@@ -10,6 +10,7 @@ add_library(cbls
     src/dag.cpp
     src/dag_ops.cpp
     src/model.cpp
+    src/expr.cpp
     src/violation.cpp
     src/moves.cpp
     src/search.cpp

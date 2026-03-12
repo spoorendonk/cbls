@@ -1,4 +1,5 @@
 #include "cbls/model.h"
+#include "cbls/expr.h"
 #include "cbls/dag_ops.h"
 
 namespace cbls {
@@ -137,6 +138,22 @@ int32_t Model::cos_expr(int32_t x) {
     return alloc_node(NodeOp::Cos, {wrap(x)});
 }
 
+int32_t Model::tan_expr(int32_t x) {
+    return alloc_node(NodeOp::Tan, {wrap(x)});
+}
+
+int32_t Model::exp_expr(int32_t x) {
+    return alloc_node(NodeOp::Exp, {wrap(x)});
+}
+
+int32_t Model::log_expr(int32_t x) {
+    return alloc_node(NodeOp::Log, {wrap(x)});
+}
+
+int32_t Model::sqrt_expr(int32_t x) {
+    return alloc_node(NodeOp::Sqrt, {wrap(x)});
+}
+
 int32_t Model::if_then_else(int32_t cond, int32_t then_, int32_t else_) {
     return alloc_node(NodeOp::If, {wrap(cond), wrap(then_), wrap(else_)});
 }
@@ -157,6 +174,22 @@ int32_t Model::eq_expr(int32_t a, int32_t b) {
     return alloc_node(NodeOp::Eq, {wrap(a), wrap(b)});
 }
 
+int32_t Model::geq(int32_t a, int32_t b) {
+    return alloc_node(NodeOp::Geq, {wrap(a), wrap(b)});
+}
+
+int32_t Model::neq(int32_t a, int32_t b) {
+    return alloc_node(NodeOp::Neq, {wrap(a), wrap(b)});
+}
+
+int32_t Model::lt(int32_t a, int32_t b) {
+    return alloc_node(NodeOp::Lt, {wrap(a), wrap(b)});
+}
+
+int32_t Model::gt(int32_t a, int32_t b) {
+    return alloc_node(NodeOp::Gt, {wrap(a), wrap(b)});
+}
+
 int32_t Model::lambda_sum(int32_t list_var_handle, std::function<double(int)> func) {
     lambda_funcs_.push_back(std::move(func));
     int32_t func_id = static_cast<int32_t>(lambda_funcs_.size() - 1);
@@ -164,6 +197,43 @@ int32_t Model::lambda_sum(int32_t list_var_handle, std::function<double(int)> fu
     int32_t nid = alloc_node(NodeOp::Lambda, {wrap(list_var_handle)});
     nodes_[nid].lambda_func_id = func_id;
     return nid;
+}
+
+// Expr-returning variable creation
+Expr Model::Bool(const std::string& name) {
+    return {this, bool_var(name)};
+}
+
+Expr Model::Int(int lb, int ub, const std::string& name) {
+    return {this, int_var(lb, ub, name)};
+}
+
+Expr Model::Float(double lb, double ub, const std::string& name) {
+    return {this, float_var(lb, ub, name)};
+}
+
+Expr Model::List(int n, const std::string& name) {
+    return {this, list_var(n, name)};
+}
+
+Expr Model::Set(int n, int min_size, int max_size, const std::string& name) {
+    return {this, set_var(n, min_size, max_size, name)};
+}
+
+Expr Model::Constant(double val) {
+    return {this, constant(val)};
+}
+
+void Model::add_constraint(const Expr& e) {
+    add_constraint(e.handle);
+}
+
+void Model::minimize(const Expr& e) {
+    minimize(e.handle);
+}
+
+void Model::maximize(const Expr& e) {
+    maximize(e.handle);
 }
 
 void Model::add_constraint(int32_t expr_id) {

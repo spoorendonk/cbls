@@ -49,7 +49,15 @@ NB_MODULE(_cbls_core, m) {
         .value("Count", NodeOp::Count)
         .value("Lambda", NodeOp::Lambda)
         .value("Leq", NodeOp::Leq)
-        .value("Eq", NodeOp::Eq);
+        .value("Eq", NodeOp::Eq)
+        .value("Tan", NodeOp::Tan)
+        .value("Exp", NodeOp::Exp)
+        .value("Log", NodeOp::Log)
+        .value("Sqrt", NodeOp::Sqrt)
+        .value("Geq", NodeOp::Geq)
+        .value("Neq", NodeOp::Neq)
+        .value("Lt", NodeOp::Lt)
+        .value("Gt", NodeOp::Gt);
 
     // Variable (read-only access)
     nb::class_<Variable>(m, "Variable")
@@ -102,16 +110,28 @@ NB_MODULE(_cbls_core, m) {
         .def("abs_expr", &Model::abs_expr)
         .def("sin_expr", &Model::sin_expr)
         .def("cos_expr", &Model::cos_expr)
+        .def("tan_expr", &Model::tan_expr)
+        .def("exp_expr", &Model::exp_expr)
+        .def("log_expr", &Model::log_expr)
+        .def("sqrt_expr", &Model::sqrt_expr)
         .def("if_then_else", &Model::if_then_else)
         .def("at", &Model::at)
         .def("count", &Model::count)
         .def("leq", &Model::leq)
         .def("eq_expr", &Model::eq_expr)
+        .def("geq", &Model::geq)
+        .def("neq", &Model::neq)
+        .def("lt", &Model::lt)
+        .def("gt", &Model::gt)
         .def("lambda_sum", &Model::lambda_sum)
-        // Constraint and objective
-        .def("add_constraint", &Model::add_constraint)
-        .def("minimize", &Model::minimize)
-        .def("maximize", &Model::maximize)
+        // Constraint and objective (int32_t overloads)
+        .def("add_constraint", static_cast<void(Model::*)(int32_t)>(&Model::add_constraint))
+        .def("minimize", static_cast<void(Model::*)(int32_t)>(&Model::minimize))
+        .def("maximize", static_cast<void(Model::*)(int32_t)>(&Model::maximize))
+        // Constraint and objective (Expr overloads)
+        .def("add_constraint", static_cast<void(Model::*)(const Expr&)>(&Model::add_constraint))
+        .def("minimize", static_cast<void(Model::*)(const Expr&)>(&Model::minimize))
+        .def("maximize", static_cast<void(Model::*)(const Expr&)>(&Model::maximize))
         .def("close", &Model::close)
         // Accessors
         .def("var", &Model::var, nb::rv_policy::reference_internal)
@@ -123,7 +143,68 @@ NB_MODULE(_cbls_core, m) {
         .def("num_nodes", &Model::num_nodes)
         // State snapshot/restore
         .def("copy_state", &Model::copy_state)
-        .def("restore_state", &Model::restore_state);
+        .def("restore_state", &Model::restore_state)
+        // Expr-returning variable creation
+        .def("Bool", &Model::Bool, nb::arg("name") = "")
+        .def("Int", &Model::Int, nb::arg("lb"), nb::arg("ub"), nb::arg("name") = "")
+        .def("Float", &Model::Float, nb::arg("lb"), nb::arg("ub"), nb::arg("name") = "")
+        .def("List", &Model::List, nb::arg("n"), nb::arg("name") = "")
+        .def("Set", &Model::Set, nb::arg("n"), nb::arg("min_size") = 0,
+             nb::arg("max_size") = -1, nb::arg("name") = "")
+        .def("Constant", &Model::Constant);
+
+    // Expr
+    nb::class_<Expr>(m, "Expr")
+        .def_ro("model", &Expr::model)
+        .def_ro("handle", &Expr::handle)
+        .def("var_id", &Expr::var_id)
+        .def("__add__", [](const Expr& a, const Expr& b) { return a + b; })
+        .def("__add__", [](const Expr& a, double b) { return a + b; })
+        .def("__radd__", [](const Expr& a, double b) { return b + a; })
+        .def("__mul__", [](const Expr& a, const Expr& b) { return a * b; })
+        .def("__mul__", [](const Expr& a, double b) { return a * b; })
+        .def("__rmul__", [](const Expr& a, double b) { return b * a; })
+        .def("__sub__", [](const Expr& a, const Expr& b) { return a - b; })
+        .def("__sub__", [](const Expr& a, double b) { return a - b; })
+        .def("__rsub__", [](const Expr& a, double b) { return b - a; })
+        .def("__truediv__", [](const Expr& a, const Expr& b) { return a / b; })
+        .def("__truediv__", [](const Expr& a, double b) { return a / b; })
+        .def("__rtruediv__", [](const Expr& a, double b) { return b / a; })
+        .def("__neg__", [](const Expr& a) { return -a; })
+        .def("__pow__", [](const Expr& a, const Expr& b) { return a.pow(b); })
+        .def("__pow__", [](const Expr& a, double b) { return a.pow(Expr{a.model, a.model->constant(b)}); })
+        .def("__pow__", [](const Expr& a, int b) { return a.pow(Expr{a.model, a.model->constant(static_cast<double>(b))}); })
+        .def("__rpow__", [](const Expr& a, double b) {
+            return Expr{a.model, a.model->pow_expr(a.model->constant(b), a.handle)};
+        })
+        .def("__le__", [](const Expr& a, const Expr& b) { return a <= b; })
+        .def("__le__", [](const Expr& a, double b) { return a <= b; })
+        .def("__ge__", [](const Expr& a, const Expr& b) { return a >= b; })
+        .def("__ge__", [](const Expr& a, double b) { return a >= b; })
+        .def("__lt__", [](const Expr& a, const Expr& b) { return a < b; })
+        .def("__lt__", [](const Expr& a, double b) { return a < b; })
+        .def("__gt__", [](const Expr& a, const Expr& b) { return a > b; })
+        .def("__gt__", [](const Expr& a, double b) { return a > b; })
+        .def("__abs__", [](const Expr& a) { return cbls::abs(a); })
+        .def("is_var", &Expr::is_var)
+        .def("eq", &Expr::eq)
+        .def("neq", &Expr::neq)
+        .def("pow", &Expr::pow);
+
+    // Expr free functions
+    m.def("sin", [](const Expr& x) { return cbls::sin(x); });
+    m.def("cos", [](const Expr& x) { return cbls::cos(x); });
+    m.def("tan", [](const Expr& x) { return cbls::tan(x); });
+    m.def("exp", [](const Expr& x) { return cbls::exp(x); });
+    m.def("log", [](const Expr& x) { return cbls::log(x); });
+    m.def("sqrt", [](const Expr& x) { return cbls::sqrt(x); });
+    m.def("abs", [](const Expr& x) { return cbls::abs(x); });
+    m.def("pow", [](const Expr& base, const Expr& exp) { return cbls::pow(base, exp); });
+    m.def("min", [](const std::vector<Expr>& args) { return cbls::min(args); });
+    m.def("max", [](const std::vector<Expr>& args) { return cbls::max(args); });
+    m.def("if_then_else", [](const Expr& cond, const Expr& then_, const Expr& else_) {
+        return cbls::if_then_else(cond, then_, else_);
+    });
 
     // Model::State
     nb::class_<Model::State>(m, "ModelState")

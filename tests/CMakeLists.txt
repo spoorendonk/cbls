@@ -1,5 +1,6 @@
 add_executable(cbls_tests
     test_dag.cpp
+    test_expr.cpp
     test_moves.cpp
     test_search.cpp
     test_chped.cpp

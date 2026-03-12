@@ -94,6 +94,24 @@ double evaluate(const ExprNode& node, const Model& model) {
     case NodeOp::Cos:
         return std::cos(child_val(node.children[0], model));
 
+    case NodeOp::Tan:
+        return std::tan(child_val(node.children[0], model));
+
+    case NodeOp::Exp:
+        return std::exp(child_val(node.children[0], model));
+
+    case NodeOp::Log: {
+        double x = child_val(node.children[0], model);
+        if (x <= 0) return -std::numeric_limits<double>::infinity();
+        return std::log(x);
+    }
+
+    case NodeOp::Sqrt: {
+        double x = child_val(node.children[0], model);
+        if (x < 0) return 0.0;
+        return std::sqrt(x);
+    }
+
     case NodeOp::If: {
         double cond = child_val(node.children[0], model);
         return cond > 0 ? child_val(node.children[1], model)
@@ -131,6 +149,26 @@ double evaluate(const ExprNode& node, const Model& model) {
     case NodeOp::Eq:
         // |child0 - child1| (= 0 when equal)
         return std::abs(child_val(node.children[0], model) - child_val(node.children[1], model));
+
+    case NodeOp::Geq:
+        // b - a (≤ 0 when a ≥ b)
+        return child_val(node.children[1], model) - child_val(node.children[0], model);
+
+    case NodeOp::Neq:
+        // 1 when equal (violated), 0 when not equal (satisfied)
+        return (std::abs(child_val(node.children[0], model) - child_val(node.children[1], model)) < 1e-9) ? 1.0 : 0.0;
+
+    case NodeOp::Lt: {
+        // a - b + ε (≤ 0 when a < b strictly)
+        constexpr double eps = 1e-9;
+        return child_val(node.children[0], model) - child_val(node.children[1], model) + eps;
+    }
+
+    case NodeOp::Gt: {
+        // b - a + ε (≤ 0 when a > b strictly)
+        constexpr double eps = 1e-9;
+        return child_val(node.children[1], model) - child_val(node.children[0], model) + eps;
+    }
     }
     return 0.0;
 }
@@ -207,6 +245,26 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
     case NodeOp::Cos:
         return -std::sin(child_val(node.children[0], model));
 
+    case NodeOp::Tan: {
+        double c = std::cos(child_val(node.children[0], model));
+        return 1.0 / (c * c);
+    }
+
+    case NodeOp::Exp:
+        return std::exp(child_val(node.children[0], model));
+
+    case NodeOp::Log: {
+        double x = child_val(node.children[0], model);
+        if (std::abs(x) < 1e-15) return 0.0;
+        return 1.0 / x;
+    }
+
+    case NodeOp::Sqrt: {
+        double x = child_val(node.children[0], model);
+        if (x < 1e-15) return 0.0;
+        return 1.0 / (2.0 * std::sqrt(x));
+    }
+
     case NodeOp::If: {
         if (child_idx == 0) return 0.0;  // non-differentiable w.r.t. condition
         double cond = child_val(node.children[0], model);
@@ -227,6 +285,21 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
         double sign = diff > 0 ? 1.0 : (diff < 0 ? -1.0 : 0.0);
         return child_idx == 0 ? sign : -sign;
     }
+
+    case NodeOp::Geq:
+        // d/d(child0) of (child1 - child0) = -1, d/d(child1) = 1
+        return child_idx == 0 ? -1.0 : 1.0;
+
+    case NodeOp::Neq:
+        return 0.0;  // non-differentiable
+
+    case NodeOp::Lt:
+        // d/d(child0) of (child0 - child1 + eps) = 1, d/d(child1) = -1
+        return child_idx == 0 ? 1.0 : -1.0;
+
+    case NodeOp::Gt:
+        // d/d(child0) of (child1 - child0 + eps) = -1, d/d(child1) = 1
+        return child_idx == 0 ? -1.0 : 1.0;
     }
     return 0.0;
 }
