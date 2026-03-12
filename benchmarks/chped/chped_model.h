@@ -9,7 +9,7 @@ namespace chped {
 
 struct CHPEDModel {
     Model model;
-    std::vector<std::vector<int32_t>> commit;  // [unit][period] - var handles
+    std::vector<std::vector<int32_t>> commit;  // [unit][period] - var or node handles
     std::vector<std::vector<int32_t>> power;   // [unit][period] - var handles
 };
 
@@ -26,7 +26,12 @@ inline CHPEDModel build_chped_model(const Instance& inst) {
         result.commit[i].resize(T);
         result.power[i].resize(T);
         for (int t = 0; t < T; ++t) {
-            result.commit[i][t] = m.bool_var("u_" + std::to_string(i) + "_" + std::to_string(t));
+            if (inst.all_committed) {
+                // All units forced on — use a constant 1 instead of a decision variable
+                result.commit[i][t] = m.constant(1.0);
+            } else {
+                result.commit[i][t] = m.bool_var("u_" + std::to_string(i) + "_" + std::to_string(t));
+            }
             result.power[i][t] = m.float_var(inst.P_min[i], inst.P_max[i],
                                               "p_" + std::to_string(i) + "_" + std::to_string(t));
         }
