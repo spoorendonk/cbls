@@ -1,23 +1,18 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["scikit-build-core>=0.5", "nanobind>=1.8"]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "cbls"
 version = "0.1.0"
-description = "Constraint-Based Local Search engine with Hexaly-style modeling API"
+description = "Constraint-Based Local Search engine (C++ core with Python bindings)"
 requires-python = ">=3.11"
-dependencies = [
-    "numpy>=1.24",
-]
 
 [project.optional-dependencies]
-lp = ["highspy>=1.5"]
-nlp = ["scipy>=1.10"]
 dev = [
     "pytest>=7.0",
     "pytest-timeout>=2.1",
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests/python"]
