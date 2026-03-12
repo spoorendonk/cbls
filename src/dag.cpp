@@ -2,6 +2,7 @@
 #include "cbls/model.h"
 #include <cmath>
 #include <algorithm>
+#include <limits>
 
 namespace cbls {
 
@@ -54,7 +55,8 @@ double evaluate(const ExprNode& node, const Model& model) {
         double denom = child_val(node.children[1], model);
         double num = child_val(node.children[0], model);
         if (std::abs(denom) < 1e-15) {
-            return num >= 0 ? 1e15 : -1e15;
+            return num >= 0 ? std::numeric_limits<double>::infinity()
+                            : -std::numeric_limits<double>::infinity();
         }
         return num / denom;
     }
@@ -62,13 +64,9 @@ double evaluate(const ExprNode& node, const Model& model) {
     case NodeOp::Pow: {
         double base = child_val(node.children[0], model);
         double exp = child_val(node.children[1], model);
-        try {
-            double result = std::pow(base, exp);
-            if (std::isfinite(result)) return result;
-            return 1e15;
-        } catch (...) {
-            return 1e15;
-        }
+        double result = std::pow(base, exp);
+        if (std::isfinite(result)) return result;
+        return std::numeric_limits<double>::infinity();
     }
 
     case NodeOp::Min: {

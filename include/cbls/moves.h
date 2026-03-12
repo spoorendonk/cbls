@@ -10,7 +10,7 @@ namespace cbls {
 
 struct Move {
     struct Change {
-        int32_t var_id;
+        int32_t var_id = -1;
         double new_value = 0.0;
         std::vector<int32_t> new_elements;
     };
@@ -42,7 +42,7 @@ public:
     std::string select(RNG& rng) const;
     void update(const std::string& move_type, bool accepted);
 
-    const std::vector<double>& probabilities() const { return probs_; }
+    const std::vector<double>& probabilities() const noexcept { return probs_; }
 
 private:
     void rebalance();

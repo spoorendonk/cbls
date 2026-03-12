@@ -1,11 +1,11 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cbls/cbls.h>
+#include "test_helpers.h"
 #include <cmath>
+#include <stdexcept>
 
 using namespace cbls;
-
-static int32_t vid(int32_t handle) { return -(handle + 1); }
 
 // Violation tests
 TEST_CASE("No violation when feasible", "[violation]") {
@@ -93,7 +93,7 @@ TEST_CASE("FJ-NL finds feasibility simple", "[search]") {
     RNG rng(42);
     fj_nl_initialize(m, vm, 1000, &rng);
     full_evaluate(m);
-    REQUIRE((vm.is_feasible() || vm.total_violation() < 0.1));
+    REQUIRE(vm.is_feasible());
 }
 
 TEST_CASE("FJ-NL finds feasibility bool", "[search]") {
@@ -233,4 +233,71 @@ TEST_CASE("SolutionPool ordering", "[pool]") {
     REQUIRE(best->objective == 3.0);
     REQUIRE(best->feasible);
     REQUIRE(pool.size() == 3);
+}
+
+// Error-path tests
+TEST_CASE("Out-of-range var throws", "[model][error]") {
+    Model m;
+    m.float_var(0, 1);
+    REQUIRE_THROWS_AS(m.var(999), std::out_of_range);
+    REQUIRE_THROWS_AS(m.var(-1), std::out_of_range);
+}
+
+TEST_CASE("Out-of-range node throws", "[model][error]") {
+    Model m;
+    REQUIRE_THROWS_AS(m.node(0), std::out_of_range);
+    m.constant(1.0);
+    REQUIRE_THROWS_AS(m.node(999), std::out_of_range);
+}
+
+TEST_CASE("add_constraint rejects var handle", "[model][error]") {
+    Model m;
+    auto x = m.float_var(0, 10);
+    REQUIRE_THROWS_AS(m.add_constraint(x), std::invalid_argument);
+}
+
+TEST_CASE("minimize rejects var handle", "[model][error]") {
+    Model m;
+    auto x = m.float_var(0, 10);
+    REQUIRE_THROWS_AS(m.minimize(x), std::invalid_argument);
+}
+
+// State snapshot/restore tests
+TEST_CASE("copy_state and restore_state", "[model]") {
+    Model m;
+    auto x = m.float_var(0, 10);
+    auto y = m.float_var(0, 10);
+    m.minimize(m.sum({x, y}));
+    m.close();
+
+    m.var_mut(vid(x)).value = 3.0;
+    m.var_mut(vid(y)).value = 7.0;
+    auto state = m.copy_state();
+
+    m.var_mut(vid(x)).value = 1.0;
+    m.var_mut(vid(y)).value = 2.0;
+    REQUIRE(m.var(vid(x)).value == 1.0);
+    REQUIRE(m.var(vid(y)).value == 2.0);
+
+    m.restore_state(state);
+    REQUIRE(m.var(vid(x)).value == 3.0);
+    REQUIRE(m.var(vid(y)).value == 7.0);
+}
+
+// ParallelSearch test
+TEST_CASE("ParallelSearch basic", "[pool]") {
+    auto model_factory = []() {
+        Model m;
+        auto x = m.float_var(-5, 5);
+        auto y = m.float_var(-5, 5);
+        auto two = m.constant(2);
+        m.minimize(m.sum({m.pow_expr(x, two), m.pow_expr(y, two)}));
+        m.close();
+        return m;
+    };
+
+    ParallelSearch ps(2);
+    auto result = ps.solve(model_factory, 1.0, 42);
+    REQUIRE(result.feasible);
+    REQUIRE(result.objective < 5.0);
 }

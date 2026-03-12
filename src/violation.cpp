@@ -1,6 +1,7 @@
 #include "cbls/violation.h"
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
 namespace cbls {
 
@@ -31,6 +32,8 @@ ViolationManager::ViolationManager(Model& model) : model_(model) {
 }
 
 double ViolationManager::constraint_violation(int i) const {
+    if (i < 0 || i >= static_cast<int>(model_.constraint_ids().size()))
+        throw std::out_of_range("constraint index out of range");
     int32_t cid = model_.constraint_ids()[i];
     return std::max(0.0, model_.node(cid).value);
 }

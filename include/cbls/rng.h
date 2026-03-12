@@ -54,7 +54,7 @@ public:
         return pool;
     }
 
-    uint64_t seed() const { return seed_; }
+    uint64_t seed() const noexcept { return seed_; }
 
     std::mt19937_64& engine() { return gen_; }
 

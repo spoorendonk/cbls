@@ -1,7 +1,6 @@
 #include "cbls/pool.h"
 #include <thread>
 #include <algorithm>
-#include <numeric>
 
 namespace cbls {
 

@@ -1,9 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
+#include "test_helpers.h"
 
 using namespace cbls;
-
-static int32_t vid(int32_t handle) { return -(handle + 1); }
 
 TEST_CASE("Bool flip move", "[moves]") {
     Model m;
@@ -187,6 +186,6 @@ TEST_CASE("MoveProbabilities floor", "[moves]") {
     for (int i = 0; i < 333; ++i) mp.update("c", false);
     const auto& probs = mp.probabilities();
     for (double p : probs) {
-        REQUIRE(p >= 0.049);
+        REQUIRE(p >= 0.05);
     }
 }

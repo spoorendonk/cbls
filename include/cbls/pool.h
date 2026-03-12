@@ -3,6 +3,7 @@
 #include "model.h"
 #include "search.h"
 #include "rng.h"
+#include <limits>
 #include <mutex>
 #include <vector>
 #include <optional>

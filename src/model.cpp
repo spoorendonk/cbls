@@ -1,6 +1,5 @@
 #include "cbls/model.h"
 #include "cbls/dag_ops.h"
-#include <algorithm>
 
 namespace cbls {
 
@@ -30,60 +29,14 @@ int32_t Model::alloc_node(NodeOp op, const std::vector<ChildRef>& children) {
     return nodes_.back().id;
 }
 
-ChildRef Model::wrap(int32_t id) {
-    // Negative IDs or IDs that fall within var range but were returned by
-    // var creation are var refs. IDs from expression creation are node refs.
-    // The convention: var IDs and node IDs are in separate spaces.
-    // Variables have IDs [0, num_vars), nodes have IDs [0, num_nodes).
-    // We need to know if the user passed a var ID or node ID.
-    // The Python version checks isinstance. In C++, we use a convention:
-    // var IDs are encoded as negative: -(var_id + 1) in the user-facing API?
-    // No, that's ugly. Better: use a flag.
-
-    // Actually, looking at the Python code, Model.sum() etc take Variable or ExprNode.
-    // In C++, we use int32_t IDs. We need to distinguish.
-    // Convention: variable IDs are stored as -(id+1), node IDs as id.
-    // OR: we use a separate "handle" type.
-
-    // Simplest approach: The user-facing API returns "handles" that encode
-    // whether they are vars or nodes. We'll use bit 31 as the flag.
-    // Actually the simplest: we just check if id < num_vars and treat it
-    // as a variable. But that's ambiguous when there are both vars and nodes.
-
-    // Let me use a clean approach: user-facing IDs are globally unique.
-    // Variables get IDs [0, N), nodes get IDs [N, N+M).
-    // Then wrap(id) checks if id < num_vars.
-
-    // Wait, this won't work because nodes are allocated dynamically and their
-    // count changes. Let me think...
-
-    // Better approach: we'll use a "handle" where the high bit indicates type.
-    // Var handles: id | 0x80000000, Node handles: id (plain).
-    // This is clean and efficient.
-
-    // Actually, let's be even simpler. The vars and nodes are allocated
-    // incrementally. We give them IDs in a single namespace:
-    // vars get even IDs starting from 0, nodes get odd... no, that's silly.
-
-    // Let me just do what the plan says: user-facing methods return int32_t,
-    // and we use a global ID counter that assigns unique IDs across both
-    // vars and nodes. Then wrap() can determine which.
-
-    // OR: Most straightforward - keep vars and nodes in separate vectors
-    // but return "typed handles". Since C++ API will be used by calling
-    // bool_var(), float_var() etc which clearly return var handles, and
-    // sum(), prod() etc which return expr handles, we can just use
-    // a signed convention: var handles are negative, expr handles are non-negative.
-
-    // Let's use: var handles = -(var_id + 1), node handles = node_id
-    // So wrap(handle) decodes: if handle < 0 => var, else => node.
-
+ChildRef Model::wrap(int32_t handle) {
+    // Handle encoding: var handles = -(var_id + 1) (negative), node handles = node_id (non-negative)
     ChildRef ref;
-    if (id < 0) {
-        ref.id = -(id + 1);  // decode var ID
+    if (handle < 0) {
+        ref.id = -(handle + 1);
         ref.is_var = true;
     } else {
-        ref.id = id;
+        ref.id = handle;
         ref.is_var = false;
     }
     return ref;
@@ -214,11 +167,16 @@ int32_t Model::lambda_sum(int32_t list_var_handle, std::function<double(int)> fu
 }
 
 void Model::add_constraint(int32_t expr_id) {
-    // expr_id should be a node handle (non-negative)
+    if (expr_id < 0) {
+        throw std::invalid_argument("add_constraint requires a node handle (non-negative), got var handle");
+    }
     constraint_ids_.push_back(expr_id);
 }
 
 void Model::minimize(int32_t expr_id) {
+    if (expr_id < 0) {
+        throw std::invalid_argument("minimize requires a node handle (non-negative), got var handle");
+    }
     objective_id_ = expr_id;
 }
 
@@ -245,6 +203,8 @@ Model::State Model::copy_state() const {
 }
 
 void Model::restore_state(const State& state) {
+    if (state.values.size() != vars_.size())
+        throw std::invalid_argument("state size does not match model");
     for (size_t i = 0; i < vars_.size(); ++i) {
         vars_[i].value = state.values[i];
         vars_[i].elements = state.elements[i];

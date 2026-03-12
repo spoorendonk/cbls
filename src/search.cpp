@@ -228,7 +228,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj) 
         if (var.type == VarType::Float) {
             auto violated = vm.violated_constraints();
             if (!violated.empty()) {
-                int ci = violated[rng.integers(0, violated.size())];
+                int ci = violated[static_cast<size_t>(rng.integers(0, violated.size()))];
                 auto nm = newton_tight_move(var.id, model, ci);
                 moves.insert(moves.end(), nm.begin(), nm.end());
             }
@@ -242,7 +242,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj) 
         }
 
         // Pick a move uniformly
-        const auto& move = moves[rng.integers(0, moves.size())];
+        const auto& move = moves[static_cast<size_t>(rng.integers(0, moves.size()))];
 
         // Evaluate via delta
         auto saved = save_move_values(model, move);

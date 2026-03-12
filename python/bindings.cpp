@@ -12,6 +12,17 @@ using namespace cbls;
 NB_MODULE(_cbls_core, m) {
     m.doc() = "CBLS: Constraint-Based Local Search engine (C++ core)";
 
+    // Exception translators
+    nb::register_exception_translator([](const std::exception_ptr &p, void *) {
+        try {
+            std::rethrow_exception(p);
+        } catch (const std::out_of_range &e) {
+            PyErr_SetString(PyExc_IndexError, e.what());
+        } catch (const std::invalid_argument &e) {
+            PyErr_SetString(PyExc_ValueError, e.what());
+        }
+    });
+
     // VarType enum
     nb::enum_<VarType>(m, "VarType")
         .value("Bool", VarType::Bool)
@@ -109,7 +120,16 @@ NB_MODULE(_cbls_core, m) {
         .def("objective_id", &Model::objective_id)
         .def("constraint_ids", &Model::constraint_ids)
         .def("num_vars", &Model::num_vars)
-        .def("num_nodes", &Model::num_nodes);
+        .def("num_nodes", &Model::num_nodes)
+        // State snapshot/restore
+        .def("copy_state", &Model::copy_state)
+        .def("restore_state", &Model::restore_state);
+
+    // Model::State
+    nb::class_<Model::State>(m, "ModelState")
+        .def(nb::init<>())
+        .def_rw("values", &Model::State::values)
+        .def_rw("elements", &Model::State::elements);
 
     // ViolationManager
     nb::class_<ViolationManager>(m, "ViolationManager")
@@ -122,11 +142,78 @@ NB_MODULE(_cbls_core, m) {
         .def("bump_weights", &ViolationManager::bump_weights, nb::arg("factor") = 1.0)
         .def_rw("adaptive_lambda", &ViolationManager::adaptive_lambda);
 
+    // RNG
+    nb::class_<RNG>(m, "RNG")
+        .def(nb::init<uint64_t>(), nb::arg("seed") = 42)
+        .def("uniform", &RNG::uniform)
+        .def("integers", &RNG::integers)
+        .def("normal", &RNG::normal)
+        .def("random", &RNG::random)
+        .def("seed", &RNG::seed);
+
+    // Move::Change
+    nb::class_<Move::Change>(m, "MoveChange")
+        .def(nb::init<>())
+        .def_rw("var_id", &Move::Change::var_id)
+        .def_rw("new_value", &Move::Change::new_value)
+        .def_rw("new_elements", &Move::Change::new_elements);
+
+    // Move
+    nb::class_<Move>(m, "Move")
+        .def(nb::init<>())
+        .def_rw("changes", &Move::changes)
+        .def_rw("move_type", &Move::move_type)
+        .def_rw("delta_F", &Move::delta_F);
+
+    // SavedValues
+    nb::class_<SavedValues>(m, "SavedValues")
+        .def(nb::init<>())
+        .def_rw("values", &SavedValues::values)
+        .def_rw("elements", &SavedValues::elements);
+
+    // MoveProbabilities
+    nb::class_<MoveProbabilities>(m, "MoveProbabilities")
+        .def(nb::init<const std::vector<std::string>&>())
+        .def("select", &MoveProbabilities::select)
+        .def("update", &MoveProbabilities::update)
+        .def("probabilities", &MoveProbabilities::probabilities);
+
+    // LNS
+    nb::class_<LNS>(m, "LNS")
+        .def(nb::init<double>(), nb::arg("destroy_fraction") = 0.3)
+        .def("destroy_repair", &LNS::destroy_repair)
+        .def("destroy_repair_cycle", &LNS::destroy_repair_cycle,
+             nb::arg("model"), nb::arg("vm"), nb::arg("rng"), nb::arg("n_rounds") = 10);
+
+    // SolutionPool
+    nb::class_<Solution>(m, "Solution")
+        .def(nb::init<>())
+        .def_rw("state", &Solution::state)
+        .def_rw("objective", &Solution::objective)
+        .def_rw("feasible", &Solution::feasible);
+
+    nb::class_<SolutionPool>(m, "SolutionPool")
+        .def(nb::init<int>(), nb::arg("capacity") = 10)
+        .def("submit", &SolutionPool::submit)
+        .def("best", &SolutionPool::best)
+        .def("size", &SolutionPool::size);
+
     // Free functions
     m.def("full_evaluate", &full_evaluate);
     m.def("delta_evaluate", &delta_evaluate);
     m.def("compute_partial", &compute_partial);
+    m.def("generate_standard_moves", &generate_standard_moves);
+    m.def("newton_tight_move", &newton_tight_move);
+    m.def("gradient_lift_move", &gradient_lift_move,
+          nb::arg("var_id"), nb::arg("model"), nb::arg("step_size") = 0.1);
+    m.def("apply_move", &apply_move);
+    m.def("save_move_values", &save_move_values);
+    m.def("undo_move", &undo_move);
     m.def("solve", &cbls::solve,
           nb::arg("model"), nb::arg("time_limit") = 10.0,
           nb::arg("seed") = 42, nb::arg("use_fj") = true);
+    m.def("initialize_random", &initialize_random);
+    m.def("fj_nl_initialize", &fj_nl_initialize,
+          nb::arg("model"), nb::arg("vm"), nb::arg("max_iterations") = 10000,
+          nb::arg("rng") = nullptr);
 }

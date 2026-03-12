@@ -2,14 +2,8 @@
 #include "cbls/dag_ops.h"
 #include <algorithm>
 #include <cmath>
-#include <numeric>
 
 namespace cbls {
-
-// Helper to get var ID from handle
-static int32_t var_id_from_handle(int32_t handle) {
-    return -(handle + 1);
-}
 
 static std::vector<Move> bool_moves(const Variable& var) {
     Move m;
@@ -108,7 +102,7 @@ static std::vector<Move> set_moves(const Variable& var, RNG& rng) {
     if (!not_in.empty() && cur_size < var.max_size) {
         Move m;
         m.move_type = "set_add";
-        int32_t add_elem = not_in[rng.integers(0, not_in.size())];
+        int32_t add_elem = not_in[static_cast<size_t>(rng.integers(0, not_in.size()))];
         auto new_elems = var.elements;
         new_elems.push_back(add_elem);
         m.changes.push_back({var.id, 0.0, new_elems});
@@ -119,24 +113,30 @@ static std::vector<Move> set_moves(const Variable& var, RNG& rng) {
     if (!in_set.empty() && cur_size > var.min_size) {
         Move m;
         m.move_type = "set_remove";
-        int idx = static_cast<int>(rng.integers(0, in_set.size()));
+        int32_t rem_elem = in_set[static_cast<size_t>(rng.integers(0, in_set.size()))];
         auto new_elems = var.elements;
-        new_elems.erase(std::find(new_elems.begin(), new_elems.end(), in_set[idx]));
-        m.changes.push_back({var.id, 0.0, new_elems});
-        moves.push_back(m);
+        auto it = std::find(new_elems.begin(), new_elems.end(), rem_elem);
+        if (it != new_elems.end()) {
+            new_elems.erase(it);
+            m.changes.push_back({var.id, 0.0, new_elems});
+            moves.push_back(m);
+        }
     }
 
     // Swap
     if (!in_set.empty() && !not_in.empty()) {
         Move m;
         m.move_type = "set_swap";
-        int32_t add_elem = not_in[rng.integers(0, not_in.size())];
-        int32_t rem_elem = in_set[rng.integers(0, in_set.size())];
+        int32_t add_elem = not_in[static_cast<size_t>(rng.integers(0, not_in.size()))];
+        int32_t rem_elem = in_set[static_cast<size_t>(rng.integers(0, in_set.size()))];
         auto new_elems = var.elements;
-        new_elems.erase(std::find(new_elems.begin(), new_elems.end(), rem_elem));
-        new_elems.push_back(add_elem);
-        m.changes.push_back({var.id, 0.0, new_elems});
-        moves.push_back(m);
+        auto it = std::find(new_elems.begin(), new_elems.end(), rem_elem);
+        if (it != new_elems.end()) {
+            new_elems.erase(it);
+            new_elems.push_back(add_elem);
+            m.changes.push_back({var.id, 0.0, new_elems});
+            moves.push_back(m);
+        }
     }
 
     return moves;

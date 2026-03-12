@@ -57,4 +57,7 @@ TEST_CASE("CHPED 24-unit feasibility", "[chped]") {
     printf("\n24-unit: feasible=%d, obj=%.2f, iters=%ld\n",
            result.feasible, result.objective, result.iterations);
     REQUIRE(result.iterations > 100);
+    if (result.feasible) {
+        REQUIRE(result.objective < 20000);
+    }
 }

@@ -44,23 +44,43 @@ public:
     void close();
 
     // Accessors
-    const Variable& var(int32_t id) const { return vars_[id]; }
-    Variable& var_mut(int32_t id) { return vars_[id]; }
-    const ExprNode& node(int32_t id) const { return nodes_[id]; }
-    ExprNode& node_mut(int32_t id) { return nodes_[id]; }
-    int32_t objective_id() const { return objective_id_; }
-    const std::vector<int32_t>& constraint_ids() const { return constraint_ids_; }
-    const std::vector<int32_t>& topo_order() const { return topo_order_; }
-    const std::vector<Variable>& variables() const { return vars_; }
-    std::vector<Variable>& variables_mut() { return vars_; }
-    const std::vector<ExprNode>& nodes() const { return nodes_; }
-    std::vector<ExprNode>& nodes_mut() { return nodes_; }
-    size_t num_vars() const { return vars_.size(); }
-    size_t num_nodes() const { return nodes_.size(); }
-    bool is_closed() const { return closed_; }
+    const Variable& var(int32_t id) const {
+        if (id < 0 || id >= static_cast<int32_t>(vars_.size()))
+            throw std::out_of_range("var id out of range");
+        return vars_[id];
+    }
+    Variable& var_mut(int32_t id) {
+        if (id < 0 || id >= static_cast<int32_t>(vars_.size()))
+            throw std::out_of_range("var id out of range");
+        return vars_[id];
+    }
+    const ExprNode& node(int32_t id) const {
+        if (id < 0 || id >= static_cast<int32_t>(nodes_.size()))
+            throw std::out_of_range("node id out of range");
+        return nodes_[id];
+    }
+    ExprNode& node_mut(int32_t id) {
+        if (id < 0 || id >= static_cast<int32_t>(nodes_.size()))
+            throw std::out_of_range("node id out of range");
+        return nodes_[id];
+    }
+    int32_t objective_id() const noexcept { return objective_id_; }
+    const std::vector<int32_t>& constraint_ids() const noexcept { return constraint_ids_; }
+    const std::vector<int32_t>& topo_order() const noexcept { return topo_order_; }
+    const std::vector<Variable>& variables() const noexcept { return vars_; }
+    std::vector<Variable>& variables_mut() noexcept { return vars_; }
+    const std::vector<ExprNode>& nodes() const noexcept { return nodes_; }
+    std::vector<ExprNode>& nodes_mut() noexcept { return nodes_; }
+    size_t num_vars() const noexcept { return vars_.size(); }
+    size_t num_nodes() const noexcept { return nodes_.size(); }
+    bool is_closed() const noexcept { return closed_; }
 
     // Lambda function access
-    const std::function<double(int)>& lambda_func(int32_t idx) const { return lambda_funcs_[idx]; }
+    const std::function<double(int)>& lambda_func(int32_t idx) const {
+        if (idx < 0 || idx >= static_cast<int32_t>(lambda_funcs_.size()))
+            throw std::out_of_range("lambda func index out of range");
+        return lambda_funcs_[idx];
+    }
 
     // State snapshot/restore
     struct State {
