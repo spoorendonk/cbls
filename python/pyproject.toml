@@ -1,0 +1,14 @@
+[build-system]
+requires = ["scikit-build-core>=0.5", "nanobind>=1.8"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "cbls"
+version = "0.1.0"
+description = "Constraint-Based Local Search engine (C++ core with Python bindings)"
+requires-python = ">=3.11"
+
+[tool.scikit-build]
+cmake.source-dir = ".."
+cmake.build-type = "Release"
+cmake.args = ["-DCBLS_BUILD_PYTHON=ON", "-DCBLS_BUILD_TESTS=OFF", "-DCBLS_BUILD_EXAMPLES=OFF"]

@@ -1,0 +1,87 @@
+#pragma once
+
+#include "dag.h"
+#include <vector>
+#include <string>
+#include <functional>
+#include <stdexcept>
+
+namespace cbls {
+
+class Model {
+public:
+    Model() = default;
+
+    // Variable creation — returns var ID
+    int32_t bool_var(const std::string& name = "");
+    int32_t int_var(int lb, int ub, const std::string& name = "");
+    int32_t float_var(double lb, double ub, const std::string& name = "");
+    int32_t list_var(int n, const std::string& name = "");
+    int32_t set_var(int n, int min_size = 0, int max_size = -1, const std::string& name = "");
+
+    // Expression creation — returns node ID
+    int32_t constant(double val);
+    int32_t neg(int32_t x);
+    int32_t sum(const std::vector<int32_t>& args);
+    int32_t prod(int32_t a, int32_t b);
+    int32_t div_expr(int32_t a, int32_t b);
+    int32_t pow_expr(int32_t base, int32_t exp);
+    int32_t min_expr(const std::vector<int32_t>& args);
+    int32_t max_expr(const std::vector<int32_t>& args);
+    int32_t abs_expr(int32_t x);
+    int32_t sin_expr(int32_t x);
+    int32_t cos_expr(int32_t x);
+    int32_t if_then_else(int32_t cond, int32_t then_, int32_t else_);
+    int32_t at(int32_t list_var_id, int32_t index_expr);
+    int32_t count(int32_t var_id);
+    int32_t leq(int32_t a, int32_t b);
+    int32_t eq_expr(int32_t a, int32_t b);
+    int32_t lambda_sum(int32_t list_var_id, std::function<double(int)> func);
+
+    void add_constraint(int32_t expr_id);
+    void minimize(int32_t expr_id);
+    void maximize(int32_t expr_id);
+    void close();
+
+    // Accessors
+    const Variable& var(int32_t id) const { return vars_[id]; }
+    Variable& var_mut(int32_t id) { return vars_[id]; }
+    const ExprNode& node(int32_t id) const { return nodes_[id]; }
+    ExprNode& node_mut(int32_t id) { return nodes_[id]; }
+    int32_t objective_id() const { return objective_id_; }
+    const std::vector<int32_t>& constraint_ids() const { return constraint_ids_; }
+    const std::vector<int32_t>& topo_order() const { return topo_order_; }
+    const std::vector<Variable>& variables() const { return vars_; }
+    std::vector<Variable>& variables_mut() { return vars_; }
+    const std::vector<ExprNode>& nodes() const { return nodes_; }
+    std::vector<ExprNode>& nodes_mut() { return nodes_; }
+    size_t num_vars() const { return vars_.size(); }
+    size_t num_nodes() const { return nodes_.size(); }
+    bool is_closed() const { return closed_; }
+
+    // Lambda function access
+    const std::function<double(int)>& lambda_func(int32_t idx) const { return lambda_funcs_[idx]; }
+
+    // State snapshot/restore
+    struct State {
+        std::vector<double> values;
+        std::vector<std::vector<int32_t>> elements;
+    };
+    State copy_state() const;
+    void restore_state(const State& state);
+
+private:
+    std::vector<Variable> vars_;
+    std::vector<ExprNode> nodes_;
+    std::vector<int32_t> topo_order_;
+    std::vector<int32_t> constraint_ids_;
+    int32_t objective_id_ = -1;
+    std::vector<std::function<double(int)>> lambda_funcs_;
+    bool closed_ = false;
+
+    int32_t alloc_var(VarType type, double lb, double ub, const std::string& name);
+    int32_t alloc_node(NodeOp op, const std::vector<ChildRef>& children);
+    ChildRef wrap(int32_t id);  // auto-detect var vs node
+};
+
+}  // namespace cbls
