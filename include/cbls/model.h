@@ -8,6 +8,9 @@
 
 namespace cbls {
 
+// Forward declare Expr
+class Expr;
+
 class Model {
 public:
     Model() = default;
@@ -31,16 +34,38 @@ public:
     int32_t abs_expr(int32_t x);
     int32_t sin_expr(int32_t x);
     int32_t cos_expr(int32_t x);
+    int32_t tan_expr(int32_t x);
+    int32_t exp_expr(int32_t x);
+    int32_t log_expr(int32_t x);
+    int32_t sqrt_expr(int32_t x);
     int32_t if_then_else(int32_t cond, int32_t then_, int32_t else_);
     int32_t at(int32_t list_var_id, int32_t index_expr);
     int32_t count(int32_t var_id);
     int32_t leq(int32_t a, int32_t b);
     int32_t eq_expr(int32_t a, int32_t b);
+    int32_t geq(int32_t a, int32_t b);
+    int32_t neq(int32_t a, int32_t b);
+    int32_t lt(int32_t a, int32_t b);
+    int32_t gt(int32_t a, int32_t b);
     int32_t lambda_sum(int32_t list_var_id, std::function<double(int)> func);
 
     void add_constraint(int32_t expr_id);
     void minimize(int32_t expr_id);
     void maximize(int32_t expr_id);
+
+    // Expr-returning variable creation
+    Expr Bool(const std::string& name = "");
+    Expr Int(int lb, int ub, const std::string& name = "");
+    Expr Float(double lb, double ub, const std::string& name = "");
+    Expr List(int n, const std::string& name = "");
+    Expr Set(int n, int min_size = 0, int max_size = -1, const std::string& name = "");
+    Expr Constant(double val);
+
+    // Overloaded constraint/objective accepting Expr
+    void add_constraint(const Expr& e);
+    void minimize(const Expr& e);
+    void maximize(const Expr& e);
+
     void close();
 
     // Accessors

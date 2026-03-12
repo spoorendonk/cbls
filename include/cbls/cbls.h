@@ -10,3 +10,4 @@
 #include "pool.h"
 #include "inner_solver.h"
 #include "rng.h"
+#include "expr.h"
