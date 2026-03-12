@@ -3,10 +3,13 @@
 ## Quick Reference
 
 ```bash
-# build
-pip install -e .
+# build (C++ library + nanobind Python bindings)
+cmake -B build && cmake --build build
 
-# test
+# test C++
+ctest --test-dir build
+
+# test Python bindings
 pytest
 ```
 
