@@ -61,3 +61,29 @@ TEST_CASE("CHPED 24-unit feasibility", "[chped]") {
         REQUIRE(result.objective < 20000);
     }
 }
+
+TEST_CASE("CHPED 13-unit feasibility and quality", "[chped]") {
+    auto inst = make_13unit();
+    auto cm = build_chped_model(inst);
+    auto& m = cm.model;
+
+    auto result = solve(m, 5.0, 42);
+    REQUIRE(result.feasible);
+    REQUIRE(result.objective >= inst.known_optimum);
+    REQUIRE(result.objective < 19000);
+    printf("\n13-unit: feasible=%d, obj=%.2f (known optimum ~%.0f), iters=%ld, time=%.3fs\n",
+           result.feasible, result.objective, inst.known_optimum, result.iterations, result.time_seconds);
+}
+
+TEST_CASE("CHPED 40-unit feasibility and quality", "[chped]") {
+    auto inst = make_40unit();
+    auto cm = build_chped_model(inst);
+    auto& m = cm.model;
+
+    auto result = solve(m, 15.0, 42);
+    REQUIRE(result.feasible);
+    REQUIRE(result.objective >= inst.known_optimum);
+    REQUIRE(result.objective < 140000);
+    printf("\n40-unit: feasible=%d, obj=%.2f (known optimum ~%.0f), iters=%ld, time=%.3fs\n",
+           result.feasible, result.objective, inst.known_optimum, result.iterations, result.time_seconds);
+}

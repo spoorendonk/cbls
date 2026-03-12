@@ -32,7 +32,12 @@ examples/           # simple.cpp, chped.cpp
 
 ## Status
 
-All phases complete (0-7). 62 C++ tests, 21 Python tests passing.
+All phases complete (0-8). Merged to `main` via PRs #1, #2.
+91 C++ tests (Catch2), 67 Python binding tests (pytest).
+Legacy Python implementation removed.
+Repo: https://github.com/spoorendonk/cbls
+
+### Completed
 
 - Phase 0: Project setup (CMake, Catch2, nanobind)
 - Phase 1: Expression DAG + delta evaluation + reverse-mode AD
@@ -42,10 +47,19 @@ All phases complete (0-7). 62 C++ tests, 21 Python tests passing.
 - Phase 5: LNS destroy-repair
 - Phase 6: Multi-threading + SolutionPool
 - Phase 7: CHPED benchmarks (4/7/24-unit)
+- Code review: bounds checks, exception safety, Python error translation
+- Legacy Python removal, build/test docs updated
+- Phase 8: Expr wrapper + operator overloading + 8 new ops (PR #2)
+  - New ops: tan, exp, log, sqrt, geq, neq, lt, gt (evaluate + AD)
+  - Expr class: `x*x + 2*x*y + sin(y)` syntax in C++ and Python
+  - Scalar-Expr mixed ops, scalar comparisons
+  - Model::Float/Int/Bool/Constant Expr-returning methods
+  - Full Python bindings with dunder methods + free functions
 
 ## Future Work
 
 - CI (GitHub Actions)
-- Operator overloading on Python handles
-- More benchmark instances
+- ~~Standard benchmark instances with known optima~~ → Done: 13-unit (Sinha et al. 2003) and 40-unit (Taipower)
+- 140-unit CHPED (replicated from 40-unit)
+- Reference solver comparison (SCIP or Couenne)
 - Inner solver integration tests
