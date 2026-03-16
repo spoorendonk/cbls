@@ -44,7 +44,7 @@ TEST_CASE("FloatIntensifyHook improves Float vars", "[inner_solver]") {
 
     FloatIntensifyHook hook;
     hook.max_sweeps = 5;
-    hook.step_size = 0.1;
+    hook.initial_step_size = 1.0;
     hook.solve(m, vm);
 
     double after_aug = vm.augmented_objective();
@@ -78,6 +78,74 @@ TEST_CASE("FloatIntensifyHook with infeasible start (no objective)", "[inner_sol
     double after_aug = vm.augmented_objective();
     // Newton steps should reduce violation (no objective to counterbalance)
     REQUIRE(after_aug < before_aug);
+}
+
+TEST_CASE("Backtracking line search finds better step than fixed", "[inner_solver]") {
+    // min (x - 3)^2, starting at x = 0
+    Model m;
+    auto x = m.float_var(-10, 10);
+    auto three = m.constant(3.0);
+    auto neg1 = m.constant(-1.0);
+    auto two = m.constant(2.0);
+    auto x_minus_3 = m.sum({x, m.prod(neg1, three)});
+    m.minimize(m.pow_expr(x_minus_3, two));
+    m.close();
+
+    m.var_mut(vid(x)).value = 0.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+
+    FloatIntensifyHook hook;
+    hook.max_sweeps = 1;
+    hook.initial_step_size = 1.0;
+    hook.max_line_search_steps = 5;
+    hook.solve(m, vm);
+
+    // Should move x toward 3.0
+    REQUIRE(m.var(vid(x)).value > 0.5);
+}
+
+TEST_CASE("Multi-var Newton moves multiple vars", "[inner_solver]") {
+    // constraint: x^2 + y^2 - 25 <= 0  (x^2 + y^2 >= 25)
+    // Start at x=1, y=1 (violation = 23). Single-var Newton on x alone
+    // would need x=sqrt(24)~4.9 but multi-var distributes the correction.
+    // objective: min (x-10)^2 + (y-10)^2 to push toward (10,10)
+    // Multi-var Newton should move both vars toward the constraint boundary.
+    Model m;
+    auto x = m.float_var(0, 10);
+    auto y = m.float_var(0, 10);
+    auto neg1 = m.constant(-1.0);
+    auto two = m.constant(2.0);
+    auto ten = m.constant(10.0);
+    auto twentyfive = m.constant(25.0);
+
+    // constraint: 25 - x^2 - y^2 <= 0
+    m.add_constraint(m.sum({twentyfive, m.prod(neg1, m.pow_expr(x, two)),
+                            m.prod(neg1, m.pow_expr(y, two))}));
+    // objective: (x-10)^2 + (y-10)^2
+    auto xm10 = m.sum({x, m.prod(neg1, ten)});
+    auto ym10 = m.sum({y, m.prod(neg1, ten)});
+    m.minimize(m.sum({m.pow_expr(xm10, two), m.pow_expr(ym10, two)}));
+    m.close();
+
+    m.var_mut(vid(x)).value = 1.0;
+    m.var_mut(vid(y)).value = 1.0;
+    full_evaluate(m);
+
+    ViolationManager vm(m);
+    double before_viol = vm.total_violation();
+    REQUIRE(before_viol > 0.0);
+
+    FloatIntensifyHook hook;
+    hook.max_sweeps = 3;
+    hook.max_multi_var_constraints = 5;
+    hook.solve(m, vm);
+
+    // Should reduce total violation
+    REQUIRE(vm.total_violation() < before_viol);
+    // Both vars should have moved from initial value of 1.0
+    REQUIRE(m.var(vid(x)).value > 1.5);
+    REQUIRE(m.var(vid(y)).value > 1.5);
 }
 
 TEST_CASE("solve with FloatIntensifyHook improves mixed problem", "[inner_solver]") {

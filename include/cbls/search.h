@@ -4,6 +4,7 @@
 #include "violation.h"
 #include "moves.h"
 #include "inner_solver.h"
+#include "lns.h"
 #include "rng.h"
 #include <limits>
 
@@ -24,6 +25,7 @@ void fj_nl_initialize(Model& model, ViolationManager& vm,
 
 SearchResult solve(Model& model, double time_limit = 10.0,
                    uint64_t seed = 42, bool use_fj = true,
-                   InnerSolverHook* hook = nullptr);
+                   InnerSolverHook* hook = nullptr,
+                   LNS* lns = nullptr);
 
 }  // namespace cbls

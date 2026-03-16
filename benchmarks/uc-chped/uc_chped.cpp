@@ -36,7 +36,8 @@ int main(int argc, char** argv) {
             fflush(stdout);
 
             cbls::FloatIntensifyHook hook;
-            auto result = cbls::solve(ucm.model, time_limits[T], 42, true, &hook);
+            cbls::LNS lns(0.3);
+            auto result = cbls::solve(ucm.model, time_limits[T], 42, true, &hook, &lns);
 
             // Compute gap vs known bounds
             auto it = inst.known_bounds.find(T);
