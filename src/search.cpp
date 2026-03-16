@@ -202,7 +202,7 @@ static double initial_temperature(double F) {
 }
 
 SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
-                   InnerSolverHook* hook) {
+                   InnerSolverHook* hook, LNS* lns) {
     RNG rng(seed);
     ViolationManager vm(model);
 
@@ -337,6 +337,12 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             // Run hook on reheat
             if (hook) {
                 hook->solve(model, vm);
+                update_best_after_hook(model, vm, best_F, best_feasible_obj, best_state);
+            }
+
+            // LNS diversification on reheat
+            if (lns) {
+                lns->destroy_repair(model, vm, rng);
                 update_best_after_hook(model, vm, best_F, best_feasible_obj, best_state);
             }
         }

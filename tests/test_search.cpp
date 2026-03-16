@@ -218,6 +218,40 @@ TEST_CASE("LNS basic", "[lns]") {
     // Just check it doesn't crash
 }
 
+// LNS integration in solve() test
+TEST_CASE("solve with LNS param", "[search][lns]") {
+    Model m;
+    auto x = m.float_var(0, 10);
+    auto y = m.float_var(0, 10);
+    auto neg1 = m.constant(-1.0);
+    auto five = m.constant(5.0);
+    m.add_constraint(m.sum({five, m.prod(neg1, x), m.prod(neg1, y)}));
+    m.minimize(m.sum({x, y}));
+    m.close();
+
+    LNS lns(0.5);
+    auto result = solve(m, 2.0, 42, true, nullptr, &lns);
+    REQUIRE(result.feasible);
+    REQUIRE(result.objective < 10.0);
+}
+
+TEST_CASE("solve with hook and LNS", "[search][lns]") {
+    Model m;
+    auto x = m.float_var(0, 10);
+    auto y = m.float_var(0, 10);
+    auto neg1 = m.constant(-1.0);
+    auto five = m.constant(5.0);
+    m.add_constraint(m.sum({five, m.prod(neg1, x), m.prod(neg1, y)}));
+    m.minimize(m.sum({x, y}));
+    m.close();
+
+    FloatIntensifyHook hook;
+    LNS lns(0.3);
+    auto result = solve(m, 2.0, 42, true, &hook, &lns);
+    REQUIRE(result.feasible);
+    REQUIRE(result.objective < 8.0);
+}
+
 // Solution pool test
 TEST_CASE("SolutionPool ordering", "[pool]") {
     SolutionPool pool(3);
