@@ -1,7 +1,7 @@
 #pragma once
 
-#include <string>
-#include <unordered_map>
+#include "model.h"
+#include "violation.h"
 
 namespace cbls {
 
@@ -9,12 +9,19 @@ class InnerSolverHook {
 public:
     virtual ~InnerSolverHook() = default;
 
-    struct Result {
-        std::unordered_map<std::string, double> float_values;
-        double objective = 0.0;
-    };
+    // Called with mutable model + violation manager.
+    // Hook mutates model directly (var values + delta_evaluate).
+    virtual void solve(Model& model, ViolationManager& vm) = 0;
+};
 
-    virtual Result solve(const std::unordered_map<std::string, double>& fixed_state) = 0;
+// Generic Float intensification: coordinate-descent sweeps over all Float vars
+// using Newton steps on violated constraints + gradient steps on objective.
+class FloatIntensifyHook : public InnerSolverHook {
+public:
+    int max_sweeps = 3;
+    double step_size = 0.1;
+
+    void solve(Model& model, ViolationManager& vm) override;
 };
 
 }  // namespace cbls

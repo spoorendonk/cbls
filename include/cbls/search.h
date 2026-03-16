@@ -3,6 +3,7 @@
 #include "model.h"
 #include "violation.h"
 #include "moves.h"
+#include "inner_solver.h"
 #include "rng.h"
 #include <limits>
 
@@ -22,6 +23,7 @@ void fj_nl_initialize(Model& model, ViolationManager& vm,
                        int max_iterations = 10000, RNG* rng = nullptr);
 
 SearchResult solve(Model& model, double time_limit = 10.0,
-                   uint64_t seed = 42, bool use_fj = true);
+                   uint64_t seed = 42, bool use_fj = true,
+                   InnerSolverHook* hook = nullptr);
 
 }  // namespace cbls

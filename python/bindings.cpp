@@ -290,9 +290,18 @@ NB_MODULE(_cbls_core, m) {
     m.def("apply_move", &apply_move);
     m.def("save_move_values", &save_move_values);
     m.def("undo_move", &undo_move);
+    // InnerSolverHook + FloatIntensifyHook
+    nb::class_<InnerSolverHook>(m, "InnerSolverHook");
+
+    nb::class_<FloatIntensifyHook, InnerSolverHook>(m, "FloatIntensifyHook")
+        .def(nb::init<>())
+        .def_rw("max_sweeps", &FloatIntensifyHook::max_sweeps)
+        .def_rw("step_size", &FloatIntensifyHook::step_size);
+
     m.def("solve", &cbls::solve,
           nb::arg("model"), nb::arg("time_limit") = 10.0,
-          nb::arg("seed") = 42, nb::arg("use_fj") = true);
+          nb::arg("seed") = 42, nb::arg("use_fj") = true,
+          nb::arg("hook") = nullptr);
     m.def("initialize_random", &initialize_random);
     m.def("fj_nl_initialize", &fj_nl_initialize,
           nb::arg("model"), nb::arg("vm"), nb::arg("max_iterations") = 10000,

@@ -176,11 +176,33 @@ void fj_nl_initialize(Model& model, ViolationManager& vm,
     }
 }
 
+// Update best tracking after hook runs
+static void update_best_after_hook(Model& model, ViolationManager& vm,
+                                   double& best_F, double& best_feasible_obj,
+                                   Model::State& best_state) {
+    double hook_F = vm.augmented_objective();
+    if (vm.is_feasible()) {
+        double hook_obj = model.objective_id() >= 0
+            ? model.node(model.objective_id()).value : 0.0;
+        if (hook_obj < best_feasible_obj) {
+            best_feasible_obj = hook_obj;
+            best_state = model.copy_state();
+        }
+    }
+    if (hook_F < best_F) {
+        best_F = hook_F;
+        if (!vm.is_feasible()) {
+            best_state = model.copy_state();
+        }
+    }
+}
+
 static double initial_temperature(double F) {
     return std::max(std::abs(F) * 0.1, 1.0);
 }
 
-SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj) {
+SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
+                   InnerSolverHook* hook) {
     RNG rng(seed);
     ViolationManager vm(model);
 
@@ -216,6 +238,9 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj) 
     });
 
     int64_t iteration = 0;
+    int64_t discrete_accepts_since_hook = 0;
+    const int64_t hook_frequency = 10;  // run hook every N discrete acceptances
+
     while (std::chrono::steady_clock::now() < deadline) {
         // Select random variable
         int var_idx = static_cast<int>(rng.integers(0, model.num_vars()));
@@ -280,6 +305,23 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj) 
                 }
             }
 
+            // Run hook periodically after discrete variable acceptances
+            if (hook) {
+                bool has_discrete = false;
+                for (const auto& ch : move.changes) {
+                    auto t = model.var(ch.var_id).type;
+                    if (t == VarType::Bool || t == VarType::Int) {
+                        has_discrete = true;
+                        break;
+                    }
+                }
+                if (has_discrete && ++discrete_accepts_since_hook >= hook_frequency) {
+                    discrete_accepts_since_hook = 0;
+                    hook->solve(model, vm);
+                    update_best_after_hook(model, vm, best_F, best_feasible_obj, best_state);
+                }
+            }
+
             move_probs.update(move.move_type, true);
             vm.adaptive_lambda.update(vm.is_feasible(), obj_improved);
         } else {
@@ -291,6 +333,12 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj) 
         temperature *= cooling_rate;
         if (iteration > 0 && iteration % reheat_interval == 0) {
             temperature = initial_temperature(best_F) * 0.5;
+
+            // Run hook on reheat
+            if (hook) {
+                hook->solve(model, vm);
+                update_best_after_hook(model, vm, best_F, best_feasible_obj, best_state);
+            }
         }
 
         iteration++;

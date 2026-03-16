@@ -35,7 +35,8 @@ int main(int argc, char** argv) {
             printf("%-20s %6d %6d ", inst.name.c_str(), inst.n_units, inst.n_periods);
             fflush(stdout);
 
-            auto result = cbls::solve(ucm.model, time_limits[T], 42);
+            cbls::FloatIntensifyHook hook;
+            auto result = cbls::solve(ucm.model, time_limits[T], 42, true, &hook);
 
             // Compute gap vs known bounds
             auto it = inst.known_bounds.find(T);
