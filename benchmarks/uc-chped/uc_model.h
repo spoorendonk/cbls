@@ -37,44 +37,48 @@ inline UCModel build_uc_model(const UCInstance& inst) {
     // ---------- Constants ----------
     auto zero = m.constant(0.0);
     auto neg1 = m.constant(-1.0);
-    auto half = m.constant(0.5);
     auto neg_half = m.constant(-0.5);
     auto one_const = m.constant(1.0);
+    auto two = m.constant(2.0);
+
+    // Per-unit constants (created once, reused across periods)
+    std::vector<int32_t> unit_ai(N), unit_bi(N), unit_ci(N), unit_di(N), unit_ei(N);
+    std::vector<int32_t> unit_pmin(N), unit_pmax(N), unit_a_hot(N), unit_a_cold(N);
+    std::vector<int32_t> unit_y_prev_const(N);  // constant node for y_prev[u]
+    for (int u = 0; u < N; ++u) {
+        unit_ai[u] = m.constant(inst.a[u]);
+        unit_bi[u] = m.constant(inst.b[u]);
+        unit_ci[u] = m.constant(inst.c[u]);
+        unit_di[u] = m.constant(inst.d[u]);
+        unit_ei[u] = m.constant(inst.e[u]);
+        unit_pmin[u] = m.constant(inst.P_min[u]);
+        unit_pmax[u] = m.constant(inst.P_max[u]);
+        unit_a_hot[u] = m.constant(inst.a_hot[u]);
+        unit_a_cold[u] = m.constant(inst.a_cold[u]);
+        unit_y_prev_const[u] = m.constant(static_cast<double>(inst.y_prev[u]));
+    }
 
     // ---------- Objective: total cost ----------
     std::vector<int32_t> cost_terms;
 
     for (int u = 0; u < N; ++u) {
-        auto ai = m.constant(inst.a[u]);
-        auto bi = m.constant(inst.b[u]);
-        auto ci = m.constant(inst.c[u]);
-        auto di = m.constant(inst.d[u]);
-        auto ei = m.constant(inst.e[u]);
-        auto pmin_i = m.constant(inst.P_min[u]);
-        auto two = m.constant(2.0);
-        auto a_hot_c = m.constant(inst.a_hot[u]);
-        auto a_cold_c = m.constant(inst.a_cold[u]);
-
         for (int t = 0; t < T; ++t) {
             auto P = result.p[u][t];
             auto Y = result.y[u][t];
 
             // --- Fuel cost: y * F(p) ---
             // F(p) = a + b*p + c*p^2 + |d*sin(e*(Pmin-p))|
-            auto base_cost = m.sum({ai, m.prod(bi, P), m.prod(ci, m.pow_expr(P, two))});
-            auto pmin_minus_p = m.sum({pmin_i, m.prod(neg1, P)});
-            auto valve_point = m.abs_expr(m.prod(di, m.sin_expr(m.prod(ei, pmin_minus_p))));
+            auto base_cost = m.sum({unit_ai[u], m.prod(unit_bi[u], P),
+                                    m.prod(unit_ci[u], m.pow_expr(P, two))});
+            auto pmin_minus_p = m.sum({unit_pmin[u], m.prod(neg1, P)});
+            auto valve_point = m.abs_expr(
+                m.prod(unit_di[u], m.sin_expr(m.prod(unit_ei[u], pmin_minus_p))));
             auto fuel_cost = m.prod(Y, m.sum({base_cost, valve_point}));
             cost_terms.push_back(fuel_cost);
 
             // --- Startup cost ---
             // Startup detection: su = max(0, y[t] - y_prev)
-            int32_t y_prev_h;
-            if (t == 0) {
-                y_prev_h = m.constant(static_cast<double>(inst.y_prev[u]));
-            } else {
-                y_prev_h = result.y[u][t - 1];
-            }
+            int32_t y_prev_h = (t == 0) ? unit_y_prev_const[u] : result.y[u][t - 1];
             auto su = m.max_expr({zero, m.sum({Y, m.prod(neg1, y_prev_h)})});
 
             // Hot/cold startup cost
@@ -85,9 +89,10 @@ inline UCModel build_uc_model(const UCInstance& inst) {
             std::vector<int32_t> lookback_ys;
             for (int tau = lookback_start; tau < t; ++tau) {
                 if (tau < 0) {
-                    // Before horizon: use y_prev if unit was on and n_init covers this
-                    // Simplification: if y_prev=1, unit was on before horizon
-                    lookback_ys.push_back(m.constant(static_cast<double>(inst.y_prev[u])));
+                    // Before horizon: reuse single y_prev constant for this unit
+                    if (lookback_ys.empty() || lookback_ys.back() != unit_y_prev_const[u]) {
+                        lookback_ys.push_back(unit_y_prev_const[u]);
+                    }
                 } else {
                     lookback_ys.push_back(result.y[u][tau]);
                 }
@@ -95,14 +100,15 @@ inline UCModel build_uc_model(const UCInstance& inst) {
 
             int32_t startup_cost;
             if (lookback_ys.empty()) {
-                // No lookback → always cold startup
-                startup_cost = m.prod(a_cold_c, su);
+                // No lookback -> always cold startup
+                startup_cost = m.prod(unit_a_cold[u], su);
             } else {
                 auto was_on = m.max_expr(lookback_ys);
-                // if_then_else(cond, then, else): cond > 0 → then, else → else
-                // We want: was_on > 0.5 → hot, else → cold
+                // if_then_else(cond, then, else): cond > 0 -> then, else -> else
+                // We want: was_on > 0.5 -> hot, else -> cold
                 auto cond = m.sum({was_on, neg_half});
-                startup_cost = m.if_then_else(cond, m.prod(a_hot_c, su), m.prod(a_cold_c, su));
+                startup_cost = m.if_then_else(cond, m.prod(unit_a_hot[u], su),
+                                              m.prod(unit_a_cold[u], su));
             }
             cost_terms.push_back(startup_cost);
         }
@@ -126,7 +132,7 @@ inline UCModel build_uc_model(const UCInstance& inst) {
         if (inst.reserve[t] > 0) {
             std::vector<int32_t> cap_terms;
             for (int u = 0; u < N; ++u) {
-                cap_terms.push_back(m.prod(m.constant(inst.P_max[u]), result.y[u][t]));
+                cap_terms.push_back(m.prod(unit_pmax[u], result.y[u][t]));
             }
             auto capacity = m.sum(cap_terms);
             auto reserve_t = m.constant(inst.reserve[t]);
@@ -140,12 +146,10 @@ inline UCModel build_uc_model(const UCInstance& inst) {
             auto P = result.p[u][t];
 
             // --- Dispatch lower bound: Pmin*y - p <= 0 ---
-            auto pmin_c = m.constant(inst.P_min[u]);
-            m.add_constraint(m.sum({m.prod(pmin_c, Y), m.prod(neg1, P)}));
+            m.add_constraint(m.sum({m.prod(unit_pmin[u], Y), m.prod(neg1, P)}));
 
             // --- Dispatch upper bound: p - Pmax*y <= 0 ---
-            auto pmax_c = m.constant(inst.P_max[u]);
-            m.add_constraint(m.sum({P, m.prod(neg1, m.prod(pmax_c, Y))}));
+            m.add_constraint(m.sum({P, m.prod(neg1, m.prod(unit_pmax[u], Y))}));
         }
 
         // --- Min uptime constraints ---
@@ -154,12 +158,7 @@ inline UCModel build_uc_model(const UCInstance& inst) {
         //   y[t] - y_prev - y[tau] <= 0  (if unit turned on at t, it must be on at tau)
         // Equivalently: y[t] - y[t-1] <= y[tau]
         for (int t = 0; t < T; ++t) {
-            int32_t y_prev_h;
-            if (t == 0) {
-                y_prev_h = m.constant(static_cast<double>(inst.y_prev[u]));
-            } else {
-                y_prev_h = result.y[u][t - 1];
-            }
+            int32_t y_prev_h = (t == 0) ? unit_y_prev_const[u] : result.y[u][t - 1];
 
             int end = std::min(t + inst.min_on[u], T);
             for (int tau = t + 1; tau < end; ++tau) {
@@ -174,12 +173,7 @@ inline UCModel build_uc_model(const UCInstance& inst) {
         // For each pair (t, tau) where tau in [t+1, min(t+min_off-1, T-1)]:
         //   y_prev - y[t] + y[tau] - 1 <= 0
         for (int t = 0; t < T; ++t) {
-            int32_t y_prev_h;
-            if (t == 0) {
-                y_prev_h = m.constant(static_cast<double>(inst.y_prev[u]));
-            } else {
-                y_prev_h = result.y[u][t - 1];
-            }
+            int32_t y_prev_h = (t == 0) ? unit_y_prev_const[u] : result.y[u][t - 1];
 
             int end = std::min(t + inst.min_off[u], T);
             for (int tau = t + 1; tau < end; ++tau) {
@@ -195,7 +189,7 @@ inline UCModel build_uc_model(const UCInstance& inst) {
         if (inst.y_prev[u] == 1) {
             int remaining_on = std::max(0, inst.min_on[u] - inst.n_init[u]);
             for (int t = 0; t < std::min(remaining_on, T); ++t) {
-                // y[t] >= 1  →  1 - y[t] <= 0
+                // y[t] >= 1  ->  1 - y[t] <= 0
                 m.add_constraint(m.sum({one_const, m.prod(neg1, result.y[u][t])}));
             }
         }
@@ -204,7 +198,7 @@ inline UCModel build_uc_model(const UCInstance& inst) {
         if (inst.y_prev[u] == 0) {
             int remaining_off = std::max(0, inst.min_off[u] - inst.n_init[u]);
             for (int t = 0; t < std::min(remaining_off, T); ++t) {
-                // y[t] <= 0  →  y[t] <= 0
+                // y[t] <= 0  ->  y[t] <= 0
                 m.add_constraint(result.y[u][t]);
             }
         }

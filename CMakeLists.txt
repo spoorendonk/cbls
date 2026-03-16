@@ -44,10 +44,12 @@ configure_file(cmake/cblsConfig.cmake.in
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/cblsConfig.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cbls)
 
+# FetchContent (shared by tests and benchmarks)
+include(FetchContent)
+
 # C++ tests
 option(CBLS_BUILD_TESTS "Build C++ tests" ON)
 if(CBLS_BUILD_TESTS)
-    include(FetchContent)
     FetchContent_Declare(
         Catch2
         GIT_REPOSITORY https://github.com/catchorg/Catch2.git
@@ -73,7 +75,6 @@ endif()
 # Benchmarks
 option(CBLS_BUILD_BENCHMARKS "Build benchmarks" ON)
 if(CBLS_BUILD_BENCHMARKS)
-    include(FetchContent)
     FetchContent_Declare(json
         GIT_REPOSITORY https://github.com/nlohmann/json.git
         GIT_TAG v3.11.3
