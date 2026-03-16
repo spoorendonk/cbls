@@ -21,7 +21,8 @@ struct SearchResult {
 void initialize_random(Model& model, RNG& rng);
 
 void fj_nl_initialize(Model& model, ViolationManager& vm,
-                       int max_iterations = 10000, RNG* rng = nullptr);
+                       int max_iterations = 10000, RNG* rng = nullptr,
+                       double time_limit = 2.0);
 
 SearchResult solve(Model& model, double time_limit = 10.0,
                    uint64_t seed = 42, bool use_fj = true,

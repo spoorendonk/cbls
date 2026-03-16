@@ -100,15 +100,19 @@ static std::vector<std::pair<double, std::vector<int32_t>>> fj_candidate_values(
 }
 
 void fj_nl_initialize(Model& model, ViolationManager& vm,
-                       int max_iterations, RNG* rng_ptr) {
+                       int max_iterations, RNG* rng_ptr, double time_limit) {
     RNG local_rng(42);
     RNG& rng = rng_ptr ? *rng_ptr : local_rng;
 
     full_evaluate(model);
 
+    auto deadline = std::chrono::steady_clock::now()
+        + std::chrono::duration<double>(time_limit);
+
     for (int iteration = 0; iteration < max_iterations; ++iteration) {
         auto violated = vm.violated_constraints();
         if (violated.empty()) break;
+        if (std::chrono::steady_clock::now() >= deadline) break;
 
         int best_var_id = -1;
         double best_val = 0.0;
@@ -214,7 +218,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     full_evaluate(model);
 
     if (use_fj) {
-        fj_nl_initialize(model, vm, 5000, &rng);
+        fj_nl_initialize(model, vm, 5000, &rng, time_limit * 0.2);
     }
 
     double current_F = vm.augmented_objective();
