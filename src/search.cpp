@@ -202,7 +202,7 @@ static double initial_temperature(double F) {
 }
 
 SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
-                   InnerSolverHook* hook, LNS* lns) {
+                   InnerSolverHook* hook, LNS* lns, int lns_interval) {
     RNG rng(seed);
     ViolationManager vm(model);
 
@@ -238,6 +238,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     });
 
     int64_t iteration = 0;
+    int reheat_count = 0;
     int64_t discrete_accepts_since_hook = 0;
     const int64_t hook_frequency = 10;  // run hook every N discrete acceptances
 
@@ -333,6 +334,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         temperature *= cooling_rate;
         if (iteration > 0 && iteration % reheat_interval == 0) {
             temperature = initial_temperature(best_F) * 0.5;
+            reheat_count++;
 
             // Run hook on reheat
             if (hook) {
@@ -340,8 +342,8 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
                 update_best_after_hook(model, vm, best_F, best_feasible_obj, best_state);
             }
 
-            // LNS diversification on reheat
-            if (lns) {
+            // LNS diversification every lns_interval reheats
+            if (lns && (reheat_count % lns_interval == 0)) {
                 lns->destroy_repair(model, vm, rng);
                 update_best_after_hook(model, vm, best_F, best_feasible_obj, best_state);
             }
