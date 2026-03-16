@@ -75,53 +75,52 @@ void FloatIntensifyHook::solve(Model& model, ViolationManager& vm) {
         }
 
         // Multi-var Newton: minimum-norm step on violated constraints
-        {
+        for (int ci = 0; ci < max_multi_var_constraints; ++ci) {
             auto violated = vm.violated_constraints();
-            int n_mv = std::min(static_cast<int>(violated.size()), max_multi_var_constraints);
-            for (int ci = 0; ci < n_mv; ++ci) {
-                int32_t cid = model.constraint_ids()[violated[ci]];
-                double g = model.node(cid).value;
-                if (std::abs(g) < 1e-15) continue;
+            if (ci >= static_cast<int>(violated.size())) break;
 
-                // Collect float vars with non-trivial gradient
-                struct VarGrad { int32_t id; double dg; double old_val; };
-                std::vector<VarGrad> grads;
-                for (const auto& v : model.variables()) {
-                    if (v.type != VarType::Float) continue;
-                    double dg = compute_partial(model, cid, v.id);
-                    if (std::abs(dg) > 1e-12) {
-                        grads.push_back({v.id, dg, v.value});
-                    }
+            int32_t cid = model.constraint_ids()[violated[ci]];
+            double g = model.node(cid).value;
+            if (std::abs(g) < 1e-15) continue;
+
+            // Collect float vars with non-trivial gradient
+            struct VarGrad { int32_t id; double dg; double old_val; };
+            std::vector<VarGrad> grads;
+            for (const auto& v : model.variables()) {
+                if (v.type != VarType::Float) continue;
+                double dg = compute_partial(model, cid, v.id);
+                if (std::abs(dg) > 1e-12) {
+                    grads.push_back({v.id, dg, v.value});
                 }
-                if (static_cast<int>(grads.size()) < 2) continue;
+            }
+            if (static_cast<int>(grads.size()) < 2) continue;
 
-                double grad_norm_sq = 0.0;
-                for (const auto& vg : grads) grad_norm_sq += vg.dg * vg.dg;
-                double scale = -g / grad_norm_sq;
+            double grad_norm_sq = 0.0;
+            for (const auto& vg : grads) grad_norm_sq += vg.dg * vg.dg;
+            double scale = -g / grad_norm_sq;
 
-                // Capture baseline before applying step
-                double old_aug = vm.augmented_objective();
+            // Capture baseline before applying step
+            double old_aug = vm.augmented_objective();
 
-                // Apply minimum-norm Newton step
-                std::set<int32_t> changed_ids;
+            // Apply minimum-norm Newton step
+            std::set<int32_t> changed_ids;
+            for (const auto& vg : grads) {
+                const auto& v = model.var(vg.id);
+                double new_val = std::clamp(vg.old_val + scale * vg.dg, v.lb, v.ub);
+                model.var_mut(vg.id).value = new_val;
+                changed_ids.insert(vg.id);
+            }
+            delta_evaluate(model, changed_ids);
+            double new_aug = vm.augmented_objective();
+
+            if (new_aug < old_aug) {
+                improved = true;
+            } else {
+                // Restore all vars
                 for (const auto& vg : grads) {
-                    const auto& v = model.var(vg.id);
-                    double new_val = std::clamp(vg.old_val + scale * vg.dg, v.lb, v.ub);
-                    model.var_mut(vg.id).value = new_val;
-                    changed_ids.insert(vg.id);
+                    model.var_mut(vg.id).value = vg.old_val;
                 }
                 delta_evaluate(model, changed_ids);
-                double new_aug = vm.augmented_objective();
-
-                if (new_aug < old_aug) {
-                    improved = true;
-                } else {
-                    // Restore all vars
-                    for (const auto& vg : grads) {
-                        model.var_mut(vg.id).value = vg.old_val;
-                    }
-                    delta_evaluate(model, changed_ids);
-                }
             }
         }
 
