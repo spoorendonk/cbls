@@ -252,6 +252,40 @@ TEST_CASE("solve with hook and LNS", "[search][lns]") {
     REQUIRE(result.objective < 8.0);
 }
 
+TEST_CASE("lns_interval=0 disables LNS in solve", "[search][lns]") {
+    Model m;
+    auto x = m.float_var(0, 10);
+    auto y = m.float_var(0, 10);
+    auto neg1 = m.constant(-1.0);
+    auto five = m.constant(5.0);
+    m.add_constraint(m.sum({five, m.prod(neg1, x), m.prod(neg1, y)}));
+    m.minimize(m.sum({x, y}));
+    m.close();
+
+    LNS lns(0.5);
+    // lns_interval=0 should disable LNS entirely (no division by zero)
+    auto result = solve(m, 1.0, 42, true, nullptr, &lns, 0);
+    REQUIRE(result.feasible);
+    REQUIRE(result.iterations > 0);
+}
+
+TEST_CASE("lns_interval gates LNS frequency", "[search][lns]") {
+    Model m;
+    auto x = m.float_var(0, 10);
+    auto y = m.float_var(0, 10);
+    auto neg1 = m.constant(-1.0);
+    auto five = m.constant(5.0);
+    m.add_constraint(m.sum({five, m.prod(neg1, x), m.prod(neg1, y)}));
+    m.minimize(m.sum({x, y}));
+    m.close();
+
+    // With high lns_interval, LNS rarely fires — solve should still work
+    LNS lns(0.5);
+    auto result = solve(m, 1.0, 42, true, nullptr, &lns, 100);
+    REQUIRE(result.feasible);
+    REQUIRE(result.iterations > 0);
+}
+
 // Solution pool test
 TEST_CASE("SolutionPool ordering", "[pool]") {
     SolutionPool pool(3);

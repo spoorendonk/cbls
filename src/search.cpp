@@ -343,7 +343,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             }
 
             // LNS diversification every lns_interval reheats
-            if (lns && (reheat_count % lns_interval == 0)) {
+            if (lns && lns_interval > 0 && (reheat_count % lns_interval == 0)) {
                 lns->destroy_repair(model, vm, rng);
                 update_best_after_hook(model, vm, best_F, best_feasible_obj, best_state);
             }
