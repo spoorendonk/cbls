@@ -70,6 +70,21 @@ if(CBLS_BUILD_EXAMPLES)
     target_include_directories(cbls_chped PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
+# Benchmarks
+option(CBLS_BUILD_BENCHMARKS "Build benchmarks" ON)
+if(CBLS_BUILD_BENCHMARKS)
+    include(FetchContent)
+    FetchContent_Declare(json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG v3.11.3
+    )
+    FetchContent_MakeAvailable(json)
+
+    add_executable(cbls_uc_chped benchmarks/uc-chped/uc_chped.cpp)
+    target_link_libraries(cbls_uc_chped PRIVATE cbls nlohmann_json::nlohmann_json)
+    target_include_directories(cbls_uc_chped PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
+
 # Python bindings (optional)
 option(CBLS_BUILD_PYTHON "Build Python bindings" OFF)
 if(CBLS_BUILD_PYTHON)
