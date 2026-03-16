@@ -100,15 +100,19 @@ static std::vector<std::pair<double, std::vector<int32_t>>> fj_candidate_values(
 }
 
 void fj_nl_initialize(Model& model, ViolationManager& vm,
-                       int max_iterations, RNG* rng_ptr) {
+                       int max_iterations, RNG* rng_ptr, double time_limit) {
     RNG local_rng(42);
     RNG& rng = rng_ptr ? *rng_ptr : local_rng;
 
     full_evaluate(model);
 
+    auto deadline = std::chrono::steady_clock::now()
+        + std::chrono::duration<double>(time_limit);
+
     for (int iteration = 0; iteration < max_iterations; ++iteration) {
         auto violated = vm.violated_constraints();
         if (violated.empty()) break;
+        if (std::chrono::steady_clock::now() >= deadline) break;
 
         int best_var_id = -1;
         double best_val = 0.0;
@@ -202,7 +206,7 @@ static double initial_temperature(double F) {
 }
 
 SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
-                   InnerSolverHook* hook, LNS* lns) {
+                   InnerSolverHook* hook, LNS* lns, int lns_interval) {
     RNG rng(seed);
     ViolationManager vm(model);
 
@@ -214,7 +218,8 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     full_evaluate(model);
 
     if (use_fj) {
-        fj_nl_initialize(model, vm, 5000, &rng);
+        constexpr double fj_time_fraction = 0.2;
+        fj_nl_initialize(model, vm, 5000, &rng, time_limit * fj_time_fraction);
     }
 
     double current_F = vm.augmented_objective();
@@ -238,6 +243,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     });
 
     int64_t iteration = 0;
+    int reheat_count = 0;
     int64_t discrete_accepts_since_hook = 0;
     const int64_t hook_frequency = 10;  // run hook every N discrete acceptances
 
@@ -333,6 +339,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         temperature *= cooling_rate;
         if (iteration > 0 && iteration % reheat_interval == 0) {
             temperature = initial_temperature(best_F) * 0.5;
+            reheat_count++;
 
             // Run hook on reheat
             if (hook) {
@@ -340,8 +347,8 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
                 update_best_after_hook(model, vm, best_F, best_feasible_obj, best_state);
             }
 
-            // LNS diversification on reheat
-            if (lns) {
+            // LNS diversification every lns_interval reheats (<=0 disables)
+            if (lns && lns_interval > 0 && (reheat_count % lns_interval == 0)) {
                 lns->destroy_repair(model, vm, rng);
                 update_best_after_hook(model, vm, best_F, best_feasible_obj, best_state);
             }

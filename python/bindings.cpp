@@ -304,9 +304,10 @@ NB_MODULE(_cbls_core, m) {
           nb::arg("model"), nb::arg("time_limit") = 10.0,
           nb::arg("seed") = 42, nb::arg("use_fj") = true,
           nb::arg("hook") = nullptr,
-          nb::arg("lns") = nullptr);
+          nb::arg("lns") = nullptr,
+          nb::arg("lns_interval") = 3);
     m.def("initialize_random", &initialize_random);
     m.def("fj_nl_initialize", &fj_nl_initialize,
           nb::arg("model"), nb::arg("vm"), nb::arg("max_iterations") = 10000,
-          nb::arg("rng") = nullptr);
+          nb::arg("rng") = nullptr, nb::arg("time_limit") = 2.0);
 }

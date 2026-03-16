@@ -2,6 +2,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cbls/cbls.h>
 #include "test_helpers.h"
+#include <chrono>
 #include <cmath>
 #include <stdexcept>
 
@@ -250,6 +251,68 @@ TEST_CASE("solve with hook and LNS", "[search][lns]") {
     auto result = solve(m, 2.0, 42, true, &hook, &lns);
     REQUIRE(result.feasible);
     REQUIRE(result.objective < 8.0);
+}
+
+TEST_CASE("fj_nl_initialize respects time_limit", "[search][fj]") {
+    // Build a model large enough that FJ would need many iterations
+    Model m;
+    std::vector<int32_t> vars;
+    for (int i = 0; i < 50; ++i) {
+        vars.push_back(m.int_var(0, 100));
+    }
+    // Constraint: sum of all vars == 2500 (hard to satisfy randomly)
+    auto neg2500 = m.constant(-2500.0);
+    std::vector<int32_t> sum_args(vars.begin(), vars.end());
+    sum_args.push_back(neg2500);
+    m.add_constraint(m.abs_expr(m.sum(sum_args)));
+    m.close();
+
+    ViolationManager vm(m);
+    RNG rng(42);
+    initialize_random(m, rng);
+    full_evaluate(m);
+
+    auto before = std::chrono::steady_clock::now();
+    fj_nl_initialize(m, vm, 1000000, &rng, 0.05);  // 50ms cap, huge iter limit
+    auto elapsed = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - before).count();
+
+    // Should finish near the time limit, not run all 1M iterations
+    REQUIRE(elapsed < 0.5);
+}
+
+TEST_CASE("lns_interval=0 disables LNS in solve", "[search][lns]") {
+    Model m;
+    auto x = m.float_var(0, 10);
+    auto y = m.float_var(0, 10);
+    auto neg1 = m.constant(-1.0);
+    auto five = m.constant(5.0);
+    m.add_constraint(m.sum({five, m.prod(neg1, x), m.prod(neg1, y)}));
+    m.minimize(m.sum({x, y}));
+    m.close();
+
+    LNS lns(0.5);
+    // lns_interval=0 should disable LNS entirely (no division by zero)
+    auto result = solve(m, 1.0, 42, true, nullptr, &lns, 0);
+    REQUIRE(result.feasible);
+    REQUIRE(result.iterations > 0);
+}
+
+TEST_CASE("lns_interval gates LNS frequency", "[search][lns]") {
+    Model m;
+    auto x = m.float_var(0, 10);
+    auto y = m.float_var(0, 10);
+    auto neg1 = m.constant(-1.0);
+    auto five = m.constant(5.0);
+    m.add_constraint(m.sum({five, m.prod(neg1, x), m.prod(neg1, y)}));
+    m.minimize(m.sum({x, y}));
+    m.close();
+
+    // With high lns_interval, LNS rarely fires — solve should still work
+    LNS lns(0.5);
+    auto result = solve(m, 1.0, 42, true, nullptr, &lns, 100);
+    REQUIRE(result.feasible);
+    REQUIRE(result.iterations > 0);
 }
 
 // Solution pool test

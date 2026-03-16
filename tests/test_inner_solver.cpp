@@ -44,7 +44,6 @@ TEST_CASE("FloatIntensifyHook improves Float vars", "[inner_solver]") {
 
     FloatIntensifyHook hook;
     hook.max_sweeps = 5;
-    hook.initial_step_size = 1.0;
     hook.solve(m, vm);
 
     double after_aug = vm.augmented_objective();
@@ -97,7 +96,6 @@ TEST_CASE("Backtracking line search finds better step than fixed", "[inner_solve
 
     FloatIntensifyHook hook;
     hook.max_sweeps = 1;
-    hook.initial_step_size = 1.0;
     hook.max_line_search_steps = 5;
     hook.solve(m, vm);
 

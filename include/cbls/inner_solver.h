@@ -19,7 +19,7 @@ public:
 class FloatIntensifyHook : public InnerSolverHook {
 public:
     int max_sweeps = 3;
-    double initial_step_size = 1.0;
+    double initial_step_size = 0.1;
     int max_line_search_steps = 5;
     int max_multi_var_constraints = 5;
 
