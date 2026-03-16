@@ -180,7 +180,8 @@ static double initial_temperature(double F) {
     return std::max(std::abs(F) * 0.1, 1.0);
 }
 
-SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj) {
+SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
+                   InnerSolverHook* hook) {
     RNG rng(seed);
     ViolationManager vm(model);
 
@@ -280,6 +281,37 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj) 
                 }
             }
 
+            // Run hook after accepting a discrete variable change
+            if (hook) {
+                bool has_discrete = false;
+                for (const auto& ch : move.changes) {
+                    auto t = model.var(ch.var_id).type;
+                    if (t == VarType::Bool || t == VarType::Int) {
+                        has_discrete = true;
+                        break;
+                    }
+                }
+                if (has_discrete) {
+                    hook->solve(model, vm);
+                    // Update best tracking after hook
+                    double hook_F = vm.augmented_objective();
+                    if (vm.is_feasible()) {
+                        double hook_obj = model.objective_id() >= 0
+                            ? model.node(model.objective_id()).value : 0.0;
+                        if (hook_obj < best_feasible_obj) {
+                            best_feasible_obj = hook_obj;
+                            best_state = model.copy_state();
+                        }
+                    }
+                    if (hook_F < best_F) {
+                        best_F = hook_F;
+                        if (!vm.is_feasible()) {
+                            best_state = model.copy_state();
+                        }
+                    }
+                }
+            }
+
             move_probs.update(move.move_type, true);
             vm.adaptive_lambda.update(vm.is_feasible(), obj_improved);
         } else {
@@ -291,6 +323,26 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj) 
         temperature *= cooling_rate;
         if (iteration > 0 && iteration % reheat_interval == 0) {
             temperature = initial_temperature(best_F) * 0.5;
+
+            // Run hook on reheat
+            if (hook) {
+                hook->solve(model, vm);
+                double hook_F = vm.augmented_objective();
+                if (vm.is_feasible()) {
+                    double hook_obj = model.objective_id() >= 0
+                        ? model.node(model.objective_id()).value : 0.0;
+                    if (hook_obj < best_feasible_obj) {
+                        best_feasible_obj = hook_obj;
+                        best_state = model.copy_state();
+                    }
+                }
+                if (hook_F < best_F) {
+                    best_F = hook_F;
+                    if (!vm.is_feasible()) {
+                        best_state = model.copy_state();
+                    }
+                }
+            }
         }
 
         iteration++;

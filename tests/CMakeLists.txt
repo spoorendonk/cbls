@@ -4,6 +4,7 @@ add_executable(cbls_tests
     test_moves.cpp
     test_search.cpp
     test_chped.cpp
+    test_inner_solver.cpp
 )
 target_link_libraries(cbls_tests PRIVATE cbls Catch2::Catch2WithMain)
 target_include_directories(cbls_tests PRIVATE ${CMAKE_SOURCE_DIR})
