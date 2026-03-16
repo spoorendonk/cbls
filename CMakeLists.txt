@@ -44,10 +44,12 @@ configure_file(cmake/cblsConfig.cmake.in
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/cblsConfig.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cbls)
 
+# FetchContent (shared by tests and benchmarks)
+include(FetchContent)
+
 # C++ tests
 option(CBLS_BUILD_TESTS "Build C++ tests" ON)
 if(CBLS_BUILD_TESTS)
-    include(FetchContent)
     FetchContent_Declare(
         Catch2
         GIT_REPOSITORY https://github.com/catchorg/Catch2.git
@@ -68,6 +70,20 @@ if(CBLS_BUILD_EXAMPLES)
     add_executable(cbls_chped examples/chped.cpp)
     target_link_libraries(cbls_chped PRIVATE cbls)
     target_include_directories(cbls_chped PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
+
+# Benchmarks
+option(CBLS_BUILD_BENCHMARKS "Build benchmarks" ON)
+if(CBLS_BUILD_BENCHMARKS)
+    FetchContent_Declare(json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG v3.11.3
+    )
+    FetchContent_MakeAvailable(json)
+
+    add_executable(cbls_uc_chped benchmarks/uc-chped/uc_chped.cpp)
+    target_link_libraries(cbls_uc_chped PRIVATE cbls nlohmann_json::nlohmann_json)
+    target_include_directories(cbls_uc_chped PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
 # Python bindings (optional)
