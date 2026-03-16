@@ -176,6 +176,27 @@ void fj_nl_initialize(Model& model, ViolationManager& vm,
     }
 }
 
+// Update best tracking after hook runs
+static void update_best_after_hook(Model& model, ViolationManager& vm,
+                                   double& best_F, double& best_feasible_obj,
+                                   Model::State& best_state) {
+    double hook_F = vm.augmented_objective();
+    if (vm.is_feasible()) {
+        double hook_obj = model.objective_id() >= 0
+            ? model.node(model.objective_id()).value : 0.0;
+        if (hook_obj < best_feasible_obj) {
+            best_feasible_obj = hook_obj;
+            best_state = model.copy_state();
+        }
+    }
+    if (hook_F < best_F) {
+        best_F = hook_F;
+        if (!vm.is_feasible()) {
+            best_state = model.copy_state();
+        }
+    }
+}
+
 static double initial_temperature(double F) {
     return std::max(std::abs(F) * 0.1, 1.0);
 }
@@ -217,6 +238,9 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     });
 
     int64_t iteration = 0;
+    int64_t discrete_accepts_since_hook = 0;
+    const int64_t hook_frequency = 10;  // run hook every N discrete acceptances
+
     while (std::chrono::steady_clock::now() < deadline) {
         // Select random variable
         int var_idx = static_cast<int>(rng.integers(0, model.num_vars()));
@@ -281,7 +305,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
                 }
             }
 
-            // Run hook after accepting a discrete variable change
+            // Run hook periodically after discrete variable acceptances
             if (hook) {
                 bool has_discrete = false;
                 for (const auto& ch : move.changes) {
@@ -291,24 +315,10 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
                         break;
                     }
                 }
-                if (has_discrete) {
+                if (has_discrete && ++discrete_accepts_since_hook >= hook_frequency) {
+                    discrete_accepts_since_hook = 0;
                     hook->solve(model, vm);
-                    // Update best tracking after hook
-                    double hook_F = vm.augmented_objective();
-                    if (vm.is_feasible()) {
-                        double hook_obj = model.objective_id() >= 0
-                            ? model.node(model.objective_id()).value : 0.0;
-                        if (hook_obj < best_feasible_obj) {
-                            best_feasible_obj = hook_obj;
-                            best_state = model.copy_state();
-                        }
-                    }
-                    if (hook_F < best_F) {
-                        best_F = hook_F;
-                        if (!vm.is_feasible()) {
-                            best_state = model.copy_state();
-                        }
-                    }
+                    update_best_after_hook(model, vm, best_F, best_feasible_obj, best_state);
                 }
             }
 
@@ -327,21 +337,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             // Run hook on reheat
             if (hook) {
                 hook->solve(model, vm);
-                double hook_F = vm.augmented_objective();
-                if (vm.is_feasible()) {
-                    double hook_obj = model.objective_id() >= 0
-                        ? model.node(model.objective_id()).value : 0.0;
-                    if (hook_obj < best_feasible_obj) {
-                        best_feasible_obj = hook_obj;
-                        best_state = model.copy_state();
-                    }
-                }
-                if (hook_F < best_F) {
-                    best_F = hook_F;
-                    if (!vm.is_feasible()) {
-                        best_state = model.copy_state();
-                    }
-                }
+                update_best_after_hook(model, vm, best_F, best_feasible_obj, best_state);
             }
         }
 

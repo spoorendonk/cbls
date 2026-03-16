@@ -45,13 +45,11 @@ TEST_CASE("FloatIntensifyHook improves Float vars", "[inner_solver]") {
     FloatIntensifyHook hook;
     hook.max_sweeps = 5;
     hook.step_size = 0.1;
-    auto hr = hook.solve(m, vm);
+    hook.solve(m, vm);
 
     double after_aug = vm.augmented_objective();
     // Hook should improve the augmented objective
     REQUIRE(after_aug < before_aug);
-    // Result should contain Float var assignments
-    REQUIRE_FALSE(hr.assignments.empty());
 }
 
 TEST_CASE("FloatIntensifyHook with infeasible start (no objective)", "[inner_solver]") {

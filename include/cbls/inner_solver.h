@@ -2,8 +2,6 @@
 
 #include "model.h"
 #include "violation.h"
-#include <vector>
-#include <utility>
 
 namespace cbls {
 
@@ -11,14 +9,9 @@ class InnerSolverHook {
 public:
     virtual ~InnerSolverHook() = default;
 
-    struct Result {
-        std::vector<std::pair<int32_t, double>> assignments;  // var_id -> new value
-    };
-
     // Called with mutable model + violation manager.
-    // Hook may read var values, compute partials, etc.
-    // Returns assignments for variables it optimizes.
-    virtual Result solve(Model& model, ViolationManager& vm) = 0;
+    // Hook mutates model directly (var values + delta_evaluate).
+    virtual void solve(Model& model, ViolationManager& vm) = 0;
 };
 
 // Generic Float intensification: coordinate-descent sweeps over all Float vars
@@ -28,7 +21,7 @@ public:
     int max_sweeps = 3;
     double step_size = 0.1;
 
-    Result solve(Model& model, ViolationManager& vm) override;
+    void solve(Model& model, ViolationManager& vm) override;
 };
 
 }  // namespace cbls
