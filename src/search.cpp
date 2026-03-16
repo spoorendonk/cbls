@@ -218,7 +218,8 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     full_evaluate(model);
 
     if (use_fj) {
-        fj_nl_initialize(model, vm, 5000, &rng, time_limit * 0.2);
+        constexpr double fj_time_fraction = 0.2;
+        fj_nl_initialize(model, vm, 5000, &rng, time_limit * fj_time_fraction);
     }
 
     double current_F = vm.augmented_objective();
@@ -346,7 +347,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
                 update_best_after_hook(model, vm, best_F, best_feasible_obj, best_state);
             }
 
-            // LNS diversification every lns_interval reheats
+            // LNS diversification every lns_interval reheats (<=0 disables)
             if (lns && lns_interval > 0 && (reheat_count % lns_interval == 0)) {
                 lns->destroy_repair(model, vm, rng);
                 update_best_after_hook(model, vm, best_F, best_feasible_obj, best_state);
