@@ -47,7 +47,7 @@ int main(int argc, char* argv[]) {
             print_help();
             return 0;
         } else if (arg == "--version") {
-            std::cout << "cbls 0.1.0\n";
+            std::cout << "cbls " << cbls::version << "\n";
             return 0;
         } else if (arg == "--time-limit" && i + 1 < argc) {
             time_limit = std::stod(argv[++i]);

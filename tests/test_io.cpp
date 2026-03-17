@@ -193,6 +193,32 @@ TEST_CASE("round-trip model with lambda_sum", "[io]") {
     REQUIRE(m2.node(m2.objective_id()).value == 30.0);
 }
 
+TEST_CASE("round-trip maximize model", "[io]") {
+    Model m;
+    auto x = m.float_var(0, 10, "x");
+    auto y = m.float_var(0, 10, "y");
+    auto obj = m.sum({x, y});
+    m.maximize(obj);
+    m.close();
+
+    REQUIRE(m.is_maximizing());
+
+    std::ostringstream out;
+    save_model(m, out);
+    std::string saved = out.str();
+
+    // Must contain "maximize", not "minimize"
+    REQUIRE(saved.find("\"maximize\"") != std::string::npos);
+    REQUIRE(saved.find("\"minimize\"") == std::string::npos);
+
+    // Reload
+    std::istringstream ss(saved);
+    Model m2 = load_model(ss);
+    REQUIRE(m2.num_vars() == 2);
+    REQUIRE(m2.objective_id() >= 0);
+    REQUIRE(m2.is_maximizing());
+}
+
 TEST_CASE("load_model all comparison ops", "[io]") {
     std::string input =
         R"({"var":"a","type":"Float","lb":0,"ub":10})"  "\n"

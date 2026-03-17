@@ -334,10 +334,12 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
                 }
             }
 
-            // Fire callback only on meaningful feasible objective improvement
-            // (at least 1e-6 relative change to suppress float noise)
+            // Fire callback on meaningful feasible objective improvement
+            // Always fire for first feasible solution (prev was infinity);
+            // otherwise require at least 1e-6 relative change to suppress float noise
             if (callback && obj_improved &&
-                (best_feasible_obj == 0.0 ||
+                (prev_best_feasible == std::numeric_limits<double>::infinity() ||
+                 best_feasible_obj == 0.0 ||
                  (prev_best_feasible - best_feasible_obj) / (std::abs(prev_best_feasible) + 1e-30) > 1e-6)) {
                 auto now = std::chrono::steady_clock::now();
                 double elapsed = std::chrono::duration<double>(now - start).count();

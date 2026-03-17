@@ -1,4 +1,5 @@
 #include "cbls/formatter.h"
+#include "cbls/cbls.h"
 #include <nlohmann/json.hpp>
 #include <iomanip>
 #include <cmath>
@@ -22,11 +23,11 @@ static std::string format_count(int64_t n) {
 
 void HumanFormatter::print_header(const std::string& model_path, const Model& model,
                                    uint64_t seed, double time_limit) {
-    out_ << "cbls 0.1.0 — Constraint-Based Local Search\n";
+    out_ << "cbls " << version << " — Constraint-Based Local Search\n";
     out_ << "Model: " << model_path
          << " | " << model.num_vars() << " vars"
          << " | " << model.constraint_ids().size() << " constraints"
-         << " | " << (model.objective_id() >= 0 ? "minimize obj" : "feasibility")
+         << " | " << (model.objective_id() >= 0 ? (model.is_maximizing() ? "maximize obj" : "minimize obj") : "feasibility")
          << "\n";
     out_ << "Seed: " << seed << " | Time limit: "
          << std::fixed << std::setprecision(1) << time_limit << "s\n\n";
@@ -101,7 +102,7 @@ void JsonlFormatter::print_header(const std::string& model_path, const Model& mo
                                    uint64_t seed, double time_limit) {
     json j;
     j["event"] = "start";
-    j["version"] = "0.1.0";
+    j["version"] = version;
     j["model"] = model_path;
     j["vars"] = model.num_vars();
     j["constraints"] = model.constraint_ids().size();

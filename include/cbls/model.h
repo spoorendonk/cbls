@@ -90,6 +90,7 @@ public:
         return nodes_[id];
     }
     int32_t objective_id() const noexcept { return objective_id_; }
+    bool is_maximizing() const noexcept { return is_maximizing_; }
     const std::vector<int32_t>& constraint_ids() const noexcept { return constraint_ids_; }
     const std::vector<int32_t>& topo_order() const noexcept { return topo_order_; }
     const std::vector<Variable>& variables() const noexcept { return vars_; }
@@ -121,6 +122,7 @@ private:
     std::vector<int32_t> topo_order_;
     std::vector<int32_t> constraint_ids_;
     int32_t objective_id_ = -1;
+    bool is_maximizing_ = false;
     std::vector<std::function<double(int)>> lambda_funcs_;
     bool closed_ = false;
 

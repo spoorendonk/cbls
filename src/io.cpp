@@ -57,7 +57,9 @@ static NodeOp string_to_op(const std::string& s) {
         {"Lt", NodeOp::Lt}, {"Gt", NodeOp::Gt},
     };
     auto it = map.find(s);
-    if (it == map.end()) return static_cast<NodeOp>(255);  // sentinel for unknown
+    if (it == map.end()) {
+        throw std::invalid_argument("unknown op: " + s);
+    }
     return it->second;
 }
 
@@ -145,8 +147,10 @@ Model load_model(std::istream& input) {
         } else if (j.contains("node")) {
             std::string name = j["node"].get<std::string>();
             std::string op_str = j.at("op").get<std::string>();
-            NodeOp op = string_to_op(op_str);
-            if (op == static_cast<NodeOp>(255)) {
+            NodeOp op;
+            try {
+                op = string_to_op(op_str);
+            } catch (const std::invalid_argument&) {
                 throw std::invalid_argument("line " + std::to_string(line_num) +
                                             ": unknown op '" + op_str + "'");
             }
@@ -347,6 +351,9 @@ void save_model(const Model& model, std::ostream& out) {
 
     // Write nodes in topological order
     for (int32_t nid : model.topo_order()) {
+        // Skip the auto-generated Neg wrapper when maximizing
+        if (model.is_maximizing() && nid == model.objective_id()) continue;
+
         const auto& node = model.node(nid);
         json j;
         j["node"] = node_names[node.id];
@@ -392,7 +399,14 @@ void save_model(const Model& model, std::ostream& out) {
     // Write objective
     if (model.objective_id() >= 0) {
         json j;
-        j["minimize"] = node_names[model.objective_id()];
+        if (model.is_maximizing()) {
+            // Unwrap the auto-generated Neg node to get the original expression
+            const auto& neg_node = model.node(model.objective_id());
+            const auto& child = neg_node.children[0];
+            j["maximize"] = child.is_var ? var_names[child.id] : node_names[child.id];
+        } else {
+            j["minimize"] = node_names[model.objective_id()];
+        }
         out << j.dump() << '\n';
     }
 }
