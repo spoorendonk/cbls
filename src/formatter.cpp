@@ -1,7 +1,6 @@
 #include "cbls/formatter.h"
 #include <nlohmann/json.hpp>
 #include <iomanip>
-#include <sstream>
 #include <cmath>
 #include <limits>
 
@@ -13,7 +12,7 @@ using json = nlohmann::json;
 
 static std::string format_count(int64_t n) {
     if (n >= 1000000) {
-        return std::to_string(n / 1000) + "." + std::to_string((n % 1000) / 100) + "k";
+        return std::to_string(n / 1000000) + "." + std::to_string((n % 1000000) / 100000) + "M";
     }
     if (n >= 1000) {
         return std::to_string(n / 1000) + "." + std::to_string((n % 1000) / 100) + "k";
@@ -38,7 +37,6 @@ void HumanFormatter::print_header(const std::string& model_path, const Model& mo
          << std::setw(11) << "Violation"
          << std::setw(13) << "Temperature"
          << "\n";
-    header_printed_ = true;
 }
 
 void HumanFormatter::on_progress(const SolveProgress& p) {

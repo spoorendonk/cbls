@@ -14,7 +14,7 @@ static void print_help() {
   and finds optimal or feasible variable assignments.
 
 Arguments:
-  MODEL                 Path to JSONL model file (.cbls or .cbls.gz)
+  MODEL                 Path to JSONL model file (.cbls)
 
 Options:
   --time-limit SECS     Maximum solve time in seconds (default: 10.0)

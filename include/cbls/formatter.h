@@ -18,7 +18,6 @@ public:
 
 private:
     std::ostream& out_;
-    bool header_printed_ = false;
 };
 
 class JsonlFormatter : public SolveCallback {
