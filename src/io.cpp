@@ -1,7 +1,6 @@
 #include "cbls/io.h"
 #include <nlohmann/json.hpp>
 #include <fstream>
-#include <sstream>
 #include <unordered_map>
 #include <stdexcept>
 
@@ -249,9 +248,8 @@ Model load_model(std::istream& input) {
                 case NodeOp::Gt:
                     node_id = m.gt(children.at(0), children.at(1));
                     break;
-                default:
-                    throw std::invalid_argument("line " + std::to_string(line_num) +
-                                                ": unsupported op '" + op_str + "'");
+                case NodeOp::Const:
+                    break;  // handled above
                 }
             }
             name_to_handle[name] = node_id;
@@ -308,9 +306,6 @@ void save_model(const Model& model, std::ostream& out) {
     for (const auto& node : model.nodes()) {
         node_names[node.id] = "n" + std::to_string(node.id);
     }
-
-    // Check if any node has a user-supplied name via the name_to_handle map
-    // We don't have that info, so we use generated names for nodes
 
     // Write variables
     for (const auto& var : model.variables()) {

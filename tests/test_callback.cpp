@@ -1,6 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
-#include "test_helpers.h"
 
 using namespace cbls;
 

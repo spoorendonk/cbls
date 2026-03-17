@@ -1,7 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
-#include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cbls/cbls.h>
-#include "test_helpers.h"
 #include <sstream>
 
 using namespace cbls;
@@ -191,6 +189,26 @@ TEST_CASE("round-trip model with lambda_sum", "[io]") {
     full_evaluate(m2);
     // 0 + 1 + 4 + 9 + 16 = 30
     REQUIRE(m2.node(m2.objective_id()).value == 30.0);
+}
+
+TEST_CASE("idempotent lambda_sum round-trip", "[io]") {
+    Model m;
+    auto lv = m.list_var(5, "perm");
+    auto ls = m.lambda_sum(lv, [](int e) { return e * 1.1; });
+    m.minimize(ls);
+    m.close();
+
+    std::ostringstream out1;
+    save_model(m, out1);
+    std::string saved1 = out1.str();
+
+    std::istringstream ss1(saved1);
+    Model m2 = load_model(ss1);
+    std::ostringstream out2;
+    save_model(m2, out2);
+    std::string saved2 = out2.str();
+
+    REQUIRE(saved1 == saved2);
 }
 
 TEST_CASE("round-trip maximize model", "[io]") {
