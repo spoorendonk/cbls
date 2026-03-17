@@ -1,4 +1,5 @@
 #include <nanobind/nanobind.h>
+#include <nanobind/trampoline.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 #include <nanobind/stl/function.h>
@@ -8,6 +9,13 @@
 
 namespace nb = nanobind;
 using namespace cbls;
+
+struct PySolveCallback : SolveCallback {
+    NB_TRAMPOLINE(SolveCallback, 1);
+    void on_progress(const SolveProgress& p) override {
+        NB_OVERRIDE_PURE(on_progress, p);
+    }
+};
 
 NB_MODULE(_cbls_core, m) {
     m.doc() = "CBLS: Constraint-Based Local Search engine (C++ core)";
@@ -300,12 +308,32 @@ NB_MODULE(_cbls_core, m) {
         .def_rw("max_line_search_steps", &FloatIntensifyHook::max_line_search_steps)
         .def_rw("max_multi_var_constraints", &FloatIntensifyHook::max_multi_var_constraints);
 
+    // SolveProgress
+    nb::class_<SolveProgress>(m, "SolveProgress")
+        .def(nb::init<>())
+        .def_ro("iteration", &SolveProgress::iteration)
+        .def_ro("time_seconds", &SolveProgress::time_seconds)
+        .def_ro("objective", &SolveProgress::objective)
+        .def_ro("total_violation", &SolveProgress::total_violation)
+        .def_ro("temperature", &SolveProgress::temperature)
+        .def_ro("feasible", &SolveProgress::feasible)
+        .def_ro("new_best", &SolveProgress::new_best)
+        .def_ro("reheat_count", &SolveProgress::reheat_count);
+
+    // SolveCallback with trampoline for Python subclassing
+    nb::class_<SolveCallback, PySolveCallback>(m, "SolveCallback")
+        .def(nb::init<>())
+        .def("on_progress", [](SolveCallback& self, const SolveProgress& p) {
+            self.on_progress(p);
+        });
+
     m.def("solve", &cbls::solve,
           nb::arg("model"), nb::arg("time_limit") = 10.0,
           nb::arg("seed") = 42, nb::arg("use_fj") = true,
           nb::arg("hook") = nullptr,
           nb::arg("lns") = nullptr,
-          nb::arg("lns_interval") = 3);
+          nb::arg("lns_interval") = 3,
+          nb::arg("callback") = nullptr);
     m.def("initialize_random", &initialize_random);
     m.def("fj_nl_initialize", &fj_nl_initialize,
           nb::arg("model"), nb::arg("vm"), nb::arg("max_iterations") = 10000,

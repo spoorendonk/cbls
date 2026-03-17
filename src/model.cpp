@@ -253,6 +253,7 @@ void Model::minimize(int32_t expr_id) {
 void Model::maximize(int32_t expr_id) {
     // Maximize by negating
     objective_id_ = neg(expr_id);
+    is_maximizing_ = true;
 }
 
 void Model::close() {

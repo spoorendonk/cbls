@@ -12,7 +12,7 @@ if(NB_DIR_RESULT EQUAL 0 AND NB_DIR)
     find_package(nanobind CONFIG REQUIRED)
 
     nanobind_add_module(_cbls_core bindings.cpp)
-    target_link_libraries(_cbls_core PRIVATE cbls)
+    target_link_libraries(_cbls_core PRIVATE cbls_lib)
 
     install(TARGETS _cbls_core LIBRARY DESTINATION cbls)
 else()

@@ -7,6 +7,8 @@
 
 namespace cbls {
 
+SolveCallback::~SolveCallback() = default;
+
 void initialize_random(Model& model, RNG& rng) {
     for (auto& var : model.variables_mut()) {
         switch (var.type) {
@@ -205,8 +207,25 @@ static double initial_temperature(double F) {
     return std::max(std::abs(F) * 0.1, 1.0);
 }
 
+static SolveProgress make_progress(int64_t iteration, double elapsed,
+                                   double best_feasible_obj, double total_viol,
+                                   double temperature, bool feasible,
+                                   bool new_best, int reheat_count) {
+    SolveProgress p;
+    p.iteration = iteration;
+    p.time_seconds = elapsed;
+    p.objective = best_feasible_obj;
+    p.total_violation = total_viol;
+    p.temperature = temperature;
+    p.feasible = feasible;
+    p.new_best = new_best;
+    p.reheat_count = reheat_count;
+    return p;
+}
+
 SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
-                   InnerSolverHook* hook, LNS* lns, int lns_interval) {
+                   InnerSolverHook* hook, LNS* lns, int lns_interval,
+                   SolveCallback* callback) {
     RNG rng(seed);
     ViolationManager vm(model);
 
@@ -246,6 +265,9 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     int reheat_count = 0;
     int64_t discrete_accepts_since_hook = 0;
     const int64_t hook_frequency = 10;  // run hook every N discrete acceptances
+
+    auto last_callback_time = start;
+    constexpr double callback_interval_secs = 1.0;
 
     while (std::chrono::steady_clock::now() < deadline) {
         // Select random variable
@@ -294,6 +316,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
 
         if (accept) {
             bool obj_improved = false;
+            double prev_best_feasible = best_feasible_obj;
             if (vm.is_feasible()) {
                 double obj_val = model.objective_id() >= 0
                     ? model.node(model.objective_id()).value : 0.0;
@@ -309,6 +332,21 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
                 if (!vm.is_feasible()) {
                     best_state = model.copy_state();
                 }
+            }
+
+            // Fire callback on meaningful feasible objective improvement
+            // Always fire for first feasible solution (prev was infinity);
+            // otherwise require at least 1e-6 relative change to suppress float noise
+            if (callback && obj_improved &&
+                (prev_best_feasible == std::numeric_limits<double>::infinity() ||
+                 best_feasible_obj == 0.0 ||
+                 (prev_best_feasible - best_feasible_obj) / (std::abs(prev_best_feasible) + 1e-30) > 1e-6)) {
+                auto now = std::chrono::steady_clock::now();
+                double elapsed = std::chrono::duration<double>(now - start).count();
+                callback->on_progress(make_progress(
+                    iteration, elapsed, best_feasible_obj, vm.total_violation(),
+                    temperature, vm.is_feasible(), true, reheat_count));
+                last_callback_time = now;
             }
 
             // Run hook periodically after discrete variable acceptances
@@ -351,6 +389,19 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             if (lns && lns_interval > 0 && (reheat_count % lns_interval == 0)) {
                 lns->destroy_repair(model, vm, rng);
                 update_best_after_hook(model, vm, best_F, best_feasible_obj, best_state);
+            }
+        }
+
+        // Periodic callback (~1s intervals)
+        if (callback && iteration % 1000 == 0) {
+            auto now = std::chrono::steady_clock::now();
+            double since_last = std::chrono::duration<double>(now - last_callback_time).count();
+            if (since_last >= callback_interval_secs) {
+                double elapsed = std::chrono::duration<double>(now - start).count();
+                callback->on_progress(make_progress(
+                    iteration, elapsed, best_feasible_obj, vm.total_violation(),
+                    temperature, vm.is_feasible(), false, reheat_count));
+                last_callback_time = now;
             }
         }
 
