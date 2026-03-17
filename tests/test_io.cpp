@@ -164,6 +164,35 @@ TEST_CASE("load_model skips empty lines", "[io]") {
     REQUIRE(m.num_vars() == 1);
 }
 
+TEST_CASE("round-trip model with lambda_sum", "[io]") {
+    Model m;
+    auto lv = m.list_var(5, "perm");
+    auto ls = m.lambda_sum(lv, [](int e) { return static_cast<double>(e * e); });
+    m.minimize(ls);
+    m.close();
+
+    // Save
+    std::ostringstream out;
+    save_model(m, out);
+    std::string saved = out.str();
+
+    // Verify table appears in output
+    REQUIRE(saved.find("\"table\"") != std::string::npos);
+
+    // Reload and verify behavior
+    std::istringstream ss(saved);
+    Model m2 = load_model(ss);
+    REQUIRE(m2.num_vars() == 1);
+    REQUIRE(m2.objective_id() >= 0);
+
+    // Set same elements and evaluate
+    auto& v2 = m2.var_mut(0);
+    v2.elements = {0, 1, 2, 3, 4};
+    full_evaluate(m2);
+    // 0 + 1 + 4 + 9 + 16 = 30
+    REQUIRE(m2.node(m2.objective_id()).value == 30.0);
+}
+
 TEST_CASE("load_model all comparison ops", "[io]") {
     std::string input =
         R"({"var":"a","type":"Float","lb":0,"ub":10})"  "\n"

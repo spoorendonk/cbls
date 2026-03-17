@@ -217,6 +217,16 @@ Model load_model(std::istream& input) {
                 case NodeOp::Count:
                     node_id = m.count(children.at(0));
                     break;
+                case NodeOp::Lambda: {
+                    if (!j.contains("table")) {
+                        throw std::invalid_argument("line " + std::to_string(line_num) +
+                                                    ": Lambda node requires 'table' field");
+                    }
+                    auto table = j["table"].get<std::vector<double>>();
+                    node_id = m.lambda_sum(children.at(0),
+                        [table](int e) -> double { return table.at(e); });
+                    break;
+                }
                 case NodeOp::Leq:
                     node_id = m.leq(children.at(0), children.at(1));
                     break;
@@ -345,12 +355,24 @@ void save_model(const Model& model, std::ostream& out) {
         if (node.op == NodeOp::Const) {
             j["value"] = node.const_value;
         } else if (node.op == NodeOp::Lambda) {
-            // Lambda nodes can't be serialized (they contain function pointers)
-            // Skip or write a placeholder
-            j["children"] = json::array();
-            for (const auto& ch : node.children) {
-                j["children"].push_back(child_name(ch));
+            // Tabulate: store [func(0), func(1), ..., func(n-1)]
+            const auto& child_ref = node.children[0];
+            if (!child_ref.is_var) {
+                throw std::runtime_error("Lambda node child must be a variable");
             }
+            const auto& var = model.var(child_ref.id);
+            int n = (var.type == VarType::Set) ? var.universe_size : var.max_size;
+            if (n > 10000) {
+                throw std::runtime_error(
+                    "Lambda universe too large to tabulate (" + std::to_string(n) + " > 10000)");
+            }
+            const auto& func = model.lambda_func(node.lambda_func_id);
+            j["table"] = json::array();
+            for (int i = 0; i < n; ++i) {
+                j["table"].push_back(func(i));
+            }
+            j["children"] = json::array();
+            j["children"].push_back(child_name(child_ref));
         } else {
             j["children"] = json::array();
             for (const auto& ch : node.children) {
