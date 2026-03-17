@@ -1,0 +1,10 @@
+{"var":"x","type":"Float","lb":0,"ub":10}
+{"var":"y","type":"Float","lb":0,"ub":10}
+{"node":"x_sq","op":"Prod","children":["x","x"]}
+{"node":"y_sq","op":"Prod","children":["y","y"]}
+{"node":"obj","op":"Sum","children":["x_sq","y_sq"]}
+{"node":"xy_sum","op":"Sum","children":["x","y"]}
+{"node":"c5","op":"Const","value":5.0}
+{"node":"geq1","op":"Geq","children":["xy_sum","c5"]}
+{"constraint":"geq1"}
+{"minimize":"obj"}

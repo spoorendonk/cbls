@@ -11,3 +11,5 @@
 #include "inner_solver.h"
 #include "rng.h"
 #include "expr.h"
+#include "io.h"
+#include "formatter.h"
