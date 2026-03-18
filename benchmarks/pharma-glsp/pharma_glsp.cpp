@@ -69,7 +69,6 @@ int main(int argc, char** argv) {
         auto gm = cbls::glsp::build_glsp_model(inst);
 
         cbls::glsp::GLSPInnerSolverHook hook(inst, gm.seq, gm.lot);
-        cbls::FloatIntensifyHook float_hook;
         cbls::LNS lns(0.3);
 
         auto result = cbls::solve(gm.model, time_limit, 42, true, &hook, &lns);
