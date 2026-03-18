@@ -26,6 +26,7 @@ public:
     const NuclearModel& nm;
 
     // Scenario sampling: evaluate a subset of scenarios per move for speed.
+    // Rotates through scenario windows to avoid bias toward early scenarios.
     int scenarios_per_move = 50;
 
     NuclearDispatchHook(const NuclearInstance& inst_, const NuclearModel& nm_)
@@ -39,9 +40,11 @@ public:
             starts[o] = static_cast<int>(std::round(model.var(vid).value));
         }
 
-        // 2. Compute expected dispatch cost
+        // 2. Compute expected dispatch cost with rotating scenario window
         int n_sc = std::min(scenarios_per_move, inst.n_scenarios);
-        double cost = expected_cost(inst, starts, n_sc);
+        int offset = scenario_offset_ % std::max(1, inst.n_scenarios - n_sc + 1);
+        double cost = expected_cost(inst, starts, n_sc, offset);
+        scenario_offset_ += n_sc;
 
         // 3. Add resource violation penalty
         cost += resource_violation_penalty(inst, starts);
@@ -51,6 +54,9 @@ public:
         model.node_mut(nm.objective_node).value = cost;
         model.node_mut(nm.objective_node).const_value = cost;
     }
+
+private:
+    int scenario_offset_ = 0;
 };
 
 }  // namespace nuclear_outage

@@ -81,7 +81,7 @@ TEST_CASE("Dispatch cost is positive", "[nuclear]") {
     printf("\nDispatch cost (5 scenarios): %.2f\n", cost);
 }
 
-TEST_CASE("Resource violation penalty", "[nuclear]") {
+TEST_CASE("Resource violation penalty - max outages per site", "[nuclear]") {
     auto inst = load_mini();
 
     // Schedule all outages at the same time → should violate site constraints
@@ -99,6 +99,27 @@ TEST_CASE("Resource violation penalty", "[nuclear]") {
         spread_starts[o] = std::min(spread_starts[o], inst.outage_latest[o]);
     }
     double penalty2 = resource_violation_penalty(inst, spread_starts);
+    REQUIRE(penalty2 < penalty);
+}
+
+TEST_CASE("Resource violation penalty - site spacing", "[nuclear]") {
+    auto inst = load_mini();
+    // mini instance: sites = [0,0,0, 1,1,1, 2,2,2,2], min_spacing_same_site = 3
+    // Schedule two outages on site 0 (units 0,1) back-to-back with no gap
+    // Outage 0: unit 0, dur 6, start at week 5 → ends at 11
+    // Outage 1: unit 1, dur 7, start at week 11 → ends at 18
+    // Gap = 11 - 11 = 0 < 3 → should be penalized
+    std::vector<int> starts(inst.n_outages, 40);  // all far away
+    starts[0] = 5;   // unit 0, site 0
+    starts[1] = 11;  // unit 1, site 0, immediately after outage 0
+
+    double penalty = resource_violation_penalty(inst, starts);
+    REQUIRE(penalty > 0.0);
+    printf("\nSite spacing penalty (gap=0, min=3): %.0f\n", penalty);
+
+    // Now space them properly: outage 1 starts at week 14 (gap = 14-11 = 3)
+    starts[1] = 14;
+    double penalty2 = resource_violation_penalty(inst, starts);
     REQUIRE(penalty2 < penalty);
 }
 

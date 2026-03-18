@@ -89,7 +89,8 @@ inline double expected_cost(
 }
 
 /// Compute resource constraint violation penalty.
-/// Penalizes exceeding max simultaneous outages per site.
+/// Penalizes: (1) exceeding max simultaneous outages per site,
+///            (2) violating min_spacing_same_site between outages at the same site.
 inline double resource_violation_penalty(
     const NuclearInstance& inst,
     const std::vector<int>& outage_starts,
@@ -97,7 +98,7 @@ inline double resource_violation_penalty(
 {
     double violation = 0.0;
 
-    // For each period, count outages per site
+    // (1) Max simultaneous outages per site
     for (int t = 0; t < inst.n_periods; ++t) {
         std::vector<int> site_count(inst.n_sites, 0);
         for (int o = 0; o < inst.n_outages; ++o) {
@@ -110,6 +111,29 @@ inline double resource_violation_penalty(
             int excess = site_count[s] - inst.max_outages_per_site[s];
             if (excess > 0) {
                 violation += excess;
+            }
+        }
+    }
+
+    // (2) Min spacing between outages at the same site
+    // Group outages by site
+    std::vector<std::vector<int>> site_outages(inst.n_sites);
+    for (int o = 0; o < inst.n_outages; ++o) {
+        site_outages[inst.site[inst.outage_unit[o]]].push_back(o);
+    }
+    for (int s = 0; s < inst.n_sites; ++s) {
+        auto& outages = site_outages[s];
+        if (outages.size() < 2) continue;
+        // Sort by start time
+        std::sort(outages.begin(), outages.end(),
+                  [&](int a, int b) { return outage_starts[a] < outage_starts[b]; });
+        for (size_t i = 0; i + 1 < outages.size(); ++i) {
+            int o1 = outages[i];
+            int o2 = outages[i + 1];
+            int end1 = outage_starts[o1] + inst.outage_duration[o1];
+            int gap = outage_starts[o2] - end1;
+            if (gap < inst.min_spacing_same_site) {
+                violation += (inst.min_spacing_same_site - gap);
             }
         }
     }

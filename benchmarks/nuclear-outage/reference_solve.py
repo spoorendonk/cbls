@@ -4,6 +4,9 @@ Formulates as a MIP with scenario sampling (sample average approximation).
 Merit-order dispatch is linearized: production variables per unit per period
 per scenario, with fuel cost as linear coefficient.
 
+Constraints enforced: unit spacing (non-overlap), max outages per site,
+min spacing between outages at the same site, demand satisfaction.
+
 Usage:
     pip install pyscipopt numpy
     cd benchmarks/nuclear-outage
@@ -154,6 +157,26 @@ def solve_mip(inst, time_limit=300.0, n_scenarios=None, seed=42):
                     quicksum(site_outages[site_id])
                     <= inst["max_outages_per_site"][site_id]
                 )
+
+    # --- Min spacing between outages at the same site ---
+    min_spacing = inst["min_spacing_same_site"]
+    site_outage_map = [[] for _ in range(n_sites)]
+    for o in range(n_outages):
+        site_id = inst["site"][inst["outage_unit"][o]]
+        site_outage_map[site_id].append(o)
+    for site_id in range(n_sites):
+        outages_at_site = site_outage_map[site_id]
+        for i in range(len(outages_at_site)):
+            for j in range(i + 1, len(outages_at_site)):
+                o1, o2 = outages_at_site[i], outages_at_site[j]
+                # Either o1 ends + spacing <= o2 starts, or o2 ends + spacing <= o1 starts
+                # Use big-M with binary indicator
+                M_val = n_periods + max(inst["outage_duration"])
+                order_var = m.addVar(f"ord_{o1}_{o2}", vtype="B")
+                m.addCons(s[o1] + inst["outage_duration"][o1] + min_spacing
+                          <= s[o2] + M_val * (1 - order_var))
+                m.addCons(s[o2] + inst["outage_duration"][o2] + min_spacing
+                          <= s[o1] + M_val * order_var)
 
     # --- Objective: expected cost ---
     m.setObjective(
