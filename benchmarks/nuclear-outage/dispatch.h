@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <numeric>
 #include <vector>
-#include <cmath>
 
 namespace cbls {
 namespace nuclear_outage {
@@ -87,61 +86,6 @@ inline double expected_cost(
     }
 
     return total_cost / n_scenarios;
-}
-
-/// Incremental cost update: recompute cost for only the periods affected
-/// by moving one outage from old_start to new_start.
-/// Returns the delta in expected cost (new - old).
-inline double incremental_cost_delta(
-    const NuclearInstance& inst,
-    const std::vector<int>& outage_starts,
-    int outage_idx,
-    int old_start,
-    int new_start,
-    const std::vector<int>& merit_order,
-    int n_scenarios = -1,
-    int scenario_offset = 0)
-{
-    if (n_scenarios < 0) n_scenarios = inst.n_scenarios;
-    n_scenarios = std::min(n_scenarios, inst.n_scenarios - scenario_offset);
-
-    int u = inst.outage_unit[outage_idx];
-    int dur = inst.outage_duration[outage_idx];
-
-    // Periods affected: union of [old_start, old_start+dur) and [new_start, new_start+dur)
-    int t_min = std::min(old_start, new_start);
-    int t_max = std::min(std::max(old_start + dur, new_start + dur), inst.n_periods);
-
-    // Compute current availability for affected periods
-    // We need to rebuild availability for these periods only
-    auto avail_old = compute_availability(inst, outage_starts);
-
-    // New availability: same as old but with outage moved
-    // In affected periods, only unit u changes
-    double delta = 0.0;
-    for (int s = scenario_offset; s < scenario_offset + n_scenarios; ++s) {
-        for (int t = t_min; t < t_max; ++t) {
-            double old_cost = dispatch_period(inst, avail_old[t],
-                                              inst.demand[s][t], merit_order);
-
-            // Flip unit u availability for new schedule
-            auto avail_new_t = avail_old[t];
-            // Was unit u offline in old schedule at period t?
-            bool was_offline = (t >= old_start && t < old_start + dur);
-            // Will unit u be offline in new schedule at period t?
-            bool will_be_offline = (t >= new_start && t < new_start + dur);
-
-            if (was_offline != will_be_offline) {
-                avail_new_t[u] = !was_offline;  // flip
-            }
-
-            double new_cost = dispatch_period(inst, avail_new_t,
-                                              inst.demand[s][t], merit_order);
-            delta += (new_cost - old_cost);
-        }
-    }
-
-    return delta / n_scenarios;
 }
 
 /// Compute resource constraint violation penalty.

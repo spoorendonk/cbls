@@ -34,9 +34,6 @@ inline NuclearModel build_nuclear_model(const NuclearInstance& inst) {
     m.minimize(result.objective_node);
 
     // ---------- Constraints ----------
-    auto zero = m.constant(0.0);
-    auto neg1 = m.constant(-1.0);
-
     // Spacing constraints: consecutive outages on the same unit must not overlap.
     // For outages o1, o2 on the same unit where o1 is earlier:
     //   s[o1] + duration[o1] - s[o2] <= 0
@@ -57,6 +54,7 @@ inline NuclearModel build_nuclear_model(const NuclearInstance& inst) {
                   });
 
         // Consecutive outages must not overlap
+        auto neg1 = m.constant(-1.0);
         for (size_t i = 0; i + 1 < outages.size(); ++i) {
             int o1 = outages[i];
             int o2 = outages[i + 1];

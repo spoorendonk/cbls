@@ -6,6 +6,7 @@
 #include "nuclear_model.h"
 #include <vector>
 #include <algorithm>
+#include <cmath>
 
 namespace cbls {
 namespace nuclear_outage {
@@ -35,7 +36,7 @@ public:
         std::vector<int> starts(inst.n_outages);
         for (int o = 0; o < inst.n_outages; ++o) {
             int32_t vid = handle_to_var_id(nm.s[o]);
-            starts[o] = static_cast<int>(model.var(vid).value);
+            starts[o] = static_cast<int>(std::round(model.var(vid).value));
         }
 
         // 2. Compute expected dispatch cost
