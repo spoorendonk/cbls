@@ -289,8 +289,11 @@ NB_MODULE(_cbls_core, m) {
 
     // Free functions
     m.def("full_evaluate", &full_evaluate);
-    m.def("delta_evaluate", &delta_evaluate);
+    m.def("delta_evaluate", [](Model& model, const std::set<int32_t>& changed) {
+        return delta_evaluate(model, changed);
+    });
     m.def("compute_partial", &compute_partial);
+    m.def("compute_all_partials", &compute_all_partials);
     m.def("generate_standard_moves", &generate_standard_moves);
     m.def("newton_tight_move", &newton_tight_move);
     m.def("gradient_lift_move", &gradient_lift_move,

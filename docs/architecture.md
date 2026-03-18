@@ -88,7 +88,7 @@ and optionally `const_value` or `lambda_func_id`.
 | Trigonometric| Sin, Cos, Tan                                        |
 | Exponential  | Exp, Log, Sqrt                                       |
 | Conditional  | If                                                   |
-| Collection   | At (indexing), Count, Lambda (functional aggregation) |
+| Collection   | At (indexing), Count, Lambda (functional aggregation¹) |
 | Comparison   | Leq, Eq, Geq, Neq, Lt, Gt                           |
 
 Comparison nodes evaluate to a **violation measure** (0 when satisfied,
@@ -124,6 +124,12 @@ reverse-mode AD:
 components). Discrete operations (At, Count, Lambda) return 0.
 
 AD is used by Newton moves, gradient moves, and the inner solver.
+
+¹ **Lambda serialization:** Lambda nodes store a C++ `std::function`, which
+cannot be serialized directly. `save_model` tabulates the function over its
+input domain and writes the resulting table. `load_model` reconstructs an
+equivalent Lambda via table lookup, so round-tripping through JSONL is lossless
+for finite-domain Lambda nodes.
 
 ---
 
@@ -686,32 +692,109 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval)
 
 ## I/O & Logging
 
-### Console Output
+### CLI
 
-The solver library produces no output. There are no `std::cout` calls, no
-logging framework, and no progress callbacks. Example programs use `printf`
-after `solve()` returns to print results. Users wanting iteration-level
-diagnostics must instrument externally (e.g., via the `InnerSolverHook`
-interface or by inspecting `SearchResult` after completion). No verbosity
-flag exists.
+**File:** `src/cli.cpp`
 
-### File I/O
+The `cbls` executable is a command-line driver that loads a JSONL model file,
+solves it, and prints results.
 
-There is no file reading or writing anywhere in the library. Models are
-constructed programmatically via the C++ or Python API. Benchmark data is
-hardcoded as `constexpr` arrays (`benchmarks/chped/data.h`). There is no
-serialization format — no MPS, LP, JSON, or protobuf support. To persist a
-solution, users extract variable values from `SearchResult` and write them
-out themselves.
+```
+cbls [OPTIONS] MODEL.cbls
+```
+
+| Option | Description |
+|--------|-------------|
+| `--time-limit SECS` | Maximum solve time (default: 10.0) |
+| `--seed INT` | RNG seed (default: 42) |
+| `--no-fj` | Disable Feasibility Jump initialization |
+| `--lns FRACTION` | Enable LNS with given destroy fraction (e.g. 0.3) |
+| `--lns-interval INT` | LNS fires every N reheats (default: 3) |
+| `--intensify` | Enable float intensification hook |
+| `--format human\|jsonl` | Output format (default: human) |
+| `--quiet` | Suppress progress output, print only final result |
+| `--version` | Print `cbls::version` (`include/cbls/cbls.h`) and exit |
+
+### JSONL Model Format
+
+**Files:** `include/cbls/io.h`, `src/io.cpp`
+
+Models are serialized as `.cbls` files — one JSON object per line (JSONL).
+Each line describes a variable, expression node, constraint, or objective:
+
+```jsonl
+{"var":"x","type":"int","lb":0,"ub":10}
+{"node":"s","op":"sum","children":["x","y"]}
+{"constraint":"s_leq","op":"leq","children":["s","limit"]}
+{"minimize":"x"}
+```
+
+**API:**
+
+- `Model load_model(const std::string& path)` / `Model load_model(std::istream& input)` — parse JSONL, construct and close the model
+- `void save_model(const Model& model, const std::string& path)` / `void save_model(const Model& model, std::ostream& out)` — serialize a closed model to JSONL
+
+Lambda nodes are handled via tabulation: `save_model` evaluates the lambda
+function over its input domain and writes the table; `load_model` reconstructs
+an equivalent Lambda from the table. See the
+[Lambda serialization note](#expression-dag) above.
+
+Models can also be constructed programmatically via the C++ or Python API.
+Benchmark data remains hardcoded as `constexpr` arrays
+(`benchmarks/chped/data.h`).
+
+### SolveCallback
+
+**File:** `include/cbls/search.h`
+
+`SolveCallback` is an abstract interface for receiving progress updates during
+search. Implement `on_progress(const SolveProgress&)` to receive periodic
+reports.
+
+```cpp
+struct SolveProgress {
+    int64_t iteration;
+    double time_seconds, objective, total_violation, temperature;
+    bool feasible, new_best;
+    int reheat_count;
+};
+```
+
+The callback fires periodically (~1 second intervals) and immediately on any
+new best solution. Pass a `SolveCallback*` to `solve()` via the `callback`
+parameter.
+
+### Formatters
+
+**Files:** `include/cbls/formatter.h`, `src/formatter.cpp`
+
+Two built-in `SolveCallback` implementations format solver output:
+
+- **`HumanFormatter`** — human-readable tabular output with a header
+  (model path, variable/constraint/node counts, seed, time limit), periodic
+  progress lines, and a final result summary.
+- **`JsonlFormatter`** — machine-readable JSONL output: one JSON object per
+  event (header, progress, result), suitable for piping into analysis tools.
+
+Both write to a configurable `std::ostream` (default `std::cout`). The CLI
+selects between them via `--format human|jsonl` and suppresses both with
+`--quiet`.
+
+### Version
+
+`cbls::version` is a `constexpr const char*` defined in
+`include/cbls/cbls.h`, currently `"0.1.0"`.
 
 ### Parameters
 
 Top-level parameters are arguments to `solve()` with defaults
-(`search.h:27-31`): `time_limit=10.0`, `seed=42`, `use_fj=true`,
-`hook=nullptr`, `lns=nullptr`, `lns_interval=3`. SA schedule parameters
-(`cooling_rate`, `reheat_interval`, `fj_time_fraction`, `hook_frequency`)
-are hardcoded constants in `search.cpp`. Inner solver parameters are fields
-on `FloatIntensifyHook`. LNS takes `destroy_fraction`. There is no
+(`search.h`): `time_limit=10.0`, `seed=42`, `use_fj=true`,
+`hook=nullptr`, `lns=nullptr`, `lns_interval=3`, `callback=nullptr`.
+The CLI exposes these as command-line arguments (see table above). SA
+schedule parameters (`cooling_rate`, `reheat_interval`,
+`fj_time_fraction`, `hook_frequency`) are hardcoded constants in
+`search.cpp`. Inner solver parameters are fields on
+`FloatIntensifyHook`. LNS takes `destroy_fraction`. There is no
 centralized config struct — parameters are scattered across function
 arguments, class fields, and local constants. See the
 [Parameters Table](#parameters-table) for the full list.

@@ -27,11 +27,20 @@ public:
     std::vector<int> violated_constraints(double tol = 1e-9) const;
     void bump_weights(double factor = 1.0);
 
+    // Invalidate cached total (call after weights change or full_evaluate)
+    void invalidate_cache() { cache_valid_ = false; }
+
     AdaptiveLambda adaptive_lambda;
     std::vector<double> weights;
 
 private:
+    void recompute_cache() const;
+
     Model& model_;
+    mutable std::vector<double> cached_violations_;  // max(0, node.value) per constraint
+    mutable double cached_total_ = 0.0;
+    mutable bool cache_valid_ = false;
+    mutable int incremental_updates_ = 0;  // counter to trigger periodic full recompute
 };
 
 }  // namespace cbls
