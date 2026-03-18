@@ -142,6 +142,20 @@ double evaluate(const ExprNode& node, const Model& model) {
         return s;
     }
 
+    case NodeOp::PairLambda: {
+        // Sum over consecutive pairs using pair lambda function
+        if (node.lambda_func_id < 0) return 0.0;
+        const auto& func = model.pair_lambda_func(node.lambda_func_id);
+        const auto& ref = node.children[0];
+        if (!ref.is_var) return 0.0;
+        const auto& v = model.var(ref.id);
+        double s = 0.0;
+        for (size_t k = 0; k + 1 < v.elements.size(); ++k) {
+            s += func(v.elements[k], v.elements[k + 1]);
+        }
+        return s;
+    }
+
     case NodeOp::Leq:
         // child0 - child1 (≤ 0 when child0 ≤ child1)
         return child_val(node.children[0], model) - child_val(node.children[1], model);
@@ -275,6 +289,7 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
     case NodeOp::At:
     case NodeOp::Count:
     case NodeOp::Lambda:
+    case NodeOp::PairLambda:
         return 0.0;  // discrete — not differentiable
 
     case NodeOp::Leq:

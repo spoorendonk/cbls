@@ -28,7 +28,8 @@ static std::string op_to_string(NodeOp op) {
     case NodeOp::If:     return "If";
     case NodeOp::At:     return "At";
     case NodeOp::Count:  return "Count";
-    case NodeOp::Lambda: return "Lambda";
+    case NodeOp::Lambda:     return "Lambda";
+    case NodeOp::PairLambda: return "PairLambda";
     case NodeOp::Leq:    return "Leq";
     case NodeOp::Eq:     return "Eq";
     case NodeOp::Geq:    return "Geq";
@@ -50,7 +51,7 @@ static NodeOp string_to_op(const std::string& s) {
         {"Exp", NodeOp::Exp}, {"Log", NodeOp::Log},
         {"Sqrt", NodeOp::Sqrt}, {"If", NodeOp::If},
         {"At", NodeOp::At}, {"Count", NodeOp::Count},
-        {"Lambda", NodeOp::Lambda},
+        {"Lambda", NodeOp::Lambda}, {"PairLambda", NodeOp::PairLambda},
         {"Leq", NodeOp::Leq}, {"Eq", NodeOp::Eq},
         {"Geq", NodeOp::Geq}, {"Neq", NodeOp::Neq},
         {"Lt", NodeOp::Lt}, {"Gt", NodeOp::Gt},
@@ -230,6 +231,16 @@ Model load_model(std::istream& input) {
                         [table](int e) -> double { return table.at(e); });
                     break;
                 }
+                case NodeOp::PairLambda: {
+                    if (!j.contains("table")) {
+                        throw std::invalid_argument("line " + std::to_string(line_num) +
+                                                    ": PairLambda node requires 'table' field");
+                    }
+                    auto table = j["table"].get<std::vector<std::vector<double>>>();
+                    node_id = m.pair_lambda_sum(children.at(0),
+                        [table](int a, int b) -> double { return table.at(a).at(b); });
+                    break;
+                }
                 case NodeOp::Leq:
                     node_id = m.leq(children.at(0), children.at(1));
                     break;
@@ -372,6 +383,29 @@ void save_model(const Model& model, std::ostream& out) {
             j["table"] = json::array();
             for (int i = 0; i < n; ++i) {
                 j["table"].push_back(func(i));
+            }
+            j["children"] = json::array();
+            j["children"].push_back(child_name(child_ref));
+        } else if (node.op == NodeOp::PairLambda) {
+            // Tabulate: store [[func(i,j) for j in 0..n-1] for i in 0..n-1]
+            const auto& child_ref = node.children[0];
+            if (!child_ref.is_var) {
+                throw std::runtime_error("PairLambda node child must be a variable");
+            }
+            const auto& var = model.var(child_ref.id);
+            int n = var.max_size;
+            if (n > 1000) {
+                throw std::runtime_error(
+                    "PairLambda universe too large to tabulate (" + std::to_string(n) + " > 1000)");
+            }
+            const auto& func = model.pair_lambda_func(node.lambda_func_id);
+            j["table"] = json::array();
+            for (int i = 0; i < n; ++i) {
+                auto row = json::array();
+                for (int jj = 0; jj < n; ++jj) {
+                    row.push_back(func(i, jj));
+                }
+                j["table"].push_back(row);
             }
             j["children"] = json::array();
             j["children"].push_back(child_name(child_ref));

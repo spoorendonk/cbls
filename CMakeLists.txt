@@ -97,6 +97,10 @@ if(CBLS_BUILD_BENCHMARKS)
     add_executable(cbls_uc_chped benchmarks/uc-chped/uc_chped.cpp)
     target_link_libraries(cbls_uc_chped PRIVATE cbls_lib)
     target_include_directories(cbls_uc_chped PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${json_SOURCE_DIR}/include)
+
+    add_executable(cbls_pharma_glsp benchmarks/pharma-glsp/pharma_glsp.cpp)
+    target_link_libraries(cbls_pharma_glsp PRIVATE cbls_lib)
+    target_include_directories(cbls_pharma_glsp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${json_SOURCE_DIR}/include)
 endif()
 
 # Python bindings (optional)
