@@ -7,6 +7,7 @@ add_executable(cbls_tests
     test_inner_solver.cpp
     test_callback.cpp
     test_io.cpp
+    test_nuclear_outage.cpp
     test_bunker_eca.cpp
     test_pharma_glsp.cpp
 )
