@@ -98,6 +98,10 @@ if(CBLS_BUILD_BENCHMARKS)
     target_link_libraries(cbls_uc_chped PRIVATE cbls_lib)
     target_include_directories(cbls_uc_chped PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${json_SOURCE_DIR}/include)
 
+    add_executable(cbls_bunker_eca benchmarks/bunker-eca/bunker_eca.cpp)
+    target_link_libraries(cbls_bunker_eca PRIVATE cbls_lib)
+    target_include_directories(cbls_bunker_eca PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${json_SOURCE_DIR}/include)
+
     add_executable(cbls_pharma_glsp benchmarks/pharma-glsp/pharma_glsp.cpp)
     target_link_libraries(cbls_pharma_glsp PRIVATE cbls_lib)
     target_include_directories(cbls_pharma_glsp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${json_SOURCE_DIR}/include)
