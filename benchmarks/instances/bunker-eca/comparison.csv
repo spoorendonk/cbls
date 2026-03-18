@@ -1,0 +1,13 @@
+instance,method,objective,gap_pct,source
+small-3s-10c,SCIP,,,"PySCIPOpt MIQCP, 60s"
+small-3s-10c,CBLS,,,"CBLS SA solver"
+small-3s-10c,CBLS-noECA,,,"CBLS SA without ECA fuel switching"
+medium-7s-30c,SCIP,,,"PySCIPOpt MIQCP, 300s"
+medium-7s-30c,CBLS,,,"CBLS SA solver"
+medium-7s-30c,CBLS-noECA,,,"CBLS SA without ECA fuel switching"
+large-15s-60c,SCIP,,,"PySCIPOpt MIQCP, 600s"
+large-15s-60c,CBLS,,,"CBLS SA solver"
+large-15s-60c,CBLS-noECA,,,"CBLS SA without ECA fuel switching"
+xlarge-30s-120c,SCIP,,,"PySCIPOpt MIQCP, 1800s"
+xlarge-30s-120c,CBLS,,,"CBLS SA solver"
+xlarge-30s-120c,CBLS-noECA,,,"CBLS SA without ECA fuel switching"
