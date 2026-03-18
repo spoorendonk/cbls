@@ -79,11 +79,14 @@ static std::vector<std::pair<double, std::vector<int32_t>>> fj_candidate_values(
             }
         }
     } else if (var.type == VarType::Float) {
-        // Linspace
-        for (int k = 0; k < 10; ++k) {
-            double v = var.lb + (var.ub - var.lb) * k / 9.0;
-            candidates.push_back({v, {}});
+        // Reduced linspace: lb, midpoint, ub (3 instead of 10)
+        candidates.push_back({var.lb, {}});
+        double mid = 0.5 * (var.lb + var.ub);
+        if (mid != var.lb && mid != var.ub) {
+            candidates.push_back({mid, {}});
         }
+        candidates.push_back({var.ub, {}});
+
         // Gradient-based candidates from violated constraints
         auto violated = vm.violated_constraints();
         int n_check = std::min(static_cast<int>(violated.size()), 3);
@@ -225,7 +228,7 @@ static SolveProgress make_progress(int64_t iteration, double elapsed,
 
 SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
                    InnerSolverHook* hook, LNS* lns, int lns_interval,
-                   SolveCallback* callback) {
+                   SolveCallback* callback, bool skip_init) {
     RNG rng(seed);
     ViolationManager vm(model);
 
@@ -233,12 +236,14 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     auto deadline = start + std::chrono::duration<double>(time_limit);
 
     // Initialize
-    initialize_random(model, rng);
-    full_evaluate(model);
+    if (!skip_init) {
+        initialize_random(model, rng);
+        full_evaluate(model);
 
-    if (use_fj) {
-        constexpr double fj_time_fraction = 0.2;
-        fj_nl_initialize(model, vm, 5000, &rng, time_limit * fj_time_fraction);
+        if (use_fj) {
+            constexpr double fj_time_fraction = 0.2;
+            fj_nl_initialize(model, vm, 5000, &rng, time_limit * fj_time_fraction);
+        }
     }
 
     double current_F = vm.augmented_objective();
@@ -255,7 +260,8 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     int reheat_interval = 5000;
 
     MoveProbabilities move_probs({
-        "flip", "int_dec", "int_inc", "int_rand",
+        "flip", "block_on", "block_off",
+        "int_dec", "int_inc", "int_rand",
         "float_perturb", "list_swap", "list_2opt",
         "list_relocate", "list_or_opt_2", "list_or_opt_3",
         "set_add", "set_remove", "set_swap",
@@ -277,6 +283,12 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
 
         // Generate moves
         auto moves = generate_standard_moves(var, rng);
+
+        // Block moves for vars in sequences
+        if (var.type == VarType::Bool) {
+            auto bm = generate_block_moves(var.id, model, rng);
+            moves.insert(moves.end(), bm.begin(), bm.end());
+        }
 
         // Enriched moves for FloatVar
         if (var.type == VarType::Float) {

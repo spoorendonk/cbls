@@ -265,6 +265,39 @@ void Model::maximize(int32_t expr_id) {
     is_maximizing_ = true;
 }
 
+void Model::add_var_sequence(std::vector<int32_t> handles,
+                              int min_block_on, int min_block_off) {
+    int seq_idx = static_cast<int>(var_sequences_.size());
+    VarSequence seq;
+    seq.min_block_on = min_block_on;
+    seq.min_block_off = min_block_off;
+
+    // Convert handles to internal var IDs
+    seq.var_ids.reserve(handles.size());
+    for (int32_t h : handles) {
+        int32_t vid = (h < 0) ? -(h + 1) : h;  // decode var handle
+        seq.var_ids.push_back(vid);
+    }
+
+    // Grow lookup table if needed
+    for (size_t pos = 0; pos < seq.var_ids.size(); ++pos) {
+        int32_t vid = seq.var_ids[pos];
+        if (vid >= static_cast<int32_t>(var_to_seq_.size())) {
+            var_to_seq_.resize(vid + 1, {-1, -1});
+        }
+        var_to_seq_[vid] = {seq_idx, static_cast<int>(pos)};
+    }
+
+    var_sequences_.push_back(std::move(seq));
+}
+
+std::pair<int, int> Model::var_sequence_for(int32_t var_id) const {
+    if (var_id >= 0 && var_id < static_cast<int32_t>(var_to_seq_.size())) {
+        return var_to_seq_[var_id];
+    }
+    return {-1, -1};
+}
+
 void Model::close() {
     topo_order_ = detail::compute_topo_order(*this);
     full_evaluate(*this);

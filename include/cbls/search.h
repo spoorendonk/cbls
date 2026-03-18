@@ -46,6 +46,7 @@ SearchResult solve(Model& model, double time_limit = 10.0,
                    InnerSolverHook* hook = nullptr,
                    LNS* lns = nullptr,
                    int lns_interval = 3,
-                   SolveCallback* callback = nullptr);
+                   SolveCallback* callback = nullptr,
+                   bool skip_init = false);
 
 }  // namespace cbls

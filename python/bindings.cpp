@@ -140,6 +140,9 @@ NB_MODULE(_cbls_core, m) {
         .def("add_constraint", static_cast<void(Model::*)(const Expr&)>(&Model::add_constraint))
         .def("minimize", static_cast<void(Model::*)(const Expr&)>(&Model::minimize))
         .def("maximize", static_cast<void(Model::*)(const Expr&)>(&Model::maximize))
+        .def("add_var_sequence", &Model::add_var_sequence,
+             nb::arg("var_ids"), nb::arg("min_block_on") = 1, nb::arg("min_block_off") = 1)
+        .def("var_sequence_for", &Model::var_sequence_for)
         .def("close", &Model::close)
         // Accessors
         .def("var", &Model::var, nb::rv_policy::reference_internal)
@@ -336,7 +339,8 @@ NB_MODULE(_cbls_core, m) {
           nb::arg("hook") = nullptr,
           nb::arg("lns") = nullptr,
           nb::arg("lns_interval") = 3,
-          nb::arg("callback") = nullptr);
+          nb::arg("callback") = nullptr,
+          nb::arg("skip_init") = false);
     m.def("initialize_random", &initialize_random);
     m.def("fj_nl_initialize", &fj_nl_initialize,
           nb::arg("model"), nb::arg("vm"), nb::arg("max_iterations") = 10000,
