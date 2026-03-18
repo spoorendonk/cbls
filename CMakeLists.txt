@@ -101,6 +101,10 @@ if(CBLS_BUILD_BENCHMARKS)
     add_executable(cbls_nuclear_outage benchmarks/nuclear-outage/nuclear_outage.cpp)
     target_link_libraries(cbls_nuclear_outage PRIVATE cbls_lib)
     target_include_directories(cbls_nuclear_outage PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${json_SOURCE_DIR}/include)
+
+    add_executable(cbls_bunker_eca benchmarks/bunker-eca/bunker_eca.cpp)
+    target_link_libraries(cbls_bunker_eca PRIVATE cbls_lib)
+    target_include_directories(cbls_bunker_eca PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${json_SOURCE_DIR}/include)
 endif()
 
 # Python bindings (optional)
