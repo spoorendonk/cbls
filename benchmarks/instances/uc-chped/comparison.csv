@@ -1,0 +1,23 @@
+instance,periods,method,objective,lb,gap_pct,time_s,source
+ucp13,1,Pedroso MIP (1hr),11701,11701,0.00,,Pedroso et al. 2014 Table 2
+ucp13,3,Pedroso MIP (1hr),38850,38850,0.00,,Pedroso et al. 2014 Table 2
+ucp13,6,Pedroso MIP (1hr),91784,91406,0.41,,Pedroso et al. 2014 Table 2
+ucp13,12,Pedroso MIP (1hr),232537,231587,0.41,,Pedroso et al. 2014 Table 2
+ucp13,24,Pedroso MIP (1hr),466187,464053,0.46,,Pedroso et al. 2014 Table 2
+ucp40,1,Pedroso MIP (1hr),55645,55645,0.00,,Pedroso et al. 2014 Table 2
+ucp40,3,Pedroso MIP (1hr),178547,178396,0.08,,Pedroso et al. 2014 Table 2
+ucp40,6,Pedroso MIP (1hr),416606,416108,0.12,,Pedroso et al. 2014 Table 2
+ucp40,12,Pedroso MIP (1hr),1113801,1112371,0.13,,Pedroso et al. 2014 Table 2
+ucp40,24,Pedroso MIP (1hr),2238504,2235971,0.11,,Pedroso et al. 2014 Table 2
+ucp13,1,CBLS SA (10s),13864.8,11701,18.49,10.0,this work
+ucp13,3,CBLS SA (30s),48531.9,38850,24.92,30.0,this work
+ucp13,6,CBLS SA (60s),INFEASIBLE,91406,,60.0,this work
+ucp13,12,CBLS SA (120s),INFEASIBLE,231587,,123.5,this work
+ucp13,24,CBLS SA (300s),INFEASIBLE,464053,,308.9,this work
+ucp40,1,CBLS SA (10s),77964.4,55645,40.11,10.0,this work
+ucp40,3,CBLS SA (30s),INFEASIBLE,178396,,30.9,this work
+ucp40,6,CBLS SA (60s),INFEASIBLE,416108,,63.2,this work
+ucp40,12,CBLS SA (120s),INFEASIBLE,1112371,,130.7,this work
+ucp40,24,CBLS SA (300s),INFEASIBLE,2235971,,391.3,this work
+ucp100,1,CBLS SA (10s),INFEASIBLE,,,10.5,this work
+ucp200,1,CBLS SA (10s),INFEASIBLE,,,10.0,this work

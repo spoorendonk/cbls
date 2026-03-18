@@ -61,20 +61,26 @@ Repo: https://github.com/spoorendonk/cbls
 | # | Domain | Problem | Core nonlinearity | Key CBLS features | Status |
 |---|--------|---------|-------------------|--------------------|--------|
 | 1 | Energy | CHPED dispatch | Valve-point sinusoidal cost | FloatVar, delta eval | **Done** (PR #3, #4) |
-| 2 | Energy | UC-CHPED | Valve-point + binary commitment | BoolVar + FloatVar, min up/down, startup costs | **Data + reference solver done** |
+| 2 | Energy | UC-CHPED | Valve-point + binary commitment | BoolVar + FloatVar, min up/down, startup costs | **Done** |
 | 3 | Energy | ROADEF 2010 — Nuclear Outage | Stochastic production × binary outage dates | BoolVar/IntVar + FloatVar, inner solver hook, 500 scenarios | Planned |
 | 4 | Maritime | Fleet Bunker + ECA | Cubic fuel (v³), binary fuel switching, tank dynamics | FloatVar + BoolVar, nonlinear state, inner solver | Planned |
 | 5 | Manufacturing | Pharma GLSP + Shelf-Life | Coupled lot-sizing/sequencing, shelf-life cross-stage | ListVar + FloatVar, changeover, inner solver | Planned |
 
 ### Benchmark 2: UC-CHPED
 
-Unit Commitment with valve-point effects. 13/40-unit instances from Pedroso et al.
-(2014), 24-hour horizon with binary commitment, min up/down times, hot/cold startup
-costs. Instance data in `benchmarks/instances/uc-chped/data.py`, MIP reference solver
-in `benchmarks/chped/reference_solve.py --uc`.
+Unit Commitment with valve-point effects. Instances from Pedroso et al. (2014):
+- 13/40-unit base instances, 24h horizon with binary commitment, min up/down times,
+  hot/cold startup costs
+- 100/200-unit scaled instances (from 40-unit Taipower), 24/48/168h horizons
 
-**Next step:** Build CBLS model with BoolVar per unit per period, FloatVar dispatch,
-violation constraints for min up/down, inner solver hook for dispatch optimization.
+CBLS model: BoolVar per unit×period (commitment) + FloatVar (dispatch), valve-point
+cost, min up/down time constraints, demand + spinning reserve constraints. Runner in
+`benchmarks/uc-chped/uc_chped.cpp`, Catch2 tests in `tests/test_uc_chped.cpp`.
+
+Results: CBLS SA finds feasible solutions for 1-period instances (13/40-unit). Multi-period
+instances are challenging for SA due to heavy constraint structure (min up/down times create
+long-range coupling). See `benchmarks/instances/uc-chped/comparison.csv` for full results
+vs Pedroso known bounds.
 
 ### Benchmark 3: ROADEF/EURO 2010 — Nuclear Outage Scheduling (planned)
 

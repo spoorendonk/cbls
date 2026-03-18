@@ -186,6 +186,79 @@ def _build_ucp40():
 UCP_40UNIT = _build_ucp40()
 
 # ---------------------------------------------------------------------------
+# UCP_100UNIT — 100-unit system (10× Kazarlis base, valve-point from 40-unit)
+# Cost coefficients cycle from CHPED_40UNIT; UC parameters cycle from Kazarlis.
+# Demand scaled proportionally: 100/40 = 2.5× the 40-unit demand.
+# ---------------------------------------------------------------------------
+
+
+def _build_ucp100():
+    n = 100
+    base40 = CHPED_40UNIT
+    return {
+        "name": "ucp100",
+        "n_units": n,
+        "n_periods": 24,
+        "a": [base40["a"][i % 40] for i in range(n)],
+        "b": [base40["b"][i % 40] for i in range(n)],
+        "c": [base40["c"][i % 40] for i in range(n)],
+        "d": [base40["d"][i % 40] for i in range(n)],
+        "e": [base40["e"][i % 40] for i in range(n)],
+        "P_min": [base40["P_min"][i % 40] for i in range(n)],
+        "P_max": [base40["P_max"][i % 40] for i in range(n)],
+        "min_on": [_KAZARLIS_MIN_ON[i % 10] for i in range(n)],
+        "min_off": [_KAZARLIS_MIN_OFF[i % 10] for i in range(n)],
+        "t_cold": [_KAZARLIS_T_COLD[i % 10] for i in range(n)],
+        "n_init": [_KAZARLIS_N_INIT[i % 10] for i in range(n)],
+        "y_prev": [_KAZARLIS_Y_PREV[i % 10] for i in range(n)],
+        "a_hot": [_KAZARLIS_A_HOT[i % 10] for i in range(n)],
+        "a_cold": [_KAZARLIS_A_COLD[i % 10] for i in range(n)],
+        # 2.5× the 40-unit demand
+        "demand": [round(d * 2.5) for d in UCP_40UNIT["demand"]],
+        "reserve": [round(r * 2.5) for r in UCP_40UNIT["reserve"]],
+        "known_bounds": {},
+    }
+
+
+UCP_100UNIT = _build_ucp100()
+
+# ---------------------------------------------------------------------------
+# UCP_200UNIT — 200-unit system (20× Kazarlis base)
+# Demand scaled: 200/40 = 5× the 40-unit demand.
+# ---------------------------------------------------------------------------
+
+
+def _build_ucp200():
+    n = 200
+    base40 = CHPED_40UNIT
+    return {
+        "name": "ucp200",
+        "n_units": n,
+        "n_periods": 24,
+        "a": [base40["a"][i % 40] for i in range(n)],
+        "b": [base40["b"][i % 40] for i in range(n)],
+        "c": [base40["c"][i % 40] for i in range(n)],
+        "d": [base40["d"][i % 40] for i in range(n)],
+        "e": [base40["e"][i % 40] for i in range(n)],
+        "P_min": [base40["P_min"][i % 40] for i in range(n)],
+        "P_max": [base40["P_max"][i % 40] for i in range(n)],
+        "min_on": [_KAZARLIS_MIN_ON[i % 10] for i in range(n)],
+        "min_off": [_KAZARLIS_MIN_OFF[i % 10] for i in range(n)],
+        "t_cold": [_KAZARLIS_T_COLD[i % 10] for i in range(n)],
+        "n_init": [_KAZARLIS_N_INIT[i % 10] for i in range(n)],
+        "y_prev": [_KAZARLIS_Y_PREV[i % 10] for i in range(n)],
+        "a_hot": [_KAZARLIS_A_HOT[i % 10] for i in range(n)],
+        "a_cold": [_KAZARLIS_A_COLD[i % 10] for i in range(n)],
+        # 5× the 40-unit demand
+        "demand": [round(d * 5.0) for d in UCP_40UNIT["demand"]],
+        "reserve": [round(r * 5.0) for r in UCP_40UNIT["reserve"]],
+        "known_bounds": {},
+    }
+
+
+UCP_200UNIT = _build_ucp200()
+
+# ---------------------------------------------------------------------------
 # Convenience: sub-instance with fewer periods
 # ---------------------------------------------------------------------------
 
@@ -201,4 +274,32 @@ def make_subinstance(inst, n_periods):
     # Look up bounds for this period count
     bounds = inst["known_bounds"].get(n_periods)
     sub["known_bounds"] = {n_periods: bounds} if bounds else {}
+    return sub
+
+
+def extend_horizon(inst, n_periods):
+    """Extend an instance to n_periods by repeating the 24h demand profile.
+
+    Each repeated day gets a slight variation (±3% sinusoidal) to avoid
+    perfect periodicity that could be trivially exploited.
+    """
+    import math as _math
+
+    base_T = inst["n_periods"]
+    assert n_periods > base_T, f"n_periods must be > {base_T}"
+    sub = dict(inst)
+    sub["n_periods"] = n_periods
+    demand = []
+    reserve = []
+    for t in range(n_periods):
+        day = t // base_T
+        hour = t % base_T
+        # Slight daily variation: ±3% sinusoidal over the week
+        variation = 1.0 + 0.03 * _math.sin(2 * _math.pi * day / 7)
+        demand.append(round(inst["demand"][hour] * variation))
+        reserve.append(round(inst["reserve"][hour] * variation))
+    sub["demand"] = demand
+    sub["reserve"] = reserve
+    sub["name"] = f"{inst['name']}-{n_periods}p"
+    sub["known_bounds"] = {}
     return sub
