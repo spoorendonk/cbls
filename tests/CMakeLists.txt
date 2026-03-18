@@ -4,6 +4,7 @@ add_executable(cbls_tests
     test_moves.cpp
     test_search.cpp
     test_chped.cpp
+    test_uc_chped.cpp
     test_inner_solver.cpp
     test_callback.cpp
     test_io.cpp
