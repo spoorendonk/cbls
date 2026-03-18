@@ -61,7 +61,7 @@ int main(int argc, char** argv) {
             nm.model.restore_state(result.best_state);
             printf("  Outage schedule: ");
             for (int o = 0; o < std::min(inst.n_outages, 20); ++o) {
-                int32_t vid = -(nm.s[o] + 1);  // handle to var ID
+                int32_t vid = cbls::nuclear_outage::handle_to_var_id(nm.s[o]);
                 printf("o%d@w%d ", o, (int)nm.model.var(vid).value);
             }
             if (inst.n_outages > 20) printf("...");

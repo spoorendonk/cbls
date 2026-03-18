@@ -43,6 +43,7 @@ inline NuclearModel build_nuclear_model(const NuclearInstance& inst) {
         unit_outages[inst.outage_unit[o]].push_back(o);
     }
 
+    auto neg1 = m.constant(-1.0);
     for (int u = 0; u < inst.n_units; ++u) {
         auto& outages = unit_outages[u];
         if (outages.size() < 2) continue;
@@ -54,7 +55,6 @@ inline NuclearModel build_nuclear_model(const NuclearInstance& inst) {
                   });
 
         // Consecutive outages must not overlap
-        auto neg1 = m.constant(-1.0);
         for (size_t i = 0; i + 1 < outages.size(); ++i) {
             int o1 = outages[i];
             int o2 = outages[i + 1];
