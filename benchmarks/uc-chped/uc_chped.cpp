@@ -53,7 +53,9 @@ int main(int argc, char** argv) {
 
         for (int T : spec.periods) {
             cbls::uc_chped::UCInstance inst;
-            if (T <= base.n_periods) {
+            if (T == base.n_periods) {
+                inst = base;  // already the right size
+            } else if (T < base.n_periods) {
                 inst = cbls::uc_chped::make_subinstance(base, T);
             } else {
                 printf("%-20s %6d %6d  (skipped: T > n_periods)\n",
