@@ -6,7 +6,8 @@
 
 namespace cbls {
 
-void FloatIntensifyHook::solve(Model& model, ViolationManager& vm) {
+void FloatIntensifyHook::solve(Model& model, ViolationManager& vm,
+                               const std::vector<int32_t>& /*last_changed_vars*/) {
     for (int sweep = 0; sweep < max_sweeps; ++sweep) {
         bool improved = false;
 

@@ -10,6 +10,13 @@
 
 namespace cbls {
 
+struct SearchConfig {
+    double cooling_rate = 0.9999;
+    int reheat_interval = 5000;
+    int hook_frequency = 10;
+    double fj_time_fraction = 0.2;
+};
+
 struct SearchResult {
     double objective = std::numeric_limits<double>::infinity();
     bool feasible = false;
@@ -46,6 +53,7 @@ SearchResult solve(Model& model, double time_limit = 10.0,
                    InnerSolverHook* hook = nullptr,
                    LNS* lns = nullptr,
                    int lns_interval = 3,
-                   SolveCallback* callback = nullptr);
+                   SolveCallback* callback = nullptr,
+                   const SearchConfig& config = {});
 
 }  // namespace cbls
