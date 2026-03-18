@@ -225,7 +225,7 @@ static SolveProgress make_progress(int64_t iteration, double elapsed,
 
 SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
                    InnerSolverHook* hook, LNS* lns, int lns_interval,
-                   SolveCallback* callback) {
+                   SolveCallback* callback, const SearchConfig& config) {
     RNG rng(seed);
     ViolationManager vm(model);
 
@@ -237,8 +237,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     full_evaluate(model);
 
     if (use_fj) {
-        constexpr double fj_time_fraction = 0.2;
-        fj_nl_initialize(model, vm, 5000, &rng, time_limit * fj_time_fraction);
+        fj_nl_initialize(model, vm, 5000, &rng, time_limit * config.fj_time_fraction);
     }
 
     double current_F = vm.augmented_objective();
@@ -251,8 +250,8 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     }
 
     double temperature = initial_temperature(best_F);
-    double cooling_rate = 0.9999;
-    int reheat_interval = 5000;
+    double cooling_rate = config.cooling_rate;
+    int reheat_interval = config.reheat_interval;
 
     MoveProbabilities move_probs({
         "flip", "int_dec", "int_inc", "int_rand",
@@ -265,7 +264,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     int64_t iteration = 0;
     int reheat_count = 0;
     int64_t discrete_accepts_since_hook = 0;
-    const int64_t hook_frequency = 10;  // run hook every N discrete acceptances
+    const int64_t hook_frequency = config.hook_frequency;
 
     auto last_callback_time = start;
     constexpr double callback_interval_secs = 1.0;
@@ -362,7 +361,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
                 }
                 if (has_discrete && ++discrete_accepts_since_hook >= hook_frequency) {
                     discrete_accepts_since_hook = 0;
-                    hook->solve(model, vm);
+                    hook->solve(model, vm, changed);
                     update_best_after_hook(model, vm, best_F, best_feasible_obj, best_state);
                 }
             }

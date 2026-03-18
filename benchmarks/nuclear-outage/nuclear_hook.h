@@ -32,7 +32,8 @@ public:
     NuclearDispatchHook(const NuclearInstance& inst_, const NuclearModel& nm_)
         : inst(inst_), nm(nm_) {}
 
-    void solve(Model& model, ViolationManager& /*vm*/) override {
+    void solve(Model& model, ViolationManager& /*vm*/,
+               const std::vector<int32_t>& /*last_changed_vars*/ = {}) override {
         // 1. Read current outage start values (convert var handles to var IDs)
         std::vector<int> starts(inst.n_outages);
         for (int o = 0; o < inst.n_outages; ++o) {

@@ -30,7 +30,8 @@ public:
             for (auto h : lot_handles[j]) lot_vars_[j].push_back(handle_to_vid(h));
     }
 
-    void solve(Model& model, ViolationManager& vm) override {
+    void solve(Model& model, ViolationManager& vm,
+               const std::vector<int32_t>& /*last_changed_vars*/ = {}) override {
         int J = inst_.n_products;
         int T = inst_.n_macro;
         std::set<int32_t> changed;
