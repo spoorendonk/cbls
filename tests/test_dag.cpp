@@ -379,3 +379,30 @@ TEST_CASE("AD: composite x^2 + 2*x*y", "[dag]") {
     double expected = 2 * 3.0 + 2 * 2.0;  // 10
     REQUIRE_THAT(compute_partial(m, f, vid(x)), WithinAbs(expected, 1e-10));
 }
+
+TEST_CASE("Batch AD matches per-variable AD", "[dag]") {
+    Model m;
+    auto x = m.float_var(-10, 10);
+    auto y = m.float_var(-10, 10);
+    auto z = m.float_var(-10, 10);
+    auto two = m.constant(2);
+    // f = x^2 + 2*x*y + sin(z)
+    auto x_sq = m.pow_expr(x, two);
+    auto xy = m.prod(x, y);
+    auto two_xy = m.prod(two, xy);
+    auto sin_z = m.sin_expr(z);
+    auto f = m.sum({x_sq, two_xy, sin_z});
+    m.minimize(f);
+    m.close();
+
+    m.var_mut(vid(x)).value = 3.0;
+    m.var_mut(vid(y)).value = 2.0;
+    m.var_mut(vid(z)).value = 1.0;
+    full_evaluate(m);
+
+    auto all = compute_all_partials(m, f);
+    REQUIRE(all.size() == 3);
+    REQUIRE_THAT(all[vid(x)], WithinAbs(compute_partial(m, f, vid(x)), 1e-10));
+    REQUIRE_THAT(all[vid(y)], WithinAbs(compute_partial(m, f, vid(y)), 1e-10));
+    REQUIRE_THAT(all[vid(z)], WithinAbs(compute_partial(m, f, vid(z)), 1e-10));
+}

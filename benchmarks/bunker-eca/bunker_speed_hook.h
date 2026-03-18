@@ -28,7 +28,7 @@ public:
         }
 
         int C = (int)inst_->cargoes.size();
-        std::set<int32_t> changed;
+        std::vector<int32_t> changed;
 
         for (int c = 0; c < C; ++c) {
             int32_t speed_vid = handle_to_var_id(bec_model_->speed[c]);
@@ -42,7 +42,7 @@ public:
                 // Unassigned cargo: set minimum speed
                 if (std::abs(speed_var.value - speed_var.lb) > 1e-6) {
                     speed_var.value = speed_var.lb;
-                    changed.insert(speed_vid);
+                    changed.push_back(speed_vid);
                 }
                 continue;
             }
@@ -67,7 +67,7 @@ public:
 
             if (std::abs(speed_var.value - v_opt) > 1e-6) {
                 speed_var.value = v_opt;
-                changed.insert(speed_vid);
+                changed.push_back(speed_vid);
             }
         }
 

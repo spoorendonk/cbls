@@ -1,8 +1,6 @@
 #include "cbls/dag_ops.h"
 #include "cbls/model.h"
 #include <queue>
-#include <unordered_map>
-#include <unordered_set>
 #include <algorithm>
 
 namespace cbls {
@@ -38,7 +36,8 @@ std::vector<int32_t> compute_topo_order(Model& model) {
 
     size_t n = nodes.size();
     std::vector<int> in_degree(n, 0);
-    std::unordered_map<int32_t, std::vector<int32_t>> child_to_parents;
+    // Use flat vector instead of unordered_map for child->parents
+    std::vector<std::vector<int32_t>> child_to_parents(n);
 
     for (auto& nd : nodes) {
         for (const auto& child : nd.children) {
@@ -62,13 +61,10 @@ std::vector<int32_t> compute_topo_order(Model& model) {
         int32_t nid = queue.front();
         queue.pop();
         sorted.push_back(nid);
-        auto it = child_to_parents.find(nid);
-        if (it != child_to_parents.end()) {
-            for (int32_t parent_id : it->second) {
-                in_degree[parent_id]--;
-                if (in_degree[parent_id] == 0) {
-                    queue.push(parent_id);
-                }
+        for (int32_t parent_id : child_to_parents[nid]) {
+            in_degree[parent_id]--;
+            if (in_degree[parent_id] == 0) {
+                queue.push(parent_id);
             }
         }
     }
@@ -89,44 +85,60 @@ double full_evaluate(Model& model) {
     return 0.0;
 }
 
-double delta_evaluate(Model& model, const std::set<int32_t>& changed_var_ids) {
-    if (changed_var_ids.empty()) {
+double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count) {
+    if (count == 0) {
         if (model.objective_id() >= 0) {
             return model.node(model.objective_id()).value;
         }
         return 0.0;
     }
 
-    // Mark dirty nodes via BFS up from changed variables
-    std::unordered_set<int32_t> dirty;
-    std::queue<int32_t> queue;
+    const size_t num_nodes = model.num_nodes();
 
-    for (int32_t vid : changed_var_ids) {
-        const auto& v = model.var(vid);
+    // Flat dirty flags + dirty list for O(dirty) cleanup
+    // Use thread_local to avoid reallocation across calls
+    thread_local std::vector<uint8_t> dirty_flags;
+    thread_local std::vector<int32_t> dirty_list;
+
+    if (dirty_flags.size() < num_nodes) {
+        dirty_flags.resize(num_nodes, 0);
+    }
+    dirty_list.clear();
+
+    // Seed dirty set from changed variables' dependents
+    for (size_t ci = 0; ci < count; ++ci) {
+        const auto& v = model.var(changed_var_ids[ci]);
         for (int32_t dep_id : v.dependent_ids) {
-            if (dirty.insert(dep_id).second) {
-                queue.push(dep_id);
+            if (!dirty_flags[dep_id]) {
+                dirty_flags[dep_id] = 1;
+                dirty_list.push_back(dep_id);
             }
         }
     }
 
-    while (!queue.empty()) {
-        int32_t nid = queue.front();
-        queue.pop();
+    // BFS upward through parents
+    for (size_t i = 0; i < dirty_list.size(); ++i) {
+        int32_t nid = dirty_list[i];
         const auto& nd = model.node(nid);
         for (int32_t parent_id : nd.parent_ids) {
-            if (dirty.insert(parent_id).second) {
-                queue.push(parent_id);
+            if (!dirty_flags[parent_id]) {
+                dirty_flags[parent_id] = 1;
+                dirty_list.push_back(parent_id);
             }
         }
     }
 
     // Recompute dirty nodes in topological order
     for (int32_t nid : model.topo_order()) {
-        if (dirty.count(nid)) {
+        if (dirty_flags[nid]) {
             auto& nd = model.node_mut(nid);
             nd.value = evaluate(nd, model);
         }
+    }
+
+    // Clean up dirty flags (only touch entries we set)
+    for (int32_t nid : dirty_list) {
+        dirty_flags[nid] = 0;
     }
 
     if (model.objective_id() >= 0) {
@@ -135,35 +147,108 @@ double delta_evaluate(Model& model, const std::set<int32_t>& changed_var_ids) {
     return 0.0;
 }
 
+// Sparse reverse-mode AD: only visit ancestors of expr_id
 double compute_partial(const Model& model, int32_t expr_id, int32_t var_id) {
-    // Reverse-mode AD
-    std::unordered_map<int32_t, double> adjoint;
-    adjoint[expr_id] = 1.0;
+    const size_t num_nodes = model.num_nodes();
+    const size_t num_vars = model.num_vars();
 
-    // We need to iterate topo order in reverse
+    // Flat adjoint vector: [0..num_nodes-1] for nodes, [num_nodes..num_nodes+num_vars-1] for vars
+    thread_local std::vector<double> adjoint;
+    thread_local std::vector<int32_t> written;  // dirty list for cleanup
+
+    const size_t total_size = num_nodes + num_vars;
+    if (adjoint.size() < total_size) {
+        adjoint.resize(total_size, 0.0);
+    }
+    written.clear();
+
+    adjoint[expr_id] = 1.0;
+    written.push_back(expr_id);
+
+    // Find ancestors of expr_id by walking topo_order in reverse,
+    // only visiting nodes that have nonzero adjoint (i.e., are reachable from expr_id)
     const auto& order = model.topo_order();
     for (auto it = order.rbegin(); it != order.rend(); ++it) {
         int32_t nid = *it;
-        auto adj_it = adjoint.find(nid);
-        if (adj_it == adjoint.end()) continue;
-        double adj = adj_it->second;
+        if (adjoint[nid] == 0.0) continue;
+        double adj = adjoint[nid];
 
         const auto& nd = model.node(nid);
         for (int i = 0; i < static_cast<int>(nd.children.size()); ++i) {
             double ld = local_derivative(nd, i, model);
             const auto& child = nd.children[i];
             if (child.is_var) {
-                int32_t key = -(child.id + 1);  // negative to distinguish from node IDs
-                adjoint[key] = (adjoint.count(key) ? adjoint[key] : 0.0) + adj * ld;
+                int32_t key = static_cast<int32_t>(num_nodes) + child.id;
+                if (adjoint[key] == 0.0) written.push_back(key);
+                adjoint[key] += adj * ld;
             } else {
-                adjoint[child.id] = (adjoint.count(child.id) ? adjoint[child.id] : 0.0) + adj * ld;
+                if (adjoint[child.id] == 0.0) written.push_back(child.id);
+                adjoint[child.id] += adj * ld;
             }
         }
     }
 
-    int32_t key = -(var_id + 1);
-    auto it = adjoint.find(key);
-    return it != adjoint.end() ? it->second : 0.0;
+    int32_t key = static_cast<int32_t>(num_nodes) + var_id;
+    double result = (key < static_cast<int32_t>(adjoint.size())) ? adjoint[key] : 0.0;
+
+    // Clean up only entries we wrote
+    for (int32_t idx : written) {
+        adjoint[idx] = 0.0;
+    }
+
+    return result;
+}
+
+// Batch AD: one reverse pass computing ∂expr/∂(all vars)
+std::vector<double> compute_all_partials(const Model& model, int32_t expr_id) {
+    const size_t num_nodes = model.num_nodes();
+    const size_t num_vars = model.num_vars();
+
+    thread_local std::vector<double> adjoint;
+    thread_local std::vector<int32_t> written;
+
+    const size_t total_size = num_nodes + num_vars;
+    if (adjoint.size() < total_size) {
+        adjoint.resize(total_size, 0.0);
+    }
+    written.clear();
+
+    adjoint[expr_id] = 1.0;
+    written.push_back(expr_id);
+
+    const auto& order = model.topo_order();
+    for (auto it = order.rbegin(); it != order.rend(); ++it) {
+        int32_t nid = *it;
+        if (adjoint[nid] == 0.0) continue;
+        double adj = adjoint[nid];
+
+        const auto& nd = model.node(nid);
+        for (int i = 0; i < static_cast<int>(nd.children.size()); ++i) {
+            double ld = local_derivative(nd, i, model);
+            const auto& child = nd.children[i];
+            if (child.is_var) {
+                int32_t key = static_cast<int32_t>(num_nodes) + child.id;
+                if (adjoint[key] == 0.0) written.push_back(key);
+                adjoint[key] += adj * ld;
+            } else {
+                if (adjoint[child.id] == 0.0) written.push_back(child.id);
+                adjoint[child.id] += adj * ld;
+            }
+        }
+    }
+
+    // Extract var partials
+    std::vector<double> partials(num_vars);
+    for (size_t i = 0; i < num_vars; ++i) {
+        partials[i] = adjoint[num_nodes + i];
+    }
+
+    // Clean up
+    for (int32_t idx : written) {
+        adjoint[idx] = 0.0;
+    }
+
+    return partials;
 }
 
 }  // namespace cbls
