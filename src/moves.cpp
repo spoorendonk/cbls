@@ -240,8 +240,9 @@ std::vector<Move> gradient_lift_move(int32_t var_id, Model& model, double step_s
     return {m};
 }
 
-std::set<int32_t> apply_move(Model& model, const Move& move) {
-    std::set<int32_t> changed;
+std::vector<int32_t> apply_move(Model& model, const Move& move) {
+    std::vector<int32_t> changed;
+    changed.reserve(move.changes.size());
     for (const auto& change : move.changes) {
         auto& var = model.var_mut(change.var_id);
         if (var.type == VarType::List || var.type == VarType::Set) {
@@ -249,7 +250,7 @@ std::set<int32_t> apply_move(Model& model, const Move& move) {
         } else {
             var.value = change.new_value;
         }
-        changed.insert(change.var_id);
+        changed.push_back(change.var_id);
     }
     return changed;
 }

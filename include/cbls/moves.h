@@ -4,7 +4,6 @@
 #include "rng.h"
 #include <vector>
 #include <string>
-#include <set>
 
 namespace cbls {
 
@@ -31,7 +30,7 @@ std::vector<Move> newton_tight_move(int32_t var_id, Model& model, int constraint
 std::vector<Move> gradient_lift_move(int32_t var_id, Model& model, double step_size = 0.1);
 
 // Move application
-std::set<int32_t> apply_move(Model& model, const Move& move);
+std::vector<int32_t> apply_move(Model& model, const Move& move);
 SavedValues save_move_values(const Model& model, const Move& move);
 void undo_move(Model& model, const Move& move, const SavedValues& saved);
 

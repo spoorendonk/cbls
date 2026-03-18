@@ -2,7 +2,6 @@
 #include "cbls/dag_ops.h"
 #include <cmath>
 #include <algorithm>
-#include <set>
 #include <vector>
 
 namespace cbls {
@@ -83,12 +82,14 @@ void FloatIntensifyHook::solve(Model& model, ViolationManager& vm) {
             double g = model.node(cid).value;
             if (std::abs(g) < 1e-15) continue;
 
-            // Collect float vars with non-trivial gradient
+            // Batch AD: one reverse pass for all partials
+            auto all_partials = compute_all_partials(model, cid);
+
             struct VarGrad { int32_t id; double dg; double old_val; };
             std::vector<VarGrad> grads;
             for (const auto& v : model.variables()) {
                 if (v.type != VarType::Float) continue;
-                double dg = compute_partial(model, cid, v.id);
+                double dg = all_partials[v.id];
                 if (std::abs(dg) > 1e-12) {
                     grads.push_back({v.id, dg, v.value});
                 }
@@ -103,12 +104,13 @@ void FloatIntensifyHook::solve(Model& model, ViolationManager& vm) {
             double old_aug = vm.augmented_objective();
 
             // Apply minimum-norm Newton step
-            std::set<int32_t> changed_ids;
+            std::vector<int32_t> changed_ids;
+            changed_ids.reserve(grads.size());
             for (const auto& vg : grads) {
                 const auto& v = model.var(vg.id);
                 double new_val = std::clamp(vg.old_val + scale * vg.dg, v.lb, v.ub);
                 model.var_mut(vg.id).value = new_val;
-                changed_ids.insert(vg.id);
+                changed_ids.push_back(vg.id);
             }
             delta_evaluate(model, changed_ids);
             double new_aug = vm.augmented_objective();
