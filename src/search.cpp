@@ -257,6 +257,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     MoveProbabilities move_probs({
         "flip", "int_dec", "int_inc", "int_rand",
         "float_perturb", "list_swap", "list_2opt",
+        "list_relocate", "list_or_opt_2", "list_or_opt_3",
         "set_add", "set_remove", "set_swap",
         "newton_tight", "gradient_lift",
     });
@@ -354,7 +355,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
                 bool has_discrete = false;
                 for (const auto& ch : move.changes) {
                     auto t = model.var(ch.var_id).type;
-                    if (t == VarType::Bool || t == VarType::Int) {
+                    if (t == VarType::Bool || t == VarType::Int || t == VarType::List) {
                         has_discrete = true;
                         break;
                     }

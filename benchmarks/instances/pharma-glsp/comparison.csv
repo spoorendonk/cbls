@@ -1,0 +1,10 @@
+class,method,n_instances,feasible_pct,avg_objective,avg_time_s,source
+A,CPLEX(paper),50,100.0,6289.89,1800.0,"Goerler et al. 2020 Table 10"
+A,LAHCM_l50(paper),50,100.0,5587.84,876.0,"Goerler et al. 2020 Table 10"
+A,CBLS,10,100.0,38788.5,15.0,"This benchmark (seed=42)"
+B,CPLEX(paper),50,100.0,2664.20,212.0,"Goerler et al. 2020 Table 11"
+B,LAHCM_l50(paper),50,100.0,2668.10,168.0,"Goerler et al. 2020 Table 11"
+B,CBLS,10,100.0,8892.0,15.0,"This benchmark (seed=42)"
+C,CPLEX(paper),50,100.0,31287.84,1354.0,"Goerler et al. 2020 Table 12"
+C,LAHCM_l50(paper),50,100.0,31335.30,182.0,"Goerler et al. 2020 Table 12"
+C,CBLS,10,60.0,6505.4,15.0,"This benchmark (seed=42)"

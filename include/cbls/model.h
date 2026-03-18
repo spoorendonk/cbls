@@ -48,6 +48,7 @@ public:
     int32_t lt(int32_t a, int32_t b);
     int32_t gt(int32_t a, int32_t b);
     int32_t lambda_sum(int32_t list_var_id, std::function<double(int)> func);
+    int32_t pair_lambda_sum(int32_t list_var_id, std::function<double(int, int)> func);
 
     void add_constraint(int32_t expr_id);
     void minimize(int32_t expr_id);
@@ -108,6 +109,12 @@ public:
         return lambda_funcs_[idx];
     }
 
+    const std::function<double(int, int)>& pair_lambda_func(int32_t idx) const {
+        if (idx < 0 || idx >= static_cast<int32_t>(pair_lambda_funcs_.size()))
+            throw std::out_of_range("pair lambda func index out of range");
+        return pair_lambda_funcs_[idx];
+    }
+
     // State snapshot/restore
     struct State {
         std::vector<double> values;
@@ -124,6 +131,7 @@ private:
     int32_t objective_id_ = -1;
     bool is_maximizing_ = false;
     std::vector<std::function<double(int)>> lambda_funcs_;
+    std::vector<std::function<double(int, int)>> pair_lambda_funcs_;
     bool closed_ = false;
 
     int32_t alloc_var(VarType type, double lb, double ub, const std::string& name);

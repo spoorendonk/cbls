@@ -28,7 +28,7 @@ struct Variable {
 enum class NodeOp : uint8_t {
     Const, Neg, Sum, Prod, Div, Pow, Min, Max, Abs,
     Sin, Cos, Tan, Exp, Log, Sqrt,
-    If, At, Count, Lambda,
+    If, At, Count, Lambda, PairLambda,
     Leq, Eq, Geq, Neq, Lt, Gt
 };
 

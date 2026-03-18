@@ -199,6 +199,15 @@ int32_t Model::lambda_sum(int32_t list_var_handle, std::function<double(int)> fu
     return nid;
 }
 
+int32_t Model::pair_lambda_sum(int32_t list_var_handle, std::function<double(int, int)> func) {
+    pair_lambda_funcs_.push_back(std::move(func));
+    int32_t func_id = static_cast<int32_t>(pair_lambda_funcs_.size() - 1);
+
+    int32_t nid = alloc_node(NodeOp::PairLambda, {wrap(list_var_handle)});
+    nodes_[nid].lambda_func_id = func_id;
+    return nid;
+}
+
 // Expr-returning variable creation
 Expr Model::Bool(const std::string& name) {
     return {this, bool_var(name)};

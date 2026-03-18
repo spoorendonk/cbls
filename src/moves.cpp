@@ -78,6 +78,55 @@ static std::vector<Move> list_moves(const Variable& var, RNG& rng) {
         moves.push_back(m);
     }
 
+    // Relocate: remove element at position i, insert at position j
+    {
+        Move m;
+        m.move_type = "list_relocate";
+        auto new_elems = var.elements;
+        int32_t elem = new_elems[i];
+        new_elems.erase(new_elems.begin() + i);
+        int insert_pos = (j > i) ? j - 1 : j;
+        new_elems.insert(new_elems.begin() + insert_pos, elem);
+        m.changes.push_back({var.id, 0.0, new_elems});
+        moves.push_back(m);
+    }
+
+    // Or-opt(2): relocate a consecutive pair
+    if (n >= 3 && i < n - 1) {
+        Move m;
+        m.move_type = "list_or_opt_2";
+        auto new_elems = var.elements;
+        int32_t e0 = new_elems[i];
+        int32_t e1 = new_elems[i + 1];
+        new_elems.erase(new_elems.begin() + i, new_elems.begin() + i + 2);
+        int insert_pos = j;
+        if (j > i) insert_pos = std::max(0, j - 2);
+        insert_pos = std::min(insert_pos, static_cast<int>(new_elems.size()));
+        new_elems.insert(new_elems.begin() + insert_pos, e1);
+        new_elems.insert(new_elems.begin() + insert_pos, e0);
+        m.changes.push_back({var.id, 0.0, new_elems});
+        moves.push_back(m);
+    }
+
+    // Or-opt(3): relocate a consecutive triple
+    if (n >= 4 && i < n - 2) {
+        Move m;
+        m.move_type = "list_or_opt_3";
+        auto new_elems = var.elements;
+        int32_t e0 = new_elems[i];
+        int32_t e1 = new_elems[i + 1];
+        int32_t e2 = new_elems[i + 2];
+        new_elems.erase(new_elems.begin() + i, new_elems.begin() + i + 3);
+        int insert_pos = j;
+        if (j > i) insert_pos = std::max(0, j - 3);
+        insert_pos = std::min(insert_pos, static_cast<int>(new_elems.size()));
+        new_elems.insert(new_elems.begin() + insert_pos, e2);
+        new_elems.insert(new_elems.begin() + insert_pos, e1);
+        new_elems.insert(new_elems.begin() + insert_pos, e0);
+        m.changes.push_back({var.id, 0.0, new_elems});
+        moves.push_back(m);
+    }
+
     return moves;
 }
 
