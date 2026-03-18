@@ -22,6 +22,10 @@ Options:
   --lns FRACTION        Enable LNS with destroy fraction, e.g. 0.3
   --lns-interval INT    LNS fires every N reheats (default: 3)
   --intensify           Enable float intensification hook
+  --cooling-rate FLOAT  SA cooling rate (default: 0.9999)
+  --reheat-interval INT SA reheat interval in iterations (default: 5000)
+  --hook-frequency INT  Run hook every N discrete acceptances (default: 10)
+  --fj-time-fraction F  Fraction of time limit for FJ init (default: 0.2)
   --format human|jsonl  Output format (default: human)
   --quiet               Suppress progress, print only final result
   --help                Show this help message
@@ -37,6 +41,7 @@ int main(int argc, char* argv[]) {
     bool use_intensify = false;
     double lns_fraction = 0.0;
     int lns_interval = 3;
+    SearchConfig config;
     std::string format = "human";
     bool quiet = false;
 
@@ -60,6 +65,14 @@ int main(int argc, char* argv[]) {
             lns_interval = std::stoi(argv[++i]);
         } else if (arg == "--intensify") {
             use_intensify = true;
+        } else if (arg == "--cooling-rate" && i + 1 < argc) {
+            config.cooling_rate = std::stod(argv[++i]);
+        } else if (arg == "--reheat-interval" && i + 1 < argc) {
+            config.reheat_interval = std::stoi(argv[++i]);
+        } else if (arg == "--hook-frequency" && i + 1 < argc) {
+            config.hook_frequency = std::stoi(argv[++i]);
+        } else if (arg == "--fj-time-fraction" && i + 1 < argc) {
+            config.fj_time_fraction = std::stod(argv[++i]);
         } else if (arg == "--format" && i + 1 < argc) {
             format = argv[++i];
             if (format != "human" && format != "jsonl") {
@@ -112,7 +125,7 @@ int main(int argc, char* argv[]) {
     }
 
     auto result = solve(model, time_limit, seed, use_fj,
-                        hook, lns_ptr, lns_interval, callback);
+                        hook, lns_ptr, lns_interval, callback, config);
 
     if (format == "human") {
         human_fmt.print_result(result, model);

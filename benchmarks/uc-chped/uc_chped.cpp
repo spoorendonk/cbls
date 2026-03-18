@@ -74,8 +74,10 @@ int main(int argc, char** argv) {
 
             cbls::FloatIntensifyHook hook;
             cbls::LNS lns(0.3);
+            cbls::SearchConfig cfg;
+            cfg.skip_init = true;
             auto result = cbls::solve(ucm.model, tlim, 42, false, &hook, &lns,
-                                       3, nullptr, true);
+                                       3, nullptr, cfg);
 
             // Compute gap vs known bounds
             auto it = inst.known_bounds.find(T);
