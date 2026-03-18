@@ -1,0 +1,7 @@
+instance,method,objective,gap_pct,source
+mini,Greedy,7711651923,,this work
+mini,MIP (SAA 20sc),7711651923,0.0,this work (PySCIPOpt)
+mini,CBLS (SA+hook),7648754817,-0.82,this work (vs Greedy)
+small,Greedy,12736677594,,this work
+small,MIP (SAA 20sc),12724583264,0.0,this work (PySCIPOpt)
+small,CBLS (SA+hook),12702032099,-0.27,this work (vs Greedy)
