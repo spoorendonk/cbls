@@ -11,6 +11,12 @@ namespace cbls {
 // Forward declare Expr
 class Expr;
 
+struct VarSequence {
+    std::vector<int32_t> var_ids;    // ordered variable IDs in this sequence
+    int min_block_on = 1;            // minimum consecutive vars to set to 1
+    int min_block_off = 1;           // minimum consecutive vars to set to 0
+};
+
 class Model {
 public:
     Model() = default;
@@ -66,6 +72,13 @@ public:
     void add_constraint(const Expr& e);
     void minimize(const Expr& e);
     void maximize(const Expr& e);
+
+    // Variable sequences for block moves
+    void add_var_sequence(std::vector<int32_t> var_ids,
+                          int min_block_on = 1, int min_block_off = 1);
+    const std::vector<VarSequence>& var_sequences() const noexcept { return var_sequences_; }
+    // Returns (seq_index, position) or (-1, -1) if not in any sequence
+    std::pair<int, int> var_sequence_for(int32_t var_id) const;
 
     void close();
 
@@ -133,6 +146,8 @@ private:
     std::vector<std::function<double(int)>> lambda_funcs_;
     std::vector<std::function<double(int, int)>> pair_lambda_funcs_;
     bool closed_ = false;
+    std::vector<VarSequence> var_sequences_;
+    std::vector<std::pair<int, int>> var_to_seq_;  // var_id -> (seq_idx, pos), resized lazily
 
     int32_t alloc_var(VarType type, double lb, double ub, const std::string& name);
     int32_t alloc_node(NodeOp op, const std::vector<ChildRef>& children);

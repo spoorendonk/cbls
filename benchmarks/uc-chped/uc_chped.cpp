@@ -1,6 +1,7 @@
 #include <cbls/cbls.h>
 #include "data.h"
 #include "uc_model.h"
+#include "greedy_init.h"
 #include <cstdio>
 #include <map>
 #include <string>
@@ -68,9 +69,15 @@ int main(int argc, char** argv) {
             printf("%-20s %6d %6d ", inst.name.c_str(), inst.n_units, inst.n_periods);
             fflush(stdout);
 
+            // Greedy initialization (replaces random init + FJ)
+            cbls::uc_chped::greedy_uc_initialize(ucm.model, inst, ucm);
+
             cbls::FloatIntensifyHook hook;
             cbls::LNS lns(0.3);
-            auto result = cbls::solve(ucm.model, tlim, 42, true, &hook, &lns);
+            cbls::SearchConfig cfg;
+            cfg.skip_init = true;
+            auto result = cbls::solve(ucm.model, tlim, 42, false, &hook, &lns,
+                                       3, nullptr, cfg);
 
             // Compute gap vs known bounds
             auto it = inst.known_bounds.find(T);

@@ -26,6 +26,7 @@ struct SavedValues {
 
 // Move generators
 std::vector<Move> generate_standard_moves(const Variable& var, RNG& rng);
+std::vector<Move> generate_block_moves(int32_t var_id, const Model& model, RNG& rng);
 std::vector<Move> newton_tight_move(int32_t var_id, Model& model, int constraint_idx);
 std::vector<Move> gradient_lift_move(int32_t var_id, Model& model, double step_size = 0.1);
 

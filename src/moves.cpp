@@ -191,6 +191,48 @@ static std::vector<Move> set_moves(const Variable& var, RNG& rng) {
     return moves;
 }
 
+std::vector<Move> generate_block_moves(int32_t var_id, const Model& model, RNG& rng) {
+    auto [seq_idx, pos] = model.var_sequence_for(var_id);
+    if (seq_idx < 0) return {};
+
+    const auto& seq = model.var_sequences()[seq_idx];
+    int n = static_cast<int>(seq.var_ids.size());
+    if (n < 2) return {};
+
+    std::vector<Move> moves;
+    const auto& var = model.var(var_id);
+    double target = (var.value < 0.5) ? 1.0 : 0.0;  // flip direction
+    int min_block = (target > 0.5) ? seq.min_block_on : seq.min_block_off;
+    if (min_block > n) return {};
+
+    // Pick a random block of length in [min_block, min(2*min_block, n)] containing pos
+    int block_len = min_block;
+    int max_len = std::min(2 * min_block, n);
+    if (max_len > min_block) {
+        block_len = static_cast<int>(rng.integers(min_block, max_len + 1));
+    }
+
+    // Position the block to include pos
+    int earliest_start = std::max(0, pos - block_len + 1);
+    int latest_start = std::min(pos, n - block_len);
+    if (latest_start < earliest_start) return {};
+
+    int start = static_cast<int>(rng.integers(earliest_start, latest_start + 1));
+
+    Move m;
+    m.move_type = (target > 0.5) ? "block_on" : "block_off";
+    for (int i = start; i < start + block_len; ++i) {
+        // Only include vars that actually change
+        if (model.var(seq.var_ids[i]).value != target) {
+            m.changes.push_back({seq.var_ids[i], target, {}});
+        }
+    }
+    if (m.changes.empty()) return {};
+    moves.push_back(std::move(m));
+
+    return moves;
+}
+
 std::vector<Move> generate_standard_moves(const Variable& var, RNG& rng) {
     switch (var.type) {
     case VarType::Bool:  return bool_moves(var);
