@@ -48,7 +48,6 @@ inline BunkerECAModel build_bunker_eca_model(const Instance& inst) {
     auto zero = m.constant(0.0);
     auto one = m.constant(1.0);
     auto half = m.constant(0.5);
-    auto two = m.constant(2.0);
     auto twenty_four = m.constant(24.0);
 
     // ---------- Variables ----------
@@ -123,7 +122,7 @@ inline BunkerECAModel build_bunker_eca_model(const Instance& inst) {
                                          inst.cargoes[c].delivery_region);
         double alpha = avg_fuel_coeff * dist / 24.0;
         auto alpha_const = m.constant(alpha);
-        auto speed_sq = m.pow_expr(result.speed[c], two);
+        auto speed_sq = m.prod(result.speed[c], result.speed[c]);
         fuel_per_cargo[c] = m.prod(alpha_const, m.prod(speed_sq, active[c]));
 
         // Split into HFO/MGO by ECA fraction and fuel choice
