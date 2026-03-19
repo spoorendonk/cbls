@@ -204,6 +204,11 @@ inline UCModel build_uc_model(const UCInstance& inst) {
         }
     }
 
+    // Register commitment var sequences for block moves
+    for (int u = 0; u < N; ++u) {
+        m.add_var_sequence(result.y[u], inst.min_on[u], inst.min_off[u]);
+    }
+
     m.close();
     return result;
 }

@@ -140,6 +140,9 @@ NB_MODULE(_cbls_core, m) {
         .def("add_constraint", static_cast<void(Model::*)(const Expr&)>(&Model::add_constraint))
         .def("minimize", static_cast<void(Model::*)(const Expr&)>(&Model::minimize))
         .def("maximize", static_cast<void(Model::*)(const Expr&)>(&Model::maximize))
+        .def("add_var_sequence", &Model::add_var_sequence,
+             nb::arg("var_ids"), nb::arg("min_block_on") = 1, nb::arg("min_block_off") = 1)
+        .def("var_sequence_for", &Model::var_sequence_for)
         .def("close", &Model::close)
         // Accessors
         .def("var", &Model::var, nb::rv_policy::reference_internal)
@@ -317,7 +320,8 @@ NB_MODULE(_cbls_core, m) {
         .def_rw("cooling_rate", &SearchConfig::cooling_rate)
         .def_rw("reheat_interval", &SearchConfig::reheat_interval)
         .def_rw("hook_frequency", &SearchConfig::hook_frequency)
-        .def_rw("fj_time_fraction", &SearchConfig::fj_time_fraction);
+        .def_rw("fj_time_fraction", &SearchConfig::fj_time_fraction)
+        .def_rw("skip_init", &SearchConfig::skip_init);
 
     // SolveProgress
     nb::class_<SolveProgress>(m, "SolveProgress")

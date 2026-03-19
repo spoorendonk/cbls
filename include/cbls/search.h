@@ -15,6 +15,7 @@ struct SearchConfig {
     int reheat_interval = 5000;
     int hook_frequency = 10;
     double fj_time_fraction = 0.2;
+    bool skip_init = false;
 };
 
 struct SearchResult {
