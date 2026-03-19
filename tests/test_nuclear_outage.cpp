@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 #include <cbls/cbls.h>
 #include "benchmarks/nuclear-outage/data.h"
 #include "benchmarks/nuclear-outage/dispatch.h"
@@ -121,6 +122,46 @@ TEST_CASE("Resource violation penalty - site spacing", "[nuclear]") {
     starts[1] = 14;
     double penalty2 = resource_violation_penalty(inst, starts);
     REQUIRE(penalty2 < penalty);
+}
+
+TEST_CASE("DispatchEvaluator matches free functions", "[nuclear]") {
+    auto inst = load_mini();
+
+    // Several different outage schedules to test
+    std::vector<std::vector<int>> schedules = {
+        {1, 5, 10, 1, 8, 15, 20, 1, 12, 25},  // earliest starts
+        {30, 35, 40, 28, 33, 38, 42, 30, 36, 42},  // latest starts
+        {15, 20, 25, 14, 20, 26, 30, 15, 24, 33},  // mid-range
+        std::vector<int>(10, 5),  // all at period 5 (causes violations)
+    };
+
+    DispatchEvaluator eval(inst);
+
+    for (auto& starts : schedules) {
+        // Dispatch cost should match
+        double ref_cost = expected_cost(inst, starts, 10, 0);
+        double eval_cost = eval.expected_cost(starts, 10, 0);
+        REQUIRE(eval_cost == Catch::Approx(ref_cost).epsilon(1e-10));
+
+        // Full resource penalty should match
+        double ref_pen = resource_violation_penalty(inst, starts);
+        double eval_pen = eval.resource_penalty(starts, 1e6, -1);
+        REQUIRE(eval_pen == Catch::Approx(ref_pen).epsilon(1e-10));
+    }
+
+    // Test delta resource penalty: change one outage and verify
+    auto starts = schedules[0];
+    eval.resource_penalty(starts, 1e6, -1);  // full compute to initialize
+
+    starts[3] = 10;  // change outage 3
+    double ref_pen = resource_violation_penalty(inst, starts);
+    double delta_pen = eval.resource_penalty(starts, 1e6, 3);
+    REQUIRE(delta_pen == Catch::Approx(ref_pen).epsilon(1e-10));
+
+    starts[7] = 20;  // change outage 7
+    ref_pen = resource_violation_penalty(inst, starts);
+    delta_pen = eval.resource_penalty(starts, 1e6, 7);
+    REQUIRE(delta_pen == Catch::Approx(ref_pen).epsilon(1e-10));
 }
 
 TEST_CASE("Nuclear outage solver finds feasible solution", "[nuclear]") {
