@@ -5,7 +5,7 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
-#include <set>
+#include <numeric>
 
 namespace cbls {
 namespace glsp {
@@ -17,7 +17,13 @@ static inline int32_t handle_to_vid(int32_t handle) {
 
 /// Custom inner solver hook for GLSP-RP.
 /// Optimizes FloatVar lot sizes given fixed ListVar sequences using a
-/// backward-pass demand-driven heuristic.
+/// just-in-time allocation with capacity spilling.
+///
+/// Strategy:
+/// 1. Start with JIT: produce demand[j][t] / serv_frac in each period
+/// 2. Fix over-capacity periods by spilling excess to earlier periods
+///    (cheapest-to-hold products spilled first)
+/// 3. Enforce minimum lot sizes
 class GLSPInnerSolverHook : public InnerSolverHook {
 public:
     GLSPInnerSolverHook(const GLSPInstance& inst,
@@ -34,7 +40,7 @@ public:
                const std::vector<int32_t>& /*last_changed_vars*/ = {}) override {
         int J = inst_.n_products;
         int T = inst_.n_macro;
-        std::set<int32_t> changed;
+        std::vector<int32_t> changed;
 
         // Compute setup times per macro-period from current sequences
         std::vector<double> setup_times(T, 0.0);
@@ -46,39 +52,75 @@ public:
             }
         }
 
-        // Optimize lot sizes — backward-pass demand-driven heuristic
         std::vector<std::vector<double>> new_lots(J, std::vector<double>(T, 0.0));
 
+        // Phase 1: JIT — produce exactly what's needed in each period,
+        // accounting for defect rate
         for (int j = 0; j < J; ++j) {
-            double remaining = 0.0;
-            for (int t = 0; t < T; ++t)
-                remaining += inst_.demand[j][t];
-
-            // Backward pass: place production in latest periods first
-            for (int t = T - 1; t >= 0 && remaining > 1e-6; --t) {
-                double avail = inst_.capacity[t] - setup_times[t];
-                for (int jj = 0; jj < J; ++jj) {
-                    if (jj != j) avail -= new_lots[jj][t] * inst_.process_time[jj];
-                }
-                double max_prod = std::max(0.0, avail / inst_.process_time[j]);
-
-                double lot = std::min(remaining, max_prod);
-                if (lot > 0 && lot < inst_.min_lot[j])
-                    lot = std::min(inst_.min_lot[j], max_prod);
-                if (lot < 0) lot = 0;
-
-                new_lots[j][t] = lot;
-                remaining -= lot;
+            for (int t = 0; t < T; ++t) {
+                double serv_frac = 1.0 - inst_.defect_rate[j][t];
+                new_lots[j][t] = (serv_frac > 1e-9)
+                    ? inst_.demand[j][t] / serv_frac
+                    : inst_.demand[j][t];
             }
+        }
 
-            // Forward pass for remaining demand
-            for (int t = 0; t < T && remaining > 1e-6; ++t) {
-                double avail = inst_.capacity[t] - setup_times[t];
-                for (int jj = 0; jj < J; ++jj)
-                    avail -= new_lots[jj][t] * inst_.process_time[jj];
-                double additional = std::min(remaining, std::max(0.0, avail / inst_.process_time[j]));
-                new_lots[j][t] += additional;
-                remaining -= additional;
+        // Phase 2: fix over-capacity by spilling to earlier periods.
+        // Spill cheapest-to-hold products first.
+        std::vector<int> spill_order(J);
+        std::iota(spill_order.begin(), spill_order.end(), 0);
+        std::sort(spill_order.begin(), spill_order.end(), [&](int a, int b) {
+            return inst_.holding_cost[a] < inst_.holding_cost[b];
+        });
+
+        for (int t = T - 1; t > 0; --t) {
+            double used_time = setup_times[t];
+            for (int j = 0; j < J; ++j)
+                used_time += new_lots[j][t] * inst_.process_time[j];
+            double excess_time = used_time - inst_.capacity[t];
+
+            if (excess_time <= 1e-9) continue;
+
+            for (int ji = 0; ji < J && excess_time > 1e-9; ++ji) {
+                int j = spill_order[ji];
+                if (new_lots[j][t] < 1e-9) continue;
+
+                double spill_time = std::min(excess_time,
+                    new_lots[j][t] * inst_.process_time[j]);
+                double spill_units = spill_time / inst_.process_time[j];
+
+                // Move production to earlier periods (latest first to
+                // minimize additional holding)
+                for (int s = t - 1; s >= 0 && spill_units > 1e-9; --s) {
+                    double s_used = setup_times[s];
+                    for (int jj = 0; jj < J; ++jj)
+                        s_used += new_lots[jj][s] * inst_.process_time[jj];
+                    double spare = std::max(0.0,
+                        (inst_.capacity[s] - s_used) / inst_.process_time[j]);
+
+                    // Adjust for different defect rates
+                    double sf_t = 1.0 - inst_.defect_rate[j][t];
+                    double sf_s = 1.0 - inst_.defect_rate[j][s];
+                    double ratio = (sf_s > 1e-9) ? sf_t / sf_s : 1.0;
+
+                    double move = std::min(spill_units, spare / std::max(ratio, 1e-9));
+                    new_lots[j][s] += move * ratio;
+                    new_lots[j][t] -= move;
+                    spill_units -= move;
+                    excess_time -= move * inst_.process_time[j];
+                }
+            }
+        }
+
+        // Phase 3: enforce min lot size
+        for (int j = 0; j < J; ++j) {
+            for (int t = 0; t < T; ++t) {
+                if (new_lots[j][t] > 0 && new_lots[j][t] < inst_.min_lot[j]) {
+                    if (inst_.demand[j][t] > 1e-9)
+                        new_lots[j][t] = inst_.min_lot[j];
+                    else
+                        new_lots[j][t] = 0.0;
+                }
             }
         }
 
@@ -89,7 +131,7 @@ public:
                 double clamped = std::clamp(new_lots[j][t], var.lb, var.ub);
                 if (std::abs(var.value - clamped) > 1e-9) {
                     var.value = clamped;
-                    changed.insert(var.id);
+                    changed.push_back(var.id);
                 }
             }
         }
