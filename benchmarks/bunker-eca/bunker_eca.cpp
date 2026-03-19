@@ -51,10 +51,13 @@ int main(int argc, char** argv) {
 
         cbls::bunker_eca::BunkerSpeedHook hook;
         hook.set_model(&bec, &inst);
+        hook.float_hook.max_sweeps = 1;
         cbls::LNS lns(0.3);
 
+        cbls::SearchConfig config;
+        config.hook_frequency = 50;
         auto result = cbls::solve(bec.model, spec.time_limit, 42, true,
-                                   &hook, &lns);
+                                   &hook, &lns, 3, nullptr, config);
 
         double obj = actual_objective(result, bec.model);
         printf("%12.0f %8s %6.1fs",
@@ -93,10 +96,13 @@ int main(int argc, char** argv) {
 
         cbls::bunker_eca::BunkerSpeedHook hook;
         hook.set_model(&bec, &inst);
+        hook.float_hook.max_sweeps = 1;
         cbls::LNS lns(0.3);
 
+        cbls::SearchConfig config;
+        config.hook_frequency = 50;
         auto result = cbls::solve(bec.model, spec.time_limit, 42, true,
-                                   &hook, &lns);
+                                   &hook, &lns, 3, nullptr, config);
 
         double obj = actual_objective(result, bec.model);
         printf("%12.0f %8s %6.1fs",
