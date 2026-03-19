@@ -21,9 +21,10 @@ class BunkerSpeedHook : public InnerSolverHook {
 public:
     FloatIntensifyHook float_hook;
 
-    void solve(Model& model, ViolationManager& vm) override {
+    void solve(Model& model, ViolationManager& vm,
+               const std::vector<int32_t>& last_changed_vars = {}) override {
         if (!inst_) {
-            float_hook.solve(model, vm);
+            float_hook.solve(model, vm, last_changed_vars);
             return;
         }
 
@@ -75,7 +76,7 @@ public:
             delta_evaluate(model, changed);
         }
 
-        float_hook.solve(model, vm);
+        float_hook.solve(model, vm, last_changed_vars);
     }
 
     void set_model(const BunkerECAModel* bec_model, const Instance* inst) {

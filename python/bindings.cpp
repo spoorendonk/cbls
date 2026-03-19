@@ -311,6 +311,14 @@ NB_MODULE(_cbls_core, m) {
         .def_rw("max_line_search_steps", &FloatIntensifyHook::max_line_search_steps)
         .def_rw("max_multi_var_constraints", &FloatIntensifyHook::max_multi_var_constraints);
 
+    // SearchConfig
+    nb::class_<SearchConfig>(m, "SearchConfig")
+        .def(nb::init<>())
+        .def_rw("cooling_rate", &SearchConfig::cooling_rate)
+        .def_rw("reheat_interval", &SearchConfig::reheat_interval)
+        .def_rw("hook_frequency", &SearchConfig::hook_frequency)
+        .def_rw("fj_time_fraction", &SearchConfig::fj_time_fraction);
+
     // SolveProgress
     nb::class_<SolveProgress>(m, "SolveProgress")
         .def(nb::init<>())
@@ -336,7 +344,8 @@ NB_MODULE(_cbls_core, m) {
           nb::arg("hook") = nullptr,
           nb::arg("lns") = nullptr,
           nb::arg("lns_interval") = 3,
-          nb::arg("callback") = nullptr);
+          nb::arg("callback") = nullptr,
+          nb::arg("config") = SearchConfig{});
     m.def("initialize_random", &initialize_random);
     m.def("fj_nl_initialize", &fj_nl_initialize,
           nb::arg("model"), nb::arg("vm"), nb::arg("max_iterations") = 10000,
