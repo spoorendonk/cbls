@@ -1,13 +1,13 @@
 instance,method,objective,gap_pct,source
-small-3s-10c,SCIP,,,"PySCIPOpt MIQCP, 60s"
-small-3s-10c,CBLS,,,"CBLS SA solver"
-small-3s-10c,CBLS-noECA,,,"CBLS SA without ECA fuel switching"
-medium-7s-30c,SCIP,,,"PySCIPOpt MIQCP, 300s"
-medium-7s-30c,CBLS,,,"CBLS SA solver"
-medium-7s-30c,CBLS-noECA,,,"CBLS SA without ECA fuel switching"
-large-15s-60c,SCIP,,,"PySCIPOpt MIQCP, 600s"
-large-15s-60c,CBLS,,,"CBLS SA solver"
-large-15s-60c,CBLS-noECA,,,"CBLS SA without ECA fuel switching"
-xlarge-30s-120c,SCIP,,,"PySCIPOpt MIQCP, 1800s"
-xlarge-30s-120c,CBLS,,,"CBLS SA solver"
-xlarge-30s-120c,CBLS-noECA,,,"CBLS SA without ECA fuel switching"
+small-3s-10c,SCIP,1350768,0.00,"PySCIPOpt MIQCP, 60s, optimal"
+small-3s-10c,CBLS,1096172,18.85,"CBLS SA, 30s, avg fuel coeff simplification"
+small-3s-10c,CBLS-noECA,1096172,18.85,"CBLS SA without ECA fuel switching"
+medium-7s-30c,SCIP,,,PySCIPOpt MIQCP no solution in 300s
+medium-7s-30c,CBLS,3291331,,"CBLS SA, 120s"
+medium-7s-30c,CBLS-noECA,3291331,,"CBLS SA without ECA fuel switching"
+large-15s-60c,SCIP,,,PySCIPOpt MIQCP no solution in 600s
+large-15s-60c,CBLS,6447180,,"CBLS SA, 300s"
+large-15s-60c,CBLS-noECA,6447180,,"CBLS SA without ECA fuel switching"
+xlarge-30s-120c,SCIP,,,PySCIPOpt MIQCP no solution in 1800s
+xlarge-30s-120c,CBLS,,,not run
+xlarge-30s-120c,CBLS-noECA,,,not run

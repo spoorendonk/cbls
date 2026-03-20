@@ -17,3 +17,4 @@ inline constexpr const char* version = "0.1.0";
 #include "expr.h"
 #include "io.h"
 #include "formatter.h"
+#include "verify.h"

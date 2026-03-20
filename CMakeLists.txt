@@ -28,6 +28,7 @@ add_library(cbls_lib
     src/inner_solver.cpp
     src/io.cpp
     src/formatter.cpp
+    src/verify.cpp
 )
 target_include_directories(cbls_lib PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
