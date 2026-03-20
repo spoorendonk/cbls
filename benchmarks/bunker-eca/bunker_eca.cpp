@@ -2,7 +2,9 @@
 #include "data.h"
 #include "bunker_eca_model.h"
 #include "bunker_speed_hook.h"
+#include "verify_bunker_eca.h"
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -15,8 +17,13 @@ static double actual_objective(const cbls::SearchResult& result, const cbls::Mod
 
 int main(int argc, char** argv) {
     std::string inst_dir = "benchmarks/instances/bunker-eca";
-    if (argc > 1) {
-        inst_dir = argv[1];
+    bool do_verify = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--verify") == 0) {
+            do_verify = true;
+        } else {
+            inst_dir = argv[i];
+        }
     }
 
     struct InstanceSpec {
@@ -69,6 +76,11 @@ int main(int argc, char** argv) {
                (long)bec.model.num_vars(),
                (long)bec.model.num_nodes(),
                (long)result.iterations);
+
+        if (do_verify && result.feasible) {
+            auto vr = cbls::bunker_eca::verify_bunker_eca(bec, inst);
+            vr.print_diagnostics(stdout);
+        }
     }
 
     // No-ECA mode comparison
@@ -114,6 +126,11 @@ int main(int argc, char** argv) {
                (long)bec.model.num_vars(),
                (long)bec.model.num_nodes(),
                (long)result.iterations);
+
+        if (do_verify && result.feasible) {
+            auto vr = cbls::bunker_eca::verify_bunker_eca(bec, inst);
+            vr.print_diagnostics(stdout);
+        }
     }
 
     return 0;

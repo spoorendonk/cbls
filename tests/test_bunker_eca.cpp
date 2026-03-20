@@ -3,6 +3,7 @@
 #include "benchmarks/bunker-eca/data.h"
 #include "benchmarks/bunker-eca/bunker_eca_model.h"
 #include "benchmarks/bunker-eca/bunker_speed_hook.h"
+#include "benchmarks/bunker-eca/verify_bunker_eca.h"
 #include <cstdio>
 #include <cmath>
 
@@ -110,6 +111,57 @@ TEST_CASE("Bunker-ECA medium model builds", "[bunker_eca]") {
     printf("\nMedium model: %ld vars, %ld nodes, %ld constraints\n",
            (long)m.num_vars(), (long)m.num_nodes(),
            (long)m.constraint_ids().size());
+}
+
+TEST_CASE("Bunker-ECA small verify", "[bunker_eca][verify]") {
+    auto inst = make_small();
+    auto bec = build_bunker_eca_model(inst);
+
+    BunkerSpeedHook hook;
+    hook.set_model(&bec, &inst);
+    LNS lns(0.3);
+
+    auto result = solve(bec.model, 15.0, 42, true, &hook, &lns);
+    REQUIRE(result.feasible);
+
+    auto vr = verify_bunker_eca(bec, inst);
+    vr.print_diagnostics(stdout);
+    REQUIRE(vr.ok);
+}
+
+TEST_CASE("Bunker-ECA small noECA verify", "[bunker_eca][verify]") {
+    auto inst = make_small();
+    for (auto& leg : inst.legs) {
+        leg.eca_fraction = 0.0;
+    }
+    auto bec = build_bunker_eca_model(inst);
+
+    BunkerSpeedHook hook;
+    hook.set_model(&bec, &inst);
+    LNS lns(0.3);
+
+    auto result = solve(bec.model, 15.0, 42, true, &hook, &lns);
+    REQUIRE(result.feasible);
+
+    auto vr = verify_bunker_eca(bec, inst);
+    vr.print_diagnostics(stdout);
+    REQUIRE(vr.ok);
+}
+
+TEST_CASE("Bunker-ECA medium verify", "[bunker_eca][verify]") {
+    auto inst = make_medium();
+    auto bec = build_bunker_eca_model(inst);
+
+    BunkerSpeedHook hook;
+    hook.set_model(&bec, &inst);
+    LNS lns(0.3);
+
+    auto result = solve(bec.model, 30.0, 42, true, &hook, &lns);
+    REQUIRE(result.feasible);
+
+    auto vr = verify_bunker_eca(bec, inst);
+    vr.print_diagnostics(stdout);
+    REQUIRE(vr.ok);
 }
 
 TEST_CASE("Bunker-ECA medium feasibility", "[bunker_eca]") {
