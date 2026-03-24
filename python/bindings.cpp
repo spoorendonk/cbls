@@ -288,7 +288,33 @@ NB_MODULE(_cbls_core, m) {
         .def(nb::init<int>(), nb::arg("capacity") = 10)
         .def("submit", &SolutionPool::submit)
         .def("best", &SolutionPool::best)
+        .def("top_k", &SolutionPool::top_k)
         .def("size", &SolutionPool::size);
+
+    // ParallelConfig
+    nb::class_<ParallelConfig>(m, "ParallelConfig")
+        .def(nb::init<>())
+        .def_rw("n_threads", &ParallelConfig::n_threads)
+        .def_rw("deterministic", &ParallelConfig::deterministic)
+        .def_rw("epoch_iterations", &ParallelConfig::epoch_iterations)
+        .def_rw("max_epochs", &ParallelConfig::max_epochs)
+        .def_rw("elite_pool_size", &ParallelConfig::elite_pool_size);
+
+    // ParallelSearch
+    nb::class_<ParallelSearch>(m, "ParallelSearch")
+        .def(nb::init<int>(), nb::arg("n_threads") = 0)
+        .def("solve", static_cast<SearchResult(ParallelSearch::*)(
+            std::function<Model()>, double, uint64_t)>(&ParallelSearch::solve),
+            nb::arg("model_factory"), nb::arg("time_limit") = 10.0,
+            nb::arg("seed") = 42)
+        .def("solve_parallel", static_cast<SearchResult(ParallelSearch::*)(
+            std::function<Model()>, double, uint64_t, const SearchConfig&,
+            std::function<InnerSolverHook*(Model&)>, std::function<LNS*()>,
+            SolveCallback*, const ParallelConfig&)>(&ParallelSearch::solve),
+            nb::arg("model_factory"), nb::arg("time_limit") = 10.0,
+            nb::arg("seed") = 42, nb::arg("config") = SearchConfig{},
+            nb::arg("hook_factory") = nullptr, nb::arg("lns_factory") = nullptr,
+            nb::arg("callback") = nullptr, nb::arg("par_config") = ParallelConfig{});
 
     // Free functions
     m.def("full_evaluate", &full_evaluate);
@@ -321,7 +347,10 @@ NB_MODULE(_cbls_core, m) {
         .def_rw("reheat_interval", &SearchConfig::reheat_interval)
         .def_rw("hook_frequency", &SearchConfig::hook_frequency)
         .def_rw("fj_time_fraction", &SearchConfig::fj_time_fraction)
-        .def_rw("skip_init", &SearchConfig::skip_init);
+        .def_rw("skip_init", &SearchConfig::skip_init)
+        .def_rw("max_iterations", &SearchConfig::max_iterations)
+        .def_rw("use_fj", &SearchConfig::use_fj)
+        .def_rw("lns_interval", &SearchConfig::lns_interval);
 
     // SolveProgress
     nb::class_<SolveProgress>(m, "SolveProgress")

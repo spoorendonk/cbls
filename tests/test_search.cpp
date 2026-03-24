@@ -381,9 +381,9 @@ TEST_CASE("copy_state and restore_state", "[model]") {
     REQUIRE(m.var(vid(y)).value == 7.0);
 }
 
-// ParallelSearch test
-TEST_CASE("ParallelSearch basic", "[pool]") {
-    auto model_factory = []() {
+// Helper: factory for a simple x^2 + y^2 model
+static std::function<Model()> simple_model_factory() {
+    return []() {
         Model m;
         auto x = m.float_var(-5, 5);
         auto y = m.float_var(-5, 5);
@@ -392,9 +392,99 @@ TEST_CASE("ParallelSearch basic", "[pool]") {
         m.close();
         return m;
     };
+}
 
+// ParallelSearch test
+TEST_CASE("ParallelSearch basic", "[pool]") {
     ParallelSearch ps(2);
-    auto result = ps.solve(model_factory, 1.0, 42);
+    auto result = ps.solve(simple_model_factory(), 1.0, 42);
     REQUIRE(result.feasible);
     REQUIRE(result.objective < 5.0);
+}
+
+TEST_CASE("ParallelSearch default threads uses hardware_concurrency", "[pool]") {
+    ParallelSearch ps;  // n_threads=0 -> hardware_concurrency()
+    auto result = ps.solve(simple_model_factory(), 1.0, 42);
+    REQUIRE(result.feasible);
+    REQUIRE(result.objective < 5.0);
+}
+
+TEST_CASE("ParallelSearch with hook and LNS factories", "[pool]") {
+    auto factory = []() {
+        Model m;
+        auto x = m.float_var(0, 10);
+        auto y = m.float_var(0, 10);
+        auto neg1 = m.constant(-1.0);
+        auto five = m.constant(5.0);
+        m.add_constraint(m.sum({five, m.prod(neg1, x), m.prod(neg1, y)}));
+        m.minimize(m.sum({x, y}));
+        m.close();
+        return m;
+    };
+
+    auto hook_factory = [](Model&) -> InnerSolverHook* {
+        return new FloatIntensifyHook();
+    };
+    auto lns_factory = []() -> LNS* {
+        return new LNS(0.3);
+    };
+
+    ParallelSearch ps(2);
+    ParallelConfig pc;
+    pc.n_threads = 2;
+    auto result = ps.solve(factory, 2.0, 42, {}, hook_factory, lns_factory, nullptr, pc);
+    REQUIRE(result.feasible);
+    REQUIRE(result.objective < 15.0);
+}
+
+TEST_CASE("Deterministic mode produces identical results", "[pool][deterministic]") {
+    auto factory = simple_model_factory();
+
+    ParallelConfig pc;
+    pc.n_threads = 2;
+    pc.deterministic = true;
+    pc.epoch_iterations = 5000;
+    pc.max_epochs = 3;
+    pc.elite_pool_size = 2;
+
+    ParallelSearch ps1(2);
+    auto r1 = ps1.solve(factory, 999.0, 42, {}, nullptr, nullptr, nullptr, pc);
+
+    ParallelSearch ps2(2);
+    auto r2 = ps2.solve(factory, 999.0, 42, {}, nullptr, nullptr, nullptr, pc);
+
+    REQUIRE(r1.feasible);
+    REQUIRE(r2.feasible);
+    REQUIRE(r1.objective == r2.objective);
+    REQUIRE(r1.iterations == r2.iterations);
+}
+
+TEST_CASE("max_iterations stops SA by iteration count", "[search]") {
+    Model m;
+    auto x = m.float_var(-5, 5);
+    auto y = m.float_var(-5, 5);
+    auto two = m.constant(2);
+    m.minimize(m.sum({m.pow_expr(x, two), m.pow_expr(y, two)}));
+    m.close();
+
+    SearchConfig config;
+    config.max_iterations = 1000;
+    auto result = solve(m, 60.0, 42, true, nullptr, nullptr, 3, nullptr, config);
+    // Should stop well before the 60s time limit
+    REQUIRE(result.time_seconds < 5.0);
+    REQUIRE(result.iterations <= 1000);
+}
+
+TEST_CASE("SolutionPool top_k", "[pool]") {
+    SolutionPool pool(10);
+    Model::State empty_state;
+    pool.submit({empty_state, 10.0, true});
+    pool.submit({empty_state, 5.0, true});
+    pool.submit({empty_state, 3.0, true});
+    pool.submit({empty_state, 20.0, false});
+
+    auto top2 = pool.top_k(2);
+    REQUIRE(top2.size() == 2);
+    REQUIRE(top2[0].objective == 3.0);
+    REQUIRE(top2[1].objective == 5.0);
 }
