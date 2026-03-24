@@ -275,7 +275,9 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     auto last_callback_time = start;
     constexpr double callback_interval_secs = 1.0;
 
-    while (std::chrono::steady_clock::now() < deadline) {
+    const int64_t max_iters = config.max_iterations;
+    while ((max_iters > 0 ? iteration < max_iters : true) &&
+           std::chrono::steady_clock::now() < deadline) {
         // Select random variable
         int var_idx = static_cast<int>(rng.integers(0, model.num_vars()));
         const auto& var = model.var(var_idx);

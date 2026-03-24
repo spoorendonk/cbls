@@ -805,13 +805,35 @@ arguments, class fields, and local constants. See the
 
 ### Multi-threading
 
-The core solver (`solve()`) is single-threaded. `ParallelSearch` launches N
-independent threads, each creating its own `Model` via a user-provided
+The core solver (`solve()`) is single-threaded. `ParallelSearch` provides
+two modes for multi-threaded search:
+
+**Opportunistic mode** (default): Launches N independent threads (default:
+`hardware_concurrency()`), each creating its own `Model` via a user-provided
 factory function and calling `solve()` with staggered seeds
 (`seed + thread_index`). Only the `SolutionPool` is shared
 (mutex-protected). There is no shared state during search — thread safety is
 achieved by isolation. No OpenMP, no work-stealing, no parallel evaluation
 of the DAG.
+
+**Deterministic epoch-sync mode** (`ParallelConfig::deterministic = true`):
+Threads run in synchronized epochs of fixed iteration count (no wall-clock
+dependency within epochs):
+
+1. All threads start from the same initial state (or elite pool states)
+2. Each thread runs exactly `epoch_iterations` SA iterations using
+   `SearchConfig::max_iterations`
+3. All threads finish the epoch before proceeding
+4. Results collected into `SolutionPool`, top-K elite solutions extracted
+5. Threads restart from elite solutions with fresh temperature
+6. Repeat for `max_epochs` epochs (no wall-clock dependency)
+
+Thread seeding: `base_seed + epoch * n_threads + thread_id` — deterministic
+given the same seed, thread count, and epoch iteration count.
+
+`ParallelSearch::solve()` accepts factory functions for hooks and LNS
+objects (since these are stateful and per-model). Each thread creates its
+own instances via the factories.
 
 ### Determinism
 
@@ -822,10 +844,25 @@ the `seed` parameter. Unordered containers (`unordered_set` in
 membership/lookup — iteration order does not affect results because
 recomputation follows topological order.
 
-**Wall-clock caveat:** `std::chrono::steady_clock` determines when to stop
-FJ and SA. Different machine speeds produce different iteration counts and
-therefore different solutions. Same seed + same hardware + same load =
-reproducible results.
+**Wall-clock caveat:** In opportunistic mode, `std::chrono::steady_clock`
+determines when to stop FJ and SA. Different machine speeds produce
+different iteration counts and therefore different solutions. Same seed +
+same hardware + same load = reproducible results.
+
+**Deterministic mode** eliminates the wall-clock caveat: same seed + same
+`n_threads` + same `epoch_iterations` + same `max_epochs` = identical
+result on any machine. No wall-clock is consulted during deterministic
+execution. The `SearchConfig::max_iterations` field controls
+iteration-count-based stopping (0 = unlimited, use time_limit).
+
+### CLI flags
+
+```
+--threads N           Number of threads (0 = auto-detect, default: 1)
+--deterministic       Enable deterministic epoch-sync mode
+--epoch-iters INT     Iterations per epoch in deterministic mode (default: 5000)
+--max-epochs INT      Number of epochs in deterministic mode (default: 10)
+```
 
 ---
 

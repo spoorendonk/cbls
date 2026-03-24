@@ -16,6 +16,9 @@ struct SearchConfig {
     int hook_frequency = 10;
     double fj_time_fraction = 0.2;
     bool skip_init = false;
+    int64_t max_iterations = 0;  // 0 = unlimited (use time_limit)
+    bool use_fj = true;
+    int lns_interval = 3;
 };
 
 struct SearchResult {
