@@ -16,4 +16,6 @@ target_link_libraries(cbls_tests PRIVATE cbls_lib Catch2::Catch2WithMain)
 target_include_directories(cbls_tests PRIVATE ${CMAKE_SOURCE_DIR} ${json_SOURCE_DIR}/include)
 
 include(Catch)
-catch_discover_tests(cbls_tests WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+catch_discover_tests(cbls_tests
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    PROPERTIES SKIP_RETURN_CODE 4)
