@@ -12,3 +12,5 @@ cmake_install.cmake
 Makefile
 compile_commands.json
 .cache/
+.pytest_cache/
+*.o
