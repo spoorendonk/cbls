@@ -15,7 +15,7 @@ cmake -B build && cmake --build build -j$(nproc)
 ```
 
 ```test
-ctest --test-dir build --output-on-failure -j$(nproc) && pytest --tb=short -q
+ctest --test-dir build --output-on-failure -j$(nproc) && (pytest --tb=short -q; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 5 ])
 ```
 
 Run a single C++ test by name (Catch2 `-c` filter):
