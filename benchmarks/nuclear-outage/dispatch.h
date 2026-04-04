@@ -175,35 +175,42 @@ public:
     }
 
     /// Compute expected dispatch cost. No heap allocation on the hot path.
+    /// If changed_outages is non-empty and the scenario window matches the cache,
+    /// uses incremental dispatch (5d): only re-dispatches affected periods.
     double expected_cost(const std::vector<int>& outage_starts,
-                         int n_scenarios, int scenario_offset) {
+                         int n_scenarios, int scenario_offset,
+                         const std::vector<int>& changed_outages = {}) {
         int n_sc = std::min(n_scenarios, inst_.n_scenarios - scenario_offset);
-        int P = inst_.n_periods;
-        int U = inst_.n_units;
 
-        // 5b: reset flat avail array with memset (all units online)
-        std::memset(avail_.data(), 1, P * U);
+        // 5d: try incremental path if cached state matches.
+        // Fall back to full if estimated affected periods > half the total.
+        if (!changed_outages.empty() && dispatch_cached_ &&
+            cached_n_sc_ == n_sc && cached_offset_ == scenario_offset) {
+            int est_affected = 0;
+            for (int o : changed_outages) {
+                est_affected += 2 * inst_.outage_duration[o];
+            }
+            if (est_affected >= inst_.n_periods) {
+                return full_dispatch(outage_starts, n_sc, scenario_offset);
+            }
+            return multi_incremental_dispatch(outage_starts, changed_outages);
+        }
 
-        // Mark outage periods offline
+        return full_dispatch(outage_starts, n_sc, scenario_offset);
+    }
+
+    /// Find which outages changed vs cached state.
+    /// Returns number of changed outages (0 if cache invalid). Fills changed_outages.
+    int find_changes(const std::vector<int>& outage_starts,
+                     std::vector<int>& changed_outages) const {
+        changed_outages.clear();
+        if (!dispatch_cached_) return 0;
         for (int o = 0; o < inst_.n_outages; ++o) {
-            int u = inst_.outage_unit[o];
-            int start = outage_starts[o];
-            int end = std::min(start + inst_.outage_duration[o], P);
-            for (int t = start; t < end; ++t) {
-                avail_[t * U + u] = 0;
+            if (outage_starts[o] != cached_starts_[o]) {
+                changed_outages.push_back(o);
             }
         }
-
-        // Dispatch across scenarios and periods
-        double total_cost = 0.0;
-        for (int s = scenario_offset; s < scenario_offset + n_sc; ++s) {
-            const auto& demand_s = inst_.demand[s];
-            for (int t = 0; t < P; ++t) {
-                total_cost += dispatch_flat(t, demand_s[t]);
-            }
-        }
-
-        return total_cost / n_sc;
+        return static_cast<int>(changed_outages.size());
     }
 
     /// Compute resource violation penalty using pre-allocated scratch.
@@ -233,11 +240,109 @@ private:
     std::vector<std::vector<int>> site_outages_;
     std::vector<int> outage_site_;  // outage → site
 
+    // 5d: cached dispatch state for incremental evaluation
+    std::vector<double> cost_per_period_;   // [n_periods] total cost across cached scenarios
+    std::vector<int> cached_starts_;        // outage starts for the cached avail/cost state
+    double cached_total_ = 0.0;             // sum of cost_per_period_
+    int cached_n_sc_ = 0;                   // scenario count for cached state
+    int cached_offset_ = 0;                 // scenario offset for cached state
+    bool dispatch_cached_ = false;
+
     // 5e: cached per-site penalty contributions
     std::vector<double> site_capacity_penalty_;
     std::vector<double> site_spacing_penalty_;
     double total_penalty_ = 0.0;
     bool penalty_valid_ = false;
+
+    /// Full dispatch: reset avail, mark all outages, dispatch all periods.
+    double full_dispatch(const std::vector<int>& outage_starts,
+                         int n_sc, int scenario_offset) {
+        int P = inst_.n_periods;
+        int U = inst_.n_units;
+
+        // Reset flat avail array
+        std::memset(avail_.data(), 1, P * U);
+
+        // Mark outage periods offline
+        for (int o = 0; o < inst_.n_outages; ++o) {
+            int u = inst_.outage_unit[o];
+            int start = outage_starts[o];
+            int end = std::min(start + inst_.outage_duration[o], P);
+            for (int t = start; t < end; ++t) {
+                avail_[t * U + u] = 0;
+            }
+        }
+
+        // Dispatch across scenarios and periods, caching per-period costs
+        cost_per_period_.resize(P);
+        cached_total_ = 0.0;
+        for (int t = 0; t < P; ++t) {
+            double period_cost = 0.0;
+            for (int s = scenario_offset; s < scenario_offset + n_sc; ++s) {
+                period_cost += dispatch_flat(t, inst_.demand[s][t]);
+            }
+            cost_per_period_[t] = period_cost;
+            cached_total_ += period_cost;
+        }
+
+        // Save cache state
+        cached_starts_ = outage_starts;
+        cached_n_sc_ = n_sc;
+        cached_offset_ = scenario_offset;
+        dispatch_cached_ = true;
+
+        return cached_total_ / n_sc;
+    }
+
+    /// 5d: Multi-outage incremental dispatch — apply each change sequentially.
+    double multi_incremental_dispatch(const std::vector<int>& outage_starts,
+                                       const std::vector<int>& changed_outages) {
+        for (int o : changed_outages) {
+            incremental_dispatch_one(outage_starts, o);
+        }
+        return cached_total_ / cached_n_sc_;
+    }
+
+    /// 5d: Incremental dispatch for a single outage change.
+    void incremental_dispatch_one(const std::vector<int>& outage_starts,
+                                  int changed_outage) {
+        int P = inst_.n_periods;
+        int U = inst_.n_units;
+        int u = inst_.outage_unit[changed_outage];
+        int dur = inst_.outage_duration[changed_outage];
+        int old_start = cached_starts_[changed_outage];
+        int new_start = outage_starts[changed_outage];
+
+        if (old_start == new_start) return;  // no actual change
+
+        // Toggle avail: restore old position (unit back online)
+        int old_end = std::min(old_start + dur, P);
+        for (int t = old_start; t < old_end; ++t) {
+            avail_[t * U + u] = 1;
+        }
+        // Toggle avail: mark new position (unit offline)
+        int new_end = std::min(new_start + dur, P);
+        for (int t = new_start; t < new_end; ++t) {
+            avail_[t * U + u] = 0;
+        }
+
+        // Collect affected periods (union of old and new ranges)
+        int lo = std::min(old_start, new_start);
+        int hi = std::max(old_end, new_end);
+
+        // Re-dispatch only affected periods
+        for (int t = lo; t < hi; ++t) {
+            double period_cost = 0.0;
+            for (int s = cached_offset_; s < cached_offset_ + cached_n_sc_; ++s) {
+                period_cost += dispatch_flat(t, inst_.demand[s][t]);
+            }
+            cached_total_ -= cost_per_period_[t];
+            cost_per_period_[t] = period_cost;
+            cached_total_ += period_cost;
+        }
+
+        cached_starts_[changed_outage] = new_start;
+    }
 
     /// Merit-order dispatch on flat avail array. No allocation.
     double dispatch_flat(int period, double demand) const {
