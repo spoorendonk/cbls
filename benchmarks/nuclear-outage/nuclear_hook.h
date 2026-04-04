@@ -11,15 +11,6 @@
 namespace cbls {
 namespace nuclear_outage {
 
-#ifndef CBLS_HANDLE_TO_VAR_ID_DEFINED
-#define CBLS_HANDLE_TO_VAR_ID_DEFINED
-/// Convert a var handle (negative, returned by int_var/float_var/etc.)
-/// to a var ID (non-negative, used by model.var()/model.var_mut()).
-inline int32_t handle_to_var_id(int32_t handle) {
-    return -(handle + 1);
-}
-#endif
-
 /// InnerSolverHook that evaluates production dispatch cost externally.
 /// Reads outage start values from the model, runs merit-order dispatch
 /// across demand scenarios, and writes the expected cost into the objective node.

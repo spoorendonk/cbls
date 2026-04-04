@@ -58,7 +58,7 @@ static void run_synthetic(const std::string& inst_dir) {
             nm.model.restore_state(result.best_state);
             printf("  Outage schedule: ");
             for (int o = 0; o < std::min(inst.n_outages, 20); ++o) {
-                int32_t vid = cbls::nuclear_outage::handle_to_var_id(nm.s[o]);
+                int32_t vid = cbls::handle_to_var_id(nm.s[o]);
                 printf("o%d@w%d ", o, (int)nm.model.var(vid).value);
             }
             if (inst.n_outages > 20) printf("...");
@@ -111,7 +111,7 @@ static void run_roadef(const std::string& data_file,
         // Print outage schedule
         printf("  Outage schedule:");
         for (int o = 0; o < inst.n_outages(); ++o) {
-            int32_t vid = handle_to_var_id(rm.ha[o]);
+            int32_t vid = cbls::handle_to_var_id(rm.ha[o]);
             int ha = (int)rm.model.var(vid).value;
             printf(" [p%d.k%d@w%d]", inst.ct13[o].plant_idx,
                    inst.ct13[o].cycle, ha);

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <cstdint>
+#include <cbls/model.h>
 
-// Convert a variable handle (negative) to internal var ID
-static inline int32_t vid(int32_t handle) { return -(handle + 1); }
+// Short alias for tests — delegates to the canonical core function.
+inline int32_t vid(int32_t handle) { return cbls::handle_to_var_id(handle); }

@@ -17,6 +17,10 @@ struct VarSequence {
     int min_block_off = 1;           // minimum consecutive vars to set to 0
 };
 
+/// Convert variable handle (negative, from int_var/float_var/etc.)
+/// to var ID (non-negative, for model.var()/model.var_mut()).
+inline int32_t handle_to_var_id(int32_t handle) { return -(handle + 1); }
+
 class Model {
 public:
     Model() = default;

@@ -12,9 +12,6 @@
 using namespace cbls;
 using namespace cbls::nuclear_outage;
 
-// Convert var handle (negative) to var ID (non-negative)
-static int32_t h2v(int32_t handle) { return -(handle + 1); }
-
 // Helper: load the mini instance
 static NuclearInstance load_mini() {
     return load_jsonl("benchmarks/instances/nuclear-outage/mini.jsonl");
@@ -214,13 +211,13 @@ TEST_CASE("Nuclear outage spacing constraints satisfied", "[nuclear]") {
         if (outages.size() < 2) continue;
         std::sort(outages.begin(), outages.end(),
                   [&](int a, int b) {
-                      return nm.model.var(h2v(nm.s[a])).value < nm.model.var(h2v(nm.s[b])).value;
+                      return nm.model.var(handle_to_var_id(nm.s[a])).value < nm.model.var(handle_to_var_id(nm.s[b])).value;
                   });
         for (size_t i = 0; i + 1 < outages.size(); ++i) {
             int o1 = outages[i];
             int o2 = outages[i + 1];
-            double s1 = nm.model.var(h2v(nm.s[o1])).value;
-            double s2 = nm.model.var(h2v(nm.s[o2])).value;
+            double s1 = nm.model.var(handle_to_var_id(nm.s[o1])).value;
+            double s2 = nm.model.var(handle_to_var_id(nm.s[o2])).value;
             REQUIRE(s1 + sub.outage_duration[o1] <= s2 + 0.5);
         }
     }

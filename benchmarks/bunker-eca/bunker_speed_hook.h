@@ -9,11 +9,6 @@
 namespace cbls {
 namespace bunker_eca {
 
-// Convert a variable handle (negative) to a 0-based var ID
-inline int32_t handle_to_var_id(int32_t handle) {
-    return -(handle + 1);
-}
-
 // Inner solver hook: given fixed cargo assignments, optimize speeds analytically.
 // Optimal speed = max(v_min, dist / (24 * available_time)) — minimum feasible speed
 // minimizes quadratic fuel cost.

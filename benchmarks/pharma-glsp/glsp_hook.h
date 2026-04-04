@@ -10,11 +10,6 @@
 namespace cbls {
 namespace glsp {
 
-/// Convert a variable handle (negative) to a var_id (non-negative).
-static inline int32_t handle_to_vid(int32_t handle) {
-    return -(handle + 1);
-}
-
 /// Custom inner solver hook for GLSP-RP.
 /// Optimizes FloatVar lot sizes given fixed ListVar sequences using a
 /// just-in-time allocation with capacity spilling.
@@ -30,10 +25,10 @@ public:
                         const std::vector<int32_t>& seq_handles,
                         const std::vector<std::vector<int32_t>>& lot_handles)
         : inst_(inst) {
-        for (auto h : seq_handles) seq_vars_.push_back(handle_to_vid(h));
+        for (auto h : seq_handles) seq_vars_.push_back(handle_to_var_id(h));
         lot_vars_.resize(lot_handles.size());
         for (size_t j = 0; j < lot_handles.size(); ++j)
-            for (auto h : lot_handles[j]) lot_vars_[j].push_back(handle_to_vid(h));
+            for (auto h : lot_handles[j]) lot_vars_[j].push_back(handle_to_var_id(h));
     }
 
     void solve(Model& model, ViolationManager& vm,
