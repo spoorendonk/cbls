@@ -5,6 +5,7 @@
 #include "benchmarks/nuclear-outage/dispatch.h"
 #include "benchmarks/nuclear-outage/nuclear_model.h"
 #include "benchmarks/nuclear-outage/nuclear_hook.h"
+#include "benchmarks/nuclear-outage/roadef_dispatch.h"
 #include "benchmarks/nuclear-outage/roadef_hook.h"
 #include <cstdio>
 #include <fstream>
@@ -356,4 +357,155 @@ TEST_CASE("DecreaseProfile interpolation", "[roadef]") {
 
     // Below lowest point → clamp to last
     REQUIRE(prof.evaluate(-10.0) == Catch::Approx(0.5));
+}
+
+// ===========================================================================
+// simulate_scenario unit tests for the two correctness fixes
+// ===========================================================================
+
+// Build a minimal ROADEFInstance with one Type 1 plant and no Type 2 plants.
+// Useful for testing Type 1 dispatch behavior in isolation.
+static ROADEFInstance build_t1_only_instance(double pmin, double pmax, double cost,
+                                             double demand_per_step) {
+    ROADEFInstance inst;
+    inst.T = 4;
+    inst.H = 2;
+    inst.timesteps_per_week = 2;
+    inst.K = 0;
+    inst.S = 1;
+    inst.n_type1 = 1;
+    inst.n_type2 = 0;
+    inst.epsilon = 0.01;
+    inst.timestep_durations.assign(inst.T, 1.0);
+    inst.demand.assign(1, std::vector<double>(inst.T, demand_per_step));
+
+    Type1Plant p1;
+    p1.name = "p1";
+    p1.index = 0;
+    p1.pmin = {std::vector<double>(inst.T, pmin)};
+    p1.pmax = {std::vector<double>(inst.T, pmax)};
+    p1.cost = {std::vector<double>(inst.T, cost)};
+    inst.type1_plants.push_back(p1);
+
+    return inst;
+}
+
+TEST_CASE("simulate_scenario overproduces when demand below pmin", "[roadef]") {
+    // demand=5, pmin=10, pmax=20 → plant runs at pmin=10 (overproducing by 5)
+    auto inst = build_t1_only_instance(10.0, 20.0, 2.0, 5.0);
+
+    PlantStatus status;
+    std::vector<std::vector<double>> reload;
+    auto result = simulate_scenario(inst, status, reload, 0);
+
+    // Expected: each timestep dispatches 10 at cost 2.0 * dt (dt=1), 4 timesteps
+    // Total cost = 4 * 10 * 2.0 = 80. No unserved penalty.
+    REQUIRE(result.cost == Catch::Approx(80.0));
+}
+
+TEST_CASE("simulate_scenario dispatches normally when demand above pmin", "[roadef]") {
+    // demand=15, pmin=10, pmax=20 → plant runs at 15 exactly
+    auto inst = build_t1_only_instance(10.0, 20.0, 2.0, 15.0);
+
+    PlantStatus status;
+    std::vector<std::vector<double>> reload;
+    auto result = simulate_scenario(inst, status, reload, 0);
+
+    // Total = 4 * 15 * 2.0 = 120
+    REQUIRE(result.cost == Catch::Approx(120.0));
+}
+
+TEST_CASE("simulate_scenario caps at pmax when demand exceeds pmax", "[roadef]") {
+    // demand=30, pmin=10, pmax=20 → plant runs at pmax=20, remaining=10 unserved
+    auto inst = build_t1_only_instance(10.0, 20.0, 2.0, 30.0);
+
+    PlantStatus status;
+    std::vector<std::vector<double>> reload;
+    auto result = simulate_scenario(inst, status, reload, 0);
+
+    // Dispatch cost: 4 * 20 * 2.0 = 160
+    // Unserved penalty: 4 * 10 * 1e5 * 1.0 = 4e6
+    REQUIRE(result.cost == Catch::Approx(160.0 + 4e6));
+}
+
+// Build a minimal ROADEFInstance with one Type 2 plant that has a week-0 outage.
+// Used to verify the CT10 refueling fix fires at week 0.
+static ROADEFInstance build_week0_outage_instance() {
+    ROADEFInstance inst;
+    inst.T = 4;
+    inst.H = 2;
+    inst.timesteps_per_week = 2;
+    inst.K = 1;
+    inst.S = 1;
+    inst.n_type1 = 0;
+    inst.n_type2 = 1;
+    inst.epsilon = 0.01;
+    inst.timestep_durations.assign(inst.T, 1.0);
+    inst.demand.assign(1, std::vector<double>(inst.T, 0.0));  // no demand
+
+    Type2Plant p2;
+    p2.name = "p2";
+    p2.index = 0;
+    p2.initial_stock = 100.0;
+    p2.n_cycles = 1;
+    p2.durations = {2};                 // outage lasts 2 weeks (both weeks)
+    p2.mmax = {100.0, 100.0};           // K+1 entries
+    p2.bo = {10.0, 20.0};               // K+1 entries
+    p2.rmax = {50.0};
+    p2.rmin = {0.0};
+    p2.q = {2.0};                       // refuel coefficient
+    p2.amax = {100.0};
+    p2.smax = {200.0};
+    p2.refuel_cost = {0.0};
+    p2.pmax_t.assign(inst.T, 100.0);
+    p2.fuel_price_end = 0.0;
+    p2.profiles.emplace_back();          // empty profiles (evaluate returns 1.0)
+    p2.profiles.emplace_back();
+    inst.type2_plants.push_back(p2);
+
+    // Schedule an outage at week 0 for plant 0, cycle 0
+    CT13Window w;
+    w.plant_idx = 0;
+    w.cycle = 0;
+    w.TO = 0;
+    w.TA = 0;
+    inst.ct13.push_back(w);
+
+    return inst;
+}
+
+TEST_CASE("simulate_scenario applies CT10 refueling at week-0 outage", "[roadef]") {
+    auto inst = build_week0_outage_instance();
+    std::vector<int> ha = {0};  // outage starts at week 0
+
+    auto lookup = build_outage_lookup(inst, ha);
+    auto status = compute_plant_status(inst, lookup);
+    auto reload = compute_reloads(inst, lookup);
+
+    // Plant should be in outage for both weeks; refueling should trigger at t=0.
+    REQUIRE(status.in_outage[0][0] == true);
+    REQUIRE(status.in_outage[0][1] == true);
+    REQUIRE(reload[0][0] == Catch::Approx(50.0));  // rmax
+
+    auto result = simulate_scenario(inst, status, reload, 0);
+
+    // CT10 formula at t=0 (first outage timestep, k=0):
+    //   fuel = ((q-1)/q) * (initial_stock - bo[0]) + reload[0][0] + bo[1]
+    //        = (1/2) * (100 - 10) + 50 + 20
+    //        = 45 + 50 + 20 = 115
+    // Then fuel credit at end = 0 * 115 = 0 (fuel_price_end=0)
+    // No production (outage whole horizon), no Type 1, no demand.
+    // Cost should be 0 (no unserved, no production, no residual credit).
+    REQUIRE(result.cost == Catch::Approx(0.0));
+}
+
+TEST_CASE("build_outage_lookup maps plant/cycle to start week", "[roadef]") {
+    auto inst = build_week0_outage_instance();
+    std::vector<int> ha = {0};
+
+    auto lookup = build_outage_lookup(inst, ha);
+
+    REQUIRE(lookup.size() == 1);  // 1 Type 2 plant
+    REQUIRE(lookup[0].size() == 1);  // 1 cycle
+    REQUIRE(lookup[0][0] == 0);  // outage starts at week 0
 }

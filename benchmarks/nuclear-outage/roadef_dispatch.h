@@ -212,12 +212,11 @@ inline ScenarioResult simulate_scenario(
                 double pmax_j = p1.pmax[scenario][t];
                 if (pmax_j <= 0.0) continue;
 
-                // Skip plant if remaining demand is below minimum output
-                if (remaining < pmin_j - 1e-6) continue;
-
+                // Plant must run at >= pmin if committed; may overproduce when
+                // remaining < pmin_j (acceptable for greedy dispatch).
                 double gen = std::max(pmin_j, std::min(pmax_j, remaining));
                 total_cost += gen * p1.cost[scenario][t] * dt;
-                remaining -= gen;
+                remaining -= gen;  // can go negative (overproduction)
 
                 if (record_production) {
                     result.t1_prod[j][t] = gen;
