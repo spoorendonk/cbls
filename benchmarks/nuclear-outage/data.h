@@ -1,14 +1,14 @@
 #pragma once
 
-#include <nlohmann/json.hpp>
-#include <vector>
-#include <map>
-#include <string>
-#include <fstream>
-#include <sstream>
-#include <stdexcept>
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <map>
+#include <nlohmann/json.hpp>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace cbls {
 namespace nuclear_outage {
@@ -101,13 +101,21 @@ struct DecreaseProfile {
     std::vector<std::pair<double, double>> points;
 
     double evaluate(double fuel_stock) const {
-        if (points.empty()) return 1.0;
-        if (fuel_stock >= points.front().first) return points.front().second;
-        if (fuel_stock <= points.back().first) return points.back().second;
+        if (points.empty()) {
+            return 1.0;
+        }
+        if (fuel_stock >= points.front().first) {
+            return points.front().second;
+        }
+        if (fuel_stock <= points.back().first) {
+            return points.back().second;
+        }
         for (size_t i = 0; i + 1 < points.size(); ++i) {
             if (fuel_stock <= points[i].first && fuel_stock >= points[i + 1].first) {
                 double range = points[i].first - points[i + 1].first;
-                if (range < 1e-12) return points[i].second;
+                if (range < 1e-12) {
+                    return points[i].second;
+                }
                 double frac = (fuel_stock - points[i + 1].first) / range;
                 return points[i + 1].second + frac * (points[i].second - points[i + 1].second);
             }
@@ -163,21 +171,21 @@ struct CT13Window {
 
 // CT14-CT18: spacing/overlap between outage sets
 struct SpacingConstraint {
-    int type;   // 14, 15, 16, 17, or 18
-    int index;
+    int type = 0;  // 14, 15, 16, 17, or 18
+    int index = 0;
     std::vector<int> plant_set;  // C_m: Type 2 plant indices
-    double spacing;              // Se_m (negative = max overlap for CT14/CT15)
+    double spacing = 0.0;        // Se_m (negative = max overlap for CT14/CT15)
     int period_start = -1;       // ID_m (CT15 only)
     int period_end = -1;         // IF_m (CT15 only)
 };
 
 // CT19: resource constraints
 struct CT19Resource {
-    int index;
-    double quantity;  // Q_m
+    int index = 0;
+    double quantity = 0.0;  // Q_m
     std::vector<int> plant_set;
     struct Usage {
-        int plant_idx;
+        int plant_idx = -1;
         std::vector<int> start;     // L_{i,k,m} per cycle
         std::vector<int> duration;  // TU_{i,k,m} per cycle
     };
@@ -186,18 +194,18 @@ struct CT19Resource {
 
 // CT20: max overlapping outages per week
 struct CT20MaxOverlap {
-    int index;
-    int week;                     // h_m
-    std::vector<int> plant_set;   // C_m
-    int max_allowed;              // N_m
+    int index = 0;
+    int week = 0;                // h_m
+    std::vector<int> plant_set;  // C_m
+    int max_allowed = 0;         // N_m
 };
 
 // CT21: max offline power capacity
 struct CT21OfflineCap {
-    int index;
-    std::vector<int> plant_set;   // C_m
-    int time_start, time_end;     // IT_m range (weeks)
-    double imax;                  // IMAX_m
+    int index = 0;
+    std::vector<int> plant_set;        // C_m
+    int time_start = 0, time_end = 0;  // IT_m range (weeks)
+    double imax = 0.0;                 // IMAX_m
 };
 
 struct ROADEFInstance {
@@ -245,8 +253,10 @@ public:
         std::string line;
         while (std::getline(f, line)) {
             // Trim trailing whitespace
-            while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
+            while (!line.empty() &&
+                   (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) {
                 line.pop_back();
+            }
             lines_.push_back(std::move(line));
         }
     }
@@ -256,7 +266,9 @@ public:
     const std::string& peek() const { return lines_[pos_]; }
 
     std::string next_line() {
-        if (pos_ >= lines_.size()) throw std::runtime_error("Unexpected end of file");
+        if (pos_ >= lines_.size()) {
+            throw std::runtime_error("Unexpected end of file");
+        }
         return lines_[pos_++];
     }
 
@@ -266,7 +278,9 @@ public:
         std::istringstream iss(line);
         std::vector<std::string> tokens;
         std::string tok;
-        while (iss >> tok) tokens.push_back(tok);
+        while (iss >> tok) {
+            tokens.push_back(tok);
+        }
         return tokens;
     }
 
@@ -284,14 +298,18 @@ public:
     // Read keyword + single int value
     int expect_int(const std::string& keyword) {
         auto toks = expect(keyword);
-        if (toks.empty()) throw std::runtime_error("Missing value for " + keyword);
+        if (toks.empty()) {
+            throw std::runtime_error("Missing value for " + keyword);
+        }
         return std::stoi(toks[0]);
     }
 
     // Read keyword + single double value
     double expect_double(const std::string& keyword) {
         auto toks = expect(keyword);
-        if (toks.empty()) throw std::runtime_error("Missing value for " + keyword);
+        if (toks.empty()) {
+            throw std::runtime_error("Missing value for " + keyword);
+        }
         return std::stod(toks[0]);
     }
 
@@ -299,7 +317,9 @@ public:
     std::vector<double> expect_doubles(const std::string& keyword) {
         auto toks = expect(keyword);
         std::vector<double> vals;
-        for (auto& t : toks) vals.push_back(std::stod(t));
+        for (auto& t : toks) {
+            vals.push_back(std::stod(t));
+        }
         return vals;
     }
 
@@ -307,7 +327,9 @@ public:
     std::vector<int> expect_ints(const std::string& keyword) {
         auto toks = expect(keyword);
         std::vector<int> vals;
-        for (auto& t : toks) vals.push_back(std::stoi(t));
+        for (auto& t : toks) {
+            vals.push_back(std::stoi(t));
+        }
         return vals;
     }
 
@@ -339,8 +361,10 @@ inline ROADEFInstance load_roadef(const std::string& path) {
     // Extract instance name from path
     auto slash = path.rfind('/');
     auto dot = path.rfind('.');
-    inst.name = path.substr(slash == std::string::npos ? 0 : slash + 1,
-                            dot == std::string::npos ? std::string::npos : dot - (slash == std::string::npos ? 0 : slash + 1));
+    inst.name =
+        path.substr(slash == std::string::npos ? 0 : slash + 1,
+                    dot == std::string::npos ? std::string::npos
+                                             : dot - (slash == std::string::npos ? 0 : slash + 1));
 
     // ---- Main section ----
     p.expect("begin");  // "begin main"
@@ -417,7 +441,9 @@ inline ROADEFInstance load_roadef(const std::string& path) {
             auto cycle_mmax = p.expect_doubles("max_modulus");
             t2.mmax.resize(t2.n_cycles + 1);
             t2.mmax[0] = cur_mmax;
-            for (int k = 0; k < t2.n_cycles; ++k) t2.mmax[k + 1] = cycle_mmax[k];
+            for (int k = 0; k < t2.n_cycles; ++k) {
+                t2.mmax[k + 1] = cycle_mmax[k];
+            }
 
             // Refueling params (K entries each)
             auto rmax_v = p.expect_doubles("max_refuel");
@@ -426,7 +452,9 @@ inline ROADEFInstance load_roadef(const std::string& path) {
             t2.rmax = rmax_v;
             t2.rmin = rmin_v;
             t2.q.resize(q_v.size());
-            for (size_t i = 0; i < q_v.size(); ++i) t2.q[i] = q_v[i];
+            for (size_t i = 0; i < q_v.size(); ++i) {
+                t2.q[i] = q_v[i];
+            }
 
             // BO: current + stock_threshold (K+1 values including current)
             double cur_bo = p.expect_double("current_campaign_stock_threshold");
@@ -435,12 +463,15 @@ inline ROADEFInstance load_roadef(const std::string& path) {
             t2.bo.resize(t2.n_cycles + 1);
             if ((int)bo_vals.size() >= t2.n_cycles + 1) {
                 // stock_threshold already includes current
-                for (int k = 0; k <= t2.n_cycles; ++k) t2.bo[k] = bo_vals[k];
+                for (int k = 0; k <= t2.n_cycles; ++k) {
+                    t2.bo[k] = bo_vals[k];
+                }
             } else {
                 // Fallback: combine current + threshold
                 t2.bo[0] = cur_bo;
-                for (int k = 0; k < t2.n_cycles && k < (int)bo_vals.size(); ++k)
+                for (int k = 0; k < t2.n_cycles && k < (int)bo_vals.size(); ++k) {
                     t2.bo[k + 1] = bo_vals[k];
+                }
             }
 
             // Per-timestep pmax
@@ -475,7 +506,7 @@ inline ROADEFInstance load_roadef(const std::string& path) {
 
             // Per-cycle profiles
             for (int k = 0; k < t2.n_cycles; ++k) {
-                p.expect("begin");  // "begin profile"
+                p.expect("begin");                 // "begin profile"
                 p.expect_int("campaign_profile");  // index
                 t2.profiles[k + 1] = detail::parse_profile(p);
                 p.expect("end");  // "end profile"
@@ -487,8 +518,8 @@ inline ROADEFInstance load_roadef(const std::string& path) {
     }
 
     // ---- Constraints ----
-    int total_constraints = n_ct13 + n_ct14 + n_ct15 + n_ct16 + n_ct17 + n_ct18 +
-                            n_ct19 + n_ct20 + n_ct21;
+    int total_constraints =
+        n_ct13 + n_ct14 + n_ct15 + n_ct16 + n_ct17 + n_ct18 + n_ct19 + n_ct20 + n_ct21;
 
     for (int c = 0; c < total_constraints; ++c) {
         p.expect("begin");  // "begin constraint"
@@ -504,13 +535,22 @@ inline ROADEFInstance load_roadef(const std::string& path) {
             // Parse fields in any order until "end constraint"
             while (p.has_next()) {
                 auto toks = p.next_tokens();
-                if (toks.empty()) continue;
-                if (toks[0] == "end") break;
-                if (toks[0] == "index") { /* constraint index, not needed */ }
-                else if (toks[0] == "powerplant") w.plant_idx = std::stoi(toks[1]);
-                else if (toks[0] == "campaign") w.cycle = std::stoi(toks[1]);
-                else if (toks[0] == "earliest_stop_time") w.TO = std::stoi(toks[1]);
-                else if (toks[0] == "latest_stop_time") w.TA = std::stoi(toks[1]);
+                if (toks.empty()) {
+                    continue;
+                }
+                if (toks[0] == "end") {
+                    break;
+                }
+                if (toks[0] == "index") { /* constraint index, not needed */
+                } else if (toks[0] == "powerplant") {
+                    w.plant_idx = std::stoi(toks[1]);
+                } else if (toks[0] == "campaign") {
+                    w.cycle = std::stoi(toks[1]);
+                } else if (toks[0] == "earliest_stop_time") {
+                    w.TO = std::stoi(toks[1]);
+                } else if (toks[0] == "latest_stop_time") {
+                    w.TA = std::stoi(toks[1]);
+                }
             }
             inst.ct13.push_back(w);
 
@@ -521,23 +561,31 @@ inline ROADEFInstance load_roadef(const std::string& path) {
 
             while (p.has_next()) {
                 auto toks = p.next_tokens();
-                if (toks.empty()) continue;
+                if (toks.empty()) {
+                    continue;
+                }
                 if (toks[0] == "end") {
                     if (toks.size() >= 2 && toks[1] != "constraint") {
                         // CT15: "end <number>" = IF_m (period end)
-                        try { sc.period_end = std::stoi(toks[1]); }
-                        catch (...) { break; }
+                        try {
+                            sc.period_end = std::stoi(toks[1]);
+                        } catch (...) {
+                            break;
+                        }
                     } else {
                         break;  // "end constraint"
                     }
-                }
-                else if (toks[0] == "index") sc.index = std::stoi(toks[1]);
-                else if (toks[0] == "set") {
-                    for (size_t i = 1; i < toks.size(); ++i)
+                } else if (toks[0] == "index") {
+                    sc.index = std::stoi(toks[1]);
+                } else if (toks[0] == "set") {
+                    for (size_t i = 1; i < toks.size(); ++i) {
                         sc.plant_set.push_back(std::stoi(toks[i]));
+                    }
+                } else if (toks[0] == "spacing") {
+                    sc.spacing = std::stod(toks[1]);
+                } else if (toks[0] == "start") {
+                    sc.period_start = std::stoi(toks[1]);
                 }
-                else if (toks[0] == "spacing") sc.spacing = std::stod(toks[1]);
-                else if (toks[0] == "start") sc.period_start = std::stoi(toks[1]);
             }
             inst.spacing_constraints.push_back(sc);
 
@@ -545,28 +593,40 @@ inline ROADEFInstance load_roadef(const std::string& path) {
             CT19Resource res;
             while (p.has_next()) {
                 auto toks = p.next_tokens();
-                if (toks.empty()) continue;
-                if (toks[0] == "end" && (toks.size() < 2 || toks[1] == "constraint")) break;
-                if (toks[0] == "index") res.index = std::stoi(toks[1]);
-                else if (toks[0] == "quantity") res.quantity = std::stod(toks[1]);
-                else if (toks[0] == "set") {
-                    for (size_t i = 1; i < toks.size(); ++i)
-                        res.plant_set.push_back(std::stoi(toks[i]));
+                if (toks.empty()) {
+                    continue;
                 }
-                else if (toks[0] == "begin" && toks.size() >= 2 && toks[1] == "period") {
+                if (toks[0] == "end" && (toks.size() < 2 || toks[1] == "constraint")) {
+                    break;
+                }
+                if (toks[0] == "index") {
+                    res.index = std::stoi(toks[1]);
+                } else if (toks[0] == "quantity") {
+                    res.quantity = std::stod(toks[1]);
+                } else if (toks[0] == "set") {
+                    for (size_t i = 1; i < toks.size(); ++i) {
+                        res.plant_set.push_back(std::stoi(toks[i]));
+                    }
+                } else if (toks[0] == "begin" && toks.size() >= 2 && toks[1] == "period") {
                     CT19Resource::Usage usage;
                     while (p.has_next()) {
                         auto ptoks = p.next_tokens();
-                        if (ptoks.empty()) continue;
-                        if (ptoks[0] == "end" && ptoks.size() >= 2 && ptoks[1] == "period") break;
-                        if (ptoks[0] == "powerplant") usage.plant_idx = std::stoi(ptoks[1]);
-                        else if (ptoks[0] == "start") {
-                            for (size_t i = 1; i < ptoks.size(); ++i)
-                                usage.start.push_back(std::stoi(ptoks[i]));
+                        if (ptoks.empty()) {
+                            continue;
                         }
-                        else if (ptoks[0] == "duration") {
-                            for (size_t i = 1; i < ptoks.size(); ++i)
+                        if (ptoks[0] == "end" && ptoks.size() >= 2 && ptoks[1] == "period") {
+                            break;
+                        }
+                        if (ptoks[0] == "powerplant") {
+                            usage.plant_idx = std::stoi(ptoks[1]);
+                        } else if (ptoks[0] == "start") {
+                            for (size_t i = 1; i < ptoks.size(); ++i) {
+                                usage.start.push_back(std::stoi(ptoks[i]));
+                            }
+                        } else if (ptoks[0] == "duration") {
+                            for (size_t i = 1; i < ptoks.size(); ++i) {
                                 usage.duration.push_back(std::stoi(ptoks[i]));
+                            }
                         }
                     }
                     res.usages.push_back(std::move(usage));
@@ -578,15 +638,23 @@ inline ROADEFInstance load_roadef(const std::string& path) {
             CT20MaxOverlap ct;
             while (p.has_next()) {
                 auto toks = p.next_tokens();
-                if (toks.empty()) continue;
-                if (toks[0] == "end") break;
-                if (toks[0] == "index") ct.index = std::stoi(toks[1]);
-                else if (toks[0] == "week") ct.week = std::stoi(toks[1]);
-                else if (toks[0] == "set") {
-                    for (size_t i = 1; i < toks.size(); ++i)
-                        ct.plant_set.push_back(std::stoi(toks[i]));
+                if (toks.empty()) {
+                    continue;
                 }
-                else if (toks[0] == "max") ct.max_allowed = std::stoi(toks[1]);
+                if (toks[0] == "end") {
+                    break;
+                }
+                if (toks[0] == "index") {
+                    ct.index = std::stoi(toks[1]);
+                } else if (toks[0] == "week") {
+                    ct.week = std::stoi(toks[1]);
+                } else if (toks[0] == "set") {
+                    for (size_t i = 1; i < toks.size(); ++i) {
+                        ct.plant_set.push_back(std::stoi(toks[i]));
+                    }
+                } else if (toks[0] == "max") {
+                    ct.max_allowed = std::stoi(toks[1]);
+                }
             }
             inst.ct20.push_back(ct);
 
@@ -594,19 +662,28 @@ inline ROADEFInstance load_roadef(const std::string& path) {
             CT21OfflineCap ct;
             while (p.has_next()) {
                 auto toks = p.next_tokens();
-                if (toks.empty()) continue;
-                if (toks[0] == "end") break;
-                if (toks[0] == "index") ct.index = std::stoi(toks[1]);
-                else if (toks[0] == "set") {
-                    for (size_t i = 1; i < toks.size(); ++i)
+                if (toks.empty()) {
+                    continue;
+                }
+                if (toks[0] == "end") {
+                    break;
+                }
+                if (toks[0] == "index") {
+                    ct.index = std::stoi(toks[1]);
+                } else if (toks[0] == "set") {
+                    for (size_t i = 1; i < toks.size(); ++i) {
                         ct.plant_set.push_back(std::stoi(toks[i]));
-                }
-                else if (toks[0] == "startend") {
+                    }
+                } else if (toks[0] == "startend") {
                     ct.time_start = std::stoi(toks[1]);
-                    if (toks.size() >= 3) ct.time_end = std::stoi(toks[2]);
-                    else ct.time_end = ct.time_start;
+                    if (toks.size() >= 3) {
+                        ct.time_end = std::stoi(toks[2]);
+                    } else {
+                        ct.time_end = ct.time_start;
+                    }
+                } else if (toks[0] == "max") {
+                    ct.imax = std::stod(toks[1]);
                 }
-                else if (toks[0] == "max") ct.imax = std::stod(toks[1]);
             }
             inst.ct21.push_back(ct);
 
@@ -614,17 +691,20 @@ inline ROADEFInstance load_roadef(const std::string& path) {
             // Unknown constraint type — skip to end
             while (p.has_next()) {
                 auto toks = p.next_tokens();
-                if (!toks.empty() && toks[0] == "end") break;
+                if (!toks.empty() && toks[0] == "end") {
+                    break;
+                }
             }
         }
     }
 
     // Sort CT13 by (plant_idx, cycle) for consistent outage ordering
-    std::sort(inst.ct13.begin(), inst.ct13.end(),
-              [](const CT13Window& a, const CT13Window& b) {
-                  if (a.plant_idx != b.plant_idx) return a.plant_idx < b.plant_idx;
-                  return a.cycle < b.cycle;
-              });
+    std::sort(inst.ct13.begin(), inst.ct13.end(), [](const CT13Window& a, const CT13Window& b) {
+        if (a.plant_idx != b.plant_idx) {
+            return a.plant_idx < b.plant_idx;
+        }
+        return a.cycle < b.cycle;
+    });
 
     return inst;
 }

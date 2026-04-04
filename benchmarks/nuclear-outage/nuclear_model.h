@@ -1,10 +1,11 @@
 #pragma once
 
-#include <cbls/cbls.h>
 #include "data.h"
-#include <vector>
+
 #include <algorithm>
+#include <cbls/cbls.h>
 #include <cmath>
+#include <vector>
 
 namespace cbls {
 namespace nuclear_outage {
@@ -15,8 +16,8 @@ namespace nuclear_outage {
 
 struct NuclearModel {
     Model model;
-    std::vector<int32_t> s;       // [outage] start period (int var handles)
-    int32_t objective_node;       // constant node updated by hook (node ID)
+    std::vector<int32_t> s;  // [outage] start period (int var handles)
+    int32_t objective_node;  // constant node updated by hook (node ID)
 };
 
 inline NuclearModel build_nuclear_model(const NuclearInstance& inst) {
@@ -26,8 +27,8 @@ inline NuclearModel build_nuclear_model(const NuclearInstance& inst) {
 
     result.s.resize(O);
     for (int o = 0; o < O; ++o) {
-        result.s[o] = m.int_var(inst.outage_earliest[o], inst.outage_latest[o],
-                                 "s_" + std::to_string(o));
+        result.s[o] =
+            m.int_var(inst.outage_earliest[o], inst.outage_latest[o], "s_" + std::to_string(o));
     }
 
     result.objective_node = m.constant(1e15);
@@ -41,17 +42,16 @@ inline NuclearModel build_nuclear_model(const NuclearInstance& inst) {
     auto neg1 = m.constant(-1.0);
     for (int u = 0; u < inst.n_units; ++u) {
         auto& outages = unit_outages[u];
-        if (outages.size() < 2) continue;
+        if (outages.size() < 2) {
+            continue;
+        }
         std::sort(outages.begin(), outages.end(),
-                  [&](int a, int b) {
-                      return inst.outage_earliest[a] < inst.outage_earliest[b];
-                  });
+                  [&](int a, int b) { return inst.outage_earliest[a] < inst.outage_earliest[b]; });
         for (size_t i = 0; i + 1 < outages.size(); ++i) {
             int o1 = outages[i];
             int o2 = outages[i + 1];
             auto dur = m.constant(static_cast<double>(inst.outage_duration[o1]));
-            m.add_constraint(m.sum({result.s[o1], dur,
-                                    m.prod(neg1, result.s[o2])}));
+            m.add_constraint(m.sum({result.s[o1], dur, m.prod(neg1, result.s[o2])}));
         }
     }
 
@@ -90,11 +90,12 @@ inline ROADEFModel build_roadef_model(const ROADEFInstance& inst) {
         auto& w = inst.ct13[o];
         int lo = w.TO;
         int hi = w.TA;
-        if (hi < 0) hi = inst.H - 1;  // if TA undefined, use full horizon
+        if (hi < 0) {
+            hi = inst.H - 1;  // if TA undefined, use full horizon
+        }
 
-        result.ha[o] = m.int_var(lo, hi,
-                                  "ha_" + std::to_string(w.plant_idx) + "_" +
-                                  std::to_string(w.cycle));
+        result.ha[o] =
+            m.int_var(lo, hi, "ha_" + std::to_string(w.plant_idx) + "_" + std::to_string(w.cycle));
         result.outage_info[o] = {w.plant_idx, w.cycle};
     }
 
@@ -116,9 +117,7 @@ inline ROADEFModel build_roadef_model(const ROADEFInstance& inst) {
     for (auto& [plant_idx, outages] : plant_outages) {
         // Sort by cycle index
         std::sort(outages.begin(), outages.end(),
-                  [&](int a, int b) {
-                      return inst.ct13[a].cycle < inst.ct13[b].cycle;
-                  });
+                  [&](int a, int b) { return inst.ct13[a].cycle < inst.ct13[b].cycle; });
 
         for (size_t i = 0; i + 1 < outages.size(); ++i) {
             int o1 = outages[i];
@@ -128,8 +127,7 @@ inline ROADEFModel build_roadef_model(const ROADEFInstance& inst) {
             int dur = inst.type2_plants[plant_idx].durations[k1];
             // ha[o1] + dur - ha[o2] <= 0
             auto dur_c = m.constant(static_cast<double>(dur));
-            m.add_constraint(m.sum({result.ha[o1], dur_c,
-                                    m.prod(neg1, result.ha[o2])}));
+            m.add_constraint(m.sum({result.ha[o1], dur_c, m.prod(neg1, result.ha[o2])}));
         }
     }
 
@@ -150,46 +148,8 @@ inline ROADEFModel build_roadef_model(const ROADEFInstance& inst) {
         return outages;
     };
 
-    for (auto& sc : inst.spacing_constraints) {
-        auto outages = get_outages_for_plants(sc.plant_set);
-        if (outages.size() < 2) continue;
-
-        // For each pair of distinct outages
-        for (size_t i = 0; i < outages.size(); ++i) {
-            for (size_t j = i + 1; j < outages.size(); ++j) {
-                int o1 = outages[i];
-                int o2 = outages[j];
-                int p1 = inst.ct13[o1].plant_idx;
-                int p2 = inst.ct13[o2].plant_idx;
-                int k1 = inst.ct13[o1].cycle;
-                int k2 = inst.ct13[o2].cycle;
-                int da1 = inst.type2_plants[p1].durations[k1];
-                int da2 = inst.type2_plants[p2].durations[k2];
-
-                if (sc.type == 14) {
-                    // Min spacing/max overlap between outages:
-                    // ha[o1] - ha[o2] - DA[o2] >= Se  OR  ha[o2] - ha[o1] - DA[o1] >= Se
-                    // Encoded as penalty: min(Se - (ha1 - ha2 - da2), Se - (ha2 - ha1 - da1), 0)
-                    // For the DAG, we use a disjunctive constraint approximation.
-                    // Since CBLS uses SA with penalty, we can encode as:
-                    // max(0, Se - gap1) + max(0, Se - gap2) where at least one must be 0
-                    // But the DAG doesn't support disjunctions natively.
-                    // Use penalty in hook instead — skip DAG constraints for CT14.
-                    // (CT14-18 will be evaluated as penalties in the hook)
-                }
-                else if (sc.type == 16) {
-                    // Min spacing between decoupling dates:
-                    // |ha[o1] - ha[o2]| >= Se
-                    // This is symmetric. Encode as penalty in hook.
-                }
-                // CT15, CT17, CT18 also involve disjunctions — handle in hook
-            }
-        }
-    }
-
-    // Note: CT14-CT18 are handled as penalties in the dispatch hook
-    // because they involve disjunctive constraints that the DAG can't express.
-    // CT19, CT20, CT21 are also evaluated in the hook.
+    // CT14-CT21 are evaluated as penalties in the dispatch hook
+    // because they involve disjunctions the DAG can't express natively.
 
     m.close();
     return result;

@@ -6,36 +6,37 @@ Usage:
     python parse_roadef.py data0.txt --json        # output JSONL to stdout
 """
 
-import sys
 import json
+import sys
 from pathlib import Path
+from typing import Any
 
 
-def tokenize_line(line):
+def tokenize_line(line: str) -> list[str]:
     """Split a line into whitespace-separated tokens."""
     return line.strip().split()
 
 
 class ROADEFParser:
-    def __init__(self, path):
+    def __init__(self, path: str) -> None:
         with open(path) as f:
             self.lines = [line.rstrip() for line in f]
         self.pos = 0
 
-    def has_next(self):
+    def has_next(self) -> bool:
         return self.pos < len(self.lines)
 
-    def next_line(self):
+    def next_line(self) -> str:
         if self.pos >= len(self.lines):
             raise RuntimeError("Unexpected end of file")
         line = self.lines[self.pos]
         self.pos += 1
         return line
 
-    def next_tokens(self):
+    def next_tokens(self) -> list[str]:
         return tokenize_line(self.next_line())
 
-    def expect(self, keyword):
+    def expect(self, keyword: str) -> list[str]:
         toks = self.next_tokens()
         if not toks or toks[0] != keyword:
             raise RuntimeError(
@@ -43,32 +44,32 @@ class ROADEFParser:
             )
         return toks[1:]
 
-    def expect_int(self, keyword):
+    def expect_int(self, keyword: str) -> int:
         return int(self.expect(keyword)[0])
 
-    def expect_float(self, keyword):
+    def expect_float(self, keyword: str) -> float:
         return float(self.expect(keyword)[0])
 
-    def expect_floats(self, keyword):
+    def expect_floats(self, keyword: str) -> list[float]:
         return [float(x) for x in self.expect(keyword)]
 
-    def expect_ints(self, keyword):
+    def expect_ints(self, keyword: str) -> list[int]:
         return [int(x) for x in self.expect(keyword)]
 
 
-def parse_profile(p):
+def parse_profile(p: ROADEFParser) -> list[tuple[float, float]]:
     n_points = p.expect_int("profile_points")
     toks = p.expect("decrease_profile")
-    points = []
+    points: list[tuple[float, float]] = []
     for i in range(n_points):
         if 2 * i + 1 < len(toks):
             points.append((float(toks[2 * i]), float(toks[2 * i + 1])))
     return points
 
 
-def parse_roadef(path):
+def parse_roadef(path: str) -> dict[str, Any]:
     p = ROADEFParser(path)
-    inst = {"name": Path(path).stem}
+    inst: dict[str, Any] = {"name": Path(path).stem}
 
     # Main section
     p.expect("begin")  # begin main
@@ -80,7 +81,7 @@ def parse_roadef(path):
     inst["n_type1"] = p.expect_int("powerplant1")
     inst["n_type2"] = p.expect_int("powerplant2")
 
-    constraint_counts = {}
+    constraint_counts: dict[int, int] = {}
     for ct in range(13, 22):
         constraint_counts[ct] = p.expect_int(f"constraint{ct}")
 
@@ -93,7 +94,7 @@ def parse_roadef(path):
     # Power plants
     inst["type1_plants"] = []
     inst["type2_plants"] = []
-    total_plants = inst["n_type1"] + inst["n_type2"]
+    total_plants: int = inst["n_type1"] + inst["n_type2"]
 
     for _ in range(total_plants):
         p.expect("begin")  # begin powerplant
@@ -101,9 +102,9 @@ def parse_roadef(path):
         plant_type = int(p.expect("type")[0])
 
         if plant_type == 1:
-            t1 = {"name": name, "index": p.expect_int("index")}
+            t1: dict[str, Any] = {"name": name, "index": p.expect_int("index")}
             s_count = p.expect_int("scenario")
-            t_count = p.expect_int("timesteps")
+            _t_count = p.expect_int("timesteps")
             t1["pmin"] = []
             t1["pmax"] = []
             t1["cost"] = []
@@ -115,7 +116,7 @@ def parse_roadef(path):
             inst["type1_plants"].append(t1)
 
         elif plant_type == 2:
-            t2 = {"name": name, "index": p.expect_int("index")}
+            t2: dict[str, Any] = {"name": name, "index": p.expect_int("index")}
             t2["initial_stock"] = p.expect_float("stock")
             t2["n_cycles"] = p.expect_int("campaigns")
             t2["durations"] = p.expect_ints("durations")
@@ -169,7 +170,7 @@ def parse_roadef(path):
         ctype = p.expect_int("type")
 
         if ctype == 13:
-            ct = {"type": 13}
+            ct: dict[str, Any] = {"type": 13}
             while p.has_next():
                 toks = p.next_tokens()
                 if not toks:
@@ -189,7 +190,7 @@ def parse_roadef(path):
             inst["ct13"].append(ct)
 
         elif 14 <= ctype <= 18:
-            sc = {"type": ctype}
+            sc: dict[str, Any] = {"type": ctype}
             while p.has_next():
                 toks = p.next_tokens()
                 if not toks:
@@ -228,7 +229,7 @@ def parse_roadef(path):
                 elif toks[0] == "set":
                     ct["plant_set"] = [int(x) for x in toks[1:]]
                 elif toks[0] == "begin" and len(toks) >= 2 and toks[1] == "period":
-                    usage = {}
+                    usage: dict[str, Any] = {}
                     while p.has_next():
                         ptoks = p.next_tokens()
                         if not ptoks:
@@ -289,22 +290,22 @@ def parse_roadef(path):
     return inst
 
 
-def print_summary(inst):
+def print_summary(inst: dict[str, Any]) -> None:
     print(f"Instance: {inst['name']}")
     print(f"  Timesteps: {inst['T']}, Weeks: {inst['H']}, "
           f"Timesteps/week: {inst['T'] // inst['H']}")
     print(f"  Scenarios: {inst['S']}, Epsilon: {inst['epsilon']}")
     print(f"  Type 1 plants: {inst['n_type1']}")
-    for p in inst["type1_plants"]:
-        print(f"    {p['name']} (index {p['index']}): "
-              f"pmax_range=[{min(min(r) for r in p['pmax']):.0f}, "
-              f"{max(max(r) for r in p['pmax']):.0f}]")
+    for plant in inst["type1_plants"]:
+        print(f"    {plant['name']} (index {plant['index']}): "
+              f"pmax_range=[{min(min(r) for r in plant['pmax']):.0f}, "
+              f"{max(max(r) for r in plant['pmax']):.0f}]")
 
     print(f"  Type 2 plants: {inst['n_type2']}")
-    for p in inst["type2_plants"]:
-        print(f"    {p['name']} (index {p['index']}): "
-              f"stock={p['initial_stock']:.0f}, cycles={p['n_cycles']}, "
-              f"durations={p['durations']}")
+    for plant in inst["type2_plants"]:
+        print(f"    {plant['name']} (index {plant['index']}): "
+              f"stock={plant['initial_stock']:.0f}, cycles={plant['n_cycles']}, "
+              f"durations={plant['durations']}")
 
     print(f"  CT13 windows: {len(inst['ct13'])}")
     for ct in inst["ct13"]:
