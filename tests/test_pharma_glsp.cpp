@@ -3,6 +3,7 @@
 #include "benchmarks/pharma-glsp/data.h"
 #include "benchmarks/pharma-glsp/glsp_model.h"
 #include "benchmarks/pharma-glsp/glsp_hook.h"
+#include "benchmarks/pharma-glsp/verify_glsp.h"
 #include <cstdio>
 
 using namespace cbls;
@@ -119,4 +120,41 @@ TEST_CASE("GLSP loaded instance builds and solves", "[glsp]") {
            inst.name.c_str(), result.feasible, result.objective,
            (long)result.iterations, result.time_seconds);
     REQUIRE(result.iterations > 100);
+}
+
+TEST_CASE("GLSP tiny verify", "[glsp][verify]") {
+    auto inst = make_tiny();
+    auto gm = build_glsp_model(inst);
+
+    GLSPInnerSolverHook hook(inst, gm.seq, gm.lot);
+    LNS lns(0.3);
+    auto result = solve(gm.model, 5.0, 42, true, &hook, &lns);
+    REQUIRE(result.feasible);
+
+    auto vr = verify_glsp(gm, inst);
+    vr.print_diagnostics(stdout);
+    REQUIRE(vr.ok);
+}
+
+TEST_CASE("GLSP loaded class-A verify", "[glsp][verify]") {
+    std::vector<GLSPInstance> instances;
+    try {
+        instances = load_jsonl("benchmarks/instances/pharma-glsp/class_a.jsonl");
+    } catch (...) {
+        printf("\nSkipping: class_a.jsonl not found\n");
+        return;
+    }
+    REQUIRE(!instances.empty());
+    const auto& inst = instances[0];
+
+    auto gm = build_glsp_model(inst);
+
+    GLSPInnerSolverHook hook(inst, gm.seq, gm.lot);
+    LNS lns(0.3);
+    auto result = solve(gm.model, 15.0, 42, true, &hook, &lns);
+    REQUIRE(result.feasible);
+
+    auto vr = verify_glsp(gm, inst);
+    vr.print_diagnostics(stdout);
+    REQUIRE(vr.ok);
 }

@@ -2,6 +2,7 @@
 #include "data.h"
 #include "glsp_model.h"
 #include "glsp_hook.h"
+#include "verify_glsp.h"
 #include <cstdio>
 #include <string>
 #include <map>
@@ -11,6 +12,7 @@ int main(int argc, char** argv) {
     double time_limit = 30.0;
     int max_instances = 0;  // 0 = all
     std::string class_filter;
+    bool do_verify = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -22,6 +24,8 @@ int main(int argc, char** argv) {
             max_instances = std::stoi(argv[++i]);
         } else if (arg == "--class" && i + 1 < argc) {
             class_filter = argv[++i];
+        } else if (arg == "--verify") {
+            do_verify = true;
         }
     }
 
@@ -79,6 +83,11 @@ int main(int argc, char** argv) {
                result.feasible ? result.objective : -1.0,
                result.feasible ? "yes" : "NO",
                (long)result.iterations, result.time_seconds);
+
+        if (do_verify && result.feasible) {
+            auto vr = cbls::glsp::verify_glsp(gm, inst);
+            vr.print_diagnostics(stdout);
+        }
 
         auto& s = stats[inst.cls];
         s.count++;
