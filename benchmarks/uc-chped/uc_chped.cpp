@@ -2,7 +2,9 @@
 #include "data.h"
 #include "uc_model.h"
 #include "greedy_init.h"
+#include "verify_uc_chped.h"
 #include <cstdio>
+#include <cstring>
 #include <map>
 #include <string>
 #include <vector>
@@ -15,8 +17,13 @@ struct InstanceSpec {
 int main(int argc, char** argv) {
     // Default instance directory: relative to working directory
     std::string inst_dir = "benchmarks/instances/uc-chped";
-    if (argc > 1) {
-        inst_dir = argv[1];
+    bool do_verify = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--verify") == 0) {
+            do_verify = true;
+        } else {
+            inst_dir = argv[i];
+        }
     }
 
     // Time limits per number of periods
@@ -69,8 +76,13 @@ int main(int argc, char** argv) {
             printf("%-20s %6d %6d ", inst.name.c_str(), inst.n_units, inst.n_periods);
             fflush(stdout);
 
-            // Greedy initialization (replaces random init + FJ)
+            // Greedy initialization + short FJ polish
             cbls::uc_chped::greedy_uc_initialize(ucm.model, inst, ucm);
+            {
+                cbls::RNG init_rng(42);
+                cbls::ViolationManager init_vm(ucm.model);
+                cbls::fj_nl_initialize(ucm.model, init_vm, 200, &init_rng, 1.0);
+            }
 
             cbls::FloatIntensifyHook hook;
             cbls::LNS lns(0.3);
@@ -90,6 +102,12 @@ int main(int argc, char** argv) {
                 printf("%12.1f %12s %8s %7.1fs",
                        result.feasible ? result.objective : -1.0,
                        "—", result.feasible ? "—" : "INFEAS", result.time_seconds);
+            }
+
+            if (do_verify && result.feasible) {
+                auto vr = cbls::uc_chped::verify_uc_chped(ucm, inst);
+                printf("  %s", vr.ok ? "VERIFIED" : "VERIFY FAIL");
+                if (!vr.ok) vr.print_diagnostics(stdout);
             }
 
             printf("  (%s, %ld vars, %ld nodes, %ld iters)\n",

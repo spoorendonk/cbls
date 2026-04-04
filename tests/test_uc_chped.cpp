@@ -2,6 +2,7 @@
 #include <cbls/cbls.h>
 #include "benchmarks/uc-chped/data.h"
 #include "benchmarks/uc-chped/uc_model.h"
+#include "benchmarks/uc-chped/verify_uc_chped.h"
 #include <cstdio>
 
 using namespace cbls;
@@ -72,4 +73,19 @@ TEST_CASE("UC-CHPED 100-unit 1-period builds and solves", "[uc-chped]") {
     REQUIRE(result.feasible);
     printf("\n100-unit 1p: obj=%.1f, %ld vars, iters=%ld, time=%.3fs\n",
            result.objective, (long)m.num_vars(), (long)result.iterations, result.time_seconds);
+}
+
+TEST_CASE("UC-CHPED 13-unit 1-period verify", "[uc-chped][verify]") {
+    auto ucp13 = load_jsonl("benchmarks/instances/uc-chped/ucp13.jsonl");
+    auto inst = make_subinstance(ucp13, 1);
+    auto ucm = build_uc_model(inst);
+
+    FloatIntensifyHook hook;
+    LNS lns(0.3);
+    auto result = solve(ucm.model, 10.0, 42, true, &hook, &lns);
+    REQUIRE(result.feasible);
+
+    auto vr = verify_uc_chped(ucm, inst);
+    vr.print_diagnostics(stdout);
+    REQUIRE(vr.ok);
 }
