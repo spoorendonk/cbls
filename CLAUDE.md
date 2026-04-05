@@ -99,3 +99,53 @@ Each benchmark follows the same pattern:
 - `verify_*.h` — solution correctness checker
 
 The `benchmarks/chped/` directory is reference-only (Benchmark 1 was dropped). Active benchmarks: uc-chped, nuclear-outage, bunker-eca, pharma-glsp.
+
+### Benchmark assignments (per worktree)
+
+Active work happens in sibling git worktrees under `~/code/my/cbls/`. Each session works ONLY on its assigned benchmark.
+
+| Worktree | Benchmark | Problem | Epic |
+|----------|-----------|---------|------|
+| `uc-chped/` | 2 | UC-CHPED: unit commitment + valve-point dispatch | #25 |
+| `nuclear-outage/` | 3 | ROADEF 2010: nuclear outage scheduling, 500 scenarios | #26 |
+| `bunker-eca/` | 4 | Maritime fleet bunker + ECA fuel switching | #27 |
+| `pharma-glsp/` | 5 | Pharma GLSP + shelf-life campaign scheduling | #28 |
+
+Engine-wide (cross-cutting) work is tracked under epic #24.
+
+### Common benchmark workflow
+
+Each benchmark session must follow these steps in order:
+
+0. **Plan first** — Read the benchmark's epic (linked above) and its open sub-issues, plus `docs/architecture.md` (solver internals). Investigate what already exists for your benchmark (data, reference solver, model code). Propose an approach and wait for approval before implementing. This is the Plan phase — do not skip it.
+
+1. **Download/prepare instance data** — Write a download/generation script into `benchmarks/instances/{name}/`. Follow the pattern of `benchmarks/instances/uc-chped/` (Python data definitions + JSONL serialization). Source data from public benchmark libraries, competition archives, or papers.
+
+2. **Find a reference solver** — Implement a reference solver in `benchmarks/{name}/reference_solve.py` using SCIP (PySCIPOpt) or another open-source solver if SCIP can't handle the formulation. Follow the pattern in `benchmarks/chped/reference_solve.py`.
+
+3. **Collect best-known results** — Find published results from papers/competitions. Write to `benchmarks/instances/{name}/comparison.csv` with columns: instance, method, objective, gap, source.
+
+4. **Implement CBLS model** — Create `benchmarks/{name}/data.h` (C++ data structs + loaders) and `benchmarks/{name}/{name}_model.h` (model builder). Follow the pattern of `benchmarks/chped/chped_model.h`. **Critical rules:**
+   - Implement features generically in `include/cbls/` and `src/` — not benchmark-specific hacks
+   - You may READ files in other worktree sibling folders (e.g., `../cbls/`, `../nuclear-outage/`) to understand patterns, but NEVER WRITE to them or to their git branches
+   - If the solver needs new ops, moves, or hooks — implement them in the core library so all benchmarks benefit
+   - Add a runner executable in `benchmarks/{name}/{name}.cpp`
+   - Add Catch2 tests in `tests/test_{name}.cpp`
+   - Update `CMakeLists.txt` for new executables and tests
+
+5. **Run comparison** — Compare CBLS vs reference solver vs best-known results. Report objective, gap %, and solve time. Update `comparison.csv`.
+
+6. **Verify correctness** — Check CBLS solutions against best-known solutions. Feasibility must be verified (all constraints satisfied). Objective should be within reasonable gap of BKS.
+
+7. **Commit often** — Commit to your worktree branch (`bench/{name}`) after each meaningful step. Use descriptive commit messages.
+
+8. **Self-review loop** — After each commit, review your own changes for issues/nits. Fix and commit again. Repeat until clean.
+
+9. **Do not interrupt the user** — No exceptions. Keep going until the benchmark is fully implemented, running, and producing correct results. Only stop if you hit a fundamental blocker that requires API/architecture changes.
+
+### Cross-worktree rules
+
+- Each session works ONLY on its assigned benchmark
+- READ other worktrees for reference — never write to them
+- Merge to main via squash-merge when done
+- Pull main into your branch before final merge to pick up other benchmarks' core changes
