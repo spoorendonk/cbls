@@ -1,13 +1,27 @@
 instance,method,objective,gap_pct,source
-small-3s-10c,SCIP,1350768,0.00,"PySCIPOpt MIQCP, 60s, optimal"
-small-3s-10c,CBLS,1096172,18.85,"CBLS SA, 30s, avg fuel coeff simplification"
-small-3s-10c,CBLS-noECA,1096172,18.85,"CBLS SA without ECA fuel switching"
-medium-7s-30c,SCIP,,,PySCIPOpt MIQCP no solution in 300s
-medium-7s-30c,CBLS,3291331,,"CBLS SA, 120s"
-medium-7s-30c,CBLS-noECA,3291331,,"CBLS SA without ECA fuel switching"
-large-15s-60c,SCIP,,,PySCIPOpt MIQCP no solution in 600s
-large-15s-60c,CBLS,6447180,,"CBLS SA, 300s"
-large-15s-60c,CBLS-noECA,6447180,,"CBLS SA without ECA fuel switching"
-xlarge-30s-120c,SCIP,,,PySCIPOpt MIQCP no solution in 1800s
+# AUDIT (#75 / 2026-05-04): rows below are NOT comparable across methods.
+# - SCIP rows use a known-broken formulation: linear-in-v fuel (#49), missing
+#   per-ship caps (#50), different ECA threshold (#51), different price avg (#52),
+#   sailing-time pinned to v_max independent of speed var (#81).
+#   They solve a different, easier problem.
+# - CBLS rows use a different (also simplified) formulation: avg fuel coefficient
+#   over fleet (#53), single per-cargo speed var with fleet-wide bounds (#54),
+#   ECA constraint enforced only at >=0.99 (root cause of #57 noECA == ECA),
+#   missing per-ship MGO tank cap (#78), time-window violated for unassigned
+#   cargoes (#79).
+# - No published BKS exists for these instances (synthetic factories in data.py).
+# Until both sides agree (gates #56, #55), do NOT report a gap-vs-SCIP or
+# gap-vs-BKS. CBLS rows are valid only as self-consistency / engine-throughput
+# data points. See benchmarks/bunker-eca/FIDELITY.md for full audit.
+small-3s-10c,SCIP,1350768,,"PySCIPOpt MIQCP, 60s; BUGGY FORMULATION (#49-#52, #81) — not comparable"
+small-3s-10c,CBLS,1096172,,"CBLS SA, 30s; simplified formulation (#53, #54, #78, #79) — self-consistent only"
+small-3s-10c,CBLS-noECA,1096172,,"CBLS SA without ECA fuel switching; equal to CBLS due to #57"
+medium-7s-30c,SCIP,,,"PySCIPOpt MIQCP no solution in 300s (and would be buggy if it did)"
+medium-7s-30c,CBLS,3291331,,"CBLS SA, 120s; simplified formulation — self-consistent only"
+medium-7s-30c,CBLS-noECA,3291331,,"CBLS SA without ECA fuel switching; equal to CBLS due to #57"
+large-15s-60c,SCIP,,,"PySCIPOpt MIQCP no solution in 600s (and would be buggy if it did)"
+large-15s-60c,CBLS,6447180,,"CBLS SA, 300s; simplified formulation — self-consistent only"
+large-15s-60c,CBLS-noECA,6447180,,"CBLS SA without ECA fuel switching; equal to CBLS due to #57"
+xlarge-30s-120c,SCIP,,,"PySCIPOpt MIQCP no solution in 1800s"
 xlarge-30s-120c,CBLS,,,not run
 xlarge-30s-120c,CBLS-noECA,,,not run
