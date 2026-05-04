@@ -1,0 +1,4 @@
+# Downloaded instance files — fetched by download.py at runtime.
+*.mps.gz
+*.mps
+miplib2017-v22.solu

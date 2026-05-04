@@ -184,6 +184,11 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
             int32_t off = m.constant(prob.objective_offset);
             obj_node = m.sum({obj_lin, off});
         }
+        // `Model::minimize` rejects raw variable handles. If the linear
+        // objective collapsed to a single var, wrap it in a sum node.
+        if (obj_node < 0) {
+            obj_node = m.sum({obj_node});
+        }
         m.minimize(obj_node);
         result.objective_node_id = obj_node;
     }
