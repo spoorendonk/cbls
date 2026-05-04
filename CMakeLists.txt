@@ -5,6 +5,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Compression libraries (required for MPS .gz reader; bzip2 optional).
+find_package(ZLIB REQUIRED)
+option(CBLS_USE_BZIP2 "Enable bzip2 (.bz2) support in the MPS reader" OFF)
+if(CBLS_USE_BZIP2)
+    find_package(BZip2 REQUIRED)
+endif()
+
 # FetchContent (shared by library, tests, benchmarks, CLI)
 include(FetchContent)
 
@@ -27,6 +34,9 @@ add_library(cbls_lib
     src/pool.cpp
     src/inner_solver.cpp
     src/io.cpp
+    src/io/mps_reader.cpp
+    src/io/solu_reader.cpp
+    src/io/mps_to_model.cpp
     src/formatter.cpp
     src/verify.cpp
 )
@@ -40,7 +50,11 @@ set_target_properties(cbls_lib PROPERTIES
 )
 # Link json headers privately (interface lib, so use target_include_directories instead)
 target_include_directories(cbls_lib PRIVATE ${json_SOURCE_DIR}/include)
-target_link_libraries(cbls_lib PRIVATE pthread)
+target_link_libraries(cbls_lib PRIVATE pthread ZLIB::ZLIB)
+if(CBLS_USE_BZIP2)
+    target_compile_definitions(cbls_lib PRIVATE CBLS_HAS_BZIP2)
+    target_link_libraries(cbls_lib PRIVATE BZip2::BZip2)
+endif()
 
 # CLI executable
 add_executable(cbls_cli src/cli.cpp)
@@ -110,6 +124,10 @@ if(CBLS_BUILD_BENCHMARKS)
     add_executable(cbls_pharma_glsp benchmarks/pharma-glsp/pharma_glsp.cpp)
     target_link_libraries(cbls_pharma_glsp PRIVATE cbls_lib)
     target_include_directories(cbls_pharma_glsp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${json_SOURCE_DIR}/include)
+
+    add_executable(cbls_miplib_fj benchmarks/miplib-fj/miplib_fj.cpp)
+    target_link_libraries(cbls_miplib_fj PRIVATE cbls_lib)
+    target_include_directories(cbls_miplib_fj PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${json_SOURCE_DIR}/include)
 endif()
 
 # Python bindings (optional)
