@@ -57,13 +57,13 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
             // fall back to int_var with the explicit bounds.
             int ilb = static_cast<int>(std::lround(std::max(0.0, lb)));
             int iub = static_cast<int>(std::lround(std::min(1.0, ub)));
+            if (ilb > iub) {
+                throw std::runtime_error("MPS binary column " + v.name +
+                                         " has empty integer domain after rounding");
+            }
             if (ilb == 0 && iub == 1) {
                 handle = m.bool_var(v.name);
             } else {
-                if (ilb > iub) {
-                    ilb = 0;
-                    iub = 1;
-                }
                 handle = m.int_var(ilb, iub, v.name);
             }
         } else if (v.kind == MpsVarKind::Integer) {

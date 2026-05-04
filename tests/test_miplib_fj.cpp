@@ -12,7 +12,6 @@
 #include <string>
 
 using Catch::Matchers::WithinAbs;
-using Catch::Matchers::WithinRel;
 
 namespace fs = std::filesystem;
 
