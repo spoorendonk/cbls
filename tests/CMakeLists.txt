@@ -11,6 +11,7 @@ add_executable(cbls_tests
     test_nuclear_outage.cpp
     test_bunker_eca.cpp
     test_pharma_glsp.cpp
+    test_miplib_fj.cpp
 )
 target_link_libraries(cbls_tests PRIVATE cbls_lib Catch2::Catch2WithMain)
 target_include_directories(cbls_tests PRIVATE ${CMAKE_SOURCE_DIR} ${json_SOURCE_DIR}/include)
