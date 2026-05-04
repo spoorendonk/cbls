@@ -1,7 +1,20 @@
-instance,method,objective,gap_pct,source
-mini,Greedy,7711651923,,this work
-mini,MIP (SAA 20sc),7711651923,0.0,this work (PySCIPOpt)
-mini,CBLS (SA+hook),7648754817,-0.82,this work (vs Greedy)
-small,Greedy,12736677594,,this work
-small,MIP (SAA 20sc),12724583264,0.0,this work (PySCIPOpt)
-small,CBLS (SA+hook),12702032099,-0.27,this work (vs Greedy)
+instance,method,objective,gap_pct,source,notes
+mini,Greedy,7711651923,,this work,synthetic legacy model -- not ROADEF 2010
+mini,MIP (SAA 20sc),7711651923,0.0,this work (PySCIPOpt),synthetic legacy model -- not ROADEF 2010
+mini,CBLS (SA+hook),7648754817,-0.82,this work (vs Greedy),"synthetic legacy model -- not ROADEF 2010; n_sc=5 sampled per move"
+small,Greedy,12736677594,,this work,synthetic legacy model -- not ROADEF 2010
+small,MIP (SAA 20sc),12724583264,0.0,this work (PySCIPOpt),synthetic legacy model -- not ROADEF 2010
+small,CBLS (SA+hook),12702032099,-0.27,this work (vs Greedy),"synthetic legacy model -- not ROADEF 2010; n_sc=20 sampled per move"
+# Audit notes (issue #74 / FIDELITY.md):
+# All rows above are SELF-CONSISTENT comparisons over the synthetic legacy model
+# (capacity + merit-order dispatch only; no fuel dynamics, no CT5-CT12,
+# spacing collapsed into one site param). They do NOT reflect a gap vs the
+# ROADEF 2010 BKS. The legacy model solves a different problem.
+# A meaningful ROADEF 2010 BKS comparison requires:
+#   1. download.sh executed (instances + checker not vendored)
+#   2. ROADEF model run on data0-dataB10 with full S=500 evaluation
+#   3. CT6 lower-bound (#45), CT12 (#44), CT10 AMAX, CT1 Type 1 commitment
+#      gaps closed (FIDELITY.md sec 7)
+#   4. official checker.jar passes on emitted solution.txt
+# Until then, this CSV claims only "CBLS-SA vs greedy / SCIP-SAA
+# self-consistency on synthetic instances", not "% gap vs published BKS".
