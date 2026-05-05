@@ -19,6 +19,7 @@
 #include <cctype>
 #include <charconv>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <stdexcept>
@@ -430,8 +431,10 @@ bool isSection(std::string_view line) {
     return !std::isspace(static_cast<unsigned char>(line[0]));
 }
 
-enum class Section { None, Name, Rows, Columns, Rhs, Ranges, Bounds, Endata };
+enum class Section { None, Name, ObjSense, Rows, Columns, Rhs, Ranges, Bounds, Endata };
 
+// MIPX-DIFF: ObjSense section is local to cbls; vendored mipx does not
+// parse OBJSENSE today (filed upstream).
 Section parseSection(std::string_view line) {
     auto tokens = tokenize(line);
     if (tokens.n == 0) {
@@ -440,6 +443,9 @@ Section parseSection(std::string_view line) {
     auto s = tokens[0];
     if (s == "NAME") {
         return Section::Name;
+    }
+    if (s == "OBJSENSE") {
+        return Section::ObjSense;
     }
     if (s == "ROWS") {
         return Section::Rows;
@@ -505,6 +511,9 @@ MpsProblem read_mps(const std::string& filename) {
     bool in_integer_section = false;
     Section section = Section::None;
     bool have_objective = false;
+    // MIPX-DIFF: track ENDATA sentinel to warn on truncated files; vendored
+    // mipx tolerates missing ENDATA without warning.
+    bool saw_endata = false;
 
     // Column name cache: MPS groups columns contiguously, so the same
     // column name repeats on consecutive lines.  Cache the last lookup.
@@ -561,6 +570,7 @@ MpsProblem read_mps(const std::string& filename) {
                 }
             }
             if (section == Section::Endata) {
+                saw_endata = true;
                 break;
             }
             continue;
@@ -572,6 +582,18 @@ MpsProblem read_mps(const std::string& filename) {
         }
 
         switch (section) {
+            case Section::ObjSense: {
+                // Body line is a single token: MAX / MAXIMIZE / MIN / MINIMIZE.
+                // MIPX-DIFF: section recognised locally; vendored mipx ignores it.
+                auto tok = tokens[0];
+                if (tok == "MAX" || tok == "MAXIMIZE") {
+                    prob.maximize = true;
+                } else if (tok == "MIN" || tok == "MINIMIZE") {
+                    prob.maximize = false;
+                }
+                break;
+            }
+
             case Section::Rows: {
                 if (tokens.n < 2) {
                     break;
@@ -635,6 +657,11 @@ MpsProblem read_mps(const std::string& filename) {
                 for (int i = 1; i + 1 < tokens.n; i += 2) {
                     auto row_name = tokens[i];
                     double val = parseReal(tokens[i + 1]);
+                    if (!std::isfinite(val)) {
+                        throw std::runtime_error("MPS: non-finite coefficient for column '" +
+                                                 std::string(col_name) + "' row '" +
+                                                 std::string(row_name) + "'");
+                    }
 
                     auto it = row_map.find(std::string(row_name));
                     if (it == row_map.end()) {
@@ -737,6 +764,8 @@ MpsProblem read_mps(const std::string& filename) {
                     // Semi-continuous / semi-integer: not modelled in CBLS.
                     // Treat as their integer/continuous kind with the given
                     // upper bound; the "off-or-in-band" behavior is dropped.
+                    // Per MPS convention SC/SI implies lb=0; matches mipx upstream.
+                    v.lb = 0.0;
                     if (has_value) {
                         v.ub = parseReal(tokens[3]);
                     }
@@ -750,6 +779,22 @@ MpsProblem read_mps(const std::string& filename) {
             default:
                 break;
         }
+    }
+
+    // MIPX-DIFF: Apply MPS integer-default upper bound. CPLEX/Gurobi/SCIP
+    // convention: integer columns inside INTORG/INTEND (or marked via LI/UI)
+    // default to ub=1 unless an explicit upper was set. Vendored mipx leaves
+    // ub=+inf, which produces multi-billion domains for MIPLIB instances that
+    // rely on the default. (Filed upstream.)
+    for (auto& v : prob.vars) {
+        if (v.kind == MpsVarKind::Integer && v.ub == kMpsInf) {
+            v.ub = 1.0;
+        }
+    }
+
+    if (!saw_endata) {
+        std::fprintf(stderr, "MPS warning: no ENDATA marker in '%s' (file may be truncated)\n",
+                     filename.c_str());
     }
 
     return prob;

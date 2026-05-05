@@ -68,6 +68,9 @@ struct MpsProblem {
     std::string name;
     std::string objective_row_name;  ///< First 'N' row name; empty if none.
     double objective_offset = 0.0;   ///< From RHS of the objective row.
+    /// True if the MPS had `OBJSENSE MAX|MAXIMIZE`. The reader records this
+    /// faithfully; `mps_to_model` currently rejects it (CBLS expects min).
+    bool maximize = false;
 
     std::vector<MpsVar> vars;
     std::vector<MpsRow> rows;

@@ -33,6 +33,13 @@ double clamp_hi(double ub, double inf_clamp) {
 }  // namespace
 
 MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& opts) {
+    if (prob.maximize) {
+        throw std::runtime_error(
+            "MPS: OBJSENSE MAX is not supported by mps_to_model (CBLS expects "
+            "minimisation). Negate the objective coefficients in the input or extend "
+            "this adapter.");
+    }
+
     MpsToModelResult result;
     Model& m = result.model;
 

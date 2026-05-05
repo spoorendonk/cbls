@@ -1,3 +1,20 @@
+# MIPLIB-FJ pre-port baseline.
+#
+# This row set was produced by the simulated-annealing search (no
+# Feasibility-Jump-style construction phase) on raw MIPLIB instances with a
+# 15s/instance time limit. SA without a primal heuristic is not expected to
+# find feasible points on most pure-MILP instances; the numbers below are
+# therefore floors, not signal.
+#
+# Purpose: lock in a self-consistent baseline so post-port ViolationLS can be
+# compared apples-to-apples on the same subset (epic #64). Re-run after the
+# port to populate the post-port rows.
+#
+# Notes on integer-default upper bound: pre-fix, integer columns without an
+# explicit UP/UI bound were left at +inf and clamped to 1e9, blowing up the
+# objective on instances like gen-ip054, pk1, mad. Post-fix
+# (read_mps now applies the CPLEX/Gurobi/SCIP ub=1 default), these values
+# should be regenerated; see issue #64 P5 (#70).
 instance,objective,gap_to_opt%,wall_seconds,commit_sha
 enlight_hard,NaN,NaN,16.5839,4e9c264
 markshare1,278,27700,15.5285,4e9c264

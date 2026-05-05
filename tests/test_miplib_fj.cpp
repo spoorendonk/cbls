@@ -2,10 +2,11 @@
 // adapter. These tests do not require network access — small MPS / .solu
 // fixtures are written into a temporary directory at runtime.
 
+#include "test_helpers.h"
+
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cbls/cbls.h>
-#include <cbls/io_mps.h>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -165,6 +166,88 @@ TEST_CASE("CBLS finds a feasible point on a small binary IP", "[miplib-fj][solve
     // with all costs); accept any feasible point satisfying the assertion.
     REQUIRE(result.objective >= 5.0 - 1e-6);
     REQUIRE(result.objective <= 9.0 + 1e-6);
+}
+
+TEST_CASE("model at known optimum has zero violation and matching objective",
+          "[miplib-fj][adapter]") {
+    // Issue #71 acceptance criterion: the MPS-to-Model adapter should produce
+    // a closed CBLS model whose total_violation matches the LP residual when
+    // fed the optimum from .solu.
+    auto path = write_file("small_opt.mps", kSmallLp);
+    auto prob = cbls::read_mps(path.string());
+    auto built = cbls::mps_to_model(prob);
+
+    // Known optimum of kSmallLp: x = 3, y = 0, obj = 3.
+    REQUIRE(built.var_handles.size() == 2);
+    built.model.var_mut(vid(built.var_handles[0])).value = 3.0;
+    built.model.var_mut(vid(built.var_handles[1])).value = 0.0;
+    cbls::full_evaluate(built.model);
+
+    cbls::ViolationManager vm(built.model);
+    REQUIRE(vm.is_feasible());
+    REQUIRE_THAT(vm.total_violation(), WithinAbs(0.0, 1e-9));
+
+    REQUIRE(built.objective_node_id >= 0);
+    REQUIRE_THAT(built.model.node(built.objective_node_id).value, WithinAbs(3.0, 1e-9));
+}
+
+TEST_CASE("read_mps applies MPS integer-default ub=1 for unbounded integers",
+          "[miplib-fj][reader]") {
+    // INTORG without any UP/UI/BV defaults to ub=1 (CPLEX/Gurobi/SCIP).
+    const std::string content =
+        "NAME          INTDEFAULT\n"
+        "ROWS\n"
+        " N  COST\n"
+        " G  C1\n"
+        "COLUMNS\n"
+        "    MARKER1     'MARKER'                 'INTORG'\n"
+        "    Z    COST   1.0   C1   1.0\n"
+        "    MARKER2     'MARKER'                 'INTEND'\n"
+        "RHS\n"
+        "    RHS  C1     0.0\n"
+        "ENDATA\n";
+    auto path = write_file("intdefault.mps", content);
+    auto prob = cbls::read_mps(path.string());
+    REQUIRE(prob.vars.size() == 1);
+    REQUIRE(prob.vars[0].kind == cbls::MpsVarKind::Integer);
+    REQUIRE(prob.vars[0].lb == 0.0);
+    REQUIRE_THAT(prob.vars[0].ub, WithinAbs(1.0, 1e-12));
+}
+
+TEST_CASE("read_mps records OBJSENSE and adapter rejects MAX", "[miplib-fj][reader]") {
+    const std::string content =
+        "NAME          MAX\n"
+        "OBJSENSE\n"
+        "    MAX\n"
+        "ROWS\n"
+        " N  COST\n"
+        " L  C1\n"
+        "COLUMNS\n"
+        "    X    COST   1.0   C1   1.0\n"
+        "RHS\n"
+        "    RHS  C1     5.0\n"
+        "BOUNDS\n"
+        " UP BND  X      10.0\n"
+        "ENDATA\n";
+    auto path = write_file("max.mps", content);
+    auto prob = cbls::read_mps(path.string());
+    REQUIRE(prob.maximize);
+    REQUIRE_THROWS_AS(cbls::mps_to_model(prob), std::runtime_error);
+}
+
+TEST_CASE("read_mps rejects non-finite coefficients", "[miplib-fj][reader]") {
+    const std::string content =
+        "NAME          NAN\n"
+        "ROWS\n"
+        " N  COST\n"
+        " L  C1\n"
+        "COLUMNS\n"
+        "    X    COST   inf   C1   1.0\n"
+        "RHS\n"
+        "    RHS  C1     5.0\n"
+        "ENDATA\n";
+    auto path = write_file("nonfinite.mps", content);
+    REQUIRE_THROWS_AS(cbls::read_mps(path.string()), std::runtime_error);
 }
 
 TEST_CASE("read_solu parses =opt= / =inf= / =best=", "[miplib-fj][reader]") {
