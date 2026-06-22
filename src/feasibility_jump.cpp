@@ -345,24 +345,29 @@ bool FeasibilityJump::apply_jump(int sample_size) {
     return true;
 }
 
-GFJStatus FeasibilityJump::gls(int sample_size) {
-    rebuild_violated_and_scan_set();
-    const auto& cids = model_.constraint_ids();
-    const size_t nc = cids.size();
+bool FeasibilityJump::any_active_violated() const {
+    const size_t nc = violated_.size();
+    for (size_t c = 0; c < nc; ++c) {
+        if (violated_[c] && active(static_cast<int32_t>(c))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The GLS inner loop (ApplyJump + stagnation weight bump), reusing the current
+// state (Q, weights, jump table). Returns Feasible as soon as no active
+// constraint is violated; Unsolved when the batch / global iteration budget or
+// the deadline is hit. batch_iter_limit <= 0 means "no per-call limit".
+GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
+    const size_t nc = model_.constraint_ids().size();
+    int64_t batch_iters = 0;
 
     while (true) {
         if (!apply_jump(sample_size)) {
-            bool any_active_violated = false;
-            for (size_t c = 0; c < nc; ++c) {
-                if (violated_[c] && active(static_cast<int32_t>(c))) {
-                    any_active_violated = true;
-                    break;
-                }
-            }
-            if (!any_active_violated) {
+            if (!any_active_violated()) {
                 return GFJStatus::Feasible;
             }
-
             gls_update_weights(vm_, config_.rho);
             for (size_t c = 0; c < nc; ++c) {
                 if (violated_[c] && active(static_cast<int32_t>(c))) {
@@ -375,6 +380,10 @@ GFJStatus FeasibilityJump::gls(int sample_size) {
         }
 
         ++iterations_;
+        ++batch_iters;
+        if (batch_iter_limit > 0 && batch_iters >= batch_iter_limit) {
+            return any_active_violated() ? GFJStatus::Unsolved : GFJStatus::Feasible;
+        }
         if (config_.max_iterations > 0 && iterations_ >= config_.max_iterations) {
             return GFJStatus::Unsolved;
         }
@@ -382,6 +391,67 @@ GFJStatus FeasibilityJump::gls(int sample_size) {
             return GFJStatus::Unsolved;
         }
     }
+}
+
+GFJStatus FeasibilityJump::gls(int sample_size) {
+    rebuild_violated_and_scan_set();
+    return gls_loop(sample_size, 0);
+}
+
+// ---- Batch API (drives ViolationLS Algorithm 6 from an outer loop) ----
+
+void FeasibilityJump::begin(bool set_initial_x) {
+    iterations_ = 0;
+    has_deadline_ = config_.time_limit > 0.0;
+    if (has_deadline_) {
+        deadline_ = std::chrono::steady_clock::now() +
+                    std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                        std::chrono::duration<double>(config_.time_limit));
+    }
+    if (set_initial_x) {
+        set_initial_assignment();
+    }
+    full_evaluate(model_);
+    std::fill(vm_.weights.begin(), vm_.weights.end(), 1.0);
+    vm_.invalidate_cache();
+    rebuild_violated_and_scan_set();
+}
+
+bool FeasibilityJump::batch(int64_t batch_iterations) {
+    return gls_loop(config_.sample_size_general, batch_iterations) == GFJStatus::Feasible;
+}
+
+void FeasibilityJump::reset_weights() {
+    std::fill(vm_.weights.begin(), vm_.weights.end(), 1.0);
+    vm_.invalidate_cache();
+    rebuild_violated_and_scan_set();
+}
+
+void FeasibilityJump::perturb(double probability) {
+    for (int32_t v = 0; v < static_cast<int32_t>(model_.num_vars()); ++v) {
+        if (!jumpable(v) || rng_.random() >= probability) {
+            continue;
+        }
+        Variable& var = model_.var_mut(v);
+        switch (var.type) {
+            case VarType::Bool:
+                var.value = static_cast<double>(rng_.integers(0, 2));
+                break;
+            case VarType::Int:
+                var.value = static_cast<double>(
+                    rng_.integers(static_cast<int64_t>(var.lb), static_cast<int64_t>(var.ub) + 1));
+                break;
+            default:  // Float
+                var.value = rng_.uniform(var.lb, var.ub);
+                break;
+        }
+    }
+    full_evaluate(model_);
+    reset_weights();
+}
+
+bool FeasibilityJump::all_satisfied() const {
+    return !any_active_violated();
 }
 
 GFJStatus FeasibilityJump::run() {

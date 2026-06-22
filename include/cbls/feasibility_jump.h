@@ -87,13 +87,29 @@ class FeasibilityJump {
 public:
     FeasibilityJump(Model& model, ViolationManager& vm, RNG& rng, GFJConfig config = {});
 
-    // Run GLS until feasible, or until the iteration/time budget is exhausted.
+    // Run GLS until feasible, or until the iteration/time budget is exhausted
+    // (standalone construction / single-shot use).
     GFJStatus run();
+
+    // Batch API for the ViolationLS outer loop (Algorithm 6). The caller owns
+    // the loop: begin() once, then batch() repeatedly, calling reset_weights()
+    // on a new best (after tightening the objective bound) and perturb() on
+    // stagnation. set_rho() re-randomises the GLS decay between batches.
+    void begin(bool set_initial_x);
+    bool batch(int64_t batch_iterations);  // true if feasible (no active violated)
+    void reset_weights();                  // W <- 1 and rebuild the scan set
+    void perturb(double probability);      // randomise each jumpable var w.p. p
+    void set_rho(double rho) { config_.rho = rho; }
+    bool all_satisfied() const;
 
 private:
     // One GLS pass over the constraints whose weight is currently > 0 (the
     // "active" set). Returns Feasible if all active constraints are satisfied.
     GFJStatus gls(int sample_size);
+    // GLS inner loop reusing current state, bounded by a per-call iteration
+    // limit (<=0 for none) plus the global budget/deadline.
+    GFJStatus gls_loop(int sample_size, int64_t batch_iter_limit);
+    bool any_active_violated() const;
     // ApplyJump (Algorithm 2): sample up to `sample_size` vars from Q, apply the
     // best improving jump via update_var. Returns false if none improves.
     bool apply_jump(int sample_size);

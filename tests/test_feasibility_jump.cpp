@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cmath>
+#include <limits>
 
 using namespace cbls;
 
@@ -211,4 +212,52 @@ TEST_CASE("FeasibilityJump returns Unsolved on contradiction within budget", "[f
     FeasibilityJump fj(m, vm, rng, cfg);
     REQUIRE(fj.run() == GFJStatus::Unsolved);
     REQUIRE_FALSE(vm.is_feasible());
+}
+
+TEST_CASE("batch API drives objective minimization (Algorithm 6 mechanism)", "[fj][batch]") {
+    // minimize x+y s.t. x+y >= 4, integer ; optimum obj = 4. An integer
+    // objective makes the objective-as-constraint mechanism converge cleanly
+    // (the continuous case relies on the InnerSolverHook for objective descent,
+    // P4 — golden section sits on the feasible band rather than its lower edge).
+    Model m;
+    auto x = m.int_var(0, 5);
+    auto y = m.int_var(0, 5);
+    m.add_constraint(m.geq(m.sum({x, y}), m.constant(4.0)));
+    m.minimize(m.sum({x, y}));
+    m.close();
+    m.add_objective_soft_constraint();
+
+    ViolationManager vm(m);
+    RNG rng(5);
+    GFJConfig cfg;
+    cfg.time_limit = 3.0;  // safety bound
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(/*set_initial_x=*/true);
+
+    double best = std::numeric_limits<double>::infinity();
+    bool have = false;
+    int stagnation = 0;
+    for (int b = 0; b < 3000; ++b) {
+        bool feasible = fj.batch(200);
+        if (feasible) {
+            double obj = m.node(m.objective_id()).value;
+            if (obj < best - 1e-9) {
+                best = obj;
+                have = true;
+                double eps = 1e-6 * (std::abs(obj) + 1.0);
+                m.set_objective_bound(obj - eps);
+                vm.invalidate_cache();
+                fj.reset_weights();
+                stagnation = 0;
+                continue;
+            }
+        }
+        if (++stagnation >= 50) {
+            fj.perturb(0.2);
+            stagnation = 0;
+        }
+    }
+    REQUIRE(have);
+    REQUIRE(best >= 4.0 - 1e-6);  // cannot beat the true optimum
+    REQUIRE(best < 4.0 + 0.05);   // reaches it
 }
