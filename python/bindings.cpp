@@ -1,32 +1,31 @@
+#include <cbls/cbls.h>
 #include <nanobind/nanobind.h>
-#include <nanobind/trampoline.h>
-#include <nanobind/stl/string.h>
-#include <nanobind/stl/vector.h>
 #include <nanobind/stl/function.h>
 #include <nanobind/stl/optional.h>
+#include <nanobind/stl/pair.h>
 #include <nanobind/stl/set.h>
-#include <cbls/cbls.h>
+#include <nanobind/stl/string.h>
+#include <nanobind/stl/vector.h>
+#include <nanobind/trampoline.h>
 
 namespace nb = nanobind;
 using namespace cbls;
 
 struct PySolveCallback : SolveCallback {
     NB_TRAMPOLINE(SolveCallback, 1);
-    void on_progress(const SolveProgress& p) override {
-        NB_OVERRIDE_PURE(on_progress, p);
-    }
+    void on_progress(const SolveProgress& p) override { NB_OVERRIDE_PURE(on_progress, p); }
 };
 
 NB_MODULE(_cbls_core, m) {
     m.doc() = "CBLS: Constraint-Based Local Search engine (C++ core)";
 
     // Exception translators
-    nb::register_exception_translator([](const std::exception_ptr &p, void *) {
+    nb::register_exception_translator([](const std::exception_ptr& p, void*) {
         try {
             std::rethrow_exception(p);
-        } catch (const std::out_of_range &e) {
+        } catch (const std::out_of_range& e) {
             PyErr_SetString(PyExc_IndexError, e.what());
-        } catch (const std::invalid_argument &e) {
+        } catch (const std::invalid_argument& e) {
             PyErr_SetString(PyExc_ValueError, e.what());
         }
     });
@@ -133,15 +132,15 @@ NB_MODULE(_cbls_core, m) {
         .def("gt", &Model::gt)
         .def("lambda_sum", &Model::lambda_sum)
         // Constraint and objective (int32_t overloads)
-        .def("add_constraint", static_cast<void(Model::*)(int32_t)>(&Model::add_constraint))
-        .def("minimize", static_cast<void(Model::*)(int32_t)>(&Model::minimize))
-        .def("maximize", static_cast<void(Model::*)(int32_t)>(&Model::maximize))
+        .def("add_constraint", static_cast<void (Model::*)(int32_t)>(&Model::add_constraint))
+        .def("minimize", static_cast<void (Model::*)(int32_t)>(&Model::minimize))
+        .def("maximize", static_cast<void (Model::*)(int32_t)>(&Model::maximize))
         // Constraint and objective (Expr overloads)
-        .def("add_constraint", static_cast<void(Model::*)(const Expr&)>(&Model::add_constraint))
-        .def("minimize", static_cast<void(Model::*)(const Expr&)>(&Model::minimize))
-        .def("maximize", static_cast<void(Model::*)(const Expr&)>(&Model::maximize))
-        .def("add_var_sequence", &Model::add_var_sequence,
-             nb::arg("var_ids"), nb::arg("min_block_on") = 1, nb::arg("min_block_off") = 1)
+        .def("add_constraint", static_cast<void (Model::*)(const Expr&)>(&Model::add_constraint))
+        .def("minimize", static_cast<void (Model::*)(const Expr&)>(&Model::minimize))
+        .def("maximize", static_cast<void (Model::*)(const Expr&)>(&Model::maximize))
+        .def("add_var_sequence", &Model::add_var_sequence, nb::arg("var_ids"),
+             nb::arg("min_block_on") = 1, nb::arg("min_block_off") = 1)
         .def("var_sequence_for", &Model::var_sequence_for)
         .def("close", &Model::close)
         // Accessors
@@ -150,6 +149,9 @@ NB_MODULE(_cbls_core, m) {
         .def("node", &Model::node, nb::rv_policy::reference_internal)
         .def("objective_id", &Model::objective_id)
         .def("constraint_ids", &Model::constraint_ids)
+        .def("constraints_of_var", &Model::constraints_of_var, nb::arg("var_id"))
+        .def("per_constraint_violation_delta", &Model::per_constraint_violation_delta,
+             nb::arg("var_id"), nb::arg("j"))
         .def("num_vars", &Model::num_vars)
         .def("num_nodes", &Model::num_nodes)
         // State snapshot/restore
@@ -160,8 +162,8 @@ NB_MODULE(_cbls_core, m) {
         .def("Int", &Model::Int, nb::arg("lb"), nb::arg("ub"), nb::arg("name") = "")
         .def("Float", &Model::Float, nb::arg("lb"), nb::arg("ub"), nb::arg("name") = "")
         .def("List", &Model::List, nb::arg("n"), nb::arg("name") = "")
-        .def("Set", &Model::Set, nb::arg("n"), nb::arg("min_size") = 0,
-             nb::arg("max_size") = -1, nb::arg("name") = "")
+        .def("Set", &Model::Set, nb::arg("n"), nb::arg("min_size") = 0, nb::arg("max_size") = -1,
+             nb::arg("name") = "")
         .def("Constant", &Model::Constant);
 
     // Expr
@@ -183,11 +185,16 @@ NB_MODULE(_cbls_core, m) {
         .def("__rtruediv__", [](const Expr& a, double b) { return b / a; })
         .def("__neg__", [](const Expr& a) { return -a; })
         .def("__pow__", [](const Expr& a, const Expr& b) { return a.pow(b); })
-        .def("__pow__", [](const Expr& a, double b) { return a.pow(Expr{a.model, a.model->constant(b)}); })
-        .def("__pow__", [](const Expr& a, int b) { return a.pow(Expr{a.model, a.model->constant(static_cast<double>(b))}); })
-        .def("__rpow__", [](const Expr& a, double b) {
-            return Expr{a.model, a.model->pow_expr(a.model->constant(b), a.handle)};
-        })
+        .def("__pow__",
+             [](const Expr& a, double b) { return a.pow(Expr{a.model, a.model->constant(b)}); })
+        .def("__pow__",
+             [](const Expr& a, int b) {
+                 return a.pow(Expr{a.model, a.model->constant(static_cast<double>(b))});
+             })
+        .def("__rpow__",
+             [](const Expr& a, double b) {
+                 return Expr{a.model, a.model->pow_expr(a.model->constant(b), a.handle)};
+             })
         .def("__le__", [](const Expr& a, const Expr& b) { return a <= b; })
         .def("__le__", [](const Expr& a, double b) { return a <= b; })
         .def("__ge__", [](const Expr& a, const Expr& b) { return a >= b; })
@@ -232,6 +239,8 @@ NB_MODULE(_cbls_core, m) {
         .def("is_feasible", &ViolationManager::is_feasible, nb::arg("tol") = 1e-9)
         .def("violated_constraints", &ViolationManager::violated_constraints, nb::arg("tol") = 1e-9)
         .def("bump_weights", &ViolationManager::bump_weights, nb::arg("factor") = 1.0)
+        .def("weighted_violation_delta", &ViolationManager::weighted_violation_delta,
+             nb::arg("var_id"), nb::arg("j"))
         .def_rw("adaptive_lambda", &ViolationManager::adaptive_lambda);
 
     // RNG
@@ -274,8 +283,8 @@ NB_MODULE(_cbls_core, m) {
     nb::class_<LNS>(m, "LNS")
         .def(nb::init<double>(), nb::arg("destroy_fraction") = 0.3)
         .def("destroy_repair", &LNS::destroy_repair)
-        .def("destroy_repair_cycle", &LNS::destroy_repair_cycle,
-             nb::arg("model"), nb::arg("vm"), nb::arg("rng"), nb::arg("n_rounds") = 10);
+        .def("destroy_repair_cycle", &LNS::destroy_repair_cycle, nb::arg("model"), nb::arg("vm"),
+             nb::arg("rng"), nb::arg("n_rounds") = 10);
 
     // SolutionPool
     nb::class_<Solution>(m, "Solution")
@@ -303,18 +312,20 @@ NB_MODULE(_cbls_core, m) {
     // ParallelSearch
     nb::class_<ParallelSearch>(m, "ParallelSearch")
         .def(nb::init<int>(), nb::arg("n_threads") = 0)
-        .def("solve", static_cast<SearchResult(ParallelSearch::*)(
-            std::function<Model()>, double, uint64_t)>(&ParallelSearch::solve),
-            nb::arg("model_factory"), nb::arg("time_limit") = 10.0,
-            nb::arg("seed") = 42)
-        .def("solve_parallel", static_cast<SearchResult(ParallelSearch::*)(
-            std::function<Model()>, double, uint64_t, const SearchConfig&,
-            std::function<InnerSolverHook*(Model&)>, std::function<LNS*()>,
-            SolveCallback*, const ParallelConfig&)>(&ParallelSearch::solve),
-            nb::arg("model_factory"), nb::arg("time_limit") = 10.0,
-            nb::arg("seed") = 42, nb::arg("config") = SearchConfig{},
-            nb::arg("hook_factory") = nullptr, nb::arg("lns_factory") = nullptr,
-            nb::arg("callback") = nullptr, nb::arg("par_config") = ParallelConfig{});
+        .def(
+            "solve",
+            static_cast<SearchResult (ParallelSearch::*)(std::function<Model()>, double, uint64_t)>(
+                &ParallelSearch::solve),
+            nb::arg("model_factory"), nb::arg("time_limit") = 10.0, nb::arg("seed") = 42)
+        .def("solve_parallel",
+             static_cast<SearchResult (ParallelSearch::*)(
+                 std::function<Model()>, double, uint64_t, const SearchConfig&,
+                 std::function<InnerSolverHook*(Model&)>, std::function<LNS*()>, SolveCallback*,
+                 const ParallelConfig&)>(&ParallelSearch::solve),
+             nb::arg("model_factory"), nb::arg("time_limit") = 10.0, nb::arg("seed") = 42,
+             nb::arg("config") = SearchConfig{}, nb::arg("hook_factory") = nullptr,
+             nb::arg("lns_factory") = nullptr, nb::arg("callback") = nullptr,
+             nb::arg("par_config") = ParallelConfig{});
 
     // Free functions
     m.def("full_evaluate", &full_evaluate);
@@ -325,8 +336,8 @@ NB_MODULE(_cbls_core, m) {
     m.def("compute_all_partials", &compute_all_partials);
     m.def("generate_standard_moves", &generate_standard_moves);
     m.def("newton_tight_move", &newton_tight_move);
-    m.def("gradient_lift_move", &gradient_lift_move,
-          nb::arg("var_id"), nb::arg("model"), nb::arg("step_size") = 0.1);
+    m.def("gradient_lift_move", &gradient_lift_move, nb::arg("var_id"), nb::arg("model"),
+          nb::arg("step_size") = 0.1);
     m.def("apply_move", &apply_move);
     m.def("save_move_values", &save_move_values);
     m.def("undo_move", &undo_move);
@@ -367,20 +378,14 @@ NB_MODULE(_cbls_core, m) {
     // SolveCallback with trampoline for Python subclassing
     nb::class_<SolveCallback, PySolveCallback>(m, "SolveCallback")
         .def(nb::init<>())
-        .def("on_progress", [](SolveCallback& self, const SolveProgress& p) {
-            self.on_progress(p);
-        });
+        .def("on_progress",
+             [](SolveCallback& self, const SolveProgress& p) { self.on_progress(p); });
 
-    m.def("solve", &cbls::solve,
-          nb::arg("model"), nb::arg("time_limit") = 10.0,
-          nb::arg("seed") = 42, nb::arg("use_fj") = true,
-          nb::arg("hook") = nullptr,
-          nb::arg("lns") = nullptr,
-          nb::arg("lns_interval") = 3,
-          nb::arg("callback") = nullptr,
+    m.def("solve", &cbls::solve, nb::arg("model"), nb::arg("time_limit") = 10.0,
+          nb::arg("seed") = 42, nb::arg("use_fj") = true, nb::arg("hook") = nullptr,
+          nb::arg("lns") = nullptr, nb::arg("lns_interval") = 3, nb::arg("callback") = nullptr,
           nb::arg("config") = SearchConfig{});
     m.def("initialize_random", &initialize_random);
-    m.def("fj_nl_initialize", &fj_nl_initialize,
-          nb::arg("model"), nb::arg("vm"), nb::arg("max_iterations") = 10000,
-          nb::arg("rng") = nullptr, nb::arg("time_limit") = 2.0);
+    m.def("fj_nl_initialize", &fj_nl_initialize, nb::arg("model"), nb::arg("vm"),
+          nb::arg("max_iterations") = 10000, nb::arg("rng") = nullptr, nb::arg("time_limit") = 2.0);
 }

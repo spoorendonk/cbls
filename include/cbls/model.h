@@ -1,10 +1,11 @@
 #pragma once
 
 #include "dag.h"
-#include <vector>
-#include <string>
+
 #include <functional>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace cbls {
 
@@ -12,14 +13,16 @@ namespace cbls {
 class Expr;
 
 struct VarSequence {
-    std::vector<int32_t> var_ids;    // ordered variable IDs in this sequence
-    int min_block_on = 1;            // minimum consecutive vars to set to 1
-    int min_block_off = 1;           // minimum consecutive vars to set to 0
+    std::vector<int32_t> var_ids;  // ordered variable IDs in this sequence
+    int min_block_on = 1;          // minimum consecutive vars to set to 1
+    int min_block_off = 1;         // minimum consecutive vars to set to 0
 };
 
 /// Convert variable handle (negative, from int_var/float_var/etc.)
 /// to var ID (non-negative, for model.var()/model.var_mut()).
-inline int32_t handle_to_var_id(int32_t handle) { return -(handle + 1); }
+inline int32_t handle_to_var_id(int32_t handle) {
+    return -(handle + 1);
+}
 
 class Model {
 public:
@@ -78,8 +81,8 @@ public:
     void maximize(const Expr& e);
 
     // Variable sequences for block moves
-    void add_var_sequence(std::vector<int32_t> var_ids,
-                          int min_block_on = 1, int min_block_off = 1);
+    void add_var_sequence(std::vector<int32_t> var_ids, int min_block_on = 1,
+                          int min_block_off = 1);
     const std::vector<VarSequence>& var_sequences() const noexcept { return var_sequences_; }
     // Returns (seq_index, position) or (-1, -1) if not in any sequence
     std::pair<int, int> var_sequence_for(int32_t var_id) const;
@@ -87,24 +90,48 @@ public:
     void close();
 
     // Accessors
-    const Variable& var(int32_t id) const {
-        if (id < 0 || id >= static_cast<int32_t>(vars_.size()))
+    // Constraints (by index into constraint_ids()) that variable var_id can
+    // affect. This is the paper's G_v. Populated by close(); empty before.
+    const std::vector<int32_t>& constraints_of_var(int32_t var_id) const {
+        if (var_id < 0 || var_id >= static_cast<int32_t>(var_constraints_.size())) {
             throw std::out_of_range("var id out of range");
+        }
+        return var_constraints_[var_id];
+    }
+
+    // Sparse per-constraint violation deltas if var_id <- j, WITHOUT committing.
+    // Returns (constraint_index, delta) pairs for affected constraints whose
+    // violation changes. Scalar variables only (Bool/Int/Float); throws on
+    // List/Set. Does not clamp j to [lb, ub] — it is a pure counterfactual.
+    // PRECONDITION: node values are consistent with the current assignment
+    // (true after close(), full_evaluate(), or a committed move). The probe
+    // restores exactly to that consistent state; it does not snapshot a dirty
+    // mid-move state.
+    std::vector<std::pair<int32_t, double>> per_constraint_violation_delta(int32_t var_id,
+                                                                           double j);
+
+    const Variable& var(int32_t id) const {
+        if (id < 0 || id >= static_cast<int32_t>(vars_.size())) {
+            throw std::out_of_range("var id out of range");
+        }
         return vars_[id];
     }
     Variable& var_mut(int32_t id) {
-        if (id < 0 || id >= static_cast<int32_t>(vars_.size()))
+        if (id < 0 || id >= static_cast<int32_t>(vars_.size())) {
             throw std::out_of_range("var id out of range");
+        }
         return vars_[id];
     }
     const ExprNode& node(int32_t id) const {
-        if (id < 0 || id >= static_cast<int32_t>(nodes_.size()))
+        if (id < 0 || id >= static_cast<int32_t>(nodes_.size())) {
             throw std::out_of_range("node id out of range");
+        }
         return nodes_[id];
     }
     ExprNode& node_mut(int32_t id) {
-        if (id < 0 || id >= static_cast<int32_t>(nodes_.size()))
+        if (id < 0 || id >= static_cast<int32_t>(nodes_.size())) {
             throw std::out_of_range("node id out of range");
+        }
         return nodes_[id];
     }
     int32_t objective_id() const noexcept { return objective_id_; }
@@ -121,14 +148,16 @@ public:
 
     // Lambda function access
     const std::function<double(int)>& lambda_func(int32_t idx) const {
-        if (idx < 0 || idx >= static_cast<int32_t>(lambda_funcs_.size()))
+        if (idx < 0 || idx >= static_cast<int32_t>(lambda_funcs_.size())) {
             throw std::out_of_range("lambda func index out of range");
+        }
         return lambda_funcs_[idx];
     }
 
     const std::function<double(int, int)>& pair_lambda_func(int32_t idx) const {
-        if (idx < 0 || idx >= static_cast<int32_t>(pair_lambda_funcs_.size()))
+        if (idx < 0 || idx >= static_cast<int32_t>(pair_lambda_funcs_.size())) {
             throw std::out_of_range("pair lambda func index out of range");
+        }
         return pair_lambda_funcs_[idx];
     }
 
@@ -145,6 +174,7 @@ private:
     std::vector<ExprNode> nodes_;
     std::vector<int32_t> topo_order_;
     std::vector<int32_t> constraint_ids_;
+    std::vector<std::vector<int32_t>> var_constraints_;  // var_id -> constraint indices (G_v)
     int32_t objective_id_ = -1;
     bool is_maximizing_ = false;
     std::vector<std::function<double(int)>> lambda_funcs_;
@@ -153,6 +183,7 @@ private:
     std::vector<VarSequence> var_sequences_;
     std::vector<std::pair<int, int>> var_to_seq_;  // var_id -> (seq_idx, pos), resized lazily
 
+    void build_var_constraints();
     int32_t alloc_var(VarType type, double lb, double ub, const std::string& name);
     int32_t alloc_node(NodeOp op, const std::vector<ChildRef>& children);
     ChildRef wrap(int32_t id);  // auto-detect var vs node

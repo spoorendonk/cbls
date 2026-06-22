@@ -3,6 +3,7 @@ add_executable(cbls_tests
     test_expr.cpp
     test_moves.cpp
     test_search.cpp
+    test_violation_delta.cpp
     test_chped.cpp
     test_uc_chped.cpp
     test_inner_solver.cpp

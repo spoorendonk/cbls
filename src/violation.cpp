@@ -1,4 +1,5 @@
 #include "cbls/violation.h"
+
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -33,8 +34,9 @@ ViolationManager::ViolationManager(Model& model) : model_(model) {
 }
 
 double ViolationManager::constraint_violation(int i) const {
-    if (i < 0 || i >= static_cast<int>(model_.constraint_ids().size()))
+    if (i < 0 || i >= static_cast<int>(model_.constraint_ids().size())) {
         throw std::out_of_range("constraint index out of range");
+    }
     int32_t cid = model_.constraint_ids()[i];
     return std::max(0.0, model_.node(cid).value);
 }
@@ -84,7 +86,9 @@ double ViolationManager::augmented_objective() const {
 
 bool ViolationManager::is_feasible(double tol) const {
     for (int32_t cid : model_.constraint_ids()) {
-        if (model_.node(cid).value > tol) return false;
+        if (model_.node(cid).value > tol) {
+            return false;
+        }
     }
     return true;
 }
@@ -105,6 +109,14 @@ void ViolationManager::bump_weights(double factor) {
         weights[i] += factor;
     }
     cache_valid_ = false;  // weights changed, invalidate
+}
+
+double ViolationManager::weighted_violation_delta(int32_t var_id, double j) const {
+    double total = 0.0;
+    for (const auto& [cidx, delta] : model_.per_constraint_violation_delta(var_id, j)) {
+        total += weights[cidx] * delta;
+    }
+    return total;
 }
 
 }  // namespace cbls

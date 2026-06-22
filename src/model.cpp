@@ -1,6 +1,10 @@
 #include "cbls/model.h"
-#include "cbls/expr.h"
+
 #include "cbls/dag_ops.h"
+#include "cbls/expr.h"
+
+#include <algorithm>
+#include <utility>
 
 namespace cbls {
 
@@ -31,7 +35,8 @@ int32_t Model::alloc_node(NodeOp op, const std::vector<ChildRef>& children) {
 }
 
 ChildRef Model::wrap(int32_t handle) {
-    // Handle encoding: var handles = -(var_id + 1) (negative), node handles = node_id (non-negative)
+    // Handle encoding: var handles = -(var_id + 1) (negative), node handles = node_id
+    // (non-negative)
     ChildRef ref;
     if (handle < 0) {
         ref.id = -(handle + 1);
@@ -64,7 +69,9 @@ int32_t Model::list_var(int n, const std::string& name) {
     auto& v = vars_[vid];
     v.max_size = n;
     v.elements.resize(n);
-    for (int i = 0; i < n; ++i) v.elements[i] = i;
+    for (int i = 0; i < n; ++i) {
+        v.elements[i] = i;
+    }
     return -(vid + 1);
 }
 
@@ -93,7 +100,9 @@ int32_t Model::neg(int32_t x) {
 }
 
 int32_t Model::sum(const std::vector<int32_t>& args) {
-    if (args.empty()) return constant(0.0);
+    if (args.empty()) {
+        return constant(0.0);
+    }
     std::vector<ChildRef> children;
     children.reserve(args.size());
     for (int32_t a : args) {
@@ -116,13 +125,17 @@ int32_t Model::pow_expr(int32_t base, int32_t exp) {
 
 int32_t Model::min_expr(const std::vector<int32_t>& args) {
     std::vector<ChildRef> children;
-    for (int32_t a : args) children.push_back(wrap(a));
+    for (int32_t a : args) {
+        children.push_back(wrap(a));
+    }
     return alloc_node(NodeOp::Min, children);
 }
 
 int32_t Model::max_expr(const std::vector<int32_t>& args) {
     std::vector<ChildRef> children;
-    for (int32_t a : args) children.push_back(wrap(a));
+    for (int32_t a : args) {
+        children.push_back(wrap(a));
+    }
     return alloc_node(NodeOp::Max, children);
 }
 
@@ -247,14 +260,16 @@ void Model::maximize(const Expr& e) {
 
 void Model::add_constraint(int32_t expr_id) {
     if (expr_id < 0) {
-        throw std::invalid_argument("add_constraint requires a node handle (non-negative), got var handle");
+        throw std::invalid_argument(
+            "add_constraint requires a node handle (non-negative), got var handle");
     }
     constraint_ids_.push_back(expr_id);
 }
 
 void Model::minimize(int32_t expr_id) {
     if (expr_id < 0) {
-        throw std::invalid_argument("minimize requires a node handle (non-negative), got var handle");
+        throw std::invalid_argument(
+            "minimize requires a node handle (non-negative), got var handle");
     }
     objective_id_ = expr_id;
 }
@@ -265,8 +280,7 @@ void Model::maximize(int32_t expr_id) {
     is_maximizing_ = true;
 }
 
-void Model::add_var_sequence(std::vector<int32_t> handles,
-                              int min_block_on, int min_block_off) {
+void Model::add_var_sequence(std::vector<int32_t> handles, int min_block_on, int min_block_off) {
     int seq_idx = static_cast<int>(var_sequences_.size());
     VarSequence seq;
     seq.min_block_on = min_block_on;
@@ -300,8 +314,81 @@ std::pair<int, int> Model::var_sequence_for(int32_t var_id) const {
 
 void Model::close() {
     topo_order_ = detail::compute_topo_order(*this);
+    build_var_constraints();
     full_evaluate(*this);
     closed_ = true;
+}
+
+// Build var_id -> constraint-index adjacency (the paper's G_v) by walking down
+// each constraint's subtree and recording every variable it reaches. Stamping
+// gives O(1) per-constraint reset and dedups vars/nodes within a constraint.
+void Model::build_var_constraints() {
+    var_constraints_.assign(vars_.size(), {});
+    std::vector<int32_t> node_stamp(nodes_.size(), -1);
+    std::vector<int32_t> var_stamp(vars_.size(), -1);
+    std::vector<int32_t> stack;
+    for (int32_t ci = 0; ci < static_cast<int32_t>(constraint_ids_.size()); ++ci) {
+        stack.clear();
+        int32_t root = constraint_ids_[ci];
+        node_stamp[root] = ci;
+        stack.push_back(root);
+        while (!stack.empty()) {
+            int32_t nid = stack.back();
+            stack.pop_back();
+            for (const auto& child : nodes_[nid].children) {
+                if (child.is_var) {
+                    if (var_stamp[child.id] != ci) {
+                        var_stamp[child.id] = ci;
+                        var_constraints_[child.id].push_back(ci);
+                    }
+                } else if (node_stamp[child.id] != ci) {
+                    node_stamp[child.id] = ci;
+                    stack.push_back(child.id);
+                }
+            }
+        }
+    }
+}
+
+std::vector<std::pair<int32_t, double>> Model::per_constraint_violation_delta(int32_t var_id,
+                                                                              double j) {
+    const Variable& v = var(var_id);  // bounds-checked
+    if (v.type == VarType::List || v.type == VarType::Set) {
+        throw std::invalid_argument(
+            "per_constraint_violation_delta: scalar variable required (Bool/Int/Float)");
+    }
+
+    const auto& affected = constraints_of_var(var_id);
+    std::vector<std::pair<int32_t, double>> result;
+    if (affected.empty()) {
+        return result;
+    }
+
+    // Snapshot affected constraints' current violations.
+    std::vector<double> old_viol(affected.size());
+    for (size_t k = 0; k < affected.size(); ++k) {
+        old_viol[k] = std::max(0.0, node(constraint_ids_[affected[k]]).value);
+    }
+
+    // Probe: set candidate, recompute only the affected dirty cone.
+    const double old_value = v.value;
+    var_mut(var_id).value = j;
+    delta_evaluate(*this, &var_id, 1);
+
+    for (size_t k = 0; k < affected.size(); ++k) {
+        double new_viol = std::max(0.0, node(constraint_ids_[affected[k]]).value);
+        double delta = new_viol - old_viol[k];
+        if (delta != 0.0) {
+            result.emplace_back(affected[k], delta);
+        }
+    }
+
+    // Restore exactly: same inputs through deterministic evaluate() roll node
+    // values back to where they were.
+    var_mut(var_id).value = old_value;
+    delta_evaluate(*this, &var_id, 1);
+
+    return result;
 }
 
 Model::State Model::copy_state() const {
@@ -316,8 +403,9 @@ Model::State Model::copy_state() const {
 }
 
 void Model::restore_state(const State& state) {
-    if (state.values.size() != vars_.size())
+    if (state.values.size() != vars_.size()) {
         throw std::invalid_argument("state size does not match model");
+    }
     for (size_t i = 0; i < vars_.size(); ++i) {
         vars_[i].value = state.values[i];
         vars_[i].elements = state.elements[i];
