@@ -7,6 +7,7 @@ inline constexpr const char* version = "0.1.0";
 #include "dag.h"
 #include "dag_ops.h"
 #include "expr.h"
+#include "feasibility_jump.h"
 #include "formatter.h"
 #include "inner_solver.h"
 #include "io.h"

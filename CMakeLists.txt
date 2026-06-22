@@ -29,6 +29,7 @@ add_library(cbls_lib
     src/expr.cpp
     src/violation.cpp
     src/moves.cpp
+    src/feasibility_jump.cpp
     src/search.cpp
     src/lns.cpp
     src/pool.cpp

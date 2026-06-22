@@ -1,8 +1,11 @@
 #include "cbls/search.h"
+
 #include "cbls/dag_ops.h"
-#include <cmath>
-#include <chrono>
+#include "cbls/feasibility_jump.h"
+
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <vector>
 
 namespace cbls {
@@ -12,187 +15,61 @@ SolveCallback::~SolveCallback() = default;
 void initialize_random(Model& model, RNG& rng) {
     for (auto& var : model.variables_mut()) {
         switch (var.type) {
-        case VarType::Bool:
-            var.value = static_cast<double>(rng.integers(0, 2));
-            break;
-        case VarType::Int:
-            var.value = static_cast<double>(rng.integers(
-                static_cast<int64_t>(var.lb), static_cast<int64_t>(var.ub) + 1));
-            break;
-        case VarType::Float:
-            var.value = rng.uniform(var.lb, var.ub);
-            break;
-        case VarType::List:
-            var.elements = rng.permutation(var.max_size);
-            break;
-        case VarType::Set: {
-            int size = static_cast<int>(rng.integers(var.min_size, var.max_size + 1));
-            auto chosen = rng.choice(var.universe_size, size);
-            var.elements = chosen;
-            break;
-        }
-        }
-    }
-}
-
-// Helper: save a single variable's state
-static void save_var(const Variable& var, double& val, std::vector<int32_t>& elems) {
-    val = var.value;
-    elems = var.elements;
-}
-
-static void set_var(Variable& var, double val, const std::vector<int32_t>& elems) {
-    if (var.type == VarType::List || var.type == VarType::Set) {
-        var.elements = elems;
-    } else {
-        var.value = val;
-    }
-}
-
-// FJ candidate values for a variable
-static std::vector<std::pair<double, std::vector<int32_t>>> fj_candidate_values(
-    const Variable& var, Model& model, ViolationManager& vm, RNG& rng) {
-
-    std::vector<std::pair<double, std::vector<int32_t>>> candidates;
-
-    if (var.type == VarType::Bool) {
-        candidates.push_back({1.0 - var.value, {}});
-    } else if (var.type == VarType::Int) {
-        int domain_size = static_cast<int>(var.ub - var.lb) + 1;
-        if (domain_size <= 20) {
-            for (int v = static_cast<int>(var.lb); v <= static_cast<int>(var.ub); ++v) {
-                if (static_cast<double>(v) != var.value) {
-                    candidates.push_back({static_cast<double>(v), {}});
-                }
-            }
-        } else {
-            std::set<double> vals;
-            if (var.value > var.lb) vals.insert(var.value - 1);
-            if (var.value < var.ub) vals.insert(var.value + 1);
-            for (int k = 0; k < 8; ++k) {
-                vals.insert(static_cast<double>(rng.integers(
-                    static_cast<int64_t>(var.lb), static_cast<int64_t>(var.ub) + 1)));
-            }
-            vals.erase(var.value);
-            for (double v : vals) {
-                candidates.push_back({v, {}});
-            }
-        }
-    } else if (var.type == VarType::Float) {
-        // Reduced linspace: lb, midpoint, ub (3 instead of 10)
-        candidates.push_back({var.lb, {}});
-        double mid = 0.5 * (var.lb + var.ub);
-        if (mid != var.lb && mid != var.ub) {
-            candidates.push_back({mid, {}});
-        }
-        candidates.push_back({var.ub, {}});
-
-        // Gradient-based candidates from violated constraints
-        auto violated = vm.violated_constraints();
-        int n_check = std::min(static_cast<int>(violated.size()), 3);
-        for (int ci = 0; ci < n_check; ++ci) {
-            int32_t cid = model.constraint_ids()[violated[ci]];
-            double dg = compute_partial(model, cid, var.id);
-            if (std::abs(dg) > 1e-12) {
-                double step = -model.node(cid).value / dg;
-                double new_val = std::clamp(var.value + step, var.lb, var.ub);
-                candidates.push_back({new_val, {}});
+            case VarType::Bool:
+                var.value = static_cast<double>(rng.integers(0, 2));
+                break;
+            case VarType::Int:
+                var.value = static_cast<double>(
+                    rng.integers(static_cast<int64_t>(var.lb), static_cast<int64_t>(var.ub) + 1));
+                break;
+            case VarType::Float:
+                var.value = rng.uniform(var.lb, var.ub);
+                break;
+            case VarType::List:
+                var.elements = rng.permutation(var.max_size);
+                break;
+            case VarType::Set: {
+                int size = static_cast<int>(rng.integers(var.min_size, var.max_size + 1));
+                auto chosen = rng.choice(var.universe_size, size);
+                var.elements = chosen;
+                break;
             }
         }
     }
-
-    return candidates;
 }
 
-void fj_nl_initialize(Model& model, ViolationManager& vm,
-                       int max_iterations, RNG* rng_ptr, double time_limit) {
+// Construction heuristic: Generalised Feasibility Jump (ViolationLS). Refines
+// the model's current assignment toward feasibility. Delegates to
+// FeasibilityJump; see src/feasibility_jump.cpp.
+void fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations, RNG* rng_ptr,
+                      double time_limit) {
     RNG local_rng(42);
     RNG& rng = rng_ptr ? *rng_ptr : local_rng;
 
-    full_evaluate(model);
+    GFJConfig config;
+    config.max_iterations = max_iterations;
+    config.time_limit = time_limit;
+    config.set_initial_x = false;  // refine the current (already-initialised) assignment
+    // As an SA warm-start (not the full solver), the two-phase linear-first pass
+    // over-commits the linear submodel to cost-pessimal feasibility-boundary
+    // values the SA loop cannot recover from; single-phase gives SA a better
+    // start. Two-phase stays the default for GFJ-as-solver (P2).
+    config.two_phase = false;
+    FeasibilityJump fj(model, vm, rng, config);
+    fj.run();
 
-    auto deadline = std::chrono::steady_clock::now()
-        + std::chrono::duration<double>(time_limit);
-
-    for (int iteration = 0; iteration < max_iterations; ++iteration) {
-        auto violated = vm.violated_constraints();
-        if (violated.empty()) break;
-        if (std::chrono::steady_clock::now() >= deadline) break;
-
-        int best_var_id = -1;
-        double best_val = 0.0;
-        std::vector<int32_t> best_elems;
-        double best_reduction = 0.0;
-
-        for (const auto& var : model.variables()) {
-            auto candidates = fj_candidate_values(var, model, vm, rng);
-            for (const auto& [cand_val, cand_elems] : candidates) {
-                // Save
-                double old_val;
-                std::vector<int32_t> old_elems;
-                save_var(var, old_val, old_elems);
-
-                // Apply candidate
-                auto& mvar = model.var_mut(var.id);
-                if (var.type == VarType::List || var.type == VarType::Set) {
-                    mvar.elements = cand_elems;
-                } else {
-                    mvar.value = cand_val;
-                }
-                delta_evaluate(model, {var.id});
-                double new_viol = vm.total_violation();
-
-                // Restore
-                mvar.value = old_val;
-                mvar.elements = old_elems;
-                delta_evaluate(model, {var.id});
-
-                double old_viol = vm.total_violation();
-                double reduction = old_viol - new_viol;
-                if (reduction > best_reduction) {
-                    best_var_id = var.id;
-                    best_val = cand_val;
-                    best_elems = cand_elems;
-                    best_reduction = reduction;
-                }
-            }
-        }
-
-        if (best_var_id < 0) {
-            // Stagnation: bump weights and perturb
-            vm.bump_weights();
-            if (!model.variables().empty()) {
-                int idx = static_cast<int>(rng.integers(0, model.num_vars()));
-                auto& var = model.var_mut(idx);
-                if (var.type == VarType::Bool || var.type == VarType::Int || var.type == VarType::Float) {
-                    auto candidates = fj_candidate_values(var, model, vm, rng);
-                    if (!candidates.empty()) {
-                        var.value = candidates[0].first;
-                        delta_evaluate(model, {var.id});
-                    }
-                }
-            }
-            continue;
-        }
-
-        auto& mvar = model.var_mut(best_var_id);
-        if (mvar.type == VarType::List || mvar.type == VarType::Set) {
-            mvar.elements = best_elems;
-        } else {
-            mvar.value = best_val;
-        }
-        delta_evaluate(model, {best_var_id});
-    }
+    // Hand the SA loop a clean penalty landscape: GLS leaves per-constraint
+    // weights skewed, which would distort the SA augmented objective.
+    std::fill(vm.weights.begin(), vm.weights.end(), 1.0);
+    vm.invalidate_cache();
 }
 
 // Update best tracking after hook runs
-static void update_best_after_hook(Model& model, ViolationManager& vm,
-                                   double& best_F, double& best_feasible_obj,
-                                   Model::State& best_state) {
+static void update_best_after_hook(Model& model, ViolationManager& vm, double& best_F,
+                                   double& best_feasible_obj, Model::State& best_state) {
     double hook_F = vm.augmented_objective();
     if (vm.is_feasible()) {
-        double hook_obj = model.objective_id() >= 0
-            ? model.node(model.objective_id()).value : 0.0;
+        double hook_obj = model.objective_id() >= 0 ? model.node(model.objective_id()).value : 0.0;
         if (hook_obj < best_feasible_obj) {
             best_feasible_obj = hook_obj;
             best_state = model.copy_state();
@@ -210,9 +87,8 @@ static double initial_temperature(double F) {
     return std::max(std::abs(F) * 0.1, 1.0);
 }
 
-static SolveProgress make_progress(int64_t iteration, double elapsed,
-                                   double best_feasible_obj, double total_viol,
-                                   double temperature, bool feasible,
+static SolveProgress make_progress(int64_t iteration, double elapsed, double best_feasible_obj,
+                                   double total_viol, double temperature, bool feasible,
                                    bool new_best, int reheat_count) {
     SolveProgress p;
     p.iteration = iteration;
@@ -227,8 +103,8 @@ static SolveProgress make_progress(int64_t iteration, double elapsed,
 }
 
 SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
-                   InnerSolverHook* hook, LNS* lns, int lns_interval,
-                   SolveCallback* callback, const SearchConfig& config) {
+                   InnerSolverHook* hook, LNS* lns, int lns_interval, SolveCallback* callback,
+                   const SearchConfig& config) {
     RNG rng(seed);
     ViolationManager vm(model);
 
@@ -259,12 +135,23 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     int reheat_interval = config.reheat_interval;
 
     MoveProbabilities move_probs({
-        "flip", "block_on", "block_off",
-        "int_dec", "int_inc", "int_rand",
-        "float_perturb", "list_swap", "list_2opt",
-        "list_relocate", "list_or_opt_2", "list_or_opt_3",
-        "set_add", "set_remove", "set_swap",
-        "newton_tight", "gradient_lift",
+        "flip",
+        "block_on",
+        "block_off",
+        "int_dec",
+        "int_inc",
+        "int_rand",
+        "float_perturb",
+        "list_swap",
+        "list_2opt",
+        "list_relocate",
+        "list_or_opt_2",
+        "list_or_opt_3",
+        "set_add",
+        "set_remove",
+        "set_swap",
+        "newton_tight",
+        "gradient_lift",
     });
 
     int64_t iteration = 0;
@@ -332,8 +219,8 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             bool obj_improved = false;
             double prev_best_feasible = best_feasible_obj;
             if (vm.is_feasible()) {
-                double obj_val = model.objective_id() >= 0
-                    ? model.node(model.objective_id()).value : 0.0;
+                double obj_val =
+                    model.objective_id() >= 0 ? model.node(model.objective_id()).value : 0.0;
                 if (obj_val < best_feasible_obj) {
                     best_feasible_obj = obj_val;
                     best_state = model.copy_state();
@@ -354,12 +241,13 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             if (callback && obj_improved &&
                 (prev_best_feasible == std::numeric_limits<double>::infinity() ||
                  best_feasible_obj == 0.0 ||
-                 (prev_best_feasible - best_feasible_obj) / (std::abs(prev_best_feasible) + 1e-30) > 1e-6)) {
+                 (prev_best_feasible - best_feasible_obj) / (std::abs(prev_best_feasible) + 1e-30) >
+                     1e-6)) {
                 auto now = std::chrono::steady_clock::now();
                 double elapsed = std::chrono::duration<double>(now - start).count();
-                callback->on_progress(make_progress(
-                    iteration, elapsed, best_feasible_obj, vm.total_violation(),
-                    temperature, vm.is_feasible(), true, reheat_count));
+                callback->on_progress(make_progress(iteration, elapsed, best_feasible_obj,
+                                                    vm.total_violation(), temperature,
+                                                    vm.is_feasible(), true, reheat_count));
                 last_callback_time = now;
             }
 
@@ -412,9 +300,9 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             double since_last = std::chrono::duration<double>(now - last_callback_time).count();
             if (since_last >= callback_interval_secs) {
                 double elapsed = std::chrono::duration<double>(now - start).count();
-                callback->on_progress(make_progress(
-                    iteration, elapsed, best_feasible_obj, vm.total_violation(),
-                    temperature, vm.is_feasible(), false, reheat_count));
+                callback->on_progress(make_progress(iteration, elapsed, best_feasible_obj,
+                                                    vm.total_violation(), temperature,
+                                                    vm.is_feasible(), false, reheat_count));
                 last_callback_time = now;
             }
         }
@@ -430,8 +318,8 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     double elapsed = std::chrono::duration<double>(end - start).count();
 
     SearchResult result;
-    result.objective = best_feasible_obj < std::numeric_limits<double>::infinity()
-        ? best_feasible_obj : best_F;
+    result.objective =
+        best_feasible_obj < std::numeric_limits<double>::infinity() ? best_feasible_obj : best_F;
     result.feasible = best_feasible_obj < std::numeric_limits<double>::infinity();
     result.best_state = best_state;
     result.iterations = iteration;
