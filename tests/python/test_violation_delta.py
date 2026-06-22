@@ -71,10 +71,11 @@ def test_weights_are_applied():
     m.var_mut(vid(x)).value = 1.0
 
     vm = cbls.ViolationManager(m)
-    vm.weights[0] = 3.0
-    vm.weights[1] = 5.0
+    # nanobind returns a list copy on read, so set the whole vector at once.
+    vm.weights = [3.0, 5.0]
     vm.invalidate_cache()
 
+    weights = vm.weights
     pcd = m.per_constraint_violation_delta(vid(x), 6.0)
-    expected = sum(vm.weights[ci] * d for ci, d in pcd)
+    expected = sum(weights[ci] * d for ci, d in pcd)
     assert abs(vm.weighted_violation_delta(vid(x), 6.0) - expected) < 1e-12

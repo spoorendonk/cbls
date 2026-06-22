@@ -241,6 +241,8 @@ NB_MODULE(_cbls_core, m) {
         .def("bump_weights", &ViolationManager::bump_weights, nb::arg("factor") = 1.0)
         .def("weighted_violation_delta", &ViolationManager::weighted_violation_delta,
              nb::arg("var_id"), nb::arg("j"))
+        .def("invalidate_cache", &ViolationManager::invalidate_cache)
+        .def_rw("weights", &ViolationManager::weights)
         .def_rw("adaptive_lambda", &ViolationManager::adaptive_lambda);
 
     // RNG
@@ -309,6 +311,20 @@ NB_MODULE(_cbls_core, m) {
         .def_rw("max_epochs", &ParallelConfig::max_epochs)
         .def_rw("elite_pool_size", &ParallelConfig::elite_pool_size);
 
+    // SearchConfig — must be registered before ParallelSearch / solve, which
+    // use SearchConfig{} as a default argument (nanobind casts defaults to
+    // Python eagerly at .def() time; an unregistered type throws std::bad_cast).
+    nb::class_<SearchConfig>(m, "SearchConfig")
+        .def(nb::init<>())
+        .def_rw("cooling_rate", &SearchConfig::cooling_rate)
+        .def_rw("reheat_interval", &SearchConfig::reheat_interval)
+        .def_rw("hook_frequency", &SearchConfig::hook_frequency)
+        .def_rw("fj_time_fraction", &SearchConfig::fj_time_fraction)
+        .def_rw("skip_init", &SearchConfig::skip_init)
+        .def_rw("max_iterations", &SearchConfig::max_iterations)
+        .def_rw("use_fj", &SearchConfig::use_fj)
+        .def_rw("lns_interval", &SearchConfig::lns_interval);
+
     // ParallelSearch
     nb::class_<ParallelSearch>(m, "ParallelSearch")
         .def(nb::init<int>(), nb::arg("n_threads") = 0)
@@ -350,18 +366,6 @@ NB_MODULE(_cbls_core, m) {
         .def_rw("initial_step_size", &FloatIntensifyHook::initial_step_size)
         .def_rw("max_line_search_steps", &FloatIntensifyHook::max_line_search_steps)
         .def_rw("max_multi_var_constraints", &FloatIntensifyHook::max_multi_var_constraints);
-
-    // SearchConfig
-    nb::class_<SearchConfig>(m, "SearchConfig")
-        .def(nb::init<>())
-        .def_rw("cooling_rate", &SearchConfig::cooling_rate)
-        .def_rw("reheat_interval", &SearchConfig::reheat_interval)
-        .def_rw("hook_frequency", &SearchConfig::hook_frequency)
-        .def_rw("fj_time_fraction", &SearchConfig::fj_time_fraction)
-        .def_rw("skip_init", &SearchConfig::skip_init)
-        .def_rw("max_iterations", &SearchConfig::max_iterations)
-        .def_rw("use_fj", &SearchConfig::use_fj)
-        .def_rw("lns_interval", &SearchConfig::lns_interval);
 
     // SolveProgress
     nb::class_<SolveProgress>(m, "SolveProgress")
