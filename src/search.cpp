@@ -171,8 +171,61 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     int64_t batches = 0;
     auto last_callback = start;
 
+    // Skip the structural pass entirely on scalar-only models.
+    const bool has_structural = std::any_of(
+        model.variables().begin(), model.variables().end(),
+        [](const Variable& v) { return v.type == VarType::List || v.type == VarType::Set; });
+
     auto sample_rho = [&]() { fj.set_rho(rng.random() < 0.5 ? 0.95 : 1.0); };
     sample_rho();
+
+    auto emit_progress = [&](bool new_best) {
+        if (!callback) {
+            return;
+        }
+        vm.invalidate_cache();
+        double elapsed =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        callback->on_progress(make_progress(batches, elapsed, best_feasible_obj,
+                                            vm.total_violation(), real_feasible(), new_best,
+                                            perturbations));
+        last_callback = std::chrono::steady_clock::now();
+    };
+
+    // Record the current (real-feasible) assignment if it improves the best and
+    // tighten the objective bound. Returns true on a new best.
+    auto record_best = [&]() -> bool {
+        double obj = current_obj();
+        if (have_feasible &&
+            obj >= best_feasible_obj - 1e-12 * (std::abs(best_feasible_obj) + 1.0)) {
+            return false;
+        }
+        have_feasible = true;
+        best_feasible_obj = obj;
+        best_state = model.copy_state();
+        if (has_obj) {
+            // The bound step doubles as the Newton step size toward the objective
+            // (the float jump chases obj <= bound), so it must be non-trivial for
+            // hook-less continuous descent.
+            double eps = 1e-3 * (std::abs(obj) + 1.0);
+            model.set_objective_bound(obj - eps);
+        }
+        emit_progress(/*new_best=*/true);
+        return true;
+    };
+
+    // On stagnation: LNS diversification every lns_interval-th time, else perturb.
+    auto diversify = [&]() {
+        if (lns && lns_interval > 0 && (perturbations % lns_interval == lns_interval - 1)) {
+            lns->destroy_repair(model, vm, rng);
+            fj.reset_weights();  // LNS mutated state outside GFJ
+        } else {
+            fj.perturb(config.perturbation_probability);  // self-resyncs
+        }
+        sample_rho();
+        ++perturbations;
+        stagnation = 0;
+    };
 
     while (std::chrono::steady_clock::now() < deadline) {
         if (config.max_iterations > 0 &&
@@ -183,52 +236,22 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         fj.batch(config.batch_iterations);
         ++batches;
 
+        bool resync = has_structural && structural_pass(model, vm, rng);
+
         bool improved = false;
-        bool resync = false;
-        // List/set optimisation (FJ only jumps scalars); cheap no-op when the
-        // model has no list/set variables.
-        if (structural_pass(model, vm, rng)) {
-            resync = true;
-        }
         if (real_feasible()) {
             if (hook) {
                 hook->solve(model, vm, {});  // continuous-objective polish (mutates floats)
                 resync = true;
             }
-            if (real_feasible()) {  // hook may have moved off the feasible region
-                double obj = current_obj();
-                if (!have_feasible ||
-                    obj < best_feasible_obj - 1e-12 * (std::abs(best_feasible_obj) + 1.0)) {
-                    improved = true;
-                    have_feasible = true;
-                    best_feasible_obj = obj;
-                    best_state = model.copy_state();
-                    if (has_obj) {
-                        // The bound step doubles as the Newton step size toward
-                        // the objective (the float jump chases obj <= bound), so
-                        // it must be non-trivial for hook-less continuous descent.
-                        double eps = 1e-3 * (std::abs(obj) + 1.0);
-                        model.set_objective_bound(obj - eps);
-                        resync = true;  // objective constraint residual changed
-                    }
-                    if (callback) {
-                        vm.invalidate_cache();
-                        double elapsed =
-                            std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
-                                .count();
-                        callback->on_progress(make_progress(batches, elapsed, best_feasible_obj,
-                                                            vm.total_violation(), true, true,
-                                                            perturbations));
-                        last_callback = std::chrono::steady_clock::now();
-                    }
-                }
+            if (!hook || real_feasible()) {  // hook may have moved off the feasible region
+                improved = record_best();
             }
         }
 
         if (improved) {
-            // New best: fresh GLS weights (paper) and a new rho sample.
             stagnation = 0;
-            fj.reset_weights();
+            fj.reset_weights();  // new best: fresh GLS weights (paper) + new rho
             sample_rho();
             if (!has_obj) {
                 break;  // pure feasibility: first solution is the answer
@@ -241,28 +264,14 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         }
 
         if (stagnation >= config.perturbation_period) {
-            if (lns && lns_interval > 0 && (perturbations % lns_interval == lns_interval - 1)) {
-                lns->destroy_repair(model, vm, rng);
-                fj.reset_weights();  // LNS mutated state outside GFJ
-            } else {
-                fj.perturb(config.perturbation_probability);  // self-resyncs
-            }
-            sample_rho();
-            ++perturbations;
-            stagnation = 0;
+            diversify();
         }
 
         // Periodic progress (~1s) even without improvement.
-        if (callback) {
-            auto now = std::chrono::steady_clock::now();
-            if (std::chrono::duration<double>(now - last_callback).count() >= 1.0) {
-                vm.invalidate_cache();
-                double elapsed = std::chrono::duration<double>(now - start).count();
-                callback->on_progress(make_progress(batches, elapsed, best_feasible_obj,
-                                                    vm.total_violation(), real_feasible(), false,
-                                                    perturbations));
-                last_callback = now;
-            }
+        if (callback &&
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - last_callback)
+                    .count() >= 1.0) {
+            emit_progress(/*new_best=*/false);
         }
     }
 

@@ -24,6 +24,71 @@ double clamp_to_domain(const Variable& var, double value) {
     return std::min(std::max(value, var.lb), var.ub);
 }
 
+// Integer jump candidates: exhaustive over a small domain, else a coarse grid
+// plus neighbours/endpoints. Each consider() runs one weighted_violation_delta
+// (two delta_evaluate passes); the JumpTable cache amortises this across the
+// GLS loop. (Closed-form linear-constraint argmin is a deferred optimisation.)
+template <class Consider>
+void int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
+    const long lb = std::lround(var.lb);
+    const long ub = std::lround(var.ub);
+    if (ub <= lb) {
+        return;
+    }
+    if (ub - lb <= 256) {
+        for (long v = lb; v <= ub; ++v) {
+            consider(static_cast<double>(v));
+        }
+        return;
+    }
+    consider(static_cast<double>(lb));
+    consider(static_cast<double>(ub));
+    consider(clamp_to_domain(var, x0 - 1));
+    consider(clamp_to_domain(var, x0 + 1));
+    const int grid = 32;
+    for (int k = 1; k < grid; ++k) {
+        double frac = static_cast<double>(k) / grid;
+        consider(std::round(static_cast<double>(lb) + frac * static_cast<double>(ub - lb)));
+    }
+}
+
+// Float jump candidates: cheap convex-ish descent — a Newton step toward the
+// root of each violated constraint containing v (reverse-mode AD), plus
+// midpoint/endpoints. The GLS loop iterates these to converge; the
+// InnerSolverHook does the heavy continuous objective polish. This replaces a
+// per-jump golden-section (~60 evals) with a handful — critical for throughput
+// on continuous-heavy models. Newton candidates come FIRST so that, on a tie in
+// violation delta (a feasible plateau), the gradient-informed point wins rather
+// than an arbitrary endpoint (`consider` keeps the first-seen minimum). The
+// objective enters here too: when `obj <= bound` is violated, chasing its root
+// pulls the objective down.
+template <class Consider>
+void float_jump_candidates(Model& model, int32_t var_id, const Variable& var, double x0,
+                           Consider&& consider) {
+    if (var.ub <= var.lb) {
+        return;
+    }
+    const auto& cids = model.constraint_ids();
+    int budget = 4;
+    for (int32_t c : model.constraints_of_var(var_id)) {
+        if (budget <= 0) {
+            break;
+        }
+        double residual = model.node(cids[c]).value;
+        if (residual <= kTol) {
+            continue;  // satisfied: no root to chase
+        }
+        double grad = compute_partial(model, cids[c], var_id);
+        if (std::abs(grad) > 1e-12) {
+            consider(clamp_to_domain(var, x0 - residual / grad));
+            --budget;
+        }
+    }
+    consider(0.5 * (var.lb + var.ub));
+    consider(var.lb);
+    consider(var.ub);
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -54,64 +119,9 @@ JumpResult compute_var_jump(Model& model, const ViolationManager& vm, int32_t va
     if (var.type == VarType::Bool) {
         consider(1.0 - x0);
     } else if (var.type == VarType::Int) {
-        // Each consider() runs one weighted_violation_delta (two delta_evaluate
-        // passes), so a small domain is scanned exhaustively and a large one on
-        // a coarse grid. The closed-form linear-constraint argmin (paper) is a
-        // deferred optimisation; the JumpTable cache means this is computed at
-        // most once per variable between neighbour changes.
-        const long lb = std::lround(var.lb);
-        const long ub = std::lround(var.ub);
-        if (ub > lb && ub - lb <= 256) {
-            for (long v = lb; v <= ub; ++v) {
-                consider(static_cast<double>(v));
-            }
-        } else if (ub > lb) {
-            // Large domain: neighbours, endpoints, and a fixed coarse grid.
-            consider(static_cast<double>(lb));
-            consider(static_cast<double>(ub));
-            consider(clamp_to_domain(var, x0 - 1));
-            consider(clamp_to_domain(var, x0 + 1));
-            const int grid = 32;
-            for (int k = 1; k < grid; ++k) {
-                double frac = static_cast<double>(k) / grid;
-                consider(std::round(lb + frac * (ub - lb)));
-            }
-        }
+        int_jump_candidates(var, x0, consider);
     } else if (var.type == VarType::Float) {
-        if (var.ub > var.lb) {
-            // Cheap convex-ish descent: a Newton step toward the root of each
-            // violated constraint containing v (reusing reverse-mode AD). The
-            // GLS loop iterates these to converge; the InnerSolverHook does the
-            // heavy continuous objective polish. This replaces a per-jump
-            // golden-section (~60 evals) with a handful of evals — critical for
-            // throughput on continuous-heavy models.
-            //
-            // Newton candidates are considered BEFORE the endpoints/midpoint so
-            // that, on a tie in violation delta (e.g. a feasible plateau), the
-            // gradient-informed boundary point wins rather than an arbitrary
-            // endpoint — `consider` keeps the first-seen minimum. The objective
-            // enters here too: when `obj <= bound` is violated, chasing its root
-            // pulls the objective down.
-            const auto& cids = model.constraint_ids();
-            int budget = 4;
-            for (int32_t c : model.constraints_of_var(var_id)) {
-                if (budget <= 0) {
-                    break;
-                }
-                double residual = model.node(cids[c]).value;
-                if (residual <= kTol) {
-                    continue;  // satisfied: no root to chase
-                }
-                double grad = compute_partial(model, cids[c], var_id);
-                if (std::abs(grad) > 1e-12) {
-                    consider(clamp_to_domain(var, x0 - residual / grad));
-                    --budget;
-                }
-            }
-            consider(0.5 * (var.lb + var.ub));
-            consider(var.lb);
-            consider(var.ub);
-        }
+        float_jump_candidates(model, var_id, var, x0, consider);
     }
 
     return {best_j, -best_f};
