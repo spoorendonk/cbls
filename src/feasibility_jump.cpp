@@ -24,36 +24,6 @@ double clamp_to_domain(const Variable& var, double value) {
     return std::min(std::max(value, var.lb), var.ub);
 }
 
-// Minimise f over [a, b] by golden-section search; returns the argmin. The
-// paper assumes each violation is convex in a single variable, so a positive-
-// weighted sum is convex and this converges to the global argmin; on a
-// non-convex f it returns a local min (correctness unaffected, search just more
-// restricted).
-template <class F>
-double golden_section_argmin(F&& func, double a, double b) {
-    const double phi = 0.6180339887498949;  // (sqrt(5)-1)/2
-    double c = b - phi * (b - a);
-    double d = a + phi * (b - a);
-    double fc = func(c);
-    double fd = func(d);
-    for (int it = 0; it < 100 && (b - a) > 1e-12 * (std::abs(a) + std::abs(b) + 1.0); ++it) {
-        if (fc < fd) {
-            b = d;
-            d = c;
-            fd = fc;
-            c = b - phi * (b - a);
-            fc = func(c);
-        } else {
-            a = c;
-            c = d;
-            fc = fd;
-            d = a + phi * (b - a);
-            fd = func(d);
-        }
-    }
-    return 0.5 * (a + b);
-}
-
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -109,9 +79,38 @@ JumpResult compute_var_jump(Model& model, const ViolationManager& vm, int32_t va
         }
     } else if (var.type == VarType::Float) {
         if (var.ub > var.lb) {
+            // Cheap convex-ish descent: a Newton step toward the root of each
+            // violated constraint containing v (reusing reverse-mode AD). The
+            // GLS loop iterates these to converge; the InnerSolverHook does the
+            // heavy continuous objective polish. This replaces a per-jump
+            // golden-section (~60 evals) with a handful of evals — critical for
+            // throughput on continuous-heavy models.
+            //
+            // Newton candidates are considered BEFORE the endpoints/midpoint so
+            // that, on a tie in violation delta (e.g. a feasible plateau), the
+            // gradient-informed boundary point wins rather than an arbitrary
+            // endpoint — `consider` keeps the first-seen minimum. The objective
+            // enters here too: when `obj <= bound` is violated, chasing its root
+            // pulls the objective down.
+            const auto& cids = model.constraint_ids();
+            int budget = 4;
+            for (int32_t c : model.constraints_of_var(var_id)) {
+                if (budget <= 0) {
+                    break;
+                }
+                double residual = model.node(cids[c]).value;
+                if (residual <= kTol) {
+                    continue;  // satisfied: no root to chase
+                }
+                double grad = compute_partial(model, cids[c], var_id);
+                if (std::abs(grad) > 1e-12) {
+                    consider(clamp_to_domain(var, x0 - residual / grad));
+                    --budget;
+                }
+            }
+            consider(0.5 * (var.lb + var.ub));
             consider(var.lb);
             consider(var.ub);
-            consider(golden_section_argmin(f, var.lb, var.ub));
         }
     }
 
@@ -424,6 +423,10 @@ bool FeasibilityJump::batch(int64_t batch_iterations) {
 void FeasibilityJump::reset_weights() {
     std::fill(vm_.weights.begin(), vm_.weights.end(), 1.0);
     vm_.invalidate_cache();
+    rebuild_violated_and_scan_set();
+}
+
+void FeasibilityJump::resync() {
     rebuild_violated_and_scan_set();
 }
 

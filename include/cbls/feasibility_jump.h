@@ -98,9 +98,11 @@ public:
     void begin(bool set_initial_x);
     bool batch(int64_t batch_iterations);  // true if feasible (no active violated)
     void reset_weights();                  // W <- 1 and rebuild the scan set
+    void resync();                         // rebuild the scan set from current state, keep weights
     void perturb(double probability);      // randomise each jumpable var w.p. p
     void set_rho(double rho) { config_.rho = rho; }
     bool all_satisfied() const;
+    int64_t iterations() const { return iterations_; }  // total GLS iterations since begin()
 
 private:
     // One GLS pass over the constraints whose weight is currently > 0 (the

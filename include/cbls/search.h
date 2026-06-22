@@ -1,24 +1,33 @@
 #pragma once
 
-#include "model.h"
-#include "violation.h"
-#include "moves.h"
 #include "inner_solver.h"
 #include "lns.h"
+#include "model.h"
+#include "moves.h"
 #include "rng.h"
+#include "violation.h"
+
 #include <limits>
 
 namespace cbls {
 
 struct SearchConfig {
+    // SA-era knobs — unused by the ViolationLS solve loop. Kept until the
+    // bindings/CLI that still reference them are swept (post-P2 cleanup).
     double cooling_rate = 0.9999;
     int reheat_interval = 5000;
     int hook_frequency = 10;
     double fj_time_fraction = 0.2;
+
     bool skip_init = false;
-    int64_t max_iterations = 0;  // 0 = unlimited (use time_limit)
+    int64_t max_iterations = 0;  // 0 = unlimited (use time_limit); counts GLS iterations
     bool use_fj = true;
     int lns_interval = 3;
+
+    // ViolationLS batch outer loop (Algorithm 6).
+    int64_t batch_iterations = 1000;        // GLS iterations per batch
+    int perturbation_period = 100;          // batches without improvement before perturbing
+    double perturbation_probability = 0.1;  // per-variable randomisation probability
 };
 
 struct SearchResult {
@@ -48,16 +57,11 @@ public:
 
 void initialize_random(Model& model, RNG& rng);
 
-void fj_nl_initialize(Model& model, ViolationManager& vm,
-                       int max_iterations = 10000, RNG* rng = nullptr,
-                       double time_limit = 2.0);
+void fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations = 10000,
+                      RNG* rng = nullptr, double time_limit = 2.0);
 
-SearchResult solve(Model& model, double time_limit = 10.0,
-                   uint64_t seed = 42, bool use_fj = true,
-                   InnerSolverHook* hook = nullptr,
-                   LNS* lns = nullptr,
-                   int lns_interval = 3,
-                   SolveCallback* callback = nullptr,
-                   const SearchConfig& config = {});
+SearchResult solve(Model& model, double time_limit = 10.0, uint64_t seed = 42, bool use_fj = true,
+                   InnerSolverHook* hook = nullptr, LNS* lns = nullptr, int lns_interval = 3,
+                   SolveCallback* callback = nullptr, const SearchConfig& config = {});
 
 }  // namespace cbls
