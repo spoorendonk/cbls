@@ -273,6 +273,21 @@ TEST_CASE("objective soft constraint: bound tightening", "[objconstraint]") {
     vm.invalidate_cache();
     REQUIRE(std::abs(vm.constraint_violation(idx) - 2.0) < 1e-9);
 
+    // Dynamic-probe path: a delta_evaluate driven by changing a var that feeds
+    // the objective must recompute the objective-constraint residual against the
+    // updated bound const node (the search loop relies on this).
+    {
+        const int32_t xv = vid(x);
+        m.var_mut(xv).value = 9.0;
+        delta_evaluate(m, &xv, 1);
+        vm.invalidate_cache();
+        REQUIRE(std::abs(vm.constraint_violation(idx) - 6.0) < 1e-9);  // 9 - 3
+        m.var_mut(xv).value = 5.0;
+        delta_evaluate(m, &xv, 1);
+        vm.invalidate_cache();
+        REQUIRE(std::abs(vm.constraint_violation(idx) - 2.0) < 1e-9);  // back to 5 - 3
+    }
+
     // Idempotent.
     m.add_objective_soft_constraint();
     REQUIRE(m.objective_constraint_idx() == idx);

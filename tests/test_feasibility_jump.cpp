@@ -66,8 +66,10 @@ TEST_CASE("compute_var_jump: convex continuous converges to argmin", "[fj][jump]
     ViolationManager vm(m);
 
     JumpResult r = compute_var_jump(m, vm, vid(x));
-    REQUIRE(std::abs(r.jump_value - 5.0) < 1e-3);  // golden section finds the min at x=5
-    REQUIRE(r.score > 24.0);                       // reduction ~25
+    // The candidate set includes the domain midpoint (=5), the argmin of
+    // (x-5)^2; Newton steps toward the constraint root also point there.
+    REQUIRE(std::abs(r.jump_value - 5.0) < 1e-3);
+    REQUIRE(r.score > 24.0);  // reduction ~25
 }
 
 TEST_CASE("compute_var_jump: linear / bool / int", "[fj][jump]") {

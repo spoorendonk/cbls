@@ -59,10 +59,13 @@ struct JumpResult {
     double score = 0.0;
 };
 
-// Compute the best jump for `var_id` under the current weights `vm`. For Float
-// variables the domain minimisation is a 1-D convex search (golden section) on
-// the weighted violation (the paper assumes per-variable convexity). `var_id`
-// must be a scalar (Bool/Int/Float) variable.
+// Compute the best jump for `var_id` under the current weights `vm`: the value
+// minimising the weighted violation delta over a small candidate set. For Float
+// variables the candidates are gradient-informed — a Newton step toward each
+// violated constraint's root (reverse-mode AD) plus the domain midpoint and
+// endpoints — and the best by weighted-violation delta is returned. A single
+// call is not a converged 1-D minimiser; the GLS loop iterates these cheap
+// jumps. `var_id` must be a scalar (Bool/Int/Float) variable.
 JumpResult compute_var_jump(Model& model, const ViolationManager& vm, int32_t var_id);
 
 // Guided Local Search weight update (paper Algorithm 3, lines 8-10): decay all

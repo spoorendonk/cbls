@@ -79,15 +79,19 @@ static bool structural_pass(Model& model, ViolationManager& vm, RNG& rng) {
             continue;
         }
         auto moves = generate_standard_moves(var, rng);
+        // total_violation()'s incremental path self-corrects to the current node
+        // state on each call (it diffs all constraints against its cache), so no
+        // explicit invalidate is needed across the apply/undo dance; thread the
+        // accepted baseline instead of recomputing it per move.
+        double before = vm.total_violation();
         for (const auto& move : moves) {
-            vm.invalidate_cache();
-            double before = vm.total_violation();
             auto saved = save_move_values(model, move);
             auto touched = apply_move(model, move);
             delta_evaluate(model, touched);
-            vm.invalidate_cache();
-            if (vm.total_violation() < before - 1e-12) {
+            double after = vm.total_violation();
+            if (after < before - 1e-12) {
                 changed = true;  // improving: keep
+                before = after;
             } else {
                 undo_move(model, move, saved);
                 delta_evaluate(model, touched);
