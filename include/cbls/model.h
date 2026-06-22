@@ -89,6 +89,21 @@ public:
 
     void close();
 
+    // ViolationLS objective-as-soft-constraint (paper §5, P2 #67). Folds the
+    // objective into the constraint set as `objective_expr <= bound`, with the
+    // bound a mutable RHS. Must be called after close() and only when an
+    // objective is set; re-runs the topological sort and adjacency. The bound
+    // starts at +inf (the constraint is inert until tightened), so search drives
+    // the objective down by tightening it on each new feasible solution.
+    void add_objective_soft_constraint();
+    bool has_objective_constraint() const noexcept { return objective_constraint_idx_ >= 0; }
+    // Index of the objective constraint in constraint_ids(), or -1.
+    int32_t objective_constraint_idx() const noexcept { return objective_constraint_idx_; }
+    // Tighten/relax the objective bound (RHS). Recomputes the objective
+    // constraint node in place; caller invalidates any violation cache.
+    void set_objective_bound(double bound);
+    double objective_bound() const noexcept { return objective_bound_; }
+
     // Accessors
     // Constraints (by index into constraint_ids()) that variable var_id can
     // affect. This is the paper's G_v. Populated by close(); empty before.
@@ -177,6 +192,10 @@ private:
     std::vector<std::vector<int32_t>> var_constraints_;  // var_id -> constraint indices (G_v)
     int32_t objective_id_ = -1;
     bool is_maximizing_ = false;
+    int32_t objective_bound_node_ = -1;       // Const node holding the objective RHS
+    int32_t objective_constraint_node_ = -1;  // the `obj - bound` node
+    int32_t objective_constraint_idx_ = -1;   // its index in constraint_ids_
+    double objective_bound_ = 0.0;
     std::vector<std::function<double(int)>> lambda_funcs_;
     std::vector<std::function<double(int, int)>> pair_lambda_funcs_;
     bool closed_ = false;

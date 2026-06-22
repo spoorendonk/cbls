@@ -243,3 +243,45 @@ TEST_CASE("delta: variable in no constraint returns empty", "[violation][delta]"
     REQUIRE(vm.weighted_violation_delta(vid(y), 9.0) == 0.0);
     REQUIRE(m.constraints_of_var(vid(y)).empty());
 }
+
+TEST_CASE("objective soft constraint: bound tightening", "[objconstraint]") {
+    Model m;
+    auto x = m.float_var(0, 10);
+    m.add_constraint(m.geq(x, m.constant(2.0)));  // x >= 2
+    m.minimize(m.sum({x}));
+    m.close();
+
+    REQUIRE_FALSE(m.has_objective_constraint());
+    m.add_objective_soft_constraint();
+    REQUIRE(m.has_objective_constraint());
+    const int idx = m.objective_constraint_idx();
+
+    m.var_mut(vid(x)).value = 5.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+
+    // Bound starts at +inf -> objective constraint inert (obj=5 <= inf).
+    REQUIRE(vm.constraint_violation(idx) == 0.0);
+
+    // Tighten to 3 -> obj=5 violates by 2.
+    m.set_objective_bound(3.0);
+    vm.invalidate_cache();
+    REQUIRE(std::abs(vm.constraint_violation(idx) - 2.0) < 1e-9);
+
+    // In-place recompute matches a full re-evaluation.
+    full_evaluate(m);
+    vm.invalidate_cache();
+    REQUIRE(std::abs(vm.constraint_violation(idx) - 2.0) < 1e-9);
+
+    // Idempotent.
+    m.add_objective_soft_constraint();
+    REQUIRE(m.objective_constraint_idx() == idx);
+}
+
+TEST_CASE("objective soft constraint: requires an objective", "[objconstraint]") {
+    Model m;
+    auto x = m.float_var(0, 1);
+    m.add_constraint(m.leq(x, m.constant(1.0)));
+    m.close();
+    REQUIRE_THROWS_AS(m.add_objective_soft_constraint(), std::invalid_argument);
+}

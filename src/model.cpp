@@ -4,6 +4,7 @@
 #include "cbls/expr.h"
 
 #include <algorithm>
+#include <limits>
 #include <utility>
 
 namespace cbls {
@@ -317,6 +318,39 @@ void Model::close() {
     build_var_constraints();
     full_evaluate(*this);
     closed_ = true;
+}
+
+void Model::add_objective_soft_constraint() {
+    if (objective_id_ < 0) {
+        throw std::invalid_argument("add_objective_soft_constraint requires an objective");
+    }
+    if (objective_constraint_idx_ >= 0) {
+        return;  // idempotent
+    }
+
+    objective_bound_ = std::numeric_limits<double>::infinity();
+    objective_bound_node_ = constant(objective_bound_);
+    // obj - bound <= 0; inert while bound is +inf, tightened during search.
+    objective_constraint_node_ = leq(objective_id_, objective_bound_node_);
+    objective_constraint_idx_ = static_cast<int32_t>(constraint_ids_.size());
+    add_constraint(objective_constraint_node_);
+
+    // Rebuild structure now that a node/constraint was appended after close().
+    topo_order_ = detail::compute_topo_order(*this);
+    build_var_constraints();
+    full_evaluate(*this);
+}
+
+void Model::set_objective_bound(double bound) {
+    if (objective_constraint_node_ < 0) {
+        throw std::logic_error("set_objective_bound requires add_objective_soft_constraint first");
+    }
+    objective_bound_ = bound;
+    ExprNode& bound_node = nodes_[objective_bound_node_];
+    bound_node.const_value = bound;
+    bound_node.value = bound;
+    // Recompute the objective constraint residual in place (obj - bound).
+    nodes_[objective_constraint_node_].value = nodes_[objective_id_].value - bound;
 }
 
 // Build var_id -> constraint-index adjacency (the paper's G_v) by walking down
