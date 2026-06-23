@@ -59,14 +59,15 @@ struct JumpResult {
     double score = 0.0;
 };
 
-// Compute the best jump for `var_id` under the current weights `vm`: the value
-// minimising the weighted violation delta over a small candidate set. For Float
-// variables the candidates are gradient-informed — a Newton step toward each
-// violated constraint's root (reverse-mode AD) plus the domain midpoint and
-// endpoints — and the best by weighted-violation delta is returned. A single
-// call is not a converged 1-D minimiser; the GLS loop iterates these cheap
-// jumps. `var_id` must be a scalar (Bool/Int/Float) variable.
-JumpResult compute_var_jump(Model& model, const ViolationManager& vm, int32_t var_id);
+// Compute the best jump for `var_id` under the per-constraint `weights`: the
+// value minimising the weighted violation delta over a small candidate set, and
+// score = −delta (>0 improving). For Float variables the candidates are
+// gradient-informed — a Newton step toward each violated constraint's root
+// (reverse-mode AD) plus the domain midpoint and endpoints. A single call is not
+// a converged 1-D minimiser; the GLS loop iterates these cheap jumps. Passing
+// the GLS weights gives the Feasibility-Jump score; passing the novelty weights
+// gives the Novelty-Jump (W') argmin. `var_id` must be scalar (Bool/Int/Float).
+JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id);
 
 // Guided Local Search weight update (paper Algorithm 3, lines 8-10): decay all
 // weights by rho, then bump every currently-violated constraint by 1. Weights
@@ -107,6 +108,17 @@ public:
     bool all_satisfied() const;
     int64_t iterations() const { return iterations_; }  // total GLS iterations since begin()
 
+    // Novelty Jump (paper Algorithms 4-5): a bounded-backtracking compound-move
+    // search that escapes local optima single-variable FJ cannot (chained-
+    // invariant fixes). Commits the improving compound move(s) it finds (left
+    // applied) and returns true if it reaches feasibility, else leaves any
+    // committed moves applied and returns false. Call from a local optimum with
+    // violated_/weights current (e.g. right after begin() or a stalled batch);
+    // the caller must resync() afterwards. Uses novelty weights W' =
+    // kCompoundDiscount*W for constraints not violated at entry, full W for
+    // those violated at entry.
+    bool apply_novelty_jump();
+
 private:
     // One GLS pass over the constraints whose weight is currently > 0 (the
     // "active" set). Returns Feasible if all active constraints are satisfied.
@@ -130,6 +142,21 @@ private:
     void compute_linear_constraints();
     void enqueue(int32_t var_id);
 
+    // Novelty Jump internals (Algorithm 5). A candidate var with its W'-argmin
+    // jump and both scores (original-weight `score`, novelty-weight
+    // `novelty_score`).
+    struct NoveltyPick {
+        int32_t var = -1;
+        double jump = 0.0;
+        double score = 0.0;          // -W . deltaG(v, jump)
+        double novelty_score = 0.0;  // -W' . deltaG(v, jump)
+    };
+    void init_novelty_weights();
+    void seed_novelty_scan_set();
+    void nj_enqueue(int32_t var_id);
+    NoveltyPick select_novelty_var(double s_m, double s_c);
+    bool novelty_jump_search(double s_m, int budget);
+
     Model& model_;
     ViolationManager& vm_;
     RNG& rng_;
@@ -145,6 +172,18 @@ private:
     std::chrono::steady_clock::time_point deadline_;
     bool has_deadline_ = false;
     int64_t iterations_ = 0;
+
+    // Novelty Jump state (Algorithms 4-5).
+    static constexpr double kCompoundDiscount = 1.0 / 1024.0;  // epsilon (OR-tools value)
+    std::vector<double> novelty_weights_;                      // W'
+    std::vector<int32_t> nj_queue_;                            // novelty scan set Q
+    std::vector<uint8_t> nj_in_queue_;                         // per var: in the novelty scan set
+    std::vector<uint8_t> on_stack_;  // per var: on the compound-move stack (the paper's T)
+    struct StackMove {
+        int32_t var;
+        double old_value;
+    };
+    std::vector<StackMove> move_stack_;
 };
 
 }  // namespace cbls

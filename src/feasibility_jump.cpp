@@ -95,13 +95,13 @@ void float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
 // Free functions
 // ---------------------------------------------------------------------------
 
-JumpResult compute_var_jump(Model& model, const ViolationManager& vm, int32_t var_id) {
+JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id) {
     const Variable& var = model.var(var_id);
     const double x0 = var.value;
 
     // f(j) = weighted violation delta of moving var_id to j (0 at the current
     // value). The best jump minimises f; score is the reduction -min f.
-    auto f = [&](double j) { return vm.weighted_violation_delta(var_id, j); };
+    auto f = [&](double j) { return model.weighted_violation_delta(var_id, j, weights); };
 
     double best_j = x0;
     double best_f = 0.0;  // f(x0) == 0
@@ -330,7 +330,7 @@ bool FeasibilityJump::apply_jump(int sample_size) {
             continue;  // already sampled this call; redraw for a distinct var
         }
         if (!jumps_.valid(v)) {
-            JumpResult r = compute_var_jump(model_, vm_, v);
+            JumpResult r = compute_var_jump(model_, vm_.weights, v);
             jumps_.set(v, r.jump_value, r.score);
         }
         double s = jumps_.score(v);
@@ -465,6 +465,164 @@ void FeasibilityJump::perturb(double probability) {
 
 bool FeasibilityJump::all_satisfied() const {
     return !any_active_violated();
+}
+
+// ---------------------------------------------------------------------------
+// Novelty Jump (paper Algorithms 4-5)
+// ---------------------------------------------------------------------------
+
+void FeasibilityJump::init_novelty_weights() {
+    // W'[c] = W[c] for constraints violated at entry, else kCompoundDiscount*W[c]
+    // (the "novelty" weights make breaking a not-violated-since-best constraint
+    // cheap, prioritising chains that fix the initially-broken constraints).
+    const size_t nc = vm_.weights.size();
+    novelty_weights_.resize(nc);
+    for (size_t c = 0; c < nc; ++c) {
+        novelty_weights_[c] = violated_[c] ? vm_.weights[c] : kCompoundDiscount * vm_.weights[c];
+    }
+}
+
+void FeasibilityJump::nj_enqueue(int32_t var_id) {
+    if (!nj_in_queue_[var_id]) {
+        nj_in_queue_[var_id] = 1;
+        nj_queue_.push_back(var_id);
+    }
+}
+
+void FeasibilityJump::seed_novelty_scan_set() {
+    std::fill(nj_in_queue_.begin(), nj_in_queue_.end(), 0);
+    nj_queue_.clear();
+    const auto& cids = model_.constraint_ids();
+    for (size_t c = 0; c < cids.size(); ++c) {
+        if (violated_[c] && active(static_cast<int32_t>(c))) {
+            for (int32_t v : vars_of_constraint_[c]) {
+                nj_enqueue(v);
+            }
+        }
+    }
+}
+
+// Best of up to 3 sampled vars in Q\T satisfying the filter F (paper §4):
+// F = (s_m + novelty_score > 0)  OR  (score > s_c). "Best" = highest original
+// score. The chosen var is removed from Q (paper Algorithm 5 line 6).
+FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, double s_c) {
+    NoveltyPick best;
+    int sampled = 0;
+    int draws = 0;
+    const int max_draws = 32;
+    examined_.clear();
+    while (!nj_queue_.empty() && sampled < 3 && draws < max_draws) {
+        ++draws;
+        size_t idx = static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(nj_queue_.size())));
+        int32_t v = nj_queue_[idx];
+        if (on_stack_[v] || std::find(examined_.begin(), examined_.end(), v) != examined_.end()) {
+            continue;  // on the stack (T) or already sampled this call
+        }
+        examined_.push_back(v);
+        ++sampled;
+        JumpResult nr = compute_var_jump(model_, novelty_weights_, v);  // W'-argmin
+        double score = -model_.weighted_violation_delta(v, nr.jump_value, vm_.weights);
+        bool passes = (s_m + nr.score > 0.0) || (score > s_c);
+        if (passes && (best.var < 0 || score > best.score)) {
+            best = {v, nr.jump_value, score, nr.score};
+        }
+    }
+    if (best.var >= 0) {
+        // Remove the chosen var from Q (swap-remove).
+        for (size_t i = 0; i < nj_queue_.size(); ++i) {
+            if (nj_queue_[i] == best.var) {
+                nj_in_queue_[best.var] = 0;
+                nj_queue_[i] = nj_queue_.back();
+                nj_queue_.pop_back();
+                break;
+            }
+        }
+    }
+    return best;
+}
+
+// NoveltyJumpSearch (Algorithm 5), recursive with the explicit move_stack_ for
+// T-membership and commit/revert. s_m is the cumulative original-weight score of
+// the moves currently on the stack. Returns true once a compound move with
+// positive cumulative score is found (left applied); false leaves the assignment
+// as it was on entry (every move it applied is reverted).
+bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
+    if (budget < 0) {
+        return false;
+    }
+    double s_c = 0.0;  // best explored child score at this level
+    const auto& cids = model_.constraint_ids();
+    while (true) {
+        NoveltyPick pick = select_novelty_var(s_m, s_c);
+        if (pick.var < 0) {
+            return false;
+        }
+        s_c = std::max(s_c, pick.score);
+
+        const int32_t v = pick.var;
+        const double old_value = model_.var(v).value;
+        model_.var_mut(v).value = pick.jump;
+        delta_evaluate(model_, &v, 1);
+        move_stack_.push_back({v, old_value});
+        on_stack_[v] = 1;
+
+        // Refresh violated_ for v's constraints; promote any now-broken
+        // constraint to full novelty weight and add its vars to the scan set.
+        for (int32_t c : model_.constraints_of_var(v)) {
+            violated_[c] = is_violated(model_.node(cids[c]).value);
+            if (violated_[c] && novelty_weights_[c] != vm_.weights[c]) {
+                novelty_weights_[c] = vm_.weights[c];
+                for (int32_t vp : vars_of_constraint_[c]) {
+                    nj_enqueue(vp);
+                }
+            }
+        }
+
+        if (s_m + pick.score > 0.0) {
+            return true;  // commit (leave applied)
+        }
+        if (novelty_jump_search(s_m + pick.score, budget)) {
+            return true;
+        }
+
+        // Backtrack: revert this move and try a sibling (consumes a discrepancy).
+        on_stack_[v] = 0;
+        move_stack_.pop_back();
+        model_.var_mut(v).value = old_value;
+        delta_evaluate(model_, &v, 1);
+        for (int32_t c : model_.constraints_of_var(v)) {
+            violated_[c] = is_violated(model_.node(cids[c]).value);
+        }
+        budget -= 1;
+    }
+}
+
+bool FeasibilityJump::apply_novelty_jump() {
+    const size_t nv = model_.num_vars();
+    nj_in_queue_.assign(nv, 0);
+    on_stack_.assign(nv, 0);
+    move_stack_.clear();
+
+    int b = 0;
+    while (b <= 2) {
+        init_novelty_weights();
+        seed_novelty_scan_set();
+        on_stack_.assign(nv, 0);
+        move_stack_.clear();
+        while (novelty_jump_search(0.0, b)) {
+            if (!any_active_violated()) {
+                return true;  // reached feasibility
+            }
+            // Committed a compound move; start a fresh one from the new state
+            // (reset budget per Algorithm 4 line 8, keep evolving W').
+            b = 0;
+            seed_novelty_scan_set();
+            on_stack_.assign(nv, 0);
+            move_stack_.clear();
+        }
+        b += 1;
+    }
+    return false;
 }
 
 GFJStatus FeasibilityJump::run() {

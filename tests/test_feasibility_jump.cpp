@@ -65,7 +65,7 @@ TEST_CASE("compute_var_jump: convex continuous converges to argmin", "[fj][jump]
     full_evaluate(m);
     ViolationManager vm(m);
 
-    JumpResult r = compute_var_jump(m, vm, vid(x));
+    JumpResult r = compute_var_jump(m, vm.weights, vid(x));
     // The candidate set includes the domain midpoint (=5), the argmin of
     // (x-5)^2; Newton steps toward the constraint root also point there.
     REQUIRE(std::abs(r.jump_value - 5.0) < 1e-3);
@@ -82,7 +82,7 @@ TEST_CASE("compute_var_jump: linear / bool / int", "[fj][jump]") {
         m.var_mut(vid(x)).value = 8.0;  // violation 5
         full_evaluate(m);
         ViolationManager vm(m);
-        JumpResult r = compute_var_jump(m, vm, vid(x));
+        JumpResult r = compute_var_jump(m, vm.weights, vid(x));
         REQUIRE(r.jump_value <= 3.0 + 1e-6);
         REQUIRE(std::abs(r.score - 5.0) < 1e-3);
     }
@@ -95,7 +95,7 @@ TEST_CASE("compute_var_jump: linear / bool / int", "[fj][jump]") {
         m.var_mut(vid(b)).value = 1.0;
         full_evaluate(m);
         ViolationManager vm(m);
-        JumpResult r = compute_var_jump(m, vm, vid(b));
+        JumpResult r = compute_var_jump(m, vm.weights, vid(b));
         REQUIRE(r.jump_value == 0.0);
         REQUIRE(std::abs(r.score - 1.0) < 1e-12);
     }
@@ -108,7 +108,7 @@ TEST_CASE("compute_var_jump: linear / bool / int", "[fj][jump]") {
         m.var_mut(vid(x)).value = 8.0;
         full_evaluate(m);
         ViolationManager vm(m);
-        JumpResult r = compute_var_jump(m, vm, vid(x));
+        JumpResult r = compute_var_jump(m, vm.weights, vid(x));
         REQUIRE(r.jump_value <= 3.0);
         REQUIRE(std::abs(r.score - 5.0) < 1e-9);
     }
@@ -125,7 +125,7 @@ TEST_CASE("compute_var_jump: score never negative, jump within domain", "[fj][ju
     m.var_mut(vid(x)).value = 0.0;  // sin(0)=0 > -0.5 -> violated
     full_evaluate(m);
     ViolationManager vm(m);
-    JumpResult r = compute_var_jump(m, vm, vid(x));
+    JumpResult r = compute_var_jump(m, vm.weights, vid(x));
     REQUIRE(r.jump_value >= -3.0);
     REQUIRE(r.jump_value <= 3.0);
     // From x0=0 the constraint is violated; the jump must strictly reduce
@@ -264,4 +264,62 @@ TEST_CASE("batch API drives objective minimization (Algorithm 6 mechanism)", "[f
     REQUIRE(have);
     REQUIRE(best >= 4.0 - 1e-6);  // cannot beat the true optimum
     REQUIRE(best < 4.0 + 0.05);   // reaches it
+}
+
+TEST_CASE("Novelty Jump escapes an FJ local optimum via a compound move", "[fj][novelty]") {
+    // bool x, y with: x != y, x >= 1, y <= 0. Feasible only at (x=1, y=0).
+    // From (0,1) every SINGLE flip is net-zero (fixes one constraint, breaks
+    // x!=y), so Feasibility Jump is stuck; the 2-variable compound move
+    // (x->1, y->0) reaches feasibility — exactly what Novelty Jump is for.
+    Model m;
+    auto x = m.bool_var();
+    auto y = m.bool_var();
+    m.add_constraint(m.neq(x, y));                // x != y
+    m.add_constraint(m.geq(x, m.constant(1.0)));  // x >= 1
+    m.add_constraint(m.leq(y, m.constant(0.0)));  // y <= 0
+    m.minimize(m.sum({x, y}));
+    m.close();
+
+    m.var_mut(vid(x)).value = 0.0;
+    m.var_mut(vid(y)).value = 1.0;
+
+    ViolationManager vm(m);
+    RNG rng(1);
+    FeasibilityJump fj(m, vm, rng, GFJConfig{});
+    fj.begin(/*set_initial_x=*/false);  // keep (0,1); evaluate + seed state
+
+    // Single-variable jumps are non-improving here (score 0): FJ is at a local
+    // optimum.
+    REQUIRE(compute_var_jump(m, vm.weights, vid(x)).score <= 0.0);
+    REQUIRE(compute_var_jump(m, vm.weights, vid(y)).score <= 0.0);
+
+    // Novelty Jump finds the compound move and reaches feasibility.
+    REQUIRE(fj.apply_novelty_jump());
+    REQUIRE(vm.is_feasible());
+    REQUIRE(m.var(vid(x)).value == 1.0);
+    REQUIRE(m.var(vid(y)).value == 0.0);
+}
+
+TEST_CASE("Novelty Jump terminates and leaves consistent state on a contradiction",
+          "[fj][novelty]") {
+    Model m;
+    auto x = m.int_var(0, 10);
+    m.add_constraint(m.leq(x, m.constant(2.0)));  // x <= 2
+    m.add_constraint(m.geq(x, m.constant(5.0)));  // x >= 5  (contradiction)
+    m.minimize(m.sum({x}));
+    m.close();
+
+    m.var_mut(vid(x)).value = 0.0;
+    ViolationManager vm(m);
+    RNG rng(1);
+    FeasibilityJump fj(m, vm, rng, GFJConfig{});
+    fj.begin(/*set_initial_x=*/false);
+
+    REQUIRE_FALSE(fj.apply_novelty_jump());  // cannot reach feasibility; must return
+    REQUIRE_FALSE(vm.is_feasible());
+    // State left consistent: total violation is finite and the var is in-domain.
+    fj.resync();
+    REQUIRE(std::isfinite(vm.total_violation()));
+    REQUIRE(m.var(vid(x)).value >= 0.0);
+    REQUIRE(m.var(vid(x)).value <= 10.0);
 }
