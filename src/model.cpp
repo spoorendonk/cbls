@@ -425,6 +425,40 @@ std::vector<std::pair<int32_t, double>> Model::per_constraint_violation_delta(in
     return result;
 }
 
+double Model::weighted_violation_delta(int32_t var_id, double j,
+                                       const std::vector<double>& weights) {
+    const Variable& v = var(var_id);  // bounds-checked
+    if (v.type == VarType::List || v.type == VarType::Set) {
+        throw std::invalid_argument(
+            "weighted_violation_delta: scalar variable required (Bool/Int/Float)");
+    }
+    const auto& affected = constraints_of_var(var_id);
+    if (affected.empty()) {
+        return 0.0;
+    }
+
+    // Accumulate the weighted violation over the affected constraints before and
+    // after the probe; no per-constraint vector is allocated.
+    double weighted_old = 0.0;
+    for (int32_t c : affected) {
+        weighted_old += weights[c] * std::max(0.0, node(constraint_ids_[c]).value);
+    }
+
+    const double old_value = v.value;
+    var_mut(var_id).value = j;
+    delta_evaluate(*this, &var_id, 1);
+
+    double weighted_new = 0.0;
+    for (int32_t c : affected) {
+        weighted_new += weights[c] * std::max(0.0, node(constraint_ids_[c]).value);
+    }
+
+    var_mut(var_id).value = old_value;
+    delta_evaluate(*this, &var_id, 1);
+
+    return weighted_new - weighted_old;
+}
+
 Model::State Model::copy_state() const {
     State state;
     state.values.resize(vars_.size());

@@ -112,11 +112,9 @@ void ViolationManager::bump_weights(double factor) {
 }
 
 double ViolationManager::weighted_violation_delta(int32_t var_id, double j) const {
-    double total = 0.0;
-    for (const auto& [cidx, delta] : model_.per_constraint_violation_delta(var_id, j)) {
-        total += weights[cidx] * delta;
-    }
-    return total;
+    // Delegate to the allocation-free Model probe (hot path: one call per jump
+    // candidate). weights is the per-constraint GLS weight vector.
+    return model_.weighted_violation_delta(var_id, j, weights);
 }
 
 }  // namespace cbls

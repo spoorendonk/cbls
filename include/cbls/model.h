@@ -125,6 +125,13 @@ public:
     std::vector<std::pair<int32_t, double>> per_constraint_violation_delta(int32_t var_id,
                                                                            double j);
 
+    // Change in total WEIGHTED violation if var_id <- j: sum_c weights[c]*delta_c,
+    // computed in-place without allocating (the hot path for FeasibilityJump
+    // scoring; the per_constraint variant allocates and is for sparse/tooling
+    // use). `weights` is indexed by constraint index (constraint_ids()). Scalar
+    // variables only; same no-commit / precondition contract as above.
+    double weighted_violation_delta(int32_t var_id, double j, const std::vector<double>& weights);
+
     const Variable& var(int32_t id) const {
         if (id < 0 || id >= static_cast<int32_t>(vars_.size())) {
             throw std::out_of_range("var id out of range");
