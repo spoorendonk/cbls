@@ -547,7 +547,7 @@ FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, dou
 // positive cumulative score is found (left applied); false leaves the assignment
 // as it was on entry (every move it applied is reverted).
 bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
-    if (budget < 0) {
+    if (budget < 0 || nj_work_remaining_ <= 0) {
         return false;
     }
     double s_c = 0.0;  // best explored child score at this level
@@ -565,6 +565,7 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         delta_evaluate(model_, &v, 1);
         move_stack_.push_back({v, old_value});
         on_stack_[v] = 1;
+        --nj_work_remaining_;  // bound total moves applied per apply_novelty_jump
 
         // Refresh violated_ for v's constraints; promote any now-broken
         // constraint to full novelty weight and add its vars to the scan set.
@@ -602,6 +603,7 @@ bool FeasibilityJump::apply_novelty_jump() {
     nj_in_queue_.assign(nv, 0);
     on_stack_.assign(nv, 0);
     move_stack_.clear();
+    nj_work_remaining_ = kNoveltyWorkBudget;  // bound the compound-move search
 
     int b = 0;
     while (b <= 2) {

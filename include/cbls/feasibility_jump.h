@@ -175,9 +175,11 @@ private:
 
     // Novelty Jump state (Algorithms 4-5).
     static constexpr double kCompoundDiscount = 1.0 / 1024.0;  // epsilon (OR-tools value)
-    std::vector<double> novelty_weights_;                      // W'
-    std::vector<int32_t> nj_queue_;                            // novelty scan set Q
-    std::vector<uint8_t> nj_in_queue_;                         // per var: in the novelty scan set
+    static constexpr int64_t kNoveltyWorkBudget = 256;  // max moves applied per apply_novelty_jump
+    int64_t nj_work_remaining_ = 0;                     // bounds compound-move search cost
+    std::vector<double> novelty_weights_;               // W'
+    std::vector<int32_t> nj_queue_;                     // novelty scan set Q
+    std::vector<uint8_t> nj_in_queue_;                  // per var: in the novelty scan set
     std::vector<uint8_t> on_stack_;  // per var: on the compound-move stack (the paper's T)
     struct StackMove {
         int32_t var;

@@ -237,10 +237,19 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             break;
         }
 
-        fj.batch(config.batch_iterations);
+        // Each batch is Feasibility Jump or Novelty Jump (paper Algorithm 6,
+        // ~50/50). NJ commits compound moves outside the FJ scan-set/jump-table,
+        // so it must be followed by a resync.
+        bool resync = false;
+        if (config.use_compound_moves && rng.random() < config.novelty_jump_probability) {
+            fj.apply_novelty_jump();
+            resync = true;
+        } else {
+            fj.batch(config.batch_iterations);
+        }
         ++batches;
 
-        bool resync = has_structural && structural_pass(model, vm, rng);
+        resync = (has_structural && structural_pass(model, vm, rng)) || resync;
 
         bool improved = false;
         if (real_feasible()) {

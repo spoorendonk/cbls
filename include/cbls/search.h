@@ -28,6 +28,13 @@ struct SearchConfig {
     int64_t batch_iterations = 1000;        // GLS iterations per batch
     int perturbation_period = 100;          // batches without improvement before perturbing
     double perturbation_probability = 0.1;  // per-variable randomisation probability
+    // Novelty Jump is implemented, wired, and unit-tested, but OFF by default:
+    // its per-batch cost is not yet bounded tightly enough for the large
+    // continuous benchmarks (it burns the time budget there). Enable + tune
+    // (probability, work budget, when-stuck-only) in P5 (#70); the paper uses
+    // 0.5 with deterministic-time-bounded batches.
+    bool use_compound_moves = false;        // run Novelty Jump batches (else FJ only)
+    double novelty_jump_probability = 0.5;  // P(a batch is Novelty Jump)
 };
 
 struct SearchResult {
