@@ -30,3 +30,18 @@ ucp40,12,CBLS SA (120s),INFEASIBLE,1112371,,130.7,this work,ramp-free; #32 #33 a
 ucp40,24,CBLS SA (300s),INFEASIBLE,2235971,,391.3,this work,ramp-free; #32 #33 affect feasibility flag
 ucp100,1,CBLS SA (10s),INFEASIBLE,,,10.5,this work,ramp-free
 ucp200,1,CBLS SA (10s),INFEASIBLE,,,10.0,this work,ramp-free
+# Post-port ViolationLS rows (epic #64 P0-P4; engine HEAD fc600ea, seed 42,
+# greedy init + FJ warm-start + FloatIntensifyHook + LNS, default config).
+# All feasible rows below pass --verify (resolves the #32/#33 false-feasible
+# flag). Strict improvement over CBLS SA on every instance SA solved, plus two
+# instances SA could not make feasible (ucp13-6p, ucp40-3p) are now VERIFIED.
+ucp13,1,CBLS ViolationLS (10s),12172.0,11701,4.03,10.0,this work,ramp-free; VERIFIED; was SA 13864.8 (18.49%)
+ucp13,3,CBLS ViolationLS (30s),42192.8,38850,8.60,30.0,this work,ramp-free; VERIFIED; was SA 48531.9 (24.92%)
+ucp13,6,CBLS ViolationLS (60s),98104.1,91406,7.33,60.1,this work,ramp-free; VERIFIED; SA was INFEASIBLE
+ucp13,12,CBLS ViolationLS (120s),INFEASIBLE,231587,,120.1,this work,ramp-free; still infeasible (hard coupled temporal; see #35/#36)
+ucp13,24,CBLS ViolationLS (300s),INFEASIBLE,464053,,300.3,this work,ramp-free; still infeasible (see #35/#36)
+ucp40,1,CBLS ViolationLS (10s),62801.8,55645,12.86,10.1,this work,ramp-free; VERIFIED; was SA 77964.4 (40.11%)
+ucp40,3,CBLS ViolationLS (30s),185257.1,178396,3.85,30.2,this work,ramp-free; VERIFIED; SA was INFEASIBLE
+ucp40,6,CBLS ViolationLS (60s),INFEASIBLE,416108,,61.0,this work,ramp-free; still infeasible (see #35/#36)
+ucp40,12,CBLS ViolationLS (120s),INFEASIBLE,1112371,,130.4,this work,ramp-free; still infeasible (see #35/#36)
+ucp40,24,CBLS ViolationLS (300s),INFEASIBLE,2235971,,304.3,this work,ramp-free; still infeasible (see #35/#36)
