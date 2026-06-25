@@ -16,3 +16,13 @@ B,CBLS,10,100.0,1544.3,15.0,"This benchmark (seed=42, JIT hook)","simplified-mod
 C,CPLEX(paper),50,100.0,31287.84,1354.0,"Goerler et al. 2020 Table 12","reference-only; full GLSP-RP — different model from CBLS"
 C,LAHCM_l50(paper),50,100.0,31335.30,182.0,"Goerler et al. 2020 Table 12","reference-only; full GLSP-RP — different model from CBLS"
 C,CBLS,10,60.0,2090.2,15.0,"This benchmark (seed=42, JIT hook)","simplified-model — disposal and cross-boundary changeover structurally absent; tight-capacity feasibility issue (#62)"
+# Post-port ViolationLS rows (epic #64 P0-P4; engine HEAD fc600ea, seed 42,
+# default config incl. structural-batch probability 0.33, 15s/instance, all
+# instances per class). n=50 here vs the n=10 CBLS rows above, so avg_objective
+# is over a larger/harder sample and not directly comparable; feasible_pct is.
+# Headline: Class C feasibility 60% (n=10, pre-port) -> 84% (n=50, post-port) —
+# the tight-capacity feasibility gap in #61/#62 is materially reduced. All
+# feasible rows pass --verify.
+A,CBLS-ViolationLS,50,100.0,3605.2,15.7,"This work (HEAD fc600ea, seed=42)","post-port; simplified model (FIDELITY.md); n=50 full class (vs n=10 above)"
+B,CBLS-ViolationLS,50,100.0,1761.7,15.3,"This work (HEAD fc600ea, seed=42)","post-port; simplified model (FIDELITY.md); n=50 full class"
+C,CBLS-ViolationLS,50,84.0,2251.9,15.2,"This work (HEAD fc600ea, seed=42)","post-port; simplified model (FIDELITY.md); n=50 full class; feasibility 60%->84% vs #61/#62"
