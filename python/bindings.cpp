@@ -267,13 +267,6 @@ NB_MODULE(_cbls_core, m) {
         .def_rw("values", &SavedValues::values)
         .def_rw("elements", &SavedValues::elements);
 
-    // MoveProbabilities
-    nb::class_<MoveProbabilities>(m, "MoveProbabilities")
-        .def(nb::init<const std::vector<std::string>&>())
-        .def("select", &MoveProbabilities::select)
-        .def("update", &MoveProbabilities::update)
-        .def("probabilities", &MoveProbabilities::probabilities);
-
     // LNS
     nb::class_<LNS>(m, "LNS")
         .def(nb::init<double>(), nb::arg("destroy_fraction") = 0.3)
@@ -340,9 +333,6 @@ NB_MODULE(_cbls_core, m) {
     m.def("compute_partial", &compute_partial);
     m.def("compute_all_partials", &compute_all_partials);
     m.def("generate_standard_moves", &generate_standard_moves);
-    m.def("newton_tight_move", &newton_tight_move);
-    m.def("gradient_lift_move", &gradient_lift_move, nb::arg("var_id"), nb::arg("model"),
-          nb::arg("step_size") = 0.1);
     m.def("apply_move", &apply_move);
     m.def("save_move_values", &save_move_values);
     m.def("undo_move", &undo_move);

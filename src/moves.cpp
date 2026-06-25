@@ -1,5 +1,5 @@
 #include "cbls/moves.h"
-#include "cbls/dag_ops.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -29,8 +29,8 @@ static std::vector<Move> int_moves(const Variable& var, RNG& rng) {
     {
         Move m;
         m.move_type = "int_rand";
-        double new_val = static_cast<double>(rng.integers(
-            static_cast<int64_t>(var.lb), static_cast<int64_t>(var.ub) + 1));
+        double new_val = static_cast<double>(
+            rng.integers(static_cast<int64_t>(var.lb), static_cast<int64_t>(var.ub) + 1));
         m.changes.push_back({var.id, new_val, {}});
         moves.push_back(m);
     }
@@ -50,11 +50,15 @@ static std::vector<Move> float_moves(const Variable& var, RNG& rng, double sigma
 static std::vector<Move> list_moves(const Variable& var, RNG& rng) {
     std::vector<Move> moves;
     int n = static_cast<int>(var.elements.size());
-    if (n < 2) return moves;
+    if (n < 2) {
+        return moves;
+    }
 
     int i = static_cast<int>(rng.integers(0, n));
     int j = static_cast<int>(rng.integers(0, n - 1));
-    if (j >= i) j++;  // ensure i != j
+    if (j >= i) {
+        j++;  // ensure i != j
+    }
 
     // Swap
     {
@@ -100,7 +104,9 @@ static std::vector<Move> list_moves(const Variable& var, RNG& rng) {
         int32_t e1 = new_elems[i + 1];
         new_elems.erase(new_elems.begin() + i, new_elems.begin() + i + 2);
         int insert_pos = j;
-        if (j > i) insert_pos = std::max(0, j - 2);
+        if (j > i) {
+            insert_pos = std::max(0, j - 2);
+        }
         insert_pos = std::min(insert_pos, static_cast<int>(new_elems.size()));
         new_elems.insert(new_elems.begin() + insert_pos, e1);
         new_elems.insert(new_elems.begin() + insert_pos, e0);
@@ -118,7 +124,9 @@ static std::vector<Move> list_moves(const Variable& var, RNG& rng) {
         int32_t e2 = new_elems[i + 2];
         new_elems.erase(new_elems.begin() + i, new_elems.begin() + i + 3);
         int insert_pos = j;
-        if (j > i) insert_pos = std::max(0, j - 3);
+        if (j > i) {
+            insert_pos = std::max(0, j - 3);
+        }
         insert_pos = std::min(insert_pos, static_cast<int>(new_elems.size()));
         new_elems.insert(new_elems.begin() + insert_pos, e2);
         new_elems.insert(new_elems.begin() + insert_pos, e1);
@@ -139,10 +147,14 @@ static std::vector<Move> set_moves(const Variable& var, RNG& rng) {
     // For set vars, elements stores the current set. Universe is {0..universe_size-1}
     std::vector<bool> in_flag(var.universe_size, false);
     for (int32_t e : var.elements) {
-        if (e >= 0 && e < var.universe_size) in_flag[e] = true;
+        if (e >= 0 && e < var.universe_size) {
+            in_flag[e] = true;
+        }
     }
     for (int32_t i = 0; i < var.universe_size; ++i) {
-        if (!in_flag[i]) not_in.push_back(i);
+        if (!in_flag[i]) {
+            not_in.push_back(i);
+        }
     }
 
     int cur_size = static_cast<int>(var.elements.size());
@@ -193,17 +205,23 @@ static std::vector<Move> set_moves(const Variable& var, RNG& rng) {
 
 std::vector<Move> generate_block_moves(int32_t var_id, const Model& model, RNG& rng) {
     auto [seq_idx, pos] = model.var_sequence_for(var_id);
-    if (seq_idx < 0) return {};
+    if (seq_idx < 0) {
+        return {};
+    }
 
     const auto& seq = model.var_sequences()[seq_idx];
     int n = static_cast<int>(seq.var_ids.size());
-    if (n < 2) return {};
+    if (n < 2) {
+        return {};
+    }
 
     std::vector<Move> moves;
     const auto& var = model.var(var_id);
     double target = (var.value < 0.5) ? 1.0 : 0.0;  // flip direction
     int min_block = (target > 0.5) ? seq.min_block_on : seq.min_block_off;
-    if (min_block > n) return {};
+    if (min_block > n) {
+        return {};
+    }
 
     // Pick a random block of length in [min_block, min(2*min_block, n)] containing pos
     int block_len = min_block;
@@ -215,7 +233,9 @@ std::vector<Move> generate_block_moves(int32_t var_id, const Model& model, RNG& 
     // Position the block to include pos
     int earliest_start = std::max(0, pos - block_len + 1);
     int latest_start = std::min(pos, n - block_len);
-    if (latest_start < earliest_start) return {};
+    if (latest_start < earliest_start) {
+        return {};
+    }
 
     int start = static_cast<int>(rng.integers(earliest_start, latest_start + 1));
 
@@ -227,7 +247,9 @@ std::vector<Move> generate_block_moves(int32_t var_id, const Model& model, RNG& 
             m.changes.push_back({seq.var_ids[i], target, {}});
         }
     }
-    if (m.changes.empty()) return {};
+    if (m.changes.empty()) {
+        return {};
+    }
     moves.push_back(std::move(m));
 
     return moves;
@@ -235,51 +257,18 @@ std::vector<Move> generate_block_moves(int32_t var_id, const Model& model, RNG& 
 
 std::vector<Move> generate_standard_moves(const Variable& var, RNG& rng) {
     switch (var.type) {
-    case VarType::Bool:  return bool_moves(var);
-    case VarType::Int:   return int_moves(var, rng);
-    case VarType::Float: return float_moves(var, rng);
-    case VarType::List:  return list_moves(var, rng);
-    case VarType::Set:   return set_moves(var, rng);
+        case VarType::Bool:
+            return bool_moves(var);
+        case VarType::Int:
+            return int_moves(var, rng);
+        case VarType::Float:
+            return float_moves(var, rng);
+        case VarType::List:
+            return list_moves(var, rng);
+        case VarType::Set:
+            return set_moves(var, rng);
     }
     return {};
-}
-
-std::vector<Move> newton_tight_move(int32_t var_id, Model& model, int constraint_idx) {
-    const auto& var = model.var(var_id);
-    if (var.type != VarType::Float) return {};
-
-    int32_t cid = model.constraint_ids()[constraint_idx];
-    double g_x = model.node(cid).value;  // > 0 means violated
-    double dg_dxj = compute_partial(model, cid, var_id);
-
-    if (std::abs(dg_dxj) < 1e-12) return {};
-
-    double delta = -g_x / dg_dxj;
-    double new_val = std::clamp(var.value + delta, var.lb, var.ub);
-    if (std::abs(new_val - var.value) < 1e-15) return {};
-
-    Move m;
-    m.move_type = "newton_tight";
-    m.changes.push_back({var_id, new_val, {}});
-    return {m};
-}
-
-std::vector<Move> gradient_lift_move(int32_t var_id, Model& model, double step_size) {
-    const auto& var = model.var(var_id);
-    if (var.type != VarType::Float) return {};
-    if (model.objective_id() < 0) return {};
-
-    double df_dxj = compute_partial(model, model.objective_id(), var_id);
-    if (std::abs(df_dxj) < 1e-12) return {};
-
-    double delta = -step_size * df_dxj;
-    double new_val = std::clamp(var.value + delta, var.lb, var.ub);
-    if (std::abs(new_val - var.value) < 1e-15) return {};
-
-    Move m;
-    m.move_type = "gradient_lift";
-    m.changes.push_back({var_id, new_val, {}});
-    return {m};
 }
 
 std::vector<int32_t> apply_move(Model& model, const Move& move) {
@@ -312,87 +301,6 @@ void undo_move(Model& model, const Move& move, const SavedValues& saved) {
         auto& var = model.var_mut(move.changes[i].var_id);
         var.value = saved.values[i];
         var.elements = saved.elements[i];
-    }
-}
-
-// MoveProbabilities
-MoveProbabilities::MoveProbabilities(const std::vector<std::string>& move_types)
-    : move_types_(move_types) {
-    size_t n = move_types.size();
-    accept_counts_.resize(n, 0);
-    total_counts_.resize(n, 0);
-    probs_.resize(n, 1.0 / n);
-}
-
-std::string MoveProbabilities::select(RNG& rng) const {
-    double r = rng.random();
-    double cumulative = 0.0;
-    for (size_t i = 0; i < move_types_.size(); ++i) {
-        cumulative += probs_[i];
-        if (r < cumulative) return move_types_[i];
-    }
-    return move_types_.back();
-}
-
-void MoveProbabilities::update(const std::string& move_type, bool accepted) {
-    for (size_t i = 0; i < move_types_.size(); ++i) {
-        if (move_types_[i] == move_type) {
-            total_counts_[i]++;
-            if (accepted) accept_counts_[i]++;
-            break;
-        }
-    }
-    total_updates_++;
-    if (total_updates_ % update_interval_ == 0) {
-        rebalance();
-    }
-}
-
-void MoveProbabilities::rebalance() {
-    size_t n = move_types_.size();
-    double floor = 0.05;
-
-    std::vector<double> rates(n);
-    for (size_t i = 0; i < n; ++i) {
-        rates[i] = static_cast<double>(accept_counts_[i]) /
-                   std::max(total_counts_[i], 1);
-    }
-
-    double total = 0.0;
-    for (double r : rates) total += r;
-    total += 1e-10;
-
-    std::vector<double> probs(n);
-    for (size_t i = 0; i < n; ++i) {
-        probs[i] = rates[i] / total;
-    }
-
-    // Iteratively enforce floor and redistribute
-    for (int iter = 0; iter < 3; ++iter) {
-        double deficit = 0.0;
-        int above_floor = 0;
-        for (size_t i = 0; i < n; ++i) {
-            if (probs[i] < floor) {
-                deficit += floor - probs[i];
-                probs[i] = floor;
-            } else {
-                above_floor++;
-            }
-        }
-        if (deficit > 0 && above_floor > 0) {
-            for (size_t i = 0; i < n; ++i) {
-                if (probs[i] > floor) {
-                    probs[i] -= deficit / above_floor;
-                    probs[i] = std::max(probs[i], floor);
-                }
-            }
-        }
-    }
-
-    total = 0.0;
-    for (double p : probs) total += p;
-    for (size_t i = 0; i < n; ++i) {
-        probs_[i] = probs[i] / total;
     }
 }
 
