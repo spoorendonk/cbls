@@ -16,7 +16,9 @@ TEST_CASE("SolveCallback fires during solve", "[callback]") {
         bool saw_new_best = false;
         void on_progress(const SolveProgress& p) override {
             count++;
-            if (p.new_best) saw_new_best = true;
+            if (p.new_best) {
+                saw_new_best = true;
+            }
         }
     };
 
@@ -39,10 +41,18 @@ TEST_CASE("SolveCallback receives valid progress data", "[callback]") {
     struct ValidateCallback : SolveCallback {
         bool all_valid = true;
         void on_progress(const SolveProgress& p) override {
-            if (p.time_seconds < 0) all_valid = false;
-            if (p.iteration < 0) all_valid = false;
-            if (p.temperature < 0) all_valid = false;
-            if (p.total_violation < 0) all_valid = false;
+            if (p.time_seconds < 0) {
+                all_valid = false;
+            }
+            if (p.iteration < 0) {
+                all_valid = false;
+            }
+            if (p.perturbations < 0) {
+                all_valid = false;
+            }
+            if (p.total_violation < 0) {
+                all_valid = false;
+            }
         }
     };
 

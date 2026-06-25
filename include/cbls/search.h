@@ -12,13 +12,6 @@
 namespace cbls {
 
 struct SearchConfig {
-    // SA-era knobs — unused by the ViolationLS solve loop. Kept until the
-    // bindings/CLI that still reference them are swept (post-P2 cleanup).
-    double cooling_rate = 0.9999;
-    int reheat_interval = 5000;
-    int hook_frequency = 10;
-    double fj_time_fraction = 0.2;
-
     bool skip_init = false;
     int64_t max_iterations = 0;  // 0 = unlimited (use time_limit); counts GLS iterations
     bool use_fj = true;
@@ -50,10 +43,9 @@ struct SolveProgress {
     double time_seconds = 0.0;
     double objective = std::numeric_limits<double>::infinity();
     double total_violation = 0.0;
-    double temperature = 0.0;
     bool feasible = false;
     bool new_best = false;
-    int reheat_count = 0;
+    int perturbations = 0;  // diversification kicks so far (ViolationLS)
 };
 
 class SolveCallback {

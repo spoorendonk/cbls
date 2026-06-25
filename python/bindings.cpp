@@ -309,10 +309,6 @@ NB_MODULE(_cbls_core, m) {
     // Python eagerly at .def() time; an unregistered type throws std::bad_cast).
     nb::class_<SearchConfig>(m, "SearchConfig")
         .def(nb::init<>())
-        .def_rw("cooling_rate", &SearchConfig::cooling_rate)
-        .def_rw("reheat_interval", &SearchConfig::reheat_interval)
-        .def_rw("hook_frequency", &SearchConfig::hook_frequency)
-        .def_rw("fj_time_fraction", &SearchConfig::fj_time_fraction)
         .def_rw("skip_init", &SearchConfig::skip_init)
         .def_rw("max_iterations", &SearchConfig::max_iterations)
         .def_rw("use_fj", &SearchConfig::use_fj)
@@ -367,10 +363,9 @@ NB_MODULE(_cbls_core, m) {
         .def_ro("time_seconds", &SolveProgress::time_seconds)
         .def_ro("objective", &SolveProgress::objective)
         .def_ro("total_violation", &SolveProgress::total_violation)
-        .def_ro("temperature", &SolveProgress::temperature)
         .def_ro("feasible", &SolveProgress::feasible)
         .def_ro("new_best", &SolveProgress::new_best)
-        .def_ro("reheat_count", &SolveProgress::reheat_count);
+        .def_ro("perturbations", &SolveProgress::perturbations);
 
     // SolveCallback with trampoline for Python subclassing
     nb::class_<SolveCallback, PySolveCallback>(m, "SolveCallback")

@@ -1,9 +1,11 @@
 #include "cbls/formatter.h"
+
 #include "cbls/cbls.h"
-#include <nlohmann/json.hpp>
-#include <iomanip>
+
 #include <cmath>
+#include <iomanip>
 #include <limits>
+#include <nlohmann/json.hpp>
 
 namespace cbls {
 
@@ -21,28 +23,24 @@ static std::string format_count(int64_t n) {
     return std::to_string(n);
 }
 
-void HumanFormatter::print_header(const std::string& model_path, const Model& model,
-                                   uint64_t seed, double time_limit) {
+void HumanFormatter::print_header(const std::string& model_path, const Model& model, uint64_t seed,
+                                  double time_limit) {
     out_ << "cbls " << version << " — Constraint-Based Local Search\n";
-    out_ << "Model: " << model_path
-         << " | " << model.num_vars() << " vars"
+    out_ << "Model: " << model_path << " | " << model.num_vars() << " vars"
          << " | " << model.constraint_ids().size() << " constraints"
-         << " | " << (model.objective_id() >= 0 ? (model.is_maximizing() ? "maximize obj" : "minimize obj") : "feasibility")
+         << " | "
+         << (model.objective_id() >= 0 ? (model.is_maximizing() ? "maximize obj" : "minimize obj")
+                                       : "feasibility")
          << "\n";
-    out_ << "Seed: " << seed << " | Time limit: "
-         << std::fixed << std::setprecision(1) << time_limit << "s\n\n";
-    out_ << std::right
-         << std::setw(8) << "Time"
-         << std::setw(11) << "Iter"
-         << std::setw(16) << "Objective"
-         << std::setw(11) << "Violation"
-         << std::setw(13) << "Temperature"
+    out_ << "Seed: " << seed << " | Time limit: " << std::fixed << std::setprecision(1)
+         << time_limit << "s\n\n";
+    out_ << std::right << std::setw(8) << "Time" << std::setw(11) << "Iter" << std::setw(16)
+         << "Objective" << std::setw(11) << "Violation" << std::setw(13) << "Perturbs"
          << "\n";
 }
 
 void HumanFormatter::on_progress(const SolveProgress& p) {
-    out_ << std::fixed << std::setprecision(2)
-         << std::setw(7) << p.time_seconds << "s"
+    out_ << std::fixed << std::setprecision(2) << std::setw(7) << p.time_seconds << "s"
          << std::setw(11) << format_count(p.iteration);
 
     if (p.feasible && p.objective < std::numeric_limits<double>::infinity()) {
@@ -57,9 +55,11 @@ void HumanFormatter::on_progress(const SolveProgress& p) {
         out_ << std::setw(11) << std::setprecision(2) << p.total_violation;
     }
 
-    out_ << std::setw(13) << std::setprecision(3) << p.temperature;
+    out_ << std::setw(13) << p.perturbations;
 
-    if (p.new_best) out_ << "  *";
+    if (p.new_best) {
+        out_ << "  *";
+    }
     out_ << "\n";
 }
 
@@ -67,25 +67,23 @@ void HumanFormatter::print_result(const SearchResult& result, const Model& model
     out_ << "\n";
     out_ << "Status:     " << (result.feasible ? "feasible" : "infeasible") << "\n";
     if (result.feasible && result.objective < std::numeric_limits<double>::infinity()) {
-        out_ << "Objective:  " << std::fixed << std::setprecision(6)
-             << result.objective << "\n";
+        out_ << "Objective:  " << std::fixed << std::setprecision(6) << result.objective << "\n";
     } else if (model.objective_id() < 0) {
         out_ << "Objective:  -\n";
     } else {
-        out_ << "Objective:  " << std::fixed << std::setprecision(6)
-             << result.objective << "\n";
+        out_ << "Objective:  " << std::fixed << std::setprecision(6) << result.objective << "\n";
     }
-    out_ << "Time:       " << std::fixed << std::setprecision(2)
-         << result.time_seconds << "s ("
+    out_ << "Time:       " << std::fixed << std::setprecision(2) << result.time_seconds << "s ("
          << result.iterations << " iterations)\n";
     out_ << "Solution:\n";
     for (const auto& var : model.variables()) {
-        out_ << "  " << (var.name.empty() ? "v" + std::to_string(var.id) : var.name)
-             << " = ";
+        out_ << "  " << (var.name.empty() ? "v" + std::to_string(var.id) : var.name) << " = ";
         if (var.type == VarType::List || var.type == VarType::Set) {
             out_ << "[";
             for (size_t i = 0; i < var.elements.size(); ++i) {
-                if (i > 0) out_ << ", ";
+                if (i > 0) {
+                    out_ << ", ";
+                }
                 out_ << var.elements[i];
             }
             out_ << "]";
@@ -98,8 +96,8 @@ void HumanFormatter::print_result(const SearchResult& result, const Model& model
 
 // --- JsonlFormatter ---
 
-void JsonlFormatter::print_header(const std::string& model_path, const Model& model,
-                                   uint64_t seed, double time_limit) {
+void JsonlFormatter::print_header(const std::string& model_path, const Model& model, uint64_t seed,
+                                  double time_limit) {
     json j;
     j["event"] = "start";
     j["version"] = version;
@@ -124,7 +122,7 @@ void JsonlFormatter::on_progress(const SolveProgress& p) {
     }
     j["violation"] = p.total_violation;
     j["feasible"] = p.feasible;
-    j["temperature"] = p.temperature;
+    j["perturbations"] = p.perturbations;
     j["new_best"] = p.new_best;
     out_ << j.dump() << "\n";
 }

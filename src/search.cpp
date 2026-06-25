@@ -109,10 +109,9 @@ static SolveProgress make_progress(int64_t iteration, double elapsed, double bes
     p.time_seconds = elapsed;
     p.objective = best_feasible_obj;
     p.total_violation = total_viol;
-    p.temperature = 0.0;  // SA-only field; retained for ABI, always 0 under ViolationLS
     p.feasible = feasible;
     p.new_best = new_best;
-    p.reheat_count = perturbations;  // repurposed: perturbation count
+    p.perturbations = perturbations;
     return p;
 }
 
