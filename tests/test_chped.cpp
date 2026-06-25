@@ -1,7 +1,8 @@
+#include "benchmarks/chped/chped_model.h"
+#include "benchmarks/chped/data.h"
+
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
-#include "benchmarks/chped/data.h"
-#include "benchmarks/chped/chped_model.h"
 #include <cstdio>
 
 using namespace cbls;
@@ -11,7 +12,7 @@ TEST_CASE("CHPED 4-unit builds model", "[chped]") {
     auto inst = make_4unit();
     auto cm = build_chped_model(inst);
     auto& m = cm.model;
-    REQUIRE(m.num_vars() == 8);  // 4 commit + 4 power
+    REQUIRE(m.num_vars() == 8);               // 4 commit + 4 power
     REQUIRE(m.constraint_ids().size() == 1);  // 1 demand constraint
 }
 
@@ -22,8 +23,8 @@ TEST_CASE("CHPED 4-unit feasibility", "[chped]") {
 
     auto result = solve(m, 2.0, 42);
     REQUIRE(result.feasible);
-    printf("\n4-unit: feasible=%d, obj=%.2f, iters=%ld, time=%.3fs\n",
-           result.feasible, result.objective, result.iterations, result.time_seconds);
+    printf("\n4-unit: feasible=%d, obj=%.2f, iters=%ld, time=%.3fs\n", result.feasible,
+           result.objective, result.iterations, result.time_seconds);
 }
 
 TEST_CASE("CHPED 4-unit solution quality", "[chped]") {
@@ -44,8 +45,8 @@ TEST_CASE("CHPED 7-unit feasibility", "[chped]") {
 
     auto result = solve(m, 3.0, 42);
     REQUIRE(result.feasible);
-    printf("\n7-unit: feasible=%d, obj=%.2f, iters=%ld\n",
-           result.feasible, result.objective, result.iterations);
+    printf("\n7-unit: feasible=%d, obj=%.2f, iters=%ld\n", result.feasible, result.objective,
+           result.iterations);
 }
 
 TEST_CASE("CHPED 24-unit feasibility", "[chped]") {
@@ -54,8 +55,8 @@ TEST_CASE("CHPED 24-unit feasibility", "[chped]") {
     auto& m = cm.model;
 
     auto result = solve(m, 10.0, 42);
-    printf("\n24-unit: feasible=%d, obj=%.2f, iters=%ld\n",
-           result.feasible, result.objective, result.iterations);
+    printf("\n24-unit: feasible=%d, obj=%.2f, iters=%ld\n", result.feasible, result.objective,
+           result.iterations);
     REQUIRE(result.iterations > 100);
     if (result.feasible) {
         REQUIRE(result.objective < 20000);
@@ -72,7 +73,8 @@ TEST_CASE("CHPED 13-unit feasibility and quality", "[chped]") {
     REQUIRE(result.objective >= inst.known_optimum);
     REQUIRE(result.objective < 19000);
     printf("\n13-unit: feasible=%d, obj=%.2f (known optimum ~%.0f), iters=%ld, time=%.3fs\n",
-           result.feasible, result.objective, inst.known_optimum, result.iterations, result.time_seconds);
+           result.feasible, result.objective, inst.known_optimum, result.iterations,
+           result.time_seconds);
 }
 
 TEST_CASE("CHPED 40-unit feasibility and quality", "[chped]") {
@@ -80,10 +82,17 @@ TEST_CASE("CHPED 40-unit feasibility and quality", "[chped]") {
     auto cm = build_chped_model(inst);
     auto& m = cm.model;
 
-    auto result = solve(m, 15.0, 42);
+    // 30s, not 15s: this is a wall-clock quality bound, and the pre-commit gate
+    // runs the whole suite under `ctest -j`. With ~16 heavy benchmarks (incl. the
+    // 123s Bunker-medium) competing for cores, a 15s budget gives this test well
+    // under half a core, starving it below the quality bar. 30s wall-clock under
+    // that contention ≈ 15s solo compute, which reliably reaches obj < 140000;
+    // since Bunker-medium dominates suite wall-time, this adds no net suite time.
+    auto result = solve(m, 30.0, 42);
     REQUIRE(result.feasible);
     REQUIRE(result.objective >= inst.known_optimum);
     REQUIRE(result.objective < 140000);
     printf("\n40-unit: feasible=%d, obj=%.2f (known optimum ~%.0f), iters=%ld, time=%.3fs\n",
-           result.feasible, result.objective, inst.known_optimum, result.iterations, result.time_seconds);
+           result.feasible, result.objective, inst.known_optimum, result.iterations,
+           result.time_seconds);
 }
