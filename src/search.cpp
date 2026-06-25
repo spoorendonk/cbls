@@ -65,13 +65,14 @@ void fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations, RN
     vm.invalidate_cache();
 }
 
-// Greedy structural pass over List/Set variables: try the candidate structural
-// moves (swap / 2-opt / relocate / set add-remove-swap) for each and keep any
-// that reduce total weighted violation. FeasibilityJump only jumps scalar
-// variables, so without this list-structured models cannot improve their
-// list/set assignment beyond the random initial one. Minimal by design; P4
-// (#69) promotes this to a first-class structural batch. Returns true if any
-// move was committed.
+// A STRUCTURAL batch (paper Algorithm 6 has FJ/NJ; this is the list/set peer):
+// sweep the List/Set variables, try the candidate structural moves (swap /
+// 2-opt / relocate / or-opt / set add-remove-swap) for each, and greedily keep
+// any that reduce total weighted violation (i.e. negative weighted delta_G under
+// the current GLS weights W, since total_violation() is W-weighted).
+// FeasibilityJump only jumps scalar variables, so list-structured models cannot
+// improve their list/set assignment without this. Returns true if any move was
+// committed (the caller must then resync the FJ scan-set/jump-table).
 static bool structural_pass(Model& model, ViolationManager& vm, RNG& rng) {
     bool changed = false;
     for (const auto& var : model.variables()) {
@@ -174,10 +175,16 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     int64_t batches = 0;
     auto last_callback = start;
 
-    // Skip the structural pass entirely on scalar-only models.
+    // Skip the structural batch entirely on scalar-only models.
     const bool has_structural = std::any_of(
         model.variables().begin(), model.variables().end(),
         [](const Variable& v) { return v.type == VarType::List || v.type == VarType::Set; });
+    // Effective structural-batch probability: explicit config overrides; <0 means
+    // auto (0.33 with list/set vars, 0 otherwise). Zeroed on scalar-only models.
+    const double structural_probability = !has_structural ? 0.0
+                                          : config.structural_batch_probability >= 0.0
+                                              ? config.structural_batch_probability
+                                              : 0.33;
 
     auto sample_rho = [&]() { fj.set_rho(rng.random() < 0.5 ? 0.95 : 1.0); };
     sample_rho();
@@ -236,19 +243,32 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             break;
         }
 
-        // Each batch is Feasibility Jump or Novelty Jump (paper Algorithm 6,
-        // ~50/50). NJ commits compound moves outside the FJ scan-set/jump-table,
-        // so it must be followed by a resync.
+        // Pick this batch's kind (paper Algorithm 6 alternates FJ/NJ; the
+        // STRUCTURAL batch is the list/set peer added in P4). Structural and
+        // Novelty batches commit changes outside the FJ scan-set/jump-table, so
+        // they must be followed by a resync.
+        enum class BatchKind { FeasibilityJump, NoveltyJump, Structural };
+        BatchKind kind = BatchKind::FeasibilityJump;
+        if (rng.random() < structural_probability) {
+            kind = BatchKind::Structural;
+        } else if (config.use_compound_moves && rng.random() < config.novelty_jump_probability) {
+            kind = BatchKind::NoveltyJump;
+        }
+
         bool resync = false;
-        if (config.use_compound_moves && rng.random() < config.novelty_jump_probability) {
-            fj.apply_novelty_jump();
-            resync = true;
-        } else {
-            fj.batch(config.batch_iterations);
+        switch (kind) {
+            case BatchKind::Structural:
+                resync = structural_pass(model, vm, rng);
+                break;
+            case BatchKind::NoveltyJump:
+                fj.apply_novelty_jump();
+                resync = true;
+                break;
+            case BatchKind::FeasibilityJump:
+                fj.batch(config.batch_iterations);
+                break;
         }
         ++batches;
-
-        resync = (has_structural && structural_pass(model, vm, rng)) || resync;
 
         bool improved = false;
         if (real_feasible()) {

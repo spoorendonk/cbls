@@ -305,7 +305,8 @@ NB_MODULE(_cbls_core, m) {
         .def_rw("skip_init", &SearchConfig::skip_init)
         .def_rw("max_iterations", &SearchConfig::max_iterations)
         .def_rw("use_fj", &SearchConfig::use_fj)
-        .def_rw("lns_interval", &SearchConfig::lns_interval);
+        .def_rw("lns_interval", &SearchConfig::lns_interval)
+        .def_rw("structural_batch_probability", &SearchConfig::structural_batch_probability);
 
     // ParallelSearch
     nb::class_<ParallelSearch>(m, "ParallelSearch")

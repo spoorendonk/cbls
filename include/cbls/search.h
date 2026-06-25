@@ -21,6 +21,13 @@ struct SearchConfig {
     int64_t batch_iterations = 1000;        // GLS iterations per batch
     int perturbation_period = 100;          // batches without improvement before perturbing
     double perturbation_probability = 0.1;  // per-variable randomisation probability
+    // Structural batch (P4): instead of a scalar Feasibility/Novelty Jump batch,
+    // sweep the List/Set variables trying typed structural moves (swap / 2-opt /
+    // relocate / or-opt / set add-remove-swap) and keep any that reduce weighted
+    // violation. FJ only jumps scalar variables, so list/set-structured models
+    // need this to improve their structural assignment. <0 picks an automatic
+    // default: 0.33 when the model has List/Set variables, 0.0 otherwise.
+    double structural_batch_probability = -1.0;
     // Novelty Jump is implemented, wired, and unit-tested, but OFF by default:
     // its per-batch cost is not yet bounded tightly enough for the large
     // continuous benchmarks (it burns the time budget there). Enable + tune
