@@ -25,3 +25,11 @@ large-15s-60c,CBLS-noECA,6447180,,"CBLS SA without ECA fuel switching; equal to 
 xlarge-30s-120c,SCIP,,,"PySCIPOpt MIQCP no solution in 1800s"
 xlarge-30s-120c,CBLS,,,not run
 xlarge-30s-120c,CBLS-noECA,,,not run
+# Post-port ViolationLS rows (epic #64 P0-P4; engine HEAD c0116c3, seed 42,
+# default config, --verify PASS). Bunker is scalar-only (no List/Set vars) so the
+# structural batch is inactive and the engine finds the same optima as CBLS-SA: a
+# no-regression result. Still self-consistent only (simplified formulation, no
+# BKS; see header + FIDELITY.md). noECA == ECA persists (#57).
+small-3s-10c,CBLS-ViolationLS,1096172,,"post-port 30s; identical to CBLS-SA (no regression); self-consistent only"
+medium-7s-30c,CBLS-ViolationLS,3291331,,"post-port 120s; identical to CBLS-SA (no regression); self-consistent only"
+large-15s-60c,CBLS-ViolationLS,6447180,,"post-port 300s; identical to CBLS-SA (no regression); self-consistent only"
