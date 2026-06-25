@@ -6,28 +6,6 @@
 
 namespace cbls {
 
-void AdaptiveLambda::update(bool is_feasible, bool obj_improved) {
-    if (!is_feasible) {
-        consecutive_infeasible++;
-        consecutive_feasible_stuck = 0;
-        if (consecutive_infeasible > 10) {
-            lambda_ *= 1.5;
-            consecutive_infeasible = 0;
-        }
-    } else {
-        consecutive_infeasible = 0;
-        if (!obj_improved) {
-            consecutive_feasible_stuck++;
-            if (consecutive_feasible_stuck > 20) {
-                lambda_ *= 0.8;
-                consecutive_feasible_stuck = 0;
-            }
-        } else {
-            consecutive_feasible_stuck = 0;
-        }
-    }
-}
-
 ViolationManager::ViolationManager(Model& model) : model_(model) {
     weights.resize(model.constraint_ids().size(), 1.0);
     cached_violations_.resize(model.constraint_ids().size(), 0.0);
@@ -81,7 +59,7 @@ double ViolationManager::augmented_objective() const {
     if (model_.objective_id() >= 0) {
         obj = model_.node(model_.objective_id()).value;
     }
-    return obj + adaptive_lambda.lambda_ * total_violation();
+    return obj + total_violation();
 }
 
 bool ViolationManager::is_feasible(double tol) const {

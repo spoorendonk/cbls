@@ -6,22 +6,17 @@
 
 namespace cbls {
 
-struct AdaptiveLambda {
-    double lambda_ = 1.0;
-    int consecutive_infeasible = 0;
-    int consecutive_feasible_stuck = 0;
-
-    explicit AdaptiveLambda(double initial_lambda = 1.0) : lambda_(initial_lambda) {}
-
-    void update(bool is_feasible, bool obj_improved);
-};
-
 class ViolationManager {
 public:
     explicit ViolationManager(Model& model);
 
     double constraint_violation(int i) const;
     double total_violation() const;
+    // Penalty-method objective: raw objective + unit-weighted total violation.
+    // The continuous InnerSolverHook descends this. NOTE: when the objective is
+    // folded in as the `obj <= bound` soft constraint (during solve()), the
+    // objective term is double-counted; that is acceptable for the hook's local
+    // polish but not for accept rules (LNS uses a real-feasibility comparison).
     double augmented_objective() const;
     bool is_feasible(double tol = 1e-9) const;
     std::vector<int> violated_constraints(double tol = 1e-9) const;
@@ -38,7 +33,6 @@ public:
     // Invalidate cached total (call after weights change or full_evaluate)
     void invalidate_cache() { cache_valid_ = false; }
 
-    AdaptiveLambda adaptive_lambda;
     std::vector<double> weights;
 
 private:

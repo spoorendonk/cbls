@@ -1,7 +1,8 @@
+#include "test_helpers.h"
+
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cbls/cbls.h>
-#include "test_helpers.h"
 #include <chrono>
 #include <cmath>
 #include <stdexcept>
@@ -50,25 +51,8 @@ TEST_CASE("Augmented objective", "[violation]") {
     m.var_mut(vid(x)).value = 8.0;
     full_evaluate(m);
     ViolationManager vm(m);
-    // F = f + lambda*V = 8 + 1.0*3 = 11
+    // Penalty-method objective with unit weights: f + V = 8 + 3 = 11.
     REQUIRE(vm.augmented_objective() == 11.0);
-}
-
-// Adaptive lambda tests
-TEST_CASE("Lambda increases when infeasible", "[violation]") {
-    AdaptiveLambda al(1.0);
-    for (int i = 0; i < 11; ++i) {
-        al.update(false, false);
-    }
-    REQUIRE(al.lambda_ > 1.0);
-}
-
-TEST_CASE("Lambda decreases when stuck feasible", "[violation]") {
-    AdaptiveLambda al(1.0);
-    for (int i = 0; i < 21; ++i) {
-        al.update(true, false);
-    }
-    REQUIRE(al.lambda_ < 1.0);
 }
 
 // FJ-NL tests
@@ -274,8 +258,7 @@ TEST_CASE("fj_nl_initialize respects time_limit", "[search][fj]") {
 
     auto before = std::chrono::steady_clock::now();
     fj_nl_initialize(m, vm, 1000000, &rng, 0.05);  // 50ms cap, huge iter limit
-    auto elapsed = std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - before).count();
+    auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - before).count();
 
     // Should finish near the time limit, not run all 1M iterations
     REQUIRE(elapsed < 0.5);
@@ -422,12 +405,8 @@ TEST_CASE("ParallelSearch with hook and LNS factories", "[pool]") {
         return m;
     };
 
-    auto hook_factory = [](Model&) -> InnerSolverHook* {
-        return new FloatIntensifyHook();
-    };
-    auto lns_factory = []() -> LNS* {
-        return new LNS(0.3);
-    };
+    auto hook_factory = [](Model&) -> InnerSolverHook* { return new FloatIntensifyHook(); };
+    auto lns_factory = []() -> LNS* { return new LNS(0.3); };
 
     ParallelSearch ps(2);
     ParallelConfig pc;

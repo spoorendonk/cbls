@@ -89,12 +89,6 @@ NB_MODULE(_cbls_core, m) {
         .def_ro("iterations", &SearchResult::iterations)
         .def_ro("time_seconds", &SearchResult::time_seconds);
 
-    // AdaptiveLambda
-    nb::class_<AdaptiveLambda>(m, "AdaptiveLambda")
-        .def(nb::init<double>(), nb::arg("initial_lambda") = 1.0)
-        .def_rw("lambda_", &AdaptiveLambda::lambda_)
-        .def("update", &AdaptiveLambda::update);
-
     // Model
     nb::class_<Model>(m, "Model")
         .def(nb::init<>())
@@ -242,8 +236,7 @@ NB_MODULE(_cbls_core, m) {
         .def("weighted_violation_delta", &ViolationManager::weighted_violation_delta,
              nb::arg("var_id"), nb::arg("j"))
         .def("invalidate_cache", &ViolationManager::invalidate_cache)
-        .def_rw("weights", &ViolationManager::weights)
-        .def_rw("adaptive_lambda", &ViolationManager::adaptive_lambda);
+        .def_rw("weights", &ViolationManager::weights);
 
     // RNG
     nb::class_<RNG>(m, "RNG")
