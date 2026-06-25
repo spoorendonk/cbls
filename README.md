@@ -39,7 +39,7 @@ m.close();
 
 - **Variable types**: Bool, Int, Float, List (permutation), Set
 - **Nonlinear expressions**: arithmetic, trig, exp/log, comparisons, lambda functions
-- **Simulated annealing** with Metropolis acceptance, exponential cooling, periodic reheat
+- **ViolationLS** guided local search (Davies et al. CPAIOR 2024): single-variable Feasibility Jump + compound-move Novelty Jump, GLS weight dynamics, objective-as-soft-constraint
 - **Feasibility Jump** construction heuristic (greedy violation reduction)
 - **Gradient-based intensification**: Newton steps and backtracking line search on continuous variables
 - **Large neighborhood search**: destroy-repair diversification

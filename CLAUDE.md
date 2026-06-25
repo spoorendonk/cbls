@@ -36,7 +36,7 @@ cmake --build build -j$(nproc)
 
 ## Architecture
 
-CBLS = constraint-based local search. Simulated annealing over an expression DAG with penalty-method feasibility. Full details in `docs/architecture.md`.
+CBLS = constraint-based local search. ViolationLS (guided local search over single- and compound-variable jumps) on an expression DAG with penalty-method feasibility. Full details in `docs/architecture.md` (pending a post-port rewrite — it still describes the old SA loop).
 
 ### Core pipeline
 
@@ -45,21 +45,23 @@ CBLS = constraint-based local search. Simulated annealing over an expression DAG
 2. **Expression DAG** (`include/cbls/dag.h`, `src/dag.cpp`, `src/dag_ops.cpp`) — Variables use negative handles `-(id+1)`, nodes use non-negative `id`. 23 operation types. Two evaluation modes:
    - `full_evaluate`: evaluate all nodes in topo order (initialization)
    - `delta_evaluate`: BFS dirty-marking from changed variables, recompute only affected nodes (moves)
-   - Reverse-mode AD via `compute_all_partials` for gradient/Newton moves
+   - Reverse-mode AD via `compute_all_partials` for the continuous (Newton) jump-value engine
 
-3. **Search** (`src/search.cpp`) — Main SA loop. Phase 1 (20% time): Feasibility Jump construction heuristic. Phase 2 (80%): SA with Metropolis acceptance, periodic reheat, adaptive lambda penalty, adaptive move probabilities.
+3. **Search** (`src/search.cpp`) — ViolationLS batch outer loop (Davies et al. CPAIOR 2024, Algorithm 6). The objective is folded into the constraints as `obj <= bound`; each batch is a Feasibility Jump, Novelty Jump, or STRUCTURAL batch (selected by config probabilities). The objective bound is tightened on each new real-feasible solution; on stagnation the assignment is perturbed or diversified via LNS. (Note: the legacy SA loop is gone; older docs/comments mentioning cooling/reheat are stale — see `docs/architecture.md`, pending a rewrite.)
 
-4. **Moves** (`src/moves.cpp`) — 12 move types by variable type (bool flip, int ±1/rand/neighbors, float perturb/newton_tight/gradient_lift, list swap/2opt, set add/remove/swap). `MoveProbabilities` rebalances every 1000 evaluations based on acceptance rates.
+4. **Feasibility Jump** (`src/feasibility_jump.cpp`) — Generalised Feasibility Jump: a `JumpTable` of cached per-variable best jumps (score = `-W·δ_G`), best-of-N scan-set sampling, GLS weight dynamics (bump violated + ρ-decay), and Novelty Jump compound moves (Algorithms 4–5). Float jump values come from Newton-toward-violated-root candidates via reverse-mode AD.
 
-5. **Inner solver** (`src/inner_solver.cpp`) — `FloatIntensifyHook`: coordinate descent over float variables using Newton steps on violated constraints + backtracking line search on objective. Triggered every 10 discrete-variable accepts and on reheat.
+5. **Moves** (`src/moves.cpp`) — typed move generators by variable type (bool flip, int ±1/rand, float perturb, list swap/2opt/relocate/or-opt, set add/remove/swap). Scalar moves are subsumed by FJ's jump values; the list/set moves feed the STRUCTURAL batch.
 
-6. **LNS** (`src/lns.cpp`) — Destroy 30% of variables, repair via FJ. Fires every N reheats.
+6. **Inner solver** (`src/inner_solver.cpp`) — `FloatIntensifyHook`: coordinate descent over float variables using Newton steps on violated constraints + backtracking line search on objective. Triggered on each new feasible solution.
 
-7. **Violation & penalty** (`src/violation.cpp`) — `F = obj + λ * total_violation`. `AdaptiveLambda` increases λ when stuck infeasible, decreases when feasible-but-not-improving.
+7. **LNS** (`src/lns.cpp`) — Destroy 30% of variables, repair via FJ. Fires every N diversification kicks. Accepts on a lexicographic (real-violation, objective) key.
 
-8. **Parallel search** (`src/pool.cpp`) — `SolutionPool` + `ParallelSearch` with opportunistic (independent seeds) or deterministic (epoch-sync) modes.
+8. **Violation & penalty** (`src/violation.cpp`) — `total_violation = Σ W[c]·max(0, viol_c)` with per-constraint GLS weights `W`. `weighted_violation_delta` is the no-commit counterfactual δ_G. `augmented_objective() = obj + total_violation()` is the penalty-method metric the inner solver descends.
 
-9. **I/O** (`src/io.cpp`) — JSONL `.cbls` model format. CLI in `src/cli.cpp`.
+9. **Parallel search** (`src/pool.cpp`) — `SolutionPool` + `ParallelSearch` with opportunistic (independent seeds) or deterministic (epoch-sync) modes.
+
+10. **I/O** (`src/io.cpp`) — JSONL `.cbls` model format. CLI in `src/cli.cpp`.
 
 ### Key extension points
 
