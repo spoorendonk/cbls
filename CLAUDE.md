@@ -36,7 +36,7 @@ cmake --build build -j$(nproc)
 
 ## Architecture
 
-CBLS = constraint-based local search. ViolationLS (guided local search over single- and compound-variable jumps) on an expression DAG with penalty-method feasibility. Full details in `docs/architecture.md` (pending a post-port rewrite — it still describes the old SA loop).
+CBLS = constraint-based local search. ViolationLS (guided local search over single- and compound-variable jumps) on an expression DAG with penalty-method feasibility. Full details in `docs/architecture.md`.
 
 ### Core pipeline
 
@@ -47,7 +47,7 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
    - `delta_evaluate`: BFS dirty-marking from changed variables, recompute only affected nodes (moves)
    - Reverse-mode AD via `compute_all_partials` for the continuous (Newton) jump-value engine
 
-3. **Search** (`src/search.cpp`) — ViolationLS batch outer loop (Davies et al. CPAIOR 2024, Algorithm 6). The objective is folded into the constraints as `obj <= bound`; each batch is a Feasibility Jump, Novelty Jump, or STRUCTURAL batch (selected by config probabilities). The objective bound is tightened on each new real-feasible solution; on stagnation the assignment is perturbed or diversified via LNS. (Note: the legacy SA loop is gone; older docs/comments mentioning cooling/reheat are stale — see `docs/architecture.md`, pending a rewrite.)
+3. **Search** (`src/search.cpp`) — ViolationLS batch outer loop (Davies et al. CPAIOR 2024, Algorithm 6). The objective is folded into the constraints as `obj <= bound`; each batch is a Feasibility Jump, Novelty Jump, or STRUCTURAL batch (selected by config probabilities). The objective bound is tightened on each new real-feasible solution; on stagnation the assignment is perturbed or diversified via LNS.
 
 4. **Feasibility Jump** (`src/feasibility_jump.cpp`) — Generalised Feasibility Jump: a `JumpTable` of cached per-variable best jumps (score = `-W·δ_G`), best-of-N scan-set sampling, GLS weight dynamics (bump violated + ρ-decay), and Novelty Jump compound moves (Algorithms 4–5). Float jump values come from Newton-toward-violated-root candidates via reverse-mode AD.
 
