@@ -1,51 +1,70 @@
 # CBLS Solver Architecture
 
-Constraint-Based Local Search: simulated annealing over an expression DAG with
-penalty-method feasibility, adaptive moves, gradient-based continuous
-intensification, and large neighborhood search diversification.
+Constraint-Based Local Search: **ViolationLS** (Davies, Didier, Perron,
+"ViolationLS: Constraint-Based Local Search in CP-SAT", CPAIOR 2024) over an
+expression DAG. A Generalised Feasibility Jump (GFJ) engine drives the
+assignment toward feasibility under Guided Local Search (GLS) constraint
+weights; the objective is folded in as a soft constraint `obj <= bound` whose
+bound is tightened on each new feasible solution. Continuous variables are
+polished by a gradient-based inner solver; stagnation triggers perturbation or
+large-neighborhood-search diversification.
 
 ## Table of Contents
 
 1. [Overview](#overview)
 2. [Expression DAG](#expression-dag)
 3. [Model](#model)
-4. [Violation & Penalty](#violation--penalty)
-5. [Construction Heuristic: Feasibility Jump](#construction-heuristic-feasibility-jump)
-6. [Simulated Annealing](#simulated-annealing)
-7. [Adaptive Move Probabilities](#adaptive-move-probabilities)
-8. [Inner Solver (Continuous Intensification)](#inner-solver-continuous-intensification)
-9. [Large Neighborhood Search](#large-neighborhood-search)
-10. [Solution Pool & Parallel Search](#solution-pool--parallel-search)
-11. [Design Decisions](#design-decisions)
-12. [Control Flow Diagram](#control-flow-diagram)
-13. [Parameters Table](#parameters-table)
-14. [I/O & Logging](#io--logging)
-15. [Threading & Determinism](#threading--determinism)
-16. [GPU](#gpu)
+4. [Violation & GLS Weights](#violation--gls-weights)
+5. [Generalised Feasibility Jump](#generalised-feasibility-jump)
+6. [Novelty Jump](#novelty-jump)
+7. [Structural Batch](#structural-batch)
+8. [ViolationLS Outer Loop](#violationls-outer-loop)
+9. [Inner Solver (Continuous Intensification)](#inner-solver-continuous-intensification)
+10. [Large Neighborhood Search](#large-neighborhood-search)
+11. [Solution Pool & Parallel Search](#solution-pool--parallel-search)
+12. [Design Decisions](#design-decisions)
+13. [Control Flow Diagram](#control-flow-diagram)
+14. [Parameters Table](#parameters-table)
+15. [I/O & Logging](#io--logging)
+16. [Threading & Determinism](#threading--determinism)
+17. [GPU](#gpu)
 
 ---
 
 ## Overview
 
 CBLS is a hybrid metaheuristic/mathematical-programming solver for constrained
-optimization over mixed discrete-continuous variables. The core algorithm:
+optimization over mixed discrete-continuous variables. The core algorithm
+follows ViolationLS (CP-SAT's CBLS worker), adapted to a nonlinear expression
+DAG:
 
 1. **Models** problems as an expression DAG with typed variables (Bool, Int,
    Float, List, Set) and nonlinear constraints/objectives.
-2. **Constructs** an initial feasible solution via Feasibility Jump (FJ), a
-   greedy heuristic that iteratively reduces total constraint violation.
-3. **Searches** via simulated annealing with type-specific moves, Metropolis
-   acceptance, exponential cooling, and periodic reheat.
+2. **Folds the objective into the constraint set** as a soft constraint
+   `obj <= bound`. The bound starts at `+inf` (inert) and is tightened every
+   time a strictly better real-feasible solution is found. Optimization thus
+   reduces to a sequence of feasibility problems.
+3. **Searches** with batches of **Generalised Feasibility Jump** — a GLS-driven
+   best-of-N greedy that repeatedly applies the single-variable "jump" that most
+   reduces the weighted constraint violation, bumping per-constraint weights on
+   stagnation. Batches may instead be **Novelty Jump** (bounded-backtracking
+   compound moves) or **Structural** (typed moves over List/Set variables).
 4. **Intensifies** continuous variables via a gradient-based inner solver
-   (Newton steps, backtracking line search, multi-variable minimum-norm
-   Newton), triggered periodically during SA.
-5. **Diversifies** via large neighborhood search (destroy + FJ repair) fired
-   every N reheats.
-6. **Tracks** the best feasible solution found, with a solution pool for
-   parallel multi-seed search.
+   (Newton steps on violated constraints, backtracking line search on the
+   objective, multi-variable minimum-norm Newton), triggered **on each new
+   feasible solution**.
+5. **Diversifies** on stagnation: a per-variable random perturbation, or — every
+   `lns_interval`-th diversification kick — large neighborhood search (destroy +
+   GFJ repair).
+6. **Tracks** the best real-feasible solution found (objective bound tightened
+   alongside it), with a solution pool for parallel multi-seed search.
 
-The penalty method converts constrained optimization into unconstrained:
-`F = obj + lambda * total_violation`, where lambda adapts during search.
+There is no temperature, no Metropolis acceptance, no global penalty multiplier
+`lambda`. Feasibility pressure comes entirely from the per-constraint GLS
+weights `W`, and progress is greedy on weighted violation. The penalty-method
+metric `obj + total_violation()` survives only as the *inner solver's* local
+descent objective (`ViolationManager::augmented_objective`), not as the search's
+acceptance rule.
 
 ---
 
@@ -62,6 +81,10 @@ enum class VarType : uint8_t { Bool, Int, Float, List, Set };
 Each `Variable` stores: `id`, `type`, `value` (scalar), `lb`/`ub` (bounds),
 `elements` (for List/Set), `universe_size`, `min_size`/`max_size` (Set
 cardinality), and `dependent_ids` (nodes that use this variable).
+
+Bool, Int and Float are *scalar* (jumpable by GFJ). List and Set are
+*structural* — GFJ leaves them untouched; they are moved only by the
+[structural batch](#structural-batch) and LNS.
 
 ### Handle Encoding
 
@@ -102,17 +125,21 @@ positive when violated):
 ### Evaluation Modes
 
 **Full evaluation** (`full_evaluate`): evaluates all nodes in topological
-order. Used at initialization and after large state changes.
+order. Used at initialization, after perturbation/LNS, and after the
+objective-bound soft constraint is appended.
 
 **Delta evaluation** (`delta_evaluate`): given a set of changed variable IDs,
 BFS-marks dirty nodes upward through `dependent_ids`/`parent_ids`, then
 recomputes only dirty nodes in topological order. This is the hot path during
-SA — most moves change one variable and touch a small subgraph.
+GFJ — each jump changes one variable and touches a small subgraph, and each
+jump *candidate* is scored by a no-commit delta probe (see
+[`weighted_violation_delta`](#violation--gls-weights)).
 
 ### Reverse-Mode Automatic Differentiation
 
 `compute_partial(model, expr_id, var_id)` computes `d(expr)/d(var)` via
-reverse-mode AD:
+reverse-mode AD; `compute_all_partials(model, expr_id)` returns every variable's
+partial in one reverse pass:
 
 1. Initialize `adjoint[expr_id] = 1.0`
 2. Traverse nodes in reverse topological order
@@ -123,7 +150,8 @@ reverse-mode AD:
 `local_derivative` computes per-operation partial derivatives (chain rule
 components). Discrete operations (At, Count, Lambda) return 0.
 
-AD is used by Newton moves, gradient moves, and the inner solver.
+AD is used to generate Newton-toward-root jump candidates for Float variables
+(in `compute_var_jump`) and by the inner solver.
 
 ¹ **Lambda serialization:** Lambda nodes store a C++ `std::function`, which
 cannot be serialized directly. `save_model` tabulates the function over its
@@ -160,11 +188,40 @@ m.close();
 `lambda_sum`), and comparisons (`leq`, `eq_expr`, `geq`, `neq`, `lt`, `gt`).
 Each returns a non-negative node handle.
 
+**Objective.** `minimize(e)` sets the objective node directly; `maximize(e)`
+sets it to `neg(e)` and flips `is_maximizing_`. Internally the objective is
+*always a quantity to minimize*, so the soft constraint `obj <= bound` is
+uniformly correct for both senses.
+
 ### Finalization
 
 `close()` computes the topological order, performs an initial full evaluation,
-and sets the `closed_` flag. The model is immutable in structure after close
-(variable values can still change).
+builds the `var_id -> constraint-index` adjacency (`build_var_constraints`, the
+paper's `G_v`), and sets the `closed_` flag. The model is immutable in structure
+after close — *except* for the objective soft constraint, which `solve()`
+appends lazily (see below).
+
+### Objective as a Soft Constraint
+
+When the model has an objective, `solve()` calls `add_objective_soft_constraint()`
+once (idempotent). This:
+
+- creates a constant node `objective_bound_node_` (initially `+inf`),
+- adds the constraint `obj - bound <= 0` (`objective_constraint_node_`), inert
+  while the bound is `+inf`,
+- records its index in `constraint_ids_` as `objective_constraint_idx_`,
+- rebuilds the topo order and `G_v` (a node/constraint was appended after
+  `close()`).
+
+`set_objective_bound(bound)` updates the constant node and recomputes the
+constraint residual in place. The search tightens the bound to `obj - eps` on
+each new best feasible solution; the GFJ engine then treats meeting that bound
+as just another constraint to satisfy. The bound is released back to `+inf`
+before `solve()` returns so post-solve verifiers don't see it violated.
+
+`has_objective_constraint()`, `objective_constraint_idx()` and
+`objective_bound()` expose this state. "Real feasibility" everywhere means *all
+constraints except* `objective_constraint_idx()`.
 
 ### State Save/Restore
 
@@ -175,203 +232,342 @@ struct State {
 };
 ```
 
-`copy_state()` snapshots all variable values and elements.
-`restore_state(state)` restores them. Used for backtracking: SA saves the
-best state found and restores it at the end. LNS saves state before
-destruction for potential rollback.
+`copy_state()` snapshots all variable values and elements;
+`restore_state(state)` restores them. `solve()` snapshots the best feasible
+state and restores it at the end. LNS snapshots state before destruction for
+rollback.
 
 ---
 
-## Violation & Penalty
+## Violation & GLS Weights
 
 **Files:** `include/cbls/violation.h`, `src/violation.cpp`
 
 ### ViolationManager
 
-Tracks constraint satisfaction and computes the augmented objective.
+Tracks per-constraint violation and the GLS weight vector.
 
+- `weights` (public `std::vector<double>`) — the per-constraint GLS weight `W`,
+  initialized to `1.0`. This is the **only** feasibility-pressure mechanism;
+  there is no global `lambda`.
 - `constraint_violation(i)` = `max(0, constraint_node_value)` — non-negative
-  violation for constraint `i`
-- `total_violation()` = `sum(weight[i] * max(0, constraint_value[i]))` —
-  weighted sum across all constraints
-- `augmented_objective()` = `objective + lambda * total_violation()` — the
-  value SA optimizes (called `F` throughout)
-- `is_feasible(tol=1e-9)` — true when all constraint violations <= tolerance
-- `violated_constraints(tol)` — returns indices of violated constraints
+  violation for constraint `i`.
+- `total_violation()` = `sum_c W[c] * max(0, constraint_value[c])` — the
+  weighted total the GFJ engine minimizes. Cached and updated incrementally
+  (full recompute every 1000 updates to bound floating-point drift; call
+  `invalidate_cache()` after a weight change or `full_evaluate`).
+- `weighted_violation_delta(var_id, j)` — the **no-commit counterfactual**
+  `deltaG`: the change in `total_violation()` if `var_id` were set to `j`,
+  without keeping the change. (Delegates to the allocation-free
+  `Model::weighted_violation_delta(var_id, j, weights)`; transiently mutates and
+  restores node state, so it is not reentrant on a shared Model — each search
+  thread owns its own Model.) The GFJ jump *score* is `-deltaG` (positive =
+  improving). Scalar variables only.
+- `augmented_objective()` = `obj + total_violation()` — the penalty-method
+  metric. **Used only as the inner solver's local descent objective**, not as
+  any search acceptance rule. (When the objective is folded in as a soft
+  constraint, the objective term is technically double-counted here; that is
+  acceptable for the hook's local polish.)
+- `is_feasible(tol=1e-9)` / `violated_constraints(tol)` — convenience predicates
+  over *all* constraints (including the objective soft constraint).
+- `bump_weights(factor=1.0)` — increments the weight of each currently-violated
+  constraint (a simple additive scheme; the GFJ engine uses the
+  decay-then-bump `gls_update_weights` below instead).
 
-### Adaptive Lambda
+### GLS Weight Dynamics
 
-The penalty multiplier `lambda` adapts during search via `AdaptiveLambda`:
+`gls_update_weights(vm, rho)` is the Guided Local Search update fired on GFJ
+stagnation (paper Algorithm 3):
 
-| Condition | Action |
-|-----------|--------|
-| Infeasible for >10 consecutive steps | `lambda *= 1.5` (increase penalty) |
-| Feasible but objective not improving for >20 steps | `lambda *= 0.8` (reduce penalty, explore more) |
-| Feasible and objective improving | Reset both counters |
+1. **Decay**: multiply every weight by `rho`.
+2. **Bump**: add `1.0` to every currently-violated, *active* (weight > 0)
+   constraint.
 
-This balances exploration (low lambda allows infeasible moves) with
-feasibility pressure (high lambda forces constraint satisfaction).
+`rho` is sampled per batch from `{0.95, 1.0}` (decay or pure additive). Weights
+masked to `0` (e.g. nonlinear constraints during the two-phase linear-first
+pass) stay `0` under decay and are never bumped, so they remain inactive.
 
-### Weight Bumping
+After a new best feasible solution, the search resets all weights to `1.0`
+(`FeasibilityJump::reset_weights`) — a fresh penalty landscape per the paper.
 
-`bump_weights(factor=1.0)` increments the weight of each currently-violated
-constraint by `factor`. Used by FJ on stagnation to escape local minima by
-changing the violation landscape.
+> **Removed:** the old `AdaptiveLambda` global penalty multiplier (increase when
+> stuck infeasible, decrease when feasible-not-improving) no longer exists. All
+> feasibility pressure is now per-constraint GLS weighting.
 
 ---
 
-## Construction Heuristic: Feasibility Jump
+## Generalised Feasibility Jump
 
-**File:** `src/search.cpp` (lines 50–181)
+**Files:** `include/cbls/feasibility_jump.h`, `src/feasibility_jump.cpp`
 
-FJ is a greedy construction heuristic that initializes variable values to
-reduce total constraint violation. It runs once before SA, allocated 20% of
-the total time budget and at most 5000 iterations.
+Generalised Feasibility Jump (GFJ; paper Algorithms 1–3) is *both* the
+construction heuristic and the main search engine. It drives the model's current
+assignment `X` toward feasibility by repeatedly applying the best of a sampled
+set of improving single-variable jumps, with GLS weight bumping on stagnation.
 
-### Algorithm
+The engine's state maps to the paper's `S = <G, X, W, V, Q, J>`:
 
-```
-initialize_random(model)
-full_evaluate(model)
-for iteration in [0, max_iterations):
-    if no violated constraints: break
-    for each variable:
-        for each candidate value:
-            trial-evaluate, measure violation reduction
-    if best_reduction > 0:
-        apply best (variable, value) pair
-    else:
-        bump_weights()  # stagnation escape
-        perturb a random variable
-```
+| Symbol | Meaning | Implementation |
+|--------|---------|----------------|
+| `G` | constraint graph | `Model` |
+| `X` | variable values | `Model` variable values |
+| `W` | constraint weights | `ViolationManager::weights` |
+| `V` | violated constraints | `violated_` bitset |
+| `Q` | scan set of candidate vars | `queue_` / `in_queue_` |
+| `J` | cached per-var best jump | `JumpTable` |
 
-### Candidate Generation by Type
+### JumpTable
+
+A per-variable cache of the best jump found for that variable: the
+`jump_value` to move to and the `score = -W.deltaG` (positive = improving). An
+entry is lazily invalidated when a neighbouring variable changes (paper
+Algorithm 1), so most iterations reuse cached scores.
+
+### `compute_var_jump`
+
+Computes the best jump for one scalar variable under a given weight vector — the
+value minimising `weighted_violation_delta` over a small, type-specific
+candidate set, plus its score:
 
 | Type  | Candidates |
 |-------|-----------|
-| Bool  | Flip (1 candidate) |
-| Int (domain <= 20) | All domain values except current |
-| Int (domain > 20) | Neighbors (current +/- 1) + 8 random domain values |
-| Float | 10 linspace values over [lb, ub] + Newton candidates from up to 3 violated constraints |
-| List  | (not generated by FJ candidate function) |
-| Set   | (not generated by FJ candidate function) |
+| Bool  | the flip `1 - x` |
+| Int (domain <= 256) | every value in `[lb, ub]` |
+| Int (domain > 256)  | endpoints, neighbours `x±1`, and a 32-point rounded grid |
+| Float | Newton step toward the root of each violated constraint containing `v` (`x - residual/grad`, gradient via reverse-mode AD; up to 4), then midpoint and endpoints |
 
-**Float Newton candidates**: For each of the top 3 violated constraints,
-compute `dg/dx` via AD. If `|dg/dx| > 1e-12`, propose
-`x_new = clamp(x - g/dg, [lb, ub])`.
+Each candidate is scored with one `weighted_violation_delta` probe. Newton
+candidates are considered first so that, on a tie in violation delta (a feasible
+plateau), the gradient-informed point wins. Because the objective is a
+constraint `obj <= bound`, when that constraint is violated its Newton candidate
+pulls the objective *down* — this is how a hook-less continuous model still
+descends the objective.
 
-### Design Rationale vs FPR/LocalMip
+A single call is *not* a converged 1-D minimiser; the GLS loop iterates these
+cheap jumps. The continuous heavy lifting is left to the
+[inner solver](#inner-solver-continuous-intensification).
 
-FJ operates on the expression DAG directly, supporting nonlinear constraints
-via `delta_evaluate`. FPR and LocalMip (from MIP heuristic literature) assume
-linear constraints in sparse `Ax` form and use domain propagation / lift
-bounds that require knowing constraint coefficients.
+### The GLS Loop
 
-**Potential improvements from FPR/LocalMip ideas:**
+`gls_loop(sample_size, batch_iter_limit)`:
 
-- **WalkSAT-style repair**: pick a violated constraint, greedily fix the best
-  variable for that constraint, with 30% random diversification. Better
-  focused than current "bump weights + random perturb" stagnation handling.
-- **Multi-attempt restarts**: FPR typically runs 10 attempts with different
-  random seeds; FJ currently runs once.
-- **Variable ranking by DAG connectivity**: prioritize high-fan-in variables
-  (those appearing in many constraints) for earlier repair.
+```
+loop:
+    if apply_jump(sample_size) fails (no sampled var improves):
+        if no active constraint is violated: return Feasible
+        gls_update_weights(vm, rho)          # decay + bump violated
+        re-enqueue vars of violated active constraints, invalidate their jumps
+    ++iterations
+    stop if batch / global iteration budget or deadline reached
+```
+
+`apply_jump` samples up to `sample_size` **distinct** variables from the scan
+set `Q` (best-of-N: `sample_size_general = 3` general, `sample_size_linear = 5`
+linear phase), refreshes any stale `JumpTable` entries via `compute_var_jump`,
+removes non-improving vars from `Q` permanently, and commits the best improving
+jump via `update_var`. `update_var` writes `X[v]`, delta-evaluates, refreshes
+the violated set for `v`'s constraints, invalidates neighbour jumps, and
+replenishes `Q` with vars now participating in active violated constraints.
+
+### Two-Phase Linear-First (construction only)
+
+`FeasibilityJump::run()` (standalone construction) optionally runs GLS on the
+*linear submodel* first: nonlinear constraint weights are masked to `0`, GLS
+satisfies the affine constraints, then all weights are restored to `1` for the
+general phase. `compute_linear_constraints()` marks each constraint affine by a
+single topo pass (Const/Neg/Sum affine in affine children; Prod/Div affine with
+a constant factor/divisor; comparisons affine when both sides are). This is the
+default for GFJ-as-solver. As a warm-start (LNS repair, SA-style seeding) the
+two-phase pass over-commits the linear submodel to cost-pessimal boundary
+values, so `fj_nl_initialize` and the outer loop use **single-phase**.
+
+### Batch API (drives the outer loop)
+
+The ViolationLS outer loop owns the iteration clock and calls:
+
+- `begin(set_initial_x)` — optionally set each scalar var to the domain value
+  closest to 0, full-evaluate, reset weights to 1, rebuild `V`/`Q`.
+- `batch(batch_iterations)` — run `gls_loop` for at most `batch_iterations`
+  GLS iterations; returns whether all active constraints are satisfied.
+- `reset_weights()` — `W <- 1`, rebuild `V`/`Q` (called on a new best).
+- `resync()` — rebuild `V`/`Q` from current state, keep weights (called after a
+  hook/structural mutation outside the engine's bookkeeping).
+- `perturb(probability)` — randomise each scalar var w.p. `probability`,
+  full-evaluate, reset weights.
+- `set_rho(rho)` — re-randomise the GLS decay between batches.
 
 ---
 
-## Simulated Annealing
+## Novelty Jump
 
-**File:** `src/search.cpp` (lines 207–374)
+**Files:** `include/cbls/feasibility_jump.h`, `src/feasibility_jump.cpp`
+(`apply_novelty_jump`)
 
-### Core Loop
+Novelty Jump (paper Algorithms 4–5) is a bounded-backtracking **compound-move**
+search that escapes local optima single-variable FJ cannot — chained-invariant
+fixes where no single jump improves weighted violation but a short *sequence*
+does.
 
-Each iteration:
+### Novelty Weights
 
-1. Select a random variable uniformly
-2. Generate candidate moves (type-specific + enriched moves for floats)
-3. Pick a move uniformly from candidates
-4. Delta-evaluate the move to compute `delta_F` (change in augmented objective)
-5. Accept/reject via Metropolis criterion
-6. Update best tracking, adaptive lambda, move probabilities
-7. Cool temperature; check for reheat
+On entry it builds `W' = ` novelty weights from the GLS weights `W`:
 
-### Move Generation
+- `W'[c] = W[c]` for constraints **violated at entry**,
+- `W'[c] = kCompoundDiscount * W[c]` (`kCompoundDiscount = 1/1024`, OR-Tools'
+  epsilon) for constraints satisfied at entry.
 
-Standard moves by type (see `generate_standard_moves` in `src/moves.cpp`):
+Breaking a currently-satisfied constraint is therefore *cheap*, which lets the
+search build chains that target the initially-broken constraints. When a move
+breaks a satisfied constraint, that constraint is promoted to full weight and
+its vars are enqueued.
+
+### Bounded-Backtracking Search
+
+`novelty_jump_search(s_m, budget)` is a recursive DFS over compound moves with an
+explicit move stack (the paper's set `T`). `s_m` is the cumulative
+*original-weight* score of moves on the stack; `s_c` tracks the best child score
+explored at the current level. A candidate var is selected (`select_novelty_var`)
+as the best of up to 3 sampled vars in `Q\T` passing the filter
+`(s_m + W'-score > 0) OR (W-score > s_c)`, scored by `compute_var_jump` under
+`W'`. The move is applied; if `s_m + W-score > 0` the compound move is committed
+(left applied) and returns true; otherwise it recurses, and on failure backtracks
+(reverting the move and consuming a `budget` discrepancy).
+
+`apply_novelty_jump()` iterates `budget = 0, 1, 2` (iterated-deepening style),
+committing improving compound moves and restarting from the new state; it stops
+when feasibility is reached or `kNoveltyWorkBudget = 256` total applied moves are
+exhausted. It commits its moves in place and returns whether it reached
+feasibility; the caller must `resync()` afterward.
+
+> **Status:** Novelty Jump is implemented, wired, and unit-tested, but **off by
+> default** (`SearchConfig::use_compound_moves = false`). Its per-batch cost is
+> not yet bounded tightly enough for the large continuous benchmarks. When
+> enabled, `novelty_jump_probability` (default 0.5, matching the paper) sets the
+> fraction of batches that are Novelty Jump.
+
+---
+
+## Structural Batch
+
+**File:** `src/search.cpp` (`structural_pass`)
+
+FJ jumps only scalar variables, so List/Set-structured models cannot improve
+their structural assignment through FJ alone. The structural batch is the
+List/Set peer of an FJ/NJ batch: it sweeps every List/Set variable, generates
+the candidate structural moves for it, and greedily keeps any move that reduces
+total weighted violation (negative weighted `deltaG` under the current GLS
+weights `W`).
+
+Moves come from `generate_standard_moves` (`src/moves.cpp`):
 
 | Type  | Moves |
 |-------|-------|
-| Bool  | `flip` — toggle 0/1 |
-| Int   | `int_dec` (−1), `int_inc` (+1), `int_rand` (uniform in [lb,ub]) |
-| Float | `float_perturb` — Gaussian with sigma = (ub−lb) * 0.1 |
-| List  | `list_swap` (swap two elements), `list_2opt` (reverse a segment) |
+| List  | `list_swap`, `list_2opt`, `list_relocate`, `list_or_opt_2`, `list_or_opt_3` |
 | Set   | `set_add`, `set_remove`, `set_swap` |
 
-**Enriched moves for Float variables:**
+(`generate_block_moves` provides sequence-aware block on/off moves for models
+that register variable sequences; the scalar move generators `flip`,
+`int_dec`/`int_inc`/`int_rand`, `float_perturb` also live here and are used by
+LNS randomization paths.)
 
-- `newton_tight` — pick a random violated constraint, compute Newton step
-  `delta = -g / (dg/dx)`, clamp to bounds. Targets constraint satisfaction.
-- `gradient_lift` — compute `df/dx` for the objective, step
-  `delta = -0.1 * df/dx`, clamp to bounds. Targets objective improvement.
+A batch is structural with probability `structural_batch_probability`: `< 0`
+auto-selects `0.33` when the model has any List/Set variable and `0.0`
+otherwise; scalar-only models always get `0.0`. After a structural batch commits
+anything, the engine `resync()`s its scan set.
 
-### Acceptance Criterion
-
-```
-if delta_F <= 0:
-    accept (improvement)
-else if temperature > 1e-15:
-    accept with probability exp(-delta_F / temperature)
-```
-
-### Temperature Schedule
-
-- **Initial**: `T_0 = max(|F| * 0.1, 1.0)` — scaled to problem magnitude
-- **Cooling**: `T *= 0.9999` every iteration (exponential/geometric)
-- **Reheat**: every 5000 iterations, `T = initial_temperature(best_F) * 0.5`
-
-Reheat prevents premature convergence by periodically restoring acceptance of
-uphill moves. The reheat temperature is 50% of the initial temperature
-recomputed from the current best objective.
-
-### Best Tracking
-
-Two-tier tracking:
-1. **Best feasible**: lowest objective among all feasible solutions seen
-2. **Best overall**: lowest augmented objective `F` (used when no feasible
-   solution has been found)
-
-Feasible solutions always take priority. The best state is restored at the
-end of search.
+> **Removed:** the old SA "adaptive move probabilities" (per-move-type
+> acceptance-rate tracking, 5% floor, rebalance every 1000 evaluations) and the
+> SA-only Float moves `newton_tight` / `gradient_lift` no longer exist. The
+> structural batch picks moves uniformly within each variable; Float steering is
+> now handled by GFJ's gradient jump candidates and the inner solver.
 
 ---
 
-## Adaptive Move Probabilities
+## ViolationLS Outer Loop
 
-**File:** `src/moves.cpp` (lines 226–305)
+**File:** `src/search.cpp` (`solve`)
 
-The solver tracks 12 move types and adapts their selection probabilities based
-on acceptance rates.
+`solve()` implements the ViolationLS batch outer loop (paper Algorithm 6).
 
-### Mechanism
+### Setup
 
-- Initialized with uniform probability `1/12` per type
-- On each move evaluation, record accept/reject for that type
-- Every 1000 updates, **rebalance**:
-  1. Compute acceptance rate per type: `rate = accepts / max(total, 1)`
-  2. Normalize rates to probabilities
-  3. Enforce 5% floor: redistribute deficit from below-floor types to
-     above-floor types (3 iterations of redistribution)
-  4. Final normalization
+1. If the model has an objective, add the `obj <= bound` soft constraint
+   (idempotent) and reset its bound to `+inf`.
+2. Construct the `ViolationManager`.
+3. Unless `config.skip_init`, randomize the assignment (`initialize_random`).
+4. Construct a single-phase `FeasibilityJump`; call `begin(set_initial_x)`.
 
-The 5% floor prevents move-type starvation — even rarely-accepted moves get
-some exploration budget, which matters because acceptance rates change as
-search progresses.
+`use_fj` is now vestigial — GFJ is always the engine.
 
-**Note:** Variable selection is uniform random. Move selection from the
-generated candidate pool is also uniform. The adaptive probabilities influence
-which move *types* are represented in the candidate pool via the `select()`
-roulette wheel, though the current implementation generates all applicable
-moves for the selected variable and picks uniformly.
+### Main Loop
+
+While time and `max_iterations` remain, each pass:
+
+1. **Pick the batch kind.** With probability `structural_batch_probability`,
+   STRUCTURAL; else with probability `novelty_jump_probability` (only when
+   `use_compound_moves`), NOVELTY JUMP; else FEASIBILITY JUMP. Structural and
+   novelty batches mutate state outside FJ's bookkeeping, so they set a `resync`
+   flag.
+2. **Run the batch.** `fj.batch(batch_iterations)`, `fj.apply_novelty_jump()`,
+   or `structural_pass(...)`.
+3. **On real feasibility**, run the inner solver hook (if any) to polish
+   continuous variables — this may move off the feasible region, so feasibility
+   is re-checked — then `record_best()`.
+4. **`record_best()`** keeps the assignment if it strictly improves
+   `best_feasible_obj`, snapshots the state, and tightens the objective bound to
+   `obj - eps` (`eps = 1e-3*(|obj|+1)`; the step doubles as the Newton step size
+   for hook-less continuous descent). For pure-feasibility models (no objective)
+   the first feasible solution ends the search.
+5. **On a new best**, reset GLS weights to 1 and resample `rho`.
+6. **Otherwise** increment `stagnation`, and `resync()` if a structural/novelty
+   /hook mutation happened.
+7. **On `stagnation >= perturbation_period`**, diversify (below) and reset the
+   stagnation counter.
+8. Emit a progress callback (~1 s cadence, or immediately on a new best).
+
+At the end, restore the best state, release the objective bound to `+inf`,
+full-evaluate, and return the best feasible objective (or `+inf` / infeasible).
+`SearchResult::iterations` is the total GLS iteration count, not the batch count.
+
+### Diversification
+
+`diversify()` increments a `perturbations` counter and, every `lns_interval`-th
+kick (when an `LNS` is supplied), runs [LNS](#large-neighborhood-search)
+destroy-repair (then resets FJ weights, since LNS mutates state outside the
+engine). Otherwise it calls `fj.perturb(perturbation_probability)`. Either way
+it resamples `rho`.
+
+### SearchConfig
+
+```cpp
+struct SearchConfig {
+    bool skip_init = false;                 // keep current assignment (epoch restarts)
+    int64_t max_iterations = 0;             // 0 = unlimited (use time_limit); counts GLS iterations
+    bool use_fj = true;                     // vestigial: GFJ is always the engine
+    int lns_interval = 3;                   // LNS fires every Nth diversification kick
+
+    int64_t batch_iterations = 1000;        // GLS iterations per FJ batch
+    int perturbation_period = 100;          // batches without improvement before diversifying
+    double perturbation_probability = 0.1;  // per-variable randomisation probability
+    double structural_batch_probability = -1.0;  // <0 = auto (0.33 if List/Set vars, else 0)
+    bool use_compound_moves = false;        // run Novelty Jump batches (else FJ only)
+    double novelty_jump_probability = 0.5;  // P(a batch is Novelty Jump) when enabled
+};
+```
+
+### SolveProgress
+
+```cpp
+struct SolveProgress {
+    int64_t iteration = 0;        // batch count at emission
+    double time_seconds = 0.0;
+    double objective = inf;       // best feasible objective so far
+    double total_violation = 0.0; // current weighted violation
+    bool feasible = false;        // current assignment real-feasible
+    bool new_best = false;
+    int perturbations = 0;        // diversification kicks so far
+};
+```
 
 ---
 
@@ -379,85 +575,54 @@ moves for the selected variable and picks uniformly.
 
 **Files:** `include/cbls/inner_solver.h`, `src/inner_solver.cpp`
 
-### Architecture
+The `FloatIntensifyHook` implements `InnerSolverHook` — a constraint-directed NLP
+sub-solver for continuous variables. GFJ explores the discrete/structural space
+while the inner solver tightens continuous variables, avoiding treating them as
+discretized jump candidates (which would need impractically fine granularity).
 
-The `FloatIntensifyHook` implements `InnerSolverHook` — a constraint-directed
-NLP sub-solver for continuous variables. It separates concerns: SA explores the
-discrete variable space while the inner solver periodically tightens continuous
-variables toward constraint satisfaction via gradient-based methods.
+### Trigger
 
-This hybrid metaheuristic/mathematical-programming approach avoids treating
-continuous variables as discretized SA candidates, which would require
-impractically fine granularity.
+The hook fires **on each new feasible solution** (just before `record_best()`,
+inside the outer loop). Because the hook may move the assignment off the feasible
+region, the loop re-checks `real_feasible()` before recording. (This replaces the
+old SA trigger of "every 10 discrete accepts / on every reheat".)
 
-### Trigger Points
+It descends `ViolationManager::augmented_objective()` = `obj + total_violation()`
+and mutates Float variables directly via `delta_evaluate`.
 
-- **Every 10 discrete-variable acceptances** — after SA accepts a move
-  involving Bool or Int variables
-- **On every reheat** (every 5000 SA iterations)
+### Mechanism 1 — Single-Variable Newton Steps
 
-### Mechanism 1: Single-Variable Newton Steps
+For each Float variable, examine up to 3 violated constraints. For each,
+`g = constraint_value`, `dg = d(constraint)/d(var)` (reverse-mode AD); if
+`|dg| > 1e-12`, propose `clamp(var - g/dg, [lb, ub])` and keep it if
+`augmented_objective` improves.
 
-For each Float variable, examine up to 3 violated constraints:
+### Mechanism 2 — Backtracking Line Search on Objective
 
-```
-g = constraint_value
-dg = d(constraint) / d(var)    # via reverse-mode AD
-if |dg| > 1e-12:
-    candidate = clamp(var - g/dg, [lb, ub])
-    if augmented_objective improves: accept
-```
+For each Float variable, `df = d(objective)/d(var)`; if `|df| > 1e-12`, try
+`clamp(var - step*df, [lb, ub])` for `step = initial_step_size`, halving up to
+`max_line_search_steps` times, keeping the best improvement (Armijo-style).
 
-This performs constraint tightening — one Newton step per variable per
-constraint, zeroing the constraint by moving along its gradient.
+### Mechanism 3 — Multi-Variable Minimum-Norm Newton
 
-### Mechanism 2: Backtracking Line Search on Objective
+For up to `max_multi_var_constraints` violated constraints, take one reverse AD
+pass (`compute_all_partials`) and step *all* Float vars simultaneously by the
+minimum-norm Newton solution to the linearized constraint `g + grad . dx = 0`:
+`dx_j = (-g / ||grad||^2) * dg_j`, clamped to bounds. Requires >= 2 Float vars
+with non-negligible gradients; accepted only if `augmented_objective` improves,
+else fully rolled back.
 
-For each Float variable with a defined objective:
-
-```
-df = d(objective) / d(var)     # via reverse-mode AD
-if |df| > 1e-12:
-    step = 0.1
-    for up to 5 iterations:
-        candidate = clamp(var - step*df, [lb, ub])
-        if augmented_objective improves: accept best
-        step *= 0.5             # backtrack
-```
-
-This performs gradient descent on the objective with Armijo-style
-backtracking.
-
-### Mechanism 3: Multi-Variable Minimum-Norm Newton
-
-For up to 5 violated constraints, simultaneously update all Float variables:
-
-```
-g = constraint_value
-if |g| >= 1e-15:
-    for each Float var j:
-        dg_j = d(constraint) / d(var_j)
-    grad_norm_sq = sum(dg_j^2)
-    scale = -g / grad_norm_sq
-    for each Float var j:
-        var_j += scale * dg_j    # clamped to bounds
-    if augmented_objective improves: accept
-    else: rollback all changes
-```
-
-The update `delta_x = scale * gradient` is the minimum-norm solution to the
-linearized constraint `g + gradient . delta_x = 0`. It distributes the
-correction proportionally to gradient magnitude across all participating
-variables (requires >= 2 Float variables with non-negligible gradients).
+Sweeps repeat up to `max_sweeps` times, stopping early when a sweep makes no
+improvement.
 
 ### Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `max_sweeps` | 3 | Coordinate-descent sweeps over all Float vars |
-| `initial_step_size` | 0.1 | Starting step for backtracking line search |
-| `max_line_search_steps` | 5 | Maximum backtracking halvings |
-| `max_multi_var_constraints` | 5 | Max violated constraints for multi-var Newton |
+| `max_sweeps` | 3 | coordinate-descent sweeps over Float vars |
+| `initial_step_size` | 0.1 | starting step for the line search |
+| `max_line_search_steps` | 5 | max backtracking halvings |
+| `max_multi_var_constraints` | 5 | max violated constraints for multi-var Newton |
 
 ---
 
@@ -467,37 +632,42 @@ variables (requires >= 2 Float variables with non-negligible gradients).
 
 ### Trigger
 
-LNS fires every `lns_interval` reheats (i.e., every `lns_interval * 5000`
-SA iterations). It provides diversification by partially destroying and
-reconstructing the current solution.
+LNS fires from the outer loop's `diversify()` — every `lns_interval`-th
+diversification kick (a kick happens after `perturbation_period` stagnant
+batches). When no `LNS` object is supplied, diversification is plain
+perturbation instead.
 
 ### Destroy Phase
 
-1. Save current state and augmented objective
-2. Select `n_destroy = max(1, floor(num_vars * destroy_fraction))` random
-   variables (default `destroy_fraction = 0.3`)
-3. Randomize selected variables by type:
-   - Bool: random 0/1
-   - Int: uniform in [lb, ub]
-   - Float: uniform in [lb, ub]
-   - List: shuffle elements
-   - Set: random subset with valid cardinality
+`destroy_repair` snapshots the state and its lexicographic key, then selects
+variables to destroy:
+
+- **Sequence-aware** (when the model registers `var_sequences`): pick
+  `ceil(n_seqs * destroy_fraction)` whole sequences plus a proportional fraction
+  of non-sequence vars.
+- **Uniform** (no sequences): `max(1, floor(num_vars * destroy_fraction))`
+  random vars (default `destroy_fraction = 0.3`).
+
+Destroyed variables are re-randomized by type (Bool/Int/Float uniform, List
+shuffled, Set a random valid-cardinality subset).
 
 ### Repair Phase
 
-1. Full evaluate (recompute all nodes after randomization)
-2. Run FJ with 2000 iterations to reduce violation
+`full_evaluate`, then `fj_nl_initialize(model, vm, 2000, &rng)` — a single-phase
+GFJ repair (2000 iterations) refining the current (partially destroyed)
+assignment toward feasibility, leaving a clean unit-weight penalty landscape.
 
-### Acceptance
+### Acceptance — Lexicographic (real-violation, objective)
 
-Pure improvement: accept if `new_F < old_F`. Otherwise rollback to saved
-state. This is more conservative than SA acceptance — LNS only keeps
-improvements.
+LNS computes a `state_key = (real_violation, objective)` where `real_violation`
+**excludes the artificial `obj <= bound` soft constraint** (so the objective is
+not double-counted). It accepts the repaired solution iff its key is
+lexicographically smaller than the saved key — feasibility first, then objective
+— mirroring `solve()`'s `record_best`. Otherwise it rolls back. This is
+strictly improving in the (feasibility, objective) order.
 
-### LNS Cycle
-
-`destroy_repair_cycle(n_rounds=10)` runs multiple destroy-repair iterations,
-returning the count of successful improvements.
+`destroy_repair_cycle(n_rounds)` runs multiple rounds and returns the count of
+accepted improvements.
 
 ---
 
@@ -510,148 +680,148 @@ returning the count of successful improvements.
 A bounded, sorted collection of solutions for tracking best results across
 parallel searches.
 
-**Sorting order** (two criteria):
-1. Feasible solutions first (`feasible > !feasible`)
-2. Among same feasibility, ascending objective value
-
-**Capacity**: default 10 solutions; excess trimmed after each insertion.
-
-**Restart selection**: `get_restart_point()` picks uniformly from the first
-half of the pool — biased toward better solutions but with diversity.
+**Sort order:** feasible solutions first; among same feasibility, ascending
+objective. **Capacity:** default 10, excess trimmed after each insert.
+**Restart selection:** `get_restart_point()` samples uniformly from the better
+half of the pool.
 
 ### Parallel Search
 
-`ParallelSearch` runs `n_threads` (default 4) independent SA searches with
-staggered seeds (`seed + thread_index`). Each thread:
+`ParallelSearch::solve()` dispatches by `ParallelConfig::deterministic`:
 
-1. Creates a model via a user-provided factory function
-2. Calls `solve()` with the thread's unique seed
-3. Submits the result to the shared (mutex-protected) pool
+**Opportunistic / portfolio mode** (default): launch N threads (default
+`hardware_concurrency()`), each building its own `Model` via a factory and
+calling `solve()` with a staggered seed (`seed + thread_index`). Only the
+`SolutionPool` is shared (mutex-protected); thread safety is by isolation. The
+best solution across threads is returned, prioritizing feasibility then
+objective.
 
-The best solution across all threads is returned, prioritizing feasibility
-then objective value.
+**Deterministic epoch-sync mode** (`deterministic = true`): threads run
+synchronized epochs of fixed GLS-iteration count (no wall-clock dependency).
+Each epoch sets `SearchConfig::max_iterations = epoch_iterations`; after the
+first epoch `skip_init = true` and FJ initialization is off. Per-epoch results
+feed an elite `SolutionPool`; threads restart from elite states next epoch.
+Thread seeds are `base_seed + epoch * n_threads + thread_id`. Repeats for
+`max_epochs`.
+
+`ParallelSearch::solve()` takes hook and LNS *factories* (these objects are
+stateful and per-model); each thread builds its own instances.
 
 ---
 
 ## Design Decisions
 
-### Construction: FJ vs FPR/LocalMip
+### Why ViolationLS instead of Simulated Annealing
 
-**Chosen:** FJ operates on the expression DAG directly, supporting nonlinear
-constraints via delta evaluation and AD-based Newton candidates.
+The engine was ported from a simulated-annealing core (Metropolis acceptance,
+geometric cooling + reheat, adaptive `lambda`, adaptive move probabilities) to
+ViolationLS. ViolationLS replaces all of SA's tuning knobs (temperature,
+cooling rate, reheat interval, penalty multiplier) with a single, self-adapting
+mechanism: per-constraint GLS weights driving a greedy best-of-N jump. In the
+paper it is competitive with CP-SAT's other workers on CBLS-amenable problems;
+here it gives a parameter-light core that adapts feasibility pressure
+per-constraint rather than globally, and folds optimization into a sequence of
+feasibility problems (objective-as-constraint) so the same engine handles both.
 
-**Alternative:** FPR and LocalMip require linear `Ax` form but offer domain
-propagation, WalkSAT-style constraint-directed repair, and multi-attempt
-restarts. These ideas could be ported to the DAG setting — particularly
-WalkSAT repair (pick violated constraint → fix best variable, 30%
-diversification) and multi-attempt restarts.
+### Search core: Generalised FJ vs SA / tabu / WalkSAT
 
-### Acceptance Criterion: SA vs LAHC/Great Deluge/Threshold Accepting
+**Chosen:** GFJ — greedy on weighted violation, best-of-N sampled scan set, GLS
+weights, gradient-informed Float jumps. Operates directly on the nonlinear
+expression DAG via `delta_evaluate` and reverse-mode AD; no linear `Ax` form
+required.
 
-**Chosen:** SA with exponential cooling + periodic reheat. Well-understood
-theoretically (converges to global optimum under logarithmic cooling), with
-reheat providing practical diversification.
+**Alternatives:** SA (now removed) trades determinism for uphill exploration via
+temperature. WalkSAT-style focused repair (pick a violated constraint, fix its
+best variable) is close in spirit to a single FJ jump but less general. Tabu
+search would add short-term memory; GLS weighting already provides a longer-term
+escape mechanism.
 
-**Alternative:** Late Acceptance Hill Climbing (LAHC) is parameter-free but
-less understood theoretically. Great Deluge and Threshold Accepting avoid
-probability-based acceptance but require water-level/threshold parameter
-tuning.
+### Compound moves: Novelty Jump vs plain restarts
 
-### Move Selection: Adaptive Probabilities vs ALNS
+**Chosen:** Novelty Jump (bounded-backtracking compound moves with novelty
+weights) to escape FJ local optima where only a sequence of moves improves.
+Currently off by default pending tighter per-batch cost bounds.
 
-**Chosen:** Per-move-type acceptance rate tracking with 5% floor and
-rebalancing every 1000 evaluations. Simple, low overhead.
+**Alternative:** rely solely on perturbation/LNS diversification. Simpler, but
+cannot find the chained-invariant fixes Novelty Jump targets.
 
-**Alternative:** Full Adaptive Large Neighborhood Search (ALNS) maintains
-multiple destroy/repair operators with roulette-wheel selection, segment-based
-scoring, and reaction factors. More powerful for operator selection but
-significantly more complex.
+### Objective handling: soft-constraint bound tightening vs penalty multiplier
 
-### Temperature Schedule: Fixed Geometric vs Self-Adaptive
+**Chosen:** fold the objective in as `obj <= bound`, tighten on each new best.
+Optimization becomes a sequence of feasibility problems the same GFJ engine
+solves; no penalty-multiplier tuning.
 
-**Chosen:** Fixed `cooling_rate = 0.9999` with reheat every 5000 iterations.
-Predictable behavior, easy to reason about.
+**Alternative:** the old `obj + lambda * violation` penalty with an adaptive
+`lambda` (removed). Required balancing two adaptation thresholds and a global
+multiplier against per-constraint pressure.
 
-**Alternative:** Self-adaptive schemes (e.g., record-to-record travel,
-acceptance-rate targeting) avoid manual tuning. Luby restart sequences provide
-theoretically optimal restart schedules.
+### Continuous variables: gradient jumps + inner solver vs discretization
 
-### Constraint Weighting: Adaptive Lambda + Bump vs PAWS/SAPS
+**Chosen:** GFJ proposes Newton-toward-root Float jumps; an inner solver does
+the heavy continuous polish on each feasible solution. Keeps Float handling
+gradient-based without discretizing the domain.
 
-**Chosen:** Two-level adaptation: (1) global `lambda` multiplier that
-increases after 10 consecutive infeasible steps (`*1.5`) and decreases when
-feasible-stuck (`*0.8`); (2) per-constraint weight bumping on FJ stagnation.
+**Alternative:** discretize Float domains into Int-like candidates — impractical
+granularity, and loses the constraint-root information AD provides.
 
-**Alternative:** PAWS (Pure Additive Weighting Scheme) and SAPS (Scaling And
-Probabilistic Smoothing) from SAT literature use more principled weight
-update and decay mechanisms. PAWS adds weight to falsified clauses and
-periodically smooths all weights.
+### Diversification: perturbation + LNS vs population/restarts
 
-### Diversification: LNS + Reheat vs Population/Restarts
+**Chosen:** per-variable random perturbation by default; LNS (destroy + GFJ
+repair, lexicographic accept) every `lns_interval`-th kick.
 
-**Chosen:** Single LNS operator (random destroy + FJ repair) with periodic
-SA reheat. Simple and effective.
-
-**Alternative:** Population-based approaches (genetic algorithms, scatter
-search) maintain solution diversity explicitly. The solution pool exists but
-isn't currently used for warm restarts during single-thread search. Luby or
-geometric restart schemes from SAT provide systematic restart policies.
+**Alternative:** population-based search (GA, scatter search) or systematic
+restart schedules (Luby). The solution pool supports multi-seed parallel search
+but is not yet used for warm restarts within a single thread.
 
 ---
 
 ## Control Flow Diagram
 
 ```
-solve(model, time_limit, seed, use_fj, hook, lns, lns_interval)
+solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config)
 │
-├── initialize_random(model)
-├── full_evaluate(model)
+├── [if objective] add_objective_soft_constraint(); set_objective_bound(+inf)
+├── ViolationManager vm(model)
+├── [unless config.skip_init] initialize_random(model)
 │
-├── [if use_fj]
-│   └── fj_nl_initialize(model, 5000 iters, 20% time budget)
-│       │
-│       └── loop:
-│           ├── find (variable, value) that most reduces violation
-│           ├── if found: apply
-│           └── if stagnated: bump_weights() + random perturb
+├── FeasibilityJump fj(model, vm, rng, single-phase)
+├── fj.begin(set_initial_x = !skip_init)
+│       └── set X near 0, full_evaluate, W <- 1, rebuild V/Q
 │
-├── T = max(|F|*0.1, 1.0)          # initial temperature
-├── save best_state
-│
-└── SA main loop (while time remains):
+└── outer loop (while time && max_iterations remain):
     │
-    ├── pick random variable
-    ├── generate moves (standard + newton/gradient for floats)
-    ├── pick one move uniformly
-    ├── delta_evaluate → delta_F
+    ├── pick batch kind:
+    │     P(structural_batch_probability)        → STRUCTURAL
+    │     elif use_compound_moves & P(nj_prob)   → NOVELTY JUMP
+    │     else                                   → FEASIBILITY JUMP
     │
-    ├── Metropolis accept?
-    │   ├── yes: apply move, update adaptive_lambda
-    │   │   ├── update best if improved
-    │   │   ├── move_probs.update(type, accept=true)
-    │   │   │
-    │   │   └── [if hook && discrete var accepted]
-    │   │       └── every 10 discrete accepts:
-    │   │           hook->solve(model, vm)  # inner solver
-    │   │
-    │   └── no: undo move
-    │       └── move_probs.update(type, accept=false)
+    ├── run batch:
+    │     FJ:         fj.batch(batch_iterations)      # GLS: best-of-N jump + weight bump
+    │     NOVELTY:    fj.apply_novelty_jump()         # compound moves; resync
+    │     STRUCTURAL: structural_pass()               # list/set moves; resync
     │
-    ├── T *= 0.9999                 # cool
+    ├── if real_feasible():
+    │     ├── [if hook] hook->solve(model, vm)        # continuous polish; resync
+    │     └── if still real_feasible(): record_best()
+    │           └── tighten objective bound to obj - eps; snapshot best state
     │
-    └── [every 5000 iters: REHEAT]
-        ├── T = initial_temperature(best_F) * 0.5
-        ├── hook->solve(model, vm)  # inner solver on reheat
-        │
-        └── [every lns_interval reheats: LNS]
-            ├── destroy: randomize 30% of variables
-            ├── repair: FJ with 2000 iterations
-            └── accept if F improved, else rollback
+    ├── if new best:  stagnation=0; fj.reset_weights(); resample rho
+    │                 (pure feasibility → break)
+    ├── else:         ++stagnation; if resync flag: fj.resync()
+    │
+    ├── if stagnation >= perturbation_period:
+    │     diversify():
+    │       every lns_interval-th kick → lns->destroy_repair(); fj.reset_weights()
+    │       else                       → fj.perturb(perturbation_probability)
+    │       resample rho; ++perturbations; stagnation=0
+    │
+    └── emit progress (~1s cadence, or on new best)
 
     ── end loop ──
 
-    restore best_state
-    return SearchResult
+    restore best_state; release objective bound to +inf; full_evaluate
+    return SearchResult{ best_feasible_obj, feasible, best_state,
+                         iterations = fj.iterations(), time_seconds }
 ```
 
 ---
@@ -660,33 +830,36 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval)
 
 | Parameter | Default | Location | Description |
 |-----------|---------|----------|-------------|
-| `time_limit` | (required) | `search.cpp:208` | Total search time in seconds |
-| `seed` | (required) | `search.cpp:208` | RNG seed |
-| `use_fj` | true | `search.cpp:208` | Enable Feasibility Jump initialization |
-| `cooling_rate` | 0.9999 | `search.cpp:235` | SA geometric cooling factor |
-| `reheat_interval` | 5000 | `search.cpp:236` | Iterations between reheats |
-| `reheat_temp_factor` | 0.5 | `search.cpp:341` | Reheat temperature = initial_temp * factor |
-| `initial_temp_scale` | 0.1 | `search.cpp:205` | `T_0 = max(abs(F)*scale, 1.0)` |
-| `fj_time_fraction` | 0.2 | `search.cpp:221` | Fraction of time budget for FJ |
-| `fj_max_iterations` | 5000 | `search.cpp:222` | Maximum FJ iterations |
-| `hook_frequency` | 10 | `search.cpp:248` | Inner solver fires every N discrete accepts |
-| `lns_interval` | (caller) | `search.cpp:209` | LNS fires every N reheats |
-| `destroy_fraction` | 0.3 | `lns.cpp:11` | Fraction of variables randomized by LNS |
-| `lns_repair_iters` | 2000 | `lns.cpp:48` | FJ iterations in LNS repair phase |
-| `max_sweeps` | 3 | `inner_solver.h:21` | Inner solver coordinate-descent sweeps |
-| `initial_step_size` | 0.1 | `inner_solver.h:22` | Line search starting step |
-| `max_line_search_steps` | 5 | `inner_solver.h:23` | Max backtracking halvings |
-| `max_multi_var_constraints` | 5 | `inner_solver.h:24` | Max constraints for multi-var Newton |
-| `float_perturb_sigma` | (ub−lb)*0.1 | `moves.cpp:44` | Gaussian perturbation scale |
-| `move_rebalance_interval` | 1000 | `moves.cpp:54` | Updates between probability rebalancing |
-| `move_prob_floor` | 0.05 | `moves.cpp:261` | Minimum probability per move type |
-| `adaptive_lambda_init` | 1.0 | `violation.h:10` | Initial penalty multiplier |
-| `infeasible_threshold` | 10 | `violation.cpp:12` | Steps before lambda increase |
-| `feasible_stuck_threshold` | 20 | `violation.cpp:19` | Steps before lambda decrease |
-| `lambda_increase_factor` | 1.5 | `violation.cpp:13` | Lambda multiplier on infeasibility |
-| `lambda_decrease_factor` | 0.8 | `violation.cpp:22` | Lambda multiplier when feasible-stuck |
-| `pool_capacity` | 10 | `pool.h:22` | Maximum solutions in pool |
-| `n_threads` | 4 | `pool.h:37` | Default parallel search threads |
+| `time_limit` | 10.0 | `solve()` arg | total search time (seconds) |
+| `seed` | 42 | `solve()` arg | RNG seed |
+| `use_fj` | true | `SearchConfig` | vestigial (GFJ always the engine) |
+| `max_iterations` | 0 | `SearchConfig` | GLS-iteration cap (0 = use time_limit) |
+| `skip_init` | false | `SearchConfig` | keep current assignment (epoch restarts) |
+| `batch_iterations` | 1000 | `SearchConfig` | GLS iterations per FJ batch |
+| `perturbation_period` | 100 | `SearchConfig` | stagnant batches before a diversification kick |
+| `perturbation_probability` | 0.1 | `SearchConfig` | per-var randomisation probability on perturb |
+| `structural_batch_probability` | -1 (auto) | `SearchConfig` | P(structural batch); auto 0.33 w/ List/Set, else 0 |
+| `use_compound_moves` | false | `SearchConfig` | enable Novelty Jump batches |
+| `novelty_jump_probability` | 0.5 | `SearchConfig` | P(Novelty Jump batch) when enabled |
+| `lns_interval` | 3 | `SearchConfig` / arg | LNS fires every Nth diversification kick |
+| `rho` (GLS decay) | {0.95, 1.0} | sampled per batch | GLS weight decay factor |
+| `sample_size_general` | 3 | `GFJConfig` | best-of-N scan-set sample, general phase |
+| `sample_size_linear` | 5 | `GFJConfig` | best-of-N scan-set sample, linear phase |
+| `two_phase` | true (solver) / false (outer loop, warm-start) | `GFJConfig` | linear-first GLS pass |
+| `set_initial_x` | true | `GFJConfig` | set X to domain value nearest 0 first |
+| `kCompoundDiscount` | 1/1024 | `feasibility_jump.cpp` | Novelty-weight discount on satisfied constraints |
+| `kNoveltyWorkBudget` | 256 | `feasibility_jump.cpp` | max moves per `apply_novelty_jump` |
+| `objective_bound_eps` | 1e-3·(|obj|+1) | `search.cpp` `record_best` | bound tightening / hook Newton step |
+| `destroy_fraction` | 0.3 | `LNS` ctor | fraction of variables/sequences destroyed |
+| `lns_repair_iters` | 2000 | `lns.cpp` | GFJ iterations in LNS repair |
+| `max_sweeps` | 3 | `inner_solver.h` | inner-solver coordinate-descent sweeps |
+| `initial_step_size` | 0.1 | `inner_solver.h` | line-search starting step |
+| `max_line_search_steps` | 5 | `inner_solver.h` | max backtracking halvings |
+| `max_multi_var_constraints` | 5 | `inner_solver.h` | max constraints for multi-var Newton |
+| `pool_capacity` | 10 | `pool.h` | max solutions in pool |
+| `n_threads` | 1 (CLI) / hw_concurrency (lib) | CLI / `ParallelConfig` | parallel search threads |
+| `epoch_iterations` | 5000 | `ParallelConfig` | GLS iterations per epoch (deterministic) |
+| `max_epochs` | 10 | `ParallelConfig` | epochs (deterministic mode) |
 
 ---
 
@@ -696,8 +869,7 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval)
 
 **File:** `src/cli.cpp`
 
-The `cbls` executable is a command-line driver that loads a JSONL model file,
-solves it, and prints results.
+The `cbls` executable loads a JSONL model file, solves it, and prints results.
 
 ```
 cbls [OPTIONS] MODEL.cbls
@@ -705,22 +877,30 @@ cbls [OPTIONS] MODEL.cbls
 
 | Option | Description |
 |--------|-------------|
-| `--time-limit SECS` | Maximum solve time (default: 10.0) |
+| `--time-limit SECS` | maximum solve time (default: 10.0) |
 | `--seed INT` | RNG seed (default: 42) |
-| `--no-fj` | Disable Feasibility Jump initialization |
-| `--lns FRACTION` | Enable LNS with given destroy fraction (e.g. 0.3) |
-| `--lns-interval INT` | LNS fires every N reheats (default: 3) |
-| `--intensify` | Enable float intensification hook |
-| `--format human\|jsonl` | Output format (default: human) |
-| `--quiet` | Suppress progress output, print only final result |
-| `--version` | Print `cbls::version` (`include/cbls/cbls.h`) and exit |
+| `--no-fj` | set `SearchConfig::use_fj = false` (vestigial; GFJ still runs) |
+| `--lns FRACTION` | enable LNS with given destroy fraction (e.g. 0.3) |
+| `--lns-interval INT` | LNS fires every N diversification kicks (default: 3) |
+| `--intensify` | enable the Float intensification hook |
+| `--threads N` | number of threads (0 = auto-detect, default: 1) |
+| `--deterministic` | enable deterministic epoch-sync parallel mode |
+| `--epoch-iters INT` | GLS iterations per epoch in deterministic mode (default: 5000) |
+| `--max-epochs INT` | number of epochs in deterministic mode (default: 10) |
+| `--format human\|jsonl` | output format (default: human) |
+| `--quiet` | suppress progress, print only the final result |
+| `--help` / `--version` | usage / `cbls::version` |
+
+> **Removed flags** (SA-era): `--cooling-rate`, `--reheat-interval`,
+> `--hook-frequency`, `--fj-time-fraction`. These no longer exist; the
+> corresponding mechanisms were deleted in the ViolationLS port.
 
 ### JSONL Model Format
 
 **Files:** `include/cbls/io.h`, `src/io.cpp`
 
-Models are serialized as `.cbls` files — one JSON object per line (JSONL).
-Each line describes a variable, expression node, constraint, or objective:
+Models are serialized as `.cbls` files — one JSON object per line (JSONL),
+describing a variable, expression node, constraint, or objective:
 
 ```jsonl
 {"var":"x","type":"int","lb":0,"ub":10}
@@ -729,75 +909,52 @@ Each line describes a variable, expression node, constraint, or objective:
 {"minimize":"x"}
 ```
 
-**API:**
+**API:** `load_model(path|istream)` parses JSONL and returns a closed model;
+`save_model(model, path|ostream)` serializes a closed model. Lambda nodes are
+tabulated over their input domain on save and reconstructed on load (see the
+[Lambda serialization note](#expression-dag)). The objective soft constraint is
+*not* part of the serialized model — `solve()` appends it at runtime.
 
-- `Model load_model(const std::string& path)` / `Model load_model(std::istream& input)` — parse JSONL, construct and close the model
-- `void save_model(const Model& model, const std::string& path)` / `void save_model(const Model& model, std::ostream& out)` — serialize a closed model to JSONL
-
-Lambda nodes are handled via tabulation: `save_model` evaluates the lambda
-function over its input domain and writes the table; `load_model` reconstructs
-an equivalent Lambda from the table. See the
-[Lambda serialization note](#expression-dag) above.
-
-Models can also be constructed programmatically via the C++ or Python API.
-Benchmark data remains hardcoded as `constexpr` arrays
-(`benchmarks/chped/data.h`).
+Models can also be built programmatically via the C++ or Python API.
 
 ### SolveCallback
 
 **File:** `include/cbls/search.h`
 
-`SolveCallback` is an abstract interface for receiving progress updates during
-search. Implement `on_progress(const SolveProgress&)` to receive periodic
-reports.
-
-```cpp
-struct SolveProgress {
-    int64_t iteration;
-    double time_seconds, objective, total_violation, temperature;
-    bool feasible, new_best;
-    int reheat_count;
-};
-```
-
-The callback fires periodically (~1 second intervals) and immediately on any
-new best solution. Pass a `SolveCallback*` to `solve()` via the `callback`
-parameter.
+`SolveCallback::on_progress(const SolveProgress&)` receives progress updates. It
+fires on a ~1 s cadence and immediately on any new best. Pass a `SolveCallback*`
+to `solve()` (the CLI passes a formatter). See
+[`SolveProgress`](#solveprogress) for the fields.
 
 ### Formatters
 
 **Files:** `include/cbls/formatter.h`, `src/formatter.cpp`
 
-Two built-in `SolveCallback` implementations format solver output:
+Two `SolveCallback` implementations format solver output:
 
-- **`HumanFormatter`** — human-readable tabular output with a header
-  (model path, variable/constraint/node counts, seed, time limit), periodic
-  progress lines, and a final result summary.
-- **`JsonlFormatter`** — machine-readable JSONL output: one JSON object per
-  event (header, progress, result), suitable for piping into analysis tools.
+- **`HumanFormatter`** — tabular output: header (model path, var/constraint
+  counts, objective sense, seed, time limit), periodic progress lines
+  (Time / Iter / Objective / Violation / Perturbs, `*` on a new best), and a
+  final solution summary.
+- **`JsonlFormatter`** — one JSON object per event (`start` / `progress` /
+  `result`), each carrying iteration, time, objective (null when not feasible),
+  violation, feasibility, perturbations, and `new_best`.
 
 Both write to a configurable `std::ostream` (default `std::cout`). The CLI
-selects between them via `--format human|jsonl` and suppresses both with
-`--quiet`.
+selects via `--format` and suppresses both with `--quiet`.
 
 ### Version
 
-`cbls::version` is a `constexpr const char*` defined in
-`include/cbls/cbls.h`, currently `"0.1.0"`.
+`cbls::version` is a `constexpr const char*` in `include/cbls/cbls.h`.
 
-### Parameters
+### Parameter Locations
 
-Top-level parameters are arguments to `solve()` with defaults
-(`search.h`): `time_limit=10.0`, `seed=42`, `use_fj=true`,
-`hook=nullptr`, `lns=nullptr`, `lns_interval=3`, `callback=nullptr`.
-The CLI exposes these as command-line arguments (see table above). SA
-schedule parameters (`cooling_rate`, `reheat_interval`,
-`fj_time_fraction`, `hook_frequency`) are hardcoded constants in
-`search.cpp`. Inner solver parameters are fields on
-`FloatIntensifyHook`. LNS takes `destroy_fraction`. There is no
-centralized config struct — parameters are scattered across function
-arguments, class fields, and local constants. See the
-[Parameters Table](#parameters-table) for the full list.
+Top-level `solve()` arguments carry defaults (`time_limit=10.0`, `seed=42`,
+`use_fj=true`, `hook=nullptr`, `lns=nullptr`, `lns_interval=3`,
+`callback=nullptr`, `config={}`). Algorithmic tuning lives in `SearchConfig`
+(outer loop) and `GFJConfig` (engine); inner-solver knobs are fields on
+`FloatIntensifyHook`; LNS takes `destroy_fraction`. See the
+[Parameters Table](#parameters-table).
 
 ---
 
@@ -805,71 +962,50 @@ arguments, class fields, and local constants. See the
 
 ### Multi-threading
 
-The core solver (`solve()`) is single-threaded. `ParallelSearch` provides
-two modes for multi-threaded search:
-
-**Opportunistic mode** (default): Launches N independent threads (default:
-`hardware_concurrency()`), each creating its own `Model` via a user-provided
-factory function and calling `solve()` with staggered seeds
-(`seed + thread_index`). Only the `SolutionPool` is shared
-(mutex-protected). There is no shared state during search — thread safety is
-achieved by isolation. No OpenMP, no work-stealing, no parallel evaluation
-of the DAG.
-
-**Deterministic epoch-sync mode** (`ParallelConfig::deterministic = true`):
-Threads run in synchronized epochs of fixed iteration count (no wall-clock
-dependency within epochs):
-
-1. All threads start from the same initial state (or elite pool states)
-2. Each thread runs exactly `epoch_iterations` SA iterations using
-   `SearchConfig::max_iterations`
-3. All threads finish the epoch before proceeding
-4. Results collected into `SolutionPool`, top-K elite solutions extracted
-5. Threads restart from elite solutions with fresh temperature
-6. Repeat for `max_epochs` epochs (no wall-clock dependency)
-
-Thread seeding: `base_seed + epoch * n_threads + thread_id` — deterministic
-given the same seed, thread count, and epoch iteration count.
-
-`ParallelSearch::solve()` accepts factory functions for hooks and LNS
-objects (since these are stateful and per-model). Each thread creates its
-own instances via the factories.
+The core `solve()` is single-threaded. `ParallelSearch` provides two modes (see
+[Parallel Search](#solution-pool--parallel-search)): opportunistic portfolio
+(independent seeds, shared mutex-protected pool) and deterministic epoch-sync.
+No OpenMP, no work-stealing, no parallel DAG evaluation.
 
 ### Determinism
 
-The solver is deterministic given the same seed, with one caveat: wall-clock
-time. All randomness flows through a single `RNG` (`mt19937_64`) seeded by
-the `seed` parameter. Unordered containers (`unordered_set` in
-`delta_evaluate`, `unordered_map` in AD) are used only for
-membership/lookup — iteration order does not affect results because
-recomputation follows topological order.
+The solver is deterministic given the same seed, modulo wall-clock. All
+randomness flows through a single `RNG` (`mt19937_64`). Unordered containers in
+`delta_evaluate` / AD are used only for membership/lookup — iteration order does
+not affect results because recomputation follows topological order.
 
-**Wall-clock caveat:** In opportunistic mode, `std::chrono::steady_clock`
-determines when to stop FJ and SA. Different machine speeds produce
-different iteration counts and therefore different solutions. Same seed +
-same hardware + same load = reproducible results.
+**Wall-clock caveat (opportunistic mode):** `steady_clock` determines when to
+stop. Different machine speeds yield different GLS-iteration counts and thus
+different solutions. Same seed + same hardware + same load = reproducible.
 
-**Deterministic mode** eliminates the wall-clock caveat: same seed + same
-`n_threads` + same `epoch_iterations` + same `max_epochs` = identical
-result on any machine. No wall-clock is consulted during deterministic
-execution. The `SearchConfig::max_iterations` field controls
-iteration-count-based stopping (0 = unlimited, use time_limit).
+**Deterministic mode** removes the caveat: epochs stop by GLS-iteration count
+(`epoch_iterations`), not wall-clock, so same seed + `n_threads` +
+`epoch_iterations` + `max_epochs` = identical result on any machine. The
+`SearchConfig::max_iterations` field is what enforces the per-epoch
+iteration-count stop.
 
 ### CLI flags
 
 ```
---threads N           Number of threads (0 = auto-detect, default: 1)
---deterministic       Enable deterministic epoch-sync mode
---epoch-iters INT     Iterations per epoch in deterministic mode (default: 5000)
---max-epochs INT      Number of epochs in deterministic mode (default: 10)
+--threads N           number of threads (0 = auto-detect, default: 1)
+--deterministic       enable deterministic epoch-sync mode
+--epoch-iters INT     GLS iterations per epoch in deterministic mode (default: 5000)
+--max-epochs INT      number of epochs in deterministic mode (default: 10)
 ```
 
 ---
 
 ## GPU
 
-No GPU code. All computation is CPU-only. The bottleneck
-(`delta_evaluate`) is inherently serial per-move due to sequential SA. GPU
-acceleration would require batch-parallel evaluation (e.g., evaluating
-multiple candidate moves simultaneously), which the current architecture
-does not support.
+No GPU code. All computation is CPU-only. The bottleneck (`delta_evaluate`,
+invoked per jump candidate) is inherently serial per-jump. GPU acceleration
+would require batch-parallel evaluation of multiple candidate jumps
+simultaneously, which the current architecture does not support.
+
+---
+
+## Reference
+
+Davies, T. O., Didier, F., Perron, L. *ViolationLS: Constraint-Based Local
+Search in CP-SAT.* CPAIOR 2024. (PDF in `docs/`.) Algorithm references
+throughout this document (Algorithms 1–6) refer to this paper.
