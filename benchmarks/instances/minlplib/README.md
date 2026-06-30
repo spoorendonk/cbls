@@ -1,0 +1,108 @@
+# MINLPLib non-convex benchmark subset
+
+External yardstick for the CBLS continuous machinery (reverse-mode AD on a
+transcendental DAG + Newton jump values). Where MIPLIB-FJ (`../miplib-fj/`)
+exercises the pure-linear search core, this subset targets **non-convex
+mixed-integer non-linear** instances — the regime where standalone CBLS
+competitors (Yuck, fzn-oscar-cbls) cannot even *encode* most cases, because
+FlatZinc has no transcendental float constraints. Coverage is the headline
+metric here; gap-to-BKS is secondary (we are a primal heuristic).
+
+Source: [MINLPLib](https://www.minlplib.org/). Metadata and bounds come from
+the published catalogue CSV:
+
+    https://www.minlplib.org/instancedata.csv   (semicolon-separated)
+
+Each instance's text NL file is fetched individually from
+`https://www.minlplib.org/nl/<name>.nl` (we do **not** pull the multi-hundred-MB
+archive). The CBLS NL reader (`src/io/nl_reader.cpp`) handles the **text** ('g'
+header) format; instances served only as **binary** NL ('b' header) are rejected
+by the downloader and excluded (e.g. the `kriging_peaks-*` family).
+
+## Selection method (CSV-driven, reproducible)
+
+`download.py` applies a metadata-only filter — no NL parsing needed for
+selection — then stratifies:
+
+1. `convex == False` (non-convex only).
+2. `probtype` in {NLP, MINLP, QCP, QCQP, QP, MIQCP, MIQCQP, MIQP, BQP, BQCP}.
+3. The instance advertises the `nl` format.
+4. **Operator subset check**: no operator column outside the set CBLS can
+   express (see table below) is flagged `True`.
+5. Size budget: `nvars <= 150` and `ncons <= 150`.
+6. A finite `primalbound` (so gap-to-BKS is defined).
+7. Stratify the survivors round-robin across structure classes
+   (bilinear / polynomial / transcendental / mixed-integer / other), smallest
+   first, to a roster of ~30–40.
+
+Reproduce with the project venv:
+
+    .venv/bin/python3 benchmarks/instances/minlplib/download.py --select-only
+    .venv/bin/python3 benchmarks/instances/minlplib/download.py --limit 40
+
+The downloader validates every fetched body (rejects HTML/404 and binary-NL
+headers) and prints a sha256 for provenance. `bounds.csv` records the published
+primal/dual bounds for the selected roster.
+
+## Operator support (CBLS DAG ↔ MINLPLib op columns)
+
+| MINLPLib op column | CBLS DAG op            | Supported |
+|--------------------|------------------------|-----------|
+| `opmul`            | `Prod`                 | yes       |
+| `opdiv`            | `Div`                  | yes       |
+| `oppower` / `opsqr`| `Pow`                  | yes       |
+| `opsqrt`           | `Sqrt`                 | yes       |
+| `opabs`            | `Abs`                  | yes       |
+| `opexp`            | `Exp`                  | yes       |
+| `oplog` / `oplog10`| `Log` (+ scale)        | yes       |
+| `opsin` / `opcos`  | `Sin` / `Cos`          | yes       |
+| `opmin`            | `Min` / `Max`          | yes       |
+| `opsignpower` / `oprpower` | `SignPower` (added #72) | yes |
+| `optanh`           | `Tanh` (added #72)     | yes       |
+| `opcvpower` / `opvcpower` | —               | no (skipped) |
+| `operrorf` (erf)   | —                      | no (skipped) |
+| `opgamma`          | —                      | no (skipped) |
+| `opcentropy`       | —                      | no (skipped) |
+| `opmod`            | —                      | no (skipped) |
+
+Piecewise (`OPPLTERM`), function calls (`OPFUNCALL`), and inverse-trig opcodes
+are parsed structurally but rejected by the adapter with a skip reason; the
+runner records these as `skipped(unsupported)`.
+
+## Yuck / fzn-oscar-cbls coverage
+
+These FlatZinc-based local-search solvers are the natural CBLS comparators, but
+FlatZinc's float layer has no `exp`/`log`/`sin`/`signpower` constraints, so the
+**transcendental and signpower instances in this roster are not expressible**
+for them at all. That non-expressibility is the differentiator this benchmark
+documents; per-instance "expressible? Y/N" is noted in `comparison.csv`'s `note`
+column where relevant. No published Yuck numbers exist for these instances.
+
+## Provenance
+
+- Instance data, primal/dual bounds: MINLPLib, https://www.minlplib.org/ (CSV
+  above). MINLPLib is a curated public benchmark library; bounds are from
+  BARON/SCIP/ANTIGONE runs reported there.
+- NL format: David M. Gay, *Writing .nl Files*
+  (https://ampl.github.io/nlwrite.pdf) and *Hooking Your Solver to AMPL*
+  (https://ampl.com/REFS/hooking2.pdf). The CBLS NL reader and opcode table are
+  an original implementation from those public specs (opcode numbers cross-
+  checked against the ASL `opcode.hd`); no third-party source is vendored.
+
+## Files
+
+- `download.py` — CSV-driven selection + per-instance `.nl` fetch + validation.
+- `bounds.csv` — selected roster with published primal/dual bounds.
+- `comparison.csv` — written by the `cbls_minlplib` runner: CBLS objective,
+  gap-to-BKS, gap-to-dual, feasibility, and notes per instance.
+- `*.nl` — fetched text NL instance files.
+
+## Caveats
+
+- CBLS is a primal heuristic; large gap-to-BKS on hard multimodal instances is
+  expected and acceptable (per issue #72).
+- All NL variables are loaded as continuous (the reader does not yet surface NL
+  integrality); mixed-integer instances are solved as their continuous
+  relaxations, so their objectives may beat the integer BKS.
+- The roster is reproducible from the CSV but will drift as MINLPLib updates its
+  catalogue; re-run `download.py` to refresh.
