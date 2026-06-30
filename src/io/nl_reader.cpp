@@ -332,7 +332,13 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
         }
     };
     // Peek ahead: the remaining header lines all start with a digit, '-', or
-    // space. Consume them until a segment marker letter appears.
+    // space. Consume them until a segment marker letter appears. While doing so,
+    // capture the discrete-variable line. In the `g` format the header layout is
+    // fixed; counting line 1 (`g...`) and line 2 (counts) already consumed, the
+    // discrete-variable line is the 5th of the lines we skip here (overall header
+    // line 7): "nbv niv nlvbi nlvci nlvoi". We sum its five integers to get the
+    // total integer/binary variable count.
+    int header_line_after_counts = 0;
     while (true) {
         char c = 0;
         if (!tok.peek_char(c)) {
@@ -341,7 +347,17 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
         if (is_segment_marker(c)) {
             break;
         }
-        tok.read_line();  // another header line
+        std::string hline = tok.read_line();  // another header line
+        ++header_line_after_counts;
+        if (header_line_after_counts == 5) {  // discrete-variable line (line 7)
+            std::istringstream ss(hline);
+            int64_t v = 0;
+            int32_t total = 0;
+            for (int k = 0; k < 5 && (ss >> v); ++k) {
+                total += static_cast<int32_t>(v);
+            }
+            prob.n_discrete_vars = total;
+        }
     }
 
     prob.constraints.resize(prob.n_cons);

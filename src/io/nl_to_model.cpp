@@ -148,11 +148,19 @@ private:
             case OP_tanh:
                 return m_.tanh_expr(kids[0]);
             case MINLIST:
+                if (kids.empty()) {
+                    fail("empty MINLIST");
+                    return m_.constant(0.0);
+                }
                 return m_.min_expr(kids);
             case MAXLIST:
+                if (kids.empty()) {
+                    fail("empty MAXLIST");
+                    return m_.constant(0.0);
+                }
                 return m_.max_expr(kids);
             case OPSUMLIST:
-                return m_.sum(kids);
+                return m_.sum(kids);  // empty -> constant 0 (Model::sum handles it)
             default:
                 fail("unsupported NL opcode " + std::to_string(n.opcode));
                 return m_.constant(0.0);

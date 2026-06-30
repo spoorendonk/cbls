@@ -126,6 +126,30 @@ TEST_CASE("NL reader parses linear J/G segments", "[minlplib]") {
     REQUIRE(p.objectives[0].linear.size() == 2);
 }
 
+TEST_CASE("NL reader sums the discrete-variable header line", "[minlplib]") {
+    // The 7th header line is "nbv niv nlvbi nlvci nlvoi"; n_discrete_vars is the
+    // sum. nl_header() writes "0 0 0 0 0" on that line, so a default fixture has
+    // zero discrete vars. Build a custom header with a nonzero discrete line.
+    std::string text = "g3 0 1 0\t# header\n";
+    text += " 3 0 1 0 0\t# vars, cons, objs, ranges, eqns\n";
+    text += " 0 0\n";
+    text += " 0 0\n";
+    text += " 0 0 0\n";
+    text += " 0 0 0 1\n";
+    text += " 0 0 2 1 0\t# discrete: nbv niv nlvbi nlvci nlvoi -> 3 total\n";
+    text += " 0 0\n";
+    text += " 0 0\n";
+    text += " 0 0 0 0 0\n";
+    text += "b\n0 0 10\n0 0 10\n0 0 10\n";
+    text += "O0 0\nn0\n";
+    NlProblem p = parse_nl(text, "discrete");
+    REQUIRE(p.n_discrete_vars == 3);
+
+    // The default fixture (all-zero discrete line) reports zero.
+    NlProblem q = parse_nl(nl_header(1, 0, 1) + "b\n0 0 1\nO0 0\nn0\n", "cont");
+    REQUIRE(q.n_discrete_vars == 0);
+}
+
 TEST_CASE("NL reader throws a tagged marker on an unsupported opcode", "[minlplib]") {
     // OPPLTERM (64, piecewise) has a non-standard payload; the reader can't know
     // its arity and must throw the NL_UNKNOWN_OPCODE marker rather than crash.
@@ -220,7 +244,7 @@ TEST_CASE("nl_to_model reports unsupported operator without throwing", "[minlpli
     REQUIRE(r.skipped_reasons[0].find("49") != std::string::npos);
 }
 
-TEST_CASE("nl_to_model maps signpower opcode (OP1POW) to pow", "[minlplib]") {
+TEST_CASE("nl_to_model maps OP1POW (base^const) to pow", "[minlplib]") {
     // OP1POW (76) is base ^ constant-exponent. With exponent 3 and x=2 -> 8.
     std::string text = nl_header(1, 0, 1);
     text += "b\n0 -5 5\n";

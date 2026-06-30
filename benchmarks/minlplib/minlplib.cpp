@@ -140,9 +140,11 @@ struct Tally {
     int feasible = 0;
     int better = 0;
     int worse = 0;
+    int relaxed = 0;  // mixed-integer, solved as continuous relaxation
     int failed_nonfinite = 0;
     int skipped_unsupported = 0;
     int not_found = 0;
+    int errored = 0;  // read/build/solve exceptions
 };
 
 double safe_gap(double obj, double ref) {
@@ -201,8 +203,23 @@ int main(int argc, char** argv) {
         try {
             prob = cbls::read_nl(nl_path);
         } catch (const std::exception& e) {
-            std::printf("%-22s  ERROR reading: %s\n", name.c_str(), e.what());
-            csv << name << ",NaN,NaN,NaN,NaN,NaN,0,false,read-error," << args.commit_sha << "\n";
+            // An unknown opcode or unsupported segment is a coverage gap, not a
+            // malformed file: bucket it as skipped(unsupported), not an error.
+            std::string what = e.what();
+            bool unsupported = what.find("NL_UNKNOWN_OPCODE") != std::string::npos ||
+                               what.find("not supported by this reader") != std::string::npos;
+            std::replace(what.begin(), what.end(), ',', ';');
+            if (unsupported) {
+                std::printf("%-22s  (skipped: %s)\n", name.c_str(), what.c_str());
+                ++t.skipped_unsupported;
+                csv << name << ",NaN,NaN,NaN,NaN,NaN,0,false,unsupported: " << what << ","
+                    << args.commit_sha << "\n";
+            } else {
+                std::printf("%-22s  ERROR reading: %s\n", name.c_str(), what.c_str());
+                ++t.errored;
+                csv << name << ",NaN,NaN,NaN,NaN,NaN,0,false,read-error," << args.commit_sha
+                    << "\n";
+            }
             continue;
         }
         ++t.parsed;
@@ -213,11 +230,14 @@ int main(int argc, char** argv) {
             built = cbls::nl_to_model(prob);
         } catch (const std::exception& e) {
             std::printf("%-22s  ERROR building model: %s\n", name.c_str(), e.what());
+            ++t.errored;
             csv << name << ",NaN,NaN,NaN,NaN,NaN,0,false,build-error," << args.commit_sha << "\n";
             continue;
         }
 
-        Bounds b = bounds.count(name) ? bounds[name] : Bounds{};
+        auto bit = bounds.find(name);
+        Bounds b = bit != bounds.end() ? bit->second : Bounds{};
+        const bool relaxed = prob.n_discrete_vars > 0;
 
         if (!built.supported) {
             note = built.skipped_reasons.empty() ? "unsupported"
@@ -244,6 +264,7 @@ int main(int argc, char** argv) {
                                  /*use_fj=*/true, &hook, &lns);
         } catch (const std::exception& e) {
             std::printf(" ERROR solving: %s\n", e.what());
+            ++t.errored;
             csv << name << ",NaN," << b.primal << "," << b.dual << ",NaN,NaN,0,false,solve-error,"
                 << args.commit_sha << "\n";
             continue;
@@ -277,7 +298,13 @@ int main(int argc, char** argv) {
 
         if (result.feasible) {
             ++t.feasible;
-            if (!std::isnan(gap_bks)) {
+            if (relaxed) {
+                // Integer vars were relaxed to continuous, so the objective is a
+                // relaxation bound, not a valid integer solution. Never claim
+                // "better-than-bks" here; tag the row honestly.
+                ++t.relaxed;
+                note = "feasible(relaxed-int)";
+            } else if (!std::isnan(gap_bks)) {
                 // "Better than BKS" is sense-aware: a smaller objective beats a
                 // min-sense BKS, a larger one beats a max-sense BKS. gap_bks is
                 // signed obj-vs-BKS, so the beat condition flips with the sense.
@@ -335,15 +362,19 @@ int main(int argc, char** argv) {
     std::printf("parsed:               %d\n", t.parsed);
     std::printf("closed (built):       %d\n", t.closed);
     std::printf("feasible:             %d\n", t.feasible);
-    std::printf("  better-than-BKS:    %d\n", t.better);
+    std::printf("  better-than-BKS:    %d  (continuous instances only)\n", t.better);
     std::printf("  worse/equal:        %d\n", t.worse);
+    std::printf("  relaxed-int:        %d  (mixed-integer, solved continuous)\n", t.relaxed);
     std::printf("failed(non-finite):   %d\n", t.failed_nonfinite);
     std::printf("skipped(unsupported): %d\n", t.skipped_unsupported);
+    std::printf("read/build errors:    %d\n", t.errored);
     std::printf("not found:            %d\n", t.not_found);
-    int considered = t.parsed + t.not_found;
-    if (considered > 0) {
-        std::printf("closed-model rate:    %.0f%% of %d considered\n",
-                    100.0 * t.closed / considered, considered);
+    // Closed-model rate over everything we attempted to read (present .nl files):
+    // parsed + skipped-unsupported + errors. not_found excluded (no file).
+    int attempted = t.parsed + t.skipped_unsupported + t.errored;
+    if (attempted > 0) {
+        std::printf("closed-model rate:    %.0f%% of %d attempted (%d not found)\n",
+                    100.0 * t.closed / attempted, attempted, t.not_found);
     }
     std::printf("\nWrote %s\n", args.out_csv.c_str());
     return 0;

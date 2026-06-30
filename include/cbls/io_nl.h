@@ -97,6 +97,11 @@ struct NlProblem {
     int32_t n_vars = 0;
     int32_t n_cons = 0;
     int32_t n_objs = 0;
+    /// Total integer/binary variable count from the NL header's discrete-variable
+    /// line (nbv + niv + nlvbi + nlvci + nlvoi). The reader does not yet map the
+    /// integer *positions* (Gay's variable ordering); this count lets consumers
+    /// flag an instance as mixed-integer (solved as a continuous relaxation).
+    int32_t n_discrete_vars = 0;
 
     std::vector<NlVarBound> var_bounds;     ///< size n_vars (from `b`)
     std::vector<double> initial_x;          ///< size n_vars; from `x`, NaN if unset

@@ -57,7 +57,7 @@ primal/dual bounds for the selected roster.
 | `oplog` / `oplog10`| `Log` (+ scale)        | yes       |
 | `opsin` / `opcos`  | `Sin` / `Cos`          | yes       |
 | `opmin`            | `Min` / `Max`          | yes       |
-| `opsignpower` / `oprpower` | `SignPower` (added #72) | yes |
+| `opsignpower` / `oprpower` | `Pow` (NL emits these as standard `OPPOW`; the `SignPower` DAG op added in #72 is available for direct model building / JSONL) | yes |
 | `optanh`           | `Tanh` (added #72)     | yes       |
 | `opcvpower` / `opvcpower` | —               | no (skipped) |
 | `operrorf` (erf)   | —                      | no (skipped) |
@@ -68,6 +68,11 @@ primal/dual bounds for the selected roster.
 Piecewise (`OPPLTERM`), function calls (`OPFUNCALL`), and inverse-trig opcodes
 are parsed structurally but rejected by the adapter with a skip reason; the
 runner records these as `skipped(unsupported)`.
+
+The reader also rejects NL `V` (defined-variable / common-subexpression), `S`
+(suffix), `F` (function), and `d` (dual) segments — instances using them are
+reported as `skipped(unsupported)`. The curated roster avoids these; supporting
+`V` (inlining defined variables) is the natural next step to widen coverage.
 
 ## Yuck / fzn-oscar-cbls coverage
 

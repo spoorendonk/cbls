@@ -33,9 +33,11 @@ CSV_URL = "https://www.minlplib.org/instancedata.csv"
 NL_URL_TEMPLATE = "https://www.minlplib.org/nl/{name}.nl"
 
 # Operator columns CBLS can express today. An instance is selectable only if all
-# of its remaining (nonzero) operator columns fall in this set. opsignpower /
-# oprpower map onto the SignPower DAG op; optanh onto Tanh; the rest onto
-# existing DAG ops (see src/io/nl_to_model.cpp).
+# of its remaining (nonzero) operator columns fall in this set. In the NL text
+# format these are realised by standard opcodes (e.g. signpower/rpower appear as
+# OPPOW); the SignPower DAG op added in #72 is available for direct model
+# building. optanh maps onto Tanh; the rest onto existing DAG ops (see
+# src/io/nl_to_model.cpp).
 SUPPORTED_OP_COLUMNS: frozenset[str] = frozenset(
     {
         "opabs",
