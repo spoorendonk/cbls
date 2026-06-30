@@ -4,6 +4,7 @@
 #include "cbls/expr.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <utility>
 
@@ -13,6 +14,24 @@ namespace cbls {
 namespace detail {
 std::vector<int32_t> compute_topo_order(Model& model);
 }
+
+namespace {
+// Mirror ViolationManager's clamp: a non-convex node value that overflows to
+// +inf or NaN is mapped to a large finite penalty so jump scoring stays ordered
+// and never propagates NaN/inf into the search. Must match violation.cpp.
+constexpr double kInfPenalty = 1.0e30;
+double clamped_node_violation(double node_value) {
+    // NaN before max(): std::max(0.0, NaN) == 0.0 would mask a NaN as satisfied.
+    if (std::isnan(node_value)) {
+        return kInfPenalty;
+    }
+    double v = std::max(0.0, node_value);
+    if (v > kInfPenalty) {  // also catches +inf
+        return kInfPenalty;
+    }
+    return v;
+}
+}  // namespace
 
 int32_t Model::alloc_var(VarType type, double lb, double ub, const std::string& name) {
     Variable v;
@@ -401,7 +420,7 @@ std::vector<std::pair<int32_t, double>> Model::per_constraint_violation_delta(in
     // Snapshot affected constraints' current violations.
     std::vector<double> old_viol(affected.size());
     for (size_t k = 0; k < affected.size(); ++k) {
-        old_viol[k] = std::max(0.0, node(constraint_ids_[affected[k]]).value);
+        old_viol[k] = clamped_node_violation(node(constraint_ids_[affected[k]]).value);
     }
 
     // Probe: set candidate, recompute only the affected dirty cone.
@@ -410,7 +429,7 @@ std::vector<std::pair<int32_t, double>> Model::per_constraint_violation_delta(in
     delta_evaluate(*this, &var_id, 1);
 
     for (size_t k = 0; k < affected.size(); ++k) {
-        double new_viol = std::max(0.0, node(constraint_ids_[affected[k]]).value);
+        double new_viol = clamped_node_violation(node(constraint_ids_[affected[k]]).value);
         double delta = new_viol - old_viol[k];
         if (delta != 0.0) {
             result.emplace_back(affected[k], delta);
@@ -441,7 +460,7 @@ double Model::weighted_violation_delta(int32_t var_id, double j,
     // after the probe; no per-constraint vector is allocated.
     double weighted_old = 0.0;
     for (int32_t c : affected) {
-        weighted_old += weights[c] * std::max(0.0, node(constraint_ids_[c]).value);
+        weighted_old += weights[c] * clamped_node_violation(node(constraint_ids_[c]).value);
     }
 
     const double old_value = v.value;
@@ -450,7 +469,7 @@ double Model::weighted_violation_delta(int32_t var_id, double j,
 
     double weighted_new = 0.0;
     for (int32_t c : affected) {
-        weighted_new += weights[c] * std::max(0.0, node(constraint_ids_[c]).value);
+        weighted_new += weights[c] * clamped_node_violation(node(constraint_ids_[c]).value);
     }
 
     var_mut(var_id).value = old_value;

@@ -206,6 +206,12 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     // tighten the objective bound. Returns true on a new best.
     auto record_best = [&]() -> bool {
         double obj = current_obj();
+        // A non-convex objective can overflow to +inf/NaN at a (real-)feasible
+        // point; never accept such a value as a best — it would poison the bound
+        // and best_state. Wait for a finite-objective feasible point instead.
+        if (!std::isfinite(obj)) {
+            return false;
+        }
         if (have_feasible &&
             obj >= best_feasible_obj - 1e-12 * (std::abs(best_feasible_obj) + 1.0)) {
             return false;

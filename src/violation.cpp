@@ -6,6 +6,31 @@
 
 namespace cbls {
 
+// Non-convex objectives/constraints (exp/pow/div blowups — the MINLPLib target)
+// can drive a node value to +inf or NaN. Such a value would poison the
+// total_violation cache, the structural-pass `after < before` comparison and the
+// best-objective bookkeeping. Map every non-finite (or absurdly large) violation
+// to a large but finite penalty so the search treats the point as very bad but
+// still well-ordered. The clamp is one-sided on the violation (which is already
+// max(0, .)), so a finite-but-huge value and a +inf value both become kInfPenalty.
+namespace {
+constexpr double kInfPenalty = 1.0e30;
+
+double clamped_node_violation(double node_value) {
+    // NaN must be handled before max(): std::max(0.0, NaN) returns 0.0, which
+    // would silently mask a NaN constraint as satisfied. NaN (e.g. inf-inf,
+    // 0*inf) is treated as a maximal violation — we have no evidence it holds.
+    if (std::isnan(node_value)) {
+        return kInfPenalty;
+    }
+    double v = std::max(0.0, node_value);
+    if (v > kInfPenalty) {  // also catches +inf
+        return kInfPenalty;
+    }
+    return v;
+}
+}  // namespace
+
 ViolationManager::ViolationManager(Model& model) : model_(model) {
     weights.resize(model.constraint_ids().size(), 1.0);
     cached_violations_.resize(model.constraint_ids().size(), 0.0);
@@ -16,14 +41,14 @@ double ViolationManager::constraint_violation(int i) const {
         throw std::out_of_range("constraint index out of range");
     }
     int32_t cid = model_.constraint_ids()[i];
-    return std::max(0.0, model_.node(cid).value);
+    return clamped_node_violation(model_.node(cid).value);
 }
 
 void ViolationManager::recompute_cache() const {
     const auto& cids = model_.constraint_ids();
     cached_total_ = 0.0;
     for (size_t i = 0; i < cids.size(); ++i) {
-        cached_violations_[i] = std::max(0.0, model_.node(cids[i]).value);
+        cached_violations_[i] = clamped_node_violation(model_.node(cids[i]).value);
         cached_total_ += cached_violations_[i] * weights[i];
     }
     cache_valid_ = true;
@@ -45,7 +70,7 @@ double ViolationManager::total_violation() const {
     // Incremental update: check which constraints changed
     const auto& cids = model_.constraint_ids();
     for (size_t i = 0; i < cids.size(); ++i) {
-        double new_viol = std::max(0.0, model_.node(cids[i]).value);
+        double new_viol = clamped_node_violation(model_.node(cids[i]).value);
         if (new_viol != cached_violations_[i]) {
             cached_total_ += (new_viol - cached_violations_[i]) * weights[i];
             cached_violations_[i] = new_viol;
@@ -58,13 +83,18 @@ double ViolationManager::augmented_objective() const {
     double obj = 0.0;
     if (model_.objective_id() >= 0) {
         obj = model_.node(model_.objective_id()).value;
+        if (!std::isfinite(obj)) {
+            obj = kInfPenalty;  // non-convex blowup: keep the metric ordered
+        }
     }
     return obj + total_violation();
 }
 
 bool ViolationManager::is_feasible(double tol) const {
     for (int32_t cid : model_.constraint_ids()) {
-        if (model_.node(cid).value > tol) {
+        // A NaN node value is not <= tol; treat it as infeasible (the `!(<=)`
+        // form catches NaN, which a bare `> tol` would silently pass).
+        if (!(model_.node(cid).value <= tol)) {
             return false;
         }
     }
@@ -75,7 +105,7 @@ std::vector<int> ViolationManager::violated_constraints(double tol) const {
     std::vector<int> result;
     const auto& cids = model_.constraint_ids();
     for (size_t i = 0; i < cids.size(); ++i) {
-        if (model_.node(cids[i]).value > tol) {
+        if (!(model_.node(cids[i]).value <= tol)) {
             result.push_back(static_cast<int>(i));
         }
     }
