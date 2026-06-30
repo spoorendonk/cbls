@@ -137,3 +137,99 @@ TEST_CASE("NL reader throws a tagged marker on an unsupported opcode", "[minlpli
     REQUIRE_THROWS_WITH(parse_nl(text, "unsupported"),
                         Catch::Matchers::ContainsSubstring("NL_UNKNOWN_OPCODE"));
 }
+
+// ---- P4: NL -> Model adapter ----
+
+TEST_CASE("nl_to_model builds a closed model", "[minlplib]") {
+    // minimize x0^2 + x1 ; s.t. x0 + x1 >= 3 ; x in [0,10]^2.
+    std::string text = nl_header(2, 1, 1);
+    text += "b\n0 0 10\n0 0 10\n";
+    text += "r\n2 3\n";          // con0: body >= 3
+    text += "J0 2\n0 1\n1 1\n";  // con0 linear: x0 + x1
+    text += "O0 0\n";
+    text += "o5\nv0\nn2\n";  // obj nonlinear: x0^2
+    text += "G0 1\n1 1\n";   // obj linear: x1
+    NlProblem p = parse_nl(text, "build");
+    NlToModelResult r = nl_to_model(p);
+    REQUIRE(r.supported);
+    REQUIRE(r.model.is_closed());
+    REQUIRE(r.var_handles.size() == 2);
+    REQUIRE(r.objective_node_id >= 0);
+    REQUIRE(r.constraint_node_ids[0] >= 0);
+}
+
+TEST_CASE("nl_to_model: feasible point has zero violation and correct objective", "[minlplib]") {
+    std::string text = nl_header(2, 1, 1);
+    text += "b\n0 0 10\n0 0 10\n";
+    text += "r\n2 3\n";  // x0 + x1 >= 3
+    text += "J0 2\n0 1\n1 1\n";
+    text += "O0 0\n";
+    text += "o5\nv0\nn2\n";  // x0^2
+    text += "G0 1\n1 1\n";   // + x1
+    NlProblem p = parse_nl(text, "feas");
+    NlToModelResult r = nl_to_model(p);
+    REQUIRE(r.supported);
+
+    // Set a feasible point: x0=2, x1=2 -> x0+x1=4 >= 3 OK; obj = 4 + 2 = 6.
+    r.model.var_mut(0).value = 2.0;
+    r.model.var_mut(1).value = 2.0;
+    full_evaluate(r.model);
+
+    ViolationManager vm(r.model);
+    vm.invalidate_cache();
+    REQUIRE_THAT(vm.total_violation(), WithinAbs(0.0, 1e-9));
+    REQUIRE_THAT(r.model.node(r.objective_node_id).value, WithinAbs(6.0, 1e-9));
+
+    // Infeasible point: x0=0, x1=0 -> x0+x1=0 < 3, violation = 3.
+    r.model.var_mut(0).value = 0.0;
+    r.model.var_mut(1).value = 0.0;
+    full_evaluate(r.model);
+    vm.invalidate_cache();
+    REQUIRE(vm.total_violation() > 0.0);
+}
+
+TEST_CASE("nl_to_model handles maximize sense", "[minlplib]") {
+    // maximize x0 ; x0 in [0, 5]. CBLS minimizes the negated objective, so the
+    // objective node value at x0=5 should be -5.
+    std::string text = nl_header(1, 0, 1);
+    text += "b\n0 0 5\n";
+    text += "O0 1\n";       // sense 1 = maximize
+    text += "n0\n";         // nonlinear part 0
+    text += "G0 1\n0 1\n";  // linear: x0
+    NlProblem p = parse_nl(text, "max");
+    REQUIRE(p.objectives[0].maximize == true);
+    NlToModelResult r = nl_to_model(p);
+    REQUIRE(r.supported);
+
+    r.model.var_mut(0).value = 5.0;
+    full_evaluate(r.model);
+    REQUIRE_THAT(r.model.node(r.objective_node_id).value, WithinAbs(-5.0, 1e-9));
+}
+
+TEST_CASE("nl_to_model reports unsupported operator without throwing", "[minlplib]") {
+    // OP_atan (49) is parseable (unary) but not in the CBLS supported set, so
+    // the adapter must return supported=false with a reason, not throw.
+    std::string text = nl_header(1, 0, 1);
+    text += "b\n0 0 10\n";
+    text += "O0 0\n";
+    text += "o49\nv0\n";  // atan(x0)
+    NlProblem p = parse_nl(text, "atan");
+    NlToModelResult r = nl_to_model(p);
+    REQUIRE_FALSE(r.supported);
+    REQUIRE_FALSE(r.skipped_reasons.empty());
+    REQUIRE(r.skipped_reasons[0].find("49") != std::string::npos);
+}
+
+TEST_CASE("nl_to_model maps signpower opcode (OP1POW) to pow", "[minlplib]") {
+    // OP1POW (76) is base ^ constant-exponent. With exponent 3 and x=2 -> 8.
+    std::string text = nl_header(1, 0, 1);
+    text += "b\n0 -5 5\n";
+    text += "O0 0\n";
+    text += "o76\nv0\nn3\n";  // x0 ^ 3
+    NlProblem p = parse_nl(text, "p1pow");
+    NlToModelResult r = nl_to_model(p);
+    REQUIRE(r.supported);
+    r.model.var_mut(0).value = 2.0;
+    full_evaluate(r.model);
+    REQUIRE_THAT(r.model.node(r.objective_node_id).value, WithinAbs(8.0, 1e-9));
+}

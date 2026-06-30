@@ -39,6 +39,7 @@ add_library(cbls_lib
     src/io/solu_reader.cpp
     src/io/mps_to_model.cpp
     src/io/nl_reader.cpp
+    src/io/nl_to_model.cpp
     src/formatter.cpp
     src/verify.cpp
 )

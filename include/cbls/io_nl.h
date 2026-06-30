@@ -15,6 +15,8 @@
 // CBLS `Model` from an `NlProblem`, skipping (not throwing on) instances whose
 // operator set is unsupported.
 
+#include "model.h"
+
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -109,5 +111,35 @@ NlProblem read_nl(const std::string& filename);
 /// Parse NL text from an already-loaded buffer (used by tests with inline
 /// fixtures). `name` labels the resulting problem.
 NlProblem parse_nl(const std::string& text, const std::string& name = "");
+
+/// Build a closed CBLS `Model` from an `NlProblem`.
+///
+/// One CBLS variable per NL column (Float for all — MINLPLib discrete vars are
+/// handled by clamping to int domains when integrality is declared, but the NL
+/// reader here does not yet surface integrality, so all are continuous). Each
+/// constraint body (`nonlinear + linear`) is translated to one or two CBLS
+/// comparison constraints from its `r` bound. The first objective is used; its
+/// sense drives minimize/maximize.
+///
+/// Unsupported operators do NOT throw: `supported` is set false and a reason is
+/// appended to `skipped_reasons`. On an unsupported instance the returned model
+/// is left un-closed and should not be solved.
+struct NlToModelOptions {
+    double inf_clamp = 1.0e9;  ///< ±inf variable bounds clamped to this magnitude
+};
+
+struct NlToModelResult {
+    Model model;
+    /// `var_handles[i]` is the CBLS variable handle for NL column `i`.
+    std::vector<int32_t> var_handles;
+    /// `constraint_node_ids[i]` is the *primary* constraint node for NL row `i`
+    /// (the second node of a range row is added to the model but not recorded).
+    std::vector<int32_t> constraint_node_ids;
+    int32_t objective_node_id = -1;  ///< -1 if no objective
+    bool supported = true;           ///< false if any operator was unsupported
+    std::vector<std::string> skipped_reasons;
+};
+
+NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts = {});
 
 }  // namespace cbls
