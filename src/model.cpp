@@ -187,6 +187,14 @@ int32_t Model::sqrt_expr(int32_t x) {
     return alloc_node(NodeOp::Sqrt, {wrap(x)});
 }
 
+int32_t Model::signpower_expr(int32_t base, int32_t exp) {
+    return alloc_node(NodeOp::SignPower, {wrap(base), wrap(exp)});
+}
+
+int32_t Model::tanh_expr(int32_t x) {
+    return alloc_node(NodeOp::Tanh, {wrap(x)});
+}
+
 int32_t Model::if_then_else(int32_t cond, int32_t then_, int32_t else_) {
     return alloc_node(NodeOp::If, {wrap(cond), wrap(then_), wrap(else_)});
 }

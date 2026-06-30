@@ -1,11 +1,11 @@
 #pragma once
 
+#include <cmath>
 #include <cstdint>
+#include <functional>
+#include <limits>
 #include <string>
 #include <vector>
-#include <cmath>
-#include <limits>
-#include <functional>
 
 namespace cbls {
 
@@ -20,16 +20,40 @@ struct Variable {
     std::string name;
     std::vector<int32_t> elements;       // List/Set current elements
     int32_t universe_size = 0;           // Set: universe {0..n-1}
-    int32_t min_size = 0;               // Set: minimum cardinality
-    int32_t max_size = 0;               // Set/List: maximum cardinality
+    int32_t min_size = 0;                // Set: minimum cardinality
+    int32_t max_size = 0;                // Set/List: maximum cardinality
     std::vector<int32_t> dependent_ids;  // ExprNode IDs that depend on this var
 };
 
 enum class NodeOp : uint8_t {
-    Const, Neg, Sum, Prod, Div, Pow, Min, Max, Abs,
-    Sin, Cos, Tan, Exp, Log, Sqrt,
-    If, At, Count, Lambda, PairLambda,
-    Leq, Eq, Geq, Neq, Lt, Gt
+    Const,
+    Neg,
+    Sum,
+    Prod,
+    Div,
+    Pow,
+    Min,
+    Max,
+    Abs,
+    Sin,
+    Cos,
+    Tan,
+    Exp,
+    Log,
+    Sqrt,
+    SignPower,
+    Tanh,
+    If,
+    At,
+    Count,
+    Lambda,
+    PairLambda,
+    Leq,
+    Eq,
+    Geq,
+    Neq,
+    Lt,
+    Gt
 };
 
 struct ChildRef {

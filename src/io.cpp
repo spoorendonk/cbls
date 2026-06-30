@@ -1,8 +1,9 @@
 #include "cbls/io.h"
-#include <nlohmann/json.hpp>
+
 #include <fstream>
-#include <unordered_map>
+#include <nlohmann/json.hpp>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace cbls {
 
@@ -10,51 +11,82 @@ using json = nlohmann::json;
 
 static std::string op_to_string(NodeOp op) {
     switch (op) {
-    case NodeOp::Const:  return "Const";
-    case NodeOp::Neg:    return "Neg";
-    case NodeOp::Sum:    return "Sum";
-    case NodeOp::Prod:   return "Prod";
-    case NodeOp::Div:    return "Div";
-    case NodeOp::Pow:    return "Pow";
-    case NodeOp::Min:    return "Min";
-    case NodeOp::Max:    return "Max";
-    case NodeOp::Abs:    return "Abs";
-    case NodeOp::Sin:    return "Sin";
-    case NodeOp::Cos:    return "Cos";
-    case NodeOp::Tan:    return "Tan";
-    case NodeOp::Exp:    return "Exp";
-    case NodeOp::Log:    return "Log";
-    case NodeOp::Sqrt:   return "Sqrt";
-    case NodeOp::If:     return "If";
-    case NodeOp::At:     return "At";
-    case NodeOp::Count:  return "Count";
-    case NodeOp::Lambda:     return "Lambda";
-    case NodeOp::PairLambda: return "PairLambda";
-    case NodeOp::Leq:    return "Leq";
-    case NodeOp::Eq:     return "Eq";
-    case NodeOp::Geq:    return "Geq";
-    case NodeOp::Neq:    return "Neq";
-    case NodeOp::Lt:     return "Lt";
-    case NodeOp::Gt:     return "Gt";
+        case NodeOp::Const:
+            return "Const";
+        case NodeOp::Neg:
+            return "Neg";
+        case NodeOp::Sum:
+            return "Sum";
+        case NodeOp::Prod:
+            return "Prod";
+        case NodeOp::Div:
+            return "Div";
+        case NodeOp::Pow:
+            return "Pow";
+        case NodeOp::Min:
+            return "Min";
+        case NodeOp::Max:
+            return "Max";
+        case NodeOp::Abs:
+            return "Abs";
+        case NodeOp::Sin:
+            return "Sin";
+        case NodeOp::Cos:
+            return "Cos";
+        case NodeOp::Tan:
+            return "Tan";
+        case NodeOp::Exp:
+            return "Exp";
+        case NodeOp::Log:
+            return "Log";
+        case NodeOp::Sqrt:
+            return "Sqrt";
+        case NodeOp::SignPower:
+            return "SignPower";
+        case NodeOp::Tanh:
+            return "Tanh";
+        case NodeOp::If:
+            return "If";
+        case NodeOp::At:
+            return "At";
+        case NodeOp::Count:
+            return "Count";
+        case NodeOp::Lambda:
+            return "Lambda";
+        case NodeOp::PairLambda:
+            return "PairLambda";
+        case NodeOp::Leq:
+            return "Leq";
+        case NodeOp::Eq:
+            return "Eq";
+        case NodeOp::Geq:
+            return "Geq";
+        case NodeOp::Neq:
+            return "Neq";
+        case NodeOp::Lt:
+            return "Lt";
+        case NodeOp::Gt:
+            return "Gt";
     }
     return "Unknown";
 }
 
 static NodeOp string_to_op(const std::string& s) {
     static const std::unordered_map<std::string, NodeOp> map = {
-        {"Const", NodeOp::Const}, {"Neg", NodeOp::Neg},
-        {"Sum", NodeOp::Sum}, {"Prod", NodeOp::Prod},
-        {"Div", NodeOp::Div}, {"Pow", NodeOp::Pow},
-        {"Min", NodeOp::Min}, {"Max", NodeOp::Max},
-        {"Abs", NodeOp::Abs}, {"Sin", NodeOp::Sin},
-        {"Cos", NodeOp::Cos}, {"Tan", NodeOp::Tan},
-        {"Exp", NodeOp::Exp}, {"Log", NodeOp::Log},
-        {"Sqrt", NodeOp::Sqrt}, {"If", NodeOp::If},
-        {"At", NodeOp::At}, {"Count", NodeOp::Count},
+        {"Const", NodeOp::Const},   {"Neg", NodeOp::Neg},
+        {"Sum", NodeOp::Sum},       {"Prod", NodeOp::Prod},
+        {"Div", NodeOp::Div},       {"Pow", NodeOp::Pow},
+        {"Min", NodeOp::Min},       {"Max", NodeOp::Max},
+        {"Abs", NodeOp::Abs},       {"Sin", NodeOp::Sin},
+        {"Cos", NodeOp::Cos},       {"Tan", NodeOp::Tan},
+        {"Exp", NodeOp::Exp},       {"Log", NodeOp::Log},
+        {"Sqrt", NodeOp::Sqrt},     {"SignPower", NodeOp::SignPower},
+        {"Tanh", NodeOp::Tanh},     {"If", NodeOp::If},
+        {"At", NodeOp::At},         {"Count", NodeOp::Count},
         {"Lambda", NodeOp::Lambda}, {"PairLambda", NodeOp::PairLambda},
-        {"Leq", NodeOp::Leq}, {"Eq", NodeOp::Eq},
-        {"Geq", NodeOp::Geq}, {"Neq", NodeOp::Neq},
-        {"Lt", NodeOp::Lt}, {"Gt", NodeOp::Gt},
+        {"Leq", NodeOp::Leq},       {"Eq", NodeOp::Eq},
+        {"Geq", NodeOp::Geq},       {"Neq", NodeOp::Neq},
+        {"Lt", NodeOp::Lt},         {"Gt", NodeOp::Gt},
     };
     auto it = map.find(s);
     if (it == map.end()) {
@@ -65,21 +97,36 @@ static NodeOp string_to_op(const std::string& s) {
 
 static std::string vartype_to_string(VarType t) {
     switch (t) {
-    case VarType::Bool:  return "Bool";
-    case VarType::Int:   return "Int";
-    case VarType::Float: return "Float";
-    case VarType::List:  return "List";
-    case VarType::Set:   return "Set";
+        case VarType::Bool:
+            return "Bool";
+        case VarType::Int:
+            return "Int";
+        case VarType::Float:
+            return "Float";
+        case VarType::List:
+            return "List";
+        case VarType::Set:
+            return "Set";
     }
     return "Unknown";
 }
 
 static VarType string_to_vartype(const std::string& s) {
-    if (s == "Bool")  return VarType::Bool;
-    if (s == "Int")   return VarType::Int;
-    if (s == "Float") return VarType::Float;
-    if (s == "List")  return VarType::List;
-    if (s == "Set")   return VarType::Set;
+    if (s == "Bool") {
+        return VarType::Bool;
+    }
+    if (s == "Int") {
+        return VarType::Int;
+    }
+    if (s == "Float") {
+        return VarType::Float;
+    }
+    if (s == "List") {
+        return VarType::List;
+    }
+    if (s == "Set") {
+        return VarType::Set;
+    }
     throw std::invalid_argument("unknown variable type: " + s);
 }
 
@@ -89,8 +136,8 @@ static int32_t resolve(const std::string& name,
                        int line_num) {
     auto it = name_to_handle.find(name);
     if (it == name_to_handle.end()) {
-        throw std::invalid_argument("line " + std::to_string(line_num) +
-                                    ": unknown reference '" + name + "'");
+        throw std::invalid_argument("line " + std::to_string(line_num) + ": unknown reference '" +
+                                    name + "'");
     }
     return it->second;
 }
@@ -105,7 +152,9 @@ Model load_model(std::istream& input) {
     while (std::getline(input, line)) {
         line_num++;
         // Skip empty lines and comments
-        if (line.empty() || line[0] == '#') continue;
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
 
         json j;
         try {
@@ -122,25 +171,25 @@ Model load_model(std::istream& input) {
             int32_t handle = 0;
 
             switch (vtype) {
-            case VarType::Bool:
-                handle = m.bool_var(name);
-                break;
-            case VarType::Int:
-                handle = m.int_var(j.value("lb", 0), j.value("ub", 1), name);
-                break;
-            case VarType::Float:
-                handle = m.float_var(j.value("lb", 0.0), j.value("ub", 1.0), name);
-                break;
-            case VarType::List:
-                handle = m.list_var(j.at("n").get<int>(), name);
-                break;
-            case VarType::Set: {
-                int n = j.at("n").get<int>();
-                int min_sz = j.value("min_size", 0);
-                int max_sz = j.value("max_size", -1);
-                handle = m.set_var(n, min_sz, max_sz, name);
-                break;
-            }
+                case VarType::Bool:
+                    handle = m.bool_var(name);
+                    break;
+                case VarType::Int:
+                    handle = m.int_var(j.value("lb", 0), j.value("ub", 1), name);
+                    break;
+                case VarType::Float:
+                    handle = m.float_var(j.value("lb", 0.0), j.value("ub", 1.0), name);
+                    break;
+                case VarType::List:
+                    handle = m.list_var(j.at("n").get<int>(), name);
+                    break;
+                case VarType::Set: {
+                    int n = j.at("n").get<int>();
+                    int min_sz = j.value("min_size", 0);
+                    int max_sz = j.value("max_size", -1);
+                    handle = m.set_var(n, min_sz, max_sz, name);
+                    break;
+                }
             }
             name_to_handle[name] = handle;
 
@@ -151,8 +200,8 @@ Model load_model(std::istream& input) {
             try {
                 op = string_to_op(op_str);
             } catch (const std::invalid_argument&) {
-                throw std::invalid_argument("line " + std::to_string(line_num) +
-                                            ": unknown op '" + op_str + "'");
+                throw std::invalid_argument("line " + std::to_string(line_num) + ": unknown op '" +
+                                            op_str + "'");
             }
 
             int32_t node_id = -1;
@@ -164,103 +213,110 @@ Model load_model(std::istream& input) {
                 std::vector<int32_t> children;
                 if (j.contains("children")) {
                     for (const auto& child_name : j["children"]) {
-                        children.push_back(resolve(child_name.get<std::string>(),
-                                                   name_to_handle, line_num));
+                        children.push_back(
+                            resolve(child_name.get<std::string>(), name_to_handle, line_num));
                     }
                 }
 
                 switch (op) {
-                case NodeOp::Neg:
-                    node_id = m.neg(children.at(0));
-                    break;
-                case NodeOp::Sum:
-                    node_id = m.sum(children);
-                    break;
-                case NodeOp::Prod:
-                    node_id = m.prod(children.at(0), children.at(1));
-                    break;
-                case NodeOp::Div:
-                    node_id = m.div_expr(children.at(0), children.at(1));
-                    break;
-                case NodeOp::Pow:
-                    node_id = m.pow_expr(children.at(0), children.at(1));
-                    break;
-                case NodeOp::Min:
-                    node_id = m.min_expr(children);
-                    break;
-                case NodeOp::Max:
-                    node_id = m.max_expr(children);
-                    break;
-                case NodeOp::Abs:
-                    node_id = m.abs_expr(children.at(0));
-                    break;
-                case NodeOp::Sin:
-                    node_id = m.sin_expr(children.at(0));
-                    break;
-                case NodeOp::Cos:
-                    node_id = m.cos_expr(children.at(0));
-                    break;
-                case NodeOp::Tan:
-                    node_id = m.tan_expr(children.at(0));
-                    break;
-                case NodeOp::Exp:
-                    node_id = m.exp_expr(children.at(0));
-                    break;
-                case NodeOp::Log:
-                    node_id = m.log_expr(children.at(0));
-                    break;
-                case NodeOp::Sqrt:
-                    node_id = m.sqrt_expr(children.at(0));
-                    break;
-                case NodeOp::If:
-                    node_id = m.if_then_else(children.at(0), children.at(1), children.at(2));
-                    break;
-                case NodeOp::At:
-                    node_id = m.at(children.at(0), children.at(1));
-                    break;
-                case NodeOp::Count:
-                    node_id = m.count(children.at(0));
-                    break;
-                case NodeOp::Lambda: {
-                    if (!j.contains("table")) {
-                        throw std::invalid_argument("line " + std::to_string(line_num) +
-                                                    ": Lambda node requires 'table' field");
+                    case NodeOp::Neg:
+                        node_id = m.neg(children.at(0));
+                        break;
+                    case NodeOp::Sum:
+                        node_id = m.sum(children);
+                        break;
+                    case NodeOp::Prod:
+                        node_id = m.prod(children.at(0), children.at(1));
+                        break;
+                    case NodeOp::Div:
+                        node_id = m.div_expr(children.at(0), children.at(1));
+                        break;
+                    case NodeOp::Pow:
+                        node_id = m.pow_expr(children.at(0), children.at(1));
+                        break;
+                    case NodeOp::Min:
+                        node_id = m.min_expr(children);
+                        break;
+                    case NodeOp::Max:
+                        node_id = m.max_expr(children);
+                        break;
+                    case NodeOp::Abs:
+                        node_id = m.abs_expr(children.at(0));
+                        break;
+                    case NodeOp::Sin:
+                        node_id = m.sin_expr(children.at(0));
+                        break;
+                    case NodeOp::Cos:
+                        node_id = m.cos_expr(children.at(0));
+                        break;
+                    case NodeOp::Tan:
+                        node_id = m.tan_expr(children.at(0));
+                        break;
+                    case NodeOp::Exp:
+                        node_id = m.exp_expr(children.at(0));
+                        break;
+                    case NodeOp::Log:
+                        node_id = m.log_expr(children.at(0));
+                        break;
+                    case NodeOp::Sqrt:
+                        node_id = m.sqrt_expr(children.at(0));
+                        break;
+                    case NodeOp::SignPower:
+                        node_id = m.signpower_expr(children.at(0), children.at(1));
+                        break;
+                    case NodeOp::Tanh:
+                        node_id = m.tanh_expr(children.at(0));
+                        break;
+                    case NodeOp::If:
+                        node_id = m.if_then_else(children.at(0), children.at(1), children.at(2));
+                        break;
+                    case NodeOp::At:
+                        node_id = m.at(children.at(0), children.at(1));
+                        break;
+                    case NodeOp::Count:
+                        node_id = m.count(children.at(0));
+                        break;
+                    case NodeOp::Lambda: {
+                        if (!j.contains("table")) {
+                            throw std::invalid_argument("line " + std::to_string(line_num) +
+                                                        ": Lambda node requires 'table' field");
+                        }
+                        auto table = j["table"].get<std::vector<double>>();
+                        node_id = m.lambda_sum(children.at(0),
+                                               [table](int e) -> double { return table.at(e); });
+                        break;
                     }
-                    auto table = j["table"].get<std::vector<double>>();
-                    node_id = m.lambda_sum(children.at(0),
-                        [table](int e) -> double { return table.at(e); });
-                    break;
-                }
-                case NodeOp::PairLambda: {
-                    if (!j.contains("table")) {
-                        throw std::invalid_argument("line " + std::to_string(line_num) +
-                                                    ": PairLambda node requires 'table' field");
+                    case NodeOp::PairLambda: {
+                        if (!j.contains("table")) {
+                            throw std::invalid_argument("line " + std::to_string(line_num) +
+                                                        ": PairLambda node requires 'table' field");
+                        }
+                        auto table = j["table"].get<std::vector<std::vector<double>>>();
+                        node_id = m.pair_lambda_sum(
+                            children.at(0),
+                            [table](int a, int b) -> double { return table.at(a).at(b); });
+                        break;
                     }
-                    auto table = j["table"].get<std::vector<std::vector<double>>>();
-                    node_id = m.pair_lambda_sum(children.at(0),
-                        [table](int a, int b) -> double { return table.at(a).at(b); });
-                    break;
-                }
-                case NodeOp::Leq:
-                    node_id = m.leq(children.at(0), children.at(1));
-                    break;
-                case NodeOp::Eq:
-                    node_id = m.eq_expr(children.at(0), children.at(1));
-                    break;
-                case NodeOp::Geq:
-                    node_id = m.geq(children.at(0), children.at(1));
-                    break;
-                case NodeOp::Neq:
-                    node_id = m.neq(children.at(0), children.at(1));
-                    break;
-                case NodeOp::Lt:
-                    node_id = m.lt(children.at(0), children.at(1));
-                    break;
-                case NodeOp::Gt:
-                    node_id = m.gt(children.at(0), children.at(1));
-                    break;
-                case NodeOp::Const:
-                    break;  // handled above
+                    case NodeOp::Leq:
+                        node_id = m.leq(children.at(0), children.at(1));
+                        break;
+                    case NodeOp::Eq:
+                        node_id = m.eq_expr(children.at(0), children.at(1));
+                        break;
+                    case NodeOp::Geq:
+                        node_id = m.geq(children.at(0), children.at(1));
+                        break;
+                    case NodeOp::Neq:
+                        node_id = m.neq(children.at(0), children.at(1));
+                        break;
+                    case NodeOp::Lt:
+                        node_id = m.lt(children.at(0), children.at(1));
+                        break;
+                    case NodeOp::Gt:
+                        node_id = m.gt(children.at(0), children.at(1));
+                        break;
+                    case NodeOp::Const:
+                        break;  // handled above
                 }
             }
             name_to_handle[name] = node_id;
@@ -324,24 +380,24 @@ void save_model(const Model& model, std::ostream& out) {
         j["var"] = var_names[var.id];
         j["type"] = vartype_to_string(var.type);
         switch (var.type) {
-        case VarType::Bool:
-            break;
-        case VarType::Int:
-            j["lb"] = static_cast<int>(var.lb);
-            j["ub"] = static_cast<int>(var.ub);
-            break;
-        case VarType::Float:
-            j["lb"] = var.lb;
-            j["ub"] = var.ub;
-            break;
-        case VarType::List:
-            j["n"] = var.max_size;
-            break;
-        case VarType::Set:
-            j["n"] = var.universe_size;
-            j["min_size"] = var.min_size;
-            j["max_size"] = var.max_size;
-            break;
+            case VarType::Bool:
+                break;
+            case VarType::Int:
+                j["lb"] = static_cast<int>(var.lb);
+                j["ub"] = static_cast<int>(var.ub);
+                break;
+            case VarType::Float:
+                j["lb"] = var.lb;
+                j["ub"] = var.ub;
+                break;
+            case VarType::List:
+                j["n"] = var.max_size;
+                break;
+            case VarType::Set:
+                j["n"] = var.universe_size;
+                j["min_size"] = var.min_size;
+                j["max_size"] = var.max_size;
+                break;
         }
         out << j.dump() << '\n';
     }
@@ -358,7 +414,9 @@ void save_model(const Model& model, std::ostream& out) {
     // Write nodes in topological order
     for (int32_t nid : model.topo_order()) {
         // Skip the auto-generated Neg wrapper when maximizing
-        if (model.is_maximizing() && nid == model.objective_id()) continue;
+        if (model.is_maximizing() && nid == model.objective_id()) {
+            continue;
+        }
 
         const auto& node = model.node(nid);
         json j;
@@ -376,8 +434,8 @@ void save_model(const Model& model, std::ostream& out) {
             const auto& var = model.var(child_ref.id);
             int n = (var.type == VarType::Set) ? var.universe_size : var.max_size;
             if (n > 10000) {
-                throw std::runtime_error(
-                    "Lambda universe too large to tabulate (" + std::to_string(n) + " > 10000)");
+                throw std::runtime_error("Lambda universe too large to tabulate (" +
+                                         std::to_string(n) + " > 10000)");
             }
             const auto& func = model.lambda_func(node.lambda_func_id);
             j["table"] = json::array();
@@ -395,8 +453,8 @@ void save_model(const Model& model, std::ostream& out) {
             const auto& var = model.var(child_ref.id);
             int n = var.max_size;
             if (n > 1000) {
-                throw std::runtime_error(
-                    "PairLambda universe too large to tabulate (" + std::to_string(n) + " > 1000)");
+                throw std::runtime_error("PairLambda universe too large to tabulate (" +
+                                         std::to_string(n) + " > 1000)");
             }
             const auto& func = model.pair_lambda_func(node.lambda_func_id);
             j["table"] = json::array();

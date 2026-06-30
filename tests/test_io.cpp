@@ -1,18 +1,27 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cbls/cbls.h>
+#include <cmath>
 #include <sstream>
 
 using namespace cbls;
+using Catch::Matchers::WithinAbs;
 
 TEST_CASE("load_model with valid JSONL", "[io]") {
-    std::string input =
-        R"({"var":"x","type":"Float","lb":0,"ub":10})"  "\n"
-        R"({"var":"y","type":"Float","lb":0,"ub":10})"  "\n"
-        R"({"node":"sum_xy","op":"Sum","children":["x","y"]})"  "\n"
-        R"({"node":"c5","op":"Const","value":5.0})"  "\n"
-        R"({"node":"geq1","op":"Geq","children":["sum_xy","c5"]})"  "\n"
-        R"({"constraint":"geq1"})"  "\n"
-        R"({"minimize":"sum_xy"})"  "\n";
+    std::string input = R"({"var":"x","type":"Float","lb":0,"ub":10})"
+                        "\n"
+                        R"({"var":"y","type":"Float","lb":0,"ub":10})"
+                        "\n"
+                        R"({"node":"sum_xy","op":"Sum","children":["x","y"]})"
+                        "\n"
+                        R"({"node":"c5","op":"Const","value":5.0})"
+                        "\n"
+                        R"({"node":"geq1","op":"Geq","children":["sum_xy","c5"]})"
+                        "\n"
+                        R"({"constraint":"geq1"})"
+                        "\n"
+                        R"({"minimize":"sum_xy"})"
+                        "\n";
 
     std::istringstream ss(input);
     Model m = load_model(ss);
@@ -24,11 +33,14 @@ TEST_CASE("load_model with valid JSONL", "[io]") {
 }
 
 TEST_CASE("load_model with Bool and Int vars", "[io]") {
-    std::string input =
-        R"({"var":"b","type":"Bool"})"  "\n"
-        R"({"var":"i","type":"Int","lb":-5,"ub":5})"  "\n"
-        R"({"node":"sum","op":"Sum","children":["b","i"]})"  "\n"
-        R"({"minimize":"sum"})"  "\n";
+    std::string input = R"({"var":"b","type":"Bool"})"
+                        "\n"
+                        R"({"var":"i","type":"Int","lb":-5,"ub":5})"
+                        "\n"
+                        R"({"node":"sum","op":"Sum","children":["b","i"]})"
+                        "\n"
+                        R"({"minimize":"sum"})"
+                        "\n";
 
     std::istringstream ss(input);
     Model m = load_model(ss);
@@ -41,17 +53,18 @@ TEST_CASE("load_model with Bool and Int vars", "[io]") {
 }
 
 TEST_CASE("load_model error: unknown op", "[io]") {
-    std::string input =
-        R"({"var":"x","type":"Float","lb":0,"ub":1})"  "\n"
-        R"({"node":"bad","op":"Foo","children":["x"]})"  "\n";
+    std::string input = R"({"var":"x","type":"Float","lb":0,"ub":1})"
+                        "\n"
+                        R"({"node":"bad","op":"Foo","children":["x"]})"
+                        "\n";
 
     std::istringstream ss(input);
     REQUIRE_THROWS_AS(load_model(ss), std::invalid_argument);
 }
 
 TEST_CASE("load_model error: missing reference", "[io]") {
-    std::string input =
-        R"({"node":"bad","op":"Sum","children":["nonexistent"]})"  "\n";
+    std::string input = R"({"node":"bad","op":"Sum","children":["nonexistent"]})"
+                        "\n";
 
     std::istringstream ss(input);
     REQUIRE_THROWS_AS(load_model(ss), std::invalid_argument);
@@ -87,17 +100,26 @@ TEST_CASE("save_model writes valid JSONL", "[io]") {
 }
 
 TEST_CASE("round-trip save(load(file))", "[io]") {
-    std::string input =
-        R"({"var":"x","type":"Float","lb":0,"ub":10})"  "\n"
-        R"({"var":"y","type":"Float","lb":0,"ub":10})"  "\n"
-        R"({"node":"x_sq","op":"Prod","children":["x","x"]})"  "\n"
-        R"({"node":"y_sq","op":"Prod","children":["y","y"]})"  "\n"
-        R"({"node":"obj","op":"Sum","children":["x_sq","y_sq"]})"  "\n"
-        R"({"node":"xy_sum","op":"Sum","children":["x","y"]})"  "\n"
-        R"({"node":"c5","op":"Const","value":5.0})"  "\n"
-        R"({"node":"geq1","op":"Geq","children":["xy_sum","c5"]})"  "\n"
-        R"({"constraint":"geq1"})"  "\n"
-        R"({"minimize":"obj"})"  "\n";
+    std::string input = R"({"var":"x","type":"Float","lb":0,"ub":10})"
+                        "\n"
+                        R"({"var":"y","type":"Float","lb":0,"ub":10})"
+                        "\n"
+                        R"({"node":"x_sq","op":"Prod","children":["x","x"]})"
+                        "\n"
+                        R"({"node":"y_sq","op":"Prod","children":["y","y"]})"
+                        "\n"
+                        R"({"node":"obj","op":"Sum","children":["x_sq","y_sq"]})"
+                        "\n"
+                        R"({"node":"xy_sum","op":"Sum","children":["x","y"]})"
+                        "\n"
+                        R"({"node":"c5","op":"Const","value":5.0})"
+                        "\n"
+                        R"({"node":"geq1","op":"Geq","children":["xy_sum","c5"]})"
+                        "\n"
+                        R"({"constraint":"geq1"})"
+                        "\n"
+                        R"({"minimize":"obj"})"
+                        "\n";
 
     std::istringstream ss1(input);
     Model m1 = load_model(ss1);
@@ -116,14 +138,20 @@ TEST_CASE("round-trip save(load(file))", "[io]") {
 }
 
 TEST_CASE("idempotent save(load(save(load(file))))", "[io]") {
-    std::string input =
-        R"({"var":"a","type":"Int","lb":1,"ub":100})"  "\n"
-        R"({"var":"b","type":"Float","lb":-5,"ub":5})"  "\n"
-        R"({"node":"s","op":"Sum","children":["a","b"]})"  "\n"
-        R"({"node":"c0","op":"Const","value":0.0})"  "\n"
-        R"({"node":"geq","op":"Geq","children":["s","c0"]})"  "\n"
-        R"({"constraint":"geq"})"  "\n"
-        R"({"minimize":"s"})"  "\n";
+    std::string input = R"({"var":"a","type":"Int","lb":1,"ub":100})"
+                        "\n"
+                        R"({"var":"b","type":"Float","lb":-5,"ub":5})"
+                        "\n"
+                        R"({"node":"s","op":"Sum","children":["a","b"]})"
+                        "\n"
+                        R"({"node":"c0","op":"Const","value":0.0})"
+                        "\n"
+                        R"({"node":"geq","op":"Geq","children":["s","c0"]})"
+                        "\n"
+                        R"({"constraint":"geq"})"
+                        "\n"
+                        R"({"minimize":"s"})"
+                        "\n";
 
     std::istringstream ss1(input);
     Model m1 = load_model(ss1);
@@ -140,6 +168,39 @@ TEST_CASE("idempotent save(load(save(load(file))))", "[io]") {
     REQUIRE(saved1 == saved2);
 }
 
+TEST_CASE("round-trip SignPower and Tanh ops", "[io]") {
+    // Build a model using the new MINLPLib ops, serialise, reload, and confirm
+    // the op names survive and the reloaded model evaluates identically.
+    Model m1;
+    int32_t x = m1.float_var(-5, 5, "x");
+    int32_t p = m1.constant(3.0);
+    int32_t sp = m1.signpower_expr(x, p);  // sign(x)|x|^3
+    int32_t th = m1.tanh_expr(x);
+    int32_t obj = m1.sum({sp, th});
+    m1.minimize(obj);
+    m1.close();
+
+    std::ostringstream out;
+    save_model(m1, out);
+    std::string text = out.str();
+    REQUIRE(text.find("SignPower") != std::string::npos);
+    REQUIRE(text.find("Tanh") != std::string::npos);
+
+    std::istringstream ss(text);
+    Model m2 = load_model(ss);
+    REQUIRE(m2.num_nodes() == m1.num_nodes());
+
+    // Evaluate both at the same point; objective node values must match.
+    m1.var_mut(0).value = 1.5;
+    full_evaluate(m1);
+    m2.var_mut(0).value = 1.5;
+    full_evaluate(m2);
+    REQUIRE_THAT(m2.node(m2.objective_id()).value,
+                 WithinAbs(m1.node(m1.objective_id()).value, 1e-12));
+    double expected = std::copysign(std::pow(1.5, 3.0), 1.5) + std::tanh(1.5);
+    REQUIRE_THAT(m1.node(m1.objective_id()).value, WithinAbs(expected, 1e-12));
+}
+
 TEST_CASE("load_model from file", "[io]") {
     // Test with the example file (tests run from build dir)
     Model m = load_model("examples/simple.cbls");
@@ -151,11 +212,15 @@ TEST_CASE("load_model from file", "[io]") {
 TEST_CASE("load_model skips empty lines", "[io]") {
     std::string input =
         "\n"
-        R"({"var":"x","type":"Float","lb":0,"ub":1})"  "\n"
+        R"({"var":"x","type":"Float","lb":0,"ub":1})"
         "\n"
-        R"({"node":"c0","op":"Const","value":0.0})"  "\n"
-        R"({"node":"geq","op":"Geq","children":["x","c0"]})"  "\n"
-        R"({"constraint":"geq"})"  "\n";
+        "\n"
+        R"({"node":"c0","op":"Const","value":0.0})"
+        "\n"
+        R"({"node":"geq","op":"Geq","children":["x","c0"]})"
+        "\n"
+        R"({"constraint":"geq"})"
+        "\n";
 
     std::istringstream ss(input);
     Model m = load_model(ss);
@@ -238,16 +303,24 @@ TEST_CASE("round-trip maximize model", "[io]") {
 }
 
 TEST_CASE("load_model all comparison ops", "[io]") {
-    std::string input =
-        R"({"var":"a","type":"Float","lb":0,"ub":10})"  "\n"
-        R"({"var":"b","type":"Float","lb":0,"ub":10})"  "\n"
-        R"({"node":"leq","op":"Leq","children":["a","b"]})"  "\n"
-        R"({"node":"eq","op":"Eq","children":["a","b"]})"  "\n"
-        R"({"node":"geq","op":"Geq","children":["a","b"]})"  "\n"
-        R"({"node":"neq","op":"Neq","children":["a","b"]})"  "\n"
-        R"({"node":"lt","op":"Lt","children":["a","b"]})"  "\n"
-        R"({"node":"gt","op":"Gt","children":["a","b"]})"  "\n"
-        R"({"constraint":"leq"})"  "\n";
+    std::string input = R"({"var":"a","type":"Float","lb":0,"ub":10})"
+                        "\n"
+                        R"({"var":"b","type":"Float","lb":0,"ub":10})"
+                        "\n"
+                        R"({"node":"leq","op":"Leq","children":["a","b"]})"
+                        "\n"
+                        R"({"node":"eq","op":"Eq","children":["a","b"]})"
+                        "\n"
+                        R"({"node":"geq","op":"Geq","children":["a","b"]})"
+                        "\n"
+                        R"({"node":"neq","op":"Neq","children":["a","b"]})"
+                        "\n"
+                        R"({"node":"lt","op":"Lt","children":["a","b"]})"
+                        "\n"
+                        R"({"node":"gt","op":"Gt","children":["a","b"]})"
+                        "\n"
+                        R"({"constraint":"leq"})"
+                        "\n";
 
     std::istringstream ss(input);
     Model m = load_model(ss);

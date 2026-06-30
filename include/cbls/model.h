@@ -51,6 +51,10 @@ public:
     int32_t exp_expr(int32_t x);
     int32_t log_expr(int32_t x);
     int32_t sqrt_expr(int32_t x);
+    // sign(base) * |base|^exp (AMPL/MINLPLib signpower). exp is typically a
+    // constant node giving the power.
+    int32_t signpower_expr(int32_t base, int32_t exp);
+    int32_t tanh_expr(int32_t x);
     int32_t if_then_else(int32_t cond, int32_t then_, int32_t else_);
     int32_t at(int32_t list_var_id, int32_t index_expr);
     int32_t count(int32_t var_id);

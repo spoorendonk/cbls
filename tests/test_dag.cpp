@@ -1,7 +1,8 @@
+#include "test_helpers.h"
+
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cbls/cbls.h>
-#include "test_helpers.h"
 #include <cmath>
 
 using namespace cbls;
@@ -405,4 +406,91 @@ TEST_CASE("Batch AD matches per-variable AD", "[dag]") {
     REQUIRE_THAT(all[vid(x)], WithinAbs(compute_partial(m, f, vid(x)), 1e-10));
     REQUIRE_THAT(all[vid(y)], WithinAbs(compute_partial(m, f, vid(y)), 1e-10));
     REQUIRE_THAT(all[vid(z)], WithinAbs(compute_partial(m, f, vid(z)), 1e-10));
+}
+
+// ---- SignPower / Tanh (issue #72: MINLPLib opsignpower / optanh) ----
+
+// Central finite-difference of a single-output expr w.r.t. one variable.
+static double fd_partial(Model& m, int32_t expr_id, int32_t var_id, double h) {
+    double x0 = m.var(var_id).value;
+    m.var_mut(var_id).value = x0 + h;
+    full_evaluate(m);
+    double fp = m.node(expr_id).value;
+    m.var_mut(var_id).value = x0 - h;
+    full_evaluate(m);
+    double fm = m.node(expr_id).value;
+    m.var_mut(var_id).value = x0;
+    full_evaluate(m);
+    return (fp - fm) / (2.0 * h);
+}
+
+TEST_CASE("SignPower evaluation", "[dag]") {
+    Model m;
+    auto x = m.float_var(-10, 10);
+    auto p = m.constant(3.0);
+    auto sp = m.signpower_expr(x, p);
+    m.minimize(m.sum({sp}));
+    m.close();
+
+    m.var_mut(vid(x)).value = 2.0;
+    full_evaluate(m);
+    REQUIRE_THAT(m.node(sp).value, WithinAbs(8.0, 1e-10));  // sign(2)*|2|^3 = 8
+
+    m.var_mut(vid(x)).value = -2.0;
+    full_evaluate(m);
+    REQUIRE_THAT(m.node(sp).value, WithinAbs(-8.0, 1e-10));  // sign(-2)*|2|^3 = -8
+
+    m.var_mut(vid(x)).value = 0.0;
+    full_evaluate(m);
+    REQUIRE_THAT(m.node(sp).value, WithinAbs(0.0, 1e-10));
+}
+
+TEST_CASE("SignPower AD matches finite difference", "[dag]") {
+    Model m;
+    auto x = m.float_var(-10, 10);
+    auto p = m.constant(3.0);
+    auto sp = m.signpower_expr(x, p);
+    m.minimize(m.sum({sp}));
+    m.close();
+
+    for (double xv : {2.5, -2.5, 1.0, -1.0, 0.7}) {
+        m.var_mut(vid(x)).value = xv;
+        full_evaluate(m);
+        // d/dx sign(x)|x|^3 = 3|x|^2
+        REQUIRE_THAT(compute_partial(m, sp, vid(x)), WithinAbs(3.0 * xv * xv, 1e-8));
+        REQUIRE_THAT(compute_partial(m, sp, vid(x)),
+                     WithinAbs(fd_partial(m, sp, vid(x), 1e-5), 1e-4));
+    }
+}
+
+TEST_CASE("Tanh evaluation", "[dag]") {
+    Model m;
+    auto x = m.float_var(-10, 10);
+    auto t = m.tanh_expr(x);
+    m.minimize(m.sum({t}));
+    m.close();
+
+    for (double xv : {0.0, 1.0, -1.5, 3.0}) {
+        m.var_mut(vid(x)).value = xv;
+        full_evaluate(m);
+        REQUIRE_THAT(m.node(t).value, WithinAbs(std::tanh(xv), 1e-10));
+    }
+}
+
+TEST_CASE("Tanh AD matches finite difference", "[dag]") {
+    Model m;
+    auto x = m.float_var(-10, 10);
+    auto t = m.tanh_expr(x);
+    m.minimize(m.sum({t}));
+    m.close();
+
+    for (double xv : {0.0, 1.0, -1.5, 2.0}) {
+        m.var_mut(vid(x)).value = xv;
+        full_evaluate(m);
+        double th = std::tanh(xv);
+        // d/dx tanh(x) = 1 - tanh^2(x)
+        REQUIRE_THAT(compute_partial(m, t, vid(x)), WithinAbs(1.0 - th * th, 1e-10));
+        REQUIRE_THAT(compute_partial(m, t, vid(x)),
+                     WithinAbs(fd_partial(m, t, vid(x), 1e-5), 1e-5));
+    }
 }
