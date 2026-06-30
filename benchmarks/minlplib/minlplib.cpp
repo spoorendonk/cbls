@@ -251,7 +251,13 @@ int main(int argc, char** argv) {
         auto t1 = std::chrono::steady_clock::now();
         double wall = std::chrono::duration<double>(t1 - t0).count();
 
+        // solve() reports the *minimised* objective. For a maximize instance the
+        // model objective was negated, so un-negate to recover the true value and
+        // make gap-to-BKS comparable to the published (max-sense) bound.
         double obj = result.feasible ? result.objective : std::numeric_limits<double>::quiet_NaN();
+        if (result.feasible && built.model.is_maximizing()) {
+            obj = -obj;
+        }
 
         // A feasible-but-non-finite objective means the guard fired: count it as
         // failed(non-finite), not feasible.
@@ -272,8 +278,12 @@ int main(int argc, char** argv) {
         if (result.feasible) {
             ++t.feasible;
             if (!std::isnan(gap_bks)) {
-                // gap_bks > 0 means worse than BKS (for a min sense); < 0 better.
-                if (gap_bks < -1e-6) {
+                // "Better than BKS" is sense-aware: a smaller objective beats a
+                // min-sense BKS, a larger one beats a max-sense BKS. gap_bks is
+                // signed obj-vs-BKS, so the beat condition flips with the sense.
+                const bool beats_bks =
+                    built.model.is_maximizing() ? (gap_bks > 1e-6) : (gap_bks < -1e-6);
+                if (beats_bks) {
                     ++t.better;
                     note = "better-than-bks";
                 } else {
