@@ -160,6 +160,7 @@ struct Tally {
     int closed = 0;
     int feasible = 0;
     int better = 0;
+    int matches = 0;  // equal to BKS within the tie band
     int worse = 0;
     int mixed_integer = 0;  // instances with >=1 integer column (integrality enforced)
     int failed_nonfinite = 0;
@@ -451,12 +452,24 @@ int main(int argc, char** argv) {
         if (verified) {
             ++t.feasible;
             if (!std::isnan(gap_bks)) {
-                // "Better than BKS" is sense-aware: a smaller objective beats a
-                // min-sense BKS, a larger one beats a max-sense BKS. gap_bks is
-                // signed obj-vs-BKS, so the beat condition flips with the sense.
+                // Claiming to beat a published MINLPLib bound needs a margin
+                // that is actually meaningful. Two things set the floor:
+                //   * relative floating-point noise on the objective value, and
+                //   * the feasibility tolerance itself — we accept solutions
+                //     violating a constraint by up to feas_tol, and that slack
+                //     buys a small objective gain. A "win" at that scale is a
+                //     tolerance artifact, not a better solution.
+                // Anything inside the band is reported as a tie, so the
+                // better-than-bks count means something and warrants scrutiny.
+                const double tie_band =
+                    std::max(1e-6 * (std::abs(b.primal) + 1.0), 10.0 * args.feas_tol);
+                const double diff = obj - b.primal;  // signed, in objective units
                 const bool beats_bks =
-                    built.model.is_maximizing() ? (gap_bks > 1e-6) : (gap_bks < -1e-6);
-                if (beats_bks) {
+                    built.model.is_maximizing() ? (diff > tie_band) : (diff < -tie_band);
+                if (std::abs(diff) <= tie_band) {
+                    ++t.matches;
+                    note = "matches-bks";
+                } else if (beats_bks) {
                     ++t.better;
                     note = "better-than-bks";
                 } else {
@@ -547,6 +560,7 @@ int main(int argc, char** argv) {
     std::printf("  mixed-integer:      %d  (integrality enforced)\n", t.mixed_integer);
     std::printf("feasible:             %d\n", t.feasible);
     std::printf("  better-than-BKS:    %d\n", t.better);
+    std::printf("  matches BKS:        %d\n", t.matches);
     std::printf("  worse/equal:        %d\n", t.worse);
     std::printf("infeasible:           %d\n", t.closed - t.feasible - t.failed_nonfinite);
     std::printf("  near-miss (<=%.0e): %d\n", kNearMiss, t.near_miss);
