@@ -164,7 +164,8 @@ std::vector<std::string> split_csv_line(const std::string& line) {
 }
 
 // Curated root-cause annotations: instance -> "classification: note". Optional;
-// an absent file just means no annotations.
+// an absent file just means no annotations. Records are one per physical line:
+// a quoted field may contain commas but not a newline.
 std::unordered_map<std::string, std::string> load_analysis_notes(const std::string& path) {
     std::unordered_map<std::string, std::string> out;
     std::ifstream f(path);
@@ -246,8 +247,11 @@ struct Residual {
     int n_violated = 0;
 };
 
-Residual worst_residual(const cbls::Model& model, const cbls::NlProblem& prob,
-                        const cbls::NlToModelResult& built, double tol) {
+Residual worst_residual(const cbls::NlProblem& prob, const cbls::NlToModelResult& built,
+                        double tol) {
+    // Always the model `built` owns; taking it separately invited passing a
+    // different one.
+    const cbls::Model& model = built.model;
     // Map constraint node id -> NL row so the worst offender can be named. Range
     // rows record only their upper node, so the lower half maps to -1.
     std::unordered_map<int32_t, int> node_to_row;
@@ -398,10 +402,6 @@ int main(int argc, char** argv) {
         // with MINLPLib's own nbinvars+nintvars, the model we just built is not
         // the instance the published bound refers to — say so rather than
         // reporting a gap against a bound for a different problem.
-        const bool mixed_integer = prob.n_discrete_vars > 0;
-        if (mixed_integer) {
-            ++t.mixed_integer;
-        }
         std::string integrality_note;
         if (b.n_disc >= 0 && b.n_disc != prob.n_discrete_vars) {
             ++t.integrality_mismatch;
@@ -422,6 +422,11 @@ int main(int argc, char** argv) {
             continue;
         }
         ++t.closed;
+        // Counted here, not earlier, so the tally's mixed-integer count is a
+        // subset of the instances actually built (as the printout implies).
+        if (prob.n_discrete_vars > 0) {
+            ++t.mixed_integer;
+        }
 
         std::printf("%-22s ", name.c_str());
         std::fflush(stdout);
@@ -477,7 +482,7 @@ int main(int argc, char** argv) {
         // and must not be published as a solved instance.
         bool verified = result.feasible;
         if (result.feasible) {
-            Residual r = worst_residual(built.model, prob, built, args.feas_tol);
+            Residual r = worst_residual(prob, built, args.feas_tol);
             max_violation = r.worst;
             int frac = 0;
             for (const auto& v : built.model.variables()) {
@@ -546,7 +551,7 @@ int main(int argc, char** argv) {
             // and by how much, so the row distinguishes a numerical near-miss
             // from a search that never reached the feasible region. solve()
             // leaves the model at that closest-approach assignment.
-            Residual r = worst_residual(built.model, prob, built, args.feas_tol);
+            Residual r = worst_residual(prob, built, args.feas_tol);
             char buf[192];
             std::string row_label =
                 r.nl_row >= 0 ? "row" + std::to_string(r.nl_row) + " " + bound_type_name(r.row_type)
@@ -614,8 +619,14 @@ int main(int argc, char** argv) {
             os << v;
             return os.str();
         };
-        csv << name << "," << cell(obj) << "," << cell(b.primal) << "," << cell(b.dual) << ","
-            << cell(gap_bks) << "," << cell(gap_dual) << "," << wall << ","
+        // A row that failed verification must not publish the objective or gaps
+        // it was rejected for: those columns describe a solution we do not stand
+        // behind. The note and max_violation still record what happened.
+        const double pub_obj = verified ? obj : std::numeric_limits<double>::quiet_NaN();
+        const double pub_gap_bks = verified ? gap_bks : std::numeric_limits<double>::quiet_NaN();
+        const double pub_gap_dual = verified ? gap_dual : std::numeric_limits<double>::quiet_NaN();
+        csv << name << "," << cell(pub_obj) << "," << cell(b.primal) << "," << cell(b.dual) << ","
+            << cell(pub_gap_bks) << "," << cell(pub_gap_dual) << "," << wall << ","
             << (verified ? "true" : "false") << "," << note << "," << args.commit_sha << ","
             << cell(max_violation) << "," << prob.n_discrete_vars << "\n";
         csv.flush();
