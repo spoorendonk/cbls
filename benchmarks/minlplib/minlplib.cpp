@@ -131,6 +131,65 @@ std::unordered_map<std::string, Bounds> load_bounds(const std::string& path) {
     return out;
 }
 
+// Split one CSV line, honouring "quoted" fields (which may contain commas and
+// doubled "" escapes). Needed for analysis_notes.csv, whose note column is prose.
+std::vector<std::string> split_csv_line(const std::string& line) {
+    std::vector<std::string> out;
+    std::string cur;
+    bool in_quotes = false;
+    for (size_t i = 0; i < line.size(); ++i) {
+        char c = line[i];
+        if (in_quotes) {
+            if (c == '"') {
+                if (i + 1 < line.size() && line[i + 1] == '"') {
+                    cur += '"';
+                    ++i;
+                } else {
+                    in_quotes = false;
+                }
+            } else {
+                cur += c;
+            }
+        } else if (c == '"') {
+            in_quotes = true;
+        } else if (c == ',') {
+            out.push_back(cur);
+            cur.clear();
+        } else {
+            cur += c;
+        }
+    }
+    out.push_back(cur);
+    return out;
+}
+
+// Curated root-cause annotations: instance -> "classification: note". Optional;
+// an absent file just means no annotations.
+std::unordered_map<std::string, std::string> load_analysis_notes(const std::string& path) {
+    std::unordered_map<std::string, std::string> out;
+    std::ifstream f(path);
+    if (!f.is_open()) {
+        return out;
+    }
+    std::string line;
+    bool header_seen = false;
+    while (std::getline(f, line)) {
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+        if (!header_seen) {
+            header_seen = true;  // "instance,classification,note"
+            continue;
+        }
+        auto cells = split_csv_line(line);
+        if (cells.size() < 3) {
+            continue;
+        }
+        out[cells[0]] = cells[1] + ": " + cells[2];
+    }
+    return out;
+}
+
 // Roster order: instances listed in bounds.csv, in file order. If bounds.csv is
 // missing, the caller falls back to scanning for *.nl (handled in main).
 std::vector<std::string> roster_from_bounds(const std::string& path) {
@@ -258,6 +317,7 @@ int main(int argc, char** argv) {
 
     std::string bounds_path = args.inst_dir + "/bounds.csv";
     auto bounds = load_bounds(bounds_path);
+    auto analysis_notes = load_analysis_notes(args.inst_dir + "/analysis_notes.csv");
 
     std::vector<std::string> insts = args.instances;
     if (insts.empty()) {
@@ -515,6 +575,15 @@ int main(int argc, char** argv) {
         }
         if (!integrality_note.empty()) {
             note += "; " + integrality_note;
+        }
+        // Curated root-cause annotation, if this instance has one. Records
+        // whether an unsolved instance is a solver defect or genuine
+        // hardness, so the CSV carries the verdict and not just a residual.
+        {
+            auto an = analysis_notes.find(name);
+            if (an != analysis_notes.end()) {
+                note += " | " + an->second;
+            }
         }
         std::replace(note.begin(), note.end(), ',', ';');
 
