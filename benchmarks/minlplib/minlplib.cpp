@@ -167,6 +167,7 @@ struct Tally {
     int not_found = 0;
     int errored = 0;         // read/build/solve exceptions
     int integrality_mismatch = 0;
+    int verify_failed = 0;  // reported feasible but failed the independent re-check
     int near_miss = 0;       // infeasible, but residual within kNearMiss of feasible
 };
 
@@ -407,7 +408,46 @@ int main(int argc, char** argv) {
         double gap_bks = safe_gap(obj, b.primal);
         double gap_dual = safe_gap(obj, b.dual);
 
+        // Independent re-check of the returned assignment. solve() restores
+        // best_state and full-evaluates, so this re-derives feasibility and
+        // integrality from the model rather than trusting the search's own
+        // bookkeeping. A reported-feasible row that fails here is a solver bug,
+        // and must not be published as a solved instance.
+        bool verified = result.feasible;
         if (result.feasible) {
+            Residual r = worst_residual(built.model, prob, built, args.feas_tol);
+            max_violation = r.worst;
+            int frac = 0;
+            for (const auto& v : built.model.variables()) {
+                if (v.type == cbls::VarType::Int &&
+                    std::abs(v.value - std::round(v.value)) > 1e-9) {
+                    ++frac;
+                }
+            }
+            // The published objective must also be the one the model reports at
+            // the returned assignment, not just the search's running best.
+            double model_obj = built.objective_node_id >= 0
+                                   ? built.model.node(built.objective_node_id).value
+                                   : obj;
+            if (built.model.is_maximizing()) {
+                model_obj = -model_obj;  // same un-negation applied to `obj` above
+            }
+            const double obj_drift = std::abs(model_obj - obj);
+            const bool obj_mismatch = obj_drift > 1e-6 * (std::abs(obj) + 1.0);
+
+            if (r.worst > args.feas_tol || frac > 0 || obj_mismatch) {
+                verified = false;
+                ++t.verify_failed;
+                char buf[192];
+                std::snprintf(buf, sizeof(buf),
+                              "VERIFY-FAILED(residual=%.2g; %d fractional int; obj drift %.2g)",
+                              r.worst, frac, obj_drift);
+                std::printf("%-22s  WARNING: %s\n", name.c_str(), buf);
+                note = buf;
+            }
+        }
+
+        if (verified) {
             ++t.feasible;
             if (!std::isnan(gap_bks)) {
                 // "Better than BKS" is sense-aware: a smaller objective beats a
@@ -425,6 +465,8 @@ int main(int argc, char** argv) {
             } else {
                 note = "feasible";
             }
+        } else if (result.feasible) {
+            // Verify failed; `note` is already the VERIFY-FAILED string.
         } else {
             // Infeasible: report *where* the closest approach is still violated
             // and by how much, so the row distinguishes a numerical near-miss
@@ -453,7 +495,7 @@ int main(int argc, char** argv) {
         std::replace(note.begin(), note.end(), ',', ';');
 
         // Console.
-        if (result.feasible) {
+        if (verified) {
             std::printf("%12.4g ", obj);
         } else {
             std::printf("%12s ", "INFEAS");
@@ -481,7 +523,7 @@ int main(int argc, char** argv) {
         };
         csv << name << "," << cell(obj) << "," << cell(b.primal) << "," << cell(b.dual) << ","
             << cell(gap_bks) << "," << cell(gap_dual) << "," << wall << ","
-            << (result.feasible ? "true" : "false") << "," << note << "," << args.commit_sha << ","
+            << (verified ? "true" : "false") << "," << note << "," << args.commit_sha << ","
             << cell(max_violation) << "," << prob.n_discrete_vars << "\n";
         csv.flush();
     }
@@ -503,6 +545,8 @@ int main(int argc, char** argv) {
     std::printf("not found:            %d\n", t.not_found);
     std::printf("integrality mismatch: %d  (NL header vs MINLPLib catalogue)\n",
                 t.integrality_mismatch);
+    std::printf("verify failed:        %d  (reported feasible; re-check disagreed)\n",
+                t.verify_failed);
     // Closed-model rate over everything we attempted to read (present .nl files):
     // parsed + skipped-unsupported + errors. not_found excluded (no file).
     int attempted = t.parsed + t.skipped_unsupported + t.errored;

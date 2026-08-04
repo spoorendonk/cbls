@@ -33,16 +33,27 @@ selection — then stratifies:
 6. A finite `primalbound` (so gap-to-BKS is defined).
 7. Stratify the survivors round-robin across structure classes
    (bilinear / polynomial / transcendental / mixed-integer / other), smallest
-   first, to a roster of ~30–40.
+   first.
+
+The downloader then walks that stratified order fetching `.nl` files until
+`--limit` instances are **successfully fetched**, so an instance the catalogue
+advertises as `nl` but serves as binary NL (the `kriging_peaks-*` family) is
+replaced from the candidate pool rather than shrinking the roster.
+`bounds.csv` is written from the fetched set only, so the roster the runner
+reads is exactly the set of `.nl` files on disk.
 
 Reproduce with the project venv:
 
     .venv/bin/python3 benchmarks/instances/minlplib/download.py --select-only
-    .venv/bin/python3 benchmarks/instances/minlplib/download.py --limit 40
+    .venv/bin/python3 benchmarks/instances/minlplib/download.py --limit 50
 
 The downloader validates every fetched body (rejects HTML/404 and binary-NL
-headers) and prints a sha256 for provenance. `bounds.csv` records the published
-primal/dual bounds for the selected roster.
+headers) and prints a sha256 for provenance.
+
+`bounds.csv` columns: `instance,structure,nvars,ncons,objsense,primal_bks,
+dual_bound,n_disc_vars_bks`. The trailing `n_disc_vars_bks` is the catalogue's
+`nbinvars + nintvars`; the runner cross-checks it against the integrality the
+NL reader recovers and reports any mismatch (see below).
 
 ## Operator support (CBLS DAG ↔ MINLPLib op columns)
 
@@ -97,17 +108,67 @@ column where relevant. No published Yuck numbers exist for these instances.
 ## Files
 
 - `download.py` — CSV-driven selection + per-instance `.nl` fetch + validation.
-- `bounds.csv` — selected roster with published primal/dual bounds.
+- `bounds.csv` — fetched roster with published primal/dual bounds and the
+  catalogue integer-variable count.
 - `comparison.csv` — written by the `cbls_minlplib` runner: CBLS objective,
-  gap-to-BKS, gap-to-dual, feasibility, and notes per instance.
+  gap-to-BKS, gap-to-dual, feasibility, notes, commit SHA, closest-approach
+  residual (`max_violation`) and integer-variable count (`n_int_vars`).
 - `*.nl` — fetched text NL instance files.
+
+Regenerate `comparison.csv` with:
+
+    cmake --build build -j$(nproc)
+    ./build/cbls_minlplib --time-limit 60 --seed 1 --commit "$(git rev-parse --short HEAD)"
+
+## Integrality
+
+NL columns flagged integer/binary are built as CBLS `Int` variables, so the
+mixed-integer instances are solved as genuine MINLPs rather than continuous
+relaxations.
+
+The NL header gives integer *counts* per category, not positions; the positions
+follow Gay's variable ordering ("Hooking Your Solver to AMPL"), where columns
+are laid out as
+
+| Order | Category                                | Count         | Integers            |
+|-------|-----------------------------------------|---------------|---------------------|
+| 1     | nonlinear in both constraints and objs  | `nlvb`        | last `nlvbi`        |
+| 2     | nonlinear in constraints only           | `nlvc - nlvb` | last `nlvci`        |
+| 3     | nonlinear in objectives only            | `nlvo - nlvb` | last `nlvoi`        |
+| 4     | linear arc variables                    | `nwv`         | —                   |
+| 5     | other linear                            | remainder     | —                   |
+| 6     | binary                                  | `nbv`         | all                 |
+| 7     | other integer                           | `niv`         | all                 |
+
+Two independent checks guard this mapping:
+
+- the reader itself fails loudly if the positions it derives don't account for
+  exactly the count the header declares;
+- the runner compares the recovered count against MINLPLib's own
+  `nbinvars + nintvars` (the `n_disc_vars_bks` column) per instance and reports
+  `integrality mismatch` in the tally. The published run has **zero mismatches
+  across the roster**.
+
+## Feasibility tolerance
+
+A constraint counts as satisfied when its violation is `<= 1e-6`, matching
+SCIP's default `numerics/feastol` — the right reference point for a
+continuous/nonlinear roster, and the same tolerance the SCIP baseline (#89)
+will use.
+
+The engine default is `1e-9`, which is not a reasonable requirement here: the
+violation is measured as an *absolute* residual (for an equality row, the raw
+`|lhs - rhs|`), so on a row whose body is of magnitude 1e4 it demands ~13
+significant digits. The runner overrides it via `--feas-tol`.
+
+Infeasible rows report the closest approach the search made, so a numerical
+near-miss is distinguishable from a search that never reached the feasible
+region: `max_violation` holds the residual, and the `note` column names the
+worst-violated NL row and its sense.
 
 ## Caveats
 
 - CBLS is a primal heuristic; large gap-to-BKS on hard multimodal instances is
   expected and acceptable (per issue #72).
-- All NL variables are loaded as continuous (the reader does not yet surface NL
-  integrality); mixed-integer instances are solved as their continuous
-  relaxations, so their objectives may beat the integer BKS.
 - The roster is reproducible from the CSV but will drift as MINLPLib updates its
   catalogue; re-run `download.py` to refresh.

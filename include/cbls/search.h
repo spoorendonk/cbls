@@ -53,10 +53,12 @@ struct SearchResult {
     Model::State best_state;
     int64_t iterations = 0;
     double time_seconds = 0.0;
-    /// Smallest max-over-real-constraints violation seen during the search
-    /// (0.0 when `feasible`). Lets a caller distinguish a near-miss from a run
-    /// that never approached the feasible region. `best_state` is the assignment
-    /// attaining it, so the caller can inspect *which* constraints remain violated.
+    /// Largest violation over the real constraints at `best_state` — i.e. the
+    /// residual of the assignment actually returned (<= the feasibility
+    /// tolerance when `feasible`). On an infeasible run `best_state` is the
+    /// search's closest approach to the feasible region, so this distinguishes
+    /// a numerical near-miss from a run that never got near it, and the caller
+    /// can inspect the model to see *which* constraints remain violated.
     double best_violation = std::numeric_limits<double>::infinity();
 };
 

@@ -361,7 +361,9 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     result.objective = have_feasible ? best_feasible_obj : std::numeric_limits<double>::infinity();
     result.feasible = have_feasible;
     result.best_state = have_feasible ? best_state : closest_state;
-    result.best_violation = have_feasible ? 0.0 : best_violation;
+    // Residual of the assignment actually being returned, from the fresh
+    // full_evaluate above rather than the incrementally-maintained node values.
+    result.best_violation = max_real_violation();
     result.iterations = fj.iterations();  // total GLS iterations (not batch count)
     result.time_seconds = elapsed;
     return result;
