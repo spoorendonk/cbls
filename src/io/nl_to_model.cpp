@@ -242,11 +242,18 @@ NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts)
         const bool discrete = j < static_cast<int32_t>(prob.var_is_discrete.size()) &&
                               prob.var_is_discrete[static_cast<size_t>(j)] != 0;
         if (discrete) {
-            // Tighten to the integers inside [lb, ub]. An unbounded integer
-            // column would otherwise get the ±inf_clamp box, which is a useless
-            // search domain; clamp it to `int_inf_clamp` instead.
-            double ilb = std::ceil(std::max(lb, -opts.int_inf_clamp) - 1e-9);
-            double iub = std::floor(std::min(ub, opts.int_inf_clamp) + 1e-9);
+            // Tighten to the integers inside [lb, ub]. A *declared* bound is
+            // always honoured; only a genuinely infinite one falls back to
+            // int_inf_clamp, since a ±1e9 integer box is not a searchable
+            // domain. (Narrowing a finite bound would change the instance.)
+            double raw_lb = -kNlInf;
+            double raw_ub = kNlInf;
+            if (j < static_cast<int32_t>(prob.var_bounds.size())) {
+                raw_lb = prob.var_bounds[j].lower;
+                raw_ub = prob.var_bounds[j].upper;
+            }
+            double ilb = std::isfinite(raw_lb) ? std::ceil(lb - 1e-9) : -opts.int_inf_clamp;
+            double iub = std::isfinite(raw_ub) ? std::floor(ub + 1e-9) : opts.int_inf_clamp;
             if (ilb > iub) {
                 // Bounds admit no integer (degenerate). Keep a single point so
                 // the model still closes; the row's constraints will register
@@ -264,6 +271,9 @@ NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts)
     for (int32_t j = 0; j < prob.n_vars && j < static_cast<int32_t>(prob.initial_x.size()); ++j) {
         double x0 = prob.initial_x[j];
         if (std::isfinite(x0)) {
+            if (m.var(j).type == VarType::Int) {
+                x0 = std::round(x0);  // an Int column must not start fractional
+            }
             double lb = m.var(j).lb;
             double ub = m.var(j).ub;
             m.var_mut(j).value = std::min(std::max(x0, lb), ub);

@@ -236,6 +236,19 @@ TEST_CASE("nl_to_model narrows fractional bounds inward for Int columns", "[minl
     REQUIRE_THAT(r.model.var(0).ub, WithinAbs(3.0, 1e-12));
 }
 
+TEST_CASE("nl_to_model honours a large but finite Int bound", "[minlplib]") {
+    // int_inf_clamp is a fallback for *infinite* bounds only. A declared finite
+    // bound must survive verbatim — narrowing it would change the instance.
+    std::string text = nl_header_disc(1, 0, 1, 1, 0, 1, 0, 0, /*nlvbi=*/1, 0, 0);
+    text += "b\n0 0 50000000\n";  // [0, 5e7], well above int_inf_clamp (1e6)
+    text += "O0 0\nn0\n";
+    NlProblem p = parse_nl(text, "int-big");
+    NlToModelResult r = nl_to_model(p);
+    REQUIRE(r.supported);
+    REQUIRE(r.model.var(0).type == VarType::Int);
+    REQUIRE_THAT(r.model.var(0).ub, WithinAbs(5.0e7, 1e-6));
+}
+
 TEST_CASE("nl_to_model clamps an unbounded Int column to a searchable box", "[minlplib]") {
     // A free integer column must not inherit the ±1e9 float clamp.
     std::string text = nl_header_disc(1, 0, 1, 1, 0, 1, 0, 0, /*nlvbi=*/1, 0, 0);

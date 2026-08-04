@@ -169,6 +169,7 @@ struct Tally {
     int integrality_mismatch = 0;
     int verify_failed = 0;  // reported feasible but failed the independent re-check
     int near_miss = 0;       // infeasible, but residual within kNearMiss of feasible
+    int nonfinite_obj = 0;   // infeasible with a non-finite objective at the closest approach
 };
 
 // An infeasible run whose closest approach is this small is a numerical
@@ -477,6 +478,16 @@ int main(int argc, char** argv) {
             std::string row_label =
                 r.nl_row >= 0 ? "row" + std::to_string(r.nl_row) + " " + bound_type_name(r.row_type)
                               : "range-lower-half";
+            // A non-finite objective at the closest approach is its own failure
+            // mode, not generic hardness: the objective is folded in as an
+            // `obj <= bound` soft constraint, so an infinite objective makes
+            // that constraint's violation swamp the real ones and the search
+            // loses the feasibility signal entirely. Call it out by name.
+            if (built.objective_node_id >= 0 &&
+                !std::isfinite(built.model.node(built.objective_node_id).value)) {
+                ++t.nonfinite_obj;
+                row_label += "; obj non-finite here";
+            }
             if (r.worst <= kNearMiss) {
                 ++t.near_miss;
                 std::snprintf(buf, sizeof(buf),
@@ -539,6 +550,8 @@ int main(int argc, char** argv) {
     std::printf("  worse/equal:        %d\n", t.worse);
     std::printf("infeasible:           %d\n", t.closed - t.feasible - t.failed_nonfinite);
     std::printf("  near-miss (<=%.0e): %d\n", kNearMiss, t.near_miss);
+    std::printf("  non-finite obj:     %d  (objective +inf/NaN at closest approach)\n",
+                t.nonfinite_obj);
     std::printf("failed(non-finite):   %d\n", t.failed_nonfinite);
     std::printf("skipped(unsupported): %d\n", t.skipped_unsupported);
     std::printf("read/build errors:    %d\n", t.errored);
