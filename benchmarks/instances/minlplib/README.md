@@ -113,12 +113,54 @@ column where relevant. No published Yuck numbers exist for these instances.
 - `comparison.csv` — written by the `cbls_minlplib` runner: CBLS objective,
   gap-to-BKS, gap-to-dual, feasibility, notes, commit SHA, closest-approach
   residual (`max_violation`) and integer-variable count (`n_int_vars`).
+- `analysis_notes.csv` — curated per-instance root-cause verdicts
+  (`bug` vs `hard`) for instances the runner cannot solve. Merged into
+  `comparison.csv`'s note column, so the data carries its own explanation.
 - `*.nl` — fetched text NL instance files.
 
 Regenerate `comparison.csv` with:
 
     cmake --build build -j$(nproc)
     ./build/cbls_minlplib --time-limit 60 --seed 1 --commit "$(git rev-parse --short HEAD)"
+
+## Results
+
+Latest run: **60s per instance, seed 1, feasibility tolerance 1e-6**, commit
+recorded per row in `comparison.csv`. The previously published numbers used a
+5s budget and solved the mixed-integer instances as continuous relaxations;
+both are fixed here, so the two runs are not comparable row-by-row.
+
+| | count |
+|---|---|
+| roster | 50 |
+| parsed and built (closed-model rate) | 50 (100%) |
+| of which mixed-integer (integrality enforced) | 15 |
+| **feasible** | **46** |
+| — matching BKS (within the tie band) | 19 |
+| — worse than BKS | 27 |
+| — better than BKS | 0 |
+| infeasible | 4 |
+| unsupported / read errors / non-finite | 0 |
+| integrality mismatches vs catalogue | 0 |
+| verification failures | 0 |
+
+Gap distribution over the 46 feasible instances: 20 within 0.01% of BKS, 23
+within 1%, 27 within 10%.
+
+Nothing in this roster beats a published bound. Three instances previously
+appeared to, on margins of ~1e-5 percent; those are ties, not improvements, and
+are now classified as `matches-bks` (see the tie band in the runner).
+
+### The four unsolved instances
+
+Every one is root-caused, and the verdict is recorded per row in
+`comparison.csv` (merged from `analysis_notes.csv`):
+
+| Instance | Verdict | Cause |
+|----------|---------|-------|
+| `elec25`, `elec50` | **bug** (#100) | Thomson problem. The feasible region contains coincident-point configurations where the Coulomb objective is `+inf`. Since the objective is folded in as an `obj <= bound` soft constraint, that violation clamps to ~1e30 and absorbs the real constraints' O(1) contributions in floating point, so the search loses its feasibility signal. Verified by construction: dropping the objective makes `elec25` feasible in 20s at violation 0; keeping it pins the search at the origin at violation exactly 1. |
+| `nvs01` | hard | `420.169·√(x0²+900) == x2·x0·x1` needs `x0` and the product `x1·x2` changed together. While `x0 = 0` the product term vanishes, so `x1` and `x2` receive no gradient signal and no single-variable jump improves — escaping requires a compound move. |
+| `st_e40` | hard | Rows C1–C3 are degree-7 polynomials `(x-1)(x-2)(x-3)(x-5)(x-8)(x-10)(x-12) == 0` restricting each integer to `{1,2,3,5,8,10,12}`. Moving between allowed values crosses forbidden integers where the violation spikes into the thousands. |
 
 ## Integrality
 
