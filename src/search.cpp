@@ -153,23 +153,41 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     const int32_t obj_ci = model.objective_constraint_idx();
     const auto& cids = model.constraint_ids();
 
-    // Real feasibility = every constraint except the artificial objective one.
-    auto real_feasible = [&]() {
+    // Largest violation over the *real* constraints (the artificial objective
+    // constraint excluded); 0.0 when every real constraint holds. Unweighted, so
+    // it is comparable across the run regardless of the GLS weight dynamics.
+    //
+    // NaN maps to +inf, not 0: a non-convex body can evaluate to NaN (inf-inf,
+    // 0*inf, log of a negative), and a bare `value > tol` test would read that
+    // as satisfied and hand back a "feasible" solution we have no evidence for.
+    // This mirrors the guard in ViolationManager's clamped_node_violation.
+    auto max_real_violation = [&]() {
+        double worst = 0.0;
         for (size_t i = 0; i < cids.size(); ++i) {
             if (static_cast<int32_t>(i) == obj_ci) {
                 continue;
             }
-            if (model.node(cids[i]).value > 1e-9) {
-                return false;
+            double v = model.node(cids[i]).value;
+            if (std::isnan(v)) {
+                return std::numeric_limits<double>::infinity();
+            }
+            if (v > worst) {
+                worst = v;
             }
         }
-        return true;
+        return worst;
     };
+    auto real_feasible = [&]() { return max_real_violation() <= config.feasibility_tolerance; };
     auto current_obj = [&]() { return has_obj ? model.node(model.objective_id()).value : 0.0; };
 
     double best_feasible_obj = std::numeric_limits<double>::infinity();
     Model::State best_state = model.copy_state();
     bool have_feasible = false;
+    // Closest approach to the feasible region, tracked so an infeasible run
+    // returns something diagnosable (which constraint is left violated, and by
+    // how much) instead of the untouched initial assignment.
+    double best_violation = std::numeric_limits<double>::infinity();
+    Model::State closest_state = best_state;
     int perturbations = 0;
     int stagnation = 0;
     int64_t batches = 0;
@@ -276,14 +294,26 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         }
         ++batches;
 
+        double batch_violation = max_real_violation();
+        if (batch_violation < best_violation) {
+            best_violation = batch_violation;
+            closest_state = model.copy_state();
+        }
+
         bool improved = false;
-        if (real_feasible()) {
+        if (batch_violation <= config.feasibility_tolerance) {
+            // Record the feasible point we already have *before* polishing. The
+            // hook descends the penalty-method objective and can land outside
+            // the feasible region; recording only afterwards silently threw away
+            // genuinely feasible solutions (an instance would be reported
+            // infeasible despite the search having visited a feasible point).
+            improved = record_best();
             if (hook) {
                 hook->solve(model, vm, {});  // continuous-objective polish (mutates floats)
                 resync = true;
-            }
-            if (!hook || real_feasible()) {  // hook may have moved off the feasible region
-                improved = record_best();
+                if (real_feasible()) {  // keep the polish only if it stayed feasible
+                    improved = record_best() || improved;
+                }
             }
         }
 
@@ -313,7 +343,10 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         }
     }
 
-    model.restore_state(best_state);
+    // On a feasible run the best-objective assignment is the answer; on an
+    // infeasible one, hand back the closest approach rather than the initial
+    // assignment (which carries no information about where the search got to).
+    model.restore_state(have_feasible ? best_state : closest_state);
     // Release the artificial objective bound so post-solve feasibility checks
     // (verifiers iterating model constraints) don't see it violated by ~eps.
     if (has_obj) {
@@ -327,7 +360,8 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     SearchResult result;
     result.objective = have_feasible ? best_feasible_obj : std::numeric_limits<double>::infinity();
     result.feasible = have_feasible;
-    result.best_state = best_state;
+    result.best_state = have_feasible ? best_state : closest_state;
+    result.best_violation = have_feasible ? 0.0 : best_violation;
     result.iterations = fj.iterations();  // total GLS iterations (not batch count)
     result.time_seconds = elapsed;
     return result;

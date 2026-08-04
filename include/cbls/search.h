@@ -35,6 +35,16 @@ struct SearchConfig {
     // 0.5 with deterministic-time-bounded batches.
     bool use_compound_moves = false;        // run Novelty Jump batches (else FJ only)
     double novelty_jump_probability = 0.5;  // P(a batch is Novelty Jump)
+
+    // A constraint counts as satisfied when its violation is <= this. Absolute,
+    // applied to the constraint node's violation value (for an equality row that
+    // is |lhs - rhs|), so on models whose constraint bodies are large in
+    // magnitude the effective requirement is far tighter than it looks.
+    //
+    // The default is the historical value. Continuous/nonlinear models generally
+    // want something like an NLP solver's feasibility tolerance (SCIP's
+    // numerics/feastol default is 1e-6) — see the MINLPLib benchmark runner.
+    double feasibility_tolerance = 1e-9;
 };
 
 struct SearchResult {
@@ -43,6 +53,11 @@ struct SearchResult {
     Model::State best_state;
     int64_t iterations = 0;
     double time_seconds = 0.0;
+    /// Smallest max-over-real-constraints violation seen during the search
+    /// (0.0 when `feasible`). Lets a caller distinguish a near-miss from a run
+    /// that never approached the feasible region. `best_state` is the assignment
+    /// attaining it, so the caller can inspect *which* constraints remain violated.
+    double best_violation = std::numeric_limits<double>::infinity();
 };
 
 struct SolveProgress {

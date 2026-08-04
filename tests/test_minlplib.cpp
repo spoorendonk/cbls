@@ -126,28 +126,127 @@ TEST_CASE("NL reader parses linear J/G segments", "[minlplib]") {
     REQUIRE(p.objectives[0].linear.size() == 2);
 }
 
-TEST_CASE("NL reader sums the discrete-variable header line", "[minlplib]") {
-    // The 7th header line is "nbv niv nlvbi nlvci nlvoi"; n_discrete_vars is the
-    // sum. nl_header() writes "0 0 0 0 0" on that line, so a default fixture has
-    // zero discrete vars. Build a custom header with a nonzero discrete line.
-    std::string text = "g3 0 1 0\t# header\n";
-    text += " 3 0 1 0 0\t# vars, cons, objs, ranges, eqns\n";
-    text += " 0 0\n";
-    text += " 0 0\n";
-    text += " 0 0 0\n";
-    text += " 0 0 0 1\n";
-    text += " 0 0 2 1 0\t# discrete: nbv niv nlvbi nlvci nlvoi -> 3 total\n";
-    text += " 0 0\n";
-    text += " 0 0\n";
-    text += " 0 0 0 0 0\n";
-    text += "b\n0 0 10\n0 0 10\n0 0 10\n";
-    text += "O0 0\nn0\n";
-    NlProblem p = parse_nl(text, "discrete");
-    REQUIRE(p.n_discrete_vars == 3);
+// Header with explicit nonlinear-variable counts ("nlvc nlvo nlvb") and discrete
+// counts ("nbv niv nlvbi nlvci nlvoi") so integrality *placement* can be tested.
+static std::string nl_header_disc(int nv, int nc, int no, int nlvc, int nlvo, int nlvb, int nbv,
+                                  int niv, int nlvbi, int nlvci, int nlvoi) {
+    std::string h = "g3 0 1 0\t# header\n";
+    h += " " + std::to_string(nv) + " " + std::to_string(nc) + " " + std::to_string(no) +
+         " 0 0\t# vars, cons, objs, ranges, eqns\n";
+    h += " 0 0\t# nonlinear cons, objs\n";
+    h += " 0 0\t# network\n";
+    h += " " + std::to_string(nlvc) + " " + std::to_string(nlvo) + " " + std::to_string(nlvb) +
+         "\t# nonlinear vars in cons, objs, both\n";
+    h += " 0 0 0 1\t# linear net, funcs, arith, flags\n";
+    h += " " + std::to_string(nbv) + " " + std::to_string(niv) + " " + std::to_string(nlvbi) + " " +
+         std::to_string(nlvci) + " " + std::to_string(nlvoi) + "\t# discrete\n";
+    h += " 0 0\t# jacobian/gradient nonzeros\n";
+    h += " 0 0\t# max name lengths\n";
+    h += " 0 0 0 0 0\t# common exprs\n";
+    return h;
+}
 
-    // The default fixture (all-zero discrete line) reports zero.
-    NlProblem q = parse_nl(nl_header(1, 0, 1) + "b\n0 0 1\nO0 0\nn0\n", "cont");
-    REQUIRE(q.n_discrete_vars == 0);
+static std::string bounds_segment(int nv) {
+    std::string s = "b\n";
+    for (int i = 0; i < nv; ++i) {
+        s += "0 0 10\n";
+    }
+    return s;
+}
+
+TEST_CASE("NL reader recovers discrete-variable count and positions", "[minlplib]") {
+    SECTION("integers are the trailing columns of each nonlinear block") {
+        // 4 vars. nlvb=2 (cols 0,1) with the last nlvbi=1 integer -> col 1.
+        // nlvc-nlvb=1 (col 2) with the last nlvci=1 integer -> col 2.
+        // col 3 is purely linear and continuous.
+        std::string text = nl_header_disc(4, 0, 1, /*nlvc=*/3, /*nlvo=*/0, /*nlvb=*/2, /*nbv=*/0,
+                                          /*niv=*/0, /*nlvbi=*/1, /*nlvci=*/1, /*nlvoi=*/0);
+        text += bounds_segment(4) + "O0 0\nn0\n";
+        NlProblem p = parse_nl(text, "disc-nonlinear");
+        REQUIRE(p.n_discrete_vars == 2);
+        REQUIRE(p.var_is_discrete == std::vector<uint8_t>{0, 1, 1, 0});
+    }
+
+    SECTION("purely-linear binary/integer columns are the last of the file") {
+        // No nonlinear vars; nbv=1 and niv=1 -> the final two columns.
+        std::string text = nl_header_disc(4, 0, 1, 0, 0, 0, /*nbv=*/1, /*niv=*/1, 0, 0, 0);
+        text += bounds_segment(4) + "O0 0\nn0\n";
+        NlProblem p = parse_nl(text, "disc-linear");
+        REQUIRE(p.n_discrete_vars == 2);
+        REQUIRE(p.var_is_discrete == std::vector<uint8_t>{0, 0, 1, 1});
+    }
+
+    SECTION("objective-only nonlinear block follows the constraint-only block") {
+        // nlvb=1 (col 0, continuous), nlvc-nlvb=1 (col 1, continuous),
+        // nlvo-nlvb=2 (cols 2,3) with the last nlvoi=1 integer -> col 3.
+        std::string text = nl_header_disc(4, 0, 1, /*nlvc=*/2, /*nlvo=*/3, /*nlvb=*/1, 0, 0,
+                                          /*nlvbi=*/0, /*nlvci=*/0, /*nlvoi=*/1);
+        text += bounds_segment(4) + "O0 0\nn0\n";
+        NlProblem p = parse_nl(text, "disc-obj");
+        REQUIRE(p.n_discrete_vars == 1);
+        REQUIRE(p.var_is_discrete == std::vector<uint8_t>{0, 0, 0, 1});
+    }
+
+    SECTION("a fully continuous instance flags nothing") {
+        NlProblem q = parse_nl(nl_header(1, 0, 1) + "b\n0 0 1\nO0 0\nn0\n", "cont");
+        REQUIRE(q.n_discrete_vars == 0);
+        REQUIRE(q.var_is_discrete == std::vector<uint8_t>{0});
+    }
+}
+
+TEST_CASE("NL reader rejects a header whose discrete counts don't fit the layout", "[minlplib]") {
+    // nlvbi=2 integer "nonlinear in both" variables, but nlvb=0 declares no such
+    // block. Placement can't account for the declared count, so the reader must
+    // fail loudly rather than build a model with silently wrong integrality.
+    std::string text = nl_header_disc(3, 0, 1, /*nlvc=*/0, /*nlvo=*/0, /*nlvb=*/0, 0, 0,
+                                      /*nlvbi=*/2, /*nlvci=*/1, /*nlvoi=*/0);
+    text += bounds_segment(3) + "O0 0\nn0\n";
+    REQUIRE_THROWS_WITH(parse_nl(text, "bad-layout"),
+                        Catch::Matchers::ContainsSubstring("variable ordering"));
+}
+
+TEST_CASE("nl_to_model builds Int variables for discrete columns", "[minlplib]") {
+    // cols 0,1 nonlinear-in-both with col 1 integer; col 2 nonlinear-in-cons and
+    // integer; col 3 linear continuous.
+    std::string text = nl_header_disc(4, 0, 1, 3, 0, 2, 0, 0, 1, 1, 0);
+    text += bounds_segment(4) + "O0 0\nn0\n";
+    NlProblem p = parse_nl(text, "int-model");
+    NlToModelResult r = nl_to_model(p);
+    REQUIRE(r.supported);
+    REQUIRE(r.model.var(0).type == VarType::Float);
+    REQUIRE(r.model.var(1).type == VarType::Int);
+    REQUIRE(r.model.var(2).type == VarType::Int);
+    REQUIRE(r.model.var(3).type == VarType::Float);
+    // Bounds [0,10] survive the float->int narrowing exactly.
+    REQUIRE_THAT(r.model.var(1).lb, WithinAbs(0.0, 1e-12));
+    REQUIRE_THAT(r.model.var(1).ub, WithinAbs(10.0, 1e-12));
+}
+
+TEST_CASE("nl_to_model narrows fractional bounds inward for Int columns", "[minlplib]") {
+    // A single integer column with bounds [-2.5, 3.5] admits integers [-2, 3]:
+    // ceil the lower bound, floor the upper.
+    std::string text = nl_header_disc(1, 0, 1, 1, 0, 1, 0, 0, /*nlvbi=*/1, 0, 0);
+    text += "b\n0 -2.5 3.5\n";
+    text += "O0 0\nn0\n";
+    NlProblem p = parse_nl(text, "int-bounds");
+    NlToModelResult r = nl_to_model(p);
+    REQUIRE(r.supported);
+    REQUIRE(r.model.var(0).type == VarType::Int);
+    REQUIRE_THAT(r.model.var(0).lb, WithinAbs(-2.0, 1e-12));
+    REQUIRE_THAT(r.model.var(0).ub, WithinAbs(3.0, 1e-12));
+}
+
+TEST_CASE("nl_to_model clamps an unbounded Int column to a searchable box", "[minlplib]") {
+    // A free integer column must not inherit the ±1e9 float clamp.
+    std::string text = nl_header_disc(1, 0, 1, 1, 0, 1, 0, 0, /*nlvbi=*/1, 0, 0);
+    text += "b\n3\n";  // type 3 = free
+    text += "O0 0\nn0\n";
+    NlProblem p = parse_nl(text, "int-free");
+    NlToModelResult r = nl_to_model(p);
+    REQUIRE(r.supported);
+    REQUIRE(r.model.var(0).type == VarType::Int);
+    REQUIRE_THAT(r.model.var(0).lb, WithinAbs(-1.0e6, 1e-6));
+    REQUIRE_THAT(r.model.var(0).ub, WithinAbs(1.0e6, 1e-6));
 }
 
 TEST_CASE("NL reader throws a tagged marker on an unsupported opcode", "[minlplib]") {

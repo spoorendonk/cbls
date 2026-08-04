@@ -11,6 +11,7 @@
 #include "cbls/io_nl.h"
 #include "cbls/model.h"
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <string>
@@ -223,7 +224,10 @@ NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts)
     NlToModelResult result;
     Model& m = result.model;
 
-    // ---------- Variables (all continuous) ----------
+    // ---------- Variables ----------
+    // Integer/binary NL columns become Int variables so the search respects
+    // integrality; everything else is a Float. `var_is_discrete` comes from the
+    // NL header counts plus Gay's variable ordering (see nl_reader.cpp).
     result.var_handles.reserve(prob.n_vars);
     for (int32_t j = 0; j < prob.n_vars; ++j) {
         double lb = -opts.inf_clamp;
@@ -235,7 +239,25 @@ NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts)
         if (lb > ub) {
             std::swap(lb, ub);  // defensive: degenerate bound ordering
         }
-        result.var_handles.push_back(m.float_var(lb, ub, "x" + std::to_string(j)));
+        const bool discrete = j < static_cast<int32_t>(prob.var_is_discrete.size()) &&
+                              prob.var_is_discrete[static_cast<size_t>(j)] != 0;
+        if (discrete) {
+            // Tighten to the integers inside [lb, ub]. An unbounded integer
+            // column would otherwise get the ±inf_clamp box, which is a useless
+            // search domain; clamp it to `int_inf_clamp` instead.
+            double ilb = std::ceil(std::max(lb, -opts.int_inf_clamp) - 1e-9);
+            double iub = std::floor(std::min(ub, opts.int_inf_clamp) + 1e-9);
+            if (ilb > iub) {
+                // Bounds admit no integer (degenerate). Keep a single point so
+                // the model still closes; the row's constraints will register
+                // the violation rather than the reader silently dropping it.
+                iub = ilb;
+            }
+            result.var_handles.push_back(m.int_var(static_cast<int>(ilb), static_cast<int>(iub),
+                                                   "x" + std::to_string(j)));
+        } else {
+            result.var_handles.push_back(m.float_var(lb, ub, "x" + std::to_string(j)));
+        }
     }
 
     // Seed initial values from the NL `x` segment where present.

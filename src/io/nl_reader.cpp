@@ -13,6 +13,7 @@
 
 #include "cbls/io_nl.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <fstream>
@@ -333,11 +334,21 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
     };
     // Peek ahead: the remaining header lines all start with a digit, '-', or
     // space. Consume them until a segment marker letter appears. While doing so,
-    // capture the discrete-variable line. In the `g` format the header layout is
-    // fixed; counting line 1 (`g...`) and line 2 (counts) already consumed, the
-    // discrete-variable line is the 5th of the lines we skip here (overall header
-    // line 7): "nbv niv nlvbi nlvci nlvoi". We sum its five integers to get the
-    // total integer/binary variable count.
+    // capture the three lines needed to place the discrete variables. In the `g`
+    // format the header layout is fixed; lines 1 (`g...`) and 2 (counts) are
+    // already consumed, so of the lines skipped here:
+    //   #3 -> header line 5: "nlvc nlvo nlvb"          (nonlinear var counts)
+    //   #4 -> header line 6: "nwv nfunc arith flags"   (linear network vars)
+    //   #5 -> header line 7: "nbv niv nlvbi nlvci nlvoi"  (discrete counts)
+    auto read_ints = [](const std::string& line, int count) {
+        std::vector<int64_t> out(static_cast<size_t>(count), 0);
+        std::istringstream ss(line);
+        for (int k = 0; k < count && (ss >> out[static_cast<size_t>(k)]); ++k) {
+        }
+        return out;
+    };
+    int64_t nlvc = 0, nlvo = 0, nlvb = 0, nwv = 0;
+    int64_t nbv = 0, niv = 0, nlvbi = 0, nlvci = 0, nlvoi = 0;
     int header_line_after_counts = 0;
     while (true) {
         char c = 0;
@@ -349,14 +360,71 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
         }
         std::string hline = tok.read_line();  // another header line
         ++header_line_after_counts;
-        if (header_line_after_counts == 5) {  // discrete-variable line (line 7)
-            std::istringstream ss(hline);
-            int64_t v = 0;
-            int32_t total = 0;
-            for (int k = 0; k < 5 && (ss >> v); ++k) {
-                total += static_cast<int32_t>(v);
+        if (header_line_after_counts == 3) {
+            auto v = read_ints(hline, 3);
+            nlvc = v[0];
+            nlvo = v[1];
+            nlvb = v[2];
+        } else if (header_line_after_counts == 4) {
+            nwv = read_ints(hline, 1)[0];
+        } else if (header_line_after_counts == 5) {
+            auto v = read_ints(hline, 5);
+            nbv = v[0];
+            niv = v[1];
+            nlvbi = v[2];
+            nlvci = v[3];
+            nlvoi = v[4];
+            prob.n_discrete_vars = static_cast<int32_t>(nbv + niv + nlvbi + nlvci + nlvoi);
+        }
+    }
+
+    // Integer variable *positions* follow Gay's variable ordering ("Hooking Your
+    // Solver to AMPL", the variable-order table). Columns are laid out as:
+    //
+    //   1. nonlinear in both constraints and objectives   nlvb        (last nlvbi integer)
+    //   2. nonlinear in constraints only                  nlvc - nlvb (last nlvci integer)
+    //   3. nonlinear in objectives only                   nlvo - nlvb (last nlvoi integer)
+    //   4. linear arc variables                           nwv         (continuous)
+    //   5. other linear                                   remainder   (continuous)
+    //   6. binary                                         nbv
+    //   7. other integer                                  niv
+    //
+    // i.e. within each nonlinear block the integer columns are the trailing ones,
+    // and the purely-linear discrete columns are the last nbv+niv of the file.
+    prob.var_is_discrete.assign(static_cast<size_t>(prob.n_vars), 0);
+    auto mark_tail = [&prob](int64_t block_start, int64_t block_len, int64_t n_int) {
+        // The last `n_int` columns of [block_start, block_start+block_len) are integer.
+        int64_t first = block_start + block_len - n_int;
+        for (int64_t j = std::max<int64_t>(first, block_start); j < block_start + block_len; ++j) {
+            if (j >= 0 && j < prob.n_vars) {
+                prob.var_is_discrete[static_cast<size_t>(j)] = 1;
             }
-            prob.n_discrete_vars = total;
+        }
+    };
+    const int64_t cat1 = nlvb;                          // nonlinear in both
+    const int64_t cat2 = std::max<int64_t>(nlvc - nlvb, 0);  // nonlinear in constraints only
+    const int64_t cat3 = std::max<int64_t>(nlvo - nlvb, 0);  // nonlinear in objectives only
+    mark_tail(0, cat1, nlvbi);
+    mark_tail(cat1, cat2, nlvci);
+    mark_tail(cat1 + cat2, cat3, nlvoi);
+    // Trailing linear discrete block: the final nbv + niv columns.
+    mark_tail(0, prob.n_vars, nbv + niv);
+
+    // Self-check: the positions we just derived must account for exactly the
+    // count the header declares. A mismatch means the layout assumption above
+    // does not hold for this file (overlapping blocks, or a variable-order
+    // variant we don't model) — fail loudly rather than build a model whose
+    // integrality is quietly wrong.
+    {
+        int32_t marked = 0;
+        for (uint8_t f : prob.var_is_discrete) {
+            marked += f;
+        }
+        if (marked != prob.n_discrete_vars) {
+            throw std::runtime_error(
+                "NL: discrete-variable placement disagrees with the header count (placed " +
+                std::to_string(marked) + ", header declares " +
+                std::to_string(prob.n_discrete_vars) + ") — unexpected variable ordering");
         }
     }
 

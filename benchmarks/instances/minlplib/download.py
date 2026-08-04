@@ -128,6 +128,7 @@ class Instance:
         dualbound: float | None,
         objsense: str,
         structure: str,
+        ndiscvars: int,
     ) -> None:
         self.name = name
         self.nvars = nvars
@@ -136,6 +137,11 @@ class Instance:
         self.dualbound = dualbound
         self.objsense = objsense
         self.structure = structure
+        # Catalogue ground truth (nbinvars + nintvars). The runner cross-checks
+        # the NL reader's recovered integrality against this: the NL header gives
+        # integer *counts* per category and Gay's variable ordering gives their
+        # positions, so an off-by-one in that mapping shows up as a mismatch here.
+        self.ndiscvars = ndiscvars
 
 
 def classify_structure(row: dict[str, str]) -> str:
@@ -194,11 +200,20 @@ def row_to_instance(row: dict[str, str]) -> Instance | None:
         dualbound=_to_float(row.get("dualbound", "")),
         objsense=row.get("objsense", "").strip(),
         structure=classify_structure(row),
+        ndiscvars=(_to_int(row.get("nbinvars", "0")) or 0)
+        + (_to_int(row.get("nintvars", "0")) or 0),
     )
 
 
-def select(rows: list[dict[str, str]], roster: int) -> list[Instance]:
-    """Apply the CSV filter and return a stratified roster."""
+def select(rows: list[dict[str, str]], roster: int | None = None) -> list[Instance]:
+    """Apply the CSV filter and return the stratified candidate order.
+
+    ``roster`` truncates the result; ``None`` returns every survivor in
+    stratified order. The caller walks this order and stops once enough
+    instances have been *fetched successfully*, so that instances the catalogue
+    advertises as ``nl`` but serves as binary NL (the ``kriging_peaks-*``
+    family) are replaced rather than silently shrinking the roster.
+    """
     survivors: list[Instance] = []
     for row in rows:
         inst = row_to_instance(row)
@@ -215,16 +230,48 @@ def select(rows: list[dict[str, str]], roster: int) -> list[Instance]:
     roster_list: list[Instance] = []
     order = sorted(by_structure.keys())
     idx = 0
-    while len(roster_list) < roster and any(by_structure.values()):
+    while (roster is None or len(roster_list) < roster) and any(by_structure.values()):
         cls = order[idx % len(order)]
         bucket = by_structure.get(cls, [])
         if bucket:
             roster_list.append(bucket.pop(0))
         idx += 1
-        # Stop if every bucket is empty.
-        if not any(by_structure.values()):
-            break
     return roster_list
+
+
+def write_bounds(path: Path, instances: list[Instance]) -> None:
+    """Write bounds.csv for `instances`.
+
+    Schema is the original seven columns plus a trailing `n_disc_vars_bks`
+    (appended, so positional readers of columns 0-6 are unaffected).
+    """
+    with open(path, "w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(
+            [
+                "instance",
+                "structure",
+                "nvars",
+                "ncons",
+                "objsense",
+                "primal_bks",
+                "dual_bound",
+                "n_disc_vars_bks",
+            ]
+        )
+        for inst in instances:
+            writer.writerow(
+                [
+                    inst.name,
+                    inst.structure,
+                    inst.nvars,
+                    inst.ncons,
+                    inst.objsense,
+                    inst.primalbound,
+                    inst.dualbound,
+                    inst.ndiscvars,
+                ]
+            )
 
 
 def parse_csv(data: bytes) -> list[dict[str, str]]:
@@ -272,49 +319,39 @@ def main() -> int:
     rows = parse_csv(csv_bytes)
     print(f"        {len(rows)} instances in metadata")
 
-    roster = select(rows, args.limit)
+    candidates = select(rows)
     print(
-        f"\nSelected {len(roster)} instances (budget nvars<={MAX_VARS}, "
-        f"ncons<={MAX_CONS}, non-convex, supported ops):"
+        f"\n{len(candidates)} instances pass the filter (budget nvars<={MAX_VARS}, "
+        f"ncons<={MAX_CONS}, non-convex, supported ops); "
+        f"target roster {args.limit}."
     )
-    for inst in roster:
-        print(
-            f"  {inst.name:30s} {inst.structure:14s} "
-            f"nvars={inst.nvars:4d} ncons={inst.ncons:4d} "
-            f"primal={inst.primalbound}"
-        )
 
-    # Write the bounds table regardless of fetch outcome.
     bounds_path = here / "bounds.csv"
-    with open(bounds_path, "w", newline="") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(
-            ["instance", "structure", "nvars", "ncons", "objsense", "primal_bks", "dual_bound"]
-        )
-        for inst in roster:
-            writer.writerow(
-                [
-                    inst.name,
-                    inst.structure,
-                    inst.nvars,
-                    inst.ncons,
-                    inst.objsense,
-                    inst.primalbound,
-                    inst.dualbound,
-                ]
-            )
-    print(f"\nWrote {bounds_path.name}")
 
     if args.select_only:
+        roster = candidates[: args.limit]
+        for inst in roster:
+            print(
+                f"  {inst.name:30s} {inst.structure:14s} "
+                f"nvars={inst.nvars:4d} ncons={inst.ncons:4d} "
+                f"primal={inst.primalbound}"
+            )
+        write_bounds(bounds_path, roster)
+        print(f"\nWrote {bounds_path.name} (selection only — no .nl fetched)")
         return 0
 
-    ok = 0
+    # Walk the stratified order, fetching until `limit` instances are in hand.
+    # bounds.csv is written from the fetched set only, so the roster the runner
+    # reads is exactly the set of .nl files on disk.
+    fetched: list[Instance] = []
     fail = 0
-    for inst in roster:
+    for inst in candidates:
+        if len(fetched) >= args.limit:
+            break
         dest = here / f"{inst.name}.nl"
         if dest.exists() and not args.force and dest.stat().st_size > 0:
             print(f"[skip]  {dest.name} (exists, {dest.stat().st_size} bytes)")
-            ok += 1
+            fetched.append(inst)
             continue
         url = NL_URL_TEMPLATE.format(name=inst.name)
         print(f"[fetch] {url}")
@@ -331,11 +368,25 @@ def main() -> int:
             continue
         dest.write_bytes(data)
         digest = hashlib.sha256(data).hexdigest()
-        print(f"        -> {dest.name} ({len(data)} bytes, sha256 {digest[:12]}...)")
-        ok += 1
+        print(
+            f"        -> {dest.name} ({len(data)} bytes, sha256 {digest[:12]}..., "
+            f"{inst.structure}, {inst.ndiscvars} int vars)"
+        )
+        fetched.append(inst)
 
-    print(f"\nDone. ok={ok} fail={fail} of {len(roster)} instances.")
-    return 0 if fail == 0 else 1
+    write_bounds(bounds_path, fetched)
+    by_class: dict[str, int] = {}
+    for inst in fetched:
+        by_class[inst.structure] = by_class.get(inst.structure, 0) + 1
+    n_mip = sum(1 for inst in fetched if inst.ndiscvars > 0)
+
+    print(f"\nWrote {bounds_path.name} ({len(fetched)} fetched instances)")
+    print(f"Done. fetched={len(fetched)} fail={fail} (target {args.limit}).")
+    print(f"  structure mix: {dict(sorted(by_class.items()))}")
+    print(f"  mixed-integer: {n_mip} of {len(fetched)}")
+    # A short roster is the only real failure: individual fetch failures are
+    # expected (binary-NL instances) and are replaced from the candidate pool.
+    return 0 if len(fetched) >= min(args.limit, len(candidates)) else 1
 
 
 if __name__ == "__main__":

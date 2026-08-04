@@ -98,10 +98,13 @@ struct NlProblem {
     int32_t n_cons = 0;
     int32_t n_objs = 0;
     /// Total integer/binary variable count from the NL header's discrete-variable
-    /// line (nbv + niv + nlvbi + nlvci + nlvoi). The reader does not yet map the
-    /// integer *positions* (Gay's variable ordering); this count lets consumers
-    /// flag an instance as mixed-integer (solved as a continuous relaxation).
+    /// line (nbv + niv + nlvbi + nlvci + nlvoi).
     int32_t n_discrete_vars = 0;
+
+    /// Per-column integrality, size n_vars: 1 if NL column j is an integer or
+    /// binary variable. Recovered from the header counts plus Gay's variable
+    /// ordering (see `nl_reader.cpp`); `sum(var_is_discrete) == n_discrete_vars`.
+    std::vector<uint8_t> var_is_discrete;
 
     std::vector<NlVarBound> var_bounds;     ///< size n_vars (from `b`)
     std::vector<double> initial_x;          ///< size n_vars; from `x`, NaN if unset
@@ -119,18 +122,21 @@ NlProblem parse_nl(const std::string& text, const std::string& name = "");
 
 /// Build a closed CBLS `Model` from an `NlProblem`.
 ///
-/// One CBLS variable per NL column (Float for all — MINLPLib discrete vars are
-/// handled by clamping to int domains when integrality is declared, but the NL
-/// reader here does not yet surface integrality, so all are continuous). Each
-/// constraint body (`nonlinear + linear`) is translated to one or two CBLS
-/// comparison constraints from its `r` bound. The first objective is used; its
-/// sense drives minimize/maximize.
+/// One CBLS variable per NL column: Int for columns flagged in
+/// `var_is_discrete`, Float otherwise. Each constraint body
+/// (`nonlinear + linear`) is translated to one or two CBLS comparison
+/// constraints from its `r` bound. The first objective is used; its sense
+/// drives minimize/maximize.
 ///
 /// Unsupported operators do NOT throw: `supported` is set false and a reason is
 /// appended to `skipped_reasons`. On an unsupported instance the returned model
 /// is left un-closed and should not be solved.
 struct NlToModelOptions {
     double inf_clamp = 1.0e9;  ///< ±inf variable bounds clamped to this magnitude
+    /// ±inf bounds on an *integer* column clamp to this instead. A ±1e9 integer
+    /// domain is not a searchable space; unbounded integers in practice mean
+    /// "small non-negative count", so a far tighter box is the useful default.
+    double int_inf_clamp = 1.0e6;
 };
 
 struct NlToModelResult {
