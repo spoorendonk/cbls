@@ -95,7 +95,7 @@ TEST_CASE("solve does not NaN-poison on an unbounded-overflow direction", "[nonf
     m.minimize(ex);
     m.close();
 
-    SearchResult r = solve(m, /*time_limit=*/0.5, /*seed=*/42);
+    SearchResult r = solve_deterministic(m, 249000, 42);
 
     REQUIRE(r.feasible);
     REQUIRE(std::isfinite(r.objective));

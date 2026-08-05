@@ -1,3 +1,5 @@
+#include "test_helpers.h"
+
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 #include <cbls/cbls.h>
@@ -180,7 +182,7 @@ TEST_CASE("Nuclear outage solver finds feasible solution", "[nuclear]") {
     hook.scenarios_per_move = 5;
     LNS lns(0.3);
 
-    auto result = solve(nm.model, 5.0, 42, true, &hook, &lns);
+    auto result = solve_deterministic(nm.model, 3492000, 42, &hook, &lns);
     printf("\nMini solve: feasible=%d, obj=%.2f, iters=%ld, time=%.3fs\n",
            result.feasible, result.objective, (long)result.iterations,
            result.time_seconds);
@@ -197,7 +199,7 @@ TEST_CASE("Nuclear outage spacing constraints satisfied", "[nuclear]") {
     hook.scenarios_per_move = 5;
     LNS lns(0.3);
 
-    auto result = solve(nm.model, 3.0, 42, true, &hook, &lns);
+    auto result = solve_deterministic(nm.model, 2103000, 42, &hook, &lns);
     REQUIRE(result.feasible);
 
     nm.model.restore_state(result.best_state);
@@ -328,7 +330,10 @@ TEST_CASE("ROADEF solver produces feasible solution on data0", "[roadef]") {
     ROADEFDispatchHook hook(inst, rm);
     LNS lns(0.3);
 
-    auto result = solve(rm.model, 10.0, 42, true, &hook, &lns);
+    // NOT calibrated against a wall clock like the other budgets: this test is
+    // skipped unless the ROADEF competition data is present, so it never ran
+    // during calibration. Recalibrate with CBLS_TEST_CALIBRATE once data exists.
+    auto result = solve_deterministic(rm.model, 200000, 42, &hook, &lns);
 
     printf("\nROADEF data0 solve: feasible=%d, obj=%.2f, iters=%ld, time=%.1fs\n",
            result.feasible, result.objective, (long)result.iterations,

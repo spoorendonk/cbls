@@ -1,3 +1,5 @@
+#include "test_helpers.h"
+
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include "benchmarks/pharma-glsp/data.h"
@@ -32,7 +34,7 @@ TEST_CASE("GLSP tiny instance feasibility", "[glsp]") {
     auto& m = gm.model;
 
     GLSPInnerSolverHook hook(inst, gm.seq, gm.lot);
-    auto result = solve(m, 5.0, 42, true, &hook);
+    auto result = solve_deterministic(m, 324000, 42, &hook);
     printf("\nGLSP tiny: feasible=%d, obj=%.2f, iters=%ld, time=%.3fs\n",
            result.feasible, result.objective, (long)result.iterations,
            result.time_seconds);
@@ -47,7 +49,7 @@ TEST_CASE("GLSP tiny with LNS", "[glsp]") {
 
     GLSPInnerSolverHook hook(inst, gm.seq, gm.lot);
     LNS lns(0.3);
-    auto result = solve(m, 5.0, 42, true, &hook, &lns);
+    auto result = solve_deterministic(m, 325000, 42, &hook, &lns);
     printf("\nGLSP tiny+LNS: feasible=%d, obj=%.2f, iters=%ld\n",
            result.feasible, result.objective, (long)result.iterations);
     REQUIRE(result.feasible);
@@ -114,7 +116,7 @@ TEST_CASE("GLSP loaded instance builds and solves", "[glsp]") {
 
     GLSPInnerSolverHook hook(inst, gm.seq, gm.lot);
     LNS lns(0.3);
-    auto result = solve(m, 10.0, 42, true, &hook, &lns);
+    auto result = solve_deterministic(m, 58000, 42, &hook, &lns);
 
     printf("GLSP %s: feasible=%d, obj=%.2f, iters=%ld, time=%.3fs\n",
            inst.name.c_str(), result.feasible, result.objective,
@@ -128,7 +130,7 @@ TEST_CASE("GLSP tiny verify", "[glsp][verify]") {
 
     GLSPInnerSolverHook hook(inst, gm.seq, gm.lot);
     LNS lns(0.3);
-    auto result = solve(gm.model, 5.0, 42, true, &hook, &lns);
+    auto result = solve_deterministic(gm.model, 324000, 42, &hook, &lns);
     REQUIRE(result.feasible);
 
     auto vr = verify_glsp(gm, inst);
@@ -151,7 +153,7 @@ TEST_CASE("GLSP loaded class-A verify", "[glsp][verify]") {
 
     GLSPInnerSolverHook hook(inst, gm.seq, gm.lot);
     LNS lns(0.3);
-    auto result = solve(gm.model, 15.0, 42, true, &hook, &lns);
+    auto result = solve_deterministic(gm.model, 87000, 42, &hook, &lns);
     REQUIRE(result.feasible);
 
     auto vr = verify_glsp(gm, inst);

@@ -1,3 +1,5 @@
+#include "test_helpers.h"
+
 #include "benchmarks/chped/chped_model.h"
 #include "benchmarks/chped/data.h"
 
@@ -21,7 +23,7 @@ TEST_CASE("CHPED 4-unit feasibility", "[chped]") {
     auto cm = build_chped_model(inst);
     auto& m = cm.model;
 
-    auto result = solve(m, 2.0, 42);
+    auto result = solve_deterministic(m, 186000, 42);
     REQUIRE(result.feasible);
     printf("\n4-unit: feasible=%d, obj=%.2f, iters=%ld, time=%.3fs\n", result.feasible,
            result.objective, result.iterations, result.time_seconds);
@@ -32,7 +34,7 @@ TEST_CASE("CHPED 4-unit solution quality", "[chped]") {
     auto cm = build_chped_model(inst);
     auto& m = cm.model;
 
-    auto result = solve(m, 5.0, 42);
+    auto result = solve_deterministic(m, 466000, 42);
     REQUIRE(result.feasible);
     REQUIRE(result.objective < 5000);
     printf("\n4-unit solution: cost=%.2f\n", result.objective);
@@ -43,7 +45,7 @@ TEST_CASE("CHPED 7-unit feasibility", "[chped]") {
     auto cm = build_chped_model(inst);
     auto& m = cm.model;
 
-    auto result = solve(m, 3.0, 42);
+    auto result = solve_deterministic(m, 122000, 42);
     REQUIRE(result.feasible);
     printf("\n7-unit: feasible=%d, obj=%.2f, iters=%ld\n", result.feasible, result.objective,
            result.iterations);
@@ -54,7 +56,7 @@ TEST_CASE("CHPED 24-unit feasibility", "[chped]") {
     auto cm = build_chped_model(inst);
     auto& m = cm.model;
 
-    auto result = solve(m, 10.0, 42);
+    auto result = solve_deterministic(m, 79000, 42);
     printf("\n24-unit: feasible=%d, obj=%.2f, iters=%ld\n", result.feasible, result.objective,
            result.iterations);
     REQUIRE(result.iterations > 100);
@@ -68,7 +70,7 @@ TEST_CASE("CHPED 13-unit feasibility and quality", "[chped]") {
     auto cm = build_chped_model(inst);
     auto& m = cm.model;
 
-    auto result = solve(m, 5.0, 42);
+    auto result = solve_deterministic(m, 106000, 42);
     REQUIRE(result.feasible);
     REQUIRE(result.objective >= inst.known_optimum);
     REQUIRE(result.objective < 19000);
@@ -88,7 +90,7 @@ TEST_CASE("CHPED 40-unit feasibility and quality", "[chped]") {
     // under half a core, starving it below the quality bar. 30s wall-clock under
     // that contention ≈ 15s solo compute, which reliably reaches obj < 140000;
     // since Bunker-medium dominates suite wall-time, this adds no net suite time.
-    auto result = solve(m, 30.0, 42);
+    auto result = solve_deterministic(m, 126000, 42);
     REQUIRE(result.feasible);
     REQUIRE(result.objective >= inst.known_optimum);
     REQUIRE(result.objective < 140000);

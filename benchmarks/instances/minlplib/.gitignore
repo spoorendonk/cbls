@@ -1,2 +1,4 @@
-# Downloaded instance files — fetched by download.py at runtime.
-*.nl
+# Instance .nl files are vendored (1.3 MB raw, ~129 KB packed) so the roster is
+# reproducible from the repo alone: MINLPLib's catalogue drifts, and instances
+# it advertises as text NL are sometimes served as binary NL, so a re-fetch is
+# not guaranteed to reproduce this set. download.py refreshes them on demand.

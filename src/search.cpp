@@ -137,7 +137,30 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     ViolationManager vm(model);
 
     const auto start = std::chrono::steady_clock::now();
-    const auto deadline = start + std::chrono::duration<double>(time_limit);
+    // time_limit <= 0 means "no wall-clock budget": the run is bounded by
+    // config.max_iterations alone and is therefore fully deterministic, which is
+    // what tests need. Any positive limit is a hard deadline enforced at every
+    // sub-step below, not just between batches.
+    const bool has_deadline = time_limit > 0.0;
+    // Saturate before converting to the clock's integer tick type: callers pass
+    // very large limits to mean "effectively unbounded", and casting e.g.
+    // double::max() seconds to nanoseconds overflows int64 and yields a deadline
+    // already in the past, which would end the search immediately.
+    constexpr double kMaxBudgetSeconds = 1.0e9;  // ~31 years
+    const auto deadline =
+        start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                    std::chrono::duration<double>(
+                        has_deadline ? std::min(time_limit, kMaxBudgetSeconds) : 0.0));
+    auto past_deadline = [&]() {
+        return has_deadline && std::chrono::steady_clock::now() >= deadline;
+    };
+    auto remaining = [&]() {
+        if (!has_deadline) {
+            return 0.0;  // unbounded: sub-steps use their own iteration budgets
+        }
+        return std::max(
+            0.0, std::chrono::duration<double>(deadline - std::chrono::steady_clock::now()).count());
+    };
 
     if (!config.skip_init) {
         initialize_random(model, rng);
@@ -145,7 +168,11 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
 
     GFJConfig gfj;
     gfj.two_phase = false;  // batches reuse weights across calls; single-phase GLS
-    gfj.time_limit = 0.0;   // the outer loop owns the wall clock
+    // Hand FJ the same absolute deadline (its own is armed in begin(), called
+    // immediately below). A batch is 1000 GLS iterations, so without this a
+    // batch entered just before the deadline runs to completion and overruns it
+    // — measured at +45% on the largest MINLPLib instance.
+    gfj.time_limit = time_limit;
     gfj.max_iterations = 0;
     FeasibilityJump fj(model, vm, rng, gfj);
     fj.begin(/*set_initial_x=*/!config.skip_init);
@@ -251,7 +278,9 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     // On stagnation: LNS diversification every lns_interval-th time, else perturb.
     auto diversify = [&]() {
         if (lns && lns_interval > 0 && (perturbations % lns_interval == lns_interval - 1)) {
-            lns->destroy_repair(model, vm, rng);
+            // Bound the repair by whatever budget is left, so an LNS kick near
+            // the deadline cannot run its own independent 2s.
+            lns->destroy_repair(model, vm, rng, has_deadline ? std::min(2.0, remaining()) : 0.0);
             fj.reset_weights();  // LNS mutated state outside GFJ
         } else {
             fj.perturb(config.perturbation_probability);  // self-resyncs
@@ -261,10 +290,16 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         stagnation = 0;
     };
 
-    while (std::chrono::steady_clock::now() < deadline) {
-        if (config.max_iterations > 0 &&
-            batches * config.batch_iterations >= config.max_iterations) {
+    while (!past_deadline()) {
+        // Count *actual* GLS iterations, which is what the config documents and
+        // what SearchResult::iterations reports. Using batches *
+        // batch_iterations over-counts whenever a batch exits early on
+        // feasibility, so the budget expired after far less work than asked for.
+        if (config.max_iterations > 0 && fj.iterations() >= config.max_iterations) {
             break;
+        }
+        if (!has_deadline && config.max_iterations <= 0) {
+            break;  // neither budget set: nothing would ever stop the loop
         }
 
         // Pick this batch's kind (paper Algorithm 6 alternates FJ/NJ; the
@@ -313,7 +348,9 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             // genuinely feasible solutions (an instance would be reported
             // infeasible despite the search having visited a feasible point).
             improved = record_best();
-            if (hook) {
+            // The hook is unbounded work (sweeps over every Float); don't start
+            // one we have no budget for.
+            if (hook && !past_deadline()) {
                 hook->solve(model, vm, {});  // continuous-objective polish (mutates floats)
                 resync = true;
                 if (real_feasible()) {  // keep the polish only if it stayed feasible
@@ -336,7 +373,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             }
         }
 
-        if (stagnation >= config.perturbation_period) {
+        if (stagnation >= config.perturbation_period && !past_deadline()) {
             diversify();
         }
 

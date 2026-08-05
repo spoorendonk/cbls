@@ -1,3 +1,5 @@
+#include "test_helpers.h"
+
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include "benchmarks/bunker-eca/data.h"
@@ -61,7 +63,7 @@ TEST_CASE("Bunker-ECA small feasibility", "[bunker_eca]") {
     BunkerSpeedHook hook;
     hook.set_model(&bec, &inst);
 
-    auto result = solve(bec.model, 10.0, 42, true, &hook);
+    auto result = solve_deterministic(bec.model, 131000, 42, &hook);
     double obj = actual_obj(result, bec.model);
     printf("\nSmall: feasible=%d, profit=%.0f, iters=%ld, time=%.3fs\n",
            result.feasible, obj, (long)result.iterations, result.time_seconds);
@@ -81,7 +83,7 @@ TEST_CASE("Bunker-ECA small with LNS", "[bunker_eca]") {
     hook.set_model(&bec, &inst);
     LNS lns(0.3);
 
-    auto result = solve(bec.model, 15.0, 42, true, &hook, &lns);
+    auto result = solve_deterministic(bec.model, 195000, 42, &hook, &lns);
     double obj = actual_obj(result, bec.model);
     printf("\nSmall+LNS: feasible=%d, profit=%.0f, iters=%ld, time=%.3fs\n",
            result.feasible, obj, (long)result.iterations, result.time_seconds);
@@ -121,7 +123,7 @@ TEST_CASE("Bunker-ECA small verify", "[bunker_eca][verify]") {
     hook.set_model(&bec, &inst);
     LNS lns(0.3);
 
-    auto result = solve(bec.model, 15.0, 42, true, &hook, &lns);
+    auto result = solve_deterministic(bec.model, 197000, 42, &hook, &lns);
     REQUIRE(result.feasible);
 
     auto vr = verify_bunker_eca(bec, inst);
@@ -140,7 +142,7 @@ TEST_CASE("Bunker-ECA small noECA verify", "[bunker_eca][verify]") {
     hook.set_model(&bec, &inst);
     LNS lns(0.3);
 
-    auto result = solve(bec.model, 15.0, 42, true, &hook, &lns);
+    auto result = solve_deterministic(bec.model, 197000, 42, &hook, &lns);
     REQUIRE(result.feasible);
 
     auto vr = verify_bunker_eca(bec, inst);
@@ -156,7 +158,7 @@ TEST_CASE("Bunker-ECA medium verify", "[bunker_eca][verify]") {
     hook.set_model(&bec, &inst);
     LNS lns(0.3);
 
-    auto result = solve(bec.model, 30.0, 42, true, &hook, &lns);
+    auto result = solve_deterministic(bec.model, 27000, 42, &hook, &lns);
     REQUIRE(result.feasible);
 
     auto vr = verify_bunker_eca(bec, inst);
@@ -172,7 +174,7 @@ TEST_CASE("Bunker-ECA medium feasibility", "[bunker_eca]") {
     hook.set_model(&bec, &inst);
     LNS lns(0.3);
 
-    auto result = solve(bec.model, 120.0, 42, true, &hook, &lns);
+    auto result = solve_deterministic(bec.model, 108000, 42, &hook, &lns);
     double obj = actual_obj(result, bec.model);
     printf("\nMedium: feasible=%d, profit=%.0f, iters=%ld, time=%.3fs\n",
            result.feasible, obj, (long)result.iterations, result.time_seconds);

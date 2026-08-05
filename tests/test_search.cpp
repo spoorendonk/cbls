@@ -114,7 +114,7 @@ TEST_CASE("SA unconstrained minimum", "[search]") {
     m.minimize(m.sum({m.pow_expr(x, two), m.pow_expr(y, two)}));
     m.close();
 
-    auto result = solve(m, 2.0, 42);
+    auto result = solve_deterministic(m, 947000, 42);
     REQUIRE(result.feasible);
     REQUIRE(result.objective < 1.0);
 }
@@ -129,7 +129,7 @@ TEST_CASE("SA constrained problem", "[search]") {
     m.minimize(m.sum({x, y}));
     m.close();
 
-    auto result = solve(m, 3.0, 42);
+    auto result = solve_deterministic(m, 1110000, 42);
     REQUIRE(result.feasible);
     REQUIRE(result.objective < 5.0);
 }
@@ -141,7 +141,7 @@ TEST_CASE("SA integer problem", "[search]") {
     m.minimize(m.abs_expr(m.sum({x, neg7})));
     m.close();
 
-    auto result = solve(m, 2.0, 42);
+    auto result = solve_deterministic(m, 895000, 42);
     REQUIRE(result.feasible);
     REQUIRE(result.objective < 2.0);
 }
@@ -164,7 +164,7 @@ TEST_CASE("SA Rosenbrock 2D", "[search]") {
     m.minimize(m.sum({term1, term2}));
     m.close();
 
-    auto result = solve(m, 5.0, 42);
+    auto result = solve_deterministic(m, 1117000, 42);
     REQUIRE(result.feasible);
     REQUIRE(result.objective < 50.0);
 }
@@ -215,7 +215,7 @@ TEST_CASE("solve with LNS param", "[search][lns]") {
     m.close();
 
     LNS lns(0.5);
-    auto result = solve(m, 2.0, 42, true, nullptr, &lns);
+    auto result = solve_deterministic(m, 746000, 42, nullptr, &lns);
     REQUIRE(result.feasible);
     REQUIRE(result.objective < 10.0);
 }
@@ -232,7 +232,7 @@ TEST_CASE("solve with hook and LNS", "[search][lns]") {
 
     FloatIntensifyHook hook;
     LNS lns(0.3);
-    auto result = solve(m, 2.0, 42, true, &hook, &lns);
+    auto result = solve_deterministic(m, 745000, 42, &hook, &lns);
     REQUIRE(result.feasible);
     REQUIRE(result.objective < 8.0);
 }
@@ -276,7 +276,7 @@ TEST_CASE("lns_interval=0 disables LNS in solve", "[search][lns]") {
 
     LNS lns(0.5);
     // lns_interval=0 should disable LNS entirely (no division by zero)
-    auto result = solve(m, 1.0, 42, true, nullptr, &lns, 0);
+    auto result = solve_deterministic(m, 376000, 42, nullptr, &lns, 0);
     REQUIRE(result.feasible);
     REQUIRE(result.iterations > 0);
 }
@@ -293,7 +293,7 @@ TEST_CASE("lns_interval gates LNS frequency", "[search][lns]") {
 
     // With high lns_interval, LNS rarely fires — solve should still work
     LNS lns(0.5);
-    auto result = solve(m, 1.0, 42, true, nullptr, &lns, 100);
+    auto result = solve_deterministic(m, 378000, 42, nullptr, &lns, 100);
     REQUIRE(result.feasible);
     REQUIRE(result.iterations > 0);
 }
@@ -448,10 +448,12 @@ TEST_CASE("max_iterations stops SA by iteration count", "[search]") {
 
     SearchConfig config;
     config.max_iterations = 1000;
-    auto result = solve(m, 60.0, 42, true, nullptr, nullptr, 3, nullptr, config);
-    // Should stop well before the 60s time limit
-    REQUIRE(result.time_seconds < 5.0);
+    // time_limit 0 = no wall clock at all: the iteration budget is the only
+    // thing that can stop this, which is exactly what the test asserts.
+    auto result = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
+                        nullptr, config);
     REQUIRE(result.iterations <= 1000);
+    REQUIRE(result.time_seconds < 5.0);
 }
 
 TEST_CASE("SolutionPool top_k", "[pool]") {

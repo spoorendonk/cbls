@@ -36,7 +36,8 @@ struct Args {
     double feas_tol = cbls::kDefaultFeasibilityTolerance;
     std::vector<std::string> instances;  // optional override
     std::string commit_sha = "unknown";
-    std::string out_csv;  // default: <inst_dir>/comparison.csv
+    std::string out_csv;    // default: <inst_dir>/comparison.csv
+    std::string trace_csv;  // optional: anytime profile (best objective vs time)
 };
 
 Args parse_args(int argc, char** argv) {
@@ -55,10 +56,13 @@ Args parse_args(int argc, char** argv) {
             a.commit_sha = argv[++i];
         } else if (s == "--out" && i + 1 < argc) {
             a.out_csv = argv[++i];
+        } else if (s == "--trace" && i + 1 < argc) {
+            a.trace_csv = argv[++i];
         } else if (s == "--help" || s == "-h") {
             std::printf(
                 "Usage: cbls_minlplib [inst-dir] [--time-limit S] [--seed N]"
-                " [--feas-tol T] [--instance NAME ...] [--commit SHA] [--out CSV]\n");
+                " [--feas-tol T] [--instance NAME ...] [--commit SHA] [--out CSV]"
+                " [--trace CSV]\n");
             std::exit(0);
         } else if (s.rfind("--", 0) == 0) {
             // A typo'd flag must not silently become the instance directory:
@@ -204,6 +208,27 @@ std::unordered_map<std::string, std::string> load_analysis_notes(const std::stri
     }
     return out;
 }
+
+// Records the incumbent objective against wall time, so the value of the tail
+// of the budget can be measured rather than guessed. solve() emits progress on
+// each new best and roughly once a second.
+class TraceRecorder : public cbls::SolveCallback {
+public:
+    TraceRecorder(std::ofstream& out, const std::string& instance)
+        : out_(out), instance_(instance) {}
+
+    void on_progress(const cbls::SolveProgress& p) override {
+        if (!p.feasible || !std::isfinite(p.objective)) {
+            return;  // no incumbent yet
+        }
+        out_ << instance_ << "," << p.time_seconds << "," << p.objective << ","
+             << (p.new_best ? 1 : 0) << "\n";
+    }
+
+private:
+    std::ofstream& out_;
+    std::string instance_;
+};
 
 // Roster order: instances listed in bounds.csv, in file order. If bounds.csv is
 // missing, the caller falls back to scanning for *.nl (handled in main).
@@ -358,6 +383,12 @@ int main(int argc, char** argv) {
         }
     }
 
+    std::ofstream trace;
+    if (!args.trace_csv.empty()) {
+        trace.open(args.trace_csv);
+        trace << "instance,time_seconds,objective,new_best\n";
+    }
+
     std::ofstream csv(args.out_csv);
     if (!csv.is_open()) {
         std::fprintf(stderr, "Failed to open %s for writing\n", args.out_csv.c_str());
@@ -470,9 +501,10 @@ int main(int argc, char** argv) {
         cfg.feasibility_tolerance = args.feas_tol;
         cbls::SearchResult result;
         try {
+            TraceRecorder recorder(trace, name);
             result = cbls::solve(built.model, args.time_limit, args.seed,
                                  /*use_fj=*/true, &hook, &lns, /*lns_interval=*/3,
-                                 /*callback=*/nullptr, cfg);
+                                 trace.is_open() ? &recorder : nullptr, cfg);
         } catch (const std::exception& e) {
             std::printf(" ERROR solving: %s\n", e.what());
             ++t.errored;

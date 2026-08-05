@@ -143,8 +143,7 @@ TEST_CASE("CBLS finds the optimum on a small continuous LP", "[miplib-fj][solve]
 
     cbls::FloatIntensifyHook hook;
     cbls::LNS lns(0.3);
-    auto result = cbls::solve(built.model, /*time_limit=*/3.0, /*seed=*/42,
-                              /*use_fj=*/true, &hook, &lns);
+    auto result = solve_deterministic(built.model, 1010000, 42, &hook, &lns);
     REQUIRE(result.feasible);
     // Optimum is 3.0 (x=3, y=0). SA may not hit exactly the LP optimum;
     // require a generous bound for the assertion (3.0 <= obj <= 6.0).
@@ -159,8 +158,7 @@ TEST_CASE("CBLS finds a feasible point on a small binary IP", "[miplib-fj][solve
 
     cbls::FloatIntensifyHook hook;
     cbls::LNS lns(0.3);
-    auto result = cbls::solve(built.model, /*time_limit=*/3.0, /*seed=*/42,
-                              /*use_fj=*/true, &hook, &lns);
+    auto result = solve_deterministic(built.model, 1486000, 42, &hook, &lns);
     REQUIRE(result.feasible);
     // Minimum is 5; any feasible binary solution is at most 9 (1+1+1=3 sum
     // with all costs); accept any feasible point satisfying the assertion.

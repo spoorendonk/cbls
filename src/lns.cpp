@@ -39,7 +39,8 @@ static std::pair<double, double> state_key(const Model& model) {
     return {real_violation, obj};
 }
 
-bool LNS::destroy_repair(Model& model, ViolationManager& vm, RNG& rng) {
+bool LNS::destroy_repair(Model& model, ViolationManager& vm, RNG& rng,
+                         double repair_time_limit) {
     auto old_key = state_key(model);
     auto saved_state = model.copy_state();
 
@@ -119,7 +120,7 @@ bool LNS::destroy_repair(Model& model, ViolationManager& vm, RNG& rng) {
     full_evaluate(model);
 
     // Repair via FJ-NL
-    fj_nl_initialize(model, vm, 2000, &rng);
+    fj_nl_initialize(model, vm, 2000, &rng, repair_time_limit);
 
     auto new_key = state_key(model);
 
@@ -132,10 +133,11 @@ bool LNS::destroy_repair(Model& model, ViolationManager& vm, RNG& rng) {
     }
 }
 
-int LNS::destroy_repair_cycle(Model& model, ViolationManager& vm, RNG& rng, int n_rounds) {
+int LNS::destroy_repair_cycle(Model& model, ViolationManager& vm, RNG& rng, int n_rounds,
+                              double repair_time_limit) {
     int improvements = 0;
     for (int i = 0; i < n_rounds; ++i) {
-        if (destroy_repair(model, vm, rng)) {
+        if (destroy_repair(model, vm, rng, repair_time_limit)) {
             improvements++;
         }
     }

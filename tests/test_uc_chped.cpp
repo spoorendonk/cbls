@@ -1,3 +1,5 @@
+#include "test_helpers.h"
+
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include "benchmarks/uc-chped/data.h"
@@ -26,7 +28,7 @@ TEST_CASE("UC-CHPED 13-unit 1-period feasibility", "[uc-chped]") {
 
     FloatIntensifyHook hook;
     LNS lns(0.3);
-    auto result = solve(ucm.model, 5.0, 42, true, &hook, &lns);
+    auto result = solve_deterministic(ucm.model, 180000, 42, &hook, &lns);
     REQUIRE(result.feasible);
     printf("\n13-unit 1p: obj=%.1f, iters=%ld, time=%.3fs\n",
            result.objective, (long)result.iterations, result.time_seconds);
@@ -39,7 +41,7 @@ TEST_CASE("UC-CHPED 13-unit 1-period quality", "[uc-chped]") {
 
     FloatIntensifyHook hook;
     LNS lns(0.3);
-    auto result = solve(ucm.model, 10.0, 42, true, &hook, &lns);
+    auto result = solve_deterministic(ucm.model, 360000, 42, &hook, &lns);
     REQUIRE(result.feasible);
     // Known LB = 11701 from Pedroso. Allow up to ~25% gap for SA.
     REQUIRE(result.objective < 15000);
@@ -53,7 +55,7 @@ TEST_CASE("UC-CHPED 40-unit 1-period feasibility", "[uc-chped]") {
 
     FloatIntensifyHook hook;
     LNS lns(0.3);
-    auto result = solve(ucm.model, 10.0, 42, true, &hook, &lns);
+    auto result = solve_deterministic(ucm.model, 71000, 42, &hook, &lns);
     REQUIRE(result.feasible);
     printf("\n40-unit 1p: obj=%.1f, iters=%ld, time=%.3fs\n",
            result.objective, (long)result.iterations, result.time_seconds);
@@ -69,7 +71,7 @@ TEST_CASE("UC-CHPED 100-unit 1-period builds and solves", "[uc-chped]") {
 
     FloatIntensifyHook hook;
     LNS lns(0.3);
-    auto result = solve(ucm.model, 30.0, 42, true, &hook, &lns);
+    auto result = solve_deterministic(ucm.model, 64000, 42, &hook, &lns);
     REQUIRE(result.feasible);
     printf("\n100-unit 1p: obj=%.1f, %ld vars, iters=%ld, time=%.3fs\n",
            result.objective, (long)m.num_vars(), (long)result.iterations, result.time_seconds);
@@ -82,7 +84,7 @@ TEST_CASE("UC-CHPED 13-unit 1-period verify", "[uc-chped][verify]") {
 
     FloatIntensifyHook hook;
     LNS lns(0.3);
-    auto result = solve(ucm.model, 10.0, 42, true, &hook, &lns);
+    auto result = solve_deterministic(ucm.model, 360000, 42, &hook, &lns);
     REQUIRE(result.feasible);
 
     auto vr = verify_uc_chped(ucm, inst);

@@ -14,7 +14,7 @@ TEST_CASE("solve with nullptr hook is regression-safe", "[inner_solver]") {
     m.minimize(m.sum({m.pow_expr(x, two), m.pow_expr(y, two)}));
     m.close();
 
-    auto result = solve(m, 2.0, 42, true, nullptr);
+    auto result = solve_deterministic(m, 954000, 42, nullptr);
     REQUIRE(result.feasible);
     REQUIRE(result.objective < 1.0);
 }
@@ -159,7 +159,7 @@ TEST_CASE("solve with FloatIntensifyHook improves mixed problem", "[inner_solver
     m.close();
 
     FloatIntensifyHook hook;
-    auto result = solve(m, 2.0, 42, true, &hook);
+    auto result = solve_deterministic(m, 945000, 42, &hook);
     REQUIRE(result.feasible);
     // With hook, should find good solution (x=2 when b=1, or x=3 when b=0)
     REQUIRE(result.objective <= 3.5);

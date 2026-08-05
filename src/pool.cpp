@@ -215,8 +215,9 @@ SearchResult ParallelSearch::solve_deterministic(
     std::vector<SearchResult> epoch_results(n_threads);
 
     // In deterministic mode, epochs stop by iteration count, not wall-clock.
-    // Use a huge time_limit so wall-clock never cuts an epoch short.
-    const double epoch_time_limit = std::numeric_limits<double>::max();
+    // 0 disables the wall clock entirely in solve(), so nothing can cut an epoch
+    // short and make the run depend on machine speed.
+    const double epoch_time_limit = 0.0;
 
     for (int epoch = 0; epoch < max_epochs; ++epoch) {
         // Configure per-epoch search: iteration-limited, no FJ after first epoch

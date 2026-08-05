@@ -1,3 +1,5 @@
+#include "test_helpers.h"
+
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 
@@ -23,7 +25,7 @@ TEST_CASE("SolveCallback fires during solve", "[callback]") {
     };
 
     CountCallback cb;
-    auto result = solve(m, 0.5, 42, true, nullptr, nullptr, 3, &cb);
+    auto result = solve_deterministic(m, 277000, 42, nullptr, nullptr, 3, &cb);
 
     REQUIRE(cb.count > 0);
     REQUIRE(cb.saw_new_best);
@@ -57,6 +59,6 @@ TEST_CASE("SolveCallback receives valid progress data", "[callback]") {
     };
 
     ValidateCallback cb;
-    solve(m, 0.5, 42, true, nullptr, nullptr, 3, &cb);
+    solve_deterministic(m, 265000, 42, nullptr, nullptr, 3, &cb);
     REQUIRE(cb.all_valid);
 }
