@@ -115,6 +115,10 @@ documents. No published Yuck numbers exist for these instances.
 - `analysis_notes.csv` — curated per-instance root-cause verdicts
   (`bug` vs `hard`) for instances the runner cannot solve. Merged into
   `comparison.csv`'s note column, so the data carries its own explanation.
+- `anytime_trace.csv` — incumbent objective against wall time for the published
+  run (`instance,time_seconds,objective,new_best`), written by `--trace`. The
+  `objective` column is the internally *minimised* value, so a maximize instance
+  appears negated relative to `comparison.csv`.
 - `*.nl` — fetched text NL instance files.
 
 Regenerate `comparison.csv` with:
@@ -125,18 +129,19 @@ Regenerate `comparison.csv` with:
 ## Results
 
 Latest run: **60s per instance, seed 1, feasibility tolerance 1e-6**, commit
-recorded per row in `comparison.csv`. The previously published numbers used a
-5s budget and solved the mixed-integer instances as continuous relaxations;
-both are fixed here, so the two runs are not comparable row-by-row.
+recorded per row in `comparison.csv`. The tally below, the gap buckets and the
+anytime profile all come from that **one** run; its incumbent trace is committed
+as `anytime_trace.csv`, so every number in this section is reproducible from a
+checkout without re-running anything.
 
 **These are single-sample numbers.** The budget is wall-clock, so a fixed seed
-does not pin the iteration count and consecutive runs of the same binary differ.
-Two runs at this commit and seed gave 46 and 45 feasible respectively — the
-per-instance objectives move by more than that. Treat any single row as one
-draw, not a measurement. Reporting a median over several seeds (or switching the
-published run to a deterministic iteration budget, which the engine now supports
-via `time_limit = 0` plus `SearchConfig::max_iterations`) is the fix; it is not
-done here.
+does not pin the iteration count and consecutive runs of the same binary differ:
+two runs at one earlier commit and seed gave 46 and 45 feasible, and an
+independent replication moved two gap values materially (`nvs05` 453%→477%).
+Treat any single row as one draw, not a measurement. Reporting a median over
+several seeds is the fix; it is not done here, and the runner has no flag for a
+deterministic budget yet (the engine supports one — `time_limit = 0` plus
+`SearchConfig::max_iterations` — but `cbls_minlplib` requires `--time-limit > 0`).
 
 | | count |
 |---|---|
@@ -145,62 +150,68 @@ done here.
 | of which mixed-integer (integrality enforced) | 15 |
 | **feasible** | **46** |
 | — matching BKS (within the tie band) | 17 |
-| — worse than BKS | 29 |
+| — better than BKS, but inside the tolerance slack | 1 |
+| — worse than BKS | 28 |
 | — better than BKS | 0 |
 | infeasible | 4 |
 | unsupported / read errors / non-finite | 0 |
 | integrality mismatches vs catalogue | 0 |
 | verification failures | 0 |
 
-Gap distribution over the feasible instances: 20 within 0.01% of BKS, 21 within
-1%, 25 within 10%.
+Gap distribution over the feasible instances: **20 within 0.01% of BKS, 21
+within 1%, 25 within 10%.**
 
-Those buckets deliberately exclude the rows whose BKS is numerically zero
-(`mathopt1`, `prob09`, `least`). For `|BKS| < 1e-12` the runner writes an
-*absolute* residual into the `gap_to_bks%` column, because a percentage against
-zero is meaningless — so those values are not percentages and must not be read
-as ones. Counting them as percentages would have put `mathopt1` (objective 1.0
-against a BKS of 3.3e-18) in the "within 10%" bucket.
-
-`gap_to_bks%` is sense-normalised: a positive value always means worse than the
-reference, for maximize and minimize alike.
+Five rows have a numerically zero BKS (`|BKS| < 1e-12`), for which the runner
+writes an *absolute* residual into the `gap_to_bks%` column rather than a
+meaningless percentage against zero: `mathopt1`, `prob09`, `least`, `ex14_2_4`
+and `ex14_2_5`. Those values are not percentages. The buckets above exclude the
+first three, whose residual is non-zero, and retain `ex14_2_4`/`ex14_2_5`, where
+objective and BKS are both exactly 0 and so are exact matches at any threshold.
+Excluding all five instead gives 18 / 19 / 23 over 41 rows. Counting the
+excluded three *as* percentages would have put `mathopt1` — objective 1.0
+against a BKS of 3.3e-18 — inside the "within 1%" bucket.
 
 Nothing in this roster beats a published bound. Under the runner's earlier
 margin rule — which compared a *percentage* against 1e-6, i.e. 1e-8 relative —
-three rows of this run would have been flagged `better-than-bks` on differences
-of 1e-5 to 1e-4 percent. Those are ties, not improvements. (The previously
-published 5s run contained no `better-than-bks` rows at all.)
+two rows of this run would have been flagged `better-than-bks`: `ex6_2_6` at
+8.3e-5 percent and `prob06` at 3.2e-4 percent. Those are ties, not improvements.
 
-Two bands are used, deliberately different. An improvement is only claimed when
-it exceeds `max(1e-6·(|BKS|+1), 10·feas_tol)`: we accept solutions violating a
-constraint by up to `feas_tol`, and that slack itself buys a small objective
-gain. A *tie* requires the much tighter, purely relative `1e-6·(|BKS|+1)` —
-using the same band for both would have published `ex8_4_5` (BKS 3.07e-4) as
-matching BKS when it was 1.38% worse, because the absolute floor dwarfs an
-objective that small.
+Two bands are used, deliberately different. An improvement is only *claimed*
+when it exceeds `max(1e-6·(|BKS|+1), 10·feas_tol)`: we accept solutions
+violating a constraint by up to `feas_tol`, and that slack itself buys a small
+objective gain. A *tie* requires the much tighter, purely relative
+`1e-6·(|BKS|+1)` — using one band for both would have published `ex8_4_5`
+(BKS 3.07e-4) as matching BKS when it was 1.38% worse, because the absolute
+floor dwarfs an objective that small. A row that improves on BKS by more than
+the tie band but less than the claim threshold falls between the two and is
+labelled `within-tolerance-of-bks` rather than being miscounted as worse.
 
-#### Why 60s
+### Why 60s
 
-Measured, not assumed. `--trace` records the incumbent against wall time, so one
-run yields the whole anytime profile. Cumulative instances with a feasible
-solution by time t (of 50):
+Measured from the committed trace, not assumed. Cumulative instances with a
+feasible solution by time t (of 50):
 
 | by | 1s | 5s | 10s | 20s | 30s | 45s | 60s |
-|----|----|----|----|-----|-----|-----|-----|
-| feasible | 41 | 41 | 41 | 42 | 43 | 45 | 45 |
+|----|----|----|-----|-----|-----|-----|-----|
+| feasible | 41 | 41 | 41 | 42 | 44 | 46 | 46 |
 
-Four instances only reach feasibility long after 5s — `chain50` (17.9s),
-`ex8_4_5` (25.0s), `tln2` (32.1s), `spring` (32.2s) — so a 5s budget would
-publish all four as infeasible.
+**This is the load-bearing argument.** Five instances reach feasibility only
+long after 5s — `chain50` (17.6s), `ex8_4_5` (25.1s), `tln2` (26.6s), `spring`
+(30.9s), `minlphi` (36.5s) — so a 5s budget would publish all five as
+infeasible, 41 solved instead of 46. Which five varies between draws; that
+several exist does not.
 
-Solution quality is strongly bimodal. Of the instances that do become feasible,
-42% stop improving within the first second, but **22% are still improving in the
-final 15 seconds**, sometimes by orders of magnitude (`eg_all_s` goes from
-1.21e6 to 8.46 after the 20s mark; `process` from -37 to -1015). The mean share
-of each instance's total improvement achieved by 5s is 0.78, by 30s 0.88.
-
-So the tail of the budget is not wasted, and the profile suggests a few
-instances would keep improving past 60s.
+Solution *quality* over time is a weaker argument than it first appears, and is
+recorded here with that caveat. Of the 46 instances that become feasible, 46%
+stop improving within the first second while 22% are still improving in the
+final 15 seconds. But the incumbent trace cannot be read as pure search
+progress: `record_best` tightens the objective bound by `1e-3·(|obj|+1)` per
+accepted solution, so improvements are *floored* at roughly 0.1% steps. The
+measured median consecutive-incumbent ratio on `eg_all_s` is 0.9989993 — exactly
+`1 - 1e-3` — and it takes 15931 such steps to walk from 1e9 down to 8.46. That
+instance is therefore evidence about the bound-tightening step size, not about
+how long the search needs. Read the quality column as a lower bound on what a
+larger step (or a direct objective descent) might achieve sooner.
 
 ### The four unsolved instances
 
@@ -211,7 +222,7 @@ Every one is root-caused, and the verdict is recorded per row in
 |----------|---------|-------|
 | `elec25`, `elec50` | **bug** (#100) | Thomson problem. The feasible region contains coincident-point configurations where the Coulomb objective is `+inf`. Since the objective is folded in as an `obj <= bound` soft constraint, that violation clamps to ~1e30 and absorbs the real constraints' O(1) contributions in floating point, so the search loses its feasibility signal. Verified by construction: dropping the objective makes `elec25` feasible in 20s at violation 0; keeping it pins the search at the origin at violation exactly 1. |
 | `nvs01` ([#101](https://github.com/spoorendonk/cbls/issues/101)) | hard | `420.169·√(x0²+900) == x2·x0·x1` needs `x0` and the product `x1·x2` changed together. While `x0 = 0` the product term vanishes, so `x1` and `x2` receive no gradient signal and no single-variable jump improves — escaping requires a compound move (Novelty Jump implements exactly this, but is off by default). Verified analytically and reproduced across seeds 1–7. |
-| `st_e40` ([#102](https://github.com/spoorendonk/cbls/issues/102)) | hard, **mechanism unidentified** | Rows C1–C3 are degree-7 polynomials `(x-1)(x-2)(x-3)(x-5)(x-8)(x-10)(x-12) == 0` restricting each integer to `{1,2,3,5,8,10,12}`; C0 pins the free `x3` to a bilinear function of them, and four linear rows bound the combination. The search satisfies C1–C3 but misses a linear row by ~2. An earlier revision of this table claimed a violation barrier between allowed integer values — that was **wrong**: `int_jump_candidates` enumerates the entire domain when it is narrower than 256, and these are `[1,12]`, so every allowed value is one jump away. The real mechanism is still open. |
+| `st_e40` ([#102](https://github.com/spoorendonk/cbls/issues/102)) | hard, **mechanism unidentified** | Rows C1–C3 are degree-7 polynomials `(x-1)(x-2)(x-3)(x-5)(x-8)(x-10)(x-12) == 0` restricting each integer to `{1,2,3,5,8,10,12}`; C0 pins the free `x3` to a bilinear function of them, and four linear rows bound the combination. The search satisfies C1–C3 but misses a linear row by ~2. An earlier revision of this table claimed a violation barrier between allowed integer values — that was **wrong**: `int_jump_candidates` enumerates the entire domain when that domain spans at most 256 values, and these are `[1,12]`, so every allowed value is one jump away. The real mechanism is still open. |
 
 ## Integrality
 
