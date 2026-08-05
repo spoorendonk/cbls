@@ -83,6 +83,15 @@ Args parse_args(int argc, char** argv) {
         std::exit(2);
     }
     if (a.out_csv.empty()) {
+        if (!a.instances.empty()) {
+            // A partial roster must never overwrite the published results table:
+            // the default --out is the file the README publishes, and a
+            // single-instance debugging run would silently truncate it to one row.
+            std::fprintf(stderr,
+                         "--instance requires an explicit --out (refusing to overwrite %s)\n",
+                         (a.inst_dir + "/comparison.csv").c_str());
+            std::exit(2);
+        }
         a.out_csv = a.inst_dir + "/comparison.csv";
     }
     return a;
@@ -221,8 +230,13 @@ public:
         if (!p.feasible || !std::isfinite(p.objective)) {
             return;  // no incumbent yet
         }
+        // Flushed per row, as the results CSV is: a run is tens of minutes long
+        // and an interrupted one must not lose its buffered profile.
+        // NOTE: p.objective is the internally *minimised* value, so a maximize
+        // instance appears negated here relative to comparison.csv. Improvement
+        // ratios are invariant under that, but raw values are not.
         out_ << instance_ << "," << p.time_seconds << "," << p.objective << ","
-             << (p.new_best ? 1 : 0) << "\n";
+             << (p.new_best ? 1 : 0) << std::endl;
     }
 
 private:
@@ -259,7 +273,8 @@ struct Tally {
     int closed = 0;
     int feasible = 0;
     int better = 0;
-    int matches = 0;  // equal to BKS within the tie band
+    int matches = 0;     // equal to BKS within the tie band
+    int within_tol = 0;  // better than BKS, but by less than the tolerance slack
     int worse = 0;
     int mixed_integer = 0;  // instances with >=1 integer column (integrality enforced)
     int failed_nonfinite = 0;
@@ -385,6 +400,10 @@ int main(int argc, char** argv) {
     std::ofstream trace;
     if (!args.trace_csv.empty()) {
         trace.open(args.trace_csv);
+        if (!trace.is_open()) {
+            std::fprintf(stderr, "Failed to open %s for writing\n", args.trace_csv.c_str());
+            return 2;
+        }
         trace << "instance,time_seconds,objective,new_best\n";
     }
 
@@ -611,12 +630,20 @@ int main(int argc, char** argv) {
                 const double tie_band = 1e-6 * (std::abs(b.primal) + 1.0);
                 const double diff = obj - b.primal;  // signed, in objective units
                 const double improvement = maximizing ? diff : -diff;  // >0 is better
+                // Three outcomes, not two. A row can improve on BKS by more than
+                // the tie band yet less than win_slack: we will not claim that as a
+                // win (the feasibility slack alone could buy it), but calling it
+                // "worse than BKS" when its objective is better is simply false.
+                // It gets its own label so the worse count means what it says.
                 if (improvement > win_slack) {
                     ++t.better;
                     note = "better-than-bks";
                 } else if (std::abs(diff) <= tie_band) {
                     ++t.matches;
                     note = "matches-bks";
+                } else if (improvement > 0.0) {
+                    ++t.within_tol;
+                    note = "within-tolerance-of-bks";
                 } else {
                     ++t.worse;
                     note = "feasible";
@@ -736,6 +763,8 @@ int main(int argc, char** argv) {
     std::printf("feasible:             %d\n", t.feasible);
     std::printf("  better-than-BKS:    %d\n", t.better);
     std::printf("  matches BKS:        %d\n", t.matches);
+    std::printf("  within tolerance:   %d  (better, but inside the tolerance slack)\n",
+                t.within_tol);
     std::printf("  worse than BKS:     %d\n", t.worse);
     std::printf("infeasible:           %d\n", t.closed - t.feasible - t.failed_nonfinite);
     std::printf("  near-miss (<=%.0e): %d\n", kNearMiss, t.near_miss);

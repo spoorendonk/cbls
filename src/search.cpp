@@ -307,6 +307,14 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         if (config.max_iterations > 0 && fj.iterations() >= config.max_iterations) {
             break;
         }
+        // Structural and Novelty batches do not charge fj.iterations(), so on a
+        // List/Set model with no wall clock the iteration budget alone cannot
+        // guarantee termination (structural_batch_probability = 1.0 would spin
+        // forever). Batches <= iterations by construction, so this only bites
+        // when iterations have stalled.
+        if (config.max_iterations > 0 && batches >= config.max_iterations) {
+            break;
+        }
         if (!has_deadline && config.max_iterations <= 0) {
             break;  // neither budget set: nothing would ever stop the loop
         }
@@ -341,10 +349,12 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         double batch_violation = max_real_violation();
         // Only tracked until the first feasible solution: after that both the
         // final restore and the returned state use best_state, so the snapshot
-        // would be pure allocation on every improving batch. `<=` rather than
-        // `<` so an all-NaN run (violation stays +inf) still captures a state
-        // instead of returning the untouched initial assignment.
-        if (!have_feasible && batch_violation <= best_violation) {
+        // would be pure allocation on every improving batch. The `batches == 1`
+        // clause guarantees one capture even on an all-NaN run (violation stays
+        // +inf, so `<` never fires) without re-snapshotting on every batch of a
+        // violation plateau — the common infeasible case (elec25/elec50 sit at
+        // exactly 1.0 for the whole run).
+        if (!have_feasible && (batch_violation < best_violation || batches == 1)) {
             best_violation = batch_violation;
             closest_state = model.copy_state();
         }
@@ -357,8 +367,9 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             // genuinely feasible solutions (an instance would be reported
             // infeasible despite the search having visited a feasible point).
             improved = record_best();
-            // The hook is unbounded work (sweeps over every Float); don't start
-            // one we have no budget for.
+            // The hook is unbounded in *time* — a custom InnerSolverHook may do
+            // arbitrary work, and even FloatIntensifyHook sweeps every Float
+            // max_sweeps times. Don't start one we have no budget for.
             if (hook && !past_deadline()) {
                 hook->solve(model, vm, {});  // continuous-objective polish (mutates floats)
                 resync = true;
