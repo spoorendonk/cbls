@@ -703,7 +703,10 @@ int main(int argc, char** argv) {
         // data itself contradicts. Warn loudly instead, so the note gets retired.
         {
             auto an = analysis_notes.find(name);
-            if (an != analysis_notes.end()) {
+            // Only for rows that are actually infeasible: a VERIFY-FAILED row is
+            // also !verified, but its failure is a solver-bookkeeping mismatch,
+            // not the infeasibility mechanism the note describes.
+            if (an != analysis_notes.end() && !result.feasible) {
                 if (verified) {
                     std::printf("%-22s  WARNING: stale analysis note (now solved)\n", name.c_str());
                     note += "; stale-analysis-note";

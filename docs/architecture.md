@@ -844,7 +844,7 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 
 | Parameter | Default | Location | Description |
 |-----------|---------|----------|-------------|
-| `time_limit` | 10.0 | `solve()` arg | total search time (seconds) |
+| `time_limit` | 10.0 | `solve()` arg | total search time (seconds); `<= 0` disables the wall clock entirely, leaving `max_iterations` as the only budget (deterministic) |
 | `seed` | 42 | `solve()` arg | RNG seed |
 | `use_fj` | true | `SearchConfig` | vestigial (GFJ always the engine) |
 | `max_iterations` | 0 | `SearchConfig` | GLS-iteration cap (0 = use time_limit) |
@@ -865,6 +865,8 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `kNoveltyWorkBudget` | 256 | `feasibility_jump.cpp` | max moves per `apply_novelty_jump` |
 | `objective_bound_eps` | 1e-3·(|obj|+1) | `search.cpp` `record_best` | bound tightening / hook Newton step |
 | `destroy_fraction` | 0.3 | `LNS` ctor | fraction of variables/sequences destroyed |
+| `repair_time_limit` | 2.0 s | `LNS::destroy_repair` | FJ repair budget; `<= 0` = iteration-bounded only |
+| `feasibility_tolerance` | 1e-6 | `SearchConfig` / `kDefaultFeasibilityTolerance` | violation below which a constraint counts as satisfied |
 | `lns_repair_iters` | 2000 | `lns.cpp` | GFJ iterations in LNS repair |
 | `max_sweeps` | 3 | `inner_solver.h` | inner-solver coordinate-descent sweeps |
 | `initial_step_size` | 0.1 | `inner_solver.h` | line-search starting step |
