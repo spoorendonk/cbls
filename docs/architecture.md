@@ -514,9 +514,11 @@ While time and `max_iterations` remain, each pass:
    flag.
 2. **Run the batch.** `fj.batch(batch_iterations)`, `fj.apply_novelty_jump()`,
    or `structural_pass(...)`.
-3. **On real feasibility**, run the inner solver hook (if any) to polish
-   continuous variables — this may move off the feasible region, so feasibility
-   is re-checked — then `record_best()`.
+3. **On real feasibility**, `record_best()` *first*, banking the feasible point
+   before anything can move off it; then run the inner solver hook (if any) to
+   polish continuous variables, and `record_best()` again only if the polish
+   stayed feasible. Recording only after the hook silently discarded genuinely
+   feasible solutions whenever the polish left the feasible region.
 4. **`record_best()`** keeps the assignment if it strictly improves
    `best_feasible_obj`, snapshots the state, and tightens the objective bound to
    `obj - eps` (`eps = 1e-3*(|obj|+1)`; the step doubles as the Newton step size
@@ -529,8 +531,11 @@ While time and `max_iterations` remain, each pass:
    stagnation counter.
 8. Emit a progress callback (~1 s cadence, or immediately on a new best).
 
-At the end, restore the best state, release the objective bound to `+inf`,
-full-evaluate, and return the best feasible objective (or `+inf` / infeasible).
+At the end, restore the best state — or, on an infeasible run, the *closest
+approach* to the feasible region rather than the untouched initial assignment —
+release the objective bound to `+inf`, full-evaluate, and return the best
+feasible objective (or `+inf` / infeasible). `SearchResult::best_violation`
+carries the largest real-constraint residual at the returned assignment.
 `SearchResult::iterations` is the total GLS iteration count, not the batch count.
 
 ### Diversification
@@ -586,10 +591,14 @@ discretized jump candidates (which would need impractically fine granularity).
 
 ### Trigger
 
-The hook fires **on each new feasible solution** (just before `record_best()`,
-inside the outer loop). Because the hook may move the assignment off the feasible
-region, the loop re-checks `real_feasible()` before recording. (This replaces the
-old SA trigger of "every 10 discrete accepts / on every reheat".)
+The hook fires **on each feasible batch**, immediately *after* `record_best()`
+has banked the point. Because the hook may move the assignment off the feasible
+region, the loop re-checks `real_feasible()` before recording the polished
+assignment; the pre-polish point is safe either way. (This replaces the old SA
+trigger of "every 10 discrete accepts / on every reheat".)
+
+Note the bound tightening in `record_best()` now happens *before* the hook runs,
+so the hook descends against an already-tightened `obj <= bound`.
 
 It descends `ViolationManager::augmented_objective()` = `obj + total_violation()`
 and mutates Float variables directly via `delta_evaluate`.
@@ -804,10 +813,11 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
     │     NOVELTY:    fj.apply_novelty_jump()         # compound moves; resync
     │     STRUCTURAL: structural_pass()               # list/set moves; resync
     │
-    ├── if real_feasible():
-    │     ├── [if hook] hook->solve(model, vm)        # continuous polish; resync
-    │     └── if still real_feasible(): record_best()
-    │           └── tighten objective bound to obj - eps; snapshot best state
+    ├── if max_real_violation() <= config.feasibility_tolerance:
+    │     ├── record_best()                           # bank it BEFORE polishing
+    │     │     └── tighten objective bound to obj - eps; snapshot best state
+    │     └── [if hook] hook->solve(model, vm)        # continuous polish; resync
+    │           └── if still real_feasible(): record_best()
     │
     ├── if new best:  stagnation=0; fj.reset_weights(); resample rho
     │                 (pure feasibility → break)

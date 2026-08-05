@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -254,6 +255,13 @@ NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts)
             }
             double ilb = std::isfinite(raw_lb) ? std::ceil(lb - 1e-9) : -opts.int_inf_clamp;
             double iub = std::isfinite(raw_ub) ? std::floor(ub + 1e-9) : opts.int_inf_clamp;
+            // clamp_lo/clamp_hi are one-sided (clamp_lo only raises values below
+            // -inf_clamp), so a declared-finite bound pointing away from zero
+            // arrives here unclamped and would make the int casts below UB.
+            constexpr double kIntLo = static_cast<double>(std::numeric_limits<int>::min());
+            constexpr double kIntHi = static_cast<double>(std::numeric_limits<int>::max());
+            ilb = std::min(std::max(ilb, kIntLo), kIntHi);
+            iub = std::min(std::max(iub, kIntLo), kIntHi);
             if (ilb > iub) {
                 // Bounds admit no integer (degenerate). Keep a single point so
                 // the model still closes; the row's constraints will register

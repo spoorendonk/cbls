@@ -5,10 +5,12 @@ Pipeline:
   2. Filter to non-convex instances whose nonzero operator columns are a subset
      of the operator set CBLS can express today, with a size budget and a finite
      primal bound.
-  3. Stratify the survivors across structure types and pick a roster.
-  4. Fetch each instance's text ``.nl`` file, validate the ``g3`` header, reject
-     HTML/404 bodies, and print a sha256.
-  5. Write ``bounds.csv`` recording the published primal/dual bounds.
+  3. Stratify the survivors across structure types into a candidate order.
+  4. Walk that order fetching each instance's text ``.nl`` file (validating the
+     ``g3`` header, rejecting HTML/404 bodies, printing a sha256) until
+     ``--limit`` instances have been fetched successfully, so an instance served
+     as binary NL is replaced rather than shrinking the roster.
+  5. Write ``bounds.csv`` from the *fetched* set, so every row has a .nl on disk.
 
 Network access is required only for steps 1 and 4; everything is logged so a
 failed fetch is visible. Run with the project venv:
@@ -24,6 +26,7 @@ import argparse
 import csv
 import hashlib
 import io
+import math
 import sys
 import urllib.error
 import urllib.request
@@ -82,8 +85,10 @@ ACCEPTED_PROBTYPES: frozenset[str] = frozenset(
 MAX_VARS = 150
 MAX_CONS = 150
 
-# Target roster size after stratification.
-DEFAULT_ROSTER = 30
+# Target roster size after stratification. Must match the published roster:
+# bounds.csv is written from the fetched set, so a smaller default would silently
+# shrink the roster the runner reads while the extra .nl files sit unused on disk.
+DEFAULT_ROSTER = 50
 
 
 def _is_true(cell: str) -> bool:
@@ -189,8 +194,8 @@ def row_to_instance(row: dict[str, str]) -> Instance | None:
         return None
 
     primal = _to_float(row.get("primalbound", ""))
-    if primal is None:
-        return None  # need a finite primal BKS for gap reporting
+    if primal is None or not math.isfinite(primal):
+        return None  # need a *finite* primal BKS for gap reporting ("inf" parses)
 
     return Instance(
         name=row["name"].strip(),
@@ -205,14 +210,13 @@ def row_to_instance(row: dict[str, str]) -> Instance | None:
     )
 
 
-def select(rows: list[dict[str, str]], roster: int | None = None) -> list[Instance]:
-    """Apply the CSV filter and return the stratified candidate order.
+def select(rows: list[dict[str, str]]) -> list[Instance]:
+    """Apply the CSV filter and return every survivor in stratified order.
 
-    ``roster`` truncates the result; ``None`` returns every survivor in
-    stratified order. The caller walks this order and stops once enough
-    instances have been *fetched successfully*, so that instances the catalogue
-    advertises as ``nl`` but serves as binary NL (the ``kriging_peaks-*``
-    family) are replaced rather than silently shrinking the roster.
+    The caller walks this order and stops once enough instances have been
+    *fetched successfully*, so that instances the catalogue advertises as ``nl``
+    but serves as binary NL (the ``kriging_peaks-*`` family) are replaced rather
+    than silently shrinking the roster.
     """
     survivors: list[Instance] = []
     for row in rows:
@@ -230,7 +234,7 @@ def select(rows: list[dict[str, str]], roster: int | None = None) -> list[Instan
     roster_list: list[Instance] = []
     order = sorted(by_structure.keys())
     idx = 0
-    while (roster is None or len(roster_list) < roster) and any(by_structure.values()):
+    while any(by_structure.values()):
         cls = order[idx % len(order)]
         bucket = by_structure.get(cls, [])
         if bucket:
@@ -336,8 +340,11 @@ def main() -> int:
                 f"nvars={inst.nvars:4d} ncons={inst.ncons:4d} "
                 f"primal={inst.primalbound}"
             )
-        write_bounds(bounds_path, roster)
-        print(f"\nWrote {bounds_path.name} (selection only — no .nl fetched)")
+        # Deliberately does NOT write bounds.csv: this is the pre-fetch roster and
+        # still contains instances the catalogue advertises as `nl` but serves as
+        # binary NL. Writing it would desynchronise bounds.csv from the .nl files
+        # on disk, and the runner would report those rows as not-found.
+        print(f"\n(selection only — no .nl fetched, {bounds_path.name} left unchanged)")
         return 0
 
     # Walk the stratified order, fetching until `limit` instances are in hand.

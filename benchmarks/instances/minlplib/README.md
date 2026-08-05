@@ -91,8 +91,7 @@ These FlatZinc-based local-search solvers are the natural CBLS comparators, but
 FlatZinc's float layer has no `exp`/`log`/`sin`/`signpower` constraints, so the
 **transcendental and signpower instances in this roster are not expressible**
 for them at all. That non-expressibility is the differentiator this benchmark
-documents; per-instance "expressible? Y/N" is noted in `comparison.csv`'s `note`
-column where relevant. No published Yuck numbers exist for these instances.
+documents. No published Yuck numbers exist for these instances.
 
 ## Provenance
 
@@ -136,20 +135,40 @@ both are fixed here, so the two runs are not comparable row-by-row.
 | parsed and built (closed-model rate) | 50 (100%) |
 | of which mixed-integer (integrality enforced) | 15 |
 | **feasible** | **46** |
-| — matching BKS (within the tie band) | 19 |
-| — worse than BKS | 27 |
+| — matching BKS (within the tie band) | see note below |
+| — worse than BKS | see note below |
 | — better than BKS | 0 |
 | infeasible | 4 |
 | unsupported / read errors / non-finite | 0 |
 | integrality mismatches vs catalogue | 0 |
 | verification failures | 0 |
 
-Gap distribution over the 46 feasible instances: 20 within 0.01% of BKS, 23
-within 1%, 27 within 10%.
+Gap distribution over the feasible instances: 20 within 0.01% of BKS, 21 within
+1%, 25 within 10%.
 
-Nothing in this roster beats a published bound. Three instances previously
-appeared to, on margins of ~1e-5 percent; those are ties, not improvements, and
-are now classified as `matches-bks` (see the tie band in the runner).
+Those buckets deliberately exclude the rows whose BKS is numerically zero
+(`mathopt1`, `prob09`, `least`). For `|BKS| < 1e-12` the runner writes an
+*absolute* residual into the `gap_to_bks%` column, because a percentage against
+zero is meaningless — so those values are not percentages and must not be read
+as ones. Counting them as percentages would have put `mathopt1` (objective 1.0
+against a BKS of 3.3e-18) in the "within 10%" bucket.
+
+`gap_to_bks%` is sense-normalised: a positive value always means worse than the
+reference, for maximize and minimize alike.
+
+Nothing in this roster beats a published bound. Under the runner's earlier
+margin rule — which compared a *percentage* against 1e-6, i.e. 1e-8 relative —
+three rows of this run would have been flagged `better-than-bks` on differences
+of 1e-5 to 1e-4 percent. Those are ties, not improvements. (The previously
+published 5s run contained no `better-than-bks` rows at all.)
+
+Two bands are used, deliberately different. An improvement is only claimed when
+it exceeds `max(1e-6·(|BKS|+1), 10·feas_tol)`: we accept solutions violating a
+constraint by up to `feas_tol`, and that slack itself buys a small objective
+gain. A *tie* requires the much tighter, purely relative `1e-6·(|BKS|+1)` —
+using the same band for both would have published `ex8_4_5` (BKS 3.07e-4) as
+matching BKS when it was 1.38% worse, because the absolute floor dwarfs an
+objective that small.
 
 ### The four unsolved instances
 
@@ -159,8 +178,8 @@ Every one is root-caused, and the verdict is recorded per row in
 | Instance | Verdict | Cause |
 |----------|---------|-------|
 | `elec25`, `elec50` | **bug** (#100) | Thomson problem. The feasible region contains coincident-point configurations where the Coulomb objective is `+inf`. Since the objective is folded in as an `obj <= bound` soft constraint, that violation clamps to ~1e30 and absorbs the real constraints' O(1) contributions in floating point, so the search loses its feasibility signal. Verified by construction: dropping the objective makes `elec25` feasible in 20s at violation 0; keeping it pins the search at the origin at violation exactly 1. |
-| `nvs01` | hard | `420.169·√(x0²+900) == x2·x0·x1` needs `x0` and the product `x1·x2` changed together. While `x0 = 0` the product term vanishes, so `x1` and `x2` receive no gradient signal and no single-variable jump improves — escaping requires a compound move. |
-| `st_e40` | hard | Rows C1–C3 are degree-7 polynomials `(x-1)(x-2)(x-3)(x-5)(x-8)(x-10)(x-12) == 0` restricting each integer to `{1,2,3,5,8,10,12}`. Moving between allowed values crosses forbidden integers where the violation spikes into the thousands. |
+| `nvs01` ([#101](https://github.com/spoorendonk/cbls/issues/101)) | hard | `420.169·√(x0²+900) == x2·x0·x1` needs `x0` and the product `x1·x2` changed together. While `x0 = 0` the product term vanishes, so `x1` and `x2` receive no gradient signal and no single-variable jump improves — escaping requires a compound move (Novelty Jump implements exactly this, but is off by default). Verified analytically and reproduced across seeds 1–7. |
+| `st_e40` ([#102](https://github.com/spoorendonk/cbls/issues/102)) | hard, **mechanism unidentified** | Rows C1–C3 are degree-7 polynomials `(x-1)(x-2)(x-3)(x-5)(x-8)(x-10)(x-12) == 0` restricting each integer to `{1,2,3,5,8,10,12}`; C0 pins the free `x3` to a bilinear function of them, and four linear rows bound the combination. The search satisfies C1–C3 but misses a linear row by ~2. An earlier revision of this table claimed a violation barrier between allowed integer values — that was **wrong**: `int_jump_candidates` enumerates the entire domain when it is narrower than 256, and these are `[1,12]`, so every allowed value is one jump away. The real mechanism is still open. |
 
 ## Integrality
 
@@ -176,20 +195,27 @@ are laid out as
 |-------|-----------------------------------------|---------------|---------------------|
 | 1     | nonlinear in both constraints and objs  | `nlvb`        | last `nlvbi`        |
 | 2     | nonlinear in constraints only           | `nlvc - nlvb` | last `nlvci`        |
-| 3     | nonlinear in objectives only            | `nlvo - nlvb` | last `nlvoi`        |
+| 3     | nonlinear in objectives only            | `nlvo - nlvc` | last `nlvoi`        |
 | 4     | linear arc variables                    | `nwv`         | —                   |
 | 5     | other linear                            | remainder     | —                   |
 | 6     | binary                                  | `nbv`         | all                 |
 | 7     | other integer                           | `niv`         | all                 |
 
-Two independent checks guard this mapping:
+Three checks guard this mapping. The first two are *count* checks — they catch a
+miscount but would not catch a correctly-sized set placed at the wrong offset:
 
-- the reader itself fails loudly if the positions it derives don't account for
-  exactly the count the header declares;
+- the reader fails loudly if the positions it derives don't account for exactly
+  the count the header declares;
 - the runner compares the recovered count against MINLPLib's own
   `nbinvars + nintvars` (the `n_disc_vars_bks` column) per instance and reports
   `integrality mismatch` in the tally. The published run has **zero mismatches
   across the roster**.
+
+The positions themselves are pinned by the unit tests in `tests/test_minlplib.cpp`
+("NL reader recovers discrete-variable count and positions"), which assert the
+exact `var_is_discrete` vector for each block. That third check matters: an
+earlier revision had the objective-only block length wrong and *both* count
+checks still passed.
 
 ## Feasibility tolerance
 

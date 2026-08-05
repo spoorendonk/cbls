@@ -334,11 +334,13 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
     };
     // Peek ahead: the remaining header lines all start with a digit, '-', or
     // space. Consume them until a segment marker letter appears. While doing so,
-    // capture the three lines needed to place the discrete variables. In the `g`
+    // capture the two lines needed to place the discrete variables. In the `g`
     // format the header layout is fixed; lines 1 (`g...`) and 2 (counts) are
     // already consumed, so of the lines skipped here:
     //   #3 -> header line 5: "nlvc nlvo nlvb"          (nonlinear var counts)
-    //   #4 -> header line 6: "nwv nfunc arith flags"   (linear network vars)
+    //   (#4 -> header line 6, "nwv nfunc arith flags", is skipped: arc and
+    //    other-linear variables are always continuous and always precede the
+    //    trailing nbv+niv block, so they never shift a discrete position.)
     //   #5 -> header line 7: "nbv niv nlvbi nlvci nlvoi"  (discrete counts)
     auto read_ints = [](const std::string& line, int count) {
         std::vector<int64_t> out(static_cast<size_t>(count), 0);
@@ -347,7 +349,7 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
         }
         return out;
     };
-    int64_t nlvc = 0, nlvo = 0, nlvb = 0, nwv = 0;
+    int64_t nlvc = 0, nlvo = 0, nlvb = 0;
     int64_t nbv = 0, niv = 0, nlvbi = 0, nlvci = 0, nlvoi = 0;
     int header_line_after_counts = 0;
     while (true) {
@@ -365,8 +367,6 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
             nlvc = v[0];
             nlvo = v[1];
             nlvb = v[2];
-        } else if (header_line_after_counts == 4) {
-            nwv = read_ints(hline, 1)[0];
         } else if (header_line_after_counts == 5) {
             auto v = read_ints(hline, 5);
             nbv = v[0];
@@ -383,7 +383,7 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
     //
     //   1. nonlinear in both constraints and objectives   nlvb        (last nlvbi integer)
     //   2. nonlinear in constraints only                  nlvc - nlvb (last nlvci integer)
-    //   3. nonlinear in objectives only                   nlvo - nlvb (last nlvoi integer)
+    //   3. nonlinear in objectives only                   nlvo - nlvc (last nlvoi integer)
     //   4. linear arc variables                           nwv         (continuous)
     //   5. other linear                                   remainder   (continuous)
     //   6. binary                                         nbv
@@ -401,9 +401,15 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
             }
         }
     };
-    const int64_t cat1 = nlvb;                          // nonlinear in both
+    const int64_t cat1 = nlvb;                               // nonlinear in both
     const int64_t cat2 = std::max<int64_t>(nlvc - nlvb, 0);  // nonlinear in constraints only
-    const int64_t cat3 = std::max<int64_t>(nlvo - nlvb, 0);  // nonlinear in objectives only
+    // Objective-only block. `nlvo` is an index bound *past* the constraint-only
+    // block, not nlvb + (#objective-only) — the total nonlinear column count is
+    // max(nlvc, nlvo) — so this block is [nlvc, nlvo) and is empty when
+    // nlvo <= nlvc. Using `nlvo - nlvb` overshoots by nlvc - nlvb: on windfac
+    // (nlvc=11, nlvo=13, 14 columns) the blocks would span 24 columns, either
+    // mis-placing the nlvoi integers or pushing them past n_vars.
+    const int64_t cat3 = std::max<int64_t>(nlvo - (cat1 + cat2), 0);
     mark_tail(0, cat1, nlvbi);
     mark_tail(cat1, cat2, nlvci);
     mark_tail(cat1 + cat2, cat3, nlvoi);

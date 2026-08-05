@@ -234,8 +234,10 @@ NB_MODULE(_cbls_core, m) {
         .def("constraint_violation", &ViolationManager::constraint_violation)
         .def("total_violation", &ViolationManager::total_violation)
         .def("augmented_objective", &ViolationManager::augmented_objective)
-        .def("is_feasible", &ViolationManager::is_feasible, nb::arg("tol") = 1e-9)
-        .def("violated_constraints", &ViolationManager::violated_constraints, nb::arg("tol") = 1e-9)
+        .def("is_feasible", &ViolationManager::is_feasible,
+             nb::arg("tol") = kDefaultFeasibilityTolerance)
+        .def("violated_constraints", &ViolationManager::violated_constraints,
+             nb::arg("tol") = kDefaultFeasibilityTolerance)
         .def("bump_weights", &ViolationManager::bump_weights, nb::arg("factor") = 1.0)
         .def("weighted_violation_delta", &ViolationManager::weighted_violation_delta,
              nb::arg("var_id"), nb::arg("j"))
@@ -310,7 +312,8 @@ NB_MODULE(_cbls_core, m) {
         .def_rw("max_iterations", &SearchConfig::max_iterations)
         .def_rw("use_fj", &SearchConfig::use_fj)
         .def_rw("lns_interval", &SearchConfig::lns_interval)
-        .def_rw("structural_batch_probability", &SearchConfig::structural_batch_probability);
+        .def_rw("structural_batch_probability", &SearchConfig::structural_batch_probability)
+        .def_rw("feasibility_tolerance", &SearchConfig::feasibility_tolerance);
 
     // ParallelSearch
     nb::class_<ParallelSearch>(m, "ParallelSearch")

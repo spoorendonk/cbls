@@ -176,15 +176,29 @@ TEST_CASE("NL reader recovers discrete-variable count and positions", "[minlplib
         REQUIRE(p.var_is_discrete == std::vector<uint8_t>{0, 0, 1, 1});
     }
 
-    SECTION("objective-only nonlinear block follows the constraint-only block") {
-        // nlvb=1 (col 0, continuous), nlvc-nlvb=1 (col 1, continuous),
-        // nlvo-nlvb=2 (cols 2,3) with the last nlvoi=1 integer -> col 3.
+    SECTION("objective-only nonlinear block sits at [nlvc, nlvo)") {
+        // nlvb=1 (col 0, continuous), nlvc-nlvb=1 (col 1, continuous). The
+        // objective-only block is [nlvc, nlvo) = col 2 only, with the last
+        // nlvoi=1 integer -> col 2. Col 3 is purely linear and continuous.
         std::string text = nl_header_disc(4, 0, 1, /*nlvc=*/2, /*nlvo=*/3, /*nlvb=*/1, 0, 0,
                                           /*nlvbi=*/0, /*nlvci=*/0, /*nlvoi=*/1);
         text += bounds_segment(4) + "O0 0\nn0\n";
         NlProblem p = parse_nl(text, "disc-obj");
         REQUIRE(p.n_discrete_vars == 1);
-        REQUIRE(p.var_is_discrete == std::vector<uint8_t>{0, 0, 0, 1});
+        REQUIRE(p.var_is_discrete == std::vector<uint8_t>{0, 0, 1, 0});
+    }
+
+    SECTION("objective-only integers survive a non-empty constraint-only block") {
+        // Regression: `nlvo - nlvb` would place the block at [3, 7) on 8 columns
+        // and mark col 6, while the header-count self-check still passed — so a
+        // count check alone cannot catch a mis-placed block.
+        // True layout: both=[0,1), cons-only=[1,3), obj-only=[3,5) -> integer col 4.
+        std::string text = nl_header_disc(8, 0, 1, /*nlvc=*/3, /*nlvo=*/5, /*nlvb=*/1, 0, 0,
+                                          /*nlvbi=*/0, /*nlvci=*/0, /*nlvoi=*/1);
+        text += bounds_segment(8) + "O0 0\nn0\n";
+        NlProblem p = parse_nl(text, "disc-obj-offset");
+        REQUIRE(p.n_discrete_vars == 1);
+        REQUIRE(p.var_is_discrete == std::vector<uint8_t>{0, 0, 0, 0, 1, 0, 0, 0});
     }
 
     SECTION("a fully continuous instance flags nothing") {

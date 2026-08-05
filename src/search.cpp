@@ -295,7 +295,12 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         ++batches;
 
         double batch_violation = max_real_violation();
-        if (batch_violation < best_violation) {
+        // Only tracked until the first feasible solution: after that both the
+        // final restore and the returned state use best_state, so the snapshot
+        // would be pure allocation on every improving batch. `<=` rather than
+        // `<` so an all-NaN run (violation stays +inf) still captures a state
+        // instead of returning the untouched initial assignment.
+        if (!have_feasible && batch_violation <= best_violation) {
             best_violation = batch_violation;
             closest_state = model.copy_state();
         }
