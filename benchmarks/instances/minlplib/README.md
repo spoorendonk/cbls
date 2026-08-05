@@ -129,14 +129,23 @@ recorded per row in `comparison.csv`. The previously published numbers used a
 5s budget and solved the mixed-integer instances as continuous relaxations;
 both are fixed here, so the two runs are not comparable row-by-row.
 
+**These are single-sample numbers.** The budget is wall-clock, so a fixed seed
+does not pin the iteration count and consecutive runs of the same binary differ.
+Two runs at this commit and seed gave 46 and 45 feasible respectively — the
+per-instance objectives move by more than that. Treat any single row as one
+draw, not a measurement. Reporting a median over several seeds (or switching the
+published run to a deterministic iteration budget, which the engine now supports
+via `time_limit = 0` plus `SearchConfig::max_iterations`) is the fix; it is not
+done here.
+
 | | count |
 |---|---|
 | roster | 50 |
 | parsed and built (closed-model rate) | 50 (100%) |
 | of which mixed-integer (integrality enforced) | 15 |
 | **feasible** | **46** |
-| — matching BKS (within the tie band) | see note below |
-| — worse than BKS | see note below |
+| — matching BKS (within the tie band) | 17 |
+| — worse than BKS | 29 |
 | — better than BKS | 0 |
 | infeasible | 4 |
 | unsupported / read errors / non-finite | 0 |
@@ -169,6 +178,29 @@ gain. A *tie* requires the much tighter, purely relative `1e-6·(|BKS|+1)` —
 using the same band for both would have published `ex8_4_5` (BKS 3.07e-4) as
 matching BKS when it was 1.38% worse, because the absolute floor dwarfs an
 objective that small.
+
+#### Why 60s
+
+Measured, not assumed. `--trace` records the incumbent against wall time, so one
+run yields the whole anytime profile. Cumulative instances with a feasible
+solution by time t (of 50):
+
+| by | 1s | 5s | 10s | 20s | 30s | 45s | 60s |
+|----|----|----|----|-----|-----|-----|-----|
+| feasible | 41 | 41 | 41 | 42 | 43 | 45 | 45 |
+
+Four instances only reach feasibility long after 5s — `chain50` (17.9s),
+`ex8_4_5` (25.0s), `tln2` (32.1s), `spring` (32.2s) — so a 5s budget would
+publish all four as infeasible.
+
+Solution quality is strongly bimodal. Of the instances that do become feasible,
+42% stop improving within the first second, but **22% are still improving in the
+final 15 seconds**, sometimes by orders of magnitude (`eg_all_s` goes from
+1.21e6 to 8.46 after the 20s mark; `process` from -37 to -1015). The mean share
+of each instance's total improvement achieved by 5s is 0.78, by 30s 0.88.
+
+So the tail of the budget is not wasted, and the profile suggests a few
+instances would keep improving past 60s.
 
 ### The four unsolved instances
 
