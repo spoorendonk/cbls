@@ -39,12 +39,9 @@ struct SearchConfig {
     // A constraint counts as satisfied when its violation is <= this. Absolute,
     // applied to the constraint node's violation value (for an equality row that
     // is |lhs - rhs|), so on models whose constraint bodies are large in
-    // magnitude the effective requirement is far tighter than it looks.
-    //
-    // The default is the historical value. Continuous/nonlinear models generally
-    // want something like an NLP solver's feasibility tolerance (SCIP's
-    // numerics/feastol default is 1e-6) — see the MINLPLib benchmark runner.
-    double feasibility_tolerance = 1e-9;
+    // magnitude the effective requirement is tighter than it looks.
+    // See kDefaultFeasibilityTolerance for why 1e-6.
+    double feasibility_tolerance = kDefaultFeasibilityTolerance;
 };
 
 struct SearchResult {

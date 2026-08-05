@@ -268,7 +268,11 @@ Tracks per-constraint violation and the GLS weight vector.
   any search acceptance rule. (When the objective is folded in as a soft
   constraint, the objective term is technically double-counted here; that is
   acceptable for the hook's local polish.)
-- `is_feasible(tol=1e-9)` / `violated_constraints(tol)` — convenience predicates
+- `is_feasible(tol=kDefaultFeasibilityTolerance)` / `violated_constraints(tol)` —
+  convenience predicates. The default is `1e-6` (matching SCIP's
+  `numerics/feastol` and `verify_model`); it is an *absolute* residual, so a much
+  tighter value is not achievable on models whose constraint bodies are large in
+  magnitude. `SearchConfig::feasibility_tolerance` shares the same default.
   over *all* constraints (including the objective soft constraint).
 - `bump_weights(factor=1.0)` — increments the weight of each currently-violated
   constraint (a simple additive scheme; the GFJ engine uses the

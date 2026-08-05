@@ -28,12 +28,11 @@ struct Args {
     // budget for a general-purpose non-convex MINLP heuristic (issue #88).
     double time_limit = 60.0;
     uint64_t seed = 1;
-    // Absolute constraint-violation tolerance for "feasible". 1e-6 matches
-    // SCIP's numerics/feastol default, which is the right reference point for a
-    // continuous/nonlinear roster and keeps the SCIP baseline (#89) comparable.
-    // The engine default (1e-9) is unreachable for equality rows whose bodies
-    // are large in magnitude, since the violation is the absolute |lhs - rhs|.
-    double feas_tol = 1e-6;
+    // Absolute constraint-violation tolerance for "feasible". Stated explicitly
+    // rather than inherited, because it is a published property of these
+    // results: it matches SCIP's numerics/feastol default, which keeps the SCIP
+    // baseline (#89) comparable. Same value as the engine default.
+    double feas_tol = cbls::kDefaultFeasibilityTolerance;
     std::vector<std::string> instances;  // optional override
     std::string commit_sha = "unknown";
     std::string out_csv;  // default: <inst_dir>/comparison.csv

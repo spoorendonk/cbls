@@ -196,12 +196,13 @@ Two independent checks guard this mapping:
 A constraint counts as satisfied when its violation is `<= 1e-6`, matching
 SCIP's default `numerics/feastol` — the right reference point for a
 continuous/nonlinear roster, and the same tolerance the SCIP baseline (#89)
-will use.
+will use. This is also the engine-wide default
+(`cbls::kDefaultFeasibilityTolerance`); the runner states it explicitly because
+it is a published property of these results, and `--feas-tol` overrides it.
 
-The engine default is `1e-9`, which is not a reasonable requirement here: the
-violation is measured as an *absolute* residual (for an equality row, the raw
-`|lhs - rhs|`), so on a row whose body is of magnitude 1e4 it demands ~13
-significant digits. The runner overrides it via `--feas-tol`.
+The violation is an *absolute* residual (for an equality row, the raw
+`|lhs - rhs|`), so a much tighter tolerance is not meaningful: on a row whose
+body is of magnitude 1e4, `1e-9` would demand ~13 significant digits.
 
 Infeasible rows report the closest approach the search made, so a numerical
 near-miss is distinguishable from a search that never reached the feasible

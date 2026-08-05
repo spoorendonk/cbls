@@ -6,6 +6,16 @@
 
 namespace cbls {
 
+/// Default tolerance below which a constraint counts as satisfied.
+///
+/// Applied to the constraint node's violation value, which is an *absolute*
+/// residual (for an equality row, the raw |lhs - rhs|). 1e-6 matches SCIP's
+/// `numerics/feastol` default and `verify_model`'s tolerance. A far tighter
+/// value is not meaningful on continuous/nonlinear models: on a row whose body
+/// is of magnitude 1e4 it would demand ~13 significant digits, which double
+/// precision cannot deliver.
+inline constexpr double kDefaultFeasibilityTolerance = 1e-6;
+
 class ViolationManager {
 public:
     explicit ViolationManager(Model& model);
@@ -18,8 +28,8 @@ public:
     // objective term is double-counted; that is acceptable for the hook's local
     // polish but not for accept rules (LNS uses a real-feasibility comparison).
     double augmented_objective() const;
-    bool is_feasible(double tol = 1e-9) const;
-    std::vector<int> violated_constraints(double tol = 1e-9) const;
+    bool is_feasible(double tol = kDefaultFeasibilityTolerance) const;
+    std::vector<int> violated_constraints(double tol = kDefaultFeasibilityTolerance) const;
     void bump_weights(double factor = 1.0);
 
     // Change in total weighted violation if var_id <- j, without committing.
