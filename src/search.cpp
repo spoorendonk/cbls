@@ -147,10 +147,13 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     // double::max() seconds to nanoseconds overflows int64 and yields a deadline
     // already in the past, which would end the search immediately.
     constexpr double kMaxBudgetSeconds = 1.0e9;  // ~31 years
+    // Saturate once and reuse for FJ's deadline below: FeasibilityJump::begin()
+    // performs the same integer-tick duration_cast, so handing it the raw value
+    // would reintroduce exactly the overflow this saturation prevents.
+    const double budget_seconds = has_deadline ? std::min(time_limit, kMaxBudgetSeconds) : 0.0;
     const auto deadline =
         start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                    std::chrono::duration<double>(
-                        has_deadline ? std::min(time_limit, kMaxBudgetSeconds) : 0.0));
+                    std::chrono::duration<double>(budget_seconds));
     auto past_deadline = [&]() {
         return has_deadline && std::chrono::steady_clock::now() >= deadline;
     };
@@ -172,7 +175,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     // immediately below). A batch is 1000 GLS iterations, so without this a
     // batch entered just before the deadline runs to completion and overruns it
     // — measured at +45% on the largest MINLPLib instance.
-    gfj.time_limit = time_limit;
+    gfj.time_limit = budget_seconds;  // saturated: begin() casts to integer ticks
     gfj.max_iterations = 0;
     FeasibilityJump fj(model, vm, rng, gfj);
     fj.begin(/*set_initial_x=*/!config.skip_init);
@@ -280,7 +283,13 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         if (lns && lns_interval > 0 && (perturbations % lns_interval == lns_interval - 1)) {
             // Bound the repair by whatever budget is left, so an LNS kick near
             // the deadline cannot run its own independent 2s.
-            lns->destroy_repair(model, vm, rng, has_deadline ? std::min(2.0, remaining()) : 0.0);
+            // Floored at a tiny positive value while a deadline exists:
+            // remaining() returns exactly 0.0 if the clock crossed the deadline
+            // since the past_deadline() check above, and 0 means "no wall-clock
+            // limit" downstream in fj_nl_initialize — the opposite of intent.
+            const double repair_limit =
+                has_deadline ? std::max(1e-9, std::min(2.0, remaining())) : 0.0;
+            lns->destroy_repair(model, vm, rng, repair_limit);
             fj.reset_weights();  // LNS mutated state outside GFJ
         } else {
             fj.perturb(config.perturbation_probability);  // self-resyncs

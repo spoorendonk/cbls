@@ -371,6 +371,13 @@ bool FeasibilityJump::any_active_violated() const {
 GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
     const size_t nc = model_.constraint_ids().size();
     int64_t batch_iters = 0;
+    // Sampling the wall clock every iteration is not free: steady_clock::now()
+    // costs ~20ns on a TSC clocksource but ~1.4us on HPET, against a GLS
+    // iteration that can be under 600ns — measured as a 3.8x throughput loss on
+    // an HPET machine. Check on a stride instead: the overrun is then bounded by
+    // one stride of work, which is nothing against the multi-second overrun the
+    // deadline exists to prevent. Power of two so the test is a mask.
+    constexpr int64_t kDeadlineCheckStride = 64;
 
     while (true) {
         if (!apply_jump(sample_size)) {
@@ -396,7 +403,8 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
         if (config_.max_iterations > 0 && iterations_ >= config_.max_iterations) {
             return GFJStatus::Unsolved;
         }
-        if (has_deadline_ && std::chrono::steady_clock::now() >= deadline_) {
+        if (has_deadline_ && (batch_iters & (kDeadlineCheckStride - 1)) == 0 &&
+            std::chrono::steady_clock::now() >= deadline_) {
             return GFJStatus::Unsolved;
         }
     }

@@ -216,7 +216,10 @@ SearchResult ParallelSearch::solve_deterministic(
 
     // In deterministic mode, epochs stop by iteration count, not wall-clock.
     // 0 disables the wall clock entirely in solve(), so nothing can cut an epoch
-    // short and make the run depend on machine speed.
+    // short and make the run depend on machine speed. (The previous sentinel,
+    // double::max(), was not itself broken - it produced a floating-rep +inf
+    // deadline - but solve() now converts to the clock's integer tick type,
+    // where such a value overflows.)
     const double epoch_time_limit = 0.0;
 
     for (int epoch = 0; epoch < max_epochs; ++epoch) {

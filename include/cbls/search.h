@@ -13,7 +13,10 @@ namespace cbls {
 
 struct SearchConfig {
     bool skip_init = false;
-    int64_t max_iterations = 0;  // 0 = unlimited (use time_limit); counts GLS iterations
+    // Total GLS iterations (not batches). 0 = unlimited (bounded by time_limit).
+    // Checked at batch boundaries, so SearchResult::iterations may exceed this
+    // by up to batch_iterations - 1.
+    int64_t max_iterations = 0;
     bool use_fj = true;
     int lns_interval = 3;
 
@@ -80,6 +83,10 @@ void initialize_random(Model& model, RNG& rng);
 void fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations = 10000,
                       RNG* rng = nullptr, double time_limit = 2.0);
 
+/// `time_limit <= 0` disables the wall clock entirely: the run is then bounded by
+/// `config.max_iterations` alone and is fully deterministic for a given seed
+/// (what the tests rely on). With neither budget set the call returns immediately
+/// having done no work, rather than looping forever.
 SearchResult solve(Model& model, double time_limit = 10.0, uint64_t seed = 42, bool use_fj = true,
                    InnerSolverHook* hook = nullptr, LNS* lns = nullptr, int lns_interval = 3,
                    SolveCallback* callback = nullptr, const SearchConfig& config = {});

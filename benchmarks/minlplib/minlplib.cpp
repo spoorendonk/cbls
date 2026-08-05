@@ -349,7 +349,8 @@ const char* bound_type_name(cbls::NlBoundType t) {
 //
 // NOTE: when |ref| < 1e-12 the return value is an ABSOLUTE residual, not a
 // percent — a percentage against zero is meaningless. Consumers must not bucket
-// those rows as percentages; `gap_is_absolute` reports which rows those are.
+// those rows as percentages; the CSV does not distinguish them, so the README
+// records which instances they are (mathopt1, prob09, least).
 double safe_gap(double obj, double ref, bool maximizing) {
     if (std::isnan(obj) || std::isnan(ref)) {
         return std::numeric_limits<double>::quiet_NaN();
@@ -361,8 +362,6 @@ double safe_gap(double obj, double ref, bool maximizing) {
     }
     return 100.0 * diff / denom;
 }
-
-bool gap_is_absolute(double ref) { return !std::isnan(ref) && std::abs(ref) < 1e-12; }
 
 }  // namespace
 
@@ -529,6 +528,10 @@ int main(int argc, char** argv) {
         if (nonfinite) {
             ++t.failed_nonfinite;
             note = "non-finite";
+            if (!integrality_note.empty()) {
+                // else the tally reports a mismatch that no CSV row explains
+                note += "; " + integrality_note;
+            }
             std::printf("%12s %12.4g %10s %8.2fs  %s\n", "NONFIN", b.primal, "N/A", wall,
                         note.c_str());
             csv << name << ",NaN," << b.primal << "," << b.dual << ",NaN,NaN," << wall << ",false,"

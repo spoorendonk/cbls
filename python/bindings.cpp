@@ -276,9 +276,10 @@ NB_MODULE(_cbls_core, m) {
     // LNS
     nb::class_<LNS>(m, "LNS")
         .def(nb::init<double>(), nb::arg("destroy_fraction") = 0.3)
-        .def("destroy_repair", &LNS::destroy_repair)
+        .def("destroy_repair", &LNS::destroy_repair, nb::arg("model"), nb::arg("vm"),
+             nb::arg("rng"), nb::arg("repair_time_limit") = 2.0)
         .def("destroy_repair_cycle", &LNS::destroy_repair_cycle, nb::arg("model"), nb::arg("vm"),
-             nb::arg("rng"), nb::arg("n_rounds") = 10);
+             nb::arg("rng"), nb::arg("n_rounds") = 10, nb::arg("repair_time_limit") = 2.0);
 
     // SolutionPool
     nb::class_<Solution>(m, "Solution")

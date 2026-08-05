@@ -20,6 +20,10 @@ inline int32_t vid(int32_t handle) { return cbls::handle_to_var_id(handle); }
 // *iterations* instead (`time_limit = 0` disables the wall clock entirely), so a
 // given seed always produces exactly the same result.
 //
+// Not every call site is converted: a few tests deliberately keep a wall clock
+// because the thing they assert *is* timing (e.g. "SA returns result" checks
+// time_seconds > 0). Those are the exception and are commented as such.
+//
 // The iteration budgets at the call sites were calibrated against the wall-clock
 // budgets they replaced — see tools note in the commit that introduced this.
 // Raise a budget if a quality assertion needs more search; never swap it back
@@ -41,6 +45,16 @@ inline cbls::SearchResult solve_deterministic(cbls::Model& model, int64_t max_it
     const char* calib = std::getenv("CBLS_TEST_CALIBRATE");
     if (calib != nullptr) {
         time_limit = std::atof(calib);
+        if (!(time_limit > 0.0)) {
+            std::fprintf(stderr,
+                         "CBLS_TEST_CALIBRATE=\"%s\" is not a positive number of seconds; "
+                         "every solve would return immediately. Refusing to run.\n",
+                         calib);
+            std::abort();
+        }
+        std::fprintf(stderr,
+                     "WARNING: CBLS_TEST_CALIBRATE is set - this run is NOT deterministic "
+                     "and its pass/fail result is meaningless.\n");
         cfg.max_iterations = 0;
     }
 

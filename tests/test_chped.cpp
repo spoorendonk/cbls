@@ -84,13 +84,11 @@ TEST_CASE("CHPED 40-unit feasibility and quality", "[chped]") {
     auto cm = build_chped_model(inst);
     auto& m = cm.model;
 
-    // 30s, not 15s: this is a wall-clock quality bound, and the pre-commit gate
-    // runs the whole suite under `ctest -j`. With ~16 heavy benchmarks (incl. the
-    // 123s Bunker-medium) competing for cores, a 15s budget gives this test well
-    // under half a core, starving it below the quality bar. 30s wall-clock under
-    // that contention ≈ 15s solo compute, which reliably reaches obj < 140000;
-    // since Bunker-medium dominates suite wall-time, this adds no net suite time.
-    auto result = solve_deterministic(m, 126000, 42);
+    // Iteration-bounded, so unlike the wall-clock budget this replaced, the
+    // result no longer depends on how much core this test gets under `ctest -j`.
+    // Budget set from what reliably clears obj < 140000 (measured: the objective
+    // is already 127128 well before this); raise it if the bar tightens.
+    auto result = solve_deterministic(m, 95000, 42);
     REQUIRE(result.feasible);
     REQUIRE(result.objective >= inst.known_optimum);
     REQUIRE(result.objective < 140000);

@@ -76,7 +76,9 @@ TEST_CASE("FJ-NL finds feasibility simple", "[search]") {
     REQUIRE_FALSE(vm.is_feasible());
 
     RNG rng(42);
-    fj_nl_initialize(m, vm, 1000, &rng);
+    // time_limit 0: bounded by the iteration budget alone, so a loaded machine
+    // cannot cut the repair short and turn the assertion below into a flake.
+    fj_nl_initialize(m, vm, 1000, &rng, /*time_limit=*/0.0);
     full_evaluate(m);
     REQUIRE(vm.is_feasible());
 }
@@ -100,7 +102,7 @@ TEST_CASE("FJ-NL finds feasibility bool", "[search]") {
     REQUIRE_FALSE(vm.is_feasible());
 
     RNG rng(42);
-    fj_nl_initialize(m, vm, 100, &rng);
+    fj_nl_initialize(m, vm, 100, &rng, /*time_limit=*/0.0);
     full_evaluate(m);
     REQUIRE(vm.is_feasible());
 }
@@ -452,8 +454,12 @@ TEST_CASE("max_iterations stops SA by iteration count", "[search]") {
     // thing that can stop this, which is exactly what the test asserts.
     auto result = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
                         nullptr, config);
-    REQUIRE(result.iterations <= 1000);
-    REQUIRE(result.time_seconds < 5.0);
+    // The budget is checked at batch boundaries, so the count lands in
+    // [max_iterations, max_iterations + batch_iterations). Both ends matter: the
+    // lower proves the budget was actually spent rather than an early break, the
+    // upper that it stopped near the budget rather than running unbounded.
+    REQUIRE(result.iterations >= 1000);
+    REQUIRE(result.iterations < 1000 + config.batch_iterations);
 }
 
 TEST_CASE("SolutionPool top_k", "[pool]") {
