@@ -1,16 +1,7 @@
-instance,method,objective,gap_pct,source,notes
-mini,Greedy,7711651923,,this work,synthetic legacy model -- not ROADEF 2010
-mini,MIP (SAA 20sc),7711651923,0.0,this work (PySCIPOpt),synthetic legacy model -- not ROADEF 2010
-mini,CBLS (SA+hook),7648754817,-0.82,this work (vs Greedy),"synthetic legacy model -- not ROADEF 2010; n_sc=5 sampled per move"
-small,Greedy,12736677594,,this work,synthetic legacy model -- not ROADEF 2010
-small,MIP (SAA 20sc),12724583264,0.0,this work (PySCIPOpt),synthetic legacy model -- not ROADEF 2010
-small,CBLS (SA+hook),12702032099,-0.27,this work (vs Greedy),"synthetic legacy model -- not ROADEF 2010; n_sc=20 sampled per move"
 # Post-port ViolationLS rows (epic #64 P0-P4; engine HEAD c0116c3, seed 42).
 # Scalar-only model (structural batch inactive). Essentially tied with CBLS-SA
 # (within ~0.1%); both feasible and beat Greedy; small post-port edges MIP-SAA.
 # No meaningful regression. Still synthetic legacy model, not ROADEF 2010.
-mini,CBLS ViolationLS,7651754817,-0.78,this work (vs Greedy),"post-port; ~SA 7648754817; beats Greedy; synthetic legacy model"
-small,CBLS ViolationLS,12715568297,-0.17,this work (vs Greedy),"post-port; ~SA 12702032099; beats Greedy and MIP-SAA (12724583264); synthetic legacy model"
 # All rows above are SELF-CONSISTENT comparisons over the synthetic legacy model
 # (capacity + merit-order dispatch only; no fuel dynamics, no CT5-CT12,
 # spacing collapsed into one site param). They do NOT reflect a gap vs the
@@ -23,3 +14,14 @@ small,CBLS ViolationLS,12715568297,-0.17,this work (vs Greedy),"post-port; ~SA 1
 #   4. official checker.jar passes on emitted solution.txt
 # Until then, this CSV claims only "CBLS-SA vs greedy / SCIP-SAA
 # self-consistency on synthetic instances", not "% gap vs published BKS".
+# CBLS rows REMOVED (4 of 8): they were produced under the old
+# 1e-9 feasibility tolerance, before the engine default moved to 1e-6, and this
+# file records no tolerance so they cannot be interpreted. Regeneration is
+# blocked on this benchmark having no committed generator (the runner does not
+# write this file) - tracked in #103. Rows below are cited reference results
+# and are unaffected. Removed rows remain in git history.
+instance,method,objective,gap_pct,source,notes
+mini,Greedy,7711651923,,this work,synthetic legacy model -- not ROADEF 2010
+mini,MIP (SAA 20sc),7711651923,0.0,this work (PySCIPOpt),synthetic legacy model -- not ROADEF 2010
+small,Greedy,12736677594,,this work,synthetic legacy model -- not ROADEF 2010
+small,MIP (SAA 20sc),12724583264,0.0,this work (PySCIPOpt),synthetic legacy model -- not ROADEF 2010

@@ -15,15 +15,34 @@
 # objective on instances like gen-ip054, pk1, mad. Post-fix
 # (read_mps now applies the CPLEX/Gurobi/SCIP ub=1 default), these values
 # should be regenerated; see issue #64 P5 (#70).
-instance,objective,gap_to_opt%,wall_seconds,commit_sha
-enlight_hard,NaN,NaN,16.5839,4e9c264
-markshare1,278,27700,15.5285,4e9c264
-markshare2,546,54500,16.1336,4e9c264
-gen-ip054,6.06948e+10,8.87225e+08,15.0001,4e9c264
-gen-ip002,NaN,NaN,15.2657,4e9c264
-pk1,1e+09,9.09091e+09,15.0001,4e9c264
-mas76,1.36143e+06,3303.15,15.0006,4e9c264
-neos5,16,6.66667,15.0001,4e9c264
-flugpl,NaN,NaN,16.2082,4e9c264
-mad,8.10259e+09,3.02336e+13,15.1272,4e9c264
-binkar10_1,NaN,NaN,18.9572,4e9c264
+#
+# UPDATE: the post-port ViolationLS rows this file asked for are now present.
+# A `phase` column distinguishes them: `pre-port-SA` rows are the original
+# 15s/instance simulated-annealing baseline above; `post-port-ViolationLS`
+# rows are 30s/instance at the commit in their commit_sha, with the engine's
+# feasibility tolerance at its 1e-6 default. The two phases differ in search
+# algorithm, time budget AND tolerance, so they are a coarse before/after, not
+# a controlled comparison.
+instance,phase,objective,gap_to_opt%,wall_seconds,commit_sha
+enlight_hard,pre-port-SA,NaN,NaN,16.5839,4e9c264
+markshare1,pre-port-SA,278,27700,15.5285,4e9c264
+markshare2,pre-port-SA,546,54500,16.1336,4e9c264
+gen-ip054,pre-port-SA,6.06948e+10,8.87225e+08,15.0001,4e9c264
+gen-ip002,pre-port-SA,NaN,NaN,15.2657,4e9c264
+pk1,pre-port-SA,1e+09,9.09091e+09,15.0001,4e9c264
+mas76,pre-port-SA,1.36143e+06,3303.15,15.0006,4e9c264
+neos5,pre-port-SA,16,6.66667,15.0001,4e9c264
+flugpl,pre-port-SA,NaN,NaN,16.2082,4e9c264
+mad,pre-port-SA,8.10259e+09,3.02336e+13,15.1272,4e9c264
+binkar10_1,pre-port-SA,NaN,NaN,18.9572,4e9c264
+enlight_hard,post-port-ViolationLS,NaN,NaN,30.001,fca1638
+markshare1,post-port-ViolationLS,2744,274300,30.0009,fca1638
+markshare2,post-port-ViolationLS,3636,363500,30.0008,fca1638
+gen-ip054,post-port-ViolationLS,NaN,NaN,30.0012,fca1638
+gen-ip002,post-port-ViolationLS,-3359.01,29.7827,30.0029,fca1638
+pk1,post-port-ViolationLS,121,1000,30.0143,fca1638
+mas76,post-port-ViolationLS,NaN,NaN,30.0056,fca1638
+neos5,post-port-ViolationLS,16.5045,10.0299,30.0222,fca1638
+flugpl,post-port-ViolationLS,NaN,NaN,30.0017,fca1638
+mad,post-port-ViolationLS,3.076,11377.6,30.0272,fca1638
+binkar10_1,post-port-ViolationLS,1.0102e+06,14883.2,30.0437,fca1638

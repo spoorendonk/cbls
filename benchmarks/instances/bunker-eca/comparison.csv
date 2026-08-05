@@ -1,4 +1,3 @@
-instance,method,objective,gap_pct,source
 # AUDIT (#75 / 2026-05-04): rows below are NOT comparable across methods.
 # - SCIP rows use a known-broken formulation: linear-in-v fuel (#49), missing
 #   per-ship caps (#50), different ECA threshold (#51), different price avg (#52),
@@ -13,23 +12,19 @@ instance,method,objective,gap_pct,source
 # Until both sides agree (gates #56, #55), do NOT report a gap-vs-SCIP or
 # gap-vs-BKS. CBLS rows are valid only as self-consistency / engine-throughput
 # data points. See benchmarks/bunker-eca/FIDELITY.md for full audit.
-small-3s-10c,SCIP,1350768,,"PySCIPOpt MIQCP, 60s; BUGGY FORMULATION (#49-#52, #81) — not comparable"
-small-3s-10c,CBLS,1096172,,"CBLS SA, 30s; simplified formulation (#53, #54, #78, #79) — self-consistent only"
-small-3s-10c,CBLS-noECA,1096172,,"CBLS SA without ECA fuel switching; equal to CBLS due to #57"
-medium-7s-30c,SCIP,,,"PySCIPOpt MIQCP no solution in 300s (and would be buggy if it did)"
-medium-7s-30c,CBLS,3291331,,"CBLS SA, 120s; simplified formulation — self-consistent only"
-medium-7s-30c,CBLS-noECA,3291331,,"CBLS SA without ECA fuel switching; equal to CBLS due to #57"
-large-15s-60c,SCIP,,,"PySCIPOpt MIQCP no solution in 600s (and would be buggy if it did)"
-large-15s-60c,CBLS,6447180,,"CBLS SA, 300s; simplified formulation — self-consistent only"
-large-15s-60c,CBLS-noECA,6447180,,"CBLS SA without ECA fuel switching; equal to CBLS due to #57"
-xlarge-30s-120c,SCIP,,,"PySCIPOpt MIQCP no solution in 1800s"
-xlarge-30s-120c,CBLS,,,not run
-xlarge-30s-120c,CBLS-noECA,,,not run
 # Post-port ViolationLS rows (epic #64 P0-P4; engine HEAD c0116c3, seed 42,
 # default config, --verify PASS). Bunker is scalar-only (no List/Set vars) so the
 # structural batch is inactive and the engine finds the same optima as CBLS-SA: a
 # no-regression result. Still self-consistent only (simplified formulation, no
 # BKS; see header + FIDELITY.md). noECA == ECA persists (#57).
-small-3s-10c,CBLS-ViolationLS,1096172,,"post-port 30s; identical to CBLS-SA (no regression); self-consistent only"
-medium-7s-30c,CBLS-ViolationLS,3291331,,"post-port 120s; identical to CBLS-SA (no regression); self-consistent only"
-large-15s-60c,CBLS-ViolationLS,6447180,,"post-port 300s; identical to CBLS-SA (no regression); self-consistent only"
+# CBLS rows REMOVED (11 of 15): they were produced under the old
+# 1e-9 feasibility tolerance, before the engine default moved to 1e-6, and this
+# file records no tolerance so they cannot be interpreted. Regeneration is
+# blocked on this benchmark having no committed generator (the runner does not
+# write this file) - tracked in #103. Rows below are cited reference results
+# and are unaffected. Removed rows remain in git history.
+instance,method,objective,gap_pct,source
+small-3s-10c,SCIP,1350768,,"PySCIPOpt MIQCP, 60s; BUGGY FORMULATION (#49-#52, #81) — not comparable"
+medium-7s-30c,SCIP,,,"PySCIPOpt MIQCP no solution in 300s (and would be buggy if it did)"
+large-15s-60c,SCIP,,,"PySCIPOpt MIQCP no solution in 600s (and would be buggy if it did)"
+xlarge-30s-120c,SCIP,,,"PySCIPOpt MIQCP no solution in 1800s"

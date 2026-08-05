@@ -1,4 +1,3 @@
-instance,periods,method,objective,lb,gap_pct,time_s,source,note
 # Audit (issue #73, FIDELITY.md, follow-up #77): Our CBLS model and the SCIP
 # reference (reference_solve.py) both solve a ramp-free UC: no |P[t]-P[t-1]|
 # constraints. Whether Pedroso 2014's Table 2 bounds were obtained with ramp
@@ -8,6 +7,18 @@ instance,periods,method,objective,lb,gap_pct,time_s,source,note
 # certified BKS gap. The SCIP reference additionally uses a 50-segment
 # piecewise-linear approximation of the |d*sin(e*(Pmin-P))| valve-point term
 # (objective error bounded ~0.1%). See FIDELITY.md.
+# Post-port ViolationLS rows (epic #64 P0-P4; engine HEAD fc600ea, seed 42,
+# greedy init + FJ warm-start + FloatIntensifyHook + LNS, default config).
+# All feasible rows below pass --verify (resolves the #32/#33 false-feasible
+# flag). Strict improvement over CBLS SA on every instance SA solved, plus two
+# instances SA could not make feasible (ucp13-6p, ucp40-3p) are now VERIFIED.
+# CBLS rows REMOVED (22 of 32): they were produced under the old
+# 1e-9 feasibility tolerance, before the engine default moved to 1e-6, and this
+# file records no tolerance so they cannot be interpreted. Regeneration is
+# blocked on this benchmark having no committed generator (the runner does not
+# write this file) - tracked in #103. Rows below are cited reference results
+# and are unaffected. Removed rows remain in git history.
+instance,periods,method,objective,lb,gap_pct,time_s,source,note
 ucp13,1,Pedroso MIP (1hr),11701,11701,0.00,,Pedroso et al. 2014 Table 2,possibly ramp-constrained (see #77)
 ucp13,3,Pedroso MIP (1hr),38850,38850,0.00,,Pedroso et al. 2014 Table 2,possibly ramp-constrained (see #77)
 ucp13,6,Pedroso MIP (1hr),91784,91406,0.41,,Pedroso et al. 2014 Table 2,possibly ramp-constrained (see #77)
@@ -18,30 +29,3 @@ ucp40,3,Pedroso MIP (1hr),178547,178396,0.08,,Pedroso et al. 2014 Table 2,possib
 ucp40,6,Pedroso MIP (1hr),416606,416108,0.12,,Pedroso et al. 2014 Table 2,possibly ramp-constrained (see #77)
 ucp40,12,Pedroso MIP (1hr),1113801,1112371,0.13,,Pedroso et al. 2014 Table 2,possibly ramp-constrained (see #77)
 ucp40,24,Pedroso MIP (1hr),2238504,2235971,0.11,,Pedroso et al. 2014 Table 2,possibly ramp-constrained (see #77)
-ucp13,1,CBLS SA (10s),13864.8,11701,18.49,10.0,this work,ramp-free; gap vs Pedroso LB (ramp question open, see #77)
-ucp13,3,CBLS SA (30s),48531.9,38850,24.92,30.0,this work,ramp-free; gap vs Pedroso LB (ramp question open, see #77); verifier may flag (#32 #33)
-ucp13,6,CBLS SA (60s),INFEASIBLE,91406,,60.0,this work,ramp-free; #32 #33 affect feasibility flag
-ucp13,12,CBLS SA (120s),INFEASIBLE,231587,,123.5,this work,ramp-free; #32 #33 affect feasibility flag
-ucp13,24,CBLS SA (300s),INFEASIBLE,464053,,308.9,this work,ramp-free; #32 #33 affect feasibility flag
-ucp40,1,CBLS SA (10s),77964.4,55645,40.11,10.0,this work,ramp-free; gap vs Pedroso LB (ramp question open, see #77)
-ucp40,3,CBLS SA (30s),INFEASIBLE,178396,,30.9,this work,ramp-free; #32 #33 affect feasibility flag
-ucp40,6,CBLS SA (60s),INFEASIBLE,416108,,63.2,this work,ramp-free; #32 #33 affect feasibility flag
-ucp40,12,CBLS SA (120s),INFEASIBLE,1112371,,130.7,this work,ramp-free; #32 #33 affect feasibility flag
-ucp40,24,CBLS SA (300s),INFEASIBLE,2235971,,391.3,this work,ramp-free; #32 #33 affect feasibility flag
-ucp100,1,CBLS SA (10s),INFEASIBLE,,,10.5,this work,ramp-free
-ucp200,1,CBLS SA (10s),INFEASIBLE,,,10.0,this work,ramp-free
-# Post-port ViolationLS rows (epic #64 P0-P4; engine HEAD fc600ea, seed 42,
-# greedy init + FJ warm-start + FloatIntensifyHook + LNS, default config).
-# All feasible rows below pass --verify (resolves the #32/#33 false-feasible
-# flag). Strict improvement over CBLS SA on every instance SA solved, plus two
-# instances SA could not make feasible (ucp13-6p, ucp40-3p) are now VERIFIED.
-ucp13,1,CBLS ViolationLS (10s),12172.0,11701,4.03,10.0,this work,ramp-free; VERIFIED; was SA 13864.8 (18.49%)
-ucp13,3,CBLS ViolationLS (30s),42192.8,38850,8.60,30.0,this work,ramp-free; VERIFIED; was SA 48531.9 (24.92%)
-ucp13,6,CBLS ViolationLS (60s),98104.1,91406,7.33,60.1,this work,ramp-free; VERIFIED; SA was INFEASIBLE
-ucp13,12,CBLS ViolationLS (120s),INFEASIBLE,231587,,120.1,this work,ramp-free; still infeasible (hard coupled temporal; see #35/#36)
-ucp13,24,CBLS ViolationLS (300s),INFEASIBLE,464053,,300.3,this work,ramp-free; still infeasible (see #35/#36)
-ucp40,1,CBLS ViolationLS (10s),62801.8,55645,12.86,10.1,this work,ramp-free; VERIFIED; was SA 77964.4 (40.11%)
-ucp40,3,CBLS ViolationLS (30s),185257.1,178396,3.85,30.2,this work,ramp-free; VERIFIED; SA was INFEASIBLE
-ucp40,6,CBLS ViolationLS (60s),INFEASIBLE,416108,,61.0,this work,ramp-free; still infeasible (see #35/#36)
-ucp40,12,CBLS ViolationLS (120s),INFEASIBLE,1112371,,130.4,this work,ramp-free; still infeasible (see #35/#36)
-ucp40,24,CBLS ViolationLS (300s),INFEASIBLE,2235971,,304.3,this work,ramp-free; still infeasible (see #35/#36)

@@ -1,4 +1,4 @@
-# Downloaded instance files — fetched by download.py at runtime.
-*.mps.gz
-*.mps
-miplib2017-v22.solu
+# Instance files are vendored (~180 KB) so the roster is reproducible from the
+# repo alone and so running the benchmark refreshes comparison.csv rather than
+# emptying it: with no instances present the runner skips every row and writes a
+# header-only file over the published table. download.py refreshes them on demand.
