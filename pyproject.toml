@@ -13,6 +13,11 @@ dev = [
     "pytest>=7.0",
     "pytest-timeout>=2.1",
 ]
+benchmarks = [
+    # CP-SAT's violation_ls worker, the MIPfeas baseline. 9.7 is when the
+    # num_violation_ls parameter shipped.
+    "ortools>=9.7",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
