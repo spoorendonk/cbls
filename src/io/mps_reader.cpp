@@ -509,6 +509,11 @@ MpsProblem read_mps(const std::string& filename) {
     }
 
     bool in_integer_section = false;
+    // Columns that appeared in BOUNDS at all. The integer-default upper bound
+    // applied after the parse loop is only correct for an integer column with no
+    // bound entry whatsoever; an explicit LI/LO/MI entry sets no upper bound and
+    // must leave it at +inf.
+    std::vector<char> col_had_bound_entry;
     Section section = Section::None;
     bool have_objective = false;
     // MIPX-DIFF: track ENDATA sentinel to warn on truncated files; vendored
@@ -732,6 +737,10 @@ MpsProblem read_mps(const std::string& filename) {
                 // tokens[1] is bound name (ignored).
                 auto col_name = tokens[2];
                 int32_t col_idx = getOrCreateCol(col_name);
+                if (static_cast<size_t>(col_idx) >= col_had_bound_entry.size()) {
+                    col_had_bound_entry.resize(static_cast<size_t>(col_idx) + 1, 0);
+                }
+                col_had_bound_entry[static_cast<size_t>(col_idx)] = 1;
                 const bool has_value = tokens.n >= 4;
                 MpsVar& v = prob.vars[col_idx];
 
@@ -782,12 +791,21 @@ MpsProblem read_mps(const std::string& filename) {
     }
 
     // MIPX-DIFF: Apply MPS integer-default upper bound. CPLEX/Gurobi/SCIP
-    // convention: integer columns inside INTORG/INTEND (or marked via LI/UI)
-    // default to ub=1 unless an explicit upper was set. Vendored mipx leaves
-    // ub=+inf, which produces multi-billion domains for MIPLIB instances that
-    // rely on the default. (Filed upstream.)
-    for (auto& v : prob.vars) {
-        if (v.kind == MpsVarKind::Integer && v.ub == kMpsInf) {
+    // convention: an integer column inside INTORG/INTEND with *no* BOUNDS entry
+    // defaults to ub=1. Vendored mipx leaves ub=+inf, which produces
+    // multi-billion domains for MIPLIB instances that rely on the default.
+    // (Filed upstream.)
+    //
+    // A column that does appear in BOUNDS keeps ub=+inf unless UP/UI/FX/BV sets
+    // one: `LI bnd C 0` declares a general integer with a lower bound and no
+    // upper. Applying the default there silently binarises the model. On MIPLIB
+    // that is not a subtle distortion — under ub=1, gen-ip054 and enlight_hard
+    // have no feasible point at all, and gen-ip002's optimum moves from
+    // -4783.73 to -3359.01. Every one of those reads as a solver failure.
+    for (size_t j = 0; j < prob.vars.size(); ++j) {
+        MpsVar& v = prob.vars[j];
+        const bool had_bound_entry = j < col_had_bound_entry.size() && col_had_bound_entry[j] != 0;
+        if (v.kind == MpsVarKind::Integer && v.ub == kMpsInf && !had_bound_entry) {
             v.ub = 1.0;
         }
     }

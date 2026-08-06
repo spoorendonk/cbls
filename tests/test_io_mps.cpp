@@ -212,6 +212,43 @@ TEST_CASE("read_mps applies MPS integer-default ub=1 for unbounded integers",
     REQUIRE_THAT(prob.vars[0].ub, WithinAbs(1.0, 1e-12));
 }
 
+TEST_CASE("read_mps leaves an LI-bounded integer column unbounded above", "[mps][reader]") {
+    // The integer default is "no BOUNDS entry at all", not "no upper bound". `LI`
+    // sets a lower bound and says nothing about the upper, so the column stays a
+    // general integer. Applying ub=1 here binarises the model: on MIPLIB it makes
+    // gen-ip054 and enlight_hard infeasible and moves gen-ip002's optimum, each of
+    // which then reads as a solver failure rather than a reader bug.
+    const std::string content =
+        "NAME          LIBOUND\n"
+        "ROWS\n"
+        " N  COST\n"
+        " G  C1\n"
+        "COLUMNS\n"
+        "    MARKER1     'MARKER'                 'INTORG'\n"
+        "    Z    COST   1.0   C1   1.0\n"
+        "    W    COST   1.0   C1   1.0\n"
+        "    MARKER2     'MARKER'                 'INTEND'\n"
+        "RHS\n"
+        "    RHS  C1     0.0\n"
+        "BOUNDS\n"
+        " LI bnd  Z      0.0\n"
+        "ENDATA\n";
+    auto path = write_file("libound.mps", content);
+    auto prob = cbls::read_mps(path.string());
+    REQUIRE(prob.vars.size() == 2);
+
+    // Z appeared in BOUNDS: no upper bound was given, so it keeps +inf.
+    REQUIRE(prob.vars[0].name == "Z");
+    REQUIRE(prob.vars[0].kind == cbls::MpsVarKind::Integer);
+    REQUIRE(prob.vars[0].lb == 0.0);
+    REQUIRE(prob.vars[0].ub == cbls::kMpsInf);
+
+    // W never appeared in BOUNDS, so the ub=1 default still applies to it.
+    REQUIRE(prob.vars[1].name == "W");
+    REQUIRE(prob.vars[1].kind == cbls::MpsVarKind::Integer);
+    REQUIRE_THAT(prob.vars[1].ub, WithinAbs(1.0, 1e-12));
+}
+
 TEST_CASE("read_mps records OBJSENSE and adapter rejects MAX", "[mps][reader]") {
     const std::string content =
         "NAME          MAX\n"
