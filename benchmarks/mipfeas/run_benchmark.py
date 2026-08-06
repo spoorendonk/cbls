@@ -70,9 +70,14 @@ def resolve_roster(value: str, inst_dir: Path) -> Path:
 
 
 def commit_sha() -> str:
+    """The commit a run is attributed to, marked `-dirty` when the tree is modified.
+
+    A plain SHA from a modified checkout claims a reproducibility the result does
+    not have — the code that ran is not the code at that commit.
+    """
     try:
         out = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
+            ["git", "describe", "--always", "--dirty", "--abbrev=7"],
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
@@ -131,7 +136,9 @@ def with_memory_limit(command: list[str], limit_gb: float | None) -> list[str]:
     if not limit_gb:
         return command
     limit_kb = int(limit_gb * 1024 * 1024)
-    return ["/bin/sh", "-c", f'ulimit -v {limit_kb}; exec "$0" "$@"', *command]
+    # `&&`, not `;`: if the limit cannot be set (a lower hard limit already in
+    # force), the job must fail loudly rather than run uncapped.
+    return ["/bin/sh", "-c", f'ulimit -v {limit_kb} && exec "$0" "$@"', *command]
 
 
 def write_failure_result(
@@ -168,6 +175,10 @@ def run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
             capture_output=True,
             text=True,
             timeout=args.budget + TIMEOUT_SLACK_SECONDS,
+            # Own process group: without it a Ctrl-C reaches every in-flight child,
+            # each of which then leaves a "killed" result that resume treats as done
+            # — permanently converting those instances to a Primal Integral of 2.
+            start_new_session=True,
         )
     except subprocess.TimeoutExpired:
         write_failure_result(
@@ -180,17 +191,23 @@ def run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
         return f"{job.engine}/{job.instance}: TIMEOUT"
 
     elapsed = time.monotonic() - started
-    if completed.returncode != 0 and not job.result_path(results_dir).exists():
-        # Non-zero with no result of its own: killed by the OOM killer or the
-        # address-space limit, or the instance was absent.
-        write_failure_result(
-            job,
-            results_dir,
-            "killed",
-            f"exit {completed.returncode}: {completed.stderr.strip()[:400]}",
-            args.budget,
+    if completed.returncode != 0:
+        if not job.result_path(results_dir).exists():
+            # Non-zero with no result of its own: killed by the OOM killer or the
+            # address-space limit, or the instance was absent.
+            write_failure_result(
+                job,
+                results_dir,
+                "killed",
+                f"exit {completed.returncode}: {completed.stderr.strip()[:400]}",
+                args.budget,
+            )
+        # A job that wrote a result and *then* died still died. Reporting that as
+        # "done" is how a systematic crash goes unnoticed for a whole roster.
+        return (
+            f"{job.engine}/{job.instance}: FAILED (exit {completed.returncode}) "
+            f"{completed.stderr.strip()[:200]}"
         )
-        return f"{job.engine}/{job.instance}: FAILED (exit {completed.returncode})"
     return f"{job.engine}/{job.instance}: {completed.stdout.strip() or 'done'} [{elapsed:.1f}s]"
 
 
@@ -225,7 +242,7 @@ def main() -> int:
     parser.add_argument("--results-dir", default=str(REPO_ROOT / "results" / "mipfeas"))
     parser.add_argument("--inst-dir", default=str(DEFAULT_INSTANCE_DIR))
     parser.add_argument("--cbls-bin", default=str(DEFAULT_CBLS_BIN))
-    parser.add_argument("--cpsat-workers", type=int, default=2)
+    parser.add_argument("--cpsat-workers", type=int, default=1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--engines", nargs="+", choices=ENGINES, default=list(ENGINES))
     parser.add_argument("--large-bytes", type=int, default=DEFAULT_LARGE_BYTES)
@@ -233,6 +250,14 @@ def main() -> int:
         "--force", action="store_true", help="re-run jobs that already have results"
     )
     args = parser.parse_args()
+    if args.budget <= 0 or args.jobs < 1:
+        # A non-positive budget makes every runner return instantly with a
+        # "no_solution" result, which resume then treats as work completed.
+        print(
+            f"--budget must be > 0 and --jobs >= 1 (got {args.budget}, {args.jobs}).",
+            file=sys.stderr,
+        )
+        return 2
     args.commit = commit_sha()
     args.inst_dir = Path(args.inst_dir)
     args.cbls_bin = Path(args.cbls_bin)
@@ -266,6 +291,12 @@ def main() -> int:
         large = [j for j in large if not j.result_path(results_dir).exists()]
         if done:
             print(f"Resuming: {len(done)} jobs already have results.")
+    else:
+        # Drop the old results first. A forced re-run that dies before writing would
+        # otherwise leave the previous run's result in place — possibly from another
+        # budget — with nothing downstream able to tell it apart from a fresh one.
+        for job in normal + large:
+            job.result_path(results_dir).unlink(missing_ok=True)
 
     total = len(normal) + len(large)
     print(
@@ -277,11 +308,15 @@ def main() -> int:
     execute(normal, args, results_dir, args.jobs)
     execute(large, args, results_dir, 1)
     print(f"\nDone in {(time.monotonic() - started) / 60:.1f} min -> {results_dir}")
+    # comparison.csv is the publishable filename; anything short of the full roster
+    # goes to smoke_comparison.csv so following this hint cannot overwrite a result
+    # with a wiring check.
+    out_name = "comparison.csv" if roster_path.name == "roster.csv" else "smoke_comparison.csv"
     print(
         "Score it with:\n"
         f"  python {Path(__file__).parent}/primal_integral.py "
         f"--results-dir {results_dir} --roster {roster_path} --budget {args.budget} "
-        f"--out {args.inst_dir}/comparison.csv"
+        f"--out {args.inst_dir}/{out_name}"
     )
     return 0
 

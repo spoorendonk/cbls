@@ -15,9 +15,11 @@ Configuration notes, all established empirically against ortools 9.15:
 * `ls` alone never bootstraps a first solution (status stays UNKNOWN); it needs `fj`.
   That pairing mirrors CBLS, which runs Feasibility Jump to reach feasibility and then
   ViolationLS with the objective folded in as `obj <= bound`.
-* `num_workers: 1` leaves no slot for the interleaved `ls` worker — only `fj` runs. Two
-  is the minimum that runs the whole algorithm, so it is the default here. CBLS runs
-  single-threaded, so the worker count is recorded per result rather than assumed.
+* `num_workers: 1` runs both of them — the log reports `1 first solution subsolver: [fj]`
+  and `1 interleaved subsolver: [ls]`. One worker is therefore the default here, so the
+  baseline gets the same single thread CBLS does. Raising it multiplies *both* workers
+  (`num_workers: 2` gives `fj(2)` and `ls(2)`, ~2x the CPU in the same wall time), so
+  the count is recorded per result rather than assumed.
 * Presolve is left at its default (on), i.e. the worker as it actually ships.
 * `ModelSolver.log_callback` raises TypeError on this ortools/Python combination
   (pybind11 std::function caster unregistered), so the log is captured by redirecting
@@ -53,7 +55,7 @@ if TYPE_CHECKING:
 #: Bound-only lines (`#Bound`) and model lines (`#Model`) do not match.
 SOLUTION_LINE = re.compile(r"^#(\d+)\s+([0-9.]+)s\s+best:(-?[0-9.eE+-]+)\b")
 
-DEFAULT_WORKERS = 2
+DEFAULT_WORKERS = 1
 
 
 def build_parameters(workers: int, seed: int) -> str:
@@ -85,16 +87,19 @@ def parse_trace(log_text: str) -> list[tuple[float, float]]:
 
 
 @contextlib.contextmanager
-def capture_stdout_fd() -> Iterator[Path]:
-    """Redirect fd 1 (including writes from C++) to a temp file for the block's duration."""
-    with tempfile.NamedTemporaryFile(mode="w+", suffix=".log", delete=False) as tmp:
-        path = Path(tmp.name)
+def capture_stdout_fd(sink_path: Path) -> Iterator[None]:
+    """Redirect fd 1 (including writes from C++) to `sink_path` for the block's duration.
+
+    The caller owns `sink_path`. Holding it in a TemporaryDirectory is what makes the
+    log disappear on every exit path, including a solve that raises; deleting it only
+    after a clean return leaks one log per failed job, and these logs are not small.
+    """
     sys.stdout.flush()
     saved = os.dup(1)
     try:
-        with open(path, "w") as sink:
+        with open(sink_path, "w") as sink:
             os.dup2(sink.fileno(), 1)
-        yield path
+        yield
     finally:
         sys.stdout.flush()
         os.dup2(saved, 1)
@@ -109,7 +114,15 @@ def solve(
     # model_builder surface used here is typed.
     model = model_builder.ModelBuilder()  # type: ignore[no-untyped-call]
     if not model.import_from_mps_file(str(mps_path)):
-        return {"status": "read_error", "message": f"CP-SAT could not import {mps_path.name}"}, []
+        # Same keys as the solved path. A key missing here crashes the job *after*
+        # write_outputs has already written its result, and the driver — seeing a
+        # result file — then reports the crash as a clean run.
+        return {
+            "status": "read_error",
+            "message": f"CP-SAT could not import {mps_path.name}",
+            "wall_seconds": 0.0,
+            "objective": None,
+        }, []
 
     solver = model_builder.ModelSolver("SAT")
     solver.enable_output(True)
@@ -117,11 +130,12 @@ def solve(
     solver.set_solver_specific_parameters(build_parameters(workers, seed))
 
     started = time.monotonic()
-    with capture_stdout_fd() as log_path:
-        status = solver.solve(model)
-    wall = time.monotonic() - started
-    log_text = log_path.read_text()
-    log_path.unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory(prefix="cpsat-log-") as tmpdir:
+        log_path = Path(tmpdir) / "solve.log"
+        with capture_stdout_fd(log_path):
+            status = solver.solve(model)
+        wall = time.monotonic() - started
+        log_text = log_path.read_text()
 
     trace = parse_trace(log_text)
     has_solution = status in (
@@ -139,11 +153,21 @@ def solve(
     }
     if status == model_builder.SolveStatus.INVALID_SOLVER_PARAMETERS:
         record["status"] = "invalid_parameters"
-    elif not has_solution and status == model_builder.SolveStatus.MODEL_INVALID:
+    elif not has_solution and status in (
+        model_builder.SolveStatus.MODEL_INVALID,
+        model_builder.SolveStatus.NOT_SOLVED,
+        model_builder.SolveStatus.ABNORMAL,
+    ):
         # CP-SAT scales continuous columns to integers and rejects what it cannot
-        # express. Distinct from "searched and found nothing" — tallied separately
-        # so a modelling limit is never reported as a search failure.
+        # express; NOT_SOLVED/ABNORMAL mean it aborted. All three are "did not
+        # search", not "searched and found nothing", so they are tallied apart
+        # from a genuine search failure rather than counted against the baseline.
         record["status"] = "invalid_model"
+
+    # Whether the incumbent profile came from the log or is a single end-point.
+    # A systematic regex miss after an OR-Tools log-format change would otherwise
+    # score every CP-SAT instance ~2.0, indistinguishable from "CP-SAT is bad".
+    record["trace_source"] = "log" if trace else "final_only"
 
     if has_solution:
         objective = float(solver.objective_value)
@@ -193,7 +217,7 @@ def main() -> int:
         "--workers",
         type=int,
         default=DEFAULT_WORKERS,
-        help="CP-SAT threads; 2 is the minimum that runs both the fj and ls workers",
+        help="CP-SAT threads; 1 runs both the fj and ls workers, matching CBLS",
     )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()

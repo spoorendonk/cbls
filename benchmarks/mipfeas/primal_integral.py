@@ -103,7 +103,12 @@ def primal_integral(trace: list[tuple[float, float]], reference: float, budget: 
     area = 0.0
     previous_time = 0.0
     current_gap = NO_SOLUTION_GAP
-    for raw_time, objective in sorted(trace):
+    # Sorted by time, then objective descending: CP-SAT logs to 0.01s and routinely
+    # reports several improvements inside one tick. Plain tuple ordering would apply
+    # the *worst* of a tied group last and hold it until the next distinct time — a
+    # small, one-directional penalty against whichever engine has the denser trace,
+    # which is systematically CP-SAT.
+    for raw_time, objective in sorted(trace, key=lambda entry: (entry[0], -entry[1])):
         time = min(max(raw_time, 0.0), budget)
         if time > previous_time:
             area += current_gap * (time - previous_time)
@@ -123,7 +128,15 @@ def load_trace(path: Path) -> list[tuple[float, float]]:
     if not path.exists():
         return []
     with open(path, newline="") as fh:
-        return [(float(row["time_seconds"]), float(row["objective"])) for row in csv.DictReader(fh)]
+        trace = [
+            (float(row["time_seconds"]), float(row["objective"])) for row in csv.DictReader(fh)
+        ]
+    # One NaN or infinity turns every aggregate into NaN with no warning: the
+    # geometric mean, the arithmetic mean and the median all propagate it.
+    bad = [entry for entry in trace if not (math.isfinite(entry[0]) and math.isfinite(entry[1]))]
+    if bad:
+        raise ValueError(f"{path} has non-finite entries (e.g. {bad[0]})")
+    return trace
 
 
 def _provenance(result: dict[str, object]) -> str:
@@ -163,7 +176,22 @@ def score_instance(
             provenance="n/a",
         )
 
-    result: dict[str, object] = json.loads(result_path.read_text())
+    try:
+        result: dict[str, object] = json.loads(result_path.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{result_path} is not valid JSON (a job killed mid-write?)") from exc
+
+    # A result produced under a different budget cannot be scored against this one:
+    # holding its last incumbent over a longer budget silently improves its Primal
+    # Integral. Reachable by ordinary use — the driver resumes on file existence and
+    # defaults to one results directory whatever the budget, so the README's own
+    # smoke-then-full sequence would otherwise fold 60s results into a 600s table.
+    recorded = result.get("budget_seconds")
+    if isinstance(recorded, (int, float)) and abs(float(recorded) - budget) > 1e-9:
+        raise ValueError(
+            f"{result_path} was produced at a {recorded}s budget but is being scored "
+            f"at {budget}s. Re-run those jobs, or score at the budget they used."
+        )
     status = str(result.get("status", "unknown"))
     raw_objective = result.get("objective")
     objective = float(raw_objective) if isinstance(raw_objective, (int, float)) else None
@@ -264,6 +292,17 @@ def write_comparison(
         "#",
     ]
     instances = len(rows) // max(len(summaries), 1)
+    partial = [s for s in summaries if s.not_run]
+    if partial:
+        # Fires independently of the wiring-check banner: a *full* roster at the
+        # right budget with half its jobs unfinished would otherwise read as a clean
+        # result, with the shortfall visible only in a stderr warning nobody sees
+        # months later.
+        header += [
+            "# *** INCOMPLETE RUN — AGGREGATES COVER ONLY THE JOBS THAT RAN ***",
+            "# " + "; ".join(f"{s.engine}: {s.not_run} of {instances} not run" for s in partial),
+            "#",
+        ]
     if instances != FULL_ROSTER_SIZE or budget != MIPFEAS_BUDGET_SECONDS:
         header += [
             "# *** WIRING CHECK, NOT A PUBLISHABLE RESULT ***",

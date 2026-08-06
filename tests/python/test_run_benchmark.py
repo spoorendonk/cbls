@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 import subprocess
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
@@ -18,9 +18,6 @@ from benchmarks.mipfeas.run_benchmark import (
     with_memory_limit,
     write_failure_result,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def _write_csv(path: Path, header: list[str], rows: list[list[object]]) -> None:
@@ -95,6 +92,62 @@ def test_a_killed_job_scores_as_a_failure_not_as_unrun(tmp_path: Path) -> None:
     assert summary.not_run == 0
     assert summary.feasible == 0
     assert summary.errored == 1
+
+
+def test_the_runner_writes_nothing_for_an_absent_instance(tmp_path: Path) -> None:
+    """The #103 guard: a missing instance must not be scored as 'found nothing'.
+
+    Runs the real binary, because this is a property of the process contract the
+    driver depends on — a non-zero exit and no result file — not of any function.
+    """
+    binary = Path(__file__).resolve().parents[2] / "build" / "cbls_mipfeas"
+    if not binary.exists():
+        pytest.skip("cbls_mipfeas not built")
+
+    out_dir = tmp_path / "results"
+    result = subprocess.run(
+        [
+            str(binary),
+            "--instance",
+            "no-such-instance",
+            "--inst-dir",
+            str(tmp_path),
+            "--out-dir",
+            str(out_dir),
+            "--budget",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "not found" in result.stderr
+    assert not (out_dir / "no-such-instance.json").exists()
+    assert not (out_dir / "no-such-instance.trace.csv").exists()
+
+
+def test_the_runner_rejects_a_nonpositive_budget(tmp_path: Path) -> None:
+    # atof returns 0 on a parse failure and solve() with no clock returns instantly,
+    # so an unchecked budget scores a whole roster "no_solution" at exit 0.
+    binary = Path(__file__).resolve().parents[2] / "build" / "cbls_mipfeas"
+    if not binary.exists():
+        pytest.skip("cbls_mipfeas not built")
+
+    result = subprocess.run(
+        [
+            str(binary),
+            "--instance",
+            "anything",
+            "--out-dir",
+            str(tmp_path),
+            "--budget",
+            "notanumber",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "--budget must be a positive" in result.stderr
 
 
 def test_with_memory_limit_is_a_no_op_without_a_limit() -> None:

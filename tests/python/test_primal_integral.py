@@ -88,6 +88,14 @@ def test_primal_integral_sorts_an_out_of_order_trace() -> None:
     assert shuffled == pytest.approx(ordered)
 
 
+def test_primal_integral_holds_the_best_of_several_incumbents_at_one_timestamp() -> None:
+    # CP-SAT logs to 0.01s and reports bursts of improvements inside one tick.
+    # A plain tuple sort would apply the worst of the burst last and hold it.
+    burst = primal_integral([(10.0, 200.0), (10.0, 100.0)], reference=100.0, budget=20.0)
+    best_only = primal_integral([(10.0, 100.0)], reference=100.0, budget=20.0)
+    assert burst == pytest.approx(best_only)
+
+
 def test_primal_integral_stays_within_zero_and_two() -> None:
     assert 0.0 <= primal_integral([(5.0, -50.0)], reference=100.0, budget=60.0) <= 2.0
 
@@ -167,6 +175,44 @@ def test_score_instance_ignores_a_trace_when_the_run_found_nothing(tmp_path: Pat
     )
     scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
     assert scored.primal_integral == NO_SOLUTION_GAP
+
+
+def test_score_instance_rejects_a_result_from_a_different_budget(tmp_path: Path) -> None:
+    # The driver resumes on file existence and defaults to one results directory
+    # whatever the budget, so a 60s smoke run and a 600s run land on top of each
+    # other. Holding a 60s incumbent over 600s would score better than the run
+    # earned, so this must fail rather than publish it.
+    _write_result(
+        tmp_path,
+        "cbls",
+        "inst",
+        {"status": "feasible", "objective": 100.0, "budget_seconds": 60.0},
+        trace=[(1.0, 100.0)],
+    )
+    with pytest.raises(ValueError, match="60.0s budget but is being scored at 600"):
+        score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=600.0)
+
+
+def test_score_instance_rejects_a_truncated_result_file(tmp_path: Path) -> None:
+    engine_dir = tmp_path / "cbls"
+    engine_dir.mkdir(parents=True)
+    (engine_dir / "inst.json").write_text('{"status": "feasi')
+    with pytest.raises(ValueError, match="not valid JSON"):
+        score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
+
+
+def test_score_instance_rejects_a_non_finite_trace(tmp_path: Path) -> None:
+    # One NaN would otherwise turn the geometric mean, the arithmetic mean and the
+    # median all into NaN, with no warning anywhere.
+    _write_result(
+        tmp_path,
+        "cbls",
+        "inst",
+        {"status": "feasible", "objective": 100.0},
+        trace=[(1.0, float("nan"))],
+    )
+    with pytest.raises(ValueError, match="non-finite"):
+        score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
 
 
 def test_summarize_excludes_not_run_instances_from_the_aggregates(tmp_path: Path) -> None:

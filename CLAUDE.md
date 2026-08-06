@@ -79,6 +79,8 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 | `cbls_nuclear_outage` | `benchmarks/nuclear-outage/` | Nuclear outage benchmark runner |
 | `cbls_bunker_eca` | `benchmarks/bunker-eca/` | Bunker ECA benchmark runner |
 | `cbls_pharma_glsp` | `benchmarks/pharma-glsp/` | Pharma GLSP benchmark runner |
+| `cbls_mipfeas` | `benchmarks/mipfeas/` | MIPfeas runner (one instance per process) |
+| `cbls_minlplib` | `benchmarks/minlplib/` | MINLPLib benchmark runner |
 
 ### Dependencies
 
@@ -109,7 +111,7 @@ down; do not start lower-priority benchmark work while a higher one is open.
 
 | # | Benchmark | Compared against | Purpose | Tracking |
 |---|-----------|------------------|---------|----------|
-| 1 | `miplib-fj` → MIPfeas | OR-Tools CP-SAT `num_violation_ls` worker **only** | head-to-head correctness *and* performance against the reference implementation of the same jump-based algorithm | #90 |
+| 1 | `mipfeas` | OR-Tools CP-SAT `num_violation_ls` worker **only** | head-to-head correctness *and* performance against the reference implementation of the same jump-based algorithm | #90 |
 | 2 | `minlplib` | SCIP (nonlinear) | performance on non-convex MINLP — the regime CP-SAT's LS worker cannot express | #89, #87 |
 | 3 | `uc-chped` | Pedroso 2014 | a good result on a published unit-commitment formulation | #25, #91, #92 |
 | 4 | `pharma-glsp` | Goerler et al. 2020 | a List-variable use case on a published formulation | #28, #94 |

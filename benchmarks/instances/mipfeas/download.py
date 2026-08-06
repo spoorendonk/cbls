@@ -11,7 +11,7 @@ must come to exactly 233. A MIPLIB revision that changes either input therefore 
 loudly instead of silently redefining the benchmark.
 
 Usage:
-    python download.py                 # full 233 roster (~317 MB via benchmark.zip)
+    python download.py                 # full 233 roster (~546 MiB via benchmark.zip)
     python download.py --subset smoke  # the 11-instance smoke roster only
     python download.py --force         # re-download even if files exist
 """
@@ -161,14 +161,6 @@ def write_roster_csv(roster: list[RosterEntry], path: Path) -> None:
             writer.writerow([entry.instance, repr(entry.reference_value), entry.reference_kind])
 
 
-def read_roster_csv(path: Path) -> list[RosterEntry]:
-    with open(path, newline="") as fh:
-        return [
-            RosterEntry(row["instance"], float(row["reference_value"]), row["reference_kind"])
-            for row in csv.DictReader(fh)
-        ]
-
-
 def write_smoke_csv(roster: list[RosterEntry], path: Path) -> None:
     by_name = {entry.instance: entry for entry in roster}
     unknown = [n for n in SMOKE_INSTANCES if n not in by_name]
@@ -199,7 +191,7 @@ def fetch_via_zip(names: list[str], target_dir: Path, force: bool) -> list[str]:
     """Fetch the whole benchmark set in one request and extract the roster from it.
 
     233 individual requests to miplib.zib.de is antisocial; `benchmark.zip` is a
-    single ~317 MB download covering all of them.
+    single ~546 MiB download covering all of them.
     """
     wanted = {f"{name}.mps.gz": name for name in names}
     missing = [n for n in names if force or not (target_dir / f"{n}.mps.gz").exists()]
@@ -232,19 +224,30 @@ def write_manifest(names: list[str], target_dir: Path, path: Path) -> None:
 
     `bytes` doubles as the size proxy the run driver schedules on: the largest
     instances are run serially rather than alongside others.
+
+    Merged into what is already committed rather than replacing it. `--subset smoke`
+    fetches 11 of the 233 names, and rewriting the file from those alone drops the
+    other 222 rows — after which the run driver sees no sizes and schedules the
+    largest instances alongside everything else instead of alone. That is the #103
+    failure mode: running a tool over a subset silently destroys committed data.
     """
-    rows: list[tuple[str, str, int]] = []
+    rows: dict[str, tuple[str, int]] = {}
+    if path.exists():
+        with open(path, newline="") as fh:
+            rows = {r["instance"]: (r["sha256"], int(r["bytes"])) for r in csv.DictReader(fh)}
+    refreshed = 0
     for name in names:
         src = target_dir / f"{name}.mps.gz"
         if not src.exists():
             continue
         data = src.read_bytes()
-        rows.append((name, hashlib.sha256(data).hexdigest(), len(data)))
+        rows[name] = (hashlib.sha256(data).hexdigest(), len(data))
+        refreshed += 1
     with open(path, "w", newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow(["instance", "sha256", "bytes"])
-        writer.writerows(rows)
-    print(f"[write] {path.name} ({len(rows)} instances)")
+        writer.writerows((name, sha, size) for name, (sha, size) in sorted(rows.items()))
+    print(f"[write] {path.name} ({len(rows)} instances, {refreshed} refreshed)")
 
 
 def main() -> int:

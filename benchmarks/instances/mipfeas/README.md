@@ -65,7 +65,7 @@ benchmarks/instances/mipfeas/
   manifest.csv         sha256 + byte size per instance      (committed)
   smoke_comparison.csv the wiring check's output            (committed)
   comparison.csv       scored results                       (committed once a run is published)
-  *.mps.gz             instances, ~317 MB                   (gitignored)
+  *.mps.gz             instances, ~546 MiB                   (gitignored)
 
 benchmarks/mipfeas/
   mipfeas.cpp        CBLS runner, one instance per process
@@ -82,7 +82,7 @@ that failure mode is what emptied a published table in #103.
 ## Running it
 
 ```bash
-# 1. Fetch the roster (~317 MB via benchmark.zip; --subset smoke for the 11)
+# 1. Fetch the roster (~546 MiB via benchmark.zip; --subset smoke for the 11)
 python benchmarks/instances/mipfeas/download.py
 
 # 2. Build the CBLS runner
@@ -108,21 +108,30 @@ The driver is resumable: a job whose result file exists is skipped, so an
 interrupted run continues where it stopped.
 
 Sizing `--jobs` is a memory question rather than a core-count one. Every result
-records its `peak_rss_kib`; from the wiring check, the roster's largest instance
-(`neos-5114902-kasavu`, 710k variables and 961k rows) peaked at **1.2 GB under
-CBLS and 3.3 GB under CP-SAT**, and CP-SAT carries a ~100 MB floor on even the
-smallest models. So CP-SAT is the binding side at roughly 3x CBLS, and
-`--mem-limit-gb 6` leaves headroom for anything on the roster.
+records its `peak_rss_kib`. From the wiring check, `neos-5114902-kasavu` (710k
+columns, 961k rows, 4.9M nonzeros) peaked at **1.2 GB under CBLS and 3.3 GB
+under CP-SAT**, and CP-SAT carries a ~100 MB floor on even the smallest models.
+
+It is not the roster's largest model, though: `square47` carries 27.4M nonzeros
+(5.6x kasavu) and `supportcase19` 1.43M columns (2x). Note also that
+`--mem-limit-gb` caps *address space* (`ulimit -v`), which runs roughly 30% above
+resident set — so confirm the cap on the target machine before trusting
+`--jobs 4` rather than reading 6 GB off the RSS figures above.
 
 ## What the wiring check found
 
 `smoke_comparison.csv` is 11 instances at 60s — enough to prove the harness end
-to end, and **not** a result. Both engines honoured the budget (60.0–62.4s
-wall), the largest instance ran without OOM, and the Primal Integral came out
-where hand-calculation says it should. On that subset CP-SAT reached feasibility
-on 8 of 11 against CBLS's 6, and was ahead on the shifted geometric mean; CBLS
-was ahead on `pk1` and level on `neos5`. Whether that holds over 233 instances
-at 600s is exactly what the full run is for.
+to end, and **not** a result. Both engines honoured the budget, the largest
+instance in the subset ran without OOM, and the driver resumed correctly after
+being interrupted.
+
+The numbers themselves were thrown away. The run that produced them was made
+before two defects were found: the MPS reader was binarising general-integer
+columns carrying an `LI` bound (which made `gen-ip054` and `enlight_hard`
+infeasible as CBLS saw them, and moved `gen-ip002`'s optimum), and CP-SAT was
+being given two workers on a mistaken belief that one would not run its `ls`
+worker. Both are fixed; the table is regenerated at one worker each, with the
+reader correct.
 
 ## Configuration, and what is recorded
 
@@ -131,7 +140,7 @@ inherited, so a published number cannot silently change when a default moves:
 
 | | CBLS | CP-SAT |
 |---|---|---|
-| Threads | 1 | 2 (`num_workers`) |
+| Threads | 1 | 1 (`num_workers`) |
 | Algorithm | Feasibility Jump + ViolationLS | `fj` + `ls` workers only (`filter_subsolvers`) |
 | Presolve | none | default, i.e. on |
 | Feasibility tolerance | `1e-6`, stated explicitly | CP-SAT's own |
@@ -143,10 +152,18 @@ established empirically against ortools 9.15:
 * `filter_subsolvers` is the **only** parameter that accepts `fj`/`ls`.
   `subsolvers` and `ignore_subsolvers` validate against full-problem subsolver
   names and reject both, so they cannot express "LS only".
-* `num_workers: 1` leaves no slot for the interleaved `ls` worker, and `ls`
-  without `fj` never bootstraps a first solution. Two workers is the minimum that
-  runs the whole algorithm — hence CP-SAT gets 2 threads to CBLS's 1, which is
-  recorded rather than hidden.
+* `num_workers: 1` runs the whole algorithm — the log reports `1 first solution
+  subsolver: [fj]` and `1 interleaved subsolver: [ls]` — so both engines get one
+  thread. Raising it multiplies *both* workers (`num_workers: 2` gives `fj(2)`
+  and `ls(2)`, roughly twice the CPU in the same wall time), so the count is
+  recorded per result. `ls` without `fj` never bootstraps a first solution at any
+  worker count, which is why both are enabled.
+
+One asymmetry is not configuration and cannot be tuned away: CBLS's clock starts
+inside `solve()`, so its MPS read and model build are free, while CP-SAT's log
+timestamps include its presolve. On the largest instances that is a few seconds
+against a 600s budget — under 1%, but it favours CBLS and is stated here rather
+than left to be discovered.
 
 ## Provenance
 

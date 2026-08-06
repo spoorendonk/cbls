@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <string>
 
@@ -92,15 +93,23 @@ bool file_exists(const std::string& path) {
 // Filters on a finite objective rather than on `p.feasible`: SolveProgress
 // carries `best_feasible_obj`, which is +inf until a real-feasible solution has
 // been recorded, whereas `p.feasible` reports whether the *current* assignment
-// is feasible. Filtering on the latter drops improvements found while the
-// current point is infeasible, which mis-times the step function.
+// is feasible. The two agree on the rows this recorder keeps — solve() only
+// emits a new best from a feasible point — so this is the more direct statement
+// of the invariant the step function needs ("an incumbent exists"), not a
+// correction of a bug. tests/test_mipfeas.cpp pins that invariant down.
 //
 // Only strict improvements are written. solve() also emits progress roughly once
 // a second with no new best; those rows repeat a value the step function already
 // holds, and at 233 instances x 600s the repetition is the bulk of the file.
 class TraceRecorder : public cbls::SolveCallback {
 public:
-    explicit TraceRecorder(std::ofstream& out) : out_(out) {}
+    explicit TraceRecorder(std::ofstream& out) : out_(out) {
+        // Full round-trip precision. The default 6 significant digits rounds the
+        // objective the Primal Integral integrates (1010195.19 -> 1.0102e+06), so
+        // the trace's last value would stop matching the objective the result file
+        // publishes — and the two are read into the same comparison row.
+        out_ << std::setprecision(17);
+    }
 
     void on_progress(const cbls::SolveProgress& p) override {
         if (!std::isfinite(p.objective) || p.objective >= last_written_) {
@@ -166,6 +175,18 @@ int main(int argc, char** argv) {
         print_usage();
         return 2;
     }
+    // std::atof returns 0 on a parse failure, and solve() with a non-positive time
+    // limit and no iteration budget returns having done nothing. Unchecked, one
+    // typo'd flag scores an entire roster "no_solution" (Primal Integral 2.0) at
+    // exit code 0, and the driver's resume then treats that as work completed.
+    if (!(args.budget > 0.0)) {
+        std::fprintf(stderr, "--budget must be a positive number of seconds\n");
+        return 2;
+    }
+    if (!(args.feas_tol > 0.0)) {
+        std::fprintf(stderr, "--feas-tol must be positive\n");
+        return 2;
+    }
 
     std::error_code ec;
     std::filesystem::create_directories(args.out_dir, ec);
@@ -228,9 +249,19 @@ int main(int argc, char** argv) {
     }
     const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 
-    const bool have_solution = result.feasible && std::isfinite(result.objective);
+    // Cross-check the engine's own feasibility verdict against the residual of the
+    // assignment it actually returned, which solve() recomputes with a full
+    // evaluate after restoring the best state. The two can only disagree if
+    // incremental and full evaluation have drifted — and publishing an objective
+    // for an infeasible point is the one thing this table must never contain.
+    const bool verdict_consistent = !result.feasible || result.best_violation <= args.feas_tol;
+    const bool have_solution =
+        result.feasible && std::isfinite(result.objective) && verdict_consistent;
+    const char* status = !verdict_consistent ? "violation_mismatch"
+                         : have_solution     ? "feasible"
+                                             : "no_solution";
     nlohmann::json j{
-        {"status", have_solution ? "feasible" : "no_solution"},
+        {"status", status},
         {"wall_seconds", wall},
         {"iterations", result.iterations},
         {"max_violation", result.best_violation},
@@ -241,8 +272,7 @@ int main(int argc, char** argv) {
     j["objective"] = have_solution ? nlohmann::json(result.objective) : nlohmann::json(nullptr);
     write_result(args, j);
 
-    std::printf("%-28s %-12s obj=%-16.8g viol=%-10.3g %8.2fs\n", args.instance.c_str(),
-                have_solution ? "feasible" : "no-solution",
+    std::printf("%-28s %-12s obj=%-16.8g viol=%-10.3g %8.2fs\n", args.instance.c_str(), status,
                 have_solution ? result.objective : std::numeric_limits<double>::quiet_NaN(),
                 result.best_violation, wall);
     return 0;
