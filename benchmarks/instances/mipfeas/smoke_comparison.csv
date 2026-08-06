@@ -1,0 +1,45 @@
+# MIPfeas comparison: CBLS vs CP-SAT's violation_ls worker.
+#
+# This is an IMPLEMENTATION SANITY CHECK, not a MIP-competitiveness claim.
+# The only baseline is CP-SAT restricted to its fj + ls workers — the reference
+# implementation of the same jump-based algorithm CBLS reimplements. CP-SAT's
+# default portfolio, and every other MIP solver, are deliberately out of scope
+# (epic #87). A gap in either direction is informative about the reimplementation.
+#
+# Roster:  smoke.csv (11 instances)
+# Budget:  60.0s per instance-solver pair
+# Metric:  Primal Integral over the budget, in [0, 2]; lower is better.
+#          0 = optimal immediately, 2 = never feasible.
+#
+# *** WIRING CHECK, NOT A PUBLISHABLE RESULT ***
+# The published MIPfeas setup is 233 instances at 600s; this table used 11 at 60s. The numbers below are not comparable to a
+# MIPfeas score, and the two engines' relative standing on a subset at a
+# short budget need not hold on the full roster.
+#
+# Aggregates (shifted geometric mean is the primary ranking):
+#   cbls   sgm=0.9725 mean=1.3005 median=1.0223 iqr=[0.9111,2.0000] feasible=6/11 matched_reference=0 invalid_model=0 errored=0 not_run=0
+#   cpsat  sgm=0.2563 mean=0.8445 median=0.9794 iqr=[0.0242,2.0000] feasible=8/11 matched_reference=0 invalid_model=0 errored=0 not_run=0
+#
+instance,engine,status,objective,reference_value,reference_kind,final_gap,primal_integral,wall_seconds,n_vars,n_cons,peak_rss_kib,provenance
+enlight_hard,cbls,no_solution,,37.0,opt,2,2,60.0010,200,100,18184,80a93cd
+enlight_hard,cpsat,no_solution,,37.0,opt,2,2,60.0017,200,100,103852,9.15.6755
+markshare2,cbls,feasible,2242.0,1.0,opt,0.999554,0.999695,60.0075,74,7,18184,80a93cd
+markshare2,cpsat,feasible,61.0,1.0,opt,0.983607,0.984513,59.9908,74,7,103648,9.15.6755
+gen-ip054,cbls,no_solution,,6840.96564179,opt,2,2,60.0095,30,27,18184,80a93cd
+gen-ip054,cpsat,feasible,6862.593929603,6840.96564179,opt,0.00315162,0.00730647,60.0018,30,27,103684,9.15.6755
+gen-ip002,cbls,feasible,-3359.0094241300003,-4783.733392,opt,0.297827,0.297945,60.0207,41,24,18184,80a93cd
+gen-ip002,cpsat,feasible,-4734.18129325,-4783.733392,opt,0.0103585,0.0241565,60.0031,41,24,103992,9.15.6755
+pk1,cbls,feasible,120.99999999999996,11.0,opt,0.909091,0.911086,60.0004,86,45,18184,80a93cd
+pk1,cpsat,feasible,503.0,11.0,opt,0.978131,0.97943,60.0027,86,45,103720,9.15.6755
+mas76,cbls,no_solution,,40005.05398999999,opt,2,2,60.0043,151,12,18184,80a93cd
+mas76,cpsat,feasible,40675.00015,40005.05398999999,opt,0.0164707,0.0342713,60.0023,151,12,106816,9.15.6755
+neos5,cbls,feasible,16.0,15.0,opt,0.0625,0.0826611,60.0179,63,63,18184,80a93cd
+neos5,cpsat,feasible,16.0,15.0,opt,0.0625,0.250292,60.0039,63,63,104020,9.15.6755
+mad,cbls,feasible,3.076,0.0268,opt,0.991287,0.991573,60.0414,220,51,18184,80a93cd
+mad,cpsat,feasible,2.0,0.0268,opt,0.9866,0.987812,60.0029,220,52,104732,9.15.6755
+binkar10_1,cbls,feasible,1010195.1900089992,6741.38002393972,opt,0.993327,1.02234,60.0634,2298,1026,18184,80a93cd
+binkar10_1,cpsat,feasible,6800.510019000299,6741.38002393972,opt,0.00869494,0.0220374,60.0123,2298,1026,109916,9.15.6755
+atlanta-ip,cbls,no_solution,,90.009878614,opt,2,2,61.7955,48738,21732,130820,80a93cd
+atlanta-ip,cpsat,no_solution,,90.009878614,opt,2,2,60.1040,48738,21732,221552,9.15.6755
+neos-5114902-kasavu,cbls,no_solution,,655.0,opt,2,2,61.3824,710164,961170,1208332,80a93cd
+neos-5114902-kasavu,cpsat,no_solution,,655.0,opt,2,2,62.4076,710164,961170,3463176,9.15.6755

@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <string>
@@ -165,6 +166,9 @@ int main(int argc, char** argv) {
         print_usage();
         return 2;
     }
+
+    std::error_code ec;
+    std::filesystem::create_directories(args.out_dir, ec);
 
     const std::string mps_path = args.inst_dir + "/" + args.instance + ".mps.gz";
     if (!file_exists(mps_path)) {

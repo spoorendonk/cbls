@@ -60,11 +60,12 @@ the shifted geometric mean (shift 0.001).
 ```
 benchmarks/instances/mipfeas/
   download.py     roster derivation + instance fetch
-  roster.csv      233 instances with reference values      (committed)
-  smoke.csv       11-instance subset for wiring checks     (committed)
-  manifest.csv    sha256 + byte size per instance          (committed)
-  comparison.csv  scored results                           (committed once a run is published)
-  *.mps.gz        instances, ~317 MB                       (gitignored)
+  roster.csv           233 instances with reference values  (committed)
+  smoke.csv            11-instance subset for wiring checks (committed)
+  manifest.csv         sha256 + byte size per instance      (committed)
+  smoke_comparison.csv the wiring check's output            (committed)
+  comparison.csv       scored results                       (committed once a run is published)
+  *.mps.gz             instances, ~317 MB                   (gitignored)
 
 benchmarks/mipfeas/
   mipfeas.cpp        CBLS runner, one instance per process
@@ -104,10 +105,24 @@ python benchmarks/mipfeas/primal_integral.py \
 ```
 
 The driver is resumable: a job whose result file exists is skipped, so an
-interrupted run continues where it stopped. Sizing `--jobs` is a memory question
-rather than a core-count one — the roster reaches ~1.4M variables and ~4.2M
-nonzeros, and every result records its `peak_rss_kib` so the next run can be
-sized from measurement.
+interrupted run continues where it stopped.
+
+Sizing `--jobs` is a memory question rather than a core-count one. Every result
+records its `peak_rss_kib`; from the wiring check, the roster's largest instance
+(`neos-5114902-kasavu`, 710k variables and 961k rows) peaked at **1.2 GB under
+CBLS and 3.3 GB under CP-SAT**, and CP-SAT carries a ~100 MB floor on even the
+smallest models. So CP-SAT is the binding side at roughly 3x CBLS, and
+`--mem-limit-gb 6` leaves headroom for anything on the roster.
+
+## What the wiring check found
+
+`smoke_comparison.csv` is 11 instances at 60s — enough to prove the harness end
+to end, and **not** a result. Both engines honoured the budget (60.0–62.4s
+wall), the largest instance ran without OOM, and the Primal Integral came out
+where hand-calculation says it should. On that subset CP-SAT reached feasibility
+on 8 of 11 against CBLS's 6, and was ahead on the shifted geometric mean; CBLS
+was ahead on `pk1` and level on `neos5`. Whether that holds over 233 instances
+at 600s is exactly what the full run is for.
 
 ## Configuration, and what is recorded
 

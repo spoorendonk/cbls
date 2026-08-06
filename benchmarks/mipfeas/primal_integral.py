@@ -49,6 +49,14 @@ GEOMETRIC_MEAN_SHIFT = 0.001
 
 ENGINES = ("cbls", "cpsat")
 
+#: Size of the full MIPfeas roster. Anything smaller is a wiring check, and the
+#: table says so in its header — a partial run read as the published result is
+#: the recurring way this repo has published a wrong number.
+FULL_ROSTER_SIZE = 233
+
+#: The budget MIPfeas scores at. A different one is a wiring check, not a score.
+MIPFEAS_BUDGET_SECONDS = 600.0
+
 
 class Scored(NamedTuple):
     instance: str
@@ -62,6 +70,9 @@ class Scored(NamedTuple):
     wall_seconds: float | None
     n_vars: int | None
     n_cons: int | None
+    #: Peak resident set of the job, so a full-roster run's concurrency can be
+    #: sized from measurement rather than guessed.
+    peak_rss_kib: int | None
     provenance: str
 
 
@@ -137,18 +148,19 @@ def score_instance(
         # Not run is not the same as ran-and-failed: scoring it 2 would report a
         # gap in the harness as a gap in the solver. Excluded from the aggregates.
         return Scored(
-            instance,
-            engine,
-            "not_run",
-            None,
-            reference_value,
-            reference_kind,
-            math.nan,
-            math.nan,
-            None,
-            None,
-            None,
-            "n/a",
+            instance=instance,
+            engine=engine,
+            status="not_run",
+            objective=None,
+            reference_value=reference_value,
+            reference_kind=reference_kind,
+            final_gap=math.nan,
+            primal_integral=math.nan,
+            wall_seconds=None,
+            n_vars=None,
+            n_cons=None,
+            peak_rss_kib=None,
+            provenance="n/a",
         )
 
     result: dict[str, object] = json.loads(result_path.read_text())
@@ -167,6 +179,7 @@ def score_instance(
     wall = result.get("wall_seconds")
     n_vars = result.get("n_vars")
     n_cons = result.get("n_cons")
+    peak_rss = result.get("peak_rss_kib")
     return Scored(
         instance=instance,
         engine=engine,
@@ -179,6 +192,7 @@ def score_instance(
         wall_seconds=float(wall) if isinstance(wall, (int, float)) else None,
         n_vars=int(n_vars) if isinstance(n_vars, int) else None,
         n_cons=int(n_cons) if isinstance(n_cons, int) else None,
+        peak_rss_kib=int(peak_rss) if isinstance(peak_rss, int) else None,
         provenance=_provenance(result),
     )
 
@@ -243,13 +257,24 @@ def write_comparison(
         "# default portfolio, and every other MIP solver, are deliberately out of scope",
         "# (epic #87). A gap in either direction is informative about the reimplementation.",
         "#",
-        f"# Roster:  {roster_path}",
+        f"# Roster:  {roster_path.name} ({len(rows) // max(len(summaries), 1)} instances)",
         f"# Budget:  {budget}s per instance-solver pair",
         "# Metric:  Primal Integral over the budget, in [0, 2]; lower is better.",
         "#          0 = optimal immediately, 2 = never feasible.",
         "#",
-        "# Aggregates (shifted geometric mean is the primary ranking):",
     ]
+    instances = len(rows) // max(len(summaries), 1)
+    if instances != FULL_ROSTER_SIZE or budget != MIPFEAS_BUDGET_SECONDS:
+        header += [
+            "# *** WIRING CHECK, NOT A PUBLISHABLE RESULT ***",
+            f"# The published MIPfeas setup is {FULL_ROSTER_SIZE} instances at "
+            f"{MIPFEAS_BUDGET_SECONDS:.0f}s; this table used "
+            f"{instances} at {budget:.0f}s. The numbers below are not comparable to a",
+            "# MIPfeas score, and the two engines' relative standing on a subset at a",
+            "# short budget need not hold on the full roster.",
+            "#",
+        ]
+    header.append("# Aggregates (shifted geometric mean is the primary ranking):")
     for s in summaries:
         header.append(
             f"#   {s.engine:<6} sgm={s.shifted_geomean:.4f} mean={s.arithmetic_mean:.4f} "
@@ -275,6 +300,7 @@ def write_comparison(
                 "wall_seconds",
                 "n_vars",
                 "n_cons",
+                "peak_rss_kib",
                 "provenance",
             ]
         )
@@ -292,6 +318,7 @@ def write_comparison(
                     "" if r.wall_seconds is None else f"{r.wall_seconds:.4f}",
                     "" if r.n_vars is None else r.n_vars,
                     "" if r.n_cons is None else r.n_cons,
+                    "" if r.peak_rss_kib is None else r.peak_rss_kib,
                     r.provenance,
                 ]
             )
