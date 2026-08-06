@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import subprocess
 from typing import TYPE_CHECKING
 
 import pytest
@@ -14,6 +15,7 @@ from benchmarks.mipfeas.run_benchmark import (
     read_roster,
     read_sizes,
     resolve_roster,
+    with_memory_limit,
     write_failure_result,
 )
 
@@ -93,6 +95,25 @@ def test_a_killed_job_scores_as_a_failure_not_as_unrun(tmp_path: Path) -> None:
     assert summary.not_run == 0
     assert summary.feasible == 0
     assert summary.errored == 1
+
+
+def test_with_memory_limit_is_a_no_op_without_a_limit() -> None:
+    assert with_memory_limit(["prog", "--flag"], None) == ["prog", "--flag"]
+    assert with_memory_limit(["prog"], 0) == ["prog"]
+
+
+def test_with_memory_limit_actually_caps_the_child() -> None:
+    # Asserting on the wrapper's shape would pass even if the quoting were wrong,
+    # so run it and ask the child what its own limit is. 2 GB in KiB.
+    command = with_memory_limit(["/bin/sh", "-c", "ulimit -v"], 2.0)
+    result = subprocess.run(command, capture_output=True, text=True, check=True)
+    assert result.stdout.strip() == str(2 * 1024 * 1024)
+
+
+def test_with_memory_limit_preserves_arguments_containing_spaces() -> None:
+    command = with_memory_limit(["/bin/echo", "two words", "--flag=a b"], 1.0)
+    result = subprocess.run(command, capture_output=True, text=True, check=True)
+    assert result.stdout.rstrip("\n") == "two words --flag=a b"
 
 
 def test_write_failure_result_creates_the_engine_directory(tmp_path: Path) -> None:

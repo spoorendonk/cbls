@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import resource
 import subprocess
 import sys
 import time
@@ -120,8 +119,19 @@ def build_command(job: Job, args: argparse.Namespace, results_dir: Path) -> list
     ]
 
 
-def _limit_address_space(limit_bytes: int) -> None:
-    resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+def with_memory_limit(command: list[str], limit_gb: float | None) -> list[str]:
+    """Wrap a command so the child caps its own address space before exec.
+
+    Not `preexec_fn`: this driver runs jobs from a thread pool, and preexec_fn in a
+    multithreaded parent can deadlock the child between fork and exec — the one
+    failure mode an unattended multi-hour run must not have. `ulimit` in the
+    intermediate shell does the same job with no fork-safety question. `"$0" "$@"`
+    passes the argv through without re-quoting it.
+    """
+    if not limit_gb:
+        return command
+    limit_kb = int(limit_gb * 1024 * 1024)
+    return ["/bin/sh", "-c", f'ulimit -v {limit_kb}; exec "$0" "$@"', *command]
 
 
 def write_failure_result(
@@ -149,11 +159,7 @@ def write_failure_result(
 
 def run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
     (results_dir / job.engine).mkdir(parents=True, exist_ok=True)
-    command = build_command(job, args, results_dir)
-    preexec = None
-    if args.mem_limit_gb:
-        limit = int(args.mem_limit_gb * 1024**3)
-        preexec = lambda: _limit_address_space(limit)  # noqa: E731
+    command = with_memory_limit(build_command(job, args, results_dir), args.mem_limit_gb)
 
     started = time.monotonic()
     try:
@@ -162,7 +168,6 @@ def run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
             capture_output=True,
             text=True,
             timeout=args.budget + TIMEOUT_SLACK_SECONDS,
-            preexec_fn=preexec,  # noqa: PLW1509
         )
     except subprocess.TimeoutExpired:
         write_failure_result(
