@@ -17,6 +17,8 @@
 #include <cbls/io_mps.h>
 #include <nlohmann/json.hpp>
 
+#include <sys/resource.h>
+
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -114,6 +116,17 @@ private:
     double last_written_ = std::numeric_limits<double>::infinity();
 };
 
+// Peak resident set of this process, in KiB. Reported per result so the
+// concurrency for a full-roster run can be sized from measurement rather than
+// guessed: the roster spans models from tens of KB to millions of nonzeros.
+long peak_rss_kib() {
+    struct rusage usage {};
+    if (getrusage(RUSAGE_SELF, &usage) != 0) {
+        return 0;
+    }
+    return usage.ru_maxrss;
+}
+
 int count_int_vars(const cbls::MpsProblem& prob) {
     int n = 0;
     for (const auto& v : prob.vars) {
@@ -128,6 +141,7 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     nlohmann::json j = extra;
     j["engine"] = "cbls";
     j["instance"] = args.instance;
+    j["peak_rss_kib"] = peak_rss_kib();
     j["budget_seconds"] = args.budget;
     j["seed"] = args.seed;
     j["feasibility_tolerance"] = args.feas_tol;

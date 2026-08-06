@@ -190,6 +190,11 @@ class Summary(NamedTuple):
     feasible: int
     matched_reference: int
     invalid_model: int
+    #: Jobs that neither found a solution nor honestly searched for one — killed by
+    #: the driver's timeout or memory cap, or failed to read the instance. Scored
+    #: as no-solution, but surfaced separately: a harness failure and a search
+    #: failure look identical in the aggregate otherwise.
+    errored: int
     shifted_geomean: float
     arithmetic_mean: float
     median: float
@@ -209,6 +214,7 @@ def summarize(rows: list[Scored], engine: str) -> Summary:
         feasible=sum(1 for r in ran if r.status == "feasible"),
         matched_reference=sum(1 for r in ran if r.final_gap < ZERO_TOLERANCE),
         invalid_model=sum(1 for r in ran if r.status == "invalid_model"),
+        errored=sum(1 for r in ran if r.status not in ("feasible", "no_solution", "invalid_model")),
         shifted_geomean=shifted_geometric_mean(integrals),
         arithmetic_mean=statistics.fmean(integrals) if integrals else math.nan,
         median=statistics.median(integrals) if integrals else math.nan,
@@ -249,7 +255,7 @@ def write_comparison(
             f"#   {s.engine:<6} sgm={s.shifted_geomean:.4f} mean={s.arithmetic_mean:.4f} "
             f"median={s.median:.4f} iqr=[{s.q1:.4f},{s.q3:.4f}] "
             f"feasible={s.feasible}/{s.scored} matched_reference={s.matched_reference} "
-            f"invalid_model={s.invalid_model} not_run={s.not_run}"
+            f"invalid_model={s.invalid_model} errored={s.errored} not_run={s.not_run}"
         )
     header.append("#")
 

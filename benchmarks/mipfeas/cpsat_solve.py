@@ -35,6 +35,7 @@ import contextlib
 import json
 import os
 import re
+import resource
 import sys
 import tempfile
 import time
@@ -166,6 +167,9 @@ def write_outputs(
     record.update(
         engine="cpsat",
         instance=instance,
+        # Reported per result so a full-roster run's concurrency can be sized from
+        # measurement rather than guessed.
+        peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
         budget_seconds=args.budget,
         seed=args.seed,
         workers=args.workers,

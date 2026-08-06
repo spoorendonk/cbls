@@ -19,7 +19,7 @@ namespace fs = std::filesystem;
 namespace {
 
 fs::path tmp_dir() {
-    static fs::path dir = fs::temp_directory_path() / "cbls_miplib_fj_tests";
+    static fs::path dir = fs::temp_directory_path() / "cbls_mps_tests";
     std::error_code ec;
     fs::create_directories(dir, ec);
     return dir;
@@ -85,7 +85,7 @@ const std::string kSmallBinary =
 
 }  // namespace
 
-TEST_CASE("read_mps parses a tiny continuous LP", "[miplib-fj][reader]") {
+TEST_CASE("read_mps parses a tiny continuous LP", "[mps][reader]") {
     auto path = write_file("small.mps", kSmallLp);
     cbls::MpsProblem prob = cbls::read_mps(path.string());
 
@@ -111,7 +111,7 @@ TEST_CASE("read_mps parses a tiny continuous LP", "[miplib-fj][reader]") {
     REQUIRE(prob.nonzeros.size() == 6);
 }
 
-TEST_CASE("read_mps marks INTORG-flagged columns as Integer", "[miplib-fj][reader]") {
+TEST_CASE("read_mps marks INTORG-flagged columns as Integer", "[mps][reader]") {
     auto path = write_file("bin.mps", kSmallBinary);
     cbls::MpsProblem prob = cbls::read_mps(path.string());
 
@@ -124,7 +124,7 @@ TEST_CASE("read_mps marks INTORG-flagged columns as Integer", "[miplib-fj][reade
     }
 }
 
-TEST_CASE("mps_to_model builds a closed CBLS model", "[miplib-fj][adapter]") {
+TEST_CASE("mps_to_model builds a closed CBLS model", "[mps][adapter]") {
     auto path = write_file("small_a.mps", kSmallLp);
     cbls::MpsProblem prob = cbls::read_mps(path.string());
     auto built = cbls::mps_to_model(prob);
@@ -136,7 +136,7 @@ TEST_CASE("mps_to_model builds a closed CBLS model", "[miplib-fj][adapter]") {
     REQUIRE(built.objective_node_id >= 0);
 }
 
-TEST_CASE("CBLS finds the optimum on a small continuous LP", "[miplib-fj][solve]") {
+TEST_CASE("CBLS finds the optimum on a small continuous LP", "[mps][solve]") {
     auto path = write_file("small_b.mps", kSmallLp);
     auto prob = cbls::read_mps(path.string());
     auto built = cbls::mps_to_model(prob);
@@ -151,7 +151,7 @@ TEST_CASE("CBLS finds the optimum on a small continuous LP", "[miplib-fj][solve]
     REQUIRE(result.objective <= 6.0);
 }
 
-TEST_CASE("CBLS finds a feasible point on a small binary IP", "[miplib-fj][solve]") {
+TEST_CASE("CBLS finds a feasible point on a small binary IP", "[mps][solve]") {
     auto path = write_file("bin_b.mps", kSmallBinary);
     auto prob = cbls::read_mps(path.string());
     auto built = cbls::mps_to_model(prob);
@@ -167,7 +167,7 @@ TEST_CASE("CBLS finds a feasible point on a small binary IP", "[miplib-fj][solve
 }
 
 TEST_CASE("model at known optimum has zero violation and matching objective",
-          "[miplib-fj][adapter]") {
+          "[mps][adapter]") {
     // Issue #71 acceptance criterion: the MPS-to-Model adapter should produce
     // a closed CBLS model whose total_violation matches the LP residual when
     // fed the optimum from .solu.
@@ -190,7 +190,7 @@ TEST_CASE("model at known optimum has zero violation and matching objective",
 }
 
 TEST_CASE("read_mps applies MPS integer-default ub=1 for unbounded integers",
-          "[miplib-fj][reader]") {
+          "[mps][reader]") {
     // INTORG without any UP/UI/BV defaults to ub=1 (CPLEX/Gurobi/SCIP).
     const std::string content =
         "NAME          INTDEFAULT\n"
@@ -212,7 +212,7 @@ TEST_CASE("read_mps applies MPS integer-default ub=1 for unbounded integers",
     REQUIRE_THAT(prob.vars[0].ub, WithinAbs(1.0, 1e-12));
 }
 
-TEST_CASE("read_mps records OBJSENSE and adapter rejects MAX", "[miplib-fj][reader]") {
+TEST_CASE("read_mps records OBJSENSE and adapter rejects MAX", "[mps][reader]") {
     const std::string content =
         "NAME          MAX\n"
         "OBJSENSE\n"
@@ -233,7 +233,7 @@ TEST_CASE("read_mps records OBJSENSE and adapter rejects MAX", "[miplib-fj][read
     REQUIRE_THROWS_AS(cbls::mps_to_model(prob), std::runtime_error);
 }
 
-TEST_CASE("read_mps rejects non-finite coefficients", "[miplib-fj][reader]") {
+TEST_CASE("read_mps rejects non-finite coefficients", "[mps][reader]") {
     const std::string content =
         "NAME          NAN\n"
         "ROWS\n"
@@ -248,7 +248,7 @@ TEST_CASE("read_mps rejects non-finite coefficients", "[miplib-fj][reader]") {
     REQUIRE_THROWS_AS(cbls::read_mps(path.string()), std::runtime_error);
 }
 
-TEST_CASE("read_solu parses =opt= / =inf= / =best=", "[miplib-fj][reader]") {
+TEST_CASE("read_solu parses =opt= / =inf= / =best=", "[mps][reader]") {
     std::string content =
         "# comment line\n"
         "=opt=  inst_a   42.5\n"

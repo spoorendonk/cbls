@@ -14,7 +14,8 @@ add_executable(cbls_tests
     test_nuclear_outage.cpp
     test_bunker_eca.cpp
     test_pharma_glsp.cpp
-    test_miplib_fj.cpp
+    test_io_mps.cpp
+    test_mipfeas.cpp
     test_minlplib.cpp
 )
 target_link_libraries(cbls_tests PRIVATE cbls_lib Catch2::Catch2WithMain)

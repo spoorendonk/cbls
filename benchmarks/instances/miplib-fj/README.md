@@ -1,5 +1,19 @@
 # MIPLIB-FJ benchmark subset
 
+> **Retired — superseded by `benchmarks/instances/mipfeas/` (issue #90).**
+>
+> This benchmark's roster (11 self-selected instances), metric (`gap_to_opt%`)
+> and absence of any baseline solver were all replaced: MIPfeas runs the full
+> 233-instance MIPLIB 2017 benchmark-set roster, scores the Primal Integral, and
+> compares against CP-SAT's `violation_ls` worker. The runner and its CMake
+> target are gone; `tests/test_io_mps.cpp` still covers the MPS reader and
+> adapter, which MIPfeas depends on.
+>
+> The data here is kept, not deleted: `comparison.csv` is the pre-port-SA vs
+> post-port-ViolationLS record, which answers a different question (did the
+> ViolationLS port change anything?) and is not reproducible from the current
+> tree. The vendored instances back it up.
+
 Trusted external yardstick for the CBLS engine. The instance list below is a
 **self-selected subset of MIPLIB 2017** that mirrors the spirit (not the
 exact roster — see "Caveats") of the Luteberget & Sartor 2023 *Feasibility
