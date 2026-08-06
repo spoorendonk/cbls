@@ -135,6 +135,10 @@ if(CBLS_BUILD_BENCHMARKS)
     add_executable(cbls_minlplib benchmarks/minlplib/minlplib.cpp)
     target_link_libraries(cbls_minlplib PRIVATE cbls_lib)
     target_include_directories(cbls_minlplib PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+    add_executable(cbls_mipfeas benchmarks/mipfeas/mipfeas.cpp)
+    target_link_libraries(cbls_mipfeas PRIVATE cbls_lib)
+    target_include_directories(cbls_mipfeas PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${json_SOURCE_DIR}/include)
 endif()
 
 # Python bindings (optional)
