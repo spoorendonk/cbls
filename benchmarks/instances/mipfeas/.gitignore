@@ -1,0 +1,9 @@
+# Instance files are NOT vendored here: the 233-instance MIPfeas roster is ~317 MB,
+# far past what belongs in git (contrast the 200 KB miplib-fj set, which is vendored).
+# roster.csv, smoke.csv and manifest.csv are committed instead, so the roster and the
+# exact bytes it refers to are reproducible from the repo alone; download.py refetches.
+#
+# Because the instances can be absent, the runner refuses to write results for a roster
+# whose instances are missing rather than emitting empty rows over published data.
+*.mps.gz
+*.mps
