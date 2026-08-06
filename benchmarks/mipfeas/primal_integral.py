@@ -73,6 +73,11 @@ class Scored(NamedTuple):
     #: Peak resident set of the job, so a full-roster run's concurrency can be
     #: sized from measurement rather than guessed.
     peak_rss_kib: int | None
+    #: The engine's own verdict, where it has one finer than `status` (CP-SAT's
+    #: OPTIMAL / FEASIBLE / NOT_SOLVED / MODEL_INVALID). An INFEASIBLE here on a
+    #: roster of known-feasible instances is a red flag about CP-SAT's integer
+    #: scaling, and would otherwise be indistinguishable from a plain timeout.
+    solver_status: str
     provenance: str
 
 
@@ -173,6 +178,7 @@ def score_instance(
             n_vars=None,
             n_cons=None,
             peak_rss_kib=None,
+            solver_status="",
             provenance="n/a",
         )
 
@@ -221,6 +227,7 @@ def score_instance(
         n_vars=int(n_vars) if isinstance(n_vars, int) else None,
         n_cons=int(n_cons) if isinstance(n_cons, int) else None,
         peak_rss_kib=int(peak_rss) if isinstance(peak_rss, int) else None,
+        solver_status=str(result.get("cpsat_status", "")),
         provenance=_provenance(result),
     )
 
@@ -307,10 +314,10 @@ def write_comparison(
         header += [
             "# *** WIRING CHECK, NOT A PUBLISHABLE RESULT ***",
             f"# The published MIPfeas setup is {FULL_ROSTER_SIZE} instances at "
-            f"{MIPFEAS_BUDGET_SECONDS:.0f}s; this table used "
-            f"{instances} at {budget:.0f}s. The numbers below are not comparable to a",
-            "# MIPfeas score, and the two engines' relative standing on a subset at a",
-            "# short budget need not hold on the full roster.",
+            f"{MIPFEAS_BUDGET_SECONDS:.0f}s; this table used {instances} at {budget:.0f}s.",
+            "# These numbers are not comparable to a MIPfeas score, and the two engines'",
+            "# relative standing on a subset at a short budget need not hold on the full",
+            "# roster.",
             "#",
         ]
     header.append("# Aggregates (shifted geometric mean is the primary ranking):")
@@ -340,6 +347,7 @@ def write_comparison(
                 "n_vars",
                 "n_cons",
                 "peak_rss_kib",
+                "solver_status",
                 "provenance",
             ]
         )
@@ -358,6 +366,7 @@ def write_comparison(
                     "" if r.n_vars is None else r.n_vars,
                     "" if r.n_cons is None else r.n_cons,
                     "" if r.peak_rss_kib is None else r.peak_rss_kib,
+                    r.solver_status,
                     r.provenance,
                 ]
             )

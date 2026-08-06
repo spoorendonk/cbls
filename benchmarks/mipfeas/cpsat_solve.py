@@ -155,13 +155,17 @@ def solve(
         record["status"] = "invalid_parameters"
     elif not has_solution and status in (
         model_builder.SolveStatus.MODEL_INVALID,
-        model_builder.SolveStatus.NOT_SOLVED,
         model_builder.SolveStatus.ABNORMAL,
     ):
         # CP-SAT scales continuous columns to integers and rejects what it cannot
-        # express; NOT_SOLVED/ABNORMAL mean it aborted. All three are "did not
-        # search", not "searched and found nothing", so they are tallied apart
-        # from a genuine search failure rather than counted against the baseline.
+        # express (MODEL_INVALID), and ABNORMAL means it errored out. Both are "did
+        # not search", not "searched and found nothing", so they are tallied apart
+        # rather than counted against the baseline as a search failure.
+        #
+        # NOT_SOLVED deliberately stays `no_solution`: it is the ordinary outcome of
+        # a time-limited run that found nothing, which is exactly what the metric is
+        # asking about. The precise verdict survives in `cpsat_status` and reaches
+        # the comparison table as `solver_status`.
         record["status"] = "invalid_model"
 
     # Whether the incumbent profile came from the log or is a single end-point.

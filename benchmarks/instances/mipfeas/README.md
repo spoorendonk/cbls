@@ -125,13 +125,22 @@ to end, and **not** a result. Both engines honoured the budget, the largest
 instance in the subset ran without OOM, and the driver resumed correctly after
 being interrupted.
 
-The numbers themselves were thrown away. The run that produced them was made
-before two defects were found: the MPS reader was binarising general-integer
-columns carrying an `LI` bound (which made `gen-ip054` and `enlight_hard`
-infeasible as CBLS saw them, and moved `gen-ip002`'s optimum), and CP-SAT was
-being given two workers on a mistaken belief that one would not run its `ls`
-worker. Both are fixed; the table is regenerated at one worker each, with the
-reader correct.
+The first run of it found two defects in the harness rather than in either
+solver, which is what a wiring check is for. The MPS reader was binarising
+general-integer columns carrying an `LI` bound — under that restriction
+`gen-ip054` and `enlight_hard` have no feasible point at all, and `gen-ip002`'s
+optimum moves, so all three read as CBLS failing. And CP-SAT was being given two
+workers on a mistaken belief that one would not run its `ls` worker.
+
+With both fixed, on this subset at 60s: CP-SAT reaches feasibility on 8 of 11
+against CBLS's 7, and leads on the shifted geometric mean (0.256 vs 0.652). CBLS
+is close on `gen-ip054` (5.0% gap) and ahead on `pk1` (PI 0.911 vs 0.978) and
+`neos5`; it is far behind on `binkar10_1` (1.01e6 against an optimum of 6741)
+and `markshare2`. Dropping CP-SAT from two workers to one moved its aggregate by
+0.0004, so the earlier asymmetry was not what the gap was made of.
+
+Whether any of this holds over 233 instances at 600s is exactly what the full
+run is for.
 
 ## Configuration, and what is recorded
 
