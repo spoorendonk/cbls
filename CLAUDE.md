@@ -100,18 +100,39 @@ Each benchmark follows the same pattern:
 - `reference_solve.py` — SCIP/PySCIPOpt baseline
 - `verify_*.h` — solution correctness checker
 
-The `benchmarks/chped/` directory is reference-only (Benchmark 1 was dropped). Active benchmarks: uc-chped, nuclear-outage, bunker-eca, pharma-glsp.
+The `benchmarks/chped/` directory is reference-only (Benchmark 1 was dropped).
 
-### Benchmark assignments (per worktree)
+### Benchmark priority
+
+Four benchmarks carry the comparative story, in this order. Work the list top
+down; do not start lower-priority benchmark work while a higher one is open.
+
+| # | Benchmark | Compared against | Purpose | Tracking |
+|---|-----------|------------------|---------|----------|
+| 1 | `miplib-fj` → MIPfeas | OR-Tools CP-SAT `num_violation_ls` worker **only** | head-to-head correctness *and* performance against the reference implementation of the same jump-based algorithm | #90 |
+| 2 | `minlplib` | SCIP (nonlinear) | performance on non-convex MINLP — the regime CP-SAT's LS worker cannot express | #89, #87 |
+| 3 | `uc-chped` | Pedroso 2014 | a good result on a published unit-commitment formulation | #25, #91, #92 |
+| 4 | `pharma-glsp` | Goerler et al. 2020 | a List-variable use case on a published formulation | #28, #94 |
+
+**Priority 1 is deliberately not a MIP shootout.** Compare only against CP-SAT's
+`num_violation_ls` worker (same algorithm, different implementation). Do **not**
+compare against CP-SAT's default full portfolio, Xpress, Gurobi or CPLEX — see
+epic #87 for why that framing is rejected.
+
+`bunker-eca` and `nuclear-outage` are **deprioritised, not dropped**: their code,
+data, tests and open issues (epics #26, #27) all stay, but no new work starts on
+them. Don't pick up one of their issues just because it looks tractable.
+
+### Benchmark worktrees
 
 Active work happens in sibling git worktrees under `~/code/my/cbls/`. Each session works ONLY on its assigned benchmark.
 
-| Worktree | Benchmark | Problem | Epic |
-|----------|-----------|---------|------|
-| `uc-chped/` | 2 | UC-CHPED: unit commitment + valve-point dispatch | #25 |
-| `nuclear-outage/` | 3 | ROADEF 2010: nuclear outage scheduling, 500 scenarios | #26 |
-| `bunker-eca/` | 4 | Maritime fleet bunker + ECA fuel switching | #27 |
-| `pharma-glsp/` | 5 | Pharma GLSP + shelf-life campaign scheduling | #28 |
+| Worktree | Problem | Epic |
+|----------|---------|------|
+| `uc-chped/` | UC-CHPED: unit commitment + valve-point dispatch | #25 |
+| `pharma-glsp/` | Pharma GLSP + shelf-life campaign scheduling | #28 |
+| `nuclear-outage/` | ROADEF 2010 nuclear outage scheduling — deprioritised | #26 |
+| `bunker-eca/` | Maritime fleet bunker + ECA fuel switching — deprioritised | #27 |
 
 Engine-wide (cross-cutting) work is tracked under epic #24.
 
