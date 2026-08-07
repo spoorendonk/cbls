@@ -11,6 +11,11 @@
 # Metric:  Primal Integral over the budget, in [0, 2]; lower is better.
 #          0 = optimal immediately, 2 = never feasible.
 #
+# NOT a MIPfeas leaderboard entry: the published MIPfeas runs give each
+# solver 24 threads, and both engines here get 1. These numbers are
+# comparable to each other and never to one from plato.asu.edu or the
+# GAMS blog.
+#
 # *** WIRING CHECK, NOT A PUBLISHABLE RESULT ***
 # The published MIPfeas setup is 233 instances at 600s; this table used 11 at 60s.
 # These numbers are not comparable to a MIPfeas score, and the two engines'
@@ -18,29 +23,29 @@
 # roster.
 #
 # Aggregates (shifted geometric mean is the primary ranking):
-#   cbls   sgm=0.5614 mean=0.9368 median=0.8541 iqr=[0.1431,2.0000] feasible=8/11 matched_reference=0 invalid_model=0 errored=0 not_run=0
-#   cpsat  sgm=0.2559 mean=0.8315 median=0.9776 iqr=[0.0377,2.0000] feasible=8/11 matched_reference=0 invalid_model=0 errored=0 not_run=0
+#   cbls   sgm=0.5663 mean=0.9403 median=0.8543 iqr=[0.3744,1.4998] feasible=8/11 matched_reference=0 invalid_model=0 errored=0 below_reference=0 not_run=0
+#   cpsat  sgm=0.2581 mean=0.8318 median=0.9779 iqr=[0.0487,1.4943] feasible=8/11 matched_reference=0 invalid_model=0 errored=0 below_reference=0 not_run=0
 #
-instance,engine,status,objective,reference_value,reference_kind,final_gap,primal_integral,wall_seconds,n_vars,n_cons,peak_rss_kib,n_clamped_bounds,solver_status,provenance,config
-enlight_hard,cbls,no_solution,,37.0,opt,2,2,60.0107,200,100,18128,100,,2efbde6-dirty,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
-enlight_hard,cpsat,no_solution,,37.0,opt,2,2,60.0014,200,100,103752,,NOT_SOLVED,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"
-markshare2,cbls,feasible,1135.9999999999995,1.0,opt,0.99912,0.999565,60.0015,74,7,18128,7,,2efbde6-dirty,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
-markshare2,cpsat,feasible,62.0,1.0,opt,0.983871,0.986568,59.9997,74,7,103668,,FEASIBLE,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"
-gen-ip054,cbls,feasible,6980.041607034001,6840.96564179,opt,0.0199248,0.0808956,60.2008,30,27,18128,30,,2efbde6-dirty,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
-gen-ip054,cpsat,feasible,6864.470288205001,6840.96564179,opt,0.0034241,0.0098128,60.0015,30,27,103460,,FEASIBLE,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"
-gen-ip002,cbls,feasible,-4150.16622135,-4783.733392,opt,0.132442,0.143141,60.7672,41,24,18128,41,,2efbde6-dirty,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
-gen-ip002,cpsat,feasible,-4740.7951067,-4783.733392,opt,0.00897589,0.025708,60.0017,41,24,104048,,FEASIBLE,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"
-pk1,cbls,feasible,73.99999999999997,11.0,opt,0.851351,0.854128,60.0169,86,45,18128,31,,2efbde6-dirty,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
-pk1,cpsat,feasible,466.0,11.0,opt,0.976395,0.977619,60.0014,86,45,103924,,FEASIBLE,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"
-mas76,cbls,feasible,43853.17989261785,40005.05398999999,opt,0.0877502,0.571085,60.0035,151,12,18128,1,,2efbde6-dirty,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
-mas76,cpsat,feasible,42023.00015,40005.05398999999,opt,0.04802,0.0579282,60.0018,151,12,116304,,FEASIBLE,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"
-neos5,cbls,feasible,15.5,15.0,opt,0.0322581,0.0631935,60.0051,63,63,18128,0,,2efbde6-dirty,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
-neos5,cpsat,feasible,16.0,15.0,opt,0.0625,0.0628229,59.9984,63,63,103440,,FEASIBLE,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"
-mad,cbls,feasible,1.7864000000000004,0.0268,opt,0.984998,0.987669,60.0427,220,51,18128,20,,2efbde6-dirty,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
-mad,cpsat,feasible,2.0,0.0268,opt,0.9866,0.98832,60.0021,220,52,104616,,FEASIBLE,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"
-binkar10_1,cbls,feasible,9865.217998045016,6741.38002393972,opt,0.316652,0.604934,60.0372,2298,1026,18128,2128,,2efbde6-dirty,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
-binkar10_1,cpsat,feasible,6888.810007000523,6741.38002393972,opt,0.0214014,0.0377213,60.0019,2298,1026,108960,,FEASIBLE,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"
-atlanta-ip,cbls,no_solution,,90.009878614,opt,2,2,60.8300,48738,21732,131212,127,,2efbde6-dirty,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
-atlanta-ip,cpsat,no_solution,,90.009878614,opt,2,2,60.0913,48738,21732,198016,,NOT_SOLVED,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"
-neos-5114902-kasavu,cbls,no_solution,,655.0,opt,2,2,66.1751,710164,961170,1208664,695604,,2efbde6-dirty,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
-neos-5114902-kasavu,cpsat,no_solution,,655.0,opt,2,2,62.3560,710164,961170,3112596,,NOT_SOLVED,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"
+instance,engine,status,objective,reference_value,reference_kind,final_gap,below_reference,primal_integral,wall_seconds,n_vars,n_cons,peak_rss_kib,n_clamped_bounds,trace_source,solver_status,provenance,config
+enlight_hard,cbls,no_solution,,37.0,opt,2,0,2,60.0092,200,100,18404,100,,,994d08f,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
+enlight_hard,cpsat,no_solution,,37.0,opt,2,0,2,60.0017,200,100,103560,,final_only,NOT_SOLVED,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"
+markshare2,cbls,feasible,1218.0,1.0,opt,0.999179,0,0.999578,60.0051,74,7,18404,7,,,994d08f,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
+markshare2,cpsat,feasible,62.0,1.0,opt,0.983871,0,0.986434,60.0023,74,7,103256,,log,FEASIBLE,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"
+gen-ip054,cbls,feasible,6980.041607034001,6840.96564179,opt,0.0199248,0,0.0813499,60.0158,30,27,18404,30,,,994d08f,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
+gen-ip054,cpsat,feasible,6864.470288205001,6840.96564179,opt,0.0034241,0,0.0102125,60.0019,30,27,103552,,log,FEASIBLE,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"
+gen-ip002,cbls,feasible,-4150.16622135,-4783.733392,opt,0.132442,0,0.14341,60.1639,41,24,18404,41,,,994d08f,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
+gen-ip002,cpsat,feasible,-4740.7951067,-4783.733392,opt,0.00897589,0,0.0262683,60.0017,41,24,103576,,log,FEASIBLE,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"
+pk1,cbls,feasible,73.99999999999997,11.0,opt,0.851351,0,0.854315,60.0096,86,45,18404,31,,,994d08f,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
+pk1,cpsat,feasible,473.0,11.0,opt,0.976744,0,0.977927,60.0014,86,45,104016,,log,FEASIBLE,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"
+mas76,cbls,feasible,43853.17989261785,40005.05398999999,opt,0.0877502,0,0.606905,60.0245,151,12,18404,1,,,994d08f,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
+mas76,cpsat,feasible,42023.00015,40005.05398999999,opt,0.04802,0,0.0591027,60.0019,151,12,107880,,log,FEASIBLE,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"
+neos5,cbls,feasible,15.5,15.0,opt,0.0322581,0,0.0648675,60.0003,63,63,18404,0,,,994d08f,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
+neos5,cpsat,feasible,16.0,15.0,opt,0.0625,0,0.0628229,59.9469,63,63,103308,,log,FEASIBLE,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"
+mad,cbls,feasible,1.7864000000000004,0.0268,opt,0.984998,0,0.987805,60.0374,220,51,18404,20,,,994d08f,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
+mad,cpsat,feasible,2.0,0.0268,opt,0.9866,0,0.988516,59.9999,220,52,104348,,log,FEASIBLE,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"
+binkar10_1,cbls,feasible,9865.217998045016,6741.38002393972,opt,0.316652,0,0.605381,60.0492,2298,1026,18404,2128,,,994d08f,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
+binkar10_1,cpsat,feasible,6888.810007000523,6741.38002393972,opt,0.0214014,0,0.0383012,60.0043,2298,1026,108868,,log,FEASIBLE,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"
+atlanta-ip,cbls,no_solution,,90.009878614,opt,2,0,2,60.7833,48738,21732,131264,127,,,994d08f,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
+atlanta-ip,cpsat,no_solution,,90.009878614,opt,2,0,2,60.1066,48738,21732,198164,,final_only,NOT_SOLVED,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"
+neos-5114902-kasavu,cbls,no_solution,,655.0,opt,2,0,2,71.4211,710164,961170,1208632,695604,,,994d08f,seed=42;feasibility_tolerance=1e-06;compound_moves=True;inf_clamp=10000000.0
+neos-5114902-kasavu,cpsat,no_solution,,655.0,opt,2,0,2,62.5467,710164,961170,3109848,,final_only,NOT_SOLVED,9.15.6755,"seed=42;workers=1;parameters=num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true"

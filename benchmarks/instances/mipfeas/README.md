@@ -153,12 +153,20 @@ and `gen-ip002`. The two changes compose, and together they move `binkar10_1`'s
 objective from 1,010,195 to 9,865 against an optimum of 6,741.
 
 At that configuration, on this subset at 60s: both engines reach feasibility on
-8 of 11, and CP-SAT leads on the shifted geometric mean (0.256 vs 0.561) — it
+8 of 11, and CP-SAT leads on the shifted geometric mean (0.258 vs 0.566) — it
 gets to good solutions much earlier, which is what the metric is built to
-reward. CBLS ends ahead on `pk1` (74 vs 466), `mad` (1.79 vs 2.00) and `neos5`
+reward. CBLS ends ahead on `pk1` (74 vs 473), `mad` (1.79 vs 2.00) and `neos5`
 (15.5 vs 16.0), and is close on `gen-ip054` (2.0% gap). It remains far behind on
 `markshare2` and `binkar10_1`. Dropping CP-SAT from two workers to one moved its
 aggregate by 0.0004, so that asymmetry was never what the gap was made of.
+
+Two caveats on reading any of these numbers. The A/B rows other than the chosen
+one were measured before the harness reached its current state and are not
+reproducible from what is committed here — only the bottom row is. And a
+time-limited `solve()` is not bit-reproducible even at a fixed seed (the engine
+is deterministic only when bounded by iterations, `time_limit = 0`), so re-running
+this roster moves the aggregate in the third decimal. Recording the commit SHA and
+seed pins the code and the configuration, not the exact objective.
 
 Whether any of this holds over 233 instances at 600s is exactly what the full
 run is for. One thing to expect there: `neos-5114902-kasavu` (961k rows) took
