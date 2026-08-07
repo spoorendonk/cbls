@@ -42,6 +42,18 @@ struct Args {
     // Stated explicitly rather than inherited from the engine default: a published
     // result must not silently change when an engine default moves (issue #103).
     double feas_tol = cbls::kDefaultFeasibilityTolerance;
+    // Novelty Jump (compound moves), on for this benchmark although the engine
+    // default is off. That default exists because the per-batch cost was not
+    // bounded tightly enough for the large *continuous* benchmarks, which is not
+    // this roster; and CP-SAT finds nearly all of its MIPfeas solutions from its
+    // own compound-move subsolvers (`ls_restart_*_compound_*`). Running without it
+    // would compare our Feasibility Jump against their Feasibility Jump plus
+    // Novelty Jump and call the difference a reimplementation gap.
+    bool compound_moves = true;
+    // CBLS variables need finite bounds, so an infinite one is clamped. Matched to
+    // CP-SAT's `mip_max_bound` default so both engines search the same box rather
+    // than one being handed a domain 100x wider; the engine's own default is 1e9.
+    double inf_clamp = 1.0e7;
     std::string commit_sha = "unknown";
 };
 
@@ -49,7 +61,7 @@ void print_usage() {
     std::printf(
         "Usage: cbls_mipfeas --instance NAME --out-dir DIR [--inst-dir DIR]\n"
         "                    [--budget SECONDS] [--seed N] [--feas-tol T]\n"
-        "                    [--commit SHA]\n");
+        "                    [--inf-clamp B] [--no-compound-moves] [--commit SHA]\n");
 }
 
 Args parse_args(int argc, char** argv) {
@@ -68,6 +80,12 @@ Args parse_args(int argc, char** argv) {
             a.seed = static_cast<uint64_t>(std::atoll(argv[++i]));
         } else if (s == "--feas-tol" && i + 1 < argc) {
             a.feas_tol = std::atof(argv[++i]);
+        } else if (s == "--inf-clamp" && i + 1 < argc) {
+            a.inf_clamp = std::atof(argv[++i]);
+        } else if (s == "--compound-moves") {
+            a.compound_moves = true;
+        } else if (s == "--no-compound-moves") {
+            a.compound_moves = false;
         } else if (s == "--commit" && i + 1 < argc) {
             a.commit_sha = argv[++i];
         } else if (s == "--help" || s == "-h") {
@@ -147,6 +165,20 @@ int count_int_vars(const cbls::MpsProblem& prob) {
     return n;
 }
 
+// Columns whose domain the clamp narrows. CBLS variables need finite bounds, so
+// the model it searches is a restriction of the MPS on these: it can lose
+// solutions, never invent them. Recorded per result because "the two engines
+// solved the same program" is otherwise an assumption a reader cannot check.
+int count_clamped_bounds(const cbls::MpsProblem& prob, double inf_clamp) {
+    int n = 0;
+    for (const auto& v : prob.vars) {
+        if (!(v.lb >= -inf_clamp) || !(v.ub <= inf_clamp)) {
+            ++n;
+        }
+    }
+    return n;
+}
+
 void write_result(const Args& args, const nlohmann::json& extra) {
     nlohmann::json j = extra;
     j["engine"] = "cbls";
@@ -155,6 +187,8 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     j["budget_seconds"] = args.budget;
     j["seed"] = args.seed;
     j["feasibility_tolerance"] = args.feas_tol;
+    j["compound_moves"] = args.compound_moves;
+    j["inf_clamp"] = args.inf_clamp;
     j["commit_sha"] = args.commit_sha;
 
     const std::string path = args.out_dir + "/" + args.instance + ".json";
@@ -210,9 +244,11 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    cbls::MpsToModelOptions mps_opts;
+    mps_opts.inf_clamp = args.inf_clamp;
     cbls::MpsToModelResult built;
     try {
-        built = cbls::mps_to_model(prob);
+        built = cbls::mps_to_model(prob, mps_opts);
     } catch (const std::exception& e) {
         write_result(args, {{"status", "build_error"},
                             {"message", e.what()},
@@ -235,6 +271,7 @@ int main(int argc, char** argv) {
     cbls::LNS lns(0.3);
     cbls::SearchConfig cfg;
     cfg.feasibility_tolerance = args.feas_tol;
+    cfg.use_compound_moves = args.compound_moves;
 
     const auto t0 = std::chrono::steady_clock::now();
     cbls::SearchResult result;
@@ -268,6 +305,7 @@ int main(int argc, char** argv) {
         {"n_vars", prob.vars.size()},
         {"n_cons", prob.rows.size()},
         {"n_int_vars", count_int_vars(prob)},
+        {"n_clamped_bounds", count_clamped_bounds(prob, args.inf_clamp)},
     };
     j["objective"] = have_solution ? nlohmann::json(result.objective) : nlohmann::json(nullptr);
     write_result(args, j);

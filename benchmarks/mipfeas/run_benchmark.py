@@ -103,6 +103,9 @@ def build_command(job: Job, args: argparse.Namespace, results_dir: Path) -> list
             str(args.budget),
             "--seed",
             str(args.seed),
+            "--inf-clamp",
+            str(args.inf_clamp),
+            "--compound-moves" if args.compound_moves else "--no-compound-moves",
             "--commit",
             args.commit,
         ]
@@ -243,6 +246,20 @@ def main() -> int:
     parser.add_argument("--inst-dir", default=str(DEFAULT_INSTANCE_DIR))
     parser.add_argument("--cbls-bin", default=str(DEFAULT_CBLS_BIN))
     parser.add_argument("--cpsat-workers", type=int, default=1)
+    parser.add_argument(
+        "--inf-clamp",
+        type=float,
+        default=1.0e7,
+        help="finite box CBLS clamps infinite variable bounds to; matches CP-SAT's "
+        "mip_max_bound default so both engines search the same domain",
+    )
+    parser.add_argument(
+        "--no-compound-moves",
+        dest="compound_moves",
+        action="store_false",
+        help="disable CBLS Novelty Jump; on by default here because CP-SAT's own "
+        "compound-move subsolvers find nearly all of its solutions on this roster",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--engines", nargs="+", choices=ENGINES, default=list(ENGINES))
     parser.add_argument("--large-bytes", type=int, default=DEFAULT_LARGE_BYTES)

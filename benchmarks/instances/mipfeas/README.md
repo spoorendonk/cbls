@@ -132,15 +132,35 @@ general-integer columns carrying an `LI` bound — under that restriction
 optimum moves, so all three read as CBLS failing. And CP-SAT was being given two
 workers on a mistaken belief that one would not run its `ls` worker.
 
-With both fixed, on this subset at 60s: CP-SAT reaches feasibility on 8 of 11
-against CBLS's 7, and leads on the shifted geometric mean (0.256 vs 0.652). CBLS
-is close on `gen-ip054` (5.0% gap) and ahead on `pk1` (PI 0.911 vs 0.978) and
-`neos5`; it is far behind on `binkar10_1` (1.01e6 against an optimum of 6741)
-and `markshare2`. Dropping CP-SAT from two workers to one moved its aggregate by
-0.0004, so the earlier asymmetry was not what the gap was made of.
+It also settled the two configuration choices above by measurement rather than
+argument. Each was run over the whole smoke roster, CBLS only:
+
+| Novelty Jump | clamp | shifted geomean | mean | feasible |
+|---|---|---|---|---|
+| off | 1e9 | 0.654 | 1.109 | 7/11 |
+| on | 1e9 | 0.614 | 0.961 | 8/11 |
+| off | 1e7 | 0.638 | 1.089 | 7/11 |
+| **on** | **1e7** | **0.561** | **0.937** | **8/11** |
+
+Novelty Jump turns `mas76` from no-solution into feasible and improves
+`binkar10_1` (PI 0.80 → 0.60), `pk1` and `neos5`, at a small cost on `gen-ip054`
+and `gen-ip002`. The two changes compose, and together they move `binkar10_1`'s
+objective from 1,010,195 to 9,865 against an optimum of 6,741.
+
+At that configuration, on this subset at 60s: both engines reach feasibility on
+8 of 11, and CP-SAT leads on the shifted geometric mean (0.256 vs 0.561) — it
+gets to good solutions much earlier, which is what the metric is built to
+reward. CBLS ends ahead on `pk1` (74 vs 466), `mad` (1.79 vs 2.00) and `neos5`
+(15.5 vs 16.0), and is close on `gen-ip054` (2.0% gap). It remains far behind on
+`markshare2` and `binkar10_1`. Dropping CP-SAT from two workers to one moved its
+aggregate by 0.0004, so that asymmetry was never what the gap was made of.
 
 Whether any of this holds over 233 instances at 600s is exactly what the full
-run is for.
+run is for. One thing to expect there: `neos-5114902-kasavu` (961k rows) took
+87s against a 60s budget, because model build and search initialisation are not
+bounded by the deadline. The Primal Integral is unaffected — it integrates over
+[0, budget] whatever the wall clock does — but the run takes longer than the
+budget times the job count implies.
 
 ## Configuration, and what is recorded
 
@@ -150,10 +170,28 @@ inherited, so a published number cannot silently change when a default moves:
 | | CBLS | CP-SAT |
 |---|---|---|
 | Threads | 1 | 1 (`num_workers`) |
-| Algorithm | Feasibility Jump + ViolationLS | `fj` + `ls` workers only (`filter_subsolvers`) |
+| Algorithm | Feasibility Jump + ViolationLS + Novelty Jump | `fj` + `ls` workers only (`filter_subsolvers`) |
 | Presolve | none | default, i.e. on |
 | Feasibility tolerance | `1e-6`, stated explicitly | CP-SAT's own |
-| Recorded per result | commit SHA, seed, tolerance, peak RSS | OR-Tools version, seed, full parameter string, peak RSS |
+| Infinite bound clamped to | `1e7` (`--inf-clamp`) | `1e7` (`mip_max_bound`) |
+| Recorded per result | commit SHA, seed, tolerance, clamp + columns it narrowed, compound-move flag, peak RSS | OR-Tools version, seed, full parameter string, solver verdict, peak RSS |
+
+Two of those are deliberate departures from the engine's own defaults, both made
+to keep the two sides comparable rather than to flatter either:
+
+* **Novelty Jump is on**, though `SearchConfig::use_compound_moves` defaults to
+  off. That default exists because the per-batch cost was not bounded tightly
+  enough for the large *continuous* benchmarks — not this roster. CP-SAT finds
+  nearly all of its MIPfeas solutions from its own compound-move subsolvers
+  (`ls_restart_*_compound_*`), so running without it would compare our
+  Feasibility Jump against their Feasibility Jump *plus* Novelty Jump and read
+  the difference as a reimplementation gap.
+* **Infinite variable bounds clamp to 1e7**, not the engine's 1e9. CBLS needs
+  finite bounds; CP-SAT truncates to `mip_max_bound = 1e7`. Matching it means
+  both engines search the same box. The clamp is a restriction — it can lose
+  solutions, never invent them — and each result records how many of its columns
+  it narrowed (`n_clamped_bounds`), so "both engines solved the same program" is
+  checkable rather than assumed.
 
 Two configuration facts are worth knowing before changing anything here, both
 established empirically against ortools 9.15:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import csv
 import subprocess
 from pathlib import Path
@@ -11,6 +12,7 @@ import pytest
 from benchmarks.mipfeas.primal_integral import NO_SOLUTION_GAP, score_instance, summarize
 from benchmarks.mipfeas.run_benchmark import (
     Job,
+    build_command,
     plan_jobs,
     read_roster,
     read_sizes,
@@ -148,6 +150,43 @@ def test_the_runner_rejects_a_nonpositive_budget(tmp_path: Path) -> None:
     )
     assert result.returncode == 2
     assert "--budget must be a positive" in result.stderr
+
+
+def _driver_args(**overrides: object) -> argparse.Namespace:
+    defaults = {
+        "cbls_bin": Path("/bin/cbls_mipfeas"),
+        "inst_dir": Path("/instances"),
+        "budget": 600.0,
+        "seed": 42,
+        "inf_clamp": 1.0e7,
+        "compound_moves": True,
+        "cpsat_workers": 1,
+        "commit": "abc1234",
+    }
+    return argparse.Namespace(**{**defaults, **overrides})
+
+
+def test_build_command_passes_the_cbls_configuration_through() -> None:
+    # Both are deliberate departures from the engine defaults, so the driver has to
+    # state them: a run that silently inherited either would not be the run the
+    # README describes.
+    command = build_command(Job("cbls", "inst"), _driver_args(), Path("/results"))
+    assert "--inf-clamp" in command
+    assert command[command.index("--inf-clamp") + 1] == "10000000.0"
+    assert "--compound-moves" in command
+
+
+def test_build_command_can_disable_compound_moves() -> None:
+    command = build_command(
+        Job("cbls", "inst"), _driver_args(compound_moves=False), Path("/results")
+    )
+    assert "--no-compound-moves" in command
+    assert "--compound-moves" not in command
+
+
+def test_build_command_gives_cpsat_its_worker_count() -> None:
+    command = build_command(Job("cpsat", "inst"), _driver_args(), Path("/results"))
+    assert command[command.index("--workers") + 1] == "1"
 
 
 def test_with_memory_limit_is_a_no_op_without_a_limit() -> None:
