@@ -154,7 +154,10 @@ checkout without re-running anything.
 does not pin the iteration count and consecutive runs of the same binary differ:
 two runs at one earlier commit and seed gave 46 and 45 feasible, and an
 independent replication moved two gap values materially (`nvs05` 453%→477%).
-Treat any single row as one draw, not a measurement. Reporting a median over
+The spread is wider than that on some rows: re-running the *unmodified* binary
+at the same seed and budget moved `kall_ellipsoids_tc02b` from 55.1% to 78.2%,
+and `eq6_1` spans 7.6–28.7% across four seeds. Treat any single row as one draw,
+not a measurement. Reporting a median over
 several seeds is the fix; it is not done here, and the runner has no flag for a
 deterministic budget yet (the engine supports one — `time_limit = 0` plus
 `SearchConfig::max_iterations` — but `cbls_minlplib` requires `--time-limit > 0`).
@@ -165,17 +168,17 @@ deterministic budget yet (the engine supports one — `time_limit = 0` plus
 | parsed and built (closed-model rate) | 50 (100%) |
 | of which mixed-integer (integrality enforced) | 15 |
 | **feasible** | **46** |
-| — matching BKS (within the tie band) | 17 |
+| — matching BKS (within the tie band) | 18 |
 | — better than BKS, but inside the tolerance slack | 1 |
-| — worse than BKS | 28 |
+| — worse than BKS | 27 |
 | — better than BKS | 0 |
 | infeasible | 4 |
 | unsupported / read errors / non-finite | 0 |
 | integrality mismatches vs catalogue | 0 |
 | verification failures | 0 |
 
-Gap distribution over the feasible instances: **20 within 0.01% of BKS, 21
-within 1%, 25 within 10%.**
+Gap distribution over the feasible instances: **21 within 0.01% of BKS, 22
+within 1%, 26 within 10%.**
 
 Five rows have a numerically zero BKS (`|BKS| < 1e-12`), for which the runner
 writes an *absolute* residual into the `gap_to_bks%` column rather than a
@@ -183,7 +186,7 @@ meaningless percentage against zero: `mathopt1`, `prob09`, `least`, `ex14_2_4`
 and `ex14_2_5`. Those values are not percentages. The buckets above exclude the
 first three, whose residual is non-zero, and retain `ex14_2_4`/`ex14_2_5`, where
 objective and BKS are both exactly 0 and so are exact matches at any threshold.
-Excluding all five instead gives 18 / 19 / 23 over 41 rows. Counting the
+Excluding all five instead gives 19 / 20 / 24 over 41 rows. Counting the
 excluded three *as* percentages would have put `mathopt1` — objective 1.0
 against a BKS of 3.3e-18 — inside the "within 1%" bucket.
 
@@ -212,8 +215,8 @@ feasible solution by time t (of 50):
 | feasible | 41 | 41 | 41 | 42 | 44 | 46 | 46 |
 
 **This is the load-bearing argument.** Five instances reach feasibility only
-long after 5s — `chain50` (17.6s), `ex8_4_5` (25.1s), `tln2` (26.6s), `spring`
-(30.9s), `minlphi` (36.5s) — so a 5s budget would publish all five as
+long after 5s — `chain50` (17.6s), `ex8_4_5` (24.9s), `tln2` (26.9s), `spring`
+(31.4s), `minlphi` (36.8s) — so a 5s budget would publish all five as
 infeasible, 41 solved instead of 46. Which five varies between draws; that
 several exist does not.
 
@@ -347,20 +350,25 @@ is not informative — see the zero-BKS discussion above):
 
 | | ≤0.01% | ≤1% | ≤10% |
 |---|---|---|---|
-| CBLS | 16 | 17 | 21 |
+| CBLS | 17 | 18 | 22 |
 | SCIP | 32 | 32 | 33 |
 
 SCIP is clearly ahead on quality, as expected of a mature global solver on a
-roster capped at 150 variables and 150 constraints. Four instances go the other
+roster capped at 150 variables and 150 constraints. Five instances go the other
 way by a margin far larger than any rounding effect, and every one is a row
 where SCIP exhausted the 60s budget:
 
 | Instance | CBLS gap | SCIP gap |
 |---|---|---|
 | `eg_all_s` | 10.5% | 2324% |
-| `ex8_6_1` | 49.2% | 99.6% |
-| `eq6_1` | 7.6% | 27.0% |
-| `maxmin` | 0.13% | 2.18% |
+| `ex8_1_5` | **matches BKS** | 100% |
+| `ex8_6_1` | 49.1% | 99.6% |
+| `eq6_1` | 20.4% | 27.0% |
+| `maxmin` | 0.07% | 2.18% |
+
+`ex8_1_5` is the sharpest of these: SCIP cannot make progress on it at all (its
+two variables are unbounded, so the dual bound diverges), while CBLS now reaches
+the published optimum exactly. It was CBLS's *worst* row before #107 was fixed.
 
 No finer-grained win/loss tally is published: `comparison.csv` writes objectives
 at six significant digits, which is below the tie band on several rows, so a

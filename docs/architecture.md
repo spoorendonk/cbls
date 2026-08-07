@@ -338,7 +338,7 @@ candidate set, plus its score:
 | Bool  | the flip `1 - x` |
 | Int (domain <= 256) | every value in `[lb, ub]` |
 | Int (domain > 256)  | endpoints, neighbours `x±1`, and a 32-point rounded grid |
-| Float | Newton step toward the root of each violated constraint containing `v` (`x - residual/grad`, gradient via reverse-mode AD; up to 4), then midpoint and endpoints |
+| Float | Newton step toward the root of each violated constraint containing `v` (`x - residual/grad`, gradient via reverse-mode AD; up to 4), then midpoint and endpoints. Once the search has stagnated, a Float at a *stationary* point of every violated constraint containing it additionally gets a two-sided local probe at `x ± {1e-6, 1e-2}·(|x|+1)` — see below |
 
 Each candidate is scored with one `weighted_violation_delta` probe. Newton
 candidates are considered first so that, on a tie in violation delta (a feasible
@@ -346,6 +346,25 @@ plateau), the gradient-informed point wins. Because the objective is a
 constraint `obj <= bound`, when that constraint is violated its Newton candidate
 pulls the objective *down* — this is how a hook-less continuous model still
 descends the objective.
+
+**The stagnation-gated escape probe (#107).** Every one of the candidates above
+is either a Newton step, whose length is set by the target and which vanishes
+with the gradient, or a constant derived from the box. So a Float sitting at a
+point where every violated constraint containing it is stationary had *no
+candidate that could move it at all* — an empty neighbourhood — and froze there
+for the rest of the run. `Int` never had this problem: `int_jump_candidates`
+always offers `x ± 1`. Float was the one type with no local move.
+
+The probe supplies that local move, two-sided because at a saddle the descent
+direction is precisely what a zero gradient cannot tell you. It is **off by
+default and armed only after `perturbation_period` batches without improvement**,
+then disarmed on the next new best. That gating is load-bearing rather than a
+throughput optimisation: "stationary and nothing improving" is the *steady
+state* of local search, and an always-on probe was measured ~9x worse on
+`shiporig` across every seed, because its drip of numerically tiny improvements
+kept the search from ever registering stagnation, so diversification never
+fired. Armed only as a last resort, the same probe leaves productive searches
+bit-identical and rescues frozen ones.
 
 A single call is *not* a converged 1-D minimiser; the GLS loop iterates these
 cheap jumps. The continuous heavy lifting is left to the

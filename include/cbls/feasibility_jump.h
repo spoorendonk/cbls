@@ -67,7 +67,11 @@ struct JumpResult {
 // a converged 1-D minimiser; the GLS loop iterates these cheap jumps. Passing
 // the GLS weights gives the Feasibility-Jump score; passing the novelty weights
 // gives the Novelty-Jump (W') argmin. `var_id` must be scalar (Bool/Int/Float).
-JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id);
+// `allow_escape_probe` opts a Float at a stationary point into a local
+// two-sided probe. Off by default: it is a last resort, not a steady-state
+// behaviour — see the comment on the probe in feasibility_jump.cpp.
+JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id,
+                            bool allow_escape_probe = false);
 
 // Guided Local Search weight update (paper Algorithm 3, lines 8-10): decay all
 // weights by rho, then bump every currently-violated constraint by 1. Weights
@@ -105,6 +109,8 @@ public:
     void resync();                         // rebuild the scan set from current state, keep weights
     void perturb(double probability);      // randomise each jumpable var w.p. p
     void set_rho(double rho) { config_.rho = rho; }
+    // Armed by the search loop once it has stagnated; see solve().
+    void set_escape_probe(bool on) { escape_probe_ = on; }
     bool all_satisfied() const;
     int64_t iterations() const { return iterations_; }  // total GLS iterations since begin()
 
@@ -140,6 +146,11 @@ private:
     void rebuild_violated_and_scan_set();
     void set_initial_assignment();
     void compute_linear_constraints();
+
+    //: Armed by the search loop after `perturbation_period` batches without
+    //: improvement, cleared on every new best. Gates the Float escape probe so
+    //: it stays a last resort rather than a steady-state behaviour.
+    bool escape_probe_ = false;
     void enqueue(int32_t var_id);
 
     // Novelty Jump internals (Algorithm 5). A candidate var with its W'-argmin

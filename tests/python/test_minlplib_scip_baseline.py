@@ -531,11 +531,20 @@ def test_safe_gap_reproduces_the_cpp_runners_published_gap_column() -> None:
     for row in rows:
         bound = bounds[row["instance"]]
         published = float(row["gap_to_bks%"])
-        # Below this the 6-digit objective has destroyed the information the gap
-        # was computed from, so a disagreement says nothing about the port.
-        if abs(published) <= 0.01:
+        objective = float(row["objective"])
+        if abs(published) <= 0.01 or abs(bound.primal_bks) < 1e-12:
             continue
-        ours = safe_gap(float(row["objective"]), bound.primal_bks, bound.maximizing)
+        # Six significant digits on the objective column is an absolute
+        # uncertainty of ~1e-6*|obj|, which propagates through
+        # gap = 100*(obj-ref)/|ref| to 100*1e-6*|obj|/|ref| gap points. On a row
+        # whose gap is itself tiny that swamps what we are asserting to — the
+        # subtraction has cancelled away the digits the gap was computed from —
+        # so the row carries no information about the port. Skip it rather than
+        # loosen the tolerance for every row.
+        gap_uncertainty = 100.0 * 1e-6 * abs(objective) / abs(bound.primal_bks)
+        if gap_uncertainty > 1e-3 * abs(published):
+            continue
+        ours = safe_gap(objective, bound.primal_bks, bound.maximizing)
         assert ours == pytest.approx(published, rel=1e-3), row["instance"]
         checked += 1
-    assert checked >= 20, f"only {checked} rows had enough resolution to cross-check"
+    assert checked >= 15, f"only {checked} rows had enough resolution to cross-check"

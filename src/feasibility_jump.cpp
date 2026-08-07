@@ -62,14 +62,23 @@ void int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
 // than an arbitrary endpoint (`consider` keeps the first-seen minimum). The
 // objective enters here too: when `obj <= bound` is violated, chasing its root
 // pulls the objective down.
+// Returns whether the gradient carried usable direction here. False means this
+// variable takes part in at least one violated constraint yet none of them
+// yielded a Newton candidate — every gradient was ~0, i.e. it sits at a
+// *stationary* point — so the three remaining candidates are box constants
+// unrelated to local geometry and the variable may have no move at all.
+//
+// A variable in no violated constraint reports true: nothing to escape.
 template <class Consider>
-void float_jump_candidates(Model& model, int32_t var_id, const Variable& var, double x0,
+bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, double x0,
                            Consider&& consider) {
     if (var.ub <= var.lb) {
-        return;
+        return true;  // fixed: nothing to escape
     }
     const auto& cids = model.constraint_ids();
     int budget = 4;
+    bool any_newton = false;
+    bool saw_violated = false;
     for (int32_t c : model.constraints_of_var(var_id)) {
         if (budget <= 0) {
             break;
@@ -78,15 +87,50 @@ void float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
         if (residual <= kTol) {
             continue;  // satisfied: no root to chase
         }
+        saw_violated = true;
         double grad = compute_partial(model, cids[c], var_id);
         if (std::abs(grad) > 1e-12) {
             consider(clamp_to_domain(var, x0 - residual / grad));
+            any_newton = true;
             --budget;
         }
     }
     consider(0.5 * (var.lb + var.ub));
     consider(var.lb);
     consider(var.ub);
+    return !saw_violated || any_newton;
+}
+
+// Relative probe steps. 1e-6 breaks an *exact* stationary point, where the
+// first-order model says nothing and any nonzero step is information; 1e-2
+// then covers ground, because the gain at a quadratic stationary point is
+// O(h^2) and a 1e-6 step alone makes the search crawl.
+constexpr double kEscapeRelSteps[] = {1e-6, 1e-2};
+
+// The local move Float otherwise lacks entirely. `int_jump_candidates` always
+// offers x0 +/- 1; Float had only a Newton step (length set by the target, and
+// vanishing with the gradient) plus three box constants, so a Float at an
+// interior stationary point had an empty neighbourhood and froze there.
+//
+// Two-sided because at a saddle the descent direction is exactly what a zero
+// gradient cannot supply — it has to be sampled.
+template <class Consider>
+void float_escape_candidates(const Variable& var, double x0, Consider&& consider) {
+    // Scaled on |x0|, deliberately NOT on box width: for an unbounded NL column
+    // that width is the inf_clamp artifact rather than information. The +1 keeps
+    // the step nonzero at x0 == 0 and keeps x0 +/- h distinct from x0.
+    const double scale = std::abs(x0) + 1.0;
+    for (double rel : kEscapeRelSteps) {
+        const double h = rel * scale;
+        const double up = clamp_to_domain(var, x0 + h);
+        const double down = clamp_to_domain(var, x0 - h);
+        if (up != var.ub) {  // lb/ub are already candidates; don't pay twice
+            consider(up);
+        }
+        if (down != var.lb) {
+            consider(down);
+        }
+    }
 }
 
 }  // namespace
@@ -95,7 +139,8 @@ void float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
 // Free functions
 // ---------------------------------------------------------------------------
 
-JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id) {
+JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id,
+                            bool allow_escape_probe) {
     const Variable& var = model.var(var_id);
     const double x0 = var.value;
 
@@ -121,7 +166,16 @@ JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, in
     } else if (var.type == VarType::Int) {
         int_jump_candidates(var, x0, consider);
     } else if (var.type == VarType::Float) {
-        float_jump_candidates(model, var_id, var, x0, consider);
+        // The probe is a LAST RESORT and must stay one. Firing it whenever a
+        // variable is stationary and nothing improved — which is the steady
+        // state of local search — measured ~9x worse on shiporig across every
+        // seed: the drip of tiny improvements suppresses stagnation, so
+        // diversification never fires. Hence `allow_escape_probe`, which the
+        // search loop arms only once it is genuinely stuck.
+        const bool gradient_usable = float_jump_candidates(model, var_id, var, x0, consider);
+        if (allow_escape_probe && !gradient_usable && best_f >= 0.0) {
+            float_escape_candidates(var, x0, consider);
+        }
     }
 
     return {best_j, -best_f};
@@ -330,7 +384,7 @@ bool FeasibilityJump::apply_jump(int sample_size) {
             continue;  // already sampled this call; redraw for a distinct var
         }
         if (!jumps_.valid(v)) {
-            JumpResult r = compute_var_jump(model_, vm_.weights, v);
+            JumpResult r = compute_var_jump(model_, vm_.weights, v, escape_probe_);
             jumps_.set(v, r.jump_value, r.score);
         }
         double s = jumps_.score(v);

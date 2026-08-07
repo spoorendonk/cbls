@@ -323,3 +323,69 @@ TEST_CASE("Novelty Jump terminates and leaves consistent state on a contradictio
     REQUIRE(m.var(vid(x)).value >= 0.0);
     REQUIRE(m.var(vid(x)).value <= 10.0);
 }
+
+// ---------------------------------------------------------------------------
+// Escape from a stationary point (#107)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("compute_var_jump: a stationary Float is frozen without the probe", "[fj][stationary]") {
+    // f(y) = -4y^2 + 4y^4. f'(0) == 0 exactly, minima at y = +-1/sqrt(2).
+    // Folded in as `obj <= bound` the objective row is violated at y = 0, but its
+    // gradient there is 0 so no Newton candidate is emitted; the box is symmetric
+    // so the midpoint candidate equals y and is skipped; and lb/ub are far worse.
+    // Every candidate is dead and the variable cannot move at all — this is the
+    // frozen state the escape probe exists for, and it is the default behaviour
+    // because firing the probe in the steady state suppresses diversification.
+    Model m;
+    auto y = m.float_var(-10.0, 10.0, "y");
+    m.minimize(m.sum({m.prod(m.constant(-4.0), m.pow_expr(y, m.constant(2.0))),
+                      m.prod(m.constant(4.0), m.pow_expr(y, m.constant(4.0)))}));
+    m.close();
+    m.add_objective_soft_constraint();
+    m.set_objective_bound(-1e-3);
+    m.var_mut(vid(y)).value = 0.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+
+    REQUIRE(compute_var_jump(m, vm.weights, vid(y)).score == 0.0);
+
+    SECTION("armed, it gets a local jump out") {
+        JumpResult r = compute_var_jump(m, vm.weights, vid(y), /*allow_escape_probe=*/true);
+        REQUIRE(r.score > 0.0);
+        REQUIRE(r.jump_value != 0.0);
+        REQUIRE(std::abs(r.jump_value) < 1.0);  // a local nudge, not a box endpoint
+    }
+}
+
+TEST_CASE("compute_var_jump: the escape probe invents nothing", "[fj][stationary]") {
+    // Control for the test above. At a true local minimum there is no improving
+    // jump, and the probe must not manufacture one — otherwise an already
+    // converged variable would churn forever and never let the search stagnate.
+    Model m;
+    auto z = m.float_var(-10.0, 10.0, "z");
+    m.minimize(m.pow_expr(z, m.constant(2.0)));
+    m.close();
+    m.add_objective_soft_constraint();
+    m.set_objective_bound(-1e-3);  // unreachable: z^2 >= 0, so the row stays violated
+    m.var_mut(vid(z)).value = 0.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+
+    REQUIRE(compute_var_jump(m, vm.weights, vid(z), /*allow_escape_probe=*/true).score == 0.0);
+}
+
+TEST_CASE("compute_var_jump: a fixed Float has nothing to escape", "[fj][stationary]") {
+    // Covers the `ub <= lb` early return, which reports the gradient usable so a
+    // variable that cannot move never arms the probe.
+    Model m;
+    auto f = m.float_var(3.0, 3.0, "f");
+    m.minimize(m.pow_expr(f, m.constant(2.0)));
+    m.close();
+    m.add_objective_soft_constraint();
+    m.set_objective_bound(-1e-3);
+    m.var_mut(vid(f)).value = 3.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+
+    REQUIRE(compute_var_jump(m, vm.weights, vid(f), /*allow_escape_probe=*/true).score == 0.0);
+}

@@ -381,6 +381,8 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
 
         if (improved) {
             stagnation = 0;
+            // Making progress: the Float escape probe is not needed and is not free.
+            fj.set_escape_probe(false);
             fj.reset_weights();  // new best: fresh GLS weights (paper) + new rho
             sample_rho();
             if (!has_obj) {
@@ -394,6 +396,12 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         }
 
         if (stagnation >= config.perturbation_period && !past_deadline()) {
+            // Genuinely stuck. Arm the Float escape probe: a variable sitting at a
+            // stationary point of every violated constraint has no other candidate
+            // that can move it, and diversification alone cannot rescue it because
+            // the search re-converges to the same point. Disarmed again on the next
+            // improvement, so a productive search never pays for it.
+            fj.set_escape_probe(true);
             diversify();
         }
 
