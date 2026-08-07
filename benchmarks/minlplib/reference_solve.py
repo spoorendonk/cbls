@@ -304,7 +304,10 @@ def annotate(result: ScipResult, bound: Bound) -> None:
     """Attach the BKS classification and the cross-checks worth failing loudly."""
     if result.feasible:
         result.notes.insert(
-            0, classify_vs_bks(result.objective, bound.primal_bks, bound.maximizing, SCIP_FEASTOL)
+            0,
+            classify_vs_bks(
+                result.objective, bound.primal_bks, maximizing(bound, result), SCIP_FEASTOL
+            ),
         )
     if result.status == "optimal":
         result.notes.append("proved-optimal")
@@ -328,7 +331,7 @@ def annotate(result: ScipResult, bound: Bound) -> None:
     if not math.isnan(bound.primal_bks) and math.isfinite(result.dual_bound):
         crossed = (
             result.dual_bound < bound.primal_bks - 1e-6 * (abs(bound.primal_bks) + 1.0)
-            if bound.maximizing
+            if maximizing(bound, result)
             else result.dual_bound > bound.primal_bks + 1e-6 * (abs(bound.primal_bks) + 1.0)
         )
         if crossed:
@@ -398,6 +401,21 @@ def _published_objective(result: ScipResult) -> float:
     return result.objective if result.feasible else math.nan
 
 
+def maximizing(bound: Bound, result: ScipResult) -> bool:
+    """The objective sense to score by: the instance's, else the catalogue's.
+
+    The C++ runner takes the sense from the model it built, not from
+    `bounds.csv`, and the instance file is the ground truth — the catalogue is
+    derived metadata from a library that drifts. Scoring by the catalogue would
+    let a one-word error there invert every gap and label on the row *before*
+    `annotate`'s cross-check could report the disagreement.
+
+    Falls back to the catalogue when SCIP never read the instance (a `not-found`
+    row, or a reload via `read_scip_csv`, which does not restore the sense).
+    """
+    return result.objsense.startswith("max") if result.objsense else bound.maximizing
+
+
 def _gap_to_bks(result: ScipResult, bound: Bound) -> float:
     """Gap only for a row we publish as feasible; NaN otherwise.
 
@@ -406,7 +424,7 @@ def _gap_to_bks(result: ScipResult, bound: Bound) -> float:
     """
     if not result.feasible:
         return math.nan
-    return safe_gap(result.objective, bound.primal_bks, bound.maximizing)
+    return safe_gap(result.objective, bound.primal_bks, maximizing(bound, result))
 
 
 def write_scip_csv(path: Path, rows: Sequence[tuple[Bound, ScipResult]], version: str) -> None:
@@ -419,7 +437,7 @@ def write_scip_csv(path: Path, rows: Sequence[tuple[Bound, ScipResult]], version
         for bound, result in rows:
             gap_bks = _gap_to_bks(result, bound)
             gap_dual = (
-                safe_gap(result.objective, bound.dual_bound, bound.maximizing)
+                safe_gap(result.objective, bound.dual_bound, maximizing(bound, result))
                 if result.feasible
                 else math.nan
             )

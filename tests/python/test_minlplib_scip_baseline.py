@@ -35,6 +35,7 @@ from benchmarks.minlplib.reference_solve import (
     annotate,
     classify_vs_bks,
     load_bounds,
+    maximizing,
     read_scip_csv,
     safe_gap,
     write_merged_csv,
@@ -400,6 +401,29 @@ def test_annotate_is_quiet_when_the_senses_agree() -> None:
     result = ScipResult(instance="alpha", status="optimal", objsense="minimize")
     annotate(result, _bound(instance="alpha"))
     assert not any("objsense" in n for n in result.notes)
+
+
+def test_the_instance_sense_outranks_the_catalogue_when_they_disagree() -> None:
+    # The catalogue is derived metadata from a drifting library; the instance is
+    # ground truth, and the C++ runner scores from the model too. A stale
+    # `bounds.csv` must not invert the gap before the mismatch note can report it.
+    bound = _bound(instance="alpha", primal_bks=10.0)
+    bound.objsense = "max"
+    result = ScipResult(instance="alpha", objsense="minimize", objective=11.0, feasible=True)
+    assert not maximizing(bound, result)
+    annotate(result, bound)
+    # Minimizing, 11 against a BKS of 10, is a miss. Scored as the catalogue's
+    # "max" it would read as a win.
+    assert result.notes[0] == "feasible"
+    assert any("objsense mismatch" in n for n in result.notes)
+
+
+def test_the_catalogue_sense_is_used_when_the_instance_was_never_read() -> None:
+    # `not-found` rows and `read_scip_csv` reloads carry no instance sense.
+    assert maximizing(_bound(), ScipResult(instance="alpha")) is False
+    maxi = _bound()
+    maxi.objsense = "max"
+    assert maximizing(maxi, ScipResult(instance="alpha")) is True
 
 
 def test_annotate_flags_a_dual_bound_that_crosses_the_published_primal() -> None:

@@ -302,6 +302,14 @@ a *finite* float; the runner folds that to `NaN` at capture, so an unproved boun
 is never published as a proof. Rows with no dual bound therefore read `NaN` in
 `scip_dual_bound` and `scip_gap%`, the same spelling the CBLS rows use.
 
+**Hardware.** The SCIP run was executed on an AMD Ryzen 5 5600H (12 logical
+cores, Linux 7.0), one core in use. **The CBLS run's hardware is not recorded**
+— `comparison.csv` has no machine column and that run predates this one — so the
+wall-clock ratio below assumes the two ran on comparable hardware without being
+able to verify it. Treat the *counts* (feasible, proved optimal) as the solid
+comparison and the time totals as indicative. Recording the machine per row is
+worth doing on the next re-run of either side.
+
 | | CBLS | SCIP |
 |---|---|---|
 | feasible | 46 / 50 | **49 / 50** |
