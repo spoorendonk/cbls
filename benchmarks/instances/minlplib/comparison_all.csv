@@ -1,151 +1,151 @@
 instance,method,version,objective,feasible,wall_seconds,gap_to_bks%,dual_bound,note
 process,published-bks,minlplib-catalogue,-1161.336602,true,NaN,0.0,-1161.336619,published primal/dual bound; structure=bilinear
 process,cbls,cbls@d0564ad,-1042.21,true,60.0002,10.2574,NaN,feasible
-process,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-1161.3366895778008,true,60.000155153975356,-7.541121203824842e-06,-1161.338138633181,matches-bks
+process,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-1161.3366895778008,true,60.00016442302149,-7.541121203824842e-06,-1161.3381166224408,matches-bks
 st_e36,published-bks,minlplib-catalogue,-246.0,true,NaN,0.0,-246.0,published primal/dual bound; structure=mixed-integer
 st_e36,cbls,cbls@d0564ad,-147,true,60.0005,40.2439,NaN,feasible
-st_e36,scip,SCIP 10.0 / PySCIPOpt 6.2.1,NaN,false,60.00019999197684,NaN,-304.49902433484135,no-solution(timelimit)
+st_e36,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,NaN,false,60.000059746031184,NaN,-304.49902433484135,no-solution(timelimit)
 ex4_1_1,published-bks,minlplib-catalogue,-7.487312365,true,NaN,0.0,-7.487312372,published primal/dual bound; structure=other
 ex4_1_1,cbls,cbls@d0564ad,-7.48731,true,60.0001,1.30403e-09,NaN,matches-bks
-ex4_1_1,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-7.487313096957896,true,0.17158882500370964,-9.775976483810464e-06,-7.487313096957896,matches-bks; proved-optimal
+ex4_1_1,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-7.487313096957896,true,0.16880215896526352,-9.775976483810464e-06,-7.487313096957896,matches-bks; proved-optimal
 ex8_1_6,published-bks,minlplib-catalogue,-10.0860015,true,NaN,0.0,-10.08600151,published primal/dual bound; structure=polynomial
 ex8_1_6,cbls,cbls@d0564ad,-5.06544,true,60.0002,49.7775,NaN,feasible
-ex8_1_6,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-10.08600226349212,true,0.1305426549515687,-7.569819608935091e-06,-10.08600226349212,matches-bks; proved-optimal
+ex8_1_6,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-10.08600226349212,true,0.12891863705590367,-7.569819608935091e-06,-10.08600226349212,matches-bks; proved-optimal
 alkylation,published-bks,minlplib-catalogue,1768.806964,true,NaN,0.0,1768.807015,published primal/dual bound; structure=bilinear
 alkylation,cbls,cbls@d0564ad,598.591,true,60.0004,66.1585,NaN,feasible
-alkylation,scip,SCIP 10.0 / PySCIPOpt 6.2.1,1768.8071311073327,true,60.00014838000061,-9.447460122755018e-06,1871.7542639081282,matches-bks
+alkylation,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,1768.8071311073327,true,60.00030194502324,-9.447460122755018e-06,1871.6163191503247,matches-bks
 nvs21,published-bks,minlplib-catalogue,-5.6847825,true,NaN,0.0,-5.6847825,published primal/dual bound; structure=mixed-integer
 nvs21,cbls,cbls@d0564ad,0,true,60.0035,100,NaN,feasible
-nvs21,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-5.684782596883448,true,0.03852594899944961,-1.7042595372981577e-06,-5.684782596883448,matches-bks; proved-optimal
+nvs21,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-5.684782596883448,true,0.03781161399092525,-1.7042595372981577e-06,-5.684782596883448,matches-bks; proved-optimal
 ex4_1_2,published-bks,minlplib-catalogue,-663.5000966,true,NaN,0.0,-663.5000973,published primal/dual bound; structure=other
 ex4_1_2,cbls,cbls@d0564ad,-663.498,true,60.0001,0.000351255,NaN,feasible
-ex4_1_2,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-663.5000972957905,true,0.5481884279870428,-1.048666771699258e-07,-663.5000972957905,matches-bks; proved-optimal
+ex4_1_2,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-663.5000972957905,true,0.5445580100058578,-1.048666771699258e-07,-663.5000972957905,matches-bks; proved-optimal
 ex14_2_5,published-bks,minlplib-catalogue,0.0,true,NaN,0.0,0.0,published primal/dual bound; structure=polynomial
 ex14_2_5,cbls,cbls@d0564ad,0,true,60.0001,0,NaN,matches-bks
-ex14_2_5,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-9.918514702305669e-09,true,0.018094392027705908,-9.918514702305669e-09,-9.918514702305669e-09,matches-bks; proved-optimal
+ex14_2_5,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-9.918514702305669e-09,true,0.018017355992924422,-9.918514702305669e-09,-9.918514702305669e-09,matches-bks; proved-optimal
 mathopt5_3,published-bks,minlplib-catalogue,-1.616424928,true,NaN,0.0,-1.616425478,published primal/dual bound; structure=transcendental
 mathopt5_3,cbls,cbls@d0564ad,-1.61642,true,60.0001,-1.80525e-08,NaN,matches-bks
-mathopt5_3,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-1.6164253721656376,true,0.11168231500778347,-2.7478271951215406e-05,-1.6164253721656376,matches-bks; proved-optimal
+mathopt5_3,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-1.6164253721656376,true,0.11076481099007651,-2.7478271951215406e-05,-1.6164253721656376,matches-bks; proved-optimal
 ex8_4_5,published-bks,minlplib-catalogue,0.0003074859878,true,NaN,0.0,0.0003074846867,published primal/dual bound; structure=bilinear
 ex8_4_5,cbls,cbls@d0564ad,0.000311161,true,60.0019,1.19526,NaN,feasible
-ex8_4_5,scip,SCIP 10.0 / PySCIPOpt 6.2.1,0.00030747588824423227,true,60.00025111599825,-0.0032845580509097876,0.00014865956768695537,matches-bks
+ex8_4_5,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,0.00030747588824423227,true,60.00010136101628,-0.0032845580509097876,0.00014867630789431457,matches-bks
 nvs01,published-bks,minlplib-catalogue,12.46966882,true,NaN,0.0,12.46966882,published primal/dual bound; structure=mixed-integer
 nvs01,cbls,cbls@d0564ad,NaN,false,60.0002,NaN,NaN,infeasible(residual=1.3e+04; 1 viol; worst row0 ==) | hard: Requires changing x0 and the product x1*x2 together in 420.169*sqrt(x0^2+900) == x2*x0*x1. While x0=0 the product term vanishes so x1 and x2 get no gradient signal; and no single-variable jump improves; escaping needs a compound move (Novelty Jump is implemented but off by default). Tracked in #101.
-nvs01,scip,SCIP 10.0 / PySCIPOpt 6.2.1,12.469668821568206,true,0.10523164097685367,1.2576156944929741e-08,12.469668821568206,matches-bks; proved-optimal
+nvs01,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,12.469668821568206,true,0.10582752601476386,1.2576156944929741e-08,12.469668821568206,matches-bks; proved-optimal
 ex4_1_3,published-bks,minlplib-catalogue,-443.6717047,true,NaN,0.0,-443.6717054,published primal/dual bound; structure=other
 ex4_1_3,cbls,cbls@d0564ad,-443.672,true,60.0001,-9.2614e-09,NaN,matches-bks
-ex4_1_3,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-443.67170557024656,true,0.29735008103307337,-1.9614650398571515e-07,-443.67170557024656,matches-bks; proved-optimal
+ex4_1_3,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-443.67170557024656,true,0.2916305729886517,-1.9614650398571515e-07,-443.67170557024656,matches-bks; proved-optimal
 ex14_2_4,published-bks,minlplib-catalogue,0.0,true,NaN,0.0,0.0,published primal/dual bound; structure=polynomial
 ex14_2_4,cbls,cbls@d0564ad,0,true,60.0001,0,NaN,matches-bks
-ex14_2_4,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-9.716994925976798e-09,true,0.04781636700499803,-9.716994925976798e-09,-9.716994925976798e-09,matches-bks; proved-optimal
+ex14_2_4,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-9.716994925976798e-09,true,0.046371981035918,-9.716994925976798e-09,-9.716994925976798e-09,matches-bks; proved-optimal
 ex8_1_1,published-bks,minlplib-catalogue,-2.021806783,true,NaN,0.0,-2.021807298,published primal/dual bound; structure=transcendental
 ex8_1_1,cbls,cbls@d0564ad,-2.02181,true,60.0001,-1.77623e-08,NaN,matches-bks
-ex8_1_1,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-2.0218069953341287,true,0.06935784203233197,-1.0502196861117096e-05,-2.0218069953341287,matches-bks; proved-optimal
+ex8_1_1,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-2.0218069953341287,true,0.06768074398860335,-1.0502196861117096e-05,-2.0218069953341287,matches-bks; proved-optimal
 shiporig,published-bks,minlplib-catalogue,5.54091471,true,NaN,0.0,0.0,published primal/dual bound; structure=bilinear
 shiporig,cbls,cbls@d0564ad,7.18579,true,60.0011,29.6859,NaN,feasible
-shiporig,scip,SCIP 10.0 / PySCIPOpt 6.2.1,5.540914651904179,true,60.000262709043454,-1.0484879056851671e-06,-9.999999980870551e+19,matches-bks
+shiporig,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,5.540914651904179,true,60.0002372720046,-1.0484879056851671e-06,NaN,matches-bks
 nvs08,published-bks,minlplib-catalogue,23.44972735,true,NaN,0.0,23.44972732,published primal/dual bound; structure=mixed-integer
 nvs08,cbls,cbls@d0564ad,23.828,true,60.0062,1.61303,NaN,feasible
-nvs08,scip,SCIP 10.0 / PySCIPOpt 6.2.1,23.449727150909464,true,0.072241096990183,-8.490100250873748e-07,23.449727150909464,matches-bks; proved-optimal
+nvs08,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,23.449727150909464,true,0.07127023400971666,-8.490100250873748e-07,23.449727150909464,matches-bks; proved-optimal
 ex4_1_7,published-bks,minlplib-catalogue,-7.5,true,NaN,0.0,-7.500000007,published primal/dual bound; structure=other
 ex4_1_7,cbls,cbls@d0564ad,-7.5,true,60,0,NaN,matches-bks
-ex4_1_7,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-7.500000764521982,true,0.10958191001554951,-1.0193626422960733e-05,-7.500000764521982,matches-bks; proved-optimal
+ex4_1_7,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-7.500000764521982,true,0.11043495102785528,-1.0193626422960733e-05,-7.500000764521982,matches-bks; proved-optimal
 eq6_1,published-bks,minlplib-catalogue,670.6941104,true,NaN,0.0,194.5829099,published primal/dual bound; structure=polynomial
 eq6_1,cbls,cbls@d0564ad,721.37,true,60.0059,7.55579,NaN,feasible
-eq6_1,scip,SCIP 10.0 / PySCIPOpt 6.2.1,851.7134791766831,true,60.00012128101662,26.989855132129264,-1.1000000000000001e-09,feasible
+eq6_1,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,851.7134791766831,true,60.00012846000027,26.989855132129264,-1.1000000000000001e-09,feasible
 minlphi,published-bks,minlplib-catalogue,582.236142,true,NaN,0.0,582.236142,published primal/dual bound; structure=bilinear
 minlphi,cbls,cbls@d0564ad,582.236,true,60.0008,-7.96629e-07,NaN,matches-bks
-minlphi,scip,SCIP 10.0 / PySCIPOpt 6.2.1,582.2361404889937,true,0.07263702701311558,-2.595177788172738e-07,582.2361404889937,matches-bks; proved-optimal
+minlphi,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,582.2361404889937,true,0.07191891898401082,-2.595177788172738e-07,582.2361404889937,matches-bks; proved-optimal
 gear4,published-bks,minlplib-catalogue,1.643428474,true,NaN,0.0,1.643428474,published primal/dual bound; structure=mixed-integer
 gear4,cbls,cbls@d0564ad,27149.2,true,60.0006,1.65189e+06,NaN,feasible
-gear4,scip,SCIP 10.0 / PySCIPOpt 6.2.1,1.6434284739661962,true,0.9991237359936349,-2.056910242458282e-09,1.6434284739661962,matches-bks; proved-optimal
+gear4,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,1.6434284739661962,true,0.9909974290058017,-2.056910242458282e-09,1.6434284739661962,matches-bks; proved-optimal
 mathopt5_7,published-bks,minlplib-catalogue,-4.436728338,true,NaN,0.0,-4.436728343,published primal/dual bound; structure=other
 mathopt5_7,cbls,cbls@d0564ad,-4.43673,true,60,-1.01207e-08,NaN,matches-bks
-mathopt5_7,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-4.436729172356074,true,0.26976734097115695,-1.8805660622999454e-05,-4.436729172356074,matches-bks; proved-optimal
+mathopt5_7,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-4.436729172356074,true,0.26223273103823885,-1.8805660622999454e-05,-4.436729172356074,matches-bks; proved-optimal
 elec25,published-bks,minlplib-catalogue,243.8127603,true,NaN,0.0,90.22758027,published primal/dual bound; structure=polynomial
 elec25,cbls,cbls@d0564ad,NaN,false,60.0675,NaN,NaN,infeasible(residual=1; 25 viol; worst row0 ==; obj non-finite here) | bug: Thomson problem: the feasible region contains coincident-point configurations where the Coulomb objective is +inf. Folded in as an obj<=bound soft constraint; that violation clamps to ~1e30 and absorbs the real constraints' O(1) terms in floating point; so the search loses the feasibility signal. Verified: dropping the objective makes this instance feasible in 20s at violation 0. Tracked in #100.
-elec25,scip,SCIP 10.0 / PySCIPOpt 6.2.1,243.85933535370322,true,60.0003838139819,0.01910279578718502,149.90556433876827,feasible
+elec25,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,243.85933535370322,true,60.000320104009006,0.01910279578718502,149.90556433876827,feasible
 st_e38,published-bks,minlplib-catalogue,7197.727149,true,NaN,0.0,7197.727149,published primal/dual bound; structure=mixed-integer
 st_e38,cbls,cbls@d0564ad,7273.32,true,60.0002,1.05022,NaN,feasible
-st_e38,scip,SCIP 10.0 / PySCIPOpt 6.2.1,7197.7271400834825,true,0.06698931701248512,-1.2387963054282708e-07,7197.7271400834825,matches-bks; proved-optimal
+st_e38,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,7197.7271400834825,true,0.06758303695823997,-1.2387963054282708e-07,7197.7271400834825,matches-bks; proved-optimal
 ex8_1_5,published-bks,minlplib-catalogue,-1.031628453,true,NaN,0.0,NaN,published primal/dual bound; structure=other
 ex8_1_5,cbls,cbls@d0564ad,0,true,60.0001,100,NaN,feasible
-ex8_1_5,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-9.989999999995736e-09,true,60.000089503009804,99.99999903162812,-68312266443.10746,feasible
+ex8_1_5,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-9.989999999995736e-09,true,60.00007272697985,99.99999903162812,-62102060402.82496,feasible
 maxmin,published-bks,minlplib-catalogue,-0.3660960077,true,NaN,0.0,-0.8156828567,published primal/dual bound; structure=polynomial
 maxmin,cbls,cbls@d0564ad,-0.365616,true,60.0088,0.13112,NaN,feasible
-maxmin,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-0.35810908121371005,true,60.047413419990335,2.181648069987942,-0.6854996168012307,feasible
+maxmin,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-0.35810908121371005,true,60.01155168801779,2.181648069987942,-0.6854996168012307,feasible
 nvs02,published-bks,minlplib-catalogue,5.964184523,true,NaN,0.0,5.964184523,published primal/dual bound; structure=mixed-integer
 nvs02,cbls,cbls@d0564ad,8.06597,true,60.0271,35.24,NaN,feasible
-nvs02,scip,SCIP 10.0 / PySCIPOpt 6.2.1,5.96418452307,true,0.007864540035370737,1.1736727044892934e-09,5.96418452307,matches-bks; proved-optimal
+nvs02,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,5.96418452307,true,0.007882348960265517,1.1736727044892934e-09,5.96418452307,matches-bks; proved-optimal
 ex4_1_8,published-bks,minlplib-catalogue,-16.73889318,true,NaN,0.0,-16.7388932,published primal/dual bound; structure=other
 ex4_1_8,cbls,cbls@d0564ad,-16.7389,true,60.0002,3.40048e-08,NaN,matches-bks
-ex4_1_8,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-16.73889458866055,true,0.01886194699909538,-8.415493981948948e-06,-16.73889458866055,matches-bks; proved-optimal
+ex4_1_8,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-16.73889458866055,true,0.018850562046281993,-8.415493981948948e-06,-16.73889458866055,matches-bks; proved-optimal
 ex8_6_1,published-bks,minlplib-catalogue,-28.42253189,true,NaN,0.0,NaN,published primal/dual bound; structure=polynomial
 ex8_6_1,cbls,cbls@d0564ad,-14.4411,true,60.0214,49.1912,NaN,feasible
-ex8_6_1,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-0.11975735383225984,true,60.085197306994814,99.57865346304918,-1e+20,feasible
+ex8_6_1,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-0.11975735383225984,true,60.000399163982365,99.57865346304918,NaN,feasible
 nvs14,published-bks,minlplib-catalogue,-40358.15477,true,NaN,0.0,-40358.15477,published primal/dual bound; structure=mixed-integer
 nvs14,cbls,cbls@d0564ad,-18809.1,true,60.0206,53.3946,NaN,feasible
-nvs14,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-40358.1547693,true,0.007939618022646755,1.7344649629722028e-09,-40358.1547693,matches-bks; proved-optimal
+nvs14,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-40358.1547693,true,0.007888425956480205,1.7344649629722028e-09,-40358.1547693,matches-bks; proved-optimal
 st_e01,published-bks,minlplib-catalogue,-6.666666667,true,NaN,0.0,-6.666666667,published primal/dual bound; structure=other
 st_e01,cbls,cbls@d0564ad,-6.66667,true,60.0001,5e-09,NaN,matches-bks
-st_e01,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-6.666666726646705,true,0.007140495989006013,-8.947005669220978e-07,-6.666666726646705,matches-bks; proved-optimal
+st_e01,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-6.666666726646705,true,0.007183307956438512,-8.947005669220978e-07,-6.666666726646705,matches-bks; proved-optimal
 chain50,published-bks,minlplib-catalogue,5.072261494,true,NaN,0.0,-37.10261783,published primal/dual bound; structure=polynomial
 chain50,cbls,cbls@d0564ad,5.80442,true,60.0119,14.4346,NaN,feasible
-chain50,scip,SCIP 10.0 / PySCIPOpt 6.2.1,5.072261483851801,true,60.00091572495876,-2.0007246743499998e-07,-103.44044293806556,matches-bks
+chain50,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,5.072261483851801,true,60.00061197101604,-2.0007246743499998e-07,-103.44044293806556,matches-bks
 st_e40,published-bks,minlplib-catalogue,30.4142135,true,NaN,0.0,30.41421347,published primal/dual bound; structure=mixed-integer
 st_e40,cbls,cbls@d0564ad,NaN,false,60.0003,NaN,NaN,infeasible(residual=2; 3 viol; worst row5 <=) | hard: Structure: rows C1-C3 are degree-7 polynomials (x-1)(x-2)(x-3)(x-5)(x-8)(x-10)(x-12)==0 restricting each integer to {1;2;3;5;8;10;12}; C0 then pins the free x3 to a bilinear function of them and four linear rows bound the combination. The search reaches a point satisfying C1-C3 (the integers sit on allowed values) but missing a linear row by ~2. The precise local-optimum mechanism is NOT yet identified: an earlier note here claimed a violation barrier between allowed integer values; which is wrong - int_jump_candidates enumerates the whole domain when it is narrower than 256 columns; and these are [1;12]; so any allowed value is one jump away. Tracked in #102.
-st_e40,scip,SCIP 10.0 / PySCIPOpt 6.2.1,30.4142135,true,0.21803860901854932,0.0,30.4142135,matches-bks; proved-optimal
+st_e40,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,30.4142135,true,0.21742156095569953,0.0,30.4142135,matches-bks; proved-optimal
 st_e09,published-bks,minlplib-catalogue,-0.5000000001,true,NaN,0.0,-0.500000001,published primal/dual bound; structure=other
 st_e09,cbls,cbls@d0564ad,-0.5,true,60.0002,2e-08,NaN,matches-bks
-st_e09,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-0.500000017475218,true,0.012927747971843928,-3.4750436077302014e-06,-0.500000017475218,matches-bks; proved-optimal
+st_e09,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-0.500000017475218,true,0.012903094000648707,-3.4750436077302014e-06,-0.500000017475218,matches-bks; proved-optimal
 elec50,published-bks,minlplib-catalogue,1055.182315,true,NaN,0.0,359.0296983,published primal/dual bound; structure=polynomial
 elec50,cbls,cbls@d0564ad,NaN,false,60.2572,NaN,NaN,infeasible(residual=1; 50 viol; worst row0 ==; obj non-finite here) | bug: Same mechanism as elec25; at 50 points; see #100.
-elec50,scip,SCIP 10.0 / PySCIPOpt 6.2.1,1422.3265266110725,true,60.00300439604325,34.79438637209082,567.9879185502193,feasible
+elec50,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,1422.3265266110725,true,60.0035130350152,34.79438637209082,567.9879185502193,feasible
 nvs05,published-bks,minlplib-catalogue,5.470934108,true,NaN,0.0,5.470934108,published primal/dual bound; structure=mixed-integer
 nvs05,cbls,cbls@d0564ad,30.09,true,60.0007,449.998,NaN,feasible
-nvs05,scip,SCIP 10.0 / PySCIPOpt 6.2.1,5.470934074399028,true,0.6695378849981353,-6.141724816900749e-07,5.470934074399028,matches-bks; proved-optimal
+nvs05,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,5.470934074399028,true,0.6673408169881441,-6.141724816900749e-07,5.470934074399028,matches-bks; proved-optimal
 ex4_1_9,published-bks,minlplib-catalogue,-5.508013271,true,NaN,0.0,-5.508013385,published primal/dual bound; structure=other
 ex4_1_9,cbls,cbls@d0564ad,-5.50754,true,60.0003,0.00859538,NaN,feasible
-ex4_1_9,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-5.5080135337904625,true,0.1395355500280857,-4.771057173435744e-06,-5.5080135337904625,matches-bks; proved-optimal
+ex4_1_9,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-5.5080135337904625,true,0.1384437219821848,-4.771057173435744e-06,-5.5080135337904625,matches-bks; proved-optimal
 kall_ellipsoids_tc02b,published-bks,minlplib-catalogue,32.4,true,NaN,0.0,22.5,published primal/dual bound; structure=polynomial
 kall_ellipsoids_tc02b,cbls,cbls@d0564ad,50.2401,true,60.0042,55.062,NaN,feasible
-kall_ellipsoids_tc02b,scip,SCIP 10.0 / PySCIPOpt 6.2.1,36.60773052945233,true,60.00014551595086,12.986822621766464,22.499999953999996,feasible
+kall_ellipsoids_tc02b,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,36.60773052945233,true,60.001158548053354,12.986822621766464,22.499999953999996,feasible
 nvs22,published-bks,minlplib-catalogue,6.05822,true,NaN,0.0,6.05822,published primal/dual bound; structure=mixed-integer
 nvs22,cbls,cbls@d0564ad,27.5824,true,60.0307,355.289,NaN,feasible
-nvs22,scip,SCIP 10.0 / PySCIPOpt 6.2.1,6.05822,true,0.4507197789498605,0.0,6.05822,matches-bks; proved-optimal
+nvs22,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,6.05822,true,0.4505034080357291,0.0,6.05822,matches-bks; proved-optimal
 mathopt1,published-bks,minlplib-catalogue,3.289428863e-18,true,NaN,0.0,0.0,published primal/dual bound; structure=other
 mathopt1,cbls,cbls@d0564ad,1,true,60.0003,1,NaN,feasible
-mathopt1,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-3.058676014688899e-07,true,0.11781912297010422,-3.0586760147217937e-07,-3.058676014688899e-07,matches-bks; proved-optimal
+mathopt1,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-3.058676014688899e-07,true,0.11768872896209359,-3.0586760147217937e-07,-3.058676014688899e-07,matches-bks; proved-optimal
 least,published-bks,minlplib-catalogue,0.0,true,NaN,0.0,0.0,published primal/dual bound; structure=transcendental
 least,cbls,cbls@d0564ad,23349.2,true,60.0009,23349.2,NaN,feasible
-least,scip,SCIP 10.0 / PySCIPOpt 6.2.1,15545.763127200415,true,60.00176436494803,15545.763127200415,-1e+20,feasible
+least,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,15545.763127200415,true,60.00044064997928,15545.763127200415,NaN,feasible
 tln2,published-bks,minlplib-catalogue,5.3,true,NaN,0.0,5.3,published primal/dual bound; structure=mixed-integer
 tln2,cbls,cbls@d0564ad,5.3,true,60.0002,0,NaN,matches-bks
-tln2,scip,SCIP 10.0 / PySCIPOpt 6.2.1,5.3,true,0.022306794999167323,0.0,5.3,matches-bks; proved-optimal
+tln2,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,5.3,true,0.022423708986025304,0.0,5.3,matches-bks; proved-optimal
 prob06,published-bks,minlplib-catalogue,1.177124344,true,NaN,0.0,1.177124338,published primal/dual bound; structure=other
 prob06,cbls,cbls@d0564ad,1.17712,true,60.0003,-0.00031886,NaN,within-tolerance-of-bks
-prob06,scip,SCIP 10.0 / PySCIPOpt 6.2.1,1.177124271377073,true,0.007946532976347953,-6.169520439837537e-06,1.177124271377073,matches-bks; proved-optimal
+prob06,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,1.177124271377073,true,0.007992699043825269,-6.169520439837537e-06,1.177124271377073,matches-bks; proved-optimal
 ex6_2_11,published-bks,minlplib-catalogue,-2.672407762e-06,true,NaN,0.0,-4.770901108e-06,published primal/dual bound; structure=transcendental
 ex6_2_11,cbls,cbls@d0564ad,-2.67241e-06,true,60.0014,9.54835e-06,NaN,matches-bks
-ex6_2_11,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-2.682399686341432e-06,true,60.00024957896676,-0.37389220625351693,-0.021401398735472976,matches-bks
+ex6_2_11,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-2.682399686341432e-06,true,60.00010101200314,-0.37389220625351693,-0.02124105934895415,matches-bks
 spring,published-bks,minlplib-catalogue,0.8462441005,true,NaN,0.0,0.8462456656,published primal/dual bound; structure=mixed-integer
 spring,cbls,cbls@d0564ad,1.18247,true,60.0043,39.731,NaN,feasible
-spring,scip,SCIP 10.0 / PySCIPOpt 6.2.1,0.8462455059847749,true,0.3284333319752477,0.0001660850307926927,0.8462455059847749,matches-bks; proved-optimal
+spring,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,0.8462455059847749,true,0.3323525399900973,0.0001660850307926927,0.8462455059847749,matches-bks; proved-optimal
 prob09,published-bks,minlplib-catalogue,-1.002562255e-13,true,NaN,0.0,-1.002562255e-13,published primal/dual bound; structure=other
 prob09,cbls,cbls@d0564ad,0.04593,true,60.0001,0.04593,NaN,feasible
-prob09,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-9.182624580716947e-07,true,3.642981774988584,-9.182623578154692e-07,-9.182624580716947e-07,matches-bks; proved-optimal
+prob09,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-9.182624580716947e-07,true,3.628833328024484,-9.182623578154692e-07,-9.182624580716947e-07,matches-bks; proved-optimal
 ex6_2_6,published-bks,minlplib-catalogue,-2.602527073e-06,true,NaN,0.0,-3.497831223e-06,published primal/dual bound; structure=transcendental
 ex6_2_6,cbls,cbls@d0564ad,-2.60253e-06,true,60.0011,-8.29689e-05,NaN,matches-bks
-ex6_2_6,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-3.511741562250939e-06,true,24.948909986997023,-34.935832125767824,-3.511741562250939e-06,matches-bks; proved-optimal
+ex6_2_6,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-3.511741562250939e-06,true,24.947013285011053,-34.935832125767824,-3.511741562250939e-06,matches-bks; proved-optimal
 windfac,published-bks,minlplib-catalogue,0.2544872983,true,NaN,0.0,0.2544872983,published primal/dual bound; structure=mixed-integer
 windfac,cbls,cbls@d0564ad,0.75,true,60.0004,194.71,NaN,feasible
-windfac,scip,SCIP 10.0 / PySCIPOpt 6.2.1,0.25448729562609335,true,0.12659076100680977,-1.0507033826494267e-06,0.25448729562609335,matches-bks; proved-optimal
+windfac,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,0.25448729562609335,true,0.1267140990239568,-1.0507033826494267e-06,0.25448729562609335,matches-bks; proved-optimal
 st_e08,published-bks,minlplib-catalogue,0.7417819582,true,NaN,0.0,0.7417819554,published primal/dual bound; structure=other
 st_e08,cbls,cbls@d0564ad,0.741784,true,60.0002,0.000216581,NaN,matches-bks
-st_e08,scip,SCIP 10.0 / PySCIPOpt 6.2.1,0.7417819545835109,true,0.013772338046692312,-4.875407211248702e-07,0.7417819545835109,matches-bks; proved-optimal
+st_e08,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,0.7417819545835109,true,0.013687970000319183,-4.875407211248702e-07,0.7417819545835109,matches-bks; proved-optimal
 ex6_2_8,published-bks,minlplib-catalogue,-0.02700634884,true,NaN,0.0,-0.02700791474,published primal/dual bound; structure=transcendental
 ex6_2_8,cbls,cbls@d0564ad,-0.0270063,true,60.0003,7.61862e-05,NaN,matches-bks
-ex6_2_8,scip,SCIP 10.0 / PySCIPOpt 6.2.1,-0.027007299595061,true,16.80348571005743,-0.003520487225548989,-0.027007299595061,matches-bks; proved-optimal
+ex6_2_8,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,-0.027007299595061,true,16.70571549196029,-0.003520487225548989,-0.027007299595061,matches-bks; proved-optimal
 eg_all_s,published-bks,minlplib-catalogue,7.657752093,true,NaN,0.0,0.0,published primal/dual bound; structure=mixed-integer
 eg_all_s,cbls,cbls@d0564ad,8.46273,true,60.6874,10.512,NaN,feasible
-eg_all_s,scip,SCIP 10.0 / PySCIPOpt 6.2.1,185.6317099599526,true,60.08643117797328,2324.1018474552043,-2.2631597893052287,feasible
+eg_all_s,scip,SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0,185.6317099599526,true,60.04504893103149,2324.1018474552043,-2.2631597893052287,feasible

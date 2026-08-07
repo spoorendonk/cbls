@@ -2,11 +2,17 @@
 
 The SCIP rows and the CBLS rows are only comparable if both are scored by the
 same rules. `safe_gap` and `classify_vs_bks` are hand-ports of the C++ runner's
-`safe_gap` and its two-band BKS classification, and nothing but a test keeps the
-two implementations from drifting apart — a divergence would not crash, it would
-quietly publish a gap column that means two different things in two different
-rows. These are the cases that pin the ports down, plus the merge invariants the
-comparison CSV's labelling depends on.
+`safe_gap` and its two-band BKS classification, and a divergence would not
+crash — it would quietly publish a gap column meaning two different things in
+two different rows.
+
+Most tests here pin the Python side's contract against hand-worked cases, which
+does *not* by itself detect drift on the C++ side: editing `minlplib.cpp` leaves
+them green. `test_safe_gap_reproduces_the_cpp_runners_published_gap_column` is
+the one that closes that loop, by recomputing the port against the gap column the
+C++ binary actually wrote into the committed `comparison.csv`. Its resolution is
+bounded by that file's six-significant-digit objectives, so it catches a sign or
+sense error but not sub-1e-4 relative drift.
 
 No SCIP solve happens here: the solving path needs the optional `benchmarks`
 extra, but the scoring and merge paths must stay testable without it.
@@ -16,7 +22,7 @@ from __future__ import annotations
 
 import csv
 import math
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
@@ -26,6 +32,7 @@ from benchmarks.minlplib.reference_solve import (
     SCIP_METHOD,
     Bound,
     ScipResult,
+    annotate,
     classify_vs_bks,
     load_bounds,
     read_scip_csv,
@@ -34,10 +41,10 @@ from benchmarks.minlplib.reference_solve import (
     write_scip_csv,
 )
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
 FEAS_TOL = 1e-6
+
+#: The committed roster, used by the C++ cross-check below.
+INST_DIR = Path(__file__).resolve().parents[2] / "benchmarks" / "instances" / "minlplib"
 
 
 def _bound(instance: str = "inst", primal_bks: float = 10.0, dual_bound: float = 5.0) -> Bound:
@@ -302,16 +309,161 @@ def test_a_rejected_objective_is_withheld_from_both_csvs(tmp_path: Path) -> None
     assert scip_row["feasible"] == "false"
 
 
-def test_commas_in_a_note_cannot_break_the_csv_columns(tmp_path: Path) -> None:
+def test_a_note_containing_commas_survives_the_csv_round_trip_intact(tmp_path: Path) -> None:
+    # The note is the only free-text column, so it is the one that can break the
+    # columns. Asserting only that the columns survive would be vacuous —
+    # csv.writer quotes the field either way — so pin the text itself, which
+    # `--merge-only` reads back and republishes. A reader exception carrying a
+    # comma must not come back split at that comma: "; " is the note separator.
     bound = _bound(instance="alpha")
-    result = ScipResult(instance="alpha", status="timelimit", notes=["a, b", "c"])
+    result = ScipResult(
+        instance="alpha", status="timelimit", notes=["read-error(ValueError: bad token, line 3)"]
+    )
     path = tmp_path / "scip_baseline.csv"
     write_scip_csv(path, [(bound, result)], "v")
     with path.open(newline="") as fh:
         rows = list(csv.DictReader(fh))
     assert len(rows) == 1
     assert rows[0]["status"] == "timelimit"
+    assert rows[0]["note"] == "read-error(ValueError: bad token, line 3)"
+    assert read_scip_csv(path)["alpha"].note == rows[0]["note"]
+
+
+def test_merge_only_does_not_promote_an_infeasible_row_to_feasible(tmp_path: Path) -> None:
+    # The dangerous round-trip direction: a row written `feasible=false` must not
+    # come back feasible, or the merged CSV publishes a solution SCIP never found.
+    bound = _bound(instance="alpha")
+    result = ScipResult(instance="alpha", status="timelimit", notes=["no-solution(timelimit)"])
+    path = tmp_path / "scip_baseline.csv"
+    write_scip_csv(path, [(bound, result)], "v")
+    assert not read_scip_csv(path)["alpha"].feasible
+
+
+def test_a_results_file_spanning_two_runs_keeps_each_rows_own_provenance(tmp_path: Path) -> None:
+    # A crashed run resumed after a SCIP upgrade is exactly the case where
+    # stamping one version on every row asserts a provenance most rows lack.
+    bounds = [_bound(instance="alpha"), _bound(instance="beta")]
+    old = ScipResult(instance="alpha", status="optimal", objective=10.0, feasible=True)
+    old.version = "SCIP 9.0.0 / PySCIPOpt 5.0.0 / 60s / seed 0"
+    new = ScipResult(instance="beta", status="optimal", objective=10.0, feasible=True)
+    path = tmp_path / "comparison_all.csv"
+    write_merged_csv(path, bounds, {}, {"alpha": old, "beta": new}, "SCIP 10.0.2 / run-wide")
+    with path.open(newline="") as fh:
+        scip = {
+            r["instance"]: r["version"] for r in csv.DictReader(fh) if r["method"] == SCIP_METHOD
+        }
+    assert scip["alpha"] == "SCIP 9.0.0 / PySCIPOpt 5.0.0 / 60s / seed 0"
+    assert scip["beta"] == "SCIP 10.0.2 / run-wide"
 
 
 def test_read_scip_csv_of_a_missing_file_is_empty(tmp_path: Path) -> None:
     assert read_scip_csv(tmp_path / "nope.csv") == {}
+
+
+# --- annotate: the cross-checks that exist to fail loudly ------------------
+
+
+def test_annotate_labels_the_row_then_records_the_proof() -> None:
+    result = ScipResult(instance="alpha", status="optimal", objective=10.0, feasible=True)
+    annotate(result, _bound(instance="alpha", primal_bks=10.0))
+    assert result.notes == ["matches-bks", "proved-optimal"]
+
+
+def test_annotate_reports_an_integrality_mismatch_against_the_catalogue() -> None:
+    result = ScipResult(instance="alpha", status="timelimit", n_int_vars=3)
+    bound = _bound(instance="alpha")
+    bound.n_disc_vars_bks = 4
+    annotate(result, bound)
+    assert any("integrality mismatch" in n for n in result.notes)
+
+
+def test_annotate_invents_no_mismatch_when_the_catalogue_is_silent() -> None:
+    # -1 means "unknown", not "zero integer variables".
+    result = ScipResult(instance="alpha", status="timelimit", n_int_vars=3)
+    bound = _bound(instance="alpha")
+    bound.n_disc_vars_bks = -1
+    annotate(result, bound)
+    assert not any("integrality" in n for n in result.notes)
+
+
+def test_annotate_flags_a_sense_disagreement_between_instance_and_catalogue() -> None:
+    # A one-word error in bounds.csv inverts every gap and label on the row, and
+    # the C++ runner takes the sense from the model instead of the catalogue.
+    result = ScipResult(instance="alpha", status="optimal", objsense="minimize")
+    bound = _bound(instance="alpha")
+    bound.objsense = "max"
+    annotate(result, bound)
+    assert any("objsense mismatch" in n for n in result.notes)
+
+
+def test_annotate_is_quiet_when_the_senses_agree() -> None:
+    result = ScipResult(instance="alpha", status="optimal", objsense="minimize")
+    annotate(result, _bound(instance="alpha"))
+    assert not any("objsense" in n for n in result.notes)
+
+
+def test_annotate_flags_a_dual_bound_that_crosses_the_published_primal() -> None:
+    # For a minimize instance a dual above the published primal means one of the
+    # two numbers is wrong. The direction of this comparison is the whole check.
+    crossed = ScipResult(instance="alpha", status="timelimit", dual_bound=12.0)
+    annotate(crossed, _bound(instance="alpha", primal_bks=10.0))
+    assert any("crosses the published primal" in n for n in crossed.notes)
+
+    ok = ScipResult(instance="alpha", status="timelimit", dual_bound=9.0)
+    annotate(ok, _bound(instance="alpha", primal_bks=10.0))
+    assert not any("crosses" in n for n in ok.notes)
+
+
+def test_the_crossing_check_flips_with_the_objective_sense() -> None:
+    bound = _bound(instance="alpha", primal_bks=10.0)
+    bound.objsense = "max"
+    below = ScipResult(instance="alpha", status="timelimit", dual_bound=9.0)
+    annotate(below, bound)
+    assert any("crosses the published primal" in n for n in below.notes)
+
+    above = ScipResult(instance="alpha", status="timelimit", dual_bound=12.0)
+    annotate(above, bound)
+    assert not any("crosses" in n for n in above.notes)
+
+
+def test_an_unproved_dual_bound_raises_no_crossing_alarm() -> None:
+    # SCIP reports "no bound proved" as its 1e20 infinity sentinel, which is a
+    # finite float. `_finite_or_nan` folds it to NaN at capture; if that ever
+    # regressed, every unproved row would fabricate "one of the two published
+    # numbers is wrong".
+    result = ScipResult(instance="alpha", status="timelimit", dual_bound=math.nan)
+    annotate(result, _bound(instance="alpha", primal_bks=10.0))
+    assert not any("crosses" in n for n in result.notes)
+
+
+# --- the one test that closes the C++/Python loop ---------------------------
+
+
+def test_safe_gap_reproduces_the_cpp_runners_published_gap_column() -> None:
+    """Recompute the port against the gap column `cbls_minlplib` actually wrote.
+
+    Every other test here compares the Python port to hand-worked expectations,
+    so a change to `minlplib.cpp` leaves them green. This one reads the committed
+    `comparison.csv` — C++ output — and re-derives its `gap_to_bks%` from the
+    objective and the catalogue bound. Resolution is set by that file's six
+    significant digits, so it pins the sign convention, the sense flip and the
+    zero-reference fallback, not sub-1e-4 relative drift.
+    """
+    comparison = INST_DIR / "comparison.csv"
+    bounds = {b.instance: b for b in load_bounds(INST_DIR / "bounds.csv")}
+    with comparison.open(newline="") as fh:
+        rows = [r for r in csv.DictReader(fh) if r["feasible"] == "true"]
+    assert rows, "no feasible CBLS rows to cross-check against"
+
+    checked = 0
+    for row in rows:
+        bound = bounds[row["instance"]]
+        published = float(row["gap_to_bks%"])
+        # Below this the 6-digit objective has destroyed the information the gap
+        # was computed from, so a disagreement says nothing about the port.
+        if abs(published) <= 0.01:
+            continue
+        ours = safe_gap(float(row["objective"]), bound.primal_bks, bound.maximizing)
+        assert ours == pytest.approx(published, rel=1e-3), row["instance"]
+        checked += 1
+    assert checked >= 20, f"only {checked} rows had enough resolution to cross-check"

@@ -260,11 +260,15 @@ and already a repository dependency — this adds none.
 reader, so neither solver sees a re-modelled instance and no formulation drift
 can enter the comparison. Same roster and order (`bounds.csv`), same 60s
 per-instance wall-clock budget, one thread each, and the same feasibility
-tolerance — CBLS defaults to 1e-6 and SCIP's `numerics/feastol` default is 1e-6,
-left unset rather than assigned so a future SCIP release changing it surfaces as
-a mismatch. SCIP rows are scored by ports of the runner's `safe_gap` and its
-two-band BKS classification (pinned by `tests/python/test_minlplib_scip_baseline.py`),
-so the `gap_to_bks%` column means the same thing on both.
+tolerance — CBLS defaults to 1e-6 and SCIP's `numerics/feastol` default is 1e-6.
+That parameter is left unset rather than assigned, and the runner reads the live
+value back on every solve and writes a `FEASTOL-MISMATCH` note if SCIP's default
+ever moves, so the shared tolerance is checked rather than assumed. SCIP rows are
+scored by ports of the runner's `safe_gap` and its two-band BKS classification,
+so the `gap_to_bks%` column means the same thing on both; the ports are pinned by
+`tests/python/test_minlplib_scip_baseline.py`, one of whose tests recomputes them
+against the gap column the C++ binary actually wrote, at that file's
+six-significant-digit resolution.
 
 **What is not matched, by construction.** SCIP is a complete global solver and
 proves a dual bound; CBLS is a primal heuristic and proves none. Only the primal
@@ -276,16 +280,34 @@ re-checks its assignment against the model it built, whereas the SCIP side uses
 the pre-presolve problem. A solution SCIP cannot re-validate is not published as
 feasible; zero rows in this run failed that check.
 
-Run at **SCIP 10.0 / PySCIPOpt 6.2.1**, 60s per instance, seed shift 0, recorded
-per row. Like the CBLS run this is a wall-clock budget, so these are
+Run at **SCIP 10.0.2 / PySCIPOpt 6.2.1**, 60s per instance, with every parameter
+other than `limits/time` and `randomization/randomseedshift` at its shipped
+default — presolve, cuts, symmetry handling and the full primal-heuristic set are
+all on, i.e. SCIP as a user would get it. The seed shift is 0, which is already
+SCIP's default, so this uses SCIP's own seed sequence; the flag exists so a
+multi-seed re-run is possible, not because a seed was chosen. The full
+configuration (versions, budget, seed) is recorded in every row's `scip_version`
+column, so a re-run at a different budget cannot be mistaken for this one.
+
+Three properties of the budget were measured rather than assumed:
+`timing/clocktype` defaults to 2 (wall clock), so `limits/time` is the same kind
+of budget the CBLS runner imposes; instance reading falls outside it on both
+sides (SCIP's `.nl` reads total well under a second across the roster, recorded
+per row as `read_seconds`); and the solve stays single-threaded (CPU/wall
+measured at ~1.0). Like the CBLS run this is a wall-clock budget, so these are
 single-sample numbers.
+
+Where SCIP proved no dual bound it reports its `1e20` infinity sentinel, which is
+a *finite* float; the runner folds that to `NaN` at capture, so an unproved bound
+is never published as a proof. Rows with no dual bound therefore read `NaN` in
+`scip_dual_bound` and `scip_gap%`, the same spelling the CBLS rows use.
 
 | | CBLS | SCIP |
 |---|---|---|
 | feasible | 46 / 50 | **49 / 50** |
 | proved optimal | n/a (primal heuristic) | 34 / 50 |
 | hit the 60s limit | 50 | 16 |
-| total wall over the roster | 3001s | 1011s (median 0.30s; 31 instances under 1s) |
+| total wall over the roster | 3001s | 1011s (median 0.28s; 31 instances under 1s) |
 | integrality mismatches vs catalogue | 0 | 0 |
 | verification failures | 0 | 0 |
 
@@ -407,3 +429,10 @@ worst-violated NL row and its sense.
   It does mean the baseline runs SCIP on instances well inside its comfortable
   range, which is the right way round: the comparison should not flatter the
   engine under test.
+- **The roster is the subset CBLS can express**, and this is the largest
+  confounder in the SCIP comparison — it points the *opposite* way to the size
+  caveat above, so the two belong together. The selection filter (see "Selection
+  method") admits an instance only if every operator column it uses falls inside
+  the CBLS DAG's op set, and the NL reader additionally rejects `V`/`S`/`F`/`d`
+  segments. SCIP has no such restriction and would run the excluded instances.
+  This is therefore a comparison on CBLS's expressible domain, not on MINLPLib.
