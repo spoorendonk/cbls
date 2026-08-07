@@ -532,7 +532,7 @@ def test_safe_gap_reproduces_the_cpp_runners_published_gap_column() -> None:
         bound = bounds[row["instance"]]
         published = float(row["gap_to_bks%"])
         objective = float(row["objective"])
-        if abs(published) <= 0.01 or abs(bound.primal_bks) < 1e-12:
+        if abs(published) <= 0.01:
             continue
         # Six significant digits on the objective column is an absolute
         # uncertainty of ~1e-6*|obj|, which propagates through
@@ -541,10 +541,15 @@ def test_safe_gap_reproduces_the_cpp_runners_published_gap_column() -> None:
         # subtraction has cancelled away the digits the gap was computed from —
         # so the row carries no information about the port. Skip it rather than
         # loosen the tolerance for every row.
-        gap_uncertainty = 100.0 * 1e-6 * abs(objective) / abs(bound.primal_bks)
-        if gap_uncertainty > 1e-3 * abs(published):
-            continue
+        # A |BKS| < 1e-12 row is exempt: safe_gap returns an ABSOLUTE residual
+        # there, so its relative uncertainty is ~1e-6 whatever the reference.
+        # Those rows are also the only coverage of the zero-reference fallback
+        # this test claims to pin, so they stay asserted.
+        if abs(bound.primal_bks) >= 1e-12:
+            gap_uncertainty = 100.0 * 1e-6 * abs(objective) / abs(bound.primal_bks)
+            if gap_uncertainty > 1e-3 * abs(published):
+                continue
         ours = safe_gap(objective, bound.primal_bks, bound.maximizing)
         assert ours == pytest.approx(published, rel=1e-3), row["instance"]
         checked += 1
-    assert checked >= 15, f"only {checked} rows had enough resolution to cross-check"
+    assert checked >= 20, f"only {checked} rows had enough resolution to cross-check"

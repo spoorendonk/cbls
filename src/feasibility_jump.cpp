@@ -64,7 +64,8 @@ void int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
 // pulls the objective down.
 // Returns whether the gradient carried usable direction here. False means this
 // variable takes part in at least one violated constraint yet none of them
-// yielded a Newton candidate — every gradient was ~0, i.e. it sits at a
+// yielded a Newton candidate — every gradient was ~0 (or non-finite, which
+// fails the same test), i.e. it sits at a
 // *stationary* point — so the three remaining candidates are box constants
 // unrelated to local geometry and the variable may have no move at all.
 //

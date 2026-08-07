@@ -375,8 +375,10 @@ TEST_CASE("compute_var_jump: the escape probe invents nothing", "[fj][stationary
 }
 
 TEST_CASE("compute_var_jump: a fixed Float has nothing to escape", "[fj][stationary]") {
-    // Covers the `ub <= lb` early return, which reports the gradient usable so a
-    // variable that cannot move never arms the probe.
+    // A variable whose domain is a single point has no jump, armed or not. The
+    // probe candidates all clamp onto lb == ub == x0 and are discarded, so this
+    // does not distinguish the `ub <= lb` early return's return value — it pins
+    // the outcome, which is what callers depend on.
     Model m;
     auto f = m.float_var(3.0, 3.0, "f");
     m.minimize(m.pow_expr(f, m.constant(2.0)));
@@ -388,4 +390,27 @@ TEST_CASE("compute_var_jump: a fixed Float has nothing to escape", "[fj][station
     ViolationManager vm(m);
 
     REQUIRE(compute_var_jump(m, vm.weights, vid(f), /*allow_escape_probe=*/true).score == 0.0);
+}
+
+TEST_CASE("compute_var_jump: the escape probe is two-sided", "[fj][stationary]") {
+    // f(y) = y^3 + y^4. f'(0) == 0, so the point is stationary and no Newton
+    // candidate is emitted; the box is symmetric so the midpoint equals y; and
+    // both endpoints are far worse (f(-10) = 9000, f(10) = 11000). The only
+    // descent from the origin is NEGATIVE — f(+h) = +h^3 > 0 — so a probe that
+    // only looked at x0 + h would find nothing and the variable would stay
+    // frozen. The true minimum is -0.1055 at y = -0.75.
+    Model m;
+    auto y = m.float_var(-10.0, 10.0, "y");
+    m.minimize(m.sum({m.pow_expr(y, m.constant(3.0)), m.pow_expr(y, m.constant(4.0))}));
+    m.close();
+    m.add_objective_soft_constraint();
+    m.set_objective_bound(-1e-3);
+    m.var_mut(vid(y)).value = 0.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+
+    JumpResult r = compute_var_jump(m, vm.weights, vid(y), /*allow_escape_probe=*/true);
+    REQUIRE(r.score > 0.0);
+    REQUIRE(r.jump_value < 0.0);  // the descent direction a one-sided probe misses
+    REQUIRE(r.jump_value > -1.0);
 }

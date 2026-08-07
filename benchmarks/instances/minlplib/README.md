@@ -370,6 +370,24 @@ where SCIP exhausted the 60s budget:
 two variables are unbounded, so the dual bound diverges), while CBLS now reaches
 the published optimum exactly. It was CBLS's *worst* row before #107 was fixed.
 
+### What #107 accounted for
+
+#107 was found by noticing that instances with at least one **free (unbounded)**
+variable did far worse, and asked how much of that gap the fix actually explains.
+Measured before and after, over the rows each group solves whose `|BKS| >= 1e-4`:
+
+| | instances | eligible | within 10% before | after |
+|---|---|---|---|---|
+| ≥1 free variable | 16 | 12 | 1 | **3** |
+| no free variables | 34 | 27 | 20 | 19 |
+
+So it explains **2 of the 11** free-variable misses — `ex8_1_5` and `shiporig`
+join `maxmin`. A real but minority share: the correlation that motivated the
+issue is only partly this bug, and the rest is still open. The no-free group's
+−1 is `eq6_1` crossing the 10% line, which an A/B shows is *not* attributable to
+the change (it is bit-identical between arms; that instance spans 20.5–36.9%
+across seeds at one budget).
+
 No finer-grained win/loss tally is published: `comparison.csv` writes objectives
 at six significant digits, which is below the tie band on several rows, so a
 per-instance head-to-head count would be reporting output precision rather than

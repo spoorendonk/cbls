@@ -146,11 +146,6 @@ private:
     void rebuild_violated_and_scan_set();
     void set_initial_assignment();
     void compute_linear_constraints();
-
-    //: Armed by the search loop after `perturbation_period` batches without
-    //: improvement, cleared on every new best. Gates the Float escape probe so
-    //: it stays a last resort rather than a steady-state behaviour.
-    bool escape_probe_ = false;
     void enqueue(int32_t var_id);
 
     // Novelty Jump internals (Algorithm 5). A candidate var with its W'-argmin
@@ -183,6 +178,10 @@ private:
     std::chrono::steady_clock::time_point deadline_;
     bool has_deadline_ = false;
     int64_t iterations_ = 0;
+    // Armed by the search loop after `perturbation_period` batches without
+    // improvement, cleared on every new best. Gates the Float escape probe so
+    // it stays a last resort rather than a steady-state behaviour.
+    bool escape_probe_ = false;
 
     // Novelty Jump state (Algorithms 4-5).
     static constexpr double kCompoundDiscount = 1.0 / 1024.0;  // epsilon (OR-tools value)
