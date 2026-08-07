@@ -303,12 +303,22 @@ is never published as a proof. Rows with no dual bound therefore read `NaN` in
 `scip_dual_bound` and `scip_gap%`, the same spelling the CBLS rows use.
 
 **Hardware.** The SCIP run was executed on an AMD Ryzen 5 5600H (12 logical
-cores, Linux 7.0), one core in use. **The CBLS run's hardware is not recorded**
-— `comparison.csv` has no machine column and that run predates this one — so the
-wall-clock ratio below assumes the two ran on comparable hardware without being
-able to verify it. Treat the *counts* (feasible, proved optimal) as the solid
-comparison and the time totals as indicative. Recording the machine per row is
-worth doing on the next re-run of either side.
+cores, Linux 7.0), one core in use. **The CBLS run's hardware is not recorded** —
+`comparison.csv` has no machine column and that run predates this one. Recording
+the machine per row is worth doing on the next re-run of either side.
+
+That gap matters less than it first appears, and it bites the opposite way round
+from the obvious guess. Both sides run a fixed 60s per instance, so:
+
+- The **wall-clock totals are the robust number.** CBLS never terminates early —
+  its 3001s is 50 × 60s by construction, and is therefore independent of the
+  machine entirely. SCIP's 1011s is dominated by proving optimality on 34
+  instances and stopping, not by clock rate; even a 2x hardware advantage would
+  leave 505s against 3001s.
+- The **counts are what a hardware difference would actually move.** Both
+  "feasible within 60s" and "proved optimal within 60s" scale with machine speed,
+  so those are the numbers a faster or slower box would change — in either
+  direction, for either solver.
 
 | | CBLS | SCIP |
 |---|---|---|

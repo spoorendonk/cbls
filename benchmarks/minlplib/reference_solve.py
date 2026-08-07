@@ -123,6 +123,17 @@ def classify_vs_bks(obj: float, bks: float, maximizing: bool, feas_tol: float) -
     return "feasible"
 
 
+def _reads_as_max(objsense: str) -> bool:
+    """The one place a sense string is interpreted.
+
+    Both the catalogue's spelling and SCIP's go through here, so the two can
+    never disagree about the identical string — a divergence would invert every
+    gap on a maximize row *and* silence the mismatch note, since both sides
+    would then agree on the wrong answer.
+    """
+    return objsense.strip().lower().startswith("max")
+
+
 @dataclass
 class Bound:
     """One `bounds.csv` row: the roster of record."""
@@ -136,7 +147,7 @@ class Bound:
 
     @property
     def maximizing(self) -> bool:
-        return self.objsense.strip().lower().startswith("max")
+        return _reads_as_max(self.objsense)
 
 
 @dataclass
@@ -306,15 +317,17 @@ def annotate(result: ScipResult, bound: Bound) -> None:
         result.notes.insert(
             0,
             classify_vs_bks(
-                result.objective, bound.primal_bks, maximizing(bound, result), SCIP_FEASTOL
+                result.objective, bound.primal_bks, sense_is_max(bound, result), SCIP_FEASTOL
             ),
         )
     if result.status == "optimal":
         result.notes.append("proved-optimal")
-    # The catalogue's objsense drives every gap and label on this row, while the
-    # C++ runner takes the sense from the model it built. A disagreement would
-    # have the two runners publish oppositely-signed gaps for the same instance.
-    if result.objsense and result.objsense.startswith("max") != bound.maximizing:
+    # `sense_is_max` scores this row by the instance's sense, matching the C++
+    # runner, which takes it from the model it built. A disagreement therefore no
+    # longer flips the gap's sign against the C++ row — but it does mean the
+    # catalogue's primal/dual here are oriented for the other sense, so both gaps
+    # are measured against a reference one of the two sides has wrong.
+    if result.objsense and _reads_as_max(result.objsense) != bound.maximizing:
         result.notes.append(
             f"objsense mismatch: instance {result.objsense} vs catalogue {bound.objsense}"
         )
@@ -331,7 +344,7 @@ def annotate(result: ScipResult, bound: Bound) -> None:
     if not math.isnan(bound.primal_bks) and math.isfinite(result.dual_bound):
         crossed = (
             result.dual_bound < bound.primal_bks - 1e-6 * (abs(bound.primal_bks) + 1.0)
-            if maximizing(bound, result)
+            if sense_is_max(bound, result)
             else result.dual_bound > bound.primal_bks + 1e-6 * (abs(bound.primal_bks) + 1.0)
         )
         if crossed:
@@ -401,7 +414,7 @@ def _published_objective(result: ScipResult) -> float:
     return result.objective if result.feasible else math.nan
 
 
-def maximizing(bound: Bound, result: ScipResult) -> bool:
+def sense_is_max(bound: Bound, result: ScipResult) -> bool:
     """The objective sense to score by: the instance's, else the catalogue's.
 
     The C++ runner takes the sense from the model it built, not from
@@ -410,10 +423,13 @@ def maximizing(bound: Bound, result: ScipResult) -> bool:
     let a one-word error there invert every gap and label on the row *before*
     `annotate`'s cross-check could report the disagreement.
 
-    Falls back to the catalogue when SCIP never read the instance (a `not-found`
-    row, or a reload via `read_scip_csv`, which does not restore the sense).
+    Falls back to the catalogue whenever SCIP never read the instance: a
+    `not-found` or `read-error` row, and every `--merge-only` reload, since
+    `scip_baseline.csv` has no `objsense` column to restore. On a row where the
+    two senses disagree the merge therefore scores it differently from the fresh
+    run — `_run_merge_only` refuses rather than publish that contradiction.
     """
-    return result.objsense.startswith("max") if result.objsense else bound.maximizing
+    return _reads_as_max(result.objsense) if result.objsense else bound.maximizing
 
 
 def _gap_to_bks(result: ScipResult, bound: Bound) -> float:
@@ -424,7 +440,7 @@ def _gap_to_bks(result: ScipResult, bound: Bound) -> float:
     """
     if not result.feasible:
         return math.nan
-    return safe_gap(result.objective, bound.primal_bks, maximizing(bound, result))
+    return safe_gap(result.objective, bound.primal_bks, sense_is_max(bound, result))
 
 
 def write_scip_csv(path: Path, rows: Sequence[tuple[Bound, ScipResult]], version: str) -> None:
@@ -437,7 +453,7 @@ def write_scip_csv(path: Path, rows: Sequence[tuple[Bound, ScipResult]], version
         for bound, result in rows:
             gap_bks = _gap_to_bks(result, bound)
             gap_dual = (
-                safe_gap(result.objective, bound.dual_bound, maximizing(bound, result))
+                safe_gap(result.objective, bound.dual_bound, sense_is_max(bound, result))
                 if result.feasible
                 else math.nan
             )
@@ -688,6 +704,21 @@ def _run_merge_only(
     scip_rows = read_scip_csv(out_csv)
     if not scip_rows:
         print(f"{out_csv} not found or empty; nothing to merge.", file=sys.stderr)
+        return 2
+    # `scip_baseline.csv` has no objsense column, so a reload scores by the
+    # catalogue while the fresh run scored by the instance. On a row where the
+    # two disagree that flips the gap's sign, and the two published files would
+    # contradict each other on the same instance. Refuse instead: the fresh run
+    # already recorded which rows are affected.
+    conflicted = sorted(n for n, r in scip_rows.items() if "objsense mismatch" in r.note)
+    if conflicted:
+        print(
+            f"{out_csv} has {len(conflicted)} row(s) whose instance and catalogue objective "
+            f"senses disagree ({', '.join(conflicted)}). The merge cannot recover the "
+            "instance's sense from this file, so it would publish a differently-signed gap "
+            "than the run that produced it. Fix bounds.csv and re-run the roster.",
+            file=sys.stderr,
+        )
         return 2
     version = next(iter(read_versions(out_csv)), "unknown")
     write_merged_csv(merged_csv, bounds, cbls_rows, scip_rows, version)

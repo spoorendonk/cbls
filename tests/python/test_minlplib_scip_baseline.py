@@ -35,9 +35,10 @@ from benchmarks.minlplib.reference_solve import (
     annotate,
     classify_vs_bks,
     load_bounds,
-    maximizing,
+    main,
     read_scip_csv,
     safe_gap,
+    sense_is_max,
     write_merged_csv,
     write_scip_csv,
 )
@@ -410,7 +411,7 @@ def test_the_instance_sense_outranks_the_catalogue_when_they_disagree() -> None:
     bound = _bound(instance="alpha", primal_bks=10.0)
     bound.objsense = "max"
     result = ScipResult(instance="alpha", objsense="minimize", objective=11.0, feasible=True)
-    assert not maximizing(bound, result)
+    assert not sense_is_max(bound, result)
     annotate(result, bound)
     # Minimizing, 11 against a BKS of 10, is a miss. Scored as the catalogue's
     # "max" it would read as a win.
@@ -420,10 +421,57 @@ def test_the_instance_sense_outranks_the_catalogue_when_they_disagree() -> None:
 
 def test_the_catalogue_sense_is_used_when_the_instance_was_never_read() -> None:
     # `not-found` rows and `read_scip_csv` reloads carry no instance sense.
-    assert maximizing(_bound(), ScipResult(instance="alpha")) is False
+    assert sense_is_max(_bound(), ScipResult(instance="alpha")) is False
     maxi = _bound()
     maxi.objsense = "max"
-    assert maximizing(maxi, ScipResult(instance="alpha")) is True
+    assert sense_is_max(maxi, ScipResult(instance="alpha")) is True
+
+
+def test_both_senses_are_normalised_the_same_way() -> None:
+    # The catalogue and SCIP must never disagree about the identical string: a
+    # divergence would invert every maximize row's gap AND suppress the mismatch
+    # note, because both sides would then agree on the wrong answer.
+    for spelling in ("max", "MAX", "Maximize", " maximize ", "maximise"):
+        bound = _bound()
+        bound.objsense = spelling
+        assert bound.maximizing, spelling
+        assert sense_is_max(_bound(), ScipResult(instance="a", objsense=spelling)), spelling
+
+
+def test_merge_only_refuses_a_results_file_with_a_sense_disagreement(tmp_path: Path) -> None:
+    # The reload cannot recover the instance's sense (no objsense column), so it
+    # would score such a row by the catalogue and publish a differently-signed
+    # gap than the run that produced the file. Refuse rather than contradict it.
+    bound = _bound(instance="alpha")
+    result = ScipResult(
+        instance="alpha",
+        status="optimal",
+        objective=10.0,
+        feasible=True,
+        notes=["feasible", "objsense mismatch: instance minimize vs catalogue max"],
+    )
+    inst_dir = tmp_path / "inst"
+    inst_dir.mkdir()
+    (inst_dir / "bounds.csv").write_text(
+        "instance,structure,nvars,ncons,objsense,primal_bks,dual_bound,n_disc_vars_bks\n"
+        "alpha,bilinear,2,1,max,10.0,5.0,0\n"
+    )
+    out_csv = tmp_path / "scip_baseline.csv"
+    write_scip_csv(out_csv, [(bound, result)], "v")
+    merged = tmp_path / "comparison_all.csv"
+    rc = main(
+        [
+            "--merge-only",
+            "--inst-dir",
+            str(inst_dir),
+            "--out",
+            str(out_csv),
+            "--merged-out",
+            str(merged),
+        ]
+    )
+    assert rc == 2
+    assert not merged.exists()
 
 
 def test_annotate_flags_a_dual_bound_that_crosses_the_published_primal() -> None:
