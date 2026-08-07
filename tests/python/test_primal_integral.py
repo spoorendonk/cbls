@@ -11,6 +11,7 @@ import pytest
 from benchmarks.mipfeas.primal_integral import (
     NO_SOLUTION_GAP,
     SIGN_FLIP_GAP,
+    check_uniform_configuration,
     primal_gap,
     primal_integral,
     score_instance,
@@ -213,6 +214,62 @@ def test_score_instance_rejects_a_non_finite_trace(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="non-finite"):
         score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
+
+
+def test_scoring_refuses_results_from_two_different_configurations(tmp_path: Path) -> None:
+    # The budget guard catches only the budget. Novelty Jump and the bound clamp are
+    # CLI flags measured to move the aggregate, and the driver resumes on file
+    # existence alone — so two invocations into one results directory would average
+    # two configurations into a single table and look entirely normal doing it.
+    for instance, compound in (("a", True), ("b", False)):
+        _write_result(
+            tmp_path,
+            "cbls",
+            instance,
+            {"status": "feasible", "objective": 100.0, "compound_moves": compound},
+            trace=[(1.0, 100.0)],
+        )
+    rows = [
+        score_instance(name, "cbls", 100.0, "opt", tmp_path, budget=60.0) for name in ("a", "b")
+    ]
+    with pytest.raises(ValueError, match="span 2 configurations"):
+        check_uniform_configuration(rows)
+
+
+def test_scoring_accepts_results_from_one_configuration(tmp_path: Path) -> None:
+    for instance in ("a", "b"):
+        _write_result(
+            tmp_path,
+            "cbls",
+            instance,
+            {"status": "feasible", "objective": 100.0, "compound_moves": True},
+            trace=[(1.0, 100.0)],
+        )
+    rows = [
+        score_instance(name, "cbls", 100.0, "opt", tmp_path, budget=60.0) for name in ("a", "b")
+    ]
+    check_uniform_configuration(rows)  # must not raise
+
+
+def test_beating_a_proven_optimum_is_flagged(tmp_path: Path) -> None:
+    # primal_gap takes an absolute value, so an objective below a proven optimum
+    # scores as an ordinary positive gap. It is a bug signal — a violated
+    # constraint or a wrong objective — and must not publish silently.
+    _write_result(
+        tmp_path, "cbls", "inst", {"status": "feasible", "objective": 90.0}, trace=[(1.0, 90.0)]
+    )
+    scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
+    assert scored.below_reference
+    assert summarize([scored], "cbls").below_reference == 1
+
+
+def test_beating_a_best_known_value_is_not_flagged(tmp_path: Path) -> None:
+    # Only `opt` references are proofs. Beating a best-known value is a real result.
+    _write_result(
+        tmp_path, "cbls", "inst", {"status": "feasible", "objective": 90.0}, trace=[(1.0, 90.0)]
+    )
+    scored = score_instance("inst", "cbls", 100.0, "best", tmp_path, budget=60.0)
+    assert not scored.below_reference
 
 
 def test_summarize_excludes_not_run_instances_from_the_aggregates(tmp_path: Path) -> None:

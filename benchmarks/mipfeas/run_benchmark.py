@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import json
 import subprocess
@@ -38,9 +39,12 @@ ENGINES = ("cbls", "cpsat")
 #: alongside others. The MIPfeas roster spans four orders of magnitude in size.
 DEFAULT_LARGE_BYTES = 5_000_000
 
-#: Grace on top of the budget before a job is killed. Generous, because a large
-#: model's read and build happen before the search clock starts.
-TIMEOUT_SLACK_SECONDS = 300.0
+#: Grace on top of the budget before a job is killed. Large, because a large model's
+#: read and build happen before the search clock starts and the first search batch is
+#: not interruptible: square47 spends ~170s on that before its first iteration. A job
+#: killed here is scored as a failure, so the slack has to cover the worst case rather
+#: than the typical one.
+TIMEOUT_SLACK_SECONDS = 900.0
 
 
 @dataclass(frozen=True)
@@ -167,7 +171,30 @@ def write_failure_result(
     )
 
 
+#: Markers run_job puts on a line that did not produce an honest search result.
+FAILURE_MARKERS = ("TIMEOUT", "FAILED", "DRIVER-ERROR")
+
+
 def run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
+    """Run one job. Nothing escapes.
+
+    `pool.map` re-raises a worker's exception where the caller iterates it, which
+    cancels every queued job and aborts main() — including the large-instance serial
+    tail — with a traceback. On an unattended multi-hour run a single transient
+    OSError (a fork under memory pressure, a full disk) must cost one job, not the
+    remainder of the roster.
+    """
+    try:
+        return _run_job(job, args, results_dir)
+    except Exception as exc:  # noqa: BLE001 - deliberate catch-all; see docstring
+        with contextlib.suppress(OSError):
+            # If even this fails there is nothing left to do; the returned line
+            # still reports the failure.
+            write_failure_result(job, results_dir, "killed", f"driver error: {exc!r}", args.budget)
+        return f"{job.engine}/{job.instance}: DRIVER-ERROR {exc!r}"
+
+
+def _run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
     (results_dir / job.engine).mkdir(parents=True, exist_ok=True)
     command = with_memory_limit(build_command(job, args, results_dir), args.mem_limit_gb)
 
@@ -226,12 +253,56 @@ def plan_jobs(
     return normal, large
 
 
-def execute(jobs: list[Job], args: argparse.Namespace, results_dir: Path, workers: int) -> None:
+def has_usable_result(job: Job, results_dir: Path) -> bool:
+    """Whether `job` can be skipped on resume.
+
+    A result truncated by an OOM kill or a reboot mid-write must not count: the
+    driver would make the damage permanent, and scoring would later abort on the
+    unparseable file.
+    """
+    path = job.result_path(results_dir)
+    if not path.exists():
+        return False
+    try:
+        json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        print(f"Re-running {job.engine}/{job.instance}: unreadable result file.")
+        return False
+    return True
+
+
+def drop_completed(
+    normal: list[Job], large: list[Job], results_dir: Path, force: bool
+) -> tuple[list[Job], list[Job]]:
+    """Filter out jobs already done, or clear their results when forcing."""
+    if force:
+        # Drop the old results first. A forced re-run that dies before writing would
+        # otherwise leave the previous run's result in place — possibly from another
+        # budget — with nothing downstream able to tell it apart from a fresh one.
+        for job in normal + large:
+            job.result_path(results_dir).unlink(missing_ok=True)
+        return normal, large
+
+    done = sum(1 for j in normal + large if has_usable_result(j, results_dir))
+    if done:
+        print(f"Resuming: {done} jobs already have results.")
+    return (
+        [j for j in normal if not has_usable_result(j, results_dir)],
+        [j for j in large if not has_usable_result(j, results_dir)],
+    )
+
+
+def execute(jobs: list[Job], args: argparse.Namespace, results_dir: Path, workers: int) -> int:
+    """Run `jobs`, printing one line each; returns how many did not succeed."""
     if not jobs:
-        return
+        return 0
+    failures = 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for line in pool.map(lambda job: run_job(job, args, results_dir), jobs):
+            if any(marker in line for marker in FAILURE_MARKERS):
+                failures += 1
             print(line, flush=True)
+    return failures
 
 
 def main() -> int:
@@ -250,15 +321,16 @@ def main() -> int:
         "--inf-clamp",
         type=float,
         default=1.0e7,
-        help="finite box CBLS clamps infinite variable bounds to; matches CP-SAT's "
-        "mip_max_bound default so both engines search the same domain",
+        help="finite box CBLS clamps infinite variable bounds to; a CBLS-side "
+        "restriction the baseline does not share (CP-SAT does not truncate variable "
+        "domains), recorded per result as n_clamped_bounds",
     )
     parser.add_argument(
         "--no-compound-moves",
         dest="compound_moves",
         action="store_false",
-        help="disable CBLS Novelty Jump; on by default here because CP-SAT's own "
-        "compound-move subsolvers find nearly all of its solutions on this roster",
+        help="disable CBLS Novelty Jump; on by default here because roughly half of "
+        "CP-SAT's incumbents on this roster come from its compound-move subsolvers",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--engines", nargs="+", choices=ENGINES, default=list(ENGINES))
@@ -302,18 +374,7 @@ def main() -> int:
     sizes = read_sizes(args.inst_dir / "manifest.csv")
     normal, large = plan_jobs(instances, engines, sizes, args.large_bytes)
 
-    if not args.force:
-        done = [j for j in normal + large if j.result_path(results_dir).exists()]
-        normal = [j for j in normal if not j.result_path(results_dir).exists()]
-        large = [j for j in large if not j.result_path(results_dir).exists()]
-        if done:
-            print(f"Resuming: {len(done)} jobs already have results.")
-    else:
-        # Drop the old results first. A forced re-run that dies before writing would
-        # otherwise leave the previous run's result in place — possibly from another
-        # budget — with nothing downstream able to tell it apart from a fresh one.
-        for job in normal + large:
-            job.result_path(results_dir).unlink(missing_ok=True)
+    normal, large = drop_completed(normal, large, results_dir, force=args.force)
 
     total = len(normal) + len(large)
     print(
@@ -322,20 +383,29 @@ def main() -> int:
         f"({len(large)} large jobs run alone at the end)."
     )
     started = time.monotonic()
-    execute(normal, args, results_dir, args.jobs)
-    execute(large, args, results_dir, 1)
-    print(f"\nDone in {(time.monotonic() - started) / 60:.1f} min -> {results_dir}")
-    # comparison.csv is the publishable filename; anything short of the full roster
-    # goes to smoke_comparison.csv so following this hint cannot overwrite a result
-    # with a wiring check.
+    failures = execute(normal, args, results_dir, args.jobs)
+    failures += execute(large, args, results_dir, 1)
+    print(
+        f"\nDone in {(time.monotonic() - started) / 60:.1f} min -> {results_dir} "
+        f"({total - failures}/{total} jobs succeeded)"
+    )
+    if failures:
+        # Non-zero exit, so an unattended run's wrapper can tell "finished" from
+        # "finished having failed every job" — otherwise indistinguishable.
+        print(f"{failures} of {total} jobs failed; see the lines above.", file=sys.stderr)
+    # Score beside the results, not into the instance directory: both
+    # comparison.csv and smoke_comparison.csv there are committed, README-cited
+    # artifacts, and following a printed command must not be able to overwrite one
+    # with a half-finished run (issue #103).
     out_name = "comparison.csv" if roster_path.name == "roster.csv" else "smoke_comparison.csv"
     print(
         "Score it with:\n"
         f"  python {Path(__file__).parent}/primal_integral.py "
         f"--results-dir {results_dir} --roster {roster_path} --budget {args.budget} "
-        f"--out {args.inst_dir}/{out_name}"
+        f"--out {results_dir}/{out_name}\n"
+        f"Then copy it to {args.inst_dir}/{out_name} if it is the run you mean to publish."
     )
-    return 0
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

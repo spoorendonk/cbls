@@ -89,7 +89,7 @@ python benchmarks/instances/mipfeas/download.py
 cmake -B build && cmake --build build -j$(nproc) --target cbls_mipfeas
 
 # 3. Install the baseline
-pip install ortools
+pip install -e '.[benchmarks]'
 
 # 4. Wiring check: 11 instances, both engines, short budget
 python benchmarks/mipfeas/run_benchmark.py --roster smoke --budget 60 --jobs 2
@@ -109,14 +109,19 @@ interrupted run continues where it stopped.
 
 Sizing `--jobs` is a memory question rather than a core-count one. Every result
 records its `peak_rss_kib`. From the wiring check, `neos-5114902-kasavu` (710k
-columns, 961k rows, 4.9M nonzeros) peaked at **1.2 GB under CBLS and 3.3 GB
+columns, 961k rows, 4.9M nonzeros) peaked at **1.2 GB under CBLS and 3.2 GB
 under CP-SAT**, and CP-SAT carries a ~100 MB floor on even the smallest models.
 
 It is not the roster's largest model, though: `square47` carries 27.4M nonzeros
-(5.6x kasavu) and `supportcase19` 1.43M columns (2x). Note also that
-`--mem-limit-gb` caps *address space* (`ulimit -v`), which runs roughly 30% above
-resident set — so confirm the cap on the target machine before trusting
-`--jobs 4` rather than reading 6 GB off the RSS figures above.
+(5.6x kasavu) and `supportcase19` 1.43M columns (2x). `square47` also spends
+~100-150s on model build and un-deadlined search initialisation before its first
+iteration, so budget wall-clock accordingly — the driver allows 900s of slack on
+top of the budget for exactly this. Note also that
+`--mem-limit-gb` caps *address space* (`ulimit -v`), not resident set. CBLS runs
+about 1.4x its RSS; CP-SAT adds a roughly constant ~0.7 GB of reservations on top
+of its own, so the ratio is ~1.4x on a large model like `neos-5114902-kasavu` but
+~4.4x on a small one like `atlanta-ip`. Confirm the cap on the target machine
+rather than reading 6 GB off the RSS figures above.
 
 ## What the wiring check found
 
@@ -173,7 +178,7 @@ inherited, so a published number cannot silently change when a default moves:
 | Algorithm | Feasibility Jump + ViolationLS + Novelty Jump | `fj` + `ls` workers only (`filter_subsolvers`) |
 | Presolve | none | default, i.e. on |
 | Feasibility tolerance | `1e-6`, stated explicitly | CP-SAT's own |
-| Infinite bound clamped to | `1e7` (`--inf-clamp`) | `1e7` (`mip_max_bound`) |
+| Infinite bound clamped to | `1e7` (`--inf-clamp`) | not clamped |
 | Recorded per result | commit SHA, seed, tolerance, clamp + columns it narrowed, compound-move flag, peak RSS | OR-Tools version, seed, full parameter string, solver verdict, peak RSS |
 
 Two of those are deliberate departures from the engine's own defaults, both made
@@ -181,17 +186,21 @@ to keep the two sides comparable rather than to flatter either:
 
 * **Novelty Jump is on**, though `SearchConfig::use_compound_moves` defaults to
   off. That default exists because the per-batch cost was not bounded tightly
-  enough for the large *continuous* benchmarks — not this roster. CP-SAT finds
-  nearly all of its MIPfeas solutions from its own compound-move subsolvers
-  (`ls_restart_*_compound_*`), so running without it would compare our
-  Feasibility Jump against their Feasibility Jump *plus* Novelty Jump and read
-  the difference as a reimplementation gap.
-* **Infinite variable bounds clamp to 1e7**, not the engine's 1e9. CBLS needs
-  finite bounds; CP-SAT truncates to `mip_max_bound = 1e7`. Matching it means
-  both engines search the same box. The clamp is a restriction — it can lose
-  solutions, never invent them — and each result records how many of its columns
-  it narrowed (`n_clamped_bounds`), so "both engines solved the same program" is
-  checkable rather than assumed.
+  enough for the large *continuous* benchmarks — not this roster. Roughly half of
+  CP-SAT's incumbents here come from its own compound-move subsolvers
+  (`ls_restart_*compound*`: 45–67% of improving solutions on binkar10_1 and pk1),
+  so running without it would compare our Feasibility Jump against their
+  Feasibility Jump *plus* Novelty Jump and read the difference as a
+  reimplementation gap.
+* **Infinite variable bounds clamp to 1e7**, not the engine's 1e9 — because it
+  measured better on the smoke roster, *not* because it matches the baseline.
+  CP-SAT does **not** truncate variable domains: `mip_max_bound` is not a domain
+  clamp, and on ortools 9.15 an integer column bounded at 1e12 is solved to 1e12.
+  So this is a CBLS-side restriction the baseline does not share, and it reaches
+  120 of the 233 instances. It can lose solutions, never invent them, so an
+  objective CBLS reports remains valid for the original program — but on those
+  instances CBLS is searching a strictly smaller box, and the comparison table
+  publishes `n_clamped_bounds` per row so a reader can see where.
 
 Two configuration facts are worth knowing before changing anything here, both
 established empirically against ortools 9.15:

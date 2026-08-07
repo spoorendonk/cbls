@@ -44,6 +44,12 @@ NO_SOLUTION_GAP = 2.0
 #: is not meaningful across a sign change.
 SIGN_FLIP_GAP = 1.0
 
+#: An incumbent below a *proven* optimum is not a good result, it is a bug — a
+#: violated constraint, a wrong objective, a mis-transcribed row. `primal_gap` takes
+#: an absolute value, so it scores as an ordinary positive gap and would publish
+#: silently. 232 of the 233 references are proven optima.
+BELOW_REFERENCE_TOLERANCE = 1e-6
+
 #: Shift for the geometric mean, so that a PI of exactly 0 does not collapse it.
 GEOMETRIC_MEAN_SHIFT = 0.001
 
@@ -57,6 +63,20 @@ FULL_ROSTER_SIZE = 233
 #: The budget MIPfeas scores at. A different one is a wiring check, not a score.
 MIPFEAS_BUDGET_SECONDS = 600.0
 
+#: Result keys describing *how* a run was configured. Two results disagreeing on any
+#: of them are not comparable. The driver resumes on file existence alone and
+#: defaults to one results directory whatever the flags, so a flag changed between
+#: invocations would otherwise be averaged into a single table with nothing to show
+#: for it — and these are exactly the flags measured to move the aggregate.
+CONFIG_KEYS = (
+    "seed",
+    "feasibility_tolerance",
+    "compound_moves",
+    "inf_clamp",
+    "workers",
+    "parameters",
+)
+
 
 class Scored(NamedTuple):
     instance: str
@@ -66,6 +86,8 @@ class Scored(NamedTuple):
     reference_value: float
     reference_kind: str
     final_gap: float
+    #: True when a proven optimum was beaten — a bug signal, not an achievement.
+    below_reference: bool
     primal_integral: float
     wall_seconds: float | None
     n_vars: int | None
@@ -73,6 +95,16 @@ class Scored(NamedTuple):
     #: Peak resident set of the job, so a full-roster run's concurrency can be
     #: sized from measurement rather than guessed.
     peak_rss_kib: int | None
+    #: Columns whose domain the CBLS clamp narrowed. The clamp is a CBLS-side
+    #: restriction the baseline does not share, so "both engines solved the same
+    #: program" is only checkable if this is published next to the score.
+    n_clamped_bounds: int | None
+    #: The run's configuration, so a table cannot silently mix two of them.
+    config: str
+    #: Whether the incumbent profile came from the engine's log or is a single end
+    #: point. A systematic log-format change would otherwise score every CP-SAT
+    #: instance near 2.0, indistinguishable from "CP-SAT is bad".
+    trace_source: str
     #: The engine's own verdict, where it has one finer than `status` (CP-SAT's
     #: OPTIMAL / FEASIBLE / NOT_SOLVED / MODEL_INVALID). An INFEASIBLE here on a
     #: roster of known-feasible instances is a red flag about CP-SAT's integer
@@ -173,11 +205,15 @@ def score_instance(
             reference_value=reference_value,
             reference_kind=reference_kind,
             final_gap=math.nan,
+            below_reference=False,
             primal_integral=math.nan,
             wall_seconds=None,
             n_vars=None,
             n_cons=None,
             peak_rss_kib=None,
+            n_clamped_bounds=None,
+            config="",
+            trace_source="",
             solver_status="",
             provenance="n/a",
         )
@@ -214,6 +250,7 @@ def score_instance(
     n_vars = result.get("n_vars")
     n_cons = result.get("n_cons")
     peak_rss = result.get("peak_rss_kib")
+    clamped = result.get("n_clamped_bounds")
     return Scored(
         instance=instance,
         engine=engine,
@@ -222,11 +259,19 @@ def score_instance(
         reference_value=reference_value,
         reference_kind=reference_kind,
         final_gap=primal_gap(objective, reference_value),
+        below_reference=(
+            reference_kind == "opt"
+            and objective is not None
+            and objective < reference_value - BELOW_REFERENCE_TOLERANCE * (abs(reference_value) + 1)
+        ),
         primal_integral=primal_integral(trace, reference_value, budget),
         wall_seconds=float(wall) if isinstance(wall, (int, float)) else None,
         n_vars=int(n_vars) if isinstance(n_vars, int) else None,
         n_cons=int(n_cons) if isinstance(n_cons, int) else None,
         peak_rss_kib=int(peak_rss) if isinstance(peak_rss, int) else None,
+        n_clamped_bounds=int(clamped) if isinstance(clamped, int) else None,
+        config=";".join(f"{k}={result[k]}" for k in CONFIG_KEYS if k in result),
+        trace_source=str(result.get("trace_source", "")),
         solver_status=str(result.get("cpsat_status", "")),
         provenance=_provenance(result),
     )
@@ -238,6 +283,9 @@ class Summary(NamedTuple):
     not_run: int
     feasible: int
     matched_reference: int
+    #: Runs that beat a proven optimum. Any non-zero value is a defect to chase,
+    #: not a result to publish.
+    below_reference: int
     invalid_model: int
     #: Jobs that neither found a solution nor honestly searched for one — killed by
     #: the driver's timeout or memory cap, or failed to read the instance. Scored
@@ -255,13 +303,21 @@ def summarize(rows: list[Scored], engine: str) -> Summary:
     mine = [r for r in rows if r.engine == engine]
     ran = [r for r in mine if r.status != "not_run"]
     integrals = [r.primal_integral for r in ran]
-    quartiles = statistics.quantiles(integrals, n=4) if len(integrals) > 1 else [math.nan] * 3
+    # "inclusive": the default extrapolates on small samples and can report an IQR
+    # bound outside the metric's own [0, 2] range — a negative Primal Integral in a
+    # file whose whole job is to be quoted.
+    quartiles = (
+        statistics.quantiles(integrals, n=4, method="inclusive")
+        if len(integrals) > 1
+        else [math.nan] * 3
+    )
     return Summary(
         engine=engine,
         scored=len(ran),
         not_run=len(mine) - len(ran),
         feasible=sum(1 for r in ran if r.status == "feasible"),
         matched_reference=sum(1 for r in ran if r.final_gap < ZERO_TOLERANCE),
+        below_reference=sum(1 for r in ran if r.below_reference),
         invalid_model=sum(1 for r in ran if r.status == "invalid_model"),
         errored=sum(1 for r in ran if r.status not in ("feasible", "no_solution", "invalid_model")),
         shifted_geomean=shifted_geometric_mean(integrals),
@@ -270,6 +326,25 @@ def summarize(rows: list[Scored], engine: str) -> Summary:
         q1=quartiles[0],
         q3=quartiles[2],
     )
+
+
+def check_uniform_configuration(rows: list[Scored]) -> None:
+    """Refuse to score results produced under more than one configuration.
+
+    The budget guard in `score_instance` catches only the budget. Everything else —
+    the seed, the tolerance, Novelty Jump, the bound clamp, CP-SAT's worker count —
+    is a CLI flag, so two invocations into the same results directory would average
+    two configurations into one table and look entirely normal doing it.
+    """
+    for engine in ENGINES:
+        configs = {r.config for r in rows if r.engine == engine and r.config}
+        if len(configs) > 1:
+            raise ValueError(
+                f"{engine} results span {len(configs)} configurations: {sorted(configs)}. "
+                f"The driver resumes on file existence alone, so a flag changed between "
+                f"invocations lands in the same results directory. Re-run the odd ones "
+                f"out with --force, or score them into separate tables."
+            )
 
 
 def read_roster(path: Path) -> list[tuple[str, float, str]]:
@@ -296,6 +371,11 @@ def write_comparison(
         f"# Budget:  {budget}s per instance-solver pair",
         "# Metric:  Primal Integral over the budget, in [0, 2]; lower is better.",
         "#          0 = optimal immediately, 2 = never feasible.",
+        "#",
+        "# NOT a MIPfeas leaderboard entry: the published MIPfeas runs give each",
+        "# solver 24 threads, and both engines here get 1. These numbers are",
+        "# comparable to each other and never to one from plato.asu.edu or the",
+        "# GAMS blog.",
         "#",
     ]
     instances = len(rows) // max(len(summaries), 1)
@@ -326,7 +406,8 @@ def write_comparison(
             f"#   {s.engine:<6} sgm={s.shifted_geomean:.4f} mean={s.arithmetic_mean:.4f} "
             f"median={s.median:.4f} iqr=[{s.q1:.4f},{s.q3:.4f}] "
             f"feasible={s.feasible}/{s.scored} matched_reference={s.matched_reference} "
-            f"invalid_model={s.invalid_model} errored={s.errored} not_run={s.not_run}"
+            f"invalid_model={s.invalid_model} errored={s.errored} "
+            f"below_reference={s.below_reference} not_run={s.not_run}"
         )
     header.append("#")
 
@@ -342,13 +423,17 @@ def write_comparison(
                 "reference_value",
                 "reference_kind",
                 "final_gap",
+                "below_reference",
                 "primal_integral",
                 "wall_seconds",
                 "n_vars",
                 "n_cons",
                 "peak_rss_kib",
+                "n_clamped_bounds",
+                "trace_source",
                 "solver_status",
                 "provenance",
+                "config",
             ]
         )
         for r in rows:
@@ -361,13 +446,17 @@ def write_comparison(
                     repr(r.reference_value),
                     r.reference_kind,
                     f"{r.final_gap:.6g}",
+                    int(r.below_reference),
                     f"{r.primal_integral:.6g}",
                     "" if r.wall_seconds is None else f"{r.wall_seconds:.4f}",
                     "" if r.n_vars is None else r.n_vars,
                     "" if r.n_cons is None else r.n_cons,
                     "" if r.peak_rss_kib is None else r.peak_rss_kib,
+                    "" if r.n_clamped_bounds is None else r.n_clamped_bounds,
+                    r.trace_source,
                     r.solver_status,
                     r.provenance,
+                    r.config,
                 ]
             )
 
@@ -390,6 +479,7 @@ def main() -> int:
         for engine in ENGINES
     ]
     summaries = [summarize(rows, engine) for engine in ENGINES]
+    check_uniform_configuration(rows)
 
     out_path = Path(args.out)
     write_comparison(out_path, rows, summaries, args.budget, roster_path)

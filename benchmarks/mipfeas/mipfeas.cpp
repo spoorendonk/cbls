@@ -45,14 +45,18 @@ struct Args {
     // Novelty Jump (compound moves), on for this benchmark although the engine
     // default is off. That default exists because the per-batch cost was not
     // bounded tightly enough for the large *continuous* benchmarks, which is not
-    // this roster; and CP-SAT finds nearly all of its MIPfeas solutions from its
-    // own compound-move subsolvers (`ls_restart_*_compound_*`). Running without it
-    // would compare our Feasibility Jump against their Feasibility Jump plus
-    // Novelty Jump and call the difference a reimplementation gap.
+    // this roster; and roughly half of CP-SAT's incumbents here come from its own
+    // compound-move subsolvers (`ls_restart_*compound*` — 45-67% of improving
+    // solutions on binkar10_1 and pk1). Running without it would compare our
+    // Feasibility Jump against their Feasibility Jump plus Novelty Jump and call
+    // the difference a reimplementation gap.
     bool compound_moves = true;
-    // CBLS variables need finite bounds, so an infinite one is clamped. Matched to
-    // CP-SAT's `mip_max_bound` default so both engines search the same box rather
-    // than one being handed a domain 100x wider; the engine's own default is 1e9.
+    // CBLS variables need finite bounds, so an infinite one is clamped. 1e7 rather
+    // than the engine's 1e9 because it measured better on the smoke roster — NOT
+    // because it matches CP-SAT, which does not truncate variable domains at all
+    // (`mip_max_bound` is not a domain clamp: an integer column bounded at 1e12 is
+    // solved to 1e12). This is a CBLS-side restriction, so `n_clamped_bounds`
+    // records how many columns it narrows and the comparison table publishes it.
     double inf_clamp = 1.0e7;
     std::string commit_sha = "unknown";
 };
@@ -191,13 +195,26 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     j["inf_clamp"] = args.inf_clamp;
     j["commit_sha"] = args.commit_sha;
 
+    // Write-then-rename: a job killed mid-write must leave either the previous
+    // result or none, never a truncated one. The driver resumes on file existence
+    // and does not revalidate, so a half-written result is otherwise permanent.
     const std::string path = args.out_dir + "/" + args.instance + ".json";
-    std::ofstream out(path);
-    if (!out.is_open()) {
-        std::fprintf(stderr, "Failed to open %s for writing\n", path.c_str());
+    const std::string tmp_path = path + ".tmp";
+    {
+        std::ofstream out(tmp_path);
+        if (!out.is_open()) {
+            std::fprintf(stderr, "Failed to open %s for writing\n", tmp_path.c_str());
+            std::exit(2);
+        }
+        out << j.dump(2) << "\n";
+    }
+    std::error_code rename_ec;
+    std::filesystem::rename(tmp_path, path, rename_ec);
+    if (rename_ec) {
+        std::fprintf(stderr, "Failed to rename %s -> %s: %s\n", tmp_path.c_str(), path.c_str(),
+                     rename_ec.message().c_str());
         std::exit(2);
     }
-    out << j.dump(2) << "\n";
 }
 
 }  // namespace
@@ -219,6 +236,14 @@ int main(int argc, char** argv) {
     }
     if (!(args.feas_tol > 0.0)) {
         std::fprintf(stderr, "--feas-tol must be positive\n");
+        return 2;
+    }
+    // Same hazard as --budget: atof returns 0 on a parse failure, and a clamp of 0
+    // collapses every column to [0, 0] rather than erroring — so one typo'd flag
+    // scores an entire roster "no_solution" at exit code 0, which resume then
+    // treats as work completed.
+    if (!(args.inf_clamp > 0.0)) {
+        std::fprintf(stderr, "--inf-clamp must be a positive bound\n");
         return 2;
     }
 
@@ -286,12 +311,32 @@ int main(int argc, char** argv) {
     }
     const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 
-    // Cross-check the engine's own feasibility verdict against the residual of the
-    // assignment it actually returned, which solve() recomputes with a full
-    // evaluate after restoring the best state. The two can only disagree if
-    // incremental and full evaluation have drifted — and publishing an objective
-    // for an infeasible point is the one thing this table must never contain.
-    const bool verdict_consistent = !result.feasible || result.best_violation <= args.feas_tol;
+    // Independent re-checks of the assignment solve() actually returned. It
+    // restores best_state and full-evaluates before returning, so the model holds
+    // that point now. Mirrors benchmarks/minlplib/minlplib.cpp, which already
+    // refuses to publish a row failing any of these:
+    //
+    //   * residual — the engine's verdict, recomputed, on its own DAG;
+    //   * integrality — an Int variable left fractional means the point is not a
+    //     solution of the MIP at all;
+    //   * objective drift — result.objective is the search's *running best*, taken
+    //     when the incumbent was recorded. The number published has to be what the
+    //     model evaluates to at the point being returned.
+    int n_fractional_int = 0;
+    if (result.feasible) {
+        for (const auto& v : built.model.variables()) {
+            if (v.type == cbls::VarType::Int && std::abs(v.value - std::round(v.value)) > 1e-9) {
+                ++n_fractional_int;
+            }
+        }
+    }
+    const double model_obj = built.objective_node_id >= 0
+                                 ? built.model.node(built.objective_node_id).value
+                                 : result.objective;
+    const double obj_drift = result.feasible ? std::abs(model_obj - result.objective) : 0.0;
+    const bool verdict_consistent =
+        !result.feasible || (result.best_violation <= args.feas_tol && n_fractional_int == 0 &&
+                             obj_drift <= 1e-6 * (std::abs(result.objective) + 1.0));
     const bool have_solution =
         result.feasible && std::isfinite(result.objective) && verdict_consistent;
     const char* status = !verdict_consistent ? "violation_mismatch"
@@ -302,6 +347,8 @@ int main(int argc, char** argv) {
         {"wall_seconds", wall},
         {"iterations", result.iterations},
         {"max_violation", result.best_violation},
+        {"n_fractional_int", n_fractional_int},
+        {"objective_drift", obj_drift},
         {"n_vars", prob.vars.size()},
         {"n_cons", prob.rows.size()},
         {"n_int_vars", count_int_vars(prob)},

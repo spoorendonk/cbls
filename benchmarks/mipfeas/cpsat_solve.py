@@ -48,7 +48,7 @@ from typing import TYPE_CHECKING
 from ortools.linear_solver.python import model_builder
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterable, Iterator
 
 #: CP-SAT logs each improving solution as e.g.
 #:   `#12      3.30s best:6908.97 next:[5726.32,6908.97] ls_restart_compound(...)`
@@ -77,8 +77,23 @@ def build_parameters(workers: int, seed: int) -> str:
 
 def parse_trace(log_text: str) -> list[tuple[float, float]]:
     """Extract (seconds, objective) for each improving solution in a CP-SAT log."""
+    return _parse_lines(log_text.splitlines())
+
+
+def parse_trace_file(path: Path) -> list[tuple[float, float]]:
+    """Same, streaming the file rather than loading it.
+
+    A 600s run on an instance that keeps improving writes tens of thousands of log
+    lines (mas76 manages 3.3 MB in 5s), and this job runs under an address-space cap
+    alongside a multi-GB model.
+    """
+    with open(path) as fh:
+        return _parse_lines(fh)
+
+
+def _parse_lines(lines: Iterable[str]) -> list[tuple[float, float]]:
     trace: list[tuple[float, float]] = []
-    for line in log_text.splitlines():
+    for line in lines:
         match = SOLUTION_LINE.match(line.strip())
         if match is None:
             continue
@@ -114,9 +129,10 @@ def solve(
     # model_builder surface used here is typed.
     model = model_builder.ModelBuilder()  # type: ignore[no-untyped-call]
     if not model.import_from_mps_file(str(mps_path)):
-        # Same keys as the solved path. A key missing here crashes the job *after*
-        # write_outputs has already written its result, and the driver — seeing a
-        # result file — then reports the crash as a clean run.
+        # Carries every key main() and the scorer read unconditionally. A key
+        # missing here crashes the job *after* write_outputs has written its
+        # result, and the driver — seeing a result file — reports that as a clean
+        # run. The scorer .get()s the rest.
         return {
             "status": "read_error",
             "message": f"CP-SAT could not import {mps_path.name}",
@@ -135,9 +151,7 @@ def solve(
         with capture_stdout_fd(log_path):
             status = solver.solve(model)
         wall = time.monotonic() - started
-        log_text = log_path.read_text()
-
-    trace = parse_trace(log_text)
+        trace = parse_trace_file(log_path)
     has_solution = status in (
         model_builder.SolveStatus.OPTIMAL,
         model_builder.SolveStatus.FEASIBLE,
@@ -204,11 +218,16 @@ def write_outputs(
         ortools_version=version("ortools"),
         parameters=build_parameters(args.workers, args.seed),
     )
-    (out_dir / f"{instance}.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
-
     lines = ["time_seconds,objective"]
     lines += [f"{t},{obj}" for t, obj in trace]
     (out_dir / f"{instance}.trace.csv").write_text("\n".join(lines) + "\n")
+
+    # Result last, and via a rename. The driver resumes on the result file's
+    # existence, so it must not appear before the trace it is scored with, and it
+    # must never appear truncated.
+    tmp = out_dir / f"{instance}.json.tmp"
+    tmp.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    tmp.replace(out_dir / f"{instance}.json")
 
 
 def main() -> int:
@@ -247,7 +266,11 @@ def main() -> int:
         f"obj={objective if objective is not None else 'n/a':<16} "
         f"{float(record['wall_seconds']):8.2f}s"  # type: ignore[arg-type]
     )
-    return 0
+    # A rejected parameter string or an unreadable instance is a harness fault, not
+    # a search outcome. An OR-Tools release renaming `filter_subsolvers` would
+    # otherwise score every CP-SAT instance at 2.0 across a 39 CPU-hour run, at exit
+    # 0. Matches the CBLS runner, which also exits 1 on a read error.
+    return 1 if record["status"] in ("invalid_parameters", "read_error") else 0
 
 
 if __name__ == "__main__":
