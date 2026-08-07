@@ -119,12 +119,28 @@ documents. No published Yuck numbers exist for these instances.
   run (`instance,time_seconds,objective,new_best`), written by `--trace`. The
   `objective` column is the internally *minimised* value, so a maximize instance
   appears negated relative to `comparison.csv`.
+- `scip_baseline.csv` — written by `../../minlplib/reference_solve.py`: the SCIP
+  baseline's objective, gaps against the same published bounds, feasibility,
+  wall time, plus the dual bound, gap and status only a complete solver
+  produces, and the exact `SCIP x / PySCIPOpt y` pair per row.
+- `comparison_all.csv` — the three-way comparison in long format, one row per
+  `(instance, method)` with `method` in `published-bks` / `cbls` / `scip`. Also
+  written by `reference_solve.py`, by joining the two CSVs above with
+  `bounds.csv`.
 - `*.nl` — fetched text NL instance files.
 
 Regenerate `comparison.csv` with:
 
     cmake --build build -j$(nproc)
     ./build/cbls_minlplib --time-limit 60 --seed 1 --commit "$(git rev-parse --short HEAD)"
+
+Regenerate `scip_baseline.csv` and `comparison_all.csv` with (needs the
+`benchmarks` extra — `pip install -e '.[benchmarks]'`):
+
+    .venv/bin/python3 benchmarks/minlplib/reference_solve.py --time-limit 60
+
+Run the CBLS side first: the merge reads whatever `comparison.csv` holds. To
+rebuild only the merge after a fresh CBLS run, add `--merge-only`.
 
 ## Results
 
@@ -224,6 +240,102 @@ Every one is root-caused, and the verdict is recorded per row in
 | `nvs01` ([#101](https://github.com/spoorendonk/cbls/issues/101)) | hard | `420.169·√(x0²+900) == x2·x0·x1` needs `x0` and the product `x1·x2` changed together. While `x0 = 0` the product term vanishes, so `x1` and `x2` receive no gradient signal and no single-variable jump improves — escaping requires a compound move (Novelty Jump implements exactly this, but is off by default). Verified analytically and reproduced across seeds 1–7. |
 | `st_e40` ([#102](https://github.com/spoorendonk/cbls/issues/102)) | hard, **mechanism unidentified** | Rows C1–C3 are degree-7 polynomials `(x-1)(x-2)(x-3)(x-5)(x-8)(x-10)(x-12) == 0` restricting each integer to `{1,2,3,5,8,10,12}`; C0 pins the free `x3` to a bilinear function of them, and four linear rows bound the combination. The search satisfies C1–C3 but misses a linear row by ~2. An earlier revision of this table claimed a violation barrier between allowed integer values — that was **wrong**: `int_jump_candidates` enumerates the entire domain when that domain spans at most 256 values, and these are `[1,12]`, so every allowed value is one jump away. The real mechanism is still open. |
 
+## SCIP baseline
+
+An independently-run open-source yardstick for the roster (issue #89), so the
+numbers above sit against a solver we ran ourselves rather than only against
+bounds MINLPLib publishes. Written by `../../minlplib/reference_solve.py`; per-row
+results in `scip_baseline.csv`, the labelled three-way join in
+`comparison_all.csv`.
+
+**Why SCIP.** BARON is commercial and reachable only through the NEOS job queue,
+so it cannot be batch-run reproducibly. Couenne is free but has seen little
+development since ~2018 and is generally outperformed on this family. SCIP's
+nonconvex spatial branch-and-bound is purpose-built, separately benchmarked on
+MINLPLib in *Global Optimization of Mixed-Integer Nonlinear Programs with SCIP
+8.0* ([PDF](https://optimization-online.org/wp-content/uploads/2022/12/scip8_minlp.pdf)),
+and already a repository dependency — this adds none.
+
+**What is matched.** SCIP reads the **same `.nl` files** through its own AMPL
+reader, so neither solver sees a re-modelled instance and no formulation drift
+can enter the comparison. Same roster and order (`bounds.csv`), same 60s
+per-instance wall-clock budget, one thread each, and the same feasibility
+tolerance — CBLS defaults to 1e-6 and SCIP's `numerics/feastol` default is 1e-6,
+left unset rather than assigned so a future SCIP release changing it surfaces as
+a mismatch. SCIP rows are scored by ports of the runner's `safe_gap` and its
+two-band BKS classification (pinned by `tests/python/test_minlplib_scip_baseline.py`),
+so the `gap_to_bks%` column means the same thing on both.
+
+**What is not matched, by construction.** SCIP is a complete global solver and
+proves a dual bound; CBLS is a primal heuristic and proves none. Only the primal
+columns are like-for-like. `comparison_all.csv`'s `dual_bound` therefore holds
+what *that method* proved — NaN on CBLS rows — rather than repeating the
+published dual on all three. Verification is also asymmetric: the C++ runner
+re-checks its assignment against the model it built, whereas the SCIP side uses
+`Model.checkSol(original=True)`, i.e. SCIP validating its own solution against
+the pre-presolve problem. A solution SCIP cannot re-validate is not published as
+feasible; zero rows in this run failed that check.
+
+Run at **SCIP 10.0 / PySCIPOpt 6.2.1**, 60s per instance, seed shift 0, recorded
+per row. Like the CBLS run this is a wall-clock budget, so these are
+single-sample numbers.
+
+| | CBLS | SCIP |
+|---|---|---|
+| feasible | 46 / 50 | **49 / 50** |
+| proved optimal | n/a (primal heuristic) | 34 / 50 |
+| hit the 60s limit | 50 | 16 |
+| total wall over the roster | 3001s | 1011s (median 0.30s; 31 instances under 1s) |
+| integrality mismatches vs catalogue | 0 | 0 |
+| verification failures | 0 | 0 |
+
+**The failures are almost disjoint, and that is the useful part.** SCIP reaches
+a feasible solution on all four instances CBLS cannot solve — two of them proved
+optimal in under a quarter of a second:
+
+| Instance | CBLS | SCIP | What it settles |
+|---|---|---|---|
+| `nvs01` | infeasible | optimal in 0.11s | The instance is not hard; #101 is an engine gap (single-variable jumps cannot move a product term pinned at zero). |
+| `st_e40` | infeasible | optimal in 0.22s | Same — #102's mechanism is still unidentified, but "genuinely hard instance" is now ruled out as the explanation. |
+| `elec25` | infeasible | 243.859 vs BKS 243.813 (0.02%) | Confirms #100 is a bug, not hardness: a feasible point of near-BKS quality is easy to reach. |
+| `elec50` | infeasible | 1422.3 vs BKS 1055.2 (34.8%) | Same mechanism at 50 points; SCIP does not close it either, but it does reach the feasible region. |
+| `st_e36` | −147 (BKS −246) | **no feasible solution in 60s** | The one row the other way. SCIP spends the full budget and returns only a dual bound of −304.5. |
+
+**Solution quality where both are feasible.** Buckets over the 38 instances that
+both solve and whose `|BKS| >= 1e-4` (below that a percentage against the bound
+is not informative — see the zero-BKS discussion above):
+
+| | ≤0.01% | ≤1% | ≤10% |
+|---|---|---|---|
+| CBLS | 16 | 17 | 21 |
+| SCIP | 32 | 32 | 33 |
+
+SCIP is clearly ahead on quality, as expected of a mature global solver on a
+roster capped at 150 variables and 150 constraints. Four instances go the other
+way by a margin far larger than any rounding effect, and every one is a row
+where SCIP exhausted the 60s budget:
+
+| Instance | CBLS gap | SCIP gap |
+|---|---|---|
+| `eg_all_s` | 10.5% | 2324% |
+| `ex8_6_1` | 49.2% | 99.6% |
+| `eq6_1` | 7.6% | 27.0% |
+| `maxmin` | 0.13% | 2.18% |
+
+No finer-grained win/loss tally is published: `comparison.csv` writes objectives
+at six significant digits, which is below the tie band on several rows, so a
+per-instance head-to-head count would be reporting output precision rather than
+search quality.
+
+**One catalogue row looks stale.** On `ex6_2_6` SCIP proves optimality at
+−3.51174e−06, better than MINLPLib's published primal bound (−2.60253e−06) and
+marginally past its published dual (−3.49783e−06), which a valid dual bound for a
+minimize instance cannot be. The absolute difference is 9e−07, so the two-band
+rule correctly labels it `matches-bks` — but the `gap_to_bks%` column reads
+−34.9%, which is the tiny-objective artifact rather than a real improvement. The
+same caution applies to `ex6_2_11`, `least`, `mathopt1`, `prob09`, `ex14_2_4`
+and `ex14_2_5`.
+
 ## Integrality
 
 NL columns flagged integer/binary are built as CBLS `Int` variables, so the
@@ -264,8 +376,10 @@ checks still passed.
 
 A constraint counts as satisfied when its violation is `<= 1e-6`, matching
 SCIP's default `numerics/feastol` — the right reference point for a
-continuous/nonlinear roster, and the same tolerance the SCIP baseline (#89)
-will use. This is also the engine-wide default
+continuous/nonlinear roster, and the tolerance the SCIP baseline above runs at
+(it is left at SCIP's default rather than set, so a future SCIP release changing
+it surfaces as a mismatch instead of being masked). This is also the
+engine-wide default
 (`cbls::kDefaultFeasibilityTolerance`); the runner states it explicitly because
 it is a published property of these results, and `--feas-tol` overrides it.
 
@@ -284,3 +398,12 @@ worst-violated NL row and its sense.
   expected and acceptable (per issue #72).
 - The roster is reproducible from the CSV but will drift as MINLPLib updates its
   catalogue; re-run `download.py` to refresh.
+- Both runs are single samples on a wall-clock budget. The SCIP side is the more
+  stable of the two — 34 of its 50 rows terminate with a proof rather than at
+  the limit — but the 16 that hit the limit are as draw-dependent as the CBLS
+  numbers.
+- The roster's size budget (`nvars <= 150`, `ncons <= 150`) is set by what the
+  NL reader and the selection filter admit, not chosen to favour either solver.
+  It does mean the baseline runs SCIP on instances well inside its comfortable
+  range, which is the right way round: the comparison should not flatter the
+  engine under test.

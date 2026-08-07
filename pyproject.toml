@@ -17,6 +17,12 @@ benchmarks = [
     # CP-SAT's violation_ls worker, the MIPfeas baseline. 9.7 is when the
     # num_violation_ls parameter shipped.
     "ortools>=9.7",
+    # SCIP's nonconvex spatial branch-and-bound, the MINLPLib baseline. The 6.x
+    # wheels bundle SCIP 9/10, whose AMPL .nl reader lets the baseline consume
+    # the exact same instance files the CBLS runner reads, with no re-modelling.
+    # The committed results came from 6.2.1 / SCIP 10.0; every result row records
+    # the pair it was produced by.
+    "pyscipopt>=6.0",
 ]
 
 [tool.pytest.ini_options]
