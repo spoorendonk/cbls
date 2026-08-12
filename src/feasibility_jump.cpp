@@ -287,6 +287,11 @@ FeasibilityJump::FeasibilityJump(Model& model, ViolationManager& vm, RNG& rng, G
     }
 }
 
+// The complement of `is_structured` (dag.h): between them the two partition
+// VarType, and `solve()` relies on that to initialise every variable exactly once
+// (#108) — FJ sets the scalars here, `initialize_structured_random` sets the rest.
+// Deliberately a whitelist, not `!is_structured(t)`: a VarType added later must
+// opt in to being jumped rather than default into it.
 bool FeasibilityJump::jumpable(int32_t var_id) const {
     auto t = model_.var(var_id).type;
     return t == VarType::Bool || t == VarType::Int || t == VarType::Float;

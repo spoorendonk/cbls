@@ -11,6 +11,20 @@ namespace cbls {
 
 enum class VarType : uint8_t { Bool, Int, Float, List, Set };
 
+/// True for the types that carry an `elements` permutation/subset rather than a
+/// scalar `value`. The complement — Bool/Int/Float — is exactly what
+/// `FeasibilityJump::jumpable()` accepts, and `solve()` relies on the two
+/// partitioning VarType to initialise every variable exactly once (#108): FJ sets
+/// the scalars, `initialize_structured_random` sets the rest.
+///
+/// Both are whitelists rather than one being `!other`, so a VarType added later
+/// has to opt in on each side. Nothing catches it if you forget: the build uses
+/// no `-Wall`/`-Wswitch`, so a new type would silently be neither initialised nor
+/// jumped. Add it here and to `jumpable()` in the same change.
+inline constexpr bool is_structured(VarType type) {
+    return type == VarType::List || type == VarType::Set;
+}
+
 struct Variable {
     int32_t id = -1;
     VarType type = VarType::Float;

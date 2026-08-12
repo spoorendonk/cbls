@@ -276,7 +276,7 @@ std::vector<int32_t> apply_move(Model& model, const Move& move) {
     changed.reserve(move.changes.size());
     for (const auto& change : move.changes) {
         auto& var = model.var_mut(change.var_id);
-        if (var.type == VarType::List || var.type == VarType::Set) {
+        if (is_structured(var.type)) {
             var.elements = change.new_elements;
         } else {
             var.value = change.new_value;

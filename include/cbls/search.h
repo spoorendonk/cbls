@@ -12,6 +12,10 @@
 namespace cbls {
 
 struct SearchConfig {
+    // Keep the assignment the caller handed in, whole: suppresses both the
+    // List/Set randomisation and FeasibilityJump's closest-to-zero scalar start.
+    // Used by epoch restarts, LNS repair, and callers supplying their own start
+    // (including a randomised one — see initialize_random).
     bool skip_init = false;
     // Total GLS iterations (not batches). 0 = unlimited (bounded by time_limit).
     // Checked at batch boundaries, so SearchResult::iterations may exceed this
@@ -81,7 +85,25 @@ public:
     virtual void on_progress(const SolveProgress& p) = 0;
 };
 
+/// Randomise **every** variable, scalars included.
+///
+/// `solve()` does NOT call this: FeasibilityJump owns the scalar start (see
+/// `initialize_structured_random`). It remains available for callers who
+/// deliberately want a randomised scalar start — combine it with
+/// `SearchConfig::skip_init = true`, which makes `solve()` keep the assignment it
+/// is handed instead of re-initialising it.
+///
+/// Not safe on an unbounded domain: a Float with an infinite-width domain draws
+/// NaN and a half-infinite one draws +inf, and an infinite Int bound casts to
+/// INT64_MIN. Give scalars finite bounds before calling this.
 void initialize_random(Model& model, RNG& rng);
+
+/// Randomise only the structured (List, Set) variables, leaving every scalar
+/// untouched. This is what `solve()` calls: FeasibilityJump's
+/// `begin(set_initial_x)` initialises the scalars to the domain value closest to
+/// zero (the published Feasibility Jump start), so randomising them here as well
+/// would only be overwritten (#108).
+void initialize_structured_random(Model& model, RNG& rng);
 
 void fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations = 10000,
                       RNG* rng = nullptr, double time_limit = 2.0);

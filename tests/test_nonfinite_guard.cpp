@@ -283,7 +283,9 @@ TEST_CASE("a +inf-objective feasible point does not block a later improvement",
     REQUIRE_FALSE(std::isfinite(m.node(m.objective_id()).value));
 
     SearchConfig cfg;
-    cfg.skip_init = true;  // start on the diagonal; don't randomise it away
+    // Start on the diagonal: skip_init keeps the assignment set above instead of
+    // letting FJ's begin() reset both Floats to the domain value closest to zero.
+    cfg.skip_init = true;
     cfg.max_iterations = 200000;
     SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
                            nullptr, cfg);

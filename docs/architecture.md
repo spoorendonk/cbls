@@ -409,7 +409,10 @@ values, so `fj_nl_initialize` and the outer loop use **single-phase**.
 The ViolationLS outer loop owns the iteration clock and calls:
 
 - `begin(set_initial_x)` — optionally set each scalar var to the domain value
-  closest to 0, full-evaluate, reset weights to 1, rebuild `V`/`Q`.
+  closest to 0, full-evaluate, reset weights to 1, rebuild `V`/`Q`. This is the
+  only thing that initialises scalars under `solve()` (#108); `set_initial_x =
+  false` means "refine the assignment I already have" (LNS repair, warm starts,
+  `skip_init`).
 - `batch(batch_iterations)` — run `gls_loop` for at most `batch_iterations`
   GLS iterations; returns whether all active constraints are satisfied.
 - `reset_weights()` — `W <- 1`, rebuild `V`/`Q` (called on a new best).
@@ -517,8 +520,68 @@ anything, the engine `resync()`s its scan set.
 1. If the model has an objective, add the `obj <= bound` soft constraint
    (idempotent) and reset its bound to `+inf`.
 2. Construct the `ViolationManager`.
-3. Unless `config.skip_init`, randomize the assignment (`initialize_random`).
-4. Construct a single-phase `FeasibilityJump`; call `begin(set_initial_x)`.
+3. Unless `config.skip_init`, randomize the **List/Set** variables
+   (`initialize_structured_random`).
+4. Construct a single-phase `FeasibilityJump`; call `begin(set_initial_x)`, which
+   sets every **scalar** to the domain value closest to 0.
+
+### Who initialises what (#108)
+
+Exactly one path initialises each variable, split by type:
+
+| Variable type | Initialised by | To what |
+|---------------|----------------|---------|
+| Bool, Int, Float | `FeasibilityJump::begin(set_initial_x)` | the domain value closest to 0 (the published Feasibility Jump start) |
+| List, Set | `initialize_structured_random` | a random permutation / random subset |
+
+**The scalar starting point does not depend on the seed, and this is deliberate.**
+Feasibility Jump specifies the closest-to-zero start, and the priority-1
+benchmark (`mipfeas`) is a head-to-head against another implementation of the
+same algorithm, so the start point is part of what is being compared. Two seeds
+on a scalar-only model therefore begin at the *same* assignment — if you are
+reading identical results across seeds as evidence that the search converged,
+check whether it simply started there.
+
+The seed still drives everything else: List/Set initialisation, best-of-N
+scan-set sampling, diversification kicks, the per-batch `rho` draw, LNS destroy
+sets and Novelty Jump.
+
+Do **not** over-read that as "a random start is reachable anyway". `perturb()`
+randomises each jumpable variable only with probability `perturbation_probability`
+(default **0.1**), not all of them, and it runs only after `perturbation_period`
+(default **100**) stagnant batches; when the independent draws happen to move
+nothing it forces exactly one variable (#109). A kick is therefore a sparse,
+occasional nudge, not a re-draw of the assignment, and it is not a substitute for
+a randomised starting point.
+
+`solve()` used to call `initialize_random` (which randomises scalars too) and
+then overwrite every scalar a dozen lines later in `begin()`. The draws were dead
+but still consumed. `initialize_random` remains as a public utility for callers
+who *want* a randomised scalar start; compose it with `skip_init`:
+
+```cpp
+RNG rng(seed);
+initialize_random(model, rng);        // randomise everything, scalars included
+SearchConfig cfg;
+cfg.skip_init = true;                 // solve() keeps the assignment it is handed
+solve(model, time_limit, seed, ..., cfg);
+```
+
+Beware that `initialize_random` is only safe on finite domains: a Float with an
+infinite-width domain draws NaN, a half-infinite one draws +inf, and an infinite
+Int bound casts to `INT64_MIN`. `begin()`'s closest-to-zero start, by contrast,
+is well defined on every domain — a genuine advantage of letting FJ own the
+scalars, but **only for the starting point**.
+
+It does *not* make the engine safe on unbounded domains, and this section must
+not be read as claiming it does. The same unguarded draw is still on the default
+`solve()` path through `random_in_domain`, reached from `perturb()` on every
+diversification kick and from LNS destroy. Measured: one default-probability kick
+on a model with unbounded Floats turns the assignment NaN, `full_evaluate`
+propagates it, `max_real_violation()` then returns `+inf` permanently, and the
+run cannot recover — while `solve()` still returns an ordinary-looking infeasible
+result restored from the pre-kick closest-approach state. That hazard is
+pre-existing and independent of #108; it is tracked in **#112**.
 
 `use_fj` is now vestigial — GFJ is always the engine.
 
@@ -591,7 +654,8 @@ nothing.
 
 ```cpp
 struct SearchConfig {
-    bool skip_init = false;                 // keep current assignment (epoch restarts)
+    bool skip_init = false;                 // keep the assignment whole: no List/Set
+                                            // randomisation, no FJ scalar start
     int64_t max_iterations = 0;             // 0 = unlimited (use time_limit); counts GLS iterations
     bool use_fj = true;                     // vestigial: GFJ is always the engine
     int lns_interval = 3;                   // LNS fires every Nth diversification kick
@@ -836,7 +900,7 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 │
 ├── [if objective] add_objective_soft_constraint(); set_objective_bound(+inf)
 ├── ViolationManager vm(model)
-├── [unless config.skip_init] initialize_random(model)
+├── [unless config.skip_init] initialize_structured_random(model)   # List/Set only
 │
 ├── FeasibilityJump fj(model, vm, rng, single-phase)
 ├── fj.begin(set_initial_x = !skip_init)
@@ -886,10 +950,10 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | Parameter | Default | Location | Description |
 |-----------|---------|----------|-------------|
 | `time_limit` | 10.0 | `solve()` arg | total search time (seconds); `<= 0` disables the wall clock entirely, leaving `max_iterations` as the only budget (deterministic) |
-| `seed` | 42 | `solve()` arg | RNG seed |
+| `seed` | 42 | `solve()` arg | RNG seed; drives List/Set init, sampling, kicks, `rho`, LNS — **not** the scalar starting point (#108) |
 | `use_fj` | true | `SearchConfig` | vestigial (GFJ always the engine) |
 | `max_iterations` | 0 | `SearchConfig` | GLS-iteration cap (0 = use time_limit) |
-| `skip_init` | false | `SearchConfig` | keep current assignment (epoch restarts) |
+| `skip_init` | false | `SearchConfig` | keep the current assignment whole — suppresses both List/Set randomisation and FJ's scalar start (epoch restarts, caller-supplied starts) |
 | `batch_iterations` | 1000 | `SearchConfig` | GLS iterations per FJ batch |
 | `perturbation_period` | 100 | `SearchConfig` | stagnant batches before a diversification kick |
 | `perturbation_probability` | 0.1 | `SearchConfig` | per-var randomisation probability on perturb (a no-op kick moves one var anyway) |

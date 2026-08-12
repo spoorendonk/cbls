@@ -423,7 +423,7 @@ void Model::build_var_constraints() {
 std::vector<std::pair<int32_t, double>> Model::per_constraint_violation_delta(int32_t var_id,
                                                                               double j) {
     const Variable& v = var(var_id);  // bounds-checked
-    if (v.type == VarType::List || v.type == VarType::Set) {
+    if (is_structured(v.type)) {
         throw std::invalid_argument(
             "per_constraint_violation_delta: scalar variable required (Bool/Int/Float)");
     }
@@ -464,7 +464,7 @@ std::vector<std::pair<int32_t, double>> Model::per_constraint_violation_delta(in
 double Model::weighted_violation_delta(int32_t var_id, double j,
                                        const std::vector<double>& weights) {
     const Variable& v = var(var_id);  // bounds-checked
-    if (v.type == VarType::List || v.type == VarType::Set) {
+    if (is_structured(v.type)) {
         throw std::invalid_argument(
             "weighted_violation_delta: scalar variable required (Bool/Int/Float)");
     }

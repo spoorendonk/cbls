@@ -3,6 +3,7 @@ add_executable(cbls_tests
     test_expr.cpp
     test_moves.cpp
     test_search.cpp
+    test_initialization.cpp
     test_violation_delta.cpp
     test_nonfinite_guard.cpp
     test_feasibility_jump.cpp

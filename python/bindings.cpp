@@ -376,7 +376,12 @@ NB_MODULE(_cbls_core, m) {
           nb::arg("seed") = 42, nb::arg("use_fj") = true, nb::arg("hook") = nullptr,
           nb::arg("lns") = nullptr, nb::arg("lns_interval") = 3, nb::arg("callback") = nullptr,
           nb::arg("config") = SearchConfig{});
-    m.def("initialize_random", &initialize_random);
+    // Randomises every variable. solve() does not call this (FJ owns the scalar
+    // start); pair it with SearchConfig.skip_init = True for a random scalar start.
+    m.def("initialize_random", &initialize_random, nb::arg("model"), nb::arg("rng"));
+    // What solve() calls: List/Set only, scalars untouched (#108).
+    m.def("initialize_structured_random", &initialize_structured_random, nb::arg("model"),
+          nb::arg("rng"));
     m.def("fj_nl_initialize", &fj_nl_initialize, nb::arg("model"), nb::arg("vm"),
           nb::arg("max_iterations") = 10000, nb::arg("rng") = nullptr, nb::arg("time_limit") = 2.0);
 }

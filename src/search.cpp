@@ -13,29 +13,46 @@ namespace cbls {
 
 SolveCallback::~SolveCallback() = default;
 
+namespace {
+
+void randomize_var(Variable& var, RNG& rng) {
+    switch (var.type) {
+        case VarType::Bool:
+            var.value = static_cast<double>(rng.integers(0, 2));
+            break;
+        case VarType::Int:
+            var.value = static_cast<double>(
+                rng.integers(static_cast<int64_t>(var.lb), static_cast<int64_t>(var.ub) + 1));
+            break;
+        case VarType::Float:
+            var.value = rng.uniform(var.lb, var.ub);
+            break;
+        case VarType::List:
+            var.elements = rng.permutation(var.max_size);
+            break;
+        case VarType::Set: {
+            int size = static_cast<int>(rng.integers(var.min_size, var.max_size + 1));
+            auto chosen = rng.choice(var.universe_size, size);
+            var.elements = chosen;
+            break;
+        }
+    }
+}
+
+}  // namespace
+
 void initialize_random(Model& model, RNG& rng) {
     for (auto& var : model.variables_mut()) {
-        switch (var.type) {
-            case VarType::Bool:
-                var.value = static_cast<double>(rng.integers(0, 2));
-                break;
-            case VarType::Int:
-                var.value = static_cast<double>(
-                    rng.integers(static_cast<int64_t>(var.lb), static_cast<int64_t>(var.ub) + 1));
-                break;
-            case VarType::Float:
-                var.value = rng.uniform(var.lb, var.ub);
-                break;
-            case VarType::List:
-                var.elements = rng.permutation(var.max_size);
-                break;
-            case VarType::Set: {
-                int size = static_cast<int>(rng.integers(var.min_size, var.max_size + 1));
-                auto chosen = rng.choice(var.universe_size, size);
-                var.elements = chosen;
-                break;
-            }
+        randomize_var(var, rng);
+    }
+}
+
+void initialize_structured_random(Model& model, RNG& rng) {
+    for (auto& var : model.variables_mut()) {
+        if (!is_structured(var.type)) {
+            continue;
         }
+        randomize_var(var, rng);
     }
 }
 
@@ -76,7 +93,7 @@ void fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations, RN
 static bool structural_pass(Model& model, ViolationManager& vm, RNG& rng) {
     bool changed = false;
     for (const auto& var : model.variables()) {
-        if (var.type != VarType::List && var.type != VarType::Set) {
+        if (!is_structured(var.type)) {
             continue;
         }
         auto moves = generate_standard_moves(var, rng);
@@ -165,8 +182,26 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             0.0, std::chrono::duration<double>(deadline - std::chrono::steady_clock::now()).count());
     };
 
+    // Exactly one path initialises each variable (#108). FeasibilityJump owns the
+    // scalar start — `begin(set_initial_x)` below sets every Bool/Int/Float to the
+    // domain value closest to zero, per the published Feasibility Jump — so this
+    // call covers only the types FJ cannot initialise (List, Set).
+    //
+    // Randomising the scalars here too, as this used to, was worse than merely
+    // redundant: `begin()` overwrote every one of them a dozen lines later, so the
+    // draws were dead but still consumed, and the code read as though the seed
+    // varied the starting point when it did not. It also hid a live hazard --
+    // `rng.uniform(lb, ub)` returns NaN on an infinite-width domain and +inf on a
+    // half-infinite one, and `rng.integers` casts an infinite bound to INT64_MIN.
+    //
+    // The seed still drives everything else: List/Set initialisation here,
+    // scan-set sampling, perturbation kicks, GLS rho, LNS destroy sets. Only the
+    // initial *scalar* point is seed-independent, and deliberately so. A caller
+    // who wants a randomised scalar start composes the two public pieces:
+    // `initialize_random(model, rng)` followed by `solve(..., {.skip_init = true})`,
+    // which keeps the assignment it was handed.
     if (!config.skip_init) {
-        initialize_random(model, rng);
+        initialize_structured_random(model, rng);
     }
 
     GFJConfig gfj;
@@ -224,9 +259,9 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     auto last_callback = start;
 
     // Skip the structural batch entirely on scalar-only models.
-    const bool has_structural = std::any_of(
-        model.variables().begin(), model.variables().end(),
-        [](const Variable& v) { return v.type == VarType::List || v.type == VarType::Set; });
+    const bool has_structural =
+        std::any_of(model.variables().begin(), model.variables().end(),
+                    [](const Variable& v) { return is_structured(v.type); });
     // Effective structural-batch probability: explicit config overrides; <0 means
     // auto (0.33 with list/set vars, 0 otherwise). Zeroed on scalar-only models.
     const double structural_probability = !has_structural ? 0.0

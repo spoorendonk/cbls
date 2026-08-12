@@ -83,7 +83,7 @@ void HumanFormatter::print_result(const SearchResult& result, const Model& model
     out_ << "Solution:\n";
     for (const auto& var : model.variables()) {
         out_ << "  " << (var.name.empty() ? "v" + std::to_string(var.id) : var.name) << " = ";
-        if (var.type == VarType::List || var.type == VarType::Set) {
+        if (is_structured(var.type)) {
             out_ << "[";
             for (size_t i = 0; i < var.elements.size(); ++i) {
                 if (i > 0) {
@@ -148,7 +148,7 @@ void JsonlFormatter::print_result(const SearchResult& result, const Model& model
     json sol = json::object();
     for (const auto& var : model.variables()) {
         std::string name = var.name.empty() ? "v" + std::to_string(var.id) : var.name;
-        if (var.type == VarType::List || var.type == VarType::Set) {
+        if (is_structured(var.type)) {
             sol[name] = var.elements;
         } else {
             sol[name] = var.value;
