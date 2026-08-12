@@ -66,12 +66,17 @@ void HumanFormatter::on_progress(const SolveProgress& p) {
 void HumanFormatter::print_result(const SearchResult& result, const Model& model) {
     out_ << "\n";
     out_ << "Status:     " << (result.feasible ? "feasible" : "infeasible") << "\n";
-    if (result.feasible && result.objective < std::numeric_limits<double>::infinity()) {
+    if (model.objective_id() < 0) {
+        out_ << "Objective:  -\n";  // pure feasibility model
+    } else if (std::isfinite(result.objective)) {
         out_ << "Objective:  " << std::fixed << std::setprecision(6) << result.objective << "\n";
-    } else if (model.objective_id() < 0) {
-        out_ << "Objective:  -\n";
+    } else if (result.feasible) {
+        // A feasible assignment on which the objective evaluates to +inf/NaN
+        // (issue #100). The point is real; the objective there is not a number,
+        // so say that rather than printing "inf" as if it were a value.
+        out_ << "Objective:  no finite objective at this assignment\n";
     } else {
-        out_ << "Objective:  " << std::fixed << std::setprecision(6) << result.objective << "\n";
+        out_ << "Objective:  -\n";  // infeasible: nothing to report one for
     }
     out_ << "Time:       " << std::fixed << std::setprecision(2) << result.time_seconds << "s ("
          << result.iterations << " iterations)\n";

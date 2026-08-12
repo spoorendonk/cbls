@@ -380,9 +380,13 @@ void Model::set_objective_bound(double bound) {
     // use the same residual rule as evaluate()'s Leq case, or this shortcut and
     // the next delta_evaluate() would disagree on the row's value — in
     // particular on the `obj = +inf, bound = +inf` state that opens every solve
-    // with a blown-up objective (issue #100).
+    // with a blown-up objective (issue #100). The bound side is
+    // objective_bound_node_, a Const by construction (see
+    // add_objective_soft_constraint), so it is a sentinel; the objective side is
+    // a computed expression and never is.
     nodes_[objective_constraint_node_].value =
-        comparison_residual(nodes_[objective_id_].value, bound);
+        comparison_residual(nodes_[objective_id_].value, bound,
+                            /*a_is_const=*/false, /*b_is_const=*/true);
 }
 
 // Build var_id -> constraint-index adjacency (the paper's G_v) by walking down

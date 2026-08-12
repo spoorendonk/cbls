@@ -140,6 +140,9 @@ TEST_CASE("a row with an infinite bound is vacuous, not maximally violated",
 
     // The same rule must hold on the objective-bound shortcut, which writes the
     // residual in place instead of going through evaluate().
+    //
+    // (The overflow counterpart — where the infinity is computed rather than
+    // written — is pinned by the next test.)
     Model m2;
     int32_t y = m2.float_var(-1.0e9, 1.0e9, "y");
     m2.minimize(m2.exp_expr(y));
@@ -149,6 +152,38 @@ TEST_CASE("a row with an infinite bound is vacuous, not maximally violated",
     m2.add_objective_soft_constraint();  // bound starts at +inf
     m2.set_objective_bound(std::numeric_limits<double>::infinity());
     REQUIRE(m2.node(m2.constraint_ids()[m2.objective_constraint_idx()]).value == 0.0);
+}
+
+TEST_CASE("an overflowed infinity is not mistaken for an absent bound",
+          "[nonfinite][nonfinite-objective]") {
+    // The counterpart to the vacuous-row rule, and the reason it is gated on the
+    // bound being a literal Const node.
+    //
+    // `exp(1000) <= exp(720)` is a genuinely VIOLATED row — e^1000 > e^720 — but
+    // both sides overflow to +inf in double. Resolving `inf - inf` by "equal
+    // infinities are satisfied" would silently pass an assignment there is no
+    // evidence for, breaking the invariant the rest of the engine defends (the
+    // NaN guards in ViolationManager, LNS and the search loop all exist to stop
+    // exactly that). An infinity a variable's expression *computed* means only
+    // "left double range"; only an infinity the modeller *wrote* is the
+    // "this side is absent" sentinel.
+    Model m;
+    int32_t x = m.float_var(-1.0e9, 1.0e9, "x");
+    int32_t y = m.float_var(-1.0e9, 1.0e9, "y");
+    int32_t c = m.leq(m.exp_expr(x), m.exp_expr(y));  // neither side is a Const
+    m.add_constraint(c);
+    m.close();
+
+    m.var_mut(vid(x)).value = 1000.0;  // exp(1000) = +inf
+    m.var_mut(vid(y)).value = 720.0;   // exp(720)  = +inf
+    full_evaluate(m);
+    REQUIRE(std::isnan(m.node(c).value));
+
+    ViolationManager vm(m);
+    vm.invalidate_cache();
+    REQUIRE_FALSE(vm.is_feasible());
+    REQUIRE(vm.total_violation() > 0.0);
+    REQUIRE(std::isfinite(vm.total_violation()));
 }
 
 TEST_CASE("a clamped row does not absorb the real rows in a jump score",
@@ -221,12 +256,14 @@ TEST_CASE("a feasible point with a +inf objective is reported feasible",
 
 TEST_CASE("a +inf-objective feasible point does not block a later improvement",
           "[nonfinite][nonfinite-objective]") {
-    // Guards the *new* behaviour rather than the old bug: recording a feasible
-    // point whose objective is +inf must not latch it as the incumbent. It is
-    // held only as a feasibility witness — it never becomes best_feasible_obj
-    // (nothing could beat +inf under a relative-improvement test) and never
-    // tightens the `obj <= bound` row (which would then be unsatisfiable). The
-    // first finite-objective feasible point has to displace it.
+    // A smoke test for the witness path, not a tight regression guard: it pins
+    // the end-to-end property that recording a +inf-objective feasible point
+    // still lets a later finite objective be found and reported. It passes on
+    // pre-#100 code (which never recorded the witness at all) and would pass on
+    // most natural mis-implementations of the witness logic too, so it catches
+    // only the gross failure where the witness latches and blocks improvement.
+    // The precise rules — never becoming best_feasible_obj, never tightening
+    // the bound — are asserted by construction in record_best, not here.
     //
     // minimize 1/(x-y)^2 over x, y in [1, 10]: every point is feasible, and the
     // objective diverges exactly on the diagonal. The search starts *on* the

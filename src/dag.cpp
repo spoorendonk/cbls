@@ -16,6 +16,14 @@ static double child_val(const ChildRef& ref, const Model& model) {
     }
 }
 
+// Whether a comparison's child is a literal Const node — i.e. a bound the
+// modeller wrote, not a quantity the DAG computed. `comparison_residual` needs
+// this to tell an "absent bound" +inf sentinel from an arithmetic overflow; a
+// variable is never a sentinel, since its value is search state.
+static bool child_is_const(const ChildRef& ref, const Model& model) {
+    return !ref.is_var && model.node(ref.id).op == NodeOp::Const;
+}
+
 static double list_element(const ChildRef& ref, const Model& model, int idx) {
     if (ref.is_var) {
         const auto& v = model.var(ref.id);
@@ -189,8 +197,9 @@ double evaluate(const ExprNode& node, const Model& model) {
 
         case NodeOp::Leq:
             // child0 - child1 (≤ 0 when child0 ≤ child1)
-            return comparison_residual(child_val(node.children[0], model),
-                                       child_val(node.children[1], model));
+            return comparison_residual(
+                child_val(node.children[0], model), child_val(node.children[1], model),
+                child_is_const(node.children[0], model), child_is_const(node.children[1], model));
 
         case NodeOp::Eq:
             // |child0 - child1| (= 0 when equal)
@@ -199,8 +208,9 @@ double evaluate(const ExprNode& node, const Model& model) {
 
         case NodeOp::Geq:
             // b - a (≤ 0 when a ≥ b)
-            return comparison_residual(child_val(node.children[1], model),
-                                       child_val(node.children[0], model));
+            return comparison_residual(
+                child_val(node.children[1], model), child_val(node.children[0], model),
+                child_is_const(node.children[1], model), child_is_const(node.children[0], model));
 
         case NodeOp::Neq:
             // 1 when equal (violated), 0 when not equal (satisfied)
@@ -212,16 +222,20 @@ double evaluate(const ExprNode& node, const Model& model) {
         case NodeOp::Lt: {
             // a - b + ε (≤ 0 when a < b strictly)
             constexpr double eps = 1e-9;
-            return comparison_residual(child_val(node.children[0], model),
-                                       child_val(node.children[1], model)) +
+            return comparison_residual(
+                       child_val(node.children[0], model), child_val(node.children[1], model),
+                       child_is_const(node.children[0], model),
+                       child_is_const(node.children[1], model)) +
                    eps;
         }
 
         case NodeOp::Gt: {
             // b - a + ε (≤ 0 when a > b strictly)
             constexpr double eps = 1e-9;
-            return comparison_residual(child_val(node.children[1], model),
-                                       child_val(node.children[0], model)) +
+            return comparison_residual(
+                       child_val(node.children[1], model), child_val(node.children[0], model),
+                       child_is_const(node.children[1], model),
+                       child_is_const(node.children[0], model)) +
                    eps;
         }
     }
