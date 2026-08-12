@@ -501,6 +501,44 @@ auto-selects `0.33` when the model has any List/Set variable and `0.0`
 otherwise; scalar-only models always get `0.0`. After a structural batch commits
 anything, the engine `resync()`s its scan set.
 
+### Deadline bound
+
+The sweep is bounded by the same wall-clock deadline as the rest of the loop,
+checked **between variables** — never mid-variable, so a variable's move set is
+always evaluated whole (the reference move set is never truncated for speed) and
+the overrun is capped at one variable's work.
+
+The bound is needed because the sweep's cost is unbounded in the model size:
+`O(#structured vars x #moves x (delta_evaluate + O(#constraints)))`, since
+`total_violation()` rescans every constraint on each of the two calls per move.
+Both factors matter — a 1000-List x 800-element model costs 44.5us per variable
+on its own, but **with ~40k constraints** the same model costs 407us per
+variable. On a 1500-List x 100-element model with 40k constraints, a 0.5s budget
+took **1.19–1.25s unbounded versus 0.502s bounded**. `solve(model, time_limit)`
+is a library contract, and that was a violation for any user model of this shape
+(issue #105).
+
+Real benchmark models are nowhere near that scale: pharma-glsp — the one
+benchmark that uses List variables — creates one List per macro-period, so its
+largest class (`glsp_e`, T=10) sweeps 10 structured variables in **p50 499us,
+max 792us**, i.e. 0.03% of a 3s budget. The bound is therefore about honouring
+the contract on large user models, not about the benchmarks.
+
+The check is **unconditional per variable**, not strided. An earlier self-tuning
+stride was tried and deleted: because the stride persisted across passes while
+its counter reset per pass, once it exceeded the model's structured-variable
+count it could never fire again — it did nothing at all on 160 of the 170 real
+pharma-glsp instances (2–6 List variables each). Cost of the plain check on real
+instances is ~0.75% of runtime at the adversarial `structural_batch_probability
+= 1.0`, and ~0.003% on the default 0.33 path.
+
+> A per-variable `steady_clock::now()` costs ~1.4us only on an **HPET**
+> clocksource (the machine these numbers came from); through the vDSO on a
+> **TSC** clocksource it is ~20–25ns. On a synthetic model with 2000 tiny List
+> variables the HPET cost does dominate — one sweep goes 1.54ms → 4.57ms — but
+> that is a 60x-inflated constant that will not exist on most machines, which is
+> why amortising it did not justify the complexity.
+
 > **Removed:** the old SA "adaptive move probabilities" (per-move-type
 > acceptance-rate tracking, 5% floor, rebalance every 1000 evaluations) and the
 > SA-only Float moves `newton_tight` / `gradient_lift` no longer exist. The
@@ -595,7 +633,12 @@ While time and `max_iterations` remain, each pass:
    novelty batches mutate state outside FJ's bookkeeping, so they set a `resync`
    flag.
 2. **Run the batch.** `fj.batch(batch_iterations)`, `fj.apply_novelty_jump()`,
-   or `structural_pass(...)`.
+   or `structural_pass(...)`. Every batch kind is bounded by the wall-clock
+   deadline from *inside*, not just at the loop top: FJ strides a check through
+   its GLS loop, and the structural sweep checks between variables (see
+   [Deadline bound](#deadline-bound)), so a batch entered just before the
+   deadline cannot run to completion past it. LNS repair is bounded separately,
+   by `remaining()` at its call site.
 3. **On real feasibility**, `record_best()` *first*, banking the feasible point
    before anything can move off it; then run the inner solver hook (if any) to
    polish continuous variables, and `record_best()` again only if the polish

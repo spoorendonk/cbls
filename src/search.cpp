@@ -90,11 +90,38 @@ void fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations, RN
 // FeasibilityJump only jumps scalar variables, so list-structured models cannot
 // improve their list/set assignment without this. Returns true if any move was
 // committed (the caller must then resync the FJ scan-set/jump-table).
-static bool structural_pass(Model& model, ViolationManager& vm, RNG& rng) {
+//
+// The sweep is deadline-bounded *between variables*, never mid-variable: each
+// variable's move set is evaluated whole, so the reference move set is never
+// truncated for speed, and the overrun is capped at one variable's work.
+//
+// The bound is needed because the sweep's cost is unbounded in the model size:
+// O(#structured vars x #moves x (delta_evaluate + O(#constraints))), since
+// total_violation() rescans every constraint on each of the two calls per move.
+// On a 1500-List x 100-element model with 40k constraints a 0.5s budget ran
+// 1.19-1.25s unbounded versus 0.502s bounded. `solve(model, time_limit)` is a
+// library contract, and that is a violation for any user model of this shape
+// (issue #105). Real benchmark models are nowhere near it -- pharma-glsp's
+// largest class sweeps 10 List variables in ~0.5ms -- so this bound is about
+// honouring the contract on large models, not about the benchmarks.
+//
+// The check is unconditional per variable rather than strided. An earlier
+// self-tuning stride was deleted: because the stride persisted across passes
+// while its counter reset per pass, once it exceeded the model's structured
+// variable count it could never fire again, so it did nothing at all on 160 of
+// the 170 real pharma-glsp instances (2-6 List variables each). A per-variable
+// clock read costs ~1.4us only on an HPET clocksource like the machine this was
+// measured on; via the vDSO on a TSC clocksource it is ~20-25ns. Amortising a
+// 60x-inflated constant did not justify the complexity.
+static bool structural_pass(Model& model, ViolationManager& vm, RNG& rng, bool has_deadline,
+                            std::chrono::steady_clock::time_point deadline) {
     bool changed = false;
     for (const auto& var : model.variables()) {
         if (!is_structured(var.type)) {
             continue;
+        }
+        if (has_deadline && std::chrono::steady_clock::now() >= deadline) {
+            break;
         }
         auto moves = generate_standard_moves(var, rng);
         // total_violation()'s incremental path self-corrects to the current node
@@ -390,7 +417,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         bool resync = false;
         switch (kind) {
             case BatchKind::Structural:
-                resync = structural_pass(model, vm, rng);
+                resync = structural_pass(model, vm, rng, has_deadline, deadline);
                 break;
             case BatchKind::NoveltyJump:
                 fj.apply_novelty_jump();

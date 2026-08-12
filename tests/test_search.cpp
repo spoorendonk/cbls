@@ -462,6 +462,63 @@ TEST_CASE("max_iterations stops SA by iteration count", "[search]") {
     REQUIRE(result.iterations < 1000 + config.batch_iterations);
 }
 
+// Issue #105: the STRUCTURAL batch used to be the one sub-step with no deadline
+// check, so a batch entered just before the deadline ran its whole sweep and
+// overran the budget by however long that took. Unbounded in the model size --
+// on the model below a 0.5s budget took 1.19-1.25s unbounded.
+//
+// structural_batch_probability = 1.0 makes every batch structural, so the very
+// first batch is the one under test and the assertion does not depend on which
+// batch kind the RNG happened to pick.
+//
+// [timing] MARKS THE EXCEPTION (issue #104): this is the suite's only assertion
+// on wall-clock duration. Everything else asserts on iteration counts or values.
+// Run just this class with `cbls_tests "[timing]"`. It is not known to flake --
+// measured at 0.116s against its 0.6s threshold with 48 busy processes on 12
+// cores -- but a wall-clock assertion is a standing liability, so keep it
+// greppable and do not add more without a reason as concrete as this one.
+TEST_CASE("structural batch respects the wall-clock deadline", "[search][structural][timing]") {
+    constexpr int kLists = 1500;
+    constexpr int kStops = 100;
+    // total_violation() rescans every constraint on every call, and the sweep
+    // calls it twice per move, so these inert filler constraints are what make
+    // one sweep expensive — at almost no model-build cost.
+    constexpr int kFiller = 40000;
+
+    Model m;
+    std::vector<int32_t> lists;
+    lists.reserve(kLists);
+    for (int i = 0; i < kLists; ++i) {
+        lists.push_back(m.list_var(kStops));
+    }
+    for (int i = 0; i < kLists; ++i) {
+        // Order-dependent (so list moves can change it) and unsatisfiable (so the
+        // search never ends early on feasibility and always spends the budget).
+        auto len = m.pair_lambda_sum(lists[static_cast<size_t>(i)],
+                                     [](int a, int b) { return 1.0 + 0.5 * std::abs(a - b); });
+        m.add_constraint(m.leq(len, m.constant(0.5)));
+    }
+    auto z = m.float_var(0.0, 1.0);
+    for (int i = 0; i < kFiller; ++i) {
+        m.add_constraint(m.leq(z, m.constant(2.0)));
+    }
+    m.close();
+
+    SearchConfig config;
+    config.structural_batch_probability = 1.0;
+
+    constexpr double kBudget = 0.10;
+    auto before = std::chrono::steady_clock::now();
+    solve(m, kBudget, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3, nullptr, config);
+    auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - before).count();
+
+    // Measured on this model: +0.003s overrun with the bound, +1.134s without
+    // (one full unbounded sweep). The threshold sits between the two with room
+    // on both sides, so it stays green on a loaded machine but still catches a
+    // regression that removes the bound.
+    REQUIRE(elapsed < kBudget + 0.5);
+}
+
 TEST_CASE("SolutionPool top_k", "[pool]") {
     SolutionPool pool(10);
     Model::State empty_state;
