@@ -107,7 +107,10 @@ public:
     bool batch(int64_t batch_iterations);  // true if feasible (no active violated)
     void reset_weights();                  // W <- 1 and rebuild the scan set
     void resync();                         // rebuild the scan set from current state, keep weights
-    void perturb(double probability);      // randomise each jumpable var w.p. p
+    // Randomise each jumpable var w.p. p; if that moved nothing, force one
+    // uniformly chosen var to a different value so the kick is never a no-op
+    // (#109). The fallback leaves large models bit-identical to plain p-draws.
+    void perturb(double probability);
     void set_rho(double rho) { config_.rho = rho; }
     // Armed by the search loop once it has stagnated; see solve().
     void set_escape_probe(bool on) { escape_probe_ = on; }
@@ -142,6 +145,11 @@ private:
 
     bool active(int32_t constraint_idx) const;  // weight > 0
     bool jumpable(int32_t var_id) const;        // scalar var
+    // Uniformly chosen jumpable var with a domain of at least two values — the
+    // one perturb() falls back to when its per-variable draws moved nothing.
+    // -1 if the model has no such variable, in which case a kick that changes
+    // nothing is the correct outcome.
+    int32_t pick_forced_perturb_var();
     bool participates_in_active_violated(int32_t var_id) const;
     void rebuild_violated_and_scan_set();
     void set_initial_assignment();

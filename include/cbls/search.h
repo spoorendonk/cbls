@@ -23,7 +23,10 @@ struct SearchConfig {
     // ViolationLS batch outer loop (Algorithm 6).
     int64_t batch_iterations = 1000;        // GLS iterations per batch
     int perturbation_period = 100;          // batches without improvement before perturbing
-    double perturbation_probability = 0.1;  // per-variable randomisation probability
+    // Per-variable randomisation probability on a diversification kick. If the
+    // draws happen to move nothing, one variable is moved anyway, so a kick is
+    // never a no-op (#109).
+    double perturbation_probability = 0.1;
     // Structural batch (P4): instead of a scalar Feasibility/Novelty Jump batch,
     // sweep the List/Set variables trying typed structural moves (swap / 2-opt /
     // relocate / or-opt / set add-remove-swap) and keep any that reduce weighted

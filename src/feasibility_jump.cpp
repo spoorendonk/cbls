@@ -24,6 +24,74 @@ double clamp_to_domain(const Variable& var, double value) {
     return std::min(std::max(value, var.lb), var.ub);
 }
 
+// --- perturbation helpers --------------------------------------------------
+// A variable can be moved by a perturbation only if its domain holds at least
+// two values. Bool spans {0,1} today, but ask its bounds rather than assume so:
+// should a Bool ever become pinnable, flipping it would put it outside its own
+// domain. Int truncates its bounds the same way random_in_domain does, so both
+// paths agree on which values the domain contains.
+bool movable_domain(const Variable& var) {
+    switch (var.type) {
+        case VarType::Int:
+            return static_cast<int64_t>(var.ub) > static_cast<int64_t>(var.lb);
+        default:  // Bool, Float
+            return var.ub > var.lb;
+    }
+}
+
+// Draw a uniformly random value from the variable's domain.
+double random_in_domain(const Variable& var, RNG& rng) {
+    switch (var.type) {
+        case VarType::Bool:
+            return static_cast<double>(rng.integers(0, 2));
+        case VarType::Int:
+            return static_cast<double>(
+                rng.integers(static_cast<int64_t>(var.lb), static_cast<int64_t>(var.ub) + 1));
+        default:  // Float
+            return rng.uniform(var.lb, var.ub);
+    }
+}
+
+// Draw a random value from the domain that DIFFERS from the current one, for
+// the single variable a perturbation is guaranteed to move (#109). Plain
+// resampling is not enough: it redraws the current value with probability
+// 1/|domain|, which on a Bool is one kick in two. Returns the current value
+// unchanged only for a pinned domain, where no move exists.
+double random_different_in_domain(const Variable& var, RNG& rng) {
+    if (!movable_domain(var)) {
+        return var.value;
+    }
+    switch (var.type) {
+        case VarType::Bool:
+            return var.value != 0.0 ? 0.0 : 1.0;
+        case VarType::Int: {
+            const int64_t lb = static_cast<int64_t>(var.lb);
+            const int64_t ub = static_cast<int64_t>(var.ub);
+            const int64_t cur = static_cast<int64_t>(var.value);
+            if (cur < lb || cur > ub) {
+                return static_cast<double>(rng.integers(lb, ub + 1));  // any value differs
+            }
+            // Uniform over the domain minus the current value: draw from a
+            // domain one value short, then step over the hole at `cur`.
+            int64_t draw = rng.integers(lb, ub);  // [lb, ub-1]
+            if (draw >= cur) {
+                ++draw;
+            }
+            return static_cast<double>(draw);
+        }
+        default: {  // Float
+            const double v = rng.uniform(var.lb, var.ub);
+            if (v != var.value) {
+                return v;
+            }
+            // Measure-zero in exact arithmetic, but a narrow enough domain makes
+            // it reachable; fall back to the endpoint further from the current
+            // value, which differs because the domain holds more than one point.
+            return (var.value - var.lb >= var.ub - var.value) ? var.lb : var.ub;
+        }
+    }
+}
+
 // Integer jump candidates: exhaustive over a small domain, else a coarse grid
 // plus neighbours/endpoints. Each consider() runs one weighted_violation_delta
 // (two delta_evaluate passes); the JumpTable cache amortises this across the
@@ -503,23 +571,65 @@ void FeasibilityJump::resync() {
     rebuild_violated_and_scan_set();
 }
 
+int32_t FeasibilityJump::pick_forced_perturb_var() {
+    const int32_t num_vars = static_cast<int32_t>(model_.num_vars());
+    auto eligible = [this](int32_t v) { return jumpable(v) && movable_domain(model_.var(v)); };
+
+    int32_t count = 0;
+    for (int32_t v = 0; v < num_vars; ++v) {
+        count += eligible(v) ? 1 : 0;
+    }
+    if (count == 0) {
+        return -1;  // nothing can move; a no-op kick is the correct outcome
+    }
+    // Two passes rather than materialising the candidate list: the O(n) scan is
+    // dwarfed by the full_evaluate the perturbation ends with.
+    int64_t k = rng_.integers(0, count);
+    for (int32_t v = 0; v < num_vars; ++v) {
+        if (!eligible(v)) {
+            continue;
+        }
+        if (k == 0) {
+            return v;
+        }
+        --k;
+    }
+    return -1;  // unreachable: k < count eligible variables were skipped
+}
+
 void FeasibilityJump::perturb(double probability) {
+    // Randomise each jumpable variable independently, then make sure the kick
+    // actually moved something. Independent draws alone leave the assignment
+    // untouched with probability (1-p)^n, which at the default p = 0.1 is 81% on
+    // a two-variable model — exactly the small models most likely to be stuck in
+    // one basin, where the kick then burned the stagnation counter and the
+    // search resumed where it was (#109).
+    //
+    // The guarantee is a FALLBACK, not a variable forced on every kick. That
+    // matters for cost and for fidelity: on a model big enough for the
+    // per-variable probability to do its job a no-op kick is vanishingly rare,
+    // so the scan below never runs, no extra RNG draw is taken, and the kick
+    // keeps exactly the distribution — and the exact draw sequence — it had
+    // before. Forcing a variable unconditionally instead would add an O(n) scan
+    // to every kick of every model and shift the draw sequence on all of them.
+    bool changed = false;
     for (int32_t v = 0; v < static_cast<int32_t>(model_.num_vars()); ++v) {
         if (!jumpable(v) || rng_.random() >= probability) {
             continue;
         }
         Variable& var = model_.var_mut(v);
-        switch (var.type) {
-            case VarType::Bool:
-                var.value = static_cast<double>(rng_.integers(0, 2));
-                break;
-            case VarType::Int:
-                var.value = static_cast<double>(
-                    rng_.integers(static_cast<int64_t>(var.lb), static_cast<int64_t>(var.ub) + 1));
-                break;
-            default:  // Float
-                var.value = rng_.uniform(var.lb, var.ub);
-                break;
+        const double previous = var.value;
+        var.value = random_in_domain(var, rng_);
+        changed = changed || var.value != previous;
+    }
+    if (!changed) {
+        // Nothing moved: pick one variable that CAN move and move it. -1 means
+        // the model has none (List/Set-only, or every scalar pinned), and then a
+        // kick that changes nothing is the correct outcome.
+        const int32_t forced = pick_forced_perturb_var();
+        if (forced >= 0) {
+            Variable& var = model_.var_mut(forced);
+            var.value = random_different_in_domain(var, rng_);
         }
     }
     full_evaluate(model_);

@@ -53,9 +53,9 @@ DAG:
    (Newton steps on violated constraints, backtracking line search on the
    objective, multi-variable minimum-norm Newton), triggered **on each new
    feasible solution**.
-5. **Diversifies** on stagnation: a per-variable random perturbation, or — every
-   `lns_interval`-th diversification kick — large neighborhood search (destroy +
-   GFJ repair).
+5. **Diversifies** on stagnation: a per-variable random perturbation that always
+   moves at least one variable, or — every `lns_interval`-th diversification
+   kick — large neighborhood search (destroy + GFJ repair).
 6. **Tracks** the best real-feasible solution found (objective bound tightened
    alongside it), with a solution pool for parallel multi-seed search.
 
@@ -565,6 +565,28 @@ destroy-repair (then resets FJ weights, since LNS mutates state outside the
 engine). Otherwise it calls `fj.perturb(perturbation_probability)`. Either way
 it resamples `rho`.
 
+`perturb(p)` randomises each jumpable variable independently with probability
+`p`, and then — **only if that moved nothing** — forces one uniformly chosen
+variable to a *different* value. The fallback is what makes the kick meaningful
+on a small model: independent draws alone leave the assignment untouched with
+probability `(1-p)^n`, which at the default `p = 0.1` is 81% on two variables —
+so diversification would usually do nothing, burn the stagnation counter, and
+let the search resume in the same basin.
+
+Making it a fallback rather than a variable forced on every kick is deliberate.
+On a model large enough for the per-variable probability to do its job, a no-op
+kick is vanishingly rare, so the fallback never runs: no extra scan over the
+variables, no extra RNG draw, and the kick keeps exactly the distribution *and
+the exact draw sequence* it had before. Forcing a variable unconditionally would
+instead add an O(n) scan to every kick of every model.
+
+Resampling is not enough for the forced variable — a uniform redraw returns the
+current value with probability `1/|domain|`, which on a Bool is one kick in two —
+so the fallback draws from the domain with the current value removed. A variable
+pinned by `lb == ub` cannot be chosen; if a model has no movable jumpable
+variable at all (e.g. only List/Set variables), the kick correctly changes
+nothing.
+
 ### SearchConfig
 
 ```cpp
@@ -576,7 +598,7 @@ struct SearchConfig {
 
     int64_t batch_iterations = 1000;        // GLS iterations per FJ batch
     int perturbation_period = 100;          // batches without improvement before diversifying
-    double perturbation_probability = 0.1;  // per-variable randomisation probability
+    double perturbation_probability = 0.1;  // per-var randomisation prob (never a no-op)
     double structural_batch_probability = -1.0;  // <0 = auto (0.33 if List/Set vars, else 0)
     bool use_compound_moves = false;        // run Novelty Jump batches (else FJ only)
     double novelty_jump_probability = 0.5;  // P(a batch is Novelty Jump) when enabled
@@ -798,8 +820,8 @@ granularity, and loses the constraint-root information AD provides.
 
 ### Diversification: perturbation + LNS vs population/restarts
 
-**Chosen:** per-variable random perturbation by default; LNS (destroy + GFJ
-repair, lexicographic accept) every `lns_interval`-th kick.
+**Chosen:** per-variable random perturbation (never a no-op) by default; LNS
+(destroy + GFJ repair, lexicographic accept) every `lns_interval`-th kick.
 
 **Alternative:** population-based search (GA, scatter search) or systematic
 restart schedules (Luby). The solution pool supports multi-seed parallel search
@@ -870,7 +892,7 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `skip_init` | false | `SearchConfig` | keep current assignment (epoch restarts) |
 | `batch_iterations` | 1000 | `SearchConfig` | GLS iterations per FJ batch |
 | `perturbation_period` | 100 | `SearchConfig` | stagnant batches before a diversification kick |
-| `perturbation_probability` | 0.1 | `SearchConfig` | per-var randomisation probability on perturb |
+| `perturbation_probability` | 0.1 | `SearchConfig` | per-var randomisation probability on perturb (a no-op kick moves one var anyway) |
 | `structural_batch_probability` | -1 (auto) | `SearchConfig` | P(structural batch); auto 0.33 w/ List/Set, else 0 |
 | `use_compound_moves` | false | `SearchConfig` | enable Novelty Jump batches |
 | `novelty_jump_probability` | 0.5 | `SearchConfig` | P(Novelty Jump batch) when enabled |
