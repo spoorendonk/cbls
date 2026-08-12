@@ -3,6 +3,12 @@
 // structural-pass comparison, or the best-objective bookkeeping. These tests
 // drive node values to +inf/NaN and assert the search/violation machinery stays
 // finite and well-ordered.
+//
+// The `[nonfinite-objective]` cases below cover issue #100: a non-finite
+// *objective* must not destroy the feasibility signal. Three separable defects,
+// one test each — a vacuous `obj <= +inf` row read as maximally violated, the
+// 1e30 clamp absorbing the real rows inside the jump score, and feasibility
+// bookkeeping refusing a feasible point because the objective is not finite.
 
 #include "test_helpers.h"
 
@@ -102,4 +108,151 @@ TEST_CASE("solve does not NaN-poison on an unbounded-overflow direction", "[nonf
     // exp(0.5) ~= 1.6487; the search should be in that neighbourhood, certainly
     // not +inf and not absurdly large.
     REQUIRE(r.objective < 100.0);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #100: a non-finite objective must not destroy the feasibility signal.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a row with an infinite bound is vacuous, not maximally violated",
+          "[nonfinite][nonfinite-objective]") {
+    // `a <= +inf` holds for every a, including a = +inf. Evaluating the residual
+    // as a plain `a - b` gives inf - inf = NaN, which the violation machinery
+    // reads as a maximal violation — so the row that is *least* informative in
+    // the model becomes the one that dominates it. This is the state every solve
+    // of a blown-up objective opens in: `obj <= bound` with the bound still at
+    // its initial +inf.
+    Model m;
+    int32_t x = m.float_var(-1.0e9, 1.0e9, "x");
+    int32_t ex = m.exp_expr(x);  // +inf for large x
+    int32_t c = m.leq(ex, m.constant(std::numeric_limits<double>::infinity()));
+    m.add_constraint(c);
+    m.close();
+
+    m.var_mut(vid(x)).value = 1.0e6;  // exp(1e6) = +inf
+    full_evaluate(m);
+    REQUIRE(std::isinf(m.node(ex).value));
+
+    ViolationManager vm(m);
+    vm.invalidate_cache();
+    REQUIRE(vm.total_violation() == 0.0);
+    REQUIRE(vm.is_feasible());
+
+    // The same rule must hold on the objective-bound shortcut, which writes the
+    // residual in place instead of going through evaluate().
+    Model m2;
+    int32_t y = m2.float_var(-1.0e9, 1.0e9, "y");
+    m2.minimize(m2.exp_expr(y));
+    m2.close();
+    m2.var_mut(vid(y)).value = 1.0e6;
+    full_evaluate(m2);
+    m2.add_objective_soft_constraint();  // bound starts at +inf
+    m2.set_objective_bound(std::numeric_limits<double>::infinity());
+    REQUIRE(m2.node(m2.constraint_ids()[m2.objective_constraint_idx()]).value == 0.0);
+}
+
+TEST_CASE("a clamped row does not absorb the real rows in a jump score",
+          "[nonfinite][nonfinite-objective]") {
+    // The jump score is the change in total weighted violation. Summing each
+    // side of the probe into its own accumulator and subtracting destroys the
+    // real constraints' contribution whenever any one row is clamped to
+    // kInfPenalty (1e30): `1e30 + 3 == 1e30`, so both sums round to the same
+    // value and every candidate scores exactly 0.
+    //
+    // Row A below is +inf regardless of x (y is pinned past the exp overflow),
+    // so it contributes nothing but its clamp. Row B is `x <= 0`, violated by 3.
+    // Moving x to 0 must therefore score -3, not 0.
+    Model m;
+    int32_t x = m.float_var(-10.0, 10.0, "x");
+    int32_t y = m.float_var(-1.0e9, 1.0e9, "y");
+    int32_t row_a = m.leq(m.sum({m.exp_expr(x), m.exp_expr(y)}), m.constant(1.0));
+    int32_t row_b = m.leq(x, m.constant(0.0));
+    m.add_constraint(row_a);
+    m.add_constraint(row_b);
+    m.close();
+
+    m.var_mut(vid(x)).value = 3.0;
+    m.var_mut(vid(y)).value = 1.0e6;  // exp(1e6) = +inf: row A is +inf for any x
+    full_evaluate(m);
+    REQUIRE(std::isinf(m.node(row_a).value));
+    REQUIRE(m.node(row_b).value == 3.0);
+
+    ViolationManager vm(m);
+    // Both rows are in x's adjacency, so the clamped one is inside the sum.
+    REQUIRE(m.constraints_of_var(vid(x)).size() == 2);
+
+    double delta = vm.weighted_violation_delta(vid(x), 0.0);
+    REQUIRE(delta == -3.0);
+
+    // And the signal survives all the way through FJ's scoring entry point: the
+    // variable must come back with a real improving jump, not "no move".
+    JumpResult jr = compute_var_jump(m, vm.weights, vid(x), /*allow_escape_probe=*/false);
+    REQUIRE(jr.score > 0.0);
+    REQUIRE(jr.jump_value <= 0.0);
+}
+
+TEST_CASE("a feasible point with a +inf objective is reported feasible",
+          "[nonfinite][nonfinite-objective]") {
+    // minimize exp(x) s.t. x >= 1000, x in [0, 1e9].
+    //
+    // The feasible region is [1000, 1e9] — trivially reachable — and exp
+    // overflows past ~709.78, so the objective is +inf on *all* of it. There is
+    // no finite-objective feasible point to fall back on, so the run is reported
+    // feasible only if feasibility bookkeeping is independent of whether the
+    // objective happens to be finite there. This is the shape of MINLPLib's
+    // elec* family, whose feasible region likewise contains configurations where
+    // the objective diverges.
+    Model m;
+    int32_t x = m.float_var(0.0, 1.0e9, "x");
+    m.add_constraint(m.geq(x, m.constant(1000.0)));
+    m.minimize(m.exp_expr(x));
+    m.close();
+
+    SearchResult r = solve_deterministic(m, 20000, 42);
+
+    REQUIRE(r.feasible);
+    REQUIRE(r.best_violation <= kDefaultFeasibilityTolerance);
+    // Honest about what it cannot report: the assignment is feasible, but its
+    // objective is not a number, so no objective value is claimed.
+    REQUIRE_FALSE(std::isfinite(r.objective));
+    // And the returned assignment really does satisfy the constraint.
+    REQUIRE(m.var(vid(x)).value >= 1000.0);
+}
+
+TEST_CASE("a +inf-objective feasible point does not block a later improvement",
+          "[nonfinite][nonfinite-objective]") {
+    // Guards the *new* behaviour rather than the old bug: recording a feasible
+    // point whose objective is +inf must not latch it as the incumbent. It is
+    // held only as a feasibility witness — it never becomes best_feasible_obj
+    // (nothing could beat +inf under a relative-improvement test) and never
+    // tightens the `obj <= bound` row (which would then be unsatisfiable). The
+    // first finite-objective feasible point has to displace it.
+    //
+    // minimize 1/(x-y)^2 over x, y in [1, 10]: every point is feasible, and the
+    // objective diverges exactly on the diagonal. The search starts *on* the
+    // diagonal, so the witness is recorded first and must then be improved away
+    // from.
+    Model m;
+    int32_t x = m.float_var(1.0, 10.0, "x");
+    int32_t y = m.float_var(1.0, 10.0, "y");
+    m.add_constraint(m.geq(m.sum({x, y}), m.constant(2.0)));  // trivially true
+    int32_t d = m.sum({x, m.neg(y)});
+    m.minimize(m.div_expr(m.constant(1.0), m.prod(d, d)));
+    m.close();
+
+    m.var_mut(vid(x)).value = 1.0;
+    m.var_mut(vid(y)).value = 1.0;
+    full_evaluate(m);
+    REQUIRE_FALSE(std::isfinite(m.node(m.objective_id()).value));
+
+    SearchConfig cfg;
+    cfg.skip_init = true;  // start on the diagonal; don't randomise it away
+    cfg.max_iterations = 200000;
+    SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
+                           nullptr, cfg);
+
+    REQUIRE(r.feasible);
+    // The witness was displaced: a real objective value is reported, not +inf.
+    REQUIRE(std::isfinite(r.objective));
+    REQUIRE(r.objective < 1.0);
 }

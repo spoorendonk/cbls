@@ -212,6 +212,11 @@ private:
     bool closed_ = false;
     std::vector<VarSequence> var_sequences_;
     std::vector<std::pair<int, int>> var_to_seq_;  // var_id -> (seq_idx, pos), resized lazily
+    // Scratch for weighted_violation_delta's pre-probe violations. A member so
+    // the hot scoring path allocates only until it reaches the widest variable's
+    // constraint count. Not reentrant — same single-thread-per-Model contract as
+    // the probe's transient node mutation.
+    std::vector<double> probe_old_violation_;
 
     void build_var_constraints();
     int32_t alloc_var(VarType type, double lb, double ub, const std::string& name);

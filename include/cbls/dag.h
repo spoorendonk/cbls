@@ -71,6 +71,31 @@ struct ExprNode {
     int32_t lambda_func_id = -1;  // index into Model::lambda_funcs_
 };
 
+/// Residual of `a <= b`, i.e. `a - b`, with the IEEE `inf - inf` indeterminacy
+/// resolved by the comparison the residual stands for.
+///
+/// An infinite bound marks a side as *absent*: `a <= +inf` and `-inf <= b` hold
+/// for every a/b, including a non-finite one. Plain `a - b` yields NaN when both
+/// sides are infinite with the same sign, and the violation machinery reads NaN
+/// as a maximal violation (we have no evidence the row holds) — so a vacuous row
+/// would be reported as the worst-violated row in the model. That is exactly
+/// what destroys the feasibility signal when the objective is folded in as
+/// `obj <= bound`, the objective overflows to +inf, and the bound is still at
+/// its initial +inf (issue #100).
+///
+/// Equal infinities return 0.0: satisfied, sitting on the boundary. `Lt`/`Gt`
+/// add their strictness epsilon on top, which correctly turns that boundary into
+/// a violation (`+inf < +inf` is false). Every other input is the plain
+/// difference, which is already right: +inf for (a=+inf, b=-inf), -inf for
+/// (a=-inf, b=+inf), and NaN whenever either side is NaN — an unevaluable body
+/// must stay a maximal violation.
+inline double comparison_residual(double a, double b) {
+    if (a == b && std::isinf(a)) {
+        return 0.0;
+    }
+    return a - b;
+}
+
 // Forward declaration
 class Model;
 

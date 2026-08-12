@@ -252,15 +252,36 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
 
     // Record the current (real-feasible) assignment if it improves the best and
     // tighten the objective bound. Returns true on a new best.
+    //
+    // PRECONDITION: the caller has established real_feasible().
     auto record_best = [&]() -> bool {
         double obj = current_obj();
-        // A non-convex objective can overflow to +inf/NaN at a (real-)feasible
-        // point; never accept such a value as a best — it would poison the bound
-        // and best_state. Wait for a finite-objective feasible point instead.
+        // Feasibility is a property of the constraints alone. A non-convex
+        // objective can overflow to +inf/NaN on part of the feasible region
+        // (the Thomson problem's coincident-point configurations, say), and
+        // such a point is still a feasible point of the model — refusing to
+        // record it left have_feasible false and reported the whole instance
+        // infeasible (issue #100).
+        //
+        // It cannot serve as an objective incumbent, though: it must never
+        // become best_feasible_obj (nothing could ever beat +inf under the
+        // relative-improvement test) and must never tighten the bound (the
+        // `obj <= bound` row would go permanently unsatisfiable). So it is kept
+        // strictly as the first feasibility witness, and any later
+        // finite-objective feasible point displaces it.
         if (!std::isfinite(obj)) {
-            return false;
+            if (have_feasible) {
+                return false;  // already have a witness, and possibly a better one
+            }
+            have_feasible = true;
+            best_state = model.copy_state();
+            emit_progress(/*new_best=*/true);
+            return true;
         }
-        if (have_feasible &&
+        // isfinite(best_feasible_obj) guards the case where the incumbent is the
+        // +inf witness above: the relative-improvement test would compute
+        // `inf - inf` = NaN and decide by NaN comparison.
+        if (have_feasible && std::isfinite(best_feasible_obj) &&
             obj >= best_feasible_obj - 1e-12 * (std::abs(best_feasible_obj) + 1.0)) {
             return false;
         }
@@ -352,8 +373,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         // would be pure allocation on every improving batch. The `batches == 1`
         // clause guarantees one capture even on an all-NaN run (violation stays
         // +inf, so `<` never fires) without re-snapshotting on every batch of a
-        // violation plateau — the common infeasible case (elec25/elec50 sit at
-        // exactly 1.0 for the whole run).
+        // violation plateau — the common infeasible case.
         if (!have_feasible && (batch_violation < best_violation || batches == 1)) {
             best_violation = batch_violation;
             closest_state = model.copy_state();

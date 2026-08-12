@@ -376,8 +376,13 @@ void Model::set_objective_bound(double bound) {
     ExprNode& bound_node = nodes_[objective_bound_node_];
     bound_node.const_value = bound;
     bound_node.value = bound;
-    // Recompute the objective constraint residual in place (obj - bound).
-    nodes_[objective_constraint_node_].value = nodes_[objective_id_].value - bound;
+    // Recompute the objective constraint residual in place (obj - bound). Must
+    // use the same residual rule as evaluate()'s Leq case, or this shortcut and
+    // the next delta_evaluate() would disagree on the row's value — in
+    // particular on the `obj = +inf, bound = +inf` state that opens every solve
+    // with a blown-up objective (issue #100).
+    nodes_[objective_constraint_node_].value =
+        comparison_residual(nodes_[objective_id_].value, bound);
 }
 
 // Build var_id -> constraint-index adjacency (the paper's G_v) by walking down
@@ -464,26 +469,43 @@ double Model::weighted_violation_delta(int32_t var_id, double j,
         return 0.0;
     }
 
-    // Accumulate the weighted violation over the affected constraints before and
-    // after the probe; no per-constraint vector is allocated.
-    double weighted_old = 0.0;
-    for (int32_t c : affected) {
-        weighted_old += weights[c] * clamped_node_violation(node(constraint_ids_[c]).value);
+    // Accumulate the *per-constraint* differences, rather than differencing two
+    // whole-sum accumulators.
+    //
+    // The two are equal in exact arithmetic but not in floating point, and the
+    // difference is the whole ballgame once any one row's violation is large.
+    // A non-convex blowup clamps to kInfPenalty = 1e30, some fourteen orders of
+    // magnitude above the O(1) contributions of the real rows, so `1e30 + 1`
+    // rounds back to `1e30`: both sums collapse to the same value, the
+    // subtraction yields exactly 0, and every candidate jump scores identically.
+    // Feasibility Jump is then blind — the search cannot tell which move reduces
+    // real infeasibility (issue #100). Differencing per constraint makes the
+    // huge term cancel exactly (1e30 - 1e30 == 0) and leaves the small terms at
+    // full precision.
+    //
+    // probe_old_violation_ is a member so this stays allocation-free after
+    // warm-up (one call per jump candidate). Safe for the same reason the
+    // transient node mutation below is: each search thread owns its own Model.
+    probe_old_violation_.resize(affected.size());
+    for (size_t k = 0; k < affected.size(); ++k) {
+        probe_old_violation_[k] = clamped_node_violation(node(constraint_ids_[affected[k]]).value);
     }
 
     const double old_value = v.value;
     var_mut(var_id).value = j;
     delta_evaluate(*this, &var_id, 1);
 
-    double weighted_new = 0.0;
-    for (int32_t c : affected) {
-        weighted_new += weights[c] * clamped_node_violation(node(constraint_ids_[c]).value);
+    double delta = 0.0;
+    for (size_t k = 0; k < affected.size(); ++k) {
+        const int32_t c = affected[k];
+        const double new_viol = clamped_node_violation(node(constraint_ids_[c]).value);
+        delta += weights[c] * (new_viol - probe_old_violation_[k]);
     }
 
     var_mut(var_id).value = old_value;
     delta_evaluate(*this, &var_id, 1);
 
-    return weighted_new - weighted_old;
+    return delta;
 }
 
 Model::State Model::copy_state() const {

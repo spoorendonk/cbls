@@ -189,7 +189,8 @@ double evaluate(const ExprNode& node, const Model& model) {
 
         case NodeOp::Leq:
             // child0 - child1 (≤ 0 when child0 ≤ child1)
-            return child_val(node.children[0], model) - child_val(node.children[1], model);
+            return comparison_residual(child_val(node.children[0], model),
+                                       child_val(node.children[1], model));
 
         case NodeOp::Eq:
             // |child0 - child1| (= 0 when equal)
@@ -198,7 +199,8 @@ double evaluate(const ExprNode& node, const Model& model) {
 
         case NodeOp::Geq:
             // b - a (≤ 0 when a ≥ b)
-            return child_val(node.children[1], model) - child_val(node.children[0], model);
+            return comparison_residual(child_val(node.children[1], model),
+                                       child_val(node.children[0], model));
 
         case NodeOp::Neq:
             // 1 when equal (violated), 0 when not equal (satisfied)
@@ -210,13 +212,17 @@ double evaluate(const ExprNode& node, const Model& model) {
         case NodeOp::Lt: {
             // a - b + ε (≤ 0 when a < b strictly)
             constexpr double eps = 1e-9;
-            return child_val(node.children[0], model) - child_val(node.children[1], model) + eps;
+            return comparison_residual(child_val(node.children[0], model),
+                                       child_val(node.children[1], model)) +
+                   eps;
         }
 
         case NodeOp::Gt: {
             // b - a + ε (≤ 0 when a > b strictly)
             constexpr double eps = 1e-9;
-            return child_val(node.children[1], model) - child_val(node.children[0], model) + eps;
+            return comparison_residual(child_val(node.children[1], model),
+                                       child_val(node.children[0], model)) +
+                   eps;
         }
     }
     return 0.0;
