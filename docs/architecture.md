@@ -392,8 +392,14 @@ loop:
         gls_update_weights(vm, rho)          # decay + bump violated
         re-enqueue vars of violated active constraints, invalidate their jumps
     ++iterations
-    stop if batch / global iteration budget or deadline reached
+    stop if batch / global iteration budget reached
+    every `stride` iterations: stop if the deadline has passed, else retune `stride`
 ```
+
+The deadline is checked on a stride because reading the clock is not free; the
+stride is sized in *time*, so it costs at most 1/64 of the budget (or one
+iteration, whichever is larger) — see
+[bound 1 of the wall-clock budget](#wall-clock-budget).
 
 `apply_jump` samples up to `sample_size` **distinct** variables from the scan
 set `Q` (best-of-N: `sample_size_general = 3` general, `sample_size_linear = 5`
@@ -723,7 +729,7 @@ before the deadline could overrun it. Four can, and each is bounded separately:
 
 | # | Sub-step | Bound | Where |
 |---|----------|-------|-------|
-| 1 | Feasibility Jump batch | handed the same absolute deadline, checked on a stride of 64 inside the GLS loop | `gfj.time_limit = budget_seconds` |
+| 1 | Feasibility Jump batch | handed the same absolute deadline, checked inside the GLS loop on a stride sized in *time* — one stride costs at most 1/64 of the budget, or one GLS iteration, whichever is larger (#113) | `gfj.time_limit = budget_seconds` |
 | 2 | `InnerSolverHook` | not *started* when the budget is spent — a hook is arbitrary user code, so its running time is unknowable | `if (hook && !past_deadline())` |
 | 3 | LNS repair | handed `min(2.0, remaining())`, not its own independent 2s | `diversify()` |
 | 4 | STRUCTURAL sweep | checked between variables (#105) | `structural_pass` |
@@ -739,6 +745,63 @@ Bound 3 is floored at `1e-9` rather than clamped to 0 while a deadline exists:
 `remaining()` returns exactly `0.0` once the clock crosses the deadline, and `0`
 means "no wall clock at all" downstream in `fj_nl_initialize` — so clamping to
 zero would hand the repair an *unbounded* run, the opposite of the intent.
+
+##### Bound 1: why the stride is sized in time (#113)
+
+The GLS loop cannot read the clock every iteration. `steady_clock::now()` costs
+1408 ns/call on this project's reference machine, whose clocksource is **hpet**
+(it is ~20–25 ns through the vDSO on a **tsc** clocksource, which is why the fix
+must not assume either), against GLS iterations that can be a few microseconds.
+Measured on a small Bool model, Release: **2991 → 4816 ns/iteration, a 1.75x
+throughput loss**, for checking every iteration.
+
+It used to check on a *fixed* stride of 64 iterations, which is not a time bound
+at all: one GLS iteration is `O(sampled vars x candidate values x constraints
+touched)`, so 64 of them are microseconds on a small model and seconds on a large
+one — and the large ones are exactly the benchmark instances whose wall times
+epic #87 publishes.
+
+The stride is now sized in time. Each check measures the interval since the
+previous one — which is the current cost of an iteration — and sizes the next
+stride to `kStrideBudgetFraction` (1/64) of the total budget. Growth is capped at
+`kStrideGrowth` (8x) per adjustment so the ramp goes through progressively longer
+and more accurate measurements; shrinking is uncapped, which is what stops the
+stride ratcheting upward and going silent, the failure mode that got an earlier
+self-tuning stride removed from this engine. `kMaxDeadlineStride` (65536) caps it
+outright.
+
+**Guarantee: a batch returns at most one stride past the deadline, and a stride
+costs at most 1/64 of the budget — or one GLS iteration, whichever is larger.**
+The second half is irreducible: an iteration is atomic and cannot be pre-empted
+from the inside.
+
+Measured on 400 Int vars in 20 000 rows of 8 (Release, hpet, 12-core box under
+concurrent load):
+
+| budget | before | after | iterations before / after |
+|--------|--------|-------|---------------------------|
+| 0.05 s | 7.07 s | 0.22 s | 64 / 1 |
+| 1.00 s | 7.11 s | 1.17 s | 64 / 6 |
+| 3.00 s | 7.03 s | 3.10 s | 64 / 16 |
+
+Before, the overrun was set by the model (always exactly 64 iterations, whatever
+the budget); after, it is one iteration, and the *relative* overrun shrinks as
+the budget grows.
+
+Sizing the stride in time also bounds the clock overhead without measuring the
+clock at all: one read per stride, against a stride costing `budget/64`, is
+1.4 us / (budget/64) even on the expensive clocksource — 0.45% of a 20 ms budget,
+0.009% of a 1 s one. It degrades only for budgets so small (well under a
+millisecond) that the run is over before throughput matters. Measured on the
+cheap-iteration model, Release, hpet: 2915–2994 ns/iteration adaptive against
+2991–3064 fixed-64 and 2929–3008 with no wall clock at all — i.e. at the no-clock
+floor, and no worse than the stride it replaces.
+
+Two honest caveats. The stride is a *prediction* from a measurement, so an
+iteration whose cost jumps mid-stride overruns the target and is corrected only
+at the next check. And the interval between checks can span a batch boundary, so
+work the outer loop does between batches (hook, LNS, structural sweep) is charged
+to the stride and shrinks it — conservative, never the reverse.
 
 No clock read influences control flow when `time_limit <= 0` — `past_deadline()`,
 `remaining()`, `structural_pass` and FeasibilityJump's strided check all
@@ -783,6 +846,32 @@ their measured numbers differ:
 |------|-----------------|--------|----------------|
 | FJ batch bound | 128 of 40k | ~312x | ~10s |
 | `fj_nl_initialize` time limit | 192 of 30k | ~156x | ~4.9s |
+
+The stride sizing under bound 1 (#113) is tested the same way — nothing joins
+`[timing]`. The sizing rule itself is a pure function of `(stride, elapsed,
+target)`, `FeasibilityJump::next_deadline_stride`, so it is tested exhaustively
+and deterministically: it grows only by the cap, shrinks without one, floors at
+one iteration, stops at `kMaxDeadlineStride`, and — the guarantee, asserted over
+a grid of inputs — never predicts a next stride costing more than the target.
+
+The two live tests then observe the tuner's own state through
+`deadline_check_stride()` and `deadline_checks()` rather than any duration:
+
+| Test | Observes | Margin |
+|------|----------|--------|
+| expensive iterations pin the stride to one | stride 1, one clock read per iteration, `< 64` iterations done | ~32x |
+| cheap iterations let the stride grow | stride > 64, fewer reads than a fixed 64 would make | ~800x |
+| a run with no wall clock reads no clock | `deadline_checks() == 0` | exact |
+
+The first test's margin cannot be raised without lowering the work it does:
+`(iterations that fit in the budget) x margin = 1 / kStrideBudgetFraction`, which
+is 64 whatever budget the test picks. The last one is the determinism claim above
+turned into an assertion — with `time_limit <= 0` the loop makes no clock read at
+all, so nothing timing-derived can reach control flow.
+
+All three go red on restoring a fixed stride of 64: verified by doing exactly
+that (`deadline_check_stride() == 1` → 64, `> 64` → 64, and the end-to-end
+`iterations < 64` → 64).
 
 ### Diversification
 

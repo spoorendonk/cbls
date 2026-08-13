@@ -703,6 +703,66 @@ TEST_CASE("solve stops a Feasibility Jump batch at the deadline", "[search][dead
     REQUIRE(result.iterations < config.batch_iterations);
 }
 
+// Issue #113: bound 1 above says a batch is "handed the same absolute deadline",
+// but the deadline used to be consulted only every 64 GLS iterations, and one
+// GLS iteration is O(sampled vars x candidate values x constraints touched) —
+// unbounded in the model size. So the bound held in iterations and not at all in
+// time: on 400 Int vars with 20 000 rows of 8, budgets of 0.05s, 1s and 3s all
+// took ~7s, each after exactly 64 iterations. The stride is now sized in time
+// (see test_feasibility_jump.cpp, which tests the sizing rule itself); this is
+// the end-to-end statement of it through solve().
+//
+// The test above cannot catch this one. Its model has 50 cheap variables, so its
+// 64-iteration overrun is microseconds and its "fewer than batch_iterations"
+// assertion passes with the stride fixed at 64. What is needed is a model whose
+// single iteration is expensive, which is also the shape of the benchmark
+// instances whose wall times epic #87 publishes.
+TEST_CASE("solve stops a Feasibility Jump batch inside a fraction of the budget",
+          "[search][deadline]") {
+    // 60 Int vars in 1500 rows of 8, so each variable sits in ~200 constraints
+    // and each of its 21 domain values must be scored against all of them. The
+    // rows are satisfiable at the all-zeros start, so — exactly as in the hook
+    // test below — the objective bound immediately tightens to something
+    // unreachable and every later batch grinds against it, which is what makes
+    // the iterations expensive.
+    Model m;
+    RNG rng(7);
+    constexpr int kVars = 60;
+    constexpr int kRows = 1500;
+    std::vector<int32_t> vars;
+    vars.reserve(kVars);
+    for (int i = 0; i < kVars; ++i) {
+        vars.push_back(m.int_var(0, 20));
+    }
+    for (int r = 0; r < kRows; ++r) {
+        std::vector<int32_t> args;
+        args.reserve(8);
+        for (int k = 0; k < 8; ++k) {
+            args.push_back(vars[static_cast<size_t>(rng.integers(0, kVars))]);
+        }
+        m.add_constraint(m.leq(m.sum(args), m.constant(3.0)));
+    }
+    m.minimize(m.sum(vars));
+    m.close();
+
+    SearchConfig config;
+    config.batch_iterations = 1000;
+    config.max_iterations = 0;  // no iteration budget: the clock is the only bound
+
+    auto result = solve(m, /*time_limit=*/0.02, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
+                        nullptr, config);
+
+    REQUIRE(result.termination == TerminationReason::TimeLimit);
+    REQUIRE(result.iterations > 0);  // not inert: the batch really did run
+    // A counting assertion, not a timing one, but as with the test above it is
+    // not free of machine speed: it needs the machine to be unable to do 64 GLS
+    // iterations on this model inside 20ms. Measured here (Release): the run
+    // does 1 iteration and takes 0.035s, while restoring the fixed stride of 64
+    // makes it take 12.5s — a ~600x margin on the failing path, and the flake
+    // direction is the safe one.
+    REQUIRE(result.iterations < 64);
+}
+
 TEST_CASE("solve does not start the inner-solver hook past the deadline", "[search][deadline]") {
     // x's optimum is the value FeasibilityJump starts it at (the domain value
     // closest to zero), which pins the run to exactly two batches:

@@ -714,10 +714,10 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
         // runs stay bit-identical.
         if (has_deadline_ && --deadline_countdown_ <= 0) {
             const auto now = std::chrono::steady_clock::now();
+            ++deadline_checks_;  // every clock read, including the one that stops the run
             if (now >= deadline_) {
                 return GFJStatus::Unsolved;
             }
-            ++deadline_checks_;
             deadline_stride_ = next_deadline_stride(
                 deadline_stride_, std::chrono::duration<double>(now - last_deadline_check_).count(),
                 stride_target_seconds_);
