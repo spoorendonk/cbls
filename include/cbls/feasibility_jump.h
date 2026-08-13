@@ -107,9 +107,12 @@ public:
     bool batch(int64_t batch_iterations);  // true if feasible (no active violated)
     void reset_weights();                  // W <- 1 and rebuild the scan set
     void resync();                         // rebuild the scan set from current state, keep weights
-    // Randomise each jumpable var w.p. p; if that moved nothing, force one
-    // uniformly chosen var to a different value so the kick is never a no-op
-    // (#109). The fallback leaves large models bit-identical to plain p-draws.
+    // Randomise each jumpable var w.p. p, then apply round(p*|elements|) random
+    // structural moves to each List/Set var (#111); if all of that moved
+    // nothing, force one uniformly chosen scalar to a different value so the
+    // kick is never a no-op (#109). The fallback leaves large models
+    // bit-identical to plain p-draws, and a model without List/Set variables
+    // keeps its exact draw sequence.
     void perturb(double probability);
     void set_rho(double rho) { config_.rho = rho; }
     // Armed by the search loop once it has stagnated; see solve().
@@ -150,6 +153,12 @@ private:
     // -1 if the model has no such variable, in which case a kick that changes
     // nothing is the correct outcome.
     int32_t pick_forced_perturb_var();
+    // The List/Set half of a diversification kick: perturb() cannot reach them
+    // through jumpable(), so each structural variable gets a run of random
+    // typed structural moves instead (#111). Returns true if any of them
+    // changed a variable. Draws no random numbers at all on a model without
+    // List/Set variables.
+    bool perturb_structural(double probability);
     bool participates_in_active_violated(int32_t var_id) const;
     void rebuild_violated_and_scan_set();
     void set_initial_assignment();

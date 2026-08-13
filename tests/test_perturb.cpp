@@ -7,7 +7,10 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 
+#include <algorithm>
+#include <cmath>
 #include <set>
+#include <utility>
 #include <vector>
 
 using namespace cbls;
@@ -34,6 +37,15 @@ int num_changed(const std::vector<double>& before, const std::vector<double>& af
         n += (before[i] != after[i]) ? 1 : 0;
     }
     return n;
+}
+
+std::vector<std::vector<int32_t>> all_elements(const Model& m) {
+    std::vector<std::vector<int32_t>> elements;
+    elements.reserve(m.num_vars());
+    for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
+        elements.push_back(m.var(v).elements);
+    }
+    return elements;
 }
 
 // Wraps the variables from `make_vars` in a constraint and an objective, so a
@@ -170,22 +182,26 @@ TEST_CASE("perturb keeps the configured density on a large model", "[fj][perturb
 }
 
 TEST_CASE("perturb changes nothing when no variable can move", "[fj][perturb]") {
-    SECTION("no jumpable variables at all") {
-        // A List variable is not jumpable, so there is nothing for the kick to
-        // force. It must return quietly rather than spin or crash.
+    SECTION("the only structures cannot move") {
+        // A one-element List has no second position to permute, and a Set whose
+        // min_size, max_size and universe all coincide has no legal add, remove
+        // or swap. Neither is jumpable either, so the kick has nothing to move
+        // anywhere: it must return quietly rather than spin or crash.
         Model m;
-        m.list_var(4);
+        m.list_var(1);
+        int32_t sv = m.set_var(3, /*min_size=*/3, /*max_size=*/3);
+        m.var_mut(handle_to_var_id(sv)).elements = {0, 1, 2};
         m.close();
         ViolationManager vm(m);
         RNG rng(3);
         FeasibilityJump fj(m, vm, rng);
-        std::vector<int32_t> elements_before = m.var(0).elements;
+        std::vector<std::vector<int32_t>> elements_before = all_elements(m);
         std::vector<double> before = assignment(m);
         for (int k = 0; k < 10; ++k) {
             fj.perturb(kDefaultP);
         }
         REQUIRE(assignment(m) == before);
-        REQUIRE(m.var(0).elements == elements_before);
+        REQUIRE(all_elements(m) == elements_before);
     }
 
     SECTION("every jumpable variable is pinned") {
@@ -253,5 +269,211 @@ TEST_CASE("perturb's forced integer move covers the domain minus the current val
             seen.insert(drawn);
         }
         REQUIRE(seen.size() == 3);  // all three other domain values are reachable
+    }
+}
+
+// --- #111: the structural half of the kick ---------------------------------
+// #109's guarantee reached only the variables Feasibility Jump can jump, and
+// jumpability is scalar-only. On a model whose decisions live in List/Set
+// variables — pharma-glsp's campaign scheduling is the benchmark that cares — a
+// kick randomised nothing at all, burned the stagnation counter and let the
+// search resume exactly where it was. The tests below run many seeds rather than
+// one lucky draw, for the same reason the scalar ones above do.
+
+namespace {
+
+constexpr int kStructuralKicks = 4;
+
+// Order-dependent constraint per List, so a kick runs through the same
+// full_evaluate path the search does rather than just the element write. The
+// constraint is unsatisfiable on purpose — nothing here should depend on the
+// model being solvable.
+void add_list_vars(Model& m, int num_lists, int n) {
+    for (int i = 0; i < num_lists; ++i) {
+        int32_t lv = m.list_var(n);
+        auto len = m.pair_lambda_sum(lv, [](int a, int b) { return 1.0 + 0.5 * std::abs(a - b); });
+        m.add_constraint(m.leq(len, m.constant(0.5)));
+    }
+}
+
+void add_set_vars(Model& m, int num_sets, int universe, int min_size, int max_size) {
+    for (int i = 0; i < num_sets; ++i) {
+        int32_t sv = m.set_var(universe, min_size, max_size);
+        m.add_constraint(m.leq(m.count(sv), m.constant(static_cast<double>(min_size))));
+    }
+}
+
+bool is_permutation_of(std::vector<int32_t> a, std::vector<int32_t> b) {
+    std::sort(a.begin(), a.end());
+    std::sort(b.begin(), b.end());
+    return a == b;
+}
+
+// Cardinality and domain invariants a Set must satisfy after any move.
+bool is_valid_set(const Variable& var) {
+    const std::set<int32_t> distinct(var.elements.begin(), var.elements.end());
+    if (distinct.size() != var.elements.size()) {
+        return false;  // an element added twice
+    }
+    for (int32_t e : var.elements) {
+        if (e < 0 || e >= var.universe_size) {
+            return false;
+        }
+    }
+    const int32_t size = static_cast<int32_t>(var.elements.size());
+    return size >= var.min_size && size <= var.max_size;
+}
+
+// Fraction of the list's adjacent (unordered) element pairs a kick left intact.
+// This is the metric in which the structural move generators are local — a 2-opt
+// reversal rewrites a whole sub-range of POSITIONS but breaks only two adjacent
+// pairs — so it is also the metric in which "a kick must not become a full
+// restart" means something.
+double kept_adjacency_fraction(const std::vector<int32_t>& before,
+                               const std::vector<int32_t>& after) {
+    std::set<std::pair<int32_t, int32_t>> pairs;
+    for (size_t i = 0; i + 1 < before.size(); ++i) {
+        pairs.emplace(std::min(before[i], before[i + 1]), std::max(before[i], before[i + 1]));
+    }
+    int kept = 0;
+    for (size_t i = 0; i + 1 < after.size(); ++i) {
+        kept += pairs.count({std::min(after[i], after[i + 1]), std::max(after[i], after[i + 1])});
+    }
+    return static_cast<double>(kept) / static_cast<double>(after.size() - 1);
+}
+
+}  // namespace
+
+TEST_CASE("perturb always moves a List-only model", "[fj][perturb][structural]") {
+    for (uint64_t seed = 1; seed <= kSeeds; ++seed) {
+        Model m;
+        add_list_vars(m, /*num_lists=*/2, /*n=*/8);
+        m.close();
+        ViolationManager vm(m);
+        RNG rng(seed);
+        FeasibilityJump fj(m, vm, rng);
+        fj.begin(/*set_initial_x=*/true);
+        const std::vector<std::vector<int32_t>> original = all_elements(m);
+        for (int k = 0; k < kStructuralKicks; ++k) {
+            const std::vector<std::vector<int32_t>> before = all_elements(m);
+            fj.perturb(kDefaultP);
+            const std::vector<std::vector<int32_t>> after = all_elements(m);
+            REQUIRE(after != before);  // the kick a List-only model used to not get
+            for (size_t v = 0; v < after.size(); ++v) {
+                REQUIRE(is_permutation_of(after[v], original[v]));
+            }
+        }
+    }
+}
+
+TEST_CASE("perturb always moves a Set-only model", "[fj][perturb][structural]") {
+    for (uint64_t seed = 1; seed <= kSeeds; ++seed) {
+        Model m;
+        add_set_vars(m, /*num_sets=*/2, /*universe=*/12, /*min_size=*/3, /*max_size=*/7);
+        m.close();
+        RNG rng(seed);
+        initialize_structured_random(m, rng);  // Sets start empty until initialised
+        ViolationManager vm(m);
+        FeasibilityJump fj(m, vm, rng);
+        fj.begin(/*set_initial_x=*/true);
+        for (int k = 0; k < kStructuralKicks; ++k) {
+            const std::vector<std::vector<int32_t>> before = all_elements(m);
+            fj.perturb(kDefaultP);
+            REQUIRE(all_elements(m) != before);
+            for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
+                REQUIRE(is_valid_set(m.var(v)));  // min_size/max_size and the universe hold
+            }
+        }
+    }
+}
+
+TEST_CASE("perturb moves scalars and structures on a mixed model", "[fj][perturb][structural]") {
+    int scalar_kicks = 0;
+    int structural_kicks = 0;
+    for (uint64_t seed = 1; seed <= kSeeds; ++seed) {
+        Model m;
+        std::vector<int32_t> scalars{m.bool_var(), m.int_var(0, 9), m.float_var(0.0, 10.0)};
+        m.add_constraint(m.leq(m.sum(scalars), m.constant(1.0)));
+        m.minimize(m.sum(scalars));
+        add_list_vars(m, /*num_lists=*/1, /*n=*/8);
+        add_set_vars(m, /*num_sets=*/1, /*universe=*/12, /*min_size=*/3, /*max_size=*/7);
+        m.close();
+        RNG rng(seed);
+        initialize_structured_random(m, rng);
+        ViolationManager vm(m);
+        FeasibilityJump fj(m, vm, rng);
+        fj.begin(/*set_initial_x=*/true);
+        for (int k = 0; k < kStructuralKicks; ++k) {
+            const std::vector<double> values_before = assignment(m);
+            const std::vector<std::vector<int32_t>> elements_before = all_elements(m);
+            fj.perturb(kDefaultP);
+            const bool scalar_moved = num_changed(values_before, assignment(m)) > 0;
+            const bool structure_moved = all_elements(m) != elements_before;
+            REQUIRE((scalar_moved || structure_moved));  // never a no-op
+            scalar_kicks += scalar_moved ? 1 : 0;
+            structural_kicks += structure_moved ? 1 : 0;
+        }
+    }
+    // Both kinds move. The structures move on every kick (they are scaled, not
+    // sampled); the scalars move at the configured rate, so only on some.
+    REQUIRE(structural_kicks == static_cast<int>(kSeeds) * kStructuralKicks);
+    REQUIRE(scalar_kicks > 0);
+    REQUIRE(scalar_kicks < static_cast<int>(kSeeds) * kStructuralKicks);
+}
+
+TEST_CASE("perturb's structural kick size scales with the probability",
+          "[fj][perturb][structural]") {
+    // k = round(p * |elements|) moves per structure, so the configured
+    // probability still governs how much of the model moves — a kick on a large
+    // structure must not turn into a restart. Deterministic (one fixed seed per
+    // measurement): these thresholds cannot flake, they either hold or they do
+    // not.
+    auto mean_kept = [](double probability) {
+        Model m;
+        add_list_vars(m, /*num_lists=*/1, /*n=*/200);
+        m.close();
+        ViolationManager vm(m);
+        RNG rng(17);
+        FeasibilityJump fj(m, vm, rng);
+        fj.begin(/*set_initial_x=*/true);
+        constexpr int kicks = 20;
+        double total = 0.0;
+        for (int k = 0; k < kicks; ++k) {
+            const std::vector<int32_t> before = m.var(0).elements;
+            fj.perturb(probability);
+            total += kept_adjacency_fraction(before, m.var(0).elements);
+        }
+        return total / kicks;
+    };
+
+    const double small = mean_kept(0.02);        // k = 4 moves
+    const double standard = mean_kept(kDefaultP);  // k = 20 moves
+    const double large = mean_kept(0.5);         // k = 100 moves
+
+    REQUIRE(small > 0.85);            // a small p barely disturbs the structure
+    REQUIRE(standard > 0.5);          // the default kick keeps most of it: not a restart
+    REQUIRE(standard < small - 0.05);  // ... and p is what decides how much moves
+    REQUIRE(large < standard - 0.15);
+}
+
+TEST_CASE("perturb keeps structures legal at an over-large probability",
+          "[fj][perturb][structural]") {
+    // p > 1 would ask for more moves than the structure has slots. k is clamped
+    // at one move per slot — already a full scramble — so a misconfigured
+    // probability stays bounded work and the invariants still hold.
+    Model m;
+    add_list_vars(m, /*num_lists=*/1, /*n=*/50);
+    add_set_vars(m, /*num_sets=*/1, /*universe=*/12, /*min_size=*/3, /*max_size=*/7);
+    m.close();
+    RNG rng(5);
+    initialize_structured_random(m, rng);
+    ViolationManager vm(m);
+    FeasibilityJump fj(m, vm, rng);
+    fj.begin(/*set_initial_x=*/true);
+    const std::vector<int32_t> original = m.var(0).elements;
+    for (int k = 0; k < 20; ++k) {
+        fj.perturb(3.0);
+        REQUIRE(is_permutation_of(m.var(0).elements, original));
+        REQUIRE(is_valid_set(m.var(1)));
     }
 }

@@ -1,6 +1,7 @@
 #include "cbls/feasibility_jump.h"
 
 #include "cbls/dag_ops.h"
+#include "cbls/moves.h"
 #include "cbls/randomize.h"
 
 #include <algorithm>
@@ -85,6 +86,65 @@ double random_different_in_domain(const Variable& var, RNG& rng) {
             return (var.value - w.lo >= w.hi - var.value) ? w.lo : w.hi;
         }
     }
+}
+
+// --- structural perturbation helpers ---------------------------------------
+// List and Set variables are not jumpable, so none of the above can reach them:
+// a kick on a model whose decisions live in structural variables randomised
+// nothing, burned the stagnation counter and left the search exactly where it
+// was (#111). They get their own pass, built out of the same typed move
+// generators the STRUCTURAL batch uses (moves.cpp) rather than fresh mutation
+// code — so the kick explores exactly the neighbourhood the search knows how to
+// evaluate, and every move it applies is legal by construction: a List stays a
+// permutation of its elements, a Set stays inside min_size/max_size.
+
+// How many random structural moves a kick applies to one variable.
+//
+// `perturbation_probability` has to keep governing how much of the model moves,
+// so scale with the variable's own size: k = round(p * |elements|) displaces
+// roughly a p fraction of the structure's slots, the same fraction of its
+// variables the scalar loop randomises. A structure has no "randomise the whole
+// variable" analogue that is not a restart, so the probability sets *how much*
+// of each structure moves rather than *which* structures move — which is also
+// what keeps a structure smaller than 1/p slots from never moving at all.
+//
+// Clamped to [1, |elements|]: at least one move, so a kick on a model whose
+// decisions are all structural is never a no-op (#111); at most one move per
+// slot, which is already a full scramble, so a misconfigured p > 1 cannot turn a
+// kick into unbounded work. The comparison is written to reject NaN.
+int32_t structural_kick_size(const Variable& var, double probability) {
+    const int32_t n = static_cast<int32_t>(var.elements.size());
+    const double scaled = std::round(probability * static_cast<double>(n));
+    if (!(scaled > 1.0)) {
+        return 1;
+    }
+    return static_cast<int32_t>(std::min(scaled, static_cast<double>(std::max(n, 1))));
+}
+
+// Apply one uniformly chosen structural move to `var_id` and report whether the
+// variable's elements actually changed. False means the generator offered
+// nothing that moves this variable (a List shorter than two elements, a Set
+// pinned by min_size == max_size == universe_size), so the caller can stop
+// trying: the state is unchanged, and a further attempt would find the same.
+//
+// Candidates that leave the elements as they are — a relocate to the adjacent
+// position reinserts the element where it was — are dropped before the draw, so
+// a kick cannot silently lose a move to one.
+bool apply_random_structural_move(Model& model, int32_t var_id, RNG& rng) {
+    std::vector<Move> moves = generate_standard_moves(model.var(var_id), rng);
+    const std::vector<int32_t>& current = model.var(var_id).elements;
+    moves.erase(std::remove_if(moves.begin(), moves.end(),
+                               [&current](const Move& m) {
+                                   return m.changes.size() != 1 ||
+                                          m.changes.front().new_elements == current;
+                               }),
+                moves.end());
+    if (moves.empty()) {
+        return false;
+    }
+    const auto pick = static_cast<size_t>(rng.integers(0, static_cast<int64_t>(moves.size())));
+    apply_move(model, moves[pick]);
+    return true;
 }
 
 // Integer jump candidates: exhaustive over a small domain, else a coarse grid
@@ -597,6 +657,29 @@ int32_t FeasibilityJump::pick_forced_perturb_var() {
     return -1;  // unreachable: k < count eligible variables were skipped
 }
 
+bool FeasibilityJump::perturb_structural(double probability) {
+    // Cost per structural variable is O(k * |elements|) element copies, k =
+    // round(p * |elements|): the generator builds each candidate as a whole new
+    // element vector. That is quadratic in a single structure's size, but a kick
+    // only fires once per `perturbation_period` stagnant batches, and on any
+    // model of a realistic shape (pharma-glsp: a handful of Lists of tens of
+    // elements) it is far below the full_evaluate this pass ends in.
+    bool changed = false;
+    for (int32_t v = 0; v < static_cast<int32_t>(model_.num_vars()); ++v) {
+        if (!is_structured(model_.var(v).type)) {
+            continue;  // no RNG draw: a scalar-only model keeps its draw sequence
+        }
+        const int32_t k = structural_kick_size(model_.var(v), probability);
+        for (int32_t i = 0; i < k; ++i) {
+            if (!apply_random_structural_move(model_, v, rng_)) {
+                break;  // nothing can move this variable; further tries cannot either
+            }
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 void FeasibilityJump::perturb(double probability) {
     // Randomise each jumpable variable independently, then make sure the kick
     // actually moved something. Independent draws alone leave the assignment
@@ -622,10 +705,21 @@ void FeasibilityJump::perturb(double probability) {
         var.value = random_in_domain(var, rng_);
         changed = changed || var.value != previous;
     }
+    // The loop above only reaches jumpable (scalar) variables. List and Set
+    // variables get their own pass, so a kick on a model whose decision
+    // structure is structural is a real kick rather than a no-op (#111). The
+    // pass draws no random numbers on a model without List/Set variables, so
+    // scalar-only models keep the exact draw sequence — and hence the exact
+    // runs — they had before.
+    const bool structural_changed = perturb_structural(probability);
+    changed = changed || structural_changed;
     if (!changed) {
-        // Nothing moved: pick one variable that CAN move and move it. -1 means
-        // the model has none (List/Set-only, or every scalar pinned), and then a
-        // kick that changes nothing is the correct outcome.
+        // Nothing moved: pick one variable that CAN move and move it. Only
+        // scalars are candidates, and that is enough: the structural pass
+        // already tries every List/Set variable, so reaching here means none of
+        // them could move either. -1 means the model has no movable variable at
+        // all (every scalar pinned, no movable structure), and then a kick that
+        // changes nothing is the correct outcome.
         const int32_t forced = pick_forced_perturb_var();
         if (forced >= 0) {
             Variable& var = model_.var_mut(forced);
