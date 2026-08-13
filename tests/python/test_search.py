@@ -43,6 +43,54 @@ class TestSolver:
         assert result.time_seconds > 0
 
 
+class TestTermination:
+    """SearchResult.termination — which budget ended the run (#104)."""
+
+    @staticmethod
+    def _quadratic() -> "cbls.Model":
+        m = cbls.Model()
+        x = m.float_var(-5, 5)
+        y = m.float_var(-5, 5)
+        two = m.constant(2)
+        m.minimize(m.sum([m.pow_expr(x, two), m.pow_expr(y, two)]))
+        m.close()
+        return m
+
+    def test_iteration_limit_wins_over_a_live_clock(self) -> None:
+        config = cbls.SearchConfig()
+        config.max_iterations = 1000
+        # A live but unreachable clock: the iteration budget is what stops this.
+        result = cbls.solve(self._quadratic(), 30.0, 42, config=config)
+        assert result.termination == cbls.TerminationReason.IterationLimit
+        assert result.iterations >= 1000
+
+    def test_no_budget_at_all_returns_immediately(self) -> None:
+        # Neither budget set: solve() must return rather than spin forever, and
+        # must say so instead of claiming a limit it was never given.
+        result = cbls.solve(self._quadratic(), 0.0, 42, config=cbls.SearchConfig())
+        assert result.termination == cbls.TerminationReason.NoBudget
+        assert result.iterations == 0
+
+
+class TestFjNlInitialize:
+    def test_returns_iterations_spent(self) -> None:
+        """The count is what makes 'did the clock stop this?' answerable (#104)."""
+        m = cbls.Model()
+        variables = [m.int_var(0, 10) for _ in range(50)]
+        # 50 variables capped at 10 sum to at most 500, so this is unreachable and
+        # the pass can only ever be stopped by a budget.
+        m.add_constraint(m.abs_expr(m.sum([*variables, m.constant(-2500.0)])))
+        m.close()
+
+        vm = cbls.ViolationManager(m)
+        rng = cbls.RNG(42)
+        cbls.initialize_random(m, rng)
+        cbls.full_evaluate(m)
+
+        spent = cbls.fj_nl_initialize(m, vm, 500, rng, 0.0)
+        assert spent == 500
+
+
 class TestViolation:
     def test_feasible(self):
         m = cbls.Model()

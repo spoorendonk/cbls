@@ -54,12 +54,50 @@ struct SearchConfig {
     double feasibility_tolerance = kDefaultFeasibilityTolerance;
 };
 
+/// Why `solve()`'s outer loop stopped. Exactly one of these ends every run.
+///
+/// This exists so a test can prove *which* budget bound a run, instead of
+/// inferring it from elapsed time. A test that gives a small wall-clock budget
+/// and asserts on the work done is silently inert unless it also checks that the
+/// clock is what stopped the run — the failure mode that made the previous
+/// `fj_nl_initialize` time-limit test pass whether or not the limit was honoured
+/// (#104).
+///
+/// It is not test-only scaffolding: it is the qualifier on `time_seconds`. The
+/// CLI reports it in both output formats, so a run that exhausted its budget is
+/// distinguishable from one that converged inside it — which is exactly what a
+/// reader of the per-instance wall times published under epic #87 needs in order
+/// to read them correctly.
+enum class TerminationReason {
+    /// The wall-clock deadline from `solve()`'s `time_limit` expired.
+    TimeLimit,
+    /// `SearchConfig::max_iterations` was reached (GLS iterations, or the batch
+    /// count when structural/novelty batches stall the iteration counter).
+    IterationLimit,
+    /// Pure-feasibility model (no objective): the first feasible solution is the
+    /// answer, so the search stopped on finding one.
+    Feasible,
+    /// Neither a wall-clock budget nor an iteration budget was set, so the loop
+    /// returned immediately having done no work rather than spinning forever.
+    NoBudget,
+};
+
+/// Stable snake_case token for a TerminationReason ("time_limit",
+/// "iteration_limit", "feasible", "no_budget"). Machine-readable — it is the
+/// value the CLI writes to the JSONL `termination` field — and used verbatim in
+/// the human output too, so there is exactly one spelling to keep in step with
+/// the enum. Returns a static string; never null.
+const char* termination_reason_name(TerminationReason reason);
+
 struct SearchResult {
     double objective = std::numeric_limits<double>::infinity();
     bool feasible = false;
     Model::State best_state;
     int64_t iterations = 0;
     double time_seconds = 0.0;
+    /// Which budget ended the run — the qualifier on `iterations` and
+    /// `time_seconds` above. See TerminationReason.
+    TerminationReason termination = TerminationReason::NoBudget;
     /// Largest violation over the real constraints at `best_state` — i.e. the
     /// residual of the assignment actually returned (<= the feasibility
     /// tolerance when `feasible`). On an infeasible run `best_state` is the
@@ -105,8 +143,15 @@ void initialize_random(Model& model, RNG& rng);
 /// would only be overwritten (#108).
 void initialize_structured_random(Model& model, RNG& rng);
 
-void fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations = 10000,
-                      RNG* rng = nullptr, double time_limit = 2.0);
+/// Returns the number of GLS iterations the repair pass actually spent.
+///
+/// Comparing it against `max_iterations` tells the caller whether the pass
+/// converged / exhausted its iteration budget or was cut short by `time_limit`.
+/// Without that, "did the clock stop this?" is only answerable by timing the
+/// call, which is why the test that was supposed to cover it could not tell the
+/// difference (#104).
+int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations = 10000,
+                         RNG* rng = nullptr, double time_limit = 2.0);
 
 /// `time_limit <= 0` disables the wall clock entirely: the run is then bounded by
 /// `config.max_iterations` alone and is fully deterministic for a given seed

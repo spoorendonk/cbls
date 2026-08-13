@@ -96,6 +96,30 @@ SearchResult ParallelSearch::solve(
     }
 }
 
+// Portfolio workers are homogeneous — same model, same budget, different seed —
+// so their termination reasons almost always agree, and this only has to break
+// ties. Precedence: a worker that actually finished the job (Feasible) outranks
+// any budget exit; among budget exits the shared wall clock outranks the
+// per-worker iteration budget, because the portfolio's answer is clock-limited
+// as soon as any worker ran the clock out. NoBudget is last: it is also what a
+// worker that threw leaves behind, and one crashed thread should not relabel a
+// run the others budget-limited.
+static TerminationReason aggregate_termination(const std::vector<SearchResult>& results) {
+    bool any_time = false;
+    bool any_iterations = false;
+    for (const auto& r : results) {
+        if (r.termination == TerminationReason::Feasible) {
+            return TerminationReason::Feasible;
+        }
+        any_time = any_time || r.termination == TerminationReason::TimeLimit;
+        any_iterations = any_iterations || r.termination == TerminationReason::IterationLimit;
+    }
+    if (any_time) {
+        return TerminationReason::TimeLimit;
+    }
+    return any_iterations ? TerminationReason::IterationLimit : TerminationReason::NoBudget;
+}
+
 // --- Portfolio (opportunistic) mode ---
 
 SearchResult ParallelSearch::solve_portfolio(
@@ -159,6 +183,7 @@ SearchResult ParallelSearch::solve_portfolio(
         }
         result.iterations = total_iters;
         result.time_seconds = max_time;
+        result.termination = aggregate_termination(results);
         return result;
     }
 
@@ -280,6 +305,12 @@ SearchResult ParallelSearch::solve_deterministic(
     global_best.iterations = total_iterations;
     global_best.time_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - start).count();
+    // Epoch-sync mode runs every epoch with epoch_time_limit = 0 (no wall clock
+    // at all, by design — see above), so the whole run is iteration-bounded:
+    // epoch_iterations per worker per epoch, max_epochs epochs. The only other
+    // honest answer is a worker that finished outright, which aggregate_termination
+    // reports; it can never be TimeLimit here.
+    global_best.termination = aggregate_termination(epoch_results);
 
     return global_best;
 }

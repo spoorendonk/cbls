@@ -662,6 +662,71 @@ release the objective bound to `+inf`, full-evaluate, and return the best
 feasible objective (or `+inf` / infeasible). `SearchResult::best_violation`
 carries the largest real-constraint residual at the returned assignment.
 `SearchResult::iterations` is the total GLS iteration count, not the batch count.
+`SearchResult::termination` says which budget ended the run — see below.
+
+### Wall-clock budget
+
+`solve(model, time_limit)` is a promise to return within `time_limit`. The
+budget used to be checked only *between* batches, so any sub-step entered just
+before the deadline could overrun it. Four can, and each is bounded separately:
+
+| # | Sub-step | Bound | Where |
+|---|----------|-------|-------|
+| 1 | Feasibility Jump batch | handed the same absolute deadline, checked on a stride of 64 inside the GLS loop | `gfj.time_limit = budget_seconds` |
+| 2 | `InnerSolverHook` | not *started* when the budget is spent — a hook is arbitrary user code, so its running time is unknowable | `if (hook && !past_deadline())` |
+| 3 | LNS repair | handed `min(2.0, remaining())`, not its own independent 2s | `diversify()` |
+| 4 | STRUCTURAL sweep | checked between variables (#105) | `structural_pass` |
+
+Bound 3 has two halves, and only the lower one is about the deadline. The
+`remaining()` half is the deadline bound proper: a kick taken near the end of
+the budget gets only what is left. The `2.0` cap is independent of the deadline
+and predates it — it stops a single kick early in a long run from monopolising
+it, and on any run whose whole budget is under 2s (including every test here) it
+never binds. Only the `remaining()` half is covered by a test.
+
+Bound 3 is floored at `1e-9` rather than clamped to 0 while a deadline exists:
+`remaining()` returns exactly `0.0` once the clock crosses the deadline, and `0`
+means "no wall clock at all" downstream in `fj_nl_initialize` — so clamping to
+zero would hand the repair an *unbounded* run, the opposite of the intent.
+
+No clock is read at all when `time_limit <= 0`, so iteration-budgeted runs stay
+bit-identical and deterministic.
+
+#### Why this is tested the way it is
+
+A bug in this class made a 60s budget take 87s and was found only by reading a
+benchmark's `wall_seconds` column by hand. Epic #87 publishes per-instance wall
+times, so a silently overrunning budget corrupts published data — but the suite
+was also deliberately converted to be deterministic (iteration-bounded,
+`time_limit = 0`), and an `elapsed < X` assertion drags machine speed back in.
+
+So bounds 1–3 are covered **without any assertion on elapsed time** (issue
+#104). Each test observes its own bound directly: work done for 1 (one batch
+cannot have run to completion), the call count of a test `InnerSolverHook` for
+2, and the argument handed to a test `LNS` for 3. Bound 4 has no such seam —
+its symptom really is duration — so its test is the suite's single
+wall-clock-duration assertion, quarantined behind the `[timing]` tag and
+registered as its own labelled ctest entry with an explicit timeout.
+
+Every one of these tests also asserts `SearchResult::termination`. That is what
+stops a test going quietly inert: a small time budget proves nothing if the
+model converged before the clock ever mattered, which is exactly what had
+happened to the old `fj_nl_initialize` time-limit test (its model converged in
+~2ms against a 50ms cap, so it passed whether or not the limit was honoured).
+
+The two tests that do bound work by counting — 1, and the reworked
+`fj_nl_initialize` test — are not entirely free of machine speed either: they
+need the machine to be unable to spend the whole iteration budget inside the
+time budget. The trade-off is fixed at `margin = (time a regression takes to go
+red) / (time budget)`, so buying margin costs time on the failing path. Both are
+~20ms green and fail in the *safe* direction — a slower or loaded machine does
+fewer iterations and passes more comfortably. They are different models, so
+their measured numbers differ:
+
+| Test | Iterations used | Margin | Time to go red |
+|------|-----------------|--------|----------------|
+| FJ batch bound | 128 of 40k | ~312x | ~10s |
+| `fj_nl_initialize` time limit | 192 of 30k | ~156x | ~4.9s |
 
 ### Diversification
 

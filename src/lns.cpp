@@ -12,6 +12,9 @@ namespace cbls {
 
 LNS::LNS(double destroy_fraction) : destroy_fraction_(destroy_fraction) {}
 
+// Out of line so the vtable has a single translation unit to live in.
+LNS::~LNS() = default;
+
 // Lexicographic search-state key (real violation, objective): feasibility first,
 // then objective — mirroring solve()'s record_best. Real violation excludes the
 // artificial `obj <= bound` soft constraint (when present) so the objective is

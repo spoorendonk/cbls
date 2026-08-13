@@ -79,7 +79,8 @@ void HumanFormatter::print_result(const SearchResult& result, const Model& model
         out_ << "Objective:  -\n";  // infeasible: nothing to report one for
     }
     out_ << "Time:       " << std::fixed << std::setprecision(2) << result.time_seconds << "s ("
-         << result.iterations << " iterations)\n";
+         << result.iterations << " iterations, stopped on "
+         << termination_reason_name(result.termination) << ")\n";
     out_ << "Solution:\n";
     for (const auto& var : model.variables()) {
         out_ << "  " << (var.name.empty() ? "v" + std::to_string(var.id) : var.name) << " = ";
@@ -137,6 +138,10 @@ void JsonlFormatter::print_result(const SearchResult& result, const Model& model
     j["event"] = "result";
     j["time"] = std::round(result.time_seconds * 1000.0) / 1000.0;
     j["iterations"] = result.iterations;
+    // Qualifies the two above: "time_limit" means the run was cut off by its
+    // budget, anything else that it finished inside it. Without this a published
+    // wall time cannot be read correctly (#104, epic #87).
+    j["termination"] = termination_reason_name(result.termination);
     if (result.feasible && result.objective < std::numeric_limits<double>::infinity()) {
         j["objective"] = result.objective;
     } else {

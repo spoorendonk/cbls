@@ -84,12 +84,20 @@ NB_MODULE(_cbls_core, m) {
         .def_ro("op", &ExprNode::op)
         .def_ro("value", &ExprNode::value);
 
+    // TerminationReason — which budget ended the run.
+    nb::enum_<TerminationReason>(m, "TerminationReason")
+        .value("TimeLimit", TerminationReason::TimeLimit)
+        .value("IterationLimit", TerminationReason::IterationLimit)
+        .value("Feasible", TerminationReason::Feasible)
+        .value("NoBudget", TerminationReason::NoBudget);
+
     // SearchResult
     nb::class_<SearchResult>(m, "SearchResult")
         .def_ro("objective", &SearchResult::objective)
         .def_ro("feasible", &SearchResult::feasible)
         .def_ro("iterations", &SearchResult::iterations)
-        .def_ro("time_seconds", &SearchResult::time_seconds);
+        .def_ro("time_seconds", &SearchResult::time_seconds)
+        .def_ro("termination", &SearchResult::termination);
 
     // Model
     nb::class_<Model>(m, "Model")

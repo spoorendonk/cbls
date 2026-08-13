@@ -56,11 +56,27 @@ void initialize_structured_random(Model& model, RNG& rng) {
     }
 }
 
+const char* termination_reason_name(TerminationReason reason) {
+    switch (reason) {
+        case TerminationReason::TimeLimit:
+            return "time_limit";
+        case TerminationReason::IterationLimit:
+            return "iteration_limit";
+        case TerminationReason::Feasible:
+            return "feasible";
+        case TerminationReason::NoBudget:
+            return "no_budget";
+    }
+    // Unreachable for any value of the enum; keeps the function total so a
+    // caller can print the result unconditionally.
+    return "unknown";
+}
+
 // Construction heuristic: Generalised Feasibility Jump (ViolationLS). Refines
 // the model's current assignment toward feasibility. Delegates to
 // FeasibilityJump; see src/feasibility_jump.cpp.
-void fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations, RNG* rng_ptr,
-                      double time_limit) {
+int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations, RNG* rng_ptr,
+                         double time_limit) {
     RNG local_rng(42);
     RNG& rng = rng_ptr ? *rng_ptr : local_rng;
 
@@ -80,6 +96,7 @@ void fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations, RN
     // weights skewed.
     std::fill(vm.weights.begin(), vm.weights.end(), 1.0);
     vm.invalidate_cache();
+    return fj.iterations();
 }
 
 // A STRUCTURAL batch (paper Algorithm 6 has FJ/NJ; this is the list/set peer):
@@ -382,12 +399,20 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         stagnation = 0;
     };
 
+    // Which budget ends the run. Assigned at every loop exit so it always
+    // describes the exit actually taken; the `while` condition below is the only
+    // exit that is not a `break`, so it seeds the value and each `break`
+    // overwrites it. Reported on SearchResult so callers — and the regression
+    // tests for the deadline bounds — can tell a budget-limited run from a
+    // converged one without timing the call (#104).
+    TerminationReason termination = TerminationReason::TimeLimit;
     while (!past_deadline()) {
         // Count *actual* GLS iterations, which is what the config documents and
         // what SearchResult::iterations reports. Using batches *
         // batch_iterations over-counts whenever a batch exits early on
         // feasibility, so the budget expired after far less work than asked for.
         if (config.max_iterations > 0 && fj.iterations() >= config.max_iterations) {
+            termination = TerminationReason::IterationLimit;
             break;
         }
         // Structural and Novelty batches do not charge fj.iterations(), so on a
@@ -396,10 +421,13 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         // forever). Batches <= iterations by construction, so this only bites
         // when iterations have stalled.
         if (config.max_iterations > 0 && batches >= config.max_iterations) {
+            termination = TerminationReason::IterationLimit;
             break;
         }
         if (!has_deadline && config.max_iterations <= 0) {
-            break;  // neither budget set: nothing would ever stop the loop
+            // Neither budget set: nothing would ever stop the loop.
+            termination = TerminationReason::NoBudget;
+            break;
         }
 
         // Pick this batch's kind (paper Algorithm 6 alternates FJ/NJ; the
@@ -468,7 +496,9 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             fj.reset_weights();  // new best: fresh GLS weights (paper) + new rho
             sample_rho();
             if (!has_obj) {
-                break;  // pure feasibility: first solution is the answer
+                // Pure feasibility: first solution is the answer.
+                termination = TerminationReason::Feasible;
+                break;
             }
         } else {
             ++stagnation;
@@ -518,6 +548,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     result.best_violation = max_real_violation();
     result.iterations = fj.iterations();  // total GLS iterations (not batch count)
     result.time_seconds = elapsed;
+    result.termination = termination;
     return result;
 }
 
