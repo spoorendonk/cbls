@@ -133,6 +133,10 @@ if(CBLS_BUILD_BENCHMARKS)
     target_link_libraries(cbls_minlplib PRIVATE cbls_lib)
     target_include_directories(cbls_minlplib PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+    add_executable(cbls_setcover benchmarks/setcover/setcover.cpp)
+    target_link_libraries(cbls_setcover PRIVATE cbls_lib)
+    target_include_directories(cbls_setcover PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
     add_executable(cbls_mipfeas benchmarks/mipfeas/mipfeas.cpp)
     target_link_libraries(cbls_mipfeas PRIVATE cbls_lib)
     target_include_directories(cbls_mipfeas PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${json_SOURCE_DIR}/include)
