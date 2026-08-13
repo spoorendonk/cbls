@@ -20,6 +20,7 @@ add_executable(cbls_tests
     test_io_mps.cpp
     test_mipfeas.cpp
     test_minlplib.cpp
+    test_setcover.cpp
 )
 target_link_libraries(cbls_tests PRIVATE cbls_lib Catch2::Catch2WithMain)
 target_include_directories(cbls_tests PRIVATE ${CMAKE_SOURCE_DIR} ${json_SOURCE_DIR}/include)
