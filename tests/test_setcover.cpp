@@ -148,6 +148,50 @@ TEST_CASE("Bool encoding expresses the same instance", "[setcover]") {
     REQUIRE(scm.selected_columns() == std::vector<int>{0});
 }
 
+// The structural batch evaluates every candidate Set move incrementally, so a
+// wrong delta on the Lambda coverage rows would silently accept moves that are
+// not improvements. Nothing else in the suite checks delta_evaluate through a
+// Set variable: test_dag's Set case uses `count` and full_evaluate only.
+TEST_CASE("delta evaluation of a Set move matches full evaluation", "[setcover]") {
+    SetCoverInstance inst = load_setcover(kScpe1Path);
+    SetCoverModel scm = build_set_model(inst);
+    Model& m = scm.model;
+    const int32_t var_id = handle_to_var_id(scm.chosen);
+
+    m.var_mut(var_id).elements = {3, 17, 42, 101, 250};
+    full_evaluate(m);
+
+    auto node_values = [&]() {
+        std::vector<double> values;
+        values.reserve(m.num_nodes());
+        for (size_t n = 0; n < m.num_nodes(); ++n) {
+            values.push_back(m.node(static_cast<int32_t>(n)).value);
+        }
+        return values;
+    };
+
+    struct Case {
+        const char* what;
+        std::vector<int32_t> elements;
+    };
+    const std::vector<Case> cases = {
+        {"add", {3, 17, 42, 101, 250, 7}},
+        {"remove", {3, 17, 42, 101}},
+        {"swap", {3, 17, 42, 101, 499}},
+        {"empty", {}},
+    };
+
+    for (const Case& c : cases) {
+        INFO("move: " << c.what);
+        m.var_mut(var_id).elements = c.elements;
+        delta_evaluate(m, {var_id});
+        const std::vector<double> incremental = node_values();
+
+        full_evaluate(m);
+        REQUIRE(incremental == node_values());
+    }
+}
+
 TEST_CASE("verifier rejects an uncovered assignment", "[setcover]") {
     SetCoverInstance inst = tiny();
     SetCoverModel scm = build_set_model(inst);
