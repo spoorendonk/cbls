@@ -83,7 +83,7 @@ pip install .
 - Solution quality gaps of 15-40% vs exact solvers on problems where MIP works well
 - Benchmark models are simplified relative to their source papers; comparison results are not directly comparable to published results
 - No constraint propagation, cutting planes, or LP relaxation — this is pure local search
-- **Set variables are expressible, not yet competitive.** A model whose only variables are structured (List/Set) is searched by the structural batch alone — a first-improvement hill climber over a small random move sample, with no Feasibility Jump, no compound moves and no working diversification. On OR-Library set covering the same instance encoded with one Bool per column beats the `Set` encoding by roughly an order of magnitude in gap-to-optimum (see `benchmarks/instances/setcover/`). List variables, which appear alongside scalars in the pharma GLSP model, are not affected in the same way.
+- **Set variables are expressible, not yet competitive.** A model whose only variables are structured (List/Set) is searched by the structural batch alone — a first-improvement hill climber over a small random move sample, with no Feasibility Jump, no compound moves and no working diversification. On the weighted OR-Library set-covering instances the `Set` encoding lands at 5-7x the proven optimum while the same instance encoded with one Bool per column is within 9-29% (see `benchmarks/instances/setcover/`); on unicost instances the two nearly converge. List variables, which appear alongside scalars in the pharma GLSP model, are not affected in the same way.
 
 ## Benchmarks
 

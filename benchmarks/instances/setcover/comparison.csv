@@ -1,0 +1,39 @@
+# CBLS rows: best objective over seeds 42-44, 10s wall clock per run, single
+# thread, default SearchConfig, Release build. Reproduce with:
+#   ./build-rel/cbls_setcover --time 10 --seeds 3 --csv raw.csv
+# Every CBLS row was verified against the instance file (cover recomputed
+# from the OR-Library data, not read off the DAG).
+# `cbls-set`  = one Set variable over the columns (the encoding under test).
+# `cbls-bool` = one Bool per column, i.e. the ordinary linear encoding.
+# Optima are proven; see README.md for provenance.
+instance,method,objective,gap,source
+scp41,optimum,429,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
+scp41,cbls-set,3260,659.9,"this repo, 10s x 3 seeds, best"
+scp41,cbls-bool,469,9.3,"this repo, 10s x 3 seeds, best"
+scp42,optimum,512,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
+scp42,cbls-set,3045,494.7,"this repo, 10s x 3 seeds, best"
+scp42,cbls-bool,646,26.2,"this repo, 10s x 3 seeds, best"
+scp43,optimum,516,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
+scp43,cbls-set,3387,556.4,"this repo, 10s x 3 seeds, best"
+scp43,cbls-bool,651,26.2,"this repo, 10s x 3 seeds, best"
+scp44,optimum,494,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
+scp44,cbls-set,3825,674.3,"this repo, 10s x 3 seeds, best"
+scp44,cbls-bool,636,28.7,"this repo, 10s x 3 seeds, best"
+scp45,optimum,512,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
+scp45,cbls-set,3053,496.3,"this repo, 10s x 3 seeds, best"
+scp45,cbls-bool,596,16.4,"this repo, 10s x 3 seeds, best"
+scpe1,optimum,5,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
+scpe1,cbls-set,7,40.0,"this repo, 10s x 3 seeds, best"
+scpe1,cbls-bool,6,20.0,"this repo, 10s x 3 seeds, best"
+scpe2,optimum,5,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
+scpe2,cbls-set,7,40.0,"this repo, 10s x 3 seeds, best"
+scpe2,cbls-bool,6,20.0,"this repo, 10s x 3 seeds, best"
+scpe3,optimum,5,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
+scpe3,cbls-set,7,40.0,"this repo, 10s x 3 seeds, best"
+scpe3,cbls-bool,5,0.0,"this repo, 10s x 3 seeds, best"
+scpe4,optimum,5,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
+scpe4,cbls-set,7,40.0,"this repo, 10s x 3 seeds, best"
+scpe4,cbls-bool,7,40.0,"this repo, 10s x 3 seeds, best"
+scpe5,optimum,5,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
+scpe5,cbls-set,7,40.0,"this repo, 10s x 3 seeds, best"
+scpe5,cbls-bool,6,20.0,"this repo, 10s x 3 seeds, best"

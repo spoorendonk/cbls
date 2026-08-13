@@ -550,20 +550,25 @@ only variables are structured. There, everything else is inert:
 
 so once no sampled move improves, the search is finished, whatever budget
 remains. Measured on OR-Library set covering
-(`benchmarks/instances/setcover/`, issue #93), where the same instance modelled
-as one `Set` variable and as one Bool per column differ by roughly an order of
-magnitude in gap-to-optimum, in the scalar encoding's favour. A 3-row, 4-column
-fixture in `tests/test_setcover.cpp` reproduces it exactly: the Set encoding
-stalls one move away from the optimum because every single add/remove/swap from
-its incumbent is worse.
+(`benchmarks/instances/setcover/`, issue #93): on the weighted instances the
+same data modelled as one `Set` variable costs **5-7x the proven optimum**,
+against **+9-29%** for one Bool per column — while on *unicost* instances,
+where the objective is just cardinality, the two nearly converge. What the Set
+search lacks is not reach but a violation-guided choice of *which* element to
+move. A 3-row, 4-column fixture in `tests/test_setcover.cpp` reproduces it
+exactly: the Set encoding stalls one move away from the optimum because every
+single add/remove/swap from its incumbent is worse.
 
 Note the second-order effect, because it makes tuning counter-intuitive: those
 idle FJ batches are not harmless. Their weight pump inflates `W` on the
 persistently-violated objective row, and a skewed enough `W` is what lets the
 structural pass accept a move that breaks a constraint — the closest thing a
 structure-only model has to diversification. Setting
-`structural_batch_probability = 1.0` removes it and measures *worse* on the
-unicost instances.
+`structural_batch_probability = 1.0` removes the pump in exchange for more
+structural passes, and that trade measures *worse* on the unicost set-covering
+instances (8/7/7 -> 10/10/9) while measuring *better* on the weighted ones
+(3877/3260/3625 -> 2187/2303/2517). Neither is a fix; both are symptoms of the
+structural batch having no guidance of its own.
 
 ### Deadline bound
 
