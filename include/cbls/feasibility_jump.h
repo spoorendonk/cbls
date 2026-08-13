@@ -120,6 +120,25 @@ public:
     bool all_satisfied() const;
     int64_t iterations() const { return iterations_; }  // total GLS iterations since begin()
 
+    // ---- Deadline-check tuning (#113) ----
+    //
+    // The GLS loop checks the wall clock on a stride sized in *time*, not in
+    // iterations: one stride costs at most kStrideBudgetFraction of the budget,
+    // or one (atomic) GLS iteration, whichever is larger. That is the batch's
+    // worst-case overrun. See the long comment on gls_loop for the measurements.
+    static constexpr double kStrideBudgetFraction = 1.0 / 64.0;
+    static constexpr int64_t kStrideGrowth = 8;              // max growth per adjustment
+    static constexpr int64_t kMaxDeadlineStride = 1 << 16;   // stop the tuner ratcheting
+    // Pure function of the last measurement, exposed so the tuner can be tested
+    // directly — in particular that it shrinks, not only grows.
+    static int64_t next_deadline_stride(int64_t stride, double elapsed_seconds,
+                                        double target_seconds);
+    // How the deadline is currently being observed. `deadline_checks()` is 0 for
+    // a run with no wall clock, which is the direct evidence that no clock read
+    // influenced control flow; `deadline_check_stride()` is the live stride.
+    int64_t deadline_checks() const { return deadline_checks_; }
+    int64_t deadline_check_stride() const { return deadline_stride_; }
+
     // Novelty Jump (paper Algorithms 4-5): a bounded-backtracking compound-move
     // search that escapes local optima single-variable FJ cannot (chained-
     // invariant fixes). Commits the improving compound move(s) it finds (left
@@ -198,7 +217,17 @@ private:
     std::vector<int32_t> examined_;   // scratch: distinct vars sampled in one apply_jump
     std::vector<uint8_t> is_linear_;  // per constraint
     std::vector<std::vector<int32_t>> vars_of_constraint_;  // constraint idx -> jumpable vars (G_c)
+    // Arm/disarm the deadline and reset the stride tuner (both entry points).
+    void arm_deadline();
+
     std::chrono::steady_clock::time_point deadline_;
+    // Wall-clock deadline observation state (#113). All of it is untouched, and
+    // the clock unread, while has_deadline_ is false.
+    std::chrono::steady_clock::time_point last_deadline_check_;
+    double stride_target_seconds_ = 0.0;  // what one stride is allowed to cost
+    int64_t deadline_stride_ = 1;         // iterations between clock reads
+    int64_t deadline_countdown_ = 1;      // iterations left until the next one
+    int64_t deadline_checks_ = 0;         // clock reads made inside the GLS loop
     bool has_deadline_ = false;
     int64_t iterations_ = 0;
     // Armed by the search loop after `perturbation_period` batches without

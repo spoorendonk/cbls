@@ -591,20 +591,99 @@ bool FeasibilityJump::any_active_violated() const {
     return false;
 }
 
+// Next deadline-check stride, given how long the last one actually took.
+//
+// Growth is capped at kStrideGrowth so the stride ramps up through
+// progressively longer — and therefore more accurate — measurements instead of
+// extrapolating the whole way from one short one. The cap never weakens the
+// bound: an x8 growth is only taken when 8 x elapsed is still inside the
+// target, so the predicted duration of the next stride is <= target either way.
+//
+// Shrinking is deliberately NOT capped. Iterations that got more expensive must
+// be caught on the very next check, and an uncapped shrink is also what stops
+// the stride ratcheting upward and going silent — the failure mode that got an
+// earlier self-tuning stride removed from this engine.
+int64_t FeasibilityJump::next_deadline_stride(int64_t stride, double elapsed_seconds,
+                                              double target_seconds) {
+    // elapsed <= 0 means the interval was below the clock's resolution, i.e.
+    // far inside the target: grow by the cap.
+    double scale = static_cast<double>(kStrideGrowth);
+    if (elapsed_seconds > 0.0) {
+        scale = std::min(scale, target_seconds / elapsed_seconds);
+    }
+    const double next = static_cast<double>(stride) * scale;
+    if (!(next > 1.0)) {
+        return 1;  // also the NaN case: never fewer than one iteration per check
+    }
+    if (next >= static_cast<double>(kMaxDeadlineStride)) {
+        return kMaxDeadlineStride;
+    }
+    return static_cast<int64_t>(next);
+}
+
+// Arm (or disarm) the wall-clock deadline and reset the stride tuner. Called
+// from both entry points, begin() and run(), so the tuner state cannot be left
+// stale from a previous run.
+void FeasibilityJump::arm_deadline() {
+    has_deadline_ = config_.time_limit > 0.0;
+    deadline_checks_ = 0;
+    if (!has_deadline_) {
+        return;  // no clock is read, and no clock-derived state exists, at all
+    }
+    const auto now = std::chrono::steady_clock::now();
+    deadline_ = now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                          std::chrono::duration<double>(config_.time_limit));
+    last_deadline_check_ = now;
+    stride_target_seconds_ = config_.time_limit * kStrideBudgetFraction;
+    // Start at one iteration and let the tuner grow it. The first stride is the
+    // one no measurement has bounded yet, and starting it at 64 on a model whose
+    // iterations cost 100ms is the whole of #113.
+    deadline_stride_ = 1;
+    deadline_countdown_ = 1;
+}
+
 // The GLS inner loop (ApplyJump + stagnation weight bump), reusing the current
 // state (Q, weights, jump table). Returns Feasible as soon as no active
 // constraint is violated; Unsolved when the batch / global iteration budget or
 // the deadline is hit. batch_iter_limit <= 0 means "no per-call limit".
+//
+// ---- How the deadline is observed (#113) ----
+//
+// Reading the clock is not free: steady_clock::now() measures 1408 ns/call on
+// this project's reference machine, whose clocksource is HPET (it is ~20-25 ns
+// through the vDSO on a TSC clocksource), against GLS iterations that can be a
+// few microseconds. Checking every iteration measured 2996 -> 5228 ns per
+// iteration, a 1.75x throughput loss, on a small Bool model — so the loop
+// cannot simply check every time.
+//
+// It used to check on a fixed stride of 64 iterations, which is not a time
+// bound at all: one GLS iteration is O(sampled vars x candidate values x
+// constraints touched), so 64 of them are microseconds on a small model and
+// seconds on a large one. Measured on 400 Int vars with 20 000 rows of 8: every
+// budget from 0.05s to 3s took ~7s, always after exactly 64 iterations.
+//
+// So the stride is sized in *time* instead. Each check measures how long the
+// previous stride took, which is the current cost of an iteration, and sizes
+// the next stride to kStrideBudgetFraction of the total budget. The guarantee:
+//
+//   a batch returns at most one stride past the deadline, and a stride costs at
+//   most 1/64 of the budget -- or one GLS iteration, whichever is larger,
+//   because an iteration is atomic and cannot be pre-empted from the inside.
+//
+// Sizing the stride in time also bounds the clock overhead without having to
+// measure the clock at all: one read per stride, against a stride costing
+// budget/64, is 1.4us / (budget/64) even on the expensive clocksource — 0.45%
+// of a 20ms budget, 0.009% of a 1s one. It degrades only for budgets so small
+// (well under a millisecond) that the run is over before throughput matters.
+//
+// Two honest caveats. The prediction is a measurement, so an iteration whose
+// cost jumps mid-stride overruns the target and is corrected only at the next
+// check. And the interval between checks can span a batch boundary, so work the
+// *outer* loop does between batches (hook, LNS, structural sweep) is charged to
+// the stride, which shrinks it; that is conservative, never the reverse.
 GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
     const size_t nc = model_.constraint_ids().size();
     int64_t batch_iters = 0;
-    // Sampling the wall clock every iteration is not free: steady_clock::now()
-    // costs ~20ns on a TSC clocksource but ~1.4us on HPET, against a GLS
-    // iteration that can be under 600ns — measured as a 3.8x throughput loss on
-    // an HPET machine. Check on a stride instead: the overrun is then bounded by
-    // one stride of work, which is nothing against the multi-second overrun the
-    // deadline exists to prevent. Power of two so the test is a mask.
-    constexpr int64_t kDeadlineCheckStride = 64;
 
     while (true) {
         if (!apply_jump(sample_size)) {
@@ -630,9 +709,20 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
         if (config_.max_iterations > 0 && iterations_ >= config_.max_iterations) {
             return GFJStatus::Unsolved;
         }
-        if (has_deadline_ && (batch_iters & (kDeadlineCheckStride - 1)) == 0 &&
-            std::chrono::steady_clock::now() >= deadline_) {
-            return GFJStatus::Unsolved;
+        // Short-circuited on has_deadline_, so a run with no wall clock neither
+        // reads the clock nor touches any of the tuner state: iteration-budgeted
+        // runs stay bit-identical.
+        if (has_deadline_ && --deadline_countdown_ <= 0) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= deadline_) {
+                return GFJStatus::Unsolved;
+            }
+            ++deadline_checks_;
+            deadline_stride_ = next_deadline_stride(
+                deadline_stride_, std::chrono::duration<double>(now - last_deadline_check_).count(),
+                stride_target_seconds_);
+            deadline_countdown_ = deadline_stride_;
+            last_deadline_check_ = now;
         }
     }
 }
@@ -646,12 +736,7 @@ GFJStatus FeasibilityJump::gls(int sample_size) {
 
 void FeasibilityJump::begin(bool set_initial_x) {
     iterations_ = 0;
-    has_deadline_ = config_.time_limit > 0.0;
-    if (has_deadline_) {
-        deadline_ = std::chrono::steady_clock::now() +
-                    std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                        std::chrono::duration<double>(config_.time_limit));
-    }
+    arm_deadline();
     if (set_initial_x) {
         set_initial_assignment();
     }
@@ -987,12 +1072,7 @@ bool FeasibilityJump::apply_novelty_jump() {
 
 GFJStatus FeasibilityJump::run() {
     iterations_ = 0;
-    has_deadline_ = config_.time_limit > 0.0;
-    if (has_deadline_) {
-        deadline_ = std::chrono::steady_clock::now() +
-                    std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                        std::chrono::duration<double>(config_.time_limit));
-    }
+    arm_deadline();
 
     if (config_.set_initial_x) {
         set_initial_assignment();
