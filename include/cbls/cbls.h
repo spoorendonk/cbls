@@ -16,6 +16,7 @@ inline constexpr const char* version = "0.1.0";
 #include "model.h"
 #include "moves.h"
 #include "pool.h"
+#include "randomize.h"
 #include "rng.h"
 #include "search.h"
 #include "verify.h"

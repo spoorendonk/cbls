@@ -2,6 +2,7 @@
 
 #include "cbls/dag_ops.h"
 #include "cbls/feasibility_jump.h"
+#include "cbls/randomize.h"
 
 #include <algorithm>
 #include <chrono>
@@ -12,34 +13,6 @@
 namespace cbls {
 
 SolveCallback::~SolveCallback() = default;
-
-namespace {
-
-void randomize_var(Variable& var, RNG& rng) {
-    switch (var.type) {
-        case VarType::Bool:
-            var.value = static_cast<double>(rng.integers(0, 2));
-            break;
-        case VarType::Int:
-            var.value = static_cast<double>(
-                rng.integers(static_cast<int64_t>(var.lb), static_cast<int64_t>(var.ub) + 1));
-            break;
-        case VarType::Float:
-            var.value = rng.uniform(var.lb, var.ub);
-            break;
-        case VarType::List:
-            var.elements = rng.permutation(var.max_size);
-            break;
-        case VarType::Set: {
-            int size = static_cast<int>(rng.integers(var.min_size, var.max_size + 1));
-            auto chosen = rng.choice(var.universe_size, size);
-            var.elements = chosen;
-            break;
-        }
-    }
-}
-
-}  // namespace
 
 void initialize_random(Model& model, RNG& rng) {
     for (auto& var : model.variables_mut()) {

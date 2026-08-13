@@ -4,6 +4,7 @@
 #include "lns.h"
 #include "model.h"
 #include "moves.h"
+#include "randomize.h"
 #include "rng.h"
 #include "violation.h"
 
@@ -142,9 +143,8 @@ public:
 /// `SearchConfig::skip_init = true`, which makes `solve()` keep the assignment it
 /// is handed instead of re-initialising it.
 ///
-/// Not safe on an unbounded domain: a Float with an infinite-width domain draws
-/// NaN and a half-infinite one draws +inf, and an infinite Int bound casts to
-/// INT64_MIN. Give scalars finite bounds before calling this.
+/// Safe on an unbounded domain: the draw goes through `randomize_var`, which
+/// samples a finite in-domain window instead of the raw bounds (#112).
 void initialize_random(Model& model, RNG& rng);
 
 /// Randomise only the structured (List, Set) variables, leaving every scalar

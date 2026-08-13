@@ -1,6 +1,7 @@
 #include "cbls/feasibility_jump.h"
 
 #include "cbls/dag_ops.h"
+#include "cbls/randomize.h"
 
 #include <algorithm>
 #include <cmath>
@@ -25,30 +26,23 @@ double clamp_to_domain(const Variable& var, double value) {
 }
 
 // --- perturbation helpers --------------------------------------------------
+// `random_in_domain` itself lives in randomize.h, shared with search.cpp's
+// initialisers and LNS's destroy step (#112). The two below are specific to the
+// kick and stay here; they read the domain through the same `domain_window`, so
+// the values they consider in-domain are exactly the ones it can draw.
+//
 // A variable can be moved by a perturbation only if its domain holds at least
 // two values. Bool spans {0,1} today, but ask its bounds rather than assume so:
 // should a Bool ever become pinnable, flipping it would put it outside its own
 // domain. Int truncates its bounds the same way random_in_domain does, so both
 // paths agree on which values the domain contains.
 bool movable_domain(const Variable& var) {
+    const DomainWindow w = domain_window(var);
     switch (var.type) {
         case VarType::Int:
-            return static_cast<int64_t>(var.ub) > static_cast<int64_t>(var.lb);
+            return static_cast<int64_t>(w.hi) > static_cast<int64_t>(w.lo);
         default:  // Bool, Float
-            return var.ub > var.lb;
-    }
-}
-
-// Draw a uniformly random value from the variable's domain.
-double random_in_domain(const Variable& var, RNG& rng) {
-    switch (var.type) {
-        case VarType::Bool:
-            return static_cast<double>(rng.integers(0, 2));
-        case VarType::Int:
-            return static_cast<double>(
-                rng.integers(static_cast<int64_t>(var.lb), static_cast<int64_t>(var.ub) + 1));
-        default:  // Float
-            return rng.uniform(var.lb, var.ub);
+            return w.hi > w.lo;
     }
 }
 
@@ -61,12 +55,13 @@ double random_different_in_domain(const Variable& var, RNG& rng) {
     if (!movable_domain(var)) {
         return var.value;
     }
+    const DomainWindow w = domain_window(var);
     switch (var.type) {
         case VarType::Bool:
             return var.value != 0.0 ? 0.0 : 1.0;
         case VarType::Int: {
-            const int64_t lb = static_cast<int64_t>(var.lb);
-            const int64_t ub = static_cast<int64_t>(var.ub);
+            const int64_t lb = static_cast<int64_t>(w.lo);
+            const int64_t ub = static_cast<int64_t>(w.hi);
             const int64_t cur = static_cast<int64_t>(var.value);
             if (cur < lb || cur > ub) {
                 return static_cast<double>(rng.integers(lb, ub + 1));  // any value differs
@@ -80,14 +75,14 @@ double random_different_in_domain(const Variable& var, RNG& rng) {
             return static_cast<double>(draw);
         }
         default: {  // Float
-            const double v = rng.uniform(var.lb, var.ub);
+            const double v = rng.uniform(w.lo, w.hi);
             if (v != var.value) {
                 return v;
             }
             // Measure-zero in exact arithmetic, but a narrow enough domain makes
             // it reachable; fall back to the endpoint further from the current
             // value, which differs because the domain holds more than one point.
-            return (var.value - var.lb >= var.ub - var.value) ? var.lb : var.ub;
+            return (var.value - w.lo >= w.hi - var.value) ? w.lo : w.hi;
         }
     }
 }

@@ -1,6 +1,7 @@
 #include "cbls/lns.h"
 
 #include "cbls/dag_ops.h"
+#include "cbls/randomize.h"
 #include "cbls/search.h"
 
 #include <algorithm>
@@ -97,27 +98,7 @@ bool LNS::destroy_repair(Model& model, ViolationManager& vm, RNG& rng,
 
     // Randomize destroyed variables
     for (int32_t idx : var_indices) {
-        auto& var = model.var_mut(idx);
-        switch (var.type) {
-            case VarType::Bool:
-                var.value = static_cast<double>(rng.integers(0, 2));
-                break;
-            case VarType::Int:
-                var.value = static_cast<double>(
-                    rng.integers(static_cast<int64_t>(var.lb), static_cast<int64_t>(var.ub) + 1));
-                break;
-            case VarType::Float:
-                var.value = rng.uniform(var.lb, var.ub);
-                break;
-            case VarType::List:
-                rng.shuffle(var.elements);
-                break;
-            case VarType::Set: {
-                int size = static_cast<int>(rng.integers(var.min_size, var.max_size + 1));
-                var.elements = rng.choice(var.universe_size, size);
-                break;
-            }
-        }
+        randomize_var(model.var_mut(idx), rng);
     }
 
     full_evaluate(model);
