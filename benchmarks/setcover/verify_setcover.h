@@ -17,10 +17,11 @@ namespace cbls {
 namespace setcover {
 
 struct CoverCheck {
-    bool covered = false;      // every row covered by at least one chosen column
+    bool covered = false;       // every row covered by at least one chosen column
     int uncovered_rows = 0;
-    int duplicate_columns = 0; // a column selected twice (a malformed Set value)
-    double cost = 0.0;         // recomputed from the instance costs
+    int duplicate_columns = 0;  // a column selected twice (a malformed Set value)
+    int invalid_columns = 0;    // a column index outside 0..cols-1
+    double cost = 0.0;          // recomputed from the instance costs
     int num_columns = 0;
 };
 
@@ -33,7 +34,7 @@ inline CoverCheck check_cover(const SetCoverInstance& inst, const std::vector<in
     std::vector<uint8_t> covered(static_cast<size_t>(inst.rows), 0);
     for (int col : columns) {
         if (col < 0 || col >= inst.cols) {
-            ++check.duplicate_columns;  // out of range is at least as bad
+            ++check.invalid_columns;
             continue;
         }
         if (seen[static_cast<size_t>(col)]) {
@@ -70,10 +71,12 @@ inline VerifyResult verify_setcover(const SetCoverModel& scm, const SetCoverInst
                           std::to_string(check.uncovered_rows) + " rows are covered by no "
                           "selected column"});
     }
-    if (check.duplicate_columns > 0) {
+    if (check.duplicate_columns + check.invalid_columns > 0) {
         result.add_error({VerifyError::Kind::Custom, "columns", 0.0,
-                          static_cast<double>(check.duplicate_columns),
-                          "selected column list has repeated or out-of-range entries"});
+                          static_cast<double>(check.duplicate_columns + check.invalid_columns),
+                          "selected column list has " +
+                              std::to_string(check.duplicate_columns) + " repeated and " +
+                              std::to_string(check.invalid_columns) + " out-of-range entries"});
     }
     const double dag_objective = scm.model.node(scm.model.objective_id()).value;
     if (std::abs(dag_objective - check.cost) > tol * (1.0 + std::abs(check.cost))) {

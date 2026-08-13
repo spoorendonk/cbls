@@ -41,6 +41,7 @@ const std::vector<std::string>& default_roster() {
 }
 
 struct Options {
+    bool help = false;
     std::string dir = "benchmarks/instances/setcover";
     std::string instance;  // explicit path; empty => the vendored roster
     double time_limit = 10.0;
@@ -106,8 +107,9 @@ Options parse_args(int argc, char** argv, bool* ok) {
                 *ok = false;
             }
         } else if (arg == "--help" || arg == "-h") {
+            opt.help = true;
             print_usage();
-            *ok = false;
+            break;
         } else {
             fprintf(stderr, "unknown argument '%s'\n", arg.c_str());
             *ok = false;
@@ -188,6 +190,9 @@ void write_csv(const std::string& path, const std::vector<Run>& runs) {
 int main(int argc, char** argv) {
     bool ok = false;
     Options opt = parse_args(argc, argv, &ok);
+    if (opt.help) {
+        return 0;
+    }
     if (!ok) {
         return 1;
     }
