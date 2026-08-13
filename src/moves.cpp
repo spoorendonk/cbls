@@ -1,5 +1,7 @@
 #include "cbls/moves.h"
 
+#include "cbls/randomize.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -29,8 +31,11 @@ static std::vector<Move> int_moves(const Variable& var, RNG& rng) {
     {
         Move m;
         m.move_type = "int_rand";
+        // Through the shared window, so an infinite bound cannot cast to
+        // INT64_MIN (#112). Inert on a finite domain.
+        const DomainWindow w = domain_window(var);
         double new_val = static_cast<double>(
-            rng.integers(static_cast<int64_t>(var.lb), static_cast<int64_t>(var.ub) + 1));
+            rng.integers(static_cast<int64_t>(w.lo), static_cast<int64_t>(w.hi) + 1));
         m.changes.push_back({var.id, new_val, {}});
         moves.push_back(m);
     }
@@ -38,7 +43,12 @@ static std::vector<Move> int_moves(const Variable& var, RNG& rng) {
 }
 
 static std::vector<Move> float_moves(const Variable& var, RNG& rng, double sigma_frac = 0.1) {
-    double sigma = (var.ub - var.lb) * sigma_frac;
+    // Scale the step by the shared sampling window rather than the raw bounds:
+    // an unbounded domain gives an infinite width, and normal(0, inf) is NaN
+    // (#112). Inert on a finite domain. The clamp still uses the real bounds —
+    // it is what keeps the move in the actual domain.
+    const DomainWindow w = domain_window(var);
+    double sigma = (w.hi - w.lo) * sigma_frac;
     double new_val = var.value + rng.normal(0, sigma);
     new_val = std::clamp(new_val, var.lb, var.ub);
     Move m;

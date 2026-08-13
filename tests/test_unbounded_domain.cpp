@@ -185,6 +185,36 @@ TEST_CASE("randomize_var keeps an unbounded model's assignment finite",
     }
 }
 
+TEST_CASE("standard moves stay finite on an unbounded domain", "[unbounded][moves]") {
+    // `generate_standard_moves` is a public entry point (and a Python binding)
+    // that read the raw bounds too. It is NOT on solve()'s default path —
+    // structural_pass calls it only for List/Set — but `normal(0, (ub-lb)*0.1)`
+    // is NaN when the width is infinite, and int_rand's cast hit INT64_MIN.
+    Model m;
+    int32_t x = m.float_var(-kInf, kInf, "x");
+    int32_t n = m.int_var(0, 5, "n");
+    m.add_constraint(m.leq(m.sum({x, n}), m.constant(1.0)));
+    m.close();
+    m.var_mut(vid(n)).ub = kInf;  // int_var takes `int`; a reader can write ±inf
+    m.var_mut(vid(n)).value = 2.0;
+    // A fresh Variable's value is its lower bound, so an unbounded-below Float
+    // starts at -inf until FeasibilityJump::begin() replaces it with the
+    // closest-to-zero point. Stand in for that here.
+    m.var_mut(vid(x)).value = 0.0;
+
+    for (uint64_t seed = 1; seed <= kSeeds; ++seed) {
+        RNG rng(seed);
+        for (int32_t v : {vid(x), vid(n)}) {
+            for (const Move& move : generate_standard_moves(m.var(v), rng)) {
+                for (const Move::Change& ch : move.changes) {
+                    INFO(move.move_type << " var=" << v);
+                    REQUIRE(std::isfinite(ch.new_value));
+                }
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The kick path. Both cases below FAIL on the pre-fix engine.
 // ---------------------------------------------------------------------------
@@ -209,42 +239,32 @@ TEST_CASE("a diversification kick keeps an unbounded model finite", "[unbounded]
     }
 }
 
-TEST_CASE("solve keeps improving after a diversification kick", "[unbounded][search]") {
-    // End-to-end on the default path. `perturbation_period = 1` makes the search
-    // kick after every non-improving batch, so kicks are reached well inside the
-    // iteration budget; everything else is default.
+TEST_CASE("solve solves a model only a kick can escape", "[unbounded][search]") {
+    // End-to-end, and the measurement from the issue. On `|x^2 + y^2 - 1| <= 0`
+    // the closest-to-zero start (0, 0) is a stationary point of the only
+    // constraint — both partials of |x^2 + y^2 - 1| vanish there — so no jump
+    // value can move either variable and the search is stuck at violation 1
+    // until a diversification kick moves it off the origin. The kick is
+    // therefore load-bearing, not incidental.
     //
-    // Pre-fix this fails: after the first kick every constraint is NaN,
-    // max_real_violation maps that to +inf, so no assignment is ever
-    // real-feasible again, record_best never fires, and no progress callback
-    // after the first kick ever carries new_best.
-    struct LastBest : SolveCallback {
-        int perturbations_at_last_best = -1;
-        void on_progress(const SolveProgress& p) override {
-            if (p.new_best) {
-                perturbations_at_last_best = p.perturbations;
-            }
-        }
-    };
-
-    Model m;
-    int32_t x = m.float_var(-kInf, kInf, "x");
-    int32_t y = m.float_var(-kInf, kInf, "y");
-    m.add_constraint(m.geq(m.sum({x, y}), m.constant(4.0)));
-    m.minimize(m.sum({m.prod(x, x), m.prod(y, y)}));  // optimum 8 at x = y = 2
-    m.close();
+    // Pre-fix the kick writes NaN instead: `max_real_violation()` returns +inf
+    // from then on, nothing is ever feasible again, and `solve()` returns the
+    // pre-kick closest-approach state — `feasible = false`, `best_violation = 1`
+    // — looking like an ordinary infeasible run.
+    Model m = unit_circle_model();
 
     SearchConfig cfg;
+    // Kick sooner than the default 100 stagnant batches so the budget below is
+    // small enough to keep the test quick; everything else is default.
+    cfg.perturbation_period = 4;
     cfg.max_iterations = 200000;
-    cfg.perturbation_period = 1;
-    LastBest cb;
     SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr,
-                           /*lns_interval=*/3, &cb, cfg);
+                           /*lns_interval=*/3, nullptr, cfg);
 
-    REQUIRE(cb.perturbations_at_last_best >= 1);
     REQUIRE(r.feasible);
-    REQUIRE(std::isfinite(r.objective));
+    REQUIRE(r.best_violation <= cfg.feasibility_tolerance);
     REQUIRE(all_values_finite(m));
+    REQUIRE(all_constraints_finite(m));
 }
 
 // ---------------------------------------------------------------------------
