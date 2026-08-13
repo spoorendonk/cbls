@@ -53,9 +53,10 @@ DAG:
    (Newton steps on violated constraints, backtracking line search on the
    objective, multi-variable minimum-norm Newton), triggered **on each new
    feasible solution**.
-5. **Diversifies** on stagnation: a per-variable random perturbation that always
-   moves at least one variable, or — every `lns_interval`-th diversification
-   kick — large neighborhood search (destroy + GFJ repair).
+5. **Diversifies** on stagnation: a random perturbation of the scalars plus a run
+   of random structural moves per List/Set variable, which always moves at least
+   one variable, or — every `lns_interval`-th diversification kick — large
+   neighborhood search (destroy + GFJ repair).
 6. **Tracks** the best real-feasible solution found (objective bound tightened
    alongside it), with a solution pool for parallel multi-seed search.
 
@@ -596,11 +597,12 @@ sets and Novelty Jump.
 
 Do **not** over-read that as "a random start is reachable anyway". `perturb()`
 randomises each jumpable variable only with probability `perturbation_probability`
-(default **0.1**), not all of them, and it runs only after `perturbation_period`
-(default **100**) stagnant batches; when the independent draws happen to move
-nothing it forces exactly one variable (#109). A kick is therefore a sparse,
-occasional nudge, not a re-draw of the assignment, and it is not a substitute for
-a randomised starting point.
+(default **0.1**), not all of them, and moves each List/Set variable by only
+`round(p * |elements|)` local structural moves (#111); it runs only after
+`perturbation_period` (default **100**) stagnant batches, and when all of that
+happens to move nothing it forces exactly one variable (#109). A kick is
+therefore a sparse, occasional nudge, not a re-draw of the assignment, and it is
+not a substitute for a randomised starting point.
 
 `solve()` used to call `initialize_random` (which randomises scalars too) and
 then overwrite every scalar a dozen lines later in `begin()`. The draws were dead
@@ -807,9 +809,41 @@ instead add an O(n) scan to every kick of every model.
 Resampling is not enough for the forced variable — a uniform redraw returns the
 current value with probability `1/|domain|`, which on a Bool is one kick in two —
 so the fallback draws from the domain with the current value removed. A variable
-pinned by `lb == ub` cannot be chosen; if a model has no movable jumpable
-variable at all (e.g. only List/Set variables), the kick correctly changes
-nothing.
+pinned by `lb == ub` cannot be chosen.
+
+Both of those reach only *jumpable* (scalar) variables, so List and Set variables
+get their own pass in the same kick (#111). Without it, a kick on a model whose
+decision structure is structural randomised nothing at all, and since LNS fires
+only every `lns_interval`-th kick, most kicks on such a model were no-ops — the
+pharma-glsp campaign-scheduling formulation being the case in the roster.
+
+The structural pass applies `k = round(p * |elements|)` random moves to **each**
+List/Set variable, drawn from the same typed generators the [structural
+batch](#structural-batch) uses (`generate_standard_moves`), so every move is
+legal by construction: a List stays a permutation of its elements, a Set stays
+inside `min_size`/`max_size`. Candidates that happen to be no-ops (a relocate to
+the adjacent position) are filtered out before the draw.
+
+Scaling `k` rather than sampling *which* structures move is the deliberate part.
+A structure has no "randomise the whole variable" analogue that is not a restart,
+so the probability sets how much of each structure moves instead of how many
+structures move — the same `p` fraction of the model's decision content either
+way. It also stops a structure with fewer than `1/p` slots from never moving.
+`k` is clamped to `[1, |elements|]`: at least one move, so a kick on a
+structural model is never a no-op; at most one move per slot, already a full
+scramble, so a misconfigured `p > 1` cannot turn a kick into unbounded work.
+The moves are local in the *adjacency* metric — a 2-opt reversal rewrites a whole
+sub-range of positions but breaks only two adjacent pairs — so at the default
+`p = 0.1` a 200-element List keeps ~2/3 of its adjacencies: a kick, not a restart.
+
+The pass tests the variable type before drawing, so it consumes no randomness on
+a model without List/Set variables: scalar-only models keep their exact draw
+sequence, verified bit-identical against the pre-#111 engine over 12k kicks
+(6 model shapes x 4 probabilities x 25 seeds x 20 kicks, comparing the assignment
+and the next two draws after each kick). Reaching the scalar fallback implies the
+structural pass moved nothing either, so it stays scalar-only; a model with no
+movable variable at all (every scalar pinned, no movable structure) still
+correctly changes nothing.
 
 ### SearchConfig
 
@@ -823,7 +857,8 @@ struct SearchConfig {
 
     int64_t batch_iterations = 1000;        // GLS iterations per FJ batch
     int perturbation_period = 100;          // batches without improvement before diversifying
-    double perturbation_probability = 0.1;  // per-var randomisation prob (never a no-op)
+    double perturbation_probability = 0.1;  // scalar randomisation prob + List/Set
+                                            // kick size (never a no-op)
     double structural_batch_probability = -1.0;  // <0 = auto (0.33 if List/Set vars, else 0)
     bool use_compound_moves = false;        // run Novelty Jump batches (else FJ only)
     double novelty_jump_probability = 0.5;  // P(a batch is Novelty Jump) when enabled
@@ -1049,8 +1084,9 @@ granularity, and loses the constraint-root information AD provides.
 
 ### Diversification: perturbation + LNS vs population/restarts
 
-**Chosen:** per-variable random perturbation (never a no-op) by default; LNS
-(destroy + GFJ repair, lexicographic accept) every `lns_interval`-th kick.
+**Chosen:** random perturbation of scalars and structures alike (never a no-op)
+by default; LNS (destroy + GFJ repair, lexicographic accept) every
+`lns_interval`-th kick.
 
 **Alternative:** population-based search (GA, scatter search) or systematic
 restart schedules (Luby). The solution pool supports multi-seed parallel search
@@ -1121,7 +1157,7 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `skip_init` | false | `SearchConfig` | keep the current assignment whole — suppresses both List/Set randomisation and FJ's scalar start (epoch restarts, caller-supplied starts) |
 | `batch_iterations` | 1000 | `SearchConfig` | GLS iterations per FJ batch |
 | `perturbation_period` | 100 | `SearchConfig` | stagnant batches before a diversification kick |
-| `perturbation_probability` | 0.1 | `SearchConfig` | per-var randomisation probability on perturb (a no-op kick moves one var anyway) |
+| `perturbation_probability` | 0.1 | `SearchConfig` | per-var scalar randomisation probability on perturb; also scales the List/Set moves per kick (a no-op kick moves one var anyway) |
 | `structural_batch_probability` | -1 (auto) | `SearchConfig` | P(structural batch); auto 0.33 w/ List/Set, else 0 |
 | `use_compound_moves` | false | `SearchConfig` | enable Novelty Jump batches |
 | `novelty_jump_probability` | 0.5 | `SearchConfig` | P(Novelty Jump batch) when enabled |
