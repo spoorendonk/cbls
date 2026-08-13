@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <set>
 #include <utility>
 #include <vector>
@@ -339,6 +340,9 @@ double kept_adjacency_fraction(const std::vector<int32_t>& before,
     for (size_t i = 0; i + 1 < after.size(); ++i) {
         kept += pairs.count({std::min(after[i], after[i + 1]), std::max(after[i], after[i + 1])});
     }
+    if (after.size() < 2) {
+        return 1.0;  // nothing to break
+    }
     return static_cast<double>(kept) / static_cast<double>(after.size() - 1);
 }
 
@@ -347,7 +351,9 @@ double kept_adjacency_fraction(const std::vector<int32_t>& before,
 TEST_CASE("perturb always moves a List-only model", "[fj][perturb][structural]") {
     for (uint64_t seed = 1; seed <= kSeeds; ++seed) {
         Model m;
-        add_list_vars(m, /*num_lists=*/2, /*n=*/8);
+        // n = 20 puts k = round(0.1 * 20) = 2 moves per kick, so the sweep
+        // exercises a multi-move run rather than the trivial single move.
+        add_list_vars(m, /*num_lists=*/2, /*n=*/20);
         m.close();
         ViolationManager vm(m);
         RNG rng(seed);
@@ -369,7 +375,8 @@ TEST_CASE("perturb always moves a List-only model", "[fj][perturb][structural]")
 TEST_CASE("perturb always moves a Set-only model", "[fj][perturb][structural]") {
     for (uint64_t seed = 1; seed <= kSeeds; ++seed) {
         Model m;
-        add_set_vars(m, /*num_sets=*/2, /*universe=*/12, /*min_size=*/3, /*max_size=*/7);
+        // Sized so k >= 2, as for the List sweep above.
+        add_set_vars(m, /*num_sets=*/2, /*universe=*/60, /*min_size=*/15, /*max_size=*/40);
         m.close();
         RNG rng(seed);
         initialize_structured_random(m, rng);  // Sets start empty until initialised
@@ -446,12 +453,12 @@ TEST_CASE("perturb's structural kick size scales with the probability",
         return total / kicks;
     };
 
-    const double small = mean_kept(0.02);        // k = 4 moves
+    const double small = mean_kept(0.02);          // k = 4 moves
     const double standard = mean_kept(kDefaultP);  // k = 20 moves
-    const double large = mean_kept(0.5);         // k = 100 moves
+    const double large = mean_kept(0.5);           // k = 100 moves
 
-    REQUIRE(small > 0.85);            // a small p barely disturbs the structure
-    REQUIRE(standard > 0.5);          // the default kick keeps most of it: not a restart
+    REQUIRE(small > 0.85);             // a small p barely disturbs the structure
+    REQUIRE(standard > 0.5);           // the default kick keeps most of it: not a restart
     REQUIRE(standard < small - 0.05);  // ... and p is what decides how much moves
     REQUIRE(large < standard - 0.15);
 }
@@ -475,5 +482,69 @@ TEST_CASE("perturb keeps structures legal at an over-large probability",
         fj.perturb(3.0);
         REQUIRE(is_permutation_of(m.var(0).elements, original));
         REQUIRE(is_valid_set(m.var(1)));
+    }
+}
+
+TEST_CASE("perturb never leaves a structure where it found it", "[fj][perturb][structural]") {
+    // A run of k >= 2 moves can undo itself — add an element, then remove the
+    // same one — and counting applied moves rather than the net effect would
+    // report that as a kick. It is rare (~1.5% of kicks on this model) but it is
+    // exactly the no-op #111 exists to remove, so the sweep compares elements
+    // before and after and falls through to the guarantee when they match.
+    for (uint64_t seed = 1; seed <= kSeeds; ++seed) {
+        Model m;
+        add_set_vars(m, /*num_sets=*/1, /*universe=*/30, /*min_size=*/5, /*max_size=*/30);
+        m.close();
+        RNG rng(seed);
+        initialize_structured_random(m, rng);
+        ViolationManager vm(m);
+        FeasibilityJump fj(m, vm, rng);
+        fj.begin(/*set_initial_x=*/true);
+        for (int k = 0; k < kStructuralKicks; ++k) {
+            const std::vector<int32_t> before = m.var(0).elements;
+            fj.perturb(kDefaultP);
+            REQUIRE(m.var(0).elements != before);
+            REQUIRE(is_valid_set(m.var(0)));
+        }
+    }
+}
+
+TEST_CASE("an immovable structure costs a scalar model no randomness",
+          "[fj][perturb][structural]") {
+    // The structural pass must not disturb the scalar draw sequence: it tests
+    // the variable type before it draws, and the move generators draw nothing
+    // for a structure that cannot move. Pin that by running the same scalar
+    // model with and without immovable structures — the assignments, and the
+    // draws that follow each kick, must coincide. (The stronger property, that a
+    // model with no structures at all matches the pre-#111 engine draw for draw,
+    // was verified against that engine directly; it cannot be expressed here.)
+    auto scalar_sequence = [](bool with_structures, uint64_t seed) {
+        Model m;
+        std::vector<int32_t> scalars{m.bool_var(), m.int_var(0, 9), m.float_var(0.0, 10.0)};
+        m.add_constraint(m.leq(m.sum(scalars), m.constant(1.0)));
+        m.minimize(m.sum(scalars));
+        if (with_structures) {
+            m.list_var(1);  // no second position to permute
+            int32_t sv = m.set_var(3, /*min_size=*/3, /*max_size=*/3);
+            m.var_mut(handle_to_var_id(sv)).elements = {0, 1, 2};  // pinned at the full universe
+        }
+        m.close();
+        ViolationManager vm(m);
+        RNG rng(seed);
+        FeasibilityJump fj(m, vm, rng);
+        fj.begin(/*set_initial_x=*/true);
+        std::vector<double> sequence;
+        for (int k = 0; k < 20; ++k) {
+            fj.perturb(kDefaultP);
+            for (int32_t v = 0; v < static_cast<int32_t>(scalars.size()); ++v) {
+                sequence.push_back(m.var(v).value);
+            }
+            sequence.push_back(rng.random());  // catches a shift that spared the assignment
+        }
+        return sequence;
+    };
+    for (uint64_t seed = 1; seed <= kSeeds; ++seed) {
+        REQUIRE(scalar_sequence(/*with_structures=*/false, seed) ==
+                scalar_sequence(/*with_structures=*/true, seed));
     }
 }

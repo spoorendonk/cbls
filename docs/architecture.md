@@ -429,8 +429,9 @@ The ViolationLS outer loop owns the iteration clock and calls:
 - `reset_weights()` — `W <- 1`, rebuild `V`/`Q` (called on a new best).
 - `resync()` — rebuild `V`/`Q` from current state, keep weights (called after a
   hook/structural mutation outside the engine's bookkeeping).
-- `perturb(probability)` — randomise each scalar var w.p. `probability`,
-  full-evaluate, reset weights.
+- `perturb(probability)` — randomise each scalar var w.p. `probability` and
+  apply `max(1, round(probability * |elements|))` random structural moves to
+  each List/Set var, full-evaluate, reset weights.
 - `set_rho(rho)` — re-randomise the GLS decay between batches.
 
 ---
@@ -801,10 +802,10 @@ let the search resume in the same basin.
 
 Making it a fallback rather than a variable forced on every kick is deliberate.
 On a model large enough for the per-variable probability to do its job, a no-op
-kick is vanishingly rare, so the fallback never runs: no extra scan over the
-variables, no extra RNG draw, and the kick keeps exactly the distribution *and
-the exact draw sequence* it had before. Forcing a variable unconditionally would
-instead add an O(n) scan to every kick of every model.
+kick is vanishingly rare, so the fallback never runs: no extra RNG draw, and the
+kick keeps exactly the distribution *and the exact draw sequence* it had before.
+Forcing a variable unconditionally would instead shift the draw sequence on every
+model.
 
 Resampling is not enough for the forced variable — a uniform redraw returns the
 current value with probability `1/|domain|`, which on a Bool is one kick in two —
@@ -817,37 +818,54 @@ decision structure is structural randomised nothing at all, and since LNS fires
 only every `lns_interval`-th kick, most kicks on such a model were no-ops — the
 pharma-glsp campaign-scheduling formulation being the case in the roster.
 
-The structural pass applies `k = round(p * |elements|)` random moves to **each**
-List/Set variable, drawn from the same typed generators the [structural
+The structural pass applies `k = max(1, round(p * |elements|))` random moves to
+**each** List/Set variable, drawn from the same typed generators the [structural
 batch](#structural-batch) uses (`generate_standard_moves`), so every move is
 legal by construction: a List stays a permutation of its elements, a Set stays
 inside `min_size`/`max_size`. Candidates that happen to be no-ops (a relocate to
-the adjacent position) are filtered out before the draw.
+the adjacent position) are filtered out before the draw, and a variable counts as
+moved only if its elements *net* changed — a run that adds an element and removes
+it again has to fall through to the guarantee below like any other no-op.
 
 Scaling `k` rather than sampling *which* structures move is the deliberate part.
 A structure has no "randomise the whole variable" analogue that is not a restart,
 so the probability sets how much of each structure moves instead of how many
 structures move — the same `p` fraction of the model's decision content either
 way. It also stops a structure with fewer than `1/p` slots from never moving.
-`k` is clamped to `[1, |elements|]`: at least one move, so a kick on a
-structural model is never a no-op; at most one move per slot, already a full
+The floor of one move is the price: every structure moves on every kick, `p = 0`
+included, where the scalar half moves exactly one variable.
+`k` is clamped to at least one move and at most one per slot, already a full
 scramble, so a misconfigured `p > 1` cannot turn a kick into unbounded work.
+The size is the structure's *current membership*, which for a List is its whole
+decision content but for a Set is not: a 3-of-1000 Set is kicked on the 3, so it
+rewrites a `p` fraction of the set's state and cannot grow far in one kick — LNS,
+which resamples the cardinality outright, is the mechanism for that.
 The moves are local in the *adjacency* metric — a 2-opt reversal rewrites a whole
 sub-range of positions but breaks only two adjacent pairs — so that is the metric
 in which "not a restart" means anything. Measured on a 200-element List: the
 default `p = 0.1` keeps 74% of its adjacent pairs, `p = 0.02` keeps 94%, and
-`p = 0.5` keeps 23%. Cost follows the same scale, `O(k * |elements|)` element
-copies per structure (the generator builds each candidate as a whole new vector):
-0.012 ms per kick on one 100-element List, 23 ms on the 1500-List model of #105 —
-paid once per `perturbation_period` stagnant batches.
+`p = 0.5` keeps 23%. Cost follows the same scale, `O(k * (|elements| + universe))`
+element copies per structure (the generator builds each candidate as a whole new
+vector, and a Set's candidates scan its universe): 0.012 ms per kick on one
+100-element List, 23 ms on the 1500-List model of #105 — paid once per
+`perturbation_period` stagnant batches. Because that is superlinear in one
+structure's size, the sweep is deadline-bounded *between* variables in the same
+way the structural batch's is (#105), never mid-variable, and never before it has
+moved something.
 
 The pass tests the variable type before drawing, so it consumes no randomness on
 a model without List/Set variables: scalar-only models keep their exact draw
-sequence, verified bit-identical against the pre-#111 engine over 12k kicks
-(6 model shapes x 4 probabilities x 25 seeds x 20 kicks, comparing the assignment
-and the next two draws after each kick). Reaching the scalar fallback implies the
-structural pass moved nothing either, so it stays scalar-only; a model with no
-movable variable at all (every scalar pinned, no movable structure) still
+sequence, verified bit-identical against the pre-#111 engine at the time of the
+change over 12k kicks (6 model shapes x 4 probabilities x 25 seeds x 20 kicks,
+comparing the assignment and the next two draws after each kick), and pinned in
+the suite by a test that runs the same scalar model with and without an immovable
+List and requires identical assignment sequences.
+
+The kick's guarantee is model-wide: if anything can move, something moves. On a
+mixed model that means the structures absorb it — they always move — so the
+scalar half is left to the configured probability rather than being forced, and
+the forced-scalar fallback only fires when nothing moved at all. A model with no
+movable variable anywhere (every scalar pinned, every structure a dead end) still
 correctly changes nothing.
 
 ### SearchConfig

@@ -32,7 +32,9 @@ struct SearchConfig {
     int perturbation_period = 100;          // batches without improvement before perturbing
     // How much of the model a diversification kick moves: each scalar variable
     // is randomised with this probability, and each List/Set variable gets
-    // round(p * |elements|) random structural moves (#111). If all of that
+    // max(1, round(p * |elements|)) random structural moves (#111) — the floor
+    // of one is what keeps a kick on a structural model from being a no-op, and
+    // it means every structure moves on every kick whatever p is. If all of that
     // happens to move nothing, one variable is moved anyway, so a kick is never
     // a no-op (#109).
     double perturbation_probability = 0.1;

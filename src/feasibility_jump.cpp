@@ -102,30 +102,41 @@ double random_different_in_domain(const Variable& var, RNG& rng) {
 //
 // `perturbation_probability` has to keep governing how much of the model moves,
 // so scale with the variable's own size: k = round(p * |elements|) displaces
-// roughly a p fraction of the structure's slots, the same fraction of its
-// variables the scalar loop randomises. A structure has no "randomise the whole
-// variable" analogue that is not a restart, so the probability sets *how much*
-// of each structure moves rather than *which* structures move — which is also
-// what keeps a structure smaller than 1/p slots from never moving at all.
+// roughly a p fraction of the structure's slots. A structure has no "randomise
+// the whole variable" analogue that is not a restart, so the probability sets
+// *how much* of each structure moves rather than *which* structures move —
+// which is also what keeps a structure smaller than 1/p slots from never moving
+// at all.
 //
-// Clamped to [1, |elements|]: at least one move, so a kick on a model whose
-// decisions are all structural is never a no-op (#111); at most one move per
-// slot, which is already a full scramble, so a misconfigured p > 1 cannot turn a
-// kick into unbounded work. The comparison is written to reject NaN.
+// The size is the CURRENT membership, which for a List is its whole decision
+// content but for a Set is not: a 3-of-1000 Set gets a kick sized on the 3, not
+// on the universe. That is deliberate — the kick then rewrites a p fraction of
+// the set's *state*, and p = 1 rewrites all of it — but it does mean a sparse
+// Set cannot grow far in a single kick. LNS, which resamples the cardinality
+// outright, is the mechanism for that.
+//
+// Clamped to at least one move, so a kick on a model whose decisions are all
+// structural is never a no-op (#111), and to at most one move per slot, which is
+// already a full scramble, so a misconfigured p > 1 cannot turn a kick into
+// unbounded work. The comparison is written to reject NaN.
 int32_t structural_kick_size(const Variable& var, double probability) {
     const int32_t n = static_cast<int32_t>(var.elements.size());
     const double scaled = std::round(probability * static_cast<double>(n));
     if (!(scaled > 1.0)) {
         return 1;
     }
-    return static_cast<int32_t>(std::min(scaled, static_cast<double>(std::max(n, 1))));
+    // scaled > 1 implies probability * n > 1, hence n >= 1: an empty structure
+    // always took the early return, so the clamp needs no guard for it.
+    return static_cast<int32_t>(std::min(scaled, static_cast<double>(n)));
 }
 
 // Apply one uniformly chosen structural move to `var_id` and report whether the
-// variable's elements actually changed. False means the generator offered
-// nothing that moves this variable (a List shorter than two elements, a Set
-// pinned by min_size == max_size == universe_size), so the caller can stop
-// trying: the state is unchanged, and a further attempt would find the same.
+// variable's elements actually changed. False means this draw offered nothing
+// that moves the variable — in practice a structural dead end (a List shorter
+// than two elements, a Set with no legal add, remove or swap), so the caller
+// stops rather than redraw. That is a heuristic rather than a proof: the
+// generator picks its positions at random, so on a List holding duplicate
+// elements a later draw could in principle differ.
 //
 // Candidates that leave the elements as they are — a relocate to the adjacent
 // position reinserts the element where it was — are dropped before the draw, so
@@ -658,26 +669,65 @@ int32_t FeasibilityJump::pick_forced_perturb_var() {
 }
 
 bool FeasibilityJump::perturb_structural(double probability) {
-    // Cost per structural variable is O(k * |elements|) element copies, k =
-    // round(p * |elements|): the generator builds each candidate as a whole new
-    // element vector. That is quadratic in a single structure's size, but a kick
-    // only fires once per `perturbation_period` stagnant batches: measured at
-    // 0.012 ms per kick on one 100-element List and 23 ms on the 1500-List model
-    // #105 uses as its worst case.
+    // Cost per structural variable is O(k * (|elements| + universe)) element
+    // copies, k = round(p * |elements|): the generator builds each candidate as a
+    // whole new element vector, and a Set's candidates also scan its universe.
+    // That is superlinear in a single structure's size, but a kick fires only
+    // once per `perturbation_period` stagnant batches: measured at 0.012 ms per
+    // kick on one 100-element List and 23 ms on the 1500-List model #105 uses as
+    // its worst case.
     bool changed = false;
     for (int32_t v = 0; v < static_cast<int32_t>(model_.num_vars()); ++v) {
         if (!is_structured(model_.var(v).type)) {
             continue;  // no RNG draw: a scalar-only model keeps its draw sequence
         }
+        // Bounded between variables, never mid-variable, exactly as the
+        // STRUCTURAL batch's sweep is (#105): the cost above is superlinear in a
+        // single structure's size, so on a large enough model one kick could
+        // otherwise overrun the caller's whole time limit. Gated on `changed` so
+        // a deadline already crossed on entry cannot turn the kick into a no-op.
+        if (changed && has_deadline_ && std::chrono::steady_clock::now() >= deadline_) {
+            break;
+        }
+        // Whether the run moved the variable is a question about its NET effect,
+        // not about how many moves were applied: a run of two can add an element
+        // and remove it again, and calling that "changed" would hand back a kick
+        // that changed nothing — the very thing #111 is about.
+        const std::vector<int32_t> before = model_.var(v).elements;
         const int32_t k = structural_kick_size(model_.var(v), probability);
         for (int32_t i = 0; i < k; ++i) {
             if (!apply_random_structural_move(model_, v, rng_)) {
                 break;  // nothing can move this variable; further tries cannot either
             }
-            changed = true;
         }
+        changed = changed || model_.var(v).elements != before;
     }
     return changed;
+}
+
+bool FeasibilityJump::force_structural_move() {
+    std::vector<int32_t> structured;
+    for (int32_t v = 0; v < static_cast<int32_t>(model_.num_vars()); ++v) {
+        if (is_structured(model_.var(v).type)) {
+            structured.push_back(v);
+        }
+    }
+    if (structured.empty()) {
+        return false;
+    }
+    // Walk from a random structure and take the first that moves. Not uniform
+    // over the movable ones — one sitting behind a run of dead ends is favoured
+    // — but this runs only on a kick that would otherwise have changed nothing,
+    // where any movable structure will do. A single applied move always changes
+    // the variable: the no-op candidates were filtered out before the draw.
+    const size_t n = structured.size();
+    const size_t start = static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(n)));
+    for (size_t i = 0; i < n; ++i) {
+        if (apply_random_structural_move(model_, structured[(start + i) % n], rng_)) {
+            return true;
+        }
+    }
+    return false;  // every structure is a dead end
 }
 
 void FeasibilityJump::perturb(double probability) {
@@ -689,12 +739,12 @@ void FeasibilityJump::perturb(double probability) {
     // search resumed where it was (#109).
     //
     // The guarantee is a FALLBACK, not a variable forced on every kick. That
-    // matters for cost and for fidelity: on a model big enough for the
-    // per-variable probability to do its job a no-op kick is vanishingly rare,
-    // so the scan below never runs, no extra RNG draw is taken, and the kick
-    // keeps exactly the distribution — and the exact draw sequence — it had
-    // before. Forcing a variable unconditionally instead would add an O(n) scan
-    // to every kick of every model and shift the draw sequence on all of them.
+    // matters for fidelity: on a model big enough for the per-variable
+    // probability to do its job a no-op kick is vanishingly rare, so the scan
+    // below never runs, no extra RNG draw is taken, and the kick keeps exactly
+    // the distribution — and the exact draw sequence — it had before. Forcing a
+    // variable unconditionally instead would shift the draw sequence on every
+    // model.
     bool changed = false;
     for (int32_t v = 0; v < static_cast<int32_t>(model_.num_vars()); ++v) {
         if (!jumpable(v) || rng_.random() >= probability) {
@@ -714,16 +764,19 @@ void FeasibilityJump::perturb(double probability) {
     const bool structural_changed = perturb_structural(probability);
     changed = changed || structural_changed;
     if (!changed) {
-        // Nothing moved: pick one variable that CAN move and move it. Only
-        // scalars are candidates, and that is enough: the structural pass
-        // already tries every List/Set variable, so reaching here means none of
-        // them could move either. -1 means the model has no movable variable at
-        // all (every scalar pinned, no movable structure), and then a kick that
-        // changes nothing is the correct outcome.
+        // Nothing moved: pick one variable that CAN move and move it. Scalars
+        // first, because that is the cheap answer and the common one; if every
+        // scalar is pinned (-1), force a structure instead — the structural pass
+        // reaching here means either that every structure is a dead end, in
+        // which case this fails too and a kick that changes nothing is the
+        // correct outcome, or that a run of moves cancelled itself out, which a
+        // single further move undoes.
         const int32_t forced = pick_forced_perturb_var();
         if (forced >= 0) {
             Variable& var = model_.var_mut(forced);
             var.value = random_different_in_domain(var, rng_);
+        } else {
+            force_structural_move();
         }
     }
     full_evaluate(model_);
