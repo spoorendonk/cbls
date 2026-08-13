@@ -178,15 +178,14 @@ TEST_CASE("structured init consumes RNG independently of the scalar count", "[se
 }
 
 TEST_CASE("solve's starting point is finite on an unbounded domain", "[search][init]") {
-    // FJ's closest-to-zero start is well defined on any domain, but a uniform
-    // draw is not: `rng.uniform(-inf, +inf)` returns NaN and `rng.uniform(0,
-    // +inf)` returns +inf. Routing solve()'s scalar start back through
-    // `initialize_random` would therefore seed the search at a non-finite point
-    // on exactly the models (unbounded MINLP) where that is hardest to diagnose.
+    // FJ's closest-to-zero start is well defined on any domain, and this pins
+    // that solve() keeps using it: the specific values below are the
+    // closest-to-zero point of each domain, so re-seeding the scalars from any
+    // other rule (a uniform draw, say) fails here.
     //
-    // Scope: this pins the *starting point* only. It does NOT mean the engine is
-    // safe on unbounded domains — the same unguarded draw is still reached from
-    // `perturb()` and LNS destroy on the default path, which is tracked in #112.
+    // Scope: the *starting point* only. Randomisation is safe on an unbounded
+    // domain too, since #112 routed every draw through `domain_window`, but that
+    // is pinned in tests/test_unbounded_domain.cpp, not here.
     const double inf = std::numeric_limits<double>::infinity();
     Model m;
     auto both = m.float_var(-inf, inf);    // clamp(0) = 0

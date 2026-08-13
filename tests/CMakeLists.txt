@@ -8,6 +8,7 @@ add_executable(cbls_tests
     test_nonfinite_guard.cpp
     test_feasibility_jump.cpp
     test_perturb.cpp
+    test_unbounded_domain.cpp
     test_chped.cpp
     test_uc_chped.cpp
     test_inner_solver.cpp

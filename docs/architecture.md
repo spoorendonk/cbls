@@ -615,24 +615,48 @@ cfg.skip_init = true;                 // solve() keeps the assignment it is hand
 solve(model, time_limit, seed, ..., cfg);
 ```
 
-Beware that `initialize_random` is only safe on finite domains: a Float with an
-infinite-width domain draws NaN, a half-infinite one draws +inf, and an infinite
-Int bound casts to `INT64_MIN`. `begin()`'s closest-to-zero start, by contrast,
-is well defined on every domain — a genuine advantage of letting FJ own the
-scalars, but **only for the starting point**.
+`initialize_random` is safe on any domain, unbounded ones included, because it
+goes through the shared randomisation helper described below.
 
-It does *not* make the engine safe on unbounded domains, and this section must
-not be read as claiming it does. The same unguarded draw is still on the default
-`solve()` path in two separate copies of the same unguarded draw: `random_in_domain`
-(feasibility_jump.cpp), reached from `perturb()` on every diversification kick,
-and `LNS::destroy_repair`'s own inline `switch (var.type)` (lns.cpp), which does
-*not* route through `random_in_domain` — a fix has to touch both, and a third copy
-lives in `initialize_random`'s `randomize_var` (search.cpp). Measured: one default-probability kick
-on a model with unbounded Floats turns the assignment NaN, `full_evaluate`
-propagates it, `max_real_violation()` then returns `+inf` permanently, and the
-run cannot recover — while `solve()` still returns an ordinary-looking infeasible
-result restored from the pre-kick closest-approach state. That hazard is
-pre-existing and independent of #108; it is tracked in **#112**.
+#### Randomising a variable (`include/cbls/randomize.h`)
+
+Every uniform "draw a value for this variable" in the engine goes through one
+place: `randomize_var` (scalar `value` or List/Set `elements`), which delegates
+to `random_in_domain` for scalars and `randomize_structured_var` for the rest.
+Its three callers are `initialize_random` / `initialize_structured_random`
+(search.cpp), `LNS::destroy_repair`'s destroy step (lns.cpp) and
+`FeasibilityJump::perturb`'s kick (feasibility_jump.cpp).
+
+They used to hold three private copies of the same `switch (var.type)`, none of
+them guarded against infinite bounds — so one default-probability kick on a model
+with unbounded Floats turned the assignment NaN, `full_evaluate` propagated it,
+`max_real_violation()` returned `+inf` permanently, and the run could not recover
+while `solve()` still returned an ordinary-looking infeasible result restored
+from the pre-kick closest-approach state (**#112**).
+
+`domain_window(var)` is the guard. It returns the finite `[lo, hi]` window the
+draw actually samples, always a subset of the variable's domain:
+
+- a **finite declared bound passes through untouched**, so a model with finite
+  bounds keeps its exact draw sequence and its exact solve trajectory;
+- an **infinite bound** is replaced by a clamp magnitude — `kRandomIntInfClamp`
+  (1e6) for an Int, `kRandomInfClamp` (1e9) otherwise. These are the same
+  magnitudes `NlToModelOptions`/`MpsToModelOptions` clamp infinite variable
+  bounds to at load time, so a hand-built unbounded model lands in the same box
+  a `.nl`/`.mps` one would have. Unguarded, `uniform_real_distribution(lb, ub)`
+  breaks its own precondition (`ub - lb <= DBL_MAX`) and libstdc++'s
+  `lb + (ub - lb) * u` returns NaN on `(-inf, +inf)` and +inf on `[0, +inf)`,
+  while an infinite Int bound casts to `INT64_MIN`;
+- on a **half-infinite** domain the substituted end is pushed past the declared
+  one where needed, so the window stays inside the domain even when the declared
+  bound lies beyond the clamp magnitude;
+- two finite bounds whose **width** overflows are narrowed to the clamp box, and
+  an Int window is kept inside the integers a double names exactly so the
+  `int64_t` casts at the call sites are defined.
+
+`begin()`'s closest-to-zero start is likewise well defined on every domain — a
+genuine advantage of letting FJ own the scalars, but **only for the starting
+point**; the kick and LNS destroy need the window above.
 
 `use_fj` is now vestigial — GFJ is always the engine.
 
@@ -892,8 +916,10 @@ variables to destroy:
 - **Uniform** (no sequences): `max(1, floor(num_vars * destroy_fraction))`
   random vars (default `destroy_fraction = 0.3`).
 
-Destroyed variables are re-randomized by type (Bool/Int/Float uniform, List
-shuffled, Set a random valid-cardinality subset).
+Destroyed variables are re-randomized by type through the shared `randomize_var`
+(see "Randomising a variable" under Initialization): Bool/Int/Float uniform over
+the guarded domain window, List a fresh random permutation, Set a random
+valid-cardinality subset.
 
 ### Repair Phase
 
