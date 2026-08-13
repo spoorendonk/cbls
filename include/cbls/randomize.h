@@ -3,18 +3,25 @@
 #include "dag.h"
 #include "rng.h"
 
-/// Uniform randomisation of a single variable over its own domain.
-///
-/// One implementation, three callers: `initialize_random` /
-/// `initialize_structured_random` (search.cpp), LNS's destroy step (lns.cpp) and
-/// FeasibilityJump's diversification kick (feasibility_jump.cpp). Those three
-/// each carried a private copy of the same Bool/Int/Float/List/Set switch, which
-/// meant a guard added to one of them fixed only that path (#112).
-///
-/// Every entry point here is *total*: it returns a finite value inside the
-/// variable's domain for any domain the model can hold, including the unbounded
-/// ones (`(-inf, +inf)`, `[0, +inf)`, an Int with an infinite bound). That is the
-/// whole point of concentrating them — see `domain_window`.
+// Uniform randomisation of a single variable over its own domain.
+//
+// One implementation, three callers: `initialize_random` /
+// `initialize_structured_random` (search.cpp), LNS's destroy step (lns.cpp) and
+// FeasibilityJump's diversification kick (feasibility_jump.cpp). Those three
+// each carried a private copy of the same Bool/Int/Float/List/Set switch, which
+// meant a guard added to one of them fixed only that path (#112).
+//
+// Every scalar entry point here is *total*: it returns a finite value inside the
+// variable's domain for any domain the model can hold, including the unbounded
+// ones ((-inf, +inf), [0, +inf), an Int with an infinite bound). That is the
+// whole point of concentrating them — see `domain_window`.
+//
+// No non-finite *detector* comes with it, deliberately. Three guards already
+// absorb a non-finite constraint value safely (ViolationManager's
+// clamped_node_violation, solve()'s max_real_violation, LNS's state_key), and
+// with the draws below unable to inject one there is no path from the engine's
+// own randomisation into a NaN assignment left to detect.
+
 namespace cbls {
 
 /// Magnitude that stands in for an infinite Bool/Float bound when sampling.

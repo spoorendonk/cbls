@@ -107,13 +107,17 @@ TEST_CASE("domain_window is inert on a finite domain", "[unbounded][randomize]")
         double ub;
     };
     const std::vector<Case> cases = {
-        {VarType::Bool, 0.0, 1.0},        {VarType::Int, -3.0, 7.0},
-        {VarType::Int, 0.0, 5.0e7},       {VarType::Float, -1.0e9, 1.0e9},
-        {VarType::Float, 1.5, 1.5},       {VarType::Float, -2.5, 100.0},
+        {VarType::Bool, 0.0, 1.0},
+        {VarType::Int, -3.0, 7.0},
+        {VarType::Int, 0.0, 5.0e7},
+        {VarType::Float, -1.0e9, 1.0e9},
+        {VarType::Float, 1.5, 1.5},  // pinned
+        {VarType::Float, -2.5, 100.0},
         // Past the clamp magnitudes: a *declared* bound is honoured, exactly as
         // the .nl reader honours a declared finite integer bound rather than
         // narrowing it to int_inf_clamp.
-        {VarType::Int, -1.0e8, 1.0e8},    {VarType::Float, -1.0e12, 3.0e11},
+        {VarType::Int, -1.0e8, 1.0e8},
+        {VarType::Float, -1.0e12, 3.0e11},
     };
     for (const Case& c : cases) {
         const DomainWindow w = domain_window(scalar_var(c.type, c.lb, c.ub));
