@@ -87,6 +87,16 @@ Bool, Int and Float are *scalar* (jumpable by GFJ). List and Set are
 *structural* — GFJ leaves them untouched; they are moved only by the
 [structural batch](#structural-batch) and LNS.
 
+> **Maturity differs between the two structural types.** List variables are
+> validated on a published formulation (pharma-glsp). Set variables are
+> validated for *expressiveness* only: a set-covering model over a `Set`
+> variable produces verified solutions, but well short of the same instance
+> encoded with one Bool per column — see
+> [structure-only models](#structure-only-models-what-the-structural-batch-is-and-is-not)
+> and `benchmarks/instances/setcover/README.md`. Treat "generalises to
+> structured variables" as a claim about List, and about Set only as far as
+> modelling reach.
+
 ### Handle Encoding
 
 Variables and expression nodes share a single `int32_t` handle space:
@@ -518,6 +528,42 @@ A batch is structural with probability `structural_batch_probability`: `< 0`
 auto-selects `0.33` when the model has any List/Set variable and `0.0`
 otherwise; scalar-only models always get `0.0`. After a structural batch commits
 anything, the engine `resync()`s its scan set.
+
+### Structure-only models: what the structural batch is and is not
+
+The structural batch is a **first-improvement hill climber over a 3-5 move
+random sample**, not a guided search. Per pass and per variable, `set_moves`
+proposes exactly one random add, one random remove and one random swap; nothing
+chooses *which* element on violation grounds, the way FJ's jump table and
+best-of-N scan-set sampling choose a scalar's value.
+
+That is invisible on a mixed model — pharma-glsp's List variables sit alongside
+Float lot sizes that GFJ drives — but it is the whole search on a model whose
+only variables are structured. There, everything else is inert:
+
+| Mechanism | On a structure-only model |
+|---|---|
+| FJ batch | no jumpable variable: `apply_jump` fails every iteration and the batch degenerates into a pure GLS weight pump |
+| Novelty Jump | compound moves are chains of scalar jumps — nothing to chain |
+| `perturb` kick | documented no-op (it randomises jumpable variables only) |
+| LNS | destroys the structured variables wholesale, i.e. a random restart, then repairs with an FJ that has nothing to jump |
+
+so once no sampled move improves, the search is finished, whatever budget
+remains. Measured on OR-Library set covering
+(`benchmarks/instances/setcover/`, issue #93), where the same instance modelled
+as one `Set` variable and as one Bool per column differ by roughly an order of
+magnitude in gap-to-optimum, in the scalar encoding's favour. A 3-row, 4-column
+fixture in `tests/test_setcover.cpp` reproduces it exactly: the Set encoding
+stalls one move away from the optimum because every single add/remove/swap from
+its incumbent is worse.
+
+Note the second-order effect, because it makes tuning counter-intuitive: those
+idle FJ batches are not harmless. Their weight pump inflates `W` on the
+persistently-violated objective row, and a skewed enough `W` is what lets the
+structural pass accept a move that breaks a constraint — the closest thing a
+structure-only model has to diversification. Setting
+`structural_batch_probability = 1.0` removes it and measures *worse* on the
+unicost instances.
 
 ### Deadline bound
 

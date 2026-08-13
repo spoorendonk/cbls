@@ -81,6 +81,7 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 | `cbls_pharma_glsp` | `benchmarks/pharma-glsp/` | Pharma GLSP benchmark runner |
 | `cbls_mipfeas` | `benchmarks/mipfeas/` | MIPfeas runner (one instance per process) |
 | `cbls_minlplib` | `benchmarks/minlplib/` | MINLPLib benchmark runner |
+| `cbls_setcover` | `benchmarks/setcover/` | OR-Library set-covering runner (Set-variable coverage check, #93) |
 
 ### Dependencies
 
@@ -124,6 +125,12 @@ epic #87 for why that framing is rejected.
 `bunker-eca` and `nuclear-outage` are **deprioritised, not dropped**: their code,
 data, tests and open issues (epics #26, #27) all stay, but no new work starts on
 them. Don't pick up one of their issues just because it looks tractable.
+
+`setcover` is **not a fifth benchmark**. It is the scoped coverage check the
+`Set` variable type had been missing (#93): ten small OR-Library set-covering
+instances, run under both a `Set` and a Bool encoding, whose result is a
+documented limitation rather than a comparative claim (see
+`benchmarks/instances/setcover/README.md`). Don't grow it into an epic.
 
 ### Benchmark worktrees
 
