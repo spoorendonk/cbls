@@ -122,6 +122,16 @@ positive when violated):
 - `Lt(a, b)` = `a - b + epsilon`
 - `Gt(a, b)` = `b - a + epsilon`
 
+`Leq`/`Geq`/`Lt`/`Gt` resolve one `inf - inf` case specially (`comparison_residual`
+in `dag.h`, issue #100): when both sides are infinite with the same sign *and* the
+side that would make the row vacuous is a literal `Const` node, the residual is
+`0.0` (satisfied) rather than NaN. That is the "absent bound" idiom — `a <= +inf`,
+`-inf <= b` — and it is the state every solve opens in, since the folded-in
+`obj <= bound` row starts with `bound = +inf`. An infinity an *expression*
+computed is an overflow, not a sentinel, so it keeps the NaN and stays maximally
+violated (`exp(1000) <= exp(720)` is genuinely violated). `Eq`/`Neq` deliberately
+keep plain `|a - b|`.
+
 ### Evaluation Modes
 
 **Full evaluation** (`full_evaluate`): evaluates all nodes in topological
@@ -613,8 +623,11 @@ scalars, but **only for the starting point**.
 
 It does *not* make the engine safe on unbounded domains, and this section must
 not be read as claiming it does. The same unguarded draw is still on the default
-`solve()` path through `random_in_domain`, reached from `perturb()` on every
-diversification kick and from LNS destroy. Measured: one default-probability kick
+`solve()` path in two separate copies of the same unguarded draw: `random_in_domain`
+(feasibility_jump.cpp), reached from `perturb()` on every diversification kick,
+and `LNS::destroy_repair`'s own inline `switch (var.type)` (lns.cpp), which does
+*not* route through `random_in_domain` — a fix has to touch both, and a third copy
+lives in `initialize_random`'s `randomize_var` (search.cpp). Measured: one default-probability kick
 on a model with unbounded Floats turns the assignment NaN, `full_evaluate`
 propagates it, `max_real_violation()` then returns `+inf` permanently, and the
 run cannot recover — while `solve()` still returns an ordinary-looking infeasible
@@ -689,8 +702,13 @@ Bound 3 is floored at `1e-9` rather than clamped to 0 while a deadline exists:
 means "no wall clock at all" downstream in `fj_nl_initialize` — so clamping to
 zero would hand the repair an *unbounded* run, the opposite of the intent.
 
-No clock is read at all when `time_limit <= 0`, so iteration-budgeted runs stay
-bit-identical and deterministic.
+No clock read influences control flow when `time_limit <= 0` — `past_deadline()`,
+`remaining()`, `structural_pass` and FeasibilityJump's strided check all
+short-circuit on their `has_deadline` flag — so with no `SolveCallback` attached
+the loop reads no clock at all, and iteration-budgeted runs stay bit-identical
+and deterministic. (`solve()` still timestamps entry and exit to fill
+`time_seconds`, and a callback's ~1s progress cadence reads the clock once per
+batch; neither reaches the search trajectory.)
 
 #### Why this is tested the way it is
 
@@ -1166,8 +1184,11 @@ Two `SolveCallback` implementations format solver output:
   (Time / Iter / Objective / Violation / Perturbs, `*` on a new best), and a
   final solution summary.
 - **`JsonlFormatter`** — one JSON object per event (`start` / `progress` /
-  `result`), each carrying iteration, time, objective (null when not feasible),
-  violation, feasibility, perturbations, and `new_best`.
+  `result`). `progress` carries iteration, time, objective (null when not
+  feasible or not finite), violation, feasibility, perturbations and `new_best`;
+  `result` carries time, iterations, `termination` (the `TerminationReason`
+  token — `time_limit` / `iteration_limit` / `feasible` / `no_budget`, which
+  qualifies the two above), objective, `feasible`, `status` and `solution`.
 
 Both write to a configurable `std::ostream` (default `std::cout`). The CLI
 selects via `--format` and suppresses both with `--quiet`.

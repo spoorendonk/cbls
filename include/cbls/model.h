@@ -130,9 +130,12 @@ public:
                                                                            double j);
 
     // Change in total WEIGHTED violation if var_id <- j: sum_c weights[c]*delta_c,
-    // computed in-place without allocating (the hot path for FeasibilityJump
-    // scoring; the per_constraint variant allocates and is for sparse/tooling
-    // use). `weights` is indexed by constraint index (constraint_ids()). Scalar
+    // accumulated PER CONSTRAINT rather than as a difference of two whole sums, so
+    // a row clamped to kInfPenalty cancels exactly instead of absorbing the O(1)
+    // real rows (#100 — see the comment on the definition). Uses a member scratch
+    // buffer, so it is allocation-free once warmed up but not on the first calls;
+    // the per_constraint variant allocates on every call and is for sparse/tooling
+    // use. `weights` is indexed by constraint index (constraint_ids()). Scalar
     // variables only; same no-commit / precondition contract as above.
     double weighted_violation_delta(int32_t var_id, double j, const std::vector<double>& weights);
 

@@ -14,8 +14,10 @@ namespace cbls {
 struct SearchConfig {
     // Keep the assignment the caller handed in, whole: suppresses both the
     // List/Set randomisation and FeasibilityJump's closest-to-zero scalar start.
-    // Used by epoch restarts, LNS repair, and callers supplying their own start
-    // (including a randomised one — see initialize_random).
+    // Used by epoch restarts and by callers supplying their own start (including
+    // a randomised one — see initialize_random). LNS repair gets the same effect
+    // through a different knob: it calls fj_nl_initialize, which sets
+    // GFJConfig::set_initial_x = false rather than going through SearchConfig.
     bool skip_init = false;
     // Total GLS iterations (not batches). 0 = unlimited (bounded by time_limit).
     // Checked at batch boundaries, so SearchResult::iterations may exceed this
@@ -90,7 +92,16 @@ enum class TerminationReason {
 const char* termination_reason_name(TerminationReason reason);
 
 struct SearchResult {
+    /// Objective at `best_state`, or `+inf` when there is nothing to report.
+    /// `+inf` does NOT imply infeasible: a feasible point on which the objective
+    /// overflows to +inf/NaN is recorded as a feasibility witness and returned
+    /// with `feasible = true` and this left at `+inf` (issue #100). Test
+    /// `feasible` for solvedness and `std::isfinite(objective)` before using the
+    /// value; the CLI prints "no finite objective at this assignment" and the
+    /// JSONL record emits `"objective": null` for that case.
     double objective = std::numeric_limits<double>::infinity();
+    /// Whether `best_state` satisfies every real constraint. A property of the
+    /// constraints alone — independent of whether the objective is finite there.
     bool feasible = false;
     Model::State best_state;
     int64_t iterations = 0;

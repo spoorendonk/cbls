@@ -333,7 +333,15 @@ int main(int argc, char** argv) {
     const double model_obj = built.objective_node_id >= 0
                                  ? built.model.node(built.objective_node_id).value
                                  : result.objective;
-    const double obj_drift = result.feasible ? std::abs(model_obj - result.objective) : 0.0;
+    // Only meaningful for a finite objective: a feasible point on which the
+    // objective is +inf/NaN (issue #100) makes this |inf - inf| = NaN, and
+    // `NaN <= tol` is false — which would report a perfectly consistent verdict
+    // as `violation_mismatch`. `have_solution` below already refuses such a
+    // point via isfinite, so skipping the drift check just gets it the right
+    // label (`no_solution`), matching minlplib's non-finite handling.
+    const double obj_drift = result.feasible && std::isfinite(result.objective)
+                                 ? std::abs(model_obj - result.objective)
+                                 : 0.0;
     const bool verdict_consistent =
         !result.feasible || (result.best_violation <= args.feas_tol && n_fractional_int == 0 &&
                              obj_drift <= 1e-6 * (std::abs(result.objective) + 1.0));

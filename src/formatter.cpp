@@ -142,7 +142,11 @@ void JsonlFormatter::print_result(const SearchResult& result, const Model& model
     // budget, anything else that it finished inside it. Without this a published
     // wall time cannot be read correctly (#104, epic #87).
     j["termination"] = termination_reason_name(result.termination);
-    if (result.feasible && result.objective < std::numeric_limits<double>::infinity()) {
+    // Same rule as HumanFormatter above, and for the same two reasons: a pure
+    // feasibility model has no objective to report (result.objective carries the
+    // internal 0.0 placeholder, which is not a value of the model), and a
+    // feasible point whose objective is +inf/NaN has none either (#100).
+    if (model.objective_id() >= 0 && std::isfinite(result.objective)) {
         j["objective"] = result.objective;
     } else {
         j["objective"] = nullptr;
