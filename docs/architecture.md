@@ -833,8 +833,13 @@ way. It also stops a structure with fewer than `1/p` slots from never moving.
 structural model is never a no-op; at most one move per slot, already a full
 scramble, so a misconfigured `p > 1` cannot turn a kick into unbounded work.
 The moves are local in the *adjacency* metric — a 2-opt reversal rewrites a whole
-sub-range of positions but breaks only two adjacent pairs — so at the default
-`p = 0.1` a 200-element List keeps ~2/3 of its adjacencies: a kick, not a restart.
+sub-range of positions but breaks only two adjacent pairs — so that is the metric
+in which "not a restart" means anything. Measured on a 200-element List: the
+default `p = 0.1` keeps 74% of its adjacent pairs, `p = 0.02` keeps 94%, and
+`p = 0.5` keeps 23%. Cost follows the same scale, `O(k * |elements|)` element
+copies per structure (the generator builds each candidate as a whole new vector):
+0.012 ms per kick on one 100-element List, 23 ms on the 1500-List model of #105 —
+paid once per `perturbation_period` stagnant batches.
 
 The pass tests the variable type before drawing, so it consumes no randomness on
 a model without List/Set variables: scalar-only models keep their exact draw

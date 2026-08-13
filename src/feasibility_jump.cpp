@@ -661,9 +661,9 @@ bool FeasibilityJump::perturb_structural(double probability) {
     // Cost per structural variable is O(k * |elements|) element copies, k =
     // round(p * |elements|): the generator builds each candidate as a whole new
     // element vector. That is quadratic in a single structure's size, but a kick
-    // only fires once per `perturbation_period` stagnant batches, and on any
-    // model of a realistic shape (pharma-glsp: a handful of Lists of tens of
-    // elements) it is far below the full_evaluate this pass ends in.
+    // only fires once per `perturbation_period` stagnant batches: measured at
+    // 0.012 ms per kick on one 100-element List and 23 ms on the 1500-List model
+    // #105 uses as its worst case.
     bool changed = false;
     for (int32_t v = 0; v < static_cast<int32_t>(model_.num_vars()); ++v) {
         if (!is_structured(model_.var(v).type)) {
