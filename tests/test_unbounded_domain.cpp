@@ -272,10 +272,16 @@ TEST_CASE("solve solves a model only a kick can escape", "[unbounded][search]") 
 // ---------------------------------------------------------------------------
 
 TEST_CASE("LNS destroy/repair works on an unbounded model", "[unbounded][lns]") {
-    // Finiteness alone is green pre-fix (destroy/repair rolls back a
-    // NaN-poisoned repair), so the load-bearing assertion is that a repair is
-    // ACCEPTED: pre-fix the destroyed variable is NaN, the repair can never
-    // improve the acceptance key, and every round is rolled back.
+    // The acceptance count is the load-bearing assertion. A NaN-poisoned repair
+    // scores +inf in the lexicographic key and is always rolled back, so
+    // "finiteness after the call" can be satisfied by never accepting anything —
+    // requiring an accepted repair is what rules that out.
+    //
+    // (Finiteness turns out to fail pre-fix as well, for a second reason: with
+    // the destroyed variable at NaN every partial derivative is NaN too, so the
+    // repair finds no Newton candidate and falls back to the box constants —
+    // which on an unbounded domain are +/-inf. The repair then "succeeds" at
+    // x = +inf and is accepted.)
     int accepted = 0;
     for (uint64_t seed = 1; seed <= 20; ++seed) {
         INFO("seed " << seed);
