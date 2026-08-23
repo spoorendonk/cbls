@@ -729,7 +729,7 @@ before the deadline could overrun it. Four can, and each is bounded separately:
 
 | # | Sub-step | Bound | Where |
 |---|----------|-------|-------|
-| 1 | Feasibility Jump batch | handed the same absolute deadline, checked inside the GLS loop on a stride sized in *time* — one stride costs at most 1/64 of the budget, or one GLS iteration, whichever is larger (#113) | `gfj.time_limit = budget_seconds` |
+| 1 | Feasibility Jump batch | handed the same absolute deadline, checked inside the GLS loop on a stride bounded two ways: at most 64 iterations, and at most 1/64 of the *remaining* budget in predicted time (#113) | `gfj.time_limit = budget_seconds` |
 | 2 | `InnerSolverHook` | not *started* when the budget is spent — a hook is arbitrary user code, so its running time is unknowable | `if (hook && !past_deadline())` |
 | 3 | LNS repair | handed `min(2.0, remaining())`, not its own independent 2s | `diversify()` |
 | 4 | STRUCTURAL sweep | checked between variables (#105) | `structural_pass` |
@@ -763,17 +763,32 @@ epic #87 publishes.
 
 The stride is now sized in time. Each check measures the interval since the
 previous one — which is the current cost of an iteration — and sizes the next
-stride to `kStrideBudgetFraction` (1/64) of the total budget. Growth is capped at
-`kStrideGrowth` (8x) per adjustment so the ramp goes through progressively longer
-and more accurate measurements; shrinking is uncapped, which is what stops the
-stride ratcheting upward and going silent, the failure mode that got an earlier
-self-tuning stride removed from this engine. `kMaxDeadlineStride` (65536) caps it
-outright.
+stride to `kStrideBudgetFraction` (1/64) of the *remaining* budget (remaining,
+not total, so the bound tightens as the deadline approaches instead of permitting
+`budget/64` right up to it). Growth is capped at `kStrideGrowth` (8x) per
+adjustment so the ramp goes through progressively longer and more accurate
+measurements; shrinking is uncapped, so an iteration that got more expensive is
+caught at the very next check.
 
-**Guarantee: a batch returns at most one stride past the deadline, and a stride
-costs at most 1/64 of the budget — or one GLS iteration, whichever is larger.**
-The second half is irreducible: an iteration is atomic and cannot be pre-empted
-from the inside.
+An uncapped shrink is **not** what stops the stride ratcheting upward and going
+silent — the failure mode that got an earlier self-tuning stride removed from
+this engine. It cannot be: a shrink is only *applied* at a check, and the next
+check is a whole stride away, so a stride grown while iterations were cheap is
+spent in full on the first expensive one. That is what `kMaxDeadlineStride` is
+for, and it is set to **64** — the fixed stride this replaced — so the worst case
+is no worse than the code being replaced while the time-based shrink still
+delivers the case #113 filed. Uncapped, a model whose iteration cost rises
+mid-run was measured at 9.9x over a 1 s budget (and 9.1x over 2 s, the absolute
+overrun growing with the budget, because a larger budget buys a larger stride to
+go silent with); capped, the same model runs 1.4x and 1.0x, against 2.4x and 1.2x
+for the fixed stride.
+
+**Guarantee: a batch returns at most one stride past the deadline, where a stride
+is at most 64 GLS iterations and at most 1/64 of the remaining budget in
+predicted time — or one GLS iteration, whichever is larger.** The last clause is
+irreducible: an iteration is atomic and cannot be pre-empted from the inside. The
+prediction is from the last measurement, so a cost that rises mid-stride is
+absorbed by the 64-iteration half of the bound, not the time half.
 
 Measured on 400 Int vars in 20 000 rows of 8 (Release, hpet, 12-core box under
 concurrent load):
@@ -785,8 +800,9 @@ concurrent load):
 | 3.00 s | 7.03 s | 3.10 s | 64 / 16 |
 
 Before, the overrun was set by the model (always exactly 64 iterations, whatever
-the budget); after, it is one iteration, and the *relative* overrun shrinks as
-the budget grows.
+the budget); after, it is a handful of iterations. Note the relative overrun does
+not shrink monotonically with the budget in general — that holds while iteration
+cost is stable, which is the assumption the time half of the bound rests on.
 
 Sizing the stride in time also bounds the clock overhead without measuring the
 clock at all: one read per stride, against a stride costing `budget/64`, is
@@ -851,8 +867,16 @@ The stride sizing under bound 1 (#113) is tested the same way — nothing joins
 `[timing]`. The sizing rule itself is a pure function of `(stride, elapsed,
 target)`, `FeasibilityJump::next_deadline_stride`, so it is tested exhaustively
 and deterministically: it grows only by the cap, shrinks without one, floors at
-one iteration, stops at `kMaxDeadlineStride`, and — the guarantee, asserted over
-a grid of inputs — never predicts a next stride costing more than the target.
+one iteration, floors again on a non-finite measurement, stops at
+`kMaxDeadlineStride`, and — asserted over a grid of inputs — never predicts a
+next stride costing more than the target.
+
+That grid assumes iteration cost is *stationary*, which is exactly the assumption
+that fails in the ratcheting case, so it is not the whole guarantee. Two further
+tests cover what it misses, both timing-free: one ramps the stride through an
+arbitrarily long cheap phase and asserts it never exceeds the cap, the other
+walks the countdown arithmetic across a 1e6x cost jump and asserts the iterations
+run past the deadline stay within the cap.
 
 The two live tests then observe the tuner's own state through
 `deadline_check_stride()` and `deadline_checks()` rather than any duration:

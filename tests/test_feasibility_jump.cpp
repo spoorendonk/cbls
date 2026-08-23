@@ -2,6 +2,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -456,16 +457,27 @@ TEST_CASE("the deadline-check stride is sized from the last measurement", "[fj][
     }
 
     SECTION("a stride that landed on the target stays put") {
-        REQUIRE(FJ::next_deadline_stride(100, kTarget, kTarget) == 100);
+        REQUIRE(FJ::next_deadline_stride(32, kTarget, kTarget) == 32);
     }
 
     SECTION("a stride over the target shrinks, and the shrink is not capped") {
-        // 10x over target shrinks 10x in ONE step. This is the half that keeps
-        // the tuner honest: a self-tuning stride that could only ratchet up was
-        // removed from this engine before, for growing past the loop bound and
-        // going silent.
-        REQUIRE(FJ::next_deadline_stride(1000, 0.010, kTarget) == 100);
-        REQUIRE(FJ::next_deadline_stride(65536, 1.0, kTarget) == 65);
+        // 10x over target shrinks 10x in ONE step, so an iteration that got more
+        // expensive is caught on the very next check. Note this is NOT by itself
+        // what stops the tuner ratcheting up and going silent — a shrink is only
+        // applied AT a check, a whole stride later. kMaxDeadlineStride is what
+        // bounds that; see "a grown stride cannot outrun its cap" below.
+        REQUIRE(FJ::next_deadline_stride(64, 0.010, kTarget) == 6);   // 10x over -> 10x down
+        REQUIRE(FJ::next_deadline_stride(64, 1.0, kTarget) == 1);      // 1000x over -> the floor
+        // A stride from before the cap existed is clamped to it, not honoured.
+        REQUIRE(FJ::next_deadline_stride(65536, 1e-9, kTarget) == FJ::kMaxDeadlineStride);
+    }
+
+    SECTION("a non-finite measurement floors rather than growing") {
+        // A NaN fails `elapsed > 0.0`, which alone would take the growth cap —
+        // i.e. treat "no information" as "far inside the target".
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        REQUIRE(FJ::next_deadline_stride(1000, nan, kTarget) == 1);
+        REQUIRE(FJ::next_deadline_stride(1000, 1e-9, nan) == 1);
     }
 
     SECTION("one iteration costing more than the whole target floors at 1") {
@@ -478,6 +490,60 @@ TEST_CASE("the deadline-check stride is sized from the last measurement", "[fj][
     SECTION("the stride never ratchets past its cap") {
         REQUIRE(FJ::next_deadline_stride(FJ::kMaxDeadlineStride, 1e-9, kTarget) ==
                 FJ::kMaxDeadlineStride);
+    }
+
+    SECTION("a grown stride cannot outrun its cap, however cheap the ramp") {
+        // The named hazard from #113: an earlier self-tuning stride was removed
+        // from this engine for ratcheting past the loop bound and going silent.
+        // A shrink cannot prevent that on its own, because a shrink is only
+        // applied AT a check and the next check is a whole stride away — so
+        // whatever the stride reached while iterations were cheap is spent in
+        // full on the first expensive one. The iteration cap is what bounds it.
+        int64_t stride = 1;
+        for (int i = 0; i < 200; ++i) {  // an arbitrarily long cheap phase
+            stride = FJ::next_deadline_stride(stride, 1e-9, kTarget);
+            REQUIRE(stride <= FJ::kMaxDeadlineStride);
+        }
+        REQUIRE(stride == FJ::kMaxDeadlineStride);
+    }
+
+    SECTION("the work done past a deadline is bounded when iterations get expensive") {
+        // Walk the countdown exactly as gls_loop does — cheap phase, then a
+        // 1e6x cost jump — and count the iterations that run past the deadline.
+        // Timing-free on purpose: the quantity the guarantee is about is
+        // ITERATIONS PER CHECK, which is observable without a clock.
+        constexpr double kCheap = 1e-9;
+        constexpr double kExpensive = 1e-3;
+        constexpr double kBudget = 1.0;
+
+        double elapsed_total = 0.0;
+        int64_t stride = 1;
+        int64_t iterations_past_deadline = 0;
+        int64_t worst_stride_at_check = 0;
+
+        for (int64_t i = 0; i < 2000000; ++i) {
+            // Cost jumps once the cheap phase has had ample time to ratchet.
+            const double cost = i < 100000 ? kCheap : kExpensive;
+            elapsed_total += cost;
+            if (elapsed_total >= kBudget) {
+                ++iterations_past_deadline;  // the loop cannot stop between checks
+            }
+            if (--stride > 0) {
+                continue;
+            }
+            if (elapsed_total >= kBudget) {
+                break;  // this is the check that observes the deadline and stops
+            }
+            const double remaining = kBudget - elapsed_total;
+            // Reproduce the measurement the loop would have taken: the stride it
+            // just finished, at the cost it was paying.
+            stride = FJ::next_deadline_stride(stride == 0 ? 1 : stride, cost, remaining * FJ::kStrideBudgetFraction);
+            worst_stride_at_check = std::max(worst_stride_at_check, stride);
+        }
+
+        // One stride's work is the whole of the overrun, and a stride is capped.
+        REQUIRE(worst_stride_at_check <= FJ::kMaxDeadlineStride);
+        REQUIRE(iterations_past_deadline <= FJ::kMaxDeadlineStride);
     }
 
     SECTION("the predicted cost of the next stride never exceeds the target") {
@@ -603,6 +669,7 @@ TEST_CASE("expensive iterations pin the deadline stride to one", "[fj][deadline]
 }
 
 TEST_CASE("cheap iterations let the deadline stride grow", "[fj][deadline]") {
+    using FJ = FeasibilityJump;
     // The other half: the stride exists to protect throughput, and a tuner that
     // sat at 1 would reintroduce the 1.75x per-iteration-check cost it was
     // introduced to avoid. With ~3us iterations and a 10s budget (156ms per
@@ -625,13 +692,16 @@ TEST_CASE("cheap iterations let the deadline stride grow", "[fj][deadline]") {
     fj.batch(/*batch_iterations=*/20000);
 
     REQUIRE(fj.iterations() == 20000);  // not inert: the deadline never fired
-    // Past 64, the stride this replaced: a direct statement that the fix does not
-    // read the clock more often than the code it replaced did.
-    REQUIRE(fj.deadline_check_stride() > 64);
-    // ...and over the whole run it made fewer clock reads than a fixed stride of
-    // 64 would have (measured: 5 reads against that stride's 312). The ramp is
-    // 1, 8, 64, 512, ..., so the first ~4700 iterations carry all of them.
-    REQUIRE(fj.deadline_checks() * 64 < fj.iterations());
+    // The tuner ramps 1, 8, 64 and then holds at the cap, so on a cheap model it
+    // ends up reading the clock exactly as often as the fixed stride it replaced
+    // — no more. Growing past 64 was measured at ~1.2% throughput and cost an
+    // unbounded overrun when iteration cost rose, so the cap keeps the shrink
+    // (which is what #113 asked for) and drops the growth.
+    REQUIRE(fj.deadline_check_stride() == FJ::kMaxDeadlineStride);
+    // Still strictly fewer reads than a fixed 64 over the whole run, because the
+    // ramp spends its first iterations at a coarser-than-1 stride only after
+    // measuring: the ramp itself is 1, 8, 64.
+    REQUIRE(fj.deadline_checks() <= fj.iterations() / 64 + 3);
 }
 
 TEST_CASE("a run with no wall clock reads no clock at all", "[fj][deadline]") {

@@ -599,12 +599,25 @@ bool FeasibilityJump::any_active_violated() const {
 // bound: an x8 growth is only taken when 8 x elapsed is still inside the
 // target, so the predicted duration of the next stride is <= target either way.
 //
-// Shrinking is deliberately NOT capped. Iterations that got more expensive must
-// be caught on the very next check, and an uncapped shrink is also what stops
-// the stride ratcheting upward and going silent — the failure mode that got an
-// earlier self-tuning stride removed from this engine.
+// Shrinking is deliberately NOT capped: iterations that got more expensive must
+// be caught on the very next check.
+//
+// An uncapped shrink is NOT, on its own, what stops the stride ratcheting upward
+// and going silent — the failure mode that got an earlier self-tuning stride
+// removed from this engine. It cannot be, because a shrink is only APPLIED at a
+// check and the next check is a whole stride away: a stride grown while
+// iterations were cheap is spent in full on the first expensive one, and the
+// tuner learns nothing until after the damage. What bounds that is
+// kMaxDeadlineStride, the hard iteration cap; see its comment.
 int64_t FeasibilityJump::next_deadline_stride(int64_t stride, double elapsed_seconds,
                                               double target_seconds) {
+    // A non-finite measurement carries no information; take the floor rather
+    // than the growth cap, which is what an `elapsed > 0.0` test alone would
+    // silently do with a NaN. Unreachable from a monotonic steady_clock, so this
+    // is defensive, not load-bearing.
+    if (std::isnan(elapsed_seconds) || std::isnan(target_seconds)) {
+        return 1;
+    }
     // elapsed <= 0 means the interval was below the clock's resolution, i.e.
     // far inside the target: grow by the cap.
     double scale = static_cast<double>(kStrideGrowth);
@@ -613,7 +626,7 @@ int64_t FeasibilityJump::next_deadline_stride(int64_t stride, double elapsed_sec
     }
     const double next = static_cast<double>(stride) * scale;
     if (!(next > 1.0)) {
-        return 1;  // also the NaN case: never fewer than one iteration per check
+        return 1;  // never fewer than one iteration per check
     }
     if (next >= static_cast<double>(kMaxDeadlineStride)) {
         return kMaxDeadlineStride;
@@ -634,7 +647,6 @@ void FeasibilityJump::arm_deadline() {
     deadline_ = now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                           std::chrono::duration<double>(config_.time_limit));
     last_deadline_check_ = now;
-    stride_target_seconds_ = config_.time_limit * kStrideBudgetFraction;
     // Start at one iteration and let the tuner grow it. The first stride is the
     // one no measurement has bounded yet, and starting it at 64 on a model whose
     // iterations cost 100ms is the whole of #113.
@@ -718,9 +730,15 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
             if (now >= deadline_) {
                 return GFJStatus::Unsolved;
             }
+            // Size the next stride against the budget that is LEFT, not the
+            // budget that was given. A fraction of the total permits an overrun
+            // of budget/64 right up to the deadline — 9.4 s on a 600 s
+            // benchmark run, by design — whereas remaining/64 tightens as the
+            // deadline approaches and costs nothing to compute.
+            const double remaining = std::chrono::duration<double>(deadline_ - now).count();
             deadline_stride_ = next_deadline_stride(
                 deadline_stride_, std::chrono::duration<double>(now - last_deadline_check_).count(),
-                stride_target_seconds_);
+                remaining * kStrideBudgetFraction);
             deadline_countdown_ = deadline_stride_;
             last_deadline_check_ = now;
         }

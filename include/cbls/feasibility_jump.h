@@ -127,15 +127,29 @@ public:
     // or one (atomic) GLS iteration, whichever is larger. That is the batch's
     // worst-case overrun. See the long comment on gls_loop for the measurements.
     static constexpr double kStrideBudgetFraction = 1.0 / 64.0;
-    static constexpr int64_t kStrideGrowth = 8;              // max growth per adjustment
-    static constexpr int64_t kMaxDeadlineStride = 1 << 16;   // stop the tuner ratcheting
+    static constexpr int64_t kStrideGrowth = 8;  // max growth per adjustment
+    // Hard iteration cap on the stride, and the reason the worst case is
+    // bounded at all. A time-sized stride alone is not enough: the shrink can
+    // only be APPLIED at a check, and the next check is a whole stride away, so
+    // a stride grown while iterations were cheap is spent in full once they turn
+    // expensive — the tuner goes silent exactly when it is needed. Measured at
+    // 18.7x over a 1s budget on a model whose cost jumps mid-run, against 2.8x
+    // for the fixed stride this replaced. 64 is that fixed stride, so the worst
+    // case is now no worse than the code being replaced, while the time-based
+    // shrink still delivers #113's case (136x -> 2.5x at a 0.05s budget).
+    // Priced at ~1.2% throughput on cheap iterations, which is all that letting
+    // the stride grow past 64 was ever buying.
+    static constexpr int64_t kMaxDeadlineStride = 64;
     // Pure function of the last measurement, exposed so the tuner can be tested
     // directly — in particular that it shrinks, not only grows.
     static int64_t next_deadline_stride(int64_t stride, double elapsed_seconds,
                                         double target_seconds);
-    // How the deadline is currently being observed. `deadline_checks()` is 0 for
-    // a run with no wall clock, which is the direct evidence that no clock read
-    // influenced control flow; `deadline_check_stride()` is the live stride.
+    // How the deadline is currently being observed. `deadline_checks()` counts
+    // clock reads made INSIDE THE GLS LOOP; `deadline_check_stride()` is the
+    // live stride. Note the kick's structural pass (#111) reads the clock on its
+    // own path and is not counted here, so a zero is evidence about this loop
+    // and not about the whole engine — both paths are gated on `has_deadline_`,
+    // which is what actually delivers determinism.
     int64_t deadline_checks() const { return deadline_checks_; }
     int64_t deadline_check_stride() const { return deadline_stride_; }
 
@@ -224,7 +238,6 @@ private:
     // Wall-clock deadline observation state (#113). All of it is untouched, and
     // the clock unread, while has_deadline_ is false.
     std::chrono::steady_clock::time_point last_deadline_check_;
-    double stride_target_seconds_ = 0.0;  // what one stride is allowed to cost
     int64_t deadline_stride_ = 1;         // iterations between clock reads
     int64_t deadline_countdown_ = 1;      // iterations left until the next one
     int64_t deadline_checks_ = 0;         // clock reads made inside the GLS loop
