@@ -557,3 +557,152 @@ TEST_CASE("an immovable structure costs a scalar model no randomness",
                 scalar_sequence(/*with_structures=*/true, seed));
     }
 }
+
+// ---------------------------------------------------------------------------
+// #115: the structural kick's deadline bound.
+//
+// The pass used to check the wall clock only BETWEEN structural variables, so a
+// model whose structure lives in one large List or Set had no effective bound:
+// one variable costs k = round(p * |elements|) move-set generations, quadratic
+// in that variable's size, and the check ran only on the way to a variable that
+// did not exist. It now checks between MOVES, on a stride counted in moves and
+// capped at FeasibilityJump::kMaxDeadlineStride.
+//
+// The bound is observed directly — as the moves the pass applied, which is the
+// quantity the guarantee is about — rather than as elapsed time. The deadline is
+// armed at 1 ns so it is already in the past when the pass starts; that is a
+// setup detail, not the assertion, and it is the same shape as the live deadline
+// tests in test_feasibility_jump.cpp.
+namespace {
+
+constexpr double kBigP = 0.5;  // k = |elements| / 2 moves: a run worth bounding
+
+// A deadline already spent by the time the kick runs.
+GFJConfig expired_deadline_config() {
+    GFJConfig cfg;
+    cfg.two_phase = false;
+    cfg.time_limit = 1e-9;
+    return cfg;
+}
+
+}  // namespace
+
+TEST_CASE("a kick on one large List is bounded by the deadline, not by the List",
+          "[fj][perturb][structural][deadline]") {
+    using FJ = FeasibilityJump;
+    Model m;
+    // Consumed by a pair_lambda_sum constraint: an unconsumed List would let the
+    // engine leave it alone and the probe would silently prove nothing. n = 20000
+    // at p = 0.5 puts k = 10000 moves in this ONE variable, each of them O(n)
+    // element copies — the quadratic run with no clock read inside it.
+    add_list_vars(m, /*num_lists=*/1, /*n=*/20000);
+    m.close();
+    ViolationManager vm(m);
+    RNG rng(42);
+    GFJConfig cfg = expired_deadline_config();
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(/*set_initial_x=*/true);
+
+    const std::vector<int32_t> before = m.var(0).elements;
+    fj.perturb(kBigP);
+
+    // The bound: at most one capped stride of moves past the deadline, plus the
+    // first move, which is ungated so the kick is never a no-op. Unbounded, this
+    // is 10000 — the number the pass ran before, whatever the budget was.
+    REQUIRE(fj.structural_kick_moves() <= FJ::kMaxDeadlineStride + 1);
+    // Not inert: the kick still happened, and still moved the List. Compared
+    // through a bool so a failure reports the verdict rather than dumping 20000
+    // elements twice.
+    REQUIRE(fj.structural_kick_moves() >= 1);
+    const bool moved = m.var(0).elements != before;
+    REQUIRE(moved);
+    REQUIRE(is_permutation_of(m.var(0).elements, before));
+}
+
+TEST_CASE("a kick on one large Set is bounded by the deadline, not by the Set",
+          "[fj][perturb][structural][deadline]") {
+    using FJ = FeasibilityJump;
+    Model m;
+    // The shape #115 measured at 2.3 s for a single kick. A Set move also scans
+    // the universe, so its moves are the more expensive of the two.
+    add_set_vars(m, /*num_sets=*/1, /*universe=*/20000, /*min_size=*/5000, /*max_size=*/20000);
+    m.close();
+    RNG rng(42);
+    initialize_structured_random(m, rng);  // Sets start empty until initialised
+    ViolationManager vm(m);
+    GFJConfig cfg = expired_deadline_config();
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(/*set_initial_x=*/true);
+
+    const std::vector<int32_t> before = m.var(0).elements;
+    const int64_t unbounded_moves = static_cast<int64_t>(std::llround(kBigP * before.size()));
+    REQUIRE(unbounded_moves > FJ::kMaxDeadlineStride + 1);  // the bound is not vacuous here
+    fj.perturb(kBigP);
+
+    REQUIRE(fj.structural_kick_moves() <= FJ::kMaxDeadlineStride + 1);
+    REQUIRE(fj.structural_kick_moves() >= 1);
+    REQUIRE(is_valid_set(m.var(0)));  // min_size/max_size and the universe still hold
+}
+
+TEST_CASE("a kick with no wall clock reads no clock at all",
+          "[fj][perturb][structural][deadline]") {
+    // Determinism, observed directly rather than inferred: with time_limit <= 0
+    // the check short-circuits before the clock read, so nothing timing-derived
+    // can reach control flow and an iteration-budgeted run stays bit-identical
+    // from machine to machine. The kick also runs every move it would have run.
+    auto kick = [](double time_limit, uint64_t seed) {
+        Model m;
+        add_list_vars(m, /*num_lists=*/3, /*n=*/20);  // k = round(0.1 * 20) = 2 each
+        m.close();
+        ViolationManager vm(m);
+        RNG rng(seed);
+        GFJConfig cfg;
+        cfg.two_phase = false;
+        cfg.time_limit = time_limit;
+        FeasibilityJump fj(m, vm, rng, cfg);
+        fj.begin(/*set_initial_x=*/true);
+        fj.perturb(kDefaultP);
+        return std::make_pair(fj.structural_kick_checks(), all_elements(m));
+    };
+
+    const auto [checks, elements] = kick(/*time_limit=*/0.0, /*seed=*/7);
+    REQUIRE(checks == 0);                    // the clock was never read
+    REQUIRE(kick(0.0, 7).second == elements);  // ...so the kick is reproducible
+}
+
+TEST_CASE("a kick on many small structures is not cut short",
+          "[fj][perturb][structural][deadline]") {
+    using FJ = FeasibilityJump;
+    // The shape the between-variables check already handled well, and the one
+    // the new per-move check must not slow down. 200 Lists x k = 2 moves.
+    constexpr int kLists = 200;
+    constexpr int64_t kMovesPerList = 2;
+    Model m;
+    add_list_vars(m, kLists, /*n=*/20);
+    m.close();
+    ViolationManager vm(m);
+    RNG rng(42);
+    GFJConfig cfg;
+    cfg.two_phase = false;
+    // Never reached: the kick is microseconds of work. Generous on purpose — the
+    // margin is how much slower the machine may be before the tuner can no
+    // longer afford the cap, and at remaining/64 = 156 ms per stride against
+    // ~1.5 us moves that is a factor of ~1e5.
+    cfg.time_limit = 10.0;
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(/*set_initial_x=*/true);
+    fj.perturb(kDefaultP);
+
+    // Every move the pass would have made without a deadline: the bound fires on
+    // the budget, never on the structure count.
+    REQUIRE(fj.structural_kick_moves() == kLists * kMovesPerList);
+    // Throughput, observed as clock reads rather than timed: the stride ramps
+    // 1, 8, 64 and then holds at the cap, so the pass reads the clock 8 times
+    // over these 400 moves instead of 400 times. Asserted with room -- one read
+    // per 8 moves rather than the 1-per-50 actually measured -- because a single
+    // scheduling stall on a loaded machine throttles one growth step, and the
+    // claim being made is "not once per move", not an exact ramp.
+    REQUIRE(fj.structural_kick_stride() > 1);
+    REQUIRE(fj.structural_kick_stride() <= FJ::kMaxDeadlineStride);
+    REQUIRE(fj.structural_kick_checks() * 8 <= fj.structural_kick_moves());
+}
