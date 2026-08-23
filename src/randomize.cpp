@@ -62,13 +62,19 @@ double random_in_domain(const Variable& var, RNG& rng) {
     }
 }
 
-void randomize_structured_var(Variable& var, RNG& rng) {
+void randomize_structured_var(Variable& var, RNG& rng, ListOrder order) {
     switch (var.type) {
         case VarType::List:
-            // A fresh permutation of the whole universe rather than a shuffle of
-            // the current `elements`: the result is then a well-formed List even
-            // if `elements` was not, and it does not depend on what was there.
-            var.elements = rng.permutation(var.max_size);
+            // `permutation(n)` is iota-then-shuffle, so on a freshly built List
+            // (elements == iota) the two arms are bit-identical. They diverge
+            // once the list has been moved: Regenerate discards that order,
+            // Perturb keeps the same elements in a new arrangement. LNS needs
+            // the latter — see ListOrder.
+            if (order == ListOrder::Perturb) {
+                rng.shuffle(var.elements);
+            } else {
+                var.elements = rng.permutation(var.max_size);
+            }
             break;
         case VarType::Set: {
             const int size = static_cast<int>(rng.integers(var.min_size, var.max_size + 1));
@@ -80,9 +86,9 @@ void randomize_structured_var(Variable& var, RNG& rng) {
     }
 }
 
-void randomize_var(Variable& var, RNG& rng) {
+void randomize_var(Variable& var, RNG& rng, ListOrder order) {
     if (is_structured(var.type)) {
-        randomize_structured_var(var, rng);
+        randomize_structured_var(var, rng, order);
     } else {
         var.value = random_in_domain(var, rng);
     }

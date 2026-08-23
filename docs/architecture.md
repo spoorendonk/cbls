@@ -620,12 +620,15 @@ goes through the shared randomisation helper described below.
 
 #### Randomising a variable (`include/cbls/randomize.h`)
 
-Every uniform "draw a value for this variable" in the engine goes through one
-place: `randomize_var` (scalar `value` or List/Set `elements`), which delegates
-to `random_in_domain` for scalars and `randomize_structured_var` for the rest.
-Its three callers are `initialize_random` / `initialize_structured_random`
+Every uniform "randomise this variable" in the engine goes through one place:
+`randomize_var` (scalar `value` or List/Set `elements`), which delegates to
+`random_in_domain` for scalars and `randomize_structured_var` for the rest. Its
+three callers are `initialize_random` / `initialize_structured_random`
 (search.cpp), `LNS::destroy_repair`'s destroy step (lns.cpp) and
-`FeasibilityJump::perturb`'s kick (feasibility_jump.cpp).
+`FeasibilityJump::perturb`'s kick (feasibility_jump.cpp). The move generators in
+moves.cpp are a fourth user of the same *guard* (`domain_window`) but not of
+`randomize_var`: they draw perturbations around a current value rather than
+uniformly over the domain.
 
 They used to hold three private copies of the same `switch (var.type)`, none of
 them guarded against infinite bounds — so one default-probability kick on a model
@@ -653,6 +656,14 @@ draw actually samples, always a subset of the variable's domain:
 - two finite bounds whose **width** overflows are narrowed to the clamp box, and
   an Int window is kept inside the integers a double names exactly so the
   `int64_t` casts at the call sites are defined.
+
+This closes the randomisation route into a non-finite assignment. It **does not
+make the engine safe on unbounded domains**, and this section must not be read as
+claiming it does: Float jump candidates are still built from `var.lb`/`var.ub`
+directly, so a model with an unbounded Float can still settle on an infinite
+value — and, because an infinite assignment can satisfy every row, be reported
+`feasible = true` while carrying `±inf`. That path is independent of #112 and
+predates it.
 
 `begin()`'s closest-to-zero start is likewise well defined on every domain — a
 genuine advantage of letting FJ own the scalars, but **only for the starting
@@ -918,7 +929,9 @@ variables to destroy:
 
 Destroyed variables are re-randomized by type through the shared `randomize_var`
 (see "Randomising a variable" under Initialization): Bool/Int/Float uniform over
-the guarded domain window, List a fresh random permutation, Set a random
+the guarded domain window, List a reshuffle of its current elements
+(`ListOrder::Perturb` — destroy/repair perturbs an incumbent, so the elements
+present are preserved and only their order changes), Set a random
 valid-cardinality subset.
 
 ### Repair Phase

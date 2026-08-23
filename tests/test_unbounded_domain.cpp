@@ -25,16 +25,20 @@
 // No new NaN *detector* is added here. Three guards already absorb a non-finite
 // constraint value safely (ViolationManager::clamped_node_violation, solve()'s
 // max_real_violation, LNS's state_key — see tests/test_nonfinite_guard.cpp), and
-// with randomisation no longer able to inject one there is no remaining path
-// from the engine's own moves into a NaN assignment.
+// with randomisation no longer able to inject one, that route is closed. It is
+// not the only one: Float jump candidates are still drawn from `var.lb`/`var.ub`
+// directly, so an unbounded model can still reach an infinite assignment by a
+// path this fix does not touch.
 
 #include "test_helpers.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <vector>
 
 using namespace cbls;
@@ -309,4 +313,100 @@ TEST_CASE("LNS destroy/repair works on an unbounded model", "[unbounded][lns]") 
         REQUIRE(all_constraints_finite(m));
     }
     REQUIRE(accepted > 0);
+}
+
+// ---------------------------------------------------------------------------
+// List semantics are per-caller, not flattened by the shared helper.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("ListOrder::Perturb keeps a List's elements, Regenerate need not",
+          "[unbounded][randomize][list]") {
+    // The three merged copies were NOT byte-equivalent: LNS shuffled a List's
+    // current `elements`, the initialisers regenerated the order from iota.
+    // Collapsing both onto Regenerate changed LNS's repair trajectory on every
+    // List model (pharma-glsp among them) while the RNG draw count stayed the
+    // same, so nothing caught it. Pin both semantics here.
+    Model m;
+    int32_t l = m.list_var(8, "l");
+    m.close();
+    Variable& var = m.var_mut(vid(l));
+
+    // Drive the list away from iota so the two arms can be told apart at all.
+    var.elements = {7, 0, 5, 2, 6, 1, 4, 3};
+    const std::vector<int32_t> incumbent = var.elements;
+
+    SECTION("Perturb preserves the multiset of elements") {
+        for (uint64_t seed = 1; seed <= 50; ++seed) {
+            var.elements = incumbent;
+            RNG rng(seed);
+            randomize_structured_var(var, rng, ListOrder::Perturb);
+
+            REQUIRE(var.elements.size() == incumbent.size());
+            std::vector<int32_t> got = var.elements;
+            std::vector<int32_t> want = incumbent;
+            std::sort(got.begin(), got.end());
+            std::sort(want.begin(), want.end());
+            REQUIRE(got == want);
+        }
+    }
+
+    SECTION("Perturb is exactly the pre-merge shuffle of the incumbent") {
+        for (uint64_t seed = 1; seed <= 50; ++seed) {
+            var.elements = incumbent;
+            RNG a(seed);
+            randomize_structured_var(var, a, ListOrder::Perturb);
+            const std::vector<int32_t> via_helper = var.elements;
+
+            std::vector<int32_t> direct = incumbent;
+            RNG b(seed);
+            b.shuffle(direct);  // what lns.cpp did before the merge
+
+            REQUIRE(via_helper == direct);
+        }
+    }
+
+    SECTION("Regenerate is exactly the pre-merge permutation") {
+        for (uint64_t seed = 1; seed <= 50; ++seed) {
+            var.elements = incumbent;
+            RNG a(seed);
+            randomize_structured_var(var, a, ListOrder::Regenerate);
+            const std::vector<int32_t> via_helper = var.elements;
+
+            RNG b(seed);
+            const std::vector<int32_t> direct = b.permutation(8);  // what search.cpp did
+
+            REQUIRE(via_helper == direct);
+        }
+    }
+
+    SECTION("the two arms agree on a freshly built List and diverge after it moves") {
+        // permutation(n) is iota-then-shuffle, so on a fresh List they coincide;
+        // that is why initialisation is unaffected by the split.
+        std::vector<int32_t> iota_order(8);
+        std::iota(iota_order.begin(), iota_order.end(), 0);
+
+        bool saw_divergence = false;
+        for (uint64_t seed = 1; seed <= 50; ++seed) {
+            var.elements = iota_order;
+            RNG a(seed);
+            randomize_structured_var(var, a, ListOrder::Perturb);
+            const std::vector<int32_t> from_iota = var.elements;
+
+            var.elements = iota_order;
+            RNG b(seed);
+            randomize_structured_var(var, b, ListOrder::Regenerate);
+            REQUIRE(from_iota == var.elements);
+
+            var.elements = incumbent;
+            RNG c(seed);
+            randomize_structured_var(var, c, ListOrder::Perturb);
+            const std::vector<int32_t> moved = var.elements;
+
+            var.elements = incumbent;
+            RNG d(seed);
+            randomize_structured_var(var, d, ListOrder::Regenerate);
+            saw_divergence = saw_divergence || (moved != var.elements);
+        }
+        REQUIRE(saw_divergence);
+    }
 }

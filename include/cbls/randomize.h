@@ -11,10 +11,20 @@
 // each carried a private copy of the same Bool/Int/Float/List/Set switch, which
 // meant a guard added to one of them fixed only that path (#112).
 //
+// The copies were not quite identical, and the difference is preserved rather
+// than flattened: LNS shuffled a List's *current* `elements`, while the
+// initialisers regenerated the order from scratch. See `ListOrder`.
+//
 // Every scalar entry point here is *total*: it returns a finite value inside the
 // variable's domain for any domain the model can hold, including the unbounded
 // ones ((-inf, +inf), [0, +inf), an Int with an infinite bound). That is the
 // whole point of concentrating them — see `domain_window`.
+//
+// Note this makes the engine's own *randomisation* incapable of injecting a
+// non-finite value. It does not make the engine safe on unbounded domains
+// generally: a Float jump candidate is still drawn from `var.lb`/`var.ub`
+// directly, so an unbounded model can still reach an infinite assignment (and
+// report it as feasible) by a route that has nothing to do with this file.
 //
 // No non-finite *detector* comes with it, deliberately. Three guards already
 // absorb a non-finite constraint value safely (ViolationManager's
@@ -76,6 +86,24 @@ DomainWindow domain_window(const Variable& var);
 /// in-domain for every domain — see `domain_window`.
 double random_in_domain(const Variable& var, RNG& rng);
 
+/// How a List's new order relates to its current one.
+///
+/// Both draw a uniformly random permutation and consume identical RNG draws, so
+/// this is not a distributional choice — it decides whether the incumbent order
+/// survives, and the two call sites genuinely want different answers.
+enum class ListOrder {
+    /// Discard the current order and lay out a fresh permutation of the whole
+    /// universe. What the initialisers want: there is no incumbent to respect,
+    /// and the result is well-formed even if `elements` was not.
+    Regenerate,
+    /// Shuffle the current `elements` in place, preserving exactly which
+    /// elements are present. What LNS destroy/repair wants: it perturbs an
+    /// incumbent solution, so regenerating instead would silently change the
+    /// repair trajectory on every List model (it did — that is why this
+    /// parameter exists).
+    Perturb,
+};
+
 /// Redraw a structured (List/Set) variable's `elements`: a uniformly random
 /// permutation for a List, a uniformly random subset of an admissible size for a
 /// Set. The structured counterpart of `random_in_domain`, and the hook for
@@ -83,10 +111,10 @@ double random_in_domain(const Variable& var, RNG& rng);
 /// `randomize_var`'s type dispatch.
 ///
 /// No-op on a scalar variable.
-void randomize_structured_var(Variable& var, RNG& rng);
+void randomize_structured_var(Variable& var, RNG& rng, ListOrder order = ListOrder::Regenerate);
 
 /// Randomise one variable in place, whatever its type: `value` for a scalar,
 /// `elements` for a List/Set. The single switch the three call sites share.
-void randomize_var(Variable& var, RNG& rng);
+void randomize_var(Variable& var, RNG& rng, ListOrder order = ListOrder::Regenerate);
 
 }  // namespace cbls

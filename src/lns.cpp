@@ -96,9 +96,11 @@ bool LNS::destroy_repair(Model& model, ViolationManager& vm, RNG& rng,
         var_indices.resize(n_destroy);
     }
 
-    // Randomize destroyed variables
+    // Randomize destroyed variables. ListOrder::Perturb because destroy/repair
+    // works on an incumbent: a List keeps its elements and gets a new order,
+    // which is what this loop did before the three copies were merged.
     for (int32_t idx : var_indices) {
-        randomize_var(model.var_mut(idx), rng);
+        randomize_var(model.var_mut(idx), rng, ListOrder::Perturb);
     }
 
     full_evaluate(model);
