@@ -129,6 +129,13 @@ struct SearchResult {
     /// a numerical near-miss from a run that never got near it, and the caller
     /// can inspect the model to see *which* constraints remain violated.
     double best_violation = std::numeric_limits<double>::infinity();
+    /// Whether the Float escape probe was armed when the run ended (#117). The
+    /// probe is a last resort, armed on stagnation and disarmed on the next
+    /// improvement, so this is `true` only for a run that ended stuck. Exposed
+    /// so callers — and the regression tests for the arming conditions — can
+    /// observe the arming directly instead of timing the call or inferring it
+    /// from the trajectory.
+    bool escape_probe_armed = false;
 };
 
 struct SolveProgress {

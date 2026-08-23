@@ -458,6 +458,26 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     // tests for the deadline bounds — can tell a budget-limited run from a
     // converged one without timing the call (#104).
     TerminationReason termination = TerminationReason::TimeLimit;
+
+    // Second arming condition for the Float escape probe (#117).
+    // `perturbation_period` counts BATCHES, and a batch is `batch_iterations`
+    // GLS iterations: microseconds on a small model, seconds on an expensive
+    // one, so the threshold is a wall-clock duration that varies by orders of
+    // magnitude across a roster. Measured on MINLPLib elec25 at a 60s budget a
+    // batch costs ~1.2s, so the run gets 52 batches against a threshold of 100
+    // and the probe is never armed at all — the stagnation gate that makes it a
+    // last resort (#107) is dead code on any model whose batches cost seconds.
+    // Arm on whichever comes first: the batch count, or this fraction of the
+    // wall-clock budget with no new best.
+    //
+    // Guarded on has_deadline below: with no wall-clock budget no clock read may
+    // influence control flow, or iteration-budgeted runs stop being
+    // bit-reproducible. Deliberately does NOT also diversify — the kick cadence
+    // is a tuned parameter, and making it time-aware is a separate question that
+    // wants its own measurement.
+    constexpr double kEscapeArmFraction = 0.25;
+    auto last_improvement = start;
+
     while (!past_deadline()) {
         // Count *actual* GLS iterations, which is what the config documents and
         // what SearchResult::iterations reports. Using batches *
@@ -542,6 +562,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         }
 
         if (improved) {
+            last_improvement = std::chrono::steady_clock::now();
             stagnation = 0;
             // Making progress: the Float escape probe is not needed and is not free.
             fj.set_escape_probe(false);
@@ -557,6 +578,14 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             if (resync) {
                 fj.resync();  // re-sync after hook/structural mutation, keep GLS weights
             }
+        }
+
+        // Time-based arming (#117); see kEscapeArmFraction above. Idempotent, so
+        // re-arming on every subsequent stagnant batch costs a bool store.
+        if (has_deadline && !past_deadline() &&
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - last_improvement)
+                    .count() >= kEscapeArmFraction * budget_seconds) {
+            fj.set_escape_probe(true);
         }
 
         if (stagnation >= config.perturbation_period && !past_deadline()) {
@@ -601,6 +630,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     result.iterations = fj.iterations();  // total GLS iterations (not batch count)
     result.time_seconds = elapsed;
     result.termination = termination;
+    result.escape_probe_armed = fj.escape_probe();
     return result;
 }
 

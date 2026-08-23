@@ -117,6 +117,9 @@ public:
     void set_rho(double rho) { config_.rho = rho; }
     // Armed by the search loop once it has stagnated; see solve().
     void set_escape_probe(bool on) { escape_probe_ = on; }
+    // The armed state, so the caller (and its regression tests) can observe the
+    // arming decision directly instead of inferring it from a trajectory.
+    bool escape_probe() const { return escape_probe_; }
     bool all_satisfied() const;
     int64_t iterations() const { return iterations_; }  // total GLS iterations since begin()
 
