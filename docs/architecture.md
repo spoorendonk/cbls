@@ -379,15 +379,15 @@ always offers `x ± 1`. Float was the one type with no local move.
 The probe supplies that local move, two-sided because at a saddle the descent
 direction is precisely what a zero gradient cannot tell you. It is **off by
 default and armed only once the search is stuck — after `perturbation_period`
-batches without improvement, or, when the caller set a wall clock and the run is
-projected to fall short of that batch count, after a quarter of the budget with
-no new best (#117), whichever comes first** — then disarmed on the next new best. That gating is load-bearing rather than a
+batches without improvement, or, when the caller set a wall clock, after a
+quarter of the budget with no new best (#117), whichever comes first** — then
+disarmed on the next new best. That gating is load-bearing rather than a
 throughput optimisation: "stationary and nothing improving" is the *steady
 state* of local search, and an always-on probe was measured ~9x worse on
 `shiporig` across every seed, because its drip of numerically tiny improvements
 kept the search from ever registering stagnation, so diversification never
-fired. Armed only as a last resort, the same probe leaves productive searches
-bit-identical and rescues frozen ones.
+fired. The disarm is what separates this from that regime: every improvement
+clears the flag, so an armed probe cannot drip indefinitely.
 
 The wall-clock condition exists because `perturbation_period` counts *batches*,
 and a batch is `batch_iterations` GLS iterations — microseconds on a small model,
@@ -400,21 +400,22 @@ the caller set a wall-clock budget, so a run bounded by `max_iterations` alone
 still lets no clock read influence the search trajectory and stays
 bit-reproducible.
 
-The clock route carries a **projected-batch gate**: it arms only while
-`budget * batches / elapsed` is below `perturbation_period`, i.e. only on runs
-that cannot reach the batch threshold anyway. Without it the change starves
-diversification. Before #117 arming happened at a single site, immediately before
-`diversify()`, so every arm came with a kick; a clock arm carries none, and an
-armed probe's drip of tiny improvements resets *both* `stagnation` and the
-last-improvement timestamp — enough to pin `stagnation` below
-`perturbation_period` indefinitely on a model where the threshold was reachable,
-so that neither `diversify()` nor LNS (which hangs off the same counter) ever
-fires again. That is the same drip mechanism behind the 9x `shiporig` regression
-above. The gate confines the clock route to the batch-starved regime and leaves
-runs that reach the threshold bit-identical. The tidier alternative — have the
-clock route set `stagnation = perturbation_period` so the existing site arms and
-kicks together — was considered and deferred: it changes the kick cadence, a
-tuned parameter that #117 scopes out as wanting its own measurement. For the same
+The clock route carries no diversification kick, unlike the stagnation route,
+and an earlier revision of #117 gated it on `budget * batches / elapsed` falling
+below `perturbation_period` for fear of starving diversification. **That gate was
+removed.** The drip it defended against cannot run away: the improvement that
+resets `stagnation` also disarms the probe, so re-arming costs another
+`kEscapeArmFraction` of the budget and the clock route can arm at most
+`1/kEscapeArmFraction` times in a run, each deferring at most one kick. #107's 9x
+regression came from an always-on probe with *no* disarm. Measured on a
+probe-sensitive model of Float double-wells, the gate cost objective quality
+(-2.00 gated against -3.00 ungated at a threshold the batch route could not
+reach) while preventing no starvation, and its predicate compared projected
+*total* batches against a threshold the batch route only reaches after that many
+*consecutive non-improving* ones. The tidier alternative — have the clock route
+set `stagnation = perturbation_period` so the existing site arms and kicks
+together — was considered and deferred: it changes the kick cadence, a tuned
+parameter that #117 scopes out as wanting its own measurement. For the same
 reason diversification itself stays on the batch counter.
 
 Two properties to keep in mind when reading numbers off this. Trajectories become
@@ -427,8 +428,8 @@ where it makes batches more expensive. #117's "52 batches at 60s" therefore
 describes the *unpatched* engine and cannot be carried over. The measurements
 quoted in that issue (10 of 12 batch-starved instances bit-identical, `eq6_1`
 812.195 → 746.221, `maxmin` 0.11% worse, `shiporig` 2 of 3 seeds bit-identical)
-were taken on the ungated patch and must be re-measured against the gate before
-they are quoted as describing this code.
+describe this ungated arming condition, but were taken before the merge of #115
+and #116 and have not been reproduced at this commit.
 
 A single call is *not* a converged 1-D minimiser; the GLS loop iterates these
 cheap jumps. The continuous heavy lifting is left to the
@@ -802,14 +803,14 @@ While time and `max_iterations` remain, each pass:
    `obj - eps` (`eps = 1e-3*(|obj|+1)`; the step doubles as the Newton step size
    for hook-less continuous descent). For pure-feasibility models (no objective)
    the first feasible solution ends the search.
-5. **On a new best**, reset GLS weights to 1 and resample `rho`.
+5. **On a new best**, reset GLS weights to 1, resample `rho`, and **disarm the
+   Float escape probe** — the latch `SearchResult::escape_probe_armed` reports.
 6. **Otherwise** increment `stagnation`, and `resync()` if a structural/novelty
    /hook mutation happened.
 7. **Arm the Float escape probe** if the search is stuck: either
    `stagnation >= perturbation_period` (armed at the same site as the kick in
-   step 8), or — with a wall clock, and only while the run is projected to
-   complete fewer than `perturbation_period` batches — a quarter of the budget
-   elapsed since the last new best (#117).
+   step 8), or — with a wall clock — a quarter of the budget elapsed since the
+   last new best (#117).
 8. **On `stagnation >= perturbation_period`**, diversify (below) and reset the
    stagnation counter.
 9. Emit a progress callback (~1 s cadence, or immediately on a new best).
@@ -1511,14 +1512,14 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
     │     └── [if hook] hook->solve(model, vm)        # continuous polish; resync
     │           └── if still real_feasible(): record_best()
     │
-    ├── if new best:  stagnation=0; fj.reset_weights(); resample rho
+    ├── if new best:  stagnation=0; fj.set_escape_probe(false); fj.reset_weights()
+    │                 resample rho
     │                 (pure feasibility → break)
     ├── else:         ++stagnation; if resync flag: fj.resync()
     │
     ├── [if wall clock] arm the Float escape probe once 25% of the budget has
-    │     elapsed since the last new best, and only while the run is projected
-    │     to complete < perturbation_period batches (#117) — the batch-count
-    │     arming below is unreachable when a batch costs seconds
+    │     elapsed since the last new best (#117) — the batch-count arming
+    │     below is unreachable when a batch costs seconds
     │
     ├── if stagnation >= perturbation_period:
     │     arm the Float escape probe; diversify():
@@ -1560,7 +1561,7 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `set_initial_x` | true | `GFJConfig` | set X to domain value nearest 0 first |
 | `kCompoundDiscount` | 1/1024 | `feasibility_jump.cpp` | Novelty-weight discount on satisfied constraints |
 | `kNoveltyWorkBudget` | 256 | `feasibility_jump.cpp` | max moves per `apply_novelty_jump` |
-| `kEscapeArmFraction` | 0.25 | `search.cpp` `solve` | fraction of the wall-clock budget without a new best that arms the Float escape probe, gated on the run being projected to complete fewer than `perturbation_period` batches (#117). Not a `SearchConfig` knob |
+| `kEscapeArmFraction` | 0.25 | `search.cpp` `solve` | fraction of the wall-clock budget without a new best that arms the Float escape probe (#117). Not a `SearchConfig` knob |
 | `objective_bound_eps` | 1e-3·(|obj|+1) | `search.cpp` `record_best` | bound tightening / hook Newton step |
 | `destroy_fraction` | 0.3 | `LNS` ctor | fraction of variables/sequences destroyed |
 | `repair_time_limit` | 2.0 s | `LNS::destroy_repair` | FJ repair budget; `<= 0` = iteration-bounded only |

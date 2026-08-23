@@ -135,9 +135,12 @@ struct SearchResult {
     /// run ended stuck" while `false` does *not* mean "never armed" — a run that
     /// armed and then found a new best reports `false`. Exposed so the regression
     /// tests for the two arming conditions can observe them without timing the
-    /// call. Single-`solve()` only: `ParallelSearch` composes its aggregate result
-    /// field by field and does not carry this across (nor `best_violation`), so it
-    /// is always `false` there.
+    /// call. Single-`solve()` only: `ParallelSearch`'s live aggregation paths
+    /// compose the result field by field and drop this (and `best_violation`), so
+    /// it reads `false` there. The one exception is `solve_portfolio`'s
+    /// no-feasible-solution fallback, which copies a worker's whole `SearchResult`
+    /// and so carries either value -- currently unreachable, since `SolutionPool`
+    /// always inserts, but it is a struct copy and not a field-by-field compose.
     bool escape_probe_armed = false;
 };
 

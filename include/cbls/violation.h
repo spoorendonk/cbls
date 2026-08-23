@@ -16,6 +16,18 @@ namespace cbls {
 /// precision cannot deliver.
 inline constexpr double kDefaultFeasibilityTolerance = 1e-6;
 
+/// The engine's blowup clamp. Every non-finite (or absurdly large) constraint
+/// violation is mapped to this, so a search that wanders into inf/NaN stays
+/// well-ordered instead of poisoning the violation cache and the structural
+/// pass's `after < before` test.
+///
+/// It is therefore also the largest objective value the violation machinery can
+/// still tell apart from a blowup, which is why `record_best` installs it as the
+/// sentinel objective bound for a feasible point whose objective is not finite
+/// (#116). That argument is only sound while the clamp and the sentinel are the
+/// same number, so they read one constant rather than three copies.
+inline constexpr double kInfPenalty = 1.0e30;
+
 class ViolationManager {
 public:
     explicit ViolationManager(Model& model);

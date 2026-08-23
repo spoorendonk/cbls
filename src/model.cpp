@@ -2,6 +2,7 @@
 
 #include "cbls/dag_ops.h"
 #include "cbls/expr.h"
+#include "cbls/violation.h"
 
 #include <algorithm>
 #include <cmath>
@@ -19,7 +20,6 @@ namespace {
 // Mirror ViolationManager's clamp: a non-convex node value that overflows to
 // +inf or NaN is mapped to a large finite penalty so jump scoring stays ordered
 // and never propagates NaN/inf into the search. Must match violation.cpp.
-constexpr double kInfPenalty = 1.0e30;
 double clamped_node_violation(double node_value) {
     // NaN before max(): std::max(0.0, NaN) == 0.0 would mask a NaN as satisfied.
     if (std::isnan(node_value)) {

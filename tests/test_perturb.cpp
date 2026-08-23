@@ -805,3 +805,33 @@ TEST_CASE("a kick on many small structures is not cut short",
     // every other assertion in the file still passes.
     REQUIRE(fj.structural_kick_moves() <= FJ::kMaxDeadlineStride * fj.structural_kick_checks() + 1);
 }
+
+TEST_CASE("a kick past its deadline stops instead of walking the remaining structures",
+          "[fj][perturb][structural][deadline]") {
+    // The expired-deadline cases above all have exactly ONE structural variable,
+    // so none of them reaches perturb_structural's outer `break`: a pass that
+    // only broke out of the inner loop would pass every one of them unchanged.
+    // It must not carry on -- each remaining variable copies its whole `elements`
+    // vector for the before/after comparison and consults the clock again, which
+    // is O(total elements) of work past a deadline that is already gone.
+    //
+    // Three Lists make that observable, deterministically: the deadline is spent
+    // before the pass starts, so the first check ends it after one move.
+    Model m;
+    add_list_vars(m, /*num_lists=*/3, /*n=*/20);
+    m.close();
+    ViolationManager vm(m);
+    RNG rng(42);
+    GFJConfig cfg = expired_deadline_config();
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(/*set_initial_x=*/true);
+
+    fj.perturb(kBigP);
+
+    // One move on the first List, then the first check ends the pass...
+    REQUIRE(fj.structural_kick_moves() == 1);
+    // ...and ends it *there*. Delete the outer break and this reports 3: the pass
+    // reaches each remaining variable, finds the countdown already spent, and
+    // reads the clock again on its way out of it.
+    REQUIRE(fj.structural_kick_checks() == 1);
+}

@@ -928,10 +928,14 @@ TEST_CASE("solve does not arm the escape probe off the clock without a deadline"
           "[search][escape][determinism]") {
     // The determinism half of the fix. With no wall-clock budget, no clock read
     // may influence control flow, or an iteration-budgeted run stops being
-    // bit-reproducible. Drop the `has_deadline` guard on the new condition and
-    // this goes red immediately rather than subtly: `budget_seconds` is 0 with no
-    // deadline, so "elapsed >= 0.25 * budget" holds on the very first batch and
-    // the probe would be armed from batch one on every deterministic run.
+    // bit-reproducible.
+    //
+    // This pins the PROPERTY, not either guard that delivers it, and the two are
+    // redundant: `has_deadline` skips the block, and `now < deadline` is false
+    // anyway because `budget_seconds` is 0 with no deadline, so `deadline ==
+    // start`. Dropping either alone leaves this green -- confirmed by mutation.
+    // Dropping BOTH arms the probe from batch one ("elapsed >= 0.25 * 0" holds
+    // immediately) and turns it red.
     Model m;
     build_unsatisfiable(m);
 

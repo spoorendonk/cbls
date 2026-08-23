@@ -340,8 +340,8 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             // loosest one there is. Its only job is to make "the objective is
             // not a number" a violated row, so it sits at the violation
             // machinery's own blowup clamp — 1e30 is what clamped_node_violation
-            // maps +inf and NaN to (kInfPenalty, duplicated in violation.cpp and
-            // model.cpp), i.e. the largest objective value that machinery can
+            // maps +inf and NaN to (kInfPenalty, shared from violation.h so the two
+            // cannot drift apart), i.e. the largest objective value that machinery can
             // still tell apart from a blowup — and every finite objective under
             // it satisfies the row. A feasible point whose objective is finite
             // but *above* 1e30 is therefore indistinguishable from +inf here;
@@ -402,9 +402,8 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             // Float escape probe eligible there for the first time. When the
             // probe actually arms is #117's subject, so elec25 has to be
             // measured with both changes in.
-            constexpr double kNonFiniteObjectiveBound = 1.0e30;
             if (has_obj && !std::isfinite(model.objective_bound())) {
-                model.set_objective_bound(kNonFiniteObjectiveBound);
+                model.set_objective_bound(kInfPenalty);  // the shared clamp; see violation.h
             }
             emit_progress(/*new_best=*/true);
             return true;
@@ -564,7 +563,14 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         }
 
         if (improved) {
-            last_improvement = std::chrono::steady_clock::now();
+            // Gated so an iteration-budgeted run reads no clock AT ALL, not merely
+            // no clock that reaches control flow: this is the only writer of
+            // last_improvement and its only reader is the has_deadline-gated
+            // arming block below. Keeps architecture.md's "the loop reads no
+            // clock at all" literally true.
+            if (has_deadline) {
+                last_improvement = std::chrono::steady_clock::now();
+            }
             stagnation = 0;
             // Making progress: the Float escape probe is not needed and is not free.
             fj.set_escape_probe(false);
@@ -583,43 +589,29 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         }
 
         // Time-based arming (#117); see kEscapeArmFraction above. Tested on every
-        // batch, not only stagnant ones, so it takes ONE clock read and reuses it
-        // for the deadline test, and skips the block entirely once the probe is
-        // armed — arming again would be a no-op, and a new best clears the flag
-        // and re-enables the check.
+        // batch, not only stagnant ones, and costs ONE steady_clock::now() per
+        // batch on top of the loop's own deadline reads — immaterial against a
+        // batch of batch_iterations GLS iterations. Skipped entirely once the
+        // probe is armed: arming again would be a no-op, and a new best clears
+        // the flag and re-enables the check.
         //
-        // The projected-batch gate is what keeps this from starving
-        // diversification. Before #117 there was exactly one arming site, the one
-        // immediately below, so every arm was paid for with a kick. A clock arm
-        // carries no kick, and an armed probe's drip of tiny improvements resets
-        // BOTH `stagnation` and `last_improvement` — so on a model whose batch
-        // threshold IS reachable, an early clock arm can pin `stagnation` below
-        // `perturbation_period` indefinitely: diversify() never fires, and since
-        // LNS hangs off the same counter, LNS never fires either. Gating on "this
-        // run is projected to fall short of perturbation_period batches" confines
-        // the clock route to the regime #117 targets (elec25: 52 batches against a
-        // threshold of 100) and leaves any run that reaches the threshold
-        // bit-identical.
-        //
-        // The alternative — have the clock route set `stagnation` to
-        // `perturbation_period` so the block below arms *and* kicks, restoring the
-        // baseline coupling — is cleaner, but it changes the kick cadence, which
-        // #117 scopes out as a tuned parameter wanting its own measurement.
-        // Considered and deferred rather than rejected.
+        // This route carries no diversification kick, unlike the stagnation route
+        // below, and an earlier revision gated it on the run being projected to
+        // fall short of perturbation_period batches for fear of starving
+        // diversify(). That gate was removed: the drip it defended against cannot
+        // run away, because the improvement that resets `stagnation` also disarms
+        // the probe (see the `improved` branch above), so re-arming costs another
+        // kEscapeArmFraction of the budget and the route can arm at most
+        // 1/kEscapeArmFraction times per run. #107's measured 9x regression came
+        // from an always-on probe with no disarm, which is a different regime.
+        // The gate was also measured to cost objective quality on a probe-
+        // sensitive model while preventing nothing, and it is the ungated form
+        // that #117's roster numbers describe.
         if (has_deadline && !fj.escape_probe()) {
             const auto now = std::chrono::steady_clock::now();
             if (now < deadline && std::chrono::duration<double>(now - last_improvement).count() >=
                                       kEscapeArmFraction * budget_seconds) {
-                // Both divisor terms are safe here: `batches` is >= 1 (incremented
-                // above), and the elapsed total is >= the time since the last new
-                // best, which this branch just showed to be >= a positive fraction
-                // of a positive budget.
-                const double elapsed_so_far = std::chrono::duration<double>(now - start).count();
-                const double projected_batches =
-                    budget_seconds * static_cast<double>(batches) / elapsed_so_far;
-                if (projected_batches < static_cast<double>(config.perturbation_period)) {
-                    fj.set_escape_probe(true);
-                }
+                fj.set_escape_probe(true);
             }
         }
 

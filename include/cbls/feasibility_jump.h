@@ -287,8 +287,9 @@ private:
     int64_t kick_moves_ = 0;      // structural moves the last kick applied
     bool has_deadline_ = false;
     int64_t iterations_ = 0;
-    // Armed by the search loop after `perturbation_period` batches without
-    // improvement, cleared on every new best. Gates the Float escape probe so
+    // Armed by the search loop once it is stuck: after `perturbation_period`
+    // batches without improvement, or -- with a wall clock -- after a quarter of
+    // the budget with no new best (#117). Cleared on every new best. Gates the Float escape probe so
     // it stays a last resort rather than a steady-state behaviour.
     bool escape_probe_ = false;
 

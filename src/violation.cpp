@@ -14,7 +14,6 @@ namespace cbls {
 // still well-ordered. The clamp is one-sided on the violation (which is already
 // max(0, .)), so a finite-but-huge value and a +inf value both become kInfPenalty.
 namespace {
-constexpr double kInfPenalty = 1.0e30;
 
 double clamped_node_violation(double node_value) {
     // NaN must be handled before max(): std::max(0.0, NaN) returns 0.0, which
