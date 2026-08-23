@@ -147,11 +147,25 @@ public:
     // How the deadline is currently being observed. `deadline_checks()` counts
     // clock reads made INSIDE THE GLS LOOP; `deadline_check_stride()` is the
     // live stride. Note the kick's structural pass (#111) reads the clock on its
-    // own path and is not counted here, so a zero is evidence about this loop
-    // and not about the whole engine — both paths are gated on `has_deadline_`,
-    // which is what actually delivers determinism.
+    // own path and is not counted here — see `structural_kick_checks()` below —
+    // so a zero is evidence about this loop and not about the whole engine. Both
+    // paths are gated on `has_deadline_`, which is what actually delivers
+    // determinism.
     int64_t deadline_checks() const { return deadline_checks_; }
     int64_t deadline_check_stride() const { return deadline_stride_; }
+
+    // ---- The structural kick's own deadline bound (#115) ----
+    //
+    // How the last perturb() observed the deadline inside its structural pass,
+    // in the unit that pass advances in: one structural MOVE (one move-set
+    // generation plus one apply, O(|elements| + universe) element copies).
+    // `structural_kick_moves()` is the moves that pass applied, which is the
+    // quantity the bound is about and is observable without a clock;
+    // `structural_kick_checks()` is 0 for a run with no wall clock, the direct
+    // evidence that no clock read reached control flow.
+    int64_t structural_kick_moves() const { return kick_moves_; }
+    int64_t structural_kick_checks() const { return kick_checks_; }
+    int64_t structural_kick_stride() const { return kick_stride_; }
 
     // Novelty Jump (paper Algorithms 4-5): a bounded-backtracking compound-move
     // search that escapes local optima single-variable FJ cannot (chained-
@@ -191,8 +205,17 @@ private:
     // clamp(round(p * |elements|), 1, |elements|) random typed structural moves
     // instead (#111). Returns true if any variable's elements NET changed —
     // by set equality for a Set, whose elements are unordered. Draws no random
-    // numbers at all on a model without List/Set variables.
+    // numbers at all on a model without List/Set variables. Deadline-bounded
+    // between MOVES, not between variables (#115); see kick_past_deadline().
     bool perturb_structural(double probability);
+    // Reset the structural kick's move counter and stride tuner. Called once per
+    // perturb_structural(), so a kick never inherits a stride another kick grew.
+    void arm_structural_kick();
+    // True when the structural pass must stop: the deadline has passed, observed
+    // on a stride counted in structural moves. Never true before the pass has
+    // applied a move, so a deadline already crossed on entry cannot turn a kick
+    // into the no-op #109/#111 exist to prevent.
+    bool kick_past_deadline();
     // Apply one structural move to some List/Set variable that can take one —
     // the structural peer of pick_forced_perturb_var(), for a kick that would
     // otherwise change nothing on a model with no movable scalar. False if
@@ -238,9 +261,19 @@ private:
     // Wall-clock deadline observation state (#113). All of it is untouched, and
     // the clock unread, while has_deadline_ is false.
     std::chrono::steady_clock::time_point last_deadline_check_;
-    int64_t deadline_stride_ = 1;         // iterations between clock reads
-    int64_t deadline_countdown_ = 1;      // iterations left until the next one
-    int64_t deadline_checks_ = 0;         // clock reads made inside the GLS loop
+    int64_t deadline_stride_ = 1;     // iterations between clock reads
+    int64_t deadline_countdown_ = 1;  // iterations left until the next one
+    int64_t deadline_checks_ = 0;     // clock reads made inside the GLS loop
+    // The same observation state for the structural kick (#115), kept separate
+    // because the two loops advance in different units — GLS iterations there,
+    // structural moves here — and interleave: a kick runs between batches, so
+    // sharing one tuner would have each mis-size the other's stride. Also
+    // untouched, and the clock unread, while has_deadline_ is false.
+    std::chrono::steady_clock::time_point last_kick_check_;
+    int64_t kick_stride_ = 1;     // structural moves between clock reads
+    int64_t kick_countdown_ = 1;  // moves left until the next one
+    int64_t kick_checks_ = 0;     // clock reads made inside the structural pass
+    int64_t kick_moves_ = 0;      // structural moves the last kick applied
     bool has_deadline_ = false;
     int64_t iterations_ = 0;
     // Armed by the search loop after `perturbation_period` batches without

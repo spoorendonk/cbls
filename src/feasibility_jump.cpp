@@ -804,31 +804,97 @@ int32_t FeasibilityJump::pick_forced_perturb_var() {
     return -1;  // unreachable: k < count eligible variables were skipped
 }
 
+// Reset the structural kick's move counter and stride tuner. Starting the stride
+// at one move is the point of the whole bound: the first move of a kick is the
+// one no measurement has sized yet, and a model whose structure is a single 41k
+// -element Set spends its entire quadratic run inside that first variable.
+void FeasibilityJump::arm_structural_kick() {
+    kick_moves_ = 0;
+    kick_checks_ = 0;
+    kick_stride_ = 1;
+    kick_countdown_ = 1;
+    if (has_deadline_) {
+        last_kick_check_ = std::chrono::steady_clock::now();
+    }
+}
+
+// Stop the structural pass? Checked between MOVES, which is what makes the
+// bound mean anything on a model with one large structure (#115).
+//
+// The unit here is one structural move — one move-set generation plus one apply,
+// O(|elements| + universe) element copies — which is the same unit the STRUCTURAL
+// batch's sweep caps its overrun at (#105). Checking between *variables*, as this
+// pass used to, capped nothing: a variable costs k = round(p * |elements|) of
+// those moves, quadratic in its size, so a model whose structure lives in one
+// List or Set ran the whole quadratic pass and then consulted the clock on its
+// way to a variable that did not exist. Measured at 2.3 s for one kick on a
+// 41k-element Set, with solve(time_limit=1.0) returning in 1.29 s.
+//
+// A move is not cheap enough to check the clock before every one of them: the
+// shape this pass already handles well is many small structures, where a move on
+// a 100-element List is ~1.5us against 1408 ns for steady_clock::now() on this
+// project's HPET reference machine. So the check strides, and the stride is the
+// one the GLS loop already uses — FeasibilityJump::next_deadline_stride, sized in
+// time from the last measurement, growth capped at 8x, shrink uncapped, and hard
+// capped at kMaxDeadlineStride moves.
+//
+// Sharing that tuner shares the lesson it encodes (#113): a stride sized in time
+// ALONE goes silent exactly when it is needed, because the shrink can only be
+// applied at a check and the next check is a whole stride away, so a stride grown
+// over many cheap small structures would be spent in full on the first move of a
+// large one. The hard cap is what bounds that, and it is why bounding k against
+// the remaining budget instead — the other direction #115 named — was not taken:
+// k is chosen once, before the run, so a per-move cost that rises inside the run
+// is never re-observed at all.
+//
+//   Guarantee: perturb()'s structural pass applies at most kMaxDeadlineStride
+//   (64) further moves after the deadline passes, and a stride costs at most
+//   1/64 of the remaining budget in predicted time — or one move, whichever is
+//   larger, since a move is atomic and cannot be pre-empted from the inside.
+//
+// The prediction is a measurement, so a move whose cost jumps mid-stride is
+// absorbed by the 64-move half of the bound, not the time half.
+bool FeasibilityJump::kick_past_deadline() {
+    // Short-circuited on has_deadline_, so a run with no wall clock neither reads
+    // the clock nor touches any tuner state: iteration-budgeted runs stay
+    // bit-identical. Gated on having applied a move as well, so a deadline
+    // already crossed on entry still leaves the kick something to have done —
+    // the never-a-no-op contract of #109/#111, which perturb()'s fallback then
+    // completes if that one move happened to cancel out.
+    if (!has_deadline_ || kick_moves_ == 0) {
+        return false;
+    }
+    if (--kick_countdown_ > 0) {
+        return false;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline_) {
+        return true;
+    }
+    ++kick_checks_;
+    // Sized against the budget that is LEFT, as the GLS loop is: a fraction of
+    // the total would permit budget/64 of overrun right up to the deadline.
+    const double remaining = std::chrono::duration<double>(deadline_ - now).count();
+    kick_stride_ = next_deadline_stride(
+        kick_stride_, std::chrono::duration<double>(now - last_kick_check_).count(),
+        remaining * kStrideBudgetFraction);
+    kick_countdown_ = kick_stride_;
+    last_kick_check_ = now;
+    return false;
+}
+
 bool FeasibilityJump::perturb_structural(double probability) {
     // Cost per structural variable is O(k * (|elements| + universe)) element
     // copies, k = round(p * |elements|): the generator builds each candidate as a
     // whole new element vector, and a Set's candidates also scan its universe.
-    // That is superlinear in a single structure's size, but a kick fires only
-    // once per `perturbation_period` stagnant batches: measured at 0.012 ms per
-    // kick on one 100-element List and 23 ms on the 1500-List model #105 uses as
-    // its worst case.
+    // That is superlinear in a single structure's size, which is why the deadline
+    // is checked between moves rather than between variables — see
+    // kick_past_deadline() for the bound that buys and what it costs.
+    arm_structural_kick();
     bool changed = false;
     for (int32_t v = 0; v < static_cast<int32_t>(model_.num_vars()); ++v) {
         if (!is_structured(model_.var(v).type)) {
             continue;  // no RNG draw: a scalar-only model keeps its draw sequence
-        }
-        // Bounded between variables, never mid-variable. This is WEAKER than
-        // the STRUCTURAL batch's sweep (#105), which caps its overrun at one
-        // move-set evaluation per variable — linear. Here one variable costs k
-        // move-set *generations*, quadratic in its size, and the check never
-        // runs inside that, so a model with a single large structure has no
-        // effective bound: measured 2.3 s for one kick on a 41k-element Set, and
-        // solve(time_limit=1.0) returning in 1.29 s. Tracked in #115. No
-        // benchmark is exposed today (pharma-glsp's lists are J-sized). Gated on
-        // `changed` so a deadline already crossed on entry cannot turn the kick
-        // into a no-op.
-        if (changed && has_deadline_ && std::chrono::steady_clock::now() >= deadline_) {
-            break;
         }
         // Whether the run moved the variable is a question about its NET effect,
         // not about how many moves were applied: a run of two can add an element
@@ -836,12 +902,23 @@ bool FeasibilityJump::perturb_structural(double probability) {
         // that changed nothing — the very thing #111 is about.
         const std::vector<int32_t> before = model_.var(v).elements;
         const int32_t k = structural_kick_size(model_.var(v), probability);
+        bool out_of_time = false;
         for (int32_t i = 0; i < k; ++i) {
+            if (kick_past_deadline()) {
+                out_of_time = true;
+                break;
+            }
             if (!apply_random_structural_move(model_, v, rng_)) {
                 break;  // nothing can move this variable; further tries cannot either
             }
+            ++kick_moves_;
         }
+        // Recorded even when the budget cut the run short: a truncated run still
+        // moved the variable, and the caller's never-a-no-op fallback keys off it.
         changed = changed || structure_moved(model_.var(v), before);
+        if (out_of_time) {
+            break;
+        }
     }
     return changed;
 }
