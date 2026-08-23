@@ -101,12 +101,19 @@ double random_different_in_domain(const Variable& var, RNG& rng) {
 // How many random structural moves a kick applies to one variable.
 //
 // `perturbation_probability` has to keep governing how much of the model moves,
-// so scale with the variable's own size: k = round(p * |elements|) displaces
-// roughly a p fraction of the structure's slots. A structure has no "randomise
-// the whole variable" analogue that is not a restart, so the probability sets
-// *how much* of each structure moves rather than *which* structures move —
-// which is also what keeps a structure smaller than 1/p slots from never moving
-// at all.
+// so scale with the variable's own size: k = round(p * |elements|) applies a p
+// fraction of the structure's size in MOVES. That is not the same as displacing
+// a p fraction of its slots, and the gap is large for a List: list_2opt
+// reverses a random sub-range (mean ~n/3), so k = 0.1n moves rewrite ~98% of
+// positions on n = 1000 while breaking ~26% of adjacent pairs. The adjacency
+// figure is the one that tracks p, so the scaling is right for a List read
+// pairwise (pair_lambda_sum, what pharma-glsp does) and much coarser than p
+// suggests for one read positionally (`at`).
+//
+// A structure has no "randomise the whole variable" analogue that is not a
+// restart, so the probability sets *how much* of each structure moves rather
+// than *which* structures move — which is also what keeps a structure smaller
+// than 1/p slots from never moving at all.
 //
 // The size is the CURRENT membership, which for a List is its whole decision
 // content but for a Set is not: a 3-of-1000 Set gets a kick sized on the 3, not
@@ -128,6 +135,32 @@ int32_t structural_kick_size(const Variable& var, double probability) {
     // scaled > 1 implies probability * n > 1, hence n >= 1: an empty structure
     // always took the early return, so the clamp needs no guard for it.
     return static_cast<int32_t>(std::min(scaled, static_cast<double>(n)));
+}
+
+// Did a run of structural moves leave `var` somewhere the search can tell apart
+// from `before`? "Somewhere else" is type-dependent, and comparing the raw
+// vectors gets a Set wrong.
+//
+// For a List, order IS the decision content: the DAG reads it positionally
+// (`at`) and pairwise (`pair_lambda_sum`), so vector inequality is exactly the
+// question. For a Set, `elements` is unordered membership — Count and Lambda
+// both read it order-insensitively — so a run that removes an element and adds
+// it back lands on a permuted vector holding the identical set. Calling that
+// "changed" hands back a kick that moved nothing and skips the never-a-no-op
+// fallback, which is the defect #111 exists to prevent, just arrived at
+// sideways. Measured at 0.5% of kicks on a universe-30 Set at the default p.
+bool structure_moved(const Variable& var, const std::vector<int32_t>& before) {
+    if (var.type != VarType::Set) {
+        return var.elements != before;
+    }
+    if (var.elements.size() != before.size()) {
+        return true;
+    }
+    std::vector<int32_t> a = var.elements;
+    std::vector<int32_t> b = before;
+    std::sort(a.begin(), a.end());
+    std::sort(b.begin(), b.end());
+    return a != b;
 }
 
 // Apply one uniformly chosen structural move to `var_id` and report whether the
@@ -681,11 +714,16 @@ bool FeasibilityJump::perturb_structural(double probability) {
         if (!is_structured(model_.var(v).type)) {
             continue;  // no RNG draw: a scalar-only model keeps its draw sequence
         }
-        // Bounded between variables, never mid-variable, exactly as the
-        // STRUCTURAL batch's sweep is (#105): the cost above is superlinear in a
-        // single structure's size, so on a large enough model one kick could
-        // otherwise overrun the caller's whole time limit. Gated on `changed` so
-        // a deadline already crossed on entry cannot turn the kick into a no-op.
+        // Bounded between variables, never mid-variable. This is WEAKER than
+        // the STRUCTURAL batch's sweep (#105), which caps its overrun at one
+        // move-set evaluation per variable — linear. Here one variable costs k
+        // move-set *generations*, quadratic in its size, and the check never
+        // runs inside that, so a model with a single large structure has no
+        // effective bound: measured 2.3 s for one kick on a 41k-element Set, and
+        // solve(time_limit=1.0) returning in 1.29 s. Tracked in #115. No
+        // benchmark is exposed today (pharma-glsp's lists are J-sized). Gated on
+        // `changed` so a deadline already crossed on entry cannot turn the kick
+        // into a no-op.
         if (changed && has_deadline_ && std::chrono::steady_clock::now() >= deadline_) {
             break;
         }
@@ -700,7 +738,7 @@ bool FeasibilityJump::perturb_structural(double probability) {
                 break;  // nothing can move this variable; further tries cannot either
             }
         }
-        changed = changed || model_.var(v).elements != before;
+        changed = changed || structure_moved(model_.var(v), before);
     }
     return changed;
 }

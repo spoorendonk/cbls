@@ -32,11 +32,16 @@ struct SearchConfig {
     int perturbation_period = 100;          // batches without improvement before perturbing
     // How much of the model a diversification kick moves: each scalar variable
     // is randomised with this probability, and each List/Set variable gets
-    // max(1, round(p * |elements|)) random structural moves (#111) — the floor
-    // of one is what keeps a kick on a structural model from being a no-op, and
-    // it means every structure moves on every kick whatever p is. If all of that
-    // happens to move nothing, one variable is moved anyway, so a kick is never
-    // a no-op (#109).
+    // clamp(round(p * |elements|), 1, |elements|) random structural moves
+    // (#111) — the floor of one is what keeps a kick on a structural model from
+    // being a no-op, and it means every structure moves on every kick whatever p
+    // is, p = 0 included. So p governs how much of each structure moves, not
+    // which structures move; there is no way to turn the structural half down.
+    // Note k counts MOVES, not displaced slots: list_2opt reverses a sub-range
+    // (mean ~n/3), so on a positionally-read List (`at`) k = 0.1n rewrites most
+    // positions. In the adjacency terms pair_lambda_sum reads, p = 0.1 breaks
+    // ~26% of adjacent pairs. If all of that happens to move nothing, one
+    // variable is moved anyway, so a kick is never a no-op (#109).
     double perturbation_probability = 0.1;
     // Structural batch (P4): instead of a scalar Feasibility/Novelty Jump batch,
     // sweep the List/Set variables trying typed structural moves (swap / 2-opt /

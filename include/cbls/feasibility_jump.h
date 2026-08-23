@@ -107,12 +107,12 @@ public:
     bool batch(int64_t batch_iterations);  // true if feasible (no active violated)
     void reset_weights();                  // W <- 1 and rebuild the scan set
     void resync();                         // rebuild the scan set from current state, keep weights
-    // Randomise each jumpable var w.p. p, then apply max(1, round(p*|elements|))
-    // random structural moves to each List/Set var (#111); if all of that moved
-    // nothing, force one variable — a scalar if any can move, else a structure —
-    // so the kick is never a no-op (#109). The fallback leaves large models
-    // bit-identical to plain p-draws, and a model without List/Set variables
-    // keeps its exact draw sequence.
+    // Randomise each jumpable var w.p. p, then apply
+    // clamp(round(p*|elements|), 1, |elements|) random structural moves to each
+    // List/Set var (#111); if all of that moved nothing, force one variable — a
+    // scalar if any can move, else a structure — so the kick is never a no-op
+    // (#109). The fallback leaves large models bit-identical to plain p-draws,
+    // and a model without List/Set variables keeps its exact draw sequence.
     void perturb(double probability);
     void set_rho(double rho) { config_.rho = rho; }
     // Armed by the search loop once it has stagnated; see solve().
@@ -155,9 +155,10 @@ private:
     int32_t pick_forced_perturb_var();
     // The List/Set half of a diversification kick: perturb() cannot reach them
     // through jumpable(), so each structural variable gets a run of
-    // max(1, round(p * |elements|)) random typed structural moves instead
-    // (#111). Returns true if any variable's elements NET changed. Draws no
-    // random numbers at all on a model without List/Set variables.
+    // clamp(round(p * |elements|), 1, |elements|) random typed structural moves
+    // instead (#111). Returns true if any variable's elements NET changed —
+    // by set equality for a Set, whose elements are unordered. Draws no random
+    // numbers at all on a model without List/Set variables.
     bool perturb_structural(double probability);
     // Apply one structural move to some List/Set variable that can take one —
     // the structural peer of pick_forced_perturb_var(), for a kick that would

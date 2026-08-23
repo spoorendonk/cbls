@@ -11,6 +11,11 @@
 // each carried a private copy of the same Bool/Int/Float/List/Set switch, which
 // meant a guard added to one of them fixed only that path (#112).
 //
+// Only the kick's SCALAR half comes through here. Its List/Set half goes to the
+// typed move generators instead (#111), because a kick wants k bounded local
+// moves on an incumbent, and every option below is a full resample — a restart
+// of the variable, which is what the kick is trying not to be.
+//
 // The copies were not quite identical, and the difference is preserved rather
 // than flattened: LNS shuffled a List's *current* `elements`, while the
 // initialisers regenerated the order from scratch. See `ListOrder`.

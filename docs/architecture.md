@@ -830,8 +830,15 @@ it again has to fall through to the guarantee below like any other no-op.
 Scaling `k` rather than sampling *which* structures move is the deliberate part.
 A structure has no "randomise the whole variable" analogue that is not a restart,
 so the probability sets how much of each structure moves instead of how many
-structures move — the same `p` fraction of the model's decision content either
-way. It also stops a structure with fewer than `1/p` slots from never moving.
+structures move. It also stops a structure with fewer than `1/p` slots from never
+moving.
+
+`k` counts *moves*, not displaced slots, and for a List the two are far apart:
+`list_2opt` reverses a random sub-range (mean ~n/3), so `k = 0.1n` rewrites ~98%
+of positions on a 1000-element list while breaking ~26% of adjacent pairs. The
+adjacency figure is the one that tracks `p`, so the scaling suits a List the DAG
+reads pairwise (`pair_lambda_sum`, which is what pharma-glsp does) and is much
+coarser than `p` suggests for one read positionally (`at`).
 The floor of one move is the price: every structure moves on every kick, `p = 0`
 included, where the scalar half moves exactly one variable.
 `k` is clamped to at least one move and at most one per slot, already a full

@@ -491,6 +491,12 @@ TEST_CASE("perturb never leaves a structure where it found it", "[fj][perturb][s
     // report that as a kick. It is rare (~1.5% of kicks on this model) but it is
     // exactly the no-op #111 exists to remove, so the sweep compares elements
     // before and after and falls through to the guarantee when they match.
+    //
+    // The comparison has to be a SET comparison. `elements` is unordered
+    // membership for a Set — Count and Lambda both read it order-insensitively —
+    // so remove-then-re-add returns a permuted vector holding the identical set,
+    // and asserting on the raw vector passes while the search sees a kick that
+    // moved nothing. Measured at ~0.5% of kicks on this model.
     for (uint64_t seed = 1; seed <= kSeeds; ++seed) {
         Model m;
         add_set_vars(m, /*num_sets=*/1, /*universe=*/30, /*min_size=*/5, /*max_size=*/30);
@@ -501,9 +507,12 @@ TEST_CASE("perturb never leaves a structure where it found it", "[fj][perturb][s
         FeasibilityJump fj(m, vm, rng);
         fj.begin(/*set_initial_x=*/true);
         for (int k = 0; k < kStructuralKicks; ++k) {
-            const std::vector<int32_t> before = m.var(0).elements;
+            std::vector<int32_t> before = m.var(0).elements;
             fj.perturb(kDefaultP);
-            REQUIRE(m.var(0).elements != before);
+            std::vector<int32_t> after = m.var(0).elements;
+            std::sort(before.begin(), before.end());
+            std::sort(after.begin(), after.end());
+            REQUIRE(after != before);
             REQUIRE(is_valid_set(m.var(0)));
         }
     }
