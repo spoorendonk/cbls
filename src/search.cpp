@@ -468,7 +468,9 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     // and the probe is never armed at all — the stagnation gate that makes it a
     // last resort (#107) is dead code on any model whose batches cost seconds.
     // Arm on whichever comes first: the batch count, or this fraction of the
-    // wall-clock budget with no new best.
+    // wall-clock budget with no new best — the latter only while the run is
+    // projected to fall short of the batch count (see the gate at the arming
+    // site below, which is what keeps this from starving diversification).
     //
     // Guarded on has_deadline below: with no wall-clock budget no clock read may
     // influence control flow, or iteration-budgeted runs stop being
@@ -580,12 +582,45 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             }
         }
 
-        // Time-based arming (#117); see kEscapeArmFraction above. Idempotent, so
-        // re-arming on every subsequent stagnant batch costs a bool store.
-        if (has_deadline && !past_deadline() &&
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - last_improvement)
-                    .count() >= kEscapeArmFraction * budget_seconds) {
-            fj.set_escape_probe(true);
+        // Time-based arming (#117); see kEscapeArmFraction above. Tested on every
+        // batch, not only stagnant ones, so it takes ONE clock read and reuses it
+        // for the deadline test, and skips the block entirely once the probe is
+        // armed — arming again would be a no-op, and a new best clears the flag
+        // and re-enables the check.
+        //
+        // The projected-batch gate is what keeps this from starving
+        // diversification. Before #117 there was exactly one arming site, the one
+        // immediately below, so every arm was paid for with a kick. A clock arm
+        // carries no kick, and an armed probe's drip of tiny improvements resets
+        // BOTH `stagnation` and `last_improvement` — so on a model whose batch
+        // threshold IS reachable, an early clock arm can pin `stagnation` below
+        // `perturbation_period` indefinitely: diversify() never fires, and since
+        // LNS hangs off the same counter, LNS never fires either. Gating on "this
+        // run is projected to fall short of perturbation_period batches" confines
+        // the clock route to the regime #117 targets (elec25: 52 batches against a
+        // threshold of 100) and leaves any run that reaches the threshold
+        // bit-identical.
+        //
+        // The alternative — have the clock route set `stagnation` to
+        // `perturbation_period` so the block below arms *and* kicks, restoring the
+        // baseline coupling — is cleaner, but it changes the kick cadence, which
+        // #117 scopes out as a tuned parameter wanting its own measurement.
+        // Considered and deferred rather than rejected.
+        if (has_deadline && !fj.escape_probe()) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now < deadline && std::chrono::duration<double>(now - last_improvement).count() >=
+                                      kEscapeArmFraction * budget_seconds) {
+                // Both divisor terms are safe here: `batches` is >= 1 (incremented
+                // above), and the elapsed total is >= the time since the last new
+                // best, which this branch just showed to be >= a positive fraction
+                // of a positive budget.
+                const double elapsed_so_far = std::chrono::duration<double>(now - start).count();
+                const double projected_batches =
+                    budget_seconds * static_cast<double>(batches) / elapsed_so_far;
+                if (projected_batches < static_cast<double>(config.perturbation_period)) {
+                    fj.set_escape_probe(true);
+                }
+            }
         }
 
         if (stagnation >= config.perturbation_period && !past_deadline()) {

@@ -754,6 +754,11 @@ GFJStatus FeasibilityJump::gls(int sample_size) {
 
 void FeasibilityJump::begin(bool set_initial_x) {
     iterations_ = 0;
+    // A fresh run starts with the escape probe disarmed, alongside the iteration
+    // count and the deadline. solve() constructs a FeasibilityJump per call so
+    // this cannot matter today; it is here so a caller that reuses one instance
+    // does not inherit the previous run's stagnation state (#117).
+    escape_probe_ = false;
     arm_deadline();
     if (set_initial_x) {
         set_initial_assignment();

@@ -129,12 +129,15 @@ struct SearchResult {
     /// a numerical near-miss from a run that never got near it, and the caller
     /// can inspect the model to see *which* constraints remain violated.
     double best_violation = std::numeric_limits<double>::infinity();
-    /// Whether the Float escape probe was armed when the run ended (#117). The
-    /// probe is a last resort, armed on stagnation and disarmed on the next
-    /// improvement, so this is `true` only for a run that ended stuck. Exposed
-    /// so callers — and the regression tests for the arming conditions — can
-    /// observe the arming directly instead of timing the call or inferring it
-    /// from the trajectory.
+    /// Whether the Float escape probe was armed when the run ended (#117). A
+    /// latch sampled at exit, NOT a count of armings: the probe is armed once the
+    /// search is stuck and disarmed on the next improvement, so `true` means "this
+    /// run ended stuck" while `false` does *not* mean "never armed" — a run that
+    /// armed and then found a new best reports `false`. Exposed so the regression
+    /// tests for the two arming conditions can observe them without timing the
+    /// call. Single-`solve()` only: `ParallelSearch` composes its aggregate result
+    /// field by field and does not carry this across (nor `best_violation`), so it
+    /// is always `false` there.
     bool escape_probe_armed = false;
 };
 

@@ -4,8 +4,8 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cbls/cbls.h>
 #include <chrono>
-#include <limits>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 using namespace cbls;
@@ -544,9 +544,16 @@ TEST_CASE("max_iterations wins over a live wall clock", "[search]") {
     REQUIRE(result.iterations >= 1000);
     REQUIRE(result.iterations < 1000 + config.batch_iterations);
 
-    // Stronger than the bounds: arming a clock that never expires must not
-    // perturb the search at all. Reading the clock consumes no randomness, so
-    // the two runs follow the same path and land on the same answer.
+    // Stronger than the bounds: arming a clock this run cannot exhaust must not
+    // perturb the search. Reading the clock consumes no randomness, so the two
+    // runs follow the same path and land on the same answer.
+    //
+    // Read that as scoped to *this* configuration rather than as a general
+    // guarantee, which it stopped being in #117: the escape probe now also arms
+    // once a quarter of the budget passes with no new best, so a timed and an
+    // untimed run of the same model diverge once the budget is short relative to
+    // the run. Here the budget is 30s against a sub-millisecond run, so the
+    // wall-clock arming condition is never reached and the two stay identical.
     Model untimed;
     build(untimed);
     auto reference = solve(untimed, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr,
@@ -872,12 +879,20 @@ TEST_CASE("solve hands the LNS repair no wall clock when it has none", "[search]
 // ~1.2s, so the run completes 52 batches against the default threshold of 100
 // and the Float escape probe is never armed at all: the stagnation gate that
 // makes the probe a last resort (#107) is dead code exactly on the models that
-// need it. These three cases pin the two arming conditions and the guard that
-// keeps the clock out of an iteration-budgeted run.
+// need it. The cases below pin the two arming conditions, the guard that keeps
+// the clock out of an iteration-budgeted run, the disarm on a new best, and that
+// diversification survives a run with a wall clock armed.
 //
 // They observe `SearchResult::escape_probe_armed` -- the engine's own armed
 // state at exit -- rather than timing the call or inferring arming from the
 // trajectory, so nothing here asserts on elapsed wall clock.
+//
+// Scope limit worth stating: `build_unsatisfiable` is Int-only, and the probe
+// changes nothing but Float candidate generation. So these pin the arming
+// DECISION and its plumbing onto SearchResult -- not the probe's effect on a
+// search, which test_feasibility_jump.cpp covers under [stationary]. Only the
+// first case can fail on the unfixed engine; the rest are guards and
+// characterization pins, and are labelled as such.
 
 TEST_CASE("solve arms the escape probe on wall-clock stagnation", "[search][deadline][escape]") {
     Model m;
@@ -885,21 +900,27 @@ TEST_CASE("solve arms the escape probe on wall-clock stagnation", "[search][dead
 
     SearchConfig config;
     // One GLS iteration per batch: the arming condition is only ever tested at a
-    // batch boundary, so cheap batches give the run thousands of chances to arm
-    // inside the budget. It also makes the test independent of machine speed in
-    // the safe direction -- a slower box simply completes fewer batches, and one
-    // batch boundary past a quarter of the budget is all this needs.
+    // batch boundary, so cheap batches give the run thousands of boundaries
+    // inside the window between a quarter of the budget and the deadline (225ms
+    // wide here). Be honest about the flake direction -- unlike the batch-count
+    // tests further up this file, which get *safer* on a loaded box, the only way
+    // to miss this window is one contiguous scheduler stall spanning all of it,
+    // and that turns the test red. It fails loudly (armed == false), not inertly.
     config.batch_iterations = 1;
     config.max_iterations = 0;  // wall clock is the only budget
-    // Unreachable batch threshold: this is the elec25 situation reproduced in
-    // miniature. The batch counter can never arm the probe here, so an armed
-    // probe at exit can only have come from the wall-clock condition.
+    // The batch counter can never arm the probe here, so an armed probe at exit
+    // can only have come from the wall-clock condition. It also holds the
+    // projected-batch gate open, since any projected count is below INT_MAX.
+    // Not elec25's mechanism reproduced, to be precise: there the threshold is
+    // reachable in principle and the budget cannot pay for it, here it is
+    // unreachable outright. Same effect on the arming path, different cause.
     config.perturbation_period = std::numeric_limits<int>::max();
 
-    auto result = solve(m, /*time_limit=*/0.1, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
+    auto result = solve(m, /*time_limit=*/0.3, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
                         nullptr, config);
 
     REQUIRE(result.termination == TerminationReason::TimeLimit);
+    REQUIRE_FALSE(result.feasible);  // premise: nothing improves, so nothing disarms
     REQUIRE(result.escape_probe_armed);
 }
 
@@ -923,13 +944,15 @@ TEST_CASE("solve does not arm the escape probe off the clock without a deadline"
                         nullptr, config);
 
     REQUIRE(result.termination == TerminationReason::IterationLimit);
+    REQUIRE_FALSE(result.feasible);  // premise: nothing improves, so nothing disarms
     REQUIRE_FALSE(result.escape_probe_armed);
 }
 
 TEST_CASE("solve still arms the escape probe on the batch count", "[search][escape]") {
     // The pre-existing condition, unchanged: on a model where the batch
     // threshold is reachable the probe arms exactly as before, with no wall
-    // clock involved at all.
+    // clock involved at all. A characterization pin -- green before #117 and
+    // after -- so it catches a regression in the old route, not this fix.
     Model m;
     build_unsatisfiable(m);
 
@@ -942,7 +965,80 @@ TEST_CASE("solve still arms the escape probe on the batch count", "[search][esca
                         nullptr, config);
 
     REQUIRE(result.termination == TerminationReason::IterationLimit);
+    REQUIRE_FALSE(result.feasible);  // premise: nothing improves, so nothing disarms
     REQUIRE(result.escape_probe_armed);
+}
+
+TEST_CASE("solve keeps diversifying when a wall clock is armed", "[search][deadline][escape][lns]") {
+    // The starvation guard. The clock route arms WITHOUT an accompanying kick,
+    // which the batch route never did, so the hazard it introduces is a probe
+    // that drips tiny improvements, resets `stagnation` before it reaches
+    // `perturbation_period`, and thereby stops diversify() -- and with it LNS,
+    // which hangs off the same counter -- from ever firing. The projected-batch
+    // gate in solve() confines the clock route to runs that cannot reach the
+    // batch threshold anyway; this pins the other side of that gate: a run with a
+    // wall clock armed and a reachable threshold still kicks.
+    //
+    // Honest about its strength: this model is Int-only and never improves, so it
+    // cannot produce the drip itself. It is a floor -- it goes red if the clock
+    // route ever suppresses kicks outright -- not a proof that the drip case is
+    // handled. That case needs a Float model that improves under an armed probe.
+    Model m;
+    build_unsatisfiable(m);
+
+    SearchConfig config;
+    config.batch_iterations = 1;
+    config.max_iterations = 0;      // wall clock is the only budget
+    config.perturbation_period = 5;  // reachable within the budget, unlike the case above
+
+    BudgetRecordingLNS lns;
+    auto result = solve(m, /*time_limit=*/0.3, /*seed=*/42, /*use_fj=*/true, nullptr, &lns,
+                        /*lns_interval=*/1, nullptr, config);
+
+    REQUIRE(result.termination == TerminationReason::TimeLimit);
+    REQUIRE_FALSE(lns.repair_limits.empty());  // diversification still fires
+}
+
+TEST_CASE("solve disarms the escape probe on a new best", "[search][escape]") {
+    // `SearchResult::escape_probe_armed` is documented as "true only for a run
+    // that ended stuck", which rests entirely on the disarm in the improvement
+    // branch. Nothing pinned that. A pure-feasibility model does it without a
+    // clock: it arms on the first stagnant batch, then breaks out the moment it
+    // becomes feasible, so a run ending Feasible must report the probe disarmed.
+    Model m;
+    std::vector<int32_t> vars;
+    vars.reserve(50);
+    for (int i = 0; i < 50; ++i) {
+        vars.push_back(m.int_var(0, 10));
+    }
+    std::vector<int32_t> args(vars.begin(), vars.end());
+    args.push_back(m.constant(-250.0));
+    // Satisfiable, unlike build_unsatisfiable: 50 vars capped at 10 reach 250
+    // exactly. No objective, so the first feasible point ends the search.
+    m.add_constraint(m.abs_expr(m.sum(args)));
+    m.close();
+
+    SearchConfig config;
+    config.batch_iterations = 1;     // one GLS iteration per batch, so...
+    config.perturbation_period = 1;  // ...batch 1 stagnates and arms the probe
+    // Keep the kick minimal so it cannot undo FJ's progress: at p = 0 perturb()
+    // still forces exactly one variable (#109), which counts as a kick without
+    // randomising a tenth of the model on every stagnant batch.
+    config.perturbation_probability = 0.0;
+    config.max_iterations = 20000;  // ample: the model needs ~25 improving jumps
+
+    auto result = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
+                        nullptr, config);
+
+    REQUIRE(result.termination == TerminationReason::Feasible);
+    REQUIRE(result.feasible);
+    // Not vacuous: more than one batch ran, so batch 1 was stagnant and (at
+    // perturbation_period = 1) armed the probe before the improvement disarmed
+    // it. Every batch is a Feasibility Jump here -- the model is Int-only, so
+    // structural_probability is 0 and compound moves are off by default -- which
+    // is what makes the iteration count a batch count.
+    REQUIRE(result.iterations > 1);
+    REQUIRE_FALSE(result.escape_probe_armed);
 }
 
 // Issue #105: the STRUCTURAL batch used to be the one sub-step with no deadline
