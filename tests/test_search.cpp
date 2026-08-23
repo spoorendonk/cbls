@@ -4,6 +4,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cbls/cbls.h>
 #include <chrono>
+#include <limits>
 #include <cmath>
 #include <stdexcept>
 
@@ -863,6 +864,85 @@ TEST_CASE("solve hands the LNS repair no wall clock when it has none", "[search]
     for (double limit : lns.repair_limits) {
         REQUIRE(limit == 0.0);
     }
+}
+
+// Issue #117: `perturbation_period` counts BATCHES, and a batch is
+// `batch_iterations` GLS iterations -- microseconds on a small model, seconds on
+// an expensive one. Measured on MINLPLib elec25 at a 60s budget, a batch costs
+// ~1.2s, so the run completes 52 batches against the default threshold of 100
+// and the Float escape probe is never armed at all: the stagnation gate that
+// makes the probe a last resort (#107) is dead code exactly on the models that
+// need it. These three cases pin the two arming conditions and the guard that
+// keeps the clock out of an iteration-budgeted run.
+//
+// They observe `SearchResult::escape_probe_armed` -- the engine's own armed
+// state at exit -- rather than timing the call or inferring arming from the
+// trajectory, so nothing here asserts on elapsed wall clock.
+
+TEST_CASE("solve arms the escape probe on wall-clock stagnation", "[search][deadline][escape]") {
+    Model m;
+    build_unsatisfiable(m);  // never improves, so the probe is never disarmed
+
+    SearchConfig config;
+    // One GLS iteration per batch: the arming condition is only ever tested at a
+    // batch boundary, so cheap batches give the run thousands of chances to arm
+    // inside the budget. It also makes the test independent of machine speed in
+    // the safe direction -- a slower box simply completes fewer batches, and one
+    // batch boundary past a quarter of the budget is all this needs.
+    config.batch_iterations = 1;
+    config.max_iterations = 0;  // wall clock is the only budget
+    // Unreachable batch threshold: this is the elec25 situation reproduced in
+    // miniature. The batch counter can never arm the probe here, so an armed
+    // probe at exit can only have come from the wall-clock condition.
+    config.perturbation_period = std::numeric_limits<int>::max();
+
+    auto result = solve(m, /*time_limit=*/0.1, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
+                        nullptr, config);
+
+    REQUIRE(result.termination == TerminationReason::TimeLimit);
+    REQUIRE(result.escape_probe_armed);
+}
+
+TEST_CASE("solve does not arm the escape probe off the clock without a deadline",
+          "[search][escape][determinism]") {
+    // The determinism half of the fix. With no wall-clock budget, no clock read
+    // may influence control flow, or an iteration-budgeted run stops being
+    // bit-reproducible. Drop the `has_deadline` guard on the new condition and
+    // this goes red immediately rather than subtly: `budget_seconds` is 0 with no
+    // deadline, so "elapsed >= 0.25 * budget" holds on the very first batch and
+    // the probe would be armed from batch one on every deterministic run.
+    Model m;
+    build_unsatisfiable(m);
+
+    SearchConfig config;
+    config.batch_iterations = 1;
+    config.max_iterations = 500;
+    config.perturbation_period = std::numeric_limits<int>::max();  // no batch arming either
+
+    auto result = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
+                        nullptr, config);
+
+    REQUIRE(result.termination == TerminationReason::IterationLimit);
+    REQUIRE_FALSE(result.escape_probe_armed);
+}
+
+TEST_CASE("solve still arms the escape probe on the batch count", "[search][escape]") {
+    // The pre-existing condition, unchanged: on a model where the batch
+    // threshold is reachable the probe arms exactly as before, with no wall
+    // clock involved at all.
+    Model m;
+    build_unsatisfiable(m);
+
+    SearchConfig config;
+    config.batch_iterations = 1;
+    config.max_iterations = 500;
+    config.perturbation_period = 1;  // arm on the first stagnant batch
+
+    auto result = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
+                        nullptr, config);
+
+    REQUIRE(result.termination == TerminationReason::IterationLimit);
+    REQUIRE(result.escape_probe_armed);
 }
 
 // Issue #105: the STRUCTURAL batch used to be the one sub-step with no deadline
