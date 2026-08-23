@@ -84,6 +84,12 @@ DomainWindow domain_window(const Variable& var);
 
 /// Draw a uniformly random value from a scalar variable's domain. Finite and
 /// in-domain for every domain — see `domain_window`.
+///
+/// Int and Float sample the window; Bool draws from {0, 1} without consulting it,
+/// which is in-domain for every Bool the model can build (`bool_var` fixes the
+/// bounds at [0, 1], and a fixed binary read from MPS becomes an Int). A Bool
+/// pinned by `lb == ub` would not be respected here — unreachable today, but the
+/// reason `movable_domain` in feasibility_jump.cpp checks the bounds anyway.
 double random_in_domain(const Variable& var, RNG& rng);
 
 /// How a List's new order relates to its current one.
