@@ -15,7 +15,17 @@ cmake -B build && cmake --build build -j$(nproc)
 ```
 
 ```test
-ctest --test-dir build --output-on-failure -j$(nproc) && (pytest --tb=short -q; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 5 ])
+ctest --test-dir build --output-on-failure -j$(nproc) && (.venv/bin/pytest --tb=short -q; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 5 ])
+```
+
+`pytest` is **only** in `.venv/` — a bare `pytest` is not on PATH and
+`python3 -m pytest` has no module. The venv hook also blocks any invocation where
+`.venv/bin/` is not preceded by whitespace or line start, so `(pytest ...)` is
+rejected while ` .venv/bin/pytest ...` passes. A git worktree has no `.venv` of
+its own; symlink the main checkout's in before running the Python suite there:
+
+```bash
+ln -sfn /path/to/main/checkout/.venv .venv && .venv/bin/pytest --tb=short -q; rm -f .venv
 ```
 
 Run a single C++ test by name (Catch2 `-c` filter):
@@ -33,6 +43,33 @@ Python bindings (off by default):
 cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE=$(which python3)
 cmake --build build -j$(nproc)
 ```
+
+## Measuring and testing engine changes
+
+Two disciplines this repo has been burned by repeatedly. Both cost a full re-run
+when skipped.
+
+**A regression test must be shown to fail before the fix.** Several issues here
+warn that a plausible-looking test passes on the unfixed code — #112 says so
+explicitly, because LNS maps a NaN constraint to `+inf` and rolls back, so a
+NaN-poisoned repair can never win and a test written against that path is green
+either way. Verify by reverting *only* the production change in a throwaway copy
+(`git archive HEAD | tar -x -C /tmp/...`, then restore the changed files from
+`main`) and confirming the new test goes red. A test that cannot fail is not a
+regression test, and three separate changes in one recent batch shipped with one.
+
+**Benchmark comparisons are time-limited, so never run them concurrently.**
+Objective quality at a fixed wall-clock budget depends on how many iterations the
+process gets, so two runs sharing cores produce numbers that are not comparable
+to each other *or* to the committed tables. Run A/B comparisons serially, check
+`uptime` first, and re-run anything anomalous. Pin the build type explicitly
+(`-DCMAKE_BUILD_TYPE=Release`) — a bare `cmake -B build` is unoptimized and an
+existing `build/` may be cached at a different type.
+
+**When regenerating a `comparison.csv`, record the engine commit in its header.**
+Search-trajectory changes silently invalidate published tables, and without the
+commit the next reader cannot tell drift from a bug. `benchmarks/instances/setcover/comparison.csv`
+is the pattern to copy.
 
 ## Architecture
 
