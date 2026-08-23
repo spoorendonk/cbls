@@ -378,14 +378,28 @@ always offers `x ± 1`. Float was the one type with no local move.
 
 The probe supplies that local move, two-sided because at a saddle the descent
 direction is precisely what a zero gradient cannot tell you. It is **off by
-default and armed only after `perturbation_period` batches without improvement**,
-then disarmed on the next new best. That gating is load-bearing rather than a
+default and armed only once the search is stuck — after `perturbation_period`
+batches without improvement, or, when the caller set a wall clock, after a
+quarter of that budget with no new best (#117), whichever comes first** — then
+disarmed on the next new best. That gating is load-bearing rather than a
 throughput optimisation: "stationary and nothing improving" is the *steady
 state* of local search, and an always-on probe was measured ~9x worse on
 `shiporig` across every seed, because its drip of numerically tiny improvements
 kept the search from ever registering stagnation, so diversification never
 fired. Armed only as a last resort, the same probe leaves productive searches
 bit-identical and rescues frozen ones.
+
+The wall-clock condition exists because `perturbation_period` counts *batches*,
+and a batch is `batch_iterations` GLS iterations — microseconds on a small model,
+seconds on an expensive one. Measured on MINLPLib `elec25` at a 60s budget, a
+batch costs ~1.2s, so the run completed 52 batches against a threshold of 100 and
+the probe was never armed at all: the gating above was dead code on exactly the
+models it was meant to rescue, and 12 of the 50 MINLPLib instances complete fewer
+than 100 batches at a 10s budget. The clock is read **only** when the caller set a
+wall-clock budget, so a run bounded by `max_iterations` alone still lets no clock
+read influence control flow and stays bit-reproducible. Diversification is
+deliberately left on the batch counter: the kick cadence is a tuned parameter and
+making it time-aware is a separate question wanting its own measurement.
 
 A single call is *not* a converged 1-D minimiser; the GLS loop iterates these
 cheap jumps. The continuous heavy lifting is left to the
@@ -1466,6 +1480,10 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
     ├── if new best:  stagnation=0; fj.reset_weights(); resample rho
     │                 (pure feasibility → break)
     ├── else:         ++stagnation; if resync flag: fj.resync()
+    │
+    ├── arm the Float escape probe when stuck (#117):
+    │     stagnation >= perturbation_period, or — with a wall clock — 25% of the
+    │     budget elapsed since the last new best, whichever comes first
     │
     ├── if stagnation >= perturbation_period:
     │     diversify():
