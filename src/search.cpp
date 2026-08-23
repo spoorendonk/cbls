@@ -317,9 +317,10 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         //
         // It cannot serve as an objective incumbent, though: it must never
         // become best_feasible_obj (nothing could ever beat +inf under the
-        // relative-improvement test) and must never tighten the bound (the
-        // `obj <= bound` row would go permanently unsatisfiable). So it is kept
-        // strictly as the first feasibility witness, and any later
+        // relative-improvement test), and the bound must never be DERIVED from
+        // it — `obj - eps` on a non-finite obj is +inf or NaN, and a NaN bound
+        // makes the `obj <= bound` row permanently and unfixably violated. So
+        // it is kept strictly as the first feasibility witness, and any later
         // finite-objective feasible point displaces it.
         if (!std::isfinite(obj)) {
             if (have_feasible) {
@@ -327,6 +328,44 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             }
             have_feasible = true;
             best_state = model.copy_state();
+            // Leaving the bound at +inf as well, though, left the search with
+            // no objective signal at all (issue #116). `obj <= +inf` is vacuous
+            // by construction — comparison_residual reads a *written* +inf as
+            // "this side is absent" and returns residual 0 (#100) — so with the
+            // bound still at its initial value the objective row can never be
+            // violated, no jump candidate scores anything through it, and every
+            // later batch returns "feasible" having done no work.
+            //
+            // So install a finite bound that is NOT derived from obj: the
+            // loosest one there is. Its only job is to make "the objective is
+            // not a number" a violated row, so it sits at the violation
+            // machinery's own blowup clamp — 1e30 is what clamped_node_violation
+            // maps +inf and NaN to, i.e. the largest objective value that
+            // machinery can still tell apart from a blowup — and every finite
+            // objective under it satisfies the row.
+            //
+            // Why the loosest rather than something tighter (e.g. the largest
+            // finite objective evaluated so far): a finite bound that some
+            // feasible point can meet is the whole safety property here, and
+            // this one is met by *every* finite-objective assignment, so the
+            // only points it rules out are the ones with no objective value at
+            // all. A tighter sentinel would keep pressure on after the
+            // objective goes finite, but it can rule out feasible
+            // finite-objective points, and it buys only the handful of batches
+            // until the first finite-objective feasible point tightens the
+            // bound properly through the path below.
+            //
+            // Guarded on the bound still being +inf, so this replaces "no bound
+            // at all" and never overwrites one derived from a real incumbent.
+            //
+            // Returning true below is load-bearing: the caller reads a new best
+            // as an improvement and calls fj.reset_weights(), which rebuilds
+            // FeasibilityJump's violated set. Without that rebuild the row just
+            // installed stays invisible to the jump table.
+            constexpr double kNonFiniteObjectiveBound = 1.0e30;
+            if (has_obj && !std::isfinite(model.objective_bound())) {
+                model.set_objective_bound(kNonFiniteObjectiveBound);
+            }
             emit_progress(/*new_best=*/true);
             return true;
         }

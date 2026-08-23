@@ -295,3 +295,118 @@ TEST_CASE("a +inf-objective feasible point does not block a later improvement",
     REQUIRE(std::isfinite(r.objective));
     REQUIRE(r.objective < 1.0);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #116: the objective bound must not stay +inf once the search is sitting
+// on a feasible point whose objective is non-finite.
+//
+// `obj <= +inf` is vacuous (pinned by the first [nonfinite-objective] case
+// above), so while the bound is at its initial value the objective row cannot
+// be violated and contributes nothing to any jump score. A search that reaches
+// its first feasible point there is feasible, has no objective row to descend,
+// and spends the rest of its budget doing nothing — measured on MINLPLib's
+// elec25 as 3614 batches yielding 13804 GLS iterations.
+//
+// The shared model below is the smallest thing with that shape: minimise
+// 1/(x-y)^2 over the box [1,10]^2, which diverges exactly on the diagonal, with
+// a trivially-true real constraint so the diagonal is *feasible*. The search is
+// started on the diagonal, so its first feasible point has a +inf objective.
+// The finite optimum is 1/81, at the opposite corners.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// x, y in [1,10]; minimise 1/(x-y)^2 subject to x + y >= 2 (always true).
+// Leaves the assignment on the diagonal (obj = +inf) and the model closed.
+int32_t build_diagonal_blowup_model(Model& m) {
+    int32_t x = m.float_var(1.0, 10.0, "x");
+    int32_t y = m.float_var(1.0, 10.0, "y");
+    m.add_constraint(m.geq(m.sum({x, y}), m.constant(2.0)));
+    int32_t d = m.sum({x, m.neg(y)});
+    m.minimize(m.div_expr(m.constant(1.0), m.prod(d, d)));
+    m.close();
+    m.var_mut(vid(x)).value = 1.0;
+    m.var_mut(vid(y)).value = 1.0;
+    full_evaluate(m);
+    return x;
+}
+
+// Captures the objective bound at the first feasible progress report. The
+// callback fires from record_best, so this observes the state the search hands
+// to the batch that follows.
+class BoundAtFirstFeasible : public SolveCallback {
+public:
+    explicit BoundAtFirstFeasible(const Model& model) : model_(model) {}
+
+    void on_progress(const SolveProgress& p) override {
+        if (captured || !p.feasible) {
+            return;
+        }
+        captured = true;
+        bound = model_.objective_bound();
+        objective = model_.node(model_.objective_id()).value;
+        objective_row =
+            model_.node(model_.constraint_ids()[model_.objective_constraint_idx()]).value;
+    }
+
+    bool captured = false;
+    double bound = 0.0;
+    double objective = 0.0;
+    double objective_row = 0.0;
+
+private:
+    const Model& model_;
+};
+
+}  // namespace
+
+TEST_CASE("a feasible point with a non-finite objective gets a finite bound",
+          "[nonfinite][nonfinite-objective]") {
+    Model m;
+    build_diagonal_blowup_model(m);
+
+    BoundAtFirstFeasible probe(m);
+    SearchConfig cfg;
+    cfg.skip_init = true;  // keep the diagonal start
+    cfg.max_iterations = 20000;
+    solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3, &probe, cfg);
+
+    REQUIRE(probe.captured);
+    // Precondition: this really is the state under test — feasible, objective
+    // not a number. (True with or without the fix.)
+    REQUIRE_FALSE(std::isfinite(probe.objective));
+    // The fix: a finite bound, hence an objective row the search can descend.
+    REQUIRE(std::isfinite(probe.bound));
+    REQUIRE(probe.bound > 0.0);
+    // And that row is genuinely violated, so it reaches the jump scores rather
+    // than being a satisfied row nobody looks at.
+    REQUIRE_FALSE(probe.objective_row <= 0.0);
+}
+
+TEST_CASE("a search starting feasible with a +inf objective still finds a finite one",
+          "[nonfinite][nonfinite-objective]") {
+    // Diversification is switched off deliberately. A random kick off the
+    // diagonal lands on a feasible point with a finite objective, which
+    // rescues the unfixed engine by luck — that is what makes the pre-existing
+    // "does not block a later improvement" case above pass either way, and it
+    // is not a signal the engine can rely on (elec25 has 3614 batches' worth of
+    // kicks and still returns +inf). With the kick suppressed, the only route
+    // to a finite objective is the objective row itself.
+    Model m;
+    build_diagonal_blowup_model(m);
+
+    SearchConfig cfg;
+    cfg.skip_init = true;              // keep the diagonal start
+    cfg.max_iterations = 20000;
+    cfg.perturbation_period = 1 << 30;  // no diversification within the budget
+
+    SearchResult r =
+        solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3, nullptr,
+              cfg);
+
+    REQUIRE(r.feasible);
+    REQUIRE(std::isfinite(r.objective));
+    // The box optimum is 1/81 at the opposite corners; nothing can beat it.
+    REQUIRE(r.objective >= 1.0 / 81.0 - 1e-9);
+    REQUIRE(r.objective < 0.1);
+}
