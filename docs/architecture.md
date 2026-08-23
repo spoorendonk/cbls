@@ -545,30 +545,32 @@ only variables are structured. There, everything else is inert:
 |---|---|
 | FJ batch | no jumpable variable: `apply_jump` fails every iteration and the batch degenerates into a pure GLS weight pump |
 | Novelty Jump | compound moves are chains of scalar jumps — nothing to chain |
-| `perturb` kick | documented no-op (it randomises jumpable variables only) |
+| `perturb` kick | reaches them since #111 (each List/Set variable gets its own pass of `clamp(round(p*|elements|), 1, |elements|)` random structural moves), but the moves are the same unguided ones — see [Diversification](#diversification) |
 | LNS | destroys the structured variables wholesale, i.e. a random restart, then repairs with an FJ that has nothing to jump |
 
-so once no sampled move improves, the search is finished, whatever budget
-remains. Measured on OR-Library set covering
+so progress is slow once the sampled neighbourhood stops improving — slow, not
+finished: 6x the budget still buys ~8% on these instances (scp41 `set` 4241 at
+10s, 3881 at 60s), so the 10s numbers below are budget-limited rather than
+neighbourhood-limited. Measured on OR-Library set covering
 (`benchmarks/instances/setcover/`, issue #93): on the weighted instances the
-same data modelled as one `Set` variable costs **5-7x the proven optimum**,
-against **+9-29%** for one Bool per column — while on *unicost* instances,
+same data modelled as one `Set` variable costs **8.5-9.9x the proven optimum**,
+against **+9-20%** for one Bool per column — while on *unicost* instances,
 where the objective is just cardinality, the two nearly converge. What the Set
 search lacks is not reach but a violation-guided choice of *which* element to
 move. A 3-row, 4-column fixture in `tests/test_setcover.cpp` reproduces it
 exactly: the Set encoding stalls one move away from the optimum because every
 single add/remove/swap from its incumbent is worse.
 
-Note the second-order effect, because it makes tuning counter-intuitive: those
-idle FJ batches are not harmless. Their weight pump inflates `W` on the
+Note what the idle FJ batches cost. Their weight pump inflates `W` on the
 persistently-violated objective row, and a skewed enough `W` is what lets the
-structural pass accept a move that breaks a constraint — the closest thing a
-structure-only model has to diversification. Setting
+structural pass accept a move that breaks a constraint — which is why the pump
+was once thought to be load-bearing for a structure-only model. Setting
 `structural_batch_probability = 1.0` removes the pump in exchange for more
-structural passes, and that trade measures *worse* on the unicost set-covering
-instances (8/7/7 -> 10/10/9) while measuring *better* on the weighted ones
-(3877/3260/3625 -> 2187/2303/2517). Neither is a fix; both are symptoms of the
-structural batch having no guidance of its own.
+structural passes, and at engine HEAD that trade measures *better* in both
+regimes — unicost 7/7/7 -> 6/6/6, weighted 4241/4393/4455 -> 2593/2727/2916 —
+i.e. the pump is not buying anything that outweighs the passes it displaces.
+Neither setting is a fix; both are symptoms of the structural batch having no
+guidance of its own.
 
 ### Deadline bound
 

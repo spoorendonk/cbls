@@ -66,7 +66,11 @@ struct SetCoverModel {
 // The cardinality upper bound is `min(cols, rows)`, which is valid rather than
 // tuned: every row needs one column, so no *minimal* cover holds more columns
 // than there are rows, and any cover with more is dominated by one of its
-// subsets. It matters because `initialize_structured_random` draws the initial
+// subsets. That domination step assumes costs are non-negative — with a negative
+// cost, dropping a redundant column can raise the objective and an optimum need
+// not be minimal. OR-Library set-covering costs are positive integers, so the
+// bound preserves an optimum here; a reader porting this to a signed-cost
+// instance needs to drop it. It matters because `initialize_structured_random` draws the initial
 // size uniformly from [min_size, max_size] — without the bound the search starts
 // from ~cols/2 columns and spends its budget shedding them.
 inline SetCoverModel build_set_model(const SetCoverInstance& inst) {

@@ -207,12 +207,18 @@ TEST_CASE("verifier rejects an uncovered assignment", "[setcover]") {
 }
 
 // The Set encoding finds a cover but NOT the optimum, even on a 3x4 instance:
-// from the universal column {0} no single add, remove or swap improves (each
-// uncovers a row), and a Set-only model has no diversification — FJ, Novelty
-// Jump and `perturb` all move scalar variables only. So the search stalls at 5
-// where the Bool encoding below reaches 3. The assertion is therefore the
+// from the universal column {0} no single add, remove or swap improves, because
+// each one uncovers a row. `perturb` DOES reach Set variables since #111, so the
+// model is not undiversified — but the kick's structural moves are the same
+// unguided add/remove/swap, so it lands nowhere better and the search stalls at
+// 5 where the Bool encoding below reaches 3. The assertion is therefore the
 // invariant (a real cover, never below the optimum), not the optimum; the gap
 // itself is measured in benchmarks/instances/setcover/README.md.
+//
+// Note `check.cost >= optimum` is close to vacuous once `check.covered` holds —
+// any genuine cover costs at least the optimum by definition — so it guards a
+// cost-lookup bug inside check_cover, nothing more. `covered` and
+// `verify_setcover(...).ok` are the assertions with teeth.
 TEST_CASE("Set encoding covers the tiny instance", "[setcover]") {
     SetCoverInstance inst = tiny();
     SetCoverModel scm = build_set_model(inst);

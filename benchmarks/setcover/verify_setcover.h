@@ -1,9 +1,16 @@
 #pragma once
 
-// Independent feasibility check for a set-covering solution: recomputed from the
-// instance file, not from the DAG's node values, so it cannot inherit a modelling
-// bug from the model builder. `verify_model` (the generic bound/constraint check)
-// is folded in on top.
+// Feasibility check for a set-covering solution, recomputed from the parsed
+// instance rather than read off the DAG's node values, so a model builder that
+// wires up the wrong rows is caught.
+//
+// How independent it is depends on the encoding. The Bool model reads
+// `inst.row_cols` while this reads `inst.covers`, so that pairing is a genuine
+// two-representation cross-check. The Set model's coverage lambda reads
+// `inst.covers` too, so for that encoding a *parser* bug would be invisible to
+// both — the parser unit tests and the SHA-256 manifest gate are what cover
+// that, not this file. `verify_model` (the generic bound/constraint check) is
+// folded in on top.
 
 #include "data.h"
 #include "setcover_model.h"
