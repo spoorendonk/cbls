@@ -340,9 +340,12 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             // loosest one there is. Its only job is to make "the objective is
             // not a number" a violated row, so it sits at the violation
             // machinery's own blowup clamp — 1e30 is what clamped_node_violation
-            // maps +inf and NaN to, i.e. the largest objective value that
-            // machinery can still tell apart from a blowup — and every finite
-            // objective under it satisfies the row.
+            // maps +inf and NaN to (kInfPenalty, duplicated in violation.cpp and
+            // model.cpp), i.e. the largest objective value that machinery can
+            // still tell apart from a blowup — and every finite objective under
+            // it satisfies the row. A feasible point whose objective is finite
+            // but *above* 1e30 is therefore indistinguishable from +inf here;
+            // that is pre-existing kInfPenalty behaviour, not new.
             //
             // Why the loosest rather than something tighter (e.g. the largest
             // finite objective evaluated so far): a finite bound that some
@@ -357,11 +360,48 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             //
             // Guarded on the bound still being +inf, so this replaces "no bound
             // at all" and never overwrites one derived from a real incumbent.
+            // (has_obj is implied — current_obj() returns a finite 0.0 when
+            // there is no objective — but it is kept as the guard on
+            // set_objective_bound's precondition.)
             //
             // Returning true below is load-bearing: the caller reads a new best
             // as an improvement and calls fj.reset_weights(), which rebuilds
             // FeasibilityJump's violated set. Without that rebuild the row just
-            // installed stays invisible to the jump table.
+            // installed stays invisible to the jump table. The baseline already
+            // returned true from this same witness path, so nothing else on it
+            // changes.
+            //
+            // Two consequences this DOES introduce, both confined to the window
+            // where the sentinel is installed and the objective is still
+            // non-finite:
+            //
+            //   * structural_pass goes blind, and that is a REGRESSION, not an
+            //     inherited gap: before this change the objective row read 0.0
+            //     in exactly this window, so the pass compared the real rows
+            //     normally. Now its `before` and `after` both round to
+            //     1e30 * w_obj — a double ULP up there is ~1.4e14 — so any
+            //     real-row change under ~7e13 is absorbed and every structural
+            //     improvement is rolled back. Trigger: a List/Set model whose
+            //     first feasible point has a non-finite objective, where FJ then
+            //     breaks a real row chasing the newly-violated objective row.
+            //     Transient (it ends at the first sub-1e30 objective) and inert
+            //     at the moment of install, where every real row is satisfied
+            //     and so there is nothing yet to absorb.
+            //   * progress reports pair feasible = true with total_violation
+            //     ~1e30 until the objective goes finite. Documented on
+            //     SolveProgress::total_violation rather than suppressed: that
+            //     field is the weighted total over *all* rows including this
+            //     artificial one, and feasible-with-positive-violation is
+            //     already the steady state after any bound tightening, so no
+            //     consumer can be reading it as "zero whenever feasible". Only
+            //     the magnitude is new.
+            //
+            // One deliberate interaction: with this row violated and its
+            // gradient non-finite, float_jump_candidates reports "gradient
+            // unusable" at a coincident-point configuration, which makes the
+            // Float escape probe eligible there for the first time. When the
+            // probe actually arms is #117's subject, so elec25 has to be
+            // measured with both changes in.
             constexpr double kNonFiniteObjectiveBound = 1.0e30;
             if (has_obj && !std::isfinite(model.objective_bound())) {
                 model.set_objective_bound(kNonFiniteObjectiveBound);

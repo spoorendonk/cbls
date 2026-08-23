@@ -135,6 +135,15 @@ struct SolveProgress {
     int64_t iteration = 0;
     double time_seconds = 0.0;
     double objective = std::numeric_limits<double>::infinity();
+    /// Weighted violation over **all** rows, the artificial `obj <= bound` row
+    /// included — so it is routinely positive on a feasible assignment, since
+    /// the bound is tightened below the incumbent objective on every
+    /// improvement. Do not read it as "zero whenever feasible".
+    ///
+    /// It reads ~1e30 while the search sits on a feasible point whose objective
+    /// is not finite: the bound there is a finite sentinel (see record_best,
+    /// #116) and the row's violation is the engine's blowup clamp. That pairing
+    /// of `feasible = true` with an enormous violation is expected, not a bug.
     double total_violation = 0.0;
     bool feasible = false;
     bool new_best = false;
