@@ -589,7 +589,6 @@ GFJConfig expired_deadline_config() {
 
 TEST_CASE("a kick on one large List is bounded by the deadline, not by the List",
           "[fj][perturb][structural][deadline]") {
-    using FJ = FeasibilityJump;
     Model m;
     // Consumed by a pair_lambda_sum constraint: an unconsumed List would let the
     // engine leave it alone and the probe would silently prove nothing. n = 20000
@@ -606,14 +605,20 @@ TEST_CASE("a kick on one large List is bounded by the deadline, not by the List"
     const std::vector<int32_t> before = m.var(0).elements;
     fj.perturb(kBigP);
 
-    // The bound: at most one capped stride of moves past the deadline, plus the
-    // first move, which is ungated so the kick is never a no-op. Unbounded, this
-    // is 10000 — the number the pass ran before, whatever the budget was.
-    REQUIRE(fj.structural_kick_moves() <= FJ::kMaxDeadlineStride + 1);
+    // EXACTLY one move, not merely "within the bound". The general guarantee is
+    // one capped stride (64), but the observed value here is deterministic: the
+    // stride is re-armed to 1 at the top of every kick, so the first check lands
+    // after a single move and finds the deadline already gone. Asserting the
+    // loose bound instead would accept 65 and let the re-arm be deleted in
+    // silence — a kick would then inherit a grown stride and run 64 moves inside
+    // the first large variable (~35 ms rather than ~0.55 ms on the 41k Set of
+    // #115). That exact stride-persistence bug already shipped once in
+    // structural_pass, where it went inert on 160 of 170 pharma-glsp instances.
+    // Unbounded, this is 10000 — what the pass ran before, whatever the budget.
+    REQUIRE(fj.structural_kick_moves() == 1);
     // Not inert: the kick still happened, and still moved the List. Compared
     // through a bool so a failure reports the verdict rather than dumping 20000
     // elements twice.
-    REQUIRE(fj.structural_kick_moves() >= 1);
     const bool moved = m.var(0).elements != before;
     REQUIRE(moved);
     REQUIRE(is_permutation_of(m.var(0).elements, before));
@@ -639,9 +644,96 @@ TEST_CASE("a kick on one large Set is bounded by the deadline, not by the Set",
     REQUIRE(unbounded_moves > FJ::kMaxDeadlineStride + 1);  // the bound is not vacuous here
     fj.perturb(kBigP);
 
-    REQUIRE(fj.structural_kick_moves() <= FJ::kMaxDeadlineStride + 1);
-    REQUIRE(fj.structural_kick_moves() >= 1);
+    // Exactly one, for the reason spelled out on the List case above: the stride
+    // is re-armed per kick, so this value is deterministic and pinning it is what
+    // keeps the re-arm alive.
+    REQUIRE(fj.structural_kick_moves() == 1);
     REQUIRE(is_valid_set(m.var(0)));  // min_size/max_size and the universe still hold
+}
+
+TEST_CASE("every kick re-arms the stride, so none inherits a grown one",
+          "[fj][perturb][structural][deadline]") {
+    // The property the two expired-deadline tests above rest on, isolated so it
+    // fails on its own if arm_structural_kick() stops resetting the stride.
+    //
+    // One List of 20 gives k = 2 moves per kick, and the arithmetic is then
+    // forced. Move 1 is ungated; the check before move 2 finds countdown 1, reads
+    // the clock ONCE, and retunes the stride to 8 (the growth cap: a ~1.5 us move
+    // against a target of remaining/64 = 156 ms). So a kick that starts re-armed
+    // always reads the clock exactly once here.
+    //
+    // Let a kick inherit the previous kick's stride instead and the second kick
+    // starts at countdown 8, which k = 2 moves never exhausts -- so it reads the
+    // clock ZERO times. That is the discriminator, and it is deterministic: it
+    // turns on the countdown arithmetic, not on how long anything took.
+    Model m;
+    add_list_vars(m, /*num_lists=*/1, /*n=*/20);
+    m.close();
+    ViolationManager vm(m);
+    RNG rng(42);
+    GFJConfig cfg;
+    cfg.two_phase = false;
+    cfg.time_limit = 10.0;  // never reached; this is a stride-sizing input only
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(/*set_initial_x=*/true);
+
+    // Three kicks: the first would pass even without the re-arm (nothing has been
+    // grown yet), so it is the second and third that carry the test.
+    for (int kick = 0; kick < 3; ++kick) {
+        fj.perturb(kDefaultP);
+        REQUIRE(fj.structural_kick_moves() == 2);   // the whole run, never truncated
+        REQUIRE(fj.structural_kick_checks() == 1);  // ...and re-armed, so it checked
+        // The retune really ran. A move would have to cost 156 ms on a 20-element
+        // List to leave the stride at 1, so this cannot flake.
+        REQUIRE(fj.structural_kick_stride() > 1);
+    }
+}
+
+TEST_CASE("a deadline that expires mid-kick stops it within a stride",
+          "[fj][perturb][structural][deadline]") {
+    using FJ = FeasibilityJump;
+    // The guarantee's actual scenario, which the expired-deadline tests above do
+    // NOT reach: there the very first check finds the deadline gone and returns
+    // before the stride is ever retuned, so the countdown reload is dead code in
+    // them. Here the budget outlives many moves, so the pass ramps, reloads the
+    // countdown repeatedly, and is then cut off partway through one variable.
+    constexpr int64_t kUnboundedMoves = 10000;  // k = round(0.5 * 20000)
+    Model m;
+    add_list_vars(m, /*num_lists=*/1, /*n=*/20000);
+    m.close();
+    ViolationManager vm(m);
+    RNG rng(42);
+    GFJConfig cfg;
+    cfg.two_phase = false;
+    // Two margins, both wide. A move on this List measures ~230 us (#115 reports
+    // 1021 ms for 3000 moves on a 30000-element List), so the whole kick is
+    // ~2.3 s against this 0.2 s budget -- 11x headroom before the kick could
+    // finish and defeat the "stopped early" half. In the other direction the
+    // budget affords ~870 moves, so the machine would have to stall for the
+    // entire 0.2 s before the second move to defeat the "got going" half.
+    cfg.time_limit = 0.2;
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(/*set_initial_x=*/true);
+    fj.perturb(kBigP);
+
+    // It got going: past the first check, so the stride was retuned and the
+    // countdown reloaded at least once -- the wiring the other tests never touch.
+    REQUIRE(fj.structural_kick_moves() > 1);
+    REQUIRE(fj.structural_kick_checks() >= 2);
+    // ...and the deadline, not the variable, is what ended it.
+    REQUIRE(fj.structural_kick_moves() < kUnboundedMoves);
+    // The guarantee itself, in the only form observable without a clock: the
+    // moves between two consecutive clock reads never exceed the cap, so neither
+    // can the work done past the deadline.
+    //
+    // Note what this does NOT catch, so nobody mistakes it for the whole story.
+    // Reloading the countdown with a MULTIPLE of the stride is invisible in this
+    // regime, because the tuner measures the interval it actually got: over
+    // 4 * stride moves it sees 4x the elapsed time and shrinks the stride 4x to
+    // match, landing on the same moves-per-check. The mutation only shows where
+    // the 64-move cap binds instead of the time target -- see the small-structure
+    // test below, which is the one that fails on it.
+    REQUIRE(fj.structural_kick_moves() <= FJ::kMaxDeadlineStride * fj.structural_kick_checks() + 1);
 }
 
 TEST_CASE("a kick with no wall clock reads no clock at all",
@@ -705,4 +797,11 @@ TEST_CASE("a kick on many small structures is not cut short",
     REQUIRE(fj.structural_kick_stride() > 1);
     REQUIRE(fj.structural_kick_stride() <= FJ::kMaxDeadlineStride);
     REQUIRE(fj.structural_kick_checks() * 8 <= fj.structural_kick_moves());
+    // And the countdown really is reloaded with the stride itself. This is the
+    // sharpest place to say it: the stride pins at the cap here, so the bound
+    // below sits just above the observed 8 reads for 400 moves. Reload with
+    // stride * 4 and the ramp reads at moves 1, 5, 37, 293 -- 4 reads, whose
+    // budget of 4 * 64 + 1 = 257 no longer covers 400 moves, so this fails while
+    // every other assertion in the file still passes.
+    REQUIRE(fj.structural_kick_moves() <= FJ::kMaxDeadlineStride * fj.structural_kick_checks() + 1);
 }

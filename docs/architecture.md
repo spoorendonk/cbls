@@ -778,7 +778,7 @@ carries the largest real-constraint residual at the returned assignment.
 
 `solve(model, time_limit)` is a promise to return within `time_limit`. The
 budget used to be checked only *between* batches, so any sub-step entered just
-before the deadline could overrun it. Four can, and each is bounded separately:
+before the deadline could overrun it. Five can, and each is bounded separately:
 
 | # | Sub-step | Bound | Where |
 |---|----------|-------|-------|
@@ -786,6 +786,7 @@ before the deadline could overrun it. Four can, and each is bounded separately:
 | 2 | `InnerSolverHook` | not *started* when the budget is spent — a hook is arbitrary user code, so its running time is unknowable | `if (hook && !past_deadline())` |
 | 3 | LNS repair | handed `min(2.0, remaining())`, not its own independent 2s | `diversify()` |
 | 4 | STRUCTURAL sweep | checked between variables (#105) | `structural_pass` |
+| 5 | diversification kick, structural half | checked between structural *moves*, on a stride bounded the same two ways as row 1: at most 64 moves, and at most 1/64 of the *remaining* budget in predicted time (#115) | `perturb_structural` |
 
 Bound 3 has two halves, and only the lower one is about the deadline. The
 `remaining()` half is the deadline bound proper: a kick taken near the end of
@@ -872,9 +873,83 @@ at the next check. And the interval between checks can span a batch boundary, so
 work the outer loop does between batches (hook, LNS, structural sweep) is charged
 to the stride and shrinks it — conservative, never the reverse.
 
+##### Bound 5: why the kick is checked between moves (#115)
+
+The kick's structural half used to check the clock only *between* structural
+variables, and its comments claimed parity with the STRUCTURAL sweep's bound
+(row 4). The parity did not hold, and the difference is the whole issue: the
+sweep caps its overrun at one *move-set evaluation* per variable, which is linear
+in that variable's size, while the kick's per-variable cost is
+`k = round(p * |elements|)` move-set *generations*, quadratic in it. Both checked
+between variables; only one had a per-variable cost small enough for that to
+mean anything. A model whose structure lives in a single large List or Set had no
+effective bound at all — it ran the entire quadratic pass and then consulted the
+clock on its way to a variable that did not exist. Measured: one `perturb(0.1)`
+took 2269 ms on a 41049-element Set and 1021 ms on a 30000-element List, and
+`solve(model, 1.0)` returned in 1.29 s.
+
+So the check moved *inside* the run, between moves. One move — one move-set
+generation plus one apply, `O(|elements| + universe)` element copies — is
+exactly the unit row 4 caps its overrun at, so the kick now has the bound its
+comments used to claim.
+
+A move is not cheap enough to check before every one of them. On the shape the
+between-variables check already handled well, many small structures, a move on a
+100-element List is ~1.5 us against 1408 ns for `steady_clock::now()` on the HPET
+reference machine, so a per-move read would roughly double a kick. The check
+therefore strides, and the stride is the one bound 1 already uses:
+`FeasibilityJump::next_deadline_stride`, sized in time from the last measurement,
+growth capped at 8x, shrink uncapped, hard-capped at `kMaxDeadlineStride`.
+
+Sharing that tuner shares the lesson it encodes. A stride sized in time **alone**
+goes silent exactly when it is needed, because a shrink can only be *applied* at
+a check and the next check is a whole stride away — so a stride grown over many
+cheap small structures would be spent in full on the first move of a large one.
+The hard cap is what bounds that. It is also why the other direction #115 named,
+bounding `k` against the remaining budget, was not taken: `k` is chosen once,
+before the run starts, so a per-move cost that rises *inside* the run is never
+re-observed at all. That is the same defect in a new place, not a fix for it.
+
+**Guarantee: the structural pass applies at most 64 further moves after the
+deadline passes, and a stride costs at most 1/64 of the remaining budget in
+predicted time — or one move, whichever is larger.** The last clause is
+irreducible for the same reason as bound 1's: a move is atomic and cannot be
+pre-empted from the inside. The prediction is from the last measurement, so a
+move whose cost jumps mid-stride is absorbed by the 64-move half, not the time
+half.
+
+The stride is armed at one move at the top of every kick rather than carried
+across kicks, so the *first* variable is bounded too — the single large structure
+is the case, and a stride inherited from a previous kick would spend itself
+inside it. It is kept separate from the GLS tuner because the two loops advance
+in different units and interleave: a kick runs between batches, so one shared
+tuner would have each mis-size the other's stride.
+
+Two deliberate exceptions to stopping. The check never fires before the pass has
+applied a move, so a deadline already crossed on entry still leaves a kick
+something to have done — the never-a-no-op contract of #109/#111, which `perturb`'s
+fallback then completes if that one move happened to cancel itself out. And a
+variable whose run was cut short still has its net effect recorded, so a
+truncated kick is not mistaken for a no-op.
+
+One gap the guarantee's unit hides, **pre-existing and deliberately left open**.
+The bound is stated in moves, and the cost model behind it assumes cost is
+proportional to moves — but an *attempted* move that finds no legal candidate is
+not free. `generate_standard_moves` on a Set allocates a `vector<bool>` over the
+universe, copies the membership and builds the complement — `O(|elements| +
+universe)` — before discovering there is nothing legal, and the pass then leaves
+that variable having applied nothing. Because the check short-circuits on "no
+move applied yet" without decrementing, a model of M saturated Sets
+(`min_size == max_size == universe_size`) does `O(M * U)` work with zero clock
+reads. The old between-variables check was gated on `changed` and was equally
+blind to it, so this is not a regression, and the cost is linear in the model
+rather than quadratic in one variable — the shape #115 is about. Closing it means
+bounding failed *attempts* as well as moves.
+
 No clock read influences control flow when `time_limit <= 0` — `past_deadline()`,
-`remaining()`, `structural_pass` and FeasibilityJump's strided check all
-short-circuit on their `has_deadline` flag — so with no `SolveCallback` attached
+`remaining()`, `structural_pass`, `perturb_structural` and FeasibilityJump's two
+strided checks all short-circuit on their `has_deadline` flag — so with no
+`SolveCallback` attached
 the loop reads no clock at all, and iteration-budgeted runs stay bit-identical
 and deterministic. (`solve()` still timestamps entry and exit to fill
 `time_seconds`, and a callback's ~1s progress cadence reads the clock once per
@@ -950,6 +1025,70 @@ All three go red on restoring a fixed stride of 64: verified by doing exactly
 that (`deadline_check_stride() == 1` → 64, `> 64` → 64, and the end-to-end
 `iterations < 64` → 64).
 
+Bound 5 (#115) is observed the same way, in the unit its guarantee is stated in:
+`structural_kick_moves()` counts the moves a kick applied and
+`structural_kick_checks()` its clock reads, so no test asserts on a duration.
+
+| Test | Observes | Fails if |
+|------|----------|----------|
+| one large List is bounded by the deadline, not by the List | exactly 1 move (unbounded: 10000) | the pass runs the variable out |
+| one large Set is bounded by the deadline, not by the Set | exactly 1 move (unbounded: 8164) | as above |
+| every kick re-arms the stride | 1 clock read per kick, on a 2-move kick | a kick inherits a grown stride |
+| a deadline that expires mid-kick stops it within a stride | `moves <= 64 * checks + 1`, stopped short of 10000 | the pass runs a variable out past its budget, or never reloads the countdown |
+| a kick with no wall clock reads no clock | `structural_kick_checks() == 0` | a clock read reaches control flow |
+| many small structures are not cut short | all 400 moves run, 8 clock reads, `moves <= 64 * checks + 1` | the bound fires on structure count, reads per move, or the countdown is reloaded with a *multiple* of the stride |
+
+Both large-structure models consume their structure through a constraint. An
+unconsumed List or Set would let the engine leave it alone, and the test would
+prove nothing while still passing.
+
+Three of those deserve their reasoning recorded, because each covers a hole the
+obvious version of the test leaves open.
+
+The two large-structure cases assert **exactly one** move rather than "within the
+bound of 65". The guarantee is one capped stride, but the observed value is
+deterministic — the stride is re-armed to 1 at the top of every kick, so the
+first check lands after a single move. Accepting 65 would let the re-arm be
+deleted in silence, and a kick would then inherit a grown stride and spend 64
+moves inside the first large variable (~35 ms rather than ~0.55 ms on #115's 41k
+Set). That is not hypothetical: the same stride-persistence bug already shipped
+once in `structural_pass`, where the stride outgrew the model's structured
+variable count and the check went inert on 160 of 170 pharma-glsp instances.
+
+The re-arm has its own test because the two above only *depend* on it. On a
+one-List model with `k = 2`, a re-armed kick reads the clock exactly once (move 1
+is ungated; the check before move 2 finds countdown 1). A kick inheriting the
+previous stride of 8 never exhausts its countdown in 2 moves and reads it zero
+times. The discriminator is the countdown arithmetic, not a duration.
+
+The mid-kick expiry test exists because the expired-deadline tests never reach
+the guarantee's real scenario: with the deadline already gone, the first check
+returns before `next_deadline_stride` is called at all, so the countdown reload
+is dead code in them. Giving the pass a budget it outlives for a while exercises
+the ramp, and `moves <= 64 * checks + 1` is the guarantee in the only form
+observable without a clock.
+
+That assertion is carried in *both* the mid-kick test and the small-structure
+one, and only the second can fail on a countdown reloaded with a **multiple** of
+the stride — an edit that multiplies the real overrun while leaving the reported
+stride untouched. In the mid-kick test the time target is what binds, and the
+tuner absorbs the mutation: measuring the interval it actually got, it sees `4x`
+the elapsed time over `4 * stride` moves and shrinks the stride `4x` to match,
+landing on the same moves-per-check. Only where the 64-move cap binds instead —
+cheap moves, a distant deadline, which is the small-structure model — does the
+mutation surface, as 256 moves between reads against a cap of 64.
+
+The tuner's own ratcheting properties are not retested: bound 5 reuses
+`next_deadline_stride` unchanged, so the exhaustive grid and the two timing-free
+ratchet tests above already cover them. What is new in #115 is *where* the check
+is placed and how the countdown is driven, which is what these observe.
+
+One cost worth naming: `arm_structural_kick()` runs on every kick, including on
+scalar-only models, so a deadline-armed run there now pays one
+`steady_clock::now()` per kick where it paid none before. It is one read per
+`perturbation_period` stagnant batches, and it is determinism-safe (the arm is
+gated on `has_deadline_`), but it is not zero.
+
 ### Diversification
 
 `diversify()` increments a `perturbations` counter and, every `lns_interval`-th
@@ -1022,9 +1161,12 @@ element copies per structure (the generator builds each candidate as a whole new
 vector, and a Set's candidates scan its universe): 0.012 ms per kick on one
 100-element List, 23 ms on the 1500-List model of #105 — paid once per
 `perturbation_period` stagnant batches. Because that is superlinear in one
-structure's size, the sweep is deadline-bounded *between* variables in the same
-way the structural batch's is (#105), never mid-variable, and never before it has
-moved something.
+structure's size, checking the deadline between *variables* bounded nothing on a
+model whose structure is one large List or Set: 2269 ms for a single kick on a
+41049-element Set. The pass is therefore deadline-bounded between *moves*, on a
+capped stride, and never before it has moved something — see
+[Bound 5](#bound-5-why-the-kick-is-checked-between-moves-115) for the guarantee
+and why a purely time-derived bound was rejected.
 
 The pass tests the variable type before drawing, so it consumes no randomness on
 a model without List/Set variables: scalar-only models keep their exact draw

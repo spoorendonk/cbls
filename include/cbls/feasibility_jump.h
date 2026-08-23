@@ -163,6 +163,14 @@ public:
     // quantity the bound is about and is observable without a clock;
     // `structural_kick_checks()` is 0 for a run with no wall clock, the direct
     // evidence that no clock read reached control flow.
+    //
+    // Two things the counts deliberately exclude, so read them as being about the
+    // strided pass rather than about the whole kick. perturb()'s never-a-no-op
+    // fallback (force_structural_move) applies a real structural move that
+    // kick_moves_ does not count, so a kick's true worst case is one move more
+    // than reported. And arm_structural_kick() reads the clock once per kick
+    // without counting it, which is also why a deadline-armed scalar-only model
+    // now pays one steady_clock::now() per kick where it paid none before.
     int64_t structural_kick_moves() const { return kick_moves_; }
     int64_t structural_kick_checks() const { return kick_checks_; }
     int64_t structural_kick_stride() const { return kick_stride_; }

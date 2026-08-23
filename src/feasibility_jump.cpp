@@ -806,8 +806,9 @@ int32_t FeasibilityJump::pick_forced_perturb_var() {
 
 // Reset the structural kick's move counter and stride tuner. Starting the stride
 // at one move is the point of the whole bound: the first move of a kick is the
-// one no measurement has sized yet, and a model whose structure is a single 41k
-// -element Set spends its entire quadratic run inside that first variable.
+// one no measurement has sized yet, and on a model whose structure is a single
+// large Set the entire quadratic run happens inside that first variable. A
+// stride inherited from a previous kick would be spent there.
 void FeasibilityJump::arm_structural_kick() {
     kick_moves_ = 0;
     kick_checks_ = 0;
@@ -854,6 +855,19 @@ void FeasibilityJump::arm_structural_kick() {
 //
 // The prediction is a measurement, so a move whose cost jumps mid-stride is
 // absorbed by the 64-move half of the bound, not the time half.
+//
+// One honest gap, PRE-EXISTING and deliberately not closed here. The guarantee is
+// stated in moves, and the cost model behind it assumes cost is proportional to
+// moves — but a move that is never applied is not free. generate_standard_moves
+// on a Set allocates a vector<bool> over the universe, copies the membership and
+// builds the complement, O(|elements| + universe), before discovering there is no
+// legal move; the pass then breaks out of that variable having applied nothing.
+// Since the check short-circuits on kick_moves_ == 0 without decrementing, a
+// model of M saturated Sets (min_size == max_size == universe_size) does O(M * U)
+// work with zero clock reads. The old between-variables check was gated on
+// `changed` and was equally blind to it, so this is not a regression, and the
+// cost is linear in the model rather than quadratic in one variable — the shape
+// #115 is about. Closing it means bounding failed ATTEMPTS as well as moves.
 bool FeasibilityJump::kick_past_deadline() {
     // Short-circuited on has_deadline_, so a run with no wall clock neither reads
     // the clock nor touches any tuner state: iteration-budgeted runs stay
@@ -868,10 +882,17 @@ bool FeasibilityJump::kick_past_deadline() {
         return false;
     }
     const auto now = std::chrono::steady_clock::now();
+    // Counted before the deadline test — as the GLS loop also does — so the read
+    // that stops the pass is included rather than dropped. The count is every
+    // read made by THIS check, not by the kick as a whole: arm_structural_kick()
+    // takes one more, uncounted. So `structural_kick_checks() == 0` states
+    // exactly that the strided check never consulted the clock, and it is the
+    // pairing with `has_deadline_ == false` — which also silences the arm — that
+    // makes a no-wall-clock run read no clock at all.
+    ++kick_checks_;
     if (now >= deadline_) {
         return true;
     }
-    ++kick_checks_;
     // Sized against the budget that is LEFT, as the GLS loop is: a fraction of
     // the total would permit budget/64 of overrun right up to the deadline.
     const double remaining = std::chrono::duration<double>(deadline_ - now).count();

@@ -41,7 +41,10 @@ struct SearchConfig {
     // (mean ~n/3), so on a positionally-read List (`at`) k = 0.1n rewrites most
     // positions. In the adjacency terms pair_lambda_sum reads, p = 0.1 breaks
     // ~26% of adjacent pairs. If all of that happens to move nothing, one
-    // variable is moved anyway, so a kick is never a no-op (#109).
+    // variable is moved anyway, so a kick is never a no-op (#109). The
+    // "every structure, every kick" part holds only while the wall-clock budget
+    // lasts: a kick that runs into the deadline stops between moves and leaves
+    // the remaining structures alone, having moved at least one (#115).
     double perturbation_probability = 0.1;
     // Structural batch (P4): instead of a scalar Feasibility/Novelty Jump batch,
     // sweep the List/Set variables trying typed structural moves (swap / 2-opt /
