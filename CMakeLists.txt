@@ -5,6 +5,53 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+option(CBLS_INSTALL_GIT_HOOKS
+       "Point this checkout's core.hooksPath at the tracked .githooks/" ON)
+
+# The git hooks live in .githooks/ under version control, so a fresh clone gets
+# them for free -- but git only runs hooks from core.hooksPath, which is
+# per-checkout local config and therefore cannot be committed. Configuring the
+# project sets it, which is the one step every contributor already performs.
+# Only an unset hooksPath, or one already pointing at .githooks, is touched.
+# The top-level guard matters: without it, a project that vendors cbls via
+# add_subdirectory or FetchContent would get core.hooksPath written into *its*
+# repository. (PROJECT_IS_TOP_LEVEL would read better but needs CMake 3.21.)
+if(CBLS_INSTALL_GIT_HOOKS
+   AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+    find_package(Git QUIET)
+    if(GIT_FOUND)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" config --get core.hooksPath
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE CBLS_HOOKS_PATH
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+        if(NOT CBLS_HOOKS_PATH)
+            execute_process(
+                COMMAND "${GIT_EXECUTABLE}" config core.hooksPath .githooks
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                RESULT_VARIABLE CBLS_HOOKS_RC)
+            # Reporting success unconditionally would hide a failed write (a
+            # read-only .git, a locked config) behind a green configure, and
+            # every gate would then be silently absent.
+            if(CBLS_HOOKS_RC EQUAL 0)
+                message(STATUS "git hooks: core.hooksPath -> .githooks")
+            else()
+                message(WARNING
+                    "git hooks: could not set core.hooksPath (git exited "
+                    "${CBLS_HOOKS_RC}). The tracked hooks under .githooks/ are "
+                    "NOT running. Fix with: git config core.hooksPath .githooks")
+            endif()
+        elseif(NOT CBLS_HOOKS_PATH STREQUAL ".githooks")
+            message(WARNING
+                "git hooks: core.hooksPath is '${CBLS_HOOKS_PATH}', not '.githooks'. "
+                "The tracked hooks under .githooks/ are NOT running. "
+                "Fix with: git config core.hooksPath .githooks")
+        endif()
+    endif()
+endif()
+
 # Compression libraries (required for MPS .gz reader; bzip2 optional).
 find_package(ZLIB REQUIRED)
 option(CBLS_USE_BZIP2 "Enable bzip2 (.bz2) support in the MPS reader" OFF)

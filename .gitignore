@@ -15,3 +15,8 @@ compile_commands.json
 .pytest_cache/
 *.o
 results/
+
+# Local agent/dev tooling — not part of the repo.  The gates that matter are
+# tracked in .githooks/ (wired up by `cmake -B build`).
+.claude/
+.codex/

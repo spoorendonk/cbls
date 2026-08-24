@@ -12,6 +12,13 @@ requires-python = ">=3.12"
 dev = [
     "pytest>=7.0",
     "pytest-timeout>=2.1",
+    # The pre-commit and pre-push hooks guard every ruff/mypy step on the
+    # binary existing in the venv, and skip in silence when it doesn't. Without
+    # these, the documented `pip install -e '.[dev]'` bootstrap yields a
+    # pre-push that lints and type-checks nothing while printing "All checks
+    # passed."
+    "ruff>=0.5",
+    "mypy>=1.10",
 ]
 benchmarks = [
     # CP-SAT's violation_ls worker, the MIPfeas baseline. 9.7 is when the

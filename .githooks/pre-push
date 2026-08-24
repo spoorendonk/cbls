@@ -1,0 +1,268 @@
+#!/bin/bash
+# Git pre-push hook.
+# Final gate before sharing code — catches what pre-commit doesn't.
+#
+# Flow:
+#   1. Review check → block if /review not run
+#   2. Clean build + test → block on failure
+#   3. Remaining issues (complexity, type errors, warnings) → warn and continue
+#
+# Vendored from devkit when the .devkit submodule was removed. This directory
+# is the source now — edit it here.
+#
+# SC2086: the *_FILES variables hold newline-separated path lists that are
+# meant to word-split into multiple arguments; quoting them would pass one
+# argument containing newlines and break every tool invocation.  SC1091: the
+# sourced resolve-venv.sh is not followed without -x.
+# shellcheck disable=SC2086,SC1091
+
+set -e
+
+# Get changed files vs main
+MAIN_BRANCH="main"
+git rev-parse --verify "origin/$MAIN_BRANCH" &>/dev/null || MAIN_BRANCH="master"
+git fetch origin "$MAIN_BRANCH" --quiet 2>/dev/null || true
+CHANGED_FILES=$(git diff --name-only "origin/$MAIN_BRANCH"...HEAD 2>/dev/null || git diff --name-only HEAD~1 2>/dev/null || true)
+
+if [ -z "$CHANGED_FILES" ]; then
+	# Usually a genuine no-op push.  It is also what a repo with no upstream
+	# yet produces, in which case every gate below is skipped — say so rather
+	# than exiting silently.
+	echo "pre-push: no changes vs origin/$MAIN_BRANCH — nothing to gate."
+	exit 0
+fi
+
+CPP_FILES=$(echo "$CHANGED_FILES" | grep -E '\.(cpp|cc|cxx|h|hpp|hxx)$' || true)
+PY_FILES=$(echo "$CHANGED_FILES" | grep -E '\.py$' || true)
+# The tracked hooks themselves are extensionless shell scripts; include them so
+# the linter below sees the file it is meant to police.  (Never begin a comment
+# line with the linter's own name: that parses as a malformed directive and
+# aborts analysis of the whole file.)
+SH_FILES=$(echo "$CHANGED_FILES" | grep -E '\.sh$|^\.githooks/[^/.]+$' || true)
+
+# Python venv — required for all Python tooling
+if [ -n "$PY_FILES" ] || [ -f "pyproject.toml" ] || [ -f "setup.py" ]; then
+	source "$(dirname "$0")/resolve-venv.sh"
+fi
+
+# Check if only non-code files changed (skip build+test for docs-only pushes).
+# .githooks/ is excluded: a hook change cannot alter build or test outcomes, so
+# a hooks-only push should not pay for a clean rebuild.
+CODE_FILES=$(echo "$CHANGED_FILES" | grep -vE '^(LICENSE|CHANGELOG)' | grep -vE '\.(md|txt|rst)$' | grep -vE '^\.(gitignore|gitattributes)$' | grep -vE '^\.githooks/' || true)
+
+# ============================================================
+# Step 1: Review check (block if /review not run)
+# ============================================================
+
+REVIEW_STALE=0
+CURRENT_HEAD=$(git rev-parse HEAD 2>/dev/null)
+# Per-worktree stamp: --absolute-git-dir gives .git/worktrees/<name> in linked
+# worktrees, so each worktree tracks its own review state independently.
+STAMP="$(git rev-parse --absolute-git-dir)/.last-review"
+
+# The /review command lives in .claude/, which is gitignored local agent
+# tooling.  A checkout without it has no way to write the stamp, so gating on
+# it there would brick every push with no route to satisfy the gate.  Enforce
+# the gate only where the command that clears it actually exists.
+if [ ! -f ".claude/commands/review.md" ]; then
+	# Say so out loud.  A gate that turns itself off in silence is
+	# indistinguishable from a gate that passed.
+	echo ""
+	echo "=== Review check ==="
+	echo "SKIPPED: no .claude/commands/review.md in this checkout (linked"
+	echo "         worktree or fresh clone), so nothing here can write the"
+	echo "         stamp that clears the gate. Review on the main checkout."
+elif [ -f "$STAMP" ]; then
+	LAST_REVIEWED=$(tr -d '[:space:]' <"$STAMP")
+	if [ "$LAST_REVIEWED" != "$CURRENT_HEAD" ]; then
+		COMMITS_SINCE=$(git rev-list --count "$LAST_REVIEWED..$CURRENT_HEAD" 2>/dev/null || echo "?")
+		echo ""
+		echo "=== Review check ==="
+		echo "WARNING: /review has not been run since $COMMITS_SINCE commit(s) ago."
+		REVIEW_STALE=1
+	fi
+else
+	echo ""
+	echo "=== Review check ==="
+	echo "WARNING: /review has never been run on this branch."
+	REVIEW_STALE=1
+fi
+
+if [ "$REVIEW_STALE" -ne 0 ]; then
+	echo ""
+	echo "Push blocked: run /review first."
+	exit 1
+fi
+
+# ============================================================
+# Step 2: Clean build + test (hard block)
+# ============================================================
+
+# Extract a fenced code block under "## Build & Test" by tag (e.g. ```build ... ```)
+extract_block() {
+	local tag="$1"
+	if [ -f "CLAUDE.md" ]; then
+		sed -n -e '/^## Build & Test/,/^## /{' \
+			-e "/^\`\`\`${tag}$/,/^\`\`\`$/{ /^\`\`\`/d; p; }" \
+			-e '}' CLAUDE.md
+	fi
+}
+
+# Run one extracted block in a subshell, so an `exit` inside an extracted
+# command cannot kill this hook mid-gate.
+#
+# GIT_DIR/GIT_WORK_TREE are unset defensively.  Some git versions export GIT_DIR
+# into hook environments, and CMake's nested `git clone` inside FetchContent
+# would then treat it as the repo it is cloning into and fail to check out the
+# nlohmann/json or Catch2 tag.  Measured on git 2.53.0, `git push` does NOT
+# export it to pre-push, so today this is insurance rather than a live fix —
+# keep it, but don't cite it as the reason a build broke without re-measuring.
+# Scoped to the subshell so this hook's own `git` calls are unaffected.
+run_block() {
+	set +e
+	(
+		unset GIT_DIR GIT_WORK_TREE
+		eval "$1"
+	)
+	local rc=$?
+	set -e
+	return $rc
+}
+
+if [ -z "$CODE_FILES" ]; then
+	echo ""
+	echo "=== Skipping build+test (docs-only) ==="
+else
+	BUILD_FAILED=0
+	CLEAN_CMD=$(extract_block clean)
+	BUILD_CMD=$(extract_block build)
+	TEST_CMD=$(extract_block test)
+
+	# Both blocks are required.  Devkit's version ran whichever half it found
+	# and skipped the other in silence, so a renamed fence or a moved heading
+	# produced "All checks passed." on a push that never ran the tests.  There
+	# is also no auto-detect fallback: guessing a build would gate a *different*
+	# build than the documented one, which is the same failure wearing a hat.
+	# CLAUDE.md's `## Build & Test` fences are the contract.
+	if [ -z "$BUILD_CMD" ] || [ -z "$TEST_CMD" ]; then
+		echo ""
+		echo "Push blocked: could not extract the build/test commands from"
+		echo "CLAUDE.md's '## Build & Test' section. Restore the fenced"
+		echo "\`\`\`clean / \`\`\`build / \`\`\`test blocks there."
+		[ -z "$BUILD_CMD" ] && echo "  missing: \`\`\`build"
+		[ -z "$TEST_CMD" ] && echo "  missing: \`\`\`test"
+		exit 1
+	fi
+
+	if [ -n "$CLEAN_CMD" ]; then
+		echo ""
+		echo "=== Clean ==="
+		run_block "$CLEAN_CMD" || BUILD_FAILED=1
+	fi
+	if [ "$BUILD_FAILED" -eq 0 ]; then
+		echo ""
+		echo "=== Build ==="
+		run_block "$BUILD_CMD" || BUILD_FAILED=1
+	fi
+	if [ "$BUILD_FAILED" -eq 0 ]; then
+		echo ""
+		echo "=== Test ==="
+		run_block "$TEST_CMD" || BUILD_FAILED=1
+	fi
+
+	if [ "$BUILD_FAILED" -ne 0 ]; then
+		echo ""
+		echo "Push blocked: build or tests failed."
+		exit 1
+	fi
+fi
+
+# ============================================================
+# Step 3: Remaining issues (warn and continue)
+# ============================================================
+
+ISSUES=""
+
+# clang-tidy (non-fixable warnings)
+if [ -n "$CPP_FILES" ] && command -v clang-tidy &>/dev/null; then
+	COMPILE_DB=""
+	[ -f "build/compile_commands.json" ] && COMPILE_DB="-p build"
+	[ -f "compile_commands.json" ] && COMPILE_DB="-p ."
+
+	if [ -n "$COMPILE_DB" ]; then
+		echo ""
+		echo "=== Running clang-tidy ==="
+
+		for f in $CPP_FILES; do
+			[ -f "$f" ] || continue
+			RESULT=$(clang-tidy $COMPILE_DB \
+				--quiet "$f" 2>&1 || true)
+			if echo "$RESULT" | grep -qE '(warning|error):'; then
+				ISSUES="${ISSUES}${RESULT}"$'\n'
+			fi
+		done
+	fi
+fi
+
+# ruff complexity (C901, not auto-fixable)
+if [ -n "$PY_FILES" ] && [ -x "$VENV_BIN/ruff" ]; then
+	for f in $PY_FILES; do
+		[ -f "$f" ] || continue
+		RESULT=$("$VENV_BIN/ruff" check --select C901 --no-fix "$f" 2>&1 || true)
+		if [ -n "$RESULT" ] && ! echo "$RESULT" | grep -q "^All checks passed"; then
+			ISSUES="${ISSUES}${RESULT}"$'\n'
+		fi
+	done
+fi
+
+# Shell lint warnings
+if [ -n "$SH_FILES" ] && command -v shellcheck &>/dev/null; then
+	for f in $SH_FILES; do
+		[ -f "$f" ] || continue
+		RESULT=$(shellcheck "$f" 2>&1 || true)
+		if [ -n "$RESULT" ]; then
+			ISSUES="${ISSUES}${RESULT}"$'\n'
+		fi
+	done
+fi
+
+# mypy type errors.  Deleted paths are filtered out first: unlike the loops
+# above, mypy takes the whole list at once and stops at the first unreadable
+# file ("errors prevented further checking"), so one .py removed by this push
+# would both fake a failure and mask real type errors in every surviving file.
+MYPY_FILES=""
+for f in $PY_FILES; do
+	if [ -f "$f" ]; then
+		MYPY_FILES="${MYPY_FILES}${f}"$'\n'
+	fi
+done
+if [ -n "$MYPY_FILES" ] && [ -x "$VENV_BIN/mypy" ]; then
+	echo ""
+	echo "=== Running mypy ==="
+	RESULT=$("$VENV_BIN/mypy" --strict $MYPY_FILES 2>&1 || true)
+	if echo "$RESULT" | grep -qE '(error):'; then
+		ISSUES="${ISSUES}${RESULT}"$'\n'
+	else
+		echo "mypy: clean"
+	fi
+fi
+
+# If issues found, warn but allow push
+if [ -n "$ISSUES" ]; then
+	echo ""
+	echo "═══════════════════════════════════════════"
+	echo "  Issues found:"
+	echo "═══════════════════════════════════════════"
+	echo "$ISSUES"
+	echo "═══════════════════════════════════════════"
+	echo ""
+	echo "Warning: pushing with known issues."
+else
+	echo ""
+	echo "All checks passed."
+fi
+
+# Clean up review stamp so next changes require a fresh review
+rm -f "$STAMP"
+
+exit 0

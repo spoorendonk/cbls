@@ -2,7 +2,181 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-@.devkit/standards/nanobind.md
+# Standards
+
+Previously imported from a `.devkit` submodule. That submodule is gone; this
+section is the source of truth, adapted to what this project actually does.
+
+## Communication Style
+
+Be terse. No preamble. No filler.
+
+## Code Navigation
+
+Prefer narrow queries over full-file reads:
+
+1. **LSP** for symbol questions. `goToDefinition`, `hover`, `documentSymbol`, `workspaceSymbol` answer "where is X / what's its signature" in a few tokens. Use before `Read`.
+2. **Grep with `head_limit` (small) + `-n`** to locate lines. Start with `head_limit: 20`; raise only if inconclusive.
+3. **Read with `offset`/`limit`** to fetch a slice around the hit. Full-file `Read` is fine for files under ~200 lines or when structure matters.
+
+Know the symbol → LSP. Know a string, not its location → Grep. Full-file Read is the last mile. This is a preference, not a prohibition: shelling out to `grep`/`rg` is fine when the built-in can't do the job (filtering a pipe like `git log | grep`, or a session without the `Grep` tool). What matters is bounding output, not which binary produces it.
+
+## C++
+
+- **C++17** (`CMAKE_CXX_STANDARD 17`) — not C++23. `std::expected`, concepts and ranges are *not* available here; don't reach for them.
+- Style: Google-based, enforced by `.clang-format` and `.clang-tidy` (real files at the repo root, no longer symlinks).
+- Use `#pragma once` for include guards.
+- Minimize includes in headers. Forward-declare where possible.
+
+### LSP
+
+Install `clangd-lsp@claude-plugins-official` plus `clangd` itself (`apt install clangd` or from LLVM). `.clangd` points at `build/compile_commands.json`, produced by `CMAKE_EXPORT_COMPILE_COMMANDS ON`. Prefer `LSP` tool queries (`goToDefinition`, `hover`, `documentSymbol`) over `Read` for symbol questions.
+
+## Python
+
+- Style: enforced by `ruff` (format + lint) and `mypy --strict`, configured in `pyproject.toml`.
+- All functions must have full type annotations (mypy strict mode).
+- Use built-in generics (`list[int]`, `dict[str, Any]`) and `|` union syntax.
+- Pin dependencies with `>=` lower bounds in `pyproject.toml`. Use `uv` or `pip`.
+
+### LSP
+
+Install `pyright-lsp@claude-plugins-official`. Pyright reads `[tool.mypy]` and project layout from `pyproject.toml` — no extra config needed.
+
+## nanobind Bindings
+
+- Bindings live in `python/bindings.cpp` — a single `NB_MODULE(_cbls_core, ...)` built by `nanobind_add_module` in `python/CMakeLists.txt`, gated on `CBLS_BUILD_PYTHON`. Keep binding glue out of `src/`; a new binding source must be added to that call or it is never compiled.
+- C++ `camelCase` methods → Python `snake_case` via nanobind. Use `nb::arg("name")` for Python-friendly parameter names.
+
+### Ownership and Lifetime
+
+- Default: nanobind manages ownership. Use `nb::rv_policy::reference` only when C++ retains ownership and guarantees the object outlives Python references.
+- Never return raw pointers without explicit lifetime annotation.
+- Prefer returning by value or `std::shared_ptr`. Document ownership on each binding that transfers or shares it.
+
+### Type Conversions
+
+- Use automatic conversions for standard types (`std::string` ↔ `str`, `std::vector` ↔ `list`).
+- Use `nb::ndarray` for NumPy interop — specify dtype and shape constraints.
+
+## Testing
+
+C++ tests use **Catch2** (not GoogleTest): files in `tests/`, registered in `CMakeLists.txt`, run via `ctest`. Python tests use **pytest**: `test_<module>.py` under `tests/python/`, `conftest.py` for shared fixtures, `pytest.mark.parametrize` for data-driven cases.
+
+- Name tests descriptively — `returns_optimal_for_feasible_input`, `test_solver_returns_optimal_for_feasible_input`.
+- Test nanobind bindings from Python with pytest, not from C++ — the binding is an implementation detail. Include round-trip tests: create in Python → pass to C++ → get result back.
+- Terse output is not configured anywhere — pass the flags. `ctest --progress` collapses the running list, `--tb=short -q` keeps pytest failures short, as the `## Build & Test` blocks below already do. `pyproject.toml` sets `testpaths`, ruff's rule set and `mypy strict`, but no `addopts`, `pretty` or `output-format`.
+
+## CMake
+
+- `set(CMAKE_EXPORT_COMPILE_COMMANDS ON)` for clang-tidy.
+- Use FetchContent for dependencies.
+- Targets live in the root `CMakeLists.txt` — library, CLI, examples and every benchmark runner. Only `tests/` and `python/` carry their own. Add new benchmark and example targets to the root file.
+
+## Development Workflow
+
+```
+plan (non-trivial) → implement → test → /review → push to main
+```
+
+Run tests locally before considering work done — don't skip the suite even on changes that look trivial. The pre-push hook is the final gate.
+
+## Git Hooks
+
+The hooks live in **`.githooks/`, tracked in this repo** — that directory is the source, edit it there. Git runs them only once `core.hooksPath` points at that directory, and that setting is per-checkout local config which cannot be committed, so `cmake -B build` sets it (`CBLS_INSTALL_GIT_HOOKS`, default ON). Configuring the project once is all a fresh clone needs; to wire one up by hand, `git config core.hooksPath .githooks`. If `core.hooksPath` already points somewhere else, CMake warns rather than overwriting it.
+
+Because `core.hooksPath` is shared across worktrees but `.githooks/` only exists on branches that contain it, checking out a branch created before this directory landed runs **no hooks at all**. Merge main into such a branch before relying on the gates.
+
+- `pre-commit` — auto-formats staged C++/Python/shell (clang-format, ruff, shfmt), applies safe clang-tidy fixes, re-stages, then runs the affected test suite. Hard block on failure.
+- `commit-msg` — Conventional Commits format.
+- `pre-push` — `/review` staleness check, then the clean build + full suite from `## Build & Test` below, then clang-tidy/ruff-complexity/shellcheck/mypy as warnings. The `/review` gate is skipped in a checkout without `.claude/commands/review.md`, since nothing there can write the stamp that clears it.
+
+**Never use `git push --no-verify` or `git commit --no-verify`** unless explicitly asked. A failing hook is a signal — fix the root cause.
+
+There are deliberately **no Claude Code hooks** (`.claude/settings.json` has no `hooks` block). The `PostToolUse` formatter that used to be configured read `$CLAUDE_FILE_PATH`, which Claude Code does not set, so it silently formatted nothing for the life of this project. Formatting happens at commit time instead — don't hand-tune it.
+
+Three `PreToolUse` guards went with it, and unlike the formatter they *did* work: they blocked creating a branch off a non-main branch, bare `python`/`pip`/`pytest`/`mypy` outside `.venv/`, and shelling out to `grep`/`rg`. Those three rules survive as prose — the branch rule under **Git Workflow**, the venv rule under **Build & Test**, the grep preference under **Code Navigation** — but nothing enforces them now. Follow them anyway.
+
+`.claude/` is gitignored local agent tooling (settings, statusline, the `/review` command). Nothing in it is part of the repo.
+
+## Git Workflow
+
+Trunk-based development with linear history on main. Commit directly to main and push when local gates pass.
+
+Feature branches are optional for larger changes:
+- Always branch from main. Run `git checkout main && git pull` first.
+- Never branch from another feature branch.
+- Keep branches short-lived; rebase or squash merge — no merge commits on main.
+
+After a successful push:
+- **Close any gh issue the work resolved**: `gh issue close <num> -c "<one-line note>"`. Do this for every issue covered by the push.
+- **Delete the feature branch** if one was used: `git branch -d <branch>` locally, plus `git push origin --delete <branch>` if it was pushed. Don't leave stale branches behind.
+
+## Issue Tracking
+
+GitHub Issues is the tracker. Use the `gh` CLI.
+
+- **Default to HTTPS** for GitHub remotes (`https://github.com/...`), not SSH.
+- **Read an issue** with `gh issue view <num> --json title,body,labels,state,comments`. Plain `gh issue view <num>` is deprecated for programmatic use.
+- Don't propose deferring work via a new gh issue unless it is substantial. Small follow-ups should be either fixed inline or left alone — don't open an issue just because you noticed something.
+
+### Writing Issues
+
+Issues get picked up later in fresh sessions, often by a different agent with no access to the author's machine. Write them to be picked up cold:
+
+- **Self-contained.** Body must carry all needed context: problem, motivation, acceptance criteria, repro steps. Don't assume the reader has the current conversation.
+- **No local references.** No local file paths, local repo paths, or machine-specific locations (`/home/user/...`, `~/code/foo/bar.py`, "see my other checkout"). Dead links in a fresh session.
+- **Prefer stable external links.** GitHub permalinks, paper URLs, RFCs, official docs.
+- **Be vague about local code context.** Describe the concept rather than the path; hint that the agent can search under `..`, `../..`, or `~/code/`.
+
+## Agent Self-Review
+
+**Any agent or agent team that produces code must run `/review` on its own changes before that code can merge to main.** No subagent returns unreviewed work; no orchestrator merges unreviewed work. This applies to every agent team, not just the parallel-issue workflow.
+
+## Parallel Issue Workflow
+
+When the user brings multiple gh issues to work on at once:
+
+1. **Propose parallelism first.** Offer it explicitly and wait for confirmation — don't silently start serial work.
+2. **Orchestrator role.** Spawn one subagent per issue (Agent tool with `isolation: "worktree"`). Subagents branch from main, not from the orchestrator's working branch, and work in their own git worktree. Pass each subagent its gh issue number and any plan file path.
+3. **Subagents self-review** per the Agent Self-Review rule above. Subagents commit locally in their worktree and **do not push** — worktrees share `.git`, so the orchestrator sees their commits via `git log <branch>` with no network round-trip.
+4. **No merging without user OK.** Subagents never merge into main; the orchestrator never merges a subagent's branch without explicit user approval.
+5. **Final combined review, then push.** The orchestrator merges all approved branches into local main, runs `/review` over the merged result, and only then runs `git push origin main`. No pushes — of main or feature branches — happen before that final review.
+
+## Commit Messages
+
+Conventional Commits. The commit-msg hook enforces format.
+
+- `type: description` or `type(scope): description`
+- Types: `feat`, `fix`, `refactor`, `test`, `docs`, `style`, `perf`, `chore`, `build`, `ci`
+- Subject ≤72 chars. Focus on **why**, not what.
+
+## CLAUDE.md Discipline
+
+When Claude gets something wrong, fix CLAUDE.md in the same commit. It's a living document — update it whenever better instructions would have prevented the mistake.
+
+## Complexity
+
+When a complexity warning fires, don't extract methods mechanically. Ask: what are the independent responsibilities here? Split along those boundaries. If the function is genuinely complex because the domain is, add a comment explaining why and suppress the warning.
+
+## Plan Adherence
+
+**Follow the agreed plan.** If you think a plan should change, stop and discuss — don't silently diverge. The same goes outside a written plan: if your current approach isn't working, say so out loud — don't quietly switch strategies. Implement everything specified; don't leave TODO placeholders or stub implementations unless explicitly asked.
+
+## Reference Correctness
+
+When implementing from papers, pseudocode, or open-source references:
+- Match the reference algorithm exactly. No early exits, iteration limits, size caps, or "optimization" shortcuts that change behavior.
+- Only introduce heuristic approximations when explicitly asked.
+- Implement edge cases and special handling — don't simplify them away.
+- When in doubt, be faithful to the reference and let tests verify correctness.
+
+## Common Mistakes
+
+- **Don't invent APIs — verify they exist.** Check that functions, flags, and methods actually exist before using them.
+- **Don't ignore type errors.** If mypy/clang-tidy flags something, fix the root cause — don't suppress.
+- **Don't use deprecated patterns.** Check current docs, not training data.
+- **Performance matters.** Most of our code is solvers — profile before micro-optimizing, but don't sacrifice perf for "clean code".
 
 ## Build & Test
 
@@ -19,23 +193,22 @@ ctest --test-dir build --output-on-failure -j$(nproc) && (.venv/bin/pytest --tb=
 ```
 
 `pytest` is **only** in `.venv/` — a bare `pytest` is not on PATH and
-`python3 -m pytest` has no module. The venv hook also blocks any invocation where
-`.venv/bin/` is not preceded by whitespace or line start, so `(pytest ...)` is
-rejected while ` .venv/bin/pytest ...` passes. A git worktree has no `.venv` of
-its own; symlink the main checkout's in before running the Python suite there:
+`python3 -m pytest` has no module, so always spell out `.venv/bin/pytest`.
+A git worktree has no `.venv` of its own; symlink the main checkout's in before
+running the Python suite there:
 
 ```bash
 ln -sfn /path/to/main/checkout/.venv .venv && .venv/bin/pytest --tb=short -q; rm -f .venv
 ```
 
-Run a single C++ test by name (Catch2 `-c` filter):
+Run a single C++ test by name (`catch_discover_tests` registers each `TEST_CASE` as its own ctest test, so `-R` matches the test-case name):
 ```bash
 ctest --test-dir build -R "test_name_substring"
 ```
 
 Run a single Python test:
 ```bash
-pytest tests/python/test_foo.py::test_specific -x
+.venv/bin/pytest tests/python/test_foo.py::test_specific -x
 ```
 
 Python bindings (off by default):
@@ -128,7 +301,7 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 
 ### C++ standard
 
-C++17 (`CMAKE_CXX_STANDARD 17`). Note: the `.devkit/standards/cpp.md` says C++23 but this project uses C++17.
+C++17 (`CMAKE_CXX_STANDARD 17`). See the C++ subsection under **Standards** above.
 
 ## Benchmarks
 
