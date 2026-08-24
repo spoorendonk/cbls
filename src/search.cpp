@@ -375,8 +375,8 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             // where the sentinel is installed and the objective is still
             // non-finite:
             //
-            //   * structural_pass goes blind, and that is a REGRESSION, not an
-            //     inherited gap: before this change the objective row read 0.0
+            //   * structural_pass goes blind (#118), and that is a REGRESSION, not
+            //     an inherited gap: before this change the objective row read 0.0
             //     in exactly this window, so the pass compared the real rows
             //     normally. Now its `before` and `after` both round to
             //     1e30 * w_obj — a double ULP up there is ~1.4e14 — so any
