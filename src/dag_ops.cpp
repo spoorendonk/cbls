@@ -1,7 +1,9 @@
 #include "cbls/dag_ops.h"
+
 #include "cbls/model.h"
-#include <queue>
+
 #include <algorithm>
+#include <queue>
 
 namespace cbls {
 
@@ -22,12 +24,14 @@ std::vector<int32_t> compute_topo_order(Model& model) {
         for (const auto& child : nd.children) {
             if (child.is_var) {
                 auto& v = model.var_mut(child.id);
-                if (std::find(v.dependent_ids.begin(), v.dependent_ids.end(), nd.id) == v.dependent_ids.end()) {
+                if (std::find(v.dependent_ids.begin(), v.dependent_ids.end(), nd.id) ==
+                    v.dependent_ids.end()) {
                     v.dependent_ids.push_back(nd.id);
                 }
             } else {
                 auto& child_node = model.node_mut(child.id);
-                if (std::find(child_node.parent_ids.begin(), child_node.parent_ids.end(), nd.id) == child_node.parent_ids.end()) {
+                if (std::find(child_node.parent_ids.begin(), child_node.parent_ids.end(), nd.id) ==
+                    child_node.parent_ids.end()) {
                     child_node.parent_ids.push_back(nd.id);
                 }
             }
@@ -170,7 +174,9 @@ double compute_partial(const Model& model, int32_t expr_id, int32_t var_id) {
     const auto& order = model.topo_order();
     for (auto it = order.rbegin(); it != order.rend(); ++it) {
         int32_t nid = *it;
-        if (adjoint[nid] == 0.0) continue;
+        if (adjoint[nid] == 0.0) {
+            continue;
+        }
         double adj = adjoint[nid];
 
         const auto& nd = model.node(nid);
@@ -179,10 +185,14 @@ double compute_partial(const Model& model, int32_t expr_id, int32_t var_id) {
             const auto& child = nd.children[i];
             if (child.is_var) {
                 int32_t key = static_cast<int32_t>(num_nodes) + child.id;
-                if (adjoint[key] == 0.0) written.push_back(key);
+                if (adjoint[key] == 0.0) {
+                    written.push_back(key);
+                }
                 adjoint[key] += adj * ld;
             } else {
-                if (adjoint[child.id] == 0.0) written.push_back(child.id);
+                if (adjoint[child.id] == 0.0) {
+                    written.push_back(child.id);
+                }
                 adjoint[child.id] += adj * ld;
             }
         }
@@ -219,7 +229,9 @@ std::vector<double> compute_all_partials(const Model& model, int32_t expr_id) {
     const auto& order = model.topo_order();
     for (auto it = order.rbegin(); it != order.rend(); ++it) {
         int32_t nid = *it;
-        if (adjoint[nid] == 0.0) continue;
+        if (adjoint[nid] == 0.0) {
+            continue;
+        }
         double adj = adjoint[nid];
 
         const auto& nd = model.node(nid);
@@ -228,10 +240,14 @@ std::vector<double> compute_all_partials(const Model& model, int32_t expr_id) {
             const auto& child = nd.children[i];
             if (child.is_var) {
                 int32_t key = static_cast<int32_t>(num_nodes) + child.id;
-                if (adjoint[key] == 0.0) written.push_back(key);
+                if (adjoint[key] == 0.0) {
+                    written.push_back(key);
+                }
                 adjoint[key] += adj * ld;
             } else {
-                if (adjoint[child.id] == 0.0) written.push_back(child.id);
+                if (adjoint[child.id] == 0.0) {
+                    written.push_back(child.id);
+                }
                 adjoint[child.id] += adj * ld;
             }
         }

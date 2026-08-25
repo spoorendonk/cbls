@@ -1,7 +1,8 @@
 #pragma once
 
-#include <cbls/cbls.h>
 #include "data.h"
+
+#include <cbls/cbls.h>
 #include <vector>
 
 namespace cbls {
@@ -30,10 +31,11 @@ inline CHPEDModel build_chped_model(const Instance& inst) {
                 // All units forced on — use a constant 1 instead of a decision variable
                 result.commit[i][t] = m.constant(1.0);
             } else {
-                result.commit[i][t] = m.bool_var("u_" + std::to_string(i) + "_" + std::to_string(t));
+                result.commit[i][t] =
+                    m.bool_var("u_" + std::to_string(i) + "_" + std::to_string(t));
             }
             result.power[i][t] = m.float_var(inst.P_min[i], inst.P_max[i],
-                                              "p_" + std::to_string(i) + "_" + std::to_string(t));
+                                             "p_" + std::to_string(i) + "_" + std::to_string(t));
         }
     }
 
@@ -56,9 +58,7 @@ inline CHPEDModel build_chped_model(const Instance& inst) {
 
             // valve_point = |d[i]*sin(e[i]*(P_min[i] - P))|
             auto pmin_minus_p = m.sum({pmin_i, m.prod(neg1, P)});
-            auto valve_point = m.abs_expr(
-                m.prod(di, m.sin_expr(m.prod(ei, pmin_minus_p)))
-            );
+            auto valve_point = m.abs_expr(m.prod(di, m.sin_expr(m.prod(ei, pmin_minus_p))));
 
             auto unit_cost = m.sum({base_cost, valve_point});
             cost_terms.push_back(m.prod(result.commit[i][t], unit_cost));

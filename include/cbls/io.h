@@ -1,8 +1,9 @@
 #pragma once
 
 #include "model.h"
-#include <string>
+
 #include <iostream>
+#include <string>
 
 namespace cbls {
 

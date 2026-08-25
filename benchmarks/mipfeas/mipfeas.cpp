@@ -15,10 +15,6 @@
 
 #include <cbls/cbls.h>
 #include <cbls/io_mps.h>
-#include <nlohmann/json.hpp>
-
-#include <sys/resource.h>
-
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -28,7 +24,9 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <nlohmann/json.hpp>
 #include <string>
+#include <sys/resource.h>
 
 namespace {
 
@@ -152,7 +150,7 @@ private:
 // concurrency for a full-roster run can be sized from measurement rather than
 // guessed: the roster spans models from tens of KB to millions of nonzeros.
 long peak_rss_kib() {
-    struct rusage usage {};
+    struct rusage usage{};
     if (getrusage(RUSAGE_SELF, &usage) != 0) {
         return 0;
     }
@@ -309,7 +307,8 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "%s: solve error: %s\n", args.instance.c_str(), e.what());
         return 1;
     }
-    const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    const double wall =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 
     // Independent re-checks of the assignment solve() actually returned. It
     // restores best_state and full-evaluates before returning, so the model holds

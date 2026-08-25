@@ -43,8 +43,7 @@ static std::pair<double, double> state_key(const Model& model) {
     return {real_violation, obj};
 }
 
-bool LNS::destroy_repair(Model& model, ViolationManager& vm, RNG& rng,
-                         double repair_time_limit) {
+bool LNS::destroy_repair(Model& model, ViolationManager& vm, RNG& rng, double repair_time_limit) {
     auto old_key = state_key(model);
     auto saved_state = model.copy_state();
 

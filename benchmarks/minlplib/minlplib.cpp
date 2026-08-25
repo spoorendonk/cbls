@@ -280,11 +280,11 @@ struct Tally {
     int failed_nonfinite = 0;
     int skipped_unsupported = 0;
     int not_found = 0;
-    int errored = 0;         // read/build/solve exceptions
+    int errored = 0;  // read/build/solve exceptions
     int integrality_mismatch = 0;
     int verify_failed = 0;  // reported feasible but failed the independent re-check
-    int near_miss = 0;       // infeasible, but residual within kNearMiss of feasible
-    int nonfinite_obj = 0;   // infeasible with a non-finite objective at the closest approach
+    int near_miss = 0;      // infeasible, but residual within kNearMiss of feasible
+    int nonfinite_obj = 0;  // infeasible with a non-finite objective at the closest approach
 };
 
 // An infeasible run whose closest approach is this small is a numerical
@@ -628,7 +628,7 @@ int main(int argc, char** argv) {
                 const double win_slack =
                     std::max(1e-6 * (std::abs(b.primal) + 1.0), 10.0 * args.feas_tol);
                 const double tie_band = 1e-6 * (std::abs(b.primal) + 1.0);
-                const double diff = obj - b.primal;  // signed, in objective units
+                const double diff = obj - b.primal;                    // signed, in objective units
                 const double improvement = maximizing ? diff : -diff;  // >0 is better
                 // Three outcomes, not two. A row can improve on BKS by more than
                 // the tie band yet less than win_slack: we will not claim that as a

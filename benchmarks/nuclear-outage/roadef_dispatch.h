@@ -1,6 +1,7 @@
 #pragma once
 
 #include "data.h"
+
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -13,8 +14,7 @@ namespace nuclear_outage {
 // Replaces O(n) linear scans with O(1) lookups.
 using OutageLookup = std::vector<std::vector<int>>;
 
-inline OutageLookup build_outage_lookup(const ROADEFInstance& inst,
-                                        const std::vector<int>& ha) {
+inline OutageLookup build_outage_lookup(const ROADEFInstance& inst, const std::vector<int>& ha) {
     int max_cycles = 0;
     for (int i = 0; i < inst.n_type2; ++i) {
         max_cycles = std::max(max_cycles, inst.type2_plants[i].n_cycles);
@@ -28,12 +28,11 @@ inline OutageLookup build_outage_lookup(const ROADEFInstance& inst,
 
 // Per-plant status arrays for ROADEF dispatch simulation.
 struct PlantStatus {
-    std::vector<std::vector<int>> cycle_at_week;   // [plant][week]
-    std::vector<std::vector<bool>> in_outage;      // [plant][week]
+    std::vector<std::vector<int>> cycle_at_week;  // [plant][week]
+    std::vector<std::vector<bool>> in_outage;     // [plant][week]
 };
 
-inline PlantStatus compute_plant_status(const ROADEFInstance& inst,
-                                        const OutageLookup& lookup) {
+inline PlantStatus compute_plant_status(const ROADEFInstance& inst, const OutageLookup& lookup) {
     PlantStatus status;
     status.cycle_at_week.assign(inst.n_type2, std::vector<int>(inst.H, -1));
     status.in_outage.assign(inst.n_type2, std::vector<bool>(inst.H, false));
@@ -41,7 +40,11 @@ inline PlantStatus compute_plant_status(const ROADEFInstance& inst,
     for (int i = 0; i < inst.n_type2; ++i) {
         auto& plant = inst.type2_plants[i];
 
-        struct OutageEvent { int start; int cycle; int duration; };
+        struct OutageEvent {
+            int start;
+            int cycle;
+            int duration;
+        };
         std::vector<OutageEvent> events;
         for (int k = 0; k < plant.n_cycles; ++k) {
             int start = lookup[i][k];
@@ -49,10 +52,9 @@ inline PlantStatus compute_plant_status(const ROADEFInstance& inst,
                 events.push_back({start, k, plant.durations[k]});
             }
         }
-        std::sort(events.begin(), events.end(),
-                  [](const OutageEvent& lhs, const OutageEvent& rhs) {
-                      return lhs.start < rhs.start;
-                  });
+        std::sort(events.begin(), events.end(), [](const OutageEvent& lhs, const OutageEvent& rhs) {
+            return lhs.start < rhs.start;
+        });
 
         int next_event = 0;
         int current_cycle = -1;  // -1 = current campaign before first outage
@@ -78,9 +80,8 @@ inline PlantStatus compute_plant_status(const ROADEFInstance& inst,
 }
 
 // Compute reload amounts for each Type 2 plant/cycle.
-inline std::vector<std::vector<double>> compute_reloads(
-    const ROADEFInstance& inst,
-    const OutageLookup& lookup) {
+inline std::vector<std::vector<double>> compute_reloads(const ROADEFInstance& inst,
+                                                        const OutageLookup& lookup) {
     std::vector<std::vector<double>> reload(inst.n_type2);
     for (int i = 0; i < inst.n_type2; ++i) {
         auto& plant = inst.type2_plants[i];
@@ -98,20 +99,16 @@ inline std::vector<std::vector<double>> compute_reloads(
 struct ScenarioResult {
     double cost = 0.0;
     // Per-timestep production (only filled when record_production=true)
-    std::vector<std::vector<double>> t1_prod;   // [type1_plant][timestep]
-    std::vector<std::vector<double>> t2_prod;   // [type2_plant][timestep]
-    std::vector<std::vector<double>> fuel_at_t; // [type2_plant][timestep+1]
+    std::vector<std::vector<double>> t1_prod;    // [type1_plant][timestep]
+    std::vector<std::vector<double>> t2_prod;    // [type2_plant][timestep]
+    std::vector<std::vector<double>> fuel_at_t;  // [type2_plant][timestep+1]
 };
 
 // Simulate fuel dynamics + dispatch for one scenario.
 // record_production=true fills per-timestep arrays (for solution output).
-inline ScenarioResult simulate_scenario(
-    const ROADEFInstance& inst,
-    const PlantStatus& status,
-    const std::vector<std::vector<double>>& reload,
-    int scenario,
-    bool record_production = false) {
-
+inline ScenarioResult simulate_scenario(const ROADEFInstance& inst, const PlantStatus& status,
+                                        const std::vector<std::vector<double>>& reload,
+                                        int scenario, bool record_production = false) {
     ScenarioResult result;
     double total_cost = 0.0;
     int tpw = inst.timesteps_per_week;
@@ -154,8 +151,7 @@ inline ScenarioResult simulate_scenario(
                         double q_k = plant.q[k];
                         double bo_prev = (k > 0) ? plant.bo[k] : plant.bo[0];
                         double bo_k = plant.bo[k + 1];
-                        fuel[i] = ((q_k - 1.0) / q_k) * (fuel[i] - bo_prev) +
-                                  reload[i][k] + bo_k;
+                        fuel[i] = ((q_k - 1.0) / q_k) * (fuel[i] - bo_prev) + reload[i][k] + bo_k;
                         fuel[i] = std::min(fuel[i], plant.smax[k]);
                     }
                 }
@@ -199,18 +195,21 @@ inline ScenarioResult simulate_scenario(
         if (remaining > 0.0 && inst.n_type1 > 0) {
             std::vector<int> order(inst.n_type1);
             std::iota(order.begin(), order.end(), 0);
-            std::sort(order.begin(), order.end(),
-                      [&](int lhs, int rhs) {
-                          return inst.type1_plants[lhs].cost[scenario][t] <
-                                 inst.type1_plants[rhs].cost[scenario][t];
-                      });
+            std::sort(order.begin(), order.end(), [&](int lhs, int rhs) {
+                return inst.type1_plants[lhs].cost[scenario][t] <
+                       inst.type1_plants[rhs].cost[scenario][t];
+            });
 
             for (int j : order) {
-                if (remaining <= 1e-6) break;
+                if (remaining <= 1e-6) {
+                    break;
+                }
                 auto& p1 = inst.type1_plants[j];
                 double pmin_j = p1.pmin[scenario][t];
                 double pmax_j = p1.pmax[scenario][t];
-                if (pmax_j <= 0.0) continue;
+                if (pmax_j <= 0.0) {
+                    continue;
+                }
 
                 // Plant must run at >= pmin if committed; may overproduce when
                 // remaining < pmin_j (acceptable for greedy dispatch).

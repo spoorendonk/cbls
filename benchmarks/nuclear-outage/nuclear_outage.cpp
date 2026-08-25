@@ -1,9 +1,10 @@
-#include <cbls/cbls.h>
 #include "data.h"
-#include "nuclear_model.h"
 #include "nuclear_hook.h"
+#include "nuclear_model.h"
 #include "roadef_hook.h"
 #include "write_solution.h"
+
+#include <cbls/cbls.h>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -21,10 +22,10 @@ static void run_synthetic(const std::string& inst_dir) {
         {"small.jsonl", 60.0, 20},
     };
 
-    printf("%-20s %6s %6s %6s %6s %12s %8s\n",
-           "Instance", "Units", "Outag", "Prd", "Scen", "Objective", "Time(s)");
-    printf("%-20s %6s %6s %6s %6s %12s %8s\n",
-           "--------", "-----", "-----", "---", "----", "---------", "-------");
+    printf("%-20s %6s %6s %6s %6s %12s %8s\n", "Instance", "Units", "Outag", "Prd", "Scen",
+           "Objective", "Time(s)");
+    printf("%-20s %6s %6s %6s %6s %12s %8s\n", "--------", "-----", "-----", "---", "----",
+           "---------", "-------");
 
     for (auto& cfg : configs) {
         std::string path = inst_dir + "/" + cfg.file;
@@ -36,8 +37,7 @@ static void run_synthetic(const std::string& inst_dir) {
             continue;
         }
 
-        printf("%-20s %6d %6d %6d %6d ",
-               inst.name.c_str(), inst.n_units, inst.n_outages,
+        printf("%-20s %6d %6d %6d %6d ", inst.name.c_str(), inst.n_units, inst.n_outages,
                inst.n_periods, inst.n_scenarios);
         fflush(stdout);
 
@@ -50,8 +50,7 @@ static void run_synthetic(const std::string& inst_dir) {
         auto result = cbls::solve(nm.model, cfg.time_limit, 42, true, &hook, &lns);
 
         printf("%12.0f %7.1fs", result.objective, result.time_seconds);
-        printf("  (%s, %ld vars, %ld iters)\n",
-               result.feasible ? "feasible" : "INFEASIBLE",
+        printf("  (%s, %ld vars, %ld iters)\n", result.feasible ? "feasible" : "INFEASIBLE",
                (long)nm.model.num_vars(), (long)result.iterations);
 
         if (result.feasible) {
@@ -61,15 +60,16 @@ static void run_synthetic(const std::string& inst_dir) {
                 int32_t vid = cbls::handle_to_var_id(nm.s[o]);
                 printf("o%d@w%d ", o, (int)nm.model.var(vid).value);
             }
-            if (inst.n_outages > 20) printf("...");
+            if (inst.n_outages > 20) {
+                printf("...");
+            }
             printf("\n");
         }
     }
 }
 
-static void run_roadef(const std::string& data_file,
-                        const std::string& solution_file,
-                        double time_limit) {
+static void run_roadef(const std::string& data_file, const std::string& solution_file,
+                       double time_limit) {
     using namespace cbls::nuclear_outage;
 
     printf("Loading ROADEF instance: %s\n", data_file.c_str());
@@ -79,15 +79,14 @@ static void run_roadef(const std::string& data_file,
     printf("  Timesteps: %d, Weeks: %d, Scenarios: %d\n", inst.T, inst.H, inst.S);
     printf("  Type 1 plants: %d, Type 2 plants: %d\n", inst.n_type1, inst.n_type2);
     printf("  Schedulable outages: %d\n", inst.n_outages());
-    printf("  Constraints: CT13=%d, CT14-18=%d, CT19=%d, CT20=%d, CT21=%d\n",
-           (int)inst.ct13.size(), (int)inst.spacing_constraints.size(),
-           (int)inst.ct19.size(), (int)inst.ct20.size(), (int)inst.ct21.size());
+    printf("  Constraints: CT13=%d, CT14-18=%d, CT19=%d, CT20=%d, CT21=%d\n", (int)inst.ct13.size(),
+           (int)inst.spacing_constraints.size(), (int)inst.ct19.size(), (int)inst.ct20.size(),
+           (int)inst.ct21.size());
 
     // Build model
     auto rm = build_roadef_model(inst);
-    printf("  Model: %ld vars, %ld nodes, %ld constraints\n",
-           (long)rm.model.num_vars(), (long)rm.model.num_nodes(),
-           (long)rm.model.constraint_ids().size());
+    printf("  Model: %ld vars, %ld nodes, %ld constraints\n", (long)rm.model.num_vars(),
+           (long)rm.model.num_nodes(), (long)rm.model.constraint_ids().size());
 
     // Create hook
     ROADEFDispatchHook hook(inst, rm);
@@ -102,8 +101,8 @@ static void run_roadef(const std::string& data_file,
     auto result = cbls::solve(rm.model, time_limit, 42, true, &hook, &lns);
 
     printf("  Result: %s, objective=%.2f, iters=%ld, time=%.1fs\n",
-           result.feasible ? "feasible" : "INFEASIBLE",
-           result.objective, (long)result.iterations, result.time_seconds);
+           result.feasible ? "feasible" : "INFEASIBLE", result.objective, (long)result.iterations,
+           result.time_seconds);
 
     if (result.feasible) {
         rm.model.restore_state(result.best_state);
@@ -113,17 +112,15 @@ static void run_roadef(const std::string& data_file,
         for (int o = 0; o < inst.n_outages(); ++o) {
             int32_t vid = cbls::handle_to_var_id(rm.ha[o]);
             int ha = (int)rm.model.var(vid).value;
-            printf(" [p%d.k%d@w%d]", inst.ct13[o].plant_idx,
-                   inst.ct13[o].cycle, ha);
+            printf(" [p%d.k%d@w%d]", inst.ct13[o].plant_idx, inst.ct13[o].cycle, ha);
         }
         printf("\n");
 
         // Write solution file
         if (!solution_file.empty()) {
             printf("  Writing solution to: %s\n", solution_file.c_str());
-            bool ok = write_roadef_solution(inst, rm, rm.model, data_file,
-                                            solution_file, result.objective,
-                                            result.time_seconds);
+            bool ok = write_roadef_solution(inst, rm, rm.model, data_file, solution_file,
+                                            result.objective, result.time_seconds);
             if (!ok) {
                 fprintf(stderr, "ERROR: Failed to write solution file\n");
             }
@@ -158,9 +155,8 @@ int main(int argc, char** argv) {
     if (roadef_mode && !data_file.empty()) {
         run_roadef(data_file, solution_file, time_limit);
     } else {
-        std::string inst_dir = data_file.empty()
-            ? "benchmarks/instances/nuclear-outage"
-            : data_file;
+        std::string inst_dir =
+            data_file.empty() ? "benchmarks/instances/nuclear-outage" : data_file;
         run_synthetic(inst_dir);
     }
 

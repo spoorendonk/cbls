@@ -3,27 +3,24 @@
 #include "data.h"
 #include "nuclear_model.h"
 #include "roadef_dispatch.h"
+
 #include <cbls/cbls.h>
-#include <fstream>
 #include <cstdio>
 #include <ctime>
+#include <fstream>
 #include <iomanip>
 
 namespace cbls {
 namespace nuclear_outage {
 
 // Write a solution in ROADEF 2010 competition output format (§4.2)
-inline bool write_roadef_solution(
-    const ROADEFInstance& inst,
-    const ROADEFModel& rm,
-    Model& model,
-    const std::string& data_file,
-    const std::string& output_path,
-    double objective,
-    double solve_time_seconds)
-{
+inline bool write_roadef_solution(const ROADEFInstance& inst, const ROADEFModel& rm, Model& model,
+                                  const std::string& data_file, const std::string& output_path,
+                                  double objective, double solve_time_seconds) {
     std::ofstream out(output_path);
-    if (!out.is_open()) return false;
+    if (!out.is_open()) {
+        return false;
+    }
 
     int O = inst.n_outages();
 
@@ -91,8 +88,7 @@ inline bool write_roadef_solution(
         // Write Type 1 plants
         out << "begin type1_plants\n";
         for (int j = 0; j < inst.n_type1; ++j) {
-            out << "name " << inst.type1_plants[j].name
-                << " " << inst.type1_plants[j].index;
+            out << "name " << inst.type1_plants[j].name << " " << inst.type1_plants[j].index;
             for (int t = 0; t < inst.T; ++t) {
                 out << " " << std::fixed << std::setprecision(6) << sr.t1_prod[j][t];
             }
@@ -103,8 +99,7 @@ inline bool write_roadef_solution(
         // Write Type 2 plants
         out << "begin type2_plants\n";
         for (int i = 0; i < inst.n_type2; ++i) {
-            out << "name " << inst.type2_plants[i].name
-                << " " << inst.type2_plants[i].index;
+            out << "name " << inst.type2_plants[i].name << " " << inst.type2_plants[i].index;
             for (int t = 0; t < inst.T; ++t) {
                 out << " " << std::fixed << std::setprecision(6) << sr.t2_prod[i][t];
             }
@@ -116,8 +111,8 @@ inline bool write_roadef_solution(
             }
             out << "\n";
 
-            out << "remaining_fuel_at_the_end "
-                << std::fixed << std::setprecision(6) << sr.fuel_at_t[i][inst.T] << "\n";
+            out << "remaining_fuel_at_the_end " << std::fixed << std::setprecision(6)
+                << sr.fuel_at_t[i][inst.T] << "\n";
         }
         out << "end type2_plants\n";
     }

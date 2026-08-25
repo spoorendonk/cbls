@@ -1,9 +1,10 @@
 #pragma once
 
-#include <cbls/cbls.h>
 #include "data.h"
-#include <vector>
+
 #include <algorithm>
+#include <cbls/cbls.h>
+#include <vector>
 
 namespace cbls {
 namespace uc_chped {
@@ -29,8 +30,8 @@ inline UCModel build_uc_model(const UCInstance& inst) {
         for (int t = 0; t < T; ++t) {
             result.y[u][t] = m.bool_var("y_" + std::to_string(u) + "_" + std::to_string(t));
             // Bounds [0, Pmax]: when y=0, dispatch should be 0; Pmin enforced via constraint
-            result.p[u][t] = m.float_var(0.0, inst.P_max[u],
-                                          "p_" + std::to_string(u) + "_" + std::to_string(t));
+            result.p[u][t] =
+                m.float_var(0.0, inst.P_max[u], "p_" + std::to_string(u) + "_" + std::to_string(t));
         }
     }
 
@@ -68,11 +69,11 @@ inline UCModel build_uc_model(const UCInstance& inst) {
 
             // --- Fuel cost: y * F(p) ---
             // F(p) = a + b*p + c*p^2 + |d*sin(e*(Pmin-p))|
-            auto base_cost = m.sum({unit_ai[u], m.prod(unit_bi[u], P),
-                                    m.prod(unit_ci[u], m.pow_expr(P, two))});
+            auto base_cost =
+                m.sum({unit_ai[u], m.prod(unit_bi[u], P), m.prod(unit_ci[u], m.pow_expr(P, two))});
             auto pmin_minus_p = m.sum({unit_pmin[u], m.prod(neg1, P)});
-            auto valve_point = m.abs_expr(
-                m.prod(unit_di[u], m.sin_expr(m.prod(unit_ei[u], pmin_minus_p))));
+            auto valve_point =
+                m.abs_expr(m.prod(unit_di[u], m.sin_expr(m.prod(unit_ei[u], pmin_minus_p))));
             auto fuel_cost = m.prod(Y, m.sum({base_cost, valve_point}));
             cost_terms.push_back(fuel_cost);
 
@@ -107,8 +108,8 @@ inline UCModel build_uc_model(const UCInstance& inst) {
                 // if_then_else(cond, then, else): cond > 0 -> then, else -> else
                 // We want: was_on > 0.5 -> hot, else -> cold
                 auto cond = m.sum({was_on, neg_half});
-                startup_cost = m.if_then_else(cond, m.prod(unit_a_hot[u], su),
-                                              m.prod(unit_a_cold[u], su));
+                startup_cost =
+                    m.if_then_else(cond, m.prod(unit_a_hot[u], su), m.prod(unit_a_cold[u], su));
             }
             cost_terms.push_back(startup_cost);
         }
@@ -163,8 +164,8 @@ inline UCModel build_uc_model(const UCInstance& inst) {
             int end = std::min(t + inst.min_on[u], T);
             for (int tau = t + 1; tau < end; ++tau) {
                 // y[t] - y_prev - y[tau] <= 0
-                m.add_constraint(m.sum({result.y[u][t], m.prod(neg1, y_prev_h),
-                                        m.prod(neg1, result.y[u][tau])}));
+                m.add_constraint(m.sum(
+                    {result.y[u][t], m.prod(neg1, y_prev_h), m.prod(neg1, result.y[u][tau])}));
             }
         }
 
@@ -178,8 +179,8 @@ inline UCModel build_uc_model(const UCInstance& inst) {
             int end = std::min(t + inst.min_off[u], T);
             for (int tau = t + 1; tau < end; ++tau) {
                 // y_prev - y[t] + y[tau] - 1 <= 0
-                m.add_constraint(m.sum({y_prev_h, m.prod(neg1, result.y[u][t]),
-                                        result.y[u][tau], neg1}));
+                m.add_constraint(
+                    m.sum({y_prev_h, m.prod(neg1, result.y[u][t]), result.y[u][tau], neg1}));
             }
         }
 

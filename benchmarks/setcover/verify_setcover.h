@@ -24,7 +24,7 @@ namespace cbls {
 namespace setcover {
 
 struct CoverCheck {
-    bool covered = false;       // every row covered by at least one chosen column
+    bool covered = false;  // every row covered by at least one chosen column
     int uncovered_rows = 0;
     int duplicate_columns = 0;  // a column selected twice (a malformed Set value)
     int invalid_columns = 0;    // a column index outside 0..cols-1
@@ -73,17 +73,17 @@ inline VerifyResult verify_setcover(const SetCoverModel& scm, const SetCoverInst
     const CoverCheck check = check_cover(inst, scm.selected_columns());
 
     if (!check.covered) {
-        result.add_error({VerifyError::Kind::ConstraintViolation, "coverage",
-                          0.0, static_cast<double>(check.uncovered_rows),
+        result.add_error({VerifyError::Kind::ConstraintViolation, "coverage", 0.0,
+                          static_cast<double>(check.uncovered_rows),
                           std::to_string(check.uncovered_rows) + " rows are covered by no "
-                          "selected column"});
+                                                                 "selected column"});
     }
     if (check.duplicate_columns + check.invalid_columns > 0) {
         result.add_error({VerifyError::Kind::Custom, "columns", 0.0,
                           static_cast<double>(check.duplicate_columns + check.invalid_columns),
-                          "selected column list has " +
-                              std::to_string(check.duplicate_columns) + " repeated and " +
-                              std::to_string(check.invalid_columns) + " out-of-range entries"});
+                          "selected column list has " + std::to_string(check.duplicate_columns) +
+                              " repeated and " + std::to_string(check.invalid_columns) +
+                              " out-of-range entries"});
     }
     const double dag_objective = scm.model.node(scm.model.objective_id()).value;
     if (std::abs(dag_objective - check.cost) > tol * (1.0 + std::abs(check.cost))) {

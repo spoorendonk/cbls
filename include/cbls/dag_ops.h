@@ -1,8 +1,9 @@
 #pragma once
 
 #include "dag.h"
-#include <vector>
+
 #include <set>
+#include <vector>
 
 namespace cbls {
 

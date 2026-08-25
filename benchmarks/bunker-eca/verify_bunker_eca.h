@@ -1,18 +1,19 @@
 #pragma once
 
-#include <cbls/verify.h>
 #include "bunker_eca_model.h"
 #include "data.h"
-#include <cmath>
-#include <vector>
+
 #include <algorithm>
+#include <cbls/verify.h>
+#include <cmath>
 #include <string>
+#include <vector>
 
 namespace cbls {
 namespace bunker_eca {
 
 inline VerifyResult verify_bunker_eca(const BunkerECAModel& bec, const Instance& inst,
-                                       double tol = 1e-4) {
+                                      double tol = 1e-4) {
     // Start with generic model checks (use tighter DAG-level tolerance)
     VerifyResult result = verify_model(bec.model);
 
@@ -21,12 +22,8 @@ inline VerifyResult verify_bunker_eca(const BunkerECAModel& bec, const Instance&
     int C = (int)inst.cargoes.size();
 
     // Extract variable values (handles are negative: var_id = -(handle + 1))
-    auto val = [&](int32_t handle) -> double {
-        return m.var(-(handle + 1)).value;
-    };
-    auto ival = [&](int32_t handle) -> int {
-        return (int)std::round(val(handle));
-    };
+    auto val = [&](int32_t handle) -> double { return m.var(-(handle + 1)).value; };
+    auto ival = [&](int32_t handle) -> int { return (int)std::round(val(handle)); };
 
     // Compute average fuel coefficient (same as model builder)
     double avg_fuel_coeff = 0.0;
@@ -68,9 +65,8 @@ inline VerifyResult verify_bunker_eca(const BunkerECAModel& bec, const Instance&
     // 1. Contract coverage
     for (int c = 0; c < C; ++c) {
         if (inst.cargoes[c].is_contract && assign_val[c] < 1) {
-            result.add_error({VerifyError::Kind::Custom,
-                "cargo[" + std::to_string(c) + "]", 1.0, (double)assign_val[c],
-                "contract cargo not assigned"});
+            result.add_error({VerifyError::Kind::Custom, "cargo[" + std::to_string(c) + "]", 1.0,
+                              (double)assign_val[c], "contract cargo not assigned"});
         }
     }
 
@@ -78,9 +74,10 @@ inline VerifyResult verify_bunker_eca(const BunkerECAModel& bec, const Instance&
     for (int c = 0; c < C; ++c) {
         int lb = inst.cargoes[c].is_contract ? 1 : 0;
         if (assign_val[c] < lb || assign_val[c] > V) {
-            result.add_error({VerifyError::Kind::Custom,
-                "assign[" + std::to_string(c) + "]", (double)lb, (double)assign_val[c],
-                "assignment out of range [" + std::to_string(lb) + "," + std::to_string(V) + "]"});
+            result.add_error(
+                {VerifyError::Kind::Custom, "assign[" + std::to_string(c) + "]", (double)lb,
+                 (double)assign_val[c],
+                 "assignment out of range [" + std::to_string(lb) + "," + std::to_string(V) + "]"});
         }
     }
 
@@ -92,9 +89,10 @@ inline VerifyResult verify_bunker_eca(const BunkerECAModel& bec, const Instance&
     }
     for (int c = 0; c < C; ++c) {
         if (speed_val[c] < v_min - tol || speed_val[c] > v_max + tol) {
-            result.add_error({VerifyError::Kind::Custom,
-                "speed[" + std::to_string(c) + "]", v_min, speed_val[c],
-                "speed out of fleet bounds [" + std::to_string(v_min) + "," + std::to_string(v_max) + "]"});
+            result.add_error({VerifyError::Kind::Custom, "speed[" + std::to_string(c) + "]", v_min,
+                              speed_val[c],
+                              "speed out of fleet bounds [" + std::to_string(v_min) + "," +
+                                  std::to_string(v_max) + "]"});
         }
     }
 
@@ -102,9 +100,8 @@ inline VerifyResult verify_bunker_eca(const BunkerECAModel& bec, const Instance&
     for (int c = 0; c < C; ++c) {
         if (bec.eca_fuel[c] >= 0) {
             if (eca_fuel_val[c] != 0 && eca_fuel_val[c] != 1) {
-                result.add_error({VerifyError::Kind::Custom,
-                    "eca_fuel[" + std::to_string(c) + "]", 0.0, (double)eca_fuel_val[c],
-                    "ECA fuel choice not 0 or 1"});
+                result.add_error({VerifyError::Kind::Custom, "eca_fuel[" + std::to_string(c) + "]",
+                                  0.0, (double)eca_fuel_val[c], "ECA fuel choice not 0 or 1"});
             }
         }
     }
@@ -115,13 +112,13 @@ inline VerifyResult verify_bunker_eca(const BunkerECAModel& bec, const Instance&
 
     for (int c = 0; c < C; ++c) {
         active[c] = (assign_val[c] >= 1);
-        double dist = inst.leg_distance(inst.cargoes[c].pickup_region,
-                                         inst.cargoes[c].delivery_region);
+        double dist =
+            inst.leg_distance(inst.cargoes[c].pickup_region, inst.cargoes[c].delivery_region);
         double alpha = avg_fuel_coeff * dist / 24.0;
         fuel[c] = alpha * speed_val[c] * speed_val[c] * (active[c] ? 1.0 : 0.0);
 
-        double eca_frac = inst.leg_eca_fraction(
-            inst.cargoes[c].pickup_region, inst.cargoes[c].delivery_region);
+        double eca_frac =
+            inst.leg_eca_fraction(inst.cargoes[c].pickup_region, inst.cargoes[c].delivery_region);
         if (eca_frac > 0.0 && bec.eca_fuel[c] >= 0) {
             mgo[c] = fuel[c] * eca_frac * eca_fuel_val[c];
             hfo[c] = fuel[c] - mgo[c];
@@ -133,9 +130,9 @@ inline VerifyResult verify_bunker_eca(const BunkerECAModel& bec, const Instance&
 
     // 5. Fuel capacity per ship
     for (int v = 0; v < V; ++v) {
-        double fuel_cap = inst.ships[v].initial_hfo
-                        + (inst.ships[v].hfo_tank_max - inst.ships[v].initial_hfo)
-                        - inst.ships[v].hfo_safety;
+        double fuel_cap = inst.ships[v].initial_hfo +
+                          (inst.ships[v].hfo_tank_max - inst.ships[v].initial_hfo) -
+                          inst.ships[v].hfo_safety;
         double ship_hfo = 0.0;
         for (int c = 0; c < C; ++c) {
             if (assign_val[c] == v + 1) {
@@ -144,42 +141,44 @@ inline VerifyResult verify_bunker_eca(const BunkerECAModel& bec, const Instance&
         }
         if (ship_hfo > fuel_cap + tol) {
             result.add_error({VerifyError::Kind::Custom,
-                "ship[" + std::to_string(v) + "] '" + inst.ships[v].name + "'",
-                fuel_cap, ship_hfo,
-                "HFO consumption exceeds fuel capacity"});
+                              "ship[" + std::to_string(v) + "] '" + inst.ships[v].name + "'",
+                              fuel_cap, ship_hfo, "HFO consumption exceeds fuel capacity"});
         }
     }
 
     // 6. Time windows
     for (int c = 0; c < C; ++c) {
-        if (!active[c]) continue;
-        double dist = inst.leg_distance(inst.cargoes[c].pickup_region,
-                                         inst.cargoes[c].delivery_region);
-        if (dist <= 0.0) continue;
+        if (!active[c]) {
+            continue;
+        }
+        double dist =
+            inst.leg_distance(inst.cargoes[c].pickup_region, inst.cargoes[c].delivery_region);
+        if (dist <= 0.0) {
+            continue;
+        }
 
         double travel_time = dist / (24.0 * speed_val[c]);
-        double available = inst.cargoes[c].delivery_tw_end
-                         - inst.cargoes[c].pickup_tw_start
-                         - inst.cargoes[c].service_time_load
-                         - inst.cargoes[c].service_time_discharge;
+        double available = inst.cargoes[c].delivery_tw_end - inst.cargoes[c].pickup_tw_start -
+                           inst.cargoes[c].service_time_load -
+                           inst.cargoes[c].service_time_discharge;
         if (available > 0 && travel_time > available + tol) {
             result.add_error({VerifyError::Kind::Custom,
-                "cargo[" + std::to_string(c) + "] time_window",
-                available, travel_time,
-                "travel time exceeds available time"});
+                              "cargo[" + std::to_string(c) + "] time_window", available,
+                              travel_time, "travel time exceeds available time"});
         }
     }
 
     // 7. ECA compliance: fully-ECA legs must use MGO (only for active cargoes)
     for (int c = 0; c < C; ++c) {
-        if (!active[c]) continue;
-        double eca_frac = inst.leg_eca_fraction(
-            inst.cargoes[c].pickup_region, inst.cargoes[c].delivery_region);
+        if (!active[c]) {
+            continue;
+        }
+        double eca_frac =
+            inst.leg_eca_fraction(inst.cargoes[c].pickup_region, inst.cargoes[c].delivery_region);
         if (eca_frac >= 0.99 && bec.eca_fuel[c] >= 0 && eca_fuel_val[c] != 1) {
             result.add_error({VerifyError::Kind::Custom,
-                "cargo[" + std::to_string(c) + "] eca_compliance",
-                1.0, (double)eca_fuel_val[c],
-                "fully-ECA leg must use MGO (eca_fuel=1)"});
+                              "cargo[" + std::to_string(c) + "] eca_compliance", 1.0,
+                              (double)eca_fuel_val[c], "fully-ECA leg must use MGO (eca_fuel=1)"});
         }
     }
 
@@ -188,13 +187,14 @@ inline VerifyResult verify_bunker_eca(const BunkerECAModel& bec, const Instance&
     for (int v = 0; v < V; ++v) {
         int count = 0;
         for (int c = 0; c < C; ++c) {
-            if (assign_val[c] == v + 1) count++;
+            if (assign_val[c] == v + 1) {
+                count++;
+            }
         }
         if (count > max_per_ship) {
-            result.add_error({VerifyError::Kind::Custom,
-                "ship[" + std::to_string(v) + "] workload",
-                (double)max_per_ship, (double)count,
-                "ship carries more than max cargoes"});
+            result.add_error({VerifyError::Kind::Custom, "ship[" + std::to_string(v) + "] workload",
+                              (double)max_per_ship, (double)count,
+                              "ship carries more than max cargoes"});
         }
     }
 
@@ -207,8 +207,8 @@ inline VerifyResult verify_bunker_eca(const BunkerECAModel& bec, const Instance&
         profit -= avg_hfo_price * hfo[c];
         profit -= avg_mgo_price * mgo[c];
         if (active[c]) {
-            double port_cost = inst.regions[inst.cargoes[c].pickup_region].port_cost
-                             + inst.regions[inst.cargoes[c].delivery_region].port_cost;
+            double port_cost = inst.regions[inst.cargoes[c].pickup_region].port_cost +
+                               inst.regions[inst.cargoes[c].delivery_region].port_cost;
             profit -= port_cost;
         }
     }
@@ -218,9 +218,9 @@ inline VerifyResult verify_bunker_eca(const BunkerECAModel& bec, const Instance&
     double expected_dag_obj = -profit;  // negated for maximization
 
     if (std::abs(dag_obj - expected_dag_obj) > std::max(tol * std::abs(profit), 1.0)) {
-        result.add_error({VerifyError::Kind::ObjectiveMismatch,
-            "objective", expected_dag_obj, dag_obj,
-            "independent profit recomputation mismatch (profit=" + std::to_string(profit) + ")"});
+        result.add_error(
+            {VerifyError::Kind::ObjectiveMismatch, "objective", expected_dag_obj, dag_obj,
+             "independent profit recomputation mismatch (profit=" + std::to_string(profit) + ")"});
     }
 
     return result;

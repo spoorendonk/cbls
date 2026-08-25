@@ -1,6 +1,7 @@
 #pragma once
 
 #include "model.h"
+
 #include <vector>
 
 namespace cbls {
@@ -42,7 +43,7 @@ public:
     Expr operator>=(const Expr& rhs) const;
     Expr operator<(const Expr& rhs) const;
     Expr operator>(const Expr& rhs) const;
-    Expr eq(const Expr& rhs) const;    // NOT operator== (would break containers)
+    Expr eq(const Expr& rhs) const;  // NOT operator== (would break containers)
     Expr neq(const Expr& rhs) const;
 
     // Scalar comparison (friends)

@@ -1,7 +1,9 @@
 #include "cbls/inner_solver.h"
+
 #include "cbls/dag_ops.h"
-#include <cmath>
+
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 namespace cbls {
@@ -12,7 +14,9 @@ void FloatIntensifyHook::solve(Model& model, ViolationManager& vm,
         bool improved = false;
 
         for (const auto& var : model.variables()) {
-            if (var.type != VarType::Float) continue;
+            if (var.type != VarType::Float) {
+                continue;
+            }
 
             double old_val = var.value;
             double best_val = old_val;
@@ -77,28 +81,42 @@ void FloatIntensifyHook::solve(Model& model, ViolationManager& vm,
         // Multi-var Newton: minimum-norm step on violated constraints
         for (int ci = 0; ci < max_multi_var_constraints; ++ci) {
             auto violated = vm.violated_constraints();
-            if (ci >= static_cast<int>(violated.size())) break;
+            if (ci >= static_cast<int>(violated.size())) {
+                break;
+            }
 
             int32_t cid = model.constraint_ids()[violated[ci]];
             double g = model.node(cid).value;
-            if (std::abs(g) < 1e-15) continue;
+            if (std::abs(g) < 1e-15) {
+                continue;
+            }
 
             // Batch AD: one reverse pass for all partials
             auto all_partials = compute_all_partials(model, cid);
 
-            struct VarGrad { int32_t id; double dg; double old_val; };
+            struct VarGrad {
+                int32_t id;
+                double dg;
+                double old_val;
+            };
             std::vector<VarGrad> grads;
             for (const auto& v : model.variables()) {
-                if (v.type != VarType::Float) continue;
+                if (v.type != VarType::Float) {
+                    continue;
+                }
                 double dg = all_partials[v.id];
                 if (std::abs(dg) > 1e-12) {
                     grads.push_back({v.id, dg, v.value});
                 }
             }
-            if (static_cast<int>(grads.size()) < 2) continue;
+            if (static_cast<int>(grads.size()) < 2) {
+                continue;
+            }
 
             double grad_norm_sq = 0.0;
-            for (const auto& vg : grads) grad_norm_sq += vg.dg * vg.dg;
+            for (const auto& vg : grads) {
+                grad_norm_sq += vg.dg * vg.dg;
+            }
             double scale = -g / grad_norm_sq;
 
             // Capture baseline before applying step
@@ -127,7 +145,9 @@ void FloatIntensifyHook::solve(Model& model, ViolationManager& vm,
             }
         }
 
-        if (!improved) break;
+        if (!improved) {
+            break;
+        }
     }
 }
 

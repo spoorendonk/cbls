@@ -1,10 +1,11 @@
 #pragma once
 
-#include <cbls/cbls.h>
-#include "data.h"
 #include "bunker_eca_model.h"
-#include <cmath>
+#include "data.h"
+
 #include <algorithm>
+#include <cbls/cbls.h>
+#include <cmath>
 
 namespace cbls {
 namespace bunker_eca {
@@ -31,8 +32,7 @@ public:
             auto& speed_var = model.var_mut(speed_vid);
 
             int32_t assign_vid = handle_to_var_id(bec_model_->assign[c]);
-            int assign_val = static_cast<int>(
-                std::round(model.var(assign_vid).value));
+            int assign_val = static_cast<int>(std::round(model.var(assign_vid).value));
 
             if (assign_val == 0) {
                 // Unassigned cargo: set minimum speed
@@ -43,14 +43,12 @@ public:
                 continue;
             }
 
-            double dist = inst_->leg_distance(
-                inst_->cargoes[c].pickup_region,
-                inst_->cargoes[c].delivery_region);
+            double dist = inst_->leg_distance(inst_->cargoes[c].pickup_region,
+                                              inst_->cargoes[c].delivery_region);
 
-            double available = inst_->cargoes[c].delivery_tw_end
-                             - inst_->cargoes[c].pickup_tw_start
-                             - inst_->cargoes[c].service_time_load
-                             - inst_->cargoes[c].service_time_discharge;
+            double available =
+                inst_->cargoes[c].delivery_tw_end - inst_->cargoes[c].pickup_tw_start -
+                inst_->cargoes[c].service_time_load - inst_->cargoes[c].service_time_discharge;
 
             double v_opt;
             if (available > 0.0 && dist > 0.0) {

@@ -1,10 +1,10 @@
 #pragma once
 
-#include <nlohmann/json.hpp>
-#include <vector>
-#include <string>
 #include <fstream>
+#include <nlohmann/json.hpp>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace cbls {
 namespace glsp {
@@ -12,9 +12,9 @@ namespace glsp {
 struct GLSPInstance {
     std::string name;
     std::string cls;
-    int n_products;       // J
-    int n_macro;          // T
-    int n_micro_per_macro; // |M_t|
+    int n_products;         // J
+    int n_macro;            // T
+    int n_micro_per_macro;  // |M_t|
 
     // demand[j][t]
     std::vector<std::vector<double>> demand;
@@ -69,7 +69,9 @@ inline std::vector<GLSPInstance> load_jsonl(const std::string& path) {
     std::vector<GLSPInstance> instances;
     std::string line;
     while (std::getline(f, line)) {
-        if (line.empty()) continue;
+        if (line.empty()) {
+            continue;
+        }
         auto j = nlohmann::json::parse(line);
         instances.push_back(load_jsonl_line(j));
     }
@@ -88,17 +90,9 @@ inline GLSPInstance make_tiny() {
     // demand[j][t]
     inst.demand = {{50, 60}, {40, 50}, {30, 40}};
     // setup_cost[i][j]
-    inst.setup_cost = {
-        {0, 200, 300},
-        {250, 0, 150},
-        {200, 180, 0}
-    };
+    inst.setup_cost = {{0, 200, 300}, {250, 0, 150}, {200, 180, 0}};
     // setup_time[i][j] = cost/10
-    inst.setup_time = {
-        {0, 20, 30},
-        {25, 0, 15},
-        {20, 18, 0}
-    };
+    inst.setup_time = {{0, 20, 30}, {25, 0, 15}, {20, 18, 0}};
     inst.process_time = {1.0, 1.0, 1.0};
     inst.rework_time = {0.5, 0.5, 0.5};
     inst.holding_cost = {15.0, 12.0, 18.0};

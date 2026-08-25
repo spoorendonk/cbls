@@ -1,12 +1,13 @@
 #pragma once
 
-#include <cbls/cbls.h>
 #include "data.h"
 #include "dispatch.h"
 #include "nuclear_model.h"
-#include <vector>
+
 #include <algorithm>
+#include <cbls/cbls.h>
 #include <cmath>
+#include <vector>
 
 namespace cbls {
 namespace nuclear_outage {
@@ -30,9 +31,7 @@ public:
     int epoch_size = 10;
 
     NuclearDispatchHook(const NuclearInstance& inst_, const NuclearModel& nm_)
-        : inst(inst_), nm(nm_),
-          evaluator_(inst_),
-          starts_(inst_.n_outages, 0) {}
+        : inst(inst_), nm(nm_), evaluator_(inst_), starts_(inst_.n_outages, 0) {}
 
     void solve(Model& model, ViolationManager& /*vm*/,
                const std::vector<int32_t>& /*last_changed_vars*/ = {}) override {

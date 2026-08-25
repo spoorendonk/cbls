@@ -1,11 +1,12 @@
 #pragma once
 
-#include <cbls/cbls.h>
 #include "data.h"
-#include <vector>
+
 #include <algorithm>
-#include <string>
+#include <cbls/cbls.h>
 #include <cmath>
+#include <string>
+#include <vector>
 
 namespace cbls {
 namespace bunker_eca {
@@ -14,21 +15,21 @@ struct BunkerECAModel {
     Model model;
 
     // Per cargo: which ship (0=none, 1..V)
-    std::vector<int32_t> assign;        // IntVar handles
+    std::vector<int32_t> assign;  // IntVar handles
 
     // Per cargo: speed for the main transport leg (pickup -> delivery)
-    std::vector<int32_t> speed;         // FloatVar handles
+    std::vector<int32_t> speed;  // FloatVar handles
 
     // Per cargo: use MGO (1) or HFO (0) for the main leg (relevant if ECA fraction > 0)
-    std::vector<int32_t> eca_fuel;      // BoolVar handles (-1 sentinel if no ECA)
+    std::vector<int32_t> eca_fuel;  // BoolVar handles (-1 sentinel if no ECA)
 
     // Instance reference for solution extraction
     const Instance* inst = nullptr;
 };
 
 // Build indicator expression: 1 if assign[c] == v, else 0
-inline int32_t make_indicator(Model& m, int32_t assign_var, int ship_val,
-                               int32_t zero, int32_t one, int32_t half) {
+inline int32_t make_indicator(Model& m, int32_t assign_var, int ship_val, int32_t zero, int32_t one,
+                              int32_t half) {
     auto ship_const = m.constant(static_cast<double>(ship_val));
     auto diff = m.sum({assign_var, m.neg(ship_const)});
     auto abs_diff = m.abs_expr(diff);
@@ -67,15 +68,14 @@ inline BunkerECAModel build_bunker_eca_model(const Instance& inst) {
             v_min = std::min(v_min, inst.ships[v].v_min_laden);
             v_max = std::max(v_max, inst.ships[v].v_max_laden);
         }
-        result.speed[c] = m.float_var(v_min, v_max,
-                                        "speed_" + std::to_string(c));
+        result.speed[c] = m.float_var(v_min, v_max, "speed_" + std::to_string(c));
     }
 
     // ECA fuel choice per cargo
     result.eca_fuel.resize(C);
     for (int c = 0; c < C; ++c) {
-        double eca_frac = inst.leg_eca_fraction(
-            inst.cargoes[c].pickup_region, inst.cargoes[c].delivery_region);
+        double eca_frac =
+            inst.leg_eca_fraction(inst.cargoes[c].pickup_region, inst.cargoes[c].delivery_region);
         if (eca_frac > 0.0) {
             result.eca_fuel[c] = m.bool_var("eca_" + std::to_string(c));
         } else {
@@ -88,8 +88,7 @@ inline BunkerECAModel build_bunker_eca_model(const Instance& inst) {
     std::vector<std::vector<int32_t>> on_v(C, std::vector<int32_t>(V));
     for (int c = 0; c < C; ++c) {
         for (int v = 0; v < V; ++v) {
-            on_v[c][v] = make_indicator(m, result.assign[c], v + 1,
-                                         zero, one, half);
+            on_v[c][v] = make_indicator(m, result.assign[c], v + 1, zero, one, half);
         }
     }
 
@@ -118,21 +117,20 @@ inline BunkerECAModel build_bunker_eca_model(const Instance& inst) {
     std::vector<int32_t> mgo_consumed(C);
 
     for (int c = 0; c < C; ++c) {
-        double dist = inst.leg_distance(inst.cargoes[c].pickup_region,
-                                         inst.cargoes[c].delivery_region);
+        double dist =
+            inst.leg_distance(inst.cargoes[c].pickup_region, inst.cargoes[c].delivery_region);
         double alpha = avg_fuel_coeff * dist / 24.0;
         auto alpha_const = m.constant(alpha);
         auto speed_sq = m.prod(result.speed[c], result.speed[c]);
         fuel_per_cargo[c] = m.prod(alpha_const, m.prod(speed_sq, active[c]));
 
         // Split into HFO/MGO by ECA fraction and fuel choice
-        double eca_frac = inst.leg_eca_fraction(
-            inst.cargoes[c].pickup_region, inst.cargoes[c].delivery_region);
+        double eca_frac =
+            inst.leg_eca_fraction(inst.cargoes[c].pickup_region, inst.cargoes[c].delivery_region);
 
         if (eca_frac > 0.0 && result.eca_fuel[c] >= 0) {
             auto eca_frac_const = m.constant(eca_frac);
-            mgo_consumed[c] = m.prod(fuel_per_cargo[c],
-                                      m.prod(eca_frac_const, result.eca_fuel[c]));
+            mgo_consumed[c] = m.prod(fuel_per_cargo[c], m.prod(eca_frac_const, result.eca_fuel[c]));
             hfo_consumed[c] = m.sum({fuel_per_cargo[c], m.neg(mgo_consumed[c])});
         } else {
             hfo_consumed[c] = fuel_per_cargo[c];
@@ -178,8 +176,8 @@ inline BunkerECAModel build_bunker_eca_model(const Instance& inst) {
 
     // Port costs
     for (int c = 0; c < C; ++c) {
-        double port_cost = inst.regions[inst.cargoes[c].pickup_region].port_cost
-                         + inst.regions[inst.cargoes[c].delivery_region].port_cost;
+        double port_cost = inst.regions[inst.cargoes[c].pickup_region].port_cost +
+                           inst.regions[inst.cargoes[c].delivery_region].port_cost;
         auto pc = m.constant(port_cost);
         profit_terms.push_back(m.neg(m.prod(pc, active[c])));
     }
@@ -192,9 +190,9 @@ inline BunkerECAModel build_bunker_eca_model(const Instance& inst) {
     //    must not exceed tank_max (initial + bunkered)
     for (int v = 0; v < V; ++v) {
         // Max usable fuel = initial + max_bunkerable - safety_reserve
-        double fuel_cap = inst.ships[v].initial_hfo
-                        + (inst.ships[v].hfo_tank_max - inst.ships[v].initial_hfo)
-                        - inst.ships[v].hfo_safety;
+        double fuel_cap = inst.ships[v].initial_hfo +
+                          (inst.ships[v].hfo_tank_max - inst.ships[v].initial_hfo) -
+                          inst.ships[v].hfo_safety;
         // fuel consumed by ship v: sum_c (on_v[c][v] * hfo_consumed[c])
         std::vector<int32_t> ship_fuel_terms;
         for (int c = 0; c < C; ++c) {
@@ -206,30 +204,29 @@ inline BunkerECAModel build_bunker_eca_model(const Instance& inst) {
 
     // 2. Time window constraints
     for (int c = 0; c < C; ++c) {
-        double dist = inst.leg_distance(inst.cargoes[c].pickup_region,
-                                         inst.cargoes[c].delivery_region);
-        if (dist <= 0.0) continue;
+        double dist =
+            inst.leg_distance(inst.cargoes[c].pickup_region, inst.cargoes[c].delivery_region);
+        if (dist <= 0.0) {
+            continue;
+        }
 
         auto dist_const = m.constant(dist);
-        auto travel_time = m.div_expr(dist_const,
-                                       m.prod(twenty_four, result.speed[c]));
+        auto travel_time = m.div_expr(dist_const, m.prod(twenty_four, result.speed[c]));
 
-        double available = inst.cargoes[c].delivery_tw_end
-                         - inst.cargoes[c].pickup_tw_start
-                         - inst.cargoes[c].service_time_load
-                         - inst.cargoes[c].service_time_discharge;
+        double available = inst.cargoes[c].delivery_tw_end - inst.cargoes[c].pickup_tw_start -
+                           inst.cargoes[c].service_time_load -
+                           inst.cargoes[c].service_time_discharge;
 
         if (available > 0) {
             auto avail_const = m.constant(available);
-            m.add_constraint(m.sum({travel_time,
-                                    m.neg(m.prod(avail_const, active[c]))}));
+            m.add_constraint(m.sum({travel_time, m.neg(m.prod(avail_const, active[c]))}));
         }
     }
 
     // 3. ECA compliance: fully-ECA legs must use MGO
     for (int c = 0; c < C; ++c) {
-        double eca_frac = inst.leg_eca_fraction(
-            inst.cargoes[c].pickup_region, inst.cargoes[c].delivery_region);
+        double eca_frac =
+            inst.leg_eca_fraction(inst.cargoes[c].pickup_region, inst.cargoes[c].delivery_region);
         if (eca_frac >= 0.99 && result.eca_fuel[c] >= 0) {
             m.add_constraint(m.sum({one, m.neg(result.eca_fuel[c])}));
         }

@@ -1,8 +1,9 @@
-#include <cbls/cbls.h>
 #include "data.h"
-#include "uc_model.h"
 #include "greedy_init.h"
+#include "uc_model.h"
 #include "verify_uc_chped.h"
+
+#include <cbls/cbls.h>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -28,26 +29,21 @@ int main(int argc, char** argv) {
 
     // Time limits per number of periods
     std::map<int, double> time_limits = {
-        {1, 10.0}, {3, 30.0}, {6, 60.0}, {12, 120.0}, {24, 300.0},
-        {48, 600.0}, {168, 600.0},
+        {1, 10.0}, {3, 30.0}, {6, 60.0}, {12, 120.0}, {24, 300.0}, {48, 600.0}, {168, 600.0},
     };
 
     // Instance specs: filename + period options
     std::vector<InstanceSpec> specs = {
-        {"ucp13.jsonl",      {1, 3, 6, 12, 24}},
-        {"ucp40.jsonl",      {1, 3, 6, 12, 24}},
-        {"ucp100.jsonl",     {1, 3, 6, 12, 24}},
-        {"ucp100-48p.jsonl", {48}},
-        {"ucp100-168p.jsonl",{168}},
-        {"ucp200.jsonl",     {1, 3, 6, 12, 24}},
-        {"ucp200-48p.jsonl", {48}},
-        {"ucp200-168p.jsonl",{168}},
+        {"ucp13.jsonl", {1, 3, 6, 12, 24}},  {"ucp40.jsonl", {1, 3, 6, 12, 24}},
+        {"ucp100.jsonl", {1, 3, 6, 12, 24}}, {"ucp100-48p.jsonl", {48}},
+        {"ucp100-168p.jsonl", {168}},        {"ucp200.jsonl", {1, 3, 6, 12, 24}},
+        {"ucp200-48p.jsonl", {48}},          {"ucp200-168p.jsonl", {168}},
     };
 
-    printf("%-20s %6s %6s %12s %12s %8s %8s\n",
-           "Instance", "Units", "Periods", "Objective", "Known LB", "Gap%", "Time(s)");
-    printf("%-20s %6s %6s %12s %12s %8s %8s\n",
-           "--------", "-----", "-------", "---------", "--------", "----", "-------");
+    printf("%-20s %6s %6s %12s %12s %8s %8s\n", "Instance", "Units", "Periods", "Objective",
+           "Known LB", "Gap%", "Time(s)");
+    printf("%-20s %6s %6s %12s %12s %8s %8s\n", "--------", "-----", "-------", "---------",
+           "--------", "----", "-------");
 
     for (auto& spec : specs) {
         std::string path = inst_dir + "/" + spec.filename;
@@ -66,8 +62,8 @@ int main(int argc, char** argv) {
             } else if (T < base.n_periods) {
                 inst = cbls::uc_chped::make_subinstance(base, T);
             } else {
-                printf("%-20s %6d %6d  (skipped: T > n_periods)\n",
-                       base.name.c_str(), base.n_units, T);
+                printf("%-20s %6d %6d  (skipped: T > n_periods)\n", base.name.c_str(), base.n_units,
+                       T);
                 continue;
             }
             auto ucm = cbls::uc_chped::build_uc_model(inst);
@@ -88,32 +84,31 @@ int main(int argc, char** argv) {
             cbls::LNS lns(0.3);
             cbls::SearchConfig cfg;
             cfg.skip_init = true;
-            auto result = cbls::solve(ucm.model, tlim, 42, false, &hook, &lns,
-                                       3, nullptr, cfg);
+            auto result = cbls::solve(ucm.model, tlim, 42, false, &hook, &lns, 3, nullptr, cfg);
 
             // Compute gap vs known bounds
             auto it = inst.known_bounds.find(T);
             if (it != inst.known_bounds.end() && result.feasible) {
                 double lb = it->second.first;
                 double gap = 100.0 * (result.objective - lb) / lb;
-                printf("%12.1f %12.1f %7.2f%% %7.1fs",
-                       result.objective, lb, gap, result.time_seconds);
+                printf("%12.1f %12.1f %7.2f%% %7.1fs", result.objective, lb, gap,
+                       result.time_seconds);
             } else {
-                printf("%12.1f %12s %8s %7.1fs",
-                       result.feasible ? result.objective : -1.0,
-                       "—", result.feasible ? "—" : "INFEAS", result.time_seconds);
+                printf("%12.1f %12s %8s %7.1fs", result.feasible ? result.objective : -1.0, "—",
+                       result.feasible ? "—" : "INFEAS", result.time_seconds);
             }
 
             if (do_verify && result.feasible) {
                 auto vr = cbls::uc_chped::verify_uc_chped(ucm, inst);
                 printf("  %s", vr.ok ? "VERIFIED" : "VERIFY FAIL");
-                if (!vr.ok) vr.print_diagnostics(stdout);
+                if (!vr.ok) {
+                    vr.print_diagnostics(stdout);
+                }
             }
 
             printf("  (%s, %ld vars, %ld nodes, %ld iters)\n",
-                   result.feasible ? "feasible" : "INFEASIBLE",
-                   (long)ucm.model.num_vars(), (long)ucm.model.num_nodes(),
-                   (long)result.iterations);
+                   result.feasible ? "feasible" : "INFEASIBLE", (long)ucm.model.num_vars(),
+                   (long)ucm.model.num_nodes(), (long)result.iterations);
         }
         printf("\n");
     }

@@ -1,6 +1,7 @@
-#include <cbls/cbls.h>
-#include "benchmarks/chped/data.h"
 #include "benchmarks/chped/chped_model.h"
+#include "benchmarks/chped/data.h"
+
+#include <cbls/cbls.h>
 #include <cstdio>
 
 int main() {
@@ -8,8 +9,7 @@ int main() {
     auto cm = cbls::chped::build_chped_model(inst);
     auto& m = cm.model;
 
-    printf("CHPED %s: %d units, demand=%.0f MW\n",
-           inst.name.c_str(), inst.n_units, inst.demand[0]);
+    printf("CHPED %s: %d units, demand=%.0f MW\n", inst.name.c_str(), inst.n_units, inst.demand[0]);
 
     auto result = cbls::solve(m, 5.0, 42);
     printf("feasible = %s\n", result.feasible ? "true" : "false");

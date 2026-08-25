@@ -148,14 +148,18 @@ Expr pow(const Expr& base, const Expr& exp) {
 Expr min(const std::vector<Expr>& args) {
     std::vector<int32_t> handles;
     handles.reserve(args.size());
-    for (const auto& a : args) handles.push_back(a.handle);
+    for (const auto& a : args) {
+        handles.push_back(a.handle);
+    }
     return {args[0].model, args[0].model->min_expr(handles)};
 }
 
 Expr max(const std::vector<Expr>& args) {
     std::vector<int32_t> handles;
     handles.reserve(args.size());
-    for (const auto& a : args) handles.push_back(a.handle);
+    for (const auto& a : args) {
+        handles.push_back(a.handle);
+    }
     return {args[0].model, args[0].model->max_expr(handles)};
 }
 

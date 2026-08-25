@@ -1,9 +1,10 @@
 #pragma once
 
-#include <cbls/cbls.h>
 #include "data.h"
-#include <vector>
+
+#include <cbls/cbls.h>
 #include <cmath>
+#include <vector>
 
 namespace cbls {
 namespace glsp {
@@ -40,8 +41,8 @@ inline GLSPModel build_glsp_model(const GLSPInstance& inst) {
         result.lot[j].resize(T);
         for (int t = 0; t < T; ++t) {
             double max_lot = inst.capacity[t] / inst.process_time[j];
-            result.lot[j][t] = m.float_var(0.0, max_lot,
-                "lot_" + std::to_string(j) + "_" + std::to_string(t));
+            result.lot[j][t] =
+                m.float_var(0.0, max_lot, "lot_" + std::to_string(j) + "_" + std::to_string(t));
         }
     }
 
@@ -56,10 +57,9 @@ inline GLSPModel build_glsp_model(const GLSPInstance& inst) {
     // 1. Changeover cost via pair_lambda_sum (single node per macro-period)
     for (int t = 0; t < T; ++t) {
         auto cost_matrix = inst.setup_cost;  // capture by value
-        auto changeover = m.pair_lambda_sum(result.seq[t],
-            [cost_matrix](int from, int to) -> double {
-                return cost_matrix[from][to];
-            });
+        auto changeover = m.pair_lambda_sum(
+            result.seq[t],
+            [cost_matrix](int from, int to) -> double { return cost_matrix[from][to]; });
         obj_terms.push_back(changeover);
     }
 
@@ -84,14 +84,17 @@ inline GLSPModel build_glsp_model(const GLSPInstance& inst) {
     // 3. Rework/disposal cost
     for (int j = 0; j < J; ++j) {
         for (int t = 0; t < T; ++t) {
-            if (inst.defect_rate[j][t] < 1e-12) continue;
+            if (inst.defect_rate[j][t] < 1e-12) {
+                continue;
+            }
             auto defectives = m.prod(m.constant(inst.defect_rate[j][t]), result.lot[j][t]);
 
             double hr = inst.rework_holding_cost[j] * M * 0.5;
             obj_terms.push_back(m.prod(m.constant(hr), defectives));
 
             double rework_cap = inst.lifetime[j] * (inst.capacity[t] / T / M) / inst.rework_time[j];
-            auto excess = m.max_expr({zero, m.sum({defectives, m.prod(neg1, m.constant(rework_cap))})});
+            auto excess =
+                m.max_expr({zero, m.sum({defectives, m.prod(neg1, m.constant(rework_cap))})});
             obj_terms.push_back(m.prod(m.constant(inst.disposal_cost[j]), excess));
         }
     }
@@ -109,10 +112,9 @@ inline GLSPModel build_glsp_model(const GLSPInstance& inst) {
         }
         // Setup time via pair_lambda_sum
         auto time_matrix = inst.setup_time;
-        auto setup_time = m.pair_lambda_sum(result.seq[t],
-            [time_matrix](int from, int to) -> double {
-                return time_matrix[from][to];
-            });
+        auto setup_time = m.pair_lambda_sum(
+            result.seq[t],
+            [time_matrix](int from, int to) -> double { return time_matrix[from][to]; });
         result.setup_time_nodes[t] = setup_time;
         time_terms.push_back(setup_time);
         auto total_time = m.sum(time_terms);
@@ -129,12 +131,16 @@ inline GLSPModel build_glsp_model(const GLSPInstance& inst) {
     // 3. Min lot size
     for (int j = 0; j < J; ++j) {
         double kappa = inst.min_lot[j];
-        if (kappa <= 0) continue;
+        if (kappa <= 0) {
+            continue;
+        }
         for (int t = 0; t < T; ++t) {
-            auto gap = m.max_expr({zero, m.sum({m.constant(kappa), m.prod(neg1, result.lot[j][t])})});
-            auto active = m.max_expr({zero, m.min_expr({one,
-                m.prod(m.constant(1.0 / kappa),
-                    m.max_expr({zero, m.sum({result.lot[j][t], neg1})}))})});
+            auto gap =
+                m.max_expr({zero, m.sum({m.constant(kappa), m.prod(neg1, result.lot[j][t])})});
+            auto active = m.max_expr(
+                {zero,
+                 m.min_expr({one, m.prod(m.constant(1.0 / kappa),
+                                         m.max_expr({zero, m.sum({result.lot[j][t], neg1})}))})});
             m.add_constraint(m.prod(gap, active));
         }
     }

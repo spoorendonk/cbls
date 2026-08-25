@@ -1,9 +1,10 @@
 #pragma once
 
-#include <cbls/cbls.h>
 #include "data.h"
 #include "uc_model.h"
+
 #include <algorithm>
+#include <cbls/cbls.h>
 #include <numeric>
 #include <vector>
 
@@ -14,8 +15,7 @@ namespace uc_chped {
 // For each period, commits cheapest units to meet demand+reserve,
 // respecting min up/down times by committing in blocks.
 // Sets dispatch to proportional share of demand among committed units.
-inline void greedy_uc_initialize(Model& model, const UCInstance& inst,
-                                  const UCModel& ucm) {
+inline void greedy_uc_initialize(Model& model, const UCInstance& inst, const UCModel& ucm) {
     int N = inst.n_units;
     int T = inst.n_periods;
 
@@ -43,15 +43,19 @@ inline void greedy_uc_initialize(Model& model, const UCInstance& inst,
         if (inst.y_prev[u] == 1) {
             run_length[u] = inst.n_init[u];  // was ON for this many periods
         } else {
-            run_length[u] = -inst.n_init[u]; // was OFF for this many periods
+            run_length[u] = -inst.n_init[u];  // was OFF for this many periods
         }
     }
 
     // Check if unit u can be turned ON at period t
     auto can_turn_on = [&](int u, int t) -> bool {
-        if (y[u][t] == 1) return true;  // already on
+        if (y[u][t] == 1) {
+            return true;  // already on
+        }
         // Must have been off for at least min_off periods
-        if (run_length[u] < 0 && -run_length[u] < inst.min_off[u]) return false;
+        if (run_length[u] < 0 && -run_length[u] < inst.min_off[u]) {
+            return false;
+        }
         // Must have room for min_on consecutive periods
         // (soft check — we'll try even if horizon is short)
         return true;
@@ -99,8 +103,12 @@ inline void greedy_uc_initialize(Model& model, const UCInstance& inst,
         // Commit additional units in merit order until target is met
         if (committed_capacity < target) {
             for (int u : unit_order) {
-                if (y[u][t] == 1) continue;  // already committed
-                if (!can_turn_on(u, t)) continue;
+                if (y[u][t] == 1) {
+                    continue;  // already committed
+                }
+                if (!can_turn_on(u, t)) {
+                    continue;
+                }
 
                 // Commit this unit for min_on consecutive periods
                 int block_end = std::min(t + inst.min_on[u], T);
@@ -109,7 +117,9 @@ inline void greedy_uc_initialize(Model& model, const UCInstance& inst,
                 }
 
                 committed_capacity += inst.P_max[u];
-                if (committed_capacity >= target) break;
+                if (committed_capacity >= target) {
+                    break;
+                }
             }
         }
     }

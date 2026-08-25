@@ -289,8 +289,8 @@ private:
     int64_t iterations_ = 0;
     // Armed by the search loop once it is stuck: after `perturbation_period`
     // batches without improvement, or -- with a wall clock -- after a quarter of
-    // the budget with no new best (#117). Cleared on every new best. Gates the Float escape probe so
-    // it stays a last resort rather than a steady-state behaviour.
+    // the budget with no new best (#117). Cleared on every new best. Gates the Float escape probe
+    // so it stays a last resort rather than a steady-state behaviour.
     bool escape_probe_ = false;
 
     // Novelty Jump state (Algorithms 4-5).

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "data.h"
+
 #include <algorithm>
 #include <cstring>
 #include <numeric>
@@ -11,13 +12,10 @@ namespace nuclear_outage {
 
 /// Compute availability matrix: available[period] = bitset of which units are online.
 /// A unit is offline during [outage_start, outage_start + duration).
-inline std::vector<std::vector<bool>> compute_availability(
-    const NuclearInstance& inst,
-    const std::vector<int>& outage_starts)
-{
+inline std::vector<std::vector<bool>> compute_availability(const NuclearInstance& inst,
+                                                           const std::vector<int>& outage_starts) {
     // available[period][unit] = true if unit is online
-    std::vector<std::vector<bool>> avail(inst.n_periods,
-        std::vector<bool>(inst.n_units, true));
+    std::vector<std::vector<bool>> avail(inst.n_periods, std::vector<bool>(inst.n_units, true));
 
     for (int o = 0; o < inst.n_outages; ++o) {
         int u = inst.outage_unit[o];
@@ -34,18 +32,20 @@ inline std::vector<std::vector<bool>> compute_availability(
 /// Returns the generation cost for serving the given demand.
 /// Units are dispatched cheapest-first up to their capacity.
 /// Unserved energy incurs a penalty.
-inline double dispatch_period(
-    const NuclearInstance& inst,
-    const std::vector<bool>& unit_available,
-    double demand,
-    const std::vector<int>& merit_order)  // pre-sorted by fuel_cost
+inline double dispatch_period(const NuclearInstance& inst, const std::vector<bool>& unit_available,
+                              double demand,
+                              const std::vector<int>& merit_order)  // pre-sorted by fuel_cost
 {
     double cost = 0.0;
     double remaining = demand;
 
     for (int u : merit_order) {
-        if (remaining <= 0.0) break;
-        if (!unit_available[u]) continue;
+        if (remaining <= 0.0) {
+            break;
+        }
+        if (!unit_available[u]) {
+            continue;
+        }
 
         double gen = std::min(inst.capacity[u], remaining);
         cost += gen * inst.fuel_cost[u];
@@ -61,13 +61,12 @@ inline double dispatch_period(
 
 /// Expected cost across all scenarios for a given outage schedule.
 /// This is the main evaluation function called by the hook.
-inline double expected_cost(
-    const NuclearInstance& inst,
-    const std::vector<int>& outage_starts,
-    int n_scenarios = -1,  // -1 = all scenarios
-    int scenario_offset = 0)
-{
-    if (n_scenarios < 0) n_scenarios = inst.n_scenarios;
+inline double expected_cost(const NuclearInstance& inst, const std::vector<int>& outage_starts,
+                            int n_scenarios = -1,  // -1 = all scenarios
+                            int scenario_offset = 0) {
+    if (n_scenarios < 0) {
+        n_scenarios = inst.n_scenarios;
+    }
     n_scenarios = std::min(n_scenarios, inst.n_scenarios - scenario_offset);
 
     auto avail = compute_availability(inst, outage_starts);
@@ -81,8 +80,7 @@ inline double expected_cost(
     double total_cost = 0.0;
     for (int s = scenario_offset; s < scenario_offset + n_scenarios; ++s) {
         for (int t = 0; t < inst.n_periods; ++t) {
-            total_cost += dispatch_period(inst, avail[t],
-                                          inst.demand[s][t], merit_order);
+            total_cost += dispatch_period(inst, avail[t], inst.demand[s][t], merit_order);
         }
     }
 
@@ -92,11 +90,9 @@ inline double expected_cost(
 /// Compute resource constraint violation penalty.
 /// Penalizes: (1) exceeding max simultaneous outages per site,
 ///            (2) violating min_spacing_same_site between outages at the same site.
-inline double resource_violation_penalty(
-    const NuclearInstance& inst,
-    const std::vector<int>& outage_starts,
-    double penalty_weight = 1e6)
-{
+inline double resource_violation_penalty(const NuclearInstance& inst,
+                                         const std::vector<int>& outage_starts,
+                                         double penalty_weight = 1e6) {
     double violation = 0.0;
 
     // (1) Max simultaneous outages per site
@@ -124,7 +120,9 @@ inline double resource_violation_penalty(
     }
     for (int s = 0; s < inst.n_sites; ++s) {
         auto& outages = site_outages[s];
-        if (outages.size() < 2) continue;
+        if (outages.size() < 2) {
+            continue;
+        }
         // Sort by start time
         std::sort(outages.begin(), outages.end(),
                   [&](int a, int b) { return outage_starts[a] < outage_starts[b]; });
@@ -156,8 +154,7 @@ public:
           merit_order_(inst.n_units),
           site_count_(inst.n_sites, 0),
           site_outages_(inst.n_sites),
-          outage_site_(inst.n_outages)
-    {
+          outage_site_(inst.n_outages) {
         // 5c: cache merit order once (fuel costs never change)
         std::iota(merit_order_.begin(), merit_order_.end(), 0);
         std::sort(merit_order_.begin(), merit_order_.end(),
@@ -177,15 +174,14 @@ public:
     /// Compute expected dispatch cost. No heap allocation on the hot path.
     /// If changed_outages is non-empty and the scenario window matches the cache,
     /// uses incremental dispatch (5d): only re-dispatches affected periods.
-    double expected_cost(const std::vector<int>& outage_starts,
-                         int n_scenarios, int scenario_offset,
-                         const std::vector<int>& changed_outages = {}) {
+    double expected_cost(const std::vector<int>& outage_starts, int n_scenarios,
+                         int scenario_offset, const std::vector<int>& changed_outages = {}) {
         int n_sc = std::min(n_scenarios, inst_.n_scenarios - scenario_offset);
 
         // 5d: try incremental path if cached state matches.
         // Fall back to full if estimated affected periods > half the total.
-        if (!changed_outages.empty() && dispatch_cached_ &&
-            cached_n_sc_ == n_sc && cached_offset_ == scenario_offset) {
+        if (!changed_outages.empty() && dispatch_cached_ && cached_n_sc_ == n_sc &&
+            cached_offset_ == scenario_offset) {
             int est_affected = 0;
             for (int o : changed_outages) {
                 est_affected += 2 * inst_.outage_duration[o];
@@ -204,7 +200,9 @@ public:
     int find_changes(const std::vector<int>& outage_starts,
                      std::vector<int>& changed_outages) const {
         changed_outages.clear();
-        if (!dispatch_cached_) return 0;
+        if (!dispatch_cached_) {
+            return 0;
+        }
         for (int o = 0; o < inst_.n_outages; ++o) {
             if (outage_starts[o] != cached_starts_[o]) {
                 changed_outages.push_back(o);
@@ -215,8 +213,7 @@ public:
 
     /// Compute resource violation penalty using pre-allocated scratch.
     /// If changed_outage >= 0, only rechecks the affected site (5e: delta).
-    double resource_penalty(const std::vector<int>& outage_starts,
-                            double penalty_weight = 1e6,
+    double resource_penalty(const std::vector<int>& outage_starts, double penalty_weight = 1e6,
                             int changed_outage = -1) {
         if (changed_outage >= 0) {
             return delta_resource_penalty(outage_starts, penalty_weight, changed_outage);
@@ -241,11 +238,11 @@ private:
     std::vector<int> outage_site_;  // outage → site
 
     // 5d: cached dispatch state for incremental evaluation
-    std::vector<double> cost_per_period_;   // [n_periods] total cost across cached scenarios
-    std::vector<int> cached_starts_;        // outage starts for the cached avail/cost state
-    double cached_total_ = 0.0;             // sum of cost_per_period_
-    int cached_n_sc_ = 0;                   // scenario count for cached state
-    int cached_offset_ = 0;                 // scenario offset for cached state
+    std::vector<double> cost_per_period_;  // [n_periods] total cost across cached scenarios
+    std::vector<int> cached_starts_;       // outage starts for the cached avail/cost state
+    double cached_total_ = 0.0;            // sum of cost_per_period_
+    int cached_n_sc_ = 0;                  // scenario count for cached state
+    int cached_offset_ = 0;                // scenario offset for cached state
     bool dispatch_cached_ = false;
 
     // 5e: cached per-site penalty contributions
@@ -255,8 +252,7 @@ private:
     bool penalty_valid_ = false;
 
     /// Full dispatch: reset avail, mark all outages, dispatch all periods.
-    double full_dispatch(const std::vector<int>& outage_starts,
-                         int n_sc, int scenario_offset) {
+    double full_dispatch(const std::vector<int>& outage_starts, int n_sc, int scenario_offset) {
         int P = inst_.n_periods;
         int U = inst_.n_units;
 
@@ -296,7 +292,7 @@ private:
 
     /// 5d: Multi-outage incremental dispatch — apply each change sequentially.
     double multi_incremental_dispatch(const std::vector<int>& outage_starts,
-                                       const std::vector<int>& changed_outages) {
+                                      const std::vector<int>& changed_outages) {
         for (int o : changed_outages) {
             incremental_dispatch_one(outage_starts, o);
         }
@@ -304,8 +300,7 @@ private:
     }
 
     /// 5d: Incremental dispatch for a single outage change.
-    void incremental_dispatch_one(const std::vector<int>& outage_starts,
-                                  int changed_outage) {
+    void incremental_dispatch_one(const std::vector<int>& outage_starts, int changed_outage) {
         int P = inst_.n_periods;
         int U = inst_.n_units;
         int u = inst_.outage_unit[changed_outage];
@@ -313,7 +308,9 @@ private:
         int old_start = cached_starts_[changed_outage];
         int new_start = outage_starts[changed_outage];
 
-        if (old_start == new_start) return;  // no actual change
+        if (old_start == new_start) {
+            return;  // no actual change
+        }
 
         // Toggle avail: restore old position (unit back online)
         int old_end = std::min(old_start + dur, P);
@@ -352,8 +349,12 @@ private:
         const uint8_t* row = avail_.data() + period * U;
 
         for (int u : merit_order_) {
-            if (remaining <= 0.0) break;
-            if (!row[u]) continue;
+            if (remaining <= 0.0) {
+                break;
+            }
+            if (!row[u]) {
+                continue;
+            }
             double gen = std::min(inst_.capacity[u], remaining);
             cost += gen * inst_.fuel_cost[u];
             remaining -= gen;
@@ -366,8 +367,7 @@ private:
     }
 
     /// Full resource penalty computation (first call or fallback).
-    double full_resource_penalty(const std::vector<int>& outage_starts,
-                                 double penalty_weight) {
+    double full_resource_penalty(const std::vector<int>& outage_starts, double penalty_weight) {
         int n_sites = inst_.n_sites;
         site_capacity_penalty_.assign(n_sites, 0.0);
         site_spacing_penalty_.assign(n_sites, 0.0);
@@ -392,7 +392,9 @@ private:
         // (2) Min spacing
         for (int s = 0; s < n_sites; ++s) {
             auto& outages = site_outages_[s];
-            if (outages.size() < 2) continue;
+            if (outages.size() < 2) {
+                continue;
+            }
             std::sort(outages.begin(), outages.end(),
                       [&](int a, int b) { return outage_starts[a] < outage_starts[b]; });
             for (size_t i = 0; i + 1 < outages.size(); ++i) {
@@ -415,8 +417,7 @@ private:
     }
 
     /// 5e: Delta resource penalty — only recompute site of changed outage.
-    double delta_resource_penalty(const std::vector<int>& outage_starts,
-                                  double penalty_weight,
+    double delta_resource_penalty(const std::vector<int>& outage_starts, double penalty_weight,
                                   int changed_outage) {
         if (!penalty_valid_) {
             return full_resource_penalty(outage_starts, penalty_weight);

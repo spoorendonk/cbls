@@ -28,8 +28,8 @@ struct SearchConfig {
     int lns_interval = 3;
 
     // ViolationLS batch outer loop (Algorithm 6).
-    int64_t batch_iterations = 1000;        // GLS iterations per batch
-    int perturbation_period = 100;          // batches without improvement before perturbing
+    int64_t batch_iterations = 1000;  // GLS iterations per batch
+    int perturbation_period = 100;    // batches without improvement before perturbing
     // How much of the model a diversification kick moves: each scalar variable
     // is randomised with this probability, and each List/Set variable gets
     // clamp(round(p * |elements|), 1, |elements|) random structural moves

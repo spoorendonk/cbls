@@ -1,8 +1,8 @@
 #pragma once
 
 #include "model.h"
-#include "violation.h"
 #include "rng.h"
+#include "violation.h"
 
 namespace cbls {
 

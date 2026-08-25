@@ -1,17 +1,17 @@
 #pragma once
 
-#include <cbls/verify.h>
-#include "uc_model.h"
 #include "data.h"
+#include "uc_model.h"
+
+#include <cbls/verify.h>
 #include <cmath>
-#include <vector>
 #include <string>
+#include <vector>
 
 namespace cbls {
 namespace uc_chped {
 
-inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst,
-                                     double tol = 1e-4) {
+inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst, double tol = 1e-4) {
     VerifyResult result = verify_model(ucm.model);
 
     const auto& m = ucm.model;
@@ -19,12 +19,8 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst,
     int T = inst.n_periods;
 
     // Extract variable values (handles are negative: var_id = -(handle + 1))
-    auto val = [&](int32_t handle) -> double {
-        return m.var(-(handle + 1)).value;
-    };
-    auto ival = [&](int32_t handle) -> int {
-        return (int)std::round(val(handle));
-    };
+    auto val = [&](int32_t handle) -> double { return m.var(-(handle + 1)).value; };
+    auto ival = [&](int32_t handle) -> int { return (int)std::round(val(handle)); };
 
     // Extract all variable values
     std::vector<std::vector<int>> y_val(N, std::vector<int>(T));
@@ -41,9 +37,8 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst,
         for (int t = 0; t < T; ++t) {
             if (y_val[u][t] != 0 && y_val[u][t] != 1) {
                 result.add_error({VerifyError::Kind::Custom,
-                    "y[" + std::to_string(u) + "][" + std::to_string(t) + "]",
-                    0.0, (double)y_val[u][t],
-                    "commitment not 0 or 1"});
+                                  "y[" + std::to_string(u) + "][" + std::to_string(t) + "]", 0.0,
+                                  (double)y_val[u][t], "commitment not 0 or 1"});
             }
         }
     }
@@ -55,15 +50,13 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst,
             double ub = inst.P_max[u] * y_val[u][t];
             if (p_val[u][t] < lb - tol) {
                 result.add_error({VerifyError::Kind::Custom,
-                    "p[" + std::to_string(u) + "][" + std::to_string(t) + "]",
-                    lb, p_val[u][t],
-                    "dispatch below Pmin*y"});
+                                  "p[" + std::to_string(u) + "][" + std::to_string(t) + "]", lb,
+                                  p_val[u][t], "dispatch below Pmin*y"});
             }
             if (p_val[u][t] > ub + tol) {
                 result.add_error({VerifyError::Kind::Custom,
-                    "p[" + std::to_string(u) + "][" + std::to_string(t) + "]",
-                    ub, p_val[u][t],
-                    "dispatch above Pmax*y"});
+                                  "p[" + std::to_string(u) + "][" + std::to_string(t) + "]", ub,
+                                  p_val[u][t], "dispatch above Pmax*y"});
             }
         }
     }
@@ -75,26 +68,25 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst,
             supply += p_val[u][t];
         }
         if (supply < inst.demand[t] - tol) {
-            result.add_error({VerifyError::Kind::Custom,
-                "demand[" + std::to_string(t) + "]",
-                inst.demand[t], supply,
-                "supply does not meet demand"});
+            result.add_error({VerifyError::Kind::Custom, "demand[" + std::to_string(t) + "]",
+                              inst.demand[t], supply, "supply does not meet demand"});
         }
     }
 
     // 4. Reserve margin: sum_u(Pmax[u]*y[u][t]) >= demand[t] + reserve[t]
     for (int t = 0; t < T; ++t) {
-        if (inst.reserve[t] <= 0) continue;
+        if (inst.reserve[t] <= 0) {
+            continue;
+        }
         double capacity = 0.0;
         for (int u = 0; u < N; ++u) {
             capacity += inst.P_max[u] * y_val[u][t];
         }
         double required = inst.demand[t] + inst.reserve[t];
         if (capacity < required - tol) {
-            result.add_error({VerifyError::Kind::Custom,
-                "reserve[" + std::to_string(t) + "]",
-                required, capacity,
-                "committed capacity does not meet demand + reserve"});
+            result.add_error({VerifyError::Kind::Custom, "reserve[" + std::to_string(t) + "]",
+                              required, capacity,
+                              "committed capacity does not meet demand + reserve"});
         }
     }
 
@@ -107,11 +99,12 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst,
                 int end = std::min(t + inst.min_on[u], T);
                 for (int tau = t + 1; tau < end; ++tau) {
                     if (y_val[u][tau] != 1) {
-                        result.add_error({VerifyError::Kind::Custom,
-                            "y[" + std::to_string(u) + "][" + std::to_string(tau) + "]",
-                            1.0, (double)y_val[u][tau],
-                            "min uptime violated (startup at t=" + std::to_string(t) +
-                            ", min_on=" + std::to_string(inst.min_on[u]) + ")"});
+                        result.add_error(
+                            {VerifyError::Kind::Custom,
+                             "y[" + std::to_string(u) + "][" + std::to_string(tau) + "]", 1.0,
+                             (double)y_val[u][tau],
+                             "min uptime violated (startup at t=" + std::to_string(t) +
+                                 ", min_on=" + std::to_string(inst.min_on[u]) + ")"});
                     }
                 }
             }
@@ -127,11 +120,12 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst,
                 int end = std::min(t + inst.min_off[u], T);
                 for (int tau = t + 1; tau < end; ++tau) {
                     if (y_val[u][tau] != 0) {
-                        result.add_error({VerifyError::Kind::Custom,
-                            "y[" + std::to_string(u) + "][" + std::to_string(tau) + "]",
-                            0.0, (double)y_val[u][tau],
-                            "min downtime violated (shutdown at t=" + std::to_string(t) +
-                            ", min_off=" + std::to_string(inst.min_off[u]) + ")"});
+                        result.add_error(
+                            {VerifyError::Kind::Custom,
+                             "y[" + std::to_string(u) + "][" + std::to_string(tau) + "]", 0.0,
+                             (double)y_val[u][tau],
+                             "min downtime violated (shutdown at t=" + std::to_string(t) +
+                                 ", min_off=" + std::to_string(inst.min_off[u]) + ")"});
                     }
                 }
             }
@@ -145,9 +139,10 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst,
             for (int t = 0; t < std::min(remaining, T); ++t) {
                 if (y_val[u][t] != 1) {
                     result.add_error({VerifyError::Kind::Custom,
-                        "y[" + std::to_string(u) + "][" + std::to_string(t) + "]",
-                        1.0, (double)y_val[u][t],
-                        "initial on-condition violated (remaining_on=" + std::to_string(remaining) + ")"});
+                                      "y[" + std::to_string(u) + "][" + std::to_string(t) + "]",
+                                      1.0, (double)y_val[u][t],
+                                      "initial on-condition violated (remaining_on=" +
+                                          std::to_string(remaining) + ")"});
                 }
             }
         }
@@ -156,9 +151,10 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst,
             for (int t = 0; t < std::min(remaining, T); ++t) {
                 if (y_val[u][t] != 0) {
                     result.add_error({VerifyError::Kind::Custom,
-                        "y[" + std::to_string(u) + "][" + std::to_string(t) + "]",
-                        0.0, (double)y_val[u][t],
-                        "initial off-condition violated (remaining_off=" + std::to_string(remaining) + ")"});
+                                      "y[" + std::to_string(u) + "][" + std::to_string(t) + "]",
+                                      0.0, (double)y_val[u][t],
+                                      "initial off-condition violated (remaining_off=" +
+                                          std::to_string(remaining) + ")"});
                 }
             }
         }
@@ -168,12 +164,14 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst,
     double total_cost = 0.0;
     for (int u = 0; u < N; ++u) {
         for (int t = 0; t < T; ++t) {
-            if (y_val[u][t] == 0) continue;
+            if (y_val[u][t] == 0) {
+                continue;
+            }
 
             double p = p_val[u][t];
             // Fuel cost: a + b*p + c*p^2 + |d*sin(e*(Pmin-p))|
-            double fuel = inst.a[u] + inst.b[u] * p + inst.c[u] * p * p
-                        + std::abs(inst.d[u] * std::sin(inst.e[u] * (inst.P_min[u] - p)));
+            double fuel = inst.a[u] + inst.b[u] * p + inst.c[u] * p * p +
+                          std::abs(inst.d[u] * std::sin(inst.e[u] * (inst.P_min[u] - p)));
             total_cost += fuel;
 
             // Startup cost
@@ -185,9 +183,15 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst,
                 int lookback_start = t - inst.t_cold[u];
                 for (int tau = lookback_start; tau < t; ++tau) {
                     if (tau < 0) {
-                        if (inst.y_prev[u] == 1) { was_on = true; break; }
+                        if (inst.y_prev[u] == 1) {
+                            was_on = true;
+                            break;
+                        }
                     } else {
-                        if (y_val[u][tau] == 1) { was_on = true; break; }
+                        if (y_val[u][tau] == 1) {
+                            was_on = true;
+                            break;
+                        }
                     }
                 }
                 total_cost += was_on ? inst.a_hot[u] : inst.a_cold[u];
@@ -197,9 +201,9 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst,
 
     double dag_obj = m.node(m.objective_id()).value;
     if (std::abs(dag_obj - total_cost) > std::max(tol * std::abs(total_cost), 1.0)) {
-        result.add_error({VerifyError::Kind::ObjectiveMismatch,
-            "objective", total_cost, dag_obj,
-            "independent cost recomputation mismatch (cost=" + std::to_string(total_cost) + ")"});
+        result.add_error(
+            {VerifyError::Kind::ObjectiveMismatch, "objective", total_cost, dag_obj,
+             "independent cost recomputation mismatch (cost=" + std::to_string(total_cost) + ")"});
     }
 
     return result;

@@ -1,15 +1,15 @@
 #pragma once
 
+#include <catch2/interfaces/catch_interfaces_capture.hpp>
 #include <cbls/model.h>
 #include <cbls/search.h>
-
-#include <catch2/interfaces/catch_interfaces_capture.hpp>
-
 #include <cstdio>
 #include <cstdlib>
 
 // Short alias for tests — delegates to the canonical core function.
-inline int32_t vid(int32_t handle) { return cbls::handle_to_var_id(handle); }
+inline int32_t vid(int32_t handle) {
+    return cbls::handle_to_var_id(handle);
+}
 
 // ---------------------------------------------------------------------------
 // Deterministic solve for tests.

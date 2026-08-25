@@ -268,8 +268,8 @@ NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts)
                 // the violation rather than the reader silently dropping it.
                 iub = ilb;
             }
-            result.var_handles.push_back(m.int_var(static_cast<int>(ilb), static_cast<int>(iub),
-                                                   "x" + std::to_string(j)));
+            result.var_handles.push_back(
+                m.int_var(static_cast<int>(ilb), static_cast<int>(iub), "x" + std::to_string(j)));
         } else {
             result.var_handles.push_back(m.float_var(lb, ub, "x" + std::to_string(j)));
         }

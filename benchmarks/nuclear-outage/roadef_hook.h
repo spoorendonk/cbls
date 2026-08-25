@@ -1,13 +1,14 @@
 #pragma once
 
-#include <cbls/cbls.h>
 #include "data.h"
 #include "nuclear_model.h"
 #include "roadef_dispatch.h"
-#include <vector>
+
 #include <algorithm>
+#include <cbls/cbls.h>
 #include <cmath>
 #include <numeric>
+#include <vector>
 
 namespace cbls {
 namespace nuclear_outage {
@@ -25,11 +26,9 @@ public:
     int epoch_size = 10;
 
     ROADEFDispatchHook(const ROADEFInstance& inst_, const ROADEFModel& rm_)
-        : inst(inst_), rm(rm_),
-          ha_(inst_.n_outages()) {}
+        : inst(inst_), rm(rm_), ha_(inst_.n_outages()) {}
 
-    void solve(Model& model, ViolationManager&,
-               const std::vector<int32_t>& = {}) override {
+    void solve(Model& model, ViolationManager&, const std::vector<int32_t>& = {}) override {
         int O = inst.n_outages();
 
         // 1. Read current outage start weeks from model
@@ -39,9 +38,7 @@ public:
         }
 
         // 2. Determine scenario window
-        int n_sc = (scenarios_per_move > 0)
-                   ? std::min(scenarios_per_move, inst.S)
-                   : inst.S;
+        int n_sc = (scenarios_per_move > 0) ? std::min(scenarios_per_move, inst.S) : inst.S;
         if (++calls_in_epoch_ >= epoch_size) {
             calls_in_epoch_ = 0;
             scenario_offset_ += n_sc;
@@ -175,7 +172,9 @@ private:
 
                 bool o1_intersects = (h1 >= sc.period_start - da1 + 1) && (h1 <= sc.period_end);
                 bool o2_intersects = (h2 >= sc.period_start - da2 + 1) && (h2 <= sc.period_end);
-                if (!o1_intersects || !o2_intersects) continue;
+                if (!o1_intersects || !o2_intersects) {
+                    continue;
+                }
 
                 double gap1 = h1 - h2 - da2;
                 double gap2 = h2 - h1 - da1;
@@ -234,8 +233,12 @@ private:
 
                 double gap1 = std::abs(coupling1 - ha_[outages[j]]);
                 double gap2 = std::abs(coupling2 - ha_[outages[i]]);
-                if (gap1 < sc.spacing) viol += sc.spacing - gap1;
-                if (gap2 < sc.spacing) viol += sc.spacing - gap2;
+                if (gap1 < sc.spacing) {
+                    viol += sc.spacing - gap1;
+                }
+                if (gap2 < sc.spacing) {
+                    viol += sc.spacing - gap2;
+                }
             }
         }
         return viol;
@@ -247,12 +250,16 @@ private:
             int count = 0;
             for (auto& usage : res.usages) {
                 int plant = usage.plant_idx;
-                if (plant < 0 || plant >= (int)lookup_.size()) continue;
+                if (plant < 0 || plant >= (int)lookup_.size()) {
+                    continue;
+                }
                 int max_k = (int)lookup_[plant].size();
                 int n_cycles = (int)usage.start.size();
                 for (int k = 0; k < std::min(n_cycles, max_k); ++k) {
                     int ha = lookup_[plant][k];
-                    if (ha < 0) continue;
+                    if (ha < 0) {
+                        continue;
+                    }
                     int res_start = ha + usage.start[k];
                     int res_end = res_start + usage.duration[k];
                     if (h >= res_start && h < res_end) {

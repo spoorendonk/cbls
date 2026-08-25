@@ -15,7 +15,6 @@
 
 #include <cbls/cbls.h>
 #include <cbls/search.h>
-
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -66,9 +65,10 @@ struct Run {
 };
 
 void print_usage() {
-    printf("usage: cbls_setcover [--dir D] [--instance F] [--time S] [--seeds N]\n"
-           "                     [--seed S0] [--encoding set|bool|both] [--struct-prob P]\n"
-           "                     [--csv OUT]\n");
+    printf(
+        "usage: cbls_setcover [--dir D] [--instance F] [--time S] [--seeds N]\n"
+        "                     [--seed S0] [--encoding set|bool|both] [--struct-prob P]\n"
+        "                     [--csv OUT]\n");
 }
 
 Options parse_args(int argc, char** argv, bool* ok) {
@@ -149,8 +149,7 @@ Run solve_one(const cbls::setcover::SetCoverInstance& inst, cbls::setcover::Enco
     run.iterations = result.iterations;
     if (!verified.ok) {
         fprintf(stderr, "%s/%s seed %llu: VERIFY FAILED\n", inst.name.c_str(),
-                cbls::setcover::encoding_name(encoding),
-                static_cast<unsigned long long>(seed));
+                cbls::setcover::encoding_name(encoding), static_cast<unsigned long long>(seed));
         verified.print_diagnostics();
     }
     return run;
@@ -170,16 +169,16 @@ void write_csv(const std::string& path, const std::vector<Run>& runs) {
         fprintf(stderr, "cannot write %s\n", path.c_str());
         return;
     }
-    fprintf(out, "instance,encoding,seed,objective,optimum,gap_percent,feasible,verified,"
-                 "columns,seconds,iterations\n");
+    fprintf(out,
+            "instance,encoding,seed,objective,optimum,gap_percent,feasible,verified,"
+            "columns,seconds,iterations\n");
     for (const Run& r : runs) {
         auto it = published_optima().find(r.instance);
         double optimum = (it == published_optima().end()) ? -1.0 : it->second;
         fprintf(out, "%s,%s,%llu,%.1f,%.1f,%.2f,%d,%d,%d,%.2f,%lld\n", r.instance.c_str(),
-                cbls::setcover::encoding_name(r.encoding),
-                static_cast<unsigned long long>(r.seed), r.objective, optimum,
-                gap_percent(r.instance, r.objective), r.feasible ? 1 : 0, r.verified ? 1 : 0,
-                r.columns, r.seconds, static_cast<long long>(r.iterations));
+                cbls::setcover::encoding_name(r.encoding), static_cast<unsigned long long>(r.seed),
+                r.objective, optimum, gap_percent(r.instance, r.objective), r.feasible ? 1 : 0,
+                r.verified ? 1 : 0, r.columns, r.seconds, static_cast<long long>(r.iterations));
     }
     std::fclose(out);
     printf("\nwrote %s\n", path.c_str());

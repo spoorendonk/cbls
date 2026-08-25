@@ -185,9 +185,8 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     // performs the same integer-tick duration_cast, so handing it the raw value
     // would reintroduce exactly the overflow this saturation prevents.
     const double budget_seconds = has_deadline ? std::min(time_limit, kMaxBudgetSeconds) : 0.0;
-    const auto deadline =
-        start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                    std::chrono::duration<double>(budget_seconds));
+    const auto deadline = start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                      std::chrono::duration<double>(budget_seconds));
     auto past_deadline = [&]() {
         return has_deadline && std::chrono::steady_clock::now() >= deadline;
     };
@@ -196,7 +195,8 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             return 0.0;  // unbounded: sub-steps use their own iteration budgets
         }
         return std::max(
-            0.0, std::chrono::duration<double>(deadline - std::chrono::steady_clock::now()).count());
+            0.0,
+            std::chrono::duration<double>(deadline - std::chrono::steady_clock::now()).count());
     };
 
     // Exactly one path initialises each variable (#108). FeasibilityJump owns the

@@ -1,10 +1,10 @@
 #pragma once
 
-#include <cstdint>
-#include <random>
 #include <algorithm>
-#include <vector>
+#include <cstdint>
 #include <numeric>
+#include <random>
+#include <vector>
 
 namespace cbls {
 

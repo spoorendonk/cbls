@@ -1,14 +1,22 @@
 #pragma once
 
 #include "model.h"
-#include <vector>
-#include <string>
+
 #include <cstdio>
+#include <string>
+#include <vector>
 
 namespace cbls {
 
 struct VerifyError {
-    enum class Kind { VarBounds, VarIntegrality, ConstraintViolation, ObjectiveMismatch, DagConsistency, Custom };
+    enum class Kind {
+        VarBounds,
+        VarIntegrality,
+        ConstraintViolation,
+        ObjectiveMismatch,
+        DagConsistency,
+        Custom
+    };
     Kind kind;
     std::string entity;
     double expected = 0.0;
@@ -40,15 +48,27 @@ struct VerifyResult {
         for (auto& e : errors) {
             const char* kind_str = "?";
             switch (e.kind) {
-                case VerifyError::Kind::VarBounds:            kind_str = "VarBounds"; break;
-                case VerifyError::Kind::VarIntegrality:       kind_str = "VarIntegrality"; break;
-                case VerifyError::Kind::ConstraintViolation:  kind_str = "ConstraintViolation"; break;
-                case VerifyError::Kind::ObjectiveMismatch:    kind_str = "ObjectiveMismatch"; break;
-                case VerifyError::Kind::DagConsistency:       kind_str = "DagConsistency"; break;
-                case VerifyError::Kind::Custom:               kind_str = "Custom"; break;
+                case VerifyError::Kind::VarBounds:
+                    kind_str = "VarBounds";
+                    break;
+                case VerifyError::Kind::VarIntegrality:
+                    kind_str = "VarIntegrality";
+                    break;
+                case VerifyError::Kind::ConstraintViolation:
+                    kind_str = "ConstraintViolation";
+                    break;
+                case VerifyError::Kind::ObjectiveMismatch:
+                    kind_str = "ObjectiveMismatch";
+                    break;
+                case VerifyError::Kind::DagConsistency:
+                    kind_str = "DagConsistency";
+                    break;
+                case VerifyError::Kind::Custom:
+                    kind_str = "Custom";
+                    break;
             }
-            fprintf(out, "  [%s] %s: expected=%.6f actual=%.6f  %s\n",
-                    kind_str, e.entity.c_str(), e.expected, e.actual, e.message.c_str());
+            fprintf(out, "  [%s] %s: expected=%.6f actual=%.6f  %s\n", kind_str, e.entity.c_str(),
+                    e.expected, e.actual, e.message.c_str());
         }
     }
 

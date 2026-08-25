@@ -1,10 +1,12 @@
 #include "cbls/pool.h"
+
 #include "cbls/dag_ops.h"
-#include <thread>
+
 #include <algorithm>
 #include <chrono>
 #include <limits>
 #include <memory>
+#include <thread>
 
 namespace cbls {
 
@@ -15,11 +17,12 @@ SolutionPool::SolutionPool(int capacity) : capacity_(capacity) {}
 bool SolutionPool::submit(const Solution& sol) {
     std::lock_guard<std::mutex> lock(mutex_);
     solutions_.push_back(sol);
-    std::sort(solutions_.begin(), solutions_.end(),
-              [](const Solution& a, const Solution& b) {
-                  if (a.feasible != b.feasible) return a.feasible > b.feasible;
-                  return a.objective < b.objective;
-              });
+    std::sort(solutions_.begin(), solutions_.end(), [](const Solution& a, const Solution& b) {
+        if (a.feasible != b.feasible) {
+            return a.feasible > b.feasible;
+        }
+        return a.objective < b.objective;
+    });
     if (static_cast<int>(solutions_.size()) > capacity_) {
         solutions_.resize(capacity_);
     }
@@ -28,7 +31,9 @@ bool SolutionPool::submit(const Solution& sol) {
 
 std::optional<Solution> SolutionPool::best() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (solutions_.empty()) return std::nullopt;
+    if (solutions_.empty()) {
+        return std::nullopt;
+    }
     return solutions_[0];
 }
 
@@ -40,7 +45,9 @@ std::vector<Solution> SolutionPool::top_k(int k) const {
 
 std::optional<Solution> SolutionPool::get_restart_point(RNG& rng) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (solutions_.empty()) return std::nullopt;
+    if (solutions_.empty()) {
+        return std::nullopt;
+    }
     int n = std::max(1, static_cast<int>(solutions_.size()) / 2);
     int idx = static_cast<int>(rng.integers(0, n));
     return solutions_[idx];
@@ -64,8 +71,8 @@ int ParallelSearch::effective_threads(const ParallelConfig& pc) const {
 }
 
 // Backward-compatible simple solve
-SearchResult ParallelSearch::solve(std::function<Model()> model_factory,
-                                    double time_limit, uint64_t seed) {
+SearchResult ParallelSearch::solve(std::function<Model()> model_factory, double time_limit,
+                                   uint64_t seed) {
     ParallelConfig pc;
     pc.n_threads = n_threads_;
     std::function<InnerSolverHook*(Model&)> no_hook;
@@ -75,24 +82,19 @@ SearchResult ParallelSearch::solve(std::function<Model()> model_factory,
 }
 
 // Full-featured solve
-SearchResult ParallelSearch::solve(
-    std::function<Model()> model_factory,
-    double time_limit,
-    uint64_t seed,
-    const SearchConfig& config,
-    std::function<InnerSolverHook*(Model&)> hook_factory,
-    std::function<LNS*()> lns_factory,
-    SolveCallback* callback,
-    const ParallelConfig& par_config) {
-
+SearchResult ParallelSearch::solve(std::function<Model()> model_factory, double time_limit,
+                                   uint64_t seed, const SearchConfig& config,
+                                   std::function<InnerSolverHook*(Model&)> hook_factory,
+                                   std::function<LNS*()> lns_factory, SolveCallback* callback,
+                                   const ParallelConfig& par_config) {
     int n = effective_threads(par_config);
 
     if (par_config.deterministic) {
-        return solve_deterministic(model_factory, seed, config,
-                                   hook_factory, lns_factory, callback, par_config, n);
+        return solve_deterministic(model_factory, seed, config, hook_factory, lns_factory, callback,
+                                   par_config, n);
     } else {
-        return solve_portfolio(model_factory, time_limit, seed, config,
-                               hook_factory, lns_factory, callback, n);
+        return solve_portfolio(model_factory, time_limit, seed, config, hook_factory, lns_factory,
+                               callback, n);
     }
 }
 
@@ -122,15 +124,12 @@ static TerminationReason aggregate_termination(const std::vector<SearchResult>& 
 
 // --- Portfolio (opportunistic) mode ---
 
-SearchResult ParallelSearch::solve_portfolio(
-    std::function<Model()>& model_factory,
-    double time_limit, uint64_t seed,
-    const SearchConfig& config,
-    std::function<InnerSolverHook*(Model&)>& hook_factory,
-    std::function<LNS*()>& lns_factory,
-    SolveCallback* callback,
-    int n_threads) {
-
+SearchResult ParallelSearch::solve_portfolio(std::function<Model()>& model_factory,
+                                             double time_limit, uint64_t seed,
+                                             const SearchConfig& config,
+                                             std::function<InnerSolverHook*(Model&)>& hook_factory,
+                                             std::function<LNS*()>& lns_factory,
+                                             SolveCallback* callback, int n_threads) {
     SolutionPool pool;
     std::vector<SearchResult> results(n_threads);
     std::vector<std::thread> threads;
@@ -141,18 +140,20 @@ SearchResult ParallelSearch::solve_portfolio(
                 Model m = model_factory();
 
                 std::unique_ptr<InnerSolverHook> hook;
-                if (hook_factory) hook.reset(hook_factory(m));
+                if (hook_factory) {
+                    hook.reset(hook_factory(m));
+                }
 
                 std::unique_ptr<LNS> lns;
-                if (lns_factory) lns.reset(lns_factory());
+                if (lns_factory) {
+                    lns.reset(lns_factory());
+                }
 
                 // Only thread 0 gets the callback to avoid interleaved output
                 SolveCallback* cb = (i == 0) ? callback : nullptr;
 
-                results[i] = cbls::solve(m, time_limit, seed + i,
-                                         config.use_fj, hook.get(),
-                                         lns.get(), config.lns_interval,
-                                         cb, config);
+                results[i] = cbls::solve(m, time_limit, seed + i, config.use_fj, hook.get(),
+                                         lns.get(), config.lns_interval, cb, config);
 
                 Solution sol;
                 sol.state = results[i].best_state;
@@ -165,7 +166,9 @@ SearchResult ParallelSearch::solve_portfolio(
         });
     }
 
-    for (auto& t : threads) t.join();
+    for (auto& t : threads) {
+        t.join();
+    }
 
     // Aggregate results
     auto best = pool.best();
@@ -202,15 +205,9 @@ SearchResult ParallelSearch::solve_portfolio(
 // --- Deterministic epoch-sync mode ---
 
 SearchResult ParallelSearch::solve_deterministic(
-    std::function<Model()>& model_factory,
-    uint64_t seed,
-    const SearchConfig& config,
-    std::function<InnerSolverHook*(Model&)>& hook_factory,
-    std::function<LNS*()>& lns_factory,
-    SolveCallback* callback,
-    const ParallelConfig& par_config,
-    int n_threads) {
-
+    std::function<Model()>& model_factory, uint64_t seed, const SearchConfig& config,
+    std::function<InnerSolverHook*(Model&)>& hook_factory, std::function<LNS*()>& lns_factory,
+    SolveCallback* callback, const ParallelConfig& par_config, int n_threads) {
     auto start = std::chrono::steady_clock::now();
 
     int elite_k = std::max(1, par_config.elite_pool_size);
@@ -227,8 +224,12 @@ SearchResult ParallelSearch::solve_deterministic(
     std::vector<std::unique_ptr<InnerSolverHook>> hooks(n_threads);
     std::vector<std::unique_ptr<LNS>> lns_objs(n_threads);
     for (int i = 0; i < n_threads; ++i) {
-        if (hook_factory) hooks[i].reset(hook_factory(models[i]));
-        if (lns_factory) lns_objs[i].reset(lns_factory());
+        if (hook_factory) {
+            hooks[i].reset(hook_factory(models[i]));
+        }
+        if (lns_factory) {
+            lns_objs[i].reset(lns_factory());
+        }
     }
 
     // Global best tracking
@@ -265,14 +266,14 @@ SearchResult ParallelSearch::solve_deterministic(
                 SolveCallback* cb = (i == 0) ? callback : nullptr;
 
                 epoch_results[i] = cbls::solve(
-                    models[i], epoch_time_limit, thread_seed,
-                    (epoch == 0) && config.use_fj,
-                    hooks[i].get(), lns_objs[i].get(),
-                    config.lns_interval, cb, epoch_config);
+                    models[i], epoch_time_limit, thread_seed, (epoch == 0) && config.use_fj,
+                    hooks[i].get(), lns_objs[i].get(), config.lns_interval, cb, epoch_config);
             });
         }
 
-        for (auto& t : threads) t.join();
+        for (auto& t : threads) {
+            t.join();
+        }
 
         // Collect results into pool
         for (int i = 0; i < n_threads; ++i) {
@@ -303,8 +304,8 @@ SearchResult ParallelSearch::solve_deterministic(
         global_best.best_state = best->state;
     }
     global_best.iterations = total_iterations;
-    global_best.time_seconds = std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - start).count();
+    global_best.time_seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     // Epoch-sync mode runs every epoch with epoch_time_limit = 0 (no wall clock
     // at all, by design — see above), so the whole run is iteration-bounded:
     // epoch_iterations per worker per epoch, max_epochs epochs. The only other
