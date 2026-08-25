@@ -94,7 +94,6 @@ Benchmark domains exercise different solver features. See individual directories
 | Energy | CHPED dispatch | Float variables, delta evaluation |
 | Energy | UC-CHPED | Bool + Float, min up/down constraints |
 | Energy | Nuclear outage scheduling | Inner solver hook, stochastic evaluation |
-| Maritime | Fleet bunker + ECA | Nonlinear fuel cost (v³), binary fuel switching |
 | Manufacturing | Pharma GLSP | List variables (sequencing), lot-sizing |
 | Combinatorial | OR-Library set covering | Set variables vs. the Bool encoding of the same instance |
 

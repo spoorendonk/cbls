@@ -310,7 +310,6 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 | `cbls_tests` | `tests/*.cpp` | Catch2 test suite |
 | `cbls_uc_chped` | `benchmarks/uc-chped/` | UC-CHPED benchmark runner |
 | `cbls_nuclear_outage` | `benchmarks/nuclear-outage/` | Nuclear outage benchmark runner |
-| `cbls_bunker_eca` | `benchmarks/bunker-eca/` | Bunker ECA benchmark runner |
 | `cbls_pharma_glsp` | `benchmarks/pharma-glsp/` | Pharma GLSP benchmark runner |
 | `cbls_mipfeas` | `benchmarks/mipfeas/` | MIPfeas runner (one instance per process) |
 | `cbls_minlplib` | `benchmarks/minlplib/` | MINLPLib benchmark runner |
@@ -355,9 +354,14 @@ down; do not start lower-priority benchmark work while a higher one is open.
 compare against CP-SAT's default full portfolio, Xpress, Gurobi or CPLEX — see
 epic #87 for why that framing is rejected.
 
-`bunker-eca` and `nuclear-outage` are **deprioritised, not dropped**: their code,
-data, tests and open issues (epics #26, #27) all stay, but no new work starts on
-them. Don't pick up one of their issues just because it looks tractable.
+`nuclear-outage` is **deprioritised, not dropped**: its code, data, tests and
+open issues (epic #26) all stay, but no new work starts on it. Don't pick up one
+of its issues just because it looks tractable.
+
+`bunker-eca` is **removed** (#27). Its benchmark code, instance data, tests,
+CMake target and docs were deleted from the tree and the epic and all its
+sub-issues closed. Nothing should be restored from history; if a maritime
+bunker/ECA benchmark is ever wanted again it starts from a new epic.
 
 `setcover` is **not a fifth benchmark**. It is the scoped coverage check the
 `Set` variable type had been missing (#93): ten small OR-Library set-covering
@@ -374,7 +378,6 @@ Active work happens in sibling git worktrees under `~/code/my/cbls/`. Each sessi
 | `uc-chped/` | UC-CHPED: unit commitment + valve-point dispatch | #25 |
 | `pharma-glsp/` | Pharma GLSP + shelf-life campaign scheduling | #28 |
 | `nuclear-outage/` | ROADEF 2010 nuclear outage scheduling — deprioritised | #26 |
-| `bunker-eca/` | Maritime fleet bunker + ECA fuel switching — deprioritised | #27 |
 
 Engine-wide (cross-cutting) work is tracked under epic #24.
 

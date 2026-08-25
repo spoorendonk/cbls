@@ -15,7 +15,6 @@ add_executable(cbls_tests
     test_callback.cpp
     test_io.cpp
     test_nuclear_outage.cpp
-    test_bunker_eca.cpp
     test_pharma_glsp.cpp
     test_io_mps.cpp
     test_mipfeas.cpp

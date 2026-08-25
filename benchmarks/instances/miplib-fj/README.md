@@ -19,8 +19,8 @@ Trusted external yardstick for the CBLS engine. The instance list below is a
 exact roster — see "Caveats") of the Luteberget & Sartor 2023 *Feasibility
 Jump* (FJ) primal-heuristic benchmark.
 
-This benchmark exists because our four application benchmarks (uc-chped,
-nuclear-outage, bunker-eca, pharma-glsp) all deviate from their published
+This benchmark exists because our application benchmarks (uc-chped,
+nuclear-outage, pharma-glsp) all deviate from their published
 formulations in non-trivial ways, so their "BKS gap" columns are not
 apples-to-apples. The MIPLIB instances here have unambiguous formulations
 and independently verified optima from `miplib2017-v22.solu`, so any
