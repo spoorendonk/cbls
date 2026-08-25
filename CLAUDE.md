@@ -107,9 +107,9 @@ Nothing enforces `/review` at push time, by design — a gate keyed on gitignore
 
 ### Fast vs. slow tests
 
-33 of the 301 C++ tests are multi-minute benchmark solves carrying the Catch2 `[slow]` tag; they account for ~950s of a ~1010s full run. They are registered by their own `catch_discover_tests` call in `tests/CMakeLists.txt` with `LABELS "slow"`, so:
+27 of the 291 C++ tests are multi-minute benchmark solves carrying the Catch2 `[slow]` tag; they account for ~2130s of the suite's aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~333s wall-clock full run. They are registered by their own `catch_discover_tests` call in `tests/CMakeLists.txt` with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 268 tests, ~7s with `-j`. This is what **pre-commit** runs.
+- `ctest -LE slow` — the other 264 tests, ~7s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
 
 Tag a new test `[slow]` if it takes more than ~10s. Don't tag one just to get a green commit — pre-push will still run it.
@@ -359,9 +359,18 @@ open issues (epic #26) all stay, but no new work starts on it. Don't pick up one
 of its issues just because it looks tractable.
 
 `bunker-eca` is **removed** (#27). Its benchmark code, instance data, tests,
-CMake target and docs were deleted from the tree and the epic and all its
-sub-issues closed. Nothing should be restored from history; if a maritime
-bunker/ECA benchmark is ever wanted again it starts from a new epic.
+CMake target and docs are gone from the tree. Nothing should be restored from
+history; if a maritime bunker/ECA benchmark is ever wanted again it starts from
+a new epic.
+
+**Retiring a benchmark is a tracker job as well as a tree job.** An epic's own
+sub-issue list is not the full set of things that point at it: grep *every* open
+issue body for the epic number and the benchmark slug before declaring it
+closed. Removing bunker-eca turned up three issues its sub-issue list missed — a
+generic engine issue mis-filed under the epic, a cross-benchmark maintenance
+issue naming it in passing, and a test issue citing one of its hooks. A closing
+keyword in a commit message closes the epic only, never its sub-issues, so close
+those explicitly.
 
 `setcover` is **not a fifth benchmark**. It is the scoped coverage check the
 `Set` variable type had been missing (#93): ten small OR-Library set-covering

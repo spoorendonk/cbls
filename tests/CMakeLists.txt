@@ -34,13 +34,14 @@ include(Catch)
 # the whole call, and Catch2 3.5.2 has no tag-to-label mapping. Two calls do not
 # collide -- Catch.cmake derives its generated filenames from a hash of the
 # arguments. Discovering them (rather than lumping them into one add_test) keeps
-# per-test granularity and lets ctest -j run them in parallel; collapsing 33
+# per-test granularity and lets ctest -j run them in parallel; collapsing 27
 # multi-minute solves into one serial invocation would make the full suite far
 # slower than it is.
 #
-# Measured: 33 of 301 tests take >10s and account for ~950s of a ~1010s run.
-# The remaining 268 finish in ~60s, which is what pre-commit runs via
-# `ctest -LE slow`. pre-push still runs everything.
+# Measured: 27 of 291 tests take >10s and account for ~2130s of the suite's
+# aggregate (summed per-test) time; with `-j$(nproc)` the full run is ~333s of
+# wall clock. The remaining 264 finish in ~7s with `-j`, which is what
+# pre-commit runs via `ctest -LE slow`. pre-push still runs everything.
 catch_discover_tests(cbls_tests
     TEST_SPEC "~[timing]~[slow]"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
