@@ -21,6 +21,23 @@
 
 set -e
 
+# Git feeds one line per ref being pushed:
+#   <local ref> <local sha> <remote ref> <remote sha>
+# and an all-zero local sha means that ref is being deleted.  A deletion
+# changes no code, so gating it on a clean rebuild is pure waste -- and the
+# gate would be nonsense anyway, since everything below inspects HEAD, which
+# has nothing to do with the ref being removed.  (`git push origin --delete`
+# otherwise wipes build/ and runs the full suite before removing a branch.)
+#
+# Only read when stdin is not a terminal, so running this hook by hand to test
+# it does not block waiting for EOF.
+PUSH_REFS=""
+[ -t 0 ] || PUSH_REFS=$(cat)
+if [ -n "$PUSH_REFS" ] && ! echo "$PUSH_REFS" | grep -qvE '^[^ ]+ 0+ '; then
+	echo "pre-push: deletion only — nothing to gate."
+	exit 0
+fi
+
 # Get changed files vs main
 MAIN_BRANCH="main"
 git rev-parse --verify "origin/$MAIN_BRANCH" &>/dev/null || MAIN_BRANCH="master"
