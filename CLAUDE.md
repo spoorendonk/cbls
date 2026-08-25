@@ -24,7 +24,19 @@ Know the symbol → LSP. Know a string, not its location → Grep. Full-file Rea
 ## C++
 
 - **C++17** (`CMAKE_CXX_STANDARD 17`) — not C++23. `std::expected`, concepts and ranges are *not* available here; don't reach for them.
-- Style: Google-based, enforced by `.clang-format` and `.clang-tidy` (real files at the repo root, no longer symlinks).
+- Style: Google-based, enforced by `.clang-format` and `.clang-tidy` at the repo root. Both tools are **pinned PyPI wheels in `.venv/`** (`clang-format==22.1.8`, `clang-tidy==22.1.8`), not system packages — `.venv/bin/pip install -e '.[dev]'` installs them, and the hooks prefer `.venv/bin` over `PATH`. Formatter output changes between major releases, so the pin is what keeps one person's commit from reformatting another's.
+- Naming is **not** Google's default — `.clang-tidy` encodes what this codebase actually does:
+
+  | Kind | Style | Example |
+  |---|---|---|
+  | Functions (free and member) | `lower_case` | `full_evaluate`, `weighted_violation_delta` |
+  | Locals, parameters, `const` locals | `lower_case` | `total_violation`, `node_id` |
+  | Private members | trailing `_` | `out_`, `model_` |
+  | File-scope / static / class / `constexpr` constants | `k` + `CamelCase` | `kVersion`, `kEps`, `kMpsInf` |
+  | Classes | `CamelCase` | `Model`, `JumpTable` |
+  | Namespaces | `lower_case` | `cbls` |
+
+  Two documented exceptions: `Model::Bool/Int/Float/List/Set/Constant` stay CamelCase because they name the type they create (and `bool`/`int`/`float` cannot be lowercased without hitting a keyword), and `src/io/` disables the naming check entirely because its two readers are vendored from `spoorendonk/mipx` and must stay diff-clean against upstream.
 - Use `#pragma once` for include guards.
 - Minimize includes in headers. Forward-declare where possible.
 
@@ -79,7 +91,7 @@ C++ tests use **Catch2** (not GoogleTest): files in `tests/`, registered in `CMa
 plan (non-trivial) → implement → test → /review → push to main
 ```
 
-Run tests locally before considering work done — don't skip the suite even on changes that look trivial. The pre-push hook is the final gate.
+Run tests locally before considering work done — don't skip the suite even on changes that look trivial. The pre-push hook is the final gate for build and tests; `/review` is a discipline nothing enforces, so it is on you to actually run it.
 
 ## Git Hooks
 
@@ -87,9 +99,20 @@ The hooks live in **`.githooks/`, tracked in this repo** — that directory is t
 
 Because `core.hooksPath` is shared across worktrees but `.githooks/` only exists on branches that contain it, checking out a branch created before this directory landed runs **no hooks at all**. Merge main into such a branch before relying on the gates.
 
-- `pre-commit` — auto-formats staged C++/Python/shell (clang-format, ruff, shfmt), applies safe clang-tidy fixes, re-stages, then runs the affected test suite. Hard block on failure.
+- `pre-commit` — auto-formats staged C++/Python/shell (clang-format, ruff, shfmt), applies safe clang-tidy fixes, re-stages, then runs the affected test suite. Hard block on failure. The clang tools come from `.venv/bin`; if neither the venv nor `PATH` has them it says so rather than skipping quietly.
 - `commit-msg` — Conventional Commits format.
-- `pre-push` — `/review` staleness check, then the clean build + full suite from `## Build & Test` below, then clang-tidy/ruff-complexity/shellcheck/mypy as warnings. The `/review` gate is skipped in a checkout without `.claude/commands/review.md`, since nothing there can write the stamp that clears it.
+- `pre-push` — the clean build + **full** suite from `## Build & Test` below, then clang-tidy/ruff-complexity/shellcheck/mypy as warnings. Both the ```build and ```test fences must resolve or the push is blocked; there is no auto-detect fallback, because guessing a build would gate a different one than the documented build.
+
+There is **no `/review` stamp gate**. It was removed along with `.claude/` becoming gitignored: the gate could only ever be satisfied in the checkout that happened to carry the command, and silently did nothing everywhere else. `/review` is still the expected workflow (see **Agent Self-Review**), it is just not machine-enforced at push time.
+
+### Fast vs. slow tests
+
+33 of the 301 C++ tests are multi-minute benchmark solves carrying the Catch2 `[slow]` tag; they account for ~950s of a ~1010s full run. They are registered by their own `catch_discover_tests` call in `tests/CMakeLists.txt` with `LABELS "slow"`, so:
+
+- `ctest -LE slow` — the other 268 tests, ~7s with `-j`. This is what **pre-commit** runs.
+- `ctest` — everything. This is what **pre-push** and CI run.
+
+Tag a new test `[slow]` if it takes more than ~10s. Don't tag one just to get a green commit — pre-push will still run it.
 
 **Never use `git push --no-verify` or `git commit --no-verify`** unless explicitly asked. A failing hook is a signal — fix the root cause.
 

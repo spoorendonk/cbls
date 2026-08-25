@@ -1,20 +1,22 @@
+#include "benchmarks/bunker-eca/bunker_eca_model.h"
+#include "benchmarks/bunker-eca/bunker_speed_hook.h"
+#include "benchmarks/bunker-eca/data.h"
+#include "benchmarks/bunker-eca/verify_bunker_eca.h"
 #include "test_helpers.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
-#include "benchmarks/bunker-eca/data.h"
-#include "benchmarks/bunker-eca/bunker_eca_model.h"
-#include "benchmarks/bunker-eca/bunker_speed_hook.h"
-#include "benchmarks/bunker-eca/verify_bunker_eca.h"
-#include <cstdio>
 #include <cmath>
+#include <cstdio>
 
 using namespace cbls;
 using namespace cbls::bunker_eca;
 
 // For maximize models, solver stores -objective internally
 static double actual_obj(const SearchResult& r, const Model& m) {
-    if (!r.feasible) return r.objective;
+    if (!r.feasible) {
+        return r.objective;
+    }
     return m.is_maximizing() ? -r.objective : r.objective;
 }
 
@@ -28,8 +30,11 @@ TEST_CASE("Bunker-ECA small instance data", "[bunker_eca]") {
 
     int contracts = 0, spots = 0;
     for (auto& c : inst.cargoes) {
-        if (c.is_contract) contracts++;
-        else spots++;
+        if (c.is_contract) {
+            contracts++;
+        } else {
+            spots++;
+        }
     }
     REQUIRE(contracts == 6);
     REQUIRE(spots == 4);
@@ -51,12 +56,11 @@ TEST_CASE("Bunker-ECA small model builds", "[bunker_eca]") {
     REQUIRE(m.is_closed());
     REQUIRE(m.is_maximizing());
 
-    printf("\nSmall model: %ld vars, %ld nodes, %ld constraints\n",
-           (long)m.num_vars(), (long)m.num_nodes(),
-           (long)m.constraint_ids().size());
+    printf("\nSmall model: %ld vars, %ld nodes, %ld constraints\n", (long)m.num_vars(),
+           (long)m.num_nodes(), (long)m.constraint_ids().size());
 }
 
-TEST_CASE("Bunker-ECA small feasibility", "[bunker_eca]") {
+TEST_CASE("Bunker-ECA small feasibility", "[bunker_eca][slow]") {
     auto inst = make_small();
     auto bec = build_bunker_eca_model(inst);
 
@@ -65,8 +69,8 @@ TEST_CASE("Bunker-ECA small feasibility", "[bunker_eca]") {
 
     auto result = solve_deterministic(bec.model, 131000, 42, &hook);
     double obj = actual_obj(result, bec.model);
-    printf("\nSmall: feasible=%d, profit=%.0f, iters=%ld, time=%.3fs\n",
-           result.feasible, obj, (long)result.iterations, result.time_seconds);
+    printf("\nSmall: feasible=%d, profit=%.0f, iters=%ld, time=%.3fs\n", result.feasible, obj,
+           (long)result.iterations, result.time_seconds);
 
     REQUIRE(result.iterations > 100);
     if (result.feasible) {
@@ -75,7 +79,7 @@ TEST_CASE("Bunker-ECA small feasibility", "[bunker_eca]") {
     }
 }
 
-TEST_CASE("Bunker-ECA small with LNS", "[bunker_eca]") {
+TEST_CASE("Bunker-ECA small with LNS", "[bunker_eca][slow]") {
     auto inst = make_small();
     auto bec = build_bunker_eca_model(inst);
 
@@ -85,8 +89,8 @@ TEST_CASE("Bunker-ECA small with LNS", "[bunker_eca]") {
 
     auto result = solve_deterministic(bec.model, 195000, 42, &hook, &lns);
     double obj = actual_obj(result, bec.model);
-    printf("\nSmall+LNS: feasible=%d, profit=%.0f, iters=%ld, time=%.3fs\n",
-           result.feasible, obj, (long)result.iterations, result.time_seconds);
+    printf("\nSmall+LNS: feasible=%d, profit=%.0f, iters=%ld, time=%.3fs\n", result.feasible, obj,
+           (long)result.iterations, result.time_seconds);
 }
 
 TEST_CASE("Bunker-ECA fuel consumption formula", "[bunker_eca]") {
@@ -110,12 +114,11 @@ TEST_CASE("Bunker-ECA medium model builds", "[bunker_eca]") {
     REQUIRE(m.num_vars() > 0);
     REQUIRE(m.is_closed());
 
-    printf("\nMedium model: %ld vars, %ld nodes, %ld constraints\n",
-           (long)m.num_vars(), (long)m.num_nodes(),
-           (long)m.constraint_ids().size());
+    printf("\nMedium model: %ld vars, %ld nodes, %ld constraints\n", (long)m.num_vars(),
+           (long)m.num_nodes(), (long)m.constraint_ids().size());
 }
 
-TEST_CASE("Bunker-ECA small verify", "[bunker_eca][verify]") {
+TEST_CASE("Bunker-ECA small verify", "[bunker_eca][verify][slow]") {
     auto inst = make_small();
     auto bec = build_bunker_eca_model(inst);
 
@@ -131,7 +134,7 @@ TEST_CASE("Bunker-ECA small verify", "[bunker_eca][verify]") {
     REQUIRE(vr.ok);
 }
 
-TEST_CASE("Bunker-ECA small noECA verify", "[bunker_eca][verify]") {
+TEST_CASE("Bunker-ECA small noECA verify", "[bunker_eca][verify][slow]") {
     auto inst = make_small();
     for (auto& leg : inst.legs) {
         leg.eca_fraction = 0.0;
@@ -150,7 +153,7 @@ TEST_CASE("Bunker-ECA small noECA verify", "[bunker_eca][verify]") {
     REQUIRE(vr.ok);
 }
 
-TEST_CASE("Bunker-ECA medium verify", "[bunker_eca][verify]") {
+TEST_CASE("Bunker-ECA medium verify", "[bunker_eca][verify][slow]") {
     auto inst = make_medium();
     auto bec = build_bunker_eca_model(inst);
 
@@ -166,7 +169,7 @@ TEST_CASE("Bunker-ECA medium verify", "[bunker_eca][verify]") {
     REQUIRE(vr.ok);
 }
 
-TEST_CASE("Bunker-ECA medium feasibility", "[bunker_eca]") {
+TEST_CASE("Bunker-ECA medium feasibility", "[bunker_eca][slow]") {
     auto inst = make_medium();
     auto bec = build_bunker_eca_model(inst);
 
@@ -176,8 +179,8 @@ TEST_CASE("Bunker-ECA medium feasibility", "[bunker_eca]") {
 
     auto result = solve_deterministic(bec.model, 108000, 42, &hook, &lns);
     double obj = actual_obj(result, bec.model);
-    printf("\nMedium: feasible=%d, profit=%.0f, iters=%ld, time=%.3fs\n",
-           result.feasible, obj, (long)result.iterations, result.time_seconds);
+    printf("\nMedium: feasible=%d, profit=%.0f, iters=%ld, time=%.3fs\n", result.feasible, obj,
+           (long)result.iterations, result.time_seconds);
 
     REQUIRE(result.iterations > 50);
 }

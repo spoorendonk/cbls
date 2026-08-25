@@ -396,13 +396,12 @@ TEST_CASE("a search starting feasible with a +inf objective still finds a finite
     build_diagonal_blowup_model(m);
 
     SearchConfig cfg;
-    cfg.skip_init = true;              // keep the diagonal start
+    cfg.skip_init = true;  // keep the diagonal start
     cfg.max_iterations = 20000;
     cfg.perturbation_period = 1 << 30;  // no diversification within the budget
 
-    SearchResult r =
-        solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3, nullptr,
-              cfg);
+    SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
+                           nullptr, cfg);
 
     REQUIRE(r.feasible);
     REQUIRE(std::isfinite(r.objective));

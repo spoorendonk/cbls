@@ -26,18 +26,36 @@ PY_FILES=$(echo "$STAGED_FILES" | grep -E '\.py$' || true)
 # shfmt keeps this directory formatted like every other script.
 SH_FILES=$(echo "$STAGED_FILES" | grep -E '\.sh$|^\.githooks/[^/.]+$' || true)
 
-# Python venv — required for all Python tooling
-if [ -n "$PY_FILES" ]; then
-	source "$(dirname "$0")/resolve-venv.sh"
-fi
+# Sourced unconditionally, not only for Python: the clang tools this hook runs
+# are the pinned PyPI ones inside the venv, not system packages.
+source "$(dirname "$0")/resolve-venv.sh"
+
+# Prefer the venv's pinned clang-format/clang-tidy over whatever is on PATH.
+# clang-format's output changes between major releases, so a PATH copy of a
+# different vintage would reformat differently from everyone else's commit --
+# and on a machine with no system clang tools at all (the common case here) a
+# bare `command -v` check silently formats nothing. Fall back to PATH, and say
+# so when neither exists rather than passing quietly.
+CLANG_FORMAT=""
+[ -x "$VENV_BIN/clang-format" ] && CLANG_FORMAT="$VENV_BIN/clang-format"
+[ -z "$CLANG_FORMAT" ] && command -v clang-format &>/dev/null && CLANG_FORMAT="clang-format"
+
+CLANG_TIDY=""
+[ -x "$VENV_BIN/clang-tidy" ] && CLANG_TIDY="$VENV_BIN/clang-tidy"
+[ -z "$CLANG_TIDY" ] && command -v clang-tidy &>/dev/null && CLANG_TIDY="clang-tidy"
 
 # ============================================================
 # Step 1: Auto-format and auto-fix
 # ============================================================
 
 # C++ formatting
-if [ -n "$CPP_FILES" ] && command -v clang-format &>/dev/null; then
-	clang-format -i $CPP_FILES || true
+if [ -n "$CPP_FILES" ]; then
+	if [ -n "$CLANG_FORMAT" ]; then
+		"$CLANG_FORMAT" -i $CPP_FILES || true
+	else
+		echo "NOTE: no clang-format found (venv or PATH) — staged C++ NOT formatted."
+		echo "      Install it with: .venv/bin/pip install -e '.[dev]'"
+	fi
 fi
 
 # Shell script formatting
@@ -52,14 +70,14 @@ if [ -n "$PY_FILES" ] && [ -x "$VENV_BIN/ruff" ]; then
 fi
 
 # C++ auto-fixable lint (safe clang-tidy fixes only)
-if [ -n "$CPP_FILES" ] && command -v clang-tidy &>/dev/null; then
+if [ -n "$CPP_FILES" ] && [ -n "$CLANG_TIDY" ]; then
 	COMPILE_DB=""
 	[ -f "build/compile_commands.json" ] && COMPILE_DB="-p build"
 	[ -f "compile_commands.json" ] && COMPILE_DB="-p ."
 
 	if [ -n "$COMPILE_DB" ]; then
 		for f in $CPP_FILES; do
-			clang-tidy $COMPILE_DB \
+			"$CLANG_TIDY" $COMPILE_DB \
 				--checks="-*,modernize-use-nullptr,modernize-use-override,modernize-use-using,readability-braces-around-statements" \
 				--fix --quiet "$f" 2>/dev/null || true
 		done
@@ -81,8 +99,12 @@ TESTS_FAILED=0
 
 # Only run C++ tests if C++ files were staged
 if [ -n "$CPP_FILES" ] && [ -d "build" ] && command -v ctest &>/dev/null; then
-	echo "Running C++ tests..."
-	if ! ctest --test-dir build --output-on-failure --progress -j"$(nproc 2>/dev/null || echo 4)"; then
+	# -LE slow deliberately: this is the fast inner loop. The 33 [slow] tests
+	# are multi-minute benchmark solves worth ~950s of a ~1010s full run, and
+	# pre-push runs the whole suite from a clean tree anyway. A 17-minute
+	# pre-commit is one people learn to bypass, which gates nothing at all.
+	echo "Running C++ tests (fast set; [slow] runs at push)..."
+	if ! ctest --test-dir build -LE slow --output-on-failure --progress -j"$(nproc 2>/dev/null || echo 4)"; then
 		echo "FAILED: C++ tests failed."
 		TESTS_FAILED=1
 	fi

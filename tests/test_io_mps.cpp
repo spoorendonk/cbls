@@ -136,7 +136,7 @@ TEST_CASE("mps_to_model builds a closed CBLS model", "[mps][adapter]") {
     REQUIRE(built.objective_node_id >= 0);
 }
 
-TEST_CASE("CBLS finds the optimum on a small continuous LP", "[mps][solve]") {
+TEST_CASE("CBLS finds the optimum on a small continuous LP", "[mps][solve][slow]") {
     auto path = write_file("small_b.mps", kSmallLp);
     auto prob = cbls::read_mps(path.string());
     auto built = cbls::mps_to_model(prob);
@@ -151,7 +151,7 @@ TEST_CASE("CBLS finds the optimum on a small continuous LP", "[mps][solve]") {
     REQUIRE(result.objective <= 6.0);
 }
 
-TEST_CASE("CBLS finds a feasible point on a small binary IP", "[mps][solve]") {
+TEST_CASE("CBLS finds a feasible point on a small binary IP", "[mps][solve][slow]") {
     auto path = write_file("bin_b.mps", kSmallBinary);
     auto prob = cbls::read_mps(path.string());
     auto built = cbls::mps_to_model(prob);
@@ -166,8 +166,7 @@ TEST_CASE("CBLS finds a feasible point on a small binary IP", "[mps][solve]") {
     REQUIRE(result.objective <= 9.0 + 1e-6);
 }
 
-TEST_CASE("model at known optimum has zero violation and matching objective",
-          "[mps][adapter]") {
+TEST_CASE("model at known optimum has zero violation and matching objective", "[mps][adapter]") {
     // Issue #71 acceptance criterion: the MPS-to-Model adapter should produce
     // a closed CBLS model whose total_violation matches the LP residual when
     // fed the optimum from .solu.
@@ -189,8 +188,7 @@ TEST_CASE("model at known optimum has zero violation and matching objective",
     REQUIRE_THAT(built.model.node(built.objective_node_id).value, WithinAbs(3.0, 1e-9));
 }
 
-TEST_CASE("read_mps applies MPS integer-default ub=1 for unbounded integers",
-          "[mps][reader]") {
+TEST_CASE("read_mps applies MPS integer-default ub=1 for unbounded integers", "[mps][reader]") {
     // INTORG without any UP/UI/BV defaults to ub=1 (CPLEX/Gurobi/SCIP).
     const std::string content =
         "NAME          INTDEFAULT\n"

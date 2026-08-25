@@ -1,12 +1,13 @@
+#include "test_helpers.h"
+
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cbls/cbls.h>
-#include "test_helpers.h"
 #include <cmath>
 
 using namespace cbls;
 
-TEST_CASE("solve with nullptr hook is regression-safe", "[inner_solver]") {
+TEST_CASE("solve with nullptr hook is regression-safe", "[inner_solver][slow]") {
     Model m;
     auto x = m.float_var(-10, 10);
     auto y = m.float_var(-10, 10);
@@ -118,8 +119,8 @@ TEST_CASE("Multi-var Newton moves multiple vars", "[inner_solver]") {
     auto twentyfive = m.constant(25.0);
 
     // constraint: 25 - x^2 - y^2 <= 0
-    m.add_constraint(m.sum({twentyfive, m.prod(neg1, m.pow_expr(x, two)),
-                            m.prod(neg1, m.pow_expr(y, two))}));
+    m.add_constraint(
+        m.sum({twentyfive, m.prod(neg1, m.pow_expr(x, two)), m.prod(neg1, m.pow_expr(y, two))}));
     // objective: (x-10)^2 + (y-10)^2
     auto xm10 = m.sum({x, m.prod(neg1, ten)});
     auto ym10 = m.sum({y, m.prod(neg1, ten)});
@@ -146,7 +147,7 @@ TEST_CASE("Multi-var Newton moves multiple vars", "[inner_solver]") {
     REQUIRE(m.var(vid(y)).value > 1.5);
 }
 
-TEST_CASE("solve with FloatIntensifyHook improves mixed problem", "[inner_solver]") {
+TEST_CASE("solve with FloatIntensifyHook improves mixed problem", "[inner_solver][slow]") {
     // Bool b, Float x in [0,10], constraint: b + x >= 3, min x
     Model m;
     auto b = m.bool_var();

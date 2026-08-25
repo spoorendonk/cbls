@@ -4,10 +4,9 @@
 // probability (1-p)^n — 90% on a one-variable model, 81% on two. The tests
 // below run many seeds rather than one lucky draw, so a reintroduced
 // no-op would fail deterministically rather than flake.
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
-
-#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <set>
@@ -96,21 +95,17 @@ TEST_CASE("perturb always moves a one-variable model", "[fj][perturb]") {
     REQUIRE(min_vars_moved_per_kick([](Model& m) { return std::vector<int32_t>{m.int_var(0, 5)}; },
                                     kDefaultP) == 1);
     REQUIRE(min_vars_moved_per_kick(
-                [](Model& m) { return std::vector<int32_t>{m.float_var(0.0, 10.0)}; },
-                kDefaultP) == 1);
+                [](Model& m) { return std::vector<int32_t>{m.float_var(0.0, 10.0)}; }, kDefaultP) ==
+            1);
 }
 
 TEST_CASE("perturb always moves a two-variable model", "[fj][perturb]") {
     // P(no-op) was 81% here at the default probability.
     REQUIRE(min_vars_moved_per_kick(
-                [](Model& m) {
-                    return std::vector<int32_t>{m.bool_var(), m.bool_var()};
-                },
+                [](Model& m) { return std::vector<int32_t>{m.bool_var(), m.bool_var()}; },
                 kDefaultP) >= 1);
     REQUIRE(min_vars_moved_per_kick(
-                [](Model& m) {
-                    return std::vector<int32_t>{m.int_var(0, 5), m.int_var(-3, 3)};
-                },
+                [](Model& m) { return std::vector<int32_t>{m.int_var(0, 5), m.int_var(-3, 3)}; },
                 kDefaultP) >= 1);
     REQUIRE(min_vars_moved_per_kick(
                 [](Model& m) {
@@ -118,9 +113,7 @@ TEST_CASE("perturb always moves a two-variable model", "[fj][perturb]") {
                 },
                 kDefaultP) >= 1);
     REQUIRE(min_vars_moved_per_kick(
-                [](Model& m) {
-                    return std::vector<int32_t>{m.bool_var(), m.float_var(0.0, 10.0)};
-                },
+                [](Model& m) { return std::vector<int32_t>{m.bool_var(), m.float_var(0.0, 10.0)}; },
                 kDefaultP) >= 1);
 }
 
@@ -758,7 +751,7 @@ TEST_CASE("a kick with no wall clock reads no clock at all",
     };
 
     const auto [checks, elements] = kick(/*time_limit=*/0.0, /*seed=*/7);
-    REQUIRE(checks == 0);                    // the clock was never read
+    REQUIRE(checks == 0);                      // the clock was never read
     REQUIRE(kick(0.0, 7).second == elements);  // ...so the kick is reproducible
 }
 

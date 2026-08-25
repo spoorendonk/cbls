@@ -25,7 +25,7 @@ static std::string format_count(int64_t n) {
 
 void HumanFormatter::print_header(const std::string& model_path, const Model& model, uint64_t seed,
                                   double time_limit) {
-    out_ << "cbls " << version << " — Constraint-Based Local Search\n";
+    out_ << "cbls " << kVersion << " — Constraint-Based Local Search\n";
     out_ << "Model: " << model_path << " | " << model.num_vars() << " vars"
          << " | " << model.constraint_ids().size() << " constraints"
          << " | "
@@ -106,7 +106,7 @@ void JsonlFormatter::print_header(const std::string& model_path, const Model& mo
                                   double time_limit) {
     json j;
     j["event"] = "start";
-    j["version"] = version;
+    j["version"] = kVersion;
     j["model"] = model_path;
     j["vars"] = model.num_vars();
     j["constraints"] = model.constraint_ids().size();

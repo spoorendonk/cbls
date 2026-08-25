@@ -1,10 +1,10 @@
+#include "benchmarks/uc-chped/data.h"
+#include "benchmarks/uc-chped/uc_model.h"
+#include "benchmarks/uc-chped/verify_uc_chped.h"
 #include "test_helpers.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
-#include "benchmarks/uc-chped/data.h"
-#include "benchmarks/uc-chped/uc_model.h"
-#include "benchmarks/uc-chped/verify_uc_chped.h"
 #include <cstdio>
 
 using namespace cbls;
@@ -17,11 +17,10 @@ TEST_CASE("UC-CHPED 13-unit 1-period model builds", "[uc-chped]") {
     auto& m = ucm.model;
     // 13 bool (commitment) + 13 float (dispatch) = 26 vars
     REQUIRE(m.num_vars() == 26);
-    printf("\n13-unit 1p: %ld vars, %ld nodes\n",
-           (long)m.num_vars(), (long)m.num_nodes());
+    printf("\n13-unit 1p: %ld vars, %ld nodes\n", (long)m.num_vars(), (long)m.num_nodes());
 }
 
-TEST_CASE("UC-CHPED 13-unit 1-period feasibility", "[uc-chped]") {
+TEST_CASE("UC-CHPED 13-unit 1-period feasibility", "[uc-chped][slow]") {
     auto ucp13 = load_jsonl("benchmarks/instances/uc-chped/ucp13.jsonl");
     auto inst = make_subinstance(ucp13, 1);
     auto ucm = build_uc_model(inst);
@@ -30,11 +29,11 @@ TEST_CASE("UC-CHPED 13-unit 1-period feasibility", "[uc-chped]") {
     LNS lns(0.3);
     auto result = solve_deterministic(ucm.model, 180000, 42, &hook, &lns);
     REQUIRE(result.feasible);
-    printf("\n13-unit 1p: obj=%.1f, iters=%ld, time=%.3fs\n",
-           result.objective, (long)result.iterations, result.time_seconds);
+    printf("\n13-unit 1p: obj=%.1f, iters=%ld, time=%.3fs\n", result.objective,
+           (long)result.iterations, result.time_seconds);
 }
 
-TEST_CASE("UC-CHPED 13-unit 1-period quality", "[uc-chped]") {
+TEST_CASE("UC-CHPED 13-unit 1-period quality", "[uc-chped][slow]") {
     auto ucp13 = load_jsonl("benchmarks/instances/uc-chped/ucp13.jsonl");
     auto inst = make_subinstance(ucp13, 1);
     auto ucm = build_uc_model(inst);
@@ -48,7 +47,7 @@ TEST_CASE("UC-CHPED 13-unit 1-period quality", "[uc-chped]") {
     printf("\n13-unit 1p quality: obj=%.1f (known LB=11701)\n", result.objective);
 }
 
-TEST_CASE("UC-CHPED 40-unit 1-period feasibility", "[uc-chped]") {
+TEST_CASE("UC-CHPED 40-unit 1-period feasibility", "[uc-chped][slow]") {
     auto ucp40 = load_jsonl("benchmarks/instances/uc-chped/ucp40.jsonl");
     auto inst = make_subinstance(ucp40, 1);
     auto ucm = build_uc_model(inst);
@@ -57,11 +56,11 @@ TEST_CASE("UC-CHPED 40-unit 1-period feasibility", "[uc-chped]") {
     LNS lns(0.3);
     auto result = solve_deterministic(ucm.model, 71000, 42, &hook, &lns);
     REQUIRE(result.feasible);
-    printf("\n40-unit 1p: obj=%.1f, iters=%ld, time=%.3fs\n",
-           result.objective, (long)result.iterations, result.time_seconds);
+    printf("\n40-unit 1p: obj=%.1f, iters=%ld, time=%.3fs\n", result.objective,
+           (long)result.iterations, result.time_seconds);
 }
 
-TEST_CASE("UC-CHPED 100-unit 1-period builds and solves", "[uc-chped]") {
+TEST_CASE("UC-CHPED 100-unit 1-period builds and solves", "[uc-chped][slow]") {
     auto ucp100 = load_jsonl("benchmarks/instances/uc-chped/ucp100.jsonl");
     auto inst = make_subinstance(ucp100, 1);
     auto ucm = build_uc_model(inst);
@@ -73,11 +72,11 @@ TEST_CASE("UC-CHPED 100-unit 1-period builds and solves", "[uc-chped]") {
     LNS lns(0.3);
     auto result = solve_deterministic(ucm.model, 64000, 42, &hook, &lns);
     REQUIRE(result.feasible);
-    printf("\n100-unit 1p: obj=%.1f, %ld vars, iters=%ld, time=%.3fs\n",
-           result.objective, (long)m.num_vars(), (long)result.iterations, result.time_seconds);
+    printf("\n100-unit 1p: obj=%.1f, %ld vars, iters=%ld, time=%.3fs\n", result.objective,
+           (long)m.num_vars(), (long)result.iterations, result.time_seconds);
 }
 
-TEST_CASE("UC-CHPED 13-unit 1-period verify", "[uc-chped][verify]") {
+TEST_CASE("UC-CHPED 13-unit 1-period verify", "[uc-chped][verify][slow]") {
     auto ucp13 = load_jsonl("benchmarks/instances/uc-chped/ucp13.jsonl");
     auto inst = make_subinstance(ucp13, 1);
     auto ucm = build_uc_model(inst);

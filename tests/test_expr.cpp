@@ -1,7 +1,8 @@
+#include "test_helpers.h"
+
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cbls/cbls.h>
-#include "test_helpers.h"
 #include <cmath>
 
 using namespace cbls;

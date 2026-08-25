@@ -1,8 +1,8 @@
 #include "test_helpers.h"
 
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
-#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -466,8 +466,8 @@ TEST_CASE("the deadline-check stride is sized from the last measurement", "[fj][
         // what stops the tuner ratcheting up and going silent — a shrink is only
         // applied AT a check, a whole stride later. kMaxDeadlineStride is what
         // bounds that; see "a grown stride cannot outrun its cap" below.
-        REQUIRE(FJ::next_deadline_stride(64, 0.010, kTarget) == 6);   // 10x over -> 10x down
-        REQUIRE(FJ::next_deadline_stride(64, 1.0, kTarget) == 1);      // 1000x over -> the floor
+        REQUIRE(FJ::next_deadline_stride(64, 0.010, kTarget) == 6);  // 10x over -> 10x down
+        REQUIRE(FJ::next_deadline_stride(64, 1.0, kTarget) == 1);    // 1000x over -> the floor
         // A stride from before the cap existed is clamped to it, not honoured.
         REQUIRE(FJ::next_deadline_stride(65536, 1e-9, kTarget) == FJ::kMaxDeadlineStride);
     }
@@ -537,7 +537,8 @@ TEST_CASE("the deadline-check stride is sized from the last measurement", "[fj][
             const double remaining = kBudget - elapsed_total;
             // Reproduce the measurement the loop would have taken: the stride it
             // just finished, at the cost it was paying.
-            stride = FJ::next_deadline_stride(stride == 0 ? 1 : stride, cost, remaining * FJ::kStrideBudgetFraction);
+            stride = FJ::next_deadline_stride(stride == 0 ? 1 : stride, cost,
+                                              remaining * FJ::kStrideBudgetFraction);
             worst_stride_at_check = std::max(worst_stride_at_check, stride);
         }
 
@@ -660,8 +661,8 @@ TEST_CASE("expensive iterations pin the deadline stride to one", "[fj][deadline]
     fj.begin(/*set_initial_x=*/true);
     fj.batch(/*batch_iterations=*/1000);
 
-    REQUIRE(fj.iterations() > 0);              // not inert: the batch really ran
-    REQUIRE(fj.deadline_check_stride() == 1);  // one iteration per clock read...
+    REQUIRE(fj.iterations() > 0);                      // not inert: the batch really ran
+    REQUIRE(fj.deadline_check_stride() == 1);          // one iteration per clock read...
     REQUIRE(fj.deadline_checks() == fj.iterations());  // ...and it really was read
     // And the batch stopped long before the 64 iterations the old fixed stride
     // let through unconditionally, which is the whole of #113.

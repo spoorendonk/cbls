@@ -19,6 +19,13 @@ dev = [
     # passed."
     "ruff>=0.5",
     "mypy>=1.10",
+    # clang-format and clang-tidy come from PyPI rather than the system, and
+    # are pinned exactly: clang-format's output and clang-tidy's finding set
+    # both change between major releases, so an unpinned or system copy would
+    # reformat differently from everyone else's commit and report a different
+    # set at push time. The hooks prefer .venv/bin over PATH for this reason.
+    "clang-format==22.1.8",
+    "clang-tidy==22.1.8",
 ]
 benchmarks = [
     # CP-SAT's violation_ls worker, the MIPfeas baseline. 9.7 is when the

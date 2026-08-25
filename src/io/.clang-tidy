@@ -1,0 +1,17 @@
+# Naming check disabled for this directory only.
+#
+# mps_reader.cpp and solu_reader.cpp are vendored from spoorendonk/mipx and
+# carry a "port the diff here and bump the last synced commit" contract in
+# their headers. Upstream spells its helpers camelBack (`parseReal`,
+# `isSection`, `parseSection`), so renaming them to this project's lower_case
+# would put a permanent, purely cosmetic delta between the two trees and make
+# the next sync harder to review -- against the Reference Correctness rule in
+# CLAUDE.md. Four findings, all in the vendored readers.
+#
+# Everything else in the root .clang-tidy still applies here; only the naming
+# check is off. The tradeoff is that the three native adapters in this
+# directory (mps_to_model.cpp, nl_to_model.cpp, nl_reader.cpp) also lose naming
+# coverage -- they are clean today, so keep an eye on new code here.
+---
+Checks: >
+  -readability-identifier-naming

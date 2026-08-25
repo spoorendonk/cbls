@@ -1,7 +1,6 @@
-#include "test_helpers.h"
-
 #include "benchmarks/chped/chped_model.h"
 #include "benchmarks/chped/data.h"
+#include "test_helpers.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
@@ -18,7 +17,7 @@ TEST_CASE("CHPED 4-unit builds model", "[chped]") {
     REQUIRE(m.constraint_ids().size() == 1);  // 1 demand constraint
 }
 
-TEST_CASE("CHPED 4-unit feasibility", "[chped]") {
+TEST_CASE("CHPED 4-unit feasibility", "[chped][slow]") {
     auto inst = make_4unit();
     auto cm = build_chped_model(inst);
     auto& m = cm.model;
@@ -29,7 +28,7 @@ TEST_CASE("CHPED 4-unit feasibility", "[chped]") {
            result.objective, result.iterations, result.time_seconds);
 }
 
-TEST_CASE("CHPED 4-unit solution quality", "[chped]") {
+TEST_CASE("CHPED 4-unit solution quality", "[chped][slow]") {
     auto inst = make_4unit();
     auto cm = build_chped_model(inst);
     auto& m = cm.model;
@@ -40,7 +39,7 @@ TEST_CASE("CHPED 4-unit solution quality", "[chped]") {
     printf("\n4-unit solution: cost=%.2f\n", result.objective);
 }
 
-TEST_CASE("CHPED 7-unit feasibility", "[chped]") {
+TEST_CASE("CHPED 7-unit feasibility", "[chped][slow]") {
     auto inst = make_7unit();
     auto cm = build_chped_model(inst);
     auto& m = cm.model;
@@ -51,7 +50,7 @@ TEST_CASE("CHPED 7-unit feasibility", "[chped]") {
            result.iterations);
 }
 
-TEST_CASE("CHPED 24-unit feasibility", "[chped]") {
+TEST_CASE("CHPED 24-unit feasibility", "[chped][slow]") {
     auto inst = make_24unit();
     auto cm = build_chped_model(inst);
     auto& m = cm.model;
@@ -65,7 +64,7 @@ TEST_CASE("CHPED 24-unit feasibility", "[chped]") {
     }
 }
 
-TEST_CASE("CHPED 13-unit feasibility and quality", "[chped]") {
+TEST_CASE("CHPED 13-unit feasibility and quality", "[chped][slow]") {
     auto inst = make_13unit();
     auto cm = build_chped_model(inst);
     auto& m = cm.model;
@@ -79,7 +78,7 @@ TEST_CASE("CHPED 13-unit feasibility and quality", "[chped]") {
            result.time_seconds);
 }
 
-TEST_CASE("CHPED 40-unit feasibility and quality", "[chped]") {
+TEST_CASE("CHPED 40-unit feasibility and quality", "[chped][slow]") {
     auto inst = make_40unit();
     auto cm = build_chped_model(inst);
     auto& m = cm.model;

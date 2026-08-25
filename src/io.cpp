@@ -72,7 +72,7 @@ static std::string op_to_string(NodeOp op) {
 }
 
 static NodeOp string_to_op(const std::string& s) {
-    static const std::unordered_map<std::string, NodeOp> map = {
+    static const std::unordered_map<std::string, NodeOp> kMap = {
         {"Const", NodeOp::Const},   {"Neg", NodeOp::Neg},
         {"Sum", NodeOp::Sum},       {"Prod", NodeOp::Prod},
         {"Div", NodeOp::Div},       {"Pow", NodeOp::Pow},
@@ -88,8 +88,8 @@ static NodeOp string_to_op(const std::string& s) {
         {"Geq", NodeOp::Geq},       {"Neq", NodeOp::Neq},
         {"Lt", NodeOp::Lt},         {"Gt", NodeOp::Gt},
     };
-    auto it = map.find(s);
-    if (it == map.end()) {
+    auto it = kMap.find(s);
+    if (it == kMap.end()) {
         throw std::invalid_argument("unknown op: " + s);
     }
     return it->second;

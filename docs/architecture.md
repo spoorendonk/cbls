@@ -1604,7 +1604,7 @@ cbls [OPTIONS] MODEL.cbls
 | `--max-epochs INT` | number of epochs in deterministic mode (default: 10) |
 | `--format human\|jsonl` | output format (default: human) |
 | `--quiet` | suppress progress, print only the final result |
-| `--help` / `--version` | usage / `cbls::version` |
+| `--help` / `--version` | usage / `cbls::kVersion` |
 
 > **Removed flags** (SA-era): `--cooling-rate`, `--reheat-interval`,
 > `--hook-frequency`, `--fj-time-fraction`. These no longer exist; the
@@ -1663,7 +1663,7 @@ selects via `--format` and suppresses both with `--quiet`.
 
 ### Version
 
-`cbls::version` is a `constexpr const char*` in `include/cbls/cbls.h`.
+`cbls::kVersion` is a `constexpr const char*` in `include/cbls/cbls.h`.
 
 ### Parameter Locations
 

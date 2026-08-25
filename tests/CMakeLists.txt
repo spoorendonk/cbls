@@ -29,10 +29,28 @@ include(Catch)
 # Everything except the [timing] class, which is registered separately below so
 # it can carry ctest properties (catch_discover_tests registers at build time,
 # so set_tests_properties cannot reach the tests it creates).
+#
+# [slow] is discovered by a second call rather than excluded, because that is
+# the only way to attach a LABELS property to a subset: PROPERTIES applies to
+# the whole call, and Catch2 3.5.2 has no tag-to-label mapping. Two calls do not
+# collide -- Catch.cmake derives its generated filenames from a hash of the
+# arguments. Discovering them (rather than lumping them into one add_test) keeps
+# per-test granularity and lets ctest -j run them in parallel; collapsing 33
+# multi-minute solves into one serial invocation would make the full suite far
+# slower than it is.
+#
+# Measured: 33 of 301 tests take >10s and account for ~950s of a ~1010s run.
+# The remaining 268 finish in ~60s, which is what pre-commit runs via
+# `ctest -LE slow`. pre-push still runs everything.
 catch_discover_tests(cbls_tests
-    TEST_SPEC "~[timing]"
+    TEST_SPEC "~[timing]~[slow]"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     PROPERTIES SKIP_RETURN_CODE 4)
+
+catch_discover_tests(cbls_tests
+    TEST_SPEC "[slow]~[timing]"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    PROPERTIES SKIP_RETURN_CODE 4 LABELS "slow")
 
 # Issue #104: [timing] is the suite's ONLY wall-clock-duration assertion —
 # everything else asserts on iteration counts or values. Registered on its own so

@@ -221,22 +221,22 @@ double evaluate(const ExprNode& node, const Model& model) {
 
         case NodeOp::Lt: {
             // a - b + ε (≤ 0 when a < b strictly)
-            constexpr double eps = 1e-9;
-            return comparison_residual(
-                       child_val(node.children[0], model), child_val(node.children[1], model),
-                       child_is_const(node.children[0], model),
-                       child_is_const(node.children[1], model)) +
-                   eps;
+            constexpr double kEps = 1e-9;
+            return comparison_residual(child_val(node.children[0], model),
+                                       child_val(node.children[1], model),
+                                       child_is_const(node.children[0], model),
+                                       child_is_const(node.children[1], model)) +
+                   kEps;
         }
 
         case NodeOp::Gt: {
             // b - a + ε (≤ 0 when a > b strictly)
-            constexpr double eps = 1e-9;
-            return comparison_residual(
-                       child_val(node.children[1], model), child_val(node.children[0], model),
-                       child_is_const(node.children[1], model),
-                       child_is_const(node.children[0], model)) +
-                   eps;
+            constexpr double kEps = 1e-9;
+            return comparison_residual(child_val(node.children[1], model),
+                                       child_val(node.children[0], model),
+                                       child_is_const(node.children[1], model),
+                                       child_is_const(node.children[0], model)) +
+                   kEps;
         }
     }
     return 0.0;
@@ -407,11 +407,11 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
             return 0.0;  // non-differentiable
 
         case NodeOp::Lt:
-            // d/d(child0) of (child0 - child1 + eps) = 1, d/d(child1) = -1
+            // d/d(child0) of (child0 - child1 + kEps) = 1, d/d(child1) = -1
             return child_idx == 0 ? 1.0 : -1.0;
 
         case NodeOp::Gt:
-            // d/d(child0) of (child1 - child0 + eps) = -1, d/d(child1) = 1
+            // d/d(child0) of (child1 - child0 + kEps) = -1, d/d(child1) = 1
             return child_idx == 0 ? -1.0 : 1.0;
     }
     return 0.0;

@@ -32,10 +32,9 @@
 
 #include "test_helpers.h"
 
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
-
-#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <numeric>
@@ -182,8 +181,7 @@ TEST_CASE("an infinite Int bound does not sample INT64_MIN", "[unbounded][random
     }
 }
 
-TEST_CASE("randomize_var keeps an unbounded model's assignment finite",
-          "[unbounded][randomize]") {
+TEST_CASE("randomize_var keeps an unbounded model's assignment finite", "[unbounded][randomize]") {
     // The entry point search.cpp's initialisers and LNS's destroy step share.
     Model m = unit_circle_model();
     for (uint64_t seed = 1; seed <= kSeeds; ++seed) {

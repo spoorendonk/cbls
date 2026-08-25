@@ -1,7 +1,7 @@
 #pragma once
 
 namespace cbls {
-inline constexpr const char* version = "0.1.0";
+inline constexpr const char* kVersion = "0.1.0";
 }
 
 #include "dag.h"

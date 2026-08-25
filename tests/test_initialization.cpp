@@ -15,7 +15,6 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
-
 #include <cmath>
 #include <limits>
 #include <vector>
@@ -31,8 +30,8 @@ namespace {
 SearchResult solve_no_budget(Model& model, uint64_t seed, const SearchConfig& base = {}) {
     SearchConfig cfg = base;
     cfg.max_iterations = 0;
-    SearchResult r = solve(model, /*time_limit=*/0.0, seed, /*use_fj=*/true, nullptr, nullptr, 3,
-                           nullptr, cfg);
+    SearchResult r =
+        solve(model, /*time_limit=*/0.0, seed, /*use_fj=*/true, nullptr, nullptr, 3, nullptr, cfg);
     // These tests are only meaningful if the outer loop really did no work — they
     // read the model expecting the *starting* assignment. That rests on solve()'s
     // "neither budget set, so nothing would ever stop the loop" guard breaking
@@ -64,11 +63,11 @@ std::vector<double> scalar_values(const Model& model) {
 // to find a solution.
 Model scalar_model() {
     Model m;
-    auto straddling = m.float_var(-3.0, 4.0);   // clamp(0) =  0
-    auto positive = m.float_var(2.0, 5.0);      // clamp(0) =  2
-    auto negative = m.float_var(-5.0, -2.0);    // clamp(0) = -2
-    auto integral = m.int_var(3, 7);            // clamp(0) =  3
-    auto flag = m.bool_var();                   // clamp(0) =  0
+    auto straddling = m.float_var(-3.0, 4.0);  // clamp(0) =  0
+    auto positive = m.float_var(2.0, 5.0);     // clamp(0) =  2
+    auto negative = m.float_var(-5.0, -2.0);   // clamp(0) = -2
+    auto integral = m.int_var(3, 7);           // clamp(0) =  3
+    auto flag = m.bool_var();                  // clamp(0) =  0
     auto neg1 = m.constant(-1.0);
     auto twenty = m.constant(20.0);
     // 20 - (straddling + positive + negative + integral + flag) <= 0
@@ -188,9 +187,9 @@ TEST_CASE("solve's starting point is finite on an unbounded domain", "[search][i
     // is pinned in tests/test_unbounded_domain.cpp, not here.
     const double inf = std::numeric_limits<double>::infinity();
     Model m;
-    auto both = m.float_var(-inf, inf);    // clamp(0) = 0
-    auto half = m.float_var(0.0, inf);     // clamp(0) = 0
-    auto shifted = m.float_var(1.0, inf);  // clamp(0) = 1
+    auto both = m.float_var(-inf, inf);                                          // clamp(0) = 0
+    auto half = m.float_var(0.0, inf);                                           // clamp(0) = 0
+    auto shifted = m.float_var(1.0, inf);                                        // clamp(0) = 1
     m.add_constraint(m.sum({m.constant(-1.0), m.prod(m.constant(0.0), both)}));  // -1 <= 0
     m.close();
 

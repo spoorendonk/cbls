@@ -3,9 +3,13 @@
 # Final gate before sharing code — catches what pre-commit doesn't.
 #
 # Flow:
-#   1. Review check → block if /review not run
-#   2. Clean build + test → block on failure
-#   3. Remaining issues (complexity, type errors, warnings) → warn and continue
+#   1. Clean build + test → block on failure
+#   2. Remaining issues (complexity, type errors, warnings) → warn and continue
+#
+# There is no /review stamp gate. It was removed with the .claude/ review
+# command when .claude/ became gitignored local tooling: the gate could only
+# ever be satisfied in the one checkout that happened to carry the command,
+# and it silently did nothing everywhere else.
 #
 # Vendored from devkit when the .devkit submodule was removed. This directory
 # is the source now — edit it here.
@@ -51,51 +55,7 @@ fi
 CODE_FILES=$(echo "$CHANGED_FILES" | grep -vE '^(LICENSE|CHANGELOG)' | grep -vE '\.(md|txt|rst)$' | grep -vE '^\.(gitignore|gitattributes)$' | grep -vE '^\.githooks/' || true)
 
 # ============================================================
-# Step 1: Review check (block if /review not run)
-# ============================================================
-
-REVIEW_STALE=0
-CURRENT_HEAD=$(git rev-parse HEAD 2>/dev/null)
-# Per-worktree stamp: --absolute-git-dir gives .git/worktrees/<name> in linked
-# worktrees, so each worktree tracks its own review state independently.
-STAMP="$(git rev-parse --absolute-git-dir)/.last-review"
-
-# The /review command lives in .claude/, which is gitignored local agent
-# tooling.  A checkout without it has no way to write the stamp, so gating on
-# it there would brick every push with no route to satisfy the gate.  Enforce
-# the gate only where the command that clears it actually exists.
-if [ ! -f ".claude/commands/review.md" ]; then
-	# Say so out loud.  A gate that turns itself off in silence is
-	# indistinguishable from a gate that passed.
-	echo ""
-	echo "=== Review check ==="
-	echo "SKIPPED: no .claude/commands/review.md in this checkout (linked"
-	echo "         worktree or fresh clone), so nothing here can write the"
-	echo "         stamp that clears the gate. Review on the main checkout."
-elif [ -f "$STAMP" ]; then
-	LAST_REVIEWED=$(tr -d '[:space:]' <"$STAMP")
-	if [ "$LAST_REVIEWED" != "$CURRENT_HEAD" ]; then
-		COMMITS_SINCE=$(git rev-list --count "$LAST_REVIEWED..$CURRENT_HEAD" 2>/dev/null || echo "?")
-		echo ""
-		echo "=== Review check ==="
-		echo "WARNING: /review has not been run since $COMMITS_SINCE commit(s) ago."
-		REVIEW_STALE=1
-	fi
-else
-	echo ""
-	echo "=== Review check ==="
-	echo "WARNING: /review has never been run on this branch."
-	REVIEW_STALE=1
-fi
-
-if [ "$REVIEW_STALE" -ne 0 ]; then
-	echo ""
-	echo "Push blocked: run /review first."
-	exit 1
-fi
-
-# ============================================================
-# Step 2: Clean build + test (hard block)
+# Step 1: Clean build + test (hard block)
 # ============================================================
 
 # Extract a fenced code block under "## Build & Test" by tag (e.g. ```build ... ```)
@@ -178,13 +138,20 @@ else
 fi
 
 # ============================================================
-# Step 3: Remaining issues (warn and continue)
+# Step 2: Remaining issues (warn and continue)
 # ============================================================
 
 ISSUES=""
 
-# clang-tidy (non-fixable warnings)
-if [ -n "$CPP_FILES" ] && command -v clang-tidy &>/dev/null; then
+# clang-tidy (non-fixable warnings).  Prefer the venv's pinned copy over PATH,
+# for the same reason pre-commit does: a different major version reports a
+# different set, and with no system clang-tidy the bare `command -v` guard
+# skipped this step in silence while the docs claimed it ran.
+CLANG_TIDY=""
+[ -x "$VENV_BIN/clang-tidy" ] && CLANG_TIDY="$VENV_BIN/clang-tidy"
+[ -z "$CLANG_TIDY" ] && command -v clang-tidy &>/dev/null && CLANG_TIDY="clang-tidy"
+
+if [ -n "$CPP_FILES" ] && [ -n "$CLANG_TIDY" ]; then
 	COMPILE_DB=""
 	[ -f "build/compile_commands.json" ] && COMPILE_DB="-p build"
 	[ -f "compile_commands.json" ] && COMPILE_DB="-p ."
@@ -195,7 +162,7 @@ if [ -n "$CPP_FILES" ] && command -v clang-tidy &>/dev/null; then
 
 		for f in $CPP_FILES; do
 			[ -f "$f" ] || continue
-			RESULT=$(clang-tidy $COMPILE_DB \
+			RESULT=$("$CLANG_TIDY" $COMPILE_DB \
 				--quiet "$f" 2>&1 || true)
 			if echo "$RESULT" | grep -qE '(warning|error):'; then
 				ISSUES="${ISSUES}${RESULT}"$'\n'
@@ -261,8 +228,5 @@ else
 	echo ""
 	echo "All checks passed."
 fi
-
-# Clean up review stamp so next changes require a fresh review
-rm -f "$STAMP"
 
 exit 0

@@ -1,11 +1,11 @@
+#include "benchmarks/pharma-glsp/data.h"
+#include "benchmarks/pharma-glsp/glsp_hook.h"
+#include "benchmarks/pharma-glsp/glsp_model.h"
+#include "benchmarks/pharma-glsp/verify_glsp.h"
 #include "test_helpers.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
-#include "benchmarks/pharma-glsp/data.h"
-#include "benchmarks/pharma-glsp/glsp_model.h"
-#include "benchmarks/pharma-glsp/glsp_hook.h"
-#include "benchmarks/pharma-glsp/verify_glsp.h"
 #include <cstdio>
 
 using namespace cbls;
@@ -24,25 +24,24 @@ TEST_CASE("GLSP tiny instance builds model", "[glsp]") {
     // Should have objective
     REQUIRE(m.objective_id() >= 0);
 
-    printf("\nGLSP tiny: %zu vars, %zu nodes, %zu constraints\n",
-           m.num_vars(), m.num_nodes(), m.constraint_ids().size());
+    printf("\nGLSP tiny: %zu vars, %zu nodes, %zu constraints\n", m.num_vars(), m.num_nodes(),
+           m.constraint_ids().size());
 }
 
-TEST_CASE("GLSP tiny instance feasibility", "[glsp]") {
+TEST_CASE("GLSP tiny instance feasibility", "[glsp][slow]") {
     auto inst = make_tiny();
     auto gm = build_glsp_model(inst);
     auto& m = gm.model;
 
     GLSPInnerSolverHook hook(inst, gm.seq, gm.lot);
     auto result = solve_deterministic(m, 324000, 42, &hook);
-    printf("\nGLSP tiny: feasible=%d, obj=%.2f, iters=%ld, time=%.3fs\n",
-           result.feasible, result.objective, (long)result.iterations,
-           result.time_seconds);
+    printf("\nGLSP tiny: feasible=%d, obj=%.2f, iters=%ld, time=%.3fs\n", result.feasible,
+           result.objective, (long)result.iterations, result.time_seconds);
     REQUIRE(result.feasible);
     REQUIRE(result.objective >= 0);
 }
 
-TEST_CASE("GLSP tiny with LNS", "[glsp]") {
+TEST_CASE("GLSP tiny with LNS", "[glsp][slow]") {
     auto inst = make_tiny();
     auto gm = build_glsp_model(inst);
     auto& m = gm.model;
@@ -50,8 +49,8 @@ TEST_CASE("GLSP tiny with LNS", "[glsp]") {
     GLSPInnerSolverHook hook(inst, gm.seq, gm.lot);
     LNS lns(0.3);
     auto result = solve_deterministic(m, 325000, 42, &hook, &lns);
-    printf("\nGLSP tiny+LNS: feasible=%d, obj=%.2f, iters=%ld\n",
-           result.feasible, result.objective, (long)result.iterations);
+    printf("\nGLSP tiny+LNS: feasible=%d, obj=%.2f, iters=%ld\n", result.feasible, result.objective,
+           (long)result.iterations);
     REQUIRE(result.feasible);
 }
 
@@ -92,7 +91,7 @@ TEST_CASE("List moves produce valid permutations", "[glsp][moves]") {
     }
 }
 
-TEST_CASE("GLSP loaded instance builds and solves", "[glsp]") {
+TEST_CASE("GLSP loaded instance builds and solves", "[glsp][slow]") {
     // Try to load class_a.jsonl and solve the first instance
     std::vector<GLSPInstance> instances;
     try {
@@ -109,22 +108,20 @@ TEST_CASE("GLSP loaded instance builds and solves", "[glsp]") {
     auto gm = build_glsp_model(inst);
     auto& m = gm.model;
 
-    printf("\nGLSP %s: J=%d T=%d M=%d, %zu vars, %zu nodes, %zu constraints\n",
-           inst.name.c_str(), inst.n_products, inst.n_macro,
-           inst.n_micro_per_macro, m.num_vars(), m.num_nodes(),
+    printf("\nGLSP %s: J=%d T=%d M=%d, %zu vars, %zu nodes, %zu constraints\n", inst.name.c_str(),
+           inst.n_products, inst.n_macro, inst.n_micro_per_macro, m.num_vars(), m.num_nodes(),
            m.constraint_ids().size());
 
     GLSPInnerSolverHook hook(inst, gm.seq, gm.lot);
     LNS lns(0.3);
     auto result = solve_deterministic(m, 58000, 42, &hook, &lns);
 
-    printf("GLSP %s: feasible=%d, obj=%.2f, iters=%ld, time=%.3fs\n",
-           inst.name.c_str(), result.feasible, result.objective,
-           (long)result.iterations, result.time_seconds);
+    printf("GLSP %s: feasible=%d, obj=%.2f, iters=%ld, time=%.3fs\n", inst.name.c_str(),
+           result.feasible, result.objective, (long)result.iterations, result.time_seconds);
     REQUIRE(result.iterations > 100);
 }
 
-TEST_CASE("GLSP tiny verify", "[glsp][verify]") {
+TEST_CASE("GLSP tiny verify", "[glsp][verify][slow]") {
     auto inst = make_tiny();
     auto gm = build_glsp_model(inst);
 
@@ -138,7 +135,7 @@ TEST_CASE("GLSP tiny verify", "[glsp][verify]") {
     REQUIRE(vr.ok);
 }
 
-TEST_CASE("GLSP loaded class-A verify", "[glsp][verify]") {
+TEST_CASE("GLSP loaded class-A verify", "[glsp][verify][slow]") {
     std::vector<GLSPInstance> instances;
     try {
         instances = load_jsonl("benchmarks/instances/pharma-glsp/class_a.jsonl");

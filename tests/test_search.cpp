@@ -109,7 +109,7 @@ TEST_CASE("FJ-NL finds feasibility bool", "[search]") {
 }
 
 // SA solver tests
-TEST_CASE("SA unconstrained minimum", "[search]") {
+TEST_CASE("SA unconstrained minimum", "[search][slow]") {
     Model m;
     auto x = m.float_var(-10, 10);
     auto y = m.float_var(-10, 10);
@@ -122,7 +122,7 @@ TEST_CASE("SA unconstrained minimum", "[search]") {
     REQUIRE(result.objective < 1.0);
 }
 
-TEST_CASE("SA constrained problem", "[search]") {
+TEST_CASE("SA constrained problem", "[search][slow]") {
     Model m;
     auto x = m.float_var(0, 10);
     auto y = m.float_var(0, 10);
@@ -137,7 +137,7 @@ TEST_CASE("SA constrained problem", "[search]") {
     REQUIRE(result.objective < 5.0);
 }
 
-TEST_CASE("SA integer problem", "[search]") {
+TEST_CASE("SA integer problem", "[search][slow]") {
     Model m;
     auto x = m.int_var(0, 10);
     auto neg7 = m.constant(-7.0);
@@ -149,7 +149,7 @@ TEST_CASE("SA integer problem", "[search]") {
     REQUIRE(result.objective < 2.0);
 }
 
-TEST_CASE("SA Rosenbrock 2D", "[search]") {
+TEST_CASE("SA Rosenbrock 2D", "[search][slow]") {
     Model m;
     auto x = m.float_var(-5, 5);
     auto y = m.float_var(-5, 5);
@@ -207,7 +207,7 @@ TEST_CASE("LNS basic", "[lns]") {
 }
 
 // LNS integration in solve() test
-TEST_CASE("solve with LNS param", "[search][lns]") {
+TEST_CASE("solve with LNS param", "[search][lns][slow]") {
     Model m;
     auto x = m.float_var(0, 10);
     auto y = m.float_var(0, 10);
@@ -223,7 +223,7 @@ TEST_CASE("solve with LNS param", "[search][lns]") {
     REQUIRE(result.objective < 10.0);
 }
 
-TEST_CASE("solve with hook and LNS", "[search][lns]") {
+TEST_CASE("solve with hook and LNS", "[search][lns][slow]") {
     Model m;
     auto x = m.float_var(0, 10);
     auto y = m.float_var(0, 10);
@@ -973,7 +973,8 @@ TEST_CASE("solve still arms the escape probe on the batch count", "[search][esca
     REQUIRE(result.escape_probe_armed);
 }
 
-TEST_CASE("solve keeps diversifying when a wall clock is armed", "[search][deadline][escape][lns]") {
+TEST_CASE("solve keeps diversifying when a wall clock is armed",
+          "[search][deadline][escape][lns]") {
     // The starvation guard. The clock route arms WITHOUT an accompanying kick,
     // which the batch route never did, so the hazard it introduces is a probe
     // that drips tiny improvements, resets `stagnation` before it reaches
@@ -992,7 +993,7 @@ TEST_CASE("solve keeps diversifying when a wall clock is armed", "[search][deadl
 
     SearchConfig config;
     config.batch_iterations = 1;
-    config.max_iterations = 0;      // wall clock is the only budget
+    config.max_iterations = 0;       // wall clock is the only budget
     config.perturbation_period = 5;  // reachable within the budget, unlike the case above
 
     BudgetRecordingLNS lns;

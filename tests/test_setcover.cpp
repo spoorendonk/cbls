@@ -5,16 +5,14 @@
 // place in the suite where the Set move generators are exercised on a real
 // instance rather than a 3-10 element toy.
 
-#include "test_helpers.h"
-
 #include "benchmarks/setcover/data.h"
 #include "benchmarks/setcover/setcover_model.h"
 #include "benchmarks/setcover/verify_setcover.h"
+#include "test_helpers.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cbls/dag_ops.h>
-
 #include <cstdio>
 #include <sstream>
 #include <string>
@@ -27,11 +25,12 @@ namespace {
 // 3 rows, 4 columns. Column 0 covers everything for 5; columns 1-3 cover one
 // row each for 1. Optimum is 3 (columns 1,2,3); the coverage-greedy choice
 // (column 0) costs 5, so the search cannot reach the optimum by accident.
-const char* kTinyText = "3 4\n"
-                        "5 1 1 1\n"
-                        "2\n1 2\n"
-                        "2\n1 3\n"
-                        "2\n1 4\n";
+const char* kTinyText =
+    "3 4\n"
+    "5 1 1 1\n"
+    "2\n1 2\n"
+    "2\n1 3\n"
+    "2\n1 4\n";
 
 SetCoverInstance tiny() {
     std::istringstream in(kTinyText);
@@ -271,7 +270,7 @@ TEST_CASE("Set encoding returns a verified cover on scpe1", "[setcover]") {
     REQUIRE(check.cost >= kScpe1Optimum);
 }
 
-TEST_CASE("Bool encoding returns a verified cover on scpe1", "[setcover]") {
+TEST_CASE("Bool encoding returns a verified cover on scpe1", "[setcover][slow]") {
     SetCoverInstance inst = load_setcover(kScpe1Path);
     SetCoverModel scm = build_bool_model(inst);
 
