@@ -5,8 +5,7 @@
 #   1. Auto-format + auto-fix lint (staged files only)
 #   2. Tests → hard block (no bypass)
 #
-# Vendored from devkit when the .devkit submodule was removed. This directory
-# is the source now — edit it here.
+# This directory is the source for the git hooks — edit them here.
 #
 # SC2086: the *_FILES variables hold newline-separated path lists that are
 # meant to word-split into multiple arguments; quoting them would pass one

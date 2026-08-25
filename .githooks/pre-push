@@ -11,8 +11,7 @@
 # ever be satisfied in the one checkout that happened to carry the command,
 # and it silently did nothing everywhere else.
 #
-# Vendored from devkit when the .devkit submodule was removed. This directory
-# is the source now — edit it here.
+# This directory is the source for the git hooks — edit them here.
 #
 # SC2086: the *_FILES variables hold newline-separated path lists that are
 # meant to word-split into multiple arguments; quoting them would pass one
@@ -98,11 +97,11 @@ else
 	BUILD_CMD=$(extract_block build)
 	TEST_CMD=$(extract_block test)
 
-	# Both blocks are required.  Devkit's version ran whichever half it found
-	# and skipped the other in silence, so a renamed fence or a moved heading
-	# produced "All checks passed." on a push that never ran the tests.  There
-	# is also no auto-detect fallback: guessing a build would gate a *different*
-	# build than the documented one, which is the same failure wearing a hat.
+	# Both blocks are required.  Running whichever half resolves and skipping
+	# the other in silence turns a renamed fence or a moved heading into
+	# "All checks passed." on a push that never ran the tests.  There is also
+	# no auto-detect fallback: guessing a build would gate a *different* build
+	# than the documented one, which is the same failure wearing a hat.
 	# CLAUDE.md's `## Build & Test` fences are the contract.
 	if [ -z "$BUILD_CMD" ] || [ -z "$TEST_CMD" ]; then
 		echo ""

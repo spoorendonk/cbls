@@ -1,8 +1,7 @@
 #!/bin/bash
 # Resolve Python venv. Sourced by other hooks.
 #
-# Vendored from devkit when the .devkit submodule was removed. This directory
-# is the source now — edit it here.
+# This directory is the source for the git hooks — edit them here.
 #
 # On success (venv present): VENV_BIN is set to the venv's bin directory and
 # callers can run `"$VENV_BIN/ruff"`, `"$VENV_BIN/pytest"`, etc.

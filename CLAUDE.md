@@ -4,8 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # Standards
 
-Previously imported from a `.devkit` submodule. That submodule is gone; this
-section is the source of truth, adapted to what this project actually does.
+The rules below are the project's own. Where a generic house style would say
+otherwise, what is written here wins.
 
 ## Communication Style
 
@@ -97,13 +97,13 @@ Run tests locally before considering work done — don't skip the suite even on 
 
 The hooks live in **`.githooks/`, tracked in this repo** — that directory is the source, edit it there. Git runs them only once `core.hooksPath` points at that directory, and that setting is per-checkout local config which cannot be committed, so `cmake -B build` sets it (`CBLS_INSTALL_GIT_HOOKS`, default ON). Configuring the project once is all a fresh clone needs; to wire one up by hand, `git config core.hooksPath .githooks`. If `core.hooksPath` already points somewhere else, CMake warns rather than overwriting it.
 
-Because `core.hooksPath` is shared across worktrees but `.githooks/` only exists on branches that contain it, checking out a branch created before this directory landed runs **no hooks at all**. Merge main into such a branch before relying on the gates.
+`core.hooksPath` is shared across every worktree of a checkout, but `.githooks/` is resolved from the working tree — so a branch that does not carry the directory runs **no hooks at all**, silently. Merge main into any long-lived branch before relying on the gates.
 
 - `pre-commit` — auto-formats staged C++/Python/shell (clang-format, ruff, shfmt), applies safe clang-tidy fixes, re-stages, then runs the affected test suite. Hard block on failure. The clang tools come from `.venv/bin`; if neither the venv nor `PATH` has them it says so rather than skipping quietly.
 - `commit-msg` — Conventional Commits format.
 - `pre-push` — the clean build + **full** suite from `## Build & Test` below, then clang-tidy/ruff-complexity/shellcheck/mypy as warnings. Both the ```build and ```test fences must resolve or the push is blocked; there is no auto-detect fallback, because guessing a build would gate a different one than the documented build.
 
-There is **no `/review` stamp gate**. It was removed along with `.claude/` becoming gitignored: the gate could only ever be satisfied in the checkout that happened to carry the command, and silently did nothing everywhere else. `/review` is still the expected workflow (see **Agent Self-Review**), it is just not machine-enforced at push time.
+Nothing enforces `/review` at push time, by design — a gate keyed on gitignored local tooling can only be satisfied in whichever checkout happens to carry it, and passes silently everywhere else. `/review` is still expected on every change (see **Agent Self-Review**); running it is on you.
 
 ### Fast vs. slow tests
 
@@ -116,9 +116,9 @@ Tag a new test `[slow]` if it takes more than ~10s. Don't tag one just to get a 
 
 **Never use `git push --no-verify` or `git commit --no-verify`** unless explicitly asked. A failing hook is a signal — fix the root cause.
 
-There are deliberately **no Claude Code hooks** (`.claude/settings.json` has no `hooks` block). The `PostToolUse` formatter that used to be configured read `$CLAUDE_FILE_PATH`, which Claude Code does not set, so it silently formatted nothing for the life of this project. Formatting happens at commit time instead — don't hand-tune it.
+Gating lives in git hooks only — `.claude/settings.json` carries no `hooks` block, and none should be added. A `PostToolUse` formatter cannot see which file was edited, so it silently formats nothing; formatting belongs at commit time. Don't hand-tune formatting.
 
-Three `PreToolUse` guards went with it, and unlike the formatter they *did* work: they blocked creating a branch off a non-main branch, bare `python`/`pip`/`pytest`/`mypy` outside `.venv/`, and shelling out to `grep`/`rg`. Those three rules survive as prose — the branch rule under **Git Workflow**, the venv rule under **Build & Test**, the grep preference under **Code Navigation** — but nothing enforces them now. Follow them anyway.
+Three conventions therefore rest on you rather than on a tool: branch only from main (**Git Workflow**), never invoke `python`/`pip`/`pytest`/`mypy` outside `.venv/bin/` (**Build & Test**), and prefer the `Grep` tool to shelling out (**Code Navigation**).
 
 `.claude/` is gitignored local agent tooling (settings, statusline, the `/review` command). Nothing in it is part of the repo.
 

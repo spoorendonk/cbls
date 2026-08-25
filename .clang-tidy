@@ -1,12 +1,11 @@
 # Check contract for the clang-tidy runs in .githooks/pre-commit (safe --fix
 # subset) and .githooks/pre-push (full sweep, warn-only).
 #
-# Owned by this repository, like its sibling .clang-format. It began as a
-# shared house check set carried in the .devkit tooling submodule; that
-# submodule is gone and this file is now the source.
+# Owned by this repository, like its sibling .clang-format.
 #
-# Every deviation from the inherited set is marked NARROWED and carries the
-# measurement that justifies it. Nothing is turned off to avoid work.
+# Where this file departs from stock Google style the reason is recorded
+# inline, with the measurement that justifies it. Nothing is turned off to
+# avoid work.
 ---
 Checks: >
   -*,
@@ -22,13 +21,13 @@ CheckOptions:
     value: 25
   - key: readability-identifier-naming.ClassCase
     value: CamelCase
-  # NARROWED: the inherited set shipped camelBack. Measured over
-  # include/cbls/*.h and src/*.cpp, this codebase is 336 lower_case
-  # functions to 14 CamelCase (all constructors, which take the class
-  # name) -- `full_evaluate`, `delta_evaluate`, `weighted_violation_delta`,
-  # `augmented_objective`. camelBack produced 198 naming warnings in
-  # src/search.cpp alone, i.e. a gate that flags the convention the project
-  # actually has. Google style permits either spelling; encode the real one.
+  # Measured over include/cbls/*.h and src/*.cpp, this codebase runs 336
+  # lower_case functions to 14 CamelCase (all constructors, which take the
+  # class name) -- `full_evaluate`, `delta_evaluate`,
+  # `weighted_violation_delta`, `augmented_objective`. camelBack would flag
+  # 198 of them in src/search.cpp alone, i.e. a gate that objects to the
+  # convention the project actually has. Google style permits either
+  # spelling; encode the real one.
   - key: readability-identifier-naming.FunctionCase
     value: lower_case
   # The typed-variable factory API on Model is deliberately CamelCase: each
@@ -40,13 +39,12 @@ CheckOptions:
     value: '^(Bool|Int|Float|List|Set|Constant)$'
   - key: readability-identifier-naming.VariableCase
     value: lower_case
-  # NARROWED: the inherited set shipped one ConstantCase of UPPER_CASE, a
-  # spelling used nowhere here, and clang-tidy applies "constant" to every
-  # `const` local and `const` parameter as well as to file-scope tables.
-  # Split by scope to match the code: file-scope, static, class and
-  # constexpr constants are k-prefixed CamelCase (15 measured, e.g.
-  # `kMaxStaleRounds`); `const` locals and parameters are ordinary
-  # lower_case and carry no marker.
+  # A single ConstantCase of UPPER_CASE is a spelling used nowhere here, and
+  # clang-tidy applies "constant" to every `const` local and `const`
+  # parameter as well as to file-scope tables. Split by scope to match the
+  # code: file-scope, static, class and constexpr constants are k-prefixed
+  # CamelCase (15 measured, e.g. `kMaxStaleRounds`); `const` locals and
+  # parameters are ordinary lower_case and carry no marker.
   - key: readability-identifier-naming.LocalConstantCase
     value: lower_case
   - key: readability-identifier-naming.LocalConstantPointerCase

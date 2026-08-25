@@ -3,8 +3,7 @@
 # Validates Conventional Commits format.
 # Pattern: type: description (max 72 chars subject line)
 #
-# Vendored from devkit when the .devkit submodule was removed. This directory
-# is the source now — edit it here.
+# This directory is the source for the git hooks — edit them here.
 
 MSG_FILE="$1"
 MSG=$(head -1 "$MSG_FILE")
