@@ -62,7 +62,7 @@ With Python bindings:
 ```bash
 cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE=$(which python3)
 cmake --build build
-pytest                    # 67 Python binding tests
+.venv/bin/pytest          # 175 tests, 73 of them for the bindings
 ```
 
 Or install as a Python package:
