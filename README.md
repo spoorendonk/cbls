@@ -87,13 +87,26 @@ pip install .
 
 ## Benchmarks
 
-Benchmark domains exercise different solver features. See individual directories for details.
+Three benchmarks carry the comparative story, in priority order. See individual
+directories for details.
 
-| Domain | Problem | Key features tested |
-|--------|---------|-------------------|
-| Energy | CHPED dispatch | Float variables, delta evaluation |
-| Energy | UC-CHPED | Bool + Float, min up/down constraints |
-| Combinatorial | OR-Library set covering | Set variables vs. the Bool encoding of the same instance |
+| # | Benchmark | Runner | Compared against | What it establishes |
+|---|-----------|--------|------------------|---------------------|
+| 1 | MIPfeas (MIPLIB 2017) | `cbls_mipfeas` | OR-Tools CP-SAT `num_violation_ls` worker only | that this implementation holds up against the reference implementation of the same algorithm. Deliberately **not** a MIP-competitiveness claim |
+| 2 | MINLPLib subset | `cbls_minlplib` | SCIP (nonlinear) | non-convex MINLP — the regime CP-SAT's LS worker cannot express. This is the headline claim |
+| 3 | UC-CHPED | `cbls_uc_chped` | Pedroso et al. 2014 | a published unit-commitment formulation whose valve-point `\|d·sin(e·(Pmin−P))\|` term is likewise inexpressible in CP-SAT |
+
+A benchmark earns a place on that list on one of two grounds: it contains terms
+CP-SAT cannot express (rows 2-3), or it is a same-algorithm head-to-head on a
+formulation both sides express identically (row 1). Nothing else qualifies — a
+model whose faithful form is a MILP belongs to CP-SAT, CPLEX and Gurobi.
+
+Two further directories are **not** benchmarks in that sense:
+
+| Directory | Runner | What it is |
+|-----------|--------|------------|
+| `benchmarks/setcover/` | `cbls_setcover` | the scoped coverage check the `Set` variable type was missing — ten OR-Library instances under both a `Set` and a Bool encoding. Its result is a documented limitation, not a comparative claim |
+| `benchmarks/chped/` | none — consumed by the `cbls_chped` example | reference-only: model builder, data and a SCIP baseline for CHPED dispatch. Benchmark 1 was dropped as active work; `examples/chped.cpp` includes the model header, so it survives as a worked modelling example with no runner or comparison table |
 
 ## Architecture
 
