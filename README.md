@@ -1,7 +1,8 @@
 # CBLS
 
 Constraint-Based Local Search engine for mixed discrete-continuous optimization.
-Simulated annealing over an expression DAG with penalty-method feasibility.
+ViolationLS — guided local search over single- and compound-variable jumps on an
+expression DAG, with per-constraint GLS weights carrying the feasibility pressure.
 
 **Status: early-stage research solver, actively developed.**
 
@@ -73,13 +74,13 @@ pip install .
 ## What works
 
 - Small-to-medium nonlinear mixed-integer problems
-- Problems where SA's ability to escape local optima matters (nonconvex, discontinuous)
+- Problems where escaping local optima matters (nonconvex, discontinuous) — GLS reweighting reshapes the landscape on stagnation, and diversification kicks or LNS restart the search from a perturbed assignment
 - Problems where exact solvers time out (CBLS finds feasible solutions on instances where SCIP cannot within time limits)
 - Stochastic scheduling with continuous inner optimization (nuclear outage benchmark beats MIP baselines)
 
 ## Known limitations
 
-- Tightly-coupled multi-period problems with long-range constraints (e.g., min up/down times spanning many periods) are hard for SA — construction heuristic struggles to find feasible solutions
+- Tightly-coupled multi-period problems with long-range constraints (e.g., min up/down times spanning many periods) are hard for a jump-based search — a single-variable jump sees one period at a time, so reaching a first feasible solution is slow
 - Solution quality gaps of 15-40% vs exact solvers on problems where MIP works well
 - Benchmark models are simplified relative to their source papers; comparison results are not directly comparable to published results
 - No constraint propagation, cutting planes, or LP relaxation — this is pure local search
@@ -99,7 +100,7 @@ Benchmark domains exercise different solver features. See individual directories
 
 ## Architecture
 
-See [docs/architecture.md](docs/architecture.md) for solver internals: expression DAG, SA loop, move generation, inner solver, LNS, threading.
+See [docs/architecture.md](docs/architecture.md) for solver internals: expression DAG, ViolationLS outer loop, Generalised Feasibility Jump, move generation, inner solver, LNS, threading.
 
 ## License
 
