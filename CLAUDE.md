@@ -402,6 +402,14 @@ unrelated engine issue whose acceptance criterion hard-coded a suite size the
 removal invalidated. Grep for stale test counts as well as for the slug; #119
 named neither the benchmark nor the epic.
 
+Close a retired benchmark's sub-issues as **not planned**, not completed — the
+work was abandoned, not delivered, and a later query filtering closed-as-
+completed to reconstruct what shipped would otherwise be wrong by a dozen or
+more. `gh issue close --reason` is silently a no-op on an already-closed issue;
+to correct one after the fact use
+`gh api --method PATCH /repos/:owner/:repo/issues/<num> -f state=closed -f state_reason=not_planned`.
+The epic itself stays *completed* — retiring it was the job, and it got done.
+
 `setcover` is **not a fifth benchmark**. It is the scoped coverage check the
 `Set` variable type had been missing (#93): ten small OR-Library set-covering
 instances, run under both a `Set` and a Bool encoding, whose result is a
