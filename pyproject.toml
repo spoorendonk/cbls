@@ -75,3 +75,13 @@ strict = true
 python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
+
+# _cbls_core is a compiled nanobind extension with no stubs, so mypy cannot
+# resolve it and reported import-not-found on every run -- including when the
+# module was built and importable. Scoped to this one module rather than set
+# globally: `ignore_missing_imports = true` at top level would also swallow a
+# genuine typo in a real dependency, which is the failure this repo's "don't
+# ignore type errors" rule is aimed at.
+[[tool.mypy.overrides]]
+module = "_cbls_core"
+ignore_missing_imports = true
