@@ -112,6 +112,17 @@ Nothing enforces `/review` at push time, by design — a gate keyed on gitignore
 - `ctest -LE slow` — the other 245 tests, ~7s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
 
+These counts are hard-coded in **five** places and nothing checks that they
+agree: this section, the comment above `catch_discover_tests` in
+`tests/CMakeLists.txt`, the build section of `README.md`, the comment above the
+`ctest` call in `.githooks/pre-commit`, and — for the pytest side — the
+`.venv/bin/pytest` line in `README.md` (175 tests, 73 of them binding tests,
+echoed in prose by `pyproject.toml` and `tests/python/conftest.py`). Update all
+of them in the same commit as any change to the test roster. Leaving one behind
+is not hypothetical: removing a benchmark missed `README.md` once and
+`.githooks/pre-commit` twice running, so pre-commit spent two removals claiming
+33 slow tests of a ~1010s run.
+
 Tag a new test `[slow]` if it takes more than ~10s. Don't tag one just to get a green commit — pre-push will still run it.
 
 **Never use `git push --no-verify` or `git commit --no-verify`** unless explicitly asked. A failing hook is a signal — fix the root cause.
@@ -386,7 +397,10 @@ Not every hit is closeable, though. An issue that is still valid and merely
 *cites* the retired benchmark's code — a hook name, a file path, a list of
 affected benchmarks — needs its body **edited** to name a surviving example
 instead; closing it would drop live work. Retiring nuclear-outage needed
-closure on fifteen issues and an edit on three (#103, #38, #31).
+closure on fifteen issues and an edit on four — #103, #38, #31, and #119, an
+unrelated engine issue whose acceptance criterion hard-coded a suite size the
+removal invalidated. Grep for stale test counts as well as for the slug; #119
+named neither the benchmark nor the epic.
 
 `setcover` is **not a fifth benchmark**. It is the scoped coverage check the
 `Set` variable type had been missing (#93): ten small OR-Library set-covering
