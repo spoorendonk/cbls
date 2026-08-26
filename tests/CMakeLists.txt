@@ -14,7 +14,6 @@ add_executable(cbls_tests
     test_inner_solver.cpp
     test_callback.cpp
     test_io.cpp
-    test_nuclear_outage.cpp
     test_pharma_glsp.cpp
     test_io_mps.cpp
     test_mipfeas.cpp
@@ -38,10 +37,15 @@ include(Catch)
 # multi-minute solves into one serial invocation would make the full suite far
 # slower than it is.
 #
-# Measured: 27 of 291 tests take >10s and account for ~2130s of the suite's
-# aggregate (summed per-test) time; with `-j$(nproc)` the full run is ~333s of
-# wall clock. The remaining 264 finish in ~7s with `-j`, which is what
+# Measured: 27 of 272 tests take >10s and account for ~2130s of the suite's
+# aggregate (summed per-test) time; with `-j$(nproc)` the full run is ~339s of
+# wall clock. The remaining 245 finish in ~7s with `-j`, which is what
 # pre-commit runs via `ctest -LE slow`. pre-push still runs everything.
+#
+# SKIP_RETURN_CODE 4 maps Catch2's SKIP() onto ctest's "Skipped" rather than a
+# failure. No test uses SKIP() today -- the data-gated ROADEF tests that needed
+# it went with the nuclear-outage benchmark -- but it stays so the next
+# instance-gated test reports honestly instead of a confusing red at push.
 catch_discover_tests(cbls_tests
     TEST_SPEC "~[timing]~[slow]"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}

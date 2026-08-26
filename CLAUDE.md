@@ -107,9 +107,9 @@ Nothing enforces `/review` at push time, by design — a gate keyed on gitignore
 
 ### Fast vs. slow tests
 
-27 of the 291 C++ tests are multi-minute benchmark solves carrying the Catch2 `[slow]` tag; they account for ~2130s of the suite's aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~333s wall-clock full run. They are registered by their own `catch_discover_tests` call in `tests/CMakeLists.txt` with `LABELS "slow"`, so:
+27 of the 272 C++ tests are multi-minute benchmark solves carrying the Catch2 `[slow]` tag; they account for ~2130s of the suite's aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~339s wall-clock full run. They are registered by their own `catch_discover_tests` call in `tests/CMakeLists.txt` with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 264 tests, ~7s with `-j`. This is what **pre-commit** runs.
+- `ctest -LE slow` — the other 245 tests, ~7s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
 
 Tag a new test `[slow]` if it takes more than ~10s. Don't tag one just to get a green commit — pre-push will still run it.
@@ -311,7 +311,7 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 
 ### Key extension points
 
-- **`InnerSolverHook`** — subclass to provide domain-specific continuous optimization (see benchmark `*_hook.h` files for examples)
+- **`InnerSolverHook`** — subclass to provide domain-specific continuous optimization (`benchmarks/pharma-glsp/glsp_hook.h` is the worked example)
 - **New operations** — add to `NodeOp` enum in `dag.h`, implement `evaluate()` in `dag.cpp`, `local_derivative()` for AD, `delta_evaluate` support in `dag_ops.cpp`
 
 ### Build targets
@@ -322,7 +322,6 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 | `cbls_cli` | `src/cli.cpp` | CLI executable |
 | `cbls_tests` | `tests/*.cpp` | Catch2 test suite |
 | `cbls_uc_chped` | `benchmarks/uc-chped/` | UC-CHPED benchmark runner |
-| `cbls_nuclear_outage` | `benchmarks/nuclear-outage/` | Nuclear outage benchmark runner |
 | `cbls_pharma_glsp` | `benchmarks/pharma-glsp/` | Pharma GLSP benchmark runner |
 | `cbls_mipfeas` | `benchmarks/mipfeas/` | MIPfeas runner (one instance per process) |
 | `cbls_minlplib` | `benchmarks/minlplib/` | MINLPLib benchmark runner |
@@ -367,23 +366,27 @@ down; do not start lower-priority benchmark work while a higher one is open.
 compare against CP-SAT's default full portfolio, Xpress, Gurobi or CPLEX — see
 epic #87 for why that framing is rejected.
 
-`nuclear-outage` is **deprioritised, not dropped**: its code, data, tests and
-open issues (epic #26) all stay, but no new work starts on it. Don't pick up one
-of its issues just because it looks tractable.
-
-`bunker-eca` is **removed** (#27). Its benchmark code, instance data, tests,
-CMake target and docs are gone from the tree. Nothing should be restored from
-history; if a maritime bunker/ECA benchmark is ever wanted again it starts from
-a new epic.
+`nuclear-outage` (#26) and `bunker-eca` (#27) are **removed**. Their benchmark
+code, instance data, tests, CMake targets and docs are gone from the tree.
+Nothing should be restored from history; if a ROADEF-style outage-scheduling or
+maritime bunker/ECA benchmark is ever wanted again it starts from a new epic.
 
 **Retiring a benchmark is a tracker job as well as a tree job.** An epic's own
 sub-issue list is not the full set of things that point at it: grep *every* open
 issue body for the epic number and the benchmark slug before declaring it
 closed. Removing bunker-eca turned up three issues its sub-issue list missed — a
 generic engine issue mis-filed under the epic, a cross-benchmark maintenance
-issue naming it in passing, and a test issue citing one of its hooks. A closing
-keyword in a commit message closes the epic only, never its sub-issues, so close
-those explicitly.
+issue naming it in passing, and a test issue citing one of its hooks. Removing
+nuclear-outage was worse: GitHub's sub-issue list for #26 held 8 of the 14
+issues that pointed at it, the other 6 being body-linked with "Part of #26". A
+closing keyword in a commit message closes the epic only, never its sub-issues,
+so close those explicitly.
+
+Not every hit is closeable, though. An issue that is still valid and merely
+*cites* the retired benchmark's code — a hook name, a file path, a list of
+affected benchmarks — needs its body **edited** to name a surviving example
+instead; closing it would drop live work. Retiring nuclear-outage needed
+closure on fifteen issues and an edit on three (#103, #38, #31).
 
 `setcover` is **not a fifth benchmark**. It is the scoped coverage check the
 `Set` variable type had been missing (#93): ten small OR-Library set-covering
@@ -399,7 +402,6 @@ Active work happens in sibling git worktrees under `~/code/my/cbls/`. Each sessi
 |----------|---------|------|
 | `uc-chped/` | UC-CHPED: unit commitment + valve-point dispatch | #25 |
 | `pharma-glsp/` | Pharma GLSP + shelf-life campaign scheduling | #28 |
-| `nuclear-outage/` | ROADEF 2010 nuclear outage scheduling — deprioritised | #26 |
 
 Engine-wide (cross-cutting) work is tracked under epic #24.
 
@@ -417,7 +419,7 @@ Each benchmark session must follow these steps in order:
 
 4. **Implement CBLS model** — Create `benchmarks/{name}/data.h` (C++ data structs + loaders) and `benchmarks/{name}/{name}_model.h` (model builder). Follow the pattern of `benchmarks/chped/chped_model.h`. **Critical rules:**
    - Implement features generically in `include/cbls/` and `src/` — not benchmark-specific hacks
-   - You may READ files in other worktree sibling folders (e.g., `../cbls/`, `../nuclear-outage/`) to understand patterns, but NEVER WRITE to them or to their git branches
+   - You may READ files in other worktree sibling folders (e.g., `../cbls/`, `../pharma-glsp/`) to understand patterns, but NEVER WRITE to them or to their git branches
    - If the solver needs new ops, moves, or hooks — implement them in the core library so all benchmarks benefit
    - Add a runner executable in `benchmarks/{name}/{name}.cpp`
    - Add Catch2 tests in `tests/test_{name}.cpp`

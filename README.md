@@ -54,7 +54,7 @@ m.close();
 ```bash
 cmake -B build
 cmake --build build
-ctest --test-dir build    # 291 C++ tests (add -LE slow for the fast 264)
+ctest --test-dir build    # 272 C++ tests (add -LE slow for the fast 245)
 ```
 
 With Python bindings:
@@ -76,7 +76,6 @@ pip install .
 - Small-to-medium nonlinear mixed-integer problems
 - Problems where escaping local optima matters (nonconvex, discontinuous) — GLS reweighting reshapes the landscape on stagnation, and diversification kicks or LNS restart the search from a perturbed assignment
 - Problems where exact solvers time out (CBLS finds feasible solutions on instances where SCIP cannot within time limits)
-- Stochastic scheduling with continuous inner optimization (nuclear outage benchmark beats MIP baselines)
 
 ## Known limitations
 
@@ -94,7 +93,6 @@ Benchmark domains exercise different solver features. See individual directories
 |--------|---------|-------------------|
 | Energy | CHPED dispatch | Float variables, delta evaluation |
 | Energy | UC-CHPED | Bool + Float, min up/down constraints |
-| Energy | Nuclear outage scheduling | Inner solver hook, stochastic evaluation |
 | Manufacturing | Pharma GLSP | List variables (sequencing), lot-sizing |
 | Combinatorial | OR-Library set covering | Set variables vs. the Bool encoding of the same instance |
 
