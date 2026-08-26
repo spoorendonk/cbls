@@ -87,8 +87,11 @@ Bool, Int and Float are *scalar* (jumpable by GFJ). List and Set are
 *structural* — GFJ leaves them untouched; they are moved only by the
 [structural batch](#structural-batch) and LNS.
 
-> **Maturity differs between the two structural types.** List variables are
-> validated on a published formulation (pharma-glsp). Set variables are
+> **Neither structural type has a positive result behind it.** List variables
+> were once described here as validated on a published formulation; that claim
+> is **withdrawn**. It rested on pharma-glsp, whose model was a macro-period
+> relaxation of the source paper and which has since been retired (#28), so
+> `List` now has no benchmark evidence in either direction. Set variables are
 > validated for *expressiveness* only: a set-covering model over a `Set`
 > variable produces verified solutions, but well short of the same instance
 > encoded with one Bool per column — see
@@ -581,8 +584,8 @@ proposes exactly one random add, one random remove and one random swap; nothing
 chooses *which* element on violation grounds, the way FJ's jump table and
 best-of-N scan-set sampling choose a scalar's value.
 
-That is invisible on a mixed model — pharma-glsp's List variables sit alongside
-Float lot sizes that GFJ drives — but it is the whole search on a model whose
+That is invisible on a mixed model — where List/Set variables sit alongside
+scalars that GFJ drives — but it is the whole search on a model whose
 only variables are structured. There, everything else is inert:
 
 | Mechanism | On a structure-only model |
@@ -633,17 +636,19 @@ took **1.19–1.25s unbounded versus 0.502s bounded**. `solve(model, time_limit)
 is a library contract, and that was a violation for any user model of this shape
 (issue #105).
 
-Real benchmark models are nowhere near that scale: pharma-glsp — the one
-benchmark that uses List variables — creates one List per macro-period, so its
-largest class (`glsp_e`, T=10) sweeps 10 structured variables in **p50 499us,
-max 792us**, i.e. 0.03% of a 3s budget. The bound is therefore about honouring
+Real benchmark models were nowhere near that scale. Measured on pharma-glsp
+(the only List benchmark this repo ever had, retired in #28 — the numbers are
+kept because they are the measurement that motivated the bound): it created one
+List per macro-period, so its largest class (`glsp_e`, T=10) swept 10 structured
+variables in **p50 499us, max 792us**, i.e. 0.03% of a 3s budget. The bound is therefore about honouring
 the contract on large user models, not about the benchmarks.
 
 The check is **unconditional per variable**, not strided. An earlier self-tuning
 stride was tried and deleted: because the stride persisted across passes while
 its counter reset per pass, once it exceeded the model's structured-variable
 count it could never fire again — it did nothing at all on 160 of the 170 real
-pharma-glsp instances (2–6 List variables each). Cost of the plain check on real
+pharma-glsp instances (2–6 List variables each; benchmark since retired,
+#28). Cost of the plain check on real
 instances is ~0.75% of runtime at the adversarial `structural_batch_probability
 = 1.0`, and ~0.003% on the default 0.33 path.
 
@@ -1102,7 +1107,8 @@ deleted in silence, and a kick would then inherit a grown stride and spend 64
 moves inside the first large variable (~35 ms rather than ~0.55 ms on #115's 41k
 Set). That is not hypothetical: the same stride-persistence bug already shipped
 once in `structural_pass`, where the stride outgrew the model's structured
-variable count and the check went inert on 160 of 170 pharma-glsp instances.
+variable count and the check went inert on 160 of 170 pharma-glsp instances
+(that benchmark has since been retired, #28; the bug it exposed has not).
 
 The re-arm has its own test because the two above only *depend* on it. On a
 one-List model with `k = 2`, a re-armed kick reads the clock exactly once (move 1
@@ -1170,7 +1176,9 @@ Both of those reach only *jumpable* (scalar) variables, so List and Set variable
 get their own pass in the same kick (#111). Without it, a kick on a model whose
 decision structure is structural randomised nothing at all, and since LNS fires
 only every `lns_interval`-th kick, most kicks on such a model were no-ops — the
-pharma-glsp campaign-scheduling formulation being the case in the roster.
+pharma-glsp campaign-scheduling formulation being the case in the roster at the
+time. That benchmark has since been retired (#28) and no current benchmark has
+this shape, so the guard is now defensive rather than load-bearing.
 
 The structural pass applies `k = max(1, round(p * |elements|))` random moves to
 **each** List/Set variable, drawn from the same typed generators the [structural
@@ -1191,7 +1199,7 @@ moving.
 `list_2opt` reverses a random sub-range (mean ~n/3), so `k = 0.1n` rewrites ~98%
 of positions on a 1000-element list while breaking ~26% of adjacent pairs. The
 adjacency figure is the one that tracks `p`, so the scaling suits a List the DAG
-reads pairwise (`pair_lambda_sum`, which is what pharma-glsp does) and is much
+reads pairwise (`pair_lambda_sum`) and is much
 coarser than `p` suggests for one read positionally (`at`).
 The floor of one move is the price: every structure moves on every kick, `p = 0`
 included, where the scalar half moves exactly one variable.

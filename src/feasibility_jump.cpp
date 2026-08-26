@@ -107,7 +107,7 @@ double random_different_in_domain(const Variable& var, RNG& rng) {
 // reverses a random sub-range (mean ~n/3), so k = 0.1n moves rewrite ~98% of
 // positions on n = 1000 while breaking ~26% of adjacent pairs. The adjacency
 // figure is the one that tracks p, so the scaling is right for a List read
-// pairwise (pair_lambda_sum, what pharma-glsp does) and much coarser than p
+// pairwise (pair_lambda_sum) and much coarser than p
 // suggests for one read positionally (`at`).
 //
 // A structure has no "randomise the whole variable" analogue that is not a

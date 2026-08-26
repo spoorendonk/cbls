@@ -164,10 +164,6 @@ if(CBLS_BUILD_BENCHMARKS)
     target_link_libraries(cbls_uc_chped PRIVATE cbls_lib)
     target_include_directories(cbls_uc_chped PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${json_SOURCE_DIR}/include)
 
-    add_executable(cbls_pharma_glsp benchmarks/pharma-glsp/pharma_glsp.cpp)
-    target_link_libraries(cbls_pharma_glsp PRIVATE cbls_lib)
-    target_include_directories(cbls_pharma_glsp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${json_SOURCE_DIR}/include)
-
     add_executable(cbls_minlplib benchmarks/minlplib/minlplib.cpp)
     target_link_libraries(cbls_minlplib PRIVATE cbls_lib)
     target_include_directories(cbls_minlplib PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

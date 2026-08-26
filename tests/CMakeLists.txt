@@ -14,7 +14,6 @@ add_executable(cbls_tests
     test_inner_solver.cpp
     test_callback.cpp
     test_io.cpp
-    test_pharma_glsp.cpp
     test_io_mps.cpp
     test_mipfeas.cpp
     test_minlplib.cpp
@@ -33,13 +32,13 @@ include(Catch)
 # the whole call, and Catch2 3.5.2 has no tag-to-label mapping. Two calls do not
 # collide -- Catch.cmake derives its generated filenames from a hash of the
 # arguments. Discovering them (rather than lumping them into one add_test) keeps
-# per-test granularity and lets ctest -j run them in parallel; collapsing 27
+# per-test granularity and lets ctest -j run them in parallel; collapsing 22
 # multi-minute solves into one serial invocation would make the full suite far
 # slower than it is.
 #
-# Measured: 27 of 272 tests take >10s and account for ~2130s of the suite's
-# aggregate (summed per-test) time; with `-j$(nproc)` the full run is ~339s of
-# wall clock. The remaining 245 finish in ~7s with `-j`, which is what
+# Measured: 22 of 265 tests take >10s and account for ~1470s of the suite's
+# aggregate (summed per-test) time; with `-j$(nproc)` the full run is ~304s of
+# wall clock. The remaining 243 finish in ~7s with `-j`, which is what
 # pre-commit runs via `ctest -LE slow`. pre-push still runs everything.
 #
 # SKIP_RETURN_CODE 4 maps Catch2's SKIP() onto ctest's "Skipped" rather than a

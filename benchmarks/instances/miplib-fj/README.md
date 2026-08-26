@@ -19,9 +19,11 @@ Trusted external yardstick for the CBLS engine. The instance list below is a
 exact roster — see "Caveats") of the Luteberget & Sartor 2023 *Feasibility
 Jump* (FJ) primal-heuristic benchmark.
 
-This benchmark exists because our application benchmarks (uc-chped and
-pharma-glsp) both deviate from their published formulations in non-trivial
-ways, so their "BKS gap" columns are not apples-to-apples. The MIPLIB
+This benchmark exists because our application benchmarks deviated from their
+published formulations in non-trivial ways, so their "BKS gap" columns were not
+apples-to-apples. (Of the two that motivated this, pharma-glsp has since been
+retired for that reason, #28; uc-chped's deviations were later bounded at
+~0.1% — see its `FIDELITY.md`.) The MIPLIB
 instances here have unambiguous formulations and independently verified optima
 from `miplib2017-v22.solu`, so any gap-to-opt percentage on this benchmark is a
 real apples-to-apples gap.

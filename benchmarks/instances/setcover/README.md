@@ -6,7 +6,9 @@ real-instance usage anywhere in the repo: the three Set move generators
 (`set_add` / `set_remove` / `set_swap`) were reached only from synthetic 3-10
 element unit tests, so any claim that the engine "generalises to List/Set
 structured variables" was substantiated for List (pharma-glsp) and unsupported
-for Set.
+for Set. **That List half has since been withdrawn**: pharma-glsp was retired
+(#28) once its model turned out to be a relaxation of the source paper, so
+neither structured type has a positive result behind it now.
 
 Set covering is the natural workload: the decision *is* a subset of a universe,
 so the model is one `Set` variable and nothing else.
@@ -19,9 +21,10 @@ so the model is one `Set` variable and nothing else.
 | Does the search produce genuine, verified solutions? | **Yes** — every run on the roster returns a real cover, re-checked against the instance file. |
 | Is the `Set` encoding *competitive*? | **No.** It never beats the plain Bool encoding of the same instance (it ties on two unicost instances), and on the weighted instances it costs 8.5-9.9x the optimum where Bool is within 9-20%. See [Result](#result). |
 
-So the honest scope of the structured-variable claim today is: **List variables
-are validated for quality (pharma-glsp); `Set` variables are validated for
-expressiveness only.** Making the Set search competitive is future work, and
+So the honest scope of the structured-variable claim today is: **`Set`
+variables are validated for expressiveness only, and `List` variables are not
+validated at all** — the benchmark that once carried the List claim
+(pharma-glsp) was retired in #28. Making the Set search competitive is future work, and
 [Why the Set encoding loses](#why-the-set-encoding-loses) says exactly what is
 missing.
 

@@ -107,9 +107,9 @@ Nothing enforces `/review` at push time, by design — a gate keyed on gitignore
 
 ### Fast vs. slow tests
 
-27 of the 272 C++ tests are multi-minute benchmark solves carrying the Catch2 `[slow]` tag; they account for ~2130s of the suite's aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~339s wall-clock full run. They are registered by their own `catch_discover_tests` call in `tests/CMakeLists.txt` with `LABELS "slow"`, so:
+22 of the 265 C++ tests are multi-minute benchmark solves carrying the Catch2 `[slow]` tag; they account for ~1470s of the suite's aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~304s wall-clock full run. They are registered by their own `catch_discover_tests` call in `tests/CMakeLists.txt` with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 245 tests, ~7s with `-j`. This is what **pre-commit** runs.
+- `ctest -LE slow` — the other 243 tests, ~7s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
 
 These counts are hard-coded in **five** places and nothing checks that they
@@ -322,7 +322,7 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 
 ### Key extension points
 
-- **`InnerSolverHook`** — subclass to provide domain-specific continuous optimization (`benchmarks/pharma-glsp/glsp_hook.h` is the worked example)
+- **`InnerSolverHook`** — subclass to provide domain-specific continuous optimization. The reference implementation is the built-in `FloatIntensifyHook` (`include/cbls/inner_solver.h`, `src/inner_solver.cpp`); no benchmark currently ships a custom one, the worked example having gone with pharma-glsp (#28).
 - **New operations** — add to `NodeOp` enum in `dag.h`, implement `evaluate()` in `dag.cpp`, `local_derivative()` for AD, `delta_evaluate` support in `dag_ops.cpp`
 
 ### Build targets
@@ -333,7 +333,6 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 | `cbls_cli` | `src/cli.cpp` | CLI executable |
 | `cbls_tests` | `tests/*.cpp` | Catch2 test suite |
 | `cbls_uc_chped` | `benchmarks/uc-chped/` | UC-CHPED benchmark runner |
-| `cbls_pharma_glsp` | `benchmarks/pharma-glsp/` | Pharma GLSP benchmark runner |
 | `cbls_mipfeas` | `benchmarks/mipfeas/` | MIPfeas runner (one instance per process) |
 | `cbls_minlplib` | `benchmarks/minlplib/` | MINLPLib benchmark runner |
 | `cbls_setcover` | `benchmarks/setcover/` | OR-Library set-covering runner (Set-variable coverage check, #93) |
@@ -362,25 +361,43 @@ The `benchmarks/chped/` directory is reference-only (Benchmark 1 was dropped).
 
 ### Benchmark priority
 
-Four benchmarks carry the comparative story, in this order. Work the list top
+Three benchmarks carry the comparative story, in this order. Work the list top
 down; do not start lower-priority benchmark work while a higher one is open.
+
+**The criterion for being on this list**: the model contains terms CP-SAT cannot
+express at all — transcendental or non-convex over continuous variables. That is
+the whole claim. A benchmark whose faithful formulation is a MILP does not
+belong here however interesting the application is, because CP-SAT, CPLEX and
+Gurobi own that regime and epic #87 already rejects competing there.
 
 | # | Benchmark | Compared against | Purpose | Tracking |
 |---|-----------|------------------|---------|----------|
 | 1 | `mipfeas` | OR-Tools CP-SAT `num_violation_ls` worker **only** | head-to-head correctness *and* performance against the reference implementation of the same jump-based algorithm | #90 |
 | 2 | `minlplib` | SCIP (nonlinear) | performance on non-convex MINLP — the regime CP-SAT's LS worker cannot express | #89, #87 |
 | 3 | `uc-chped` | Pedroso 2014 | a good result on a published unit-commitment formulation | #25, #91, #92 |
-| 4 | `pharma-glsp` | Goerler et al. 2020 | a List-variable use case on a published formulation | #28, #94 |
 
 **Priority 1 is deliberately not a MIP shootout.** Compare only against CP-SAT's
 `num_violation_ls` worker (same algorithm, different implementation). Do **not**
 compare against CP-SAT's default full portfolio, Xpress, Gurobi or CPLEX — see
 epic #87 for why that framing is rejected.
 
-`nuclear-outage` (#26) and `bunker-eca` (#27) are **removed**. Their benchmark
-code, instance data, tests, CMake targets and docs are gone from the tree.
-Nothing should be restored from history; if a ROADEF-style outage-scheduling or
-maritime bunker/ECA benchmark is ever wanted again it starts from a new epic.
+`nuclear-outage` (#26), `bunker-eca` (#27) and `pharma-glsp` (#28, #94) are
+**removed**. Their benchmark code, instance data, tests, CMake targets and docs
+are gone from the tree. Nothing should be restored from history; if a
+ROADEF-style outage-scheduling, maritime bunker/ECA or pharmaceutical
+lot-sizing benchmark is ever wanted again it starts from a new epic.
+
+**Why pharma-glsp went**, since it was priority 4 and not obviously doomed: its
+sole justification was being the one List-variable use case, and that did not
+survive scrutiny. The committed model was a macro-period *relaxation* (audit
+#76) — C1, C2, C6, C7 and C10 unmodelled, disposal structurally inert — which
+is why its objectives ran 2-15x *below* the paper's. Expressing the paper's
+actual GLSP-RP faithfully needs one Bool per (product, micro-slot) plus Floats
+and nothing else; the permutation `List` was never the natural object, it was a
+workaround for the engine not having a sequence-with-repeats type. And the
+faithful formulation is a MILP — Goerler et al. solved it with CPLEX — so it
+fails the criterion above. The List claim now rests on nothing; see the
+**Structured variables** note below before reasserting it.
 
 **Retiring a benchmark is a tracker job as well as a tree job.** An epic's own
 sub-issue list is not the full set of things that point at it: grep *every* open
@@ -410,11 +427,34 @@ to correct one after the fact use
 `gh api --method PATCH /repos/:owner/:repo/issues/<num> -f state=closed -f state_reason=not_planned`.
 The epic itself stays *completed* — retiring it was the job, and it got done.
 
-`setcover` is **not a fifth benchmark**. It is the scoped coverage check the
+`setcover` is **not a fourth benchmark**. It is the scoped coverage check the
 `Set` variable type had been missing (#93): ten small OR-Library set-covering
 instances, run under both a `Set` and a Bool encoding, whose result is a
 documented limitation rather than a comparative claim (see
 `benchmarks/instances/setcover/README.md`). Don't grow it into an epic.
+
+### Structured variables: the claim is currently unsupported
+
+Do not write, in docs or issues or commit messages, that List variables are
+validated on a published formulation. They are not, as of the pharma-glsp
+retirement. The evidence position is:
+
+- **`Set`** — measured and **negative** (#93). The `Set` encoding lands at
+  8.5-9.9x the proven optimum where the same data in Bools is within 9-20%.
+- **`List`** — **no evidence either way**. The only List benchmark was
+  pharma-glsp, whose model was a relaxation, and whose faithful form does not
+  need a List at all.
+
+The mechanical cause of the `Set` result is generic and applies to `List`
+equally: `local_derivative` returns `0.0` for the structural ops
+(`src/dag.cpp`, `NodeOp::PairLambda`), so structured variables get no AD signal
+and no Feasibility Jump jump-table entry, and `set_moves`/`list_moves` therefore
+pick uniformly at random while every scalar move is cost-guided. **Cost-aware
+structural move selection is the prerequisite** for any renewed structured-variable
+claim, and `setcover` is its ready-made A/B harness — same instances, both
+encodings, a published baseline already committed. Fix the guidance, re-run
+setcover, and only then consider whether a new List/Set benchmark is worth
+building. Adding one first just reproduces #93's negative result in a new domain.
 
 ### Benchmark worktrees
 
@@ -423,7 +463,6 @@ Active work happens in sibling git worktrees under `~/code/my/cbls/`. Each sessi
 | Worktree | Problem | Epic |
 |----------|---------|------|
 | `uc-chped/` | UC-CHPED: unit commitment + valve-point dispatch | #25 |
-| `pharma-glsp/` | Pharma GLSP + shelf-life campaign scheduling | #28 |
 
 Engine-wide (cross-cutting) work is tracked under epic #24.
 
@@ -441,7 +480,7 @@ Each benchmark session must follow these steps in order:
 
 4. **Implement CBLS model** — Create `benchmarks/{name}/data.h` (C++ data structs + loaders) and `benchmarks/{name}/{name}_model.h` (model builder). Follow the pattern of `benchmarks/chped/chped_model.h`. **Critical rules:**
    - Implement features generically in `include/cbls/` and `src/` — not benchmark-specific hacks
-   - You may READ files in other worktree sibling folders (e.g., `../cbls/`, `../pharma-glsp/`) to understand patterns, but NEVER WRITE to them or to their git branches
+   - You may READ files in other worktree sibling folders (e.g., `../cbls/`, `../uc-chped/`) to understand patterns, but NEVER WRITE to them or to their git branches
    - If the solver needs new ops, moves, or hooks — implement them in the core library so all benchmarks benefit
    - Add a runner executable in `benchmarks/{name}/{name}.cpp`
    - Add Catch2 tests in `tests/test_{name}.cpp`

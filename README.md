@@ -54,7 +54,7 @@ m.close();
 ```bash
 cmake -B build
 cmake --build build
-ctest --test-dir build    # 272 C++ tests (add -LE slow for the fast 245)
+ctest --test-dir build    # 265 C++ tests (add -LE slow for the fast 243)
 ```
 
 With Python bindings:
@@ -81,9 +81,9 @@ pip install .
 
 - Tightly-coupled multi-period problems with long-range constraints (e.g., min up/down times spanning many periods) are hard for a jump-based search — a single-variable jump sees one period at a time, so reaching a first feasible solution is slow
 - Solution quality gaps of 15-40% vs exact solvers on problems where MIP works well
-- Benchmark models are simplified relative to their source papers; comparison results are not directly comparable to published results
+- Benchmark models may be simplified relative to their source papers; where they are, the benchmark's own `FIDELITY.md` records the deviation equation by equation and the comparison table says what it may and may not claim
 - No constraint propagation, cutting planes, or LP relaxation — this is pure local search
-- **Set variables are expressible, not yet competitive.** A model whose only variables are structured (List/Set) is searched by the structural batch alone — a first-improvement hill climber over a small random move sample, with no Feasibility Jump and no compound moves. Diversification reaches it, but only with the same unguided moves. On the weighted OR-Library set-covering instances the `Set` encoding lands at 8.5-9.9x the proven optimum while the same instance encoded with one Bool per column is within 9-20% (see `benchmarks/instances/setcover/`); on unicost instances the two nearly converge. List variables, which appear alongside scalars in the pharma GLSP model, are not affected in the same way.
+- **Set variables are expressible, not yet competitive.** A model whose only variables are structured (List/Set) is searched by the structural batch alone — a first-improvement hill climber over a small random move sample, with no Feasibility Jump and no compound moves. Diversification reaches it, but only with the same unguided moves. On the weighted OR-Library set-covering instances the `Set` encoding lands at 8.5-9.9x the proven optimum while the same instance encoded with one Bool per column is within 9-20% (see `benchmarks/instances/setcover/`); on unicost instances the two nearly converge. `List` variables are **untested** in this respect: the only List benchmark was pharma GLSP, which has been retired, so there is currently no evidence either way. The mechanical cause is shared — `local_derivative` returns `0.0` for the structural ops, so no structured variable gets an AD signal or a Feasibility Jump table entry — which is reason to expect `List` behaves like `Set` here rather than to assume it does not.
 
 ## Benchmarks
 
@@ -93,7 +93,6 @@ Benchmark domains exercise different solver features. See individual directories
 |--------|---------|-------------------|
 | Energy | CHPED dispatch | Float variables, delta evaluation |
 | Energy | UC-CHPED | Bool + Float, min up/down constraints |
-| Manufacturing | Pharma GLSP | List variables (sequencing), lot-sizing |
 | Combinatorial | OR-Library set covering | Set variables vs. the Bool encoding of the same instance |
 
 ## Architecture
