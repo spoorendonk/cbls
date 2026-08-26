@@ -100,8 +100,8 @@ int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations,
 // self-tuning stride was deleted: because the stride persisted across passes
 // while its counter reset per pass, once it exceeded the model's structured
 // variable count it could never fire again, so it did nothing at all on 160 of
-// the 170 real pharma-glsp instances (2-6 List variables each; benchmark
-// retired in #28, the bug it exposed is not). A per-variable
+// the 170 real pharma-glsp instances (2-6 List variables each; the benchmark
+// is gone in #28, the bug it exposed is not). A per-variable
 // clock read costs ~1.4us only on an HPET clocksource like the machine this was
 // measured on; via the vDSO on a TSC clocksource it is ~20-25ns. Amortising a
 // 60x-inflated constant did not justify the complexity.

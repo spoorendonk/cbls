@@ -352,7 +352,7 @@ C++17 (`CMAKE_CXX_STANDARD 17`). See the C++ subsection under **Standards** abov
 Each benchmark follows the same pattern:
 - `data.h` — C++ data structures + constexpr data arrays
 - `*_model.h` — model builder function
-- `*_hook.h` — custom `InnerSolverHook` for domain-specific optimization
+- `*_hook.h` — optional custom `InnerSolverHook`; no benchmark ships one today (see **Key extension points**)
 - `*.cpp` — runner executable
 - `reference_solve.py` — SCIP/PySCIPOpt baseline
 - `verify_*.h` — solution correctness checker
@@ -364,11 +364,18 @@ The `benchmarks/chped/` directory is reference-only (Benchmark 1 was dropped).
 Three benchmarks carry the comparative story, in this order. Work the list top
 down; do not start lower-priority benchmark work while a higher one is open.
 
-**The criterion for being on this list**: the model contains terms CP-SAT cannot
-express at all — transcendental or non-convex over continuous variables. That is
-the whole claim. A benchmark whose faithful formulation is a MILP does not
-belong here however interesting the application is, because CP-SAT, CPLEX and
-Gurobi own that regime and epic #87 already rejects competing there.
+**The criterion for carrying a comparative quality claim**: the model contains
+terms CP-SAT cannot express at all — transcendental or non-convex over
+continuous variables. A benchmark whose faithful formulation is a MILP cannot
+carry such a claim however interesting the application is, because CP-SAT, CPLEX
+and Gurobi own that regime and epic #87 already rejects competing there.
+
+Row 1 is deliberately exempt, on a different rationale: `mipfeas` is pure MILP
+and CP-SAT expresses every instance natively. It earns its place as an
+*implementation* check — same algorithm, two implementations, identical
+formulation — not as a claim that this engine is better there. Read the two
+admission grounds as separate: expressiveness (rows 2-3) or same-algorithm
+head-to-head (row 1). Nothing else qualifies.
 
 | # | Benchmark | Compared against | Purpose | Tracking |
 |---|-----------|------------------|---------|----------|
@@ -387,7 +394,8 @@ are gone from the tree. Nothing should be restored from history; if a
 ROADEF-style outage-scheduling, maritime bunker/ECA or pharmaceutical
 lot-sizing benchmark is ever wanted again it starts from a new epic.
 
-**Why pharma-glsp went**, since it was priority 4 and not obviously doomed: its
+**Why pharma-glsp went**, since it sat on this list until now and was not
+obviously doomed: its
 sole justification was being the one List-variable use case, and that did not
 survive scrutiny. The committed model was a macro-period *relaxation* (audit
 #76) — C1, C2, C6, C7 and C10 unmodelled, disposal structurally inert — which
@@ -446,10 +454,22 @@ retirement. The evidence position is:
   need a List at all.
 
 The mechanical cause of the `Set` result is generic and applies to `List`
-equally: `local_derivative` returns `0.0` for the structural ops
-(`src/dag.cpp`, `NodeOp::PairLambda`), so structured variables get no AD signal
-and no Feasibility Jump jump-table entry, and `set_moves`/`list_moves` therefore
-pick uniformly at random while every scalar move is cost-guided. **Cost-aware
+equally, and it has **two independent halves** — fixing either alone changes
+nothing:
+
+1. `FeasibilityJump::jumpable` (`src/feasibility_jump.cpp`) is a deliberate
+   Bool/Int/Float whitelist, so no structured variable ever gets a jump-table
+   entry regardless of its derivative. Its comment says the whitelist is
+   intentional.
+2. `local_derivative` (`src/dag.cpp`) returns `0.0` for *every* structural op —
+   `At`, `Count`, `Lambda`, `PairLambda` — so there is no AD signal to build a
+   jump value from either. (`setcover`'s `Set` model reads through `Lambda`;
+   `PairLambda` was the retired benchmark's op.)
+
+What is left is `set_moves`/`list_moves` drawing uniformly at random, where the
+scalar path has FJ's jump table and best-of-N scan-set sampling to steer it.
+Note the contrast is between the two *paths*, not the individual generators —
+`int_rand` and `float_perturb` are themselves uniform. **Cost-aware
 structural move selection is the prerequisite** for any renewed structured-variable
 claim, and `setcover` is its ready-made A/B harness — same instances, both
 encodings, a published baseline already committed. Fix the guidance, re-run

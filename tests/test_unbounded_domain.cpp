@@ -322,8 +322,8 @@ TEST_CASE("ListOrder::Perturb keeps a List's elements, Regenerate need not",
     // The three merged copies were NOT byte-equivalent: LNS shuffled a List's
     // current `elements`, the initialisers regenerated the order from iota.
     // Collapsing both onto Regenerate changed LNS's repair trajectory on every
-    // List model (pharma-glsp among them, since retired) while the RNG count stayed the
-    // same, so nothing caught it. Pin both semantics here.
+    // List model (pharma-glsp among them; since retired) while the RNG draw
+    // count stayed the same, so nothing caught it. Pin both semantics here.
     Model m;
     int32_t l = m.list_var(8, "l");
     m.close();

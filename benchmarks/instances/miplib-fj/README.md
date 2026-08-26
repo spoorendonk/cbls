@@ -22,8 +22,9 @@ Jump* (FJ) primal-heuristic benchmark.
 This benchmark exists because our application benchmarks deviated from their
 published formulations in non-trivial ways, so their "BKS gap" columns were not
 apples-to-apples. (Of the two that motivated this, pharma-glsp has since been
-retired for that reason, #28; uc-chped's deviations were later bounded at
-~0.1% — see its `FIDELITY.md`.) The MIPLIB
+retired for that reason, #28. uc-chped's remain: they are catalogued equation by
+equation in its `FIDELITY.md`, and its `comparison.csv` accordingly still claims
+a reference comparison rather than a certified BKS gap.) The MIPLIB
 instances here have unambiguous formulations and independently verified optima
 from `miplib2017-v22.solu`, so any gap-to-opt percentage on this benchmark is a
 real apples-to-apples gap.

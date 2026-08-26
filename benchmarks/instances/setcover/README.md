@@ -24,9 +24,9 @@ so the model is one `Set` variable and nothing else.
 So the honest scope of the structured-variable claim today is: **`Set`
 variables are validated for expressiveness only, and `List` variables are not
 validated at all** — the benchmark that once carried the List claim
-(pharma-glsp) was retired in #28. Making the Set search competitive is future work, and
-[Why the Set encoding loses](#why-the-set-encoding-loses) says exactly what is
-missing.
+(pharma-glsp) was retired in #28. Making the Set search competitive is future
+work, and [Why the Set encoding loses](#why-the-set-encoding-loses) says exactly
+what is missing.
 
 ## Roster
 

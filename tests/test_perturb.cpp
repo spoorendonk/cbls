@@ -269,9 +269,9 @@ TEST_CASE("perturb's forced integer move covers the domain minus the current val
 // --- #111: the structural half of the kick ---------------------------------
 // #109's guarantee reached only the variables Feasibility Jump can jump, and
 // jumpability is scalar-only. On a model whose decisions live in List/Set
-// variables — campaign scheduling and similar sequencing formulations are what
-// care; pharma-glsp was the benchmark in the roster, retired in #28 — a
-// kick randomised nothing at all, burned the stagnation counter and let the
+// variables — setcover's `Set` encoding is the case in the current roster;
+// pharma-glsp's campaign scheduling was the case when this landed, gone in
+// #28 — a kick randomised nothing at all, burned the stagnation counter and let the
 // search resume exactly where it was. The tests below run many seeds rather than
 // one lucky draw, for the same reason the scalar ones above do.
 
@@ -608,7 +608,7 @@ TEST_CASE("a kick on one large List is bounded by the deadline, not by the List"
     // the first large variable (~35 ms rather than ~0.55 ms on the 41k Set of
     // #115). That exact stride-persistence bug already shipped once in
     // structural_pass, where it went inert on 160 of 170 pharma-glsp instances
-    // (benchmark retired in #28; the bug it exposed is not).
+    // (the benchmark is gone in #28; the bug it exposed is not).
     // Unbounded, this is 10000 — what the pass ran before, whatever the budget.
     REQUIRE(fj.structural_kick_moves() == 1);
     // Not inert: the kick still happened, and still moved the List. Compared

@@ -97,8 +97,8 @@ Bool, Int and Float are *scalar* (jumpable by GFJ). List and Set are
 > encoded with one Bool per column — see
 > [structure-only models](#structure-only-models-what-the-structural-batch-is-and-is-not)
 > and `benchmarks/instances/setcover/README.md`. Treat "generalises to
-> structured variables" as a claim about List, and about Set only as far as
-> modelling reach.
+> structured variables" as a claim about modelling reach only, for both types —
+> beyond that `Set` is measured and negative, and `List` is unbenchmarked.
 
 ### Handle Encoding
 
@@ -640,16 +640,17 @@ Real benchmark models were nowhere near that scale. Measured on pharma-glsp
 (the only List benchmark this repo ever had, retired in #28 — the numbers are
 kept because they are the measurement that motivated the bound): it created one
 List per macro-period, so its largest class (`glsp_e`, T=10) swept 10 structured
-variables in **p50 499us, max 792us**, i.e. 0.03% of a 3s budget. The bound is therefore about honouring
-the contract on large user models, not about the benchmarks.
+variables in **p50 499us, max 792us**, i.e. 0.03% of a 3s budget. The bound is
+therefore about honouring the contract on large user models, not about the
+benchmarks.
 
 The check is **unconditional per variable**, not strided. An earlier self-tuning
 stride was tried and deleted: because the stride persisted across passes while
 its counter reset per pass, once it exceeded the model's structured-variable
 count it could never fire again — it did nothing at all on 160 of the 170 real
 pharma-glsp instances (2–6 List variables each; benchmark since retired,
-#28). Cost of the plain check on real
-instances is ~0.75% of runtime at the adversarial `structural_batch_probability
+#28). Cost of the plain check on real instances is ~0.75% of runtime at the
+adversarial `structural_batch_probability
 = 1.0`, and ~0.003% on the default 0.33 path.
 
 > A per-variable `steady_clock::now()` costs ~1.4us only on an **HPET**
@@ -1108,7 +1109,7 @@ moves inside the first large variable (~35 ms rather than ~0.55 ms on #115's 41k
 Set). That is not hypothetical: the same stride-persistence bug already shipped
 once in `structural_pass`, where the stride outgrew the model's structured
 variable count and the check went inert on 160 of 170 pharma-glsp instances
-(that benchmark has since been retired, #28; the bug it exposed has not).
+(the benchmark is gone in #28; the bug it exposed is not).
 
 The re-arm has its own test because the two above only *depend* on it. On a
 one-List model with `k = 2`, a re-armed kick reads the clock exactly once (move 1
@@ -1177,8 +1178,11 @@ get their own pass in the same kick (#111). Without it, a kick on a model whose
 decision structure is structural randomised nothing at all, and since LNS fires
 only every `lns_interval`-th kick, most kicks on such a model were no-ops — the
 pharma-glsp campaign-scheduling formulation being the case in the roster at the
-time. That benchmark has since been retired (#28) and no current benchmark has
-this shape, so the guard is now defensive rather than load-bearing.
+time. That benchmark has been retired (#28), but the guard is still
+load-bearing: `setcover`'s `Set` encoding (`build_set_model`) allocates one
+`Set` variable and no scalar at all, so every kick on it depends on this pass.
+Its effect there is measured, not assumed — see
+`benchmarks/instances/setcover/README.md`.
 
 The structural pass applies `k = max(1, round(p * |elements|))` random moves to
 **each** List/Set variable, drawn from the same typed generators the [structural
@@ -1199,8 +1203,8 @@ moving.
 `list_2opt` reverses a random sub-range (mean ~n/3), so `k = 0.1n` rewrites ~98%
 of positions on a 1000-element list while breaking ~26% of adjacent pairs. The
 adjacency figure is the one that tracks `p`, so the scaling suits a List the DAG
-reads pairwise (`pair_lambda_sum`) and is much
-coarser than `p` suggests for one read positionally (`at`).
+reads pairwise (`pair_lambda_sum`) and is much coarser than `p` suggests for one
+read positionally (`at`).
 The floor of one move is the price: every structure moves on every kick, `p = 0`
 included, where the scalar half moves exactly one variable.
 `k` is clamped to at least one move and at most one per slot, already a full
