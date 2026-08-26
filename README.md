@@ -54,13 +54,13 @@ m.close();
 ```bash
 cmake -B build
 cmake --build build
-ctest --test-dir build    # 93 C++ tests
+ctest --test-dir build    # 291 C++ tests (add -LE slow for the fast 264)
 ```
 
 With Python bindings:
 
 ```bash
-cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE=$(which python3)
+cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build
 .venv/bin/pytest          # 175 tests, 73 of them for the bindings
 ```

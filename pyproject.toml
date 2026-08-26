@@ -26,6 +26,13 @@ dev = [
     # set at push time. The hooks prefer .venv/bin over PATH for this reason.
     "clang-format==22.1.8",
     "clang-tidy==22.1.8",
+    # Also in [build-system].requires, but pip resolves that in an isolated
+    # build environment and never installs it into the venv. The gated build
+    # (CLAUDE.md's ```build fence) locates nanobind by running
+    # `python -m nanobind --cmake_dir` against .venv/bin/python, so without it
+    # here the documented bootstrap yields a venv that cannot build the
+    # bindings -- and the 73 binding tests would go unrun.
+    "nanobind>=1.8",
 ]
 benchmarks = [
     # CP-SAT's violation_ls worker, the MIPfeas baseline. 9.7 is when the

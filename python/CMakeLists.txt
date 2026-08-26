@@ -1,4 +1,15 @@
-find_package(Python 3.11 COMPONENTS Interpreter Development.Module REQUIRED)
+# Not REQUIRED: the ```build fence in CLAUDE.md turns CBLS_BUILD_PYTHON on for
+# every gated build, so REQUIRED here would hard-fail `cmake -B build` on any
+# machine without the Python development headers -- including someone who only
+# wants the C++ library. Degrading is safe because the skip is no longer silent:
+# tests/python/conftest.py announces the dropped binding tests, and the gate sets
+# CBLS_REQUIRE_BINDINGS=1 so a build that quietly produced no module fails there.
+find_package(Python 3.11 COMPONENTS Interpreter Development.Module)
+
+if(NOT Python_FOUND)
+    message(WARNING "Python 3.11+ with development headers not found, skipping Python bindings.")
+    return()
+endif()
 
 # Try to find nanobind
 execute_process(

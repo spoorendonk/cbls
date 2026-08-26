@@ -208,17 +208,30 @@ rm -rf build
 ```
 
 ```build
-cmake -B build && cmake --build build -j$(nproc)
+cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python" && cmake --build build -j$(nproc)
 ```
 
 ```test
-ctest --test-dir build --output-on-failure -j$(nproc) && (.venv/bin/pytest --tb=short -q; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 5 ])
+ctest --test-dir build --output-on-failure -j$(nproc) && (CBLS_REQUIRE_BINDINGS=1 .venv/bin/pytest --tb=short -q; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 5 ])
 ```
+
+**The gated build turns the Python bindings on, and the gated test run requires
+them.** `CBLS_BUILD_PYTHON` defaults to `OFF`, so the fences used to build no
+bindings, and `tests/python/conftest.py` then dropped every test that imports
+`_cbls_core` without saying so — a clean `cmake -B build` produced `102 passed`
+while 73 binding tests had not run at all, and no gate anywhere would have caught
+a binding regression. Building them costs ~2.4s of build and ~6s of pytest
+against a suite that already spends ~340s in `ctest`, which is not a price worth
+trading coverage for. `CBLS_REQUIRE_BINDINGS=1` makes the skip a hard error, so
+a build that silently produced no module fails the gate instead of passing it.
 
 `pytest` is **only** in `.venv/` — a bare `pytest` is not on PATH and
 `python3 -m pytest` has no module, so always spell out `.venv/bin/pytest`.
 A git worktree has no `.venv` of its own; symlink the main checkout's in before
-running the Python suite there:
+building or running the Python suite there. The build now needs it too — the
+```build fence locates nanobind through `$PWD/.venv/bin/python`, so without the
+symlink a worktree builds no bindings and the ```test fence fails on
+`CBLS_REQUIRE_BINDINGS=1`:
 
 ```bash
 ln -sfn /path/to/main/checkout/.venv .venv && .venv/bin/pytest --tb=short -q; rm -f .venv
