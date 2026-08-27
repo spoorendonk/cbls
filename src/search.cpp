@@ -129,11 +129,12 @@ static bool structural_pass(Model& model, ViolationManager& vm, RNG& rng, bool h
     //    `before` was threaded across candidate moves — so two readings taken at
     //    different points in that drift cycle differ in the last ulp even when no
     //    constraint changed at all. `- 1e-12` cannot filter that: x - 1e-12 == x
-    //    for every double x >= 2^14, and GLS weights put setcover's weighted
-    //    total at ~4.4e6 (1 ulp = 9.3e-10). Measured on scp41/Set with no row
-    //    clamped anywhere: 99 of 39627 candidates were accepted with a true
-    //    weighted delta of exactly 0 and zero rows changed, each of them setting
-    //    `changed` and forcing a needless fj.resync().
+    //    for every double x > 2^14 (16384 itself is the last value it still
+    //    moves), and GLS weights put setcover's weighted total at ~4.4e6, where
+    //    one ulp is 9.3e-10. Measured on scp41/Set with no row clamped anywhere:
+    //    99 of 39627 candidates were accepted with a true weighted delta of
+    //    exactly 0, each of them setting `changed` and forcing a needless
+    //    fj.resync().
     //
     // Differencing per constraint fixes both: the clamped row cancels exactly,
     // and an unchanged row contributes an exact 0 instead of a drifted total.

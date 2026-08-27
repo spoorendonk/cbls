@@ -471,15 +471,19 @@ TEST_CASE("a search starting feasible with a +inf objective still finds a finite
 // clamped row cancels exactly.
 //
 // The clamped row is only half of what whole-sum differencing got wrong, and it
-// is the half these tests cover. The other half needs no clamped row: `before`
-// was threaded across candidate moves and both readings came from
-// total_violation()'s incrementally maintained accumulator, so they disagree in
-// the last ulp even for a move that changes no constraint at all — and the
-// `- 1e-12` guard is inert above 2^14. That one is a floating-point accumulation
-// property of a long search, not a deterministic two-row fixture; it is pinned by
-// measurement instead (setcover scp41/Set, 99 no-op moves accepted in 39627
-// candidates with no row clamped anywhere), reported in the Structural Batch
-// section of docs/architecture.md.
+// is the half the search-level test below covers. The other half needs no
+// clamped row: `before` was threaded across candidate moves and both readings
+// came from total_violation()'s incrementally maintained accumulator, so they
+// disagree in the last ulp even for a move that changes no constraint at all —
+// and the `- 1e-12` guard is inert above 2^14. The *property* is pinned
+// deterministically by the two-row fixture in
+// "cache drift makes a rolled-back move look like an improvement" below; what
+// resists a fixture is the end-to-end search case, because reaching the drift
+// through solve() takes a long run whose trajectory is not reproducible move by
+// move. That end-to-end side is pinned by measurement instead (setcover
+// scp41/Set, 99 candidates accepted at a true weighted delta of exactly 0 out of
+// 39627, with no row clamped anywhere), reported in the Structural Batch section
+// of docs/architecture.md.
 //
 // The model below is the smallest thing that reaches the window and can be
 // observed leaving it:
@@ -571,4 +575,101 @@ TEST_CASE("a structural repair is accepted while the sentinel bound is installed
     // installed. Blind, the count stops at kPeriod + 1 — the batches from the
     // start through the one the kick fires at.
     REQUIRE(hook.visits > kPeriod + 1);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #118, second defect: cache drift, with no clamped row anywhere.
+//
+// ViolationManager::total_violation() maintains cached_total_ incrementally
+// (`cached_total_ += (new - old) * W`) and only rebuilds it from scratch every
+// 1000 calls, which bounds the accumulated rounding error without removing it.
+// The structural pass used to judge a candidate move by `after < before - 1e-12`
+// over two such readings, with `before` threaded across candidates — so a move
+// that was applied and rolled back could still leave the two readings one ulp
+// apart and be committed as an "improvement" that changed nothing.
+//
+// The constants below are synthetic, chosen so that arithmetic rather than luck
+// produces the drift, at the magnitude #118 measured on scp41/Set (a weighted
+// total of ~4.4e6, where one ulp is 9.3e-10):
+//
+//   from-scratch total   T = 4406803.737019805 + 4937.937847555781
+//                          = 4411741.674867361            (ulp 9.313e-10)
+//   candidate move takes row 1 to 2396.929907432458, i.e.
+//                        d = -2541.0079401233234
+//   round trip           (T + d) - d = 4411741.67486736 = T - 1 ulp
+//
+// and T is above 2^14, so `T - 1e-12 == T` and the guard cannot filter it.
+//
+// This is the fixture the previous round of #118 work claimed was impossible.
+// It is not: ViolationManager::weights is public and the node values are
+// settable, so cached_total_ can be driven into a known-drifted state without
+// going through solve() at all.
+// ---------------------------------------------------------------------------
+TEST_CASE("cache drift makes a rolled-back move look like an improvement",
+          "[nonfinite][structural]") {
+    constexpr double kFixedRow = 4406803.737019805;     // row 0, never moves
+    constexpr double kBaseRow = 4937.937847555781;      // row 1, accepted state
+    constexpr double kMovedRow = 2396.929907432458;     // row 1, candidate move
+    constexpr double kTrueTotal = 4411741.674867361;    // the from-scratch sum
+    constexpr double kDriftedTotal = 4411741.67486736;  // one ulp below it
+
+    Model m;
+    // `leq(x, 0)` evaluates to x - 0, so each row's clamped violation is exactly
+    // the variable's value. Unit weights keep the accumulator arithmetic visible.
+    int32_t x0 = m.float_var(0.0, 1.0e7, "x0");
+    int32_t x1 = m.float_var(0.0, 1.0e7, "x1");
+    m.add_constraint(m.leq(x0, m.constant(0.0)));
+    m.add_constraint(m.leq(x1, m.constant(0.0)));
+    m.close();
+
+    m.var_mut(vid(x0)).value = kFixedRow;
+    m.var_mut(vid(x1)).value = kBaseRow;
+    full_evaluate(m);
+
+    ViolationManager vm(m);
+    REQUIRE(vm.weights[0] == 1.0);
+    REQUIRE(vm.weights[1] == 1.0);
+
+    // First read is from scratch, so it is the true sum.
+    const double before = vm.total_violation();
+    REQUIRE(before == kTrueTotal);
+
+    // What the structural pass snapshots for the accepted assignment.
+    std::vector<double> baseline;
+    vm.snapshot_violations(baseline);
+
+    // A candidate move on row 1, scored and then rolled back. The assignment the
+    // pass ends on is bit-identical to the accepted one.
+    m.var_mut(vid(x1)).value = kMovedRow;
+    full_evaluate(m);
+    (void)vm.total_violation();
+    m.var_mut(vid(x1)).value = kBaseRow;
+    full_evaluate(m);
+
+    // 1. The accumulator has drifted even though no constraint changed.
+    const double after = vm.total_violation();
+    REQUIRE(after == kDriftedTotal);
+    REQUIRE(after == std::nextafter(before, 0.0));
+
+    // 2. `- 1e-12` cannot filter it: above 2^14 the subtraction is inert, so the
+    //    old whole-sum test degenerates to `after < before` and accepts.
+    REQUIRE(before - 1e-12 == before);
+    REQUIRE(after < before - 1e-12);
+
+    // 3. The shipped per-constraint test scores the rolled-back state at exactly
+    //    0 and rejects it. This is the assertion that goes red if anyone
+    //    "optimises" weighted_delta_from back into a cached-total difference, so
+    //    it has to be read while cached_total_ is still drifted — recomputing
+    //    first (step 4) would hide the defect it is here to catch.
+    REQUIRE(vm.weighted_delta_from(baseline) == 0.0);
+    REQUIRE_FALSE(vm.weighted_delta_from(baseline) < -1e-12);
+
+    // 4. A from-scratch recompute shows the drift for what it is.
+    vm.invalidate_cache();
+    REQUIRE(vm.total_violation() == kTrueTotal);
+
+    // 5. And it still scores a real change correctly, so (3) is not vacuous.
+    m.var_mut(vid(x1)).value = kMovedRow;
+    full_evaluate(m);
+    REQUIRE(vm.weighted_delta_from(baseline) == kMovedRow - kBaseRow);
 }

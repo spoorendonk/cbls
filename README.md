@@ -54,7 +54,7 @@ m.close();
 ```bash
 cmake -B build
 cmake --build build
-ctest --test-dir build    # 273 C++ tests (add -LE slow for the fast 251)
+ctest --test-dir build    # 274 C++ tests (add -LE slow for the fast 252)
 ```
 
 With Python bindings:
@@ -83,7 +83,7 @@ pip install .
 - Solution quality gaps of 15-40% vs exact solvers on problems where MIP works well
 - Benchmark models may be simplified relative to their source papers, so a "BKS gap" is not always apples-to-apples; where that applies (uc-chped) the deviation is audited equation by equation in the benchmark's `FIDELITY.md` and its comparison table states what it may and may not claim
 - No constraint propagation, cutting planes, or LP relaxation — this is pure local search
-- **Set variables are expressible, not yet competitive; List variables are unbenchmarked.** A model whose only variables are structured (List/Set) is searched by the structural batch alone — a first-improvement hill climber over a small random move sample, with no Feasibility Jump and no compound moves. Diversification reaches it, but only with the same unguided moves. On the weighted OR-Library set-covering instances the `Set` encoding lands at 8.6-11.1x the proven optimum while the same instance encoded with one Bool per column is within 9-23% (see `benchmarks/instances/setcover/`); on unicost instances the two nearly converge. `List` variables are **unbenchmarked** in this respect — they have unit-test coverage, but the only List *benchmark* was pharma GLSP, which has been retired, so there is no measured evidence either way. The mechanical cause is shared and has two halves: Feasibility Jump's jumpable-variable whitelist is scalar-only, so no structured variable gets a jump-table entry, and `local_derivative` returns `0.0` for every structural op, so there is no AD signal to build one from. That is reason to expect `List` behaves like `Set` here, not to assume it does not.
+- **Set variables are expressible, not yet competitive; List variables are unbenchmarked.** A model whose only variables are structured (List/Set) is searched by the structural batch alone — a first-improvement hill climber over a small random move sample, with no Feasibility Jump and no compound moves. Diversification reaches it, but only with the same unguided moves. On the weighted OR-Library set-covering instances the `Set` encoding lands at 8.6-11.0x the proven optimum while the same instance encoded with one Bool per column is within 9-20% (see `benchmarks/instances/setcover/`); on unicost instances the two nearly converge. `List` variables are **unbenchmarked** in this respect — they have unit-test coverage, but the only List *benchmark* was pharma GLSP, which has been retired, so there is no measured evidence either way. The mechanical cause is shared and has two halves: Feasibility Jump's jumpable-variable whitelist is scalar-only, so no structured variable gets a jump-table entry, and `local_derivative` returns `0.0` for every structural op, so there is no AD signal to build one from. That is reason to expect `List` behaves like `Set` here, not to assume it does not.
 
 ## Benchmarks
 

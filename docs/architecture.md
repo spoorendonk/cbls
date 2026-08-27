@@ -596,16 +596,25 @@ W`), whose 1000-call from-scratch recompute *bounds* the accumulated rounding
 error but does not remove it. Two readings taken at different points in that
 cycle can differ in the last ulp even when no constraint changed at all, and the
 `- 1e-12` guard does not filter it. Above `2^14` it cannot: `x - 1e-12 == x` for
-every double `x >= 16384`, and GLS weights push setcover's weighted total to
-~4.4e6, where one ulp is 9.3e-10. Below `2^14` the guard is live but the drift
-simply outgrows it — observed phantoms run 1.8e-12 to 1.2e-10.
+every double `x > 16384` (16384 itself is the last value the subtraction still
+moves, because it lands in the binade below, whose ulp is 1.8e-12), and GLS
+weights push setcover's weighted total to ~4.4e6, where one ulp is 9.3e-10.
+Below `2^14` the guard is live but the drift simply outgrows it — observed
+phantoms run 1.8e-12 to 1.2e-10.
 
 Measured on `scp41` under the `Set` encoding (10s x 3 seeds, **no row clamped
 anywhere in the run**): 99 of 39627 candidate moves were accepted by the old test
-with a true weighted delta of exactly 0 and *zero* rows changed — ~99 no-op moves
-committed per 30s of search, each setting `changed` and forcing an `fj.resync()`.
-Unicost `scpe1` shows the same at 12 of 166119. Per-constraint differencing
-scores those moves at exactly 0 and rejects them.
+with a true weighted delta of exactly 0 — ~99 zero-delta moves committed per 30s
+of search, each setting `changed` and forcing an `fj.resync()`. Unicost `scpe1`
+shows the same at 12 of 166119. Per-constraint differencing scores those moves at
+exactly 0 and rejects them. (A weighted delta of exactly 0 is not by itself proof
+that *no row* moved — a `set_swap` shifting coverage +1/-1 across two rows of
+equal GLS weight cancels exactly, and that is a genuine sideways move rather than
+a no-op. The instrumentation counted the weighted delta only, so the no-op
+reading is supported for the handful of disagreements whose changed-row count was
+printed, not for all 99.) `tests/test_nonfinite_guard.cpp` pins the underlying
+property deterministically, on a two-row fixture that reproduces the drift
+without a search.
 
 It is this second half, not the clamped-row half, that moved the `Set` numbers
 below: setcover's objective is finite throughout, so no row is ever clamped
@@ -648,12 +657,13 @@ only variables are structured. There, everything else is inert:
 | LNS | destroys the structured variables wholesale, i.e. a random restart, then repairs with an FJ that has nothing to jump |
 
 so progress is slow once the sampled neighbourhood stops improving — slow, not
-finished: 6x the budget still buys ~18% on these instances (scp41 `set` 4739 at
-10s, 3876 at 60s), so the 10s numbers below are budget-limited rather than
+finished: 6x the budget still buys ~18% on these instances (scp41 `set`, best of
+seeds 42-44: 4739 at 10s, 3876 at 60s, both measured at the engine commit the
+table below records), so the 10s numbers below are budget-limited rather than
 neighbourhood-limited. Measured on OR-Library set covering
 (`benchmarks/instances/setcover/`, issue #93): on the weighted instances the
-same data modelled as one `Set` variable costs **8.6-11.1x the proven optimum**,
-against **+9-23%** for one Bool per column — while on *unicost* instances,
+same data modelled as one `Set` variable costs **8.6-11.0x the proven optimum**,
+against **+9-20%** for one Bool per column — while on *unicost* instances,
 where the objective is just cardinality, the two nearly converge. What the Set
 search lacks is not reach but a violation-guided choice of *which* element to
 move. A 3-row, 4-column fixture in `tests/test_setcover.cpp` reproduces it
@@ -666,8 +676,9 @@ structural pass accept a move that breaks a constraint — which is why the pump
 was once thought to be load-bearing for a structure-only model. Setting
 `structural_batch_probability = 1.0` removes the pump in exchange for more
 structural passes, and at engine HEAD that trade measures *better* in both
-regimes — unicost 7/7/7 -> 6/6/6, weighted 4917/4739/4963 -> 2593/2727/2916 —
-i.e. the pump is not buying anything that outweighs the passes it displaces.
+regimes — unicost 7/7/7 -> 6/6/6, weighted 4917/4739/4902 -> 2593/2727/2916,
+i.e. best-of-3 4739 -> 2593, a 45% improvement on scp41. The pump is not buying
+anything that outweighs the passes it displaces.
 Neither setting is a fix; both are symptoms of the structural batch having no
 guidance of its own.
 
@@ -681,8 +692,15 @@ the overrun is capped at one variable's work.
 The bound is needed because the sweep's cost is unbounded in the model size:
 `O(#structured vars x #moves x (delta_evaluate + O(#constraints)))`, since the
 weighted delta rescans every constraint once per move. (The per-variable costs
-below were measured against the older two-scans-per-move form, so they are an
-upper bound on the current one.)
+below were measured at `95820e1`, where the pass hoisted `before =
+vm.total_violation()` out of the move loop — one constraint scan per move plus
+one per variable. The current form is one `weighted_delta_from` scan per move
+plus a `snapshot_violations` per pass and per accepted move, so those numbers
+remain an upper bound, but a close one: `total_violation()` is not O(1) either,
+its "incremental" path diffing every constraint on every call. The genuinely
+two-scans-per-move form — `invalidate_cache()` plus a full recompute on both
+sides of each move — predates `8e17796` and none of these numbers were measured
+against it.)
 Both factors matter — a 1000-List x 800-element model costs 44.5us per variable
 on its own, but **with ~40k constraints** the same model costs 407us per
 variable. On a 1500-List x 100-element model with 40k constraints, a 0.5s budget

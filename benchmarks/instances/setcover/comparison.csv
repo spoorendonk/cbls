@@ -14,27 +14,52 @@
 # file carried two revisions ago.
 #
 # Engine commit: adc8ee4 ("fix: let the structural pass see past a clamped
-# objective row", #118). The commit that carries this table adds only comments
-# and this file on top of adc8ee4, so adc8ee4 is the engine these numbers came
-# from. Record the hash on every regeneration: a search-trajectory change
-# silently invalidates the table, and without it the next reader cannot tell
-# drift from a bug.
+# objective row", #118). Every commit carrying this table since adc8ee4 has
+# changed only comments, docs, tests and this file, so adc8ee4 is the engine
+# every number here came from. Record the hash on every regeneration: a
+# search-trajectory change silently invalidates the table, and without it the
+# next reader cannot tell drift from a bug.
 #
 # What moved and why. #118 replaced the structural pass's whole-sum
 # `total_violation()` differencing with per-constraint differencing. That was
 # expected to be inert here — setcover's objective is finite throughout, so no
 # row is ever clamped to kInfPenalty — but it is not, because whole-sum
 # differencing had a second, clamp-independent defect: two readings of the
-# incrementally maintained violation total disagree in the last ulp, and the
-# `- 1e-12` guard is inert for any total >= 2^14, so ~0.25% of candidate moves
-# were accepted as improvements while changing nothing at all. All five
-# `cbls-set` weighted rows therefore moved. The per-seed mean over the five
-# weighted instances is a wash (4712 -> 4695 pre/post) with lower spread; the
-# best-of-3 rows move both ways (scp41/42/43 worse, scp44/45 better).
-# The `cbls-bool` rows cannot be affected — a scalar-only model never runs a
-# structural batch — and re-measuring at e99f4bf reproduced every previously
-# committed row exactly except scp44/cbls-bool, which is simply noisy at a 10s
-# budget (573 / 607 / 581 over three sweeps of the same code).
+# incrementally maintained violation total disagree in the last ulp for a move
+# that changed no constraint, so such a move is accepted as an improvement.
+# The `- 1e-12` guard does not stop it, by EITHER of two mechanisms. Above 2^14
+# the guard is arithmetically inert (`x - 1e-12 == x` for every double
+# `x > 16384`), which is the weighted case: GLS weights put scp41's total at
+# ~4.4e6, one ulp 9.3e-10, and 99 of 39627 candidates were accepted this way.
+# On unicost scpe1 the total stays small enough that the guard is live, and the
+# drift simply outgrows it — 12 of 166119, i.e. 0.0072% against scp41's 0.25%,
+# so those are per-instance rates and not a property of this table. All five
+# `cbls-set` weighted rows moved. Over the four weighted instances whose blocks
+# are load-clean on both sides (see below), the per-seed mean is 4608 -> 4676
+# pre/post, i.e. ~1.5% worse on average, while best-of-3 moves both ways:
+# scp41/42/43 worse, scp45 better.
+# The `cbls-bool` rows cannot be affected at all — `build_bool_model` creates no
+# List or Set, so `has_structural` is false and the structural pass never runs —
+# which is what makes them a control on measurement noise rather than on code.
+#
+# Measurement provenance, because two blocks of the first post-fix sweep were
+# taken while the machine was loaded and it changed a published number. Every
+# row above now comes from ONE serial sweep on a verified-idle box
+# (`uptime` checked before it, one process, `--dir ... --time 10 --seeds 3
+# --encoding both`), whose per-run iteration counts are uniform: ~27.4k bool /
+# 8.5-9.4M set on scp4x, ~23k bool / 37-39M set on scpex. In the earlier sweep
+# the scp41 and scp44 blocks ran at ~2/3 that throughput. What that cost:
+#   * scp41/cbls-set is unaffected. 4917 / 4739 / 4902 clean against
+#     4917 / 4739 / 4963 loaded; best-of-3 4739 either way. This search stalls
+#     well inside 10s, so 50% more iterations buy nothing, and the 4241 -> 4739
+#     movement is a code effect rather than budget contamination.
+#   * scp44/cbls-bool WAS affected: the loaded block reported 607, and two
+#     load-clean sweeps — one pre-fix at e99f4bf, one post-fix — both give
+#     600 / 634 / 573 exactly, so the row is 573 (gap 16.0). The 607 that this
+#     file carried, and the "+-5% band" the README hung on it, were an artefact
+#     of the loaded run, not run-to-run noise. A bool row cannot move for a
+#     structural-pass reason, so the two sweeps agreeing bit-for-bit across the
+#     fix is the expected result and the 607 was the outlier.
 instance,method,objective,gap,source
 scp41,optimum,429,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
 scp41,cbls-set,4739,1004.7,"this repo, 10s x 3 seeds, best"
@@ -47,7 +72,7 @@ scp43,cbls-set,4596,790.7,"this repo, 10s x 3 seeds, best"
 scp43,cbls-bool,615,19.2,"this repo, 10s x 3 seeds, best"
 scp44,optimum,494,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
 scp44,cbls-set,4287,767.8,"this repo, 10s x 3 seeds, best"
-scp44,cbls-bool,607,22.9,"this repo, 10s x 3 seeds, best"
+scp44,cbls-bool,573,16.0,"this repo, 10s x 3 seeds, best"
 scp45,optimum,512,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
 scp45,cbls-set,4392,757.8,"this repo, 10s x 3 seeds, best"
 scp45,cbls-bool,596,16.4,"this repo, 10s x 3 seeds, best"

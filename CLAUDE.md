@@ -107,9 +107,9 @@ Nothing enforces `/review` at push time, by design — a gate keyed on gitignore
 
 ### Fast vs. slow tests
 
-22 of the 273 C++ tests are multi-minute benchmark solves carrying the Catch2 `[slow]` tag; they account for ~1470s of the suite's aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~304s wall-clock full run. They are registered by their own `catch_discover_tests` call in `tests/CMakeLists.txt` with `LABELS "slow"`, so:
+22 of the 274 C++ tests are multi-minute benchmark solves carrying the Catch2 `[slow]` tag; they account for ~1470s of the suite's aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~304s wall-clock full run. They are registered by their own `catch_discover_tests` call in `tests/CMakeLists.txt` with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 251 tests, ~7s with `-j`. This is what **pre-commit** runs.
+- `ctest -LE slow` — the other 252 tests, ~7s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
 
 These counts are hard-coded in **five** places and nothing checks that they
@@ -448,7 +448,7 @@ validated on a published formulation. They are not, as of the pharma-glsp
 retirement. The evidence position is:
 
 - **`Set`** — measured and **negative** (#93). The `Set` encoding lands at
-  8.6-11.1x the proven optimum where the same data in Bools is within 9-23%.
+  8.6-11.0x the proven optimum where the same data in Bools is within 9-20%.
 - **`List`** — **no evidence either way**. The only List benchmark was
   pharma-glsp, whose model was a relaxation, and whose faithful form does not
   need a List at all.
