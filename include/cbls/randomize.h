@@ -55,9 +55,20 @@ inline constexpr double kRandomInfClamp = 1.0e9;
 /// "small non-negative count", so a far tighter box is the useful default.
 inline constexpr double kRandomIntInfClamp = 1.0e6;
 
-/// The finite `[lo, hi]` window that a uniform draw over a scalar variable's
-/// domain actually samples from. Always a subset of the variable's own domain,
-/// so a value drawn from it is in-domain by construction.
+/// Largest magnitude at which a double still names every integer below it.
+///
+/// Two uses, both about what a `double` can *say* rather than about sampling:
+/// `int_sample_window` trims to it so `static_cast<int64_t>` and a trailing
+/// `+ 1` stay defined, and `int_jump_candidates` (feasibility_jump.cpp) tests
+/// against it before stepping a loop counter by 1.0 — past it, `v += 1.0` does
+/// not advance and such a loop never terminates.
+inline constexpr double kExactIntMagnitude = 9007199254740992.0;  // 2^53
+
+/// A finite `[lo, hi]` interval over a scalar variable's domain.
+///
+/// `lo > hi` means *empty*, which only `int_sample_window` returns;
+/// `domain_window` is total and always yields a non-empty subset of the
+/// variable's own domain, so a value drawn from it is in-domain by construction.
 struct DomainWindow {
     double lo = 0.0;
     double hi = 0.0;
@@ -80,15 +91,31 @@ struct DomainWindow {
 ///    declared bound lies beyond the clamp magnitude (`(-inf, -2e9]` must not
 ///    sample -1e9);
 ///  - two finite bounds whose *width* overflows to +inf trip the same
-///    distribution precondition, so they are narrowed to the clamp box;
-///  - an Int window is kept within the integers a double can name exactly, which
-///    is what makes the `int64_t` casts at the call sites defined.
+///    distribution precondition, so they are narrowed to the clamp box.
+///
+/// Nothing else is rewritten. In particular the window is **not** trimmed to
+/// what an `int64_t` can hold: that trim moved each Int bound independently and
+/// so was neither inert on a finite domain (`[0, 1e17]` came back as
+/// `[0, 2^53-1]`) nor a subset of one (`[-1e18, -1e17]` came back as the single
+/// point `-2^53`, above the declared `ub`, which `random_in_domain` then
+/// returned — a #112 defect). The cast is trimmed where the cast happens; see
+/// `int_sample_window`. Pinned by "domain_window is inert on a finite domain"
+/// and "domain_window is a subset of the declared domain".
 ///
 /// Scalar types only (Bool/Int/Float). List/Set carry no `value`.
 DomainWindow domain_window(const Variable& var);
 
+/// The subset of `domain_window(var)` that `static_cast<int64_t>` and a
+/// trailing `+1` can name. Empty (`lo > hi`) when the domain lies entirely
+/// past 2^53 — callers pin the variable rather than draw.
+///
+/// Int variables only; on any other type it is `domain_window` unchanged.
+DomainWindow int_sample_window(const Variable& var);
+
 /// Draw a uniformly random value from a scalar variable's domain. Finite and
-/// in-domain for every domain — see `domain_window`.
+/// in-domain for every domain — see `domain_window`. On the one Int case
+/// `int_sample_window` cannot name (a domain wholly past 2^53) the draw falls
+/// back to the untrimmed window, where every double is already an integer.
 ///
 /// Int and Float sample the window; Bool draws from {0, 1} without consulting it,
 /// which is in-domain for every Bool the model can build (`bool_var` fixes the

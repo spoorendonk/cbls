@@ -6,18 +6,6 @@
 
 namespace cbls {
 
-namespace {
-
-// Largest magnitude at which a double still names every integer below it. An Int
-// window is trimmed to it so `static_cast<int64_t>` at the call sites — and the
-// `+ 1` that turns an inclusive upper bound into RNG::integers' exclusive one —
-// stay defined for any finite bound. Nothing is lost: past 2^53 a double cannot
-// represent consecutive integers anyway, so such an "integer domain" is already
-// not one.
-constexpr double kExactIntMagnitude = 9007199254740992.0;  // 2^53
-
-}  // namespace
-
 DomainWindow domain_window(const Variable& var) {
     const double clamp = (var.type == VarType::Int) ? kRandomIntInfClamp : kRandomInfClamp;
     const bool lo_open = !std::isfinite(var.lb);
@@ -34,11 +22,11 @@ DomainWindow domain_window(const Variable& var) {
         hi = std::max(hi, lo + clamp);
     }
 
-    if (var.type == VarType::Int) {
-        lo = std::min(std::max(lo, -kExactIntMagnitude), kExactIntMagnitude - 1.0);
-        hi = std::min(std::max(hi, -kExactIntMagnitude), kExactIntMagnitude - 1.0);
-    } else if (!std::isfinite(hi - lo)) {
-        // Both bounds declared and finite, but the width overflows.
+    if (!std::isfinite(hi - lo)) {
+        // Both bounds declared and finite, but the width overflows. Narrowing
+        // only ever moves a bound inward, so the result stays a subset. Applies
+        // to every scalar type: it used to be the `else` of an Int-only trim, so
+        // Int skipped it.
         lo = std::max(lo, -clamp);
         hi = std::min(hi, clamp);
     }
@@ -49,14 +37,44 @@ DomainWindow domain_window(const Variable& var) {
     return {lo, hi};
 }
 
+DomainWindow int_sample_window(const Variable& var) {
+    const DomainWindow w = domain_window(var);
+    if (var.type != VarType::Int) {
+        return w;
+    }
+    // Inward-only, so still a subset of the window (and of the domain). Empty
+    // when the whole window sits past 2^53; the bounds are NOT clamped
+    // independently into the range, which is what made trimming inside
+    // `domain_window` unsound.
+    //
+    // Rounding inward as well, because `static_cast<int64_t>` truncates toward
+    // zero: on `[0.9, 1.2]` that named 0, and the draw then left the domain.
+    // Both readers already round an Int column's bounds inward (`std::ceil` /
+    // `std::floor` in nl_to_model.cpp and mps_to_model.cpp) and `int_var` takes
+    // `int`, so no model the codebase can build reaches this with a fractional
+    // bound — it cannot move an existing draw sequence.
+    return {std::ceil(std::max(w.lo, -kExactIntMagnitude)),
+            std::floor(std::min(w.hi, kExactIntMagnitude - 1.0))};
+}
+
 double random_in_domain(const Variable& var, RNG& rng) {
     const DomainWindow w = domain_window(var);
     switch (var.type) {
         case VarType::Bool:
             return static_cast<double>(rng.integers(0, 2));
-        case VarType::Int:
+        case VarType::Int: {
+            const DomainWindow s = int_sample_window(var);
+            if (s.lo > s.hi) {
+                // Domain wholly past 2^53: no int64_t range to draw from. Draw
+                // over the untrimmed window instead — in-domain by construction,
+                // and integral for free, since every double that large already
+                // is one.
+                const double v = std::round(rng.uniform(w.lo, w.hi));
+                return std::min(std::max(v, w.lo), w.hi);
+            }
             return static_cast<double>(
-                rng.integers(static_cast<int64_t>(w.lo), static_cast<int64_t>(w.hi) + 1));
+                rng.integers(static_cast<int64_t>(s.lo), static_cast<int64_t>(s.hi) + 1));
+        }
         default:  // Float (List/Set have no scalar value — see randomize_var)
             return rng.uniform(w.lo, w.hi);
     }

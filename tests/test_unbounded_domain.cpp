@@ -124,11 +124,98 @@ TEST_CASE("domain_window is inert on a finite domain", "[unbounded][randomize]")
         // narrowing it to int_inf_clamp.
         {VarType::Int, -1.0e8, 1.0e8},
         {VarType::Float, -1.0e12, 3.0e11},
+        // Past 2^53, where an earlier attempt at #114 trimmed each Int bound
+        // independently into the int64-nameable range. That was not inert:
+        // [0, 1e17] came back as [0, 2^53-1] (halving the reachable jump), and
+        // [-1e18, -1e17] collapsed to the single point -2^53 — which is not even
+        // in the domain, so `random_in_domain` returned an out-of-domain value
+        // (a #112 defect). The cast is trimmed at the cast instead; see
+        // `int_sample_window`.
+        {VarType::Int, 0.0, 1.0e17},
+        {VarType::Int, -1.0e18, -1.0e17},
+        {VarType::Int, 1.0e16, 1.0e16 + 5.0},
     };
     for (const Case& c : cases) {
         const DomainWindow w = domain_window(scalar_var(c.type, c.lb, c.ub));
         REQUIRE(w.lo == c.lb);
         REQUIRE(w.hi == c.ub);
+    }
+}
+
+TEST_CASE("domain_window is a subset of the declared domain", "[unbounded][randomize]") {
+    // The contract `randomize.h` states — "always a subset of the variable's own
+    // domain, so a value drawn from it is in-domain by construction" — asserted
+    // rather than assumed. It held for every case here until an Int-only trim
+    // was added to `domain_window`: clamping each bound independently into
+    // +/-2^53 moves a bound *outward* when the whole domain sits past it, so
+    // [-1e18, -1e17] came back as [-2^53, -2^53], above the declared ub.
+    struct Case {
+        const char* label;
+        VarType type;
+        double lb;
+        double ub;
+    };
+    const std::vector<Case> cases = {
+        {"int [0, 10]", VarType::Int, 0.0, 10.0},
+        {"int [0, 1e17]", VarType::Int, 0.0, 1.0e17},
+        {"int [-1e18, -1e17]", VarType::Int, -1.0e18, -1.0e17},
+        {"int [1e16, 1e16+5]", VarType::Int, 1.0e16, 1.0e16 + 5.0},
+        {"int [1e18, 1e19]", VarType::Int, 1.0e18, 1.0e19},
+        {"int [-1e300, 1e300]", VarType::Int, -1.0e300, 1.0e300},
+        {"int [-1e308, 1e308] (width overflows)", VarType::Int, -1.0e308, 1.0e308},
+        {"int (-inf, +inf)", VarType::Int, -kInf, kInf},
+        {"int [0, +inf)", VarType::Int, 0.0, kInf},
+        {"int (-inf, 0]", VarType::Int, -kInf, 0.0},
+        {"int (-inf, -1e18]", VarType::Int, -kInf, -1.0e18},
+        {"int [1e18, +inf)", VarType::Int, 1.0e18, kInf},
+        {"float (-inf, +inf)", VarType::Float, -kInf, kInf},
+        {"float (-inf, -2e9]", VarType::Float, -kInf, -2.0e9},
+        {"float [2e9, +inf)", VarType::Float, 2.0e9, kInf},
+        {"float [-1e308, 1e308] (width overflows)", VarType::Float, -1.0e308, 1.0e308},
+        {"float [1.5, 1.5] (pinned)", VarType::Float, 1.5, 1.5},
+        {"bool [0, 1]", VarType::Bool, 0.0, 1.0},
+    };
+    for (const Case& c : cases) {
+        INFO(c.label);
+        const DomainWindow w = domain_window(scalar_var(c.type, c.lb, c.ub));
+        REQUIRE(std::isfinite(w.lo));
+        REQUIRE(std::isfinite(w.hi));
+        REQUIRE(w.lo <= w.hi);
+        REQUIRE(w.lo >= c.lb);
+        REQUIRE(w.hi <= c.ub);
+    }
+}
+
+TEST_CASE("random_in_domain stays in domain past 2^53", "[unbounded][randomize]") {
+    // `random_in_domain`'s Int arm casts the window to int64_t, so the window it
+    // reads has to be nameable. Trimming it inside `domain_window` made these
+    // domains *leave* the declared box; trimming at the cast keeps the draw
+    // inside it, falling back to the untrimmed window when no int64_t range
+    // names the domain at all. Measured before the fix: [-1e18, -1e17] returned
+    // -9007199254740992, above the declared ub.
+    struct Case {
+        const char* label;
+        double lb;
+        double ub;
+    };
+    const std::vector<Case> cases = {
+        {"int [-1e18, -1e17]", -1.0e18, -1.0e17},
+        {"int [1e16, 1e16+5]", 1.0e16, 1.0e16 + 5.0},
+        {"int [1e18, 1e19]", 1.0e18, 1.0e19},
+        // Truncation toward zero, not magnitude: `static_cast<int64_t>(0.9)` is
+        // 0, which is below the declared lb.
+        {"int [0.9, 1.2]", 0.9, 1.2},
+    };
+    for (const Case& c : cases) {
+        INFO(c.label);
+        const Variable var = scalar_var(VarType::Int, c.lb, c.ub);
+        for (uint64_t seed = 1; seed <= kSeeds; ++seed) {
+            RNG rng(seed);
+            const double v = random_in_domain(var, rng);
+            REQUIRE(std::isfinite(v));
+            REQUIRE(v >= c.lb);
+            REQUIRE(v <= c.ub);
+        }
     }
 }
 
@@ -417,40 +504,55 @@ TEST_CASE("ListOrder::Perturb keeps a List's elements, Regenerate need not",
 // ---------------------------------------------------------------------------
 //
 // The other half of the same hazard, and pre-existing rather than introduced by
-// #112: `int_jump_candidates` truncated the *raw* declared bounds with
-// `std::lround`, and glibc's `lround` returns LONG_MIN for BOTH +inf and -inf.
-// On `(-inf, +inf)` the range collapsed (`ub - lb == 0`), the `ub <= lb`
-// early-out fired and the variable got no candidates at all — permanently
-// frozen in the jump table, never selected by a scan, unreachable by GLS
-// reweighting. On `[lb, +inf)` the same early-out fired (`LONG_MIN <= lb`). On
-// `(-inf, ub]` it did not: `ub - lb` overflowed `long` and wrapped negative, so
-// the `<= 256` test chose the EXHAUSTIVE arm and the loop ran up from LONG_MIN —
-// ~9.2e18 candidates. That case HANGS on the pre-fix engine rather than
-// returning a bad jump, so re-verify it under a timeout. A *finite* bound past
-// LONG_MAX (9.22e18) overflows `lround` the same way, which is the fourth case
-// below.
+// #112. `int_jump_candidates` truncated the *raw* declared bounds with
+// `std::lround`, in `long`, and that failed three different ways:
 //
-// The fix routes the branch through `domain_window`, the helper the
-// randomisation path already uses, so both agree on an unbounded Int's
-// searchable range.
+//  - glibc's `lround` returns LONG_MIN for BOTH +inf and -inf. On
+//    `(-inf, +inf)` the range collapsed (`ub - lb == 0`), the `ub <= lb`
+//    early-out fired and the variable got no candidates at all — permanently
+//    frozen in the jump table, never selected by a scan, unreachable by GLS
+//    reweighting. On `[lb, +inf)` the same early-out fired (`LONG_MIN <= lb`).
+//  - On `(-inf, ub]` with `ub >= 0` the early-out did not fire: `ub - lb`
+//    overflowed `long` and wrapped negative, so the `<= 256` test chose the
+//    EXHAUSTIVE arm and the loop ran up from LONG_MIN — ~9.2e18 candidates, each
+//    a weighted_violation_delta. That case HANGS on the pre-fix engine rather
+//    than returning a bad jump, so re-verify it under a timeout.
+//  - On `(-inf, ub]` with `ub < 0` the width is a valid positive `long`, so the
+//    grid arm ran instantly — off a `lb` of LONG_MIN, handing back jumps near
+//    -9.2e18. Fast, and wrong.
+//
+// A *finite* bound past LONG_MAX (9.22e18) overflows `lround` the same way.
+//
+// The fix reads the bounds as doubles through `domain_window`, which substitutes
+// only for an infinity, so a finite in-range domain keeps exactly the candidates
+// it had.
 
 TEST_CASE("an unbounded Int is offered jump candidates", "[unbounded][fj]") {
     struct Case {
         const char* label;
         double lb;
         double ub;
-        bool at_least;  // constraint is `n >= 5`, else `n <= -5`
+        bool at_least;  // constraint is `n >= bound`, else `n <= bound`
+        double bound;
+        double x0;
     };
     const std::vector<Case> cases = {
-        {"int (-inf, +inf), n >= 5", -kInf, kInf, true},
-        {"int [0, +inf), n >= 5", 0.0, kInf, true},
+        {"int (-inf, +inf), n >= 5", -kInf, kInf, true, 5.0, 0.0},
+        {"int [0, +inf), n >= 5", 0.0, kInf, true, 5.0, 0.0},
         // Finite, but past LONG_MAX (9.22e18): `lround` overflowed here exactly
-        // as it did on an infinity, which is why the window is trimmed to the
-        // integers a double names rather than merely to something finite.
-        {"int [-1e19, 1e19], n >= 5", -1.0e19, 1.0e19, true},
+        // as it did on an infinity.
+        {"int [-1e19, 1e19], n >= 5", -1.0e19, 1.0e19, true, 5.0, 0.0},
+        // Far from zero, so the sampling window sits past 2^53. An earlier
+        // attempt at this issue trimmed the window inside `domain_window` and
+        // collapsed both of these to a point, taking the early-out — the very
+        // freeze this test exists to prevent, reintroduced one domain over. The
+        // targets are inside the +/-1e6 window an infinite bound stands in for,
+        // so a candidate that reaches them exists.
+        {"int (-inf, -1e18], n <= -1e18-5e5", -kInf, -1.0e18, false, -1.0e18 - 5.0e5, -1.0e18},
+        {"int [1e18, +inf), n >= 1e18+5e5", 1.0e18, kInf, true, 1.0e18 + 5.0e5, 1.0e18},
         // LAST deliberately: this is the one that HANGS pre-fix (see above), so
-        // a re-verification run reports the other three before it wedges.
-        {"int (-inf, 0], n <= -5", -kInf, 0.0, false},
+        // a re-verification run reports the others before it wedges.
+        {"int (-inf, 0], n <= -5", -kInf, 0.0, false, -5.0, 0.0},
     };
 
     // A section per case rather than a bare loop: REQUIRE aborts the whole
@@ -465,32 +567,36 @@ TEST_CASE("an unbounded Int is offered jump candidates", "[unbounded][fj]") {
             // reachable only from the C++ API, which is what the issue is about.
             Model m;
             int32_t n = m.int_var(-10, 10, "n");
-            m.add_constraint(c.at_least ? m.geq(n, m.constant(5.0)) : m.leq(n, m.constant(-5.0)));
+            m.add_constraint(c.at_least ? m.geq(n, m.constant(c.bound))
+                                        : m.leq(n, m.constant(c.bound)));
             m.close();
             m.var_mut(vid(n)).lb = c.lb;
             m.var_mut(vid(n)).ub = c.ub;
-            m.var_mut(vid(n)).value = 0.0;  // what set_initial_assignment writes
+            m.var_mut(vid(n)).value = c.x0;
             full_evaluate(m);
 
             const std::vector<double> weights(m.constraint_ids().size(), 1.0);
             const JumpResult r = compute_var_jump(m, weights, vid(n));
 
-            // Pre-fix every case but the last returned {x0, 0} — no candidates
-            // at all — and the last did not return.
+            // A positive score means some candidate strictly reduced weighted
+            // violation, which is what "offered candidates" has to mean to be
+            // worth anything: pre-fix these returned {x0, 0} — no candidates at
+            // all — bar the hanging case and the two far-from-zero ones.
             REQUIRE(r.score > 0.0);
-            REQUIRE(r.jump_value != 0.0);
+            REQUIRE(r.jump_value != c.x0);
             REQUIRE(std::isfinite(r.jump_value));
             REQUIRE(r.jump_value >= c.lb);
             REQUIRE(r.jump_value <= c.ub);
             // ...and it lands in the box randomisation samples, so the two paths
-            // agree on this variable's searchable range. Asserted against the
-            // window rather than against `kRandomIntInfClamp`: on a declared
-            // bound past the clamp the window legitimately sits outside it, and
-            // the clamp magnitude itself is already pinned by
-            // "random_in_domain is finite and in-domain on an unbounded domain".
-            // (Only the endpoints and grid are bounded this way — the `x0 +/- 1`
-            // neighbours are clamped to the raw domain, so a variable that has
-            // walked outside the window keeps its local moves. Here x0 == 0.)
+            // agree on this variable's searchable range. This is the half that
+            // fails on the `lround` code for `(-inf, ub < 0]`: it returned a
+            // jump near -9.2e18, in-domain but nowhere near the window.
+            // Asserted against the window rather than against
+            // `kRandomIntInfClamp`, because on a declared bound past the clamp
+            // the window legitimately sits outside it. (Only the endpoints and
+            // grid are bounded this way — the `x0 +/- 1` neighbours are clamped
+            // to the raw domain, so a variable that has walked outside the
+            // window keeps its local moves. Every x0 here is inside it.)
             const DomainWindow win = domain_window(m.var(vid(n)));
             REQUIRE(r.jump_value >= win.lo);
             REQUIRE(r.jump_value <= win.hi);
@@ -499,12 +605,12 @@ TEST_CASE("an unbounded Int is offered jump candidates", "[unbounded][fj]") {
 }
 
 TEST_CASE("finite Int jump candidates are unchanged", "[unbounded][fj]") {
-    // The determinism half of #114's acceptance criteria. `domain_window`
-    // returns a finite Int's declared bounds verbatim (pinned by "domain_window
-    // is inert on a finite domain" above), so routing the branch through it
-    // cannot move a candidate. These two pin the resulting jump values for both
-    // arms of the branch — the exhaustive one and the 32-point grid — against a
-    // future edit that would move them.
+    // The determinism half of #114's acceptance criteria: a finite Int domain
+    // must get the candidates the `lround` code gave it. `domain_window`
+    // substitutes only for an infinity (pinned by "domain_window is inert on a
+    // finite domain" above), so reading the bounds through it cannot move one.
+    // These pin the resulting jump values for both arms of the branch — the
+    // exhaustive one and the 32-point grid — against a future edit that would.
     SECTION("exhaustive arm (domain width <= 256)") {
         Model m;
         int32_t n = m.int_var(0, 10, "n");
@@ -535,6 +641,26 @@ TEST_CASE("finite Int jump candidates are unchanged", "[unbounded][fj]") {
         const JumpResult r = compute_var_jump(m, weights, vid(n));
         REQUIRE(r.jump_value == 3125.0);
         REQUIRE(r.score == 3125.0);
+    }
+
+    SECTION("grid arm past 2^53") {
+        // The two sections above sit far inside 2^53, so they say nothing about
+        // the range where determinism actually broke: trimming the window inside
+        // `domain_window` clipped this domain's upper bound to 2^53-1, and the
+        // jump went from 1e17 — which satisfies the row outright — to
+        // 9007199254740991, leaving it violated by ~1e15.
+        Model m;
+        int32_t n = m.int_var(0, 10, "n");
+        m.add_constraint(m.geq(n, m.constant(1.0e16)));
+        m.close();
+        m.var_mut(vid(n)).ub = 1.0e17;  // `int_var` takes `int`; see above
+        m.var_mut(vid(n)).value = 0.0;
+        full_evaluate(m);
+
+        const std::vector<double> weights(m.constraint_ids().size(), 1.0);
+        const JumpResult r = compute_var_jump(m, weights, vid(n));
+        REQUIRE(r.jump_value == 1.0e17);
+        REQUIRE(r.score == 1.0e16);
     }
 }
 

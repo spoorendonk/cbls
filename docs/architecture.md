@@ -360,8 +360,8 @@ candidate set, plus its score:
 | Type  | Candidates |
 |-------|-----------|
 | Bool  | the flip `1 - x` |
-| Int (domain <= 256) | every value in the sampling window — `domain_window(var)`, which is `[lb, ub]` whenever both are finite and within ±2^53 |
-| Int (domain > 256)  | window endpoints, neighbours `x±1` (clamped to the *declared* bounds, so a value that has drifted outside the window keeps a local move), and a 32-point rounded grid across the window |
+| Int (window width <= 256) | every integer in the sampling window — `domain_window(var)`, which is `[lb, ub]` verbatim whenever both bounds are finite. Taken only when both endpoints are within ±2^53; past that `v += 1.0` does not advance and the enumeration would not terminate |
+| Int (otherwise) | window endpoints, neighbours `x±1` (clamped to the *declared* bounds, so a value that has drifted outside the window keeps a local move), and a 32-point rounded grid across the window |
 | Float | Newton step toward the root of each violated constraint containing `v` (`x - residual/grad`, gradient via reverse-mode AD; up to 4), then midpoint and endpoints. Once the search has stagnated, a Float at a *stationary* point of every violated constraint containing it additionally gets a two-sided local probe at `x ± {1e-6, 1e-2}·(|x|+1)` — see below |
 
 Each candidate is scored with one `weighted_violation_delta` probe. Newton
@@ -378,10 +378,14 @@ point where every violated constraint containing it is stationary had *no
 candidate that could move it at all* — an empty neighbourhood — and froze there
 for the rest of the run. `Int` has no analogous *stationary-point* problem:
 `int_jump_candidates` always offers `x ± 1`. Float was the one type with no local
-move. `Int` did have its own freeze, from a different cause — on an unbounded
-domain, `lround`-ing the raw infinite bounds produced no candidates at all, `x ±
-1` included, and on `(-inf, ub]` the overflowed width sent the exhaustive arm off
-from `LONG_MIN` and wedged the solve. Fixed by reading the bounds through
+move. `Int` did have its own freeze, from a different cause — `int_jump_candidates`
+truncated the raw bounds with `std::lround`, in `long`, and glibc maps both
+infinities to `LONG_MIN`. On `(-inf, +inf)` and `[lb, +inf)` that collapsed the
+range and produced no candidates at all, `x ± 1` included. On `(-inf, ub]` it did
+not collapse: with `ub >= 0` the width overflowed `long` and wrapped negative, so
+the exhaustive arm ran up from `LONG_MIN` and wedged the solve, while with
+`ub < 0` the width stayed a valid positive `long` and the grid arm returned
+instantly with jumps near -9.2e18. Fixed by reading the bounds as doubles through
 `domain_window` (**#114**); see the guard section below.
 
 The probe supplies that local move, two-sided because at a saddle the descent
@@ -747,7 +751,10 @@ same *guard* (`domain_window`) without going through `randomize_var`: the move
 generators in moves.cpp, which draw perturbations around a current value rather
 than uniformly over the domain, and `int_jump_candidates` in feasibility_jump.cpp,
 which is not a draw at all — it reads the window to decide which integers are
-worth probing (**#114**).
+worth probing (**#114**). Note nothing gates an unbounded Int *out* of an FJ
+scan: `movable_domain` guards only the perturbation path, so a variable with no
+jump candidates was still scanned, still found scoreless, and still left where it
+was.
 
 They used to hold three private copies of the same `switch (var.type)`, none of
 them guarded against infinite bounds — so one default-probability kick on a model
@@ -772,9 +779,18 @@ draw actually samples, always a subset of the variable's domain:
 - on a **half-infinite** domain the substituted end is pushed past the declared
   one where needed, so the window stays inside the domain even when the declared
   bound lies beyond the clamp magnitude;
-- two finite bounds whose **width** overflows are narrowed to the clamp box, and
-  an Int window is kept inside the integers a double names exactly so the
-  `int64_t` casts at the call sites are defined.
+- two finite bounds whose **width** overflows are narrowed to the clamp box.
+
+Nothing else is rewritten, and in particular the window is **not** trimmed to the
+`int64_t`-nameable range. Trimming it there clamped each Int bound independently,
+which is neither inert (`[0, 1e17]` came back `[0, 2^53-1]`) nor a subset
+(`[-1e18, -1e17]` came back as the single point `-2^53`, *above* the declared
+`ub`, which `random_in_domain` then returned). `int_sample_window(var)` does that
+trim at the four places that actually cast — `random_in_domain`,
+`random_different_in_domain`, `movable_domain` and `int_rand` — and reports
+*empty* when the domain lies wholly past 2^53, where the callers pin the variable
+instead of drawing. `movable_domain` does not cast at all: `floor(hi) - ceil(lo)
+>= 1` is exact at any magnitude.
 
 This closes the randomisation route into a non-finite assignment. It **does not
 make the engine safe on unbounded domains**, and this section must not be read as

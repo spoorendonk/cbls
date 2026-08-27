@@ -29,21 +29,30 @@ double clamp_to_domain(const Variable& var, double value) {
 // --- perturbation helpers --------------------------------------------------
 // `random_in_domain` itself lives in randomize.h, shared with search.cpp's
 // initialisers and LNS's destroy step (#112). The two below are specific to the
-// kick and stay here; they read the domain through the same `domain_window`, so
-// the values they consider in-domain are exactly the ones it can draw.
+// kick and stay here; they read the domain through the same
+// `int_sample_window`, so the values they consider in-domain are exactly the
+// ones it can draw.
 //
 // A variable can be moved by a perturbation only if its domain holds at least
 // two values. Bool spans {0,1} today, but ask its bounds rather than assume so:
 // should a Bool ever become pinnable, flipping it would put it outside its own
-// domain. Int truncates its bounds the same way random_in_domain does, so both
-// paths agree on which values the domain contains.
+// domain. Int reads the same window random_different_in_domain draws from, so
+// both agree on which values the domain contains.
 bool movable_domain(const Variable& var) {
-    const DomainWindow w = domain_window(var);
     switch (var.type) {
-        case VarType::Int:
-            return static_cast<int64_t>(w.hi) > static_cast<int64_t>(w.lo);
-        default:  // Bool, Float
+        case VarType::Int: {
+            // Exact and UB-free at any magnitude, where an int64_t cast is
+            // neither: the window holds two distinct integers iff
+            // floor(hi) - ceil(lo) >= 1. Note this calls [0.9, 1.2] immovable,
+            // where truncating casts called it movable — 1 is the only integer
+            // in it, so immovable is the right answer.
+            const DomainWindow w = int_sample_window(var);
+            return std::floor(w.hi) - std::ceil(w.lo) >= 1.0;
+        }
+        default: {  // Bool, Float
+            const DomainWindow w = domain_window(var);
             return w.hi > w.lo;
+        }
     }
 }
 
@@ -61,12 +70,16 @@ double random_different_in_domain(const Variable& var, RNG& rng) {
         case VarType::Bool:
             return var.value != 0.0 ? 0.0 : 1.0;
         case VarType::Int: {
-            const int64_t lb = static_cast<int64_t>(w.lo);
-            const int64_t ub = static_cast<int64_t>(w.hi);
-            const int64_t cur = static_cast<int64_t>(var.value);
-            if (cur < lb || cur > ub) {
-                return static_cast<double>(rng.integers(lb, ub + 1));  // any value differs
+            // Non-empty: movable_domain above rejected the empty case.
+            const DomainWindow s = int_sample_window(var);
+            const int64_t lb = static_cast<int64_t>(s.lo);
+            const int64_t ub = static_cast<int64_t>(s.hi);
+            if (!(var.value >= s.lo) || !(var.value <= s.hi)) {
+                // Outside the window (or NaN), so any draw differs. Compared in
+                // double: `var.value` need not be castable to int64_t at all.
+                return static_cast<double>(rng.integers(lb, ub + 1));
             }
+            const int64_t cur = static_cast<int64_t>(var.value);
             // Uniform over the domain minus the current value: draw from a
             // domain one value short, then step over the hole at `cur`.
             int64_t draw = rng.integers(lb, ub);  // [lb, ub-1]
@@ -196,34 +209,12 @@ bool apply_random_structural_move(Model& model, int32_t var_id, RNG& rng) {
 // (two delta_evaluate passes); the JumpTable cache amortises this across the
 // GLS loop. (Closed-form linear-constraint argmin is a deferred optimisation.)
 //
-// The bounds come through `domain_window`, not raw off the Variable (#114).
-// Rounding the raw bounds meant an unbounded Int got no candidates at all:
-// glibc's `lround` returns LONG_MIN for BOTH +inf and -inf, so on `(-inf, +inf)`
-// the range collapsed to `ub - lb == 0` and the early-out below fired; on
-// `[lb, +inf)` it fired too (`LONG_MIN <= lb`). The variable then had no jump
-// value, was never picked by a scan, and no amount of GLS reweighting changed
-// that — it sat frozen at its initial value while every other variable searched.
-// On `(-inf, ub]` the early-out did NOT fire, and that case was worse than a
-// freeze: `ub - lb` overflowed `long` and wrapped negative, so the `<= 256` test
-// below chose the EXHAUSTIVE arm and the loop ran up from LONG_MIN — ~9.2e18
-// candidates, each a weighted_violation_delta. The solve wedged rather than
-// returning a bad jump. The same three failures reach any *finite* bound past
-// LONG_MAX (9.22e18), which is why the window below is trimmed to the integers a
-// double names exactly rather than merely to something finite.
-//
-// The window is the one `random_in_domain` samples, so the jump path and the
-// randomisation path agree on what an unbounded Int's searchable range is, and
-// the trim is what keeps the `lround`s below in range.
-//
-// Inert on a finite domain within +/-2^53: `domain_window` returns such bounds
-// verbatim, so ordinary models get bit-identical candidates. One deliberate
-// exception, and it IS a change from the pre-#114 behaviour: an Int whose bounds
-// both lie past 2^53 trims to a single point and takes the early-out, where the
-// raw-bounds code offered a grid. A double cannot name consecutive integers up
-// there, so that is not an integer domain in any useful sense — and
-// `movable_domain` already reads it through the same window and calls it
-// immovable, so declining to jump it is what makes the two paths agree. No
-// reader can build one (they clamp to 1e6/1e9 and saturate to `int`).
+// Bounds are read as doubles through `domain_window` (#114): no `long`, so
+// nothing overflows and an unbounded Int gets candidates instead of freezing in
+// the jump table. A finite bound passes through verbatim, so the candidates are
+// bit-identical to the pre-#114 ones. Pinned by "finite Int jump candidates are
+// unchanged" and "an unbounded Int is offered jump candidates"
+// (tests/test_unbounded_domain.cpp, which carries the archaeology).
 template <class Consider>
 void int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
     if (!(var.lb < var.ub)) {
@@ -233,25 +224,35 @@ void int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
         return;
     }
     const DomainWindow w = domain_window(var);
-    const long lb = std::lround(w.lo);
-    const long ub = std::lround(w.hi);
-    if (ub <= lb) {
-        return;  // rounding collapsed the window (e.g. [0.1, 0.4], both to 0)
+    const double lo = std::ceil(w.lo);
+    const double hi = std::floor(w.hi);
+    if (hi <= lo) {
+        // Fewer than two integers in the window. Past 2^53 that also means no
+        // jump is representable: `x +/- 1` is not a distinct double up there.
+        return;
     }
-    if (ub - lb <= 256) {
-        for (long v = lb; v <= ub; ++v) {
-            consider(static_cast<double>(v));
+    // Enumerate only where `v += 1.0` actually advances. At 1e18 the ulp is 128,
+    // so a width-<=256 loop over such endpoints would never terminate.
+    const bool steppable = std::abs(lo) < kExactIntMagnitude && std::abs(hi) < kExactIntMagnitude;
+    if (steppable && hi - lo <= 256.0) {
+        // The counter IS the candidate, and `steppable` is exactly the
+        // precondition that makes `+= 1.0` exact and the loop finite.
+        // NOLINTNEXTLINE(bugprone-float-loop-counter)
+        for (double v = lo; v <= hi; v += 1.0) {
+            consider(v);
         }
         return;
     }
-    consider(static_cast<double>(lb));
-    consider(static_cast<double>(ub));
+    consider(lo);
+    consider(hi);
+    // Clamped to the *declared* bounds, not the window, so a variable that has
+    // drifted outside the window keeps its local moves.
     consider(clamp_to_domain(var, x0 - 1));
     consider(clamp_to_domain(var, x0 + 1));
     const int grid = 32;
     for (int k = 1; k < grid; ++k) {
-        double frac = static_cast<double>(k) / grid;
-        consider(std::round(static_cast<double>(lb) + frac * static_cast<double>(ub - lb)));
+        const double frac = static_cast<double>(k) / grid;
+        consider(std::round(lo + (frac * (hi - lo))));
     }
 }
 

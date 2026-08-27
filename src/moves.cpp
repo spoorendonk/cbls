@@ -28,12 +28,15 @@ static std::vector<Move> int_moves(const Variable& var, RNG& rng) {
         m.changes.push_back({var.id, var.value + 1.0, {}});
         moves.push_back(m);
     }
-    {
+    // Through the shared window, so an infinite bound cannot cast to INT64_MIN
+    // (#112). Inert on a finite domain within +/-2^53. An empty window means the
+    // domain lies wholly past 2^53, where no int64_t range names it and `x +/- 1`
+    // is not even a distinct double, so the move is dropped rather than faked
+    // (#114).
+    const DomainWindow w = int_sample_window(var);
+    if (w.lo <= w.hi) {
         Move m;
         m.move_type = "int_rand";
-        // Through the shared window, so an infinite bound cannot cast to
-        // INT64_MIN (#112). Inert on a finite domain.
-        const DomainWindow w = domain_window(var);
         double new_val = static_cast<double>(
             rng.integers(static_cast<int64_t>(w.lo), static_cast<int64_t>(w.hi) + 1));
         m.changes.push_back({var.id, new_val, {}});
