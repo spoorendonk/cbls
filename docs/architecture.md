@@ -287,6 +287,14 @@ Tracks per-constraint violation and the GLS weight vector.
   restores node state, so it is not reentrant on a shared Model — each search
   thread owns its own Model.) The GFJ jump *score* is `-deltaG` (positive =
   improving). Scalar variables only.
+- `snapshot_violations(out)` / `weighted_delta_from(snapshot)` — the structural
+  counterpart of the above, for moves on List/Set variables that the scalar-only
+  probe cannot score. Snapshot the accepted assignment's per-constraint
+  violations once, apply a candidate move, then read the weighted change against
+  the snapshot. Like `weighted_violation_delta` it accumulates **per
+  constraint**, which is what keeps a row clamped to `kInfPenalty` from
+  swallowing the O(1) real rows (`1e30 + 3 == 1e30`, so differencing two whole
+  sums loses them; `1e30 - 1e30` cancels exactly). See #100 and #118.
 - `augmented_objective()` = `obj + total_violation()` — the penalty-method
   metric. **Used only as the inner solver's local descent objective**, not as
   any search acceptance rule. (When the objective is folded in as a soft
@@ -567,6 +575,16 @@ List/Set peer of an FJ/NJ batch: it sweeps every List/Set variable, generates
 the candidate structural moves for it, and greedily keeps any move that reduces
 total weighted violation (negative weighted `deltaG` under the current GLS
 weights `W`).
+
+That `deltaG` is accumulated per constraint, via
+`ViolationManager::snapshot_violations` / `weighted_delta_from`, and not by
+subtracting two `total_violation()` readings. The difference only shows once some
+row is clamped to `kInfPenalty`, but then it is total: 1e30 is fourteen orders of
+magnitude above an O(1) row, so both readings round to the same double and every
+move scores exactly 0. The objective soft constraint sits at that clamp for as
+long as the #116 sentinel bound is installed, which used to freeze the structural
+assignment of any model whose feasible region contains a non-finite objective
+(#118).
 
 Moves come from `generate_standard_moves` (`src/moves.cpp`):
 

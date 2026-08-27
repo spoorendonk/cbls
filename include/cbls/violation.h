@@ -19,7 +19,7 @@ inline constexpr double kDefaultFeasibilityTolerance = 1e-6;
 /// The engine's blowup clamp. Every non-finite (or absurdly large) constraint
 /// violation is mapped to this, so a search that wanders into inf/NaN stays
 /// well-ordered instead of poisoning the violation cache and the structural
-/// pass's `after < before` test.
+/// pass's move comparison.
 ///
 /// It is therefore also the largest objective value the violation machinery can
 /// still tell apart from a blowup, which is why `record_best` installs it as the
@@ -51,6 +51,25 @@ public:
     // node/var state, so it is NOT reentrant on a shared Model (each search
     // thread owns its own Model, so this is safe in practice).
     double weighted_violation_delta(int32_t var_id, double j) const;
+
+    // Per-constraint clamped violations of the current assignment, and the
+    // weighted change against such a snapshot. Together they are the structural
+    // (List/Set) counterpart of weighted_violation_delta: a move on a structured
+    // variable cannot use that probe — it is scalar-only — but it needs the same
+    // PER-CONSTRAINT differencing, because a row clamped to kInfPenalty absorbs
+    // every O(1) real row when two whole sums are subtracted instead (#100, and
+    // #118 where it blinded the structural pass under the sentinel objective
+    // bound). Differencing per constraint makes the clamped row cancel exactly.
+    //
+    // Intended use, from the caller that applies and rolls back candidate moves:
+    // snapshot the accepted state once, then read weighted_delta_from() after
+    // each candidate is applied, and re-snapshot only when one is kept.
+    //
+    // weighted_delta_from throws if the snapshot is not one constraint per
+    // constraint of this model. Both are O(#constraints); snapshot_violations
+    // also refreshes the cached total, weighted_delta_from touches no cache.
+    void snapshot_violations(std::vector<double>& out) const;
+    double weighted_delta_from(const std::vector<double>& snapshot) const;
 
     // Invalidate cached total (call after weights change or full_evaluate)
     void invalidate_cache() { cache_valid_ = false; }

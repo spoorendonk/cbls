@@ -16,6 +16,8 @@
 #include <cbls/cbls.h>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
+#include <vector>
 
 using namespace cbls;
 
@@ -226,6 +228,51 @@ TEST_CASE("a clamped row does not absorb the real rows in a jump score",
     REQUIRE(jr.jump_value <= 0.0);
 }
 
+TEST_CASE("a clamped row does not absorb the real rows in a structural delta",
+          "[nonfinite][nonfinite-objective][structural]") {
+    // The same property one level down from the structural pass (#118), on the
+    // pair it scores its moves with. weighted_violation_delta cannot be used
+    // there — it is scalar-only, and a structural move changes a List/Set — so
+    // the pass snapshots the per-constraint violations and differences against
+    // them, and this is the arithmetic that has to survive a 1e30 row.
+    //
+    // Same shape as the jump-score case above: row A is +inf whatever x does,
+    // row B is `x <= 0`, violated by 3.
+    Model m;
+    int32_t x = m.float_var(-10.0, 10.0, "x");
+    int32_t y = m.float_var(-1.0e9, 1.0e9, "y");
+    m.add_constraint(m.leq(m.sum({m.exp_expr(x), m.exp_expr(y)}), m.constant(1.0)));
+    m.add_constraint(m.leq(x, m.constant(0.0)));
+    m.close();
+
+    m.var_mut(vid(x)).value = 3.0;
+    m.var_mut(vid(y)).value = 1.0e6;  // exp(1e6) = +inf: row A is +inf for any x
+    full_evaluate(m);
+
+    ViolationManager vm(m);
+    std::vector<double> baseline;
+    vm.snapshot_violations(baseline);
+    REQUIRE(baseline.size() == m.constraint_ids().size());
+    REQUIRE(baseline[0] == kInfPenalty);
+    REQUIRE(baseline[1] == 3.0);
+    // Nothing has moved yet, so the delta against the snapshot is exactly zero —
+    // including the clamped row, which must cancel rather than round.
+    REQUIRE(vm.weighted_delta_from(baseline) == 0.0);
+
+    // Now move: the clamped row is untouched, the real row is repaired.
+    m.var_mut(vid(x)).value = 0.0;
+    full_evaluate(m);
+    REQUIRE(vm.weighted_delta_from(baseline) == -3.0);
+
+    // Weighted, and against a stale snapshot only in the rows that changed.
+    vm.weights[1] = 4.0;
+    REQUIRE(vm.weighted_delta_from(baseline) == -12.0);
+
+    // A snapshot of the wrong length is a caller bug, not a silent 0.
+    std::vector<double> too_short(1, 0.0);
+    REQUIRE_THROWS_AS(vm.weighted_delta_from(too_short), std::invalid_argument);
+}
+
 TEST_CASE("a feasible point with a +inf objective is reported feasible",
           "[nonfinite][nonfinite-objective]") {
     // minimize exp(x) s.t. x >= 1000, x in [0, 1e9].
@@ -408,4 +455,109 @@ TEST_CASE("a search starting feasible with a +inf objective still finds a finite
     // The box optimum is 1/81 at the opposite corners; nothing can beat it.
     REQUIRE(r.objective >= 1.0 / 81.0 - 1e-9);
     REQUIRE(r.objective < 0.1);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #118: the sentinel bound must not blind the structural pass.
+//
+// The sentinel is what makes `obj <= 1e30` a *violated* row while the objective
+// is not a number, and a violated row clamps to kInfPenalty. The structural pass
+// used to decide a move by differencing two whole-sum `total_violation()`
+// values, so with 1e30 in the sum both sides rounded to the same double — a ULP
+// up there is ~1.4e14 — and `after < before - 1e-12` became `before < before`.
+// Every structural move was rolled back for as long as the sentinel was
+// installed, whatever it did to the real rows. That is the #100 defect in a
+// second place, and it takes the same fix: difference per constraint, so the
+// clamped row cancels exactly.
+//
+// The model below is the smallest thing that reaches the window and can be
+// observed leaving it:
+//
+//   * one List variable, whose only row is `sum_i (L[i] - i)^2 <= 0` — the
+//     identity permutation and nothing else. No scalar appears in it, so
+//     Feasibility Jump cannot repair it and the structural pass is the only
+//     thing that can;
+//   * an objective of `exp(w)`, w >= 1000, which is +inf on the whole domain, so
+//     the window opens at the first feasible point and never closes;
+//   * the start is the identity, so the first batch is real-feasible and
+//     installs the sentinel.
+//
+// One diversification kick then fires inside the budget (perturbation_period is
+// set so a second cannot), and a kick applies at least one structural move
+// (#111), so it necessarily breaks the row. After it the List can be moved by
+// nothing but the structural pass: blind, the assignment is frozen infeasible
+// for the rest of the run; seeing, the pass walks it back to the identity.
+//
+// The observable is the number of batches at which the search was real-feasible.
+// SearchResult cannot show it — the best point is the +inf witness recorded
+// before the window opens, either way — but the InnerSolverHook is invoked on
+// exactly the real-feasible batches, so a counting hook reads it directly.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+class FeasibleVisitCounter : public InnerSolverHook {
+public:
+    void solve(Model&, ViolationManager&, const std::vector<int32_t>&) override { ++visits; }
+
+    int visits = 0;
+};
+
+}  // namespace
+
+TEST_CASE("a structural repair is accepted while the sentinel bound is installed",
+          "[nonfinite][nonfinite-objective][structural]") {
+    constexpr int kN = 4;             // permutation length
+    constexpr int kPeriod = 40;       // stagnant batches before the (single) kick
+    constexpr int64_t kBatches = 80;  // budget; bounds batches, not GLS iterations
+
+    Model m;
+    int32_t perm = m.list_var(kN, "perm");  // starts as the identity [0 .. kN-1]
+
+    // sum_i (L[i] - i)^2 <= 0: satisfied by the identity alone, and violated by
+    // at least 2 by any single structural move away from it.
+    std::vector<int32_t> terms;
+    for (int i = 0; i < kN; ++i) {
+        int32_t d = m.sum({m.at(perm, m.constant(i)), m.constant(-i)});
+        terms.push_back(m.prod(d, d));
+    }
+    m.add_constraint(m.leq(m.sum(terms), m.constant(0.0)));
+
+    // +inf for every w in the domain: exp overflows past ~709.78.
+    int32_t w = m.float_var(1000.0, 1.0e9, "w");
+    m.minimize(m.exp_expr(w));
+    m.close();
+
+    m.var_mut(vid(w)).value = 1000.0;
+    full_evaluate(m);
+    // Precondition: the start is feasible and its objective is not a number,
+    // which is exactly the state record_best installs the sentinel for.
+    REQUIRE_FALSE(std::isfinite(m.node(m.objective_id()).value));
+
+    SearchConfig cfg;
+    cfg.skip_init = true;                    // keep the identity start and w = 1000
+    cfg.structural_batch_probability = 1.0;  // every batch is a structural sweep
+    // Structural batches charge no GLS iterations, so this budget binds on the
+    // batch count (see the `batches >= max_iterations` guard in solve()).
+    cfg.max_iterations = kBatches;
+    cfg.perturbation_period = kPeriod;
+
+    FeasibleVisitCounter hook;
+    SearchResult r =
+        solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, &hook, nullptr, 3, nullptr, cfg);
+
+    // The run is feasible on the witness alone and reports no objective, before
+    // and after the fix: the point of the test is what happened in between.
+    REQUIRE(r.feasible);
+    REQUIRE_FALSE(std::isfinite(r.objective));
+
+    // The kick really did break the row: the search was not feasible at every
+    // batch. (Without this the test could pass vacuously on a kick that moved
+    // nothing.)
+    REQUIRE(hook.visits < kBatches);
+    // And the row was repaired: feasibility was regained after the kick, which
+    // is reachable only through a structural move accepted while the sentinel is
+    // installed. Blind, the count stops at kPeriod + 1 — the batches from the
+    // start through the one the kick fires at.
+    REQUIRE(hook.visits > kPeriod + 1);
 }

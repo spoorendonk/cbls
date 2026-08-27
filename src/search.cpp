@@ -86,8 +86,8 @@ int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations,
 // truncated for speed, and the overrun is capped at one variable's work.
 //
 // The bound is needed because the sweep's cost is unbounded in the model size:
-// O(#structured vars x #moves x (delta_evaluate + O(#constraints))), since
-// total_violation() rescans every constraint on each of the two calls per move.
+// O(#structured vars x #moves x (delta_evaluate + O(#constraints))), since the
+// weighted delta rescans every constraint once per move.
 // On a 1500-List x 100-element model with 40k constraints a 0.5s budget ran
 // 1.19-1.25s unbounded versus 0.502s bounded. `solve(model, time_limit)` is a
 // library contract, and that is a violation for any user model of this shape
@@ -108,6 +108,23 @@ int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations,
 static bool structural_pass(Model& model, ViolationManager& vm, RNG& rng, bool has_deadline,
                             std::chrono::steady_clock::time_point deadline) {
     bool changed = false;
+    // Per-constraint violations of the last ACCEPTED assignment. A move is judged
+    // by ViolationManager::weighted_delta_from against this, not by differencing
+    // two whole-sum total_violation() values, because that subtraction loses the
+    // real rows whenever any one row is clamped to kInfPenalty: 1e30 is fourteen
+    // orders of magnitude above an O(1) row, so both sums round to the same
+    // double and `after < before - 1e-12` reads `before < before`. That is #100's
+    // defect in this pass, and #116's sentinel objective bound put a permanently
+    // clamped row into every model whose feasible region contains a non-finite
+    // objective — so the pass rejected every structural move for as long as the
+    // sentinel was installed, however much it improved the real rows (#118).
+    // Differencing per constraint cancels the clamped row exactly.
+    //
+    // Both calls self-correct to the current node values (they read the
+    // constraint nodes directly), so no explicit invalidate is needed across the
+    // apply/undo dance; the baseline is re-snapshotted only when a move is kept.
+    std::vector<double> baseline;
+    vm.snapshot_violations(baseline);
     for (const auto& var : model.variables()) {
         if (!is_structured(var.type)) {
             continue;
@@ -116,19 +133,13 @@ static bool structural_pass(Model& model, ViolationManager& vm, RNG& rng, bool h
             break;
         }
         auto moves = generate_standard_moves(var, rng);
-        // total_violation()'s incremental path self-corrects to the current node
-        // state on each call (it diffs all constraints against its cache), so no
-        // explicit invalidate is needed across the apply/undo dance; thread the
-        // accepted baseline instead of recomputing it per move.
-        double before = vm.total_violation();
         for (const auto& move : moves) {
             auto saved = save_move_values(model, move);
             auto touched = apply_move(model, move);
             delta_evaluate(model, touched);
-            double after = vm.total_violation();
-            if (after < before - 1e-12) {
+            if (vm.weighted_delta_from(baseline) < -1e-12) {
                 changed = true;  // improving: keep
-                before = after;
+                vm.snapshot_violations(baseline);
             } else {
                 undo_move(model, move, saved);
                 delta_evaluate(model, touched);
@@ -373,22 +384,9 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             // returned true from this same witness path, so nothing else on it
             // changes.
             //
-            // Two consequences this DOES introduce, both confined to the window
-            // where the sentinel is installed and the objective is still
-            // non-finite:
+            // One consequence this DOES introduce, confined to the window where
+            // the sentinel is installed and the objective is still non-finite:
             //
-            //   * structural_pass goes blind (#118), and that is a REGRESSION, not
-            //     an inherited gap: before this change the objective row read 0.0
-            //     in exactly this window, so the pass compared the real rows
-            //     normally. Now its `before` and `after` both round to
-            //     1e30 * w_obj — a double ULP up there is ~1.4e14 — so any
-            //     real-row change under ~7e13 is absorbed and every structural
-            //     improvement is rolled back. Trigger: a List/Set model whose
-            //     first feasible point has a non-finite objective, where FJ then
-            //     breaks a real row chasing the newly-violated objective row.
-            //     Transient (it ends at the first sub-1e30 objective) and inert
-            //     at the moment of install, where every real row is satisfied
-            //     and so there is nothing yet to absorb.
             //   * progress reports pair feasible = true with total_violation
             //     ~1e30 until the objective goes finite. Documented on
             //     SolveProgress::total_violation rather than suppressed: that
@@ -397,6 +395,15 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             //     already the steady state after any bound tightening, so no
             //     consumer can be reading it as "zero whenever feasible". Only
             //     the magnitude is new.
+            //
+            // The invariant this row imposes on the rest of the window: anything
+            // that compares two assignments by violation must difference PER
+            // CONSTRAINT, because a row clamped to 1e30 swallows every O(1) real
+            // row when whole sums are subtracted instead. FJ's jump scoring
+            // already did (#100); structural_pass did not, and was blind for the
+            // whole window until #118 gave it the same treatment. LNS::state_key
+            // and max_real_violation are safe by exclusion — neither looks at the
+            // objective row at all.
             //
             // One deliberate interaction: with this row violated and its
             // gradient non-finite, float_jump_candidates reports "gradient

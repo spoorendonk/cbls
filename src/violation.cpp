@@ -8,7 +8,7 @@ namespace cbls {
 
 // Non-convex objectives/constraints (exp/pow/div blowups — the MINLPLib target)
 // can drive a node value to +inf or NaN. Such a value would poison the
-// total_violation cache, the structural-pass `after < before` comparison and the
+// total_violation cache, the structural pass's move comparison and the
 // best-objective bookkeeping. Map every non-finite (or absurdly large) violation
 // to a large but finite penalty so the search treats the point as very bad but
 // still well-ordered. The clamp is one-sided on the violation (which is already
@@ -87,6 +87,37 @@ double ViolationManager::augmented_objective() const {
         }
     }
     return obj + total_violation();
+}
+
+void ViolationManager::snapshot_violations(std::vector<double>& out) const {
+    // total_violation() brings cached_violations_ up to the current node values
+    // (it diffs every constraint against the cache on each call), so the snapshot
+    // is a copy of work that has to happen anyway rather than a second scan.
+    total_violation();
+    out = cached_violations_;
+}
+
+double ViolationManager::weighted_delta_from(const std::vector<double>& snapshot) const {
+    const auto& cids = model_.constraint_ids();
+    if (snapshot.size() != cids.size()) {
+        throw std::invalid_argument("weighted_delta_from: snapshot size != constraint count");
+    }
+    // Per-constraint differencing, for the reason spelled out on
+    // Model::weighted_violation_delta: `1e30 + 3` rounds back to `1e30`, so
+    // subtracting two whole sums loses every real row the moment one row is
+    // clamped, whereas `1e30 - 1e30` cancels to exactly 0 here.
+    //
+    // Deliberately does not update the cache: the caller's candidate move is
+    // usually rolled back, and total_violation() self-corrects against whatever
+    // the node values are when it is next called either way.
+    double delta = 0.0;
+    for (size_t i = 0; i < cids.size(); ++i) {
+        const double now = clamped_node_violation(model_.node(cids[i]).value);
+        if (now != snapshot[i]) {
+            delta += weights[i] * (now - snapshot[i]);
+        }
+    }
+    return delta;
 }
 
 bool ViolationManager::is_feasible(double tol) const {
