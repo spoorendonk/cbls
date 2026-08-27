@@ -56,10 +56,15 @@ public:
     // weighted change against such a snapshot. Together they are the structural
     // (List/Set) counterpart of weighted_violation_delta: a move on a structured
     // variable cannot use that probe — it is scalar-only — but it needs the same
-    // PER-CONSTRAINT differencing, because a row clamped to kInfPenalty absorbs
-    // every O(1) real row when two whole sums are subtracted instead (#100, and
-    // #118 where it blinded the structural pass under the sentinel objective
-    // bound). Differencing per constraint makes the clamped row cancel exactly.
+    // PER-CONSTRAINT differencing, for two reasons. (a) A row clamped to
+    // kInfPenalty absorbs every O(1) real row when two whole sums are subtracted
+    // instead (#100, and #118 where it blinded the structural pass under the
+    // sentinel objective bound); differencing per constraint cancels it exactly.
+    // (b) Even with no row clamped, two total_violation() readings disagree in
+    // the last ulp for a move that changed nothing, because that value is an
+    // incrementally maintained accumulator with a periodic resync; per-constraint
+    // differencing reports an exact 0 for an unchanged row. See #118 and the
+    // Structural Batch section of docs/architecture.md for the measurement.
     //
     // Intended use, from the caller that applies and rolls back candidate moves:
     // snapshot the accepted state once, then read weighted_delta_from() after

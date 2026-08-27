@@ -1,36 +1,61 @@
 # CBLS rows: best objective over seeds 42-44, 10s wall clock per run, single
-# thread, default SearchConfig, Release build. Reproduce with:
-#   ./build/cbls_setcover --dir benchmarks/instances/setcover --time 10 --seeds 3 \
+# thread, default SearchConfig, Release build (-DCMAKE_BUILD_TYPE=Release).
+# Reproduce with:
+#   ./build-rel/cbls_setcover --dir benchmarks/instances/setcover --time 10 --seeds 3 \
 #       --encoding both --csv raw.csv
 # Every CBLS row was verified against the instance file (cover recomputed
 # from the OR-Library data, not read off the DAG).
 # `cbls-set`  = one Set variable over the columns (the encoding under test).
 # `cbls-bool` = one Bool per column, i.e. the ordinary linear encoding.
 # Optima are proven; see README.md for provenance.
-# Measured at engine HEAD including the structural diversification kick (#111),
-# which moved the weighted `cbls-set` rows ~30% worse than the pre-#111 numbers
-# this file previously carried.
+#
+# The engine also carries the structural diversification kick (#111), which
+# moved the weighted `cbls-set` rows ~30% worse than the pre-#111 numbers this
+# file carried two revisions ago.
+#
+# Engine commit: adc8ee4 ("fix: let the structural pass see past a clamped
+# objective row", #118). The commit that carries this table adds only comments
+# and this file on top of adc8ee4, so adc8ee4 is the engine these numbers came
+# from. Record the hash on every regeneration: a search-trajectory change
+# silently invalidates the table, and without it the next reader cannot tell
+# drift from a bug.
+#
+# What moved and why. #118 replaced the structural pass's whole-sum
+# `total_violation()` differencing with per-constraint differencing. That was
+# expected to be inert here — setcover's objective is finite throughout, so no
+# row is ever clamped to kInfPenalty — but it is not, because whole-sum
+# differencing had a second, clamp-independent defect: two readings of the
+# incrementally maintained violation total disagree in the last ulp, and the
+# `- 1e-12` guard is inert for any total >= 2^14, so ~0.25% of candidate moves
+# were accepted as improvements while changing nothing at all. All five
+# `cbls-set` weighted rows therefore moved. The per-seed mean over the five
+# weighted instances is a wash (4712 -> 4695 pre/post) with lower spread; the
+# best-of-3 rows move both ways (scp41/42/43 worse, scp44/45 better).
+# The `cbls-bool` rows cannot be affected — a scalar-only model never runs a
+# structural batch — and re-measuring at e99f4bf reproduced every previously
+# committed row exactly except scp44/cbls-bool, which is simply noisy at a 10s
+# budget (573 / 607 / 581 over three sweeps of the same code).
 instance,method,objective,gap,source
 scp41,optimum,429,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
-scp41,cbls-set,4241,888.6,"this repo, 10s x 3 seeds, best"
+scp41,cbls-set,4739,1004.7,"this repo, 10s x 3 seeds, best"
 scp41,cbls-bool,469,9.3,"this repo, 10s x 3 seeds, best"
 scp42,optimum,512,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
-scp42,cbls-set,4345,748.6,"this repo, 10s x 3 seeds, best"
+scp42,cbls-set,4445,768.2,"this repo, 10s x 3 seeds, best"
 scp42,cbls-bool,613,19.7,"this repo, 10s x 3 seeds, best"
 scp43,optimum,516,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
-scp43,cbls-set,4497,771.5,"this repo, 10s x 3 seeds, best"
+scp43,cbls-set,4596,790.7,"this repo, 10s x 3 seeds, best"
 scp43,cbls-bool,615,19.2,"this repo, 10s x 3 seeds, best"
 scp44,optimum,494,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
-scp44,cbls-set,4550,821.1,"this repo, 10s x 3 seeds, best"
-scp44,cbls-bool,573,16.0,"this repo, 10s x 3 seeds, best"
+scp44,cbls-set,4287,767.8,"this repo, 10s x 3 seeds, best"
+scp44,cbls-bool,607,22.9,"this repo, 10s x 3 seeds, best"
 scp45,optimum,512,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
-scp45,cbls-set,4492,777.3,"this repo, 10s x 3 seeds, best"
+scp45,cbls-set,4392,757.8,"this repo, 10s x 3 seeds, best"
 scp45,cbls-bool,596,16.4,"this repo, 10s x 3 seeds, best"
 scpe1,optimum,5,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
 scpe1,cbls-set,7,40.0,"this repo, 10s x 3 seeds, best"
 scpe1,cbls-bool,6,20.0,"this repo, 10s x 3 seeds, best"
 scpe2,optimum,5,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
-scpe2,cbls-set,7,40.0,"this repo, 10s x 3 seeds, best"
+scpe2,cbls-set,6,20.0,"this repo, 10s x 3 seeds, best"
 scpe2,cbls-bool,6,20.0,"this repo, 10s x 3 seeds, best"
 scpe3,optimum,5,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
 scpe3,cbls-set,5,0.0,"this repo, 10s x 3 seeds, best"
@@ -39,5 +64,5 @@ scpe4,optimum,5,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
 scpe4,cbls-set,7,40.0,"this repo, 10s x 3 seeds, best"
 scpe4,cbls-bool,6,20.0,"this repo, 10s x 3 seeds, best"
 scpe5,optimum,5,0.0,Beasley EJOR 31 (1987) 85-93 via OR-Library
-scpe5,cbls-set,6,20.0,"this repo, 10s x 3 seeds, best"
+scpe5,cbls-set,7,40.0,"this repo, 10s x 3 seeds, best"
 scpe5,cbls-bool,6,20.0,"this repo, 10s x 3 seeds, best"

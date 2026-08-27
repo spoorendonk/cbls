@@ -448,7 +448,7 @@ validated on a published formulation. They are not, as of the pharma-glsp
 retirement. The evidence position is:
 
 - **`Set`** — measured and **negative** (#93). The `Set` encoding lands at
-  8.5-9.9x the proven optimum where the same data in Bools is within 9-20%.
+  8.6-11.1x the proven optimum where the same data in Bools is within 9-23%.
 - **`List`** — **no evidence either way**. The only List benchmark was
   pharma-glsp, whose model was a relaxation, and whose faithful form does not
   need a List at all.

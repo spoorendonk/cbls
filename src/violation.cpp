@@ -105,7 +105,9 @@ double ViolationManager::weighted_delta_from(const std::vector<double>& snapshot
     // Per-constraint differencing, for the reason spelled out on
     // Model::weighted_violation_delta: `1e30 + 3` rounds back to `1e30`, so
     // subtracting two whole sums loses every real row the moment one row is
-    // clamped, whereas `1e30 - 1e30` cancels to exactly 0 here.
+    // clamped, whereas `1e30 - 1e30` cancels to exactly 0 here. It also keeps an
+    // *unchanged* row at an exact 0 rather than at the last-ulp disagreement two
+    // readings of the incrementally maintained cached_total_ can show (#118).
     //
     // Deliberately does not update the cache: the caller's candidate move is
     // usually rolled back, and total_violation() self-corrects against whatever

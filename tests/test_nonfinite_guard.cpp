@@ -470,6 +470,17 @@ TEST_CASE("a search starting feasible with a +inf objective still finds a finite
 // second place, and it takes the same fix: difference per constraint, so the
 // clamped row cancels exactly.
 //
+// The clamped row is only half of what whole-sum differencing got wrong, and it
+// is the half these tests cover. The other half needs no clamped row: `before`
+// was threaded across candidate moves and both readings came from
+// total_violation()'s incrementally maintained accumulator, so they disagree in
+// the last ulp even for a move that changes no constraint at all — and the
+// `- 1e-12` guard is inert above 2^14. That one is a floating-point accumulation
+// property of a long search, not a deterministic two-row fixture; it is pinned by
+// measurement instead (setcover scp41/Set, 99 no-op moves accepted in 39627
+// candidates with no row clamped anywhere), reported in the Structural Batch
+// section of docs/architecture.md.
+//
 // The model below is the smallest thing that reaches the window and can be
 // observed leaving it:
 //

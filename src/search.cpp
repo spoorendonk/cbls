@@ -110,15 +110,33 @@ static bool structural_pass(Model& model, ViolationManager& vm, RNG& rng, bool h
     bool changed = false;
     // Per-constraint violations of the last ACCEPTED assignment. A move is judged
     // by ViolationManager::weighted_delta_from against this, not by differencing
-    // two whole-sum total_violation() values, because that subtraction loses the
-    // real rows whenever any one row is clamped to kInfPenalty: 1e30 is fourteen
-    // orders of magnitude above an O(1) row, so both sums round to the same
-    // double and `after < before - 1e-12` reads `before < before`. That is #100's
-    // defect in this pass, and #116's sentinel objective bound put a permanently
-    // clamped row into every model whose feasible region contains a non-finite
-    // objective — so the pass rejected every structural move for as long as the
-    // sentinel was installed, however much it improved the real rows (#118).
-    // Differencing per constraint cancels the clamped row exactly.
+    // two whole-sum total_violation() values. That subtraction had TWO defects,
+    // and only the first one needs a clamped row.
+    //
+    // 1. Clamped-row blindness (#118). A row clamped to kInfPenalty swallows the
+    //    real rows: 1e30 is fourteen orders of magnitude above an O(1) row, so
+    //    both sums round to the same double and `after < before - 1e-12` reads
+    //    `before < before`. That is #100's defect in this pass, and #116's
+    //    sentinel objective bound put a permanently clamped row into every model
+    //    whose feasible region contains a non-finite objective — so the pass
+    //    rejected every structural move for as long as the sentinel was
+    //    installed, however much it improved the real rows.
+    //
+    // 2. Phantom improvements, on ANY model, clamped row or not, and predating
+    //    #116. Both readings came from total_violation()'s incremental
+    //    accumulator (cached_total_ += (new - old) * W), whose 1000-call
+    //    recompute bounds the accumulated rounding error without removing it, and
+    //    `before` was threaded across candidate moves — so two readings taken at
+    //    different points in that drift cycle differ in the last ulp even when no
+    //    constraint changed at all. `- 1e-12` cannot filter that: x - 1e-12 == x
+    //    for every double x >= 2^14, and GLS weights put setcover's weighted
+    //    total at ~4.4e6 (1 ulp = 9.3e-10). Measured on scp41/Set with no row
+    //    clamped anywhere: 99 of 39627 candidates were accepted with a true
+    //    weighted delta of exactly 0 and zero rows changed, each of them setting
+    //    `changed` and forcing a needless fj.resync().
+    //
+    // Differencing per constraint fixes both: the clamped row cancels exactly,
+    // and an unchanged row contributes an exact 0 instead of a drifted total.
     //
     // Both calls self-correct to the current node values (they read the
     // constraint nodes directly), so no explicit invalidate is needed across the

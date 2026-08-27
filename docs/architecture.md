@@ -578,13 +578,38 @@ weights `W`).
 
 That `deltaG` is accumulated per constraint, via
 `ViolationManager::snapshot_violations` / `weighted_delta_from`, and not by
-subtracting two `total_violation()` readings. The difference only shows once some
-row is clamped to `kInfPenalty`, but then it is total: 1e30 is fourteen orders of
+subtracting two `total_violation()` readings. That removes **two** independent
+defects, and only the first of them needs a clamped row.
+
+**Clamped-row blindness (#118).** Once any row is clamped to `kInfPenalty`,
+whole-sum differencing loses the real rows outright: 1e30 is fourteen orders of
 magnitude above an O(1) row, so both readings round to the same double and every
 move scores exactly 0. The objective soft constraint sits at that clamp for as
 long as the #116 sentinel bound is installed, which used to freeze the structural
-assignment of any model whose feasible region contains a non-finite objective
-(#118).
+assignment of any model whose feasible region contains a non-finite objective.
+
+**Phantom improvements from cache drift.** This one is older than #116 and needs
+no clamped row at all. The old test was `after < before - 1e-12` against a
+`before` threaded across candidate moves, and both readings come from
+`total_violation()`'s incremental accumulator (`cached_total_ += (new - old) *
+W`), whose 1000-call from-scratch recompute *bounds* the accumulated rounding
+error but does not remove it. Two readings taken at different points in that
+cycle can differ in the last ulp even when no constraint changed at all, and the
+`- 1e-12` guard does not filter it. Above `2^14` it cannot: `x - 1e-12 == x` for
+every double `x >= 16384`, and GLS weights push setcover's weighted total to
+~4.4e6, where one ulp is 9.3e-10. Below `2^14` the guard is live but the drift
+simply outgrows it — observed phantoms run 1.8e-12 to 1.2e-10.
+
+Measured on `scp41` under the `Set` encoding (10s x 3 seeds, **no row clamped
+anywhere in the run**): 99 of 39627 candidate moves were accepted by the old test
+with a true weighted delta of exactly 0 and *zero* rows changed — ~99 no-op moves
+committed per 30s of search, each setting `changed` and forcing an `fj.resync()`.
+Unicost `scpe1` shows the same at 12 of 166119. Per-constraint differencing
+scores those moves at exactly 0 and rejects them.
+
+It is this second half, not the clamped-row half, that moved the `Set` numbers
+below: setcover's objective is finite throughout, so no row is ever clamped
+there.
 
 Moves come from `generate_standard_moves` (`src/moves.cpp`):
 
@@ -623,12 +648,12 @@ only variables are structured. There, everything else is inert:
 | LNS | destroys the structured variables wholesale, i.e. a random restart, then repairs with an FJ that has nothing to jump |
 
 so progress is slow once the sampled neighbourhood stops improving — slow, not
-finished: 6x the budget still buys ~8% on these instances (scp41 `set` 4241 at
-10s, 3881 at 60s), so the 10s numbers below are budget-limited rather than
+finished: 6x the budget still buys ~18% on these instances (scp41 `set` 4739 at
+10s, 3876 at 60s), so the 10s numbers below are budget-limited rather than
 neighbourhood-limited. Measured on OR-Library set covering
 (`benchmarks/instances/setcover/`, issue #93): on the weighted instances the
-same data modelled as one `Set` variable costs **8.5-9.9x the proven optimum**,
-against **+9-20%** for one Bool per column — while on *unicost* instances,
+same data modelled as one `Set` variable costs **8.6-11.1x the proven optimum**,
+against **+9-23%** for one Bool per column — while on *unicost* instances,
 where the objective is just cardinality, the two nearly converge. What the Set
 search lacks is not reach but a violation-guided choice of *which* element to
 move. A 3-row, 4-column fixture in `tests/test_setcover.cpp` reproduces it
@@ -641,7 +666,7 @@ structural pass accept a move that breaks a constraint — which is why the pump
 was once thought to be load-bearing for a structure-only model. Setting
 `structural_batch_probability = 1.0` removes the pump in exchange for more
 structural passes, and at engine HEAD that trade measures *better* in both
-regimes — unicost 7/7/7 -> 6/6/6, weighted 4241/4393/4455 -> 2593/2727/2916 —
+regimes — unicost 7/7/7 -> 6/6/6, weighted 4917/4739/4963 -> 2593/2727/2916 —
 i.e. the pump is not buying anything that outweighs the passes it displaces.
 Neither setting is a fix; both are symptoms of the structural batch having no
 guidance of its own.
@@ -654,8 +679,10 @@ always evaluated whole (the reference move set is never truncated for speed) and
 the overrun is capped at one variable's work.
 
 The bound is needed because the sweep's cost is unbounded in the model size:
-`O(#structured vars x #moves x (delta_evaluate + O(#constraints)))`, since
-`total_violation()` rescans every constraint on each of the two calls per move.
+`O(#structured vars x #moves x (delta_evaluate + O(#constraints)))`, since the
+weighted delta rescans every constraint once per move. (The per-variable costs
+below were measured against the older two-scans-per-move form, so they are an
+upper bound on the current one.)
 Both factors matter — a 1000-List x 800-element model costs 44.5us per variable
 on its own, but **with ~40k constraints** the same model costs 407us per
 variable. On a 1500-List x 100-element model with 40k constraints, a 0.5s budget
