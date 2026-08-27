@@ -695,9 +695,12 @@ weighted delta rescans every constraint once per move. (The per-variable costs
 below were measured at `95820e1`, where the pass hoisted `before =
 vm.total_violation()` out of the move loop — one constraint scan per move plus
 one per variable. The current form is one `weighted_delta_from` scan per move
-plus a `snapshot_violations` per pass and per accepted move, so those numbers
-remain an upper bound, but a close one: `total_violation()` is not O(1) either,
-its "incremental" path diffing every constraint on every call. The genuinely
+plus a `snapshot_violations` per pass and per accepted move. Those numbers are
+therefore close but not a strict upper bound: `total_violation()` is not O(1)
+either — its "incremental" path diffs every constraint on every call — yet a
+variable whose moves are all accepted costs one extra scan and one vector copy
+apiece. Accepts are rare on a stalled structural search, and #118 makes them
+rarer still by rejecting the phantom improvements it used to take. The genuinely
 two-scans-per-move form — `invalidate_cache()` plus a full recompute on both
 sides of each move — predates `8e17796` and none of these numbers were measured
 against it.)

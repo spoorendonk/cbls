@@ -1064,9 +1064,9 @@ TEST_CASE("solve disarms the escape probe on a new best", "[search][escape]") {
 TEST_CASE("structural batch respects the wall-clock deadline", "[search][structural][timing]") {
     constexpr int kLists = 1500;
     constexpr int kStops = 100;
-    // total_violation() rescans every constraint on every call, and the sweep
-    // calls it twice per move, so these inert filler constraints are what make
-    // one sweep expensive — at almost no model-build cost.
+    // The sweep rescans every constraint once per move (weighted_delta_from),
+    // so these inert filler constraints are what make one sweep expensive — at
+    // almost no model-build cost.
     constexpr int kFiller = 40000;
 
     Model m;

@@ -14,9 +14,12 @@
 # file carried two revisions ago.
 #
 # Engine commit: adc8ee4 ("fix: let the structural pass see past a clamped
-# objective row", #118). Every commit carrying this table since adc8ee4 has
-# changed only comments, docs, tests and this file, so adc8ee4 is the engine
-# every number here came from. Record the hash on every regeneration: a
+# objective row", #118). Later commits DO touch engine code — #114 changes
+# src/feasibility_jump.cpp, src/randomize.cpp and src/moves.cpp — but every one
+# of those paths is Int-gated, and these models contain no Int variable at all
+# (the Set encoding is a single Set; the Bool encoding is N Bools, verified by
+# dumping variable types against the real build_model). So the trajectory is
+# unchanged and adc8ee4 is the engine every number here came from. Record the hash on every regeneration: a
 # search-trajectory change silently invalidates the table, and without it the
 # next reader cannot tell drift from a bug.
 #
