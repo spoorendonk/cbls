@@ -30,9 +30,10 @@ static std::vector<Move> int_moves(const Variable& var, RNG& rng) {
     }
     // Through the shared window, so an infinite bound cannot cast to INT64_MIN
     // (#112). Inert on a finite domain within +/-2^53. An empty window means the
-    // domain lies wholly past 2^53, where no int64_t range names it and `x +/- 1`
-    // is not even a distinct double, so the move is dropped rather than faked
-    // (#114).
+    // domain lies wholly past 2^53, where no int64_t range names it, so this move
+    // is dropped rather than drawn from a range that does not exist (#114). The
+    // int_dec/int_inc moves above are NOT dropped there and are no-ops when the
+    // ulp exceeds 1 — pre-existing, and out of #114's scope.
     const DomainWindow w = int_sample_window(var);
     if (w.lo <= w.hi) {
         Move m;

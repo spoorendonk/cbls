@@ -360,7 +360,7 @@ candidate set, plus its score:
 | Type  | Candidates |
 |-------|-----------|
 | Bool  | the flip `1 - x` |
-| Int (window width <= 256) | every integer in the sampling window — `domain_window(var)`, which is `[lb, ub]` verbatim whenever both bounds are finite. Taken only when both endpoints are within ±2^53; past that `v += 1.0` does not advance and the enumeration would not terminate |
+| Int (window width <= 256) | every integer in the sampling window — `domain_window(var)`, which is `[lb, ub]` verbatim whenever both bounds are finite and the width does not overflow (a domain as wide as `[-DBL_MAX, DBL_MAX]` is narrowed to the clamp). Taken only when both endpoints are within ±2^53; past that `v += 1.0` does not advance and the enumeration would not terminate |
 | Int (otherwise) | window endpoints, neighbours `x±1` (clamped to the *declared* bounds, so a value that has drifted outside the window keeps a local move), and a 32-point rounded grid across the window |
 | Float | Newton step toward the root of each violated constraint containing `v` (`x - residual/grad`, gradient via reverse-mode AD; up to 4), then midpoint and endpoints. Once the search has stagnated, a Float at a *stationary* point of every violated constraint containing it additionally gets a two-sided local probe at `x ± {1e-6, 1e-2}·(|x|+1)` — see below |
 
@@ -786,11 +786,13 @@ Nothing else is rewritten, and in particular the window is **not** trimmed to th
 which is neither inert (`[0, 1e17]` came back `[0, 2^53-1]`) nor a subset
 (`[-1e18, -1e17]` came back as the single point `-2^53`, *above* the declared
 `ub`, which `random_in_domain` then returned). `int_sample_window(var)` does that
-trim at the four places that actually cast — `random_in_domain`,
-`random_different_in_domain`, `movable_domain` and `int_rand` — and reports
-*empty* when the domain lies wholly past 2^53, where the callers pin the variable
-instead of drawing. `movable_domain` does not cast at all: `floor(hi) - ceil(lo)
->= 1` is exact at any magnitude.
+trim at the three places that actually cast — `random_in_domain`,
+`random_different_in_domain` and `int_rand` — and reports *empty* when the domain
+lies wholly past 2^53. Each caller decides for itself what that means:
+`random_in_domain` draws from the untrimmed window (every double that large is
+already an integer, so the draw is in-domain), `int_rand` drops the move, and
+`movable_domain` reports immovable. `movable_domain` consults the window but does
+not cast at all: `floor(hi) - ceil(lo) >= 1` is exact at any magnitude.
 
 This closes the randomisation route into a non-finite assignment. It **does not
 make the engine safe on unbounded domains**, and this section must not be read as

@@ -107,9 +107,9 @@ Nothing enforces `/review` at push time, by design — a gate keyed on gitignore
 
 ### Fast vs. slow tests
 
-22 of the 270 C++ tests are multi-minute benchmark solves carrying the Catch2 `[slow]` tag; they account for ~1470s of the suite's aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~304s wall-clock full run. They are registered by their own `catch_discover_tests` call in `tests/CMakeLists.txt` with `LABELS "slow"`, so:
+22 of the 271 C++ tests are multi-minute benchmark solves carrying the Catch2 `[slow]` tag; they account for ~1470s of the suite's aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~304s wall-clock full run. They are registered by their own `catch_discover_tests` call in `tests/CMakeLists.txt` with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 248 tests, ~7s with `-j`. This is what **pre-commit** runs.
+- `ctest -LE slow` — the other 249 tests, ~7s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
 
 These counts are hard-coded in **five** places and nothing checks that they

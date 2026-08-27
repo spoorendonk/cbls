@@ -106,8 +106,11 @@ struct DomainWindow {
 DomainWindow domain_window(const Variable& var);
 
 /// The subset of `domain_window(var)` that `static_cast<int64_t>` and a
-/// trailing `+1` can name. Empty (`lo > hi`) when the domain lies entirely
-/// past 2^53 — callers pin the variable rather than draw.
+/// trailing `+1` can name. Rounds inward (`ceil`/`floor`) as well as clamping,
+/// because the cast truncates toward zero and would leave the domain otherwise.
+/// Empty (`lo > hi`) when the domain lies entirely past 2^53; each caller says
+/// what it does then — `random_in_domain` draws from the untrimmed window,
+/// `int_rand` drops the move, `movable_domain` reports immovable.
 ///
 /// Int variables only; on any other type it is `domain_window` unchanged.
 DomainWindow int_sample_window(const Variable& var);

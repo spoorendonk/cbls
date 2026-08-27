@@ -703,3 +703,38 @@ TEST_CASE("solve moves a free Int that must move for feasibility", "[unbounded][
         }
     }
 }
+
+// #114, from independent review of b94cfe5: `movable_domain` truncated its
+// window with `static_cast<int64_t>`, which rounds toward zero and so called
+// `[0.9, 1.2]` movable. Only one integer lies in that domain, so nothing can
+// move; the forced perturbation path then drew `rng.integers(0, 1) == 0` and
+// wrote 0.0, BELOW the declared lb. `floor(hi) - ceil(lo) >= 1.0` is exact at
+// any magnitude and calls the domain immovable, so the kick is a no-op instead.
+//
+// `perturb(0.0)` reaches that path deterministically: every per-variable draw
+// fails `rng_.random() >= 0.0`, so nothing moves and the fallback runs.
+TEST_CASE("a fractional Int domain holding one integer is not perturbed out of domain",
+          "[unbounded][fj]") {
+    for (uint64_t seed = 1; seed <= 5; ++seed) {
+        DYNAMIC_SECTION("seed " << seed) {
+            Model m;
+            int32_t n = m.int_var(0, 2, "n");
+            m.add_constraint(m.leq(n, m.constant(2.0)));
+            m.close();
+            m.var_mut(vid(n)).lb = 0.9;
+            m.var_mut(vid(n)).ub = 1.2;
+            m.var_mut(vid(n)).value = 1.0;
+            full_evaluate(m);
+
+            ViolationManager vm(m);
+            RNG rng(seed);
+            FeasibilityJump fj(m, vm, rng, GFJConfig{});
+            for (int i = 0; i < 20; ++i) {
+                fj.perturb(0.0);
+                INFO("kick " << i);
+                REQUIRE(m.var(vid(n)).value >= 0.9);
+                REQUIRE(m.var(vid(n)).value <= 1.2);
+            }
+        }
+    }
+}

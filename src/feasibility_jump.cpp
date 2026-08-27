@@ -211,8 +211,10 @@ bool apply_random_structural_move(Model& model, int32_t var_id, RNG& rng) {
 //
 // Bounds are read as doubles through `domain_window` (#114): no `long`, so
 // nothing overflows and an unbounded Int gets candidates instead of freezing in
-// the jump table. A finite bound passes through verbatim, so the candidates are
-// bit-identical to the pre-#114 ones. Pinned by "finite Int jump candidates are
+// the jump table. A finite, integral bound within +/-2^53 passes through
+// verbatim, so those candidates are bit-identical to the pre-#114 ones; a wider
+// finite domain is narrowed by the window and its candidates do change, which is
+// the point on `[-1e19, 1e19]`. Pinned by "finite Int jump candidates are
 // unchanged" and "an unbounded Int is offered jump candidates"
 // (tests/test_unbounded_domain.cpp, which carries the archaeology).
 template <class Consider>
