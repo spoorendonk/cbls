@@ -408,3 +408,142 @@ TEST_CASE("ListOrder::Perturb keeps a List's elements, Regenerate need not",
         REQUIRE(saw_divergence);
     }
 }
+
+// ---------------------------------------------------------------------------
+// FJ jump candidates on an unbounded Int (#114).
+// ---------------------------------------------------------------------------
+//
+// The other half of the same hazard, and pre-existing rather than introduced by
+// #112: `int_jump_candidates` truncated the *raw* declared bounds with
+// `std::lround`, and glibc's `lround` returns LONG_MIN for BOTH +inf and -inf.
+// On `(-inf, +inf)` the range collapsed (`ub - lb == 0`), the `ub <= lb`
+// early-out fired and the variable got no candidates at all — permanently
+// frozen in the jump table, never selected by a scan, unreachable by GLS
+// reweighting. On `[lb, +inf)` the same early-out fired (`LONG_MIN <= lb`). On
+// `(-inf, ub]` it did not, and the branch instead offered `LONG_MIN` as a double
+// (-9.2e18) and computed `ub - lb` in overflowing `long` arithmetic.
+//
+// The fix routes the branch through `domain_window`, the helper the
+// randomisation path already uses, so both agree on an unbounded Int's
+// searchable range.
+
+TEST_CASE("an unbounded Int is offered jump candidates", "[unbounded][fj]") {
+    struct Case {
+        const char* label;
+        double lb;
+        double ub;
+        bool at_least;  // constraint is `n >= 5`, else `n <= -5`
+    };
+    const std::vector<Case> cases = {
+        {"int (-inf, +inf), n >= 5", -kInf, kInf, true},
+        {"int [0, +inf), n >= 5", 0.0, kInf, true},
+        {"int (-inf, 0], n <= -5", -kInf, 0.0, false},
+    };
+
+    for (const Case& c : cases) {
+        INFO(c.label);
+        // `int_var` takes `int`, so the infinite bound is written afterwards —
+        // the same route the .cbls/.nl/.mps readers take.
+        Model m;
+        int32_t n = m.int_var(-10, 10, "n");
+        m.add_constraint(c.at_least ? m.geq(n, m.constant(5.0)) : m.leq(n, m.constant(-5.0)));
+        m.close();
+        m.var_mut(vid(n)).lb = c.lb;
+        m.var_mut(vid(n)).ub = c.ub;
+        m.var_mut(vid(n)).value = 0.0;  // what set_initial_assignment writes
+        full_evaluate(m);
+
+        const std::vector<double> weights(m.constraint_ids().size(), 1.0);
+        const JumpResult r = compute_var_jump(m, weights, vid(n));
+
+        // Pre-fix the first two cases returned {x0, 0} — no candidates at all —
+        // and the third proposed static_cast<double>(LONG_MIN) == -9.2e18.
+        REQUIRE(r.score > 0.0);
+        REQUIRE(r.jump_value != 0.0);
+        REQUIRE(std::isfinite(r.jump_value));
+        // The jump lands in the window randomisation samples, so the two paths
+        // agree on what this variable's searchable range is.
+        REQUIRE(std::abs(r.jump_value) <= kRandomIntInfClamp);
+        REQUIRE(r.jump_value >= c.lb);
+        REQUIRE(r.jump_value <= c.ub);
+    }
+}
+
+TEST_CASE("finite Int jump candidates are unchanged", "[unbounded][fj]") {
+    // The determinism half of #114's acceptance criteria. `domain_window`
+    // returns a finite Int's declared bounds verbatim (pinned by "domain_window
+    // is inert on a finite domain" above), so routing the branch through it
+    // cannot move a candidate. These two pin the resulting jump values for both
+    // arms of the branch — the exhaustive one and the 32-point grid — against a
+    // future edit that would move them.
+    SECTION("exhaustive arm (domain width <= 256)") {
+        Model m;
+        int32_t n = m.int_var(0, 10, "n");
+        m.add_constraint(m.geq(n, m.constant(5.0)));
+        m.close();
+        m.var_mut(vid(n)).value = 0.0;
+        full_evaluate(m);
+
+        const std::vector<double> weights(m.constraint_ids().size(), 1.0);
+        const JumpResult r = compute_var_jump(m, weights, vid(n));
+        // Candidates are 0..10 in order; 5 is the first to reach violation 0.
+        REQUIRE(r.jump_value == 5.0);
+        REQUIRE(r.score == 5.0);
+    }
+
+    SECTION("grid arm (domain width > 256)") {
+        Model m;
+        int32_t n = m.int_var(0, 100000, "n");
+        // |n - 3125| <= 0: exactly one feasible value, and it is grid point
+        // k = 1 of `lb + (k/32) * (ub - lb)`. Nothing else in the candidate set
+        // reaches it, so the assertion pins the grid formula itself.
+        m.add_constraint(m.leq(m.abs_expr(m.sum({n, m.constant(-3125.0)})), m.constant(0.0)));
+        m.close();
+        m.var_mut(vid(n)).value = 0.0;
+        full_evaluate(m);
+
+        const std::vector<double> weights(m.constraint_ids().size(), 1.0);
+        const JumpResult r = compute_var_jump(m, weights, vid(n));
+        REQUIRE(r.jump_value == 3125.0);
+        REQUIRE(r.score == 3125.0);
+    }
+}
+
+TEST_CASE("solve moves a free Int that must move for feasibility", "[unbounded][fj][search]") {
+    // End-to-end, and the acceptance criterion from the issue.
+    // `set_initial_assignment` puts a free Int at the closest-to-zero point (0),
+    // and `|n - 123457| <= 0` admits exactly one value, so the run reaches
+    // feasibility only if the jump machinery actually walks the variable there.
+    //
+    // Pre-fix the variable is frozen at 0: the only thing that can move it is a
+    // diversification kick, which draws uniformly over +/-1e6 and so hits the
+    // one feasible value with probability 5e-7 per kick.
+    struct Case {
+        const char* label;
+        double lb;
+        double ub;
+    };
+    const std::vector<Case> cases = {
+        {"int (-inf, +inf)", -kInf, kInf},
+        {"int [0, +inf)", 0.0, kInf},
+    };
+
+    for (const Case& c : cases) {
+        INFO(c.label);
+        Model m;
+        int32_t n = m.int_var(0, 1, "n");
+        m.add_constraint(m.leq(m.abs_expr(m.sum({n, m.constant(-123457.0)})), m.constant(0.0)));
+        m.close();
+        m.var_mut(vid(n)).lb = c.lb;
+        m.var_mut(vid(n)).ub = c.ub;
+
+        SearchConfig cfg;
+        cfg.max_iterations = 200000;
+        SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr,
+                               nullptr, /*lns_interval=*/3, nullptr, cfg);
+
+        REQUIRE(r.feasible);
+        REQUIRE(r.best_violation <= cfg.feasibility_tolerance);
+        REQUIRE(m.var(vid(n)).value == 123457.0);
+    }
+}

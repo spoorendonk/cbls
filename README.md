@@ -54,7 +54,7 @@ m.close();
 ```bash
 cmake -B build
 cmake --build build
-ctest --test-dir build    # 265 C++ tests (add -LE slow for the fast 243)
+ctest --test-dir build    # 268 C++ tests (add -LE slow for the fast 246)
 ```
 
 With Python bindings:

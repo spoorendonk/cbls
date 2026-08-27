@@ -195,12 +195,37 @@ bool apply_random_structural_move(Model& model, int32_t var_id, RNG& rng) {
 // plus neighbours/endpoints. Each consider() runs one weighted_violation_delta
 // (two delta_evaluate passes); the JumpTable cache amortises this across the
 // GLS loop. (Closed-form linear-constraint argmin is a deferred optimisation.)
+//
+// The bounds come through `domain_window`, not raw off the Variable (#114).
+// Rounding the raw bounds meant an unbounded Int got no candidates at all:
+// glibc's `lround` returns LONG_MIN for BOTH +inf and -inf, so on `(-inf, +inf)`
+// the range collapsed to `ub - lb == 0` and the early-out below fired; on
+// `[lb, +inf)` it fired too (`LONG_MIN <= lb`). The variable then had no jump
+// value, was never picked by a scan, and no amount of GLS reweighting changed
+// that — it sat frozen at its initial value while every other variable searched.
+// On `(-inf, ub]` the early-out did NOT fire and the branch instead proposed
+// `LONG_MIN` as a double (-9.2e18) and computed `ub - lb` in overflowing `long`.
+// The same three failures reach any *finite* bound past LONG_MAX (9.22e18).
+//
+// The window is the one `random_in_domain` samples, so the jump path and the
+// randomisation path agree on what an unbounded Int's searchable range is, and
+// it is trimmed to the integers a double names exactly — which is what keeps the
+// `lround`s below in range. It is inert on a finite domain: `domain_window`
+// returns declared finite bounds verbatim, so ordinary models get bit-identical
+// candidates.
 template <class Consider>
 void int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
-    const long lb = std::lround(var.lb);
-    const long ub = std::lround(var.ub);
-    if (ub <= lb) {
+    if (!(var.lb < var.ub)) {
+        // Pinned, degenerately ordered or NaN-bounded: no jump exists. Asked of
+        // the *declared* bounds, because `domain_window` swaps a reversed pair
+        // and would otherwise turn an empty domain into a searchable one.
         return;
+    }
+    const DomainWindow w = domain_window(var);
+    const long lb = std::lround(w.lo);
+    const long ub = std::lround(w.hi);
+    if (ub <= lb) {
+        return;  // rounding collapsed the window (e.g. [0.4, 0.6])
     }
     if (ub - lb <= 256) {
         for (long v = lb; v <= ub; ++v) {

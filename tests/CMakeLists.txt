@@ -36,9 +36,9 @@ include(Catch)
 # multi-minute solves into one serial invocation would make the full suite far
 # slower than it is.
 #
-# Measured: 22 of 265 tests take >10s and account for ~1470s of the suite's
+# Measured: 22 of 268 tests take >10s and account for ~1470s of the suite's
 # aggregate (summed per-test) time; with `-j$(nproc)` the full run is ~304s of
-# wall clock. The remaining 243 finish in ~7s with `-j`, which is what
+# wall clock. The remaining 246 finish in ~7s with `-j`, which is what
 # pre-commit runs via `ctest -LE slow`. pre-push still runs everything.
 #
 # SKIP_RETURN_CODE 4 maps Catch2's SKIP() onto ctest's "Skipped" rather than a
