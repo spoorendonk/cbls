@@ -203,16 +203,27 @@ bool apply_random_structural_move(Model& model, int32_t var_id, RNG& rng) {
 // `[lb, +inf)` it fired too (`LONG_MIN <= lb`). The variable then had no jump
 // value, was never picked by a scan, and no amount of GLS reweighting changed
 // that — it sat frozen at its initial value while every other variable searched.
-// On `(-inf, ub]` the early-out did NOT fire and the branch instead proposed
-// `LONG_MIN` as a double (-9.2e18) and computed `ub - lb` in overflowing `long`.
-// The same three failures reach any *finite* bound past LONG_MAX (9.22e18).
+// On `(-inf, ub]` the early-out did NOT fire, and that case was worse than a
+// freeze: `ub - lb` overflowed `long` and wrapped negative, so the `<= 256` test
+// below chose the EXHAUSTIVE arm and the loop ran up from LONG_MIN — ~9.2e18
+// candidates, each a weighted_violation_delta. The solve wedged rather than
+// returning a bad jump. The same three failures reach any *finite* bound past
+// LONG_MAX (9.22e18), which is why the window below is trimmed to the integers a
+// double names exactly rather than merely to something finite.
 //
 // The window is the one `random_in_domain` samples, so the jump path and the
 // randomisation path agree on what an unbounded Int's searchable range is, and
-// it is trimmed to the integers a double names exactly — which is what keeps the
-// `lround`s below in range. It is inert on a finite domain: `domain_window`
-// returns declared finite bounds verbatim, so ordinary models get bit-identical
-// candidates.
+// the trim is what keeps the `lround`s below in range.
+//
+// Inert on a finite domain within +/-2^53: `domain_window` returns such bounds
+// verbatim, so ordinary models get bit-identical candidates. One deliberate
+// exception, and it IS a change from the pre-#114 behaviour: an Int whose bounds
+// both lie past 2^53 trims to a single point and takes the early-out, where the
+// raw-bounds code offered a grid. A double cannot name consecutive integers up
+// there, so that is not an integer domain in any useful sense — and
+// `movable_domain` already reads it through the same window and calls it
+// immovable, so declining to jump it is what makes the two paths agree. No
+// reader can build one (they clamp to 1e6/1e9 and saturate to `int`).
 template <class Consider>
 void int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
     if (!(var.lb < var.ub)) {
@@ -225,7 +236,7 @@ void int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
     const long lb = std::lround(w.lo);
     const long ub = std::lround(w.hi);
     if (ub <= lb) {
-        return;  // rounding collapsed the window (e.g. [0.4, 0.6])
+        return;  // rounding collapsed the window (e.g. [0.1, 0.4], both to 0)
     }
     if (ub - lb <= 256) {
         for (long v = lb; v <= ub; ++v) {

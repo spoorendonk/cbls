@@ -360,8 +360,8 @@ candidate set, plus its score:
 | Type  | Candidates |
 |-------|-----------|
 | Bool  | the flip `1 - x` |
-| Int (domain <= 256) | every value in `[lb, ub]` |
-| Int (domain > 256)  | endpoints, neighbours `x±1`, and a 32-point rounded grid |
+| Int (domain <= 256) | every value in the sampling window — `domain_window(var)`, which is `[lb, ub]` whenever both are finite and within ±2^53 |
+| Int (domain > 256)  | window endpoints, neighbours `x±1` (clamped to the *declared* bounds, so a value that has drifted outside the window keeps a local move), and a 32-point rounded grid across the window |
 | Float | Newton step toward the root of each violated constraint containing `v` (`x - residual/grad`, gradient via reverse-mode AD; up to 4), then midpoint and endpoints. Once the search has stagnated, a Float at a *stationary* point of every violated constraint containing it additionally gets a two-sided local probe at `x ± {1e-6, 1e-2}·(|x|+1)` — see below |
 
 Each candidate is scored with one `weighted_violation_delta` probe. Newton
@@ -376,8 +376,13 @@ is either a Newton step, whose length is set by the target and which vanishes
 with the gradient, or a constant derived from the box. So a Float sitting at a
 point where every violated constraint containing it is stationary had *no
 candidate that could move it at all* — an empty neighbourhood — and froze there
-for the rest of the run. `Int` never had this problem: `int_jump_candidates`
-always offers `x ± 1`. Float was the one type with no local move.
+for the rest of the run. `Int` has no analogous *stationary-point* problem:
+`int_jump_candidates` always offers `x ± 1`. Float was the one type with no local
+move. `Int` did have its own freeze, from a different cause — on an unbounded
+domain, `lround`-ing the raw infinite bounds produced no candidates at all, `x ±
+1` included, and on `(-inf, ub]` the overflowed width sent the exhaustive arm off
+from `LONG_MIN` and wedged the solve. Fixed by reading the bounds through
+`domain_window` (**#114**); see the guard section below.
 
 The probe supplies that local move, two-sided because at a saddle the descent
 direction is precisely what a zero gradient cannot tell you. It is **off by
@@ -737,10 +742,12 @@ Every uniform "randomise this variable" in the engine goes through one place:
 `random_in_domain` for scalars and `randomize_structured_var` for the rest. Its
 three callers are `initialize_random` / `initialize_structured_random`
 (search.cpp), `LNS::destroy_repair`'s destroy step (lns.cpp) and
-`FeasibilityJump::perturb`'s kick (feasibility_jump.cpp). The move generators in
-moves.cpp are a fourth user of the same *guard* (`domain_window`) but not of
-`randomize_var`: they draw perturbations around a current value rather than
-uniformly over the domain.
+`FeasibilityJump::perturb`'s kick (feasibility_jump.cpp). Two more places use the
+same *guard* (`domain_window`) without going through `randomize_var`: the move
+generators in moves.cpp, which draw perturbations around a current value rather
+than uniformly over the domain, and `int_jump_candidates` in feasibility_jump.cpp,
+which is not a draw at all — it reads the window to decide which integers are
+worth probing (**#114**).
 
 They used to hold three private copies of the same `switch (var.type)`, none of
 them guarded against infinite bounds — so one default-probability kick on a model
@@ -775,7 +782,8 @@ claiming it does: Float jump candidates are still built from `var.lb`/`var.ub`
 directly, so a model with an unbounded Float can still settle on an infinite
 value — and, because an infinite assignment can satisfy every row, be reported
 `feasible = true` while carrying `±inf`. That path is independent of #112 and
-predates it.
+predates it. The *Int* jump path was a second such route — it froze the variable
+rather than infecting it — and is closed as of **#114**; Float remains open.
 
 `begin()`'s closest-to-zero start is likewise well defined on every domain — a
 genuine advantage of letting FJ own the scalars, but **only for the starting

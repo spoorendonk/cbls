@@ -1,4 +1,6 @@
-// Regression tests for #112: randomising a variable over an unbounded domain.
+// Regression tests for unbounded variable domains: #112 (randomising a variable
+// over one) and #114 (generating FJ jump candidates for one — see the second
+// block comment, below the #112 cases).
 //
 // `rng.uniform(lb, ub)` violates uniform_real_distribution's precondition
 // (`ub - lb <= DBL_MAX`) on an infinite domain, and libstdc++'s `lb + (ub-lb)*u`
@@ -28,7 +30,8 @@
 // with randomisation no longer able to inject one, that route is closed. It is
 // not the only one: Float jump candidates are still drawn from `var.lb`/`var.ub`
 // directly, so an unbounded model can still reach an infinite assignment by a
-// path this fix does not touch.
+// path this fix does not touch. (The *Int* jump path was a second such route and
+// is closed as of #114, below; Float remains open.)
 
 #include "test_helpers.h"
 
@@ -420,8 +423,12 @@ TEST_CASE("ListOrder::Perturb keeps a List's elements, Regenerate need not",
 // early-out fired and the variable got no candidates at all — permanently
 // frozen in the jump table, never selected by a scan, unreachable by GLS
 // reweighting. On `[lb, +inf)` the same early-out fired (`LONG_MIN <= lb`). On
-// `(-inf, ub]` it did not, and the branch instead offered `LONG_MIN` as a double
-// (-9.2e18) and computed `ub - lb` in overflowing `long` arithmetic.
+// `(-inf, ub]` it did not: `ub - lb` overflowed `long` and wrapped negative, so
+// the `<= 256` test chose the EXHAUSTIVE arm and the loop ran up from LONG_MIN —
+// ~9.2e18 candidates. That case HANGS on the pre-fix engine rather than
+// returning a bad jump, so re-verify it under a timeout. A *finite* bound past
+// LONG_MAX (9.22e18) overflows `lround` the same way, which is the fourth case
+// below.
 //
 // The fix routes the branch through `domain_window`, the helper the
 // randomisation path already uses, so both agree on an unbounded Int's
@@ -437,35 +444,57 @@ TEST_CASE("an unbounded Int is offered jump candidates", "[unbounded][fj]") {
     const std::vector<Case> cases = {
         {"int (-inf, +inf), n >= 5", -kInf, kInf, true},
         {"int [0, +inf), n >= 5", 0.0, kInf, true},
+        // Finite, but past LONG_MAX (9.22e18): `lround` overflowed here exactly
+        // as it did on an infinity, which is why the window is trimmed to the
+        // integers a double names rather than merely to something finite.
+        {"int [-1e19, 1e19], n >= 5", -1.0e19, 1.0e19, true},
+        // LAST deliberately: this is the one that HANGS pre-fix (see above), so
+        // a re-verification run reports the other three before it wedges.
         {"int (-inf, 0], n <= -5", -kInf, 0.0, false},
     };
 
+    // A section per case rather than a bare loop: REQUIRE aborts the whole
+    // TEST_CASE, so a plain loop would have reported only the first failure and
+    // left the other cases unverified.
     for (const Case& c : cases) {
-        INFO(c.label);
-        // `int_var` takes `int`, so the infinite bound is written afterwards —
-        // the same route the .cbls/.nl/.mps readers take.
-        Model m;
-        int32_t n = m.int_var(-10, 10, "n");
-        m.add_constraint(c.at_least ? m.geq(n, m.constant(5.0)) : m.leq(n, m.constant(-5.0)));
-        m.close();
-        m.var_mut(vid(n)).lb = c.lb;
-        m.var_mut(vid(n)).ub = c.ub;
-        m.var_mut(vid(n)).value = 0.0;  // what set_initial_assignment writes
-        full_evaluate(m);
+        DYNAMIC_SECTION(c.label) {
+            // `int_var` takes `int`, so the out-of-range bound is written
+            // afterwards. No reader can produce one — .cbls goes through
+            // `int_var(int, int)`, and the .nl/.mps readers clamp infinities to
+            // 1e6/1e9 and then saturate to the `int` range — so this domain is
+            // reachable only from the C++ API, which is what the issue is about.
+            Model m;
+            int32_t n = m.int_var(-10, 10, "n");
+            m.add_constraint(c.at_least ? m.geq(n, m.constant(5.0)) : m.leq(n, m.constant(-5.0)));
+            m.close();
+            m.var_mut(vid(n)).lb = c.lb;
+            m.var_mut(vid(n)).ub = c.ub;
+            m.var_mut(vid(n)).value = 0.0;  // what set_initial_assignment writes
+            full_evaluate(m);
 
-        const std::vector<double> weights(m.constraint_ids().size(), 1.0);
-        const JumpResult r = compute_var_jump(m, weights, vid(n));
+            const std::vector<double> weights(m.constraint_ids().size(), 1.0);
+            const JumpResult r = compute_var_jump(m, weights, vid(n));
 
-        // Pre-fix the first two cases returned {x0, 0} — no candidates at all —
-        // and the third proposed static_cast<double>(LONG_MIN) == -9.2e18.
-        REQUIRE(r.score > 0.0);
-        REQUIRE(r.jump_value != 0.0);
-        REQUIRE(std::isfinite(r.jump_value));
-        // The jump lands in the window randomisation samples, so the two paths
-        // agree on what this variable's searchable range is.
-        REQUIRE(std::abs(r.jump_value) <= kRandomIntInfClamp);
-        REQUIRE(r.jump_value >= c.lb);
-        REQUIRE(r.jump_value <= c.ub);
+            // Pre-fix every case but the last returned {x0, 0} — no candidates
+            // at all — and the last did not return.
+            REQUIRE(r.score > 0.0);
+            REQUIRE(r.jump_value != 0.0);
+            REQUIRE(std::isfinite(r.jump_value));
+            REQUIRE(r.jump_value >= c.lb);
+            REQUIRE(r.jump_value <= c.ub);
+            // ...and it lands in the box randomisation samples, so the two paths
+            // agree on this variable's searchable range. Asserted against the
+            // window rather than against `kRandomIntInfClamp`: on a declared
+            // bound past the clamp the window legitimately sits outside it, and
+            // the clamp magnitude itself is already pinned by
+            // "random_in_domain is finite and in-domain on an unbounded domain".
+            // (Only the endpoints and grid are bounded this way — the `x0 +/- 1`
+            // neighbours are clamped to the raw domain, so a variable that has
+            // walked outside the window keeps its local moves. Here x0 == 0.)
+            const DomainWindow win = domain_window(m.var(vid(n)));
+            REQUIRE(r.jump_value >= win.lo);
+            REQUIRE(r.jump_value <= win.hi);
+        }
     }
 }
 
@@ -529,21 +558,22 @@ TEST_CASE("solve moves a free Int that must move for feasibility", "[unbounded][
     };
 
     for (const Case& c : cases) {
-        INFO(c.label);
-        Model m;
-        int32_t n = m.int_var(0, 1, "n");
-        m.add_constraint(m.leq(m.abs_expr(m.sum({n, m.constant(-123457.0)})), m.constant(0.0)));
-        m.close();
-        m.var_mut(vid(n)).lb = c.lb;
-        m.var_mut(vid(n)).ub = c.ub;
+        DYNAMIC_SECTION(c.label) {  // per-case reporting; see the test above
+            Model m;
+            int32_t n = m.int_var(0, 1, "n");
+            m.add_constraint(m.leq(m.abs_expr(m.sum({n, m.constant(-123457.0)})), m.constant(0.0)));
+            m.close();
+            m.var_mut(vid(n)).lb = c.lb;
+            m.var_mut(vid(n)).ub = c.ub;
 
-        SearchConfig cfg;
-        cfg.max_iterations = 200000;
-        SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr,
-                               nullptr, /*lns_interval=*/3, nullptr, cfg);
+            SearchConfig cfg;
+            cfg.max_iterations = 200000;
+            SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr,
+                                   nullptr, /*lns_interval=*/3, nullptr, cfg);
 
-        REQUIRE(r.feasible);
-        REQUIRE(r.best_violation <= cfg.feasibility_tolerance);
-        REQUIRE(m.var(vid(n)).value == 123457.0);
+            REQUIRE(r.feasible);
+            REQUIRE(r.best_violation <= cfg.feasibility_tolerance);
+            REQUIRE(m.var(vid(n)).value == 123457.0);
+        }
     }
 }
