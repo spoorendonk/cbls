@@ -27,8 +27,7 @@
 #include <string>
 #include <vector>
 
-namespace cbls {
-namespace setcover {
+namespace cbls::setcover {
 
 enum class Encoding { Set, Bool };
 
@@ -44,7 +43,7 @@ struct SetCoverModel {
 
     // The columns the current assignment selects, ascending. Same meaning under
     // both encodings, so verification and reporting are encoding-agnostic.
-    std::vector<int> selected_columns() const {
+    [[nodiscard]] std::vector<int> selected_columns() const {
         std::vector<int> selected;
         if (encoding == Encoding::Set) {
             const Variable& v = model.var(handle_to_var_id(chosen));
@@ -128,5 +127,4 @@ inline SetCoverModel build_model(const SetCoverInstance& inst, Encoding encoding
     return encoding == Encoding::Set ? build_set_model(inst) : build_bool_model(inst);
 }
 
-}  // namespace setcover
-}  // namespace cbls
+}  // namespace cbls::setcover

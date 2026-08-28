@@ -15,7 +15,7 @@ namespace cbls {
 SolutionPool::SolutionPool(int capacity) : capacity_(capacity) {}
 
 bool SolutionPool::submit(const Solution& sol) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     solutions_.push_back(sol);
     std::sort(solutions_.begin(), solutions_.end(), [](const Solution& a, const Solution& b) {
         if (a.feasible != b.feasible) {
@@ -30,7 +30,7 @@ bool SolutionPool::submit(const Solution& sol) {
 }
 
 std::optional<Solution> SolutionPool::best() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     if (solutions_.empty()) {
         return std::nullopt;
     }
@@ -38,13 +38,13 @@ std::optional<Solution> SolutionPool::best() const {
 }
 
 std::vector<Solution> SolutionPool::top_k(int k) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     int n = std::min(k, static_cast<int>(solutions_.size()));
     return std::vector<Solution>(solutions_.begin(), solutions_.begin() + n);
 }
 
 std::optional<Solution> SolutionPool::get_restart_point(RNG& rng) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     if (solutions_.empty()) {
         return std::nullopt;
     }
@@ -54,7 +54,7 @@ std::optional<Solution> SolutionPool::get_restart_point(RNG& rng) const {
 }
 
 size_t SolutionPool::size() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     return solutions_.size();
 }
 
@@ -92,10 +92,9 @@ SearchResult ParallelSearch::solve(std::function<Model()> model_factory, double 
     if (par_config.deterministic) {
         return solve_deterministic(model_factory, seed, config, hook_factory, lns_factory, callback,
                                    par_config, n);
-    } else {
-        return solve_portfolio(model_factory, time_limit, seed, config, hook_factory, lns_factory,
-                               callback, n);
     }
+    return solve_portfolio(model_factory, time_limit, seed, config, hook_factory, lns_factory,
+                           callback, n);
 }
 
 // Portfolio workers are homogeneous — same model, same budget, different seed —

@@ -36,7 +36,8 @@ std::vector<SoluEntry> read_solu(const std::string& filename) {
         }
 
         std::istringstream iss(line);
-        std::string tag, name;
+        std::string tag;
+        std::string name;
         iss >> tag >> name;
         if (tag.empty() || name.empty()) {
             continue;

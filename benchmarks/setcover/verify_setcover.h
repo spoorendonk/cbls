@@ -20,8 +20,7 @@
 #include <string>
 #include <vector>
 
-namespace cbls {
-namespace setcover {
+namespace cbls::setcover {
 
 struct CoverCheck {
     bool covered = false;  // every row covered by at least one chosen column
@@ -93,5 +92,4 @@ inline VerifyResult verify_setcover(const SetCoverModel& scm, const SetCoverInst
     return result;
 }
 
-}  // namespace setcover
-}  // namespace cbls
+}  // namespace cbls::setcover

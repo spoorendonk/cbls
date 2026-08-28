@@ -5,8 +5,7 @@
 #include <cbls/cbls.h>
 #include <vector>
 
-namespace cbls {
-namespace chped {
+namespace cbls::chped {
 
 struct CHPEDModel {
     Model model;
@@ -92,5 +91,4 @@ inline CHPEDModel build_chped_model(const Instance& inst) {
     return result;
 }
 
-}  // namespace chped
-}  // namespace cbls
+}  // namespace cbls::chped

@@ -138,7 +138,7 @@ public:
         last_written_ = p.objective;
         // Flushed per row: a run is minutes long and an interrupted one must
         // still leave a scorable prefix behind.
-        out_ << p.time_seconds << "," << p.objective << std::endl;
+        out_ << p.time_seconds << "," << p.objective << '\n';
     }
 
 private:

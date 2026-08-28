@@ -111,11 +111,10 @@ bool LNS::destroy_repair(Model& model, ViolationManager& vm, RNG& rng, double re
 
     if (new_key < old_key) {
         return true;
-    } else {
-        model.restore_state(saved_state);
-        full_evaluate(model);
-        return false;
     }
+    model.restore_state(saved_state);
+    full_evaluate(model);
+    return false;
 }
 
 int LNS::destroy_repair_cycle(Model& model, ViolationManager& vm, RNG& rng, int n_rounds,

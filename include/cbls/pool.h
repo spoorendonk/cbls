@@ -62,19 +62,20 @@ public:
 private:
     int n_threads_;
 
-    int effective_threads(const ParallelConfig& pc) const;
+    [[nodiscard]] int effective_threads(const ParallelConfig& pc) const;
 
-    SearchResult solve_portfolio(std::function<Model()>& model_factory, double time_limit,
-                                 uint64_t seed, const SearchConfig& config,
-                                 std::function<InnerSolverHook*(Model&)>& hook_factory,
-                                 std::function<LNS*()>& lns_factory, SolveCallback* callback,
-                                 int n_threads);
+    static SearchResult solve_portfolio(std::function<Model()>& model_factory, double time_limit,
+                                        uint64_t seed, const SearchConfig& config,
+                                        std::function<InnerSolverHook*(Model&)>& hook_factory,
+                                        std::function<LNS*()>& lns_factory, SolveCallback* callback,
+                                        int n_threads);
 
-    SearchResult solve_deterministic(std::function<Model()>& model_factory, uint64_t seed,
-                                     const SearchConfig& config,
-                                     std::function<InnerSolverHook*(Model&)>& hook_factory,
-                                     std::function<LNS*()>& lns_factory, SolveCallback* callback,
-                                     const ParallelConfig& par_config, int n_threads);
+    static SearchResult solve_deterministic(std::function<Model()>& model_factory, uint64_t seed,
+                                            const SearchConfig& config,
+                                            std::function<InnerSolverHook*(Model&)>& hook_factory,
+                                            std::function<LNS*()>& lns_factory,
+                                            SolveCallback* callback,
+                                            const ParallelConfig& par_config, int n_threads);
 };
 
 }  // namespace cbls

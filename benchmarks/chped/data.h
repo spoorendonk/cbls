@@ -3,8 +3,7 @@
 #include <string>
 #include <vector>
 
-namespace cbls {
-namespace chped {
+namespace cbls::chped {
 
 struct Instance {
     std::string name;
@@ -166,5 +165,4 @@ inline Instance make_40unit() {
         true};
 }
 
-}  // namespace chped
-}  // namespace cbls
+}  // namespace cbls::chped

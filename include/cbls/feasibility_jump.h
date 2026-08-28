@@ -30,7 +30,7 @@ class JumpTable {
 public:
     explicit JumpTable(size_t num_vars) : entries_(num_vars) {}
 
-    bool valid(int32_t var_id) const { return entries_[var_id].valid; }
+    [[nodiscard]] bool valid(int32_t var_id) const { return entries_[var_id].valid; }
     void invalidate(int32_t var_id) { entries_[var_id].valid = false; }
     void invalidate_all() {
         for (auto& e : entries_) {
@@ -40,8 +40,8 @@ public:
     void set(int32_t var_id, double jump_value, double score) {
         entries_[var_id] = {jump_value, score, true};
     }
-    double jump_value(int32_t var_id) const { return entries_[var_id].jump_value; }
-    double score(int32_t var_id) const { return entries_[var_id].score; }
+    [[nodiscard]] double jump_value(int32_t var_id) const { return entries_[var_id].jump_value; }
+    [[nodiscard]] double score(int32_t var_id) const { return entries_[var_id].score; }
 
 private:
     struct Entry {
@@ -119,9 +119,11 @@ public:
     void set_escape_probe(bool on) { escape_probe_ = on; }
     // The armed state, so the caller (and its regression tests) can observe the
     // arming decision directly instead of inferring it from a trajectory.
-    bool escape_probe() const { return escape_probe_; }
-    bool all_satisfied() const;
-    int64_t iterations() const { return iterations_; }  // total GLS iterations since begin()
+    [[nodiscard]] bool escape_probe() const { return escape_probe_; }
+    [[nodiscard]] bool all_satisfied() const;
+    [[nodiscard]] int64_t iterations() const {
+        return iterations_;
+    }  // total GLS iterations since begin()
 
     // ---- Deadline-check tuning (#113) ----
     //
@@ -154,8 +156,8 @@ public:
     // so a zero is evidence about this loop and not about the whole engine. Both
     // paths are gated on `has_deadline_`, which is what actually delivers
     // determinism.
-    int64_t deadline_checks() const { return deadline_checks_; }
-    int64_t deadline_check_stride() const { return deadline_stride_; }
+    [[nodiscard]] int64_t deadline_checks() const { return deadline_checks_; }
+    [[nodiscard]] int64_t deadline_check_stride() const { return deadline_stride_; }
 
     // ---- The structural kick's own deadline bound (#115) ----
     //
@@ -174,9 +176,9 @@ public:
     // than reported. And arm_structural_kick() reads the clock once per kick
     // without counting it, which is also why a deadline-armed scalar-only model
     // now pays one steady_clock::now() per kick where it paid none before.
-    int64_t structural_kick_moves() const { return kick_moves_; }
-    int64_t structural_kick_checks() const { return kick_checks_; }
-    int64_t structural_kick_stride() const { return kick_stride_; }
+    [[nodiscard]] int64_t structural_kick_moves() const { return kick_moves_; }
+    [[nodiscard]] int64_t structural_kick_checks() const { return kick_checks_; }
+    [[nodiscard]] int64_t structural_kick_stride() const { return kick_stride_; }
 
     // Novelty Jump (paper Algorithms 4-5): a bounded-backtracking compound-move
     // search that escapes local optima single-variable FJ cannot (chained-
@@ -196,7 +198,7 @@ private:
     // GLS inner loop reusing current state, bounded by a per-call iteration
     // limit (<=0 for none) plus the global budget/deadline.
     GFJStatus gls_loop(int sample_size, int64_t batch_iter_limit);
-    bool any_active_violated() const;
+    [[nodiscard]] bool any_active_violated() const;
     // ApplyJump (Algorithm 2): sample up to `sample_size` vars from Q, apply the
     // best improving jump via update_var. Returns false if none improves.
     bool apply_jump(int sample_size);
@@ -204,8 +206,8 @@ private:
     // neighbour jumps, replenish Q.
     void update_var(int32_t var_id);
 
-    bool active(int32_t constraint_idx) const;  // weight > 0
-    bool jumpable(int32_t var_id) const;        // scalar var
+    [[nodiscard]] bool active(int32_t constraint_idx) const;  // weight > 0
+    [[nodiscard]] bool jumpable(int32_t var_id) const;        // scalar var
     // Uniformly chosen jumpable var with a domain of at least two values — the
     // one perturb() falls back to when its per-variable draws moved nothing.
     // -1 if the model has no such variable, in which case a kick that changes
@@ -232,7 +234,7 @@ private:
     // otherwise change nothing on a model with no movable scalar. False if
     // every structure is a dead end.
     bool force_structural_move();
-    bool participates_in_active_violated(int32_t var_id) const;
+    [[nodiscard]] bool participates_in_active_violated(int32_t var_id) const;
     void rebuild_violated_and_scan_set();
     void set_initial_assignment();
     void compute_linear_constraints();

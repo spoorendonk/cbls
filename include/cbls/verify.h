@@ -34,7 +34,7 @@ struct VerifyResult {
     }
 
     void merge(const VerifyResult& other) {
-        for (auto& e : other.errors) {
+        for (const auto& e : other.errors) {
             add_error(e);
         }
     }
@@ -45,7 +45,7 @@ struct VerifyResult {
             return;
         }
         fprintf(out, "verify: FAIL (%d errors)\n", (int)errors.size());
-        for (auto& e : errors) {
+        for (const auto& e : errors) {
             const char* kind_str = "?";
             switch (e.kind) {
                 case VerifyError::Kind::VarBounds:

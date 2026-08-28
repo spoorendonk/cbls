@@ -87,9 +87,11 @@ public:
     // Variable sequences for block moves
     void add_var_sequence(std::vector<int32_t> var_ids, int min_block_on = 1,
                           int min_block_off = 1);
-    const std::vector<VarSequence>& var_sequences() const noexcept { return var_sequences_; }
+    [[nodiscard]] const std::vector<VarSequence>& var_sequences() const noexcept {
+        return var_sequences_;
+    }
     // Returns (seq_index, position) or (-1, -1) if not in any sequence
-    std::pair<int, int> var_sequence_for(int32_t var_id) const;
+    [[nodiscard]] std::pair<int, int> var_sequence_for(int32_t var_id) const;
 
     void close();
 
@@ -100,18 +102,22 @@ public:
     // starts at +inf (the constraint is inert until tightened), so search drives
     // the objective down by tightening it on each new feasible solution.
     void add_objective_soft_constraint();
-    bool has_objective_constraint() const noexcept { return objective_constraint_idx_ >= 0; }
+    [[nodiscard]] bool has_objective_constraint() const noexcept {
+        return objective_constraint_idx_ >= 0;
+    }
     // Index of the objective constraint in constraint_ids(), or -1.
-    int32_t objective_constraint_idx() const noexcept { return objective_constraint_idx_; }
+    [[nodiscard]] int32_t objective_constraint_idx() const noexcept {
+        return objective_constraint_idx_;
+    }
     // Tighten/relax the objective bound (RHS). Recomputes the objective
     // constraint node in place; caller invalidates any violation cache.
     void set_objective_bound(double bound);
-    double objective_bound() const noexcept { return objective_bound_; }
+    [[nodiscard]] double objective_bound() const noexcept { return objective_bound_; }
 
     // Accessors
     // Constraints (by index into constraint_ids()) that variable var_id can
     // affect. This is the paper's G_v. Populated by close(); empty before.
-    const std::vector<int32_t>& constraints_of_var(int32_t var_id) const {
+    [[nodiscard]] const std::vector<int32_t>& constraints_of_var(int32_t var_id) const {
         if (var_id < 0 || var_id >= static_cast<int32_t>(var_constraints_.size())) {
             throw std::out_of_range("var id out of range");
         }
@@ -139,7 +145,7 @@ public:
     // variables only; same no-commit / precondition contract as above.
     double weighted_violation_delta(int32_t var_id, double j, const std::vector<double>& weights);
 
-    const Variable& var(int32_t id) const {
+    [[nodiscard]] const Variable& var(int32_t id) const {
         if (id < 0 || id >= static_cast<int32_t>(vars_.size())) {
             throw std::out_of_range("var id out of range");
         }
@@ -151,7 +157,7 @@ public:
         }
         return vars_[id];
     }
-    const ExprNode& node(int32_t id) const {
+    [[nodiscard]] const ExprNode& node(int32_t id) const {
         if (id < 0 || id >= static_cast<int32_t>(nodes_.size())) {
             throw std::out_of_range("node id out of range");
         }
@@ -163,27 +169,29 @@ public:
         }
         return nodes_[id];
     }
-    int32_t objective_id() const noexcept { return objective_id_; }
-    bool is_maximizing() const noexcept { return is_maximizing_; }
-    const std::vector<int32_t>& constraint_ids() const noexcept { return constraint_ids_; }
-    const std::vector<int32_t>& topo_order() const noexcept { return topo_order_; }
-    const std::vector<Variable>& variables() const noexcept { return vars_; }
+    [[nodiscard]] int32_t objective_id() const noexcept { return objective_id_; }
+    [[nodiscard]] bool is_maximizing() const noexcept { return is_maximizing_; }
+    [[nodiscard]] const std::vector<int32_t>& constraint_ids() const noexcept {
+        return constraint_ids_;
+    }
+    [[nodiscard]] const std::vector<int32_t>& topo_order() const noexcept { return topo_order_; }
+    [[nodiscard]] const std::vector<Variable>& variables() const noexcept { return vars_; }
     std::vector<Variable>& variables_mut() noexcept { return vars_; }
-    const std::vector<ExprNode>& nodes() const noexcept { return nodes_; }
+    [[nodiscard]] const std::vector<ExprNode>& nodes() const noexcept { return nodes_; }
     std::vector<ExprNode>& nodes_mut() noexcept { return nodes_; }
-    size_t num_vars() const noexcept { return vars_.size(); }
-    size_t num_nodes() const noexcept { return nodes_.size(); }
-    bool is_closed() const noexcept { return closed_; }
+    [[nodiscard]] size_t num_vars() const noexcept { return vars_.size(); }
+    [[nodiscard]] size_t num_nodes() const noexcept { return nodes_.size(); }
+    [[nodiscard]] bool is_closed() const noexcept { return closed_; }
 
     // Lambda function access
-    const std::function<double(int)>& lambda_func(int32_t idx) const {
+    [[nodiscard]] const std::function<double(int)>& lambda_func(int32_t idx) const {
         if (idx < 0 || idx >= static_cast<int32_t>(lambda_funcs_.size())) {
             throw std::out_of_range("lambda func index out of range");
         }
         return lambda_funcs_[idx];
     }
 
-    const std::function<double(int, int)>& pair_lambda_func(int32_t idx) const {
+    [[nodiscard]] const std::function<double(int, int)>& pair_lambda_func(int32_t idx) const {
         if (idx < 0 || idx >= static_cast<int32_t>(pair_lambda_funcs_.size())) {
             throw std::out_of_range("pair lambda func index out of range");
         }
@@ -195,7 +203,7 @@ public:
         std::vector<double> values;
         std::vector<std::vector<int32_t>> elements;
     };
-    State copy_state() const;
+    [[nodiscard]] State copy_state() const;
     void restore_state(const State& state);
 
 private:
@@ -224,7 +232,7 @@ private:
     void build_var_constraints();
     int32_t alloc_var(VarType type, double lb, double ub, const std::string& name);
     int32_t alloc_node(NodeOp op, const std::vector<ChildRef>& children);
-    ChildRef wrap(int32_t id);  // auto-detect var vs node
+    static ChildRef wrap(int32_t id);  // auto-detect var vs node
 };
 
 }  // namespace cbls

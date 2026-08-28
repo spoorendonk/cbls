@@ -11,9 +11,8 @@ namespace cbls {
 static double child_val(const ChildRef& ref, const Model& model) {
     if (ref.is_var) {
         return model.var(ref.id).value;
-    } else {
-        return model.node(ref.id).value;
     }
+    return model.node(ref.id).value;
 }
 
 // Whether a comparison's child is a literal Const node — i.e. a bound the
@@ -262,13 +261,12 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
             if (child_idx == 0) {
                 double denom = child_val(node.children[1], model);
                 return std::abs(denom) > 1e-15 ? 1.0 / denom : 0.0;
-            } else {
-                double denom = child_val(node.children[1], model);
-                if (std::abs(denom) < 1e-15) {
-                    return 0.0;
-                }
-                return -child_val(node.children[0], model) / (denom * denom);
             }
+            double denom = child_val(node.children[1], model);
+            if (std::abs(denom) < 1e-15) {
+                return 0.0;
+            }
+            return -child_val(node.children[0], model) / (denom * denom);
         }
 
         case NodeOp::Pow: {

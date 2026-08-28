@@ -6,8 +6,7 @@
 #include <cbls/cbls.h>
 #include <vector>
 
-namespace cbls {
-namespace uc_chped {
+namespace cbls::uc_chped {
 
 struct UCModel {
     Model model;
@@ -43,8 +42,15 @@ inline UCModel build_uc_model(const UCInstance& inst) {
     auto two = m.constant(2.0);
 
     // Per-unit constants (created once, reused across periods)
-    std::vector<int32_t> unit_ai(N), unit_bi(N), unit_ci(N), unit_di(N), unit_ei(N);
-    std::vector<int32_t> unit_pmin(N), unit_pmax(N), unit_a_hot(N), unit_a_cold(N);
+    std::vector<int32_t> unit_ai(N);
+    std::vector<int32_t> unit_bi(N);
+    std::vector<int32_t> unit_ci(N);
+    std::vector<int32_t> unit_di(N);
+    std::vector<int32_t> unit_ei(N);
+    std::vector<int32_t> unit_pmin(N);
+    std::vector<int32_t> unit_pmax(N);
+    std::vector<int32_t> unit_a_hot(N);
+    std::vector<int32_t> unit_a_cold(N);
     std::vector<int32_t> unit_y_prev_const(N);  // constant node for y_prev[u]
     for (int u = 0; u < N; ++u) {
         unit_ai[u] = m.constant(inst.a[u]);
@@ -214,5 +220,4 @@ inline UCModel build_uc_model(const UCInstance& inst) {
     return result;
 }
 
-}  // namespace uc_chped
-}  // namespace cbls
+}  // namespace cbls::uc_chped

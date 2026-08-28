@@ -8,8 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace cbls {
-namespace uc_chped {
+namespace cbls::uc_chped {
 
 inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst, double tol = 1e-4) {
     VerifyResult result = verify_model(ucm.model);
@@ -209,5 +208,4 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst, 
     return result;
 }
 
-}  // namespace uc_chped
-}  // namespace cbls
+}  // namespace cbls::uc_chped

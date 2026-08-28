@@ -349,8 +349,14 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
         }
         return out;
     };
-    int64_t nlvc = 0, nlvo = 0, nlvb = 0;
-    int64_t nbv = 0, niv = 0, nlvbi = 0, nlvci = 0, nlvoi = 0;
+    int64_t nlvc = 0;
+    int64_t nlvo = 0;
+    int64_t nlvb = 0;
+    int64_t nbv = 0;
+    int64_t niv = 0;
+    int64_t nlvbi = 0;
+    int64_t nlvci = 0;
+    int64_t nlvoi = 0;
     int header_line_after_counts = 0;
     while (true) {
         char c = 0;

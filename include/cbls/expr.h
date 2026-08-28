@@ -14,12 +14,12 @@ public:
     Expr(Model* m, int32_t h) : model(m), handle(h) {}
 
     // Query
-    bool is_var() const { return handle < 0; }
+    [[nodiscard]] bool is_var() const { return handle < 0; }
 
     // Convenience accessors (only valid when is_var() == true)
-    int32_t var_id() const { return -(handle + 1); }
-    Variable& var_mut() { return model->var_mut(var_id()); }
-    const Variable& var() const { return model->var(var_id()); }
+    [[nodiscard]] int32_t var_id() const { return -(handle + 1); }
+    [[nodiscard]] Variable& var_mut() const { return model->var_mut(var_id()); }
+    [[nodiscard]] const Variable& var() const { return model->var(var_id()); }
 
     // Arithmetic operators
     Expr operator+(const Expr& rhs) const;
@@ -43,8 +43,8 @@ public:
     Expr operator>=(const Expr& rhs) const;
     Expr operator<(const Expr& rhs) const;
     Expr operator>(const Expr& rhs) const;
-    Expr eq(const Expr& rhs) const;  // NOT operator== (would break containers)
-    Expr neq(const Expr& rhs) const;
+    [[nodiscard]] Expr eq(const Expr& rhs) const;  // NOT operator== (would break containers)
+    [[nodiscard]] Expr neq(const Expr& rhs) const;
 
     // Scalar comparison (friends)
     friend Expr operator<=(const Expr& lhs, double rhs);
@@ -57,7 +57,7 @@ public:
     friend Expr operator>(double lhs, const Expr& rhs);
 
     // Power
-    Expr pow(const Expr& exp) const;
+    [[nodiscard]] Expr pow(const Expr& exp) const;
 };
 
 // Free math functions

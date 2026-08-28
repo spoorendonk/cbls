@@ -236,7 +236,7 @@ public:
         // instance appears negated here relative to comparison.csv. Improvement
         // ratios are invariant under that, but raw values are not.
         out_ << instance_ << "," << p.time_seconds << "," << p.objective << ","
-             << (p.new_best ? 1 : 0) << std::endl;
+             << (p.new_best ? 1 : 0) << '\n';
     }
 
 private:

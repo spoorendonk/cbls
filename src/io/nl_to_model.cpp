@@ -69,8 +69,8 @@ public:
     ExprTranslator(Model& m, const NlExpr& e, const std::vector<int32_t>& vh)
         : m_(m), e_(e), vh_(vh) {}
 
-    bool ok() const { return ok_; }
-    const std::string& reason() const { return reason_; }
+    [[nodiscard]] bool ok() const { return ok_; }
+    [[nodiscard]] const std::string& reason() const { return reason_; }
 
     int32_t translate(int32_t node_idx) {
         if (!ok_) {

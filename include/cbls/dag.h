@@ -21,7 +21,7 @@ enum class VarType : uint8_t { Bool, Int, Float, List, Set };
 /// has to opt in on each side. Nothing catches it if you forget: the build uses
 /// no `-Wall`/`-Wswitch`, so a new type would silently be neither initialised nor
 /// jumped. Add it here and to `jumpable()` in the same change.
-inline constexpr bool is_structured(VarType type) {
+constexpr bool is_structured(VarType type) {
     return type == VarType::List || type == VarType::Set;
 }
 

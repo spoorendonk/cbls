@@ -661,7 +661,10 @@ void build_unsatisfiable(Model& m) {
 class CountingHook : public InnerSolverHook {
 public:
     int calls = 0;
-    void solve(Model&, ViolationManager&, const std::vector<int32_t>&) override { ++calls; }
+    void solve(Model& /*model*/, ViolationManager& /*vm*/,
+               const std::vector<int32_t>& /*last_changed_vars*/) override {
+        ++calls;
+    }
 };
 
 // Records the repair budget solve() hands it. Deliberately does not destroy or
@@ -670,7 +673,8 @@ public:
 class BudgetRecordingLNS : public LNS {
 public:
     std::vector<double> repair_limits;
-    bool destroy_repair(Model&, ViolationManager&, RNG&, double repair_time_limit) override {
+    bool destroy_repair(Model& /*model*/, ViolationManager& /*vm*/, RNG& /*rng*/,
+                        double repair_time_limit) override {
         repair_limits.push_back(repair_time_limit);
         return false;  // no improvement, so the caller restores nothing
     }

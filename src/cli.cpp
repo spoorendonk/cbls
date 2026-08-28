@@ -56,7 +56,8 @@ int main(int argc, char* argv[]) {
         if (arg == "--help" || arg == "-h") {
             print_help();
             return 0;
-        } else if (arg == "--version") {
+        }
+        if (arg == "--version") {
             std::cout << "cbls " << cbls::kVersion << "\n";
             return 0;
         } else if (arg == "--time-limit" && i + 1 < argc) {

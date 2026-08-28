@@ -16,8 +16,7 @@
 #include <string>
 #include <vector>
 
-namespace cbls {
-namespace setcover {
+namespace cbls::setcover {
 
 struct SetCoverInstance {
     std::string name;
@@ -32,11 +31,11 @@ struct SetCoverInstance {
     // which would need the sparse row_cols with a binary search instead.
     std::vector<uint8_t> covers;
 
-    bool covers_row(int row, int col) const {
+    [[nodiscard]] bool covers_row(int row, int col) const {
         return covers[static_cast<size_t>(row) * static_cast<size_t>(cols) +
                       static_cast<size_t>(col)] != 0;
     }
-    int nonzeros() const {
+    [[nodiscard]] int nonzeros() const {
         int n = 0;
         for (const auto& r : row_cols) {
             n += static_cast<int>(r.size());
@@ -120,5 +119,4 @@ inline SetCoverInstance load_setcover(const std::string& path) {
     return parse_setcover(in, name);
 }
 
-}  // namespace setcover
-}  // namespace cbls
+}  // namespace cbls::setcover

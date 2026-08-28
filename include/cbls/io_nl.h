@@ -48,7 +48,7 @@ struct NlExprNode {
 struct NlExpr {
     std::vector<NlExprNode> nodes;
     int32_t root = -1;
-    bool empty() const { return root < 0; }
+    [[nodiscard]] bool empty() const { return root < 0; }
 };
 
 /// Bound/constraint type codes from the NL `r` (constraint) and `b` (variable)

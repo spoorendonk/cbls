@@ -8,8 +8,7 @@
 #include <numeric>
 #include <vector>
 
-namespace cbls {
-namespace uc_chped {
+namespace cbls::uc_chped {
 
 // Greedy commitment initialization for UC-CHPED.
 // For each period, commits cheapest units to meet demand+reserve,
@@ -165,5 +164,4 @@ inline void greedy_uc_initialize(Model& model, const UCInstance& inst, const UCM
     full_evaluate(model);
 }
 
-}  // namespace uc_chped
-}  // namespace cbls
+}  // namespace cbls::uc_chped

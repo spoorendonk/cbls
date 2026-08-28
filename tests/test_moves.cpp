@@ -33,7 +33,8 @@ TEST_CASE("Int moves", "[moves]") {
     auto moves = generate_standard_moves(m.var(vid(x)), rng);
     REQUIRE(moves.size() == 3);  // dec, inc, random
 
-    bool has_dec = false, has_inc = false;
+    bool has_dec = false;
+    bool has_inc = false;
     for (const auto& mv : moves) {
         if (mv.changes[0].new_value == 4.0) {
             has_dec = true;

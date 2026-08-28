@@ -406,9 +406,8 @@ void save_model(const Model& model, std::ostream& out) {
     auto child_name = [&](const ChildRef& ref) -> std::string {
         if (ref.is_var) {
             return var_names[ref.id];
-        } else {
-            return node_names[ref.id];
         }
+        return node_names[ref.id];
     };
 
     // Write nodes in topological order

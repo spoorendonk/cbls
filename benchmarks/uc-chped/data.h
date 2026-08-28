@@ -7,8 +7,7 @@
 #include <string>
 #include <vector>
 
-namespace cbls {
-namespace uc_chped {
+namespace cbls::uc_chped {
 
 struct UCInstance {
     std::string name;
@@ -56,7 +55,7 @@ inline UCInstance load_jsonl(const std::string& path) {
     inst.demand = j["demand"].get<std::vector<double>>();
     inst.reserve = j["reserve"].get<std::vector<double>>();
 
-    for (auto& [key, val] : j["known_bounds"].items()) {
+    for (const auto& [key, val] : j["known_bounds"].items()) {
         int np = std::stoi(key);
         inst.known_bounds[np] = {val[0].get<double>(), val[1].get<double>()};
     }
@@ -82,5 +81,4 @@ inline UCInstance make_subinstance(const UCInstance& inst, int n_periods) {
     return sub;
 }
 
-}  // namespace uc_chped
-}  // namespace cbls
+}  // namespace cbls::uc_chped

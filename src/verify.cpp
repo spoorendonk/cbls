@@ -9,7 +9,7 @@ VerifyResult verify_model(const Model& model, double tol) {
 
     // 1. Variable bounds and type checks
     for (size_t i = 0; i < model.num_vars(); ++i) {
-        auto& v = model.var(static_cast<int32_t>(i));
+        const auto& v = model.var(static_cast<int32_t>(i));
         std::string name = v.name.empty() ? "var[" + std::to_string(i) + "]"
                                           : "var[" + std::to_string(i) + "] '" + v.name + "'";
 
@@ -54,7 +54,7 @@ VerifyResult verify_model(const Model& model, double tol) {
     }
 
     // 3. DAG consistency: re-evaluate each node and compare against stored value
-    for (auto& node : model.nodes()) {
+    for (const auto& node : model.nodes()) {
         double recomputed = evaluate(node, model);
         if (std::abs(recomputed - node.value) > tol) {
             std::string name = "node[" + std::to_string(node.id) + "]";
