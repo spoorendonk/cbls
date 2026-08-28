@@ -7,7 +7,7 @@
 
 using namespace cbls;
 
-TEST_CASE("solve with nullptr hook is regression-safe", "[inner_solver][slow]") {
+TEST_CASE("solve with nullptr hook is regression-safe", "[inner_solver]") {
     Model m;
     auto x = m.float_var(-10, 10);
     auto y = m.float_var(-10, 10);
@@ -147,7 +147,7 @@ TEST_CASE("Multi-var Newton moves multiple vars", "[inner_solver]") {
     REQUIRE(m.var(vid(y)).value > 1.5);
 }
 
-TEST_CASE("solve with FloatIntensifyHook improves mixed problem", "[inner_solver][slow]") {
+TEST_CASE("solve with FloatIntensifyHook improves mixed problem", "[inner_solver]") {
     // Bool b, Float x in [0,10], constraint: b + x >= 3, min x
     Model m;
     auto b = m.bool_var();

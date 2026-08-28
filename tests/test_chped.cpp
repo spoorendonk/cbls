@@ -17,7 +17,7 @@ TEST_CASE("CHPED 4-unit builds model", "[chped]") {
     REQUIRE(m.constraint_ids().size() == 1);  // 1 demand constraint
 }
 
-TEST_CASE("CHPED 4-unit feasibility", "[chped][slow]") {
+TEST_CASE("CHPED 4-unit feasibility", "[chped]") {
     auto inst = make_4unit();
     auto cm = build_chped_model(inst);
     auto& m = cm.model;
@@ -28,7 +28,7 @@ TEST_CASE("CHPED 4-unit feasibility", "[chped][slow]") {
            result.objective, result.iterations, result.time_seconds);
 }
 
-TEST_CASE("CHPED 4-unit solution quality", "[chped][slow]") {
+TEST_CASE("CHPED 4-unit solution quality", "[chped]") {
     auto inst = make_4unit();
     auto cm = build_chped_model(inst);
     auto& m = cm.model;
@@ -39,7 +39,7 @@ TEST_CASE("CHPED 4-unit solution quality", "[chped][slow]") {
     printf("\n4-unit solution: cost=%.2f\n", result.objective);
 }
 
-TEST_CASE("CHPED 7-unit feasibility", "[chped][slow]") {
+TEST_CASE("CHPED 7-unit feasibility", "[chped]") {
     auto inst = make_7unit();
     auto cm = build_chped_model(inst);
     auto& m = cm.model;
@@ -64,7 +64,7 @@ TEST_CASE("CHPED 24-unit feasibility", "[chped][slow]") {
     }
 }
 
-TEST_CASE("CHPED 13-unit feasibility and quality", "[chped][slow]") {
+TEST_CASE("CHPED 13-unit feasibility and quality", "[chped]") {
     auto inst = make_13unit();
     auto cm = build_chped_model(inst);
     auto& m = cm.model;

@@ -113,14 +113,14 @@ Three conventions therefore rest on you rather than on a tool: branch only from 
 
 ### Fast vs. slow tests
 
-The C++ suite is **275 `TEST_CASE`s**: 274 registered by `catch_discover_tests`
-plus the single `[timing]` case registered by hand. Of the 274, **22 carry the
-Catch2 `[slow]` tag** — benchmark solves accounting for ~201s of aggregate
-(summed per-test) time, which `-j$(nproc)` compresses to a ~41s wall-clock full
-run. `tests/CMakeLists.txt` discovers them in a second `catch_discover_tests`
-call with `LABELS "slow"`, so:
+The C++ suite is **274 `TEST_CASE`s**: 273 registered by `catch_discover_tests`
+plus the single `[timing]` case registered by hand. Of the 273, **6 carry the
+Catch2 `[slow]` tag** — the CHPED and UC-CHPED benchmark solves, ~103s of
+aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~39s
+wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
+`catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 252 tests, ~2s with `-j`. This is what **pre-commit** runs.
+- `ctest -LE slow` — the other 268 tests, ~8s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
 - `ctest -L timing` — `timing_structural_batch_deadline`, the suite's only
   wall-clock-duration assertion. It is registered by an explicit `add_test` so it
@@ -140,12 +140,17 @@ agree:
 
 Update all five in the same commit as any change to the test roster.
 
-All timings here are **Release** — the build type `CMakeLists.txt` now defaults
-to. Only 6 of the 22 `[slow]` tests still exceed 10s at `-O3`; the tag is
-therefore conservative rather than wrong, and retagging would move tests into
-pre-commit, so the roster is left as it stands.
+All timings here are **Release**, the build type `CMakeLists.txt` defaults to.
+The tag was re-derived at `-O3`: 16 tests that earned it at `-O0` no longer come
+close to the threshold, and carrying them cost pre-push a roster it did not need
+while hiding them from the inner loop. That move is what took pre-commit from
+~2s to ~8s — the fast set is no longer trivially fast, and the 6 that remain are
+the only ones where the split still pays.
 
-Tag a new test `[slow]` if it takes more than ~10s. Don't tag one just to get a green commit — pre-push will still run it.
+Measure both ways before tagging. These tests run under `-j$(nproc)`, and
+contention inflates a solve by 1.4-1.7x: `UC-CHPED 40-unit 1-period feasibility`
+is 9.95s alone and 17.1s under `-j12`. Tag if it exceeds ~10s on **either**
+basis. Don't tag one just to get a green commit — pre-push will still run it.
 
 **Never use `git push --no-verify` or `git commit --no-verify`** unless explicitly asked. A failing hook is a signal — fix the root cause.
 
@@ -254,7 +259,7 @@ cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python
 Release when the caller sets none, so this fence, CI and a plain `cmake -B build`
 all gate the same binaries from one place. An explicit `-DCMAKE_BUILD_TYPE=Debug`
 still overrides it. The suite is mostly real solver runs, so the type is not
-cosmetic: the full `ctest` was ~304s at the old empty default and is ~41s at
+cosmetic: the full `ctest` was ~304s at the old empty default and is ~39s at
 Release.
 
 `CMakeLists.txt` also picks up `ccache` as a compiler launcher when the machine

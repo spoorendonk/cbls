@@ -32,14 +32,15 @@ include(Catch)
 # the whole call, and Catch2 3.5.2 has no tag-to-label mapping. Two calls do not
 # collide -- Catch.cmake derives its generated filenames from a hash of the
 # arguments. Discovering them (rather than lumping them into one add_test) keeps
-# per-test granularity and lets ctest -j run them in parallel; collapsing 22
-# multi-minute solves into one serial invocation would make the full suite far
-# slower than it is.
+# per-test granularity and lets ctest -j run them in parallel; collapsing the
+# slow solves into one serial invocation would make the full suite far slower
+# than it is.
 #
-# Measured: 22 of 274 tests take >10s and account for ~1470s of the suite's
-# aggregate (summed per-test) time; with `-j$(nproc)` the full run is ~304s of
-# wall clock. The remaining 252 finish in ~7s with `-j`, which is what
-# pre-commit runs via `ctest -LE slow`. pre-push still runs everything.
+# Measured at Release: 6 of 273 discovered tests exceed ~10s and account for
+# ~103s of the suite's aggregate (summed per-test) time; with `-j$(nproc)` the
+# full run is ~39s of wall clock. The remaining 268 (267 plus the [timing] test,
+# which carries no slow label) finish in ~8s with `-j`, which is what pre-commit
+# runs via `ctest -LE slow`. pre-push still runs everything.
 #
 # SKIP_RETURN_CODE 4 maps Catch2's SKIP() onto ctest's "Skipped" rather than a
 # failure. No test uses SKIP() today -- the data-gated ROADEF tests that needed

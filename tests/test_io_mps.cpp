@@ -136,7 +136,7 @@ TEST_CASE("mps_to_model builds a closed CBLS model", "[mps][adapter]") {
     REQUIRE(built.objective_node_id >= 0);
 }
 
-TEST_CASE("CBLS finds the optimum on a small continuous LP", "[mps][solve][slow]") {
+TEST_CASE("CBLS finds the optimum on a small continuous LP", "[mps][solve]") {
     auto path = write_file("small_b.mps", kSmallLp);
     auto prob = cbls::read_mps(path.string());
     auto built = cbls::mps_to_model(prob);
@@ -151,7 +151,7 @@ TEST_CASE("CBLS finds the optimum on a small continuous LP", "[mps][solve][slow]
     REQUIRE(result.objective <= 6.0);
 }
 
-TEST_CASE("CBLS finds a feasible point on a small binary IP", "[mps][solve][slow]") {
+TEST_CASE("CBLS finds a feasible point on a small binary IP", "[mps][solve]") {
     auto path = write_file("bin_b.mps", kSmallBinary);
     auto prob = cbls::read_mps(path.string());
     auto built = cbls::mps_to_model(prob);

@@ -270,7 +270,7 @@ TEST_CASE("Set encoding returns a verified cover on scpe1", "[setcover]") {
     REQUIRE(check.cost >= kScpe1Optimum);
 }
 
-TEST_CASE("Bool encoding returns a verified cover on scpe1", "[setcover][slow]") {
+TEST_CASE("Bool encoding returns a verified cover on scpe1", "[setcover]") {
     SetCoverInstance inst = load_setcover(kScpe1Path);
     SetCoverModel scm = build_bool_model(inst);
 

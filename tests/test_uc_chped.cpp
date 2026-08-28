@@ -20,7 +20,7 @@ TEST_CASE("UC-CHPED 13-unit 1-period model builds", "[uc-chped]") {
     printf("\n13-unit 1p: %ld vars, %ld nodes\n", (long)m.num_vars(), (long)m.num_nodes());
 }
 
-TEST_CASE("UC-CHPED 13-unit 1-period feasibility", "[uc-chped][slow]") {
+TEST_CASE("UC-CHPED 13-unit 1-period feasibility", "[uc-chped]") {
     auto ucp13 = load_jsonl("benchmarks/instances/uc-chped/ucp13.jsonl");
     auto inst = make_subinstance(ucp13, 1);
     auto ucm = build_uc_model(inst);

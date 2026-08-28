@@ -109,7 +109,7 @@ TEST_CASE("FJ-NL finds feasibility bool", "[search]") {
 }
 
 // SA solver tests
-TEST_CASE("SA unconstrained minimum", "[search][slow]") {
+TEST_CASE("SA unconstrained minimum", "[search]") {
     Model m;
     auto x = m.float_var(-10, 10);
     auto y = m.float_var(-10, 10);
@@ -122,7 +122,7 @@ TEST_CASE("SA unconstrained minimum", "[search][slow]") {
     REQUIRE(result.objective < 1.0);
 }
 
-TEST_CASE("SA constrained problem", "[search][slow]") {
+TEST_CASE("SA constrained problem", "[search]") {
     Model m;
     auto x = m.float_var(0, 10);
     auto y = m.float_var(0, 10);
@@ -137,7 +137,7 @@ TEST_CASE("SA constrained problem", "[search][slow]") {
     REQUIRE(result.objective < 5.0);
 }
 
-TEST_CASE("SA integer problem", "[search][slow]") {
+TEST_CASE("SA integer problem", "[search]") {
     Model m;
     auto x = m.int_var(0, 10);
     auto neg7 = m.constant(-7.0);
@@ -149,7 +149,7 @@ TEST_CASE("SA integer problem", "[search][slow]") {
     REQUIRE(result.objective < 2.0);
 }
 
-TEST_CASE("SA Rosenbrock 2D", "[search][slow]") {
+TEST_CASE("SA Rosenbrock 2D", "[search]") {
     Model m;
     auto x = m.float_var(-5, 5);
     auto y = m.float_var(-5, 5);
@@ -207,7 +207,7 @@ TEST_CASE("LNS basic", "[lns]") {
 }
 
 // LNS integration in solve() test
-TEST_CASE("solve with LNS param", "[search][lns][slow]") {
+TEST_CASE("solve with LNS param", "[search][lns]") {
     Model m;
     auto x = m.float_var(0, 10);
     auto y = m.float_var(0, 10);
@@ -223,7 +223,7 @@ TEST_CASE("solve with LNS param", "[search][lns][slow]") {
     REQUIRE(result.objective < 10.0);
 }
 
-TEST_CASE("solve with hook and LNS", "[search][lns][slow]") {
+TEST_CASE("solve with hook and LNS", "[search][lns]") {
     Model m;
     auto x = m.float_var(0, 10);
     auto y = m.float_var(0, 10);
