@@ -68,7 +68,14 @@ fi
 # Check if only non-code files changed (skip build+test for docs-only pushes).
 # .githooks/ is excluded: a hook change cannot alter build or test outcomes, so
 # a hooks-only push should not pay for a clean rebuild.
-CODE_FILES=$(echo "$CHANGED_FILES" | grep -vE '^(LICENSE|CHANGELOG)' | grep -vE '\.(md|txt|rst)$' | grep -vE '^\.(gitignore|gitattributes)$' | grep -vE '^\.githooks/' || true)
+#
+# `.txt` is deliberately NOT in the docs extension list. Every tracked .txt in
+# this repo is load-bearing -- the three CMakeLists.txt files and the setcover
+# instance data that tests/test_setcover.cpp reads -- so treating the extension
+# as documentation silently skipped the whole gate on any build-system change.
+# Misclassifying a real doc as code costs one clean cycle; misclassifying code
+# as a doc pushes it untested, so the extension list errs toward running.
+CODE_FILES=$(echo "$CHANGED_FILES" | grep -vE '^(LICENSE|CHANGELOG)' | grep -vE '\.(md|rst)$' | grep -vE '^\.(gitignore|gitattributes)$' | grep -vE '^\.githooks/' || true)
 
 # ============================================================
 # Step 1: Clean build + test (hard block)
