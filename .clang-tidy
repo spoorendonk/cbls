@@ -7,6 +7,29 @@
 # inline, with the measurement that justifies it. Nothing is turned off to
 # avoid work.
 ---
+# Three checks are disabled below the stock set, each for a structural reason
+# rather than to dodge work:
+#
+#   bugprone-chained-comparison -- Catch2's REQUIRE/CHECK decompose into an
+#     expression template, so every `REQUIRE(a == b)` reads to this check as the
+#     chained comparison `v0 <= v1 > v2`. Measured: 548 hits, all in tests/, all
+#     of them the macro rather than the test. Nothing to fix at the call site.
+#
+#   bugprone-throwing-static-initialization -- Catch2's TEST_CASE registers each
+#     case through a static (`dummyUser1`, ...) whose initialization the check
+#     cannot prove non-throwing. 276 hits, one per TEST_CASE; the construct is
+#     Catch2's, not ours.
+#
+#   readability-identifier-length -- 1515 hits, by far the largest single source
+#     of noise, objecting to `x`, `y`, `lb`, `ub`, `id`. This is a solver: those
+#     are the domain's own names and the papers the code implements use exactly
+#     them. Renaming `x` to `x_var` across the DAG and the AD paths would make
+#     the code read *less* like its reference. Same call, and same reasoning, as
+#     the identifier-naming options below: encode the convention the project
+#     actually has.
+#
+# Note `#` is NOT a comment inside a `>` folded scalar -- it is literal text
+# that silently corrupts the check list. Rationale goes here, above the key.
 Checks: >
   -*,
   bugprone-*,
@@ -14,7 +37,10 @@ Checks: >
   performance-*,
   readability-*,
   -modernize-use-trailing-return-type,
-  -readability-magic-numbers
+  -readability-magic-numbers,
+  -bugprone-chained-comparison,
+  -bugprone-throwing-static-initialization,
+  -readability-identifier-length
 
 CheckOptions:
   - key: readability-function-cognitive-complexity.Threshold
@@ -81,5 +107,12 @@ CheckOptions:
     value: lower_case
 
 WarningsAsErrors: ''
+# '.*' meant every transitively included header, so a sweep reported ~9400
+# diagnostics from build/_deps (Catch2, nlohmann/json), nanobind, CPython and
+# libstdc++ -- none of it code this repo can change, and enough of it to bury
+# the diagnostics that are ours. Keep the broad filter and subtract what we do
+# not own, so a new project header is covered by default rather than by being
+# remembered.
 HeaderFilterRegex: '.*'
+ExcludeHeaderFilterRegex: '(build/_deps/|site-packages/|/usr/include/|/usr/lib/|/usr/bin/)'
 FormatStyle: file
