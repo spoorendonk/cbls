@@ -286,10 +286,18 @@ to each other *or* to the committed tables. Run A/B comparisons serially, check
 (`-DCMAKE_BUILD_TYPE=Release`) — a bare `cmake -B build` is unoptimized and an
 existing `build/` may be cached at a different type.
 
-**When regenerating a `comparison.csv`, record the engine commit in its header.**
+**When regenerating a `comparison.csv`, record the engine commit in it.**
 Search-trajectory changes silently invalidate published tables, and without the
-commit the next reader cannot tell drift from a bug. `benchmarks/instances/setcover/comparison.csv`
-is the pattern to copy.
+commit the next reader cannot tell drift from a bug. `minlplib`'s table carries a
+per-row `commit_sha` column; a header comment naming the commit does the job too.
+
+**Nothing checks this.** `tests/python/test_minlplib_scip_baseline.py` is the
+only test that reads a `comparison.csv` at all, so every other committed table
+drifts silently and is caught only when someone re-measures. That is why
+`setcover` no longer carries one: it went stale the moment #118 changed the
+search trajectory, with no gate anywhere to notice. Its results live in
+`benchmarks/instances/setcover/README.md` instead, with the engine commit stated
+in the text. Prefer that shape unless a test is going to read the table.
 
 ## Architecture
 

@@ -90,9 +90,14 @@ variable work" but "does it buy anything the scalar encoding does not".
 Best of seeds 42-44, 10s wall clock per run, single thread, default
 `SearchConfig`, Release build. Every one of the 60 runs returned a **verified
 cover** — feasibility recomputed from the instance file — so the expressiveness
-half of the claim holds outright. `comparison.csv` carries the same numbers in
-the repo-standard schema, and its header records the engine commit; the per-seed
-values are in the runner's `--csv` output.
+half of the claim holds outright.
+
+**Measured at engine commit `adc8ee4`** (#118, the per-constraint structural-pass
+fix). Commits after it do touch engine code, but not these numbers: #114's
+changes are all Int-gated, and these models declare no Int variable — the `Set`
+encoding is one `Set`, the Bool encoding is N Bools. Re-derive the per-seed form
+with the runner's `--csv` output. No summary table is committed; the table above
+is the record.
 
 | Instance | Optimum | `set` best | gap | `bool` best | gap |
 |---|---|---|---|---|---|
@@ -179,8 +184,8 @@ reaches 3.
 
 Spending the whole batch budget on structural passes is better in **both** cost
 regimes — the idle FJ batches buy nothing that outweighs the passes they
-displace. Both columns below are one 10s sweep at the engine commit
-`comparison.csv` records, seeds 42-44 in that order:
+displace. Both columns below are one 10s sweep at engine commit `adc8ee4`,
+seeds 42-44 in that order:
 
 | Instance | default | `--struct-prob 1.0` |
 |---|---|---|
@@ -214,9 +219,11 @@ ctest --test-dir build-rel -R setcover
 The runner verifies every solution against the instance file (not against the
 DAG) and exits non-zero if any run is infeasible or unverified.
 
-`comparison.csv` holds the summary in the repo-standard schema
-(`instance,method,objective,gap,source`); the runner's `--csv` output is the
-per-seed raw form.
+The runner's `--csv` output is the per-seed raw form. **No summary table is
+committed.** One used to be, and it went stale silently when #118 changed the
+search trajectory — nothing in the suite reads a committed CSV, so there is no
+gate that would have caught it. The Result table above is the record instead,
+and re-measuring is the way to check it.
 
 ## Provenance and licensing
 
