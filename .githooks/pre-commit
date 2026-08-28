@@ -99,10 +99,12 @@ TESTS_FAILED=0
 # Only run C++ tests if C++ files were staged
 if [ -n "$CPP_FILES" ] && [ -d "build" ] && command -v ctest &>/dev/null; then
 	# -LE slow deliberately: this is the fast inner loop. The 22 [slow] tests
-	# are multi-minute benchmark solves worth ~1470s of the suite's aggregate
-	# (summed per-test) time -- ~304s of wall clock with -j -- and pre-push
-	# runs the whole suite from a clean tree anyway. A six-minute pre-commit
-	# is one people learn to bypass, which gates nothing at all.
+	# are benchmark solves worth ~201s of the suite's aggregate (summed
+	# per-test) time -- ~41s of wall clock with -j at Release -- and pre-push
+	# runs the whole suite from a clean tree anyway. The margin is much
+	# narrower since the Release default (41s vs 2s, not 304s vs 7s), so the
+	# split is now about keeping the inner loop instant rather than about
+	# avoiding a pre-commit long enough that people learn to bypass it.
 	echo "Running C++ tests (fast set; [slow] runs at push)..."
 	if ! ctest --test-dir build -LE slow --output-on-failure --progress -j"$(nproc 2>/dev/null || echo 4)"; then
 		echo "FAILED: C++ tests failed."

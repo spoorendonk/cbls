@@ -115,12 +115,12 @@ Three conventions therefore rest on you rather than on a tool: branch only from 
 
 The C++ suite is **275 `TEST_CASE`s**: 274 registered by `catch_discover_tests`
 plus the single `[timing]` case registered by hand. Of the 274, **22 carry the
-Catch2 `[slow]` tag** — multi-minute benchmark solves accounting for ~1470s of
-aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~304s
-wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
-`catch_discover_tests` call with `LABELS "slow"`, so:
+Catch2 `[slow]` tag** — benchmark solves accounting for ~201s of aggregate
+(summed per-test) time, which `-j$(nproc)` compresses to a ~41s wall-clock full
+run. `tests/CMakeLists.txt` discovers them in a second `catch_discover_tests`
+call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 252 tests, ~7s with `-j`. This is what **pre-commit** runs.
+- `ctest -LE slow` — the other 252 tests, ~2s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
 - `ctest -L timing` — `timing_structural_batch_deadline`, the suite's only
   wall-clock-duration assertion. It is registered by an explicit `add_test` so it
@@ -139,6 +139,11 @@ agree:
    `tests/python/conftest.py`).
 
 Update all five in the same commit as any change to the test roster.
+
+All timings here are **Release** — the build type `CMakeLists.txt` now defaults
+to. Only 6 of the 22 `[slow]` tests still exceed 10s at `-O3`; the tag is
+therefore conservative rather than wrong, and retagging would move tests into
+pre-commit, so the roster is left as it stands.
 
 Tag a new test `[slow]` if it takes more than ~10s. Don't tag one just to get a green commit — pre-push will still run it.
 
@@ -245,6 +250,19 @@ rm -rf build
 cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python" && cmake --build build -j$(nproc)
 ```
 
+**No `-DCMAKE_BUILD_TYPE` here on purpose.** `CMakeLists.txt` defaults it to
+Release when the caller sets none, so this fence, CI and a plain `cmake -B build`
+all gate the same binaries from one place. An explicit `-DCMAKE_BUILD_TYPE=Debug`
+still overrides it. The suite is mostly real solver runs, so the type is not
+cosmetic: the full `ctest` was ~304s at the old empty default and is ~41s at
+Release.
+
+`CMakeLists.txt` also picks up `ccache` as a compiler launcher when the machine
+has it (`apt install ccache`), which matters because pre-push's ```clean fence is
+`rm -rf build`. Rebuilding the same path with a warm cache is **0.9s** against
+**23s** cold. It is optional — a system package cannot be committed, so a machine
+without it just builds normally.
+
 ```test
 ctest --test-dir build --output-on-failure -j$(nproc) && (CBLS_REQUIRE_BINDINGS=1 .venv/bin/pytest --tb=short -q; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 5 ])
 ```
@@ -293,9 +311,10 @@ A test that cannot fail is not a regression test.
 Objective quality at a fixed wall-clock budget depends on how many iterations the
 process gets, so two runs sharing cores produce numbers that are not comparable
 to each other *or* to the committed tables. Run A/B comparisons serially, check
-`uptime` first, and re-run anything anomalous. Pin the build type explicitly
-(`-DCMAKE_BUILD_TYPE=Release`) — a bare `cmake -B build` is unoptimized and an
-existing `build/` may be cached at a different type.
+`uptime` first, and re-run anything anomalous. A bare `cmake -B build` now
+configures Release, but an existing `build/` keeps whatever type it was first
+configured with — so for a timing comparison either check
+`CMAKE_BUILD_TYPE` in `build/CMakeCache.txt` or configure a fresh directory.
 
 **When regenerating a `comparison.csv`, record the engine commit in it.**
 Search-trajectory changes silently invalidate published tables, and without the

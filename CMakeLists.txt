@@ -5,6 +5,30 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Most of this project's test suite is real solver runs, so an unoptimized build
+# costs the full ctest cycle roughly 8x. Nothing set a build type, which means the
+# documented `cmake -B build` produced -O0 binaries and every push paid for it.
+# Only default it: an explicit -DCMAKE_BUILD_TYPE still wins, and multi-config
+# generators (which ignore the variable and set CMAKE_CONFIGURATION_TYPES instead)
+# are left alone.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING
+        "Build type; defaults to Release because the suite is solver runs" FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
+                 Debug Release RelWithDebInfo MinSizeRel)
+    message(STATUS "CMAKE_BUILD_TYPE not set; defaulting to Release")
+endif()
+
+# ccache, when the machine has it. pre-push runs `rm -rf build`, so without a
+# compile cache every push recompiles from scratch; with one the object tree is
+# restored from cache instead. Optional by design -- it is a system package that
+# cannot be committed, so a machine without it just builds normally.
+find_program(CCACHE_PROGRAM ccache)
+if(CCACHE_PROGRAM)
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+    message(STATUS "ccache: ${CCACHE_PROGRAM}")
+endif()
+
 option(CBLS_INSTALL_GIT_HOOKS
        "Point this checkout's core.hooksPath at the tracked .githooks/" ON)
 
@@ -62,9 +86,14 @@ endif()
 # FetchContent (shared by library, tests, benchmarks, CLI)
 include(FetchContent)
 
+# GIT_SHALLOW is safe on both dependencies below because each is pinned to a tag
+# rather than a moving branch. json is header-only and its 4500-commit history is
+# never read. Measured: a cold configure drops 32s -> 21s and _deps/ 359MB ->
+# 214MB. The remainder is json's working tree, which shallow cloning cannot help.
 FetchContent_Declare(json
     GIT_REPOSITORY https://github.com/nlohmann/json.git
     GIT_TAG v3.11.3
+    GIT_SHALLOW TRUE
 )
 FetchContent_MakeAvailable(json)
 
@@ -139,6 +168,7 @@ if(CBLS_BUILD_TESTS)
         Catch2
         GIT_REPOSITORY https://github.com/catchorg/Catch2.git
         GIT_TAG v3.5.2
+        GIT_SHALLOW TRUE
     )
     FetchContent_MakeAvailable(Catch2)
     list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)

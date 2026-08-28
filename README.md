@@ -54,8 +54,12 @@ m.close();
 ```bash
 cmake -B build
 cmake --build build
-ctest --test-dir build    # 274 C++ tests (add -LE slow for the fast 252)
+ctest --test-dir build    # 274 C++ tests, ~41s (add -LE slow for the fast 252, ~2s)
 ```
+
+The build type defaults to `Release`; pass `-DCMAKE_BUILD_TYPE=Debug` to override
+it. Install `ccache` and CMake will use it as a compiler launcher automatically,
+which makes a clean rebuild of the same directory near-instant.
 
 With Python bindings:
 
