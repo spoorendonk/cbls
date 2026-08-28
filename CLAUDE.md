@@ -23,8 +23,8 @@ Know the symbol → LSP. Know a string, not its location → Grep. Full-file Rea
 
 ## C++
 
-- **C++17** (`CMAKE_CXX_STANDARD 17`) — not C++23. `std::expected`, concepts and ranges are *not* available here; don't reach for them.
-- Style: Google-based, enforced by `.clang-format` and `.clang-tidy` at the repo root. Both tools are **pinned PyPI wheels in `.venv/`** (`clang-format==22.1.8`, `clang-tidy==22.1.8`), not system packages — `.venv/bin/pip install -e '.[dev]'` installs them, and the hooks prefer `.venv/bin` over `PATH`. Formatter output changes between major releases, so the pin is what keeps one person's commit from reformatting another's.
+- **C++17** (`CMAKE_CXX_STANDARD 17`). `std::expected`, concepts and ranges are *not* available here; don't reach for them.
+- Style: Google-based, enforced by `.clang-format` and `.clang-tidy` at the repo root. Both tools are **pinned PyPI wheels in `.venv/`** (`clang-format==22.1.8`, `clang-tidy==22.1.8`), not system packages — `.venv/bin/pip install -e '.[dev]'` installs them, and the hooks prefer `.venv/bin` over `PATH`. The exact pin keeps formatter and tidy output identical across checkouts.
 - Naming is **not** Google's default — `.clang-tidy` encodes what this codebase actually does:
 
   | Kind | Style | Example |
@@ -36,7 +36,7 @@ Know the symbol → LSP. Know a string, not its location → Grep. Full-file Rea
   | Classes | `CamelCase` | `Model`, `JumpTable` |
   | Namespaces | `lower_case` | `cbls` |
 
-  Two documented exceptions: `Model::Bool/Int/Float/List/Set/Constant` stay CamelCase because they name the type they create (and `bool`/`int`/`float` cannot be lowercased without hitting a keyword), and `src/io/` disables the naming check entirely because its two readers are vendored from `spoorendonk/mipx` and must stay diff-clean against upstream.
+  Two exceptions: `Model::Bool/Int/Float/List/Set/Constant` stay CamelCase because they name the type they create (and `bool`/`int`/`float` cannot be lowercased without hitting a keyword), and `src/io/.clang-tidy` disables the naming check for that directory because `mps_reader.cpp` and `solu_reader.cpp` are vendored from `spoorendonk/mipx` and must stay diff-clean against upstream. The three native adapters there (`mps_to_model.cpp`, `nl_reader.cpp`, `nl_to_model.cpp`) lose naming coverage as a side effect — keep an eye on new code in that directory.
 - Use `#pragma once` for include guards.
 - Minimize includes in headers. Forward-declare where possible.
 
@@ -73,7 +73,7 @@ Install `pyright-lsp@claude-plugins-official`. Pyright reads `[tool.mypy]` and p
 
 ## Testing
 
-C++ tests use **Catch2** (not GoogleTest): files in `tests/`, registered in `CMakeLists.txt`, run via `ctest`. Python tests use **pytest**: `test_<module>.py` under `tests/python/`, `conftest.py` for shared fixtures, `pytest.mark.parametrize` for data-driven cases.
+C++ tests use **Catch2** (not GoogleTest): files in `tests/`, registered in `tests/CMakeLists.txt`, run via `ctest`. Python tests use **pytest**: `test_<module>.py` under `tests/python/`, `conftest.py` for shared fixtures, `pytest.mark.parametrize` for data-driven cases.
 
 - Name tests descriptively — `returns_optimal_for_feasible_input`, `test_solver_returns_optimal_for_feasible_input`.
 - Test nanobind bindings from Python with pytest, not from C++ — the binding is an implementation detail. Include round-trip tests: create in Python → pass to C++ → get result back.
@@ -99,33 +99,11 @@ The hooks live in **`.githooks/`, tracked in this repo** — that directory is t
 
 `core.hooksPath` is shared across every worktree of a checkout, but `.githooks/` is resolved from the working tree — so a branch that does not carry the directory runs **no hooks at all**, silently. Merge main into any long-lived branch before relying on the gates.
 
-- `pre-commit` — auto-formats staged C++/Python/shell (clang-format, ruff, shfmt), applies safe clang-tidy fixes, re-stages, then runs the affected test suite. Hard block on failure. The clang tools come from `.venv/bin`; if neither the venv nor `PATH` has them it says so rather than skipping quietly.
+- `pre-commit` — auto-formats staged C++/Python/shell (clang-format, ruff, shfmt), applies safe clang-tidy fixes, re-stages, then runs the affected test suite. Hard block on failure. The clang tools come from `.venv/bin` (resolved by `.githooks/resolve-venv.sh`); if neither the venv nor `PATH` has them it says so rather than skipping quietly.
 - `commit-msg` — Conventional Commits format.
 - `pre-push` — the clean build + **full** suite from `## Build & Test` below, then clang-tidy/ruff-complexity/shellcheck/mypy as warnings. Both the ```build and ```test fences must resolve or the push is blocked; there is no auto-detect fallback, because guessing a build would gate a different one than the documented build.
 
 Nothing enforces `/review` at push time, by design — a gate keyed on gitignored local tooling can only be satisfied in whichever checkout happens to carry it, and passes silently everywhere else. `/review` is still expected on every change (see **Agent Self-Review**); running it is on you.
-
-### Fast vs. slow tests
-
-22 of the 274 C++ tests are multi-minute benchmark solves carrying the Catch2 `[slow]` tag; they account for ~1470s of the suite's aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~304s wall-clock full run. They are registered by their own `catch_discover_tests` call in `tests/CMakeLists.txt` with `LABELS "slow"`, so:
-
-- `ctest -LE slow` — the other 252 tests, ~7s with `-j`. This is what **pre-commit** runs.
-- `ctest` — everything. This is what **pre-push** and CI run.
-
-These counts are hard-coded in **five** places and nothing checks that they
-agree: this section, the comment above `catch_discover_tests` in
-`tests/CMakeLists.txt`, the build section of `README.md`, the comment above the
-`ctest` call in `.githooks/pre-commit`, and — for the pytest side — the
-`.venv/bin/pytest` line in `README.md` (175 tests, 73 of them binding tests,
-echoed in prose by `pyproject.toml` and `tests/python/conftest.py`). Update all
-of them in the same commit as any change to the test roster. Leaving one behind
-is not hypothetical: removing a benchmark missed `README.md` once and
-`.githooks/pre-commit` twice running, so pre-commit spent two removals claiming
-33 slow tests of a ~1010s run.
-
-Tag a new test `[slow]` if it takes more than ~10s. Don't tag one just to get a green commit — pre-push will still run it.
-
-**Never use `git push --no-verify` or `git commit --no-verify`** unless explicitly asked. A failing hook is a signal — fix the root cause.
 
 Gating lives in git hooks only — `.claude/settings.json` carries no `hooks` block, and none should be added. A `PostToolUse` formatter cannot see which file was edited, so it silently formats nothing; formatting belongs at commit time. Don't hand-tune formatting.
 
@@ -133,9 +111,42 @@ Three conventions therefore rest on you rather than on a tool: branch only from 
 
 `.claude/` is gitignored local agent tooling (settings, statusline, the `/review` command). Nothing in it is part of the repo.
 
+### Fast vs. slow tests
+
+The C++ suite is **275 `TEST_CASE`s**: 274 registered by `catch_discover_tests`
+plus the single `[timing]` case registered by hand. Of the 274, **22 carry the
+Catch2 `[slow]` tag** — multi-minute benchmark solves accounting for ~1470s of
+aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~304s
+wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
+`catch_discover_tests` call with `LABELS "slow"`, so:
+
+- `ctest -LE slow` — the other 252 tests, ~7s with `-j`. This is what **pre-commit** runs.
+- `ctest` — everything. This is what **pre-push** and CI run.
+- `ctest -L timing` — `timing_structural_batch_deadline`, the suite's only
+  wall-clock-duration assertion. It is registered by an explicit `add_test` so it
+  can carry a `TIMEOUT` and be quarantined if it flakes. Don't add tests to this
+  class without a concrete reason.
+
+These counts are hard-coded in **five** places and nothing checks that they
+agree:
+
+1. this section,
+2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
+3. the build section of `README.md`,
+4. the comment above the `ctest` call in `.githooks/pre-commit`,
+5. the `.venv/bin/pytest` line in `README.md` for the Python side (175 tests, 73
+   of them binding tests, echoed in prose by `pyproject.toml` and
+   `tests/python/conftest.py`).
+
+Update all five in the same commit as any change to the test roster.
+
+Tag a new test `[slow]` if it takes more than ~10s. Don't tag one just to get a green commit — pre-push will still run it.
+
+**Never use `git push --no-verify` or `git commit --no-verify`** unless explicitly asked. A failing hook is a signal — fix the root cause.
+
 ## Git Workflow
 
-Trunk-based development with linear history on main. Commit directly to main and push when local gates pass.
+Trunk-based development with linear history on main. Commit directly to main and push when local gates pass. There are currently no other worktrees or long-lived branches.
 
 Feature branches are optional for larger changes:
 - Always branch from main. Run `git checkout main && git pull` first.
@@ -163,6 +174,16 @@ Issues get picked up later in fresh sessions, often by a different agent with no
 - **Prefer stable external links.** GitHub permalinks, paper URLs, RFCs, official docs.
 - **Be vague about local code context.** Describe the concept rather than the path; hint that the agent can search under `..`, `../..`, or `~/code/`.
 
+### Retiring a benchmark
+
+If a benchmark is ever retired, it is a tracker job as well as a tree job:
+
+- Grep **every** open issue body for the epic number *and* the benchmark slug — GitHub's sub-issue list is not the full set of issues that point at an epic, because many are body-linked with "Part of #N" instead. Grep for hard-coded test counts too; those go stale the same way.
+- Close the epic's sub-issues **explicitly** and as **not planned** — a closing keyword in a commit message closes the epic only, and the work was abandoned, not delivered. `gh issue close --reason` is silently a no-op on an already-closed issue; correct one after the fact with
+  `gh api --method PATCH /repos/:owner/:repo/issues/<num> -f state=closed -f state_reason=not_planned`.
+- The epic itself closes as **completed** — retiring it was the job.
+- An issue that is still valid and merely *cites* the retired code (a hook name, a file path, a list of affected benchmarks) needs its body **edited** to name a surviving example instead. Closing it would drop live work.
+
 ## Agent Self-Review
 
 **Any agent or agent team that produces code must run `/review` on its own changes before that code can merge to main.** No subagent returns unreviewed work; no orchestrator merges unreviewed work. This applies to every agent team, not just the parallel-issue workflow.
@@ -176,6 +197,8 @@ When the user brings multiple gh issues to work on at once:
 3. **Subagents self-review** per the Agent Self-Review rule above. Subagents commit locally in their worktree and **do not push** — worktrees share `.git`, so the orchestrator sees their commits via `git log <branch>` with no network round-trip.
 4. **No merging without user OK.** Subagents never merge into main; the orchestrator never merges a subagent's branch without explicit user approval.
 5. **Final combined review, then push.** The orchestrator merges all approved branches into local main, runs `/review` over the merged result, and only then runs `git push origin main`. No pushes — of main or feature branches — happen before that final review.
+
+A subagent worktree may READ sibling worktrees to understand patterns, but must never WRITE to one or to its git branch. A fresh worktree has no `.venv`; see **Build & Test** for the symlink it needs before building or testing.
 
 ## Commit Messages
 
@@ -227,19 +250,17 @@ ctest --test-dir build --output-on-failure -j$(nproc) && (CBLS_REQUIRE_BINDINGS=
 ```
 
 **The gated build turns the Python bindings on, and the gated test run requires
-them.** `CBLS_BUILD_PYTHON` defaults to `OFF`, so the fences used to build no
-bindings, and `tests/python/conftest.py` then dropped every test that imports
-`_cbls_core` without saying so — a clean `cmake -B build` produced `102 passed`
-while 73 binding tests had not run at all, and no gate anywhere would have caught
-a binding regression. Building them costs ~2.4s of build and ~6s of pytest
-against a suite that already spends ~340s in `ctest`, which is not a price worth
-trading coverage for. `CBLS_REQUIRE_BINDINGS=1` makes the skip a hard error, so
-a build that silently produced no module fails the gate instead of passing it.
+them.** `CBLS_BUILD_PYTHON` defaults to `OFF` and `tests/python/conftest.py`
+skips every test that imports `_cbls_core` when the module is missing, so a build
+without the flag would leave 73 binding tests silently unrun.
+`CBLS_REQUIRE_BINDINGS=1` turns that skip into a hard error. Bindings cost ~2.4s
+of build and ~6s of pytest against a suite that already spends ~340s in `ctest` —
+always build them.
 
 `pytest` is **only** in `.venv/` — a bare `pytest` is not on PATH and
 `python3 -m pytest` has no module, so always spell out `.venv/bin/pytest`.
 A git worktree has no `.venv` of its own; symlink the main checkout's in before
-building or running the Python suite there. The build now needs it too — the
+building or running the Python suite there. The build needs it too — the
 ```build fence locates nanobind through `$PWD/.venv/bin/python`, so without the
 symlink a worktree builds no bindings and the ```test fence fails on
 `CBLS_REQUIRE_BINDINGS=1`:
@@ -258,25 +279,15 @@ Run a single Python test:
 .venv/bin/pytest tests/python/test_foo.py::test_specific -x
 ```
 
-Python bindings (off by default):
-```bash
-cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE=$(which python3)
-cmake --build build -j$(nproc)
-```
-
 ## Measuring and testing engine changes
 
-Two disciplines this repo has been burned by repeatedly. Both cost a full re-run
-when skipped.
-
-**A regression test must be shown to fail before the fix.** Several issues here
-warn that a plausible-looking test passes on the unfixed code — #112 says so
-explicitly, because LNS maps a NaN constraint to `+inf` and rolls back, so a
-NaN-poisoned repair can never win and a test written against that path is green
-either way. Verify by reverting *only* the production change in a throwaway copy
-(`git archive HEAD | tar -x -C /tmp/...`, then restore the changed files from
-`main`) and confirming the new test goes red. A test that cannot fail is not a
-regression test, and three separate changes in one recent batch shipped with one.
+**A regression test must be shown to fail before the fix.** A plausible-looking
+test frequently passes on the unfixed code — LNS maps a NaN constraint to `+inf`
+and rolls back, for instance, so a NaN-poisoned repair can never win and a test
+written against that path is green either way. Verify by reverting *only* the
+production change in a throwaway copy (`git archive HEAD | tar -x -C /tmp/...`,
+then restore the changed files from `main`) and confirming the new test goes red.
+A test that cannot fail is not a regression test.
 
 **Benchmark comparisons are time-limited, so never run them concurrently.**
 Objective quality at a fixed wall-clock budget depends on how many iterations the
@@ -293,11 +304,10 @@ per-row `commit_sha` column; a header comment naming the commit does the job too
 
 **Nothing checks this.** `tests/python/test_minlplib_scip_baseline.py` is the
 only test that reads a `comparison.csv` at all, so every other committed table
-drifts silently and is caught only when someone re-measures. That is why
-`setcover` no longer carries one: it went stale the moment #118 changed the
-search trajectory, with no gate anywhere to notice. Its results live in
-`benchmarks/instances/setcover/README.md` instead, with the engine commit stated
-in the text. Prefer that shape unless a test is going to read the table.
+drifts silently and is caught only when someone re-measures. Prefer stating
+results in a benchmark README with the engine commit named in the text — the
+shape `benchmarks/instances/setcover/README.md` uses — unless a test is actually
+going to read the table.
 
 ## Architecture
 
@@ -307,7 +317,7 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 
 1. **Model building** (`include/cbls/model.h`, `include/cbls/expr.h`) — Declare typed variables (Bool, Int, Float, List, Set), build expressions via operator overloading, add constraints, set objective, call `close()` which topologically sorts the DAG.
 
-2. **Expression DAG** (`include/cbls/dag.h`, `src/dag.cpp`, `src/dag_ops.cpp`) — Variables use negative handles `-(id+1)`, nodes use non-negative `id`. 23 operation types. Two evaluation modes:
+2. **Expression DAG** (`include/cbls/dag.h`, `src/dag.cpp`, `src/dag_ops.cpp`) — Variables use negative handles `-(id+1)`, nodes use non-negative `id`. 28 `NodeOp` operation types. Two evaluation modes:
    - `full_evaluate`: evaluate all nodes in topo order (initialization)
    - `delta_evaluate`: BFS dirty-marking from changed variables, recompute only affected nodes (moves)
    - Reverse-mode AD via `compute_all_partials` for the continuous (Newton) jump-value engine
@@ -326,46 +336,52 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 
 9. **Parallel search** (`src/pool.cpp`) — `SolutionPool` + `ParallelSearch` with opportunistic (independent seeds) or deterministic (epoch-sync) modes.
 
-10. **I/O** (`src/io.cpp`) — JSONL `.cbls` model format. CLI in `src/cli.cpp`.
+10. **I/O** (`src/io.cpp`, `src/io/`) — JSONL `.cbls` model format in `src/io.cpp`; `src/io/` holds the MPS reader (`mps_reader.cpp` + `mps_to_model.cpp`, gzip via zlib, optional bzip2), the AMPL `.nl` reader (`nl_reader.cpp` + `nl_to_model.cpp`) and the MIPLIB `.solu` reader. CLI in `src/cli.cpp`.
 
 ### Key extension points
 
-- **`InnerSolverHook`** — subclass to provide domain-specific continuous optimization. The reference implementation is the built-in `FloatIntensifyHook` (`include/cbls/inner_solver.h`, `src/inner_solver.cpp`); no benchmark currently ships a custom one, the worked example having gone with pharma-glsp (#28).
+- **`InnerSolverHook`** — subclass to provide domain-specific continuous optimization. The reference implementation is the built-in `FloatIntensifyHook` (`include/cbls/inner_solver.h`, `src/inner_solver.cpp`); no benchmark currently ships a custom one.
 - **New operations** — add to `NodeOp` enum in `dag.h`, implement `evaluate()` in `dag.cpp`, `local_derivative()` for AD, `delta_evaluate` support in `dag_ops.cpp`
 
 ### Build targets
 
 | Target | Source | Description |
 |--------|--------|-------------|
-| `cbls_lib` | `src/*.cpp` | Core library (static) |
-| `cbls_cli` | `src/cli.cpp` | CLI executable |
+| `cbls_lib` | `src/*.cpp`, `src/io/*.cpp` | Core library (static) |
+| `cbls_cli` | `src/cli.cpp` | CLI executable (output name `cbls`) |
 | `cbls_tests` | `tests/*.cpp` | Catch2 test suite |
+| `cbls_simple` | `examples/simple.cpp` | Minimal modeling example |
+| `cbls_chped` | `examples/chped.cpp` | CHPED modeling example over `benchmarks/chped/` |
 | `cbls_uc_chped` | `benchmarks/uc-chped/` | UC-CHPED benchmark runner |
 | `cbls_mipfeas` | `benchmarks/mipfeas/` | MIPfeas runner (one instance per process) |
 | `cbls_minlplib` | `benchmarks/minlplib/` | MINLPLib benchmark runner |
-| `cbls_setcover` | `benchmarks/setcover/` | OR-Library set-covering runner (Set-variable coverage check, #93) |
+| `cbls_setcover` | `benchmarks/setcover/` | OR-Library set-covering runner (`Set`-variable coverage check) |
+
+Examples, tests, benchmarks and bindings are each behind an option:
+`CBLS_BUILD_EXAMPLES`/`CBLS_BUILD_TESTS`/`CBLS_BUILD_BENCHMARKS` default ON,
+`CBLS_BUILD_PYTHON` defaults OFF (but the gated build turns it on).
 
 ### Dependencies
 
+- **zlib** — required (`find_package(ZLIB REQUIRED)`), gzip-compressed MPS input
+- **bzip2** — optional, `-DCBLS_USE_BZIP2=ON`, adds `.bz2` MPS support
 - **nlohmann/json** v3.11.3 — JSONL I/O (FetchContent)
 - **Catch2** v3.5.2 — C++ tests (FetchContent)
 - **nanobind** — Python bindings (optional, via scikit-build-core)
-
-### C++ standard
-
-C++17 (`CMAKE_CXX_STANDARD 17`). See the C++ subsection under **Standards** above.
 
 ## Benchmarks
 
 Each benchmark follows the same pattern:
 - `data.h` — C++ data structures + constexpr data arrays
 - `*_model.h` — model builder function
-- `*_hook.h` — optional custom `InnerSolverHook`; no benchmark ships one today (see **Key extension points**)
 - `*.cpp` — runner executable
 - `reference_solve.py` — SCIP/PySCIPOpt baseline
 - `verify_*.h` — solution correctness checker
 
-The `benchmarks/chped/` directory is reference-only (Benchmark 1 was dropped).
+Not every benchmark carries every file: `minlplib` and `mipfeas` read instances
+from disk rather than from a `data.h`, and no benchmark ships a custom
+`InnerSolverHook`. `benchmarks/chped/` is header-only — a model pattern consumed
+by `examples/chped.cpp` and `tests/test_chped.cpp`, with no runner of its own.
 
 ### Benchmark priority
 
@@ -387,8 +403,8 @@ head-to-head (row 1). Nothing else qualifies.
 
 | # | Benchmark | Compared against | Purpose | Tracking |
 |---|-----------|------------------|---------|----------|
-| 1 | `mipfeas` | OR-Tools CP-SAT `num_violation_ls` worker **only** | head-to-head correctness *and* performance against the reference implementation of the same jump-based algorithm | #90 |
-| 2 | `minlplib` | SCIP (nonlinear) | performance on non-convex MINLP — the regime CP-SAT's LS worker cannot express | #89, #87 |
+| 1 | `mipfeas` | OR-Tools CP-SAT `num_violation_ls` worker **only** | head-to-head correctness *and* performance against the reference implementation of the same jump-based algorithm | #87, #106 |
+| 2 | `minlplib` | SCIP (nonlinear) | performance on non-convex MINLP — the regime CP-SAT's LS worker cannot express | #87 |
 | 3 | `uc-chped` | Pedroso 2014 | a good result on a published unit-commitment formulation | #25, #91, #92 |
 
 **Priority 1 is deliberately not a MIP shootout.** Compare only against CP-SAT's
@@ -396,70 +412,23 @@ head-to-head (row 1). Nothing else qualifies.
 compare against CP-SAT's default full portfolio, Xpress, Gurobi or CPLEX — see
 epic #87 for why that framing is rejected.
 
-`nuclear-outage` (#26), `bunker-eca` (#27) and `pharma-glsp` (#28, #94) are
-**removed**. Their benchmark code, instance data, tests, CMake targets and docs
-are gone from the tree. Nothing should be restored from history; if a
-ROADEF-style outage-scheduling, maritime bunker/ECA or pharmaceutical
-lot-sizing benchmark is ever wanted again it starts from a new epic.
-
-**Why pharma-glsp went**, since it sat on this list until now and was not
-obviously doomed: its
-sole justification was being the one List-variable use case, and that did not
-survive scrutiny. The committed model was a macro-period *relaxation* (audit
-#76) — C1, C2, C6, C7 and C10 unmodelled, disposal structurally inert — which
-is why its objectives ran 2-15x *below* the paper's. Expressing the paper's
-actual GLSP-RP faithfully needs one Bool per (product, micro-slot) plus Floats
-and nothing else; the permutation `List` was never the natural object, it was a
-workaround for the engine not having a sequence-with-repeats type. And the
-faithful formulation is a MILP — Goerler et al. solved it with CPLEX — so it
-fails the criterion above. The List claim now rests on nothing; see the
-**Structured variables** note below before reasserting it.
-
-**Retiring a benchmark is a tracker job as well as a tree job.** An epic's own
-sub-issue list is not the full set of things that point at it: grep *every* open
-issue body for the epic number and the benchmark slug before declaring it
-closed. Removing bunker-eca turned up three issues its sub-issue list missed — a
-generic engine issue mis-filed under the epic, a cross-benchmark maintenance
-issue naming it in passing, and a test issue citing one of its hooks. Removing
-nuclear-outage was worse: GitHub's sub-issue list for #26 held 8 of the 14
-issues that pointed at it, the other 6 being body-linked with "Part of #26". A
-closing keyword in a commit message closes the epic only, never its sub-issues,
-so close those explicitly.
-
-Not every hit is closeable, though. An issue that is still valid and merely
-*cites* the retired benchmark's code — a hook name, a file path, a list of
-affected benchmarks — needs its body **edited** to name a surviving example
-instead; closing it would drop live work. Retiring nuclear-outage needed
-closure on fifteen issues and an edit on four — #103, #38, #31, and #119, an
-unrelated engine issue whose acceptance criterion hard-coded a suite size the
-removal invalidated. Grep for stale test counts as well as for the slug; #119
-named neither the benchmark nor the epic.
-
-Close a retired benchmark's sub-issues as **not planned**, not completed — the
-work was abandoned, not delivered, and a later query filtering closed-as-
-completed to reconstruct what shipped would otherwise be wrong by a dozen or
-more. `gh issue close --reason` is silently a no-op on an already-closed issue;
-to correct one after the fact use
-`gh api --method PATCH /repos/:owner/:repo/issues/<num> -f state=closed -f state_reason=not_planned`.
-The epic itself stays *completed* — retiring it was the job, and it got done.
-
-`setcover` is **not a fourth benchmark**. It is the scoped coverage check the
-`Set` variable type had been missing (#93): ten small OR-Library set-covering
-instances, run under both a `Set` and a Bool encoding, whose result is a
-documented limitation rather than a comparative claim (see
+Nothing outside this table is a benchmark. `setcover` is the scoped coverage
+check the `Set` variable type had been missing: ten small OR-Library
+set-covering instances, run under both a `Set` and a Bool encoding, whose result
+is a documented limitation rather than a comparative claim (see
 `benchmarks/instances/setcover/README.md`). Don't grow it into an epic.
+
+Engine-wide (cross-cutting) work is tracked under epic #24.
 
 ### Structured variables: the claim is currently unsupported
 
 Do not write, in docs or issues or commit messages, that List variables are
-validated on a published formulation. They are not, as of the pharma-glsp
-retirement. The evidence position is:
+validated on a published formulation. The evidence position is:
 
-- **`Set`** — measured and **negative** (#93). The `Set` encoding lands at
+- **`Set`** — measured and **negative**. The `Set` encoding lands at
   8.6-11.0x the proven optimum where the same data in Bools is within 9-20%.
-- **`List`** — **no evidence either way**. The only List benchmark was
-  pharma-glsp, whose model was a relaxation, and whose faithful form does not
-  need a List at all.
+- **`List`** — **no evidence either way.** No benchmark in the tree uses a
+  `List` variable.
 
 The mechanical cause of the `Set` result is generic and applies to `List`
 equally, and it has **two independent halves** — fixing either alone changes
@@ -471,8 +440,7 @@ nothing:
    intentional.
 2. `local_derivative` (`src/dag.cpp`) returns `0.0` for *every* structural op —
    `At`, `Count`, `Lambda`, `PairLambda` — so there is no AD signal to build a
-   jump value from either. (`setcover`'s `Set` model reads through `Lambda`;
-   `PairLambda` was the retired benchmark's op.)
+   jump value from either. (`setcover`'s `Set` model reads through `Lambda`.)
 
 What is left is `set_moves`/`list_moves` drawing uniformly at random, where the
 scalar path has FJ's jump table and best-of-N scan-set sampling to steer it.
@@ -480,21 +448,11 @@ Note the contrast is between the two *paths*, not the individual generators —
 `int_rand` and `float_perturb` are themselves uniform. **Cost-aware
 structural move selection is the prerequisite** for any renewed structured-variable
 claim, and `setcover` is its ready-made A/B harness — same instances, both
-encodings, a published baseline already committed. Fix the guidance, re-run
-setcover, and only then consider whether a new List/Set benchmark is worth
-building. Adding one first just reproduces #93's negative result in a new domain.
+encodings, a published baseline. Fix the guidance, re-run setcover, and only then
+consider whether a new List/Set benchmark is worth building. Adding one first
+just reproduces the negative result in a new domain.
 
-### Benchmark worktrees
-
-Active work happens in sibling git worktrees under `~/code/my/cbls/`. Each session works ONLY on its assigned benchmark.
-
-| Worktree | Problem | Epic |
-|----------|---------|------|
-| `uc-chped/` | UC-CHPED: unit commitment + valve-point dispatch | #25 |
-
-Engine-wide (cross-cutting) work is tracked under epic #24.
-
-### Common benchmark workflow
+### Benchmark workflow
 
 Each benchmark session must follow these steps in order:
 
@@ -504,29 +462,21 @@ Each benchmark session must follow these steps in order:
 
 2. **Find a reference solver** — Implement a reference solver in `benchmarks/{name}/reference_solve.py` using SCIP (PySCIPOpt) or another open-source solver if SCIP can't handle the formulation. Follow the pattern in `benchmarks/chped/reference_solve.py`.
 
-3. **Collect best-known results** — Find published results from papers/competitions. Write to `benchmarks/instances/{name}/comparison.csv` with columns: instance, method, objective, gap, source.
+3. **Collect best-known results** — Find published results from papers/competitions. Record them per **Measuring and testing engine changes** above: a README with the engine commit named in the text, or a `comparison.csv` (columns: instance, method, objective, gap, source) if a test will read it.
 
 4. **Implement CBLS model** — Create `benchmarks/{name}/data.h` (C++ data structs + loaders) and `benchmarks/{name}/{name}_model.h` (model builder). Follow the pattern of `benchmarks/chped/chped_model.h`. **Critical rules:**
    - Implement features generically in `include/cbls/` and `src/` — not benchmark-specific hacks
-   - You may READ files in other worktree sibling folders (e.g., `../cbls/`, `../uc-chped/`) to understand patterns, but NEVER WRITE to them or to their git branches
    - If the solver needs new ops, moves, or hooks — implement them in the core library so all benchmarks benefit
    - Add a runner executable in `benchmarks/{name}/{name}.cpp`
    - Add Catch2 tests in `tests/test_{name}.cpp`
-   - Update `CMakeLists.txt` for new executables and tests
+   - Update the root `CMakeLists.txt` and `tests/CMakeLists.txt` for new executables and tests
 
-5. **Run comparison** — Compare CBLS vs reference solver vs best-known results. Report objective, gap %, and solve time. Update `comparison.csv`.
+5. **Run comparison** — Compare CBLS vs reference solver vs best-known results. Report objective, gap %, and solve time.
 
 6. **Verify correctness** — Check CBLS solutions against best-known solutions. Feasibility must be verified (all constraints satisfied). Objective should be within reasonable gap of BKS.
 
-7. **Commit often** — Commit to your worktree branch (`bench/{name}`) after each meaningful step. Use descriptive commit messages.
+7. **Commit often** — Commit after each meaningful step. Use descriptive commit messages.
 
 8. **Self-review loop** — After each commit, review your own changes for issues/nits. Fix and commit again. Repeat until clean.
 
 9. **Do not interrupt the user** — No exceptions. Keep going until the benchmark is fully implemented, running, and producing correct results. Only stop if you hit a fundamental blocker that requires API/architecture changes.
-
-### Cross-worktree rules
-
-- Each session works ONLY on its assigned benchmark
-- READ other worktrees for reference — never write to them
-- Merge to main via squash-merge when done
-- Pull main into your branch before final merge to pick up other benchmarks' core changes
