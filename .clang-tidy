@@ -28,8 +28,46 @@
 #     the identifier-naming options below: encode the convention the project
 #     actually has.
 #
+# Below those three sits a RATCHET. Every check that still fired once the safe
+# auto-fixes had landed is disabled here, so that the rest of
+# bugprone-*/modernize-*/performance-*/readability-* can block at push starting
+# now. These are off because they are UNFIXED, not because they are wrong:
+#
+#    54  readability-function-cognitive-complexity
+#    30  readability-implicit-bool-conversion
+#    25  readability-math-missing-parentheses
+#    21  readability-identifier-naming
+#    17  modernize-avoid-c-style-cast
+#    17  bugprone-easily-swappable-parameters
+#    14  modernize-use-auto
+#     9  performance-inefficient-vector-operation
+#     8  bugprone-unchecked-string-to-number-conversion
+#     8  bugprone-narrowing-conversions
+#     6  performance-enum-size
+#     6  readability-inconsistent-declaration-parameter-name
+#     5  modernize-avoid-c-arrays
+#     5  readability-avoid-nested-conditional-operator
+#     4  bugprone-exception-escape
+#     4  readability-use-anyofallof
+#     3  readability-redundant-casting
+#     2  readability-use-std-min-max
+#     2  bugprone-branch-clone
+#     2  bugprone-unchecked-optional-access
+#     1  modernize-pass-by-value
+#     1  bugprone-unused-raii
+#     1  readability-else-after-return
+#     1  performance-unnecessary-value-param
+#     1  bugprone-empty-catch
+#     1  modernize-return-braced-init-list
+#
+# Deleting a line from that list is how a check comes back. Do it in the same
+# commit that fixes its warnings, never on its own. See the tracking issue for
+# the counts above and the suggested order: issue #121.
+#
 # Note `#` is NOT a comment inside a `>` folded scalar -- it is literal text
-# that silently corrupts the check list. Rationale goes here, above the key.
+# that silently corrupts the check list, and a trailing `# 25` on a check line
+# swallows the line after it. Every comment goes here, above the key; the
+# scalar itself holds check names and nothing else.
 Checks: >
   -*,
   bugprone-*,
@@ -40,7 +78,33 @@ Checks: >
   -readability-magic-numbers,
   -bugprone-chained-comparison,
   -bugprone-throwing-static-initialization,
-  -readability-identifier-length
+  -readability-identifier-length,
+  -readability-function-cognitive-complexity,
+  -readability-implicit-bool-conversion,
+  -readability-math-missing-parentheses,
+  -readability-identifier-naming,
+  -modernize-avoid-c-style-cast,
+  -bugprone-easily-swappable-parameters,
+  -modernize-use-auto,
+  -performance-inefficient-vector-operation,
+  -bugprone-unchecked-string-to-number-conversion,
+  -bugprone-narrowing-conversions,
+  -performance-enum-size,
+  -readability-inconsistent-declaration-parameter-name,
+  -modernize-avoid-c-arrays,
+  -readability-avoid-nested-conditional-operator,
+  -bugprone-exception-escape,
+  -readability-use-anyofallof,
+  -readability-redundant-casting,
+  -readability-use-std-min-max,
+  -bugprone-branch-clone,
+  -bugprone-unchecked-optional-access,
+  -modernize-pass-by-value,
+  -bugprone-unused-raii,
+  -readability-else-after-return,
+  -performance-unnecessary-value-param,
+  -bugprone-empty-catch,
+  -modernize-return-braced-init-list
 
 CheckOptions:
   - key: readability-function-cognitive-complexity.Threshold

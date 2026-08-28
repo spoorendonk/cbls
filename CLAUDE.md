@@ -101,7 +101,21 @@ The hooks live in **`.githooks/`, tracked in this repo** — that directory is t
 
 - `pre-commit` — auto-formats staged C++/Python/shell (clang-format, ruff, shfmt), applies safe clang-tidy fixes, re-stages, then runs the affected test suite. Hard block on failure. The clang tools come from `.venv/bin` (resolved by `.githooks/resolve-venv.sh`); if neither the venv nor `PATH` has them it says so rather than skipping quietly.
 - `commit-msg` — Conventional Commits format.
-- `pre-push` — the clean build + **full** suite from `## Build & Test` below, then clang-tidy/ruff-complexity/shellcheck/mypy as warnings. Both the ```build and ```test fences must resolve or the push is blocked; there is no auto-detect fallback, because guessing a build would gate a different one than the documented build.
+- `pre-push` — the clean build + **full** suite from `## Build & Test` below, then **clang-tidy as a hard block**, and ruff-complexity/shellcheck/mypy as warnings. Both the ```build and ```test fences must resolve or the push is blocked; there is no auto-detect fallback, because guessing a build would gate a different one than the documented build.
+
+  clang-tidy blocks because the tree is held at **zero** warnings, which is only
+  true given the **ratchet** in `.clang-tidy`: 26 checks are disabled by name,
+  each with its unfixed finding count, so that everything still enabled is
+  something the tree already satisfies. A warning at push is therefore new code's
+  doing. **Fix it — do not add the check to the disabled list.** That list exists
+  for pre-existing findings and is meant to shrink; #121 tracks emptying it, and
+  a check comes back in the same commit that clears its findings.
+
+  Note `.clang-tidy`'s `Checks:` is a YAML `>` folded scalar, where `#` is *not*
+  a comment — it is literal text that silently corrupts the check list, and a
+  trailing `# 25` on a check line swallows the line after it. Comments go above
+  the key. Verify any edit with `clang-tidy --dump-config`, because a corrupted
+  list fails open: checks silently stop running and the sweep goes green.
 
 Nothing enforces `/review` at push time, by design — a gate keyed on gitignored local tooling can only be satisfied in whichever checkout happens to carry it, and passes silently everywhere else. `/review` is still expected on every change (see **Agent Self-Review**); running it is on you.
 
@@ -241,7 +255,7 @@ When implementing from papers, pseudocode, or open-source references:
 ## Common Mistakes
 
 - **Don't invent APIs — verify they exist.** Check that functions, flags, and methods actually exist before using them.
-- **Don't ignore type errors.** If mypy/clang-tidy flags something, fix the root cause — don't suppress.
+- **Don't ignore type errors.** If mypy/clang-tidy flags something, fix the root cause — don't suppress. clang-tidy is a hard block at push; silencing it by disabling the check is the one route explicitly closed (see **Git Hooks**).
 - **Don't use deprecated patterns.** Check current docs, not training data.
 - **Performance matters.** Most of our code is solvers — profile before micro-optimizing, but don't sacrifice perf for "clean code".
 

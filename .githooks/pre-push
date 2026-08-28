@@ -165,6 +165,7 @@ fi
 # ============================================================
 
 ISSUES=""
+TIDY_ISSUES=""
 
 # clang-tidy (non-fixable warnings).  Prefer the venv's pinned copy over PATH,
 # for the same reason pre-commit does: a different major version reports a
@@ -183,12 +184,19 @@ if [ -n "$CPP_FILES" ] && [ -n "$CLANG_TIDY" ]; then
 		echo ""
 		echo "=== Running clang-tidy ==="
 
+		# clang-tidy BLOCKS. The tree is at zero warnings, held there by the
+		# ratchet in .clang-tidy: every check that still had findings is
+		# disabled by name with its count, so what remains enabled is exactly
+		# what the tree already satisfies. A warning here is therefore new,
+		# and the fix is to fix it -- not to add another name to that list.
+		# (Re-enabling a ratcheted check is a deliberate commit that clears
+		# its findings and deletes its line in the same change.)
 		for f in $CPP_FILES; do
 			[ -f "$f" ] || continue
 			RESULT=$("$CLANG_TIDY" $COMPILE_DB \
 				--quiet "$f" 2>&1 || true)
 			if echo "$RESULT" | grep -qE '(warning|error):'; then
-				ISSUES="${ISSUES}${RESULT}"$'\n'
+				TIDY_ISSUES="${TIDY_ISSUES}${RESULT}"$'\n'
 			fi
 		done
 	fi
@@ -235,6 +243,22 @@ if [ -n "$MYPY_FILES" ] && [ -x "$VENV_BIN/mypy" ]; then
 	else
 		echo "mypy: clean"
 	fi
+fi
+
+# clang-tidy findings are a hard block; everything below stays advisory.
+if [ -n "$TIDY_ISSUES" ]; then
+	echo ""
+	echo "═══════════════════════════════════════════"
+	echo "  clang-tidy findings (blocking):"
+	echo "═══════════════════════════════════════════"
+	echo "$TIDY_ISSUES"
+	echo "═══════════════════════════════════════════"
+	echo ""
+	echo "FAILED: the tree is kept at zero clang-tidy warnings."
+	echo "Fix the finding above. Do NOT silence it by adding the check to"
+	echo "the disabled list in .clang-tidy -- that list is a ratchet for"
+	echo "pre-existing findings only (issue #121) and is meant to shrink."
+	exit 1
 fi
 
 # If issues found, warn but allow push
