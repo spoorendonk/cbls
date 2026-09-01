@@ -106,6 +106,7 @@ add_library(cbls_lib
     src/violation.cpp
     src/moves.cpp
     src/randomize.cpp
+    src/bound_propagation.cpp
     src/feasibility_jump.cpp
     src/search.cpp
     src/lns.cpp

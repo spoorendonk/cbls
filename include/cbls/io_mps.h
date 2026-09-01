@@ -10,6 +10,7 @@
 // The MPS-to-Model adapter (`mps_to_model`) builds a closed CBLS
 // `Model` from an `MpsProblem`.
 
+#include "bound_propagation.h"
 #include "model.h"
 
 #include <cstdint>
@@ -98,10 +99,17 @@ std::vector<SoluEntry> read_solu(const std::string& filename);
 /// Float). One linear constraint per row, sense translated from `MpsRowSense`.
 /// Objective is the linear cost expression from the 'N' row (plus `offset`).
 ///
-/// Variables with infinite bounds are clamped to `[-inf_clamp, +inf_clamp]`
-/// (default 1e9) since CBLS variables require finite bounds.
+/// CBLS variables require finite bounds, so a column with an infinite one has
+/// to acquire a finite substitute. `propagate_bounds` derives that bound from
+/// the constraints (see `bound_propagation.h`), which cannot remove a feasible
+/// point; `inf_clamp` is the fallback where propagation finds no finite bound,
+/// and *can* lose solutions, so it is only ever consulted last.
 struct MpsToModelOptions {
     double inf_clamp = 1.0e9;
+    /// Derive implied bounds from the rows before falling back on `inf_clamp`.
+    bool propagate_bounds = true;
+    /// Fixed-point iteration cap for that pass; see `BoundPropagationOptions`.
+    int max_propagation_passes = 10;
 };
 
 struct MpsToModelResult {
@@ -112,6 +120,11 @@ struct MpsToModelResult {
     /// `constraint_node_ids[i]` is the constraint expression node id for MPS row `i`.
     std::vector<int32_t> constraint_node_ids;
     int32_t objective_node_id = -1;  ///< -1 if the MPS had no 'N' row.
+    /// Outcome of the propagation pass; all-zero when it was disabled.
+    BoundPropagationStats bound_stats;
+    /// Columns whose bounds `inf_clamp` still had to supply *after*
+    /// propagation, i.e. where the unsound fallback was actually used.
+    int n_clamped_columns = 0;
 };
 
 MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& opts = {});

@@ -1,11 +1,13 @@
 // Adapter: MpsProblem -> closed CBLS Model.
 
+#include "cbls/bound_propagation.h"
 #include "cbls/expr.h"
 #include "cbls/io_mps.h"
 #include "cbls/model.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <stdexcept>
 #include <vector>
@@ -14,20 +16,63 @@ namespace cbls {
 
 namespace {
 
-// Cap an infinite or very large bound to a finite value the CBLS engine
-// can use in moves. We don't try to be clever — coordinates that would
-// drift to infinity are typically not the ones we need to explore.
+// Supply a finite bound where the column has none, so the engine has a box to
+// search. This is the *fallback*, reached only where propagation derived no
+// implied bound: unlike an implied bound it is not entailed by the constraints,
+// so it can cut off feasible points. A bound that is finite — declared in the
+// file or derived by propagation — is therefore honoured as written, however
+// wide; only "no bound" is replaced.
 double clamp_lo(double lb, double inf_clamp) {
-    if (!std::isfinite(lb) || lb < -inf_clamp) {
-        return -inf_clamp;
-    }
-    return lb;
+    return is_unbounded_below(lb) ? -inf_clamp : lb;
 }
 double clamp_hi(double ub, double inf_clamp) {
-    if (!std::isfinite(ub) || ub > inf_clamp) {
-        return inf_clamp;
+    return is_unbounded_above(ub) ? inf_clamp : ub;
+}
+
+/// The row's body bounds `lo <= body <= hi`, matching exactly the constraints
+/// the adapter goes on to build from the same sense/rhs/range triple.
+void row_bounds(const MpsRow& r, double& lo, double& hi) {
+    const double rng = std::abs(r.range);
+    switch (r.sense) {
+        case MpsRowSense::L:
+            hi = r.rhs;
+            lo = r.range != 0.0 ? r.rhs - rng : -kMpsInf;
+            break;
+        case MpsRowSense::G:
+            lo = r.rhs;
+            hi = r.range != 0.0 ? r.rhs + rng : kMpsInf;
+            break;
+        case MpsRowSense::E:
+            lo = r.range < 0.0 ? r.rhs + r.range : r.rhs;
+            hi = r.range > 0.0 ? r.rhs + r.range : r.rhs;
+            break;
     }
-    return ub;
+}
+
+/// Derive implied column bounds from the rows. Returns the raw bounds
+/// tightened in place; where nothing is implied a bound stays infinite and the
+/// caller's clamp takes over.
+BoundPropagationStats tighten_column_bounds(const MpsProblem& prob,
+                                            const std::vector<std::vector<int>>& row_nz,
+                                            const MpsToModelOptions& opts, std::vector<double>& lb,
+                                            std::vector<double>& ub,
+                                            const std::vector<uint8_t>& integral) {
+    std::vector<LinearRow> rows;
+    rows.reserve(prob.rows.size());
+    for (std::size_t i = 0; i < prob.rows.size(); ++i) {
+        LinearRow row;
+        row_bounds(prob.rows[i], row.lo, row.hi);
+        row.cols.reserve(row_nz[i].size());
+        row.coefs.reserve(row_nz[i].size());
+        for (int k : row_nz[i]) {
+            row.cols.push_back(prob.nonzeros[k].col_idx);
+            row.coefs.push_back(prob.nonzeros[k].value);
+        }
+        rows.push_back(std::move(row));
+    }
+    BoundPropagationOptions popts;
+    popts.max_passes = opts.max_propagation_passes;
+    return propagate_bounds(rows, integral, lb, ub, popts);
 }
 
 }  // namespace
@@ -46,12 +91,52 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
     const int n_cols = static_cast<int>(prob.vars.size());
     const int n_rows = static_cast<int>(prob.rows.size());
 
+    // ---------- Group nonzeros by row (objective row = -1) ----------
+    std::vector<std::vector<int>> row_nz(n_rows);  // indices into prob.nonzeros
+    std::vector<int> obj_nz;
+    for (int k = 0; k < static_cast<int>(prob.nonzeros.size()); ++k) {
+        const auto& nz = prob.nonzeros[k];
+        if (nz.row_idx == -1) {
+            obj_nz.push_back(k);
+        } else if (nz.row_idx >= 0 && nz.row_idx < n_rows) {
+            row_nz[nz.row_idx].push_back(k);
+        }
+    }
+
+    // ---------- Implied bounds ----------
+    // Run before variable creation so the derived box is what the engine sees.
+    // The objective row is excluded: it carries no bounds and implies nothing.
+    std::vector<double> col_lb(n_cols);
+    std::vector<double> col_ub(n_cols);
+    std::vector<uint8_t> integral(n_cols);
+    for (int j = 0; j < n_cols; ++j) {
+        col_lb[j] = prob.vars[j].lb;
+        col_ub[j] = prob.vars[j].ub;
+        integral[j] = prob.vars[j].kind == MpsVarKind::Continuous ? 0 : 1;
+    }
+    if (opts.propagate_bounds) {
+        const std::vector<double> raw_lb = col_lb;
+        const std::vector<double> raw_ub = col_ub;
+        result.bound_stats = tighten_column_bounds(prob, row_nz, opts, col_lb, col_ub, integral);
+        if (result.bound_stats.infeasible) {
+            // Propagation proved the linear relaxation empty. That is either a
+            // genuinely infeasible instance or numerical trouble; either way the
+            // honest thing is to hand the search the box the file declared and
+            // let it report what it finds, rather than a derived empty one.
+            col_lb = raw_lb;
+            col_ub = raw_ub;
+        }
+    }
+
     // ---------- Variables ----------
     result.var_handles.reserve(n_cols);
     for (int j = 0; j < n_cols; ++j) {
         const MpsVar& v = prob.vars[j];
-        double lb = clamp_lo(v.lb, opts.inf_clamp);
-        double ub = clamp_hi(v.ub, opts.inf_clamp);
+        double lb = clamp_lo(col_lb[j], opts.inf_clamp);
+        double ub = clamp_hi(col_ub[j], opts.inf_clamp);
+        if (lb != col_lb[j] || ub != col_ub[j]) {
+            ++result.n_clamped_columns;
+        }
         if (lb > ub) {
             throw std::runtime_error("MPS column " + v.name + " has lb > ub after clamping");
         }
@@ -81,9 +166,14 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
                 throw std::runtime_error("MPS integer column " + v.name +
                                          " has empty integer domain after rounding");
             }
-            // CBLS int_var takes int — clamp to int32 range.
+            // CBLS int_var takes int — clip to the int32 range. That is a
+            // representational limit, not an implied bound, so where it bites it
+            // narrows the column and counts as clamped.
             constexpr long long kMin = std::numeric_limits<int>::min();
             constexpr long long kMax = std::numeric_limits<int>::max();
+            if (ilb < kMin || iub > kMax) {
+                ++result.n_clamped_columns;
+            }
             ilb = std::max<long long>(kMin, ilb);
             iub = std::min<long long>(kMax, iub);
             handle = m.int_var(static_cast<int>(ilb), static_cast<int>(iub), v.name);
@@ -91,18 +181,6 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
             handle = m.float_var(lb, ub, v.name);
         }
         result.var_handles.push_back(handle);
-    }
-
-    // ---------- Group nonzeros by row (objective row = -1) ----------
-    std::vector<std::vector<int>> row_nz(n_rows);  // indices into prob.nonzeros
-    std::vector<int> obj_nz;
-    for (int k = 0; k < static_cast<int>(prob.nonzeros.size()); ++k) {
-        const auto& nz = prob.nonzeros[k];
-        if (nz.row_idx == -1) {
-            obj_nz.push_back(k);
-        } else if (nz.row_idx >= 0 && nz.row_idx < n_rows) {
-            row_nz[nz.row_idx].push_back(k);
-        }
     }
 
     auto build_lin_expr = [&](const std::vector<int>& nzlist) -> int32_t {

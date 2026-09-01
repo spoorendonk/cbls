@@ -15,6 +15,7 @@
 // CBLS `Model` from an `NlProblem`, skipping (not throwing on) instances whose
 // operator set is unsupported.
 
+#include "bound_propagation.h"
 #include "model.h"
 
 #include <cstdint>
@@ -132,6 +133,12 @@ NlProblem parse_nl(const std::string& text, const std::string& name = "");
 /// appended to `skipped_reasons`. On an unsupported instance the returned model
 /// is left un-closed and should not be solved.
 struct NlToModelOptions {
+    /// Derive implied bounds from the purely linear rows before falling back on
+    /// the clamps below (see `bound_propagation.h`). An implied bound cannot cut
+    /// off a feasible point; a clamp can, so it is only ever consulted last.
+    bool propagate_bounds = true;
+    /// Fixed-point iteration cap for that pass; see `BoundPropagationOptions`.
+    int max_propagation_passes = 10;
     double inf_clamp = 1.0e9;  ///< ±inf variable bounds clamped to this magnitude
     /// ±inf bounds on an *integer* column clamp to this instead. A ±1e9 integer
     /// domain is not a searchable space; unbounded integers in practice mean
@@ -149,6 +156,11 @@ struct NlToModelResult {
     int32_t objective_node_id = -1;  ///< -1 if no objective
     bool supported = true;           ///< false if any operator was unsupported
     std::vector<std::string> skipped_reasons;
+    /// Outcome of the propagation pass; all-zero when it was disabled.
+    BoundPropagationStats bound_stats;
+    /// Columns whose bounds a clamp still had to supply *after* propagation,
+    /// i.e. where the unsound fallback was actually used.
+    int n_clamped_columns = 0;
 };
 
 NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts = {});

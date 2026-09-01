@@ -7,12 +7,14 @@
 // (+, -, *, /, pow, min, max, abs, sin, cos, tan, exp, log, log10, sqrt,
 // signpower, tanh, unary minus) plus the linear J/G parts.
 
+#include "cbls/bound_propagation.h"
 #include "cbls/expr.h"
 #include "cbls/io_nl.h"
 #include "cbls/model.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -47,17 +49,15 @@ enum AmplOp {
     OPCPOW = 78,  // constant ^ exponent
 };
 
+// Supply a finite bound where the column has none. A bound that is finite —
+// declared in the file or derived by propagation — is honoured as written,
+// however wide; only "no bound" is replaced, because the replacement is not
+// entailed by the constraints and so can cut off feasible points.
 double clamp_lo(double lb, double inf_clamp) {
-    if (!std::isfinite(lb) || lb < -inf_clamp) {
-        return -inf_clamp;
-    }
-    return lb;
+    return is_unbounded_below(lb) ? -inf_clamp : lb;
 }
 double clamp_hi(double ub, double inf_clamp) {
-    if (!std::isfinite(ub) || ub > inf_clamp) {
-        return inf_clamp;
-    }
-    return ub;
+    return is_unbounded_above(ub) ? inf_clamp : ub;
 }
 
 // Translate one NL expression tree into a CBLS expression node handle. On the
@@ -219,6 +219,35 @@ int32_t combine_body(Model& m, int32_t nonlinear, bool has_nonlinear, int32_t li
     return m.constant(0.0);
 }
 
+/// Derive implied column bounds from the *purely linear* rows. A row with a
+/// nonlinear part is skipped: activity arithmetic does not apply to it, and
+/// omitting a row only costs tightening, never validity. Nonlinear presolve is
+/// deliberately out of scope here.
+BoundPropagationStats tighten_column_bounds(const NlProblem& prob, const NlToModelOptions& opts,
+                                            std::vector<double>& lb, std::vector<double>& ub,
+                                            const std::vector<uint8_t>& integral) {
+    std::vector<LinearRow> rows;
+    rows.reserve(prob.constraints.size());
+    for (const NlConstraint& c : prob.constraints) {
+        if (!c.nonlinear.empty() || c.linear.empty()) {
+            continue;
+        }
+        LinearRow row;
+        row.lo = c.bound.lower;
+        row.hi = c.bound.upper;
+        row.cols.reserve(c.linear.size());
+        row.coefs.reserve(c.linear.size());
+        for (const NlLinTerm& t : c.linear) {
+            row.cols.push_back(t.var);
+            row.coefs.push_back(t.coef);
+        }
+        rows.push_back(std::move(row));
+    }
+    BoundPropagationOptions popts;
+    popts.max_passes = opts.max_propagation_passes;
+    return propagate_bounds(rows, integral, lb, ub, popts);
+}
+
 }  // namespace
 
 NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts) {
@@ -229,39 +258,71 @@ NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts)
     // Integer/binary NL columns become Int variables so the search respects
     // integrality; everything else is a Float. `var_is_discrete` comes from the
     // NL header counts plus Gay's variable ordering (see nl_reader.cpp).
+    // ---------- Implied bounds ----------
+    // Run before variable creation so the derived box is what the engine sees.
+    // A bound propagation derives is entailed by the constraints, so from here
+    // on it is treated exactly like one the file declared.
+    const std::size_t n_cols = static_cast<std::size_t>(prob.n_vars);
+    std::vector<double> col_lb(n_cols, -kNlInf);
+    std::vector<double> col_ub(n_cols, kNlInf);
+    std::vector<uint8_t> integral(n_cols, 0);
+    for (std::size_t j = 0; j < n_cols; ++j) {
+        if (j < prob.var_bounds.size()) {
+            col_lb[j] = prob.var_bounds[j].lower;
+            col_ub[j] = prob.var_bounds[j].upper;
+        }
+        integral[j] = (j < prob.var_is_discrete.size() && prob.var_is_discrete[j] != 0) ? 1 : 0;
+    }
+    if (opts.propagate_bounds) {
+        const std::vector<double> raw_lb = col_lb;
+        const std::vector<double> raw_ub = col_ub;
+        result.bound_stats = tighten_column_bounds(prob, opts, col_lb, col_ub, integral);
+        if (result.bound_stats.infeasible) {
+            // Propagation proved the linear part empty. That is either a
+            // genuinely infeasible instance or numerical trouble; either way the
+            // honest thing is to hand the search the box the file declared and
+            // let it report what it finds, rather than a derived empty one.
+            col_lb = raw_lb;
+            col_ub = raw_ub;
+        }
+    }
+
     result.var_handles.reserve(prob.n_vars);
     for (int32_t j = 0; j < prob.n_vars; ++j) {
-        double lb = -opts.inf_clamp;
-        double ub = opts.inf_clamp;
-        if (j < static_cast<int32_t>(prob.var_bounds.size())) {
-            lb = clamp_lo(prob.var_bounds[j].lower, opts.inf_clamp);
-            ub = clamp_hi(prob.var_bounds[j].upper, opts.inf_clamp);
-        }
+        const std::size_t col = static_cast<std::size_t>(j);
+        double lb = clamp_lo(col_lb[col], opts.inf_clamp);
+        double ub = clamp_hi(col_ub[col], opts.inf_clamp);
+        const bool clamp_used = lb != col_lb[col] || ub != col_ub[col];
         if (lb > ub) {
             std::swap(lb, ub);  // defensive: degenerate bound ordering
         }
         const bool discrete = j < static_cast<int32_t>(prob.var_is_discrete.size()) &&
                               prob.var_is_discrete[static_cast<size_t>(j)] != 0;
         if (discrete) {
-            // Tighten to the integers inside [lb, ub]. A *declared* bound is
-            // always honoured; only a genuinely infinite one falls back to
-            // int_inf_clamp, since a ±1e9 integer box is not a searchable
-            // domain. (Narrowing a finite bound would change the instance.)
-            double raw_lb = -kNlInf;
-            double raw_ub = kNlInf;
-            if (j < static_cast<int32_t>(prob.var_bounds.size())) {
-                raw_lb = prob.var_bounds[j].lower;
-                raw_ub = prob.var_bounds[j].upper;
+            // Tighten to the integers inside [lb, ub]. A bound that exists —
+            // declared or derived — is always honoured; only a genuinely
+            // infinite one falls back to int_inf_clamp, since a ±1e9 integer box
+            // is not a searchable domain.
+            const double raw_lb = col_lb[col];
+            const double raw_ub = col_ub[col];
+            double ilb = is_unbounded_below(raw_lb) ? -opts.int_inf_clamp : std::ceil(lb - 1e-9);
+            double iub = is_unbounded_above(raw_ub) ? opts.int_inf_clamp : std::floor(ub + 1e-9);
+            if (is_unbounded_below(raw_lb) || is_unbounded_above(raw_ub)) {
+                ++result.n_clamped_columns;
             }
-            double ilb = std::isfinite(raw_lb) ? std::ceil(lb - 1e-9) : -opts.int_inf_clamp;
-            double iub = std::isfinite(raw_ub) ? std::floor(ub + 1e-9) : opts.int_inf_clamp;
-            // clamp_lo/clamp_hi are one-sided (clamp_lo only raises values below
-            // -inf_clamp), so a declared-finite bound pointing away from zero
-            // arrives here unclamped and would make the int casts below UB.
+            // A finite bound is honoured however wide, so one beyond the int
+            // range arrives here unclipped and would make the casts below UB.
+            // `Model::int_var` takes an int; that representational limit narrows
+            // the column, so it counts as clamped too.
             constexpr double kIntLo = static_cast<double>(std::numeric_limits<int>::min());
             constexpr double kIntHi = static_cast<double>(std::numeric_limits<int>::max());
-            ilb = std::min(std::max(ilb, kIntLo), kIntHi);
-            iub = std::min(std::max(iub, kIntLo), kIntHi);
+            const double clipped_lb = std::min(std::max(ilb, kIntLo), kIntHi);
+            const double clipped_ub = std::min(std::max(iub, kIntLo), kIntHi);
+            if (clipped_lb != ilb || clipped_ub != iub) {
+                ++result.n_clamped_columns;
+            }
+            ilb = clipped_lb;
+            iub = clipped_ub;
             if (ilb > iub) {
                 // Bounds admit no integer (degenerate). Keep a single point so
                 // the model still closes; the row's constraints will register
@@ -271,6 +332,9 @@ NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts)
             result.var_handles.push_back(
                 m.int_var(static_cast<int>(ilb), static_cast<int>(iub), "x" + std::to_string(j)));
         } else {
+            if (clamp_used) {
+                ++result.n_clamped_columns;
+            }
             result.var_handles.push_back(m.float_var(lb, ub, "x" + std::to_string(j)));
         }
     }

@@ -15,6 +15,7 @@ add_executable(cbls_tests
     test_callback.cpp
     test_io.cpp
     test_io_mps.cpp
+    test_bound_propagation.cpp
     test_mipfeas.cpp
     test_minlplib.cpp
     test_setcover.cpp
