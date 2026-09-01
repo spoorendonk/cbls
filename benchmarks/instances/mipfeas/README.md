@@ -152,6 +152,14 @@ Novelty Jump turns `mas76` from no-solution into feasible and improves
 and `gen-ip002`. The two changes compose, and together they move `binkar10_1`'s
 objective from 1,010,195 to 9,865 against an optimum of 6,741.
 
+**Both rows of the clamp column predate #120** and no longer describe the
+engine. Implied bounds now clear the clamp entirely on 5 of these 11 instances —
+`binkar10_1` among them, which is where the 1e9-vs-1e7 difference was largest —
+so on those the setting no longer reaches anything. It still binds on `mad`,
+`pk1`, `gen-ip002` and `gen-ip054`. The numbers below were measured before that
+change and have not been re-run; treat them as the pre-propagation baseline they
+are.
+
 At that configuration, on this subset at 60s: both engines reach feasibility on
 8 of 11, and CP-SAT leads on the shifted geometric mean (0.258 vs 0.566) — it
 gets to good solutions much earlier, which is what the metric is built to
@@ -184,10 +192,10 @@ inherited, so a published number cannot silently change when a default moves:
 |---|---|---|
 | Threads | 1 | 1 (`num_workers`) |
 | Algorithm | Feasibility Jump + ViolationLS + Novelty Jump | `fj` + `ls` workers only (`filter_subsolvers`) |
-| Presolve | none | default, i.e. on |
+| Presolve | implied variable bounds only (activity-based propagation) | default, i.e. on |
 | Feasibility tolerance | `1e-6`, stated explicitly | CP-SAT's own |
-| Infinite bound clamped to | `1e7` (`--inf-clamp`) | not clamped |
-| Recorded per result | commit SHA, seed, tolerance, clamp + columns it narrowed, compound-move flag, peak RSS | OR-Tools version, seed, full parameter string, solver verdict, peak RSS |
+| Unbounded column falls back to | `1e7` (`--inf-clamp`), where propagation derives nothing | not clamped |
+| Recorded per result | commit SHA, seed, tolerance, clamp + columns it still narrows, columns declared unbounded, columns tightened, compound-move and propagation flags, peak RSS | OR-Tools version, seed, full parameter string, solver verdict, peak RSS |
 
 Two of those are deliberate departures from the engine's own defaults, both made
 to keep the two sides comparable rather than to flatter either:
@@ -200,15 +208,62 @@ to keep the two sides comparable rather than to flatter either:
   so running without it would compare our Feasibility Jump against their
   Feasibility Jump *plus* Novelty Jump and read the difference as a
   reimplementation gap.
-* **Infinite variable bounds clamp to 1e7**, not the engine's 1e9 — because it
-  measured better on the smoke roster, *not* because it matches the baseline.
-  CP-SAT does **not** truncate variable domains: `mip_max_bound` is not a domain
-  clamp, and on ortools 9.15 an integer column bounded at 1e12 is solved to 1e12.
-  So this is a CBLS-side restriction the baseline does not share, and it reaches
-  120 of the 233 instances. It can lose solutions, never invent them, so an
-  objective CBLS reports remains valid for the original program — but on those
-  instances CBLS is searching a strictly smaller box, and the comparison table
-  publishes `n_clamped_bounds` per row so a reader can see where.
+* **A column no constraint bounds falls back to 1e7**, not the engine's 1e9 —
+  because it measured better on the smoke roster, *not* because it matches the
+  baseline. CP-SAT does **not** truncate variable domains: `mip_max_bound` is not
+  a domain clamp, and on ortools 9.15 an integer column bounded at 1e12 is solved
+  to 1e12. So this remains a CBLS-side restriction the baseline does not share.
+  It can lose solutions, never invent them, so an objective CBLS reports stays
+  valid for the original program — but where it bites, CBLS searches a strictly
+  smaller box, and the comparison table publishes `n_clamped_bounds` per row so a
+  reader can see where.
+
+### Implied bounds shrink that restriction (#120)
+
+Before #120 the fallback *was* the whole story: every unbounded column got `1e7`
+substituted, and so did every column declared wider than it. Activity-based
+propagation over the linear rows now derives bounds that the constraints
+actually imply, and the fallback is consulted only on what is left. Two rules
+changed together:
+
+* An implied bound is used wherever one exists. Unlike the substitute, it cannot
+  put a feasible point outside the box.
+* A bound that *exists* — declared in the file or derived — is honoured however
+  wide. Narrowing a declared bound has the same defect as inventing one; across
+  the 233 instances it reached 110 columns on 6 of them, so stopping gives up
+  nothing measurable.
+
+Measured over all 233 roster instances at engine commit `aec705b`, model build only
+(no search):
+
+| | before propagation | after |
+|---|---:|---:|
+| Instances with a clamped column | 116 | **52** |
+| Columns the clamp supplies | 2,766,548 | **356,827** |
+
+64 instances are cleared entirely, `binkar10_1` (2128 of 2298 columns clamped,
+and the largest CBLS-vs-reference gap on the smoke roster) and
+`neos-5114902-kasavu` (695,604 of 710,164) among them. A further 519,524 columns
+across 82 instances are fixed outright to a single value. The pass costs 7.7s
+summed over the whole roster — 0.03s on `kasavu`, 1.08s worst case on
+`square47` — against a 600s per-instance budget.
+
+Two caveats a reader should have:
+
+* **"116 of 233" is not the "120 of 233" this README used to state.** The old
+  count was relative to the `1e7` clamp and so included columns merely *wider*
+  than it; this one counts columns with no bound at all, at the `1e20`
+  MPS/CPLEX/SCIP sentinel. The definition changed, not the roster.
+* **Soundness is argued and tested, not verified against known optima.** The
+  `.solu` file carries objective values, not solution vectors, so "the optimum
+  is still inside the box" cannot be checked per instance — an excluded optimum
+  would read as search weakness, not as infeasibility. What is checked: a unit
+  test where a fixed clamp excludes the only solution and propagation keeps it,
+  and 233/233 instances propagating without a single false infeasibility.
+
+`--no-propagate-bounds` restores the pre-#120 behaviour. It exists for A/B work;
+it is not a configuration to publish, because the bounds it restores are not
+implied by the constraints.
 
 Two configuration facts are worth knowing before changing anything here, both
 established empirically against ortools 9.15:

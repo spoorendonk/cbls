@@ -7,6 +7,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cbls/bound_propagation.h>
 #include <cbls/io_mps.h>
+#include <cbls/io_nl.h>
 #include <cbls/model.h>
 #include <cbls/search.h>
 #include <cmath>
@@ -331,4 +332,75 @@ TEST_CASE("mps adapter honours a finite bound wider than the clamp") {
     CHECK(x.lb <= -1.0e11);  // the row's implied bound, not the declared -1e12
     CHECK(x.lb >= -1.0e11 - 1.0);
     CHECK(result.n_clamped_columns == 0);
+}
+
+namespace {
+
+// One linear row `2*x0 + x1 <= 12` over two columns declared free. Nothing but
+// the row bounds them, so what the engine ends up searching is entirely a
+// question of whether implied bounds were derived.
+NlProblem free_columns_problem(bool discrete) {
+    NlProblem p;
+    p.name = "NLFREE";
+    p.n_vars = 2;
+    p.n_cons = 1;
+    p.var_is_discrete = {static_cast<uint8_t>(discrete ? 1 : 0),
+                         static_cast<uint8_t>(discrete ? 1 : 0)};
+    p.n_discrete_vars = discrete ? 2 : 0;
+    p.var_bounds.resize(2);
+    for (NlVarBound& b : p.var_bounds) {
+        b.type = NlBoundType::Lower;  // x >= 0, unbounded above
+        b.lower = 0.0;
+        b.upper = kNlInf;
+    }
+    NlConstraint c;
+    c.linear = {NlLinTerm{0, 2.0}, NlLinTerm{1, 1.0}};
+    c.bound.type = NlBoundType::Upper;
+    c.bound.lower = -kNlInf;
+    c.bound.upper = 12.0;
+    p.constraints = {c};
+    return p;
+}
+
+}  // namespace
+
+TEST_CASE("nl adapter derives implied bounds for a free continuous column") {
+    NlToModelOptions opts;
+    opts.inf_clamp = 1.0e5;
+    auto result = nl_to_model(free_columns_problem(/*discrete=*/false), opts);
+
+    REQUIRE(result.supported);
+    CHECK_THAT(result.model.var(0).ub, WithinAbs(6.0, 1e-6));   // 2*x0 <= 12
+    CHECK_THAT(result.model.var(1).ub, WithinAbs(12.0, 1e-6));  // x1 <= 12
+    CHECK(result.n_clamped_columns == 0);
+    CHECK(result.bound_stats.n_finitized == 2);
+}
+
+TEST_CASE("nl adapter derives implied bounds for a free integer column") {
+    // The path that used to hand a free Int the ±1e6 int_inf_clamp box.
+    NlToModelOptions opts;
+    opts.inf_clamp = 1.0e5;
+    opts.int_inf_clamp = 1.0e4;
+    auto result = nl_to_model(free_columns_problem(/*discrete=*/true), opts);
+
+    REQUIRE(result.supported);
+    CHECK(result.model.var(0).type == VarType::Int);
+    CHECK_THAT(result.model.var(0).ub, WithinAbs(6.0, 1e-9));
+    CHECK_THAT(result.model.var(1).ub, WithinAbs(12.0, 1e-9));
+    CHECK(result.n_clamped_columns == 0);
+}
+
+TEST_CASE("nl adapter falls back to the clamp where no row bounds the column") {
+    NlProblem p = free_columns_problem(/*discrete=*/false);
+    p.constraints.clear();
+    p.n_cons = 0;
+
+    NlToModelOptions opts;
+    opts.inf_clamp = 1.0e5;
+    auto result = nl_to_model(p, opts);
+
+    REQUIRE(result.supported);
+    CHECK_THAT(result.model.var(0).ub, WithinAbs(1.0e5, 1e-9));
+    CHECK(result.n_clamped_columns == 2);
+    CHECK(result.bound_stats.n_finitized == 0);
 }

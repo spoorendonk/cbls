@@ -836,9 +836,11 @@ draw actually samples, always a subset of the variable's domain:
   bounds keeps its exact draw sequence and its exact solve trajectory;
 - an **infinite bound** is replaced by a clamp magnitude — `kRandomIntInfClamp`
   (1e6) for an Int, `kRandomInfClamp` (1e9) otherwise. These are the same
-  magnitudes `NlToModelOptions`/`MpsToModelOptions` clamp infinite variable
-  bounds to at load time, so a hand-built unbounded model lands in the same box
-  a `.nl`/`.mps` one would have. Unguarded, `uniform_real_distribution(lb, ub)`
+  magnitudes `NlToModelOptions`/`MpsToModelOptions` fall back on at load time, so
+  a hand-built unbounded model lands in the same box a `.nl`/`.mps` one would
+  have — on the columns those adapters cannot bound. Since #120 they reach that
+  fallback only where bound propagation (below) derives nothing, so a loaded
+  model usually arrives here with finite bounds already. Unguarded, `uniform_real_distribution(lb, ub)`
   breaks its own precondition (`ub - lb <= DBL_MAX`) and libstdc++'s
   `lb + (ub - lb) * u` returns NaN on `(-inf, +inf)` and +inf on `[0, +inf)`,
   while an infinite Int bound casts to `INT64_MIN`;
@@ -1713,6 +1715,54 @@ cbls [OPTIONS] MODEL.cbls
 > **Removed flags** (SA-era): `--cooling-rate`, `--reheat-interval`,
 > `--hook-frequency`, `--fj-time-fraction`. These no longer exist; the
 > corresponding mechanisms were deleted in the ViolationLS port.
+
+### Implied variable bounds
+
+**Files:** `include/cbls/bound_propagation.h`, `src/bound_propagation.cpp`
+
+CBLS variables need finite bounds, and a MIP column need not have any. The
+adapters used to substitute a fixed magnitude (`inf_clamp`), which is **not
+implied by the constraints** and can therefore put the optimum outside the box
+the search ever looks at.
+
+`propagate_bounds` derives bounds that *are* implied, by standard activity-based
+tightening over linear rows. For a row `lo <= Σ aⱼxⱼ <= hi`, the min/max activity
+of every term but one bounds the remaining one:
+
+```
+aₖxₖ <= hi − minactivity(rest)      aₖxₖ >= lo − maxactivity(rest)
+```
+
+Four details carry the implementation:
+
+- **Infinite contributions are counted, not summed.** A row where exactly one
+  term is unbounded still bounds that term — the rest of the row is finite. This
+  is the case that matters: it is what finitizes a genuinely free column.
+- **Derived bounds are relaxed outward** by `max(1e-9, 1e-12·|b|)` before being
+  applied, so rounding in the activity sums cannot cut off a feasible point.
+  Integral columns round inward *after* that relaxation.
+- **`1e20` and beyond is "no bound"** (the MPS/CPLEX/SCIP convention), read
+  through `is_unbounded_below`/`is_unbounded_above`.
+- **Fixed-point iteration is capped** (`max_passes`, default 10) and each pass
+  is O(nnz). On MIPLIB's largest roster instance — 710k columns, 961k rows — the
+  pass costs ~0.03s of a 2.0s model build.
+
+The rule the adapters follow afterwards: a bound that **exists**, declared or
+derived, is honoured however wide; only a missing one is invented. `inf_clamp`
+(and the `.nl` side's `int_inf_clamp`) is the fallback, and
+`MpsToModelResult::n_clamped_columns` reports how often it was still needed.
+Propagation is on by default in both adapters and can be turned off, which
+restores the pre-#120 behaviour exactly.
+
+Deliberately **not** here: coefficient tightening, redundant-row removal,
+aggregation, probing, dual reductions, and anything nonlinear. The `.nl` adapter
+simply skips rows with a nonlinear part — omitting a row costs tightening, never
+validity.
+
+Where propagation proves the linear system empty, the adapters **discard** the
+derived bounds and build the model from the declared ones: an infeasible
+instance should be reported by the search, not by the reader silently handing it
+an empty box.
 
 ### JSONL Model Format
 

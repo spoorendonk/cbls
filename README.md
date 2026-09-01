@@ -54,7 +54,7 @@ m.close();
 ```bash
 cmake -B build
 cmake --build build
-ctest --test-dir build    # 274 C++ tests, ~39s (add -LE slow for the fast 268, ~8s)
+ctest --test-dir build    # 296 C++ tests, ~39s (add -LE slow for the fast 290, ~8s)
 ```
 
 The build type defaults to `Release`; pass `-DCMAKE_BUILD_TYPE=Debug` to override
@@ -66,7 +66,7 @@ With Python bindings:
 ```bash
 cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build
-.venv/bin/pytest          # 175 tests, 73 of them for the bindings
+.venv/bin/pytest          # 176 tests, 73 of them for the bindings
 ```
 
 Or install as a Python package:
