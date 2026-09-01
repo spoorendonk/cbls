@@ -49,26 +49,23 @@ void row_bounds(const MpsRow& r, double& lo, double& hi) {
     }
 }
 
-/// Derive implied column bounds from the rows. Returns the raw bounds
-/// tightened in place; where nothing is implied a bound stays infinite and the
-/// caller's clamp takes over.
+/// Derive implied column bounds from the rows. The rows are handed to
+/// propagation as *views* into the caller's CSR arrays: the constraint matrix of
+/// a large MIP runs to hundreds of megabytes and must not be duplicated here.
 BoundPropagationStats tighten_column_bounds(const MpsProblem& prob,
-                                            const std::vector<std::vector<int>>& row_nz,
+                                            const std::vector<int32_t>& row_start,
+                                            const std::vector<int32_t>& csr_cols,
+                                            const std::vector<double>& csr_coefs,
                                             const MpsToModelOptions& opts, std::vector<double>& lb,
                                             std::vector<double>& ub,
                                             const std::vector<uint8_t>& integral) {
-    std::vector<LinearRow> rows;
-    rows.reserve(prob.rows.size());
+    std::vector<LinearRow> rows(prob.rows.size());
     for (std::size_t i = 0; i < prob.rows.size(); ++i) {
-        LinearRow row;
+        LinearRow& row = rows[i];
         row_bounds(prob.rows[i], row.lo, row.hi);
-        row.cols.reserve(row_nz[i].size());
-        row.coefs.reserve(row_nz[i].size());
-        for (int k : row_nz[i]) {
-            row.cols.push_back(prob.nonzeros[k].col_idx);
-            row.coefs.push_back(prob.nonzeros[k].value);
-        }
-        rows.push_back(std::move(row));
+        row.nnz = row_start[i + 1] - row_start[i];
+        row.cols = csr_cols.data() + row_start[i];
+        row.coefs = csr_coefs.data() + row_start[i];
     }
     BoundPropagationOptions popts;
     popts.max_passes = opts.max_propagation_passes;
@@ -92,14 +89,32 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
     const int n_rows = static_cast<int>(prob.rows.size());
 
     // ---------- Group nonzeros by row (objective row = -1) ----------
-    std::vector<std::vector<int>> row_nz(n_rows);  // indices into prob.nonzeros
+    // One flat CSR rather than a vector-per-row: it is the single structure both
+    // the expression builder and bound propagation read, so the matrix is laid
+    // out once instead of being grouped once and copied again.
+    std::vector<int32_t> row_start(static_cast<std::size_t>(n_rows) + 1, 0);
     std::vector<int> obj_nz;
-    for (int k = 0; k < static_cast<int>(prob.nonzeros.size()); ++k) {
-        const auto& nz = prob.nonzeros[k];
-        if (nz.row_idx == -1) {
-            obj_nz.push_back(k);
-        } else if (nz.row_idx >= 0 && nz.row_idx < n_rows) {
-            row_nz[nz.row_idx].push_back(k);
+    for (const auto& nz : prob.nonzeros) {
+        if (nz.row_idx >= 0 && nz.row_idx < n_rows) {
+            ++row_start[static_cast<std::size_t>(nz.row_idx) + 1];
+        }
+    }
+    for (int i = 0; i < n_rows; ++i) {
+        row_start[static_cast<std::size_t>(i) + 1] += row_start[static_cast<std::size_t>(i)];
+    }
+    std::vector<int32_t> csr_cols(static_cast<std::size_t>(row_start[n_rows]));
+    std::vector<double> csr_coefs(static_cast<std::size_t>(row_start[n_rows]));
+    {
+        std::vector<int32_t> fill(row_start.begin(), row_start.end() - 1);
+        for (int k = 0; k < static_cast<int>(prob.nonzeros.size()); ++k) {
+            const auto& nz = prob.nonzeros[k];
+            if (nz.row_idx == -1) {
+                obj_nz.push_back(k);
+            } else if (nz.row_idx >= 0 && nz.row_idx < n_rows) {
+                const std::size_t at = static_cast<std::size_t>(fill[nz.row_idx]++);
+                csr_cols[at] = nz.col_idx;
+                csr_coefs[at] = nz.value;
+            }
         }
     }
 
@@ -122,7 +137,8 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
     if (opts.propagate_bounds) {
         const std::vector<double> raw_lb = col_lb;
         const std::vector<double> raw_ub = col_ub;
-        result.bound_stats = tighten_column_bounds(prob, row_nz, opts, col_lb, col_ub, integral);
+        result.bound_stats = tighten_column_bounds(prob, row_start, csr_cols, csr_coefs, opts,
+                                                   col_lb, col_ub, integral);
         if (result.bound_stats.infeasible) {
             // Propagation proved the linear relaxation empty. That is either a
             // genuinely infeasible instance or numerical trouble; either way the
@@ -198,19 +214,21 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
         result.var_handles.push_back(handle);
     }
 
-    auto build_lin_expr = [&](const std::vector<int>& nzlist) -> int32_t {
-        // Build sum_j coef_j * x_j as a CBLS sum node.
+    // Build sum_j coef_j * x_j as a CBLS sum node, from parallel (col, coef)
+    // arrays. Constraint rows pass a slice of the CSR above; the objective row,
+    // which the CSR excludes, passes arrays gathered from its own index list.
+    auto build_lin_expr = [&](const int32_t* cols, const double* coefs, int32_t nnz) -> int32_t {
         std::vector<int32_t> terms;
-        terms.reserve(nzlist.size());
-        for (int k : nzlist) {
-            const auto& nz = prob.nonzeros[k];
-            int32_t var_handle = result.var_handles[nz.col_idx];
-            if (nz.value == 1.0) {
+        terms.reserve(static_cast<std::size_t>(nnz));
+        for (int32_t t = 0; t < nnz; ++t) {
+            int32_t var_handle = result.var_handles[cols[t]];
+            const double value = coefs[t];
+            if (value == 1.0) {
                 terms.push_back(var_handle);
-            } else if (nz.value == -1.0) {
+            } else if (value == -1.0) {
                 terms.push_back(m.neg(var_handle));
             } else {
-                int32_t c = m.constant(nz.value);
+                int32_t c = m.constant(value);
                 terms.push_back(m.prod(c, var_handle));
             }
         }
@@ -227,7 +245,9 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
     result.constraint_node_ids.reserve(n_rows);
     for (int i = 0; i < n_rows; ++i) {
         const MpsRow& r = prob.rows[i];
-        int32_t lhs = build_lin_expr(row_nz[i]);
+        int32_t lhs =
+            build_lin_expr(csr_cols.data() + row_start[i], csr_coefs.data() + row_start[i],
+                           row_start[i + 1] - row_start[i]);
         int32_t rhs_node = m.constant(r.rhs);
 
         // Translate sense (with optional range) into CBLS constraints.
@@ -278,7 +298,17 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
 
     // ---------- Objective ----------
     if (!obj_nz.empty() || prob.objective_offset != 0.0) {
-        int32_t obj_lin = obj_nz.empty() ? m.constant(0.0) : build_lin_expr(obj_nz);
+        std::vector<int32_t> obj_cols;
+        std::vector<double> obj_coefs;
+        obj_cols.reserve(obj_nz.size());
+        obj_coefs.reserve(obj_nz.size());
+        for (int k : obj_nz) {
+            obj_cols.push_back(prob.nonzeros[k].col_idx);
+            obj_coefs.push_back(prob.nonzeros[k].value);
+        }
+        int32_t obj_lin = obj_nz.empty() ? m.constant(0.0)
+                                         : build_lin_expr(obj_cols.data(), obj_coefs.data(),
+                                                          static_cast<int32_t>(obj_cols.size()));
         int32_t obj_node = obj_lin;
         if (prob.objective_offset != 0.0) {
             int32_t off = m.constant(prob.objective_offset);

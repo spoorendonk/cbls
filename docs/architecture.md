@@ -1764,6 +1764,12 @@ disables propagation only: the other half of #120 — the clamp supplying a boun
 where none exists, rather than narrowing every bound wider than it — is
 unconditional, so the switch does not restore the pre-#120 engine.
 
+`LinearRow` is a **view**: `cols`/`coefs` point into arrays the caller owns.
+The constraint matrix of a large MIP is hundreds of megabytes — `square47` alone
+is 27.4M nonzeros — so the rows are never copied to hand them over. The MPS
+adapter builds one flat CSR that both the expression builder and propagation
+read, rather than grouping the matrix once and copying it again.
+
 Deliberately **not** here: coefficient tightening, redundant-row removal,
 aggregation, probing, dual reductions, and anything nonlinear. The `.nl` adapter
 simply skips rows with a nonlinear part — omitting a row costs tightening, never

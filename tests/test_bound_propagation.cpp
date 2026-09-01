@@ -11,6 +11,7 @@
 #include <cbls/model.h>
 #include <cbls/search.h>
 #include <cmath>
+#include <deque>
 #include <limits>
 #include <vector>
 
@@ -21,13 +22,33 @@ namespace {
 
 constexpr double kInf = std::numeric_limits<double>::infinity();
 
-LinearRow row(std::vector<int32_t> cols, std::vector<double> coefs, double lo, double hi) {
-    LinearRow r;
-    r.cols = std::move(cols);
-    r.coefs = std::move(coefs);
-    r.lo = lo;
-    r.hi = hi;
-    return r;
+// `LinearRow` is a view, so a test needs something to own the term arrays it
+// points at. A deque never invalidates references to elements already in it, so
+// the pointers handed out by `add` stay valid as more rows are appended.
+struct RowSet {
+    std::deque<std::vector<int32_t>> cols;
+    std::deque<std::vector<double>> coefs;
+    std::vector<LinearRow> rows;
+
+    RowSet& add(std::vector<int32_t> c, std::vector<double> a, double lo, double hi) {
+        cols.push_back(std::move(c));
+        coefs.push_back(std::move(a));
+        LinearRow row;
+        row.cols = cols.back().data();
+        row.coefs = coefs.back().data();
+        row.nnz = static_cast<int32_t>(cols.back().size());
+        row.lo = lo;
+        row.hi = hi;
+        rows.push_back(row);
+        return *this;
+    }
+};
+
+/// One row on its own, the common case in these tests.
+RowSet one_row(std::vector<int32_t> cols, std::vector<double> coefs, double lo, double hi) {
+    RowSet rs;
+    rs.add(std::move(cols), std::move(coefs), lo, hi);
+    return rs;
 }
 
 }  // namespace
@@ -37,7 +58,7 @@ TEST_CASE("bound propagation derives an upper bound from a <= row") {
     std::vector<double> lb{0.0, 0.0};
     std::vector<double> ub{kInf, kInf};
     std::vector<uint8_t> integral{0, 0};
-    auto stats = propagate_bounds({row({0, 1}, {1.0, 1.0}, -kInf, 10.0)}, integral, lb, ub);
+    auto stats = propagate_bounds(one_row({0, 1}, {1.0, 1.0}, -kInf, 10.0).rows, integral, lb, ub);
 
     CHECK(ub[0] <= 10.0 + 1e-6);
     CHECK(ub[0] >= 10.0);  // relaxed outward, never below the true implied bound
@@ -54,7 +75,7 @@ TEST_CASE("bound propagation finitizes the single unbounded term of a row") {
     std::vector<double> lb{-kInf, 0.0};
     std::vector<double> ub{kInf, 4.0};
     std::vector<uint8_t> integral{0, 0};
-    propagate_bounds({row({0, 1}, {1.0, 1.0}, -kInf, 10.0)}, integral, lb, ub);
+    propagate_bounds(one_row({0, 1}, {1.0, 1.0}, -kInf, 10.0).rows, integral, lb, ub);
 
     CHECK(ub[0] >= 10.0);
     CHECK(ub[0] <= 10.0 + 1e-6);
@@ -65,7 +86,7 @@ TEST_CASE("bound propagation leaves a row with two unbounded terms alone") {
     std::vector<double> lb{-kInf, -kInf};
     std::vector<double> ub{kInf, kInf};
     std::vector<uint8_t> integral{0, 0};
-    auto stats = propagate_bounds({row({0, 1}, {1.0, 1.0}, -kInf, 10.0)}, integral, lb, ub);
+    auto stats = propagate_bounds(one_row({0, 1}, {1.0, 1.0}, -kInf, 10.0).rows, integral, lb, ub);
 
     CHECK(lb[0] == -kInf);
     CHECK(ub[0] == kInf);
@@ -78,7 +99,7 @@ TEST_CASE("bound propagation handles negative coefficients") {
     std::vector<double> lb{0.0, 0.0};
     std::vector<double> ub{kInf, 4.0};
     std::vector<uint8_t> integral{0, 0};
-    propagate_bounds({row({0, 1}, {-2.0, 1.0}, -kInf, -6.0)}, integral, lb, ub);
+    propagate_bounds(one_row({0, 1}, {-2.0, 1.0}, -kInf, -6.0).rows, integral, lb, ub);
 
     CHECK(lb[0] <= 3.0);
     CHECK(lb[0] >= 3.0 - 1e-6);
@@ -90,7 +111,7 @@ TEST_CASE("bound propagation rounds a derived bound inward on an integer column"
     std::vector<double> lb{0.0};
     std::vector<double> ub{kInf};
     std::vector<uint8_t> integral{1};
-    propagate_bounds({row({0}, {2.0}, -kInf, 5.0)}, integral, lb, ub);
+    propagate_bounds(one_row({0}, {2.0}, -kInf, 5.0).rows, integral, lb, ub);
 
     CHECK_THAT(ub[0], WithinAbs(2.0, 1e-12));
 }
@@ -101,7 +122,7 @@ TEST_CASE("bound propagation does not round an integral bound off a feasible poi
     std::vector<double> lb{0.0};
     std::vector<double> ub{kInf};
     std::vector<uint8_t> integral{1};
-    propagate_bounds({row({0}, {3.0}, -kInf, 9.0)}, integral, lb, ub);
+    propagate_bounds(one_row({0}, {3.0}, -kInf, 9.0).rows, integral, lb, ub);
 
     CHECK_THAT(ub[0], WithinAbs(3.0, 1e-12));
 }
@@ -111,7 +132,7 @@ TEST_CASE("bound propagation fixes a column whose box collapses to a point") {
     std::vector<double> lb{-kInf};
     std::vector<double> ub{kInf};
     std::vector<uint8_t> integral{1};
-    auto stats = propagate_bounds({row({0}, {1.0}, 7.0, 7.0)}, integral, lb, ub);
+    auto stats = propagate_bounds(one_row({0}, {1.0}, 7.0, 7.0).rows, integral, lb, ub);
 
     CHECK_THAT(lb[0], WithinAbs(7.0, 1e-12));
     CHECK_THAT(ub[0], WithinAbs(7.0, 1e-12));
@@ -124,7 +145,7 @@ TEST_CASE("bound propagation never widens a bound that is already tighter") {
     std::vector<double> lb{0.0};
     std::vector<double> ub{5.0};
     std::vector<uint8_t> integral{0};
-    auto stats = propagate_bounds({row({0}, {1.0}, -kInf, 100.0)}, integral, lb, ub);
+    auto stats = propagate_bounds(one_row({0}, {1.0}, -kInf, 100.0).rows, integral, lb, ub);
 
     CHECK_THAT(ub[0], WithinAbs(5.0, 1e-12));
     CHECK(stats.n_tightened == 0);
@@ -136,12 +157,11 @@ TEST_CASE("bound propagation reaches a fixed point across chained rows") {
     std::vector<double> lb{0.0, 0.0, 0.0};
     std::vector<double> ub{kInf, kInf, kInf};
     std::vector<uint8_t> integral{0, 0, 0};
-    std::vector<LinearRow> rows{
-        row({0}, {1.0}, -kInf, 10.0),
-        row({1, 0}, {1.0, -1.0}, -kInf, 0.0),
-        row({2, 1}, {1.0, -1.0}, -kInf, 0.0),
-    };
-    auto stats = propagate_bounds(rows, integral, lb, ub);
+    RowSet rs;
+    rs.add({0}, {1.0}, -kInf, 10.0)
+        .add({1, 0}, {1.0, -1.0}, -kInf, 0.0)
+        .add({2, 1}, {1.0, -1.0}, -kInf, 0.0);
+    auto stats = propagate_bounds(rs.rows, integral, lb, ub);
 
     CHECK(ub[2] <= 10.0 + 1e-6);
     CHECK(stats.n_finitized == 3);
@@ -154,14 +174,13 @@ TEST_CASE("bound propagation stops at the pass cap") {
     std::vector<double> lb{0.0, 0.0, 0.0};
     std::vector<double> ub{kInf, kInf, kInf};
     std::vector<uint8_t> integral{0, 0, 0};
-    std::vector<LinearRow> rows{
-        row({2, 1}, {1.0, -1.0}, -kInf, 0.0),
-        row({1, 0}, {1.0, -1.0}, -kInf, 0.0),
-        row({0}, {1.0}, -kInf, 10.0),
-    };
+    RowSet rs;
+    rs.add({2, 1}, {1.0, -1.0}, -kInf, 0.0)
+        .add({1, 0}, {1.0, -1.0}, -kInf, 0.0)
+        .add({0}, {1.0}, -kInf, 10.0);
     BoundPropagationOptions opts;
     opts.max_passes = 1;
-    auto stats = propagate_bounds(rows, integral, lb, ub, opts);
+    auto stats = propagate_bounds(rs.rows, integral, lb, ub, opts);
 
     CHECK(stats.passes == 1);
     CHECK(stats.hit_pass_limit);
@@ -174,8 +193,9 @@ TEST_CASE("bound propagation reports an empty derived box as infeasible") {
     std::vector<double> lb{-kInf};
     std::vector<double> ub{kInf};
     std::vector<uint8_t> integral{0};
-    auto stats = propagate_bounds({row({0}, {1.0}, 5.0, kInf), row({0}, {1.0}, -kInf, 3.0)},
-                                  integral, lb, ub);
+    RowSet rs;
+    rs.add({0}, {1.0}, 5.0, kInf).add({0}, {1.0}, -kInf, 3.0);
+    auto stats = propagate_bounds(rs.rows, integral, lb, ub);
 
     CHECK(stats.infeasible);
 }
@@ -186,7 +206,7 @@ TEST_CASE("bound propagation treats a sentinel magnitude as infinite") {
     std::vector<double> lb{0.0};
     std::vector<double> ub{1e30};
     std::vector<uint8_t> integral{0};
-    auto stats = propagate_bounds({row({0}, {1.0}, -kInf, 42.0)}, integral, lb, ub);
+    auto stats = propagate_bounds(one_row({0}, {1.0}, -kInf, 42.0).rows, integral, lb, ub);
 
     CHECK(ub[0] <= 42.0 + 1e-6);
     CHECK(stats.n_finitized == 1);
@@ -196,11 +216,10 @@ TEST_CASE("bound propagation rejects malformed input") {
     std::vector<double> lb{0.0};
     std::vector<double> ub{1.0};
     std::vector<uint8_t> integral{0};
-    LinearRow ragged;
-    ragged.cols = {0};
-    ragged.coefs = {1.0, 2.0};
-    CHECK_THROWS_AS(propagate_bounds({ragged}, integral, lb, ub), std::invalid_argument);
-    CHECK_THROWS_AS(propagate_bounds({row({3}, {1.0}, 0.0, 1.0)}, integral, lb, ub),
+    LinearRow null_terms;
+    null_terms.nnz = 1;  // claims a term but supplies no array
+    CHECK_THROWS_AS(propagate_bounds({null_terms}, integral, lb, ub), std::invalid_argument);
+    CHECK_THROWS_AS(propagate_bounds(one_row({3}, {1.0}, 0.0, 1.0).rows, integral, lb, ub),
                     std::invalid_argument);
     std::vector<double> short_ub{};
     CHECK_THROWS_AS(propagate_bounds({}, integral, lb, short_ub), std::invalid_argument);
@@ -418,7 +437,7 @@ TEST_CASE("bound propagation is conservative when a column repeats in a row") {
     std::vector<double> lb{0.0};
     std::vector<double> ub{kInf};
     std::vector<uint8_t> integral{0};
-    propagate_bounds({row({0, 0}, {1.0, 1.0}, -kInf, 10.0)}, integral, lb, ub);
+    propagate_bounds(one_row({0, 0}, {1.0, 1.0}, -kInf, 10.0).rows, integral, lb, ub);
 
     CHECK(ub[0] >= 10.0);
     CHECK(ub[0] <= 10.0 + 1e-6);
@@ -433,8 +452,9 @@ TEST_CASE("bound propagation does not hand back a sub-tolerance crossed box") {
     std::vector<double> lb{-kInf};
     std::vector<double> ub{kInf};
     std::vector<uint8_t> integral{0};
-    auto stats = propagate_bounds(
-        {row({0}, {1.0}, 5.0, kInf), row({0}, {1.0}, -kInf, 5.0 - 2.5e-9)}, integral, lb, ub);
+    RowSet rs;
+    rs.add({0}, {1.0}, 5.0, kInf).add({0}, {1.0}, -kInf, 5.0 - 2.5e-9);
+    auto stats = propagate_bounds(rs.rows, integral, lb, ub);
 
     CHECK_FALSE(stats.infeasible);
     CHECK(lb[0] <= ub[0]);
@@ -603,4 +623,32 @@ TEST_CASE("mps adapter honours a NaN bound as no bound rather than throwing") {
     REQUIRE_NOTHROW(result = mps_to_model(p, opts));
     CHECK_THAT(result.model.var(0).lb, WithinAbs(-1.0e7, 1e-9));
     CHECK_THAT(result.model.var(0).ub, WithinAbs(8.0, 1e-6));
+}
+
+TEST_CASE("nl adapter reads a row bound through its type, not the unused side") {
+    // A one-sided row carries a value on the side it does not constrain. The
+    // constraint builder is type-gated and ignores it; propagation must be too,
+    // or it derives a bound from a constraint the model does not contain --
+    // precisely the unsoundness implied bounds exist to remove.
+    //
+    // `2*x0 + x1 <= 12` with x1 in [0, 4]. The stale lower value of 20 would
+    // give x0 >= (20 - 4)/2 = 8 against the real x0 <= 6 -- so propagation
+    // declares a perfectly feasible row inconsistent, and the adapter discards
+    // every derived bound on the instance and falls back to the clamp.
+    NlProblem p = free_columns_problem(/*discrete=*/false);
+    p.var_bounds[1].type = NlBoundType::Range;
+    p.var_bounds[1].lower = 0.0;
+    p.var_bounds[1].upper = 4.0;
+    NlConstraint& c = p.constraints[0];
+    c.bound.type = NlBoundType::Upper;  // only the `<= 12` side is enforced
+    c.bound.upper = 12.0;
+    c.bound.lower = 20.0;  // stale: no `>= 20` constraint is built
+
+    NlToModelOptions opts;
+    opts.inf_clamp = 1.0e5;
+    auto result = nl_to_model(p, opts);
+
+    REQUIRE(result.supported);
+    CHECK_THAT(result.model.var(0).ub, WithinAbs(6.0, 1e-6));   // the real side
+    CHECK_THAT(result.model.var(0).lb, WithinAbs(0.0, 1e-12));  // the stale one
 }

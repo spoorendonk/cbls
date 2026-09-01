@@ -91,12 +91,12 @@ void validate(const std::vector<LinearRow>& rows, const std::vector<double>& lb,
         }
     }
     for (const LinearRow& row : rows) {
-        if (row.cols.size() != row.coefs.size()) {
-            throw std::invalid_argument("propagate_bounds: LinearRow has " +
-                                        std::to_string(row.cols.size()) + " columns but " +
-                                        std::to_string(row.coefs.size()) + " coefficients");
+        if (row.nnz < 0 || (row.nnz > 0 && (row.cols == nullptr || row.coefs == nullptr))) {
+            throw std::invalid_argument("propagate_bounds: LinearRow has nnz " +
+                                        std::to_string(row.nnz) + " but a null term array");
         }
-        for (int32_t col : row.cols) {
+        for (int32_t k = 0; k < row.nnz; ++k) {
+            const int32_t col = row.cols[k];
             if (col < 0 || static_cast<std::size_t>(col) >= n_cols) {
                 throw std::invalid_argument("propagate_bounds: LinearRow references column " +
                                             std::to_string(col) + " outside [0, " +
@@ -177,7 +177,7 @@ struct Tightener {
     /// One row against the current bounds, updating them in place.
     void tighten_row(const LinearRow& row) {
         const double infinity = opts.infinity;
-        const std::size_t nnz = row.cols.size();
+        const std::size_t nnz = static_cast<std::size_t>(row.nnz);
         Activity min_act;
         Activity max_act;
         for (std::size_t k = 0; k < nnz; ++k) {

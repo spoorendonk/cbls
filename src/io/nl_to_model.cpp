@@ -18,6 +18,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace cbls {
@@ -219,24 +220,61 @@ int32_t combine_body(Model& m, int32_t nonlinear, bool has_nonlinear, int32_t li
     return m.constant(0.0);
 }
 
+/// The row's body bounds `lo <= body <= hi`, read through the bound *type* so a
+/// stale value on the unused side cannot be mistaken for a real bound. The
+/// constraint builder is type-gated the same way; deriving a bound from a side
+/// no constraint enforces would be exactly the unsoundness #120 exists to
+/// remove. Returns false for a Free row, which builds no constraint at all.
+bool linear_row_bounds(const NlConBound& b, double& lo, double& hi) {
+    lo = -kNlInf;
+    hi = kNlInf;
+    switch (b.type) {
+        case NlBoundType::Range:
+            lo = b.lower;
+            hi = b.upper;
+            return true;
+        case NlBoundType::Upper:
+            hi = b.upper;
+            return true;
+        case NlBoundType::Lower:
+            lo = b.lower;
+            return true;
+        case NlBoundType::Equal:
+            lo = b.lower;
+            hi = b.lower;
+            return true;
+        case NlBoundType::Free:
+            return false;
+    }
+    return false;
+}
+
 /// Derive implied column bounds from the *purely linear* rows. A row with a
 /// nonlinear part is skipped: activity arithmetic does not apply to it, and
 /// omitting a row only costs tightening, never validity. Nonlinear presolve is
 /// deliberately out of scope here.
+///
+/// Terms are packed into two flat arrays the caller owns for the duration, and
+/// the rows are handed to propagation as views into them rather than as copies.
 BoundPropagationStats tighten_column_bounds(const NlProblem& prob, const NlToModelOptions& opts,
                                             std::vector<double>& lb, std::vector<double>& ub,
                                             const std::vector<uint8_t>& integral) {
+    std::vector<int32_t> cols;
+    std::vector<double> coefs;
     std::vector<LinearRow> rows;
     rows.reserve(prob.constraints.size());
+    // (start, nnz) per accepted row, resolved to pointers once `cols`/`coefs`
+    // have stopped growing — they reallocate as rows are appended.
+    std::vector<std::pair<std::size_t, int32_t>> spans;
+    spans.reserve(prob.constraints.size());
     for (const NlConstraint& c : prob.constraints) {
         if (!c.nonlinear.empty() || c.linear.empty()) {
             continue;
         }
         LinearRow row;
-        row.lo = c.bound.lower;
-        row.hi = c.bound.upper;
-        row.cols.reserve(c.linear.size());
-        row.coefs.reserve(c.linear.size());
+        if (!linear_row_bounds(c.bound, row.lo, row.hi)) {
+            continue;
+        }
         // `propagate_bounds` rejects an out-of-range column outright, but
         // `build_linear` drops one silently and io_nl.h promises "skip, don't
         // throw" on a malformed file. Drop the whole row instead: omitting a row
@@ -247,13 +285,22 @@ BoundPropagationStats tighten_column_bounds(const NlProblem& prob, const NlToMod
                 in_range = false;
                 break;
             }
-            row.cols.push_back(t.var);
-            row.coefs.push_back(t.coef);
         }
         if (!in_range) {
             continue;
         }
-        rows.push_back(std::move(row));
+        const std::size_t start = cols.size();
+        for (const NlLinTerm& t : c.linear) {
+            cols.push_back(t.var);
+            coefs.push_back(t.coef);
+        }
+        spans.emplace_back(start, static_cast<int32_t>(c.linear.size()));
+        rows.push_back(row);
+    }
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        rows[i].cols = cols.data() + spans[i].first;
+        rows[i].coefs = coefs.data() + spans[i].first;
+        rows[i].nnz = spans[i].second;
     }
     BoundPropagationOptions popts;
     popts.max_passes = opts.max_propagation_passes;

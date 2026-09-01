@@ -34,14 +34,20 @@ inline bool is_unbounded_above(double ub) {
     return ub >= kBoundInfinity;
 }
 
-/// One linear row `lo <= sum_k coefs[k] * x[cols[k]] <= hi`.
+/// One linear row `lo <= sum_k coefs[k] * x[cols[k]] <= hi`, as a **view**.
 ///
-/// A one-sided row leaves the unused side infinite. `cols` and `coefs` must
-/// have equal length; a column may repeat, in which case the row is used as
-/// written (no term merging is performed).
+/// `cols` and `coefs` are parallel arrays of `nnz` entries that the caller owns
+/// and must keep alive for the call — propagation reads them once per pass and
+/// never writes them. They are not copied: the constraint matrix of a large MIP
+/// runs to hundreds of megabytes, and duplicating it to hand it over here would
+/// be the single largest allocation the model build makes.
+///
+/// A one-sided row leaves the unused side infinite. A column may repeat within a
+/// row, in which case the row is used as written (no term merging is performed).
 struct LinearRow {
-    std::vector<int32_t> cols;
-    std::vector<double> coefs;
+    const int32_t* cols = nullptr;
+    const double* coefs = nullptr;
+    int32_t nnz = 0;
     double lo = 0.0;
     double hi = 0.0;
 };
@@ -89,7 +95,7 @@ struct BoundPropagationStats {
 /// `integral[j]` non-zero means column `j` takes integer values only, and its
 /// derived bounds are rounded inward. `lb`, `ub` and `integral` must all have
 /// one entry per column; rows referencing a column outside that range are
-/// rejected.
+/// rejected. Each row's `cols`/`coefs` must remain valid for the whole call.
 ///
 /// Never widens a bound, and (up to the `safety_absolute` margin) never removes
 /// a point that satisfies every row — so a caller may apply the result
