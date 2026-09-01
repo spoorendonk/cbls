@@ -8,8 +8,9 @@
 // constraints, so it can cut off feasible points, including the optimum.
 //
 // The pass here derives bounds that *are* implied — for each linear row, the
-// min/max activity of the other terms bounds the remaining one — so it can only
-// remove points no feasible solution occupies. Where it cannot finitize a
+// min/max activity of the other terms bounds the remaining one — so, up to the
+// floating-point margin documented on `safety_absolute` below, it removes only
+// points no feasible solution occupies. Where it cannot finitize a
 // column, the caller's clamp remains as the fallback it always was.
 //
 // This is deliberately activity-based tightening only. Coefficient tightening,
@@ -90,8 +91,9 @@ struct BoundPropagationStats {
 /// one entry per column; rows referencing a column outside that range are
 /// rejected.
 ///
-/// Never widens a bound, and never removes a point that satisfies every row —
-/// so a caller may apply the result unconditionally. On `infeasible` the bounds
+/// Never widens a bound, and (up to the `safety_absolute` margin) never removes
+/// a point that satisfies every row — so a caller may apply the result
+/// unconditionally. On `infeasible` the bounds
 /// are left as far as propagation got; the caller decides what to report.
 BoundPropagationStats propagate_bounds(const std::vector<LinearRow>& rows,
                                        const std::vector<uint8_t>& integral,

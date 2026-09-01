@@ -127,14 +127,14 @@ Three conventions therefore rest on you rather than on a tool: branch only from 
 
 ### Fast vs. slow tests
 
-The C++ suite is **301 `TEST_CASE`s**: 300 registered by `catch_discover_tests`
-plus the single `[timing]` case registered by hand. Of the 300, **6 carry the
+The C++ suite is **306 `TEST_CASE`s**: 305 registered by `catch_discover_tests`
+plus the single `[timing]` case registered by hand. Of the 305, **6 carry the
 Catch2 `[slow]` tag** — the CHPED and UC-CHPED benchmark solves, ~103s of
 aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~39s
 wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 295 tests, ~8s with `-j`. This is what **pre-commit** runs.
+- `ctest -LE slow` — the other 300 tests, ~8s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
 - `ctest -L timing` — `timing_structural_batch_deadline`, the suite's only
   wall-clock-duration assertion. It is registered by an explicit `add_test` so it

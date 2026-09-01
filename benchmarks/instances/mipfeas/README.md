@@ -156,7 +156,8 @@ objective from 1,010,195 to 9,865 against an optimum of 6,741.
 engine. Implied bounds now clear the clamp entirely on 5 of these 11 instances —
 `binkar10_1` among them, which is where the 1e9-vs-1e7 difference was largest —
 so on those the setting no longer reaches anything. It still binds on `mad`,
-`pk1`, `gen-ip002` and `gen-ip054`. The numbers below were measured before that
+`pk1`, `gen-ip002` and `gen-ip054`; the remaining two, `mas76` and `neos5`, had
+no clamped column to begin with. The numbers below were measured before that
 change and have not been re-run; treat them as the pre-propagation baseline they
 are.
 
@@ -233,8 +234,9 @@ changed together:
   the 233 instances it reached 110 columns on 6 of them, so stopping gives up
   nothing measurable.
 
-Measured over all 233 roster instances at engine commit `aec705b`, model build only
-(no search):
+Measured over all 233 roster instances, model build only (no search). First taken
+at `aec705b` and re-derived after the review fixes that followed it; every count
+below is identical across the two runs:
 
 | | before propagation | after |
 |---|---:|---:|
@@ -244,9 +246,15 @@ Measured over all 233 roster instances at engine commit `aec705b`, model build o
 64 instances are cleared entirely, `binkar10_1` (2128 of 2298 columns clamped,
 and the largest CBLS-vs-reference gap on the smoke roster) and
 `neos-5114902-kasavu` (695,604 of 710,164) among them. A further 519,524 columns
-across 82 instances are fixed outright to a single value. The pass costs 7.7s
-summed over the whole roster — 0.03s on `kasavu`, 1.08s worst case on
-`square47` — against a 600s per-instance budget.
+across 82 instances are fixed outright to a single value.
+
+Cost, timed in isolation rather than by differencing two model builds (that
+difference is smaller than the run-to-run noise): **~1.1s worst case**, on
+`square47` — 0.38s assembling the rows plus 0.73s propagating over its 27.4M
+nonzeros. `neos-5114902-kasavu`, the largest by rows, costs 0.26s over 4.9M
+nonzeros in 3 passes. `supportcase12` is the only instance that reaches the
+10-pass cap, at 0.31s. Roughly 7s summed over the whole roster, against a 600s
+per-instance budget.
 
 Two caveats a reader should have:
 

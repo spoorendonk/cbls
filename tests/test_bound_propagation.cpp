@@ -1,5 +1,5 @@
-// Tests for activity-based bound propagation (#120) and its use by the MPS
-// adapter. The property that matters throughout is soundness: a derived bound
+// Tests for activity-based bound propagation (#120) and its use by the MPS and
+// `.nl` adapters. The property that matters throughout is soundness: a derived bound
 // is entailed by the constraints, so it may shrink the box but must never put
 // a feasible point outside it.
 
@@ -307,6 +307,11 @@ TEST_CASE("mps adapter falls back to the raw box when propagation proves infeasi
     auto result = mps_to_model(p);
 
     CHECK(result.bound_stats.infeasible);
+    // The discarded run's counts must not survive it: nothing was applied, so
+    // reporting a tightening would credit the pass with work it undid.
+    CHECK(result.bound_stats.n_tightened == 0);
+    CHECK(result.bound_stats.n_finitized == 0);
+    CHECK(result.bound_stats.passes == 0);
     const Variable& x = result.model.var(0);
     CHECK_THAT(x.lb, WithinAbs(0.0, 1e-12));
     CHECK_THAT(x.ub, WithinAbs(10.0, 1e-12));
@@ -495,4 +500,90 @@ TEST_CASE("nl adapter ignores rows with a nonlinear part when deriving bounds") 
     CHECK(result.bound_stats.n_finitized == 0);
     CHECK_THAT(result.model.var(0).ub, WithinAbs(1.0e5, 1e-9));
     CHECK(result.n_clamped_columns == 2);
+}
+
+TEST_CASE("nl adapter skips a row naming a column that does not exist") {
+    // `build_linear` drops an out-of-range term silently and io_nl.h promises to
+    // skip a malformed file rather than throw, so propagation must not be the
+    // one thing that throws. The whole row is dropped: no bound is derived.
+    NlProblem p = free_columns_problem(/*discrete=*/false);
+    p.constraints[0].linear.push_back(NlLinTerm{5, 1.0});  // n_vars is 2
+
+    NlToModelOptions opts;
+    opts.inf_clamp = 1.0e5;
+    NlToModelResult result;
+    REQUIRE_NOTHROW(result = nl_to_model(p, opts));
+    CHECK(result.bound_stats.n_finitized == 0);
+    CHECK_THAT(result.model.var(0).ub, WithinAbs(1.0e5, 1e-9));
+}
+
+TEST_CASE("nl adapter falls back to the raw box when propagation proves infeasibility") {
+    // The twin of the MPS case. The two adapters hand-duplicate this block, so
+    // testing only one lets them drift.
+    NlProblem p = free_columns_problem(/*discrete=*/false);
+    for (NlVarBound& b : p.var_bounds) {
+        b.type = NlBoundType::Range;
+        b.lower = 0.0;
+        b.upper = 10.0;
+    }
+    NlConstraint lo;
+    lo.linear = {NlLinTerm{0, 1.0}};
+    lo.bound.type = NlBoundType::Lower;
+    lo.bound.lower = 5.0;
+    lo.bound.upper = kNlInf;
+    NlConstraint hi;
+    hi.linear = {NlLinTerm{0, 1.0}};
+    hi.bound.type = NlBoundType::Upper;
+    hi.bound.lower = -kNlInf;
+    hi.bound.upper = 3.0;
+    p.constraints = {lo, hi};
+    p.n_cons = 2;
+
+    auto result = nl_to_model(p);
+
+    CHECK(result.bound_stats.infeasible);
+    CHECK(result.bound_stats.n_tightened == 0);
+    CHECK_THAT(result.model.var(0).lb, WithinAbs(0.0, 1e-12));
+    CHECK_THAT(result.model.var(0).ub, WithinAbs(10.0, 1e-12));
+}
+
+TEST_CASE("nl adapter honours a NaN bound as no bound rather than throwing") {
+    // propagate_bounds rejects NaN outright; the adapter must not let one reach
+    // it, because io_nl.h promises to skip a malformed file, not to throw.
+    NlProblem p = free_columns_problem(/*discrete=*/false);
+    p.var_bounds[0].lower = std::numeric_limits<double>::quiet_NaN();
+
+    NlToModelOptions opts;
+    opts.inf_clamp = 1.0e5;
+    NlToModelResult result;
+    REQUIRE_NOTHROW(result = nl_to_model(p, opts));
+    CHECK_THAT(result.model.var(0).lb, WithinAbs(-1.0e5, 1e-9));
+}
+
+TEST_CASE("nl adapter propagation can be turned off") {
+    NlToModelOptions opts;
+    opts.inf_clamp = 1.0e5;
+    opts.propagate_bounds = false;
+    auto result = nl_to_model(free_columns_problem(/*discrete=*/false), opts);
+
+    CHECK_THAT(result.model.var(0).ub, WithinAbs(1.0e5, 1e-9));
+    CHECK(result.bound_stats.passes == 0);
+    CHECK(result.n_clamped_columns == 2);
+}
+
+TEST_CASE("mps adapter counts a doubly-narrowed column once") {
+    // An unbounded-below Integer column whose upper bound is beyond int32: the
+    // clamp supplies the lower bound and the int32 clip narrows the upper. One
+    // column, so n_clamped_columns must be 1, not 2.
+    MpsProblem p;
+    p.name = "TWICE";
+    p.vars = {MpsVar{"Z", -kMpsInf, 5.0e9, MpsVarKind::Integer}};
+    p.rows = {MpsRow{"C1", MpsRowSense::L, 1.0e11, 0.0}};
+    p.nonzeros = {MpsNonzero{0, 0, 1.0}};
+
+    MpsToModelOptions opts;
+    opts.inf_clamp = 1.0e7;
+    auto result = mps_to_model(p, opts);
+
+    CHECK(result.n_clamped_columns == 1);
 }

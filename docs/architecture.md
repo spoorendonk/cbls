@@ -836,9 +836,11 @@ draw actually samples, always a subset of the variable's domain:
   bounds keeps its exact draw sequence and its exact solve trajectory;
 - an **infinite bound** is replaced by a clamp magnitude — `kRandomIntInfClamp`
   (1e6) for an Int, `kRandomInfClamp` (1e9) otherwise. These are the same
-  magnitudes `NlToModelOptions`/`MpsToModelOptions` fall back on at load time, so
-  a hand-built unbounded model lands in the same box a `.nl`/`.mps` one would
-  have — on the columns those adapters cannot bound. Since #120 they reach that
+  magnitudes `NlToModelOptions` falls back on at load time, so a hand-built
+  unbounded model lands in the same box a `.nl` one would have — on the columns
+  the adapter cannot bound. The parity is `.nl`-only: `MpsToModelOptions` has no
+  integer variant, so an unbounded MPS Int column falls back on `inf_clamp`
+  (1e9) where a hand-built one gets `kRandomIntInfClamp` (1e6). Since #120 they reach that
   fallback only where bound propagation (below) derives nothing, so a loaded
   model usually arrives here with finite bounds already. Unguarded, `uniform_real_distribution(lb, ub)`
   breaks its own precondition (`ub - lb <= DBL_MAX`) and libstdc++'s
@@ -1739,13 +1741,19 @@ Four details carry the implementation:
   term is unbounded still bounds that term — the rest of the row is finite. This
   is the case that matters: it is what finitizes a genuinely free column.
 - **Derived bounds are relaxed outward** by `max(1e-9, 1e-12·|b|)` before being
-  applied, so rounding in the activity sums cannot cut off a feasible point.
-  Integral columns round inward *after* that relaxation.
+  applied, to absorb rounding in the activity sums. Integral columns round
+  inward *after* that relaxation. The margin is scaled to the derived bound, not
+  to the activity it came from, so it is a practical guard rather than a proof:
+  a row summing ~1e5 terms of magnitude ~1e9 accumulates more error than it
+  absorbs. No instance on the MIPLIB roster has reached that regime.
 - **`1e20` and beyond is "no bound"** (the MPS/CPLEX/SCIP convention), read
   through `is_unbounded_below`/`is_unbounded_above`.
 - **Fixed-point iteration is capped** (`max_passes`, default 10) and each pass
-  is O(nnz). On MIPLIB's largest roster instance — 710k columns, 961k rows — the
-  pass costs ~0.03s of a 2.0s model build.
+  is O(nnz). Timed in isolation on the MIPLIB roster: 0.13s to assemble the rows
+  plus 0.13s to propagate on the largest instance by rows (710k columns, 961k
+  rows, 4.9M nonzeros, 3 passes), and ~1.1s worst case on the densest
+  (`square47`, 27.4M nonzeros). Do not measure this by differencing two model
+  builds — the difference is smaller than the run-to-run noise.
 
 The rule the adapters follow afterwards: a bound that **exists**, declared or
 derived, is honoured however wide; only a missing one is invented. `inf_clamp`

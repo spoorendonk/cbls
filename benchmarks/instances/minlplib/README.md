@@ -147,8 +147,19 @@ rebuild only the merge after a fresh CBLS run, add `--merge-only`.
 Latest run: **60s per instance, seed 1, feasibility tolerance 1e-6**, commit
 recorded per row in `comparison.csv`. The tally below, the gap buckets and the
 anytime profile all come from that **one** run; its incumbent trace is committed
-as `anytime_trace.csv`, so every number in this section is reproducible from a
-checkout without re-running anything.
+as `anytime_trace.csv`, so every number in this section is reproducible from the
+checkout it was measured at, which each row's `commit_sha` names.
+
+**The table predates #120 and does not describe the current engine.** The `.nl`
+adapter now derives implied variable bounds from the purely linear rows instead
+of substituting `inf_clamp`/`int_inf_clamp` for an infinite one, and it is on by
+default — so any instance whose linear rows imply something is searched over a
+different box than the one these numbers came from. How many that is has not been
+measured; the `elec` family is *not* among them (its rows are nonlinear, so the
+adapter skips them and the `±1e9` box noted below still stands). Re-run before
+comparing anything new against this table, and see
+`benchmarks/instances/mipfeas/README.md` for what the same change did to the
+MIPLIB roster.
 
 **These are single-sample numbers.** The budget is wall-clock, so a fixed seed
 does not pin the iteration count and consecutive runs of the same binary differ:

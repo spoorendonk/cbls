@@ -280,8 +280,14 @@ NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts)
     std::vector<uint8_t> integral(n_cols, 0);
     for (std::size_t j = 0; j < n_cols; ++j) {
         if (j < prob.var_bounds.size()) {
-            col_lb[j] = prob.var_bounds[j].lower;
-            col_ub[j] = prob.var_bounds[j].upper;
+            // A NaN bound is "no bound" here, as clamp_lo/clamp_hi already read
+            // it. Handing one to propagate_bounds would throw, and io_nl.h
+            // promises to skip a malformed file rather than throw out of the
+            // adapter.
+            const double declared_lb = prob.var_bounds[j].lower;
+            const double declared_ub = prob.var_bounds[j].upper;
+            col_lb[j] = std::isnan(declared_lb) ? -kNlInf : declared_lb;
+            col_ub[j] = std::isnan(declared_ub) ? kNlInf : declared_ub;
         }
         integral[j] = (j < prob.var_is_discrete.size() && prob.var_is_discrete[j] != 0) ? 1 : 0;
     }
@@ -319,13 +325,16 @@ NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts)
             // declared or derived — is always honoured; only a genuinely
             // infinite one falls back to int_inf_clamp, since a ±1e9 integer box
             // is not a searchable domain.
-            const double raw_lb = col_lb[col];
-            const double raw_ub = col_ub[col];
-            double ilb = is_unbounded_below(raw_lb) ? -opts.int_inf_clamp : std::ceil(lb - 1e-9);
-            double iub = is_unbounded_above(raw_ub) ? opts.int_inf_clamp : std::floor(ub + 1e-9);
-            if (is_unbounded_below(raw_lb) || is_unbounded_above(raw_ub)) {
-                ++result.n_clamped_columns;
-            }
+            // Propagated, not as-declared: a derived bound is entailed, so it
+            // rightly suppresses the unsound int_inf_clamp fallback.
+            const double propagated_lb = col_lb[col];
+            const double propagated_ub = col_ub[col];
+            double ilb =
+                is_unbounded_below(propagated_lb) ? -opts.int_inf_clamp : std::ceil(lb - 1e-9);
+            double iub =
+                is_unbounded_above(propagated_ub) ? opts.int_inf_clamp : std::floor(ub + 1e-9);
+            const bool int_clamped =
+                is_unbounded_below(propagated_lb) || is_unbounded_above(propagated_ub);
             // A finite bound is honoured however wide, so one beyond the int
             // range arrives here unclipped and would make the casts below UB.
             // `Model::int_var` takes an int; that representational limit narrows
@@ -334,7 +343,9 @@ NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts)
             constexpr double kIntHi = static_cast<double>(std::numeric_limits<int>::max());
             const double clipped_lb = std::min(std::max(ilb, kIntLo), kIntHi);
             const double clipped_ub = std::min(std::max(iub, kIntLo), kIntHi);
-            if (clipped_lb != ilb || clipped_ub != iub) {
+            // One column, one count: the fallback and the int32 clip can both
+            // narrow the same column.
+            if (int_clamped || clipped_lb != ilb || clipped_ub != iub) {
                 ++result.n_clamped_columns;
             }
             ilb = clipped_lb;

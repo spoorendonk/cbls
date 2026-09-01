@@ -138,9 +138,9 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
         const MpsVar& v = prob.vars[j];
         double lb = clamp_lo(col_lb[j], opts.inf_clamp);
         double ub = clamp_hi(col_ub[j], opts.inf_clamp);
-        if (lb != col_lb[j] || ub != col_ub[j]) {
-            ++result.n_clamped_columns;
-        }
+        // One column, one count. The int32 clip below can narrow the *same*
+        // column again, and this is a count of columns, not of narrowings.
+        bool clamped = lb != col_lb[j] || ub != col_ub[j];
         if (lb > ub) {
             throw std::runtime_error("MPS column " + v.name + " has lb > ub after clamping");
         }
@@ -180,14 +180,15 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
             // narrows the column and counts as clamped.
             constexpr double kIntLo = static_cast<double>(std::numeric_limits<int>::min());
             constexpr double kIntHi = static_cast<double>(std::numeric_limits<int>::max());
-            if (dlb < kIntLo || dub > kIntHi) {
-                ++result.n_clamped_columns;
-            }
+            clamped = clamped || dlb < kIntLo || dub > kIntHi;
             const double ilb = std::min(std::max(dlb, kIntLo), kIntHi);
             const double iub = std::min(std::max(dub, kIntLo), kIntHi);
             handle = m.int_var(static_cast<int>(ilb), static_cast<int>(iub), v.name);
         } else {
             handle = m.float_var(lb, ub, v.name);
+        }
+        if (clamped) {
+            ++result.n_clamped_columns;
         }
         result.var_handles.push_back(handle);
     }
