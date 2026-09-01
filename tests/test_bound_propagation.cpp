@@ -310,3 +310,25 @@ TEST_CASE("mps adapter falls back to the raw box when propagation proves infeasi
     CHECK_THAT(x.lb, WithinAbs(0.0, 1e-12));
     CHECK_THAT(x.ub, WithinAbs(10.0, 1e-12));
 }
+
+TEST_CASE("mps adapter honours a finite bound wider than the clamp") {
+    // Pre-#120 the clamp narrowed *any* column wider than its magnitude, a
+    // declared one included. A declared bound is part of the instance, so
+    // narrowing it can lose solutions exactly as substituting for an infinite
+    // one can; only a missing bound is invented now.
+    MpsProblem p;
+    p.name = "WIDE";
+    p.vars = {MpsVar{"X", -1.0e12, 1.0e12, MpsVarKind::Continuous}};
+    p.rows = {MpsRow{"C1", MpsRowSense::G, -1.0e11, 0.0}};
+    p.nonzeros = {MpsNonzero{0, 0, 1.0}};
+
+    MpsToModelOptions opts;
+    opts.inf_clamp = 1.0e7;
+    auto result = mps_to_model(p, opts);
+
+    const Variable& x = result.model.var(0);
+    CHECK_THAT(x.ub, WithinAbs(1.0e12, 1.0));
+    CHECK(x.lb <= -1.0e11);  // the row's implied bound, not the declared -1e12
+    CHECK(x.lb >= -1.0e11 - 1.0);
+    CHECK(result.n_clamped_columns == 0);
+}

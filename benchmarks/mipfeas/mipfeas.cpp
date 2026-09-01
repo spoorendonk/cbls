@@ -49,13 +49,19 @@ struct Args {
     // Feasibility Jump against their Feasibility Jump plus Novelty Jump and call
     // the difference a reimplementation gap.
     bool compound_moves = true;
-    // CBLS variables need finite bounds, so an infinite one is clamped. 1e7 rather
+    // CBLS variables need finite bounds. Implied bounds supply most of them
+    // (#120); this is the fallback for a column no constraint bounds. 1e7 rather
     // than the engine's 1e9 because it measured better on the smoke roster — NOT
     // because it matches CP-SAT, which does not truncate variable domains at all
     // (`mip_max_bound` is not a domain clamp: an integer column bounded at 1e12 is
     // solved to 1e12). This is a CBLS-side restriction, so `n_clamped_bounds`
-    // records how many columns it narrows and the comparison table publishes it.
+    // records how many columns it still narrows and the comparison table
+    // publishes it next to `n_unbounded_columns`, the exposure before propagation.
     double inf_clamp = 1.0e7;
+    // Derive implied bounds from the rows first, so the clamp above is reached
+    // only on columns no constraint bounds. Off reproduces the pre-#120 engine,
+    // which is the only reason the switch exists.
+    bool propagate_bounds = true;
     std::string commit_sha = "unknown";
 };
 
@@ -63,7 +69,8 @@ void print_usage() {
     std::printf(
         "Usage: cbls_mipfeas --instance NAME --out-dir DIR [--inst-dir DIR]\n"
         "                    [--budget SECONDS] [--seed N] [--feas-tol T]\n"
-        "                    [--inf-clamp B] [--no-compound-moves] [--commit SHA]\n");
+        "                    [--inf-clamp B] [--no-propagate-bounds]\n"
+        "                    [--no-compound-moves] [--commit SHA]\n");
 }
 
 Args parse_args(int argc, char** argv) {
@@ -84,6 +91,8 @@ Args parse_args(int argc, char** argv) {
             a.feas_tol = std::atof(argv[++i]);
         } else if (s == "--inf-clamp" && i + 1 < argc) {
             a.inf_clamp = std::atof(argv[++i]);
+        } else if (s == "--no-propagate-bounds") {
+            a.propagate_bounds = false;
         } else if (s == "--compound-moves") {
             a.compound_moves = true;
         } else if (s == "--no-compound-moves") {
@@ -167,14 +176,15 @@ int count_int_vars(const cbls::MpsProblem& prob) {
     return n;
 }
 
-// Columns whose domain the clamp narrows. CBLS variables need finite bounds, so
-// the model it searches is a restriction of the MPS on these: it can lose
-// solutions, never invent them. Recorded per result because "the two engines
-// solved the same program" is otherwise an assumption a reader cannot check.
-int count_clamped_bounds(const cbls::MpsProblem& prob, double inf_clamp) {
+// Columns the MPS leaves unbounded on at least one side. Every one of these is
+// a column CBLS would have had to invent a bound for; how many it still has to
+// after propagation is `n_clamped_bounds` below. Recorded per result because
+// "the two engines solved the same program" is otherwise an assumption a reader
+// cannot check.
+int count_unbounded_columns(const cbls::MpsProblem& prob) {
     int n = 0;
     for (const auto& v : prob.vars) {
-        if (!(v.lb >= -inf_clamp) || !(v.ub <= inf_clamp)) {
+        if (cbls::is_unbounded_below(v.lb) || cbls::is_unbounded_above(v.ub)) {
             ++n;
         }
     }
@@ -191,6 +201,7 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     j["feasibility_tolerance"] = args.feas_tol;
     j["compound_moves"] = args.compound_moves;
     j["inf_clamp"] = args.inf_clamp;
+    j["propagate_bounds"] = args.propagate_bounds;
     j["commit_sha"] = args.commit_sha;
 
     // Write-then-rename: a job killed mid-write must leave either the previous
@@ -269,6 +280,7 @@ int main(int argc, char** argv) {
 
     cbls::MpsToModelOptions mps_opts;
     mps_opts.inf_clamp = args.inf_clamp;
+    mps_opts.propagate_bounds = args.propagate_bounds;
     cbls::MpsToModelResult built;
     try {
         built = cbls::mps_to_model(prob, mps_opts);
@@ -359,7 +371,12 @@ int main(int argc, char** argv) {
         {"n_vars", prob.vars.size()},
         {"n_cons", prob.rows.size()},
         {"n_int_vars", count_int_vars(prob)},
-        {"n_clamped_bounds", count_clamped_bounds(prob, args.inf_clamp)},
+        {"n_unbounded_columns", count_unbounded_columns(prob)},
+        {"n_clamped_bounds", built.n_clamped_columns},
+        {"n_bounds_tightened", built.bound_stats.n_tightened},
+        {"n_bounds_finitized", built.bound_stats.n_finitized},
+        {"n_bounds_fixed", built.bound_stats.n_fixed},
+        {"bound_propagation_passes", built.bound_stats.passes},
     };
     j["objective"] = have_solution ? nlohmann::json(result.objective) : nlohmann::json(nullptr);
     write_result(args, j);

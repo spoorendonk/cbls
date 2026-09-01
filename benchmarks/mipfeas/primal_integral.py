@@ -73,6 +73,7 @@ CONFIG_KEYS = (
     "feasibility_tolerance",
     "compound_moves",
     "inf_clamp",
+    "propagate_bounds",
     "workers",
     "parameters",
 )
@@ -95,10 +96,17 @@ class Scored(NamedTuple):
     #: Peak resident set of the job, so a full-roster run's concurrency can be
     #: sized from measurement rather than guessed.
     peak_rss_kib: int | None
-    #: Columns whose domain the CBLS clamp narrowed. The clamp is a CBLS-side
-    #: restriction the baseline does not share, so "both engines solved the same
-    #: program" is only checkable if this is published next to the score.
+    #: Columns whose domain the CBLS clamp narrowed, *after* implied bounds were
+    #: derived. The clamp is a CBLS-side restriction the baseline does not share,
+    #: so "both engines solved the same program" is only checkable if this is
+    #: published next to the score.
     n_clamped_bounds: int | None
+    #: Columns the MPS left unbounded — what the clamp would have narrowed had
+    #: propagation not run. The gap between this and `n_clamped_bounds` is how
+    #: much of the restriction propagation removed.
+    n_unbounded_columns: int | None
+    #: Columns whose bounds propagation tightened, unbounded or not.
+    n_bounds_tightened: int | None
     #: The run's configuration, so a table cannot silently mix two of them.
     config: str
     #: Whether the incumbent profile came from the engine's log or is a single end
@@ -212,6 +220,8 @@ def score_instance(
             n_cons=None,
             peak_rss_kib=None,
             n_clamped_bounds=None,
+            n_unbounded_columns=None,
+            n_bounds_tightened=None,
             config="",
             trace_source="",
             solver_status="",
@@ -251,6 +261,8 @@ def score_instance(
     n_cons = result.get("n_cons")
     peak_rss = result.get("peak_rss_kib")
     clamped = result.get("n_clamped_bounds")
+    unbounded = result.get("n_unbounded_columns")
+    tightened = result.get("n_bounds_tightened")
     return Scored(
         instance=instance,
         engine=engine,
@@ -270,6 +282,8 @@ def score_instance(
         n_cons=int(n_cons) if isinstance(n_cons, int) else None,
         peak_rss_kib=int(peak_rss) if isinstance(peak_rss, int) else None,
         n_clamped_bounds=int(clamped) if isinstance(clamped, int) else None,
+        n_unbounded_columns=int(unbounded) if isinstance(unbounded, int) else None,
+        n_bounds_tightened=int(tightened) if isinstance(tightened, int) else None,
         config=";".join(f"{k}={result[k]}" for k in CONFIG_KEYS if k in result),
         trace_source=str(result.get("trace_source", "")),
         solver_status=str(result.get("cpsat_status", "")),
@@ -430,6 +444,8 @@ def write_comparison(
                 "n_cons",
                 "peak_rss_kib",
                 "n_clamped_bounds",
+                "n_unbounded_columns",
+                "n_bounds_tightened",
                 "trace_source",
                 "solver_status",
                 "provenance",
@@ -453,6 +469,8 @@ def write_comparison(
                     "" if r.n_cons is None else r.n_cons,
                     "" if r.peak_rss_kib is None else r.peak_rss_kib,
                     "" if r.n_clamped_bounds is None else r.n_clamped_bounds,
+                    "" if r.n_unbounded_columns is None else r.n_unbounded_columns,
+                    "" if r.n_bounds_tightened is None else r.n_bounds_tightened,
                     r.trace_source,
                     r.solver_status,
                     r.provenance,

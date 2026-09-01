@@ -160,6 +160,7 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         "seed": 42,
         "inf_clamp": 1.0e7,
         "compound_moves": True,
+        "propagate_bounds": True,
         "cpsat_workers": 1,
         "commit": "abc1234",
     }
@@ -174,6 +175,15 @@ def test_build_command_passes_the_cbls_configuration_through() -> None:
     assert "--inf-clamp" in command
     assert command[command.index("--inf-clamp") + 1] == "10000000.0"
     assert "--compound-moves" in command
+    # Propagation is the engine default, so the driver says nothing about it.
+    assert "--no-propagate-bounds" not in command
+
+
+def test_build_command_can_disable_bound_propagation() -> None:
+    command = build_command(
+        Job("cbls", "inst"), _driver_args(propagate_bounds=False), Path("/results")
+    )
+    assert "--no-propagate-bounds" in command
 
 
 def test_build_command_can_disable_compound_moves() -> None:

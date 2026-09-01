@@ -110,6 +110,7 @@ def build_command(job: Job, args: argparse.Namespace, results_dir: Path) -> list
             "--inf-clamp",
             str(args.inf_clamp),
             "--compound-moves" if args.compound_moves else "--no-compound-moves",
+            *([] if args.propagate_bounds else ["--no-propagate-bounds"]),
             "--commit",
             args.commit,
         ]
@@ -321,9 +322,17 @@ def main() -> int:
         "--inf-clamp",
         type=float,
         default=1.0e7,
-        help="finite box CBLS clamps infinite variable bounds to; a CBLS-side "
-        "restriction the baseline does not share (CP-SAT does not truncate variable "
-        "domains), recorded per result as n_clamped_bounds",
+        help="finite box CBLS clamps a variable bound to when no constraint implies "
+        "one; a CBLS-side restriction the baseline does not share (CP-SAT does not "
+        "truncate variable domains), recorded per result as n_clamped_bounds",
+    )
+    parser.add_argument(
+        "--no-propagate-bounds",
+        dest="propagate_bounds",
+        action="store_false",
+        help="disable implied-bound derivation, so every unbounded column falls back "
+        "on --inf-clamp. Reproduces the pre-#120 engine; not a configuration to "
+        "publish, since the clamp it restores is not implied by the constraints",
     )
     parser.add_argument(
         "--no-compound-moves",
