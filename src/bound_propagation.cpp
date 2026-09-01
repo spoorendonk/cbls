@@ -77,6 +77,10 @@ bool improves(double candidate, double incumbent, const BoundPropagationOptions&
     return candidate < incumbent - threshold;
 }
 
+// Only `lb`/`ub` are checked for NaN. A NaN elsewhere is conservative rather than
+// wrong: a NaN coefficient counts as an infinite contribution and suppresses
+// tightening on that row, a NaN row bound reads as infinite, and `apply` returns
+// early on a non-finite derived value. Silent, but never unsound.
 void validate(const std::vector<LinearRow>& rows, const std::vector<double>& lb,
               const std::vector<double>& ub) {
     const std::size_t n_cols = lb.size();

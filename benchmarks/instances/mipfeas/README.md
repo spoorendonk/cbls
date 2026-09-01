@@ -196,7 +196,7 @@ inherited, so a published number cannot silently change when a default moves:
 | Presolve | implied variable bounds only (activity-based propagation) | default, i.e. on |
 | Feasibility tolerance | `1e-6`, stated explicitly | CP-SAT's own |
 | Unbounded column falls back to | `1e7` (`--inf-clamp`), where propagation derives nothing | not clamped |
-| Recorded per result | commit SHA, seed, tolerance, clamp + columns it still narrows, columns declared unbounded, columns tightened, compound-move and propagation flags, peak RSS | OR-Tools version, seed, full parameter string, solver verdict, peak RSS |
+| Recorded per result | commit SHA, seed, tolerance, clamp + columns it still narrows, columns declared unbounded, columns tightened, propagation verdict and pass cap, compound-move and propagation flags, peak RSS | OR-Tools version, seed, full parameter string, solver verdict, peak RSS |
 
 Two of those are deliberate departures from the engine's own defaults, both made
 to keep the two sides comparable rather than to flatter either:
@@ -217,7 +217,10 @@ to keep the two sides comparable rather than to flatter either:
   It can lose solutions, never invent them, so an objective CBLS reports stays
   valid for the original program — but where it bites, CBLS searches a strictly
   smaller box, and the comparison table publishes `n_clamped_bounds` per row so a
-  reader can see where.
+  reader can see where. Note `n_clamped_bounds` also counts the int32 clip on an
+  integer column the file bounded finitely, so it is **not** a subset of
+  `n_unbounded_columns` and the difference of the two is not "what propagation
+  removed".
 
 ### Implied bounds shrink that restriction (#120)
 

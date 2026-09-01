@@ -840,7 +840,7 @@ draw actually samples, always a subset of the variable's domain:
   unbounded model lands in the same box a `.nl` one would have — on the columns
   the adapter cannot bound. The parity is `.nl`-only: `MpsToModelOptions` has no
   integer variant, so an unbounded MPS Int column falls back on `inf_clamp`
-  (1e9) where a hand-built one gets `kRandomIntInfClamp` (1e6). Since #120 they reach that
+  (1e9) where a hand-built one gets `kRandomIntInfClamp` (1e6). Since #120 the adapters reach that
   fallback only where bound propagation (below) derives nothing, so a loaded
   model usually arrives here with finite bounds already. Unguarded, `uniform_real_distribution(lb, ub)`
   breaks its own precondition (`ub - lb <= DBL_MAX`) and libstdc++'s

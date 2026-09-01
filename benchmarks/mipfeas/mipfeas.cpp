@@ -63,6 +63,9 @@ struct Args {
     // #120's other half, honouring a finite bound however wide, is
     // unconditional — so this is an A/B on propagation, not on the old engine.
     bool propagate_bounds = true;
+    // Changes the derived box, so it is recorded per result like every other
+    // setting that does.
+    int max_propagation_passes = 10;
     std::string commit_sha = "unknown";
 };
 
@@ -71,6 +74,7 @@ void print_usage() {
         "Usage: cbls_mipfeas --instance NAME --out-dir DIR [--inst-dir DIR]\n"
         "                    [--budget SECONDS] [--seed N] [--feas-tol T]\n"
         "                    [--inf-clamp B] [--no-propagate-bounds]\n"
+        "                    [--max-propagation-passes N]\n"
         "                    [--no-compound-moves] [--commit SHA]\n");
 }
 
@@ -94,6 +98,8 @@ Args parse_args(int argc, char** argv) {
             a.inf_clamp = std::atof(argv[++i]);
         } else if (s == "--no-propagate-bounds") {
             a.propagate_bounds = false;
+        } else if (s == "--max-propagation-passes" && i + 1 < argc) {
+            a.max_propagation_passes = std::atoi(argv[++i]);
         } else if (s == "--compound-moves") {
             a.compound_moves = true;
         } else if (s == "--no-compound-moves") {
@@ -203,6 +209,7 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     j["compound_moves"] = args.compound_moves;
     j["inf_clamp"] = args.inf_clamp;
     j["propagate_bounds"] = args.propagate_bounds;
+    j["max_propagation_passes"] = args.max_propagation_passes;
     j["commit_sha"] = args.commit_sha;
 
     // Write-then-rename: a job killed mid-write must leave either the previous
@@ -282,6 +289,7 @@ int main(int argc, char** argv) {
     cbls::MpsToModelOptions mps_opts;
     mps_opts.inf_clamp = args.inf_clamp;
     mps_opts.propagate_bounds = args.propagate_bounds;
+    mps_opts.max_propagation_passes = args.max_propagation_passes;
     cbls::MpsToModelResult built;
     try {
         built = cbls::mps_to_model(prob, mps_opts);
@@ -378,6 +386,11 @@ int main(int argc, char** argv) {
         {"n_bounds_finitized", built.bound_stats.n_finitized},
         {"n_bounds_fixed", built.bound_stats.n_fixed},
         {"bound_propagation_passes", built.bound_stats.passes},
+        // The verdict, not just the counts: on `infeasible` the adapter discards
+        // the derived bounds and zeroes the counts, so without this a false
+        // infeasibility reads exactly like "propagation found nothing".
+        {"bound_propagation_infeasible", built.bound_stats.infeasible},
+        {"bound_propagation_hit_pass_limit", built.bound_stats.hit_pass_limit},
     };
     j["objective"] = have_solution ? nlohmann::json(result.objective) : nlohmann::json(nullptr);
     write_result(args, j);

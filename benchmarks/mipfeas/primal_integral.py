@@ -74,6 +74,7 @@ CONFIG_KEYS = (
     "compound_moves",
     "inf_clamp",
     "propagate_bounds",
+    "max_propagation_passes",
     "workers",
     "parameters",
 )
@@ -96,14 +97,18 @@ class Scored(NamedTuple):
     #: Peak resident set of the job, so a full-roster run's concurrency can be
     #: sized from measurement rather than guessed.
     peak_rss_kib: int | None
-    #: Columns whose domain the CBLS clamp narrowed, *after* implied bounds were
-    #: derived. The clamp is a CBLS-side restriction the baseline does not share,
-    #: so "both engines solved the same program" is only checkable if this is
-    #: published next to the score.
+    #: Columns the adapter narrowed for a CBLS-side reason, *after* implied bounds
+    #: were derived: the `inf_clamp` fallback on a column nothing bounds, OR the
+    #: int32 clip on an integer column whose (finite) bounds exceed what
+    #: `Model::int_var` can hold. Both are restrictions the baseline does not
+    #: share, so "both engines solved the same program" is only checkable if this
+    #: is published next to the score.
     n_clamped_bounds: int | None
-    #: Columns the MPS left unbounded — what the clamp would have narrowed had
-    #: propagation not run. The gap between this and `n_clamped_bounds` is how
-    #: much of the restriction propagation removed.
+    #: Columns the MPS left unbounded on at least one side — the exposure the
+    #: clamp would have covered in full had propagation not run. NOT a superset
+    #: of `n_clamped_bounds`, which also counts the int32 clip on a column the
+    #: file bounded, so the difference of the two is not "what propagation
+    #: removed".
     n_unbounded_columns: int | None
     #: Columns whose bounds propagation tightened, unbounded or not.
     n_bounds_tightened: int | None

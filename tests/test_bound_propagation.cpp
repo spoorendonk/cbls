@@ -242,8 +242,7 @@ TEST_CASE("mps adapter clamps the optimum away without propagation") {
     auto result = mps_to_model(far_optimum_problem(), opts);
 
     const Variable& x = result.model.var(0);
-    CHECK(x.ub == 1.0e7);
-    CHECK(5.0e9 > x.ub);  // the only solution is outside the searched box
+    CHECK(x.ub == 1.0e7);  // the only solution, at 5e9, is outside the box
     CHECK(result.n_clamped_columns == 2);
 }
 
@@ -586,4 +585,22 @@ TEST_CASE("mps adapter counts a doubly-narrowed column once") {
     auto result = mps_to_model(p, opts);
 
     CHECK(result.n_clamped_columns == 1);
+}
+
+TEST_CASE("mps adapter honours a NaN bound as no bound rather than throwing") {
+    // The twin of the `.nl` case. `propagate_bounds` rejects NaN outright, so
+    // without sanitising here the same file would build under
+    // propagate_bounds=false and throw under the default.
+    MpsProblem p;
+    p.name = "NANB";
+    p.vars = {MpsVar{"X", std::numeric_limits<double>::quiet_NaN(), 10.0, MpsVarKind::Continuous}};
+    p.rows = {MpsRow{"C1", MpsRowSense::L, 8.0, 0.0}};
+    p.nonzeros = {MpsNonzero{0, 0, 1.0}};
+
+    MpsToModelOptions opts;
+    opts.inf_clamp = 1.0e7;
+    MpsToModelResult result;
+    REQUIRE_NOTHROW(result = mps_to_model(p, opts));
+    CHECK_THAT(result.model.var(0).lb, WithinAbs(-1.0e7, 1e-9));
+    CHECK_THAT(result.model.var(0).ub, WithinAbs(8.0, 1e-6));
 }

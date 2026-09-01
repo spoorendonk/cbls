@@ -110,8 +110,13 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
     std::vector<double> col_ub(n_cols);
     std::vector<uint8_t> integral(n_cols);
     for (int j = 0; j < n_cols; ++j) {
-        col_lb[j] = prob.vars[j].lb;
-        col_ub[j] = prob.vars[j].ub;
+        // A NaN bound is "no bound", which is how clamp_lo/clamp_hi below already
+        // read it. Sanitising here keeps those guards reachable and keeps the two
+        // adapters symmetric — without it, `propagate_bounds` rejects the NaN and
+        // the same file would build under --no-propagate-bounds but not by
+        // default, a divergence that has nothing to do with propagation.
+        col_lb[j] = std::isnan(prob.vars[j].lb) ? -kMpsInf : prob.vars[j].lb;
+        col_ub[j] = std::isnan(prob.vars[j].ub) ? kMpsInf : prob.vars[j].ub;
         integral[j] = prob.vars[j].kind == MpsVarKind::Continuous ? 0 : 1;
     }
     if (opts.propagate_bounds) {

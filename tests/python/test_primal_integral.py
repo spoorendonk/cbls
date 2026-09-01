@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import math
 from typing import TYPE_CHECKING
@@ -17,6 +18,7 @@ from benchmarks.mipfeas.primal_integral import (
     score_instance,
     shifted_geometric_mean,
     summarize,
+    write_comparison,
 )
 
 if TYPE_CHECKING:
@@ -290,3 +292,63 @@ def test_summarize_excludes_not_run_instances_from_the_aggregates(tmp_path: Path
     assert summary.feasible == 1
     assert summary.matched_reference == 1
     assert summary.arithmetic_mean == pytest.approx(0.0)
+
+
+def test_scored_carries_the_bound_propagation_columns(tmp_path: Path) -> None:
+    """The three propagation counts must survive the JSON round-trip into Scored.
+
+    They are what a reader uses to check both engines saw the same program, so a
+    silent None here would publish an unfalsifiable comparison.
+    """
+    _write_result(
+        tmp_path,
+        "cbls",
+        "inst",
+        {
+            "status": "feasible",
+            "objective": 10.0,
+            "n_unbounded_columns": 40,
+            "n_clamped_bounds": 7,
+            "n_bounds_tightened": 33,
+        },
+    )
+    scored = score_instance("inst", "cbls", 10.0, "opt", tmp_path, budget=60.0)
+
+    assert scored.n_unbounded_columns == 40
+    assert scored.n_clamped_bounds == 7
+    assert scored.n_bounds_tightened == 33
+
+
+def test_scored_tolerates_results_predating_bound_propagation(tmp_path: Path) -> None:
+    """A result written before #120 carries none of the new keys and must still score."""
+    _write_result(tmp_path, "cbls", "inst", {"status": "feasible", "objective": 10.0})
+    scored = score_instance("inst", "cbls", 10.0, "opt", tmp_path, budget=60.0)
+
+    assert scored.n_unbounded_columns is None
+    assert scored.n_bounds_tightened is None
+    assert scored.status == "feasible"
+
+
+def test_comparison_csv_header_and_rows_stay_aligned(tmp_path: Path) -> None:
+    """write_comparison builds its header and its rows as two parallel lists.
+
+    #120 inserted two entries into the middle of both, the most misalignment-prone
+    edit that function admits, and nothing else checks the correspondence.
+    """
+    _write_result(
+        tmp_path,
+        "cbls",
+        "inst",
+        {"status": "feasible", "objective": 10.0, "n_unbounded_columns": 40},
+    )
+    scored = score_instance("inst", "cbls", 10.0, "opt", tmp_path, budget=60.0)
+    out = tmp_path / "comparison.csv"
+    write_comparison(out, [scored], [], 60.0, tmp_path / "roster.csv")
+
+    rows = [r for r in csv.reader(out.read_text().splitlines()) if r and not r[0].startswith("#")]
+    header, body = rows[0], rows[1:]
+    assert "n_unbounded_columns" in header
+    assert "n_bounds_tightened" in header
+    for row in body:
+        assert len(row) == len(header)
+    assert body[0][header.index("n_unbounded_columns")] == "40"

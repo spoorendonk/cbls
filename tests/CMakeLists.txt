@@ -37,9 +37,9 @@ include(Catch)
 # slow solves into one serial invocation would make the full suite far slower
 # than it is.
 #
-# Measured at Release: 6 of 305 discovered tests exceed ~10s and account for
+# Measured at Release: 6 of 306 discovered tests exceed ~10s and account for
 # ~103s of the suite's aggregate (summed per-test) time; with `-j$(nproc)` the
-# full run is ~39s of wall clock. The remaining 300 (299 plus the [timing] test,
+# full run is ~39s of wall clock. The remaining 301 (300 plus the [timing] test,
 # which carries no slow label) finish in ~8s with `-j`, which is what pre-commit
 # runs via `ctest -LE slow`. pre-push still runs everything.
 #
