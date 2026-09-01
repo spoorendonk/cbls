@@ -331,8 +331,10 @@ def main() -> int:
         dest="propagate_bounds",
         action="store_false",
         help="disable implied-bound derivation, so every unbounded column falls back "
-        "on --inf-clamp. Reproduces the pre-#120 engine; not a configuration to "
-        "publish, since the clamp it restores is not implied by the constraints",
+        "on --inf-clamp. Isolates propagation only: #120 also stopped the clamp "
+        "narrowing finite bounds, and that half is unconditional. Not a "
+        "configuration to publish, since the clamp it restores is not implied by "
+        "the constraints",
     )
     parser.add_argument(
         "--no-compound-moves",

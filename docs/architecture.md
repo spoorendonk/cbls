@@ -1751,8 +1751,10 @@ The rule the adapters follow afterwards: a bound that **exists**, declared or
 derived, is honoured however wide; only a missing one is invented. `inf_clamp`
 (and the `.nl` side's `int_inf_clamp`) is the fallback, and
 `MpsToModelResult::n_clamped_columns` reports how often it was still needed.
-Propagation is on by default in both adapters and can be turned off, which
-restores the pre-#120 behaviour exactly.
+Propagation is on by default in both adapters and can be turned off. That
+disables propagation only: the other half of #120 — the clamp supplying a bound
+where none exists, rather than narrowing every bound wider than it — is
+unconditional, so the switch does not restore the pre-#120 engine.
 
 Deliberately **not** here: coefficient tightening, redundant-row removal,
 aggregation, probing, dual reductions, and anything nonlinear. The `.nl` adapter

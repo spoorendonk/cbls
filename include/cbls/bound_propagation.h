@@ -64,9 +64,12 @@ struct BoundPropagationOptions {
     double min_relative_improvement = 1e-9;
 
     /// Derived bounds are relaxed outward by
-    /// `max(safety_absolute, safety_relative * |b|)` before being applied, so
-    /// accumulated rounding in the activity sums cannot cut off a feasible
-    /// point. Integral columns are rounded after this relaxation.
+    /// `max(safety_absolute, safety_relative * |b|)` before being applied, to
+    /// absorb rounding in the activity sums. Integral columns are rounded after
+    /// this relaxation. Note the margin is scaled to the derived bound, not to
+    /// the activity it came from, so it is a practical guard rather than a proof:
+    /// a row summing ~1e5 terms of magnitude ~1e9 accumulates more error than
+    /// this absorbs. No instance on the MIPLIB roster has reached that regime.
     double safety_absolute = 1e-9;
     double safety_relative = 1e-12;
 };

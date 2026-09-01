@@ -54,10 +54,10 @@ enum AmplOp {
 // however wide; only "no bound" is replaced, because the replacement is not
 // entailed by the constraints and so can cut off feasible points.
 double clamp_lo(double lb, double inf_clamp) {
-    return is_unbounded_below(lb) ? -inf_clamp : lb;
+    return (std::isnan(lb) || is_unbounded_below(lb)) ? -inf_clamp : lb;
 }
 double clamp_hi(double ub, double inf_clamp) {
-    return is_unbounded_above(ub) ? inf_clamp : ub;
+    return (std::isnan(ub) || is_unbounded_above(ub)) ? inf_clamp : ub;
 }
 
 // Translate one NL expression tree into a CBLS expression node handle. On the
@@ -237,9 +237,21 @@ BoundPropagationStats tighten_column_bounds(const NlProblem& prob, const NlToMod
         row.hi = c.bound.upper;
         row.cols.reserve(c.linear.size());
         row.coefs.reserve(c.linear.size());
+        // `propagate_bounds` rejects an out-of-range column outright, but
+        // `build_linear` drops one silently and io_nl.h promises "skip, don't
+        // throw" on a malformed file. Drop the whole row instead: omitting a row
+        // costs tightening, never validity.
+        bool in_range = true;
         for (const NlLinTerm& t : c.linear) {
+            if (t.var < 0 || static_cast<std::size_t>(t.var) >= lb.size()) {
+                in_range = false;
+                break;
+            }
             row.cols.push_back(t.var);
             row.coefs.push_back(t.coef);
+        }
+        if (!in_range) {
+            continue;
         }
         rows.push_back(std::move(row));
     }
@@ -284,6 +296,10 @@ NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts)
             // let it report what it finds, rather than a derived empty one.
             col_lb = raw_lb;
             col_ub = raw_ub;
+            // Nothing was applied, so the counts must not say otherwise; only
+            // the verdict survives.
+            result.bound_stats = BoundPropagationStats{};
+            result.bound_stats.infeasible = true;
         }
     }
 

@@ -23,10 +23,10 @@ namespace {
 // file or derived by propagation — is therefore honoured as written, however
 // wide; only "no bound" is replaced.
 double clamp_lo(double lb, double inf_clamp) {
-    return is_unbounded_below(lb) ? -inf_clamp : lb;
+    return (std::isnan(lb) || is_unbounded_below(lb)) ? -inf_clamp : lb;
 }
 double clamp_hi(double ub, double inf_clamp) {
-    return is_unbounded_above(ub) ? inf_clamp : ub;
+    return (std::isnan(ub) || is_unbounded_above(ub)) ? inf_clamp : ub;
 }
 
 /// The row's body bounds `lo <= body <= hi`, matching exactly the constraints
@@ -125,6 +125,10 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
             // let it report what it finds, rather than a derived empty one.
             col_lb = raw_lb;
             col_ub = raw_ub;
+            // Nothing was applied, so the counts must not say otherwise; only
+            // the verdict survives.
+            result.bound_stats = BoundPropagationStats{};
+            result.bound_stats.infeasible = true;
         }
     }
 
@@ -147,8 +151,8 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
             // Binary: enforce {0,1}. CBLS' bool_var has fixed [0,1] bounds;
             // use it whenever the MPS bounds align with {0,1}, otherwise
             // fall back to int_var with the explicit bounds.
-            int ilb = static_cast<int>(std::lround(std::max(0.0, lb)));
-            int iub = static_cast<int>(std::lround(std::min(1.0, ub)));
+            int ilb = static_cast<int>(std::lround(std::min(1.0, std::max(0.0, lb))));
+            int iub = static_cast<int>(std::lround(std::max(0.0, std::min(1.0, ub))));
             if (ilb > iub) {
                 throw std::runtime_error("MPS binary column " + v.name +
                                          " has empty integer domain after rounding");
@@ -159,23 +163,28 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
                 handle = m.int_var(ilb, iub, v.name);
             }
         } else if (v.kind == MpsVarKind::Integer) {
-            // Integer: round bounds inward to nearest integers.
-            long long ilb = static_cast<long long>(std::ceil(lb));
-            long long iub = static_cast<long long>(std::floor(ub));
-            if (ilb > iub) {
+            // Integer: round bounds inward to nearest integers. The rounding
+            // stays in double: a finite bound is honoured however wide now, and
+            // anything below the 1e20 sentinel can reach here — `long long`
+            // cannot represent all of that, and the conversion would be UB.
+            const double dlb = std::ceil(lb);
+            const double dub = std::floor(ub);
+            if (dlb > dub) {
                 throw std::runtime_error("MPS integer column " + v.name +
                                          " has empty integer domain after rounding");
             }
-            // CBLS int_var takes int — clip to the int32 range. That is a
+            // CBLS int_var takes int — clip to the int32 range, on *both* sides
+            // of both bounds: a column bounded entirely above INT_MAX would
+            // otherwise keep an unclipped lower bound and invert. That is a
             // representational limit, not an implied bound, so where it bites it
             // narrows the column and counts as clamped.
-            constexpr long long kMin = std::numeric_limits<int>::min();
-            constexpr long long kMax = std::numeric_limits<int>::max();
-            if (ilb < kMin || iub > kMax) {
+            constexpr double kIntLo = static_cast<double>(std::numeric_limits<int>::min());
+            constexpr double kIntHi = static_cast<double>(std::numeric_limits<int>::max());
+            if (dlb < kIntLo || dub > kIntHi) {
                 ++result.n_clamped_columns;
             }
-            ilb = std::max<long long>(kMin, ilb);
-            iub = std::min<long long>(kMax, iub);
+            const double ilb = std::min(std::max(dlb, kIntLo), kIntHi);
+            const double iub = std::min(std::max(dub, kIntLo), kIntHi);
             handle = m.int_var(static_cast<int>(ilb), static_cast<int>(iub), v.name);
         } else {
             handle = m.float_var(lb, ub, v.name);

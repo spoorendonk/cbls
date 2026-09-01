@@ -404,3 +404,95 @@ TEST_CASE("nl adapter falls back to the clamp where no row bounds the column") {
     CHECK(result.n_clamped_columns == 2);
     CHECK(result.bound_stats.n_finitized == 0);
 }
+
+TEST_CASE("bound propagation is conservative when a column repeats in a row") {
+    // `x + x <= 10` is written as two terms, not merged. The exact implied bound
+    // is x <= 5; the pass derives the weaker x <= 10 because it treats the two
+    // occurrences as independent. Weaker is sound — it keeps every feasible
+    // point — and this pins that it never derives the *stronger* 5, which would
+    // be right here but wrong for `x + y` with y aliased to x by other rows.
+    std::vector<double> lb{0.0};
+    std::vector<double> ub{kInf};
+    std::vector<uint8_t> integral{0};
+    propagate_bounds({row({0, 0}, {1.0, 1.0}, -kInf, 10.0)}, integral, lb, ub);
+
+    CHECK(ub[0] >= 10.0);
+    CHECK(ub[0] <= 10.0 + 1e-6);
+}
+
+TEST_CASE("bound propagation does not hand back a sub-tolerance crossed box") {
+    // Two rows pin x from both sides 2.5e-9 apart. Each derived bound is relaxed
+    // outward by 1e-9, so the box crosses by 5e-10 — too little to be called
+    // infeasible, and exactly the shape accumulated rounding produces. A crossed
+    // box must not escape: the MPS adapter throws on `lb > ub`, which would drop
+    // the instance from a run with a build_error.
+    std::vector<double> lb{-kInf};
+    std::vector<double> ub{kInf};
+    std::vector<uint8_t> integral{0};
+    auto stats = propagate_bounds(
+        {row({0}, {1.0}, 5.0, kInf), row({0}, {1.0}, -kInf, 5.0 - 2.5e-9)}, integral, lb, ub);
+
+    CHECK_FALSE(stats.infeasible);
+    CHECK(lb[0] <= ub[0]);
+}
+
+TEST_CASE("mps adapter survives a sub-tolerance crossed box") {
+    // The same shape through the adapter, where a crossed box would throw.
+    MpsProblem p;
+    p.name = "CROSS";
+    p.vars = {MpsVar{"X", -kMpsInf, kMpsInf, MpsVarKind::Continuous}};
+    p.rows = {MpsRow{"C1", MpsRowSense::G, 5.0, 0.0},
+              MpsRow{"C2", MpsRowSense::L, 5.0 - 2.5e-9, 0.0}};
+    p.nonzeros = {MpsNonzero{0, 0, 1.0}, MpsNonzero{1, 0, 1.0}};
+
+    REQUIRE_NOTHROW(mps_to_model(p));
+}
+
+TEST_CASE("mps adapter clips an integer column to the int range and says so") {
+    // A finite bound is honoured however wide, so a declared integer domain
+    // beyond int32 now reaches variable creation. `Model::int_var` takes an int,
+    // so the column is clipped — a narrowing, and counted as one.
+    MpsProblem p;
+    p.name = "BIGINT";
+    p.vars = {MpsVar{"Z", 3.0e9, 4.0e9, MpsVarKind::Integer}};
+    p.rows = {MpsRow{"C1", MpsRowSense::L, 1.0e10, 0.0}};
+    p.nonzeros = {MpsNonzero{0, 0, 1.0}};
+
+    auto result = mps_to_model(p);
+
+    // Both bounds sit above INT_MAX, so both clip to it. Clipping only the far
+    // side of each bound leaves the lower one unclipped, and casting it to int
+    // is undefined — in practice it wraps to INT_MIN and the domain inverts.
+    const double kIntHi = static_cast<double>(std::numeric_limits<int>::max());
+    const Variable& z = result.model.var(0);
+    CHECK_THAT(z.lb, WithinAbs(kIntHi, 1.0));
+    CHECK_THAT(z.ub, WithinAbs(kIntHi, 1.0));
+    CHECK(result.n_clamped_columns == 1);
+}
+
+TEST_CASE("nl adapter ignores rows with a nonlinear part when deriving bounds") {
+    // Activity arithmetic does not apply to a nonlinear body, so such a row must
+    // contribute nothing. Here the *linear* part alone would imply x0 <= 6, but
+    // the row is `2*x0 + x1 + (x0*x0) <= 12` and no bound may be derived from it.
+    NlProblem p = free_columns_problem(/*discrete=*/false);
+    NlExpr nl;
+    nl.nodes.resize(3);
+    nl.nodes[0].kind = NlNodeKind::Var;
+    nl.nodes[0].index = 0;
+    nl.nodes[1].kind = NlNodeKind::Var;
+    nl.nodes[1].index = 0;
+    nl.nodes[2].kind = NlNodeKind::Op;
+    nl.nodes[2].opcode = 2;  // OPMULT
+    nl.nodes[2].children = {0, 1};
+    nl.root = 2;
+    p.constraints[0].nonlinear = nl;
+
+    NlToModelOptions opts;
+    opts.inf_clamp = 1.0e5;
+    auto result = nl_to_model(p, opts);
+
+    REQUIRE(result.supported);
+    CHECK(result.bound_stats.n_finitized == 0);
+    CHECK_THAT(result.model.var(0).ub, WithinAbs(1.0e5, 1e-9));
+    CHECK(result.n_clamped_columns == 2);
+}

@@ -261,7 +261,9 @@ Two caveats a reader should have:
   test where a fixed clamp excludes the only solution and propagation keeps it,
   and 233/233 instances propagating without a single false infeasibility.
 
-`--no-propagate-bounds` restores the pre-#120 behaviour. It exists for A/B work;
+`--no-propagate-bounds` turns off propagation only — the second rule change,
+honouring a finite bound however wide, is unconditional — so it is an A/B on
+propagation rather than a return to the pre-#120 engine. It exists for A/B work;
 it is not a configuration to publish, because the bounds it restores are not
 implied by the constraints.
 

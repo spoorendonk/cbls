@@ -136,8 +136,20 @@ struct Tightener {
             lb[j] = value;
         }
         changed = true;
-        if (lb[j] > ub[j] + relaxation(lb[j], opts)) {
-            infeasible = true;
+        if (lb[j] > ub[j]) {
+            if (lb[j] > ub[j] + relaxation(lb[j], opts)) {
+                infeasible = true;
+            } else if (upper) {
+                // Crossed by less than the safety margin: rounding, not an empty
+                // box. Widen back to a point rather than leave the caller
+                // `lb > ub`, which the MPS adapter rejects with a throw. Sound —
+                // widening only re-admits points — and it cannot oscillate,
+                // because `min_absolute_improvement` exceeds the margin, so the
+                // re-widened bound is never "improved" back down.
+                ub[j] = lb[j];
+            } else {
+                lb[j] = ub[j];
+            }
         }
     }
 
@@ -184,9 +196,13 @@ struct Tightener {
             }
             const int32_t col = row.cols[k];
             const std::size_t j = static_cast<std::size_t>(col);
-            // Contributions are recomputed here rather than cached: an earlier
-            // term of this same row may have moved a bound this one reads, if a
-            // column occurs in the row more than once.
+            // Contributions are recomputed from the *current* bounds while the
+            // activity sums still aggregate the bounds at row entry. That is
+            // stale but conservative in both directions — tightening only raises
+            // a min contribution and lowers a max one, so `min_rest` comes out
+            // under- and `max_rest` over-estimated, and the derived bound is
+            // weaker than the exact one, never stronger. Do not "fix" this into
+            // an exact recomputation without re-deriving that argument.
             const double lo = eff_lo(lb[j], infinity);
             const double hi = eff_hi(ub[j], infinity);
             const double min_rest = min_act.without(min_contribution(a, lo, hi), kNegInf);

@@ -59,8 +59,9 @@ struct Args {
     // publishes it next to `n_unbounded_columns`, the exposure before propagation.
     double inf_clamp = 1.0e7;
     // Derive implied bounds from the rows first, so the clamp above is reached
-    // only on columns no constraint bounds. Off reproduces the pre-#120 engine,
-    // which is the only reason the switch exists.
+    // only on columns no constraint bounds. Off disables *propagation* only —
+    // #120's other half, honouring a finite bound however wide, is
+    // unconditional — so this is an A/B on propagation, not on the old engine.
     bool propagate_bounds = true;
     std::string commit_sha = "unknown";
 };
