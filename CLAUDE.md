@@ -141,7 +141,7 @@ wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
   can carry a `TIMEOUT` and be quarantined if it flakes. Don't add tests to this
   class without a concrete reason.
 
-These counts are hard-coded in **five** places and nothing checks that they
+These counts are hard-coded in **six** places and nothing checks that they
 agree:
 
 1. this section,
@@ -150,9 +150,12 @@ agree:
 4. the comment above the `ctest` call in `.githooks/pre-commit`,
 5. the `.venv/bin/pytest` line in `README.md` for the Python side (235 tests, 73
    of them binding tests, echoed in prose by `pyproject.toml` and
-   `tests/python/conftest.py`).
+   `tests/python/conftest.py`),
+6. the `-LE slow` guidance and the ~39s/~304s figures in `docs/profiling.md`.
+   Note its "302/302 green" sanitizer line is a **dated record of one run at a
+   named commit**, not a current count — it says so inline. Leave it alone.
 
-Update all five in the same commit as any change to the test roster.
+Update all six in the same commit as any change to the test roster.
 
 All timings here are **Release**, the build type `CMakeLists.txt` defaults to.
 The tag was re-derived at `-O3`: 16 tests that earned it at `-O0` no longer come
@@ -257,7 +260,7 @@ When implementing from papers, pseudocode, or open-source references:
 - **Don't invent APIs — verify they exist.** Check that functions, flags, and methods actually exist before using them.
 - **Don't ignore type errors.** If mypy/clang-tidy flags something, fix the root cause — don't suppress. clang-tidy is a hard block at push; silencing it by disabling the check is the one route explicitly closed (see **Git Hooks**).
 - **Don't use deprecated patterns.** Check current docs, not training data.
-- **Performance matters.** Most of our code is solvers — profile before micro-optimizing, but don't sacrifice perf for "clean code".
+- **Performance matters.** Most of our code is solvers — profile before micro-optimizing, but don't sacrifice perf for "clean code". `docs/profiling.md` is how: heap attribution, CPU profiling and the sanitizer build, with a dated tool-availability table naming the machine it was checked on. Numbers reached by subtracting two whole-program timings are not measurements.
 
 ## Build & Test
 
@@ -332,8 +335,12 @@ process gets, so two runs sharing cores produce numbers that are not comparable
 to each other *or* to the committed tables. Run A/B comparisons serially, check
 `uptime` first, and re-run anything anomalous. A bare `cmake -B build` now
 configures Release, but an existing `build/` keeps whatever type it was first
-configured with — so for a timing comparison either check
-`CMAKE_BUILD_TYPE` in `build/CMakeCache.txt` or configure a fresh directory.
+configured with — and the same goes for `CBLS_SANITIZE`/`CBLS_PROFILE`, which are
+cache entries too: a `build/` once configured with a sanitizer stays that way
+through every later flag-less `cmake -B build`, and pre-commit gates on it. So
+for a timing comparison either check `CMAKE_BUILD_TYPE` and `CBLS_SANITIZE` in
+`build/CMakeCache.txt` or configure a fresh directory. The measurement recipes —
+heap attribution, CPU profiling, sanitizers — are in `docs/profiling.md`.
 
 **When regenerating a `comparison.csv`, record the engine commit in it.**
 Search-trajectory changes silently invalidate published tables, and without the

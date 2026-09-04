@@ -29,6 +29,61 @@ if(CCACHE_PROGRAM)
     message(STATUS "ccache: ${CCACHE_PROGRAM}")
 endif()
 
+# Measurement builds: sanitizers and profiling symbols. Both default to off, so
+# a *fresh* gated build (`cmake -B build ...` per CLAUDE.md, passing neither
+# flag) is untouched by them. Both are cache entries, though, so configuring
+# `build/` with one once keeps it there through every later flag-less
+# `cmake -B build`: pre-push drops it (`rm -rf build`), but pre-commit gates on
+# whatever `build/` already is. Each therefore wants its OWN build directory --
+# `build-asan/`, `build-profile/` -- and never `build/`, which the git hooks
+# rebuild and gate on. `.gitignore` covers `build*/`. Recipes: docs/profiling.md.
+#
+# Declared here rather than beside the CBLS_BUILD_* options at the bottom of
+# this file because add_compile_options()/add_link_options() reach only targets
+# created *after* the call, and that has to include Catch2 and the benchmark
+# runners -- a sanitizer applied to some translation units and not others
+# links, then reports garbage.
+set(CBLS_SANITIZE "" CACHE STRING
+    "Sanitizers to build with, e.g. address,undefined,float-cast-overflow (empty: off)")
+option(CBLS_PROFILE
+       "Add debug symbols and frame pointers on top of the build type" OFF)
+
+if(CBLS_SANITIZE OR CBLS_PROFILE)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        message(FATAL_ERROR
+            "CBLS_SANITIZE/CBLS_PROFILE pass GCC/Clang flags, and this is "
+            "'${CMAKE_CXX_COMPILER_ID}'. Configure without them.")
+    endif()
+endif()
+
+if(CBLS_SANITIZE)
+    # -g and frame pointers are not cosmetic here: without them a sanitizer
+    # report is a list of addresses. The build type stays whatever the caller
+    # asked for (Release by default) -- ASan works at -O2 and an -O0 sanitizer
+    # run of this suite is unusably slow.
+    # A CMake list (`-DCBLS_SANITIZE="address;undefined"`) would expand into two
+    # arguments, the second of which GCC reads as an input filename and fails on
+    # at link. Normalise to the comma form the compiler wants.
+    string(REPLACE ";" "," CBLS_SANITIZE_FLAGS "${CBLS_SANITIZE}")
+    add_compile_options(-fsanitize=${CBLS_SANITIZE_FLAGS} -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=${CBLS_SANITIZE_FLAGS})
+    message(STATUS "sanitizers: -fsanitize=${CBLS_SANITIZE_FLAGS}")
+endif()
+
+if(CBLS_PROFILE)
+    # For perf/jemalloc-heap symbolisation on an otherwise optimized binary.
+    # Release omits frame pointers, which costs a profiler its call graph.
+    add_compile_options(-fno-omit-frame-pointer -g)
+    # Multi-config generators leave CMAKE_BUILD_TYPE empty; say so rather than
+    # trailing off after "on top of ".
+    set(CBLS_PROFILE_ON "${CMAKE_BUILD_TYPE}")
+    if(NOT CBLS_PROFILE_ON)
+        set(CBLS_PROFILE_ON "the selected configuration")
+    endif()
+    message(STATUS "profiling: frame pointers + debug symbols on top of "
+                   "${CBLS_PROFILE_ON}")
+endif()
+
 option(CBLS_INSTALL_GIT_HOOKS
        "Point this checkout's core.hooksPath at the tracked .githooks/" ON)
 

@@ -61,6 +61,12 @@ The build type defaults to `Release`; pass `-DCMAKE_BUILD_TYPE=Debug` to overrid
 it. Install `ccache` and CMake will use it as a compiler launcher automatically,
 which makes a clean rebuild of the same directory near-instant.
 
+Two off-by-default measurement builds, each into its own directory:
+`-DCBLS_PROFILE=ON` adds symbols and frame pointers on top of Release, and
+`-DCBLS_SANITIZE=address,undefined,float-cast-overflow` builds under ASan/UBSan.
+See [docs/profiling.md](docs/profiling.md) for the heap and CPU profiling
+recipes that use them.
+
 With Python bindings:
 
 ```bash
