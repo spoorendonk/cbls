@@ -128,11 +128,9 @@ documents. No published Yuck numbers exist for these instances.
   written by `reference_solve.py`, by joining the two CSVs above with
   `bounds.csv`.
 - `*.nl` — fetched text NL instance files.
-
-Regenerate `comparison.csv` with:
-
-    cmake --build build -j$(nproc)
-    ./build/cbls_minlplib --time-limit 60 --seed 1 --commit "$(git rev-parse --short HEAD)"
+- `../../minlplib/run_benchmark.py` — the CBLS re-run driver. See
+  "Re-running the CBLS rows" below; that is the supported way to regenerate
+  `comparison.csv`.
 
 Regenerate `scip_baseline.csv` and `comparison_all.csv` with (needs the
 `benchmarks` extra — `pip install -e '.[benchmarks]'`):
@@ -140,7 +138,145 @@ Regenerate `scip_baseline.csv` and `comparison_all.csv` with (needs the
     .venv/bin/python3 benchmarks/minlplib/reference_solve.py --time-limit 60
 
 Run the CBLS side first: the merge reads whatever `comparison.csv` holds. To
-rebuild only the merge after a fresh CBLS run, add `--merge-only`.
+rebuild only the merge after a fresh CBLS run, add `--merge-only` — which is
+what `run_benchmark.py` does for you, so the SCIP baseline is never re-solved
+by a CBLS re-run.
+
+## Re-running the CBLS rows
+
+**One command**, from a configured Release build directory and a clean checkout:
+
+    .venv/bin/python3 benchmarks/minlplib/run_benchmark.py
+
+That rebuilds `cbls_minlplib`, solves the 50-instance `bounds.csv` roster
+**serially** at 60s each, rewrites `comparison.csv` and `anytime_trace.csv`, and
+re-merges the **CBLS rows** of `comparison_all.csv`. Add `--dry-run` first to
+print the exact commands, the roster size and the estimate without running
+anything.
+
+**Budget ~50 minutes of solving** (50 × 60s), plus model build and read time on
+top. Read
+`--time-limit`, `--seed 1` and the roster as *fixed*: the point of a re-run is
+that only the engine differs from the previous table.
+
+**The box must be quiet.** These are wall-clock-budgeted solves, so a concurrent
+build, test suite or second benchmark changes how many iterations each instance
+gets and produces numbers comparable neither to each other nor to the committed
+table. Check `uptime` before starting, and do not run this alongside anything
+else — that is why the driver never parallelises the solves and why
+`--build-jobs` (build only) defaults to 4.
+
+What the driver refuses, and why each refusal matters:
+
+| Refusal | Why |
+|---|---|
+| dirty working tree | rows would carry a plain SHA whose code is not what ran |
+| build dir not `CMAKE_BUILD_TYPE=Release` | an unoptimised build measures a different engine |
+| unconfigured build dir | nothing to rebuild the runner from |
+| a roster instance with no `.nl` | a hole in the table found 40 minutes in |
+| build dir configured from another checkout | the rows would name one checkout and measure another |
+| `--no-build` with no runner binary | nothing to run, found at the first solve |
+| `--instances` without `--out`/`--trace-out`/`--staging-dir` | a debug subset would truncate a fifty-row table, or leave short-budget rows for the next run's resume to publish |
+| `--instances` with `--out` resolving to `comparison.csv` | same, via a relative path the explicit-`--out` guard would otherwise wave through |
+| a staging directory stamped with another commit, budget or seed | resuming it would mix two configurations into one table |
+| missing `scip_baseline.csv` (unless `--no-merge`) | the merge would publish `comparison_all.csv` without SCIP rows |
+
+It also rebuilds the runner target itself, so the binary cannot lag the SHA it
+is about to be labelled with. `--dry-run` prints the plan and exits non-zero if
+any refusal applies, so it works as a precheck.
+
+**Resumable.** Each instance is solved in its own process into
+`build/minlplib-rerun/<instance>.csv` (plus `.trace.csv` and a `.log` holding
+that instance's runner output and tally). A re-invocation skips instances that
+already have a *complete* staged row. Incomplete means any of: a header-only
+file (what a killed job leaves behind), a torn last line, a row stamped with a
+different `commit_sha`, or a missing `.trace.csv` — all are re-solved.
+`build/minlplib-rerun/stamp.txt` records the commit, budget and seed the
+directory's rows belong to, and a resume against a different one is refused
+outright rather than silently mixed. `--no-resume` forces a full re-solve.
+
+`comparison.csv` and `anytime_trace.csv` are only replaced at the end, by an
+atomic rename of a fully-assembled file, so an interrupted run leaves them
+byte-for-byte intact. `comparison_all.csv` is the exception — the merge step
+rewrites it in place. If the merge fails after `comparison.csv` is written the
+driver says so and exits 1, leaving `comparison_all.csv` on its *previous* CBLS
+rows; just re-run, which reuses the staged rows and goes straight back to the
+merge.
+
+`elec25`/`elec50` **stay in the roster** — `bounds.csv` is the roster of record
+and #123 asks for 50 instances — but their rows are published as documented
+failures and are excluded from every aggregate and quality claim, per
+[#87](https://github.com/spoorendonk/cbls/issues/87) ("Do not publish `elec`
+rows until #110 lands and #116's criterion can actually be checked"). The
+driver's summary holds them apart for that reason. **If an `elec` row comes back
+feasible with a finite objective, stop and check #110/#116 before publishing
+anything about it** — that would be a result, not a routine table refresh.
+
+### After the run
+
+1. `git diff benchmarks/instances/minlplib/` — expect changes confined to
+   `comparison.csv`, `anytime_trace.csv` and the `cbls` rows of
+   `comparison_all.csv`. The `published-bks` and `scip` rows are engine-independent
+   and must be byte-identical; if they moved, something re-solved SCIP and the
+   run must be redone.
+2. Update every run-derived number below. The per-instance runner tallies in
+   `build/minlplib-rerun/*.log` carry the tie/improvement-band counts, and the
+   driver's own summary gives the verdict counts — but note its `counted` line
+   excludes `elec`, whereas the **Results** tally counts the whole roster, so
+   take its `rows written` figure as that table's `roster`. The full list,
+   because it is longer than it looks and no test checks any of it:
+   - **Results**: the tally table; the gap-distribution sentence; the zero-BKS
+     paragraph (`21/22/26`, `19/20/24 over 41 rows`, and which instances have a
+     numerically zero BKS); the worked examples in the two-band paragraphs
+     (`ex6_2_6`, `prob06`, `ex8_4_5`).
+   - **Why 60s**: the cumulative-feasibility table, recomputed from the new
+     `anytime_trace.csv`, *and* the prose under it — the named late-feasible
+     instances with their times, the 46%/22% split, and the `eg_all_s`
+     bound-tightening analysis.
+   - **The four unsolved instances**: the heading count and the table, if the
+     set changed.
+   - **SCIP baseline**: the CBLS column of the head-to-head table — `feasible`,
+     `hit the 60s limit`, and `total wall over the roster` (step 4's #113 moves
+     `wall_seconds`, so this one will change); the "failures are almost
+     disjoint" table; the CBLS row of the quality buckets; and the "What #107
+     accounted for" table.
+   - The SCIP side of all of the above is engine-independent and must not move.
+3. Delete the "**The table predates #120**" staleness paragraph below once the
+   numbers are the new run's.
+4. **Attribute any material movement to the engine changes, not to an
+   algorithmic improvement.** Five landed between the old table and this one:
+   [#111](https://github.com/spoorendonk/cbls/issues/111) (the diversification
+   kick gained a structural half),
+   [#112](https://github.com/spoorendonk/cbls/issues/112) (guarded randomisation
+   on unbounded domains), [#113](https://github.com/spoorendonk/cbls/issues/113)
+   (the FJ deadline stride is bounded in time and iterations, so `wall_seconds`
+   moves and instances that were silently overrunning now stop at the budget),
+   [#114](https://github.com/spoorendonk/cbls/issues/114) (an unbounded Int gets
+   FJ jump candidates instead of freezing) and
+   [#120](https://github.com/spoorendonk/cbls/issues/120) (implied variable
+   bounds by propagation, replacing the fixed inf-clamp). Note also that these
+   are single-sample numbers — the spread quoted in **Results** is wide enough
+   that a single row moving is not evidence of anything.
+5. `analysis_notes.csv` is merged into the note column by the runner. A root
+   cause that no longer applies has to be edited there, not in `comparison.csv`.
+   **Nothing warns you**: the runner merges the curated note only onto rows that
+   came back infeasible, and its "stale analysis note (now solved)" warning sits
+   inside that same guard, so it can never fire. Diff the noted instances
+   (`elec25`, `elec50`, `nvs01`, `st_e40`) against the new table by hand — #114
+   and #120 are exactly the kind of change that could retire one.
+6. Confirm the provenance the whole re-run is for:
+   `cut -d, -f10 comparison.csv | sort -u` must print the header and exactly one
+   SHA, and that SHA must be the checkout you built. Two SHAs mean a resumed run
+   spanned a commit; discard the staging directory and re-run.
+7. Record the machine in the **Results** preamble — CPU model and core count.
+   The "Hardware" note in the SCIP baseline section below asks for this on the
+   next re-run of either side, and this is it.
+8. Run the Python suite:
+   `.venv/bin/pytest tests/python/test_minlplib_scip_baseline.py`.
+   `test_safe_gap_reproduces_the_cpp_runners_published_gap_column` reads the
+   regenerated `comparison.csv` and requires at least 20 rows with enough
+   resolution to cross-check, so a new table can legitimately turn it red. Then
+   run the full gated suite from `CLAUDE.md`'s **Build & Test** before pushing.
 
 ## Results
 
