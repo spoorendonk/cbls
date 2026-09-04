@@ -1059,12 +1059,16 @@ TEST_CASE("solve disarms the escape probe on a new best", "[search][escape]") {
 // first batch is the one under test and the assertion does not depend on which
 // batch kind the RNG happened to pick.
 //
-// [timing] MARKS THE EXCEPTION (issue #104): this is the suite's only assertion
-// on wall-clock duration. Everything else asserts on iteration counts or values.
-// Run just this class with `cbls_tests "[timing]"`. It is not known to flake --
-// measured at 0.116s against its 0.6s threshold with 48 busy processes on 12
-// cores -- but a wall-clock assertion is a standing liability, so keep it
-// greppable and do not add more without a reason as concrete as this one.
+// [timing] MARKS THE EXCEPTION (issue #104): this is still the suite's only
+// assertion on wall-clock DURATION. Everything else asserts on iteration counts
+// or values -- the three throughput floors added under #125 share the [timing]
+// tag but assert a floor on work completed inside a budget, which is a count.
+// Run this one with `cbls_tests "structural batch respects the wall-clock
+// deadline"`, or the whole class with `cbls_tests "[timing]"`. It is not known
+// to flake -- measured at 0.116s against its 0.6s threshold with 48 busy
+// processes on 12 cores -- but a wall-clock assertion is a standing liability,
+// so keep it greppable and do not add more without a reason as concrete as
+// this one.
 TEST_CASE("structural batch respects the wall-clock deadline", "[search][structural][timing]") {
     constexpr int kLists = 1500;
     constexpr int kStops = 100;

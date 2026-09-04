@@ -98,13 +98,16 @@ TESTS_FAILED=0
 
 # Only run C++ tests if C++ files were staged
 if [ -n "$CPP_FILES" ] && [ -d "build" ] && command -v ctest &>/dev/null; then
-	# -LE slow deliberately: this is the fast inner loop. The 6 [slow] tests
-	# are the CHPED and UC-CHPED solves, worth ~103s of the suite's aggregate
-	# (summed per-test) time -- ~39s of wall clock with -j at Release -- and
-	# pre-push runs the whole suite from a clean tree anyway. The margin is
-	# much narrower than it was at -O0 (39s vs 8s, not 304s vs 7s), so the
-	# split now buys an inner loop that stays under ten seconds rather than
-	# one that avoids a six-minute commit.
+	# -LE slow deliberately: this is the fast inner loop, 304 of the 313
+	# tests. The 9 tests it skips are the 6 [slow]-tagged CHPED and UC-CHPED
+	# solves, worth ~103s of the suite's aggregate (summed per-test) time --
+	# ~40s of wall clock with -j at Release -- plus the 3 #125 throughput
+	# floors, which are labelled slow (though not [slow]-tagged) so their
+	# wall-clock budgets stay out of this loop. pre-push runs the whole suite
+	# from a clean tree anyway. The margin is much narrower than it was at
+	# -O0 (40s vs 8s, not 304s vs 7s), so the split now buys an inner loop
+	# that stays under ten seconds rather than one that avoids a six-minute
+	# commit.
 	echo "Running C++ tests (fast set; [slow] runs at push)..."
 	if ! ctest --test-dir build -LE slow --output-on-failure --progress -j"$(nproc 2>/dev/null || echo 4)"; then
 		echo "FAILED: C++ tests failed."

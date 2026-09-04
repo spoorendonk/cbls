@@ -144,10 +144,12 @@ def commit_sha() -> str:
     the moment the repository gains its first tag — the `commit_sha` column would
     silently change shape mid-history.
 
-    Dirtiness comes from `git status --porcelain --untracked-files=no`: a
-    worktree carries an untracked `.venv` symlink (the `.venv/` ignore pattern
-    does not match a symlink), so counting untracked files would refuse every
-    documented worktree setup while saying nothing about the code that ran.
+    Dirtiness comes from `git status --porcelain --untracked-files=no`, which
+    covers modifications to tracked files. Untracked files are deliberately not
+    counted: a scratch file beside the source says nothing about the code that
+    ran. The corollary is that a *new*, never-added source file does not mark
+    the tree dirty, so this is a guard against edited code, not against every
+    difference from HEAD.
     """
     sha = _git("rev-parse", "--short=7", "HEAD")
     return f"{sha}-dirty" if _git("status", "--porcelain", "--untracked-files=no") else sha
@@ -191,6 +193,24 @@ def _build_problems(args: argparse.Namespace, sha: str) -> list[str]:
             f"{args.build_dir} is CMAKE_BUILD_TYPE={cache.get('CMAKE_BUILD_TYPE') or '(empty)'}, "
             "not Release; these are wall-clock-budgeted solves and an unoptimised build "
             "measures a different engine"
+        )
+    # Both are sticky cache entries, so a build dir configured once with either
+    # keeps it through every later flag-less `cmake -B build` while
+    # CMAKE_BUILD_TYPE still reads Release. A sanitizer binary runs several-fold
+    # slower and -fno-omit-frame-pointer costs throughput, so either would
+    # publish wall-clock-budgeted rows measured on an engine nobody runs. See
+    # docs/profiling.md.
+    if cache.get("CBLS_SANITIZE"):
+        problems.append(
+            f"{args.build_dir} is configured with CBLS_SANITIZE={cache['CBLS_SANITIZE']}; "
+            "these are wall-clock-budgeted solves and a sanitizer build measures a "
+            "different engine. Use a separate build directory for sanitizers."
+        )
+    if cache.get("CBLS_PROFILE", "OFF") not in ("OFF", "FALSE", "0", ""):
+        problems.append(
+            f"{args.build_dir} is configured with CBLS_PROFILE={cache['CBLS_PROFILE']}; "
+            "frame pointers cost throughput and docs/profiling.md says a build-profile "
+            "wall-clock is not a benchmark number. Use a separate build directory."
         )
     home = cache.get("CMAKE_HOME_DIRECTORY")
     if home and Path(home).resolve() != REPO_ROOT:
@@ -247,6 +267,17 @@ def usage_error(args: argparse.Namespace, published_out: Path) -> str | None:
     if args.build_jobs < 1:
         return f"--build-jobs must be >= 1 (got {args.build_jobs})"
     if not args.instances:
+        # A whole-roster run replaces the published comparison.csv, so skipping
+        # the trace would leave anytime_trace.csv describing the previous engine
+        # with nothing in either file saying the two disagree — and the README's
+        # post-run step recomputes its budget table from that stale trace.
+        if not args.trace and (args.out is None or args.out.resolve() == published_out.resolve()):
+            published_trace = args.trace_out or args.inst_dir / "anytime_trace.csv"
+            return (
+                "--no-trace on a whole-roster run would publish comparison.csv at this engine "
+                f"while leaving {published_trace} at the previous one; drop --no-trace, or "
+                "pass --out to write somewhere other than the published table"
+            )
         return None
     # A subset rewrites the same whole files a full run does, and its rows would
     # be resumed by the next full run, so it must name scratch paths throughout.

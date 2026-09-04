@@ -127,19 +127,32 @@ Three conventions therefore rest on you rather than on a tool: branch only from 
 
 ### Fast vs. slow tests
 
-The C++ suite is **310 `TEST_CASE`s**: 309 registered by `catch_discover_tests`
-plus the single `[timing]` case registered by hand. Of the 309, **6 carry the
+The C++ suite is **313 `TEST_CASE`s**: 309 registered by `catch_discover_tests`
+plus the **4 `[timing]` cases registered by hand**. Of the 309, **6 carry the
 Catch2 `[slow]` tag** — the CHPED and UC-CHPED benchmark solves, ~103s of
-aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~39s
+aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~40s
 wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
 - `ctest -LE slow` — the other 304 tests, ~8s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
-- `ctest -L timing` — `timing_structural_batch_deadline`, the suite's only
-  wall-clock-duration assertion. It is registered by an explicit `add_test` so it
-  can carry a `TIMEOUT` and be quarantined if it flakes. Don't add tests to this
-  class without a concrete reason.
+- `ctest -L timing` — 4 tests: `timing_structural_batch_deadline` plus the three
+  `timing_throughput_*` floors added for #125. Each is registered by an explicit
+  `add_test` (naming its Catch2 test case) so it can carry a `TIMEOUT` and be
+  quarantined individually. Don't add tests to this class without a concrete
+  reason.
+
+**The Catch2 `[slow]` tag and the ctest `slow` label are not the same set here**,
+and both numbers appear above: 6 tests carry the *tag*, 9 carry the *label*
+(`ctest -N -L slow` says 9). The three throughput floors are tagged `[timing]`
+— which is what keeps them out of both `catch_discover_tests` calls, since the
+second spec is `[slow]~[timing]`; retagging one `[slow]` *instead of* `[timing]`
+would get it discovered *and* hand-registered, i.e. run twice (adding `[slow]`
+alongside `[timing]` changes nothing) —
+and are given `LABELS "timing;slow"` by hand so their wall-clock seconds stay
+out of the pre-commit set. Derive each count with the matching command rather
+than by arithmetic: `ctest -N`, `ctest -N -L slow`, `ctest -N -LE slow`,
+`ctest -N -L timing`.
 
 These counts are hard-coded in **six** places and nothing checks that they
 agree:
@@ -148,14 +161,16 @@ agree:
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
 4. the comment above the `ctest` call in `.githooks/pre-commit`,
-5. the `.venv/bin/pytest` line in `README.md` for the Python side (235 tests, 73
+5. the `.venv/bin/pytest` line in `README.md` for the Python side (241 tests, 73
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`),
-6. the `-LE slow` guidance and the ~39s/~304s figures in `docs/profiling.md`.
+6. the `-LE slow` guidance and the ~40s/~304s figures in `docs/profiling.md`.
    Note its "302/302 green" sanitizer line is a **dated record of one run at a
    named commit**, not a current count — it says so inline. Leave it alone.
 
-Update all six in the same commit as any change to the test roster.
+Update all six in the same commit as any change to the test roster, and
+re-derive every number from `ctest -N` / `pytest --collect-only` rather than
+incrementing the one you find.
 
 All timings here are **Release**, the build type `CMakeLists.txt` defaults to.
 The tag was re-derived at `-O3`: 16 tests that earned it at `-O0` no longer come
@@ -276,7 +291,7 @@ cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python
 Release when the caller sets none, so this fence, CI and a plain `cmake -B build`
 all gate the same binaries from one place. An explicit `-DCMAKE_BUILD_TYPE=Debug`
 still overrides it. The suite is mostly real solver runs, so the type is not
-cosmetic: the full `ctest` was ~304s at the old empty default and is ~39s at
+cosmetic: the full `ctest` was ~304s at the old empty default and is ~40s at
 Release.
 
 `CMakeLists.txt` also picks up `ccache` as a compiler launcher when the machine

@@ -84,14 +84,19 @@ def make_inst_dir(tmp_path: Path, names: list[str], *, scip: bool = True) -> Pat
     return inst
 
 
-def make_build_dir(tmp_path: Path, build_type: str = "Release", home: str | None = None) -> Path:
+def make_build_dir(
+    tmp_path: Path,
+    build_type: str = "Release",
+    home: str | None = None,
+    extra: str = "",
+) -> Path:
     build = tmp_path / "build"
     build.mkdir(exist_ok=True)
     (build / "CMakeCache.txt").write_text(
         "// a comment line that is not a cache entry\n"
         "CMAKE_PROJECT_NAME:STATIC=cbls\n"
         f"CMAKE_BUILD_TYPE:STRING={build_type}\n"
-        f"CMAKE_HOME_DIRECTORY:INTERNAL={home or REPO_ROOT}\n"
+        f"CMAKE_HOME_DIRECTORY:INTERNAL={home or REPO_ROOT}\n" + extra
     )
     return build
 
@@ -160,6 +165,33 @@ def test_preflight_refuses_a_build_dir_from_another_checkout(tmp_path: Path) -> 
     make_build_dir(tmp_path, home=str(tmp_path / "elsewhere"))
     problems = preflight(make_args(tmp_path), "abc1234", ["process"])
     assert any("was configured from" in p for p in problems)
+
+
+def test_preflight_refuses_a_sanitizer_build_dir(tmp_path: Path) -> None:
+    """CBLS_SANITIZE is a sticky cache entry that leaves CMAKE_BUILD_TYPE=Release.
+
+    So the Release check alone would pass a build dir configured once with a
+    sanitizer, and publish wall-clock-budgeted rows measured several-fold slow.
+    """
+    make_inst_dir(tmp_path, ["process"])
+    make_build_dir(tmp_path, extra="CBLS_SANITIZE:STRING=address,undefined\n")
+    problems = preflight(make_args(tmp_path), "abc1234", ["process"])
+    assert any("CBLS_SANITIZE=address,undefined" in p for p in problems)
+
+
+def test_preflight_refuses_a_frame_pointer_build_dir(tmp_path: Path) -> None:
+    make_inst_dir(tmp_path, ["process"])
+    make_build_dir(tmp_path, extra="CBLS_PROFILE:BOOL=ON\n")
+    problems = preflight(make_args(tmp_path), "abc1234", ["process"])
+    assert any("CBLS_PROFILE=ON" in p for p in problems)
+
+
+def test_preflight_accepts_the_options_turned_off(tmp_path: Path) -> None:
+    """An ordinary gated build records both options empty/OFF; that must pass."""
+    make_inst_dir(tmp_path, ["process"])
+    build = make_build_dir(tmp_path, extra="CBLS_SANITIZE:STRING=\nCBLS_PROFILE:BOOL=OFF\n")
+    (build / RUNNER_TARGET).write_text("")
+    assert preflight(make_args(tmp_path), "abc1234", ["process"]) == []
 
 
 def test_preflight_refuses_no_build_when_the_runner_is_absent(tmp_path: Path) -> None:
@@ -255,6 +287,23 @@ def test_a_fully_redirected_subset_run_is_accepted(tmp_path: Path) -> None:
         staging_dir=tmp_path / "stage",
     )
     assert usage_error(args, tmp_path / "comparison.csv") is None
+
+
+def test_no_trace_is_rejected_when_it_would_publish_a_stale_trace(tmp_path: Path) -> None:
+    """A whole-roster --no-trace publishes comparison.csv at this engine while
+    anytime_trace.csv keeps the previous one, and nothing in either file says so."""
+    published = tmp_path / "comparison.csv"
+    message = usage_error(make_args(tmp_path, trace=False), published)
+    assert message is not None and "--no-trace" in message
+
+
+def test_no_trace_is_allowed_when_the_table_goes_to_scratch(tmp_path: Path) -> None:
+    args = make_args(tmp_path, trace=False, out=tmp_path / "scratch.csv")
+    assert usage_error(args, tmp_path / "comparison.csv") is None
+
+
+def test_a_whole_roster_run_with_tracing_on_is_accepted(tmp_path: Path) -> None:
+    assert usage_error(make_args(tmp_path), tmp_path / "comparison.csv") is None
 
 
 def test_a_nonpositive_budget_is_rejected(tmp_path: Path) -> None:
@@ -572,7 +621,13 @@ def test_summary_holds_elec_out_of_the_counted_rows(tmp_path: Path) -> None:
 
 
 def test_the_published_header_still_matches_what_the_runner_writes() -> None:
-    """Pins HEADER above to `minlplib.cpp`, so these tests cannot drift from it."""
+    """Every HEADER column name appears in `minlplib.cpp`.
+
+    A substring search per name, so it catches a *renamed* or deleted column but
+    not a reordered or inserted one — several of these names also occur in that
+    file's prose. The exact pin is the next test, which compares the header
+    against the committed table field for field.
+    """
     source = (REPO_ROOT / "benchmarks" / "minlplib" / "minlplib.cpp").read_text()
     assert all(column in source for column in HEADER.split(","))
     assert 'trace << "' + TRACE_HEADER + '\\n"' in source

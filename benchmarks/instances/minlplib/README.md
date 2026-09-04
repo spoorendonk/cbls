@@ -265,7 +265,7 @@ anything about it** — that would be a result, not a routine table refresh.
    (`elec25`, `elec50`, `nvs01`, `st_e40`) against the new table by hand — #114
    and #120 are exactly the kind of change that could retire one.
 6. Confirm the provenance the whole re-run is for:
-   `cut -d, -f10 comparison.csv | sort -u` must print the header and exactly one
+   `.venv/bin/python -c 'import csv,sys;print(sorted({r["commit_sha"] for r in csv.DictReader(open("comparison.csv"))}))'` must print exactly one
    SHA, and that SHA must be the checkout you built. Two SHAs mean a resumed run
    spanned a commit; discard the staging directory and re-run.
 7. Record the machine in the **Results** preamble — CPU model and core count.

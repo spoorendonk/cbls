@@ -57,7 +57,7 @@ cmake --build build-profile -j"$(nproc)"
 ```
 
 **State the build type in any profile you publish.** `CMakeLists.txt` defaults
-to Release, and the difference is not cosmetic: the same suite runs in ~39s
+to Release, and the difference is not cosmetic: the same suite runs in ~40s
 optimized and ~304s unoptimized, so a profile of a `-DCMAKE_BUILD_TYPE=Debug`
 binary measures a program nobody runs. `CBLS_PROFILE` deliberately does *not*
 change the build type — it only adds back the symbols and frame pointers that
@@ -332,7 +332,7 @@ At `f511b8d`, `-DCBLS_SANITIZE=address,undefined,float-cast-overflow` puts the
 flag on every translation unit — 155 of 155, `grep -c fsanitize
 build-asan/compile_commands.json` against `grep -c '"file"'` on the same file — and links both `libasan.so.8` and
 `libubsan.so.1`. `ctest --test-dir build-asan -LE slow -j3` (`-j3` rather than the recipe's
-`-j4`, because the box was shared) was **302/302 green in 84.5s**, with zero `runtime error` lines, zero AddressSanitizer reports and
+`-j4`, because the box was shared) was **302/302 green in 84.5s** (the fast set was 302 tests at that commit; it is 304 now — this is a record of that run, not a current count), with zero `runtime error` lines, zero AddressSanitizer reports and
 no leaks — LeakSanitizer is on by default and would have said otherwise. Check
 the flags reached the compiler before trusting a green run: a mis-spelled
 `CBLS_SANITIZE` value fails at compile time, but an option that silently did not
@@ -370,8 +370,12 @@ here** — the only 3.2 GB the repository records is CP-SAT's peak on
 `neos-5114902-kasavu` in `benchmarks/instances/mipfeas/README.md`, where CBLS
 peaked at 1.2 GB. Treat the magnitude as unestablished until the capture below
 runs; the recipe settles both the number and its owner. **The profile has not
-been taken yet**, and this section must be replaced by the finding (with its
-commit) when it is.
+been taken yet** — it is tracked as #127, deliberately split out of #122 because
+a capture is a quiet-box measurement run and has to be scheduled against the
+other pending benchmark runs rather than run beside them. Replace this section
+with the finding, and its commit, when #127 executes. All three outcomes are
+publishable: the reader owns the peak, something else does, or there is no such
+peak for this engine and the ~3.2 GB was the reference solver's number.
 
 The capture, on an otherwise idle machine — check `uptime` first, and do not run
 it beside a build:
