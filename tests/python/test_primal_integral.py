@@ -10,8 +10,11 @@ from typing import TYPE_CHECKING
 import pytest
 
 from benchmarks.mipfeas.primal_integral import (
+    ENGINES,
+    FULL_ROSTER_SIZE,
     NO_SOLUTION_GAP,
     SIGN_FLIP_GAP,
+    Scored,
     check_uniform_configuration,
     primal_gap,
     primal_integral,
@@ -352,3 +355,70 @@ def test_comparison_csv_header_and_rows_stay_aligned(tmp_path: Path) -> None:
     for row in body:
         assert len(row) == len(header)
     assert body[0][header.index("n_unbounded_columns")] == "40"
+
+
+def _full_roster_rows(scored: Scored) -> list[Scored]:
+    """One copy of `scored` per instance-solver pair of a full roster.
+
+    `write_comparison` derives the instance count as `len(rows) // len(summaries)`,
+    so the roster size is all that distinguishes a full table from a partial one —
+    the rows themselves need not be distinct. Both engines are present because the
+    divisor is the summary count: a one-engine table would only reach the full
+    roster by also being passed no summaries, which is not a shape the scorer ever
+    produces.
+    """
+    return [scored._replace(engine=engine) for engine in ENGINES for _ in range(FULL_ROSTER_SIZE)]
+
+
+def test_full_roster_table_at_any_budget_is_not_a_wiring_check(tmp_path: Path) -> None:
+    # #126: the budget used to be gated against a hardcoded 600s constant, so a
+    # full-roster run at any other budget was stamped "not a publishable result".
+    # A short budget is a legitimate scoring choice; only a short *roster* is a
+    # wiring check.
+    _write_result(tmp_path, "cbls", "inst", {"status": "feasible", "objective": 10.0})
+    scored = score_instance("inst", "cbls", 10.0, "opt", tmp_path, budget=60.0)
+    rows = _full_roster_rows(scored)
+    summaries = [summarize(rows, engine) for engine in ENGINES]
+    out = tmp_path / "comparison.csv"
+    write_comparison(out, rows, summaries, 60.0, tmp_path / "roster.csv")
+
+    text = out.read_text()
+    assert "WIRING CHECK" not in text
+    assert "INCOMPLETE RUN" not in text
+    # The table states the budget it was scored at, rather than being validated
+    # against a constant that lives in the scorer. Matched in full: "60" alone is
+    # also a substring of "600.0s", so a containment check would go green on a
+    # scorer that went back to printing the retired hardcoded budget.
+    budget_line = next(line for line in text.splitlines() if line.startswith("# Budget:"))
+    assert budget_line.startswith("# Budget:  60.0s per instance-solver pair")
+    assert "scored at" in budget_line
+
+
+def test_partial_roster_table_is_still_banner_stamped(tmp_path: Path) -> None:
+    # Fewer than FULL_ROSTER_SIZE instances is a wiring check at any budget.
+    _write_result(tmp_path, "cbls", "inst", {"status": "feasible", "objective": 10.0})
+    scored = score_instance("inst", "cbls", 10.0, "opt", tmp_path, budget=600.0)
+    out = tmp_path / "comparison.csv"
+    write_comparison(out, [scored], [], 600.0, tmp_path / "roster.csv")
+
+    text = out.read_text()
+    assert "*** WIRING CHECK, NOT A PUBLISHABLE RESULT ***" in text
+    # Pinned as a phrase, not a bare "233": that also appears in objectives, column
+    # counts and peak RSS, so a substring search for the number proves nothing.
+    assert f"is {FULL_ROSTER_SIZE} instances" in text
+    assert "this table used 1" in text
+
+
+def test_a_results_directory_mixing_two_budgets_is_still_refused(tmp_path: Path) -> None:
+    # The guard that actually prevents a wrong number is per-result and
+    # budget-relative: a 60s result's last incumbent held over a 600s budget
+    # silently improves its Primal Integral.
+    _write_result(
+        tmp_path, "cbls", "long", {"status": "feasible", "objective": 10.0, "budget_seconds": 600.0}
+    )
+    _write_result(
+        tmp_path, "cbls", "short", {"status": "feasible", "objective": 10.0, "budget_seconds": 60.0}
+    )
+    with pytest.raises(ValueError, match="60.0s budget but is being scored at 600"):
+        for name in ("long", "short"):
+            score_instance(name, "cbls", 10.0, "opt", tmp_path, budget=600.0)

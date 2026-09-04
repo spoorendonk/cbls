@@ -148,7 +148,7 @@ agree:
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
 4. the comment above the `ctest` call in `.githooks/pre-commit`,
-5. the `.venv/bin/pytest` line in `README.md` for the Python side (179 tests, 73
+5. the `.venv/bin/pytest` line in `README.md` for the Python side (182 tests, 73
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`).
 

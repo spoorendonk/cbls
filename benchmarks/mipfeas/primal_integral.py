@@ -60,9 +60,6 @@ ENGINES = ("cbls", "cpsat")
 #: the recurring way this repo has published a wrong number.
 FULL_ROSTER_SIZE = 233
 
-#: The budget MIPfeas scores at. A different one is a wiring check, not a score.
-MIPFEAS_BUDGET_SECONDS = 600.0
-
 #: Result keys describing *how* a run was configured. Two results disagreeing on any
 #: of them are not comparable. The driver resumes on file existence alone and
 #: defaults to one results directory whatever the flags, so a flag changed between
@@ -387,7 +384,9 @@ def write_comparison(
         "# (epic #87). A gap in either direction is informative about the reimplementation.",
         "#",
         f"# Roster:  {roster_path.name} ({len(rows) // max(len(summaries), 1)} instances)",
-        f"# Budget:  {budget}s per instance-solver pair",
+        f"# Budget:  {budget}s per instance-solver pair — the budget this table was scored at.",
+        "#          Primal Integrals are budget-relative, so a table is comparable only",
+        "#          to another scored at the same budget.",
         "# Metric:  Primal Integral over the budget, in [0, 2]; lower is better.",
         "#          0 = optimal immediately, 2 = never feasible.",
         "#",
@@ -400,23 +399,23 @@ def write_comparison(
     instances = len(rows) // max(len(summaries), 1)
     partial = [s for s in summaries if s.not_run]
     if partial:
-        # Fires independently of the wiring-check banner: a *full* roster at the
-        # right budget with half its jobs unfinished would otherwise read as a clean
-        # result, with the shortfall visible only in a stderr warning nobody sees
-        # months later.
+        # Fires independently of the wiring-check banner: a *full* roster with half
+        # its jobs unfinished would otherwise read as a clean result, with the
+        # shortfall visible only in a stderr warning nobody sees months later.
         header += [
             "# *** INCOMPLETE RUN — AGGREGATES COVER ONLY THE JOBS THAT RAN ***",
             "# " + "; ".join(f"{s.engine}: {s.not_run} of {instances} not run" for s in partial),
             "#",
         ]
-    if instances != FULL_ROSTER_SIZE or budget != MIPFEAS_BUDGET_SECONDS:
+    if instances != FULL_ROSTER_SIZE:
+        # The budget is not part of this test (#126): the budget to score at is a
+        # choice the run makes and the header records, so a full roster at any one
+        # budget is a result. A partial roster is a wiring check at every budget.
         header += [
             "# *** WIRING CHECK, NOT A PUBLISHABLE RESULT ***",
-            f"# The published MIPfeas setup is {FULL_ROSTER_SIZE} instances at "
-            f"{MIPFEAS_BUDGET_SECONDS:.0f}s; this table used {instances} at {budget:.0f}s.",
+            f"# The MIPfeas roster is {FULL_ROSTER_SIZE} instances; this table used {instances}.",
             "# These numbers are not comparable to a MIPfeas score, and the two engines'",
-            "# relative standing on a subset at a short budget need not hold on the full",
-            "# roster.",
+            "# relative standing on a subset need not hold on the full roster.",
             "#",
         ]
     header.append("# Aggregates (shifted geometric mean is the primary ranking):")
