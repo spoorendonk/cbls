@@ -1,16 +1,19 @@
-// Network-free tests for the AMPL NL text reader (issue #72, P3) and the
-// NL->Model adapter (P4). Fixtures are tiny inline `g3` NL files; no instances
-// are downloaded. Fixture layout mirrors a real minlplib `.nl` (header block,
-// then b / x / r / J / O / C segments).
+// Network-free tests for the AMPL NL text reader (issue #72, P3), the
+// NL->Model adapter (P4), and one end-to-end solve of a vendored non-convex
+// instance (#124). Reader/adapter fixtures are tiny inline `g3` NL files; no
+// instances are downloaded. Fixture layout mirrors a real minlplib `.nl`
+// (header block, then b / x / r / J / O / C segments).
 
 #include "test_helpers.h"
 
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <cbls/cbls.h>
 #include <cbls/io_nl.h>
 #include <cmath>
+#include <cstdint>
 #include <string>
 
 using namespace cbls;
@@ -382,4 +385,88 @@ TEST_CASE("nl_to_model maps OP1POW (base^const) to pow", "[minlplib]") {
     r.model.var_mut(0).value = 2.0;
     full_evaluate(r.model);
     REQUIRE_THAT(r.model.node(r.objective_node_id).value, WithinAbs(8.0, 1e-9));
+}
+
+// ---------------------------------------------------------------------------
+// End-to-end solve (issue #124).
+//
+// Everything above tests the reader and the adapter on inline fixtures; this
+// runs the search on a real vendored instance, which is the only thing in the
+// suite that would notice search quality collapsing on a non-convex MINLP.
+//
+// `ex4_1_8` is the instance: 2 continuous columns and one nonlinear EQUALITY
+// row, which is what makes the feasible set non-convex —
+//
+//     min  x1^2 - 7 x1 - 12 x0    s.t.  2 x0^4 + x1 = 2,  x0 in [0,2], x1 in [0,3]
+//
+// so reaching feasibility means landing ON a quartic curve, not merely inside a
+// box. Note what is NOT hard here: eliminating x1 leaves 4 x0^8 + 6 x0^4 -
+// 12 x0 - 10 over x0 in [0,1], which is convex with a single minimum at
+// x0 ~ 0.7175, so the difficulty is the equality rather than a multimodal
+// objective. The instance is small enough to be fast (~0.06s for 20k GLS
+// iterations) and stable: at that budget the engine lands within 0.02% of the
+// published primal bound on every one of seeds 1-10 and on seed 42, reaching
+// either the optimum (-16.73889) or a near-miss on the same curve (-16.73598).
+//
+// The gap bound is loose on purpose (5%, against a worst observed 0.017%): this
+// is a floor, not a record. Be clear about what it does and does not catch —
+// this instance is easy for the float jump values, so even a 100x smaller
+// budget (200 iterations) stays within 0.4%, and dropping the intensification
+// hook does not move it out of the band either. It is a collapse detector, not
+// a quality gauge. The assertions with real teeth are feasibility, the
+// objective-drift check, and the lower guard: an objective below the published
+// DUAL bound cannot be produced by a correct model, so it catches a reader or
+// objective-bookkeeping bug the way the mipfeas test's below_reference check
+// does. Both bounds come from benchmarks/instances/minlplib/bounds.csv, which
+// has no reader in the library (unlike the MIPLIB .solu the mipfeas test reads),
+// so they are transcribed here with the row quoted.
+
+TEST_CASE("MINLPLib ex4_1_8 solves within a loose gap of its published bound",
+          "[minlplib][solve]") {
+    // bounds.csv: ex4_1_8,other,2,1,min,-16.73889318,-16.7388932,0
+    const double primal_bks = -16.73889318;
+    const double dual_bound = -16.7388932;
+
+    NlProblem prob = read_nl("benchmarks/instances/minlplib/ex4_1_8.nl");
+    REQUIRE(prob.n_vars == 2);
+    REQUIRE(prob.n_cons == 1);
+
+    // `win_slack` from benchmarks/minlplib/minlplib.cpp — not its `tie_band`,
+    // which that file keeps deliberately tighter — taken against the dual bound
+    // rather than the primal, which differs only in the 8th digit. Below the
+    // bound by less than this is feasibility-tolerance slack, not an impossible
+    // objective: SCIP's own proven optimum (-16.738894589, scip_baseline.csv)
+    // already sits 1.4e-6 below the 8-digit dual bound published here.
+    const double band =
+        std::max(1e-6 * (std::abs(dual_bound) + 1.0), 10.0 * kDefaultFeasibilityTolerance);
+    const double loose_gap = 0.05 * std::abs(primal_bks);
+
+    for (uint64_t seed : {1ULL, 2ULL, 42ULL}) {
+        INFO("seed " << seed);
+        NlToModelResult built = nl_to_model(prob);
+        REQUIRE(built.supported);
+        REQUIRE(built.objective_node_id >= 0);
+
+        FloatIntensifyHook hook;
+        // Inert at this budget (diversify() needs 100 stagnant batches of 1000
+        // iterations); passed for parity with benchmarks/minlplib/minlplib.cpp.
+        LNS lns(0.3);
+        SearchResult result = solve_deterministic(built.model, 20000, seed, &hook, &lns);
+
+        CAPTURE(result.best_violation, result.objective, result.iterations);
+        REQUIRE(result.feasible);
+        REQUIRE(result.best_violation <= kDefaultFeasibilityTolerance);
+        REQUIRE(std::isfinite(result.objective));
+        // The iteration budget, not a wall clock, is what stopped the run (#104).
+        REQUIRE(result.termination == TerminationReason::IterationLimit);
+
+        // The reported objective must be the one the returned assignment
+        // evaluates to; solve() restores best_state before returning.
+        const double model_objective = built.model.node(built.objective_node_id).value;
+        REQUIRE(std::abs(model_objective - result.objective) <=
+                1e-6 * (std::abs(result.objective) + 1.0));
+
+        REQUIRE(result.objective <= primal_bks + loose_gap);
+        REQUIRE(result.objective >= dual_bound - band);
+    }
 }

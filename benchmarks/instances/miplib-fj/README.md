@@ -9,6 +9,11 @@
 > target are gone; `tests/test_io_mps.cpp` still covers the MPS reader and
 > adapter, which MIPfeas depends on.
 >
+> The vendored instances are also a live test dependency: `tests/test_mipfeas.cpp`
+> reads `pk1.mps.gz` and `miplib2017-v22.solu` from this directory for its
+> end-to-end solve, because the MIPfeas roster's own instances are not vendored
+> (~546 MiB). Don't prune them.
+>
 > The data here is kept, not deleted: `comparison.csv` is the pre-port-SA vs
 > post-port-ViolationLS record, which answers a different question (did the
 > ViolationLS port change anything?) and is not reproducible from the current

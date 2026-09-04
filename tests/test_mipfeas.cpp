@@ -1,17 +1,25 @@
-// Tests for the engine contract the MIPfeas incumbent trace depends on.
+// Tests for the MIPfeas class: the engine contract its incumbent trace depends
+// on, and one end-to-end solve of a vendored MIPLIB instance.
 //
 // benchmarks/mipfeas/mipfeas.cpp records the Primal Integral's step function from
 // SolveCallback, filtering on `std::isfinite(p.objective)` rather than on
 // `p.feasible`. That choice is only correct if the objective field means "an
-// incumbent exists" — these tests pin that meaning down, because a change to it
+// incumbent exists" — the trace tests pin that meaning down, because a change to it
 // would silently mis-time every published Primal Integral rather than fail a build.
+//
+// The solve test at the bottom covers the other half: that the engine still
+// reaches a genuine, integral, no-better-than-optimal MILP solution at all.
 
 #include "test_helpers.h"
 
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
+#include <cbls/io_mps.h>
 #include <cmath>
+#include <cstdint>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace {
@@ -121,5 +129,108 @@ TEST_CASE("an incumbent can be reported while the current point is infeasible",
         if (e.feasible) {
             REQUIRE(std::isfinite(e.objective));
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// End-to-end solve (issue #124).
+
+namespace {
+
+const char* kPk1Path = "benchmarks/instances/miplib-fj/pk1.mps.gz";
+const char* kMiplibSoluPath = "benchmarks/instances/miplib-fj/miplib2017-v22.solu";
+
+// The proven optimum recorded for `name` in a MIPLIB .solu file. Read rather
+// than hard-coded so the reference the test scores against is the vendored
+// file's, not a copy of it that can drift.
+double proven_optimum(const std::string& name) {
+    for (const cbls::SoluEntry& e : cbls::read_solu(kMiplibSoluPath)) {
+        if (e.name == name) {
+            REQUIRE(e.is_optimal);
+            return e.value;
+        }
+    }
+    FAIL("no .solu entry for " << name);
+    return 0.0;
+}
+
+}  // namespace
+
+// The MIPfeas roster's own instances are deliberately NOT vendored (~546 MiB;
+// benchmarks/instances/mipfeas/.gitignore says so), so the in-suite solve runs
+// on the ~180 KB vendored MIPLIB subset in benchmarks/instances/miplib-fj/ —
+// same MIPLIB 2017 instances, same proven optima, and present in a fresh clone
+// with no network. That directory's README is headed "Retired"; the data is
+// explicitly kept, and this test is now one of its dependents.
+//
+// `pk1` is the instance picked: 86 columns over 45 rows, 55 of them integer
+// (x2-x56) and 31 continuous, with the objective a single continuous column
+// (x1) — so the run exercises the float path as well as the integer jumps, and
+// the reference guard below needs a tolerance band rather than exact integer
+// arithmetic. The engine reaches a feasible point on every one of seeds 1-10 at
+// both 1000 and 2000 GLS iterations (~0.12-0.24s), and on seed 42 at the 2000
+// the test uses, so the budget here is not near an edge. pk1's optimum, 11, is
+// proven — `=opt= pk1 11` in the vendored miplib2017-v22.solu, and the same
+// 11.0 in the MIPfeas roster.csv, which is derived from v36.
+//
+// The quality assertion is deliberately one-sided. Objective quality on pk1
+// varies by two orders of magnitude across seeds (87 at seed 1, ~1e7 at seed 7
+// at this budget), so an upper bound would be either vacuous or flaky; a
+// solution BELOW the proven optimum, on the other hand, is unambiguously a bug
+// in the model, the reader or the objective bookkeeping rather than a quality
+// regression. This is the in-suite version of the run scorer's below_reference
+// check.
+TEST_CASE("MIPfeas pk1 solves to a feasible point never better than its optimum",
+          "[mipfeas][solve]") {
+    const double reference = proven_optimum("pk1");
+    const cbls::MpsProblem prob = cbls::read_mps(kPk1Path);
+    REQUIRE(prob.vars.size() == 86);
+
+    // The scorer's own rule is the relative term alone — below_reference in
+    // benchmarks/mipfeas/primal_integral.py, 1e-6 * (|reference| + 1). The
+    // absolute floor of 10x the feasibility tolerance added here only widens it
+    // (1.2e-5 against 1.0e-5 on pk1), because a point may sit feas_tol outside a
+    // row and buy a little objective with that slack.
+    const double band =
+        std::max(1e-6 * (std::abs(reference) + 1.0), 10.0 * cbls::kDefaultFeasibilityTolerance);
+
+    for (uint64_t seed : {1ULL, 7ULL, 42ULL}) {
+        INFO("seed " << seed);
+        cbls::MpsToModelResult built = cbls::mps_to_model(prob);
+        REQUIRE(built.objective_node_id >= 0);
+        cbls::FloatIntensifyHook hook;
+        // LNS cannot fire at this budget — diversify() needs 100 stagnant
+        // batches of 1000 iterations — so it is passed for parity with
+        // benchmarks/mipfeas/mipfeas.cpp, not because it is under test.
+        cbls::LNS lns(0.3);
+        cbls::SearchResult result = solve_deterministic(built.model, 2000, seed, &hook, &lns);
+
+        CAPTURE(result.best_violation, result.objective, result.iterations);
+        REQUIRE(result.feasible);
+        REQUIRE(result.best_violation <= cbls::kDefaultFeasibilityTolerance);
+        REQUIRE(std::isfinite(result.objective));
+        // The iteration budget is what stopped the run: solve_deterministic
+        // disables the wall clock, and a regression that re-armed it would make
+        // this test machine-dependent while still passing (#104).
+        REQUIRE(result.termination == cbls::TerminationReason::IterationLimit);
+
+        // An Int column left fractional means the returned point is not a
+        // solution of the MIP at all, whatever the residual says.
+        int n_fractional = 0;
+        for (const auto& v : built.model.variables()) {
+            if (v.type == cbls::VarType::Int && std::abs(v.value - std::round(v.value)) > 1e-9) {
+                ++n_fractional;
+            }
+        }
+        REQUIRE(n_fractional == 0);
+
+        // solve() restores best_state and re-evaluates before returning, so the
+        // objective it reports must be the one the model holds. Without this the
+        // reference guard below only constrains a number, not the solution.
+        const double model_objective = built.model.node(built.objective_node_id).value;
+        REQUIRE(std::abs(model_objective - result.objective) <=
+                1e-6 * (std::abs(result.objective) + 1.0));
+
+        REQUIRE(result.objective >= reference - band);
     }
 }

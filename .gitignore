@@ -1,4 +1,7 @@
 build*/
+# No trailing slash: in a git worktree `.venv` is a SYMLINK to the main
+# checkout's venv (see CLAUDE.md, Build & Test), and `.venv/` does not match a
+# symlink -- so `git add -A` there would commit it.
 .venv
 *.egg-info/
 __pycache__/
@@ -15,6 +18,14 @@ compile_commands.json
 .pytest_cache/
 *.o
 results/
+
+# Profiling artifacts. docs/profiling.md says to run these in a scratch
+# directory; this is the backstop for when one lands here anyway.
+perf.data
+perf.data.old
+gmon.out
+*.heap
+callgrind.out.*
 
 # Local agent/dev tooling — not part of the repo.  The gates that matter are
 # tracked in .githooks/ (wired up by `cmake -B build`).
