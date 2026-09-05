@@ -137,14 +137,18 @@ NB_MODULE(_cbls_core, m) {
         .def("lt", &Model::lt)
         .def("gt", &Model::gt)
         .def("lambda_sum", &Model::lambda_sum)
-        // Constraint and objective (int32_t overloads)
-        .def("add_constraint", static_cast<void (Model::*)(int32_t)>(&Model::add_constraint))
-        .def("minimize", static_cast<void (Model::*)(int32_t)>(&Model::minimize))
-        .def("maximize", static_cast<void (Model::*)(int32_t)>(&Model::maximize))
-        // Constraint and objective (Expr overloads)
-        .def("add_constraint", static_cast<void (Model::*)(const Expr&)>(&Model::add_constraint))
-        .def("minimize", static_cast<void (Model::*)(const Expr&)>(&Model::minimize))
-        .def("maximize", static_cast<void (Model::*)(const Expr&)>(&Model::maximize))
+        // Constraint and objective, both overload sets. nb::overload_cast picks
+        // the member by parameter list; a static_cast to the member-pointer type
+        // does the same job but reads to readability-redundant-casting as a cast
+        // to the type the expression already has -- the check resolves the
+        // overload *using* the cast and then calls it redundant. Say which
+        // overload is wanted instead of casting to say it.
+        .def("add_constraint", nb::overload_cast<int32_t>(&Model::add_constraint))
+        .def("minimize", nb::overload_cast<int32_t>(&Model::minimize))
+        .def("maximize", nb::overload_cast<int32_t>(&Model::maximize))
+        .def("add_constraint", nb::overload_cast<const Expr&>(&Model::add_constraint))
+        .def("minimize", nb::overload_cast<const Expr&>(&Model::minimize))
+        .def("maximize", nb::overload_cast<const Expr&>(&Model::maximize))
         .def("add_var_sequence", &Model::add_var_sequence, nb::arg("var_ids"),
              nb::arg("min_block_on") = 1, nb::arg("min_block_off") = 1)
         .def("var_sequence_for", &Model::var_sequence_for)
