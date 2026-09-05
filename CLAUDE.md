@@ -123,9 +123,9 @@ The hooks live in **`.githooks/`, tracked in this repo** — that directory is t
 
   Issue #121's body **mirrors** that table, because a cold session picks the
   work up from the tracker rather than from the config. That is the one copy
-  that has to exist, so it is not optional to update: a commit that clears a
-  check edits `.clang-tidy`, and the push that carries it edits #121's rows and
-  total to match.
+  that has to exist, so it is not optional to update: the change that clears a
+  check edits `.clang-tidy`, and brings #121's rows and total level in the same
+  change. While such work sits on an unmerged branch, say so in the issue.
 
   Note `.clang-tidy`'s `Checks:` is a YAML `>` folded scalar, where `#` is *not*
   a comment — it is literal text that silently corrupts the check list, and a
