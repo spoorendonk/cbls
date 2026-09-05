@@ -123,14 +123,12 @@ double ViolationManager::weighted_delta_from(const std::vector<double>& snapshot
 }
 
 bool ViolationManager::is_feasible(double tol) const {
-    for (int32_t cid : model_.constraint_ids()) {
-        // A NaN node value is not <= tol; treat it as infeasible (the `!(<=)`
-        // form catches NaN, which a bare `> tol` would silently pass).
-        if (!(model_.node(cid).value <= tol)) {
-            return false;
-        }
-    }
-    return true;
+    const std::vector<int32_t>& cids = model_.constraint_ids();
+    // A NaN node value is not <= tol, so all_of rejects it -- which is what we
+    // want. Writing the predicate the other way round, as `> tol`, would let
+    // NaN through silently.
+    return std::all_of(cids.begin(), cids.end(),
+                       [&](int32_t cid) { return model_.node(cid).value <= tol; });
 }
 
 std::vector<int> ViolationManager::violated_constraints(double tol) const {

@@ -440,12 +440,9 @@ bool FeasibilityJump::active(int32_t constraint_idx) const {
 }
 
 bool FeasibilityJump::participates_in_active_violated(int32_t var_id) const {
-    for (int32_t c : model_.constraints_of_var(var_id)) {
-        if (violated_[c] && active(c)) {
-            return true;
-        }
-    }
-    return false;
+    const std::vector<int32_t>& cs = model_.constraints_of_var(var_id);
+    return std::any_of(cs.begin(), cs.end(),
+                       [this](int32_t c) { return violated_[c] && active(c); });
 }
 
 void FeasibilityJump::enqueue(int32_t var_id) {

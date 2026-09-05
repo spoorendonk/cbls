@@ -54,21 +54,16 @@ constexpr uint64_t kSeeds = 200;
 constexpr double kDefaultP = 0.1;
 
 bool all_values_finite(const Model& m) {
-    for (const auto& v : m.variables()) {
-        if (!is_structured(v.type) && !std::isfinite(v.value)) {
-            return false;
-        }
-    }
-    return true;
+    const std::vector<Variable>& vars = m.variables();
+    return std::all_of(vars.begin(), vars.end(), [](const Variable& v) {
+        return is_structured(v.type) || std::isfinite(v.value);
+    });
 }
 
 bool all_constraints_finite(const Model& m) {
-    for (int32_t cid : m.constraint_ids()) {
-        if (!std::isfinite(m.node(cid).value)) {
-            return false;
-        }
-    }
-    return true;
+    const std::vector<int32_t>& cids = m.constraint_ids();
+    return std::all_of(cids.begin(), cids.end(),
+                       [&](int32_t cid) { return std::isfinite(m.node(cid).value); });
 }
 
 // Two unbounded floats on the unit circle: the repro from the issue. `|x^2 +
