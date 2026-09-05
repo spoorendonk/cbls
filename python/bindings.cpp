@@ -354,7 +354,12 @@ NB_MODULE(_cbls_core, m) {
     m.def("save_move_values", &save_move_values);
     m.def("undo_move", &undo_move);
     // InnerSolverHook + FloatIntensifyHook
-    nb::class_<InnerSolverHook>(m, "InnerSolverHook");
+    // Named rather than a discarded temporary: nb::class_ registers the type
+    // in its constructor, so the object exists only for that side effect and
+    // an unnamed one reads as a mistake (bugprone-unused-raii). The base has
+    // no members or methods to expose -- FloatIntensifyHook below is what
+    // Python instantiates; this exists so nanobind knows the inheritance.
+    nb::class_<InnerSolverHook> inner_solver_hook(m, "InnerSolverHook");
 
     nb::class_<FloatIntensifyHook, InnerSolverHook>(m, "FloatIntensifyHook")
         .def(nb::init<>())
