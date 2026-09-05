@@ -40,7 +40,7 @@ std::optional<Solution> SolutionPool::best() const {
 std::vector<Solution> SolutionPool::top_k(int k) const {
     std::scoped_lock lock(mutex_);
     int n = std::min(k, static_cast<int>(solutions_.size()));
-    return std::vector<Solution>(solutions_.begin(), solutions_.begin() + n);
+    return {solutions_.begin(), solutions_.begin() + n};
 }
 
 std::optional<Solution> SolutionPool::get_restart_point(RNG& rng) const {

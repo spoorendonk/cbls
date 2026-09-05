@@ -49,7 +49,7 @@
 # gate red for everyone. The same goes for the running total below -- re-run
 # the sweep, do not subtract.
 #
-# TOTAL: 294
+# TOTAL: 293
 #
 #    63  readability-function-cognitive-complexity
 #    40  readability-implicit-bool-conversion
@@ -73,7 +73,6 @@
 #     2  bugprone-unchecked-optional-access
 #     1  bugprone-empty-catch
 #     1  modernize-pass-by-value
-#     1  modernize-return-braced-init-list
 #     1  performance-unnecessary-value-param
 #
 # Deleting a line from that list is how a check comes back. Do it in the same
@@ -117,8 +116,7 @@ Checks: >
   -bugprone-unchecked-optional-access,
   -modernize-pass-by-value,
   -performance-unnecessary-value-param,
-  -bugprone-empty-catch,
-  -modernize-return-braced-init-list
+  -bugprone-empty-catch
 
 CheckOptions:
   - key: readability-function-cognitive-complexity.Threshold
