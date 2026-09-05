@@ -47,9 +47,11 @@
 # Re-derive, never increment: a count here is a floor for the work, and
 # deleting a line whose findings you sized from a stale number turns the push
 # gate red for everyone. The same goes for the running total below -- re-run
-# the sweep, do not subtract: clearing bugprone-branch-clone also cleared one
-# readability-implicit-bool-conversion, so 296 minus the 24 that were fixed is
-# 272 where the tree actually reports 271.
+# the sweep, do not subtract. Worked example: rewriting one loop as std::any_of
+# for readability-use-anyofallof -- `violated_[c] && active(c)` in
+# feasibility_jump.cpp -- also took a readability-implicit-bool-conversion with
+# it, so 296 minus the 24 findings actually fixed gives 272 where the tree
+# reports 271.
 #
 # One trap when re-deriving with `clang-tidy --checks=<names>` on the command
 # line: a positive name there is appended after src/io/.clang-tidy's
