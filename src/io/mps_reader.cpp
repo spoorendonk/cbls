@@ -11,6 +11,16 @@
 //     rely on the MPS-to-Model adapter to assemble the linear constraint.
 //   * `kInf` -> `cbls::kMpsInf`.
 //   * `MIPX_HAS_BZIP2` -> `CBLS_HAS_BZIP2`.
+//   * Two behaviour-identical spellings: `128 * 1024 * 1024` -> `128ULL * ...`
+//     (bugprone-implicit-widening-of-multiplication-result) and `1u << 30` ->
+//     `1U << 30` (readability-uppercase-literal-suffix). Both values are
+//     unchanged. RE-APPLY THESE after any sync that rewrites those lines --
+//     clang-tidy is a hard block at push, so an upstream hunk that reverts
+//     them turns the gate red on someone else's commit. They are fixed here
+//     rather than by switching the two checks off in src/io/.clang-tidy so
+//     that the three native adapters in this directory keep that coverage;
+//     the naming check is exempted there instead, because renaming
+//     upstream's public helpers is a far larger delta than two characters.
 
 #include "cbls/io_mps.h"
 
@@ -44,7 +54,7 @@ namespace {
 
 // Compressed files below this threshold are bulk-decompressed into memory
 // so that getline() returns zero-copy string_view into the buffer.
-constexpr size_t kBulkDecompressThreshold = 128 * 1024 * 1024;  // 128 MB
+constexpr size_t kBulkDecompressThreshold = 128ULL * 1024 * 1024;  // 128 MB
 
 /// Unified line reader: mmap (plain), bulk-decompress (small .gz),
 /// or buffered gzread (large .gz).  getline() returns string_view
@@ -192,7 +202,7 @@ private:
                 owned_buf_.resize(owned_buf_.size() * 2);
                 avail = owned_buf_.size() - total;
             }
-            auto to_read = static_cast<unsigned>(std::min<size_t>(avail, 1u << 30));
+            auto to_read = static_cast<unsigned>(std::min<size_t>(avail, 1U << 30));
             int n = gzread(f, owned_buf_.data() + total, to_read);
             if (n <= 0) {
                 break;

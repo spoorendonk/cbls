@@ -6,12 +6,27 @@
 # `isSection`, `parseSection`), so renaming them to this project's lower_case
 # would put a permanent, purely cosmetic delta between the two trees and make
 # the next sync harder to review -- against the Reference Correctness rule in
-# CLAUDE.md. Four findings, all in the vendored readers.
+# CLAUDE.md. Four findings, all in mps_reader.cpp (solu_reader.cpp has none).
 #
 # Everything else in the root .clang-tidy still applies here; only the naming
 # check is off. The tradeoff is that the three native adapters in this
 # directory (mps_to_model.cpp, nl_to_model.cpp, nl_reader.cpp) also lose naming
 # coverage -- they are clean today, so keep an eye on new code here.
 ---
+# InheritParentConfig is load-bearing. Without it clang-tidy REPLACES the root
+# `Checks:` with this one rather than appending to it, leaving only the
+# always-on `clang-diagnostic-*` -- `clang-tidy -p build src/io/mps_to_model.cpp`
+# then exits 1 with "Error: no checks enabled." and all five translation units
+# here go unlinted. Verify any edit with
+# `cd src/io && ../../.venv/bin/clang-tidy --dump-config` -- the pinned copy,
+# because a system clang-tidy of another vintage merges a different default set
+# -- and check the root's check list is actually present in the output.
+#
+# Note the exemption below is DORMANT today: the root ratchet already carries
+# -readability-identifier-naming, so `clang-tidy --list-checks -p build` prints
+# the same enabled set here as at the root. This file only starts to bite when
+# issue #121 re-enables that check -- which is exactly why it must not be
+# deleted as dead weight in the meantime.
+InheritParentConfig: true
 Checks: >
   -readability-identifier-naming

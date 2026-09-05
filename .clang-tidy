@@ -31,34 +31,49 @@
 # Below those three sits a RATCHET. Every check that still fired once the safe
 # auto-fixes had landed is disabled here, so that the rest of
 # bugprone-*/modernize-*/performance-*/readability-* can block at push starting
-# now. These are off because they are UNFIXED, not because they are wrong:
+# now. These are off because they are UNFIXED, not because they are wrong.
 #
-#    54  readability-function-cognitive-complexity
-#    30  readability-implicit-bool-conversion
+# Counts re-derived at the commit that restored linting to src/io/, with the
+# sweep command in issue #121 and these 26 checks enabled. They rose 248 -> 296
+# for two independent reasons, so do not compare them against an older revision
+# of this list without re-running that sweep:
+#   * 36 of the findings are in src/io/, which contributed nothing before
+#     because its .clang-tidy was missing `InheritParentConfig: true` and so
+#     ran no checks at all. 4 of those 36 are readability-identifier-naming in
+#     the vendored mps_reader.cpp, which that directory still exempts by
+#     design -- they are excluded below, which is why this list totals 296.
+#   * the rest is ordinary drift in the tree since the counts were first taken.
+#
+# Re-derive, never increment: a count here is a floor for the work, and
+# deleting a line whose findings you sized from a stale number turns the push
+# gate red for everyone.
+#
+#    63  readability-function-cognitive-complexity
+#    40  readability-implicit-bool-conversion
+#    28  modernize-use-auto
 #    25  readability-math-missing-parentheses
-#    21  readability-identifier-naming
+#    24  readability-identifier-naming
+#    23  bugprone-easily-swappable-parameters
 #    17  modernize-avoid-c-style-cast
-#    17  bugprone-easily-swappable-parameters
-#    14  modernize-use-auto
+#     9  bugprone-unchecked-string-to-number-conversion
 #     9  performance-inefficient-vector-operation
-#     8  bugprone-unchecked-string-to-number-conversion
 #     8  bugprone-narrowing-conversions
-#     6  performance-enum-size
+#     8  performance-enum-size
+#     7  modernize-avoid-c-arrays
 #     6  readability-inconsistent-declaration-parameter-name
-#     5  modernize-avoid-c-arrays
 #     5  readability-avoid-nested-conditional-operator
 #     4  bugprone-exception-escape
 #     4  readability-use-anyofallof
 #     3  readability-redundant-casting
-#     2  readability-use-std-min-max
+#     3  readability-use-std-min-max
 #     2  bugprone-branch-clone
 #     2  bugprone-unchecked-optional-access
-#     1  modernize-pass-by-value
-#     1  bugprone-unused-raii
-#     1  readability-else-after-return
-#     1  performance-unnecessary-value-param
 #     1  bugprone-empty-catch
+#     1  bugprone-unused-raii
+#     1  modernize-pass-by-value
 #     1  modernize-return-braced-init-list
+#     1  performance-unnecessary-value-param
+#     1  readability-else-after-return
 #
 # Deleting a line from that list is how a check comes back. Do it in the same
 # commit that fixes its warnings, never on its own. See the tracking issue for

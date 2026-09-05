@@ -53,6 +53,19 @@ if [ -z "$CHANGED_FILES" ]; then
 fi
 
 CPP_FILES=$(echo "$CHANGED_FILES" | grep -E '\.(cpp|cc|cxx|h|hpp|hxx)$' || true)
+# A .clang-tidy edit is how the gate itself breaks: a missing
+# InheritParentConfig silently disabled every check under src/io/ for as long
+# as that file existed (issue #121). Such a push touches no source file, so the
+# clang-tidy loop below would run over nothing and report success -- the same
+# fail-open class. Seed one canary translation unit per config directory so
+# every config actually gets exercised.
+if echo "$CHANGED_FILES" | grep -qE '(^|/)\.clang-tidy$'; then
+	for canary in src/search.cpp src/io/mps_to_model.cpp; do
+		if [ -f "$canary" ]; then
+			CPP_FILES="${CPP_FILES}"$'\n'"$canary"
+		fi
+	done
+fi
 PY_FILES=$(echo "$CHANGED_FILES" | grep -E '\.py$' || true)
 # The tracked hooks themselves are extensionless shell scripts; include them so
 # the linter below sees the file it is meant to police.  (Never begin a comment
@@ -166,6 +179,7 @@ fi
 
 ISSUES=""
 TIDY_ISSUES=""
+TIDY_CONFIG_ERR=0""
 
 # clang-tidy (non-fixable warnings).  Prefer the venv's pinned copy over PATH,
 # for the same reason pre-commit does: a different major version reports a
@@ -191,11 +205,30 @@ if [ -n "$CPP_FILES" ] && [ -n "$CLANG_TIDY" ]; then
 		# and the fix is to fix it -- not to add another name to that list.
 		# (Re-enabling a ratcheted check is a deliberate commit that clears
 		# its findings and deletes its line in the same change.)
+		# Match case-insensitively and gate on the exit status too. A
+		# misconfigured directory makes clang-tidy exit 1 with the single
+		# line "Error: no checks enabled." -- capital E, which the old
+		# lower-case-only pattern missed, so every file under src/io/ went
+		# unlinted while this step reported success. Failing open is the
+		# one thing a hard gate must not do.
 		for f in $CPP_FILES; do
 			[ -f "$f" ] || continue
+			# `... && rc=0 || rc=$?` rather than a bare assignment:
+			# `set -e` is on at the top of this file, so an unguarded `RESULT=$(cmd)`
+			# whose command exits nonzero would abort the hook here
+			# instead of collecting the finding and reporting it below.
 			RESULT=$("$CLANG_TIDY" $COMPILE_DB \
-				--quiet "$f" 2>&1 || true)
-			if echo "$RESULT" | grep -qE '(warning|error):'; then
+				--quiet "$f" 2>&1) && TIDY_RC=0 || TIDY_RC=$?
+			if [ "$TIDY_RC" -ne 0 ]; then
+				# A nonzero exit is a clang-tidy/config fault, not a code
+				# finding. It prints ~750 lines of usage text after the one
+				# line that matters, which over a whole changeset scrolls
+				# the cause off the top. Keep the cause, drop the manual,
+				# and name the file -- the raw output names nothing.
+				TIDY_CONFIG_ERR=1
+				TIDY_ISSUES="${TIDY_ISSUES}${f}: clang-tidy exited ${TIDY_RC}"$'\n'
+				TIDY_ISSUES="${TIDY_ISSUES}$(echo "$RESULT" | head -5)"$'\n'
+			elif echo "$RESULT" | grep -qiE '(warning|error):'; then
 				TIDY_ISSUES="${TIDY_ISSUES}${RESULT}"$'\n'
 			fi
 		done
@@ -254,10 +287,18 @@ if [ -n "$TIDY_ISSUES" ]; then
 	echo "$TIDY_ISSUES"
 	echo "═══════════════════════════════════════════"
 	echo ""
-	echo "FAILED: the tree is kept at zero clang-tidy warnings."
-	echo "Fix the finding above. Do NOT silence it by adding the check to"
-	echo "the disabled list in .clang-tidy -- that list is a ratchet for"
-	echo "pre-existing findings only (issue #121) and is meant to shrink."
+	if [ "$TIDY_CONFIG_ERR" -ne 0 ]; then
+		echo "FAILED: clang-tidy could not run. That is a configuration"
+		echo "fault, not a code finding, so the advice below does not apply:"
+		echo "check .clang-tidy and any per-directory config -- a nested"
+		echo ".clang-tidy needs \`InheritParentConfig: true\`, or it REPLACES"
+		echo "the root check list and leaves nothing enabled (issue #121)."
+	else
+		echo "FAILED: the tree is kept at zero clang-tidy warnings."
+		echo "Fix the finding above. Do NOT silence it by adding the check to"
+		echo "the disabled list in .clang-tidy -- that list is a ratchet for"
+		echo "pre-existing findings only (issue #121) and is meant to shrink."
+	fi
 	exit 1
 fi
 

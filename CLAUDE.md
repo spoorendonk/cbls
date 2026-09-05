@@ -37,6 +37,8 @@ Know the symbol → LSP. Know a string, not its location → Grep. Full-file Rea
   | Namespaces | `lower_case` | `cbls` |
 
   Two exceptions: `Model::Bool/Int/Float/List/Set/Constant` stay CamelCase because they name the type they create (and `bool`/`int`/`float` cannot be lowercased without hitting a keyword), and `src/io/.clang-tidy` disables the naming check for that directory because `mps_reader.cpp` and `solu_reader.cpp` are vendored from `spoorendonk/mipx` and must stay diff-clean against upstream. The three native adapters there (`mps_to_model.cpp`, `nl_reader.cpp`, `nl_to_model.cpp`) lose naming coverage as a side effect — keep an eye on new code in that directory.
+
+  That directory config **must** carry `InheritParentConfig: true`. Without it clang-tidy *replaces* the root `Checks:` instead of appending to it, leaving only the always-on `clang-diagnostic-*` — the directory then runs no registered check at all and clang-tidy exits 1 with `Error: no checks enabled.` Verify any edit to **either** `.clang-tidy` with `cd src/io && ../../.venv/bin/clang-tidy --dump-config` and confirm the root's check list is actually present. This is the same verification **Git Hooks** below demands for the root file's folded-scalar hazard, and for the same reason: both failures fail open.
 - Use `#pragma once` for include guards.
 - Minimize includes in headers. Forward-declare where possible.
 
@@ -117,6 +119,14 @@ The hooks live in **`.githooks/`, tracked in this repo** — that directory is t
   the key. Verify any edit with `clang-tidy --dump-config`, because a corrupted
   list fails open: checks silently stop running and the sweep goes green.
 
+  Because both config hazards fail open, the pre-push clang-tidy step matches
+  `(warning|error):` **case-insensitively** and treats any **nonzero clang-tidy
+  exit** as a finding: a misconfigured directory reports `Error: no checks
+  enabled.` with a capital E, which a lower-case-only pattern misses. It also
+  lints a canary translation unit per config directory whenever a `.clang-tidy`
+  is itself part of the push, since such a change otherwise touches no source
+  file and would skip the step that polices it.
+
 Nothing enforces `/review` at push time, by design — a gate keyed on gitignored local tooling can only be satisfied in whichever checkout happens to carry it, and passes silently everywhere else. `/review` is still expected on every change (see **Agent Self-Review**); running it is on you.
 
 Gating lives in git hooks only — `.claude/settings.json` carries no `hooks` block, and none should be added. A `PostToolUse` formatter cannot see which file was edited, so it silently formats nothing; formatting belongs at commit time. Don't hand-tune formatting.
@@ -161,7 +171,7 @@ agree:
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
 4. the comment above the `ctest` call in `.githooks/pre-commit`,
-5. the `.venv/bin/pytest` line in `README.md` for the Python side (241 tests, 73
+5. the `.venv/bin/pytest` line in `README.md` for the Python side (242 tests, 73
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`),
 6. the `-LE slow` guidance and the ~40s/~304s figures in `docs/profiling.md`.

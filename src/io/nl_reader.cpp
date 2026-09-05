@@ -292,7 +292,9 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
         throw std::runtime_error(std::string("NL: unrecognised header char '") + fmt +
                                  "' (expected 'g' for text format)");
     }
-    std::string line1 = tok.read_line();  // consume the whole first header line
+    // Advance past the whole first header line. The text is not needed, but the
+    // cursor must move or the counts read below lands on line 1.
+    tok.read_line();
 
     // Line 2: " nvar ncon nobj nranges neqn ..." (counts). We need the first 3.
     std::string line2 = tok.read_line();
