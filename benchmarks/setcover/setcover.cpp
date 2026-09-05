@@ -17,6 +17,7 @@
 #include <cbls/search.h>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <map>
 #include <string>
 #include <vector>
@@ -184,9 +185,7 @@ void write_csv(const std::string& path, const std::vector<Run>& runs) {
     printf("\nwrote %s\n", path.c_str());
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
+int run(int argc, char** argv) {
     bool ok = false;
     Options opt = parse_args(argc, argv, &ok);
     if (opt.help) {
@@ -257,4 +256,18 @@ int main(int argc, char** argv) {
         return 1;
     }
     return 0;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    // A benchmark run is long, and an exception escaping main is std::terminate
+    // -- an abort with no message, indistinguishable from a crash. Say what
+    // failed and exit non-zero instead (bugprone-exception-escape).
+    try {
+        return run(argc, argv);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "Error: %s\n", e.what());
+        return 1;
+    }
 }

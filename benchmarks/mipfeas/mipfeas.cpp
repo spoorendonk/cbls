@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -234,9 +235,7 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     }
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
+int run(int argc, char** argv) {
     Args args = parse_args(argc, argv);
     if (args.instance.empty() || args.out_dir.empty()) {
         std::fprintf(stderr, "--instance and --out-dir are required\n");
@@ -399,4 +398,18 @@ int main(int argc, char** argv) {
                 have_solution ? result.objective : std::numeric_limits<double>::quiet_NaN(),
                 result.best_violation, wall);
     return 0;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    // A benchmark run is long, and an exception escaping main is std::terminate
+    // -- an abort with no message, indistinguishable from a crash. Say what
+    // failed and exit non-zero instead (bugprone-exception-escape).
+    try {
+        return run(argc, argv);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "Error: %s\n", e.what());
+        return 1;
+    }
 }

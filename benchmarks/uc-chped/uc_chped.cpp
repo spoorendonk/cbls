@@ -6,6 +6,7 @@
 #include <cbls/cbls.h>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <map>
 #include <string>
 #include <vector>
@@ -15,7 +16,9 @@ struct InstanceSpec {
     std::vector<int> periods;
 };
 
-int main(int argc, char** argv) {
+namespace {
+
+int run(int argc, char** argv) {
     // Default instance directory: relative to working directory
     std::string inst_dir = "benchmarks/instances/uc-chped";
     bool do_verify = false;
@@ -114,4 +117,18 @@ int main(int argc, char** argv) {
     }
 
     return 0;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    // A benchmark run is long, and an exception escaping main is std::terminate
+    // -- an abort with no message, indistinguishable from a crash. Say what
+    // failed and exit non-zero instead (bugprone-exception-escape).
+    try {
+        return run(argc, argv);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "Error: %s\n", e.what());
+        return 1;
+    }
 }
