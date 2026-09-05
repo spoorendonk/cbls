@@ -1,6 +1,8 @@
 #include "test_helpers.h"
 
+#include <atomic>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_exception.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cbls/cbls.h>
 #include <chrono>
@@ -479,7 +481,30 @@ TEST_CASE("ParallelSearch propagates a factory that fails in every worker", "[po
     auto factory = []() -> Model { throw std::runtime_error("model factory failed"); };
 
     ParallelSearch ps(2);
-    REQUIRE_THROWS_AS(ps.solve(factory, 0.5, 42), std::runtime_error);
+    // Match the message, not just the type: solve_portfolio's "no result and no
+    // error" guard on the same path is a std::runtime_error too, so a type-only
+    // assertion would still pass with the rethrow loop deleted.
+    REQUIRE_THROWS_MATCHES(ps.solve(factory, 0.5, 42), std::runtime_error,
+                           Catch::Matchers::Message("model factory failed"));
+}
+
+// The other half of that contract: one worker failing must not lose the
+// others' work, which is what catching per worker is for.
+TEST_CASE("ParallelSearch absorbs a factory that fails in one worker", "[pool]") {
+    std::atomic<int> calls{0};
+    auto base = simple_model_factory();
+    std::function<Model()> factory = [&calls, base]() -> Model {
+        if (calls.fetch_add(1) == 0) {
+            throw std::runtime_error("model factory failed");
+        }
+        return base();
+    };
+
+    ParallelSearch ps(2);
+    SearchResult result;
+    REQUIRE_NOTHROW(result = ps.solve(factory, 1.0, 42));
+    REQUIRE(result.feasible);
+    REQUIRE(result.objective < 5.0);
 }
 
 TEST_CASE("Deterministic mode produces identical results", "[pool][deterministic]") {

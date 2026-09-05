@@ -113,12 +113,19 @@ The hooks live in **`.githooks/`, tracked in this repo** — that directory is t
   for pre-existing findings and is meant to shrink; #121 tracks emptying it, and
   a check comes back in the same commit that clears its findings.
 
-  **`.clang-tidy` is the only place the ratchet is counted.** How many checks are
-  left, and how many findings each still has, is written there and nowhere else —
-  restating either number here would give it a second copy to go stale against
-  the first, exactly as the test counts in *Fast vs. slow tests* below already
-  do. Read the file. Re-derive a count with the sweep in issue #121, never by
-  subtracting from the one you found.
+  **`.clang-tidy` is the source of truth for the ratchet's counts.** How many
+  checks are left, and how many findings each still has, is written there;
+  restating either number *here* would give it a copy to go stale against, as
+  the test counts in *Fast vs. slow tests* below already do. Read the file.
+  Re-derive a count with the sweep in issue #121, never by subtracting from the
+  one you found — clearing one check has cleared another's finding, so the
+  arithmetic drifts.
+
+  Issue #121's body **mirrors** that table, because a cold session picks the
+  work up from the tracker rather than from the config. That is the one copy
+  that has to exist, so it is not optional to update: a commit that clears a
+  check edits `.clang-tidy`, and the push that carries it edits #121's rows and
+  total to match.
 
   Note `.clang-tidy`'s `Checks:` is a YAML `>` folded scalar, where `#` is *not*
   a comment — it is literal text that silently corrupts the check list, and a
@@ -144,14 +151,14 @@ Three conventions therefore rest on you rather than on a tool: branch only from 
 
 ### Fast vs. slow tests
 
-The C++ suite is **314 `TEST_CASE`s**: 310 registered by `catch_discover_tests`
-plus the **4 `[timing]` cases registered by hand**. Of the 310, **6 carry the
+The C++ suite is **315 `TEST_CASE`s**: 311 registered by `catch_discover_tests`
+plus the **4 `[timing]` cases registered by hand**. Of the 311, **6 carry the
 Catch2 `[slow]` tag** — the CHPED and UC-CHPED benchmark solves, ~103s of
 aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~40s
 wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 305 tests, ~8s with `-j`. This is what **pre-commit** runs.
+- `ctest -LE slow` — the other 306 tests, ~8s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
 - `ctest -L timing` — 4 tests: `timing_structural_batch_deadline` plus the three
   `timing_throughput_*` floors added for #125. Each is registered by an explicit

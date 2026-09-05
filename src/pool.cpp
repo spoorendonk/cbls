@@ -183,6 +183,11 @@ SearchResult ParallelSearch::solve_portfolio(std::function<Model()>& model_facto
     // Report that: a default SearchResult would say "searched, found nothing
     // feasible" about a run that never searched. A partial failure does not
     // reach here -- the survivors submitted, which is the point of catching.
+    //
+    // The lowest-index failure is the one reported. Portfolio workers are
+    // homogeneous -- same model, same budget, different seed -- so when all of
+    // them fail they have almost always failed the same way, and aggregating N
+    // copies of one message would buy nothing.
     auto best = pool.best();
     if (!best) {
         for (const auto& f : failures) {
@@ -271,6 +276,10 @@ SearchResult ParallelSearch::solve_deterministic(
         // Launch threads for this epoch
         std::vector<std::thread> threads;
         for (int i = 0; i < n_threads; ++i) {
+            // Deliberately no try/catch, unlike the portfolio path above: an
+            // epoch worker that throws terminates the process. Parking the
+            // failure here would need a decision about whether a mid-run epoch
+            // failure aborts the run or degrades it, and nothing has needed one.
             threads.emplace_back([&, i, epoch]() {
                 // Deterministic seed: base_seed + epoch * n_threads + thread_id
                 uint64_t thread_seed = seed + static_cast<uint64_t>(epoch) * n_threads + i;

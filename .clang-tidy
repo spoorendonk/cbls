@@ -34,9 +34,9 @@
 # now. These are off because they are UNFIXED, not because they are wrong.
 #
 # Counts were re-derived at the commit that restored linting to src/io/, with
-# the sweep command in issue #121 and 26 checks disabled. They rose 248 -> 296
-# there for two independent reasons, so do not compare them against an older
-# revision of this list without re-running that sweep:
+# the sweep command in issue #121 and the 26 checks then in this list enabled.
+# They rose 248 -> 296 there for two independent reasons, so do not compare them
+# against an older revision of this list without re-running that sweep:
 #   * 36 of the findings are in src/io/, which contributed nothing before
 #     because its .clang-tidy was missing `InheritParentConfig: true` and so
 #     ran no checks at all. 4 of those 36 are readability-identifier-naming in
@@ -47,8 +47,9 @@
 # Re-derive, never increment: a count here is a floor for the work, and
 # deleting a line whose findings you sized from a stale number turns the push
 # gate red for everyone. The same goes for the running total below -- re-run
-# the sweep, do not subtract. Clearing one check has cleared a finding of
-# another's more than once, so a subtracted total drifts.
+# the sweep, do not subtract: clearing bugprone-branch-clone also cleared one
+# readability-implicit-bool-conversion, so 296 minus the 24 that were fixed is
+# 272 where the tree actually reports 271.
 #
 # One trap when re-deriving with `clang-tidy --checks=<names>` on the command
 # line: a positive name there is appended after src/io/.clang-tidy's

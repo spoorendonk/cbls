@@ -1507,9 +1507,13 @@ half of the pool.
 calling `solve()` with a staggered seed (`seed + thread_index`). Only the
 `SolutionPool` is shared (mutex-protected); thread safety is by isolation. The
 best solution across threads is returned, prioritizing feasibility then
-objective.
+objective. Worker exceptions are caught (letting one escape a thread function
+is `std::terminate`), but not discarded: if *every* worker throws, `solve()`
+rethrows the first rather than returning a default, infeasible-looking result.
+A partial failure is absorbed silently.
 
-**Deterministic epoch-sync mode** (`deterministic = true`): threads run
+**Deterministic epoch-sync mode** (`deterministic = true`): worker exceptions
+are *not* caught here, so one terminates the process. Threads run
 synchronized epochs of fixed GLS-iteration count (no wall-clock dependency).
 Each epoch sets `SearchConfig::max_iterations = epoch_iterations`; after the
 first epoch `skip_init = true` and FJ initialization is off. Per-epoch results

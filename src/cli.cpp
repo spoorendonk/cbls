@@ -3,6 +3,7 @@
 #include "cbls/io.h"
 
 #include <algorithm>
+#include <exception>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -159,8 +160,16 @@ int main(int argc, char* argv[]) {
         par_config.max_epochs = max_epochs;
 
         ParallelSearch ps(effective_threads);
-        result = ps.solve(model_factory, time_limit, seed, config, hook_factory, lns_factory,
-                          callback, par_config);
+        // solve() throws when every portfolio worker threw -- the factory could
+        // not re-read the model file, say. Report that the way the load failure
+        // above is reported; letting it escape main is std::terminate.
+        try {
+            result = ps.solve(model_factory, time_limit, seed, config, hook_factory, lns_factory,
+                              callback, par_config);
+        } catch (const std::exception& e) {
+            std::cerr << "Error: parallel search failed: " << e.what() << "\n";
+            return 1;
+        }
     } else {
         // Single-thread mode: use solve() directly
         FloatIntensifyHook intensify_hook;

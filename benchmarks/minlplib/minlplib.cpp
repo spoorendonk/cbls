@@ -380,7 +380,7 @@ double safe_gap(double obj, double ref, bool maximizing) {
     return 100.0 * diff / denom;
 }
 
-int run(int argc, char** argv) {
+int run_benchmark(int argc, char** argv) {
     Args args = parse_args(argc, argv);
 
     std::string bounds_path = args.inst_dir + "/bounds.csv";
@@ -799,7 +799,7 @@ int main(int argc, char** argv) {
     // -- an abort with no message, indistinguishable from a crash. Say what
     // failed and exit non-zero instead (bugprone-exception-escape).
     try {
-        return run(argc, argv);
+        return run_benchmark(argc, argv);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "Error: %s\n", e.what());
         return 1;

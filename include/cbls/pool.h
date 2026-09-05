@@ -48,6 +48,14 @@ class ParallelSearch {
 public:
     explicit ParallelSearch(int n_threads = 0);
 
+    // Both overloads THROW in portfolio mode if *every* worker threw -- a model
+    // factory that cannot build its model, say. Returning a default
+    // SearchResult there would report "searched, found nothing feasible" about
+    // a run that never searched. A partial failure is absorbed: the survivors'
+    // best is returned and each dead worker contributes a default SearchResult
+    // to the aggregate. Deterministic mode does not catch worker exceptions at
+    // all, so one there terminates the process.
+
     // Simple portfolio solve (backward-compatible)
     SearchResult solve(std::function<Model()> model_factory, double time_limit = 10.0,
                        uint64_t seed = 42);

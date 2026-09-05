@@ -38,14 +38,14 @@ include(Catch)
 # slow solves into one serial invocation would make the full suite far slower
 # than it is.
 #
-# Measured at Release: 6 of 310 discovered tests exceed ~10s and account for
+# Measured at Release: 6 of 311 discovered tests exceed ~10s and account for
 # ~103s of the suite's aggregate (summed per-test) time; with `-j$(nproc)` the
-# full run is ~40s of wall clock. The remaining 305 (304 plus
+# full run is ~40s of wall clock. The remaining 306 (305 plus
 # timing_structural_batch_deadline, the one hand-registered test that carries no
 # slow label) finish in ~8s with `-j`, which is what pre-commit runs via
 # `ctest -LE slow`. pre-push still runs everything.
 #
-# The roster is therefore 314 ctest tests: 310 discovered here plus the 4
+# The roster is therefore 315 ctest tests: 311 discovered here plus the 4
 # hand-registered [timing] ones below. `ctest -N -L slow` reports 9, not 6 --
 # the three #125 throughput floors carry the slow LABEL without the Catch2
 # [slow] TAG. Re-derive with `ctest -N`, never by incrementing.
