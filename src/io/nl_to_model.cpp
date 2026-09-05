@@ -397,12 +397,10 @@ NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts)
             }
             ilb = clipped_lb;
             iub = clipped_ub;
-            if (ilb > iub) {
-                // Bounds admit no integer (degenerate). Keep a single point so
-                // the model still closes; the row's constraints will register
-                // the violation rather than the reader silently dropping it.
-                iub = ilb;
-            }
+            // Bounds that admit no integer (degenerate) collapse to the single
+            // point ilb, so the model still closes; the row's constraints will
+            // register the violation rather than the reader silently dropping it.
+            iub = std::max(ilb, iub);
             result.var_handles.push_back(
                 m.int_var(static_cast<int>(ilb), static_cast<int>(iub), "x" + std::to_string(j)));
         } else {

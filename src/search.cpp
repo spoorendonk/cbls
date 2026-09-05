@@ -285,9 +285,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             if (std::isnan(v)) {
                 return std::numeric_limits<double>::infinity();
             }
-            if (v > worst) {
-                worst = v;
-            }
+            worst = std::max(worst, v);
         }
         return worst;
     };

@@ -2,6 +2,7 @@
 #include "cbls/formatter.h"
 #include "cbls/io.h"
 
+#include <algorithm>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -130,10 +131,8 @@ int main(int argc, char* argv[]) {
     // Determine effective thread count
     int effective_threads = n_threads;
     if (effective_threads == 0) {
-        effective_threads = static_cast<int>(std::thread::hardware_concurrency());
-        if (effective_threads < 1) {
-            effective_threads = 1;
-        }
+        // hardware_concurrency() is allowed to return 0 when it cannot tell.
+        effective_threads = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
     }
 
     SearchResult result;
