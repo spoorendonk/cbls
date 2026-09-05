@@ -1509,11 +1509,15 @@ calling `solve()` with a staggered seed (`seed + thread_index`). Only the
 best solution across threads is returned, prioritizing feasibility then
 objective. Worker exceptions are caught (letting one escape a thread function
 is `std::terminate`), but not discarded: if *every* worker throws, `solve()`
-rethrows the first rather than returning a default, infeasible-looking result.
+rethrows the lowest-indexed one rather than returning a default,
+infeasible-looking result.
 A partial failure is absorbed silently.
 
-**Deterministic epoch-sync mode** (`deterministic = true`): worker exceptions
-are *not* caught here, so one terminates the process. Threads run
+**Deterministic epoch-sync mode** (`deterministic = true`): the per-thread
+models are built on the calling thread, so a failing model factory propagates
+straight out of `solve()` -- it always has; only the epoch worker threads are
+left unwrapped, so an exception raised inside one terminates the process.
+Threads run
 synchronized epochs of fixed GLS-iteration count (no wall-clock dependency).
 Each epoch sets `SearchConfig::max_iterations = epoch_iterations`; after the
 first epoch `skip_init = true` and FJ initialization is off. Per-epoch results

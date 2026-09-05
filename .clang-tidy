@@ -51,7 +51,10 @@
 # for readability-use-anyofallof -- `violated_[c] && active(c)` in
 # feasibility_jump.cpp -- also took a readability-implicit-bool-conversion with
 # it, so 296 minus the 24 findings actually fixed gives 272 where the tree
-# reports 271.
+# reports 271. Note that one was not fixed: the uint8_t -> bool conversion is
+# still there, the check just stops reporting it once the expression sits
+# inside the lambda. A count here can fall because the checker went blind, not
+# only because the code improved -- which is another reason to re-derive.
 #
 # One trap when re-deriving with `clang-tidy --checks=<names>` on the command
 # line: a positive name there is appended after src/io/.clang-tidy's
