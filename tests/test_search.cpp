@@ -350,7 +350,14 @@ TEST_CASE("SolutionPool ordering", "[pool]") {
     pool.submit({empty_state, 3.0, true});
 
     auto best = pool.best();
-    REQUIRE(best.has_value());
+    // Guarded with FAIL + return rather than REQUIRE(best.has_value()): both
+    // abort the test, but REQUIRE is a Catch2 expression template that
+    // bugprone-unchecked-optional-access cannot see through, so the accesses
+    // below would read as unchecked -- and .value() reads that way to it too.
+    if (!best.has_value()) {
+        FAIL("SolutionPool::best() returned nothing after four submissions");
+        return;
+    }
     REQUIRE(best->objective == 3.0);
     REQUIRE(best->feasible);
     REQUIRE(pool.size() == 3);
