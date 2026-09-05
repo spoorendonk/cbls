@@ -70,13 +70,13 @@ void HumanFormatter::print_result(const SearchResult& result, const Model& model
         out_ << "Objective:  -\n";  // pure feasibility model
     } else if (std::isfinite(result.objective)) {
         out_ << "Objective:  " << std::fixed << std::setprecision(6) << result.objective << "\n";
-    } else if (result.feasible) {
-        // A feasible assignment on which the objective evaluates to +inf/NaN
-        // (issue #100). The point is real; the objective there is not a number,
-        // so say that rather than printing "inf" as if it were a value.
-        out_ << "Objective:  no finite objective at this assignment\n";
     } else {
-        out_ << "Objective:  -\n";  // infeasible: nothing to report one for
+        // The objective exists but is not a number here. On a feasible
+        // assignment that is worth saying (issue #100): the point is real, the
+        // objective at it is not, and printing "inf" would read as a value. On
+        // an infeasible run there is no assignment to report one at.
+        out_ << "Objective:  " << (result.feasible ? "no finite objective at this assignment" : "-")
+             << "\n";
     }
     out_ << "Time:       " << std::fixed << std::setprecision(2) << result.time_seconds << "s ("
          << result.iterations << " iterations, stopped on "

@@ -7,6 +7,7 @@
 #include <exception>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <thread>
 
 namespace cbls {
@@ -177,47 +178,40 @@ SearchResult ParallelSearch::solve_portfolio(std::function<Model()>& model_facto
         t.join();
     }
 
-    // If every worker threw there is nothing to aggregate, and the default
-    // SearchResult below would report the failure as a searched-but-infeasible
-    // model. Say what actually happened instead. A partial failure still falls
-    // through: the survivors have a result, which is the point of catching.
-    const bool all_failed =
-        !failures.empty() && std::all_of(failures.begin(), failures.end(),
-                                         [](const std::exception_ptr& e) { return e != nullptr; });
-    if (all_failed) {
-        std::rethrow_exception(failures.front());
+    // Every worker either submits a solution or parks its exception, and the
+    // pool keeps the best ten, so an empty pool means every one of them threw.
+    // Report that: a default SearchResult would say "searched, found nothing
+    // feasible" about a run that never searched. A partial failure does not
+    // reach here -- the survivors submitted, which is the point of catching.
+    auto best = pool.best();
+    if (!best) {
+        for (const auto& f : failures) {
+            if (f) {
+                std::rethrow_exception(f);
+            }
+        }
+        // Unreachable while those two cases stay exhaustive; it is here so a
+        // future worker that neither submits nor throws fails loudly rather
+        // than returning an infeasible-looking result.
+        throw std::runtime_error("parallel search produced no result and no error");
     }
 
     // Aggregate results
-    auto best = pool.best();
-    if (best) {
-        SearchResult result;
-        result.objective = best->objective;
-        result.feasible = best->feasible;
-        result.best_state = best->state;
-        // Sum iterations and take max time across threads
-        int64_t total_iters = 0;
-        double max_time = 0.0;
-        for (const auto& r : results) {
-            total_iters += r.iterations;
-            max_time = std::max(max_time, r.time_seconds);
-        }
-        result.iterations = total_iters;
-        result.time_seconds = max_time;
-        result.termination = aggregate_termination(results);
-        return result;
-    }
-
-    // Fallback
-    SearchResult best_result;
+    SearchResult result;
+    result.objective = best->objective;
+    result.feasible = best->feasible;
+    result.best_state = best->state;
+    // Sum iterations and take max time across threads
+    int64_t total_iters = 0;
+    double max_time = 0.0;
     for (const auto& r : results) {
-        if (r.feasible && !best_result.feasible) {
-            best_result = r;
-        } else if (r.feasible == best_result.feasible && r.objective < best_result.objective) {
-            best_result = r;
-        }
+        total_iters += r.iterations;
+        max_time = std::max(max_time, r.time_seconds);
     }
-    return best_result;
+    result.iterations = total_iters;
+    result.time_seconds = max_time;
+    result.termination = aggregate_termination(results);
+    return result;
 }
 
 // --- Deterministic epoch-sync mode ---
