@@ -85,7 +85,7 @@ public:
     void maximize(const Expr& e);
 
     // Variable sequences for block moves
-    void add_var_sequence(std::vector<int32_t> var_ids, int min_block_on = 1,
+    void add_var_sequence(const std::vector<int32_t>& var_ids, int min_block_on = 1,
                           int min_block_off = 1);
     [[nodiscard]] const std::vector<VarSequence>& var_sequences() const noexcept {
         return var_sequences_;

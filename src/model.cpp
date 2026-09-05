@@ -308,7 +308,8 @@ void Model::maximize(int32_t expr_id) {
     is_maximizing_ = true;
 }
 
-void Model::add_var_sequence(std::vector<int32_t> handles, int min_block_on, int min_block_off) {
+void Model::add_var_sequence(const std::vector<int32_t>& handles, int min_block_on,
+                             int min_block_off) {
     int seq_idx = static_cast<int>(var_sequences_.size());
     VarSequence seq;
     seq.min_block_on = min_block_on;
