@@ -98,7 +98,7 @@ TESTS_FAILED=0
 
 # Only run C++ tests if C++ files were staged
 if [ -n "$CPP_FILES" ] && [ -d "build" ] && command -v ctest &>/dev/null; then
-	# -LE slow deliberately: this is the fast inner loop, 304 of the 313
+	# -LE slow deliberately: this is the fast inner loop, 305 of the 314
 	# tests. The 9 tests it skips are the 6 [slow]-tagged CHPED and UC-CHPED
 	# solves, worth ~103s of the suite's aggregate (summed per-test) time --
 	# ~40s of wall clock with -j at Release -- plus the 3 #125 throughput

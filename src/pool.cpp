@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <thread>
@@ -131,6 +132,9 @@ SearchResult ParallelSearch::solve_portfolio(std::function<Model()>& model_facto
                                              SolveCallback* callback, int n_threads) {
     SolutionPool pool;
     std::vector<SearchResult> results(n_threads);
+    // One slot per worker, left null unless that worker threw. Sized up front so
+    // the lambdas below only ever write their own index.
+    std::vector<std::exception_ptr> failures(n_threads);
     std::vector<std::thread> threads;
 
     for (int i = 0; i < n_threads; ++i) {
@@ -160,13 +164,28 @@ SearchResult ParallelSearch::solve_portfolio(std::function<Model()>& model_facto
                 sol.feasible = results[i].feasible;
                 pool.submit(sol);
             } catch (...) {
-                // Don't crash the whole search
+                // A thread function must not let an exception escape -- that is
+                // std::terminate -- and one worker failing is not a reason to
+                // lose the others' work. Park it rather than drop it; whether it
+                // is rethrown is decided below, once every worker has reported.
+                failures[i] = std::current_exception();
             }
         });
     }
 
     for (auto& t : threads) {
         t.join();
+    }
+
+    // If every worker threw there is nothing to aggregate, and the default
+    // SearchResult below would report the failure as a searched-but-infeasible
+    // model. Say what actually happened instead. A partial failure still falls
+    // through: the survivors have a result, which is the point of catching.
+    const bool all_failed =
+        !failures.empty() && std::all_of(failures.begin(), failures.end(),
+                                         [](const std::exception_ptr& e) { return e != nullptr; });
+    if (all_failed) {
+        std::rethrow_exception(failures.front());
     }
 
     // Aggregate results

@@ -462,6 +462,19 @@ TEST_CASE("ParallelSearch with hook and LNS factories", "[pool]") {
     REQUIRE(result.objective < 15.0);
 }
 
+// A portfolio worker cannot let an exception escape its thread function, so
+// solve_portfolio catches everything. Swallowing it outright made a run in which
+// *every* worker failed indistinguishable from one that searched and found
+// nothing: the aggregate was the default SearchResult, i.e. feasible=false with
+// an infinite objective -- a model-loading failure reported as an infeasible
+// model. A total failure now propagates; a partial one still does not.
+TEST_CASE("ParallelSearch propagates a factory that fails in every worker", "[pool]") {
+    auto factory = []() -> Model { throw std::runtime_error("model factory failed"); };
+
+    ParallelSearch ps(2);
+    REQUIRE_THROWS_AS(ps.solve(factory, 0.5, 42), std::runtime_error);
+}
+
 TEST_CASE("Deterministic mode produces identical results", "[pool][deterministic]") {
     auto factory = simple_model_factory();
 
