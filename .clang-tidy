@@ -47,12 +47,20 @@
 # Re-derive, never increment: a count here is a floor for the work, and
 # deleting a line whose findings you sized from a stale number turns the push
 # gate red for everyone. The same goes for the running total below -- re-run
-# the sweep, do not subtract.
+# the sweep, do not subtract. Clearing one check has cleared a finding of
+# another's more than once, so a subtracted total drifts.
 #
-# TOTAL: 272
+# One trap when re-deriving with `clang-tidy --checks=<names>` on the command
+# line: a positive name there is appended after src/io/.clang-tidy's
+# subtraction and so re-enables what that directory turns off. The
+# readability-identifier-naming row comes back as 28 rather than 24, the extra
+# 4 being the vendored mps_reader.cpp findings that directory exempts by
+# design. Either subtract them or re-derive by deleting the line from this file.
+#
+# TOTAL: 271
 #
 #    63  readability-function-cognitive-complexity
-#    40  readability-implicit-bool-conversion
+#    39  readability-implicit-bool-conversion
 #    28  modernize-use-auto
 #    25  readability-math-missing-parentheses
 #    24  readability-identifier-naming
