@@ -19,6 +19,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -223,8 +224,8 @@ std::unordered_map<std::string, std::string> load_analysis_notes(const std::stri
 // each new best and roughly once a second.
 class TraceRecorder : public cbls::SolveCallback {
 public:
-    TraceRecorder(std::ofstream& out, const std::string& instance)
-        : out_(out), instance_(instance) {}
+    TraceRecorder(std::ofstream& out, std::string instance)
+        : out_(out), instance_(std::move(instance)) {}
 
     void on_progress(const cbls::SolveProgress& p) override {
         if (!p.feasible || !std::isfinite(p.objective)) {

@@ -49,7 +49,7 @@
 # gate red for everyone. The same goes for the running total below -- re-run
 # the sweep, do not subtract.
 #
-# TOTAL: 292
+# TOTAL: 291
 #
 #    63  readability-function-cognitive-complexity
 #    40  readability-implicit-bool-conversion
@@ -72,7 +72,6 @@
 #     2  bugprone-branch-clone
 #     2  bugprone-unchecked-optional-access
 #     1  bugprone-empty-catch
-#     1  modernize-pass-by-value
 #
 # Deleting a line from that list is how a check comes back. Do it in the same
 # commit that fixes its warnings, never on its own. See the tracking issue for
@@ -113,7 +112,6 @@ Checks: >
   -readability-use-std-min-max,
   -bugprone-branch-clone,
   -bugprone-unchecked-optional-access,
-  -modernize-pass-by-value,
   -bugprone-empty-catch
 
 CheckOptions:
