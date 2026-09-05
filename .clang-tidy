@@ -33,20 +33,23 @@
 # bugprone-*/modernize-*/performance-*/readability-* can block at push starting
 # now. These are off because they are UNFIXED, not because they are wrong.
 #
-# Counts re-derived at the commit that restored linting to src/io/, with the
-# sweep command in issue #121 and these 26 checks enabled. They rose 248 -> 296
-# for two independent reasons, so do not compare them against an older revision
-# of this list without re-running that sweep:
+# Counts were re-derived at the commit that restored linting to src/io/, with
+# the sweep command in issue #121 and 26 checks disabled. They rose 248 -> 296
+# there for two independent reasons, so do not compare them against an older
+# revision of this list without re-running that sweep:
 #   * 36 of the findings are in src/io/, which contributed nothing before
 #     because its .clang-tidy was missing `InheritParentConfig: true` and so
 #     ran no checks at all. 4 of those 36 are readability-identifier-naming in
 #     the vendored mps_reader.cpp, which that directory still exempts by
-#     design -- they are excluded below, which is why this list totals 296.
+#     design -- they are excluded below, so that measurement totalled 296.
 #   * the rest is ordinary drift in the tree since the counts were first taken.
 #
 # Re-derive, never increment: a count here is a floor for the work, and
 # deleting a line whose findings you sized from a stale number turns the push
-# gate red for everyone.
+# gate red for everyone. The same goes for the running total below -- re-run
+# the sweep, do not subtract.
+#
+# TOTAL: 295
 #
 #    63  readability-function-cognitive-complexity
 #    40  readability-implicit-bool-conversion
@@ -73,7 +76,6 @@
 #     1  modernize-pass-by-value
 #     1  modernize-return-braced-init-list
 #     1  performance-unnecessary-value-param
-#     1  readability-else-after-return
 #
 # Deleting a line from that list is how a check comes back. Do it in the same
 # commit that fixes its warnings, never on its own. See the tracking issue for
@@ -116,7 +118,6 @@ Checks: >
   -bugprone-unchecked-optional-access,
   -modernize-pass-by-value,
   -bugprone-unused-raii,
-  -readability-else-after-return,
   -performance-unnecessary-value-param,
   -bugprone-empty-catch,
   -modernize-return-braced-init-list

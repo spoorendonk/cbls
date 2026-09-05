@@ -60,7 +60,8 @@ int main(int argc, char* argv[]) {
         if (arg == "--version") {
             std::cout << "cbls " << cbls::kVersion << "\n";
             return 0;
-        } else if (arg == "--time-limit" && i + 1 < argc) {
+        }
+        if (arg == "--time-limit" && i + 1 < argc) {
             time_limit = std::stod(argv[++i]);
         } else if (arg == "--seed" && i + 1 < argc) {
             seed = std::stoull(argv[++i]);

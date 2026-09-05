@@ -106,12 +106,19 @@ The hooks live in **`.githooks/`, tracked in this repo** — that directory is t
 - `pre-push` — the clean build + **full** suite from `## Build & Test` below, then **clang-tidy as a hard block**, and ruff-complexity/shellcheck/mypy as warnings. Both the ```build and ```test fences must resolve or the push is blocked; there is no auto-detect fallback, because guessing a build would gate a different one than the documented build.
 
   clang-tidy blocks because the tree is held at **zero** warnings, which is only
-  true given the **ratchet** in `.clang-tidy`: 26 checks are disabled by name,
-  each with its unfixed finding count, so that everything still enabled is
+  true given the **ratchet** in `.clang-tidy`: a list of checks is disabled by
+  name, each with its unfixed finding count, so that everything still enabled is
   something the tree already satisfies. A warning at push is therefore new code's
   doing. **Fix it — do not add the check to the disabled list.** That list exists
   for pre-existing findings and is meant to shrink; #121 tracks emptying it, and
   a check comes back in the same commit that clears its findings.
+
+  **`.clang-tidy` is the only place the ratchet is counted.** How many checks are
+  left, and how many findings each still has, is written there and nowhere else —
+  restating either number here would give it a second copy to go stale against
+  the first, exactly as the test counts in *Fast vs. slow tests* below already
+  do. Read the file. Re-derive a count with the sweep in issue #121, never by
+  subtracting from the one you found.
 
   Note `.clang-tidy`'s `Checks:` is a YAML `>` folded scalar, where `#` is *not*
   a comment — it is literal text that silently corrupts the check list, and a
