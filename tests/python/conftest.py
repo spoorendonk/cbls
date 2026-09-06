@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 #
 # The skip is announced rather than silent. It used to be silent, and because
 # CBLS_BUILD_PYTHON defaults to OFF, the documented build produced a run that
-# reported a green summary while never executing any of the 77 binding tests — a
+# reported a green summary while never executing any of the 80 binding tests — a
 # result indistinguishable from one where they all passed. Nothing in the gates
 # would have caught a binding regression. So: the terminal summary names what was
 # dropped, and CBLS_REQUIRE_BINDINGS=1 (set by the ```test fence in CLAUDE.md)
