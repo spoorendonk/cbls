@@ -495,6 +495,17 @@ TEST_CASE("MINLPLib ex4_1_8 solves within a loose gap of its published bound",
 // in benchmarks/instances/minlplib/README.md instead, since a wall clock cannot
 // be asserted on reproducibly.
 //
+// Shown red before the fix, per CLAUDE.md, rather than argued: a `git archive`
+// of the branch with ONLY the four production files (src/feasibility_jump.cpp,
+// src/search.cpp and their two headers) restored from main -- this test file
+// left exactly as it is -- fails at the first seed with
+//
+//   REQUIRE( result.feasible ) ... false
+//   seed 2; best_violation := 2.34203865; objective := inf; iterations := 15000
+//
+// i.e. the unfixed engine spends the whole budget and never reaches the feasible
+// set at all, rather than reaching it and being scored differently.
+//
 // Budget calibration. Both seeds below need between 5 000 and 6 000 iterations,
 // so 15 000 carries ~2.5x and costs ~3.4s. Seed 1 is deliberately NOT in the
 // list: it also solves, but not until ~120 000 iterations, which would put this

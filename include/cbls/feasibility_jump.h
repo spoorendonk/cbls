@@ -377,6 +377,30 @@ private:
     // ones. It is not stuck at a fixed point (the weight bump does keep flipping
     // which move is improving), so only a progress measure detects it.
     //
+    // The GLS weight dynamics cannot break that cycle under EITHER rho. solve()
+    // draws rho from {0.95, 1.0} per batch (sample_rho), and the two draws fail
+    // for different reasons -- worth writing down, because "it only happens at
+    // rho = 1" would be a much smaller finding than this is.
+    //
+    //   * rho = 1.0. gls_update_weights is then `w += 1` on every violated row,
+    //     so weights grow without bound; the trace has them at 375/324. The two
+    //     rows trapping x3 are violated together and contain it with coefficient
+    //     magnitude 1, so each bump adds the same +1 to both and the difference
+    //     that decides x3's move is invariant. The two candidate deltas stayed
+    //     pinned at exactly +47.5625 and +35.5286 for the whole run, and
+    //     compute_var_jump's `fv < best_f` (best_f = 0 at the current value)
+    //     rejects a positive delta.
+    //   * rho = 0.95. `w *= 0.95; w += 1` is a contraction: a permanently
+    //     violated row converges to the fixed point 1/(1 - 0.95) = 20 instead of
+    //     growing, and a row that stops being violated decays geometrically to
+    //     zero (and to exactly 0.0, at which point active() masks it out
+    //     entirely). The deltas therefore do not stay pinned -- they decay to
+    //     exactly 0. But `fv < best_f` is STRICT, so a zero delta is rejected
+    //     too, and the cycle holds for the opposite arithmetic reason.
+    //
+    // Either way no jump is ever improving, the loop bumps and re-bumps, and
+    // nothing in FJ can tell that the assignment has stopped moving anywhere.
+    //
     // So: end a batch that has gone GFJConfig::unproductive_iterations iterations
     // without pushing the measure below its best so far for that batch. This
     // bounds what a single unproductive batch can consume; it never caps a batch
