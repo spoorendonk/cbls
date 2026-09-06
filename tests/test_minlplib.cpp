@@ -486,9 +486,9 @@ TEST_CASE("MINLPLib ex4_1_8 solves within a loose gap of its published bound",
 // gated on perturbation_period (100) non-improving BATCHES of batch_iterations
 // (1000) GLS iterations, and before the first feasible solution no batch ever
 // improves -- a fixed cadence of one kick per 100 000 iterations regardless of
-// what the search is doing. FeasibilityJump::kUnproductiveIterations now ends a
-// batch that has stopped reducing the total violation, and solve() treats such a
-// batch as the kick being due.
+// what the search is doing. GFJConfig::unproductive_iterations now ends a batch
+// that has stopped reducing the REAL rows' violation, and solve() treats such a
+// batch as the diversification kick being due.
 //
 // On the iteration-bounded path so it is bit-deterministic and runs in seconds;
 // the issue's wall-clock criterion (feasible within 60s at seed 42) is recorded

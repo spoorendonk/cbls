@@ -1,10 +1,12 @@
 #include "test_helpers.h"
 
 #include <algorithm>
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cmath>
 #include <limits>
+#include <vector>
 
 using namespace cbls;
 
@@ -723,14 +725,213 @@ TEST_CASE("a run with no wall clock reads no clock at all", "[fj][deadline]") {
     GFJConfig cfg;
     cfg.two_phase = false;
     cfg.time_limit = 0.0;
-    // As above: the assertion is that the budget alone stopped the run, so the
-    // #102 unproductive-batch exit -- which this unreachable model would trip --
-    // is off. It reads no clock either way, so it cannot affect what is tested.
-    cfg.unproductive_iterations = 0;
+    // unproductive_iterations is left at its DEFAULT deliberately. This model is
+    // unreachable by construction, so the #102 exit ends the batch before its
+    // 500 iterations -- but the assertion here is deadline_checks() == 0, and
+    // WHICH exit the batch took cannot change how many times it read a clock it
+    // is configured never to read. Keeping the default is what makes this one of
+    // the tests covering the batch path as shipped.
     FeasibilityJump fj(m, vm, rng, cfg);
     fj.begin(/*set_initial_x=*/true);
     fj.batch(/*batch_iterations=*/500);
 
-    REQUIRE(fj.iterations() == 500);  // not inert: iterations really ran
+    REQUIRE(fj.iterations() > 0);  // not inert: iterations really ran
     REQUIRE(fj.deadline_checks() == 0);
+}
+
+// --- #102 unproductive-batch exit -------------------------------------------
+
+namespace {
+
+// A model FJ can descend for a controlled number of iterations, with an
+// objective attached so the artificial `obj <= bound` row exists.
+//
+// kDescendVars independent Int variables, each pinned below by its own row
+// `x_i >= 100`. set_initial_x starts every one at 0, so every row is violated by
+// 100 and each is repaired by a single jump to a value in [100, 200] -- one
+// improving iteration per variable, and the unweighted violation of the real
+// rows falls monotonically for that many iterations. The domain is 201 wide, so
+// int_jump_candidates enumerates it whole and the repairing value is always on
+// offer.
+constexpr int kDescendVars = 400;
+
+void build_descending_with_objective(Model& m) {
+    std::vector<int32_t> vars;
+    vars.reserve(kDescendVars);
+    for (int i = 0; i < kDescendVars; ++i) {
+        int32_t v = m.int_var(0, 200);
+        vars.push_back(v);
+        m.add_constraint(m.geq(v, m.constant(100.0)));
+    }
+    m.minimize(m.sum(vars));
+    m.close();
+    // solve() adds this before constructing its ViolationManager; a direct FJ
+    // test has to do it by hand, and before the manager is built, because it
+    // appends a constraint.
+    m.add_objective_soft_constraint();
+}
+
+// The progress measure recomputed from the model, independently of anything
+// FeasibilityJump maintains: finite positive residuals of the active rows, with
+// the artificial objective row left out.
+double recompute_real_violation(const Model& m, const ViolationManager& vm) {
+    const std::vector<int32_t>& cids = m.constraint_ids();
+    const int32_t obj_ci = m.objective_constraint_idx();
+    double total = 0.0;
+    for (size_t c = 0; c < cids.size(); ++c) {
+        if (static_cast<int32_t>(c) == obj_ci || vm.weights[c] <= 0.0) {
+            continue;
+        }
+        const double r = m.node(cids[c]).value;
+        if (r > 0.0 && r < std::numeric_limits<double>::infinity()) {
+            total += r;
+        }
+    }
+    return total;
+}
+
+}  // namespace
+
+TEST_CASE("an unproductive batch ends early and reports itself stuck", "[fj][unproductive]") {
+    // The mechanism itself (#102): a batch that has stopped reducing the real
+    // rows' violation hands control back instead of running its budget out.
+    // build_cheap_iterations is unsatisfiable, so after the first few iterations
+    // nothing can lower the measure again and the streak runs to the limit.
+    Model m;
+    build_cheap_iterations(m);
+    ViolationManager vm(m);
+    RNG rng(42);
+
+    GFJConfig cfg;
+    cfg.two_phase = false;
+    cfg.time_limit = 0.0;  // no clock: the only thing that can end this batch is the exit
+    REQUIRE(cfg.unproductive_iterations == 300);  // the shipped default is what is under test
+
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(/*set_initial_x=*/true);
+    fj.batch(/*batch_iterations=*/50000);
+
+    CAPTURE(fj.iterations());
+    REQUIRE(fj.batch_stuck());
+    // It took the exit, not the budget: 50000 iterations were on offer.
+    REQUIRE(fj.iterations() < 50000);
+    // And it cannot have exited before the streak was actually run out.
+    REQUIRE(fj.iterations() >= cfg.unproductive_iterations);
+}
+
+TEST_CASE("unproductive_iterations = 0 runs the batch to its budget", "[fj][unproductive]") {
+    // The opt-out restores the pre-#102 behaviour exactly: same unsatisfiable
+    // model, same everything, and now the batch runs every iteration it was
+    // given and reports itself not stuck. This is what the three tests that take
+    // the opt-out are relying on.
+    Model m;
+    build_cheap_iterations(m);
+    ViolationManager vm(m);
+    RNG rng(42);
+
+    GFJConfig cfg;
+    cfg.two_phase = false;
+    cfg.time_limit = 0.0;
+    cfg.unproductive_iterations = 0;
+
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(/*set_initial_x=*/true);
+    fj.batch(/*batch_iterations=*/2000);
+
+    REQUIRE(fj.iterations() == 2000);
+    REQUIRE_FALSE(fj.batch_stuck());
+}
+
+TEST_CASE("a huge objective row cannot absorb the real rows' progress", "[fj][unproductive]") {
+    // Regression for the review finding on #102's first cut, which summed the
+    // progress measure over ALL active rows -- the artificial `obj <= bound` row
+    // included. #116 installs a sentinel bound on any model whose feasible
+    // region contains a non-finite objective (elec25/elec50), and that row's
+    // residual then sits at ~1e30, where one ulp is ~1.4e14. Summed in, it
+    // swallows every O(1) real row: the whole sum cannot be moved by a single
+    // bit however much real violation the batch sheds, no iteration ever
+    // registers as an improvement, and the batch is declared stuck at exactly
+    // unproductive_iterations regardless of what it is doing.
+    //
+    // Reproduced here without needing a non-finite objective, by pushing the
+    // objective bound far enough below the objective that the row's residual is
+    // 1e30 on the nose. Same arithmetic, same blindness.
+    Model m;
+    build_descending_with_objective(m);
+    ViolationManager vm(m);
+    RNG rng(42);
+    REQUIRE(m.objective_constraint_idx() >= 0);
+    m.set_objective_bound(-1e30);
+    full_evaluate(m);
+
+    GFJConfig cfg;
+    cfg.two_phase = false;
+    cfg.time_limit = 0.0;
+    REQUIRE(cfg.unproductive_iterations == 300);
+
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(/*set_initial_x=*/true);
+
+    // The row really is the shape the finding is about.
+    const double obj_residual =
+        m.node(m.constraint_ids()[static_cast<size_t>(m.objective_constraint_idx())]).value;
+    CAPTURE(obj_residual);
+    REQUIRE(obj_residual > 1e29);
+    // ...and the real rows it must not absorb are fourteen orders below it.
+    const double real_before = recompute_real_violation(m, vm);
+    REQUIRE(real_before == Catch::Approx(100.0 * kDescendVars));
+
+    // Fewer iterations than there are variables to repair, so EVERY iteration of
+    // this batch has an improving jump available and the batch is productive
+    // throughout. A batch that is descending on every single iteration is the
+    // clearest possible case of one that must not be called stuck.
+    constexpr int64_t kIters = 350;
+    static_assert(kIters < kDescendVars, "the batch must still be descending when it ends");
+    fj.batch(kIters);
+
+    CAPTURE(fj.iterations(), recompute_real_violation(m, vm));
+    REQUIRE_FALSE(fj.batch_stuck());
+    REQUIRE(fj.iterations() == kIters);
+    // Not vacuous: it really did shed real violation while the huge row stood.
+    REQUIRE(recompute_real_violation(m, vm) < real_before);
+}
+
+TEST_CASE("the unweighted-violation accumulator matches a fresh recomputation",
+          "[fj][unproductive]") {
+    // The measure is maintained incrementally in update_var, per constraint, and
+    // only re-grounded at a gls_loop entry and at the unproductive-streak limit.
+    // Between those it is an accumulator, which is #118's defect class -- so pin
+    // it against a sum computed from the model directly, over a batch long
+    // enough to accumulate whatever it is going to accumulate.
+    //
+    // unproductive_iterations = 0 on purpose: with the exit enabled the streak
+    // limit re-grounds the accumulator, which would make the comparison
+    // self-fulfilling. This asserts the incremental maintenance is right on its
+    // own, not that the repair mechanism works.
+    Model m;
+    build_descending_with_objective(m);
+    ViolationManager vm(m);
+    RNG rng(7);
+    m.set_objective_bound(-1e30);  // the row that must stay out of the measure
+    full_evaluate(m);
+
+    GFJConfig cfg;
+    cfg.two_phase = false;
+    cfg.time_limit = 0.0;
+    cfg.unproductive_iterations = 0;
+
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(/*set_initial_x=*/true);
+    fj.batch(/*batch_iterations=*/5000);
+    REQUIRE(fj.iterations() == 5000);
+
+    const double fresh = recompute_real_violation(m, vm);
+    CAPTURE(fj.unweighted_violation(), fresh);
+    // Exact equality is not the claim -- the accumulator rounds, which is why
+    // gls_loop re-grounds and compares against a relative floor rather than
+    // trusting the last bit. The claim is that it agrees to far better than that
+    // floor (kProgressRelEps = 1e-9), so the floor really does separate drift
+    // from progress. A whole-sum measure including the 1e30 row would be off by
+    // thirty orders here, not by an ulp.
+    REQUIRE(std::abs(fj.unweighted_violation() - fresh) <= 1e-12 * std::max(1.0, fresh));
 }

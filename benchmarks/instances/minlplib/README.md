@@ -233,8 +233,11 @@ anything about it** — that would be a result, not a routine table refresh.
      `anytime_trace.csv`, *and* the prose under it — the named late-feasible
      instances with their times, the 46%/22% split, and the `eg_all_s`
      bound-tightening analysis.
-   - **The four unsolved instances**: the heading count and the table, if the
-     set changed.
+   - **The four instances the published run left infeasible**: the heading
+     count and the table, if the set changed. `st_e40` is expected to leave it
+     on this re-run (#102); drop its row here and in `analysis_notes.csv`
+     together, and fix the heading count, only once the regenerated
+     `comparison.csv` actually shows it feasible.
    - **SCIP baseline**: the CBLS column of the head-to-head table — `feasible`,
      `hit the 60s limit`, and `total wall over the roster` (step 4's #113 moves
      `wall_seconds`, so this one will change); the "failures are almost
@@ -262,10 +265,13 @@ anything about it** — that would be a result, not a routine table refresh.
    **Nothing warns you**: the runner merges the curated note only onto rows that
    came back infeasible, and its "stale analysis note (now solved)" warning sits
    inside that same guard, so it can never fire. Diff the noted instances
-   (`elec25`, `elec50`, `nvs01`) against the new table by hand — #114, #120 and
-   #102 are exactly the kind of change that could retire one. #102 already did:
-   its `st_e40` row was removed from `analysis_notes.csv` when the engine started
-   solving that instance.
+   (`elec25`, `elec50`, `nvs01`, `st_e40`) against the new table by hand —
+   #114, #120 and #102 are exactly the kind of change that could retire one.
+   `st_e40`'s note is the live case: the engine solves that instance now
+   (see the root-cause table below), so this re-run is expected to retire it.
+   Its row is deliberately still in `analysis_notes.csv` until then — if the
+   row comes back infeasible under the published protocol after all, that note
+   is the only thing that would flag it.
 6. Confirm the provenance the whole re-run is for:
    `.venv/bin/python -c 'import csv,sys;print(sorted({r["commit_sha"] for r in csv.DictReader(open("comparison.csv"))}))'` must print exactly one
    SHA, and that SHA must be the checkout you built. Two SHAs mean a resumed run
@@ -288,7 +294,13 @@ anytime profile all come from that **one** run; its incumbent trace is committed
 as `anytime_trace.csv`, so every number in this section is reproducible from the
 checkout it was measured at, which each row's `commit_sha` names.
 
-**The table predates #120 and does not describe the current engine.** The `.nl`
+**The table predates #120 and #102, and does not describe the current engine.**
+`st_e40` is the change with a named row below: at engine commit `e381159` on
+branch `issue-102-st-e40` it reaches its BKS of 30.4142135 at both 10s and 60s,
+seed 42, where this table records it infeasible. #123 is the re-run that will
+move it (and whatever else the trajectory change moved); until then the tally,
+the gap buckets and the "four instances" section below all describe the
+**published run**, not the engine. The `.nl`
 adapter now derives implied variable bounds from the purely linear rows instead
 of substituting `inf_clamp`/`int_inf_clamp` for an infinite one, and it is on by
 default — so any instance whose linear rows imply something is searched over a
@@ -325,6 +337,12 @@ deterministic budget yet (the engine supports one — `time_limit = 0` plus
 | unsupported / read errors / non-finite | 0 |
 | integrality mismatches vs catalogue | 0 |
 | verification failures | 0 |
+
+These are the counts of the **published run**, not of the current engine. The
+`infeasible` row is 4 because `st_e40` was infeasible at the commit the table
+was measured at; it is not at engine commit `e381159` (see below). Re-derive the
+tally from a regenerated `comparison.csv` on #123 rather than editing it here —
+a hand-adjusted count would no longer match the table it is a summary of.
 
 Gap distribution over the feasible instances: **21 within 0.01% of BKS, 22
 within 1%, 26 within 10%.**
@@ -381,16 +399,19 @@ instance is therefore evidence about the bound-tightening step size, not about
 how long the search needs. Read the quality column as a lower bound on what a
 larger step (or a direct objective descent) might achieve sooner.
 
-### The four unsolved instances
+### The four instances the published run left infeasible
 
 Every one is root-caused, and the verdict is recorded per row in
-`comparison.csv` (merged from `analysis_notes.csv`):
+`comparison.csv` (merged from `analysis_notes.csv`). One of the four —
+`st_e40` — has since been fixed and is no longer unsolved at engine commit
+`e381159`; it stays in this table, with its verdict updated, until #123
+regenerates the rows:
 
 | Instance | Verdict | Cause |
 |----------|---------|-------|
 | `elec25`, `elec50` | **bug** ([#110](https://github.com/spoorendonk/cbls/issues/110)) | Thomson problem: points on the unit sphere, Coulomb objective `+inf` wherever two coincide. **The objective-encoding defects (#100) are fixed and are no longer the blocker.** What remains: the `.nl` declares no finite variable bounds, so the box is the ±1e9 inf-clamp; random init starts ~1e9 out, and shrinking each variable toward 0 is a huge row improvement — which parks the search on the origin, a stationary point of every row `x²+y²+z²=1`. The Float jump offers a single *undamped* Newton step (`x0 - residual/grad`) plus `lb`/`ub`/midpoint; near the origin that step overshoots wildly and is rejected, and because a candidate was nonetheless *generated* the #107 escape probe is suppressed — so the variable freezes at score 0. Measured: escape probe fires only at exactly `x0 = 0`; at `x0 = 0.001/0.01/0.1` the score is 0 with the probe armed or not. Infeasible at violation ≈1 **both with the objective present and with it neutralised**, so it is not objective-related — the earlier "dropping the objective makes elec25 feasible in 20s" claim no longer reproduces. Tightening `inf_clamp` to 1 makes `elec25` feasible at violation 0 post-#100 (pre-#100 it was infeasible at *every* clamp), because clamping accidentally supplies the missing damping. |
 | `nvs01` ([#101](https://github.com/spoorendonk/cbls/issues/101)) | hard | `420.169·√(x0²+900) == x2·x0·x1` needs `x0` and the product `x1·x2` changed together. While `x0 = 0` the product term vanishes, so `x1` and `x2` receive no gradient signal and no single-variable jump improves — escaping requires a compound move (Novelty Jump implements exactly this, but is off by default). Verified analytically and reproduced across seeds 1–7. |
-| `st_e40` ([#102](https://github.com/spoorendonk/cbls/issues/102)) | **fixed** — was an engine gap, not hardness | Rows C1–C3 are degree-7 polynomials `(x-1)(x-2)(x-3)(x-5)(x-8)(x-10)(x-12) == 0` restricting each integer to `{1,2,3,5,8,10,12}`; C0 pins the free `x3` to a bilinear function of them, and four linear rows bound the combination. That leaves 343 integer combinations, **52 of them feasible**. The search reached only 3 of the 343: it fell into a limit cycle within ~20 GLS iterations — `x1` flipping between two values and `x3` hopping between the roots of the four rows containing it — and neither trapped value appears in any feasible combination (all 52 need `x0 >= 5` and `x1 >= 5`). It then spent **92% of a 155 000-iteration run on GLS weight bumps that changed nothing**, because diversification was gated on 100 non-improving *batches* of 1000 iterations and, before a first feasible solution, no batch ever improves — a fixed cadence of one kick per 100 000 iterations with no feedback from the search. Two earlier explanations in this table were both wrong: a violation barrier between allowed integer values (`int_jump_candidates` enumerates the whole domain below 256 values, and these are `[1,12]`), and "the feasible combination" singular (there are 52). Fixed by `GFJConfig::unproductive_iterations`: a batch that stops reducing the total violation ends, and `solve()` takes the kick as due. Now reaches the BKS 30.4142135 at 10s and 60s, seed 42. |
+| `st_e40` ([#102](https://github.com/spoorendonk/cbls/issues/102)) | **fixed** — was an engine gap, not hardness | Rows C1–C3 are degree-7 polynomials `(x-1)(x-2)(x-3)(x-5)(x-8)(x-10)(x-12) == 0` restricting each integer to `{1,2,3,5,8,10,12}`; C0 pins the free `x3` to a bilinear function of them, and four linear rows bound the combination. That leaves 343 integer combinations, **52 of them feasible**. The search reached only 3 of the 343: it fell into a limit cycle within ~20 GLS iterations — `x1` flipping between two values and `x3` hopping between the roots of the four rows containing it — and neither trapped value appears in any feasible combination (all 52 need `x0 >= 5` and `x1 >= 5`). It then spent **92% of a 155 000-iteration run on GLS weight bumps that changed nothing**, because diversification was gated on 100 non-improving *batches* of 1000 iterations and, before a first feasible solution, no batch ever improves — a fixed cadence of one kick per 100 000 iterations with no feedback from the search. Two earlier explanations in this table were both wrong: a violation barrier between allowed integer values (`int_jump_candidates` enumerates the whole domain below 256 values, and these are `[1,12]`), and "the feasible combination" singular (there are 52). Fixed by `GFJConfig::unproductive_iterations`: a batch that stops reducing the real rows' violation ends, and `solve()` takes the diversification kick as due (without arming the Float escape probe, which stays gated on `perturbation_period` — see #107). Measured at engine commit `e381159`, branch `issue-102-st-e40`: reaches the BKS 30.4142135 at 10s and 60s, seed 42. The `comparison.csv` row still reads infeasible and is left alone deliberately; #123 is the re-run that regenerates it. |
 
 ## SCIP baseline
 
@@ -482,13 +503,15 @@ from the obvious guess. Both sides run a fixed 60s per instance, so:
 | verification failures | 0 | 0 |
 
 **The failures are almost disjoint, and that is the useful part.** SCIP reaches
-a feasible solution on all four instances CBLS cannot solve — two of them proved
-optimal in under a quarter of a second:
+a feasible solution on all four instances CBLS did not solve in this run — two
+of them proved optimal in under a quarter of a second. (`st_e40` is no longer
+one of CBLS's failures at engine commit `e381159`; it is kept in the table
+because the CBLS column is this run's, and #123 regenerates it.)
 
 | Instance | CBLS | SCIP | What it settles |
 |---|---|---|---|
 | `nvs01` | infeasible | optimal in 0.11s | The instance is not hard; #101 is an engine gap (single-variable jumps cannot move a product term pinned at zero). |
-| `st_e40` | infeasible → **BKS 30.4142135** | optimal in 0.22s | Was an engine gap, now closed (#102): the outer loop only diversified once per 100 000 GLS iterations, so a limit cycle established after ~20 iterations ran essentially unchallenged. See the row above. |
+| `st_e40` | infeasible in this table → **BKS 30.4142135** at engine commit `e381159` | optimal in 0.22s | Was an engine gap, now closed (#102): the outer loop only diversified once per 100 000 GLS iterations, so a limit cycle established after ~20 iterations ran essentially unchallenged. The `infeasible` reading is this table's, measured before the fix; see the root-cause row above for the mechanism and the measurement. |
 | `elec25` | infeasible | 243.859 vs BKS 243.813 (0.02%) | Confirms an engine gap, not hardness: a feasible point of near-BKS quality is easy to reach. Originally attributed to #100; that is fixed, and the remaining cause is the undamped Newton jump ([#110](https://github.com/spoorendonk/cbls/issues/110), see the root-cause table above). |
 | `elec50` | infeasible | 1422.3 vs BKS 1055.2 (34.8%) | Same mechanism at 50 points; SCIP does not close it either, but it does reach the feasible region. |
 | `st_e36` | −147 (BKS −246) | **no feasible solution in 60s** | The one row the other way. SCIP spends the full budget and returns only a dual bound of −304.5. |
