@@ -17,6 +17,7 @@
 // independent re-check by verify_uc_chped(), whose UC-semantic checks use an
 // absolute 1e-4 and whose leading cbls::verify_model() pass uses 1e-6.
 
+#include "../common/runner_args.h"
 #include "data.h"
 #include "greedy_init.h"
 #include "uc_model.h"
@@ -86,40 +87,16 @@ struct Args {
 // (bugprone-unchecked-string-to-number-conversion). Trailing characters are
 // rejected too, so `--time-limit 60s` no longer quietly means 60.
 //
-// A bad double yields NaN rather than exiting here: both double flags have a
+// A bad double yields NaN rather than exiting: both double flags have a
 // `> 0.0` guard below that NaN fails, so the parse layer adds a diagnostic
 // without moving where the failure is reported. Integer flags have no such
 // guard and so report and exit 2 directly.
-double parse_double(const char* flag, const std::string& text) {
-    size_t used = 0;
-    double value = 0.0;
-    try {
-        value = std::stod(text, &used);
-    } catch (const std::exception&) {
-        used = 0;  // not a number at all; reported just below
-    }
-    if (text.empty() || used != text.size()) {
-        std::fprintf(stderr, "%s: '%s' is not a number\n", flag, text.c_str());
-        return kNaN;
-    }
-    return value;
-}
-
-int64_t parse_int64(const char* flag, const std::string& text) {
-    size_t used = 0;
-    int64_t value = 0;
-    try {
-        value = std::stoll(text, &used);
-    } catch (const std::exception&) {
-        used = 0;  // not a number at all; reported just below
-    }
-    if (text.empty() || used != text.size()) {
-        std::fprintf(stderr, "%s: '%s' is not an integer\n", flag, text.c_str());
-        std::exit(2);
-    }
-    return value;
-}
-
+//
+// The rule and this policy are shared with the other runners rather than copied
+// a fourth time -- a copy is where a fix to one silently diverges from the
+// rest, which is what #130 factored out.
+using cbls::bench::parse_double;
+using cbls::bench::parse_int64;
 /// True when a double flag names a usable positive quantity. Both failure modes
 /// of the parse layer fall out here: NaN (the token was not a number) and inf
 /// (std::stod accepts "inf" happily).
