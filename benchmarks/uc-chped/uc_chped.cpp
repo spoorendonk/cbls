@@ -17,7 +17,6 @@
 // independent re-check by verify_uc_chped(), whose UC-semantic checks use an
 // absolute 1e-4 and whose leading cbls::verify_model() pass uses 1e-6.
 
-#include "../common/runner_args.h"
 #include "data.h"
 #include "greedy_init.h"
 #include "uc_model.h"
@@ -25,6 +24,7 @@
 
 #include <algorithm>
 #include <array>
+#include <benchmarks/common/runner_args.h>
 #include <cbls/cbls.h>
 #include <cmath>
 #include <cstdint>
@@ -81,9 +81,11 @@ struct Args {
     std::string out_csv;  // default: <inst_dir>/comparison.csv
 };
 
-// Numeric flags are parsed with std::stod / std::stoll rather than std::atof /
-// std::atoll: the ato* family has no error path, so a typo'd value silently
-// became 0 and a run that never searched would report like a solver result
+// The parse rule itself lives in include/cbls/arg_parse.h and the runners'
+// report-and-exit policy in benchmarks/common/runner_args.h; what follows is
+// only why this runner cares. Numeric flags go through std::stod / std::stoll rather than std::atof
+// / std::atoll: the ato* family has no error path, so a typo'd value silently became 0 and a run
+// that never searched would report like a solver result
 // (bugprone-unchecked-string-to-number-conversion). Trailing characters are
 // rejected too, so `--time-limit 60s` no longer quietly means 60.
 //
@@ -97,6 +99,23 @@ struct Args {
 // rest, which is what #130 factored out.
 using cbls::bench::parse_double;
 using cbls::bench::parse_int64;
+/// Whether two paths name the same file. Canonicalised when both exist, so that
+/// `./benchmarks/x` and an absolute path to it compare equal; a path that does
+/// not exist yet cannot be the published table, so falling back to the lexical
+/// form is safe rather than merely convenient.
+bool same_file(const std::string& a, const std::string& b) {
+    std::error_code ec;
+    const std::filesystem::path pa = std::filesystem::weakly_canonical(a, ec);
+    if (ec) {
+        return a == b;
+    }
+    const std::filesystem::path pb = std::filesystem::weakly_canonical(b, ec);
+    if (ec) {
+        return a == b;
+    }
+    return pa == pb;
+}
+
 /// True when a double flag names a usable positive quantity. Both failure modes
 /// of the parse layer fall out here: NaN (the token was not a number) and inf
 /// (std::stod accepts "inf" happily).
@@ -174,13 +193,26 @@ Args parse_args(int argc, char** argv) {
         std::fprintf(stderr, "--feas-tol must be > 0 (got %g)\n", a.feas_tol);
         std::exit(2);
     }
+    const std::string published = a.inst_dir + "/comparison.csv";
     if (a.out_csv.empty()) {
+        a.out_csv = published;
+    }
+    // The guards below are about the FILE, not about which flags were typed. An
+    // earlier cut tested `--out` for emptiness, which meant the documented
+    // command -- which passes `--out <the published table>` explicitly --
+    // satisfied every guard while doing exactly the damage they exist to stop:
+    // a `--time-limit 60` pass over one instance rewrote the table and deleted
+    // the cited reference rows for every instance it did not run, at exit 0.
+    // So compare the resolved paths instead. Canonicalised where the file
+    // exists, because `./benchmarks/...` and an absolute path are the same file
+    // and a string compare says otherwise; a path that does not exist yet
+    // cannot be the published table, so the lexical fallback is safe.
+    if (same_file(a.out_csv, published)) {
         // A run that is not the full published measurement must never overwrite
-        // the published results table: the default --out is the file the README
-        // publishes. Both a partial roster and a shortened budget qualify --
-        // `--time-limit 2` is the obvious smoke test, and it would otherwise
-        // replace the table with two-second results (the #88 hazard).
-        const std::string published = a.inst_dir + "/comparison.csv";
+        // the published results table. Both a partial roster and a shortened
+        // budget qualify -- `--time-limit 2` is the obvious smoke test, and it
+        // would otherwise replace the table with two-second results (the #88
+        // hazard).
         const char* why = nullptr;
         if (!a.instances.empty()) {
             why = "--instance";
@@ -188,15 +220,16 @@ Args parse_args(int argc, char** argv) {
             why = "--time-limit";
         }
         if (why != nullptr) {
-            std::fprintf(stderr, "%s requires an explicit --out (refusing to overwrite %s)\n", why,
-                         published.c_str());
+            std::fprintf(stderr,
+                         "%s cannot write the published table %s "
+                         "(pass --out elsewhere for an unpublished run)\n",
+                         why, published.c_str());
             std::exit(2);
         }
-        // The bare invocation was the one route left to the published path, and
-        // it records "unknown" as its provenance -- exactly the row a reader
-        // cannot tell engine drift from a bug with. Writing that file is
-        // therefore gated on naming the commit as well, not only on avoiding
-        // the two smoke-shaped flags.
+        // A full-roster run at the documented budgets is the only thing allowed
+        // to land here, and it still has to say which engine it measured:
+        // "unknown" is exactly the provenance a reader cannot tell engine drift
+        // from a bug with.
         if (!a.commit_set) {
             std::fprintf(stderr,
                          "writing %s requires an explicit --commit SHA "
@@ -204,7 +237,6 @@ Args parse_args(int argc, char** argv) {
                          published.c_str());
             std::exit(2);
         }
-        a.out_csv = a.inst_dir + "/comparison.csv";
     }
     return a;
 }
@@ -217,6 +249,30 @@ void remove_temp(const std::string& path) {
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }
+
+/// Removes the scratch file unless the run reached its rename. RAII rather than
+/// a call on each error path, because the solve loop can throw -- Model::var
+/// raises out_of_range, make_subinstance raises invalid_argument -- and an
+/// exception unwinds past every such call, leaving the scratch file behind in a
+/// tracked directory that does not ignore it.
+class TempFileGuard {
+public:
+    explicit TempFileGuard(std::string path) : path_(std::move(path)) {}
+    TempFileGuard(const TempFileGuard&) = delete;
+    TempFileGuard& operator=(const TempFileGuard&) = delete;
+    TempFileGuard(TempFileGuard&&) = delete;
+    TempFileGuard& operator=(TempFileGuard&&) = delete;
+    ~TempFileGuard() {
+        if (armed_) {
+            remove_temp(path_);
+        }
+    }
+    void release() { armed_ = false; }
+
+private:
+    std::string path_;
+    bool armed_ = true;
+};
 
 /// One CSV line. The first nine fields are the schema the pre-#103 table
 /// published, in their original order, so a reader of the old file reads the
@@ -269,8 +325,14 @@ std::string fixed2(double v) {
 /// and a quoted field would need escaping rules the readers of this table
 /// (grep, awk, a spreadsheet import) do not all implement.
 std::string csv_text(std::string s) {
+    // Nothing here quotes, so every character that would end a field or a
+    // record has to be substituted rather than escaped -- including '"', which
+    // a reader that does honour quoting would otherwise treat as opening one,
+    // and '\r', which turns a row into two on a CRLF-aware reader.
     std::replace(s.begin(), s.end(), ',', ';');
+    std::replace(s.begin(), s.end(), '"', '\'');
     std::replace(s.begin(), s.end(), '\n', ' ');
+    std::replace(s.begin(), s.end(), '\r', ' ');
     return s;
 }
 
@@ -599,6 +661,7 @@ int run_benchmark(int argc, char** argv) {
     // at the documented budgets, and a job killed mid-write must leave either
     // the previous table or none, never a truncated one.
     const std::string tmp_csv = args.out_csv + ".tmp";
+    TempFileGuard tmp_guard(tmp_csv);
     std::ofstream csv(tmp_csv);
     if (!csv.is_open()) {
         std::fprintf(stderr, "Failed to open %s for writing\n", tmp_csv.c_str());
@@ -659,16 +722,17 @@ int run_benchmark(int argc, char** argv) {
     if (!csv) {
         std::fprintf(stderr, "Error writing %s; %s not replaced\n", tmp_csv.c_str(),
                      args.out_csv.c_str());
-        remove_temp(tmp_csv);
         return 2;
     }
     csv.close();
     std::error_code rename_ec;
     std::filesystem::rename(tmp_csv, args.out_csv, rename_ec);
+    if (!rename_ec) {
+        tmp_guard.release();  // it is the published table now, not scratch
+    }
     if (rename_ec) {
         std::fprintf(stderr, "Failed to rename %s -> %s: %s\n", tmp_csv.c_str(),
                      args.out_csv.c_str(), rename_ec.message().c_str());
-        remove_temp(tmp_csv);
         return 2;
     }
 

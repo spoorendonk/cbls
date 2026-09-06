@@ -72,7 +72,7 @@ With Python bindings:
 ```bash
 cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build
-.venv/bin/pytest          # 272 tests, 81 of them for the bindings
+.venv/bin/pytest          # 275 tests, 81 of them for the bindings
 ```
 
 Or install as a Python package:

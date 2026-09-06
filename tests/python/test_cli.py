@@ -173,3 +173,64 @@ def test_setcover_refuses_a_malformed_numeric_flag(flag: str, value: str) -> Non
 
     assert 0 < result.returncode < 128, f"{flag} {value}: returncode {result.returncode}"
     assert f"{flag}: '{value}'" in result.stderr, result.stderr
+
+
+# The uc-chped runner writes a published results table, so its guards are the
+# thing most worth pinning: a cold review found they tested whether `--out` was
+# OMITTED rather than which file it named, which meant the command the README
+# documents -- `--out <the published table>` spelled out -- satisfied every
+# guard while doing exactly the damage they exist to stop. A shortened run
+# rewrote the table and deleted the cited reference rows for every instance it
+# did not run, at exit 0.
+UC_CHPED_BINARY = Path(__file__).resolve().parents[2] / "build" / "cbls_uc_chped"
+
+
+def _uc_chped_scratch(tmp_path: Path) -> Path:
+    src = Path(__file__).resolve().parents[2] / "benchmarks" / "instances" / "uc-chped"
+    dst = tmp_path / "uc-chped"
+    dst.mkdir()
+    for f in src.iterdir():
+        if f.is_file():
+            (dst / f.name).write_bytes(f.read_bytes())
+    return dst
+
+
+@pytest.mark.parametrize("flag", ["--time-limit", "--instance"])
+def test_uc_chped_refuses_a_partial_run_onto_the_published_table(flag: str, tmp_path: Path) -> None:
+    if not UC_CHPED_BINARY.exists():
+        pytest.skip("cbls_uc_chped not built")
+    inst_dir = _uc_chped_scratch(tmp_path)
+    published = inst_dir / "comparison.csv"
+    before = published.read_bytes()
+    value = "0.2" if flag == "--time-limit" else "ucp13"
+
+    # --out spelled out, which is the shape the README documents.
+    result = subprocess.run(
+        [str(UC_CHPED_BINARY), str(inst_dir), flag, value, "--out", str(published)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert "cannot write the published table" in result.stderr, result.stderr
+    assert published.read_bytes() == before, "the published table was modified"
+
+
+def test_uc_chped_requires_a_commit_to_write_the_published_table(tmp_path: Path) -> None:
+    if not UC_CHPED_BINARY.exists():
+        pytest.skip("cbls_uc_chped not built")
+    inst_dir = _uc_chped_scratch(tmp_path)
+    published = inst_dir / "comparison.csv"
+    before = published.read_bytes()
+
+    result = subprocess.run(
+        [str(UC_CHPED_BINARY), str(inst_dir), "--out", str(published)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert "requires an explicit --commit" in result.stderr, result.stderr
+    assert published.read_bytes() == before, "the published table was modified"

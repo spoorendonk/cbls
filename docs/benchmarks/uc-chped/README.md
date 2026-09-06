@@ -149,8 +149,8 @@ From Pedroso et al. (2014), Table 2 — MIP with 1-hour time limit:
 
 The CBLS model (`uc_model.h`) maps the mathematical formulation to the solver's expression DAG:
 
-- **`BoolVar`** for each $y_{u,t}$ (commitment decisions) — explored by the SA flip move
-- **`FloatVar`** for each $p_{u,t}$ (dispatch levels) — explored by the SA float perturbation move, with a `FloatIntensifyHook` that refines dispatch once commitment is partially fixed
+- **`BoolVar`** for each $y_{u,t}$ (commitment decisions) — driven by Feasibility Jump's bool flips
+- **`FloatVar`** for each $p_{u,t}$ (dispatch levels) — driven by FJ's Newton-derived float jump values, with a `FloatIntensifyHook` that refines dispatch once commitment is partially fixed
 - **Expression DAG nodes** for the objective:
   - `sum`, `prod`, `pow_expr` for the quadratic cost terms
   - `sin_expr`, `abs_expr` for the valve-point term
@@ -195,10 +195,13 @@ time budget and the engine commit on every measured row:
 ```
 
 `--feas-tol T` overrides the tolerance, `--time-limit S` overrides the
-per-horizon budget map, `--seed N` the seed, and `--instance NAME` restricts
-the roster (which then requires an explicit `--out`, so a partial run cannot
-overwrite the published table; `--time-limit` requires one for the same reason,
-so a short smoke run cannot become the published table). Note that `feasible` is
+per-horizon budget map, `--seed N` the seed, and `--instance NAME` restricts the
+roster. The last two are refused outright when the resolved `--out` path *is*
+the published table above — a partial roster or a shortened budget cannot become
+the published result, whether the path was defaulted or spelled out. Writing
+that file at all requires `--commit`, so a published row always names the engine
+it measured. Point `--out` anywhere else and none of this applies; that is the
+shape a smoke run should take. Note that `feasible` is
 the engine's verdict at the row's `feas_tol` while `verified` is an independent
 re-check by `verify_uc_chped()` at its own tolerances — `1e-4` on its
 UC-semantic checks and `1e-6` on the generic `cbls::verify_model()` pass it runs
