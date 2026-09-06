@@ -1,8 +1,10 @@
-"""Tests for ParallelSearch via Python bindings (#128).
+"""Tests for ParallelSearch via Python bindings (#128, #129).
 
 Every scenario here runs in a **child interpreter**, not in-process. That is
-deliberate: the bug these tests cover is a GIL deadlock, and a deadlocked
-interpreter cannot fail a test. `pytest-timeout` cannot rescue it either --
+deliberate: the bugs these tests cover are a GIL deadlock (#128) and a double
+free of a factory's return value (#129), and neither is reportable from inside
+the process that hits it -- a deadlocked interpreter cannot fail a test, and an
+aborting one takes the whole pytest run down with it. `pytest-timeout` cannot rescue it either --
 its `thread` method runs `timeout_timer` on a `threading.Timer`, which is a
 Python thread and so needs the GIL it is waiting on, and its `signal` method
 sets a flag that only takes effect at the next bytecode in the main thread,
@@ -107,24 +109,31 @@ def test_solve_surfaces_a_raising_python_factory() -> None:
     assert "OK" in out
 
 
-def test_solve_parallel_refuses_a_python_hook_factory() -> None:
-    """hook_factory is C++-only, and must say so rather than abort the interpreter.
+def test_solve_parallel_accepts_a_python_hook_factory() -> None:
+    """A Python hook_factory runs once per worker and its object is freed once (#129).
 
-    Its C++ type hands back a raw owning pointer that src/pool.cpp adopts into a
-    unique_ptr. A Python callable returns an object nanobind owns, so the adopt
-    frees memory the interpreter still holds -- an unconditional SIGABRT, not a
-    race (#129). The binding refuses the argument before releasing the GIL; this
-    runs in a child because the regression is a process abort, which would take
-    the whole pytest run with it.
+    The factory type used to hand back a raw owning pointer that src/pool.cpp
+    adopted into a unique_ptr, so a nanobind-owned return value was deleted by
+    C++ and again by the interpreter -- an unconditional SIGABRT, not a race.
+    It now returns a shared_ptr, whose nanobind caster holds a Python reference
+    and drops it under the GIL. Both regression modes are fatal to the process
+    that hits them -- an abort, or a deadlock if the GIL handling is wrong --
+    so this runs in a child, like every other scenario in this file.
     """
-    out = _assert_scenario_ok("refuse_hook_factory")
-    assert "OK" in out
+    out = _assert_scenario_ok("hook_factory")
+    assert "hook_calls=2 hooks_destroyed=2" in out
 
 
-def test_solve_parallel_refuses_a_python_lns_factory() -> None:
-    """lns_factory is refused for the same ownership reason as hook_factory (#129)."""
-    out = _assert_scenario_ok("refuse_lns_factory")
-    assert "OK" in out
+def test_solve_parallel_accepts_a_python_lns_factory() -> None:
+    """The same round trip for lns_factory, which has its own lifetime (#129).
+
+    Checked separately from hook_factory rather than folded into one scenario:
+    the two arguments have the same shape but are built from different places --
+    one per worker model, one per worker -- so a fix that only reached one of
+    them would pass a combined test.
+    """
+    out = _assert_scenario_ok("lns_factory")
+    assert "lns_calls=2 lns_destroyed=2" in out
 
 
 def test_solve_parallel_deterministic_builds_models_on_the_calling_thread() -> None:
@@ -192,26 +201,66 @@ def _scenario_raising() -> None:
         raise AssertionError("a factory raising in every worker should have propagated")
 
 
-def _scenario_refuse_hook_factory() -> None:
-    try:
-        cbls.ParallelSearch(2).solve_parallel(
-            _feasible_model, 0.5, 42, cbls.SearchConfig(), lambda m: cbls.FloatIntensifyHook()
-        )
-    except TypeError as exc:
-        assert "hook_factory" in str(exc), str(exc)
-    else:
-        raise AssertionError("a Python hook_factory should have been refused")
+def _scenario_hook_factory() -> None:
+    lock = threading.Lock()
+    calls = 0
+    destroyed = 0
+
+    # _cbls_core is a compiled extension with no stubs, so mypy sees every symbol
+    # in it as Any and strict mode refuses to subclass one -- same reason as the
+    # Recorder callback below.
+    class CountingHook(cbls.FloatIntensifyHook):  # type: ignore[misc]
+        def __del__(self) -> None:
+            nonlocal destroyed
+            with lock:
+                destroyed += 1
+
+    def hook_factory(model: "cbls.Model") -> "cbls.FloatIntensifyHook":
+        nonlocal calls
+        # The Model& reaches Python as a COPY, not as a handle on the worker's
+        # own model: nanobind casts an lvalue reference with rv_policy::copy.
+        # So the argument is worth type-checking and worthless to identity-check.
+        assert isinstance(model, cbls.Model), type(model)
+        with lock:
+            calls += 1
+        return CountingHook()
+
+    result = cbls.ParallelSearch(2).solve_parallel(
+        _feasible_model, 0.5, 42, cbls.SearchConfig(), hook_factory
+    )
+    assert result.feasible, "portfolio found no feasible solution for x + y >= 3"
+    # Every hook dies before solve_parallel returns -- at the end of the worker
+    # lambda in portfolio mode -- so the counter is settled by the time it does,
+    # and nothing here holds a reference that could keep one alive.
+    with lock:
+        n_calls, n_destroyed = calls, destroyed
+    print(f"hook_calls={n_calls} hooks_destroyed={n_destroyed}")
 
 
-def _scenario_refuse_lns_factory() -> None:
-    try:
-        cbls.ParallelSearch(2).solve_parallel(
-            _feasible_model, 0.5, 42, cbls.SearchConfig(), None, lambda: cbls.LNS()
-        )
-    except TypeError as exc:
-        assert "lns_factory" in str(exc), str(exc)
-    else:
-        raise AssertionError("a Python lns_factory should have been refused")
+def _scenario_lns_factory() -> None:
+    lock = threading.Lock()
+    calls = 0
+    destroyed = 0
+
+    class CountingLNS(cbls.LNS):  # type: ignore[misc]
+        def __del__(self) -> None:
+            nonlocal destroyed
+            with lock:
+                destroyed += 1
+
+    def lns_factory() -> "cbls.LNS":
+        nonlocal calls
+        with lock:
+            calls += 1
+        return CountingLNS(0.3)
+
+    result = cbls.ParallelSearch(2).solve_parallel(
+        _feasible_model, 0.5, 42, cbls.SearchConfig(), None, lns_factory
+    )
+    assert result.feasible, "portfolio found no feasible solution for x + y >= 3"
+    with lock:
+        n_calls, n_destroyed = calls, destroyed
+    print(f"lns_calls={n_calls} lns_destroyed={n_destroyed}")
 
 
 def _scenario_deterministic() -> None:
@@ -260,8 +309,8 @@ if __name__ == "__main__":
         "solve": _scenario_solve,
         "solve_parallel": _scenario_solve_parallel,
         "raising": _scenario_raising,
-        "refuse_hook_factory": _scenario_refuse_hook_factory,
-        "refuse_lns_factory": _scenario_refuse_lns_factory,
+        "hook_factory": _scenario_hook_factory,
+        "lns_factory": _scenario_lns_factory,
         "deterministic": _scenario_deterministic,
         "callback": _scenario_callback,
     }

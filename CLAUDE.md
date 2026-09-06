@@ -180,7 +180,7 @@ out of the pre-commit set. Derive each count with the matching command rather
 than by arithmetic: `ctest -N`, `ctest -N -L slow`, `ctest -N -LE slow`,
 `ctest -N -L timing`.
 
-These counts are hard-coded in **six** places and nothing checks that they
+These counts are hard-coded in **seven** places and nothing checks that they
 agree:
 
 1. this section,
@@ -193,8 +193,12 @@ agree:
 6. the `-LE slow` guidance and the ~40s/~304s figures in `docs/profiling.md`.
    Note its "302/302 green" sanitizer line is a **dated record of one run at a
    named commit**, not a current count — it says so inline. Leave it alone.
+7. the binding count in **`## Build & Test`** below, in the paragraph explaining
+   why the gated build turns `CBLS_BUILD_PYTHON` on ("81 binding tests silently
+   unrun"). It is in this file, but not in this section, so a search that stops
+   at the enumeration above misses it.
 
-Update all six in the same commit as any change to the test roster, and
+Update all seven in the same commit as any change to the test roster, and
 re-derive every number from `ctest -N` / `pytest --collect-only` rather than
 incrementing the one you find.
 

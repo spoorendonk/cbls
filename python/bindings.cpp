@@ -4,6 +4,7 @@
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/set.h>
+#include <nanobind/stl/shared_ptr.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 #include <nanobind/trampoline.h>
@@ -33,11 +34,15 @@ constexpr const char* kParallelSolveDoc =
     "you is atomicity across bytecodes, so a callable that mutates\n"
     "Python-side state must lock it.\n"
     "\n"
-    "On `solve_parallel`, hook_factory and lns_factory are C++-only and raise\n"
-    "TypeError if passed anything but None. Both return a raw owning pointer\n"
-    "that the C++ side adopts into a unique_ptr, which for a nanobind-managed\n"
-    "object is a double free -- so the argument is refused rather than left to\n"
-    "abort the interpreter. See issue #129.\n"
+    "`solve_parallel` accepts a Python hook_factory and lns_factory. Both are\n"
+    "invoked once per worker -- hook_factory from the same thread and at the\n"
+    "same point as model_factory, lns_factory alongside it -- and the object\n"
+    "each returns is released when that worker finishes, under the GIL. Both\n"
+    "return a shared_ptr, so the C++ side shares ownership with the\n"
+    "interpreter instead of adopting a pointer Python still owns (issue #129).\n"
+    "The Model handed to hook_factory is a COPY of the worker\'s model, not a\n"
+    "handle on it: nanobind casts an lvalue reference by copying. Mutating it\n"
+    "changes nothing the worker will search.\n"
     "\n"
     "In portfolio mode an exception raised by the factory in every worker is\n"
     "re-raised here with its original type and message, while one that fails\n"
@@ -375,47 +380,21 @@ NB_MODULE(_cbls_core, m) {
             // acquires the GIL inside every worker to invoke the factory --
             // a deadlock that made this method uncallable from Python (#128).
             nb::call_guard<nb::gil_scoped_release>(), kParallelSolveDoc)
-        .def(
-            "solve_parallel",
-            // Hand-written rather than a member pointer with a call guard, for
-            // two reasons. The GIL has to be released for the same reason as
-            // `solve` above -- the SolveCallback trampoline acquires it from
-            // worker 0 -- but hook_factory and lns_factory must be REFUSED
-            // before self.solve() is entered at all. The checks are cheap and
-            // GIL-free (is_none() is a pointer compare, nb::type_error touches
-            // no Python C API), so they run first and the release is scoped to
-            // the C++ call itself.
-            //
-            // The refusal is not conservatism: both parameters are
-            // `std::function<T*(...)>` whose result src/pool.cpp adopts into a
-            // unique_ptr. nanobind casts the returned Python object to a
-            // pointer into its own instance payload, so the adopt is a delete
-            // of memory Python still owns -- an unconditional abort, not a
-            // race. Taking them as nb::handle keeps this frame out of the
-            // refcounting entirely. See issue #129.
-            [](ParallelSearch& self, std::function<Model()> model_factory, double time_limit,
-               uint64_t seed, const SearchConfig& config, nb::handle hook_factory,
-               nb::handle lns_factory, SolveCallback* callback, const ParallelConfig& par_config) {
-                if (!hook_factory.is_none()) {
-                    throw nb::type_error(
-                        "hook_factory is C++-only: a Python factory returns an object nanobind "
-                        "owns, which the C++ side would adopt and free a second time. Pass None "
-                        "(see issue #129).");
-                }
-                if (!lns_factory.is_none()) {
-                    throw nb::type_error(
-                        "lns_factory is C++-only: a Python factory returns an object nanobind "
-                        "owns, which the C++ side would adopt and free a second time. Pass None "
-                        "(see issue #129).");
-                }
-                nb::gil_scoped_release release;
-                return self.solve(std::move(model_factory), time_limit, seed, config, nullptr,
-                                  nullptr, callback, par_config);
-            },
-            nb::arg("model_factory"), nb::arg("time_limit") = 10.0, nb::arg("seed") = 42,
-            nb::arg("config") = SearchConfig{}, nb::arg("hook_factory") = nb::none(),
-            nb::arg("lns_factory") = nb::none(), nb::arg("callback") = nullptr,
-            nb::arg("par_config") = ParallelConfig{}, kParallelSolveDoc);
+        .def("solve_parallel",
+             static_cast<SearchResult (ParallelSearch::*)(
+                 std::function<Model()>, double, uint64_t, const SearchConfig&,
+                 std::function<std::shared_ptr<InnerSolverHook>(Model&)>,
+                 std::function<std::shared_ptr<LNS>()>, SolveCallback*, const ParallelConfig&)>(
+                 &ParallelSearch::solve),
+             nb::arg("model_factory"), nb::arg("time_limit") = 10.0, nb::arg("seed") = 42,
+             nb::arg("config") = SearchConfig{}, nb::arg("hook_factory") = nb::none(),
+             nb::arg("lns_factory") = nb::none(), nb::arg("callback") = nullptr,
+             nb::arg("par_config") = ParallelConfig{},
+             // Same reason as `solve` above, plus two more callables that
+             // acquire the GIL from a worker thread: the hook and LNS
+             // factories. A None default reaches the std::function caster as an
+             // empty function, which src/pool.cpp skips.
+             nb::call_guard<nb::gil_scoped_release>(), kParallelSolveDoc);
 
     // Free functions
     m.def("full_evaluate", &full_evaluate);

@@ -77,18 +77,19 @@ SearchResult ParallelSearch::solve(std::function<Model()> model_factory, double 
                                    uint64_t seed) {
     ParallelConfig pc;
     pc.n_threads = n_threads_;
-    std::function<InnerSolverHook*(Model&)> no_hook;
-    std::function<LNS*()> no_lns;
+    std::function<std::shared_ptr<InnerSolverHook>(Model&)> no_hook;
+    std::function<std::shared_ptr<LNS>()> no_lns;
     int n = effective_threads(pc);
     return solve_portfolio(model_factory, time_limit, seed, {}, no_hook, no_lns, nullptr, n);
 }
 
 // Full-featured solve
-SearchResult ParallelSearch::solve(std::function<Model()> model_factory, double time_limit,
-                                   uint64_t seed, const SearchConfig& config,
-                                   std::function<InnerSolverHook*(Model&)> hook_factory,
-                                   std::function<LNS*()> lns_factory, SolveCallback* callback,
-                                   const ParallelConfig& par_config) {
+SearchResult ParallelSearch::solve(
+    std::function<Model()> model_factory, double time_limit, uint64_t seed,
+    const SearchConfig& config,
+    std::function<std::shared_ptr<InnerSolverHook>(Model&)> hook_factory,
+    std::function<std::shared_ptr<LNS>()> lns_factory, SolveCallback* callback,
+    const ParallelConfig& par_config) {
     int n = effective_threads(par_config);
 
     if (par_config.deterministic) {
@@ -138,12 +139,11 @@ static void join_all(std::vector<std::thread>& threads) {
 
 // --- Portfolio (opportunistic) mode ---
 
-SearchResult ParallelSearch::solve_portfolio(std::function<Model()>& model_factory,
-                                             double time_limit, uint64_t seed,
-                                             const SearchConfig& config,
-                                             std::function<InnerSolverHook*(Model&)>& hook_factory,
-                                             std::function<LNS*()>& lns_factory,
-                                             SolveCallback* callback, int n_threads) {
+SearchResult ParallelSearch::solve_portfolio(
+    std::function<Model()>& model_factory, double time_limit, uint64_t seed,
+    const SearchConfig& config,
+    std::function<std::shared_ptr<InnerSolverHook>(Model&)>& hook_factory,
+    std::function<std::shared_ptr<LNS>()>& lns_factory, SolveCallback* callback, int n_threads) {
     SolutionPool pool;
     std::vector<SearchResult> results(n_threads);
     // One slot per worker, left null unless that worker threw. Sized up front so
@@ -157,14 +157,18 @@ SearchResult ParallelSearch::solve_portfolio(std::function<Model()>& model_facto
                 try {
                     Model m = model_factory();
 
-                    std::unique_ptr<InnerSolverHook> hook;
+                    // Both die at the end of this lambda, i.e. on the worker
+                    // thread. For a factory that came from Python that is where
+                    // the last reference to the returned object is dropped, and
+                    // nanobind's shared_ptr deleter takes the GIL to do it.
+                    std::shared_ptr<InnerSolverHook> hook;
                     if (hook_factory) {
-                        hook.reset(hook_factory(m));
+                        hook = hook_factory(m);
                     }
 
-                    std::unique_ptr<LNS> lns;
+                    std::shared_ptr<LNS> lns;
                     if (lns_factory) {
-                        lns.reset(lns_factory());
+                        lns = lns_factory();
                     }
 
                     // Only thread 0 gets the callback to avoid interleaved output
@@ -239,8 +243,9 @@ SearchResult ParallelSearch::solve_portfolio(std::function<Model()>& model_facto
 
 SearchResult ParallelSearch::solve_deterministic(
     std::function<Model()>& model_factory, uint64_t seed, const SearchConfig& config,
-    std::function<InnerSolverHook*(Model&)>& hook_factory, std::function<LNS*()>& lns_factory,
-    SolveCallback* callback, const ParallelConfig& par_config, int n_threads) {
+    std::function<std::shared_ptr<InnerSolverHook>(Model&)>& hook_factory,
+    std::function<std::shared_ptr<LNS>()>& lns_factory, SolveCallback* callback,
+    const ParallelConfig& par_config, int n_threads) {
     auto start = std::chrono::steady_clock::now();
 
     int elite_k = std::max(1, par_config.elite_pool_size);
@@ -254,14 +259,17 @@ SearchResult ParallelSearch::solve_deterministic(
     }
 
     // Per-thread hooks and LNS
-    std::vector<std::unique_ptr<InnerSolverHook>> hooks(n_threads);
-    std::vector<std::unique_ptr<LNS>> lns_objs(n_threads);
+    // Built and destroyed on the CALLING thread, unlike the portfolio path
+    // above: these outlive every epoch, so they are released only when this
+    // function returns.
+    std::vector<std::shared_ptr<InnerSolverHook>> hooks(n_threads);
+    std::vector<std::shared_ptr<LNS>> lns_objs(n_threads);
     for (int i = 0; i < n_threads; ++i) {
         if (hook_factory) {
-            hooks[i].reset(hook_factory(models[i]));
+            hooks[i] = hook_factory(models[i]);
         }
         if (lns_factory) {
-            lns_objs[i].reset(lns_factory());
+            lns_objs[i] = lns_factory();
         }
     }
 

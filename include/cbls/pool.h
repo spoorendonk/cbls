@@ -8,6 +8,7 @@
 
 #include <functional>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <vector>
@@ -64,11 +65,21 @@ public:
     SearchResult solve(std::function<Model()> model_factory, double time_limit = 10.0,
                        uint64_t seed = 42);
 
-    // Full-featured solve with hooks, LNS, config, and parallel config
+    // Full-featured solve with hooks, LNS, config, and parallel config.
+    //
+    // Both factories hand back a SHARED pointer rather than a raw owning one.
+    // The C++ side keeps each object alive for exactly one worker, so a
+    // unique_ptr would say what it means -- but nanobind cannot relinquish an
+    // in-place instance's ownership (nb_type_relinquish_ownership refuses
+    // `state.internal`), so a Python factory could only satisfy a unique_ptr
+    // signature through a nanobind-specific deleter, i.e. binding glue in this
+    // header. shared_ptr costs one control block per worker and lets
+    // nanobind's own caster keep the Python object alive and drop it under the
+    // GIL. See issue #129.
     SearchResult solve(std::function<Model()> model_factory, double time_limit, uint64_t seed,
                        const SearchConfig& config,
-                       std::function<InnerSolverHook*(Model&)> hook_factory,
-                       std::function<LNS*()> lns_factory, SolveCallback* callback,
+                       std::function<std::shared_ptr<InnerSolverHook>(Model&)> hook_factory,
+                       std::function<std::shared_ptr<LNS>()> lns_factory, SolveCallback* callback,
                        const ParallelConfig& par_config);
 
 private:
@@ -76,18 +87,17 @@ private:
 
     [[nodiscard]] int effective_threads(const ParallelConfig& pc) const;
 
-    static SearchResult solve_portfolio(std::function<Model()>& model_factory, double time_limit,
-                                        uint64_t seed, const SearchConfig& config,
-                                        std::function<InnerSolverHook*(Model&)>& hook_factory,
-                                        std::function<LNS*()>& lns_factory, SolveCallback* callback,
-                                        int n_threads);
+    static SearchResult solve_portfolio(
+        std::function<Model()>& model_factory, double time_limit, uint64_t seed,
+        const SearchConfig& config,
+        std::function<std::shared_ptr<InnerSolverHook>(Model&)>& hook_factory,
+        std::function<std::shared_ptr<LNS>()>& lns_factory, SolveCallback* callback, int n_threads);
 
-    static SearchResult solve_deterministic(std::function<Model()>& model_factory, uint64_t seed,
-                                            const SearchConfig& config,
-                                            std::function<InnerSolverHook*(Model&)>& hook_factory,
-                                            std::function<LNS*()>& lns_factory,
-                                            SolveCallback* callback,
-                                            const ParallelConfig& par_config, int n_threads);
+    static SearchResult solve_deterministic(
+        std::function<Model()>& model_factory, uint64_t seed, const SearchConfig& config,
+        std::function<std::shared_ptr<InnerSolverHook>(Model&)>& hook_factory,
+        std::function<std::shared_ptr<LNS>()>& lns_factory, SolveCallback* callback,
+        const ParallelConfig& par_config, int n_threads);
 };
 
 }  // namespace cbls

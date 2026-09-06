@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 
 using namespace cbls;
@@ -460,8 +461,10 @@ TEST_CASE("ParallelSearch with hook and LNS factories", "[pool]") {
         return m;
     };
 
-    auto hook_factory = [](Model&) -> InnerSolverHook* { return new FloatIntensifyHook(); };
-    auto lns_factory = []() -> LNS* { return new LNS(0.3); };
+    auto hook_factory = [](Model&) -> std::shared_ptr<InnerSolverHook> {
+        return std::make_shared<FloatIntensifyHook>();
+    };
+    auto lns_factory = []() -> std::shared_ptr<LNS> { return std::make_shared<LNS>(0.3); };
 
     ParallelSearch ps(2);
     ParallelConfig pc;

@@ -9,9 +9,11 @@ namespace cbls {
 /// Destroy-and-repair diversification for the ViolationLS loop.
 ///
 /// An extension point, like InnerSolverHook: `solve()` takes an `LNS*` and
-/// `ParallelSearch` an `LNS*` factory, so a caller can substitute its own
-/// destroy/repair strategy by overriding `destroy_repair`. Hence the virtual
-/// destructor — `ParallelSearch` owns its instances through `unique_ptr<LNS>`.
+/// `ParallelSearch` a factory returning `shared_ptr<LNS>`, so a caller can
+/// substitute its own destroy/repair strategy by overriding `destroy_repair`.
+/// Hence the virtual destructor — `ParallelSearch` holds one instance per
+/// worker through that shared_ptr, and for a factory that came from Python the
+/// pointee is an object the interpreter also references (issue #129).
 class LNS {
 public:
     explicit LNS(double destroy_fraction = 0.3);

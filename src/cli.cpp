@@ -9,6 +9,7 @@
 #include <exception>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -246,14 +247,18 @@ int run_cli(int argc, char* argv[]) {
         // Capture model_path for the factory (model is loaded once, factory re-loads)
         auto model_factory = [&model_path]() { return load_model(model_path); };
 
-        std::function<InnerSolverHook*(Model&)> hook_factory;
+        std::function<std::shared_ptr<InnerSolverHook>(Model&)> hook_factory;
         if (use_intensify) {
-            hook_factory = [](Model&) -> InnerSolverHook* { return new FloatIntensifyHook(); };
+            hook_factory = [](Model&) -> std::shared_ptr<InnerSolverHook> {
+                return std::make_shared<FloatIntensifyHook>();
+            };
         }
 
-        std::function<LNS*()> lns_factory;
+        std::function<std::shared_ptr<LNS>()> lns_factory;
         if (lns_fraction > 0.0) {
-            lns_factory = [lns_fraction]() -> LNS* { return new LNS(lns_fraction); };
+            lns_factory = [lns_fraction]() -> std::shared_ptr<LNS> {
+                return std::make_shared<LNS>(lns_fraction);
+            };
         }
 
         ParallelConfig par_config;
