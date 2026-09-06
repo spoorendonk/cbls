@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 CBLS_BINARY = Path(__file__).resolve().parents[2] / "build" / "cbls"
+MODEL = Path(__file__).resolve().parents[2] / "examples" / "simple.cbls"
 
 # Every flag in the CLI's option loop that parses its value as a number.
 NUMERIC_FLAGS = [
@@ -101,10 +102,38 @@ def test_the_seed_the_cli_prints_can_be_parsed_back() -> None:
     # --seed is unsigned and the CLI echoes it back unsigned, so `--seed -1` is
     # recorded as 2**64-1. Parsing the seed as int64 would make the tool unable
     # to read back the seed it just printed, defeating the flag's purpose.
-    result = _run_cbls("--seed", str(2**64 - 1))
+    #
+    # This has to run a real model: the seed is printed by the header, which
+    # only runs once a model has loaded. Asserting on the parse alone would
+    # leave the round trip -- the reason the flag is unsigned at all -- unpinned,
+    # and a formatter that printed the seed signed would keep such a test green.
+    printed = _run_cbls(str(MODEL), "--seed", "-1", "--time-limit", "0.1")
+    assert printed.returncode == 0, printed.stderr
 
-    assert result.returncode == 1, result.stderr
-    assert "no model file specified" in result.stderr
+    echoed = str(2**64 - 1)
+    assert f"Seed: {echoed}" in printed.stdout, printed.stdout
+
+    reparsed = _run_cbls(str(MODEL), "--seed", echoed, "--time-limit", "0.1")
+    assert reparsed.returncode == 0, reparsed.stderr
+    assert f"Seed: {echoed}" in reparsed.stdout, reparsed.stdout
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [
+        ("--threads", "2147483648"),
+        ("--epoch-iters", "99999999999999999999999"),
+        ("--seed", "18446744073709551616"),
+        ("--time-limit", "1e400"),
+    ],
+)
+def test_an_out_of_range_value_is_reported_as_such_not_as_a_typo(flag: str, value: str) -> None:
+    # A number too large to hold is not a mistyped one. Reporting it as "not an
+    # integer" sends the reader hunting for a wrong digit that is not there.
+    result = _run_cbls(flag, value)
+
+    assert 0 < result.returncode < 128, result.stderr
+    assert f"{flag}: '{value}' is out of range" in result.stderr, result.stderr
 
 
 def test_a_nan_time_limit_is_rejected() -> None:

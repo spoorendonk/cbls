@@ -65,23 +65,38 @@ namespace {
 // only has to `return 1`. The parsing rule itself is cbls/arg_parse.h, shared
 // with benchmarks/common/runner_args.h.
 
+// Overflow is reported as such rather than as a typo. Both arrive here as a
+// failed parse, but "99999999999999999999999 is not an integer" sends the
+// reader hunting for a mistyped digit that is not there.
+void report_parse_failure(const char* flag, const char* text, cbls::ParseStatus status,
+                          const char* kind) {
+    if (status == cbls::ParseStatus::kOutOfRange) {
+        std::cerr << "Error: " << flag << ": '" << text << "' is out of range\n";
+    } else {
+        std::cerr << "Error: " << flag << ": '" << text << "' is not " << kind << "\n";
+    }
+}
+
 bool parse_flag(const char* flag, const char* text, double& out) {
     // Syntax alone is not enough: std::stod accepts "nan", so the NaN the
-    // comment above rules out would otherwise arrive as a successful parse.
+    // comment above rules out would otherwise arrive as a successful parse. It
+    // is malformed for this flag's purposes, not out of range.
     double value = 0.0;
-    if (cbls::try_parse_double(text, value) && !std::isnan(value)) {
+    const cbls::ParseStatus status = cbls::parse_double_status(text, value);
+    if (status == cbls::ParseStatus::kOk && !std::isnan(value)) {
         out = value;
         return true;
     }
-    std::cerr << "Error: " << flag << ": '" << text << "' is not a number\n";
+    report_parse_failure(flag, text, status, "a number");
     return false;
 }
 
 bool parse_flag(const char* flag, const char* text, int64_t& out) {
-    if (cbls::try_parse_int64(text, out)) {
+    const cbls::ParseStatus status = cbls::parse_int64_status(text, out);
+    if (status == cbls::ParseStatus::kOk) {
         return true;
     }
-    std::cerr << "Error: " << flag << ": '" << text << "' is not an integer\n";
+    report_parse_failure(flag, text, status, "an integer");
     return false;
 }
 
@@ -103,10 +118,11 @@ bool parse_flag(const char* flag, const char* text, int& out) {
 // 18446744073709551615. Narrowing to int64 would make the tool unable to read
 // back the seed it just printed, which is the whole point of the flag.
 bool parse_flag(const char* flag, const char* text, uint64_t& out) {
-    if (cbls::try_parse_uint64(text, out)) {
+    const cbls::ParseStatus status = cbls::parse_uint64_status(text, out);
+    if (status == cbls::ParseStatus::kOk) {
         return true;
     }
-    std::cerr << "Error: " << flag << ": '" << text << "' is not an integer\n";
+    report_parse_failure(flag, text, status, "an integer");
     return false;
 }
 
