@@ -5,6 +5,8 @@
 #include <cbls/search.h>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
+#include <string>
 
 // Short alias for tests — delegates to the canonical core function.
 inline int32_t vid(int32_t handle) {
@@ -44,7 +46,14 @@ inline cbls::SearchResult solve_deterministic(cbls::Model& model, int64_t max_it
     // Deliberately opt-in: with it set, tests are NOT deterministic.
     const char* calib = std::getenv("CBLS_TEST_CALIBRATE");
     if (calib != nullptr) {
-        time_limit = std::atof(calib);
+        // std::atof has no error path -- a mistyped value would become 0.0 and
+        // read as "no wall clock" (bugprone-unchecked-string-to-number-conversion).
+        // std::stod throws instead, which the guard below turns into the message.
+        try {
+            time_limit = std::stod(calib);
+        } catch (const std::exception&) {
+            time_limit = 0.0;  // reported by the guard below
+        }
         if (!(time_limit > 0.0)) {
             std::fprintf(stderr,
                          "CBLS_TEST_CALIBRATE=\"%s\" is not a positive number of seconds; "

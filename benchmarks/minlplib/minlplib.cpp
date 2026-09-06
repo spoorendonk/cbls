@@ -42,16 +42,59 @@ struct Args {
     std::string trace_csv;  // optional: anytime profile (best objective vs time)
 };
 
+// Numeric flags are parsed with std::stod / std::stoll rather than std::atof /
+// std::atoll: the ato* family has no error path at all, so a typo'd value
+// silently became 0 and a run that never searched reported like a solver result
+// (bugprone-unchecked-string-to-number-conversion). Trailing characters are
+// rejected too, which std::stod alone accepts, so `--time-limit 60s` no longer
+// quietly means 60.
+//
+// A bad double yields NaN rather than exiting here, deliberately: every double
+// flag already has a `!(x > 0.0)` guard below that reports it and exits 2, and
+// NaN fails that guard, so the parse layer adds a diagnostic without moving
+// where the failure is reported or changing the runner's exit code. Integer
+// flags have no such guard, so those report and exit 2 directly -- which is
+// what parse_args already does for an unknown option.
+double parse_double(const char* flag, const std::string& text) {
+    size_t used = 0;
+    double value = 0.0;
+    try {
+        value = std::stod(text, &used);
+    } catch (const std::exception&) {
+        used = 0;  // not a number at all; reported just below
+    }
+    if (text.empty() || used != text.size()) {
+        std::fprintf(stderr, "%s: '%s' is not a number\n", flag, text.c_str());
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return value;
+}
+
+int64_t parse_int64(const char* flag, const std::string& text) {
+    size_t used = 0;
+    int64_t value = 0;
+    try {
+        value = std::stoll(text, &used);
+    } catch (const std::exception&) {
+        used = 0;  // not a number at all; reported just below
+    }
+    if (text.empty() || used != text.size()) {
+        std::fprintf(stderr, "%s: '%s' is not an integer\n", flag, text.c_str());
+        std::exit(2);
+    }
+    return value;
+}
+
 Args parse_args(int argc, char** argv) {
     Args a;
     for (int i = 1; i < argc; ++i) {
         std::string s = argv[i];
         if (s == "--time-limit" && i + 1 < argc) {
-            a.time_limit = std::atof(argv[++i]);
+            a.time_limit = parse_double("--time-limit", argv[++i]);
         } else if (s == "--seed" && i + 1 < argc) {
-            a.seed = static_cast<uint64_t>(std::atoll(argv[++i]));
+            a.seed = static_cast<uint64_t>(parse_int64("--seed", argv[++i]));
         } else if (s == "--feas-tol" && i + 1 < argc) {
-            a.feas_tol = std::atof(argv[++i]);
+            a.feas_tol = parse_double("--feas-tol", argv[++i]);
         } else if (s == "--instance" && i + 1 < argc) {
             a.instances.emplace_back(argv[++i]);
         } else if (s == "--commit" && i + 1 < argc) {
