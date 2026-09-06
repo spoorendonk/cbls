@@ -908,6 +908,12 @@ TEST_CASE("solve does not start the inner-solver hook past the deadline", "[sear
     // removed this test would run the full 20M (~6s) instead of hanging.
     config.batch_iterations = 20000000;
     config.max_iterations = 0;
+    // The two-batch structure above is the whole mechanism of this test, and it
+    // needs batch 2 to run to the deadline. Batch 2 chases an unreachable
+    // objective row, so the #102 unproductive-batch exit would end it in ~300
+    // iterations and the run would be hundreds of batches instead of two. Off
+    // here so the deadline guard is what the call count measures.
+    config.unproductive_iterations = 0;
 
     CountingHook hook;
     auto result = solve(m, /*time_limit=*/0.02, /*seed=*/42, /*use_fj=*/true, &hook, nullptr, 3,

@@ -261,6 +261,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     // — measured at +45% on the largest MINLPLib instance.
     gfj.time_limit = budget_seconds;  // saturated: begin() casts to integer ticks
     gfj.max_iterations = 0;
+    gfj.unproductive_iterations = config.unproductive_iterations;
     FeasibilityJump fj(model, vm, rng, gfj);
     fj.begin(/*set_initial_x=*/!config.skip_init);
 
@@ -644,6 +645,13 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             }
         }
 
+        // A Feasibility-Jump batch that reported itself unproductive stopped
+        // reducing the violation at all (see kUnproductiveIterations). Waiting
+        // out the rest of perturbation_period would be waiting for a batch that
+        // has already said it has nothing left, so the kick is due now (#102).
+        if (kind == BatchKind::FeasibilityJump && fj.batch_stuck()) {
+            stagnation = config.perturbation_period;
+        }
         if (stagnation >= config.perturbation_period && !past_deadline()) {
             // Genuinely stuck. Arm the Float escape probe: a variable sitting at a
             // stationary point of every violated constraint has no other candidate

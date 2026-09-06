@@ -67,6 +67,16 @@ struct SearchConfig {
     // magnitude the effective requirement is tighter than it looks.
     // See kDefaultFeasibilityTolerance for why 1e-6.
     double feasibility_tolerance = kDefaultFeasibilityTolerance;
+
+    // End a Feasibility-Jump batch that has run this many GLS iterations without
+    // reducing the total unweighted violation, and take the diversification kick
+    // as due when that happens rather than waiting out perturbation_period
+    // (#102). Before the first feasible solution no batch ever "improves", so
+    // without this the kick cadence is a fixed perturbation_period *
+    // batch_iterations iterations with no feedback from the search at all --
+    // 100 000 by default, which MINLPLib st_e40 spends 92% of inside a limit
+    // cycle it has no way out of. <= 0 restores the old fixed cadence.
+    int64_t unproductive_iterations = 300;
 };
 
 /// Why `solve()`'s outer loop stopped. Exactly one of these ends every run.

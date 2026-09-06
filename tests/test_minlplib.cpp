@@ -470,3 +470,67 @@ TEST_CASE("MINLPLib ex4_1_8 solves within a loose gap of its published bound",
         REQUIRE(result.objective >= dual_bound - band);
     }
 }
+
+// #102. st_e40 has 4 variables and, once C1-C3 restrict the three integers to
+// {1,2,3,5,8,10,12}, exactly 343 integer combinations of which 52 are feasible.
+// The engine nevertheless failed it at a 60s wall clock: the search fell into a
+// limit cycle within ~20 GLS iterations -- x1 flipping between two values and x3
+// hopping between the roots of the four rows containing it -- and then spent 92%
+// of a 155 000-iteration run on GLS weight bumps that changed nothing, visiting
+// 3 of the 343 combinations and none of the 52 feasible ones. Neither trapped
+// value is in any feasible combination (every one of the 52 needs x0 >= 5 and
+// x1 >= 5), so the cycle could not be escaped by refining what it was already
+// doing.
+//
+// What let it run for so long was that the outer loop's diversification is
+// gated on perturbation_period (100) non-improving BATCHES of batch_iterations
+// (1000) GLS iterations, and before the first feasible solution no batch ever
+// improves -- a fixed cadence of one kick per 100 000 iterations regardless of
+// what the search is doing. FeasibilityJump::kUnproductiveIterations now ends a
+// batch that has stopped reducing the total violation, and solve() treats such a
+// batch as the kick being due.
+//
+// On the iteration-bounded path so it is bit-deterministic and runs in seconds;
+// the issue's wall-clock criterion (feasible within 60s at seed 42) is recorded
+// in benchmarks/instances/minlplib/README.md instead, since a wall clock cannot
+// be asserted on reproducibly.
+//
+// Budget calibration. Both seeds below need between 5 000 and 6 000 iterations,
+// so 15 000 carries ~2.5x and costs ~3.4s. Seed 1 is deliberately NOT in the
+// list: it also solves, but not until ~120 000 iterations, which would put this
+// case at ~25s and earn it the [slow] tag -- the spread is restart variance on a
+// 343-point space, not a second failure mode. Raise the budget if the engine's
+// trajectory changes; don't swap it for a wall clock.
+TEST_CASE("MINLPLib st_e40 reaches feasibility on a small iteration budget", "[minlplib][solve]") {
+    // bounds.csv: st_e40,other,4,8,min,30.41421356,30.4142136,0
+    const double primal_bks = 30.41421356;
+
+    NlProblem prob = read_nl("benchmarks/instances/minlplib/st_e40.nl");
+    REQUIRE(prob.n_vars == 4);
+    REQUIRE(prob.n_cons == 8);
+
+    for (uint64_t seed : {2ULL, 42ULL}) {
+        INFO("seed " << seed);
+        NlToModelResult built = nl_to_model(prob);
+        REQUIRE(built.supported);
+        REQUIRE(built.objective_node_id >= 0);
+
+        FloatIntensifyHook hook;
+        LNS lns(0.3);
+        SearchResult result = solve_deterministic(built.model, 15000, seed, &hook, &lns);
+
+        CAPTURE(result.best_violation, result.objective, result.iterations);
+        REQUIRE(result.feasible);
+        REQUIRE(result.best_violation <= kDefaultFeasibilityTolerance);
+        REQUIRE(std::isfinite(result.objective));
+
+        // The returned assignment must evaluate to the reported objective.
+        const double model_objective = built.model.node(built.objective_node_id).value;
+        REQUIRE(std::abs(model_objective - result.objective) <=
+                1e-6 * (std::abs(result.objective) + 1.0));
+
+        // No feasible point of this instance beats the proven optimum. A
+        // strictly better objective would mean the "feasible" verdict is wrong.
+        REQUIRE(result.objective >= primal_bks - 10.0 * kDefaultFeasibilityTolerance);
+    }
+}

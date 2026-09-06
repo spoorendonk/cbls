@@ -87,6 +87,13 @@ struct GFJConfig {
     bool set_initial_x = true;    // set X[v] to the domain value closest to 0 first
     int64_t max_iterations = 0;   // 0 = unbounded (bounded by time_limit)
     double time_limit = 0.0;      // seconds; 0 = no limit
+    // End a *batch* that has run this many GLS iterations without pushing the
+    // total unweighted violation below its best so far for that batch. <= 0
+    // disables the check. See the comment on unweighted_violation_ for what it
+    // is for and what it measured. Applies only to the batch API: the
+    // single-shot gls()/run() path has no outer loop to hand control back to,
+    // so an early exit there would simply be giving up.
+    int64_t unproductive_iterations = 300;
 };
 
 enum class GFJStatus { Feasible, Unsolved };
@@ -105,8 +112,13 @@ public:
     // stagnation. set_rho() re-randomises the GLS decay between batches.
     void begin(bool set_initial_x);
     bool batch(int64_t batch_iterations);  // true if feasible (no active violated)
-    void reset_weights();                  // W <- 1 and rebuild the scan set
-    void resync();                         // rebuild the scan set from current state, keep weights
+    // Whether the last batch() ended because it had stopped reducing the total
+    // constraint violation, rather than because it exhausted its iteration
+    // budget or the deadline. Only meaningful straight after a batch() call;
+    // cleared at each batch entry. See kUnproductiveIterations.
+    [[nodiscard]] bool batch_stuck() const { return batch_stuck_; }
+    void reset_weights();  // W <- 1 and rebuild the scan set
+    void resync();         // rebuild the scan set from current state, keep weights
     // Randomise each jumpable var w.p. p, then apply
     // clamp(round(p*|elements|), 1, |elements|) random structural moves to each
     // List/Set var (#111); if all of that moved nothing, force one variable — a
@@ -199,6 +211,12 @@ private:
     // limit (<=0 for none) plus the global budget/deadline.
     GFJStatus gls_loop(int sample_size, int64_t batch_iter_limit);
     [[nodiscard]] bool any_active_violated() const;
+    // Recompute unweighted_violation_ from scratch: sum_c max(0, r_c) over the
+    // active constraints. Called by rebuild_violated_and_scan_set, which every
+    // entry into the GLS loop goes through and which is also what
+    // resynchronises the loop after a mutation made outside update_var (the
+    // novelty jump, the structural pass, perturb, LNS).
+    void refresh_unweighted_violation();
     // ApplyJump (Algorithm 2): sample up to `sample_size` vars from Q, apply the
     // best improving jump via update_var. Returns false if none improves.
     bool apply_jump(int sample_size);
@@ -294,6 +312,43 @@ private:
     // the budget with no new best (#117). Cleared on every new best. Gates the Float escape probe
     // so it stays a last resort rather than a steady-state behaviour.
     bool escape_probe_ = false;
+
+    // ---- Unproductive-batch detection (#102) ----
+    //
+    // A GLS batch runs batch_iterations (default 1000) iterations whether or not
+    // it is achieving anything, and the outer loop only diversifies after
+    // perturbation_period (default 100) non-improving batches. Before the first
+    // feasible solution no batch ever improves, so that is a fixed cadence of
+    // one diversification per 100 000 GLS iterations, with no feedback from the
+    // search at all.
+    //
+    // Measured on MINLPLib st_e40 (#102): the search falls into a limit cycle
+    // within ~20 iterations -- x1 flipping between two values and x3 hopping
+    // between the roots of the four rows that contain it -- and then spends 92%
+    // of a 155 000-iteration run on weight bumps that change nothing, visiting
+    // 3 of that instance's 343 integer combinations and none of its 52 feasible
+    // ones. It is not stuck at a fixed point (the weight bump does keep flipping
+    // which move is improving), so only a progress measure detects it.
+    //
+    // So: end a batch that has gone GFJConfig::unproductive_iterations iterations
+    // without pushing the total unweighted violation below its best so far for
+    // that batch. This bounds what a single unproductive batch can consume; it
+    // never caps a batch that is still descending, because any new minimum
+    // resets the count. The outer loop still owns what happens next -- this only
+    // stops the GLS loop from burning the whole stagnation window before the
+    // outer loop is allowed to look.
+    //
+    // 300 is calibrated, not arbitrary: at 100 the MINLPLib instance
+    // kall_ellipsoids_tc02b lost feasibility at a 2s budget, and at 1000 st_e40
+    // stopped being solved at 2s. 300 holds both.
+    //
+    // The measure is deliberately UNWEIGHTED. The weighted total is what the
+    // loop descends, but the GLS bump raises it on every stagnant iteration
+    // without the assignment moving, so it rises and falls for reasons that have
+    // nothing to do with progress and is useless here.
+    double unweighted_violation_ = 0.0;
+    int64_t unproductive_streak_ = 0;
+    bool batch_stuck_ = false;
 
     // Novelty Jump state (Algorithms 4-5).
     static constexpr double kCompoundDiscount = 1.0 / 1024.0;  // epsilon (OR-tools value)

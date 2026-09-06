@@ -688,6 +688,11 @@ TEST_CASE("cheap iterations let the deadline stride grow", "[fj][deadline]") {
     // tuner can no longer afford a stride over 64, and at 156ms per stride
     // against 3us iterations that is a factor of ~800.
     cfg.time_limit = 10.0;
+    // What is under test is the deadline stride tuner, so the batch has to run
+    // its iterations out. build_cheap_iterations is unreachable by construction,
+    // which is exactly what the #102 unproductive-batch exit ends early; off
+    // here so the only thing that can stop the batch is the budget or the clock.
+    cfg.unproductive_iterations = 0;
     FeasibilityJump fj(m, vm, rng, cfg);
     fj.begin(/*set_initial_x=*/true);
     fj.batch(/*batch_iterations=*/20000);
@@ -718,6 +723,10 @@ TEST_CASE("a run with no wall clock reads no clock at all", "[fj][deadline]") {
     GFJConfig cfg;
     cfg.two_phase = false;
     cfg.time_limit = 0.0;
+    // As above: the assertion is that the budget alone stopped the run, so the
+    // #102 unproductive-batch exit -- which this unreachable model would trip --
+    // is off. It reads no clock either way, so it cannot affect what is tested.
+    cfg.unproductive_iterations = 0;
     FeasibilityJump fj(m, vm, rng, cfg);
     fj.begin(/*set_initial_x=*/true);
     fj.batch(/*batch_iterations=*/500);

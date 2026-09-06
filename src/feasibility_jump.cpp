@@ -531,12 +531,29 @@ void FeasibilityJump::set_initial_assignment() {
     }
 }
 
+void FeasibilityJump::refresh_unweighted_violation() {
+    const auto& cids = model_.constraint_ids();
+    const size_t nc = cids.size();
+    double total = 0.0;
+    for (size_t c = 0; c < nc; ++c) {
+        if (!active(static_cast<int32_t>(c))) {
+            continue;  // masked (linear phase): not part of the problem being solved
+        }
+        const double r = model_.node(cids[c]).value;
+        if (r > 0.0) {
+            total += r;  // NaN is not > 0, so a poisoned row contributes nothing
+        }
+    }
+    unweighted_violation_ = total;
+}
+
 void FeasibilityJump::rebuild_violated_and_scan_set() {
     const auto& cids = model_.constraint_ids();
     const size_t nc = cids.size();
     for (size_t c = 0; c < nc; ++c) {
         violated_[c] = is_violated(model_.node(cids[c]).value);
     }
+    refresh_unweighted_violation();
     std::fill(in_queue_.begin(), in_queue_.end(), 0);
     queue_.clear();
     for (size_t c = 0; c < nc; ++c) {
@@ -550,16 +567,32 @@ void FeasibilityJump::rebuild_violated_and_scan_set() {
 }
 
 void FeasibilityJump::update_var(int32_t var_id) {
+    const auto& cids = model_.constraint_ids();
+    const auto& gv = model_.constraints_of_var(var_id);
+    // Only the rows this variable takes part in can move, so the running
+    // unweighted total is maintained over `gv` rather than recomputed over every
+    // row. The "before" side has to be read here, ahead of delta_evaluate.
+    double violation_delta = 0.0;
+    for (int32_t c : gv) {
+        if (active(c)) {
+            const double before = model_.node(cids[c]).value;
+            violation_delta -= (before > 0.0) ? before : 0.0;
+        }
+    }
+
     const double j = jumps_.jump_value(var_id);
     model_.var_mut(var_id).value = j;
     delta_evaluate(model_, &var_id, 1);
     jumps_.invalidate(var_id);
 
-    const auto& cids = model_.constraint_ids();
-    const auto& gv = model_.constraints_of_var(var_id);
     for (int32_t c : gv) {
-        violated_[c] = is_violated(model_.node(cids[c]).value);
+        const double after = model_.node(cids[c]).value;
+        if (active(c) && after > 0.0) {
+            violation_delta += after;
+        }
+        violated_[c] = is_violated(after);
     }
+    unweighted_violation_ += violation_delta;
     for (int32_t c : gv) {
         for (int32_t vp : vars_of_constraint_[c]) {
             if (vp == var_id) {
@@ -732,6 +765,11 @@ void FeasibilityJump::arm_deadline() {
 GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
     const size_t nc = model_.constraint_ids().size();
     int64_t batch_iters = 0;
+    double batch_best_violation = unweighted_violation_;
+    unproductive_streak_ = 0;
+    // Only the batch API has an outer loop to hand control back to; gls()/run()
+    // passes no limit and must run its budget out.
+    const bool watch_progress = batch_iter_limit > 0 && config_.unproductive_iterations > 0;
 
     while (true) {
         if (!apply_jump(sample_size)) {
@@ -751,6 +789,17 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
 
         ++iterations_;
         ++batch_iters;
+        // Strictly below, so a batch that merely holds its ground counts as
+        // unproductive -- holding ground is exactly what the cycling case does.
+        // NaN compares false either way, so a poisoned run is unproductive and
+        // ends on the streak rather than looping on an incomparable measure.
+        if (unweighted_violation_ < batch_best_violation) {
+            batch_best_violation = unweighted_violation_;
+            unproductive_streak_ = 0;
+        } else if (watch_progress && ++unproductive_streak_ >= config_.unproductive_iterations) {
+            batch_stuck_ = true;
+            return any_active_violated() ? GFJStatus::Unsolved : GFJStatus::Feasible;
+        }
         if (batch_iter_limit > 0 && batch_iters >= batch_iter_limit) {
             return any_active_violated() ? GFJStatus::Unsolved : GFJStatus::Feasible;
         }
@@ -795,6 +844,8 @@ void FeasibilityJump::begin(bool set_initial_x) {
     // this cannot matter today; it is here so a caller that reuses one instance
     // does not inherit the previous run's stagnation state (#117).
     escape_probe_ = false;
+    unproductive_streak_ = 0;
+    batch_stuck_ = false;
     arm_deadline();
     if (set_initial_x) {
         set_initial_assignment();
@@ -806,6 +857,7 @@ void FeasibilityJump::begin(bool set_initial_x) {
 }
 
 bool FeasibilityJump::batch(int64_t batch_iterations) {
+    batch_stuck_ = false;
     return gls_loop(config_.sample_size_general, batch_iterations) == GFJStatus::Feasible;
 }
 
