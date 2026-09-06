@@ -216,7 +216,7 @@ std::string fixed2(double v) {
     }
     std::array<char, 64> buf{};
     std::snprintf(buf.data(), buf.size(), "%.2f", v);
-    return std::string(buf.data());
+    return {buf.data()};
 }
 
 /// A comma inside a free-text cell would shift every column after it, so the
