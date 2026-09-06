@@ -177,7 +177,8 @@ static std::vector<Move> set_moves(const Variable& var, RNG& rng) {
     if (!not_in.empty() && cur_size < var.max_size) {
         Move m;
         m.move_type = "set_add";
-        int32_t add_elem = not_in[static_cast<size_t>(rng.integers(0, not_in.size()))];
+        int32_t add_elem =
+            not_in[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(not_in.size())))];
         auto new_elems = var.elements;
         new_elems.push_back(add_elem);
         m.changes.push_back({var.id, 0.0, new_elems});
@@ -188,7 +189,8 @@ static std::vector<Move> set_moves(const Variable& var, RNG& rng) {
     if (!in_set.empty() && cur_size > var.min_size) {
         Move m;
         m.move_type = "set_remove";
-        int32_t rem_elem = in_set[static_cast<size_t>(rng.integers(0, in_set.size()))];
+        int32_t rem_elem =
+            in_set[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(in_set.size())))];
         auto new_elems = var.elements;
         auto it = std::find(new_elems.begin(), new_elems.end(), rem_elem);
         if (it != new_elems.end()) {
@@ -202,8 +204,10 @@ static std::vector<Move> set_moves(const Variable& var, RNG& rng) {
     if (!in_set.empty() && !not_in.empty()) {
         Move m;
         m.move_type = "set_swap";
-        int32_t add_elem = not_in[static_cast<size_t>(rng.integers(0, not_in.size()))];
-        int32_t rem_elem = in_set[static_cast<size_t>(rng.integers(0, in_set.size()))];
+        int32_t add_elem =
+            not_in[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(not_in.size())))];
+        int32_t rem_elem =
+            in_set[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(in_set.size())))];
         auto new_elems = var.elements;
         auto it = std::find(new_elems.begin(), new_elems.end(), rem_elem);
         if (it != new_elems.end()) {

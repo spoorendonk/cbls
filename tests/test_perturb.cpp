@@ -332,7 +332,8 @@ double kept_adjacency_fraction(const std::vector<int32_t>& before,
     }
     int kept = 0;
     for (size_t i = 0; i + 1 < after.size(); ++i) {
-        kept += pairs.count({std::min(after[i], after[i + 1]), std::max(after[i], after[i + 1])});
+        kept += static_cast<int>(
+            pairs.count({std::min(after[i], after[i + 1]), std::max(after[i], after[i + 1])}));
     }
     if (after.size() < 2) {
         return 1.0;  // nothing to break
@@ -635,7 +636,8 @@ TEST_CASE("a kick on one large Set is bounded by the deadline, not by the Set",
     fj.begin(/*set_initial_x=*/true);
 
     const std::vector<int32_t> before = m.var(0).elements;
-    const int64_t unbounded_moves = static_cast<int64_t>(std::llround(kBigP * before.size()));
+    const int64_t unbounded_moves =
+        static_cast<int64_t>(std::llround(kBigP * static_cast<double>(before.size())));
     REQUIRE(unbounded_moves > FJ::kMaxDeadlineStride + 1);  // the bound is not vacuous here
     fj.perturb(kBigP);
 

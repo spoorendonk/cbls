@@ -82,13 +82,15 @@ bool LNS::destroy_repair(Model& model, ViolationManager& vm, RNG& rng, double re
                 non_seq.push_back(i);
             }
         }
-        int n_non_seq_destroy = std::max(0, static_cast<int>(non_seq.size() * destroy_fraction_));
+        int n_non_seq_destroy =
+            std::max(0, static_cast<int>(static_cast<double>(non_seq.size()) * destroy_fraction_));
         rng.shuffle(non_seq);
         non_seq.resize(n_non_seq_destroy);
         var_indices.insert(var_indices.end(), non_seq.begin(), non_seq.end());
     } else {
         // Uniform random destroy (no sequences registered)
-        int n_destroy = std::max(1, static_cast<int>(model.num_vars() * destroy_fraction_));
+        int n_destroy = std::max(
+            1, static_cast<int>(static_cast<double>(model.num_vars()) * destroy_fraction_));
         var_indices.resize(model.num_vars());
         std::iota(var_indices.begin(), var_indices.end(), 0);
         rng.shuffle(var_indices);

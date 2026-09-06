@@ -63,7 +63,7 @@
 # 4 being the vendored mps_reader.cpp findings that directory exempts by
 # design. Either subtract them or re-derive by deleting the line from this file.
 #
-# TOTAL: 262
+# TOTAL: 254
 #
 #    63  readability-function-cognitive-complexity
 #    39  readability-implicit-bool-conversion
@@ -73,7 +73,6 @@
 #    23  bugprone-easily-swappable-parameters
 #    17  modernize-avoid-c-style-cast
 #     9  performance-inefficient-vector-operation
-#     8  bugprone-narrowing-conversions
 #     8  performance-enum-size
 #     7  modernize-avoid-c-arrays
 #     6  readability-inconsistent-declaration-parameter-name
@@ -106,7 +105,6 @@ Checks: >
   -bugprone-easily-swappable-parameters,
   -modernize-use-auto,
   -performance-inefficient-vector-operation,
-  -bugprone-narrowing-conversions,
   -performance-enum-size,
   -readability-inconsistent-declaration-parameter-name,
   -modernize-avoid-c-arrays,
