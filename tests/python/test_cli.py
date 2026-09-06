@@ -144,3 +144,32 @@ def test_a_nan_time_limit_is_rejected() -> None:
 
     assert 0 < result.returncode < 128, result.stderr
     assert "--time-limit: 'nan' is not a number" in result.stderr
+
+
+# The benchmark runners have the same exposure with a worse consequence: they
+# run for minutes to hours, so a mistyped flag that parses to a default produces
+# a result-shaped artifact rather than an error. setcover's `--seed` went
+# through `strtoull`, which reports nothing at all -- `--seed abc` ran the whole
+# roster at seed 0 and wrote a CSV row naming it.
+SETCOVER_BINARY = Path(__file__).resolve().parents[2] / "build" / "cbls_setcover"
+
+SETCOVER_BAD_FLAGS = [
+    ("--seed", "abc"),
+    ("--seeds", "2x"),
+    ("--time", "60s"),
+    ("--time", "nan"),
+    ("--struct-prob", "abc"),
+]
+
+
+@pytest.mark.parametrize(("flag", "value"), SETCOVER_BAD_FLAGS)
+def test_setcover_refuses_a_malformed_numeric_flag(flag: str, value: str) -> None:
+    if not SETCOVER_BINARY.exists():
+        pytest.skip("cbls_setcover not built")
+    # Parsing precedes any disk access, so this needs no instance data.
+    result = subprocess.run(
+        [str(SETCOVER_BINARY), flag, value], capture_output=True, text=True, timeout=60
+    )
+
+    assert 0 < result.returncode < 128, f"{flag} {value}: returncode {result.returncode}"
+    assert f"{flag}: '{value}'" in result.stderr, result.stderr

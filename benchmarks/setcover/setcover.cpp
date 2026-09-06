@@ -13,11 +13,14 @@
 #include "setcover_model.h"
 #include "verify_setcover.h"
 
+#include <cbls/arg_parse.h>
 #include <cbls/cbls.h>
 #include <cbls/search.h>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <limits>
 #include <map>
 #include <string>
 #include <vector>
@@ -85,18 +88,58 @@ Options parse_args(int argc, char** argv, bool* ok) {
             }
             return argv[++i];
         };
+        // Numeric flags go through the strict parse rule rather than std::stod /
+        // std::strtoull. strtoull in particular has no error path: `--seed abc`
+        // silently yielded 0 and the roster ran to completion, publishing a CSV
+        // row that looks like a result and names a seed nobody asked for. The
+        // bare stod calls were only marginally better -- caught by main's try,
+        // they reported `Error: stod` without naming the flag. NaN is rejected
+        // for the same reason the CLI rejects it: it is a well-formed double
+        // that yields a solve which never searched.
+        auto number = [&](const char* flag, const char* what) -> double {
+            const std::string text = next(what);
+            double value = 0.0;
+            if (!*ok) {
+                return 0.0;
+            }
+            if (!cbls::try_parse_double(text, value) || std::isnan(value)) {
+                fprintf(stderr, "%s: '%s' is not a number\n", flag, text.c_str());
+                *ok = false;
+                return 0.0;
+            }
+            return value;
+        };
+        auto integer = [&](const char* flag, const char* what) -> uint64_t {
+            const std::string text = next(what);
+            uint64_t value = 0;
+            if (!*ok) {
+                return 0;
+            }
+            if (!cbls::try_parse_uint64(text, value)) {
+                fprintf(stderr, "%s: '%s' is not a non-negative integer\n", flag, text.c_str());
+                *ok = false;
+                return 0;
+            }
+            return value;
+        };
         if (arg == "--dir") {
             opt.dir = next("directory");
         } else if (arg == "--instance") {
             opt.instance = next("path");
         } else if (arg == "--time") {
-            opt.time_limit = std::stod(next("seconds"));
+            opt.time_limit = number("--time", "seconds");
         } else if (arg == "--seeds") {
-            opt.seeds = std::stoi(next("count"));
+            const uint64_t seeds = integer("--seeds", "count");
+            if (*ok && seeds > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+                fprintf(stderr, "--seeds: '%llu' is out of range\n",
+                        static_cast<unsigned long long>(seeds));
+                *ok = false;
+            }
+            opt.seeds = static_cast<int>(seeds);
         } else if (arg == "--seed") {
-            opt.first_seed = std::strtoull(next("seed").c_str(), nullptr, 10);
+            opt.first_seed = integer("--seed", "seed");
         } else if (arg == "--struct-prob") {
-            opt.struct_prob = std::stod(next("probability"));
+            opt.struct_prob = number("--struct-prob", "probability");
         } else if (arg == "--csv") {
             opt.csv_path = next("path");
         } else if (arg == "--encoding") {
