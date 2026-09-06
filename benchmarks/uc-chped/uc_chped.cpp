@@ -75,6 +75,7 @@ struct Args {
     // numerics/feastol.
     double feas_tol = cbls::kDefaultFeasibilityTolerance;
     std::vector<std::string> instances;  // optional roster filter (base names)
+    bool commit_set = false;
     std::string commit_sha = "unknown";
     std::string out_csv;  // default: <inst_dir>/comparison.csv
 };
@@ -154,6 +155,7 @@ Args parse_args(int argc, char** argv) {
             a.instances.emplace_back(argv[++i]);
         } else if (s == "--commit" && i + 1 < argc) {
             a.commit_sha = argv[++i];
+            a.commit_set = true;
         } else if (s == "--out" && i + 1 < argc) {
             a.out_csv = argv[++i];
         } else if (s == "--help" || s == "-h") {
@@ -201,6 +203,7 @@ Args parse_args(int argc, char** argv) {
         // publishes. Both a partial roster and a shortened budget qualify --
         // `--time-limit 2` is the obvious smoke test, and it would otherwise
         // replace the table with two-second results (the #88 hazard).
+        const std::string published = a.inst_dir + "/comparison.csv";
         const char* why = nullptr;
         if (!a.instances.empty()) {
             why = "--instance";
@@ -209,12 +212,33 @@ Args parse_args(int argc, char** argv) {
         }
         if (why != nullptr) {
             std::fprintf(stderr, "%s requires an explicit --out (refusing to overwrite %s)\n", why,
-                         (a.inst_dir + "/comparison.csv").c_str());
+                         published.c_str());
+            std::exit(2);
+        }
+        // The bare invocation was the one route left to the published path, and
+        // it records "unknown" as its provenance -- exactly the row a reader
+        // cannot tell engine drift from a bug with. Writing that file is
+        // therefore gated on naming the commit as well, not only on avoiding
+        // the two smoke-shaped flags.
+        if (!a.commit_set) {
+            std::fprintf(stderr,
+                         "writing %s requires an explicit --commit SHA "
+                         "(pass --out elsewhere for an unpublished run)\n",
+                         published.c_str());
             std::exit(2);
         }
         a.out_csv = a.inst_dir + "/comparison.csv";
     }
     return a;
+}
+
+/// The scratch file must not outlive a failed run: it sits in a tracked
+/// directory, is not ignored, and a later `git add -A` would commit a truncated
+/// shadow of the published table beside it. A kill -9 can still leave one, which
+/// is the case the rename is for; every path this program controls cleans up.
+void remove_temp(const std::string& path) {
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
 }
 
 /// One CSV line. The first nine fields are the schema the pre-#103 table
@@ -323,8 +347,11 @@ void write_header_comment(std::ostream& csv, const Args& args) {
            "# the `Pedroso MIP (1hr)` rows are those bounds restated as cited reference\n"
            "# results -- they are not measurements of this engine and so carry no seed,\n"
            "# tolerance or commit. They are re-emitted from each instance's bounds map on\n"
-           "# every run, and the generator refuses to write at all unless every rostered\n"
-           "# instance loaded, so a regeneration cannot drop them.\n"
+           "# every run, and the generator refuses to write at all unless every instance\n"
+           "# it was asked to run loaded, so a regeneration cannot drop them. Note that\n"
+           "# scope is the roster it was asked for: a --instance-filtered run emits the\n"
+           "# cited rows for the instances it names and no others, which is why such a\n"
+           "# run also refuses the published path.\n"
            "#\n";
     csv << "# Run: commit " << csv_text(args.commit_sha) << ", seed " << args.seed << ", feas-tol "
         << num(args.feas_tol, 3) << ", time limit ";
@@ -655,6 +682,7 @@ int run_benchmark(int argc, char** argv) {
     if (!csv) {
         std::fprintf(stderr, "Error writing %s; %s not replaced\n", tmp_csv.c_str(),
                      args.out_csv.c_str());
+        remove_temp(tmp_csv);
         return 2;
     }
     csv.close();
@@ -663,6 +691,7 @@ int run_benchmark(int argc, char** argv) {
     if (rename_ec) {
         std::fprintf(stderr, "Failed to rename %s -> %s: %s\n", tmp_csv.c_str(),
                      args.out_csv.c_str(), rename_ec.message().c_str());
+        remove_temp(tmp_csv);
         return 2;
     }
 
