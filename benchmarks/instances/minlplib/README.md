@@ -542,6 +542,46 @@ where SCIP exhausted the 60s budget:
 two variables are unbounded, so the dual bound diverges), while CBLS now reaches
 the published optimum exactly. It was CBLS's *worst* row before #107 was fixed.
 
+### Objective quality under the #102 unproductive-batch exit
+
+The #102 change ends a GLS batch that has stopped reducing the real rows'
+violation and takes the diversification kick as due. That alters the search
+trajectory on every instance, not only the one it was found on, so it was
+measured on objective quality and not only on feasibility — a feasibility-only
+tally cannot see a row that stayed feasible and got worse.
+
+Eight-instance probe, `--time-limit 10 --seed 42`, each arm run serially and
+interleaved per instance on a box at load below 1, gap to BKS. This is an
+**indicative probe, not the published protocol** — one seed, a 10s budget, and
+a subset chosen to include the instances an earlier arm had regressed:
+
+| instance | before | after |
+|---|---|---|
+| `alkylation` | 99.98% | **0.07%** |
+| `st_e36` | 40.24% | **0.87%** |
+| `maxmin` | 3.90% | **0.10%** |
+| `kall_ellipsoids_tc02b` | 161.76% | **159.73%** |
+| `st_e40` | infeasible | **0.00%** (BKS) |
+| `nvs01` | infeasible | **0.00%** (BKS) |
+| `ex4_1_8` | 0.00% | 0.00% |
+| `ex8_6_1` | 69.65% | **89.39%** |
+
+Five clear improvements, two instances moving from infeasible to the BKS, one
+unchanged, and **one regression**: `ex8_6_1` loses about 20 percentage points.
+It is recorded here rather than left to the re-run because a change that trades
+quality on some rows for quality on others should say so where the table is
+read, not only where it is generated.
+
+Two of the three regressions an earlier arm of this work showed — `maxmin` and
+`kall_ellipsoids_tc02b` — are *gone*, and both were caused by defects since
+fixed: the stuck test was overriding a batch that had just improved into a
+diversification kick, and it was arming the Float escape probe that #107 had
+deliberately gated. `ex8_6_1` survives both fixes and is the residual.
+
+The published rows below are **not** regenerated from this probe. That is #123's
+job, at the documented protocol, and it is where a proper win/loss tally over
+the full roster belongs.
+
 ### What #107 accounted for
 
 #107 was found by noticing that instances with at least one **free (unbounded)**
