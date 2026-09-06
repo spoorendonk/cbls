@@ -1526,14 +1526,27 @@ Thread seeds are `base_seed + epoch * n_threads + thread_id`. Repeats for
 `max_epochs`.
 
 `ParallelSearch::solve()` takes hook and LNS *factories* (these objects are
-stateful and per-model); each thread builds its own instances. Both return a
-`std::shared_ptr`, and that is load-bearing rather than loose: a `unique_ptr`
-would describe the C++ lifetime exactly -- one owner, one worker -- but a
-Python factory cannot satisfy it, because nanobind refuses to relinquish
-ownership of an instance it allocated in place. Sharing ownership instead lets
-nanobind's caster hold a reference to the Python object and drop it under the
-GIL when the worker is done, so the same factory type serves C++ and Python
-callers (#129).
+stateful and per-model); each worker gets its own instance, built wherever that
+worker's model is built -- inside the worker in portfolio mode, on the calling
+thread before any epoch starts in deterministic mode.
+
+Both return a `std::shared_ptr`, and that is load-bearing rather than loose. A
+`unique_ptr<T>` would describe the C++ lifetime exactly -- one owner, one worker
+-- but a Python factory cannot satisfy one carrying the *default* deleter:
+`nb_type_relinquish_ownership` refuses an instance nanobind allocated in place,
+which is what every Python-constructed object is. (`unique_ptr<T,
+nb::deleter<T>>` would work, and is what nanobind's own error message suggests;
+it costs a nanobind type in a core public header.) Sharing ownership instead
+lets nanobind's caster hold a reference to the Python object and drop it under
+the GIL -- at the end of the worker in portfolio mode, on the calling thread
+once every epoch is done in deterministic mode -- so one factory type serves C++
+and Python callers (#129).
+
+The cost of that choice is that nothing now stops a factory from returning the
+*same* object every call. Under the old raw-pointer signature that was an
+immediate double free; it is now a silent data race, because each worker
+searches its own model on its own thread and the search never locks the hook or
+the LNS. Return a fresh object per call.
 
 ---
 

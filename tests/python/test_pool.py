@@ -4,11 +4,12 @@ Every scenario here runs in a **child interpreter**, not in-process. That is
 deliberate: the bugs these tests cover are a GIL deadlock (#128) and a double
 free of a factory's return value (#129), and neither is reportable from inside
 the process that hits it -- a deadlocked interpreter cannot fail a test, and an
-aborting one takes the whole pytest run down with it. `pytest-timeout` cannot rescue it either --
-its `thread` method runs `timeout_timer` on a `threading.Timer`, which is a
-Python thread and so needs the GIL it is waiting on, and its `signal` method
-sets a flag that only takes effect at the next bytecode in the main thread,
-which is parked inside the C++ `join()`. Both mechanisms are starved by
+aborting one takes the whole pytest run down with it. `pytest-timeout` cannot
+rescue it either -- its `thread` method runs `timeout_timer` on a
+`threading.Timer`, which is a Python thread and so needs the GIL it is waiting
+on, and its `signal` method sets a flag that only takes effect at the next
+bytecode in the main thread, which is parked inside the C++ `join()`. Both
+mechanisms are starved by
 exactly the condition they would have to report. A child process with a
 wall-clock timeout is the only kind of deadline that still fires, so a
 regression here fails the suite in ~20s instead of hanging it forever.
@@ -68,7 +69,9 @@ def _assert_scenario_ok(name: str) -> str:
     except subprocess.TimeoutExpired as exc:
         raise AssertionError(
             f"scenario {name!r} did not finish within {CHILD_TIMEOUT_SECONDS}s -- "
-            "ParallelSearch is holding the GIL across its worker join again (#128)"
+            "something is holding the GIL across ParallelSearch's worker join: "
+            "either the call guard is gone (#128), or a factory's return value is "
+            "being released on a thread that cannot acquire it (#129)"
         ) from exc
     assert proc.returncode == 0, f"scenario {name!r} failed:\n{proc.stdout}\n{proc.stderr}"
     return proc.stdout
@@ -121,7 +124,7 @@ def test_solve_parallel_accepts_a_python_hook_factory() -> None:
     so this runs in a child, like every other scenario in this file.
     """
     out = _assert_scenario_ok("hook_factory")
-    assert "hook_calls=2 hooks_destroyed=2" in out
+    assert "hook_calls=2 hooks_destroyed=2 hook_threads=2" in out
 
 
 def test_solve_parallel_accepts_a_python_lns_factory() -> None:
@@ -133,19 +136,26 @@ def test_solve_parallel_accepts_a_python_lns_factory() -> None:
     them would pass a combined test.
     """
     out = _assert_scenario_ok("lns_factory")
-    assert "lns_calls=2 lns_destroyed=2" in out
+    assert "lns_calls=2 lns_destroyed=2 lns_threads=2" in out
 
 
-def test_solve_parallel_deterministic_builds_models_on_the_calling_thread() -> None:
+def test_solve_parallel_deterministic_builds_on_the_calling_thread() -> None:
     """Deterministic mode's factory contract is documented, so it is asserted.
 
-    The docstring promises the factory runs on the calling thread before any
-    worker starts -- the reason this mode never deadlocked the way portfolio
-    mode did. Without a test, a change moving those calls into the workers
-    would reintroduce #128 on this path with a green suite.
+    The docstring promises model_factory and hook_factory both run on the
+    calling thread before any worker starts -- the reason this mode never
+    deadlocked the way portfolio mode did. Without a test, a change moving
+    those calls into the workers would reintroduce #128 on this path with a
+    green suite, and a change that leaked the hooks would reintroduce #129's
+    lifetime question on the one path the portfolio scenarios never touch.
     """
     out = _assert_scenario_ok("deterministic")
     assert "factory_on_calling_thread=True" in out
+    # The same scenario pins the deterministic half of #129: hook_factory runs
+    # on this thread too, and every hook it built is released before
+    # solve_parallel returns -- a different release path from portfolio mode.
+    assert "hooks_on_calling_thread=True" in out
+    assert "deterministic_hooks_destroyed=2" in out
 
 
 def test_solve_parallel_calls_a_python_callback_from_a_worker_thread() -> None:
@@ -203,12 +213,17 @@ def _scenario_raising() -> None:
 
 def _scenario_hook_factory() -> None:
     lock = threading.Lock()
+    threads: set[int] = set()
     calls = 0
     destroyed = 0
 
     # _cbls_core is a compiled extension with no stubs, so mypy sees every symbol
     # in it as Any and strict mode refuses to subclass one -- same reason as the
     # Recorder callback below.
+    # __del__ takes `lock`, which is safe only because no hook is ever dropped
+    # by a thread already holding it: each worker builds its own and releases it
+    # after the factory has returned. A future scenario that drops one inside a
+    # `with lock:` block would self-deadlock and be reported as a 20s timeout.
     class CountingHook(cbls.FloatIntensifyHook):  # type: ignore[misc]
         def __del__(self) -> None:
             nonlocal destroyed
@@ -223,6 +238,7 @@ def _scenario_hook_factory() -> None:
         assert isinstance(model, cbls.Model), type(model)
         with lock:
             calls += 1
+            threads.add(threading.get_ident())
         return CountingHook()
 
     result = cbls.ParallelSearch(2).solve_parallel(
@@ -233,12 +249,15 @@ def _scenario_hook_factory() -> None:
     # lambda in portfolio mode -- so the counter is settled by the time it does,
     # and nothing here holds a reference that could keep one alive.
     with lock:
-        n_calls, n_destroyed = calls, destroyed
-    print(f"hook_calls={n_calls} hooks_destroyed={n_destroyed}")
+        n_calls, n_destroyed, n_threads = calls, destroyed, len(threads)
+    # The thread count is what makes "once per worker" testable: two calls on a
+    # single worker would satisfy hook_calls=2 on its own.
+    print(f"hook_calls={n_calls} hooks_destroyed={n_destroyed} hook_threads={n_threads}")
 
 
 def _scenario_lns_factory() -> None:
     lock = threading.Lock()
+    threads: set[int] = set()
     calls = 0
     destroyed = 0
 
@@ -252,6 +271,7 @@ def _scenario_lns_factory() -> None:
         nonlocal calls
         with lock:
             calls += 1
+            threads.add(threading.get_ident())
         return CountingLNS(0.3)
 
     result = cbls.ParallelSearch(2).solve_parallel(
@@ -259,17 +279,39 @@ def _scenario_lns_factory() -> None:
     )
     assert result.feasible, "portfolio found no feasible solution for x + y >= 3"
     with lock:
-        n_calls, n_destroyed = calls, destroyed
-    print(f"lns_calls={n_calls} lns_destroyed={n_destroyed}")
+        n_calls, n_destroyed, n_threads = calls, destroyed, len(threads)
+    print(f"lns_calls={n_calls} lns_destroyed={n_destroyed} lns_threads={n_threads}")
 
 
 def _scenario_deterministic() -> None:
     calling_thread = threading.get_ident()
     threads: set[int] = set()
+    hook_threads: set[int] = set()
+    destroyed = 0
 
     def factory() -> "cbls.Model":
         threads.add(threading.get_ident())
         return _feasible_model()
+
+    # Deterministic mode is the OTHER ownership path for #129: src/pool.cpp
+    # builds these on the calling thread and holds them across every epoch,
+    # rather than building and releasing one inside each worker. The release is
+    # a different mechanism too -- it happens on a thread that handed its GIL
+    # away via the call guard, so nanobind's deleter re-takes it there with a
+    # PyGILState_Ensure nested inside a live gil_scoped_release, where portfolio
+    # mode's workers acquire it fresh. A fix that only reached the portfolio
+    # path would leave this one aborting.
+    #
+    # No lock here, deliberately: every call and every __del__ is supposed to
+    # land on this one thread, which is precisely what is being asserted.
+    class CountingHook(cbls.FloatIntensifyHook):  # type: ignore[misc]
+        def __del__(self) -> None:
+            nonlocal destroyed
+            destroyed += 1
+
+    def hook_factory(model: "cbls.Model") -> "cbls.FloatIntensifyHook":
+        hook_threads.add(threading.get_ident())
+        return CountingHook()
 
     par = cbls.ParallelConfig()
     par.deterministic = True
@@ -277,9 +319,11 @@ def _scenario_deterministic() -> None:
     par.max_epochs = 1
     par.epoch_iterations = 200
     cbls.ParallelSearch(2).solve_parallel(
-        factory, 0.5, 42, cbls.SearchConfig(), None, None, None, par
+        factory, 0.5, 42, cbls.SearchConfig(), hook_factory, None, None, par
     )
     print(f"factory_on_calling_thread={threads == {calling_thread}}")
+    print(f"hooks_on_calling_thread={hook_threads == {calling_thread}}")
+    print(f"deterministic_hooks_destroyed={destroyed}")
 
 
 def _scenario_callback() -> None:

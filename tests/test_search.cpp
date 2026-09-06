@@ -461,10 +461,36 @@ TEST_CASE("ParallelSearch with hook and LNS factories", "[pool]") {
         return m;
     };
 
-    auto hook_factory = [](Model&) -> std::shared_ptr<InnerSolverHook> {
-        return std::make_shared<FloatIntensifyHook>();
+    // Counting subclasses rather than the stock types: the factory contract is
+    // an OWNERSHIP contract -- one object per worker, every one released before
+    // solve() returns -- and #129 changed the pointer type precisely so Python
+    // could share in it. Nothing asserted the C++ half, so a change that
+    // hoisted the shared_ptr out of the worker, reused one object for every
+    // worker, or leaked them into a static would have stayed green here.
+    std::atomic<int> hooks_built{0};
+    std::atomic<int> hooks_destroyed{0};
+    std::atomic<int> lns_built{0};
+    std::atomic<int> lns_destroyed{0};
+
+    struct CountingHook : FloatIntensifyHook {
+        explicit CountingHook(std::atomic<int>& d) : destroyed(d) {}
+        ~CountingHook() override { destroyed.fetch_add(1); }
+        std::atomic<int>& destroyed;
     };
-    auto lns_factory = []() -> std::shared_ptr<LNS> { return std::make_shared<LNS>(0.3); };
+    struct CountingLNS : LNS {
+        explicit CountingLNS(std::atomic<int>& d) : LNS(0.3), destroyed(d) {}
+        ~CountingLNS() override { destroyed.fetch_add(1); }
+        std::atomic<int>& destroyed;
+    };
+
+    auto hook_factory = [&](Model&) -> std::shared_ptr<InnerSolverHook> {
+        hooks_built.fetch_add(1);
+        return std::make_shared<CountingHook>(hooks_destroyed);
+    };
+    auto lns_factory = [&]() -> std::shared_ptr<LNS> {
+        lns_built.fetch_add(1);
+        return std::make_shared<CountingLNS>(lns_destroyed);
+    };
 
     ParallelSearch ps(2);
     ParallelConfig pc;
@@ -472,6 +498,12 @@ TEST_CASE("ParallelSearch with hook and LNS factories", "[pool]") {
     auto result = ps.solve(factory, 2.0, 42, {}, hook_factory, lns_factory, nullptr, pc);
     REQUIRE(result.feasible);
     REQUIRE(result.objective < 15.0);
+    // Read after solve() returned, i.e. after join_all(): one object per worker,
+    // each destroyed exactly once, none of them outliving the call.
+    REQUIRE(hooks_built.load() == 2);
+    REQUIRE(hooks_destroyed.load() == 2);
+    REQUIRE(lns_built.load() == 2);
+    REQUIRE(lns_destroyed.load() == 2);
 }
 
 // A portfolio worker cannot let an exception escape its thread function, so

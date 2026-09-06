@@ -76,6 +76,18 @@ public:
     // header. shared_ptr costs one control block per worker and lets
     // nanobind's own caster keep the Python object alive and drop it under the
     // GIL. See issue #129.
+    //
+    // The cost of that choice: nothing now stops a factory from handing back
+    // the SAME object every call. Don't. Each worker searches its own model on
+    // its own thread and the search never locks the hook or the LNS, so a
+    // shared stateful instance is a data race -- the failure the raw-pointer
+    // signature used to catch loudly as a double free.
+    //
+    // One more asymmetry for a Python hook_factory: the Model& reaches it as a
+    // COPY (nanobind demotes an lvalue reference to rv_policy::copy), so the
+    // callee cannot see the model it will run against, and a large model is
+    // deep-copied once per worker. Avoiding that would need a hand-written
+    // binding wrapper, i.e. the glue this signature exists to avoid.
     SearchResult solve(std::function<Model()> model_factory, double time_limit, uint64_t seed,
                        const SearchConfig& config,
                        std::function<std::shared_ptr<InnerSolverHook>(Model&)> hook_factory,
