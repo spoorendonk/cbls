@@ -7,6 +7,7 @@
 // published bounds come from `bounds.csv` (written by download.py).
 
 #include <algorithm>
+#include <benchmarks/common/runner_args.h>
 #include <cbls/cbls.h>
 #include <cbls/io_nl.h>
 #include <chrono>
@@ -42,48 +43,13 @@ struct Args {
     std::string trace_csv;  // optional: anytime profile (best objective vs time)
 };
 
-// Numeric flags are parsed with std::stod / std::stoll rather than std::atof /
-// std::atoll: the ato* family has no error path at all, so a typo'd value
-// silently became 0 and a run that never searched reported like a solver result
-// (bugprone-unchecked-string-to-number-conversion). Trailing characters are
-// rejected too, which std::stod alone accepts, so `--time-limit 60s` no longer
-// quietly means 60.
-//
-// A bad double yields NaN rather than exiting here, deliberately: every double
-// flag already has a `!(x > 0.0)` guard below that reports it and exits 2, and
-// NaN fails that guard, so the parse layer adds a diagnostic without moving
-// where the failure is reported or changing the runner's exit code. Integer
-// flags have no such guard, so those report and exit 2 directly -- which is
-// what parse_args already does for an unknown option.
-double parse_double(const char* flag, const std::string& text) {
-    size_t used = 0;
-    double value = 0.0;
-    try {
-        value = std::stod(text, &used);
-    } catch (const std::exception&) {
-        used = 0;  // not a number at all; reported just below
-    }
-    if (text.empty() || used != text.size()) {
-        std::fprintf(stderr, "%s: '%s' is not a number\n", flag, text.c_str());
-        return std::numeric_limits<double>::quiet_NaN();
-    }
-    return value;
-}
-
-int64_t parse_int64(const char* flag, const std::string& text) {
-    size_t used = 0;
-    int64_t value = 0;
-    try {
-        value = std::stoll(text, &used);
-    } catch (const std::exception&) {
-        used = 0;  // not a number at all; reported just below
-    }
-    if (text.empty() || used != text.size()) {
-        std::fprintf(stderr, "%s: '%s' is not an integer\n", flag, text.c_str());
-        std::exit(2);
-    }
-    return value;
-}
+// Flag-value parsing lives in benchmarks/common/runner_args.h, shared with the
+// other runners so that a fix to one cannot silently diverge from the rest. The
+// reporting policy is documented there and is unchanged: a bad double is
+// reported and returned as NaN for the positivity guards below to turn into
+// exit 2, and a bad integer is reported and exits 2 directly.
+using cbls::bench::parse_double;
+using cbls::bench::parse_int64;
 
 Args parse_args(int argc, char** argv) {
     Args a;

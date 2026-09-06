@@ -1,10 +1,13 @@
+#include "cbls/arg_parse.h"
 #include "cbls/cbls.h"
 #include "cbls/formatter.h"
 #include "cbls/io.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <exception>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <thread>
 
@@ -37,6 +40,67 @@ Options:
 )";
 }
 
+namespace {
+
+// How a malformed numeric flag behaves, decided once for the whole option loop.
+//
+// Report at the parse and return 1, matching the `Error: ...`/exit-1 convention
+// the rest of this loop already uses for an unknown option, a bad --format and a
+// missing model file. The benchmark runners deliberately do the opposite for
+// doubles -- report, return NaN, and let a later positivity guard exit 2 -- but
+// that split exists to keep an exit code their drivers' tests pin, and it needs
+// a guard to land in. The CLI has neither: nothing pins its codes, and a NaN
+// time limit would flow straight into solve(), where a run that never searched
+// looks like a solve that found nothing. So the CLI reports where the mistake
+// is, before anything else happens.
+//
+// Every overload returns false having already written the diagnostic; the caller
+// only has to `return 1`. The parsing rule itself is cbls/arg_parse.h, shared
+// with benchmarks/common/runner_args.h.
+
+bool parse_flag(const char* flag, const char* text, double& out) {
+    if (cbls::try_parse_double(text, out)) {
+        return true;
+    }
+    std::cerr << "Error: " << flag << ": '" << text << "' is not a number\n";
+    return false;
+}
+
+bool parse_flag(const char* flag, const char* text, int64_t& out) {
+    if (cbls::try_parse_int64(text, out)) {
+        return true;
+    }
+    std::cerr << "Error: " << flag << ": '" << text << "' is not an integer\n";
+    return false;
+}
+
+bool parse_flag(const char* flag, const char* text, int& out) {
+    int64_t wide = 0;
+    if (!parse_flag(flag, text, wide)) {
+        return false;
+    }
+    if (wide < std::numeric_limits<int>::min() || wide > std::numeric_limits<int>::max()) {
+        std::cerr << "Error: " << flag << ": '" << text << "' is out of range\n";
+        return false;
+    }
+    out = static_cast<int>(wide);
+    return true;
+}
+
+// --seed is unsigned. It is parsed as a signed 64-bit value and reinterpreted,
+// which is what std::stoull did for a negative seed anyway; the only values lost
+// are those above 2^63-1, and a seed is arbitrary, so an error beats a surprise.
+bool parse_flag(const char* flag, const char* text, uint64_t& out) {
+    int64_t wide = 0;
+    if (!parse_flag(flag, text, wide)) {
+        return false;
+    }
+    out = static_cast<uint64_t>(wide);
+    return true;
+}
+
+}  // namespace
+
 int main(int argc, char* argv[]) {
     std::string model_path;
     double time_limit = 10.0;
@@ -64,16 +128,24 @@ int main(int argc, char* argv[]) {
             return 0;
         }
         if (arg == "--time-limit" && i + 1 < argc) {
-            time_limit = std::stod(argv[++i]);
+            if (!parse_flag("--time-limit", argv[++i], time_limit)) {
+                return 1;
+            }
         } else if (arg == "--seed" && i + 1 < argc) {
-            seed = std::stoull(argv[++i]);
+            if (!parse_flag("--seed", argv[++i], seed)) {
+                return 1;
+            }
         } else if (arg == "--no-fj") {
             use_fj = false;
             config.use_fj = false;
         } else if (arg == "--lns" && i + 1 < argc) {
-            lns_fraction = std::stod(argv[++i]);
+            if (!parse_flag("--lns", argv[++i], lns_fraction)) {
+                return 1;
+            }
         } else if (arg == "--lns-interval" && i + 1 < argc) {
-            lns_interval = std::stoi(argv[++i]);
+            if (!parse_flag("--lns-interval", argv[++i], lns_interval)) {
+                return 1;
+            }
             config.lns_interval = lns_interval;
         } else if (arg == "--intensify") {
             use_intensify = true;
@@ -84,13 +156,19 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
         } else if (arg == "--threads" && i + 1 < argc) {
-            n_threads = std::stoi(argv[++i]);
+            if (!parse_flag("--threads", argv[++i], n_threads)) {
+                return 1;
+            }
         } else if (arg == "--deterministic") {
             deterministic = true;
         } else if (arg == "--epoch-iters" && i + 1 < argc) {
-            epoch_iters = std::stoll(argv[++i]);
+            if (!parse_flag("--epoch-iters", argv[++i], epoch_iters)) {
+                return 1;
+            }
         } else if (arg == "--max-epochs" && i + 1 < argc) {
-            max_epochs = std::stoi(argv[++i]);
+            if (!parse_flag("--max-epochs", argv[++i], max_epochs)) {
+                return 1;
+            }
         } else if (arg == "--quiet") {
             quiet = true;
         } else if (arg[0] == '-') {
