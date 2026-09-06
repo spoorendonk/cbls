@@ -753,7 +753,13 @@ namespace {
 // rows falls monotonically for that many iterations. The domain is 201 wide, so
 // int_jump_candidates enumerates it whole and the repairing value is always on
 // offer.
+//
+// The objective is over the first few variables only, not all of them. It just
+// has to be a row some variables share, and a row over all 400 would put all 400
+// into every one of their jump-table neighbourhoods -- quadratic, and 70x this
+// test's runtime for nothing.
 constexpr int kDescendVars = 400;
+constexpr int kDescendObjVars = 8;
 
 void build_descending_with_objective(Model& m) {
     std::vector<int32_t> vars;
@@ -763,11 +769,42 @@ void build_descending_with_objective(Model& m) {
         vars.push_back(v);
         m.add_constraint(m.geq(v, m.constant(100.0)));
     }
-    m.minimize(m.sum(vars));
+    m.minimize(m.sum(std::vector<int32_t>(vars.begin(), vars.begin() + kDescendObjVars)));
     m.close();
     // solve() adds this before constructing its ViolationManager; a direct FJ
     // test has to do it by hand, and before the manager is built, because it
     // appends a constraint.
+    m.add_objective_soft_constraint();
+}
+
+// build_cheap_iterations with an objective bolted on: unsatisfiable, so FJ
+// cycles indefinitely, ACCEPTING jumps the whole time. That is what the
+// accumulator test needs -- every accepted jump is one more incremental update,
+// and a batch of weight bumps alone would add nothing to accumulate.
+void build_cycling_with_objective(Model& m) {
+    RNG rng(7);
+    constexpr int kVars = 8;
+    constexpr int kRows = 8;
+    std::vector<int32_t> vars;
+    vars.reserve(kVars);
+    for (int i = 0; i < kVars; ++i) {
+        vars.push_back(m.bool_var());
+    }
+    for (int r = 0; r < kRows; ++r) {
+        std::vector<int32_t> args;
+        args.reserve(3);
+        for (int k = 0; k < 3; ++k) {
+            args.push_back(vars[static_cast<size_t>(rng.integers(0, kVars))]);
+        }
+        auto row = m.sum(args);
+        if (r % 2 == 0) {
+            m.add_constraint(m.geq(row, m.constant(3.0)));
+        } else {
+            m.add_constraint(m.leq(row, m.constant(0.0)));
+        }
+    }
+    m.minimize(m.sum(vars));
+    m.close();
     m.add_objective_soft_constraint();
 }
 
@@ -909,7 +946,7 @@ TEST_CASE("the unweighted-violation accumulator matches a fresh recomputation",
     // self-fulfilling. This asserts the incremental maintenance is right on its
     // own, not that the repair mechanism works.
     Model m;
-    build_descending_with_objective(m);
+    build_cycling_with_objective(m);
     ViolationManager vm(m);
     RNG rng(7);
     m.set_objective_bound(-1e30);  // the row that must stay out of the measure
@@ -922,11 +959,14 @@ TEST_CASE("the unweighted-violation accumulator matches a fresh recomputation",
 
     FeasibilityJump fj(m, vm, rng, cfg);
     fj.begin(/*set_initial_x=*/true);
-    fj.batch(/*batch_iterations=*/5000);
-    REQUIRE(fj.iterations() == 5000);
+    fj.batch(/*batch_iterations=*/20000);
+    REQUIRE(fj.iterations() == 20000);
 
     const double fresh = recompute_real_violation(m, vm);
     CAPTURE(fj.unweighted_violation(), fresh);
+    // Not vacuous: the model is unsatisfiable, so there is a real total to agree
+    // on rather than two zeros.
+    REQUIRE(fresh > 0.0);
     // Exact equality is not the claim -- the accumulator rounds, which is why
     // gls_loop re-grounds and compares against a relative floor rather than
     // trusting the last bit. The claim is that it agrees to far better than that
