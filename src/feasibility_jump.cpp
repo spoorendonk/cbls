@@ -22,6 +22,16 @@ bool is_violated(double residual) {
     return !(residual <= kTol);
 }
 
+// A row's contribution to the unproductive-batch progress measure (see
+// FeasibilityJump::unweighted_violation_). Positive finite residuals only: NaN
+// fails the comparison, and +inf is excluded explicitly so that subtracting it
+// out again in update_var cannot turn the running total into a NaN it can never
+// leave. Both callers -- the fresh recomputation and the incremental update --
+// go through this, so the two definitions cannot drift apart.
+double progress_residual(double residual) {
+    return (residual > 0.0 && residual < std::numeric_limits<double>::infinity()) ? residual : 0.0;
+}
+
 double clamp_to_domain(const Variable& var, double value) {
     return std::min(std::max(value, var.lb), var.ub);
 }
@@ -413,6 +423,8 @@ FeasibilityJump::FeasibilityJump(Model& model, ViolationManager& vm, RNG& rng, G
     is_linear_.assign(nc, 0);
     vars_of_constraint_.assign(nc, {});
 
+    objective_ci_ = model_.objective_constraint_idx();
+
     compute_linear_constraints();
 
     for (int32_t v = 0; v < static_cast<int32_t>(model_.num_vars()); ++v) {
@@ -531,18 +543,20 @@ void FeasibilityJump::set_initial_assignment() {
     }
 }
 
+// Must stay definitionally identical to the incremental maintenance in
+// update_var: same rows skipped, same predicate on the residual. The whole point
+// of re-grounding is that the exact sum and the accumulated one mean the same
+// thing, and tests/test_feasibility_jump.cpp pins them against each other.
 void FeasibilityJump::refresh_unweighted_violation() {
     const auto& cids = model_.constraint_ids();
     const size_t nc = cids.size();
     double total = 0.0;
     for (size_t c = 0; c < nc; ++c) {
-        if (!active(static_cast<int32_t>(c))) {
-            continue;  // masked (linear phase): not part of the problem being solved
+        const int32_t ci = static_cast<int32_t>(c);
+        if (ci == objective_ci_ || !active(ci)) {
+            continue;  // objective row: see unweighted_violation_. Masked: not being solved.
         }
-        const double r = model_.node(cids[c]).value;
-        if (r > 0.0) {
-            total += r;  // NaN is not > 0, so a poisoned row contributes nothing
-        }
+        total += progress_residual(model_.node(cids[c]).value);
     }
     unweighted_violation_ = total;
 }
@@ -574,9 +588,8 @@ void FeasibilityJump::update_var(int32_t var_id) {
     // row. The "before" side has to be read here, ahead of delta_evaluate.
     double violation_delta = 0.0;
     for (int32_t c : gv) {
-        if (active(c)) {
-            const double before = model_.node(cids[c]).value;
-            violation_delta -= (before > 0.0) ? before : 0.0;
+        if (c != objective_ci_ && active(c)) {
+            violation_delta -= progress_residual(model_.node(cids[c]).value);
         }
     }
 
@@ -587,8 +600,8 @@ void FeasibilityJump::update_var(int32_t var_id) {
 
     for (int32_t c : gv) {
         const double after = model_.node(cids[c]).value;
-        if (active(c) && after > 0.0) {
-            violation_delta += after;
+        if (c != objective_ci_ && active(c)) {
+            violation_delta += progress_residual(after);
         }
         violated_[c] = is_violated(after);
     }
@@ -765,11 +778,22 @@ void FeasibilityJump::arm_deadline() {
 GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
     const size_t nc = model_.constraint_ids().size();
     int64_t batch_iters = 0;
+    // Re-ground before taking the batch's reference minimum. Consecutive
+    // non-improving FJ batches reach here without a rebuild in between, so
+    // without this the accumulator would carry a whole stagnant run's rounding
+    // into the comparison that decides whether the run IS stagnant.
+    refresh_unweighted_violation();
     double batch_best_violation = unweighted_violation_;
     unproductive_streak_ = 0;
     // Only the batch API has an outer loop to hand control back to; gls()/run()
     // passes no limit and must run its budget out.
     const bool watch_progress = batch_iter_limit > 0 && config_.unproductive_iterations > 0;
+    // A new minimum has to beat the incumbent by more than the accumulator can
+    // drift within one batch, or ulp noise resets the streak and the exit never
+    // fires. Relative, because an absolute floor does not survive scale (#118).
+    auto improves = [](double v, double best) {
+        return v < best - kProgressRelEps * std::max(1.0, best);
+    };
 
     while (true) {
         if (!apply_jump(sample_size)) {
@@ -789,16 +813,26 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
 
         ++iterations_;
         ++batch_iters;
-        // Strictly below, so a batch that merely holds its ground counts as
-        // unproductive -- holding ground is exactly what the cycling case does.
-        // NaN compares false either way, so a poisoned run is unproductive and
-        // ends on the streak rather than looping on an incomparable measure.
-        if (unweighted_violation_ < batch_best_violation) {
+        // Holding ground counts as unproductive -- holding ground is exactly what
+        // the cycling case does -- so only a strict new minimum, by more than the
+        // drift floor, resets the streak.
+        if (improves(unweighted_violation_, batch_best_violation)) {
             batch_best_violation = unweighted_violation_;
             unproductive_streak_ = 0;
         } else if (watch_progress && ++unproductive_streak_ >= config_.unproductive_iterations) {
-            batch_stuck_ = true;
-            return any_active_violated() ? GFJStatus::Unsolved : GFJStatus::Feasible;
+            // The streak was accumulated on the incremental measure; ending the
+            // batch is the one decision it drives, so make that decision on an
+            // exact sum instead. This also re-grounds the accumulator, which is
+            // how a run that drifted (or that lost a row to +inf and back) gets
+            // its measure repaired rather than staying wrong for the whole run.
+            refresh_unweighted_violation();
+            if (improves(unweighted_violation_, batch_best_violation)) {
+                batch_best_violation = unweighted_violation_;
+                unproductive_streak_ = 0;
+            } else {
+                batch_stuck_ = true;
+                return any_active_violated() ? GFJStatus::Unsolved : GFJStatus::Feasible;
+            }
         }
         if (batch_iter_limit > 0 && batch_iters >= batch_iter_limit) {
             return any_active_violated() ? GFJStatus::Unsolved : GFJStatus::Feasible;

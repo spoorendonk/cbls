@@ -87,12 +87,30 @@ struct GFJConfig {
     bool set_initial_x = true;    // set X[v] to the domain value closest to 0 first
     int64_t max_iterations = 0;   // 0 = unbounded (bounded by time_limit)
     double time_limit = 0.0;      // seconds; 0 = no limit
-    // End a *batch* that has run this many GLS iterations without pushing the
-    // total unweighted violation below its best so far for that batch. <= 0
-    // disables the check. See the comment on unweighted_violation_ for what it
-    // is for and what it measured. Applies only to the batch API: the
-    // single-shot gls()/run() path has no outer loop to hand control back to,
-    // so an early exit there would simply be giving up.
+    // End a *batch* that has run this many GLS iterations without reducing the
+    // unweighted violation of the REAL rows below its best so far for that
+    // batch. <= 0 disables the check. See the comment on unweighted_violation_
+    // for the measure and what it was calibrated against. Applies only to the
+    // batch API: the single-shot gls()/run() path has no outer loop to hand
+    // control back to, so an early exit there would simply be giving up.
+    //
+    // What 300 is, honestly. It is a three-point grid search — {100, 300, 1000}
+    // — over ONE roster (MINLPLib, 50 instances) at ONE contended 2s budget and
+    // ONE seed. 100 lost feasibility on kall_ellipsoids_tc02b; 1000 stopped
+    // solving st_e40, the instance the mechanism was written for, so the ceiling
+    // is set by the motivating case rather than independently. It is not a tuned
+    // optimum, has no second roster behind it, and nothing here establishes that
+    // 300 transfers off MINLPLib.
+    //
+    // It is also DIMENSIONLESS on a quantity whose natural scale is not. An
+    // iteration count says nothing about how much violation a model can shed per
+    // iteration, and "300 iterations without a new minimum" means something very
+    // different on a 4-variable instance than on one with 10^5 rows. This is the
+    // same scale-invariance complaint search.cpp records against
+    // perturbation_period, which counts BATCHES for a threshold that is really a
+    // duration. A progress-rate or budget-fraction formulation would not have
+    // it; neither has been measured. Re-tuning by grid search would only move
+    // the number, not fix the shape.
     int64_t unproductive_iterations = 300;
 };
 
@@ -112,10 +130,10 @@ public:
     // stagnation. set_rho() re-randomises the GLS decay between batches.
     void begin(bool set_initial_x);
     bool batch(int64_t batch_iterations);  // true if feasible (no active violated)
-    // Whether the last batch() ended because it had stopped reducing the total
-    // constraint violation, rather than because it exhausted its iteration
-    // budget or the deadline. Only meaningful straight after a batch() call;
-    // cleared at each batch entry. See kUnproductiveIterations.
+    // Whether the last batch() ended because it had stopped reducing the real
+    // rows' violation, rather than because it exhausted its iteration budget or
+    // the deadline. Only meaningful straight after a batch() call; cleared at
+    // each batch entry. Governed by GFJConfig::unproductive_iterations.
     [[nodiscard]] bool batch_stuck() const { return batch_stuck_; }
     void reset_weights();  // W <- 1 and rebuild the scan set
     void resync();         // rebuild the scan set from current state, keep weights
@@ -132,6 +150,11 @@ public:
     // The armed state, so the caller (and its regression tests) can observe the
     // arming decision directly instead of inferring it from a trajectory.
     [[nodiscard]] bool escape_probe() const { return escape_probe_; }
+    // The running progress measure: unweighted violation of the active REAL rows
+    // (see unweighted_violation_). Read-only observability for the regression
+    // test that pins the incremental accumulator against a fresh recomputation;
+    // the search itself does not consult it.
+    [[nodiscard]] double unweighted_violation() const { return unweighted_violation_; }
     [[nodiscard]] bool all_satisfied() const;
     [[nodiscard]] int64_t iterations() const {
         return iterations_;
@@ -211,11 +234,23 @@ private:
     // limit (<=0 for none) plus the global budget/deadline.
     GFJStatus gls_loop(int sample_size, int64_t batch_iter_limit);
     [[nodiscard]] bool any_active_violated() const;
-    // Recompute unweighted_violation_ from scratch: sum_c max(0, r_c) over the
-    // active constraints. Called by rebuild_violated_and_scan_set, which every
-    // entry into the GLS loop goes through and which is also what
-    // resynchronises the loop after a mutation made outside update_var (the
-    // novelty jump, the structural pass, perturb, LNS).
+    // Recompute unweighted_violation_ from scratch: sum of the finite positive
+    // residuals of the active REAL rows (objective row excluded, see that
+    // member). This is the only thing that re-grounds the incremental
+    // accumulator, so every place the accumulator's value is allowed to decide
+    // something calls it first. Three sites:
+    //
+    //   * gls_loop entry, so a batch never inherits the previous batch's
+    //     accumulated rounding. rebuild_violated_and_scan_set does NOT cover
+    //     this: consecutive non-improving FJ batches call gls_loop directly with
+    //     no rebuild in between, so across a long stagnant run the accumulator
+    //     would otherwise never be re-grounded at all;
+    //   * the unproductive-streak limit, before batch_stuck_ is set — the one
+    //     consequential read, so it is made on an exact sum rather than on a
+    //     drifted one;
+    //   * rebuild_violated_and_scan_set, which resynchronises the loop after a
+    //     mutation made outside update_var (the novelty jump, the structural
+    //     pass, perturb, LNS).
     void refresh_unweighted_violation();
     // ApplyJump (Algorithm 2): sample up to `sample_size` vars from Q, apply the
     // best improving jump via update_var. Returns false if none improves.
@@ -311,6 +346,18 @@ private:
     // batches without improvement, or -- with a wall clock -- after a quarter of
     // the budget with no new best (#117). Cleared on every new best. Gates the Float escape probe
     // so it stays a last resort rather than a steady-state behaviour.
+    //
+    // Those two remain the ONLY arming routes. #102's unproductive-batch exit
+    // deliberately does not add a third: it fires on an iteration count, so on a
+    // model with no reachable feasible point the first batch already trips it,
+    // and arming from there would leave the probe on from ~300 iterations into
+    // the run onward -- which is the always-on regime #107 measured at 9x. Its
+    // one mitigation, disarming on improvement, is no defence when the arming
+    // condition recurs every batch. So an unproductive batch takes the
+    // diversification kick early and nothing else; the probe still waits for
+    // `perturbation_period` non-improving batches. See the kick site in
+    // search.cpp, which is careful not to reset the stagnation counter that
+    // clock runs on.
     bool escape_probe_ = false;
 
     // ---- Unproductive-batch detection (#102) ----
@@ -331,24 +378,81 @@ private:
     // which move is improving), so only a progress measure detects it.
     //
     // So: end a batch that has gone GFJConfig::unproductive_iterations iterations
-    // without pushing the total unweighted violation below its best so far for
-    // that batch. This bounds what a single unproductive batch can consume; it
-    // never caps a batch that is still descending, because any new minimum
-    // resets the count. The outer loop still owns what happens next -- this only
-    // stops the GLS loop from burning the whole stagnation window before the
-    // outer loop is allowed to look.
+    // without pushing the measure below its best so far for that batch. This
+    // bounds what a single unproductive batch can consume; it never caps a batch
+    // that is still descending, because any new minimum resets the count. The
+    // outer loop still owns what happens next -- this only stops the GLS loop
+    // from burning the whole stagnation window before the outer loop is allowed
+    // to look. See GFJConfig::unproductive_iterations for what its default is
+    // and is not.
     //
-    // 300 is calibrated, not arbitrary: at 100 the MINLPLib instance
-    // kall_ellipsoids_tc02b lost feasibility at a 2s budget, and at 1000 st_e40
-    // stopped being solved at 2s. 300 holds both.
+    // ---- What the measure is, and why it is that ----
     //
-    // The measure is deliberately UNWEIGHTED. The weighted total is what the
-    // loop descends, but the GLS bump raises it on every stagnant iteration
-    // without the assignment moving, so it rises and falls for reasons that have
-    // nothing to do with progress and is useless here.
+    // Sum of the finite positive residuals of the active REAL rows.
+    //
+    // UNWEIGHTED. The weighted total is what the loop descends, but the GLS bump
+    // raises it on every stagnant iteration without the assignment moving, so it
+    // rises and falls for reasons that have nothing to do with progress.
+    //
+    // REAL rows only -- the artificial `obj <= bound` row is excluded. This is
+    // not a refinement, it is the difference between working and not. While
+    // #116's sentinel bound is installed (a feasible region containing a
+    // non-finite objective: elec25/elec50 are exactly this) that row's residual
+    // clamps to kInfPenalty = 1e30, where one ulp is ~1.4e14. Summed in, it
+    // swallows every O(1) real row, no real improvement can move the total by
+    // one bit, and EVERY batch would be declared stuck at exactly iteration 300
+    // for the whole sentinel window no matter what the search was doing. That is
+    // #100's defect and #118's, and search.cpp records the invariant it teaches:
+    // anything comparing two assignments by violation must difference PER
+    // CONSTRAINT. Two things carry that discipline here. The accumulator is
+    // BUILT per constraint in update_var -- each row's own before/after are
+    // differenced, so an unchanged row contributes an exact 0 rather than a
+    // rounding of the whole sum -- and the clamped row is excluded outright,
+    // which is how max_real_violation and LNS::state_key are safe (the comment
+    // in search.cpp calls that "safe by exclusion"). Note a running MINIMUM over
+    // a trajectory cannot be written as a single per-constraint difference the
+    // way structural_pass's pairwise accept test could; excluding the row is
+    // what makes the running form sound.
+    //
+    // FINITE positive residuals only. A real row can evaluate to +inf or NaN on
+    // a non-convex body. Both contribute 0, on the same predicate in the fresh
+    // recomputation and in the incremental update, which keeps the two
+    // definitions identical and stops a single inf from turning the accumulator
+    // into a NaN it can never leave (inf subtracted, then inf added back).
+    //
+    // ---- Why it does not drift into nonsense ----
+    //
+    // It is an incremental accumulator, so it rounds. #118 is that defect in its
+    // pure form -- "phantom improvements" from differencing two readings taken at
+    // different points in a drift cycle -- and search.cpp records that an
+    // ABSOLUTE epsilon cannot filter it (x - 1e-12 == x for every x > 2^14).
+    // Downward drift here would reset the streak and stop the mechanism firing;
+    // upward drift would fire it early. Three things bound it:
+    //
+    //   1. re-grounding. refresh_unweighted_violation() runs at every gls_loop
+    //      entry, so accumulated error can never exceed one batch's worth of
+    //      roundings (~1e-13 relative at the default 1000 iterations) instead of
+    //      a whole run's;
+    //   2. a RELATIVE floor on what counts as progress (kProgressRelEps), four
+    //      orders above that drift bound and far below any genuine row
+    //      improvement;
+    //   3. confirmation. The streak limit does not set batch_stuck_ on the
+    //      accumulator's word: it recomputes exactly and re-tests. Only an exact
+    //      sum ends a batch, and the recomputation re-grounds the accumulator as
+    //      a side effect, so a poisoned or drifted one heals at the next limit
+    //      rather than persisting. It costs one O(rows) sweep per
+    //      unproductive_iterations iterations, which is why it is affordable at
+    //      the decision point but not on every iteration.
+    //
+    // Relative floor on what counts as a new minimum; see (2) above.
+    static constexpr double kProgressRelEps = 1e-9;
     double unweighted_violation_ = 0.0;
     int64_t unproductive_streak_ = 0;
     bool batch_stuck_ = false;
+    // Index of the artificial `obj <= bound` row in constraint_ids(), or -1 on a
+    // model with no objective. Fixed at close(); cached because the accumulator
+    // consults it on the hot path.
+    int32_t objective_ci_ = -1;
 
     // Novelty Jump state (Algorithms 4-5).
     static constexpr double kCompoundDiscount = 1.0 / 1024.0;  // epsilon (OR-tools value)

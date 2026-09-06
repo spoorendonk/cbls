@@ -646,12 +646,24 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         }
 
         // A Feasibility-Jump batch that reported itself unproductive stopped
-        // reducing the violation at all (see kUnproductiveIterations). Waiting
-        // out the rest of perturbation_period would be waiting for a batch that
-        // has already said it has nothing left, so the kick is due now (#102).
-        if (kind == BatchKind::FeasibilityJump && fj.batch_stuck()) {
-            stagnation = config.perturbation_period;
-        }
+        // reducing the real rows' violation at all (GFJConfig::
+        // unproductive_iterations). Waiting out the rest of perturbation_period
+        // would be waiting for a batch that has already said it has nothing
+        // left, so the kick is due now (#102).
+        //
+        // Gated on !improved. FeasibilityJump ends a batch on ITS measure, the
+        // real rows; the outer loop's `improved` is a new best on the objective.
+        // After the first feasible point those come apart routinely: a batch
+        // satisfies every real row, keeps iterating because any_active_violated()
+        // still sees the artificial objective row, plateaus on the real rows and
+        // exits stuck -- having just recorded a new best. Without this guard that
+        // batch is kicked anyway, three lines after the `improved` block set
+        // stagnation to 0 and disarmed the escape probe. That would also falsify
+        // the reasoning the time-based arming route above rests on ("the
+        // improvement that resets stagnation also disarms the probe"), by
+        // re-arming the probe on the very batch that just improved.
+        const bool unproductive_kick =
+            kind == BatchKind::FeasibilityJump && !improved && fj.batch_stuck();
         if (stagnation >= config.perturbation_period && !past_deadline()) {
             // Genuinely stuck. Arm the Float escape probe: a variable sitting at a
             // stationary point of every violated constraint has no other candidate
@@ -660,6 +672,30 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             // improvement, so a productive search never pays for it.
             fj.set_escape_probe(true);
             diversify();
+        } else if (unproductive_kick && !past_deadline()) {
+            // Kick early, but do NOT arm the escape probe and do NOT reset the
+            // stagnation counter.
+            //
+            // Not the probe: this route fires on an ITERATION count, so on a
+            // model with no reachable feasible point the very first batch trips
+            // it and every batch after it does too. Arming here would put the
+            // probe on from ~300 iterations into the run onward and leave it on
+            // -- the always-on regime #107 measured at a 9x regression -- and
+            // the mitigation that makes arming safe elsewhere (disarm on the
+            // next improvement) is worth nothing against a condition that
+            // recurs every batch. The probe keeps its two documented routes.
+            //
+            // Not the counter: diversify() zeroes `stagnation`, and an
+            // unproductive batch is by definition a non-improving one, so
+            // letting it zero the counter would mean a model that is
+            // unproductive every batch never reaches perturbation_period --
+            // which is the probe's own arming clock, and on an iteration-
+            // budgeted run (no wall clock) the only one it has. Carrying the
+            // count across keeps "100 non-improving batches" meaning what it
+            // says while still buying the early kick.
+            const int carried = stagnation;
+            diversify();
+            stagnation = carried;
         }
 
         // Periodic progress (~1s) even without improvement.
