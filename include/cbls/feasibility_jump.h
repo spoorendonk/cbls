@@ -404,11 +404,22 @@ private:
     // So: end a batch that has gone GFJConfig::unproductive_iterations iterations
     // without pushing the measure below its best so far for that batch. This
     // bounds what a single unproductive batch can consume; it never caps a batch
-    // that is still descending, because any new minimum resets the count. The
-    // outer loop still owns what happens next -- this only stops the GLS loop
-    // from burning the whole stagnation window before the outer loop is allowed
-    // to look. See GFJConfig::unproductive_iterations for what its default is
-    // and is not.
+    // that is still descending toward feasibility, because any new minimum
+    // resets the count. The outer loop still owns what happens next -- this only
+    // stops the GLS loop from burning the whole stagnation window before the
+    // outer loop is allowed to look. See GFJConfig::unproductive_iterations for
+    // what its default is and is not.
+    //
+    // ONE REGIME IS EXCLUDED, and it is not a corner case. The measure sums the
+    // REAL rows only (see below for why), so once they are all satisfied it is
+    // identically zero and cannot improve on itself. Read naively the exit would
+    // then fire on EVERY batch of the objective-descent phase -- a stall
+    // detector that is unconditionally true, which is the same shape of defect
+    // as measuring a whole sum that a clamped row swallows. A batch whose
+    // measure is zero is therefore never declared stuck: the search there is
+    // descending against the artificial objective row, which this measure
+    // deliberately cannot see, and having no signal is not evidence of being
+    // stuck. `perturbation_period` keeps owning that regime, as it did before.
     //
     // ---- What the measure is, and why it is that ----
     //

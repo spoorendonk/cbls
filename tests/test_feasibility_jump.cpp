@@ -933,6 +933,71 @@ TEST_CASE("a huge objective row cannot absorb the real rows' progress", "[fj][un
     REQUIRE(recompute_real_violation(m, vm) < real_before);
 }
 
+// Real rows and the objective are DISJOINT here, unlike
+// build_descending_with_objective: every row pins its own variable from below,
+// and the objective is a variable no row mentions. So the real rows can all be
+// satisfied while the objective row stays violated, which is the regime the
+// guard below is about. Coupling them instead leaves a unit of real violation
+// permanently traded against the objective, and the measure never reaches zero.
+constexpr int kDisjointVars = 200;
+
+void build_real_rows_with_disjoint_objective(Model& m) {
+    for (int i = 0; i < kDisjointVars; ++i) {
+        int32_t v = m.int_var(0, 200);
+        m.add_constraint(m.geq(v, m.constant(100.0)));
+    }
+    int32_t z = m.int_var(0, 200);
+    m.minimize(m.sum({z}));
+    m.close();
+    m.add_objective_soft_constraint();
+}
+
+TEST_CASE("a real-feasible batch is not called stuck by a measure that cannot move",
+          "[fj][unproductive]") {
+    // Regression for the review finding on #102's second cut. The progress
+    // measure sums the REAL rows only, so once they are all satisfied it is
+    // identically zero and cannot improve on itself. Without the guard, every
+    // batch of the objective-descent phase reports stuck at exactly
+    // unproductive_iterations -- a stall detector that is unconditionally true,
+    // which would raise the diversification cadence in that phase from one kick
+    // per stagnation window to one per 300 iterations, and LNS with it.
+    //
+    // The search there is not stalled; it is descending against the artificial
+    // objective row, which this measure deliberately cannot see. Having no
+    // signal is not evidence of being stuck.
+    Model m;
+    build_real_rows_with_disjoint_objective(m);
+    ViolationManager vm(m);
+    RNG rng(42);
+    REQUIRE(m.objective_constraint_idx() >= 0);
+    // z >= 0, so this bound is unreachable and the objective row stays violated
+    // for the whole batch. It shares no variable with a real row, so it cannot
+    // hold one hostage the way a coupled objective would.
+    m.set_objective_bound(-1.0);
+    full_evaluate(m);
+
+    GFJConfig cfg;
+    cfg.two_phase = false;
+    cfg.time_limit = 0.0;
+    REQUIRE(cfg.unproductive_iterations == 300);
+
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(/*set_initial_x=*/true);
+    // Long enough that the real rows are repaired well before the end and the
+    // streak limit is then reached several times over with the measure pinned
+    // at zero.
+    constexpr int64_t kIters = 4 * 300;
+    static_assert(kIters > kDisjointVars, "the real rows must be clean before the batch ends");
+    fj.batch(kIters);
+
+    CAPTURE(fj.iterations(), recompute_real_violation(m, vm));
+    // The premise: the real rows really are satisfied, so the measure is zero.
+    REQUIRE(recompute_real_violation(m, vm) == Catch::Approx(0.0).margin(1e-9));
+    // The point: a zero measure is not a stall report.
+    REQUIRE_FALSE(fj.batch_stuck());
+    REQUIRE(fj.iterations() == kIters);
+}
+
 TEST_CASE("the unweighted-violation accumulator matches a fresh recomputation",
           "[fj][unproductive]") {
     // The measure is maintained incrementally in update_var, per constraint, and

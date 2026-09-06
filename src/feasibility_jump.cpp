@@ -829,6 +829,18 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
             if (improves(unweighted_violation_, batch_best_violation)) {
                 batch_best_violation = unweighted_violation_;
                 unproductive_streak_ = 0;
+            } else if (unweighted_violation_ <= 0.0) {
+                // The measure sums the REAL rows only, so once they are all
+                // satisfied it is identically zero and can never improve on
+                // itself -- every batch in the objective-descent phase would
+                // report stuck at exactly unproductive_iterations, turning a
+                // stall detector into an unconditional one. The search is not
+                // stalled there; it is descending against the artificial
+                // objective row, which this measure deliberately cannot see.
+                // Having no signal is not evidence of being stuck, so hand the
+                // batch back to its own limit and let perturbation_period keep
+                // owning that regime.
+                unproductive_streak_ = 0;
             } else {
                 batch_stuck_ = true;
                 return any_active_violated() ? GFJStatus::Unsolved : GFJStatus::Feasible;

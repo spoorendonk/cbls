@@ -562,21 +562,30 @@ a subset chosen to include the instances an earlier arm had regressed:
 | `maxmin` | 3.90% | **0.10%** |
 | `kall_ellipsoids_tc02b` | 161.76% | **159.73%** |
 | `st_e40` | infeasible | **0.00%** (BKS) |
-| `nvs01` | infeasible | **0.00%** (BKS) |
+| `nvs01` | infeasible | feasible, 0.00%–21.94% across runs |
 | `ex4_1_8` | 0.00% | 0.00% |
-| `ex8_6_1` | 69.65% | **89.39%** |
+| `ex8_6_1` | 69.71% | **89.39%** |
 
-Five clear improvements, two instances moving from infeasible to the BKS, one
+Five clear improvements, two instances moving from infeasible to feasible, one
 unchanged, and **one regression**: `ex8_6_1` loses about 20 percentage points.
 It is recorded here rather than left to the re-run because a change that trades
 quality on some rows for quality on others should say so where the table is
 read, not only where it is generated.
 
-Two of the three regressions an earlier arm of this work showed — `maxmin` and
-`kall_ellipsoids_tc02b` — are *gone*, and both were caused by defects since
-fixed: the stuck test was overriding a batch that had just improved into a
-diversification kick, and it was arming the Float escape probe that #107 had
-deliberately gated. `ex8_6_1` survives both fixes and is the residual.
+Three regressions earlier arms of this work showed have since gone, and each had
+an identified cause that was fixed: the stuck test was overriding a batch that
+had just improved into a diversification kick; it was arming the Float escape
+probe that #107 had deliberately gated; and the progress measure, which sums the
+real rows only, is identically zero once those rows are satisfied, so the exit
+fired on every batch of the objective-descent phase until it was guarded.
+
+**`ex8_6_1` survives all three fixes and its cause is not identified.** It is
+stable, not seed noise — four paired seeds at 10s put the branch worse on all
+four (89.39 / 85.90 / 78.90 / 74.37 against 69.67 / 76.55 / 67.90 / 67.97).
+`nvs01` is also unstable across runs on the branch in a way it is not on main,
+which may be the same effect seen from the other side. Until that is explained,
+this change is not a settled improvement, and the residual is the reason #102 is
+held rather than merged.
 
 The published rows below are **not** regenerated from this probe. That is #123's
 job, at the documented protocol, and it is where a proper win/loss tally over
