@@ -123,6 +123,19 @@ static TerminationReason aggregate_termination(const std::vector<SearchResult>& 
     return any_iterations ? TerminationReason::IterationLimit : TerminationReason::NoBudget;
 }
 
+// ~thread calls std::terminate on a thread that is still joinable, so every
+// launch loop below has to join what it managed to create even when the loop
+// itself fails: threads.emplace_back can throw std::system_error at the process
+// thread limit, or bad_alloc. Unwinding past a half-filled vector would abort
+// the process instead of reporting the failure.
+static void join_all(std::vector<std::thread>& threads) {
+    for (auto& t : threads) {
+        if (t.joinable()) {
+            t.join();
+        }
+    }
+}
+
 // --- Portfolio (opportunistic) mode ---
 
 SearchResult ParallelSearch::solve_portfolio(std::function<Model()>& model_factory,
@@ -138,45 +151,48 @@ SearchResult ParallelSearch::solve_portfolio(std::function<Model()>& model_facto
     std::vector<std::exception_ptr> failures(n_threads);
     std::vector<std::thread> threads;
 
-    for (int i = 0; i < n_threads; ++i) {
-        threads.emplace_back([&, i]() {
-            try {
-                Model m = model_factory();
+    try {
+        for (int i = 0; i < n_threads; ++i) {
+            threads.emplace_back([&, i]() {
+                try {
+                    Model m = model_factory();
 
-                std::unique_ptr<InnerSolverHook> hook;
-                if (hook_factory) {
-                    hook.reset(hook_factory(m));
+                    std::unique_ptr<InnerSolverHook> hook;
+                    if (hook_factory) {
+                        hook.reset(hook_factory(m));
+                    }
+
+                    std::unique_ptr<LNS> lns;
+                    if (lns_factory) {
+                        lns.reset(lns_factory());
+                    }
+
+                    // Only thread 0 gets the callback to avoid interleaved output
+                    SolveCallback* cb = (i == 0) ? callback : nullptr;
+
+                    results[i] = cbls::solve(m, time_limit, seed + i, config.use_fj, hook.get(),
+                                             lns.get(), config.lns_interval, cb, config);
+
+                    Solution sol;
+                    sol.state = results[i].best_state;
+                    sol.objective = results[i].objective;
+                    sol.feasible = results[i].feasible;
+                    pool.submit(sol);
+                } catch (...) {
+                    // A thread function must not let an exception escape -- that is
+                    // std::terminate -- and one worker failing is not a reason to
+                    // lose the others' work. Park it rather than drop it; whether it
+                    // is rethrown is decided below, once every worker has reported.
+                    failures[i] = std::current_exception();
                 }
-
-                std::unique_ptr<LNS> lns;
-                if (lns_factory) {
-                    lns.reset(lns_factory());
-                }
-
-                // Only thread 0 gets the callback to avoid interleaved output
-                SolveCallback* cb = (i == 0) ? callback : nullptr;
-
-                results[i] = cbls::solve(m, time_limit, seed + i, config.use_fj, hook.get(),
-                                         lns.get(), config.lns_interval, cb, config);
-
-                Solution sol;
-                sol.state = results[i].best_state;
-                sol.objective = results[i].objective;
-                sol.feasible = results[i].feasible;
-                pool.submit(sol);
-            } catch (...) {
-                // A thread function must not let an exception escape -- that is
-                // std::terminate -- and one worker failing is not a reason to
-                // lose the others' work. Park it rather than drop it; whether it
-                // is rethrown is decided below, once every worker has reported.
-                failures[i] = std::current_exception();
-            }
-        });
+            });
+        }
+    } catch (...) {
+        join_all(threads);
+        throw;
     }
 
-    for (auto& t : threads) {
-        t.join();
-    }
+    join_all(threads);
 
     // Every worker either submits a solution or parks its exception, and the
     // pool keeps the best ten, so an empty pool means every one of them threw.
@@ -275,26 +291,31 @@ SearchResult ParallelSearch::solve_deterministic(
 
         // Launch threads for this epoch
         std::vector<std::thread> threads;
-        for (int i = 0; i < n_threads; ++i) {
-            // Deliberately no try/catch, unlike the portfolio path above: an
-            // epoch worker that throws terminates the process. Parking the
-            // failure here would need a decision about whether a mid-run epoch
-            // failure aborts the run or degrades it, and nothing has needed one.
-            threads.emplace_back([&, i, epoch]() {
-                // Deterministic seed: base_seed + epoch * n_threads + thread_id
-                uint64_t thread_seed = seed + static_cast<uint64_t>(epoch) * n_threads + i;
+        try {
+            for (int i = 0; i < n_threads; ++i) {
+                // Deliberately no try/catch *inside* the worker, unlike the
+                // portfolio path above: an epoch worker that throws terminates the
+                // process. Parking the failure here would need a decision about
+                // whether a mid-run epoch failure aborts the run or degrades it,
+                // and nothing has needed one. The catch below is a different case
+                // -- it is the launch itself failing, before any work started.
+                threads.emplace_back([&, i, epoch]() {
+                    // Deterministic seed: base_seed + epoch * n_threads + thread_id
+                    uint64_t thread_seed = seed + static_cast<uint64_t>(epoch) * n_threads + i;
 
-                SolveCallback* cb = (i == 0) ? callback : nullptr;
+                    SolveCallback* cb = (i == 0) ? callback : nullptr;
 
-                epoch_results[i] = cbls::solve(
-                    models[i], epoch_time_limit, thread_seed, (epoch == 0) && config.use_fj,
-                    hooks[i].get(), lns_objs[i].get(), config.lns_interval, cb, epoch_config);
-            });
+                    epoch_results[i] = cbls::solve(
+                        models[i], epoch_time_limit, thread_seed, (epoch == 0) && config.use_fj,
+                        hooks[i].get(), lns_objs[i].get(), config.lns_interval, cb, epoch_config);
+                });
+            }
+        } catch (...) {
+            join_all(threads);
+            throw;
         }
 
-        for (auto& t : threads) {
-            t.join();
-        }
+        join_all(threads);
 
         // Collect results into pool
         for (int i = 0; i < n_threads; ++i) {
