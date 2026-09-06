@@ -467,29 +467,48 @@ TEST_CASE("ParallelSearch with hook and LNS factories", "[pool]") {
     // could share in it. Nothing asserted the C++ half, so a change that
     // hoisted the shared_ptr out of the worker, reused one object for every
     // worker, or leaked them into a static would have stayed green here.
+    //
+    // Build/destroy counts alone are not enough: they stay green on a search
+    // that constructs both objects and then wires in neither. The overrides
+    // below count *dispatches*, so the object the factory returned has to be
+    // the one the search actually runs.
     std::atomic<int> hooks_built{0};
     std::atomic<int> hooks_destroyed{0};
+    std::atomic<int> hook_calls{0};
     std::atomic<int> lns_built{0};
     std::atomic<int> lns_destroyed{0};
+    std::atomic<int> lns_calls{0};
 
     struct CountingHook : FloatIntensifyHook {
-        explicit CountingHook(std::atomic<int>& d) : destroyed(d) {}
+        CountingHook(std::atomic<int>& d, std::atomic<int>& c) : destroyed(d), calls(c) {}
         ~CountingHook() override { destroyed.fetch_add(1); }
+        void solve(Model& model, ViolationManager& vm,
+                   const std::vector<int32_t>& last_changed_vars = {}) override {
+            calls.fetch_add(1);
+            FloatIntensifyHook::solve(model, vm, last_changed_vars);
+        }
         std::atomic<int>& destroyed;
+        std::atomic<int>& calls;
     };
     struct CountingLNS : LNS {
-        explicit CountingLNS(std::atomic<int>& d) : LNS(0.3), destroyed(d) {}
+        CountingLNS(std::atomic<int>& d, std::atomic<int>& c) : LNS(0.3), destroyed(d), calls(c) {}
         ~CountingLNS() override { destroyed.fetch_add(1); }
+        bool destroy_repair(Model& model, ViolationManager& vm, RNG& rng,
+                            double repair_time_limit) override {
+            calls.fetch_add(1);
+            return LNS::destroy_repair(model, vm, rng, repair_time_limit);
+        }
         std::atomic<int>& destroyed;
+        std::atomic<int>& calls;
     };
 
     auto hook_factory = [&](Model&) -> std::shared_ptr<InnerSolverHook> {
         hooks_built.fetch_add(1);
-        return std::make_shared<CountingHook>(hooks_destroyed);
+        return std::make_shared<CountingHook>(hooks_destroyed, hook_calls);
     };
     auto lns_factory = [&]() -> std::shared_ptr<LNS> {
         lns_built.fetch_add(1);
-        return std::make_shared<CountingLNS>(lns_destroyed);
+        return std::make_shared<CountingLNS>(lns_destroyed, lns_calls);
     };
 
     ParallelSearch ps(2);
@@ -504,6 +523,10 @@ TEST_CASE("ParallelSearch with hook and LNS factories", "[pool]") {
     REQUIRE(hooks_destroyed.load() == 2);
     REQUIRE(lns_built.load() == 2);
     REQUIRE(lns_destroyed.load() == 2);
+    // The object the factory returned is the one the search ran, not merely one
+    // it built and dropped. Without this the suite passes on a solve() call
+    // that hands nullptr to both slots.
+    REQUIRE(hook_calls.load() > 0);
 }
 
 // A portfolio worker cannot let an exception escape its thread function, so

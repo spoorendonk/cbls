@@ -156,6 +156,10 @@ def test_solve_parallel_deterministic_builds_on_the_calling_thread() -> None:
     # solve_parallel returns -- a different release path from portfolio mode.
     assert "hooks_on_calling_thread=True" in out
     assert "deterministic_hooks_destroyed=2" in out
+    # lns_factory takes a third release path -- its own loop in src/pool.cpp --
+    # so it is asserted separately rather than folded into the hook counts.
+    assert "lns_on_calling_thread=True" in out
+    assert "deterministic_lns_destroyed=2" in out
 
 
 def test_solve_parallel_calls_a_python_callback_from_a_worker_thread() -> None:
@@ -313,17 +317,37 @@ def _scenario_deterministic() -> None:
         hook_threads.add(threading.get_ident())
         return CountingHook()
 
+    # lns_factory is built and released by a *separate* loop from the hooks in
+    # this mode, so it is a third release path, not a repeat of the second. It
+    # gets its own counters for the same reason the two portfolio scenarios are
+    # split: a change that hoisted lns_objs into a static -- a plausible "stop
+    # rebuilding it per epoch" optimisation -- would leak every Python LNS with
+    # the rest of the suite green.
+    lns_threads: set[int] = set()
+    lns_destroyed = 0
+
+    class CountingLNS(cbls.LNS):  # type: ignore[misc]
+        def __del__(self) -> None:
+            nonlocal lns_destroyed
+            lns_destroyed += 1
+
+    def lns_factory() -> "cbls.LNS":
+        lns_threads.add(threading.get_ident())
+        return CountingLNS(0.3)
+
     par = cbls.ParallelConfig()
     par.deterministic = True
     par.n_threads = 2
     par.max_epochs = 1
     par.epoch_iterations = 200
     cbls.ParallelSearch(2).solve_parallel(
-        factory, 0.5, 42, cbls.SearchConfig(), hook_factory, None, None, par
+        factory, 0.5, 42, cbls.SearchConfig(), hook_factory, lns_factory, None, par
     )
     print(f"factory_on_calling_thread={threads == {calling_thread}}")
     print(f"hooks_on_calling_thread={hook_threads == {calling_thread}}")
     print(f"deterministic_hooks_destroyed={destroyed}")
+    print(f"lns_on_calling_thread={lns_threads == {calling_thread}}")
+    print(f"deterministic_lns_destroyed={lns_destroyed}")
 
 
 def _scenario_callback() -> None:
