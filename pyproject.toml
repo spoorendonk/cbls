@@ -31,7 +31,7 @@ dev = [
     # (CLAUDE.md's ```build fence) locates nanobind by running
     # `python -m nanobind --cmake_dir` against .venv/bin/python, so without it
     # here the documented bootstrap yields a venv that cannot build the
-    # bindings -- and the 73 binding tests would go unrun.
+    # bindings -- and the 77 binding tests would go unrun.
     "nanobind>=1.8",
 ]
 benchmarks = [

@@ -80,6 +80,7 @@ C++ tests use **Catch2** (not GoogleTest): files in `tests/`, registered in `tes
 - Name tests descriptively — `returns_optimal_for_feasible_input`, `test_solver_returns_optimal_for_feasible_input`.
 - Test nanobind bindings from Python with pytest, not from C++ — the binding is an implementation detail. Include round-trip tests: create in Python → pass to C++ → get result back.
 - An `std::optional` guarded by `REQUIRE(o.has_value())` still trips `bugprone-unchecked-optional-access`, which is enabled: the check cannot see through Catch2's expression templates, and `.value()` reads the same way to it. Write `if (!o.has_value()) { FAIL("..."); return; }` instead — the `return` is what makes the flow analysis see the guard, even though `FAIL` throws. Do **not** reach for a `NOLINT` or re-add the check to the ratchet; both routes are closed (see **Git Hooks**).
+- A Python test that could **deadlock the interpreter** — anything handing a Python callable to C++ that spawns threads — must run its scenario in a **child process** under a wall-clock timeout. No in-process deadline can report it: `pytest-timeout`'s `thread` method runs its timer on a Python thread that needs the very GIL the test is starving, and its `signal` method only takes effect at the next bytecode in a main thread parked inside a C++ `join()`. `tests/python/test_pool.py` is the pattern — scenarios in a `__main__` block, `subprocess.run(..., timeout=...)` in the test.
 - Terse output is not configured anywhere — pass the flags. `ctest --progress` collapses the running list, `--tb=short -q` keeps pytest failures short, as the `## Build & Test` blocks below already do. `pyproject.toml` sets `testpaths`, ruff's rule set and `mypy strict`, but no `addopts`, `pretty` or `output-format`.
 
 ## CMake
@@ -186,7 +187,7 @@ agree:
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
 4. the comment above the `ctest` call in `.githooks/pre-commit`,
-5. the `.venv/bin/pytest` line in `README.md` for the Python side (242 tests, 73
+5. the `.venv/bin/pytest` line in `README.md` for the Python side (246 tests, 77
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`),
 6. the `-LE slow` guidance and the ~40s/~304s figures in `docs/profiling.md`.
@@ -332,7 +333,7 @@ ctest --test-dir build --output-on-failure -j$(nproc) && (CBLS_REQUIRE_BINDINGS=
 **The gated build turns the Python bindings on, and the gated test run requires
 them.** `CBLS_BUILD_PYTHON` defaults to `OFF` and `tests/python/conftest.py`
 skips every test that imports `_cbls_core` when the module is missing, so a build
-without the flag would leave 73 binding tests silently unrun.
+without the flag would leave 77 binding tests silently unrun.
 `CBLS_REQUIRE_BINDINGS=1` turns that skip into a hard error. Bindings cost ~2.4s
 of build and ~6s of pytest against a suite that already spends ~340s in `ctest` —
 always build them.

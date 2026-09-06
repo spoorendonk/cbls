@@ -11,6 +11,26 @@
 namespace nb = nanobind;
 using namespace cbls;
 
+// Shared by both ParallelSearch.solve overloads: the concurrency contract is
+// the same for either, and it is not obvious from the signature. Releasing the
+// GIL is what makes the methods callable at all (see the call guards below),
+// and the direct consequence is that the factory runs on several threads at
+// once.
+constexpr const char* kParallelSolveDoc =
+    "Run the portfolio (or, with par_config.deterministic, the epoch-sync) search.\n"
+    "\n"
+    "The GIL is released for the duration of the C++ call. model_factory is\n"
+    "therefore invoked concurrently, once from each worker thread, and\n"
+    "hook_factory, lns_factory and callback are likewise called from worker\n"
+    "threads. nanobind re-acquires the GIL around each invocation, so the\n"
+    "interpreter itself is safe; what it does not give you is atomicity across\n"
+    "bytecodes. A factory that only reads its closure is fine as written; one\n"
+    "that mutates Python-side state must do its own locking.\n"
+    "\n"
+    "An exception raised by the factory in every worker is re-raised here with\n"
+    "its original type and message. One that fails in only some workers is\n"
+    "absorbed, and the surviving workers' result is returned.";
+
 struct PySolveCallback : SolveCallback {
     NB_TRAMPOLINE(SolveCallback, 1);
     void on_progress(const SolveProgress& p) override { NB_OVERRIDE_PURE(on_progress, p); }
@@ -335,7 +355,12 @@ NB_MODULE(_cbls_core, m) {
             "solve",
             static_cast<SearchResult (ParallelSearch::*)(std::function<Model()>, double, uint64_t)>(
                 &ParallelSearch::solve),
-            nb::arg("model_factory"), nb::arg("time_limit") = 10.0, nb::arg("seed") = 42)
+            nb::arg("model_factory"), nb::arg("time_limit") = 10.0, nb::arg("seed") = 42,
+            // Without this the caller keeps the GIL for the whole C++ call,
+            // including the worker join, while nanobind's std::function caster
+            // acquires the GIL inside every worker to invoke the factory --
+            // a deadlock that made this method uncallable from Python (#128).
+            nb::call_guard<nb::gil_scoped_release>(), kParallelSolveDoc)
         .def("solve_parallel",
              static_cast<SearchResult (ParallelSearch::*)(
                  std::function<Model()>, double, uint64_t, const SearchConfig&,
@@ -344,7 +369,12 @@ NB_MODULE(_cbls_core, m) {
              nb::arg("model_factory"), nb::arg("time_limit") = 10.0, nb::arg("seed") = 42,
              nb::arg("config") = SearchConfig{}, nb::arg("hook_factory") = nullptr,
              nb::arg("lns_factory") = nullptr, nb::arg("callback") = nullptr,
-             nb::arg("par_config") = ParallelConfig{});
+             nb::arg("par_config") = ParallelConfig{},
+             // Same reason as `solve` above, and the guard covers the other
+             // Python callables this overload takes too: hook_factory,
+             // lns_factory and the SolveCallback trampoline all need the
+             // caller to have let go of the GIL before they can acquire it.
+             nb::call_guard<nb::gil_scoped_release>(), kParallelSolveDoc);
 
     // Free functions
     m.def("full_evaluate", &full_evaluate);
