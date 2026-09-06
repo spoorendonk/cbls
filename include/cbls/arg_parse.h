@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <string>
@@ -23,7 +24,7 @@ namespace cbls {
 // are rejected as well, which `std::stod` alone accepts, so `--time-limit 60s`
 // cannot quietly mean 60. An out-of-range value fails like a malformed one.
 //
-// Both return false on failure and leave `out` untouched.
+// All three return false on failure and leave `out` untouched.
 
 inline bool try_parse_double(const std::string& text, double& out) {
     std::size_t used = 0;
@@ -54,6 +55,28 @@ inline bool try_parse_int64(const std::string& text, int64_t& out) {
         return false;  // trailing characters
     }
     out = static_cast<int64_t>(value);
+    return true;
+}
+
+// Unsigned, and separate from try_parse_int64 rather than a cast of it, because
+// the two do not accept the same set: std::stoull spans the full 64-bit range
+// and wraps a negative value instead of rejecting it. Both halves matter to a
+// seed flag, which round-trips through its own printed output -- `--seed -1` is
+// recorded as 18446744073709551615, and that has to parse back to the same
+// generator state.
+inline bool try_parse_uint64(const std::string& text, uint64_t& out) {
+    std::size_t used = 0;
+    unsigned long long value = 0;
+    try {
+        // Throws on empty or non-numeric text, and on overflow.
+        value = std::stoull(text, &used);
+    } catch (const std::exception&) {
+        return false;
+    }
+    if (used != text.size()) {
+        return false;  // trailing characters
+    }
+    out = static_cast<uint64_t>(value);
     return true;
 }
 

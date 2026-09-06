@@ -4,6 +4,7 @@
 #include "cbls/io.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <exception>
 #include <iostream>
@@ -49,17 +50,27 @@ namespace {
 // missing model file. The benchmark runners deliberately do the opposite for
 // doubles -- report, return NaN, and let a later positivity guard exit 2 -- but
 // that split exists to keep an exit code their drivers' tests pin, and it needs
-// a guard to land in. The CLI has neither: nothing pins its codes, and a NaN
-// time limit would flow straight into solve(), where a run that never searched
-// looks like a solve that found nothing. So the CLI reports where the mistake
-// is, before anything else happens.
+// a guard to land in. The CLI has neither: nothing pins its codes, and there is
+// no downstream guard for a NaN to be caught by, so it reports here instead.
+//
+// What is deliberately NOT rejected, because the CLI's budget is not only the
+// clock: `--time-limit 0` and `--time-limit inf` are working configurations
+// under --deterministic, where --epoch-iters/--max-epochs bind instead. A
+// runner-style `!(x > 0.0)` guard would break them. NaN is different -- it is
+// never a request anyone can mean, and it silently turns --lns off and
+// --time-limit into a solve that never searched -- so the double overload
+// rejects it and nothing else.
 //
 // Every overload returns false having already written the diagnostic; the caller
 // only has to `return 1`. The parsing rule itself is cbls/arg_parse.h, shared
 // with benchmarks/common/runner_args.h.
 
 bool parse_flag(const char* flag, const char* text, double& out) {
-    if (cbls::try_parse_double(text, out)) {
+    // Syntax alone is not enough: std::stod accepts "nan", so the NaN the
+    // comment above rules out would otherwise arrive as a successful parse.
+    double value = 0.0;
+    if (cbls::try_parse_double(text, value) && !std::isnan(value)) {
+        out = value;
         return true;
     }
     std::cerr << "Error: " << flag << ": '" << text << "' is not a number\n";
@@ -87,21 +98,19 @@ bool parse_flag(const char* flag, const char* text, int& out) {
     return true;
 }
 
-// --seed is unsigned. It is parsed as a signed 64-bit value and reinterpreted,
-// which is what std::stoull did for a negative seed anyway; the only values lost
-// are those above 2^63-1, and a seed is arbitrary, so an error beats a surprise.
+// --seed spans the full unsigned 64-bit range, not the signed one: the CLI
+// prints the seed back in its own header, where `--seed -1` is recorded as
+// 18446744073709551615. Narrowing to int64 would make the tool unable to read
+// back the seed it just printed, which is the whole point of the flag.
 bool parse_flag(const char* flag, const char* text, uint64_t& out) {
-    int64_t wide = 0;
-    if (!parse_flag(flag, text, wide)) {
-        return false;
+    if (cbls::try_parse_uint64(text, out)) {
+        return true;
     }
-    out = static_cast<uint64_t>(wide);
-    return true;
+    std::cerr << "Error: " << flag << ": '" << text << "' is not an integer\n";
+    return false;
 }
 
-}  // namespace
-
-int main(int argc, char* argv[]) {
+int run_cli(int argc, char* argv[]) {
     std::string model_path;
     double time_limit = 10.0;
     uint64_t seed = 42;
@@ -267,4 +276,26 @@ int main(int argc, char* argv[]) {
     }
 
     return result.feasible ? 0 : 1;
+}
+
+}  // namespace
+
+int main(int argc, char* argv[]) {
+    // The argument parse above is no longer the only way an exception could
+    // reach here: solve() and the formatters call into Model, whose accessors
+    // throw std::out_of_range and std::logic_error. An exception escaping main
+    // is std::terminate -- an abort with no diagnostic and no usable exit
+    // status, which is the failure issue #130 was opened for. Naming the bad
+    // flag fixed the common route; this closes the class
+    // (bugprone-exception-escape, which cannot see across translation units and
+    // so does not flag it). Same shape as both benchmark runners' main.
+    try {
+        return run_cli(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return 1;
+    } catch (...) {
+        std::cerr << "Error: unknown fatal error\n";
+        return 1;
+    }
 }

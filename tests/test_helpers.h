@@ -1,11 +1,11 @@
 #pragma once
 
 #include <catch2/interfaces/catch_interfaces_capture.hpp>
+#include <cbls/arg_parse.h>
 #include <cbls/model.h>
 #include <cbls/search.h>
 #include <cstdio>
 #include <cstdlib>
-#include <exception>
 #include <string>
 
 // Short alias for tests — delegates to the canonical core function.
@@ -48,19 +48,14 @@ inline cbls::SearchResult solve_deterministic(cbls::Model& model, int64_t max_it
     if (calib != nullptr) {
         // std::atof has no error path -- a mistyped value would become 0.0 and
         // read as "no wall clock" (bugprone-unchecked-string-to-number-conversion).
-        // std::stod throws instead, which the guard below turns into the message.
-        // Trailing characters are rejected too, the same contract the benchmark
-        // runners' parse_double got: CBLS_TEST_CALIBRATE="5s" must be refused
-        // rather than quietly calibrate against 5 seconds.
-        const std::string calib_text(calib);
-        try {
-            size_t used = 0;
-            time_limit = std::stod(calib_text, &used);
-            if (used != calib_text.size()) {
-                time_limit = 0.0;  // trailing characters; reported by the guard below
-            }
-        } catch (const std::exception&) {
-            time_limit = 0.0;  // reported by the guard below
+        // cbls::try_parse_double is the one rule the CLI and the benchmark
+        // runners parse their own flags with, trailing characters included:
+        // CBLS_TEST_CALIBRATE="5s" must be refused rather than quietly calibrate
+        // against 5 seconds. This used to be a third hand-written copy of that
+        // rule, which is where a fix to one silently diverges from the others.
+        // It leaves time_limit untouched on failure, so the guard below reports.
+        if (!cbls::try_parse_double(calib, time_limit)) {
+            time_limit = 0.0;
         }
         if (!(time_limit > 0.0)) {
             std::fprintf(stderr,

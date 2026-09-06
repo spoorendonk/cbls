@@ -187,7 +187,7 @@ agree:
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
 4. the comment above the `ctest` call in `.githooks/pre-commit`,
-5. the `.venv/bin/pytest` line in `README.md` for the Python side (257 tests, 81
+5. the `.venv/bin/pytest` line in `README.md` for the Python side (263 tests, 81
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`),
 6. the `-LE slow` guidance and the ~40s/~304s figures in `docs/profiling.md`.
@@ -468,6 +468,18 @@ Not every benchmark carries every file: `minlplib` and `mipfeas` read instances
 from disk rather than from a `data.h`, and no benchmark ships a custom
 `InnerSolverHook`. `benchmarks/chped/` is header-only — a model pattern consumed
 by `examples/chped.cpp` and `tests/test_chped.cpp`, with no runner of its own.
+
+`benchmarks/common/` is **not** a benchmark. It holds headers shared across
+runners — currently `runner_args.h`, the flag-value *reporting policy* (a bad
+double reports and returns NaN for a later positivity guard to turn into exit 2;
+a bad integer reports and exits 2) layered over the pure parsing *rule* in
+`include/cbls/arg_parse.h`. The split is deliberate: the rule is a library
+concern, the policy writes to stderr and calls `std::exit` and is pinned by
+`tests/python/test_run_benchmark.py`, so it lives next to the programs those
+tests run. It has no CMake target — runners reach it through the
+`target_include_directories(<target> PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})` line
+each already carries, so a new runner target that omits that line will not
+compile `<benchmarks/common/...>`.
 
 ### Benchmark priority
 
