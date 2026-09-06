@@ -1530,6 +1530,19 @@ stateful and per-model); each worker gets its own instance, built wherever that
 worker's model is built -- inside the worker in portfolio mode, on the calling
 thread before any epoch starts in deterministic mode.
 
+What a *Python* factory can usefully return is narrower than it looks. Neither
+`InnerSolverHook` nor `LNS` is registered with a nanobind trampoline, so C++
+dispatches through the base vtable: a Python subclass is constructed and
+released correctly, but an override of `solve` or `destroy_repair` is never
+called. The two fail differently, and the second is the trap -- `solve` is not
+bound at all, so a Python `solve` is merely an attribute nothing reads, while
+`LNS.destroy_repair` *is* bound, so an override shadows it when called from
+Python and silently does not when the search calls it from C++. The same
+narrowing applies to the `hook` and `lns` arguments of the single-threaded
+`solve()`. In practice these arguments buy a separately configured
+`FloatIntensifyHook` or `LNS` per worker, not a Python implementation of
+either. Tracked as #132.
+
 Both return a `std::shared_ptr`, and that is load-bearing rather than loose. A
 `unique_ptr<T>` would describe the C++ lifetime exactly -- one owner, one worker
 -- but a Python factory cannot satisfy one carrying the *default* deleter:

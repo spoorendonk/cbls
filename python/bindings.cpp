@@ -463,10 +463,22 @@ NB_MODULE(_cbls_core, m) {
         .def("on_progress",
              [](SolveCallback& self, const SolveProgress& p) { self.on_progress(p); });
 
+    // `hook` and `lns` take the same narrowing as solve_parallel's factories:
+    // neither InnerSolverHook nor LNS has a trampoline, so a Python subclass's
+    // override of `solve` or `destroy_repair` is never dispatched to from the
+    // search. Passing a configured FloatIntensifyHook or LNS works; passing a
+    // Python implementation of either silently runs the base. Tracked as #132 --
+    // this docstring is the note a caller of `solve` sees, since the fuller
+    // explanation lives on solve_parallel.
     m.def("solve", &cbls::solve, nb::arg("model"), nb::arg("time_limit") = 10.0,
           nb::arg("seed") = 42, nb::arg("use_fj") = true, nb::arg("hook") = nullptr,
           nb::arg("lns") = nullptr, nb::arg("lns_interval") = 3, nb::arg("callback") = nullptr,
-          nb::arg("config") = SearchConfig{});
+          nb::arg("config") = SearchConfig{},
+          "Single-threaded solve. NOTE: a Python subclass of InnerSolverHook or LNS is "
+          "constructed and destroyed correctly, but its overrides are never called -- "
+          "neither class has a nanobind trampoline, so C++ dispatches through the base "
+          "vtable. These arguments configure the built-in classes; they do not let you "
+          "implement one in Python.");
     // Randomises every variable. solve() does not call this (FJ owns the scalar
     // start); pair it with SearchConfig.skip_init = True for a random scalar start.
     m.def("initialize_random", &initialize_random, nb::arg("model"), nb::arg("rng"));
