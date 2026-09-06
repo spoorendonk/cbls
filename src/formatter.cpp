@@ -25,13 +25,14 @@ static std::string format_count(int64_t n) {
 
 void HumanFormatter::print_header(const std::string& model_path, const Model& model, uint64_t seed,
                                   double time_limit) {
+    const char* objective_label = "feasibility";
+    if (model.objective_id() >= 0) {
+        objective_label = model.is_maximizing() ? "maximize obj" : "minimize obj";
+    }
     out_ << "cbls " << kVersion << " — Constraint-Based Local Search\n";
     out_ << "Model: " << model_path << " | " << model.num_vars() << " vars"
          << " | " << model.constraint_ids().size() << " constraints"
-         << " | "
-         << (model.objective_id() >= 0 ? (model.is_maximizing() ? "maximize obj" : "minimize obj")
-                                       : "feasibility")
-         << "\n";
+         << " | " << objective_label << "\n";
     out_ << "Seed: " << seed << " | Time limit: " << std::fixed << std::setprecision(1)
          << time_limit << "s\n\n";
     out_ << std::right << std::setw(8) << "Time" << std::setw(11) << "Iter" << std::setw(16)

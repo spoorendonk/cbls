@@ -59,24 +59,34 @@
 # One trap when re-deriving with `clang-tidy --checks=<names>` on the command
 # line: a positive name there is appended after src/io/.clang-tidy's
 # subtraction and so re-enables what that directory turns off. The
-# readability-identifier-naming row comes back as 28 rather than 24, the extra
+# readability-identifier-naming row comes back as 30 rather than 26, the extra
 # 4 being the vendored mps_reader.cpp findings that directory exempts by
 # design. Either subtract them or re-derive by deleting the line from this file.
 #
-# TOTAL: 254
+# The table below was re-derived 2026-09-06 by deleting all ten remaining lines
+# from the scalar and running one sweep, then bucketing by check name. It is a
+# standing demonstration that subtraction does not work: clearing
+# readability-avoid-nested-conditional-operator (5) and
+# readability-inconsistent-declaration-parameter-name (6) off a stated 254
+# would predict 243, and the tree reports 250. Seven of the ten rows moved:
+# ordinary drift on main outran the eleven findings fixed, while
+# readability-implicit-bool-conversion went the other way and fell by one on
+# its own. The three that held steady are modernize-use-auto (28),
+# readability-math-missing-parentheses (25) and modernize-avoid-c-style-cast
+# (17).
 #
-#    63  readability-function-cognitive-complexity
-#    39  readability-implicit-bool-conversion
+# TOTAL: 250
+#
+#    66  readability-function-cognitive-complexity
+#    38  readability-implicit-bool-conversion
 #    28  modernize-use-auto
+#    26  readability-identifier-naming
+#    26  bugprone-easily-swappable-parameters
 #    25  readability-math-missing-parentheses
-#    24  readability-identifier-naming
-#    23  bugprone-easily-swappable-parameters
 #    17  modernize-avoid-c-style-cast
-#     9  performance-inefficient-vector-operation
-#     8  performance-enum-size
-#     7  modernize-avoid-c-arrays
-#     6  readability-inconsistent-declaration-parameter-name
-#     5  readability-avoid-nested-conditional-operator
+#     9  performance-enum-size
+#     8  modernize-avoid-c-arrays
+#     7  performance-inefficient-vector-operation
 #
 # Deleting a line from that list is how a check comes back. Do it in the same
 # commit that fixes its warnings, never on its own. See the tracking issue for
@@ -106,9 +116,7 @@ Checks: >
   -modernize-use-auto,
   -performance-inefficient-vector-operation,
   -performance-enum-size,
-  -readability-inconsistent-declaration-parameter-name,
-  -modernize-avoid-c-arrays,
-  -readability-avoid-nested-conditional-operator
+  -modernize-avoid-c-arrays
 
 CheckOptions:
   - key: readability-function-cognitive-complexity.Threshold

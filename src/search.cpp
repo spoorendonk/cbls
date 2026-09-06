@@ -311,10 +311,13 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
                     [](const Variable& v) { return is_structured(v.type); });
     // Effective structural-batch probability: explicit config overrides; <0 means
     // auto (0.33 with list/set vars, 0 otherwise). Zeroed on scalar-only models.
-    const double structural_probability = !has_structural ? 0.0
-                                          : config.structural_batch_probability >= 0.0
-                                              ? config.structural_batch_probability
-                                              : 0.33;
+    const double structural_probability = [&] {
+        if (!has_structural) {
+            return 0.0;
+        }
+        return config.structural_batch_probability >= 0.0 ? config.structural_batch_probability
+                                                          : 0.33;
+    }();
 
     auto sample_rho = [&]() { fj.set_rho(rng.random() < 0.5 ? 0.95 : 1.0); };
     sample_rho();

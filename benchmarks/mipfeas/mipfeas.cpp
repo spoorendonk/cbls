@@ -388,9 +388,12 @@ int run_benchmark(int argc, char** argv) {
                              obj_drift <= 1e-6 * (std::abs(result.objective) + 1.0));
     const bool have_solution =
         result.feasible && std::isfinite(result.objective) && verdict_consistent;
-    const char* status = !verdict_consistent ? "violation_mismatch"
-                         : have_solution     ? "feasible"
-                                             : "no_solution";
+    const char* status = "no_solution";
+    if (!verdict_consistent) {
+        status = "violation_mismatch";
+    } else if (have_solution) {
+        status = "feasible";
+    }
     nlohmann::json j{
         {"status", status},
         {"wall_seconds", wall},

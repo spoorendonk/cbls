@@ -393,7 +393,15 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
 
         case NodeOp::Eq: {
             double diff = child_val(node.children[0], model) - child_val(node.children[1], model);
-            double sign = diff > 0 ? 1.0 : (diff < 0 ? -1.0 : 0.0);
+            // Both comparisons are false for diff == 0 and for NaN, so each keeps the
+            // 0.0 initializer. std::copysign is NOT a substitute: it returns +/-1 for a
+            // zero or NaN diff and would inject a spurious gradient on the AD path.
+            double sign = 0.0;
+            if (diff > 0) {
+                sign = 1.0;
+            } else if (diff < 0) {
+                sign = -1.0;
+            }
             return child_idx == 0 ? sign : -sign;
         }
 

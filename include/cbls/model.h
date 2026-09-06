@@ -232,7 +232,7 @@ private:
     void build_var_constraints();
     int32_t alloc_var(VarType type, double lb, double ub, const std::string& name);
     int32_t alloc_node(NodeOp op, const std::vector<ChildRef>& children);
-    static ChildRef wrap(int32_t id);  // auto-detect var vs node
+    static ChildRef wrap(int32_t handle);  // auto-detect var vs node
 };
 
 }  // namespace cbls

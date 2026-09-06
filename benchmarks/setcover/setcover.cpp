@@ -281,11 +281,15 @@ int run_benchmark(int argc, char** argv) {
                 }
                 auto it = published_optima().find(run.instance);
                 double optimum = (it == published_optima().end()) ? -1.0 : it->second;
+                const char* verified_label = "NO";
+                if (run.feasible) {
+                    verified_label = run.verified ? "yes" : "UNVERIFIED";
+                }
                 printf("%-10s %-5s %5llu %10.1f %9.1f %8.1f %5d %8.2f %8s\n", run.instance.c_str(),
                        cbls::setcover::encoding_name(run.encoding),
                        static_cast<unsigned long long>(run.seed), run.objective, optimum,
                        gap_percent(run.instance, run.objective), run.columns, run.seconds,
-                       run.feasible ? (run.verified ? "yes" : "UNVERIFIED") : "NO");
+                       verified_label);
                 std::fflush(stdout);
             }
         }
