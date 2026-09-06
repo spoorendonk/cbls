@@ -6,9 +6,33 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 
 namespace cbls {
+
+// ---- TEMPORARY INVESTIGATION TRACE (#102) -- remove before merge ----
+namespace trace102 {
+long budget = -2;
+long iter = 0;
+bool on() {
+    if (budget == -2) {
+        const char* e = std::getenv("CBLS_TRACE_FJ");
+        budget = (e != nullptr) ? std::atol(e) : 0;
+    }
+    return budget > 0;
+}
+bool cands() {
+    static const bool c = std::getenv("CBLS_TRACE_CANDS") != nullptr;
+    return c && on();
+}
+void spend() {
+    if (budget > 0) {
+        --budget;
+    }
+}
+}  // namespace trace102
 
 namespace {
 
@@ -362,6 +386,10 @@ JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, in
             return;
         }
         double fv = f(j);
+        if (trace102::cands()) {
+            std::fprintf(stderr, "CAND it=%ld v=%d x0=%.6g -> %.6g  df=%.6g\n", trace102::iter,
+                         var_id, x0, j, fv);
+        }
         if (fv < best_f) {
             best_f = fv;
             best_j = j;
@@ -613,6 +641,11 @@ bool FeasibilityJump::apply_jump(int sample_size) {
     if (best_v < 0) {
         return false;
     }
+    if (trace102::on()) {
+        std::fprintf(stderr, "ACCEPT it=%ld v=%d %.6g -> %.6g score=%.6g\n", trace102::iter, best_v,
+                     model_.var(best_v).value, jumps_.jump_value(best_v), best_score);
+        trace102::spend();
+    }
     update_var(best_v);
     return true;
 }
@@ -734,7 +767,27 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
     int64_t batch_iters = 0;
 
     while (true) {
+        if (trace102::on()) {
+            const auto& tc = model_.constraint_ids();
+            std::fprintf(stderr, "STATE it=%ld x=[", trace102::iter);
+            for (size_t v = 0; v < model_.num_vars(); ++v) {
+                std::fprintf(stderr, "%.6g ", model_.var(static_cast<int32_t>(v)).value);
+            }
+            std::fprintf(stderr, "] resid=[");
+            for (size_t c = 0; c < tc.size(); ++c) {
+                std::fprintf(stderr, "%.4g ", model_.node(tc[c]).value);
+            }
+            std::fprintf(stderr, "] w=[");
+            for (size_t c = 0; c < tc.size(); ++c) {
+                std::fprintf(stderr, "%.4g ", vm_.weights[c]);
+            }
+            std::fprintf(stderr, "]\n");
+        }
         if (!apply_jump(sample_size)) {
+            if (trace102::on()) {
+                std::fprintf(stderr, "BUMP it=%ld\n", trace102::iter);
+                trace102::spend();
+            }
             if (!any_active_violated()) {
                 return GFJStatus::Feasible;
             }
@@ -750,6 +803,7 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
         }
 
         ++iterations_;
+        ++trace102::iter;
         ++batch_iters;
         if (batch_iter_limit > 0 && batch_iters >= batch_iter_limit) {
             return any_active_violated() ? GFJStatus::Unsolved : GFJStatus::Feasible;
