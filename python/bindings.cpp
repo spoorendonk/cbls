@@ -381,9 +381,10 @@ NB_MODULE(_cbls_core, m) {
             // two reasons. The GIL has to be released for the same reason as
             // `solve` above -- the SolveCallback trampoline acquires it from
             // worker 0 -- but hook_factory and lns_factory must be REFUSED
-            // before that happens, and refusing them means touching Python
-            // objects, which needs the GIL still held. So the check runs first
-            // and the release is scoped to the C++ call itself.
+            // before self.solve() is entered at all. The checks are cheap and
+            // GIL-free (is_none() is a pointer compare, nb::type_error touches
+            // no Python C API), so they run first and the release is scoped to
+            // the C++ call itself.
             //
             // The refusal is not conservatism: both parameters are
             // `std::function<T*(...)>` whose result src/pool.cpp adopts into a

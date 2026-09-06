@@ -49,8 +49,16 @@ inline cbls::SearchResult solve_deterministic(cbls::Model& model, int64_t max_it
         // std::atof has no error path -- a mistyped value would become 0.0 and
         // read as "no wall clock" (bugprone-unchecked-string-to-number-conversion).
         // std::stod throws instead, which the guard below turns into the message.
+        // Trailing characters are rejected too, the same contract the benchmark
+        // runners' parse_double got: CBLS_TEST_CALIBRATE="5s" must be refused
+        // rather than quietly calibrate against 5 seconds.
+        const std::string calib_text(calib);
         try {
-            time_limit = std::stod(calib);
+            size_t used = 0;
+            time_limit = std::stod(calib_text, &used);
+            if (used != calib_text.size()) {
+                time_limit = 0.0;  // trailing characters; reported by the guard below
+            }
         } catch (const std::exception&) {
             time_limit = 0.0;  // reported by the guard below
         }

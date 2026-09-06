@@ -1526,7 +1526,10 @@ Thread seeds are `base_seed + epoch * n_threads + thread_id`. Repeats for
 `max_epochs`.
 
 `ParallelSearch::solve()` takes hook and LNS *factories* (these objects are
-stateful and per-model); each thread builds its own instances.
+stateful and per-model); each thread builds its own instances. Both are C++-only
+for now: a Python factory returns an object nanobind owns, which the adopt into
+a `unique_ptr` here would free a second time, so the binding refuses it with a
+`TypeError` pending #129.
 
 ---
 

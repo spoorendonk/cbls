@@ -143,8 +143,17 @@ Args parse_args(int argc, char** argv) {
         } else if (s == "--no-propagate-bounds") {
             a.propagate_bounds = false;
         } else if (s == "--max-propagation-passes" && i + 1 < argc) {
-            a.max_propagation_passes =
-                static_cast<int>(parse_int64("--max-propagation-passes", argv[++i]));
+            // Range-checked rather than cast: parse_int64 validates the syntax, but
+            // an out-of-range value would wrap to a small or negative pass count and
+            // silently disable propagation -- a different derived box, published at
+            // exit code 0. That is the failure this commit set out to close.
+            const int64_t passes = parse_int64("--max-propagation-passes", argv[++i]);
+            if (passes < 0 || passes > std::numeric_limits<int>::max()) {
+                std::fprintf(stderr, "--max-propagation-passes must be in [0, %d]\n",
+                             std::numeric_limits<int>::max());
+                std::exit(2);
+            }
+            a.max_propagation_passes = static_cast<int>(passes);
         } else if (s == "--compound-moves") {
             a.compound_moves = true;
         } else if (s == "--no-compound-moves") {

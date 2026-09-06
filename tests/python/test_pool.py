@@ -139,6 +139,19 @@ def test_solve_parallel_deterministic_builds_models_on_the_calling_thread() -> N
     assert "factory_on_calling_thread=True" in out
 
 
+def test_solve_parallel_calls_a_python_callback_from_a_worker_thread() -> None:
+    """The progress callback is the other Python path the GIL release unblocked.
+
+    `SolveCallback` reaches C++ through a nanobind trampoline, which acquires the
+    GIL from worker 0 -- so before the release it deadlocked for exactly the same
+    reason `model_factory` did. The docstring asserts the callback runs on worker
+    0; without this test a change that reverted the guard on `solve_parallel`
+    alone would leave the other scenarios green.
+    """
+    out = _assert_scenario_ok("callback")
+    assert "callback_calls_off_main_thread=1" in out
+
+
 # --- Scenarios, executed in the child interpreter ---
 
 
@@ -220,6 +233,28 @@ def _scenario_deterministic() -> None:
     print(f"factory_on_calling_thread={threads == {calling_thread}}")
 
 
+def _scenario_callback() -> None:
+    main_thread = threading.get_ident()
+    idents: list[int] = []
+
+    # _cbls_core is a compiled extension with no stubs, so mypy sees every symbol
+    # in it as Any and strict mode refuses to subclass one. Scoped to this line
+    # rather than relaxed in pyproject.toml, which would drop the check for every
+    # base class in the suite.
+    class Recorder(cbls.SolveCallback):  # type: ignore[misc]
+        def on_progress(self, progress: "cbls.SolveProgress") -> None:
+            idents.append(threading.get_ident())
+
+    result = cbls.ParallelSearch(2).solve_parallel(
+        _feasible_model, 0.5, 42, cbls.SearchConfig(), None, None, Recorder()
+    )
+    assert result.feasible, "portfolio found no feasible solution for x + y >= 3"
+    assert idents, "the progress callback was never invoked"
+    off_main = [i for i in idents if i != main_thread]
+    assert len(off_main) == len(idents), f"callback ran on the calling thread: {idents}"
+    print(f"callback_calls_off_main_thread={len(off_main)}")
+
+
 if __name__ == "__main__":
     _scenarios = {
         "solve": _scenario_solve,
@@ -228,6 +263,7 @@ if __name__ == "__main__":
         "refuse_hook_factory": _scenario_refuse_hook_factory,
         "refuse_lns_factory": _scenario_refuse_lns_factory,
         "deterministic": _scenario_deterministic,
+        "callback": _scenario_callback,
     }
     _scenarios[sys.argv[1]]()
     print("OK")

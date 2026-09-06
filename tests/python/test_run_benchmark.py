@@ -129,8 +129,12 @@ def test_the_runner_writes_nothing_for_an_absent_instance(tmp_path: Path) -> Non
 
 
 def test_the_runner_rejects_a_nonpositive_budget(tmp_path: Path) -> None:
-    # atof returns 0 on a parse failure and solve() with no clock returns instantly,
-    # so an unchecked budget scores a whole roster "no_solution" at exit 0.
+    # parse_double reports the bad flag and hands the guard a NaN rather than
+    # exiting itself; solve() with no clock returns instantly, so unguarded this
+    # would score a whole roster "no_solution" at exit 0. Both halves are pinned
+    # deliberately: the parse layer names the flag, and the guard in run_benchmark
+    # is what decides the exit code. Moving the exit into parse_double would keep
+    # this test green only by accident.
     binary = Path(__file__).resolve().parents[2] / "build" / "cbls_mipfeas"
     if not binary.exists():
         pytest.skip("cbls_mipfeas not built")
@@ -149,6 +153,7 @@ def test_the_runner_rejects_a_nonpositive_budget(tmp_path: Path) -> None:
         text=True,
     )
     assert result.returncode == 2
+    assert "--budget: 'notanumber' is not a number" in result.stderr
     assert "--budget must be a positive" in result.stderr
 
 
