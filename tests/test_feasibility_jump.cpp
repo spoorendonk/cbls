@@ -986,7 +986,7 @@ TEST_CASE("a real-feasible batch is not called stuck by a measure that cannot mo
     // Long enough that the real rows are repaired well before the end and the
     // streak limit is then reached several times over with the measure pinned
     // at zero.
-    constexpr int64_t kIters = 4 * 300;
+    constexpr int64_t kIters = 4 * int64_t{300};
     static_assert(kIters > kDisjointVars, "the real rows must be clean before the batch ends");
     fj.batch(kIters);
 
