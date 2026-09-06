@@ -9,10 +9,10 @@ self-consistency.
 
 | Item | Verdict |
 |------|---------|
-| Source-vs-implementation severity | **Quantitative + one open question** (objective form matches verbatim, hot/cold `t_cold=0` divergence is bounded, ramp-rate question unresolved) |
+| Source-vs-implementation severity | **Quantitative** (objective form matches verbatim, hot/cold `t_cold=0` divergence is bounded; the ramp-rate question is closed — the source is ramp-free too, §1.7) |
 | SCIP reference vs source | **Cosmetic** (PWL valve-point bound ≈ 0.1 % at 50 segments; same ramp-free relaxation as our model) |
-| Solver-internal-feasibility vs verifier | **Qualitative** under current code (#32 + #33 mean SA reports "feasible" while verifier counts 44 / 134 / 166 violations) |
-| `comparison.csv` may claim | **CBLS-SA vs CBLS-ViolationLS self-consistency only** until #32, #33, #34, and #77 (ramp rates) are resolved. Pedroso bounds remain quoted as reference values; whether they apply to the same problem we solve is open. |
+| Solver-internal-feasibility vs verifier | **Qualitative when this audit was written** (#32 + #33 meant the SA reported "feasible" while the verifier counted 44 / 134 / 166 violations). #33 and #34 have since been fixed; #32 is still open, so any current claim must come from a `--verify` run rather than from this row. |
+| `comparison.csv` may claim | **A gap against the Pedroso Table 2 bounds**, now that #77 has settled that those bounds describe the same ramp-free problem (§1.7). Each measured row must carry the feasibility tolerance it was produced at and should be `--verify`-checked, because #32 is still open. |
 
 The remainder of this document records the equation-by-equation evidence.
 
@@ -108,29 +108,27 @@ y[i,t] = 0  ⇒  P[i,t] = 0
 
 Equivalently: `P_min_i · y[i,t] ≤ P[i,t] ≤ P_max_i · y[i,t]`.
 
-### 1.7 Ramp rates
+### 1.7 Ramp rates — absent from the source
 
 Standard UC formulations (Carrión & Arroyo 2006; Kazarlis 1996; many
 papers in the valve-point ED literature) include ramp-rate limits
 `|P[i,t] − P[i,t−1]| ≤ ramp_i` when committed, plus separate startup
-and shutdown ramp limits. Whether Pedroso 2014 specifically uses ramp
-constraints when computing the Table 2 bounds we cite as "known LB / UB"
-**could not be verified** in the course of this audit — we have access
-to Pedroso's GPL instance-generation code
+and shutdown ramp limits. **Pedroso 2014 does not.** Its formulation
+states power balance, spinning reserve, unit initial conditions and
+minimum up/down times only
+(<https://web.fc.up.pt/dcc/Pubs/TReports/TR14/dcc-2014-05.pdf>), and the
+GPL instance-generation code behind the shipped data
 (`http://www.dcc.fc.up.pt/~jpp/code/valve/ucp_data.py`, mirrored into
-`benchmarks/instances/uc-chped/data.py`), and that code carries **no
-ramp-rate fields**. This suggests one of:
+`benchmarks/instances/uc-chped/data.py`) carries **no ramp-rate
+fields**. The two agree, and both agree with our model.
 
-1. Pedroso's published bounds were computed on a *ramp-free* UC, in
-   which case our model is faithful and `comparison.csv` gap rows are
-   honest.
-2. Ramp data was distributed separately from the instance file, and
-   the bounds in Table 2 *do* assume ramps. In that case our model is a
-   relaxation.
-
-Without direct verification of the Pedroso paper text, we treat this as
-unresolved — the conservative position is that ramps may apply and our
-gap numbers may understate the real gap. See §2.7.
+When this audit was first written the paper text had not been read
+directly, so the possibility that the Table 2 bounds assumed ramps was
+left open as follow-up #77. Reading it settled the question and #77 was
+closed as *not planned*: there is nothing to add. Our model is
+ramp-free, the SCIP reference is ramp-free, and the source is ramp-free,
+so the bounds we quote and the results we measure describe the same
+problem. See §2.7.
 
 ## 2. Our model — equation by equation
 
@@ -213,24 +211,17 @@ Matches §1.4.
   Matches §1.5.
 - Initial conditions on `y_prev`: matches §1.5 closing paragraph.
 
-### 2.7 Ramp rates — **MISSING (Deviation #3, conditional)**
+### 2.7 Ramp rates — absent, matching the source
 
-There is no ramp-rate constraint anywhere in `uc_model.h`. The instance
-data (`data.py`, traceable to Pedroso's GPL ucp_data.py) does not carry
-ramp-rate fields either. *If* Pedroso 2014's Table 2 bounds were
-computed with ramp constraints, our problem is a *relaxation* of theirs
-— the true LB for our problem is ≤ Pedroso's LB and the true UB is
-≤ Pedroso's UB. Reporting "% gap to Pedroso UB" would then understate
-the gap. *If* the bounds are ramp-free (consistent with their own
-public instance-generation code), our model is faithful on this axis.
+There is no ramp-rate constraint anywhere in `uc_model.h`. Neither the
+source formulation (§1.7) nor the instance data (`data.py`, traceable to
+Pedroso's GPL ucp_data.py) has one, so this is **not a deviation**: our
+problem is not a relaxation of Pedroso's, and "% gap to Pedroso LB / UB"
+compares like with like.
 
-**Severity: qualitative if ramps apply, cosmetic otherwise.** This is
-the largest single open question of the audit. Resolved either by
-(a) reading Pedroso 2014 directly and either confirming the ramp-free
-reading or (b) sourcing ramp data and adding the constraint to our
-model + SCIP reference + verifier.
-
-Filed as follow-up #77.
+**Severity: none.** This was the largest single open question of the
+audit. It was resolved by reading Pedroso 2014 directly, and follow-up
+#77 was closed as *not planned* — the model already matches.
 
 ### 2.8 Cross-cutting solver-quality issues
 
@@ -247,17 +238,23 @@ These are not formulation deviations but they corrupt the meaning of the
   delta-evaluation order subtle enough) that the violation accumulates
   across moves.
 
-- **#33** — Default `is_feasible` tolerance is `1e-9`
-  (`src/violation.cpp:85`). On the surface this is tight, but the
-  violation magnitudes that leak through are dispatch-times-Pmax-scale
-  (so an effective tolerance of `1e-9 · P_max` ≈ `4.55e-7` MW on
-  Kazarlis unit 1). Combined with #32 the cumulative violation routinely
-  exceeds the verifier tolerance of `1e-4`.
+- **#33 (fixed)** — the default `is_feasible` tolerance was `1e-9` when
+  this audit was written. The complaint was that it is an *absolute*
+  residual on constraint bodies of dispatch-times-Pmax magnitude (an
+  effective `1e-9 · P_max` ≈ `4.55e-7` MW on Kazarlis unit 1), so
+  combined with #32 the cumulative violation routinely exceeded the
+  verifier's `1e-4`. The default is now `1e-6`
+  (`cbls::kDefaultFeasibilityTolerance`, `include/cbls/violation.h`),
+  matching SCIP's `numerics/feastol` and the verifier's own scale. The
+  runner also states the tolerance explicitly per run and records it on
+  every `comparison.csv` row (#103), so a published row can no longer
+  become uninterpretable when that default moves again.
 
-- **#34** — Min up / down constraints have only the global adaptive
-  lambda. Per-constraint weight bumping (a la GLS / ViolationLS) would
-  remove the chronic late-stage violations that drive
-  `comparison.csv` rows to "INFEASIBLE".
+- **#34 (fixed)** — min up / down constraints had only the global
+  adaptive lambda. Per-constraint weight bumping (a la GLS /
+  ViolationLS) was expected to remove the chronic late-stage violations
+  that drove `comparison.csv` rows to "INFEASIBLE"; the ViolationLS port
+  supplies exactly that, and #34 is closed.
 
 - **#35, #36** — LNS destroy/repair currently destroys feasibility on
   24-period instances; structural awareness would help.
@@ -357,34 +354,35 @@ problem, not a published BKS.
 | Demand & reserve | Cosmetic | Matches Pedroso exactly. |
 | Hot/cold `t_cold = 0` (§2.3) | Cosmetic to quantitative | ≤30 currency units per affected startup; <0.1 % of objective on shipped instances. |
 | Pre-horizon `y_prev=0` lookback (§2.3) | Cosmetic | Vacuous on shipped instances (n_init ≥ t_cold for all off units). |
-| Ramp rates (§2.7) | **Qualitative if applicable, cosmetic otherwise** | Pedroso 2014 paper text not directly verified; their public instance code lacks ramp data. Worst case: we solve a strict relaxation. |
-| Solver-feasibility vs verifier (#32, #33) | **Qualitative** | "Feasible" rows in `comparison.csv` are unverified by our own checker on multi-period instances. |
+| Ramp rates (§2.7) | None | Pedroso 2014 states no ramp constraints and their public instance code carries no ramp data. Our model, the SCIP reference and the source all solve the same ramp-free problem; #77 closed as not planned. |
+| Solver-feasibility vs verifier (#32) | **Qualitative, reduced** | #33 and #34 are fixed and the tolerance is now recorded per row; #32 is still open, so a published row should carry a `--verify` verdict rather than the engine's `feasible` flag alone. |
 | SCIP PWL approximation (§4.2) | Cosmetic | ~0.1 % objective error bound at 50 segments. |
 
 ### 5.2 Decision for `comparison.csv`
 
-The Pedroso "1hr MIP" rows in `comparison.csv` may have been obtained
-on a tighter (ramp-constrained) problem than the one our solver and
-our SCIP reference attack. Reporting "gap vs Pedroso LB" is therefore
-**potentially misleading** until either (a) the Pedroso paper text is
-read and the ramp question resolved, or (b) ramp rates are added to our
-model and our SCIP reference and we re-run the comparison.
+The ramp question this section was originally written around is closed
+(§1.7, §2.7): the Pedroso "1hr MIP" rows and our solver attack the same
+ramp-free problem, so "gap vs Pedroso LB / UB" is a like-for-like
+comparison, bounded on the SCIP side by the ~0.1 % PWL error of §4.2.
 
-In addition, the "INFEASIBLE" rows are partly real and partly an
-artefact of #32 + #33; under ViolationLS (#64) they will be re-measured.
+What remains is a reporting question rather than a formulation one. The
+"INFEASIBLE" rows of the original table were partly real and partly an
+artefact of #32 + #33; #33 and #34 are fixed, #32 is still open.
 
-**Decision (this audit):**
+**Decision (as revised):**
 
-1. Annotate `comparison.csv` so that:
-   - the `note` column flags rows produced by our (possibly relaxed)
-     formulation as "ramp-free", and
-   - the `note` on Pedroso rows flags them as "ramp-constrained
-     reference" pending verification.
-2. Until #77 resolves the ramp question, `comparison.csv` may
-   **only** claim self-consistency between CBLS-SA and (eventual)
-   CBLS-ViolationLS, plus a bounded-PWL gap to our own SCIP reference.
-   The Pedroso numbers stay in the file as historical reference rows
-   but are not the basis of a published gap.
+1. Every measured row records the feasibility tolerance it was produced
+   at, plus the seed, the time budget and the engine commit. That is what
+   `benchmarks/uc-chped/uc_chped.cpp` now writes (#103). The previous
+   rows carried none of it and had to be deleted when the engine default
+   moved from `1e-9` to `1e-6`.
+2. `feasible` and `verified` are separate columns because they are
+   separate tolerances: the engine's recorded `feas_tol` and the
+   verifier's own `1e-4`. While #32 is open, `verified` is the column to
+   trust, and a row that fails it publishes no objective and no gap.
+3. The Pedroso numbers stay in the file as cited reference rows. The
+   generator re-emits them from each instance's `known_bounds` map on
+   every run, so a regeneration cannot silently drop them.
 
 This audit does **not** delete the Pedroso rows — that would lose
 information. It annotates them.
@@ -392,7 +390,13 @@ information. It annotates them.
 ## 6. Follow-up issues filed
 
 - **#77** — UC-CHPED: add ramp-rate constraints to match Pedroso 2014.
-  Resolves Deviation #3 (§2.7) and the qualitative-severity finding.
-- All other deviations either are already tracked (#32, #33, #34,
-  #35, #36) or are cosmetic / vacuous on shipped instances (no issue
+  **Closed as not planned.** Reading the paper showed it has no ramp
+  constraints, so §2.7 is not a deviation and there is nothing to add.
+- **#103** — give the runner a `comparison.csv` writer and an explicit
+  feasibility tolerance, so §2.8's failure mode — a published row that
+  becomes uninterpretable when an engine default moves — cannot recur.
+  The measurement pass it unblocks is tracked separately as **#131**.
+- All other deviations either are already tracked (**#32**, still open;
+  **#33** and **#34**, fixed; **#35** and **#36**, closed as not
+  planned) or are cosmetic / vacuous on shipped instances (no issue
   filed).

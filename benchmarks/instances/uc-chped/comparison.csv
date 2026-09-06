@@ -1,31 +1,51 @@
-# Audit (issue #73, FIDELITY.md, follow-up #77): Our CBLS model and the SCIP
-# reference (reference_solve.py) both solve a ramp-free UC: no |P[t]-P[t-1]|
-# constraints. Whether Pedroso 2014's Table 2 bounds were obtained with ramp
-# constraints is unresolved (their public ucp_data.py carries no ramp data;
-# the paper text was not directly verified during the audit). Until #77 is
-# resolved, treat gap_pct vs Pedroso LB as a reference comparison, not a
-# certified BKS gap. The SCIP reference additionally uses a 50-segment
-# piecewise-linear approximation of the |d*sin(e*(Pmin-P))| valve-point term
-# (objective error bounded ~0.1%). See FIDELITY.md.
-# Post-port ViolationLS rows (epic #64 P0-P4; engine HEAD fc600ea, seed 42,
-# greedy init + FJ warm-start + FloatIntensifyHook + LNS, default config).
-# All feasible rows below pass --verify (resolves the #32/#33 false-feasible
-# flag). Strict improvement over CBLS SA on every instance SA solved, plus two
-# instances SA could not make feasible (ucp13-6p, ucp40-3p) are now VERIFIED.
-# CBLS rows REMOVED (22 of 32): they were produced under the old
-# 1e-9 feasibility tolerance, before the engine default moved to 1e-6, and this
-# file records no tolerance so they cannot be interpreted. Regeneration is
-# blocked on this benchmark having no committed generator (the runner does not
-# write this file) - tracked in #103. Rows below are cited reference results
-# and are unaffected. Removed rows remain in git history.
+# UC-CHPED comparison table.
+#
+# Model fidelity: our CBLS model and the SCIP reference (reference_solve.py)
+# both solve a ramp-free unit commitment -- no |P[t]-P[t-1]| constraints -- and
+# so does the source. Pedroso, Kubo & Viana 2014 states power balance, spinning
+# reserve, unit initial conditions and minimum up/down times only, with no
+# ramp-rate constraints
+# (https://web.fc.up.pt/dcc/Pubs/TReports/TR14/dcc-2014-05.pdf), and their
+# public instance-generation code carries no ramp data. The ramp question the
+# #73 audit left open is therefore settled (#77, closed as not planned): the
+# Table 2 bounds and our results describe the same problem, so gap_pct against
+# them compares like with like. The SCIP reference additionally uses a
+# 50-segment piecewise-linear approximation of the |d*sin(e*(Pmin-P))|
+# valve-point term (objective error bounded ~0.1%). See
+# benchmarks/uc-chped/FIDELITY.md.
+#
+# State of this file. The 22 CBLS rows it used to carry were removed: they were
+# produced under the old 1e-9 feasibility tolerance, before the engine default
+# moved to 1e-6, and the file recorded no tolerance, so they could not be
+# interpreted. They remain in git history. Regeneration was blocked on this
+# benchmark having no generator; it now has one --
+# benchmarks/uc-chped/uc_chped.cpp writes this file:
+#
+#   cbls_uc_chped --out benchmarks/instances/uc-chped/comparison.csv \
+#                 --commit $(git rev-parse --short=7 HEAD) --verify
+#
+# The measurement pass itself is tracked in #103's follow-up, issue #131, and
+# has not been run. Until it is, the rows below are the 10 cited Pedroso
+# reference results only, in the pre-generator 9-column schema. The generator
+# emits a wider schema -- it appends ub, time_limit_s, seed, feasible, verified,
+# max_violation, feas_tol and commit_sha after `note`, and re-emits these cited
+# rows from each instance's known_bounds map so a regeneration cannot drop them
+# -- so the first regeneration widens every row here. Only the header comment
+# and the `note` cells were touched when the ramp language above was corrected;
+# no number in this file has been re-measured.
+#
+# Two tolerances, not one, once measured rows exist: `feasible` is the engine's
+# own verdict at the `feas_tol` recorded on the row, while `verified` is an
+# independent re-check by verify_uc_chped() at ITS OWN absolute tolerance of
+# 1e-4 (benchmarks/uc-chped/verify_uc_chped.h).
 instance,periods,method,objective,lb,gap_pct,time_s,source,note
-ucp13,1,Pedroso MIP (1hr),11701,11701,0.00,,Pedroso et al. 2014 Table 2,possibly ramp-constrained (see #77)
-ucp13,3,Pedroso MIP (1hr),38850,38850,0.00,,Pedroso et al. 2014 Table 2,possibly ramp-constrained (see #77)
-ucp13,6,Pedroso MIP (1hr),91784,91406,0.41,,Pedroso et al. 2014 Table 2,possibly ramp-constrained (see #77)
-ucp13,12,Pedroso MIP (1hr),232537,231587,0.41,,Pedroso et al. 2014 Table 2,possibly ramp-constrained (see #77)
-ucp13,24,Pedroso MIP (1hr),466187,464053,0.46,,Pedroso et al. 2014 Table 2,possibly ramp-constrained (see #77)
-ucp40,1,Pedroso MIP (1hr),55645,55645,0.00,,Pedroso et al. 2014 Table 2,possibly ramp-constrained (see #77)
-ucp40,3,Pedroso MIP (1hr),178547,178396,0.08,,Pedroso et al. 2014 Table 2,possibly ramp-constrained (see #77)
-ucp40,6,Pedroso MIP (1hr),416606,416108,0.12,,Pedroso et al. 2014 Table 2,possibly ramp-constrained (see #77)
-ucp40,12,Pedroso MIP (1hr),1113801,1112371,0.13,,Pedroso et al. 2014 Table 2,possibly ramp-constrained (see #77)
-ucp40,24,Pedroso MIP (1hr),2238504,2235971,0.11,,Pedroso et al. 2014 Table 2,possibly ramp-constrained (see #77)
+ucp13,1,Pedroso MIP (1hr),11701,11701,0.00,,Pedroso et al. 2014 Table 2,cited reference; ramp-free (see header)
+ucp13,3,Pedroso MIP (1hr),38850,38850,0.00,,Pedroso et al. 2014 Table 2,cited reference; ramp-free (see header)
+ucp13,6,Pedroso MIP (1hr),91784,91406,0.41,,Pedroso et al. 2014 Table 2,cited reference; ramp-free (see header)
+ucp13,12,Pedroso MIP (1hr),232537,231587,0.41,,Pedroso et al. 2014 Table 2,cited reference; ramp-free (see header)
+ucp13,24,Pedroso MIP (1hr),466187,464053,0.46,,Pedroso et al. 2014 Table 2,cited reference; ramp-free (see header)
+ucp40,1,Pedroso MIP (1hr),55645,55645,0.00,,Pedroso et al. 2014 Table 2,cited reference; ramp-free (see header)
+ucp40,3,Pedroso MIP (1hr),178547,178396,0.08,,Pedroso et al. 2014 Table 2,cited reference; ramp-free (see header)
+ucp40,6,Pedroso MIP (1hr),416606,416108,0.12,,Pedroso et al. 2014 Table 2,cited reference; ramp-free (see header)
+ucp40,12,Pedroso MIP (1hr),1113801,1112371,0.13,,Pedroso et al. 2014 Table 2,cited reference; ramp-free (see header)
+ucp40,24,Pedroso MIP (1hr),2238504,2235971,0.11,,Pedroso et al. 2014 Table 2,cited reference; ramp-free (see header)

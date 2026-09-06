@@ -176,7 +176,32 @@ See [`benchmarks/chped/reference_solve.py`](../../../benchmarks/chped/reference_
 
 ## Results
 
-Results from `comparison.csv`:
+**These are archived pre-#103 numbers, not the current contents of
+`comparison.csv`.** The CBLS SA rows below were produced under the engine's
+old `1e-9` feasibility tolerance and under the simulated-annealing search that
+preceded the ViolationLS port; they were removed from `comparison.csv` because
+the file recorded no tolerance, which left them uninterpretable once the
+default moved to `1e-6`. They are kept here as the historical record and remain
+in git history. `comparison.csv` currently carries the 10 cited Pedroso
+reference rows only; regenerating the measured rows is tracked in issue #131.
+
+The table now has a generator — `benchmarks/uc-chped/uc_chped.cpp` writes it,
+stating the feasibility tolerance explicitly and recording it, the seed, the
+time budget and the engine commit on every row:
+
+```bash
+./build/cbls_uc_chped --out benchmarks/instances/uc-chped/comparison.csv \
+                      --commit "$(git rev-parse --short=7 HEAD)" --verify
+```
+
+`--feas-tol T` overrides the tolerance, `--time-limit S` overrides the
+per-horizon budget map, `--seed N` the seed, and `--instance NAME` restricts
+the roster (which then requires an explicit `--out`, so a partial run cannot
+overwrite the published table). Note that `feasible` is the engine's verdict at
+the row's `feas_tol` while `verified` is an independent re-check by
+`verify_uc_chped()` at its own `1e-4` — two different tolerances.
+
+Archived results:
 
 ### 13-Unit System
 
