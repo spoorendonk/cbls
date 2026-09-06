@@ -286,10 +286,13 @@ int run_benchmark(int argc, char** argv) {
         print_usage();
         return 2;
     }
-    // std::atof returns 0 on a parse failure, and solve() with a non-positive time
-    // limit and no iteration budget returns having done nothing. Unchecked, one
-    // typo'd flag scores an entire roster "no_solution" (Primal Integral 2.0) at
-    // exit code 0, and the driver's resume then treats that as work completed.
+    // This guard is load-bearing, not defensive: parse_double reports a bad
+    // --budget and returns NaN, and NaN is rejected here rather than at the
+    // parse, so that the exit code and message stay the ones the driver's tests
+    // pin. solve() with a non-positive time limit and no iteration budget
+    // returns having done nothing, so unchecked, one typo'd flag scores an
+    // entire roster "no_solution" (Primal Integral 2.0) at exit code 0, and the
+    // driver's resume then treats that as work completed.
     if (!(args.budget > 0.0)) {
         std::fprintf(stderr, "--budget must be a positive number of seconds\n");
         return 2;
@@ -298,10 +301,10 @@ int run_benchmark(int argc, char** argv) {
         std::fprintf(stderr, "--feas-tol must be positive\n");
         return 2;
     }
-    // Same hazard as --budget: atof returns 0 on a parse failure, and a clamp of 0
-    // collapses every column to [0, 0] rather than erroring — so one typo'd flag
-    // scores an entire roster "no_solution" at exit code 0, which resume then
-    // treats as work completed.
+    // Same hazard as --budget, and the same NaN-reaches-this-guard contract: a
+    // clamp of 0 collapses every column to [0, 0] rather than erroring — so one
+    // typo'd flag scores an entire roster "no_solution" at exit code 0, which
+    // resume then treats as work completed.
     if (!(args.inf_clamp > 0.0)) {
         std::fprintf(stderr, "--inf-clamp must be a positive bound\n");
         return 2;
