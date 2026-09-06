@@ -187,7 +187,7 @@ reference rows only; regenerating the measured rows is tracked in issue #131.
 
 The table now has a generator — `benchmarks/uc-chped/uc_chped.cpp` writes it,
 stating the feasibility tolerance explicitly and recording it, the seed, the
-time budget and the engine commit on every row:
+time budget and the engine commit on every measured row:
 
 ```bash
 ./build/cbls_uc_chped --out benchmarks/instances/uc-chped/comparison.csv \
@@ -197,9 +197,12 @@ time budget and the engine commit on every row:
 `--feas-tol T` overrides the tolerance, `--time-limit S` overrides the
 per-horizon budget map, `--seed N` the seed, and `--instance NAME` restricts
 the roster (which then requires an explicit `--out`, so a partial run cannot
-overwrite the published table). Note that `feasible` is the engine's verdict at
-the row's `feas_tol` while `verified` is an independent re-check by
-`verify_uc_chped()` at its own `1e-4` — two different tolerances.
+overwrite the published table; `--time-limit` requires one for the same reason,
+so a short smoke run cannot become the published table). Note that `feasible` is
+the engine's verdict at the row's `feas_tol` while `verified` is an independent
+re-check by `verify_uc_chped()` at its own tolerances — `1e-4` on its
+UC-semantic checks and `1e-6` on the generic `cbls::verify_model()` pass it runs
+first — so the two columns answer different questions.
 
 Archived results:
 

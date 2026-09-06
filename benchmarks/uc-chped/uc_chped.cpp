@@ -13,8 +13,9 @@
 // silently change when an engine default moves.
 //
 // Two different tolerances appear in the output and they are not the same
-// number: `feasible` is the engine's verdict at `--feas-tol`, `verified` is an
-// independent re-check by verify_uc_chped() at its own 1e-4.
+// number: `feasible` is the engine's verdict at `--feas-tol`; `verified` is an
+// independent re-check by verify_uc_chped(), whose UC-semantic checks use an
+// absolute 1e-4 and whose leading cbls::verify_model() pass uses 1e-6.
 
 #include "data.h"
 #include "greedy_init.h"
@@ -29,21 +30,26 @@
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <map>
 #include <ostream>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace {
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
-/// The verifier's own absolute tolerance, distinct from the engine's
-/// `--feas-tol`. Mirrors the default argument of `verify_uc_chped()`; kept here
-/// only so the tally can name it.
+/// The tolerance `verify_uc_chped()` applies to its UC-semantic checks,
+/// distinct from the engine's `--feas-tol`. Passed explicitly at the call site
+/// so this constant and the verifier cannot drift apart. Not the whole story:
+/// that function also runs `cbls::verify_model()` at its own 1e-6, and checks
+/// the objective recomputation on a relative band rather than this absolute
+/// one, so `verified` is a verdict over all three.
 constexpr double kVerifierTolerance = 1e-4;
 
 struct InstanceSpec {
@@ -113,8 +119,16 @@ int64_t parse_int64(const char* flag, const std::string& text) {
     return value;
 }
 
+/// True when a double flag names a usable positive quantity. Both failure modes
+/// of the parse layer fall out here: NaN (the token was not a number) and inf
+/// (std::stod accepts "inf" happily).
+bool is_positive_finite(double v) {
+    return v > 0.0 && std::isfinite(v);
+}
+
 Args parse_args(int argc, char** argv) {
     Args a;
+    bool inst_dir_set = false;
     for (int i = 1; i < argc; ++i) {
         std::string s = argv[i];
         if (s == "--verify") {
@@ -123,7 +137,17 @@ Args parse_args(int argc, char** argv) {
             a.time_limit = parse_double("--time-limit", argv[++i]);
             a.time_limit_set = true;
         } else if (s == "--seed" && i + 1 < argc) {
-            a.seed = static_cast<uint64_t>(parse_int64("--seed", argv[++i]));
+            const int64_t seed = parse_int64("--seed", argv[++i]);
+            // The seed is published on every measured row so a run can be
+            // repeated. A negative one wraps to a uint64_t that --seed itself
+            // then rejects as out of range, so the recorded value would not be
+            // usable as an input.
+            if (seed < 0) {
+                std::fprintf(stderr, "--seed must be >= 0 (got %lld)\n",
+                             static_cast<long long>(seed));
+                std::exit(2);
+            }
+            a.seed = static_cast<uint64_t>(seed);
         } else if (s == "--feas-tol" && i + 1 < argc) {
             a.feas_tol = parse_double("--feas-tol", argv[++i]);
         } else if (s == "--instance" && i + 1 < argc) {
@@ -137,34 +161,54 @@ Args parse_args(int argc, char** argv) {
                 "Usage: cbls_uc_chped [inst-dir] [--verify] [--time-limit S] [--seed N]"
                 " [--feas-tol T] [--instance NAME ...] [--commit SHA] [--out CSV]\n");
             std::exit(0);
-        } else if (s.rfind("--", 0) == 0) {
+        } else if (!s.empty() && s[0] == '-') {
             // A typo'd flag must not silently become the instance directory:
             // this tool's output is published, so a misparsed argument would
-            // produce a plausible-looking but wrong results table.
+            // produce a plausible-looking but wrong results table. The test is
+            // on a single leading dash, not two, so `-x` is caught as well.
             std::fprintf(stderr, "Unknown or incomplete option: %s (see --help)\n", s.c_str());
+            std::exit(2);
+        } else if (inst_dir_set) {
+            // Same hazard: with last-one-wins, `cbls_uc_chped dirA dirB` reads a
+            // roster nobody named.
+            std::fprintf(stderr, "Only one instance directory may be given (got '%s' and '%s')\n",
+                         a.inst_dir.c_str(), s.c_str());
             std::exit(2);
         } else {
             a.inst_dir = s;
+            inst_dir_set = true;
         }
     }
     // A NaN from parse_double fails this guard, as does a literal 0 or a
     // negative: solve() with a non-positive budget returns having searched
     // nothing, which would publish a full-looking table of empty results.
-    if (a.time_limit_set && !(a.time_limit > 0.0)) {
+    // std::stod also accepts "inf", which would never terminate, so the guard
+    // tests isfinite as well as positivity.
+    if (a.time_limit_set && !is_positive_finite(a.time_limit)) {
         std::fprintf(stderr, "--time-limit must be > 0 (got %g)\n", a.time_limit);
         std::exit(2);
     }
-    if (!(a.feas_tol > 0.0)) {
+    // isfinite as well as > 0: std::stod accepts "inf", and an infinite
+    // tolerance calls every assignment feasible, publishing a full-looking table
+    // of rows the verifier would reject.
+    if (!is_positive_finite(a.feas_tol)) {
         std::fprintf(stderr, "--feas-tol must be > 0 (got %g)\n", a.feas_tol);
         std::exit(2);
     }
     if (a.out_csv.empty()) {
+        // A run that is not the full published measurement must never overwrite
+        // the published results table: the default --out is the file the README
+        // publishes. Both a partial roster and a shortened budget qualify --
+        // `--time-limit 2` is the obvious smoke test, and it would otherwise
+        // replace the table with two-second results (the #88 hazard).
+        const char* why = nullptr;
         if (!a.instances.empty()) {
-            // A partial roster must never overwrite the published results table:
-            // the default --out is the file the README publishes, and a
-            // single-instance debugging run would silently truncate it.
-            std::fprintf(stderr,
-                         "--instance requires an explicit --out (refusing to overwrite %s)\n",
+            why = "--instance";
+        } else if (a.time_limit_set) {
+            why = "--time-limit";
+        }
+        if (why != nullptr) {
+            std::fprintf(stderr, "%s requires an explicit --out (refusing to overwrite %s)\n", why,
                          (a.inst_dir + "/comparison.csv").c_str());
             std::exit(2);
         }
@@ -222,7 +266,7 @@ std::string fixed2(double v) {
 /// A comma inside a free-text cell would shift every column after it, so the
 /// writer substitutes rather than quoting: these cells are short diagnostics,
 /// and a quoted field would need escaping rules the readers of this table
-/// (grep, awk, the pandas one-liner in the README) do not all implement.
+/// (grep, awk, a spreadsheet import) do not all implement.
 std::string csv_text(std::string s) {
     std::replace(s.begin(), s.end(), ',', ';');
     std::replace(s.begin(), s.end(), '\n', ' ');
@@ -266,16 +310,21 @@ void write_header_comment(std::ostream& csv, const Args& args) {
            "#\n"
            "# Two tolerances, not one: `feasible` is the engine's own verdict at the\n"
            "# `feas_tol` recorded on the row, while `verified` is an independent re-check\n"
-           "# by verify_uc_chped() at ITS OWN absolute tolerance of 1e-4\n"
-           "# (benchmarks/uc-chped/verify_uc_chped.h). `verified` is empty when the run was\n"
-           "# made without --verify. A row that failed verification publishes no objective\n"
-           "# and no gap: those columns would describe a solution we do not stand behind.\n"
+           "# by verify_uc_chped() (benchmarks/uc-chped/verify_uc_chped.h) at ITS OWN\n"
+           "# tolerances -- 1e-4 absolute on the UC-semantic checks, 1e-6 on the generic\n"
+           "# cbls::verify_model() pass it runs first, and a relative band on the objective\n"
+           "# recomputation. None of the three is `feas_tol`. `verified` is empty when the\n"
+           "# run was made without --verify, and on a row the engine called infeasible:\n"
+           "# there is no solution to re-check. A row that failed verification publishes no\n"
+           "# objective and no gap: those columns would describe a solution we do not stand\n"
+           "# behind.\n"
            "#\n"
            "# `lb`/`ub` are the Pedroso Table 2 bounds carried in the instance jsonl, and\n"
            "# the `Pedroso MIP (1hr)` rows are those bounds restated as cited reference\n"
            "# results -- they are not measurements of this engine and so carry no seed,\n"
-           "# tolerance or commit. They are re-emitted from the same bounds map on every\n"
-           "# run, so a regeneration cannot drop them.\n"
+           "# tolerance or commit. They are re-emitted from each instance's bounds map on\n"
+           "# every run, and the generator refuses to write at all unless every rostered\n"
+           "# instance loaded, so a regeneration cannot drop them.\n"
            "#\n";
     csv << "# Run: commit " << csv_text(args.commit_sha) << ", seed " << args.seed << ", feas-tol "
         << num(args.feas_tol, 3) << ", time limit ";
@@ -284,7 +333,15 @@ void write_header_comment(std::ostream& csv, const Args& args) {
     } else {
         csv << "per-horizon default map";
     }
-    csv << ", verify " << (args.do_verify ? "on" : "off") << ".\n";
+    csv << ", verify " << (args.do_verify ? "on" : "off");
+    // A filtered table otherwise looks exactly like a full one minus rows.
+    if (!args.instances.empty()) {
+        csv << ", roster filtered to";
+        for (const auto& name : args.instances) {
+            csv << " " << csv_text(name);
+        }
+    }
+    csv << ".\n";
 }
 
 std::string base_name(const std::string& filename) {
@@ -301,13 +358,15 @@ struct Tally {
     int feasible = 0;
     int verified_pass = 0;
     int verified_fail = 0;
-    int not_found = 0;
 };
 
 /// Restate an instance's published Table 2 bounds as cited reference rows.
 /// Regenerated from `known_bounds` rather than copied forward from the previous
 /// file, so the ten cited rows survive every regeneration without the writer
-/// having to parse its own output. Instances with no published bounds
+/// having to parse its own output. The bounds live in the instance jsonl, so
+/// run_benchmark() refuses to write anything unless every rostered instance
+/// loaded -- otherwise a run from the wrong directory would replace the
+/// published table with one missing these rows. Instances with no published bounds
 /// (ucp100/ucp200) contribute none -- inventing a citation for them would be
 /// worse than omitting it.
 void write_reference_rows(std::ostream& csv, const cbls::uc_chped::UCInstance& base,
@@ -365,6 +424,7 @@ void run_one(std::ostream& csv, const Args& args, const cbls::uc_chped::UCInstan
     row.instance = instance_name;
     row.periods = T;
     row.method = "CBLS ViolationLS";
+    row.source = "this work";
     row.time_s = result.time_seconds;
     row.time_limit_s = tlim;
     row.seed = std::to_string(args.seed);
@@ -380,13 +440,18 @@ void run_one(std::ostream& csv, const Args& args, const cbls::uc_chped::UCInstan
         row.ub = it->second.second;
     }
 
+    // `feasible` does not imply a finite objective: SearchResult documents
+    // `feasible == true` with `objective == +inf` as a feasibility witness whose
+    // objective overflowed (#100), and tells callers to test isfinite before
+    // using the value. An "inf" in a numeric column would read as a solve result.
+    const bool have_objective = result.feasible && std::isfinite(result.objective);
     double gap = kNaN;
-    if (have_bounds && result.feasible && row.lb != 0.0) {
+    if (have_bounds && have_objective && row.lb != 0.0) {
         gap = 100.0 * (result.objective - row.lb) / row.lb;
     }
 
     // Console.
-    if (have_bounds && result.feasible) {
+    if (have_bounds && have_objective) {
         std::printf("%12.1f %12.1f %7.2f%% %7.1fs", result.objective, row.lb, gap,
                     result.time_seconds);
     } else {
@@ -396,7 +461,7 @@ void run_one(std::ostream& csv, const Args& args, const cbls::uc_chped::UCInstan
 
     bool withhold = false;
     if (args.do_verify && result.feasible) {
-        auto vr = cbls::uc_chped::verify_uc_chped(ucm, inst);
+        auto vr = cbls::uc_chped::verify_uc_chped(ucm, inst, kVerifierTolerance);
         std::printf("  %s", vr.ok ? "VERIFIED" : "VERIFY FAIL");
         row.verified = vr.ok ? "true" : "false";
         if (vr.ok) {
@@ -412,12 +477,16 @@ void run_one(std::ostream& csv, const Args& args, const cbls::uc_chped::UCInstan
         }
     }
 
-    if (result.feasible && !withhold) {
+    if (have_objective && !withhold) {
         row.objective = result.objective;
         row.gap_pct = gap;
     }
-    if (!result.feasible && row.note.empty()) {
-        row.note = "infeasible at feas_tol";
+    if (row.note.empty()) {
+        if (!result.feasible) {
+            row.note = "infeasible at feas_tol";
+        } else if (!have_objective) {
+            row.note = "feasible; no finite objective";
+        }
     }
 
     std::printf("  (%s, %ld vars, %ld nodes, %ld iters)\n",
@@ -428,13 +497,26 @@ void run_one(std::ostream& csv, const Args& args, const cbls::uc_chped::UCInstan
     csv.flush();
 }
 
-/// Apply `--instance`. Returns false when the filter matched nothing, which is
-/// an error rather than an empty run: an unmatched name is a typo, and silently
-/// writing a table with no measured rows is exactly the failure mode the
-/// not-found rows below exist to prevent.
+/// Apply `--instance`. Returns false when ANY requested name is absent from the
+/// roster, not merely when none matched: an unmatched name is a typo, and a run
+/// that dropped it silently would publish a table short a row with nothing to
+/// say so. Roster order is preserved and a repeated name contributes one entry.
 bool filter_specs(const Args& args, std::vector<InstanceSpec>& specs) {
     if (args.instances.empty()) {
         return true;
+    }
+    bool all_matched = true;
+    for (const auto& want : args.instances) {
+        const bool found = std::any_of(specs.begin(), specs.end(), [&](const InstanceSpec& spec) {
+            return base_name(spec.filename) == want;
+        });
+        if (!found) {
+            std::fprintf(stderr, "--instance '%s' is not in the roster\n", want.c_str());
+            all_matched = false;
+        }
+    }
+    if (!all_matched) {
+        return false;
     }
     std::vector<InstanceSpec> filtered;
     for (const auto& spec : specs) {
@@ -443,31 +525,8 @@ bool filter_specs(const Args& args, std::vector<InstanceSpec>& specs) {
             filtered.push_back(spec);
         }
     }
-    if (filtered.empty()) {
-        return false;
-    }
     specs = filtered;
     return true;
-}
-
-void write_not_found_rows(std::ostream& csv, const Args& args, const InstanceSpec& spec,
-                          Tally& tally) {
-    // Emit a row per rostered horizon instead of skipping silently: the roster
-    // is the list of record, so an absent .jsonl must show up as a missing
-    // result rather than as a table that quietly shrank.
-    for (int T : spec.periods) {
-        Row r;
-        r.instance = base_name(spec.filename);
-        r.periods = T;
-        r.method = "CBLS ViolationLS";
-        r.note = "not-found: " + args.inst_dir + "/" + spec.filename;
-        r.feasible = "false";
-        r.seed = std::to_string(args.seed);
-        r.feas_tol = args.feas_tol;
-        r.commit_sha = args.commit_sha;
-        write_row(csv, r);
-        ++tally.not_found;
-    }
 }
 
 void print_tally(const Args& args, const Tally& tally) {
@@ -476,7 +535,8 @@ void print_tally(const Args& args, const Tally& tally) {
     std::printf("commit:               %s\n", args.commit_sha.c_str());
     std::printf("seed:                 %llu\n", static_cast<unsigned long long>(args.seed));
     std::printf("feas-tol:             %g   (engine 'feasible')\n", args.feas_tol);
-    std::printf("verifier tolerance:   %g   (independent 'verified')\n", kVerifierTolerance);
+    std::printf("verifier tolerance:   %g   (independent 'verified'; its\n", kVerifierTolerance);
+    std::printf("                              verify_model() pass uses 1e-6)\n");
     std::printf("solved:               %d\n", tally.solved);
     std::printf("feasible:             %d\n", tally.feasible);
     if (args.do_verify) {
@@ -485,7 +545,6 @@ void print_tally(const Args& args, const Tally& tally) {
     } else {
         std::printf("verify:               not run (--verify off)\n");
     }
-    std::printf("instances not found:  %d\n", tally.not_found);
 }
 
 int run_benchmark(int argc, char** argv) {
@@ -505,13 +564,40 @@ int run_benchmark(int argc, char** argv) {
         {"ucp200-48p.jsonl", {48}},          {"ucp200-168p.jsonl", {168}},
     };
     if (!filter_specs(args, specs)) {
-        std::fprintf(stderr, "--instance matched nothing in the roster (see --help)\n");
+        std::fprintf(stderr, "--instance: unknown name(s) listed above (see --help)\n");
         return 2;
     }
 
-    std::ofstream csv(args.out_csv);
+    // Load the whole roster BEFORE opening the output file. The cited Pedroso
+    // rows are regenerated from each instance's known_bounds, so a run started
+    // from the wrong directory would otherwise replace the published table with
+    // one that has no cited rows at all -- the failure that emptied the
+    // miplib-fj table. Every uc-chped instance is committed in this repo and
+    // nothing downloads them, so a missing .jsonl is a setup error, not a
+    // result: report it and leave the existing file untouched.
+    std::vector<cbls::uc_chped::UCInstance> loaded(specs.size());
+    bool all_loaded = true;
+    for (size_t i = 0; i < specs.size(); ++i) {
+        try {
+            loaded[i] = cbls::uc_chped::load_jsonl(args.inst_dir + "/" + specs[i].filename);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "Cannot load %s: %s\n", specs[i].filename.c_str(), e.what());
+            all_loaded = false;
+        }
+    }
+    if (!all_loaded) {
+        std::fprintf(stderr, "Refusing to write %s from an incomplete roster.\n",
+                     args.out_csv.c_str());
+        return 2;
+    }
+
+    // Write-then-rename, as benchmarks/mipfeas does: this run takes over an hour
+    // at the documented budgets, and a job killed mid-write must leave either
+    // the previous table or none, never a truncated one.
+    const std::string tmp_csv = args.out_csv + ".tmp";
+    std::ofstream csv(tmp_csv);
     if (!csv.is_open()) {
-        std::fprintf(stderr, "Failed to open %s for writing\n", args.out_csv.c_str());
+        std::fprintf(stderr, "Failed to open %s for writing\n", tmp_csv.c_str());
         return 2;
     }
     write_header_comment(csv, args);
@@ -524,27 +610,14 @@ int run_benchmark(int argc, char** argv) {
 
     Tally tally;
 
-    // Load everything up front and emit the cited rows first, so the published
-    // bounds head the table as they did before the measured rows.
-    std::vector<cbls::uc_chped::UCInstance> loaded(specs.size());
-    std::vector<bool> loaded_ok(specs.size(), false);
+    // Cited rows first, so the published bounds head the table as they did
+    // before the measured rows.
     for (size_t i = 0; i < specs.size(); ++i) {
-        try {
-            loaded[i] = cbls::uc_chped::load_jsonl(args.inst_dir + "/" + specs[i].filename);
-            loaded_ok[i] = true;
-        } catch (const std::exception& e) {
-            std::printf("Skipping %s: %s\n", specs[i].filename.c_str(), e.what());
-            continue;
-        }
         write_reference_rows(csv, loaded[i], specs[i].periods);
     }
 
     for (size_t i = 0; i < specs.size(); ++i) {
         const InstanceSpec& spec = specs[i];
-        if (!loaded_ok[i]) {
-            write_not_found_rows(csv, args, spec, tally);
-            continue;
-        }
         const cbls::uc_chped::UCInstance& base = loaded[i];
 
         for (int T : spec.periods) {
@@ -574,6 +647,23 @@ int run_benchmark(int argc, char** argv) {
             run_one(csv, args, inst, base.name, tlim, tally);
         }
         std::printf("\n");
+    }
+
+    // A stream error means the table on disk is short rows nobody can see are
+    // missing, so it must not be published or reported as success.
+    csv.flush();
+    if (!csv) {
+        std::fprintf(stderr, "Error writing %s; %s not replaced\n", tmp_csv.c_str(),
+                     args.out_csv.c_str());
+        return 2;
+    }
+    csv.close();
+    std::error_code rename_ec;
+    std::filesystem::rename(tmp_csv, args.out_csv, rename_ec);
+    if (rename_ec) {
+        std::fprintf(stderr, "Failed to rename %s -> %s: %s\n", tmp_csv.c_str(),
+                     args.out_csv.c_str(), rename_ec.message().c_str());
+        return 2;
     }
 
     print_tally(args, tally);

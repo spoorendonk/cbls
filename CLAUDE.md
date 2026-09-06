@@ -387,6 +387,17 @@ for a timing comparison either check `CMAKE_BUILD_TYPE` and `CBLS_SANITIZE` in
 `build/CMakeCache.txt` or configure a fresh directory. The measurement recipes —
 heap attribution, CPU profiling, sanitizers — are in `docs/profiling.md`.
 
+**A runner that writes a published table must not truncate it before it has
+results.** `std::ofstream out(path)` truncates on open, so a run started from
+the wrong directory replaces the table with a header and nothing else, at exit
+code 0 — this emptied the miplib-fj table once already. Load the roster first
+and refuse to write on an incomplete one, and write to a temp path then
+`std::filesystem::rename`, as `benchmarks/mipfeas/` and
+`benchmarks/uc-chped/` do. The rename also covers the job killed mid-write.
+Rows regenerated from the instance files — uc-chped's cited reference rows are
+— make this sharper, not softer: the rows most worth protecting are exactly the
+ones a missing instance file deletes.
+
 **When regenerating a `comparison.csv`, record the engine commit in it.**
 Search-trajectory changes silently invalidate published tables, and without the
 commit the next reader cannot tell drift from a bug. `minlplib`'s table carries a
@@ -507,7 +518,7 @@ head-to-head (row 1). Nothing else qualifies.
 |---|-----------|------------------|---------|----------|
 | 1 | `mipfeas` | OR-Tools CP-SAT `num_violation_ls` worker **only** | head-to-head correctness *and* performance against the reference implementation of the same jump-based algorithm | #87, #106 |
 | 2 | `minlplib` | SCIP (nonlinear) | performance on non-convex MINLP — the regime CP-SAT's LS worker cannot express | #87 |
-| 3 | `uc-chped` | Pedroso 2014 | a good result on a published unit-commitment formulation | #25, #91, #92 |
+| 3 | `uc-chped` | Pedroso 2014 | a good result on a published unit-commitment formulation | #25, #92, #131 |
 
 **Priority 1 is deliberately not a MIP shootout.** Compare only against CP-SAT's
 `num_violation_ls` worker (same algorithm, different implementation). Do **not**

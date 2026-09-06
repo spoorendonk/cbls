@@ -247,7 +247,7 @@ These are not formulation deviations but they corrupt the meaning of the
   (`cbls::kDefaultFeasibilityTolerance`, `include/cbls/violation.h`),
   matching SCIP's `numerics/feastol` and the verifier's own scale. The
   runner also states the tolerance explicitly per run and records it on
-  every `comparison.csv` row (#103), so a published row can no longer
+  every measured `comparison.csv` row (#103), so a published row can no longer
   become uninterpretable when that default moves again.
 
 - **#34 (fixed)** — min up / down constraints had only the global
@@ -256,12 +256,16 @@ These are not formulation deviations but they corrupt the meaning of the
   that drove `comparison.csv` rows to "INFEASIBLE"; the ViolationLS port
   supplies exactly that, and #34 is closed.
 
-- **#35, #36** — LNS destroy/repair currently destroys feasibility on
-  24-period instances; structural awareness would help.
+- **#35, #36 (closed as not planned)** — LNS destroy/repair was
+  destroying feasibility on 24-period instances when this audit was
+  written, and structure-aware destroy was proposed as the fix. Both were
+  closed unimplemented: the observation was made on the SA search that
+  the ViolationLS port (#64) replaced. Re-file against a current
+  measurement, not against this bullet.
 
 The fidelity audit does not propose changes to these — they are tracked
-under #25 already and #32, #33, #34, #35, #36 will be re-evaluated under
-the ViolationLS port (#64).
+under #25 already, and the ViolationLS port (#64) has since landed. Of
+the five, only #32 is still open.
 
 ## 3. Verifier — what it checks
 
@@ -377,12 +381,15 @@ artefact of #32 + #33; #33 and #34 are fixed, #32 is still open.
    rows carried none of it and had to be deleted when the engine default
    moved from `1e-9` to `1e-6`.
 2. `feasible` and `verified` are separate columns because they are
-   separate tolerances: the engine's recorded `feas_tol` and the
-   verifier's own `1e-4`. While #32 is open, `verified` is the column to
+   separate tolerances: the engine's recorded `feas_tol`, against the
+   verifier's own `1e-4` on its UC-semantic checks plus the `1e-6` of the
+   `cbls::verify_model()` pass it runs first. While #32 is open,
+   `verified` is the column to
    trust, and a row that fails it publishes no objective and no gap.
 3. The Pedroso numbers stay in the file as cited reference rows. The
-   generator re-emits them from each instance's `known_bounds` map on
-   every run, so a regeneration cannot silently drop them.
+   generator re-emits them from each instance's `known_bounds` map, and
+   refuses to write at all unless every rostered instance loaded, so a
+   regeneration cannot silently drop them.
 
 This audit does **not** delete the Pedroso rows — that would lose
 information. It annotates them.
