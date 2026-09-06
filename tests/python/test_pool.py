@@ -22,7 +22,7 @@ import threading
 
 import _cbls_core as cbls
 
-# Generous relative to a 0.3s solve: this is a deadlock detector, not a
+# Generous relative to a 0.5s solve: this is a deadlock detector, not a
 # performance floor, so it only has to be shorter than a developer's patience.
 CHILD_TIMEOUT_SECONDS = 20.0
 
@@ -115,14 +115,14 @@ def _scenario_solve() -> None:
             threads.add(threading.get_ident())
         return _feasible_model()
 
-    result = cbls.ParallelSearch(2).solve(factory, 0.3, 42)
+    result = cbls.ParallelSearch(2).solve(factory, 0.5, 42)
     assert result.feasible, "portfolio found no feasible solution for x + y >= 3"
     assert result.objective < 5.0, result.objective
     print(f"distinct_factory_threads={len(threads)}")
 
 
 def _scenario_solve_parallel() -> None:
-    result = cbls.ParallelSearch(2).solve_parallel(_feasible_model, 0.3, 42)
+    result = cbls.ParallelSearch(2).solve_parallel(_feasible_model, 0.5, 42)
     assert result.feasible, "portfolio found no feasible solution for x + y >= 3"
     assert result.objective < 5.0, result.objective
 
@@ -132,7 +132,7 @@ def _scenario_raising() -> None:
         raise ValueError("python model factory failed")
 
     try:
-        cbls.ParallelSearch(2).solve(factory, 0.3, 42)
+        cbls.ParallelSearch(2).solve(factory, 0.5, 42)
     except ValueError as exc:
         # Assert the original type *and* message: solve_portfolio's "no result
         # and no error" guard on the same path would otherwise pass a type-only

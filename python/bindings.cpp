@@ -17,19 +17,27 @@ using namespace cbls;
 // and the direct consequence is that the factory runs on several threads at
 // once.
 constexpr const char* kParallelSolveDoc =
-    "Run the portfolio (or, with par_config.deterministic, the epoch-sync) search.\n"
+    "Run the parallel search and return the best result the workers found.\n"
     "\n"
-    "The GIL is released for the duration of the C++ call. model_factory is\n"
-    "therefore invoked concurrently, once from each worker thread, and\n"
-    "hook_factory, lns_factory and callback are likewise called from worker\n"
-    "threads. nanobind re-acquires the GIL around each invocation, so the\n"
-    "interpreter itself is safe; what it does not give you is atomicity across\n"
-    "bytecodes. A factory that only reads its closure is fine as written; one\n"
-    "that mutates Python-side state must do its own locking.\n"
+    "The GIL is released for the duration of the C++ call, which is what makes\n"
+    "this callable at all: the workers have to acquire the GIL to invoke a\n"
+    "Python callable, and a caller holding it across the join deadlocks them.\n"
     "\n"
-    "An exception raised by the factory in every worker is re-raised here with\n"
-    "its original type and message. One that fails in only some workers is\n"
-    "absorbed, and the surviving workers' result is returned.";
+    "In portfolio mode -- the only mode `solve` has, and `solve_parallel`'s\n"
+    "default -- model_factory, hook_factory and lns_factory are invoked once\n"
+    "per worker, each from that worker's own thread, so several calls are in\n"
+    "flight at once. In deterministic mode (solve_parallel with\n"
+    "par_config.deterministic) all three run on the calling thread before any\n"
+    "worker starts. A progress callback is always called from worker 0.\n"
+    "nanobind re-acquires the GIL around every invocation, so the interpreter\n"
+    "itself is safe; what that does not give you is atomicity across\n"
+    "bytecodes, so a callable that mutates Python-side state must lock it.\n"
+    "\n"
+    "In portfolio mode an exception raised by the factory in every worker is\n"
+    "re-raised here with its original type and message, while one that fails\n"
+    "in only some workers is absorbed and the survivors' result is returned.\n"
+    "In deterministic mode a factory raising on the calling thread propagates\n"
+    "as usual, but an exception from inside a worker terminates the process.";
 
 struct PySolveCallback : SolveCallback {
     NB_TRAMPOLINE(SolveCallback, 1);
