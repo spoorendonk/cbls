@@ -526,6 +526,10 @@ int run_benchmark(int argc, char** argv) {
         cbls::LNS lns(0.3);
         cbls::SearchConfig cfg;
         cfg.feasibility_tolerance = args.feas_tol;
+        // I102-TRACE (temporary; removed before merge)
+        if (const char* u = std::getenv("CBLS_I102_UNPROD")) {
+            cfg.unproductive_iterations = std::atoll(u);
+        }
         cbls::SearchResult result;
         try {
             TraceRecorder recorder(trace, name);

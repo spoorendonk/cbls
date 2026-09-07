@@ -150,6 +150,12 @@ public:
     // The armed state, so the caller (and its regression tests) can observe the
     // arming decision directly instead of inferring it from a trajectory.
     [[nodiscard]] bool escape_probe() const { return escape_probe_; }
+    // Arm/disarm the unproductive-batch exit (GFJConfig::unproductive_iterations).
+    // Armed at begin(); solve() disarms it for the rest of the run at the first
+    // real-feasible solution, because from there on the progress measure is
+    // blind -- see the REGIME BOUNDARY paragraph on unweighted_violation_.
+    void set_watch_progress(bool on) { watch_progress_ = on; }
+    [[nodiscard]] bool watch_progress() const { return watch_progress_; }
     // The running progress measure: unweighted violation of the active REAL rows
     // (see unweighted_violation_). Read-only observability for the regression
     // test that pins the incremental accumulator against a fresh recomputation;
@@ -410,16 +416,42 @@ private:
     // outer loop is allowed to look. See GFJConfig::unproductive_iterations for
     // what its default is and is not.
     //
-    // ONE REGIME IS EXCLUDED, and it is not a corner case. The measure sums the
-    // REAL rows only (see below for why), so once they are all satisfied it is
-    // identically zero and cannot improve on itself. Read naively the exit would
-    // then fire on EVERY batch of the objective-descent phase -- a stall
-    // detector that is unconditionally true, which is the same shape of defect
-    // as measuring a whole sum that a clamped row swallows. A batch whose
-    // measure is zero is therefore never declared stuck: the search there is
-    // descending against the artificial objective row, which this measure
-    // deliberately cannot see, and having no signal is not evidence of being
-    // stuck. `perturbation_period` keeps owning that regime, as it did before.
+    // REGIME BOUNDARY: THIS IS A PRE-FEASIBILITY MECHANISM ONLY, and the whole
+    // objective-descent phase is excluded rather than the single case of a
+    // measure that reads exactly zero.
+    //
+    // The measure sums the REAL rows only (see below for why), so it cannot see
+    // the artificial `obj <= bound` row at all. Before the first feasible
+    // solution that is the point: the real rows are the whole job, and no batch
+    // ever "improves" in the outer loop's sense, so nothing else supplies
+    // feedback. AFTER it, the search's actual work is a trade -- the bound is
+    // tightened on every new best, FJ pulls the assignment off the real-feasible
+    // set to chase the objective row, and the real rows settle at a STRICTLY
+    // POSITIVE equilibrium. batch_best_violation is a running MINIMUM over the
+    // batch, so "unproductive_iterations without a new all-time low" is the
+    // normal state of any such plateau. The detector is then unconditionally
+    // true on a search that is working perfectly.
+    //
+    // Measured on MINLPLib ex8_6_1 (#102), 10s at seed 42: the run improves its
+    // incumbent on 152 of its first 162 batches, then every later batch trips
+    // the exit with the measure between 0.016 and 0.51 -- three orders above
+    // is_violated's kTol, so no zero-test can see it. Nine spurious kicks
+    // follow; three of them are LNS (lns_interval = 3), each bounded by
+    // min(2.0, remaining()), and they alone consume 4.7s of the 10s budget. The
+    // run does 8.2k GLS iterations instead of 32k and finishes at objective
+    // -3.02 instead of -8.62.
+    //
+    // An earlier revision excluded only `measure == 0`. That is too narrow twice
+    // over: the damaging plateau is at positive violation, and on a model whose
+    // real rows are nonlinear EQUALITIES (residual |body(x)|, ex8_6_1 is 45 of
+    // them over 75 continuous variables) an exactly-zero sum is measure-zero and
+    // effectively never observed, so the exclusion was dead code there.
+    //
+    // So solve() disarms the exit outright at the first real-feasible solution
+    // (set_watch_progress), which also stops batches ENDING early there -- the
+    // objective-descent phase is then bit-identical to a run with the mechanism
+    // off. `perturbation_period` owns that regime, as it did before, and it has
+    // the feedback signal this measure lacks: `improved`.
     //
     // ---- What the measure is, and why it is that ----
     //
@@ -482,6 +514,9 @@ private:
     // Relative floor on what counts as a new minimum; see (2) above.
     static constexpr double kProgressRelEps = 1e-9;
     double unweighted_violation_ = 0.0;
+    // Armed until solve() sees a real-feasible solution; see the REGIME BOUNDARY
+    // paragraph above. Reset by begin() so a reused instance does not inherit it.
+    bool watch_progress_ = true;
     int64_t unproductive_streak_ = 0;
     bool batch_stuck_ = false;
     // Index of the artificial `obj <= bound` row in constraint_ids(), or -1 on a
