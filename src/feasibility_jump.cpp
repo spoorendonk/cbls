@@ -679,6 +679,27 @@ bool FeasibilityJump::apply_jump(int sample_size) {
     return true;
 }
 
+// The real-row half of any_active_violated(): same predicate, minus the
+// artificial objective row. This is what "the real rows are all satisfied"
+// actually means, and it is NOT the same question as `unweighted_violation_ <=
+// 0.0`. progress_residual contributes 0 for a residual of +inf or NaN -- both of
+// which is_violated calls VIOLATED -- so on a model whose violated real rows have
+// gone non-finite the sum reads exactly zero while the rows are wide open. A
+// non-convex body reaching +inf is the elec25/elec50 shape, i.e. precisely the
+// class this exit would otherwise help, so gating the guard on the sum made the
+// mechanism silently inert exactly there. Scanned rather than accumulated: the
+// guard runs once per unproductive_iterations, not per jump.
+bool FeasibilityJump::any_active_real_violated() const {
+    const size_t nc = violated_.size();
+    for (size_t c = 0; c < nc; ++c) {
+        const int32_t ci = static_cast<int32_t>(c);
+        if (ci != objective_ci_ && violated_[c] && active(ci)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool FeasibilityJump::any_active_violated() const {
     const size_t nc = violated_.size();
     for (size_t c = 0; c < nc; ++c) {
@@ -850,10 +871,10 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
             if (improves(unweighted_violation_, batch_best_violation)) {
                 batch_best_violation = unweighted_violation_;
                 unproductive_streak_ = 0;
-            } else if (unweighted_violation_ <= 0.0) {
-                // The measure sums the REAL rows only, so once they are all
-                // satisfied it is identically zero and can never improve on
-                // itself -- every batch in the objective-descent phase would
+            } else if (!any_active_real_violated()) {
+                // No real row is violated at all. The measure then sums to zero
+                // and can never improve on itself, so every batch in the
+                // objective-descent phase would
                 // report stuck at exactly unproductive_iterations, turning a
                 // stall detector into an unconditional one. The search is not
                 // stalled there; it is descending against the artificial

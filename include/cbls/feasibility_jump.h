@@ -156,7 +156,6 @@ public:
     // unweighted_violation_ for why the measure alone is not enough to end a
     // batch on.
     void set_watch_progress(bool on) { watch_progress_ = on; }
-    [[nodiscard]] bool watch_progress() const { return watch_progress_; }
     // The running progress measure: unweighted violation of the active REAL rows
     // (see unweighted_violation_). Read-only observability for the regression
     // test that pins the incremental accumulator against a fresh recomputation;
@@ -241,6 +240,10 @@ private:
     // limit (<=0 for none) plus the global budget/deadline.
     GFJStatus gls_loop(int sample_size, int64_t batch_iter_limit);
     [[nodiscard]] bool any_active_violated() const;
+    /// any_active_violated() minus the artificial objective row -- "is any REAL
+    /// row violated". Deliberately not `unweighted_violation_ > 0`: that sum
+    /// zeroes non-finite residuals, which is_violated counts as violated.
+    [[nodiscard]] bool any_active_real_violated() const;
     // Recompute unweighted_violation_ from scratch: sum of the finite positive
     // residuals of the active REAL rows (objective row excluded, see that
     // member). This is the only thing that re-grounds the incremental

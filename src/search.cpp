@@ -560,7 +560,14 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     // the instances that want it. Nothing here establishes that 20 transfers off
     // MINLPLib; it is the same standing complaint GFJConfig::
     // unproductive_iterations records against its own 300.
-    const int unproductive_arm_stagnation = std::max(1, config.perturbation_period / 20);
+    // A fraction of perturbation_period rather than a fresh knob, so the two
+    // windows keep their ratio when a caller retunes the one that already
+    // exists. The max(1, ...) floor is also where that ratio stops holding: at
+    // perturbation_period < kUnproductiveArmDivisor the window is 1 batch and
+    // the shortening is whatever perturbation_period happens to be, not 20x.
+    constexpr int kUnproductiveArmDivisor = 20;
+    const int unproductive_arm_stagnation =
+        std::max(1, config.perturbation_period / kUnproductiveArmDivisor);
 
     while (!past_deadline()) {
         // Count *actual* GLS iterations, which is what the config documents and

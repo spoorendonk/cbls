@@ -784,8 +784,9 @@ Do **not** over-read that as "a random start is reachable anyway". `perturb()`
 randomises each jumpable variable only with probability `perturbation_probability`
 (default **0.1**), not all of them, and moves each List/Set variable by only
 `round(p * |elements|)` local structural moves (#111); it runs only after
-`perturbation_period` (default **100**) stagnant batches, and when all of that
-happens to move nothing it forces exactly one variable (#109). A kick is
+`perturbation_period` (default **100**) stagnant batches -- or sooner, on the
+unproductive-batch route in step 8 of the outer loop (#102) -- and when all of
+that happens to move nothing it forces exactly one variable (#109). A kick is
 therefore a sparse, occasional nudge, not a re-draw of the assignment, and it is
 not a substitute for a randomised starting point.
 
@@ -913,8 +914,21 @@ While time and `max_iterations` remain, each pass:
    `stagnation >= perturbation_period` (armed at the same site as the kick in
    step 8), or — with a wall clock — a quarter of the budget elapsed since the
    last new best (#117).
-8. **On `stagnation >= perturbation_period`**, diversify (below) and reset the
-   stagnation counter.
+8. **Diversify**, by either of two routes:
+   - **`stagnation >= perturbation_period`** — the ordinary one. Diversify
+     (below) and reset the stagnation counter.
+   - **an unproductive Feasibility-Jump batch** (#102) — the batch reported that
+     it stopped reducing the REAL rows' violation
+     (`GFJConfig::unproductive_iterations`, default 300 iterations), and the
+     outer loop's own count agrees at
+     `stagnation >= perturbation_period / 20`. Diversify without arming the
+     escape probe and **without** resetting the stagnation counter, so
+     `perturbation_period` keeps meaning what it says. Once a feasible solution
+     exists this route draws only a perturb, never an LNS destroy-repair: its
+     progress measure cannot see the artificial `obj <= bound` row the search is
+     then working against, so "no new all-time low" stops being evidence of a
+     stall, and an LNS repair launched on that signal is bounded in *seconds* and
+     is usually rejected. See `SearchResult::lns_repairs`.
 9. Emit a progress callback (~1 s cadence, or immediately on a new best).
 
 At the end, restore the best state — or, on an infeasible run, the *closest
