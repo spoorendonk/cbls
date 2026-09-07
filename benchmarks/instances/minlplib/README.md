@@ -295,7 +295,7 @@ as `anytime_trace.csv`, so every number in this section is reproducible from the
 checkout it was measured at, which each row's `commit_sha` names.
 
 **The table predates #120 and #102, and does not describe the current engine.**
-`st_e40` is the change with a named row below: at engine commit `e381159` on
+`st_e40` is the change with a named row below: at engine commit `167116e` on
 branch `issue-102-st-e40` it reaches its BKS of 30.4142135 at both 10s and 60s,
 seed 42, where this table records it infeasible. #123 is the re-run that will
 move it (and whatever else the trajectory change moved); until then the tally,
@@ -340,7 +340,7 @@ deterministic budget yet (the engine supports one — `time_limit = 0` plus
 
 These are the counts of the **published run**, not of the current engine. The
 `infeasible` row is 4 because `st_e40` was infeasible at the commit the table
-was measured at; it is not at engine commit `e381159` (see below). Re-derive the
+was measured at; it is not at engine commit `167116e` (see below). Re-derive the
 tally from a regenerated `comparison.csv` on #123 rather than editing it here —
 a hand-adjusted count would no longer match the table it is a summary of.
 
@@ -404,14 +404,14 @@ larger step (or a direct objective descent) might achieve sooner.
 Every one is root-caused, and the verdict is recorded per row in
 `comparison.csv` (merged from `analysis_notes.csv`). One of the four —
 `st_e40` — has since been fixed and is no longer unsolved at engine commit
-`e381159`; it stays in this table, with its verdict updated, until #123
+`167116e`; it stays in this table, with its verdict updated, until #123
 regenerates the rows:
 
 | Instance | Verdict | Cause |
 |----------|---------|-------|
 | `elec25`, `elec50` | **bug** ([#110](https://github.com/spoorendonk/cbls/issues/110)) | Thomson problem: points on the unit sphere, Coulomb objective `+inf` wherever two coincide. **The objective-encoding defects (#100) are fixed and are no longer the blocker.** What remains: the `.nl` declares no finite variable bounds, so the box is the ±1e9 inf-clamp; random init starts ~1e9 out, and shrinking each variable toward 0 is a huge row improvement — which parks the search on the origin, a stationary point of every row `x²+y²+z²=1`. The Float jump offers a single *undamped* Newton step (`x0 - residual/grad`) plus `lb`/`ub`/midpoint; near the origin that step overshoots wildly and is rejected, and because a candidate was nonetheless *generated* the #107 escape probe is suppressed — so the variable freezes at score 0. Measured: escape probe fires only at exactly `x0 = 0`; at `x0 = 0.001/0.01/0.1` the score is 0 with the probe armed or not. Infeasible at violation ≈1 **both with the objective present and with it neutralised**, so it is not objective-related — the earlier "dropping the objective makes elec25 feasible in 20s" claim no longer reproduces. Tightening `inf_clamp` to 1 makes `elec25` feasible at violation 0 post-#100 (pre-#100 it was infeasible at *every* clamp), because clamping accidentally supplies the missing damping. |
 | `nvs01` ([#101](https://github.com/spoorendonk/cbls/issues/101)) | hard | `420.169·√(x0²+900) == x2·x0·x1` needs `x0` and the product `x1·x2` changed together. While `x0 = 0` the product term vanishes, so `x1` and `x2` receive no gradient signal and no single-variable jump improves — escaping requires a compound move (Novelty Jump implements exactly this, but is off by default). Verified analytically and reproduced across seeds 1–7. |
-| `st_e40` ([#102](https://github.com/spoorendonk/cbls/issues/102)) | **fixed** — was an engine gap, not hardness | Rows C1–C3 are degree-7 polynomials `(x-1)(x-2)(x-3)(x-5)(x-8)(x-10)(x-12) == 0` restricting each integer to `{1,2,3,5,8,10,12}`; C0 pins the free `x3` to a bilinear function of them, and four linear rows bound the combination. That leaves 343 integer combinations, **52 of them feasible**. The search reached only 3 of the 343: it fell into a limit cycle within ~20 GLS iterations — `x1` flipping between two values and `x3` hopping between the roots of the four rows containing it — and neither trapped value appears in any feasible combination (all 52 need `x0 >= 5` and `x1 >= 5`). It then spent **92% of a 155 000-iteration run on GLS weight bumps that changed nothing**, because diversification was gated on 100 non-improving *batches* of 1000 iterations and, before a first feasible solution, no batch ever improves — a fixed cadence of one kick per 100 000 iterations with no feedback from the search. Two earlier explanations in this table were both wrong: a violation barrier between allowed integer values (`int_jump_candidates` enumerates the whole domain below 256 values, and these are `[1,12]`), and "the feasible combination" singular (there are 52). Fixed by `GFJConfig::unproductive_iterations`: a batch that stops reducing the real rows' violation ends, and `solve()` takes the diversification kick as due (without arming the Float escape probe, which stays gated on `perturbation_period` — see #107). Measured at engine commit `e381159`, branch `issue-102-st-e40`: reaches the BKS 30.4142135 at 10s and 60s, seed 42. The `comparison.csv` row still reads infeasible and is left alone deliberately; #123 is the re-run that regenerates it. |
+| `st_e40` ([#102](https://github.com/spoorendonk/cbls/issues/102)) | **fixed** — was an engine gap, not hardness | Rows C1–C3 are degree-7 polynomials `(x-1)(x-2)(x-3)(x-5)(x-8)(x-10)(x-12) == 0` restricting each integer to `{1,2,3,5,8,10,12}`; C0 pins the free `x3` to a bilinear function of them, and four linear rows bound the combination. That leaves 343 integer combinations, **52 of them feasible**. The search reached only 3 of the 343: it fell into a limit cycle within ~20 GLS iterations — `x1` flipping between two values and `x3` hopping between the roots of the four rows containing it — and neither trapped value appears in any feasible combination (all 52 need `x0 >= 5` and `x1 >= 5`). It then spent **92% of a 155 000-iteration run on GLS weight bumps that changed nothing**, because diversification was gated on 100 non-improving *batches* of 1000 iterations and, before a first feasible solution, no batch ever improves — a fixed cadence of one kick per 100 000 iterations with no feedback from the search. Two earlier explanations in this table were both wrong: a violation barrier between allowed integer values (`int_jump_candidates` enumerates the whole domain below 256 values, and these are `[1,12]`), and "the feasible combination" singular (there are 52). Fixed by `GFJConfig::unproductive_iterations`: a batch that stops reducing the real rows' violation ends, and `solve()` takes the diversification kick as due (without arming the Float escape probe, which stays gated on `perturbation_period` — see #107). `solve()` arms that exit only once its own stagnation count reaches `perturbation_period / 20` batches, which is what keeps the mechanism out of the objective-descent phase where its measure is blind — see the objective-quality section below for what that cost before it was gated. Measured at engine commit `167116e`, branch `issue-102-ex8_6_1`: reaches the BKS 30.4142135 at 10s and 60s, seed 42, and at 10s on seeds 1, 2 and 3 as well. The `comparison.csv` row still reads infeasible and is left alone deliberately; #123 is the re-run that regenerates it. |
 
 ## SCIP baseline
 
@@ -505,13 +505,13 @@ from the obvious guess. Both sides run a fixed 60s per instance, so:
 **The failures are almost disjoint, and that is the useful part.** SCIP reaches
 a feasible solution on all four instances CBLS did not solve in this run — two
 of them proved optimal in under a quarter of a second. (`st_e40` is no longer
-one of CBLS's failures at engine commit `e381159`; it is kept in the table
+one of CBLS's failures at engine commit `167116e`; it is kept in the table
 because the CBLS column is this run's, and #123 regenerates it.)
 
 | Instance | CBLS | SCIP | What it settles |
 |---|---|---|---|
 | `nvs01` | infeasible | optimal in 0.11s | The instance is not hard; #101 is an engine gap (single-variable jumps cannot move a product term pinned at zero). |
-| `st_e40` | infeasible in this table → **BKS 30.4142135** at engine commit `e381159` | optimal in 0.22s | Was an engine gap, now closed (#102): the outer loop only diversified once per 100 000 GLS iterations, so a limit cycle established after ~20 iterations ran essentially unchallenged. The `infeasible` reading is this table's, measured before the fix; see the root-cause row above for the mechanism and the measurement. |
+| `st_e40` | infeasible in this table → **BKS 30.4142135** at engine commit `167116e` | optimal in 0.22s | Was an engine gap, now closed (#102): the outer loop only diversified once per 100 000 GLS iterations, so a limit cycle established after ~20 iterations ran essentially unchallenged. The `infeasible` reading is this table's, measured before the fix; see the root-cause row above for the mechanism and the measurement. |
 | `elec25` | infeasible | 243.859 vs BKS 243.813 (0.02%) | Confirms an engine gap, not hardness: a feasible point of near-BKS quality is easy to reach. Originally attributed to #100; that is fixed, and the remaining cause is the undamped Newton jump ([#110](https://github.com/spoorendonk/cbls/issues/110), see the root-cause table above). |
 | `elec50` | infeasible | 1422.3 vs BKS 1055.2 (34.8%) | Same mechanism at 50 points; SCIP does not close it either, but it does reach the feasible region. |
 | `st_e36` | −147 (BKS −246) | **no feasible solution in 60s** | The one row the other way. SCIP spends the full budget and returns only a dual bound of −304.5. |
@@ -550,42 +550,98 @@ trajectory on every instance, not only the one it was found on, so it was
 measured on objective quality and not only on feasibility — a feasibility-only
 tally cannot see a row that stayed feasible and got worse.
 
-Eight-instance probe, `--time-limit 10 --seed 42`, each arm run serially and
-interleaved per instance on a box at load below 1, gap to BKS. This is an
-**indicative probe, not the published protocol** — one seed, a 10s budget, and
-a subset chosen to include the instances an earlier arm had regressed:
+That measurement is what caught the one real defect in the change, so the
+numbers below are given in **three** arms: `main`, the first cut of the fix
+(`before`), and the fix as it now stands (`after`, engine commit `167116e`).
+Eight-instance probe, `--time-limit 10 --seed 42`, three separately built
+binaries, each arm run serially and interleaved per instance on an idle box,
+gap to BKS. This is an **indicative probe, not the published protocol** — one
+seed, a 10s budget, and a subset chosen to include the instances an earlier arm
+had regressed:
 
-| instance | before | after |
-|---|---|---|
-| `alkylation` | 99.98% | **0.07%** |
-| `st_e36` | 40.24% | **0.87%** |
-| `maxmin` | 3.90% | **0.10%** |
-| `kall_ellipsoids_tc02b` | 161.76% | **159.73%** |
-| `st_e40` | infeasible | **0.00%** (BKS) |
-| `nvs01` | infeasible | feasible, 0.00%–21.94% across runs |
-| `ex4_1_8` | 0.00% | 0.00% |
-| `ex8_6_1` | 69.71% | **89.39%** |
+| instance | main | before | after |
+|---|---|---|---|
+| `alkylation` | 99.98% | 0.07% | **0.03%** |
+| `st_e36` | 40.24% | **0.87%** | 3.38% |
+| `maxmin` | 0.01% | 0.10% | 0.20% |
+| `kall_ellipsoids_tc02b` | 161.76% | 159.73% | **149.36%** |
+| `st_e40` | infeasible | **0.00%** (BKS) | **0.00%** (BKS) |
+| `nvs01` | infeasible | 21.94% | 30.16% |
+| `ex4_1_8` | 0.00% | 0.00% | 0.00% |
+| `ex8_6_1` | 69.67% | **89.39%** | **69.71%** |
 
-Five clear improvements, two instances moving from infeasible to feasible, one
-unchanged, and **one regression**: `ex8_6_1` loses about 20 percentage points.
-It is recorded here rather than left to the re-run because a change that trades
-quality on some rows for quality on others should say so where the table is
-read, not only where it is generated.
+**`ex8_6_1` was the reason this change was held, and it is fixed.** The `before`
+arm lost about 20 gap points there on all four paired seeds tried; the `after`
+arm is level with `main` on all four (`-8.63 / -6.01 / -10.20 / -11.04` against
+main's `-8.62 / -6.01 / -10.05 / -9.82`).
 
-Three regressions earlier arms of this work showed have since gone, and each had
-an identified cause that was fixed: the stuck test was overriding a batch that
-had just improved into a diversification kick; it was arming the Float escape
-probe that #107 had deliberately gated; and the progress measure, which sums the
-real rows only, is identically zero once those rows are satisfied, so the exit
-fired on every batch of the objective-descent phase until it was guarded.
+The mechanism, which took instrumentation rather than argument to find: the
+exit's progress measure sums the **real** rows and deliberately cannot see the
+artificial `obj <= bound` row. Before the first feasible solution that is the
+point of it. After it, the search's work is a *trade* between the two — the
+bound is tightened on every new best, FJ pulls the assignment off the
+real-feasible set to chase the objective row, and the real rows settle at a
+strictly **positive** equilibrium. Since the measure's reference is a running
+*minimum* over the batch, "no new all-time low in `unproductive_iterations`"
+is then the normal state of a batch that is working perfectly, and the detector
+is unconditionally true. Measured on `ex8_6_1`: the run improved its incumbent
+on **152 of its first 162 batches** and was declared stuck on nine of the rest,
+with the measure between 0.016 and 0.51 — three orders above the tolerance at
+which this engine calls a row satisfied, so no zero-test could ever have seen
+it. Three of the nine kicks drew LNS (`lns_interval = 3`), each bounded by
+`min(2.0, remaining())`, and those three alone consumed **4.7s of the 10s
+budget**. The run managed 8.2k GLS iterations instead of 32k.
 
-**`ex8_6_1` survives all three fixes and its cause is not identified.** It is
-stable, not seed noise — four paired seeds at 10s put the branch worse on all
-four (89.39 / 85.90 / 78.90 / 74.37 against 69.67 / 76.55 / 67.90 / 67.97).
-`nvs01` is also unstable across runs on the branch in a way it is not on main,
-which may be the same effect seen from the other side. Until that is explained,
-this change is not a settled improvement, and the residual is the reason #102 is
-held rather than merged.
+That also explains the "identical objective at 2s and 10s" that the issue asked
+someone to pull on: the eight missing seconds were spent inside LNS repairs the
+search never benefited from.
+
+Two things were wrong, and both are fixed:
+
+1. `progress_residual` counted any residual `> 0.0`, while `is_violated` calls a
+   row satisfied at `<= 1e-9`. On inequality rows over integers the two agree; on
+   **equality** rows over continuous variables a satisfied row's residual
+   (`|body(x)|`) lands a few ulp off zero rather than on it, so the measure could
+   never reach its floor and the earlier "the real rows are all satisfied" guard
+   was dead code. `ex8_6_1` is 45 nonlinear equalities over 75 continuous
+   variables — the equality fraction tracks this table closely: `maxmin` 0/78 and
+   `alkylation` 3/11 are the big wins, `kall_ellipsoids_tc02b` 109/128 barely
+   moves, `ex8_6_1` 45/45 was the regression.
+2. The exit had no witness other than its own blind measure. `solve()` now arms
+   it only once its own count of consecutive non-improving batches reaches
+   `perturbation_period / 20`, which makes the mechanism an **acceleration** of
+   the stagnation window (one kick per ~6 batches at the default) rather than a
+   replacement for it (one per ~300 GLS iterations). A search improving its
+   incumbent every few batches never arms it and is then bit-identical to a run
+   with the mechanism off. Arming, rather than merely suppressing the kick, is
+   what makes that exact: an armed exit still *ends* batches early, and on
+   `ex8_6_1` those early ends alone still cost about six gap points with every
+   kick suppressed.
+
+**The `20` is tuned and says so.** A sweep of `{5, 10, 20}` batches over four
+paired seeds: all three remove the `ex8_6_1` regression completely, because a
+search improving that often never reaches any of them. They differ on the
+instance the mechanism exists for — `st_e40` reaches its BKS on 4/4 seeds at a
+threshold of 5 batches and on 2/4 at 10 or 20 — so the smallest is chosen.
+Nothing here establishes that it transfers off MINLPLib; it is the same standing
+complaint `GFJConfig::unproductive_iterations` records against its own `300`.
+
+**What the fix trades, stated plainly.** Over four seeds (42, 1, 2, 3):
+
+- `ex8_6_1` recovers on 4/4 and `st_e40` keeps its BKS on 4/4 — the two the
+  change is judged on.
+- `alkylation` is *better* than the `before` arm on 4/4 (0.02–0.10% against
+  0.07–0.11%), and `maxmin` is level (mean 0.12% against 0.17%; `main` is 0.59%).
+- `st_e36` is the one loss: 3.38% against `before`'s 0.87% on three of the four
+  seeds, level on the fourth. Still far better than `main`'s 32–40%, but it is a
+  loss and not noise.
+- `nvs01` becomes feasible on 4/4 where `main` never does, and its objective is
+  too unstable in **both** arms to separate them (`before` 21.9/414.7/662.6/319.1
+  against `after` 30.2/12.2/734.9/769.3). Read it as a feasibility result only.
+
+`maxmin`'s `main` column moved from 3.90% in an earlier revision of this table to
+0.01% here at the same seed and the same binary, which is the honest calibration
+for how much of a sub-1% difference on these rows is run-to-run variance.
 
 The published rows below are **not** regenerated from this probe. That is #123's
 job, at the documented protocol, and it is where a proper win/loss tally over
