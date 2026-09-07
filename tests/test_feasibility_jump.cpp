@@ -1024,13 +1024,15 @@ TEST_CASE("a residual below is_violated's tolerance is not progress to be made",
     constexpr int64_t kIters = 4 * int64_t{300};
     fj.batch(kIters);
 
-    CAPTURE(fj.iterations(), fj.unweighted_violation());
-    // The measure agrees with is_violated: nothing here is violated, so there is
-    // no progress left to make and the measure is at its floor.
-    REQUIRE(fj.unweighted_violation() == 0.0);
-    // The point: a batch with no real violation left is not a stall report.
+    // Scaled, because Catch2 prints 4e-12 as "0.0" at its default precision and
+    // an unscaled failure would read `0.0 == 0.0`.
+    CAPTURE(fj.iterations(), fj.unweighted_violation() * 1e12);
+    // The point: a batch with no VIOLATED row left is not a stall report.
     REQUIRE_FALSE(fj.batch_stuck());
     REQUIRE(fj.iterations() == kIters);
+    // ...and the reason it is not: the measure agrees with is_violated, so it is
+    // at its floor and there is no progress left for it to record.
+    REQUIRE(fj.unweighted_violation() == 0.0);
 }
 
 TEST_CASE("a real-feasible batch is not called stuck by a measure that cannot move",

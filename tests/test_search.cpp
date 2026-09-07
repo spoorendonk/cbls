@@ -1296,9 +1296,11 @@ TEST_CASE("the unproductive-batch exit waits for the outer loop's stagnation cou
         Model m;
         build_long_descent_with_coupled_objective(m);
         SearchConfig config;
-        config.max_iterations = 40000;
-        // 40000 / batch_iterations is around 40 batches, so the arming threshold
-        // of perturbation_period / 20 = 100 is out of reach for the whole run.
+        config.max_iterations = 8000;
+        // 8000 / batch_iterations is around 8 batches, so the arming threshold
+        // of perturbation_period / 20 = 100 batches is out of reach for the whole
+        // run. The budget also has margin in both directions: the ungated engine
+        // still fails this case at 5000, and the gated one still passes at 80000.
         // This also puts the stagnation route's own kick (at 2000 batches) out
         // of reach, so the unproductive mechanism is the ONLY difference between
         // the two arms.
