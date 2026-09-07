@@ -83,6 +83,28 @@ struct SearchConfig {
     // still means what it says and the probe stays a last resort (#107). See the
     // kick site in solve(). Forwarded to GFJConfig::unproductive_iterations,
     // whose comment says what the default 300 is and is not.
+    //
+    // TWO THINGS BOUND IT, and neither is visible from this field alone:
+    //
+    //   1. `stagnation >= perturbation_period / 20` -- a second witness from the
+    //      outer loop. The exit's own measure is not trusted on its own, because
+    //      it sums the REAL rows and cannot see the artificial `obj <= bound`
+    //      row; the outer loop's own count of non-improving batches is what
+    //      confirms the search has actually stopped getting anywhere.
+    //   2. Once a feasible solution exists the kick draws only its cheap half.
+    //      A diversification kick is either a perturb (microseconds) or an LNS
+    //      destroy-repair bounded by min(2.0, remaining()) SECONDS. After the
+    //      first feasible solution the measure goes blind -- the real rows sit at
+    //      a positive equilibrium traded against the objective row, so "no new
+    //      all-time low" is the normal state of a batch that is working
+    //      perfectly -- and an LNS repair launched on that signal is both
+    //      expensive and, on a converged continuous model, rejected outright.
+    //      Measured on MINLPLib ex8_6_1: three such repairs took 4.7s of a 10s
+    //      budget and cost ~20 gap points. The perturb half is kept, because
+    //      st_e40 uses exactly those post-feasible kicks to hop between its 52
+    //      feasible integer combinations and loses its BKS on half the seeds
+    //      without them. See `SearchResult::lns_repairs`.
+    //
     int64_t unproductive_iterations = 300;
 };
 
@@ -159,6 +181,27 @@ struct SearchResult {
     /// and so carries either value -- currently unreachable, since `SolutionPool`
     /// always inserts, but it is a struct copy and not a field-by-field compose.
     bool escape_probe_armed = false;
+
+    /// Diversification kicks taken during the run -- the counter
+    /// `SolveProgress::perturbations` reports, sampled at exit. Both routes are
+    /// counted: the `perturbation_period` one and #102's unproductive-batch one.
+    /// Exposed so a regression test can bound how OFTEN the search diversifies
+    /// without reading its internals; a test that can only see the trajectory
+    /// cannot tell a suppressed kick from a merely delayed one.
+    /// Single-`solve()` only, with the same caveat as `escape_probe_armed`
+    /// above: `ParallelSearch`'s live aggregation paths compose the result field
+    /// by field and leave this at 0.
+    int perturbations = 0;
+
+    /// LNS destroy-repair cycles run during the run. Separate from
+    /// `perturbations` because the two halves of a diversification kick cost
+    /// wildly different amounts: a perturb is microseconds, an LNS repair is
+    /// bounded by `min(2.0, remaining())` SECONDS and on a converged continuous
+    /// model its result is usually rejected outright. #102's unproductive route
+    /// draws only the cheap half once a feasible solution exists, and this is
+    /// what lets a regression test assert that without timing the run.
+    /// Single-`solve()` only, as above.
+    int lns_repairs = 0;
 };
 
 struct SolveProgress {

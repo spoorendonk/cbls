@@ -1327,3 +1327,84 @@ TEST_CASE("the unproductive-batch exit waits for the outer loop's stagnation cou
     REQUIRE(on.iterations == off.iterations);
     REQUIRE(on.feasible == off.feasible);
 }
+
+// A model that reaches its proven optimum inside the first batch and then
+// plateaus for the rest of the run at a STRICTLY POSITIVE real violation. Each
+// row pins its own variable at >= kPlateauFloor and the objective is the sum of
+// those same variables, so the optimum is kPlateauVars * kPlateauFloor and every
+// domain is narrow enough for int_jump_candidates to enumerate whole -- one jump
+// repairs a row and lands it on its optimal value at once.
+//
+// Past that point record_best tightens the bound below the optimum, the
+// artificial `obj <= bound` row is unreachable while the real rows hold, and FJ
+// pulls variables back under the floor chasing it. No further improvement is
+// possible, so every later batch is non-improving with the real rows violated --
+// the exact state in which #102's exit misfires, and ex8_6_1's regime in
+// miniature.
+namespace {
+constexpr int kPlateauVars = 20;
+constexpr int64_t kPlateauBudget = 40000;
+constexpr double kPlateauFloor = 3.0;
+
+void build_quick_optimum_with_coupled_objective(Model& m) {
+    std::vector<int32_t> vars;
+    vars.reserve(kPlateauVars);
+    for (int i = 0; i < kPlateauVars; ++i) {
+        int32_t v = m.int_var(0, 10);
+        m.add_constraint(m.geq(v, m.constant(kPlateauFloor)));
+        vars.push_back(v);
+    }
+    m.minimize(m.sum(vars));
+    m.close();
+}
+}  // namespace
+
+TEST_CASE("the unproductive-batch exit draws no LNS after the first feasible solution",
+          "[search][unproductive]") {
+    // The measure sums the real rows only, so once they are satisfiable it is
+    // blind to the artificial objective row the search is actually working
+    // against, and "no new all-time low" stops being evidence of a stall. This
+    // model has no improvement left to give after its first batch, so it is
+    // where a rule that misreads that state does the most damage: an ungated
+    // exit kicks once per unproductive batch for the whole remaining budget,
+    // and roughly a third of those draw LNS.
+    //
+    // A stagnation threshold does not fix this -- it only postpones it, because
+    // the kick site deliberately does not reset `stagnation`, so every batch
+    // past the threshold is armed again. The gate has to be the REGIME.
+    auto run = [](int64_t unproductive) {
+        Model m;
+        build_quick_optimum_with_coupled_objective(m);
+        SearchConfig config;
+        config.max_iterations = kPlateauBudget;
+        config.perturbation_period = 100;
+        config.unproductive_iterations = unproductive;
+        LNS lns(0.3);
+        return solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, &lns,
+                     /*lns_interval=*/3, nullptr, config);
+    };
+
+    const SearchResult off = run(0);
+    const SearchResult on = run(300);
+
+    // The premise: both arms sit on the proven optimum and spend the rest of the
+    // budget on a plateau, which is the regime under test.
+    REQUIRE(off.termination == TerminationReason::IterationLimit);
+    REQUIRE(on.termination == TerminationReason::IterationLimit);
+    REQUIRE(on.feasible);
+    REQUIRE(on.objective == kPlateauVars * kPlateauFloor);
+
+    CAPTURE(on.perturbations, off.perturbations, on.lns_repairs, off.lns_repairs, on.iterations,
+            off.iterations);
+    // The mechanism IS live here -- it kicks, and that is wanted: st_e40 needs
+    // exactly these post-feasible kicks to hop between its feasible integer
+    // combinations.
+    REQUIRE(on.perturbations > off.perturbations);
+    // ...but it must draw only the cheap half. An LNS destroy-repair is bounded
+    // in SECONDS, and on a converged model its result is rejected outright, so
+    // launching one on a measure that has gone blind is pure budget burn: three
+    // of them took 4.7s of a 10s run on ex8_6_1 and cost ~20 gap points. Every
+    // repair this run performs must therefore be one the perturbation_period
+    // route asked for, exactly as when the exit is compiled out.
+    REQUIRE(on.lns_repairs == off.lns_repairs);
+}
