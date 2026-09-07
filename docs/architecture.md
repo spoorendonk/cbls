@@ -1258,7 +1258,7 @@ gated on `has_deadline_`), but it is not zero.
 ### Diversification
 
 `diversify()` increments a `perturbations` counter and, every `lns_interval`-th
-kick (when an `LNS` is supplied), runs [LNS](#large-neighborhood-search)
+LNS-eligible kick (when an `LNS` is supplied), runs [LNS](#large-neighborhood-search)
 destroy-repair (then resets FJ weights, since LNS mutates state outside the
 engine). Otherwise it calls `fj.perturb(perturbation_probability)`. Either way
 it resamples `rho`.
@@ -1456,7 +1456,7 @@ improvement.
 ### Trigger
 
 LNS fires from the outer loop's `diversify()` — every `lns_interval`-th
-diversification kick (a kick happens after `perturbation_period` stagnant
+LNS-eligible diversification kick (a kick happens after `perturbation_period` stagnant
 batches). When no `LNS` object is supplied, diversification is plain
 perturbation instead.
 

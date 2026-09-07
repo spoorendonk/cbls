@@ -679,27 +679,6 @@ bool FeasibilityJump::apply_jump(int sample_size) {
     return true;
 }
 
-// The real-row half of any_active_violated(): same predicate, minus the
-// artificial objective row. This is what "the real rows are all satisfied"
-// actually means, and it is NOT the same question as `unweighted_violation_ <=
-// 0.0`. progress_residual contributes 0 for a residual of +inf or NaN -- both of
-// which is_violated calls VIOLATED -- so on a model whose violated real rows have
-// gone non-finite the sum reads exactly zero while the rows are wide open. A
-// non-convex body reaching +inf is the elec25/elec50 shape, i.e. precisely the
-// class this exit would otherwise help, so gating the guard on the sum made the
-// mechanism silently inert exactly there. Scanned rather than accumulated: the
-// guard runs once per unproductive_iterations, not per jump.
-bool FeasibilityJump::any_active_real_violated() const {
-    const size_t nc = violated_.size();
-    for (size_t c = 0; c < nc; ++c) {
-        const int32_t ci = static_cast<int32_t>(c);
-        if (ci != objective_ci_ && violated_[c] && active(ci)) {
-            return true;
-        }
-    }
-    return false;
-}
-
 bool FeasibilityJump::any_active_violated() const {
     const size_t nc = violated_.size();
     for (size_t c = 0; c < nc; ++c) {
@@ -871,10 +850,25 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
             if (improves(unweighted_violation_, batch_best_violation)) {
                 batch_best_violation = unweighted_violation_;
                 unproductive_streak_ = 0;
-            } else if (!any_active_real_violated()) {
-                // No real row is violated at all. The measure then sums to zero
-                // and can never improve on itself, so every batch in the
-                // objective-descent phase would
+            } else if (unweighted_violation_ <= 0.0) {
+                // The measure has no usable signal, which covers TWO states and
+                // deliberately treats them alike. Either every real row is
+                // satisfied (progress_residual counts only residuals > kTol, the
+                // same threshold is_violated uses, so a zero sum means exactly
+                // that for finite rows) -- or every violated real row is +inf or
+                // NaN, which progress_residual also contributes 0 for. Both are
+                // "nothing to measure", and neither is evidence of a stall.
+                //
+                // Testing "is any real row violated" instead was tried and is
+                // WRONG: on a non-convex body that has gone non-finite it is
+                // permanently true while the measure is permanently pinned, so
+                // improves() can never fire and the batch reports stuck at every
+                // streak limit for the rest of the run -- pre-feasibility, where
+                // the kick still draws LNS. That trades a silently inert exit for
+                // a budget-burning one on exactly the elec-class instances.
+                //
+                // The measure then sums to zero and can never improve on itself,
+                // so every batch in the objective-descent phase would
                 // report stuck at exactly unproductive_iterations, turning a
                 // stall detector into an unconditional one. The search is not
                 // stalled there; it is descending against the artificial

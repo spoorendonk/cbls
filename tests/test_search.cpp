@@ -1403,8 +1403,13 @@ TEST_CASE("the unproductive-batch exit draws no LNS after the first feasible sol
     // ...but it must draw only the cheap half. An LNS destroy-repair is bounded
     // in SECONDS, and on a converged model its result is rejected outright, so
     // launching one on a measure that has gone blind is pure budget burn: three
-    // of them took 4.7s of a 10s run on ex8_6_1 and cost ~20 gap points. Every
-    // repair this run performs must therefore be one the perturbation_period
-    // route asked for, exactly as when the exit is compiled out.
-    REQUIRE(on.lns_repairs == off.lns_repairs);
+    // of them took 4.7s of a 10s run on ex8_6_1 and cost ~20 gap points.
+    //
+    // Asserted as an absolute zero, not as equality with the off arm. The off arm
+    // takes no kick at all here (40 batches against perturbation_period = 100),
+    // so `on.lns_repairs == off.lns_repairs` would be `0 == 0` -- a comparison
+    // that reads like a control but is not one. Red against the unbounded rule at
+    // 25 repairs.
+    REQUIRE(off.perturbations == 0);  // the off arm really is the no-kick control
+    REQUIRE(on.lns_repairs == 0);
 }

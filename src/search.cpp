@@ -303,6 +303,13 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     Model::State closest_state = best_state;
     int perturbations = 0;
     int lns_repairs = 0;
+    // Counts only the kicks ELIGIBLE for an LNS repair, which is what
+    // `lns_interval` has always meant. Kept apart from `perturbations` because
+    // #102's route can be refused its LNS half: letting a refused kick advance
+    // the slot would shift -- and at some kick counts permanently freeze -- the
+    // phase at which the perturbation_period route runs LNS, making that route's
+    // cadence depend on how often the unproductive one fired.
+    int lns_slot = 0;
     int stagnation = 0;
     int64_t batches = 0;
     auto last_callback = start;
@@ -470,8 +477,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     // mechanism for the models it helps, and removes the expensive half from the
     // regime where the measure that triggers it has gone blind.
     auto diversify = [&](bool allow_lns = true) {
-        if (allow_lns && lns && lns_interval > 0 &&
-            (perturbations % lns_interval == lns_interval - 1)) {
+        if (allow_lns && lns && lns_interval > 0 && (lns_slot % lns_interval == lns_interval - 1)) {
             // Bound the repair by whatever budget is left, so an LNS kick near
             // the deadline cannot run its own independent 2s.
             // Floored at a tiny positive value while a deadline exists:
@@ -488,6 +494,9 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         }
         sample_rho();
         ++perturbations;
+        if (allow_lns) {
+            ++lns_slot;
+        }
         stagnation = 0;
     };
 
@@ -610,26 +619,24 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         // batch ENDING early, which matters on its own: on ex8_6_1 the early
         // exits cost about six gap points even with every kick suppressed.
         //
-        // `!have_feasible` is the load-bearing half, and the stagnation count is
-        // a second witness inside that window rather than a substitute for it.
-        // The progress measure sums the REAL rows and deliberately cannot see the
-        // artificial `obj <= bound` row, so it only means what it says while that
-        // row is not yet in play -- before the first feasible solution, when the
-        // bound is still +inf and the real rows ARE the objective. After it, the
-        // search's work is a trade between the two: the real rows settle at a
-        // strictly positive equilibrium and "no new all-time low" becomes the
-        // normal state of a batch that is working perfectly.
+        // The rule is the stagnation count ALONE. Feasibility does not gate
+        // arming or the kick; it decides only whether the kick may draw LNS (see
+        // the kick site). Two alternatives were implemented and measured and both
+        // are worse, so do not "restore" either from these notes:
         //
-        // A stagnation count alone cannot separate those regimes. It only DELAYS
-        // the misfire, because the kick site deliberately does not reset
-        // `stagnation` -- so once the count first crosses the threshold, every
-        // later batch is armed again and the cadence returns to one kick per
-        // unproductive batch. Rate-limiting it instead (arming on the advance
-        // since the last unproductive kick) does bound that, but it also starves
-        // st_e40, which is pre-feasible for its whole run and needs those kicks:
-        // measured infeasible at seed 2 on the 15 000-iteration regression
-        // budget. Gating on the regime rather than on the rate keeps st_e40's
-        // cadence untouched and removes ex8_6_1's exposure entirely.
+        //  - Gating the kick on !have_feasible bounds the misfire completely, but
+        //    st_e40 then reaches its BKS on 2 of 4 seeds instead of 4 -- it uses
+        //    post-feasible kicks to move between its 52 feasible combinations.
+        //  - Rate-limiting the kick (arming on the advance since the last one)
+        //    starves it the other way: infeasible at seed 2 on the 15 000-
+        //    iteration regression budget.
+        //
+        // Note what this count does NOT do: it does not bound the number of
+        // kicks. The kick site restores `stagnation` deliberately, so once the
+        // count first crosses the threshold every later batch is armed until an
+        // improvement or a full-period diversify resets it. That is a DELAY on
+        // the first misfire, not a cap on the rate; what makes the misfire cheap
+        // is that the kick drops its LNS half once a feasible solution exists.
         fj.set_watch_progress(stagnation >= unproductive_arm_stagnation);
 
         bool resync = false;
@@ -754,12 +761,6 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         // `stagnation >= unproductive_arm_stagnation`, so this is the second of
         // two gates rather than the only one; it is kept because it reads on the
         // state AFTER the batch, which the arming decision could not.
-        // `!have_feasible` repeats the arming gate above rather than relying on
-        // it. batch_stuck() is sticky for the batch that set it, and the first
-        // feasible solution can be recorded by that same batch -- so a batch that
-        // armed while pre-feasible can report stuck after have_feasible has
-        // turned true. Reading the flag here, on the state AFTER the batch, is
-        // what keeps a single kick from leaking into the objective-descent phase.
         const bool unproductive_kick =
             kind == BatchKind::FeasibilityJump && !improved && fj.batch_stuck();
         if (stagnation >= config.perturbation_period && !past_deadline()) {
