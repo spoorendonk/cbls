@@ -1014,8 +1014,8 @@ TEST_CASE("a residual below is_violated's tolerance is not progress to be made",
         }
         const double r = m.node(cids[c]).value;
         CAPTURE(c, r);
-        REQUIRE(r > 0.0);     // a bare `> 0.0` test counts it...
-        REQUIRE(r <= 1e-9);   // ...but the engine calls it satisfied.
+        REQUIRE(r > 0.0);    // a bare `> 0.0` test counts it...
+        REQUIRE(r <= 1e-9);  // ...but the engine calls it satisfied.
         ++real_rows;
     }
     REQUIRE(real_rows == kTinyResidualVars);
