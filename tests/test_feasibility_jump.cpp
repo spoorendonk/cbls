@@ -819,8 +819,11 @@ double recompute_real_violation(const Model& m, const ViolationManager& vm) {
         if (static_cast<int32_t>(c) == obj_ci || vm.weights[c] <= 0.0) {
             continue;
         }
+        // is_violated's threshold, not a bare `> 0.0`: a residual in (0, kTol]
+        // is a SATISFIED row, and counting it here would re-introduce exactly
+        // the disagreement #102's ex8_6_1 finding was about.
         const double r = m.node(cids[c]).value;
-        if (r > 0.0 && r < std::numeric_limits<double>::infinity()) {
+        if (r > 1e-9 && r < std::numeric_limits<double>::infinity()) {
             total += r;
         }
     }
@@ -950,6 +953,84 @@ void build_real_rows_with_disjoint_objective(Model& m) {
     m.minimize(m.sum({z}));
     m.close();
     m.add_objective_soft_constraint();
+}
+
+// Real rows that are SATISFIED as far as is_violated is concerned, yet whose
+// residual is a strictly positive number rather than an exact 0.0. That is what
+// a satisfied EQUALITY row on continuous variables looks like: NodeOp::Eq's
+// residual is |lhs - rhs|, which lands a few ulp off zero rather than on it.
+// Each variable is pinned by its own bounds, so no jump can move it and the
+// residual is a constant for the whole run.
+constexpr int kTinyResidualVars = 4;
+constexpr double kTinyResidual = 1e-12;
+
+void build_tiny_residual_rows_with_objective(Model& m) {
+    for (int i = 0; i < kTinyResidualVars; ++i) {
+        int32_t v = m.float_var(0.5, 0.5);
+        m.add_constraint(m.eq_expr(v, m.constant(0.5 + kTinyResidual)));
+    }
+    int32_t z = m.int_var(0, 200);
+    m.minimize(m.sum({z}));
+    m.close();
+    m.add_objective_soft_constraint();
+}
+
+TEST_CASE("a residual below is_violated's tolerance is not progress to be made",
+          "[fj][unproductive]") {
+    // Regression for #102's ex8_6_1 finding, first half. progress_residual
+    // counted any residual `> 0.0`, while every other test in this engine calls
+    // a row satisfied at `<= kTol` (1e-9). The two disagreed on the band
+    // (0, kTol], and on a model whose real rows are equalities that band is
+    // where a SATISFIED row lives -- so the measure could never reach zero, and
+    // every test of the form "the real rows are all satisfied, so this measure
+    // has nothing left to say" was dead code there. MINLPLib ex8_6_1 is 45
+    // nonlinear equalities over 75 continuous variables; nothing in it ever
+    // drove the sum to an exact 0.0.
+    Model m;
+    build_tiny_residual_rows_with_objective(m);
+    ViolationManager vm(m);
+    RNG rng(42);
+    REQUIRE(m.objective_constraint_idx() >= 0);
+    // z >= 0, so the objective row stays violated and the batch keeps running.
+    m.set_objective_bound(-1.0);
+    full_evaluate(m);
+
+    GFJConfig cfg;
+    cfg.two_phase = false;
+    cfg.time_limit = 0.0;
+    REQUIRE(cfg.unproductive_iterations == 300);
+
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(/*set_initial_x=*/true);
+
+    // The premise, stated as an assertion rather than assumed: every real row
+    // sits strictly inside the disputed band.
+    const int32_t obj_ci = m.objective_constraint_idx();
+    const std::vector<int32_t>& cids = m.constraint_ids();
+    int real_rows = 0;
+    for (size_t c = 0; c < cids.size(); ++c) {
+        if (static_cast<int32_t>(c) == obj_ci) {
+            continue;
+        }
+        const double r = m.node(cids[c]).value;
+        CAPTURE(c, r);
+        REQUIRE(r > 0.0);     // a bare `> 0.0` test counts it...
+        REQUIRE(r <= 1e-9);   // ...but the engine calls it satisfied.
+        ++real_rows;
+    }
+    REQUIRE(real_rows == kTinyResidualVars);
+
+    // Long enough to reach the streak limit several times over.
+    constexpr int64_t kIters = 4 * int64_t{300};
+    fj.batch(kIters);
+
+    CAPTURE(fj.iterations(), fj.unweighted_violation());
+    // The measure agrees with is_violated: nothing here is violated, so there is
+    // no progress left to make and the measure is at its floor.
+    REQUIRE(fj.unweighted_violation() == 0.0);
+    // The point: a batch with no real violation left is not a stall report.
+    REQUIRE_FALSE(fj.batch_stuck());
+    REQUIRE(fj.iterations() == kIters);
 }
 
 TEST_CASE("a real-feasible batch is not called stuck by a measure that cannot move",

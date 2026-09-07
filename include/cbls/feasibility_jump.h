@@ -150,10 +150,11 @@ public:
     // The armed state, so the caller (and its regression tests) can observe the
     // arming decision directly instead of inferring it from a trajectory.
     [[nodiscard]] bool escape_probe() const { return escape_probe_; }
-    // Arm/disarm the unproductive-batch exit (GFJConfig::unproductive_iterations).
-    // Armed at begin(); solve() disarms it for the rest of the run at the first
-    // real-feasible solution, because from there on the progress measure is
-    // blind -- see the REGIME BOUNDARY paragraph on unweighted_violation_.
+    // Arm/disarm the unproductive-batch exit (GFJConfig::unproductive_iterations)
+    // for the next batch. Armed at begin(); solve() re-decides it before every
+    // batch from its own stagnation count -- see the SECOND WITNESS paragraph on
+    // unweighted_violation_ for why the measure alone is not enough to end a
+    // batch on.
     void set_watch_progress(bool on) { watch_progress_ = on; }
     [[nodiscard]] bool watch_progress() const { return watch_progress_; }
     // The running progress measure: unweighted violation of the active REAL rows
@@ -416,42 +417,54 @@ private:
     // outer loop is allowed to look. See GFJConfig::unproductive_iterations for
     // what its default is and is not.
     //
-    // REGIME BOUNDARY: THIS IS A PRE-FEASIBILITY MECHANISM ONLY, and the whole
-    // objective-descent phase is excluded rather than the single case of a
-    // measure that reads exactly zero.
+    // ONE REGIME IS EXCLUDED, and it is not a corner case. The measure sums the
+    // REAL rows only (see below for why), so once they are all satisfied it is
+    // identically zero and cannot improve on itself. Read naively the exit would
+    // then fire on EVERY batch of the objective-descent phase -- a stall
+    // detector that is unconditionally true, which is the same shape of defect
+    // as measuring a whole sum that a clamped row swallows. A batch whose
+    // measure is zero is therefore never declared stuck: the search there is
+    // descending against the artificial objective row, which this measure
+    // deliberately cannot see, and having no signal is not evidence of being
+    // stuck. `perturbation_period` keeps owning that regime, as it did before.
     //
-    // The measure sums the REAL rows only (see below for why), so it cannot see
-    // the artificial `obj <= bound` row at all. Before the first feasible
-    // solution that is the point: the real rows are the whole job, and no batch
-    // ever "improves" in the outer loop's sense, so nothing else supplies
-    // feedback. AFTER it, the search's actual work is a trade -- the bound is
-    // tightened on every new best, FJ pulls the assignment off the real-feasible
-    // set to chase the objective row, and the real rows settle at a STRICTLY
-    // POSITIVE equilibrium. batch_best_violation is a running MINIMUM over the
-    // batch, so "unproductive_iterations without a new all-time low" is the
-    // normal state of any such plateau. The detector is then unconditionally
-    // true on a search that is working perfectly.
+    // THE SECOND WITNESS (watch_progress_). Excluding a measure that reads
+    // exactly zero is necessary and nowhere near sufficient, and #102's ex8_6_1
+    // regression is what that costs. Two things go wrong once a feasible
+    // solution exists:
     //
-    // Measured on MINLPLib ex8_6_1 (#102), 10s at seed 42: the run improves its
-    // incumbent on 152 of its first 162 batches, then every later batch trips
-    // the exit with the measure between 0.016 and 0.51 -- three orders above
-    // is_violated's kTol, so no zero-test can see it. Nine spurious kicks
-    // follow; three of them are LNS (lns_interval = 3), each bounded by
-    // min(2.0, remaining()), and they alone consume 4.7s of the 10s budget. The
-    // run does 8.2k GLS iterations instead of 32k and finishes at objective
-    // -3.02 instead of -8.62.
+    //   * the plateau is at POSITIVE violation, not at zero. The bound is
+    //     tightened on every new best, FJ pulls the assignment off the
+    //     real-feasible set to chase the objective row, and the real rows settle
+    //     at an equilibrium the measure can see but cannot interpret --
+    //     0.016 to 0.51 on ex8_6_1, three orders above kTol. batch_best_violation
+    //     is a running MINIMUM, so "unproductive_iterations without a new
+    //     all-time low" is the normal state of any such plateau;
+    //   * on a model whose real rows are EQUALITIES an exactly-zero sum is
+    //     essentially never observed anyway (residual |body(x)|), so the
+    //     zero test is dead code there. ex8_6_1 is 45 nonlinear equalities over
+    //     75 continuous variables.
     //
-    // An earlier revision excluded only `measure == 0`. That is too narrow twice
-    // over: the damaging plateau is at positive violation, and on a model whose
-    // real rows are nonlinear EQUALITIES (residual |body(x)|, ex8_6_1 is 45 of
-    // them over 75 continuous variables) an exactly-zero sum is measure-zero and
-    // effectively never observed, so the exclusion was dead code there.
+    // Measured, 10s at seed 42: the run improved its incumbent on 152 of its
+    // first 162 batches and was then declared stuck on nine of the rest. Three
+    // of the nine kicks drew LNS (lns_interval = 3), each bounded by
+    // min(2.0, remaining()), and those three alone consumed 4.7s of the 10s
+    // budget. 8.2k GLS iterations instead of 32k, objective -3.02 instead of
+    // -8.62.
     //
-    // So solve() disarms the exit outright at the first real-feasible solution
-    // (set_watch_progress), which also stops batches ENDING early there -- the
-    // objective-descent phase is then bit-identical to a run with the mechanism
-    // off. `perturbation_period` owns that regime, as it did before, and it has
-    // the feedback signal this measure lacks: `improved`.
+    // So the exit needs a witness the measure cannot supply, and the outer loop
+    // already has one: its own count of consecutive non-improving batches.
+    // solve() arms this flag only once that count reaches a fraction of
+    // `perturbation_period`, which makes the mechanism an ACCELERATION of the
+    // stagnation window rather than a replacement for it -- one kick per
+    // (that fraction + 1) batches instead of one per 100, where leaving it
+    // unwitnessed gave one per ~300 iterations. A search improving its incumbent
+    // every few batches never arms it at all, and is then bit-identical to a run
+    // with the mechanism switched off. Arming rather than merely suppressing the
+    // KICK is deliberate: an armed exit still ends batches at
+    // unproductive_iterations, and on ex8_6_1 those early exits alone -- six of
+    // them, no kick at all -- still cost about six gap points through the
+    // changed batch cadence.
     //
     // ---- What the measure is, and why it is that ----
     //
@@ -514,8 +527,9 @@ private:
     // Relative floor on what counts as a new minimum; see (2) above.
     static constexpr double kProgressRelEps = 1e-9;
     double unweighted_violation_ = 0.0;
-    // Armed until solve() sees a real-feasible solution; see the REGIME BOUNDARY
-    // paragraph above. Reset by begin() so a reused instance does not inherit it.
+    // Armed at begin() and re-decided by solve() before every batch; see THE
+    // SECOND WITNESS above. A caller driving batch() directly (the unit tests)
+    // gets the mechanism armed throughout, which is what those tests want.
     bool watch_progress_ = true;
     int64_t unproductive_streak_ = 0;
     bool batch_stuck_ = false;

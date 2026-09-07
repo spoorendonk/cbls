@@ -1233,3 +1233,95 @@ TEST_CASE("SolutionPool top_k", "[pool]") {
     REQUIRE(top2[0].objective == 3.0);
     REQUIRE(top2[1].objective == 5.0);
 }
+
+// A model that is real-feasible from its first assignment and then descends
+// against the objective for many batches, with the objective COUPLED to the real
+// rows -- the regime #102's unproductive-batch exit had no business in.
+//
+// Every variable starts at 0 (set_initial_assignment picks the domain value
+// closest to zero), each row pins its own variable from below at -500, and the
+// objective is the sum of the same variables. Coupling is the point: chasing the
+// bound that record_best tightens on every new best pushes variables past -500,
+// so the real rows carry a strictly POSITIVE residual for much of every batch
+// rather than the exact 0.0 a disjoint objective would leave. That positive
+// plateau is what the exit cannot distinguish from a stall.
+namespace {
+constexpr int kDescentVars = 20;
+
+void build_long_descent_with_coupled_objective(Model& m) {
+    std::vector<int32_t> vars;
+    vars.reserve(kDescentVars);
+    for (int i = 0; i < kDescentVars; ++i) {
+        // Wider than the 256 values int_jump_candidates enumerates exhaustively,
+        // so the descent goes in steps rather than one jump to the answer.
+        int32_t v = m.int_var(-1000, 0);
+        m.add_constraint(m.geq(v, m.constant(-500.0)));
+        vars.push_back(v);
+    }
+    m.minimize(m.sum(vars));
+    m.close();
+}
+}  // namespace
+
+TEST_CASE("the unproductive-batch exit waits for the outer loop's stagnation count",
+          "[search][unproductive]") {
+    // Regression for #102's ex8_6_1 finding. The exit's measure is the real
+    // rows' unweighted violation and cannot see the artificial `obj <= bound`
+    // row. Once a feasible solution exists the search trades one against the
+    // other and the real rows sit at a strictly POSITIVE equilibrium; the
+    // measure's reference is a running minimum over the batch, so
+    // "no new all-time low in unproductive_iterations" is the normal state of a
+    // search that is working. Unwitnessed, the exit therefore fires on
+    // essentially every batch of the objective-descent phase -- a diversification
+    // schedule (one kick per ~300 GLS iterations, LNS in the rotation) wearing a
+    // stall detector's clothes. On MINLPLib ex8_6_1 that cost 20 gap points at a
+    // 10s budget, on all four paired seeds tried.
+    //
+    // The fix arms the exit only once solve()'s own stagnation count reaches
+    // perturbation_period / 20 batches. This asserts that rule where it is
+    // sharpest and without timing anything: `perturbation_period` is set so the
+    // threshold is 100 batches while the iteration budget spends around 40, so a
+    // correctly gated run can never arm the mechanism -- and must therefore be
+    // IDENTICAL to a run with the mechanism switched off. An ungated one fires
+    // it, diverges, and the equalities below fail.
+    //
+    // The wall-clock arm of this regression is deliberately not asserted here.
+    // Most of ex8_6_1's lost budget went into LNS repairs, which are bounded by
+    // `min(2.0, remaining())` and so cost seconds but almost no iterations; on
+    // the iteration-budgeted path the same spurious kicks are nearly free. A
+    // deterministic test cannot see that half, which is exactly why it is the
+    // half recorded in benchmarks/instances/minlplib/README.md with a measured
+    // A/B instead.
+    auto run = [](int64_t unproductive) {
+        Model m;
+        build_long_descent_with_coupled_objective(m);
+        SearchConfig config;
+        config.max_iterations = 40000;
+        // 40000 / batch_iterations is around 40 batches, so the arming threshold
+        // of perturbation_period / 20 = 100 is out of reach for the whole run.
+        // This also puts the stagnation route's own kick (at 2000 batches) out
+        // of reach, so the unproductive mechanism is the ONLY difference between
+        // the two arms.
+        config.perturbation_period = 2000;
+        config.unproductive_iterations = unproductive;
+        LNS lns(0.3);
+        return solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, &lns,
+                     /*lns_interval=*/3, nullptr, config);
+    };
+
+    const SearchResult off = run(0);
+    const SearchResult on = run(300);
+
+    // The premise: this really is the productive post-feasible regime the fix is
+    // about, and the run really is far short of the arming threshold.
+    REQUIRE(off.termination == TerminationReason::IterationLimit);
+    REQUIRE(off.feasible);
+    REQUIRE(off.objective < -100.0);
+    REQUIRE(off.iterations < 100 * SearchConfig{}.batch_iterations);
+
+    CAPTURE(off.objective, on.objective, off.iterations, on.iterations);
+    // The point: the mechanism is inert here, so the trajectory is untouched.
+    REQUIRE(on.objective == off.objective);
+    REQUIRE(on.iterations == off.iterations);
+    REQUIRE(on.feasible == off.feasible);
+}

@@ -6,7 +6,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
 #include <limits>
 
 namespace cbls {
@@ -26,24 +25,27 @@ bool is_violated(double residual) {
 // A row's contribution to the unproductive-batch progress measure (see
 // FeasibilityJump::unweighted_violation_). Finite residuals of rows this engine
 // calls VIOLATED: NaN fails the comparison, and +inf is excluded explicitly so
-// that subtracting it out again in update_var cannot turn the running total
-// into a NaN it can never leave. Both callers -- the fresh recomputation and the
+// that subtracting it out again in update_var cannot turn the running total into
+// a NaN it can never leave. Both callers -- the fresh recomputation and the
 // incremental update -- go through this, so the two definitions cannot drift
 // apart.
 //
-// The threshold is is_violated's, not a bare `> 0.0`. A residual in (0, kTol]
-// is satisfied everywhere else in this file, and counting it here made the
-// measure disagree with the engine's own satisfaction predicate: a model whose
-// rows are equalities (residual |body(x)|, so a satisfied row lands a few ulp
-// off zero rather than on it) could never drive the measure to zero, and any
-// test of the form "the real rows are all satisfied" was then dead code. Rows
-// still violated between kTol and the search's feasibility_tolerance are a
-// separate band and are deliberately still counted -- they are violated as far
-// as FJ is concerned, which is whose progress this measures.
+// The threshold is is_violated's kTol, not a bare `> 0.0`. A residual in
+// (0, kTol] is a SATISFIED row everywhere else in this file, and counting it
+// here made the measure disagree with the engine's own predicate. That
+// disagreement is invisible on inequality rows over integers, where a satisfied
+// row's residual is a clean 0.0, and structural on EQUALITY rows over
+// continuous variables, where NodeOp::Eq's |lhs - rhs| lands a few ulp off zero
+// instead: the measure could then never reach its floor, and every test of the
+// form "the real rows are all satisfied, so this measure has nothing left to
+// say" was dead code on such a model (#102, MINLPLib ex8_6_1: 45 nonlinear
+// equalities over 75 continuous variables).
+//
+// Rows violated between kTol and the search's feasibility_tolerance are a
+// different band and are still counted. They are violated as far as FJ is
+// concerned, and it is FJ's progress this measures.
 double progress_residual(double residual) {
-    static const bool i102_oldresid = std::getenv("CBLS_I102_OLDRESID") != nullptr;
-    const double thr = i102_oldresid ? 0.0 : kTol;
-    return (residual > thr && residual < std::numeric_limits<double>::infinity()) ? residual : 0.0;
+    return (residual > kTol && residual < std::numeric_limits<double>::infinity()) ? residual : 0.0;
 }
 
 double clamp_to_domain(const Variable& var, double value) {
@@ -801,9 +803,10 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
     unproductive_streak_ = 0;
     // Only the batch API has an outer loop to hand control back to; gls()/run()
     // passes no limit and must run its budget out.
-    // watch_progress_ is the regime gate: solve() disarms it at the first
-    // real-feasible solution, after which this measure has no information (see
-    // the REGIME BOUNDARY paragraph on unweighted_violation_).
+    // watch_progress_ is the second witness: solve() arms it only once its own
+    // stagnation count says the search has stopped improving, because this
+    // measure on its own is unconditionally true on any plateau at positive
+    // violation (see THE SECOND WITNESS on unweighted_violation_).
     const bool watch_progress =
         watch_progress_ && batch_iter_limit > 0 && config_.unproductive_iterations > 0;
     // A new minimum has to beat the incumbent by more than the accumulator can
@@ -848,13 +851,16 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
                 batch_best_violation = unweighted_violation_;
                 unproductive_streak_ = 0;
             } else if (unweighted_violation_ <= 0.0) {
-                // Every real row is satisfied, so the measure is at its floor and
-                // cannot improve on itself: no signal, which is not evidence of
-                // being stuck. Only the batch that is already inside such a
-                // plateau when solve() has yet to record its first feasible
-                // solution reaches here -- the objective-descent phase is
-                // excluded outright by watch_progress_ above, because there the
-                // plateau sits at POSITIVE violation and this test cannot see it.
+                // The measure sums the REAL rows only, so once they are all
+                // satisfied it is identically zero and can never improve on
+                // itself -- every batch in the objective-descent phase would
+                // report stuck at exactly unproductive_iterations, turning a
+                // stall detector into an unconditional one. The search is not
+                // stalled there; it is descending against the artificial
+                // objective row, which this measure deliberately cannot see.
+                // Having no signal is not evidence of being stuck, so hand the
+                // batch back to its own limit and let perturbation_period keep
+                // owning that regime.
                 unproductive_streak_ = 0;
             } else {
                 batch_stuck_ = true;

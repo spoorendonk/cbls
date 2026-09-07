@@ -4,8 +4,6 @@
 #include "cbls/feasibility_jump.h"
 #include "cbls/randomize.h"
 
-#include <cstdio>
-#include <cstdlib>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -305,14 +303,6 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     Model::State closest_state = best_state;
     int perturbations = 0;
     int stagnation = 0;
-    // I102-TRACE (temporary investigation instrumentation; removed before merge)
-    const bool i102_trace = std::getenv("CBLS_I102_TRACE") != nullptr;
-    int64_t i102_stuck = 0, i102_kick = 0, i102_div_stag = 0, i102_batches_fj = 0,
-            i102_improved = 0, i102_zero_guard_seen = 0;
-    double i102_first_feas_t = -1.0;
-    double i102_stuck_uv_sum = 0.0;
-    double i102_lns_t = 0.0, i102_perturb_t = 0.0;
-    int64_t i102_lns_n = 0;
     int64_t batches = 0;
     auto last_callback = start;
 
@@ -480,23 +470,10 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             // limit" downstream in fj_nl_initialize — the opposite of intent.
             const double repair_limit =
                 has_deadline ? std::max(1e-9, std::min(2.0, remaining())) : 0.0;
-            auto i102_t0 = std::chrono::steady_clock::now();
             lns->destroy_repair(model, vm, rng, repair_limit);
-            if (i102_trace) {
-                i102_lns_t += std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                                            i102_t0)
-                                  .count();
-                ++i102_lns_n;
-            }
             fj.reset_weights();  // LNS mutated state outside GFJ
         } else {
-            auto i102_t0 = std::chrono::steady_clock::now();
             fj.perturb(config.perturbation_probability);  // self-resyncs
-            if (i102_trace) {
-                i102_perturb_t += std::chrono::duration<double>(
-                                      std::chrono::steady_clock::now() - i102_t0)
-                                      .count();
-            }
         }
         sample_rho();
         ++perturbations;
@@ -531,6 +508,48 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     // wants its own measurement.
     constexpr double kEscapeArmFraction = 0.25;
     auto last_improvement = start;
+
+    // Second witness for #102's unproductive-batch exit. FeasibilityJump ends a
+    // batch on ITS measure -- the real rows' unweighted violation -- and that
+    // measure cannot see the artificial objective row at all. Before the first
+    // feasible solution that is the whole point. After it, the search's work is
+    // a trade between the two: the bound is tightened on every new best, FJ
+    // pulls the assignment off the real-feasible set to chase the objective row,
+    // and the real rows settle at a strictly positive equilibrium. Since the
+    // measure's reference is a running MINIMUM over the batch, "no new all-time
+    // low" is then the normal state of a search that is working, and the exit
+    // fires unconditionally -- on MINLPLib ex8_6_1 it fired on a run improving
+    // its incumbent on 152 of 162 batches, and the three LNS kicks that followed
+    // took 4.7s of a 10s budget (#102).
+    //
+    // So arm the exit only once THIS loop's own stagnation count agrees the
+    // search has stopped improving. That makes the mechanism an acceleration of
+    // the stagnation window rather than a replacement for it: the kick arrives
+    // after this many non-improving batches plus one unproductive one, instead
+    // of after `perturbation_period` batches -- a 20x shortening at the default,
+    // where leaving it unwitnessed shortened it by ~300x and turned a stall
+    // detector into a diversification schedule.
+    //
+    // A FRACTION of `perturbation_period` rather than a fresh constant, so the
+    // two windows keep their ratio when a caller retunes the one knob that
+    // already exists; floored at 1, since 0 is "always armed", the regime this
+    // is here to end.
+    //
+    // The divisor is the honest part to argue with, and it is tuned: a sweep of
+    // {5, 10, 20} batches on MINLPLib at a 10s budget over four paired seeds.
+    // All three remove the ex8_6_1 regression completely -- it matches or beats
+    // main on 4/4 seeds at every one of them, because a search that improves
+    // this often simply never reaches the threshold. They differ on the
+    // instance the mechanism exists for: st_e40 reaches its BKS on 4/4 seeds at
+    // 5 and on 2/4 at 10 or 20, since after the first feasible solution it needs
+    // the accelerated kick to move between its 52 feasible integer combinations.
+    // nvs01 is feasible on 4/4 at all three (main solves it on none) with
+    // objective quality too noisy to separate them. So the smallest of the three
+    // is chosen, which is also the one closest to the unwitnessed behaviour on
+    // the instances that want it. Nothing here establishes that 20 transfers off
+    // MINLPLib; it is the same standing complaint GFJConfig::
+    // unproductive_iterations records against its own 300.
+    const int unproductive_arm_stagnation = std::max(1, config.perturbation_period / 20);
 
     while (!past_deadline()) {
         // Count *actual* GLS iterations, which is what the config documents and
@@ -567,6 +586,12 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         } else if (config.use_compound_moves && rng.random() < config.novelty_jump_probability) {
             kind = BatchKind::NoveltyJump;
         }
+
+        // Re-decided every batch, from the count as it stands BEFORE the batch
+        // runs; see unproductive_arm_stagnation above. Disarming also stops the
+        // batch ENDING early, which matters on its own: on ex8_6_1 the early
+        // exits cost about six gap points even with every kick suppressed.
+        fj.set_watch_progress(stagnation >= unproductive_arm_stagnation);
 
         bool resync = false;
         switch (kind) {
@@ -625,14 +650,6 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
                 last_improvement = std::chrono::steady_clock::now();
             }
             stagnation = 0;
-            if (i102_trace) {
-                ++i102_improved;
-                if (i102_first_feas_t < 0.0) {
-                    i102_first_feas_t = std::chrono::duration<double>(
-                                            std::chrono::steady_clock::now() - start)
-                                            .count();
-                }
-            }
             // Making progress: the Float escape probe is not needed and is not free.
             fj.set_escape_probe(false);
             fj.reset_weights();  // new best: fresh GLS weights (paper) + new rho
@@ -647,24 +664,6 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             if (resync) {
                 fj.resync();  // re-sync after hook/structural mutation, keep GLS weights
             }
-        }
-
-        // #102's unproductive-batch exit is a PRE-feasibility mechanism, and this
-        // is where its regime ends. Its measure is the real rows' violation and
-        // it cannot see the artificial objective row; once a feasible solution
-        // exists the search's work is a trade between the two, the real rows
-        // plateau at a strictly positive equilibrium, and "no new all-time low
-        // for unproductive_iterations" becomes unconditionally true on a search
-        // that is improving its incumbent nearly every batch (measured on
-        // MINLPLib ex8_6_1: 152 of 162 batches improved, then nine spurious
-        // kicks, three of them LNS, burning 4.7s of a 10s budget). Disarming
-        // rather than only skipping the kick also stops batches ending early
-        // here, so this phase runs exactly as it does with the mechanism off.
-        // `perturbation_period` owns it, as it did before this change, and it
-        // has the signal the measure lacks: `improved`.
-        static const bool i102_nogate = std::getenv("CBLS_I102_NOGATE") != nullptr;
-        if (have_feasible && !i102_nogate) {
-            fj.set_watch_progress(false);
         }
 
         // Time-based arming (#117); see kEscapeArmFraction above. Tested on every
@@ -711,23 +710,13 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         // the reasoning the time-based arming route above rests on ("the
         // improvement that resets stagnation also disarms the probe"), by
         // re-arming the probe on the very batch that just improved.
+        //
+        // batch_stuck() can now only be true when the batch started with
+        // `stagnation >= unproductive_arm_stagnation`, so this is the second of
+        // two gates rather than the only one; it is kept because it reads on the
+        // state AFTER the batch, which the arming decision could not.
         const bool unproductive_kick =
             kind == BatchKind::FeasibilityJump && !improved && fj.batch_stuck();
-        if (i102_trace) {
-            if (kind == BatchKind::FeasibilityJump) {
-                ++i102_batches_fj;
-            }
-            if (fj.batch_stuck()) {
-                ++i102_stuck;
-                i102_stuck_uv_sum += fj.unweighted_violation();
-                std::fprintf(stderr, "[I102] stuck#%lld batch=%lld iters=%lld uv=%.6g maxreal=%.6g feas=%d\n",
-                             (long long)i102_stuck, (long long)batches, (long long)fj.iterations(),
-                             fj.unweighted_violation(), max_real_violation(), (int)have_feasible);
-            }
-            if (unproductive_kick) {
-                ++i102_kick;
-            }
-        }
         if (stagnation >= config.perturbation_period && !past_deadline()) {
             // Genuinely stuck. Arm the Float escape probe: a variable sitting at a
             // stationary point of every violated constraint has no other candidate
@@ -735,9 +724,6 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             // the search re-converges to the same point. Disarmed again on the next
             // improvement, so a productive search never pays for it.
             fj.set_escape_probe(true);
-            if (i102_trace) {
-                ++i102_div_stag;
-            }
             diversify();
         } else if (unproductive_kick && !past_deadline()) {
             // Kick early, but do NOT arm the escape probe and do NOT reset the
@@ -798,20 +784,6 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     result.time_seconds = elapsed;
     result.termination = termination;
     result.escape_probe_armed = fj.escape_probe();
-    if (i102_trace) {
-        std::fprintf(stderr,
-                     "\n[I102] batches=%lld fjbatches=%lld iters=%lld improved=%lld stuck=%lld "
-                     "kick=%lld divstag=%lld perturb=%d firstfeas=%.3f stuck_uv_mean=%.6g "
-                     "obj=%.9g feas=%d\n",
-                     (long long)batches, (long long)i102_batches_fj, (long long)fj.iterations(),
-                     (long long)i102_improved, (long long)i102_stuck, (long long)i102_kick,
-                     (long long)i102_div_stag, perturbations, i102_first_feas_t,
-                     i102_stuck ? i102_stuck_uv_sum / (double)i102_stuck : 0.0, result.objective,
-                     (int)result.feasible);
-        std::fprintf(stderr, "[I102] lns_n=%lld lns_t=%.3f perturb_t=%.3f\n",
-                     (long long)i102_lns_n, i102_lns_t, i102_perturb_t);
-        (void)i102_zero_guard_seen;
-    }
     return result;
 }
 
