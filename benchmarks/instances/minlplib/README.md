@@ -575,6 +575,13 @@ arm lost about 20 gap points there on all four paired seeds tried; the `after`
 arm is level with `main` on all four (`-8.63 / -6.01 / -10.20 / -11.04` against
 main's `-8.62 / -6.01 / -10.05 / -9.82`).
 
+Checked at the published 60s budget too, since the regression was a *rate* effect
+and a longer budget is where a residual would show. Gap to BKS, `main` against
+`after`, seeds 42/1/2/3: **39.58/64.86/53.14/43.48** against
+**46.97/57.78/55.98/30.11** — two seeds each way, `after` ahead on the mean
+(47.7% against 50.3%). That is the two arms being indistinguishable, which is
+what "recovered" means here; contrast the `before` arm, which was worse on 4/4.
+
 The mechanism, which took instrumentation rather than argument to find: the
 exit's progress measure sums the **real** rows and deliberately cannot see the
 artificial `obj <= bound` row. Before the first feasible solution that is the
