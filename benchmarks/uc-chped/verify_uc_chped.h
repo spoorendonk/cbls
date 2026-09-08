@@ -19,7 +19,7 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst, 
 
     // Extract variable values (handles are negative: var_id = -(handle + 1))
     auto val = [&](int32_t handle) -> double { return m.var(-(handle + 1)).value; };
-    auto ival = [&](int32_t handle) -> int { return (int)std::round(val(handle)); };
+    auto ival = [&](int32_t handle) -> int { return static_cast<int>(std::round(val(handle))); };
 
     // Extract all variable values
     std::vector<std::vector<int>> y_val(N, std::vector<int>(T));
@@ -37,7 +37,7 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst, 
             if (y_val[u][t] != 0 && y_val[u][t] != 1) {
                 result.add_error({VerifyError::Kind::Custom,
                                   "y[" + std::to_string(u) + "][" + std::to_string(t) + "]", 0.0,
-                                  (double)y_val[u][t], "commitment not 0 or 1"});
+                                  static_cast<double>(y_val[u][t]), "commitment not 0 or 1"});
             }
         }
     }
@@ -101,7 +101,7 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst, 
                         result.add_error(
                             {VerifyError::Kind::Custom,
                              "y[" + std::to_string(u) + "][" + std::to_string(tau) + "]", 1.0,
-                             (double)y_val[u][tau],
+                             static_cast<double>(y_val[u][tau]),
                              "min uptime violated (startup at t=" + std::to_string(t) +
                                  ", min_on=" + std::to_string(inst.min_on[u]) + ")"});
                     }
@@ -122,7 +122,7 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst, 
                         result.add_error(
                             {VerifyError::Kind::Custom,
                              "y[" + std::to_string(u) + "][" + std::to_string(tau) + "]", 0.0,
-                             (double)y_val[u][tau],
+                             static_cast<double>(y_val[u][tau]),
                              "min downtime violated (shutdown at t=" + std::to_string(t) +
                                  ", min_off=" + std::to_string(inst.min_off[u]) + ")"});
                     }
@@ -139,7 +139,7 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst, 
                 if (y_val[u][t] != 1) {
                     result.add_error({VerifyError::Kind::Custom,
                                       "y[" + std::to_string(u) + "][" + std::to_string(t) + "]",
-                                      1.0, (double)y_val[u][t],
+                                      1.0, static_cast<double>(y_val[u][t]),
                                       "initial on-condition violated (remaining_on=" +
                                           std::to_string(remaining) + ")"});
                 }
@@ -151,7 +151,7 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst, 
                 if (y_val[u][t] != 0) {
                     result.add_error({VerifyError::Kind::Custom,
                                       "y[" + std::to_string(u) + "][" + std::to_string(t) + "]",
-                                      0.0, (double)y_val[u][t],
+                                      0.0, static_cast<double>(y_val[u][t]),
                                       "initial off-condition violated (remaining_off=" +
                                           std::to_string(remaining) + ")"});
                 }

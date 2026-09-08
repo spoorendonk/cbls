@@ -17,7 +17,8 @@ TEST_CASE("UC-CHPED 13-unit 1-period model builds", "[uc-chped]") {
     auto& m = ucm.model;
     // 13 bool (commitment) + 13 float (dispatch) = 26 vars
     REQUIRE(m.num_vars() == 26);
-    printf("\n13-unit 1p: %ld vars, %ld nodes\n", (long)m.num_vars(), (long)m.num_nodes());
+    printf("\n13-unit 1p: %ld vars, %ld nodes\n", static_cast<long>(m.num_vars()),
+           static_cast<long>(m.num_nodes()));
 }
 
 TEST_CASE("UC-CHPED 13-unit 1-period feasibility", "[uc-chped]") {
@@ -30,7 +31,7 @@ TEST_CASE("UC-CHPED 13-unit 1-period feasibility", "[uc-chped]") {
     auto result = solve_deterministic(ucm.model, 180000, 42, &hook, &lns);
     REQUIRE(result.feasible);
     printf("\n13-unit 1p: obj=%.1f, iters=%ld, time=%.3fs\n", result.objective,
-           (long)result.iterations, result.time_seconds);
+           static_cast<long>(result.iterations), result.time_seconds);
 }
 
 TEST_CASE("UC-CHPED 13-unit 1-period quality", "[uc-chped][slow]") {
@@ -57,7 +58,7 @@ TEST_CASE("UC-CHPED 40-unit 1-period feasibility", "[uc-chped][slow]") {
     auto result = solve_deterministic(ucm.model, 71000, 42, &hook, &lns);
     REQUIRE(result.feasible);
     printf("\n40-unit 1p: obj=%.1f, iters=%ld, time=%.3fs\n", result.objective,
-           (long)result.iterations, result.time_seconds);
+           static_cast<long>(result.iterations), result.time_seconds);
 }
 
 TEST_CASE("UC-CHPED 100-unit 1-period builds and solves", "[uc-chped][slow]") {
@@ -73,7 +74,8 @@ TEST_CASE("UC-CHPED 100-unit 1-period builds and solves", "[uc-chped][slow]") {
     auto result = solve_deterministic(ucm.model, 64000, 42, &hook, &lns);
     REQUIRE(result.feasible);
     printf("\n100-unit 1p: obj=%.1f, %ld vars, iters=%ld, time=%.3fs\n", result.objective,
-           (long)m.num_vars(), (long)result.iterations, result.time_seconds);
+           static_cast<long>(m.num_vars()), static_cast<long>(result.iterations),
+           result.time_seconds);
 }
 
 TEST_CASE("UC-CHPED 13-unit 1-period verify", "[uc-chped][verify][slow]") {

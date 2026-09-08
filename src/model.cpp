@@ -145,6 +145,7 @@ int32_t Model::pow_expr(int32_t base, int32_t exp) {
 
 int32_t Model::min_expr(const std::vector<int32_t>& args) {
     std::vector<ChildRef> children;
+    children.reserve(args.size());
     for (int32_t a : args) {
         children.push_back(wrap(a));
     }
@@ -153,6 +154,7 @@ int32_t Model::min_expr(const std::vector<int32_t>& args) {
 
 int32_t Model::max_expr(const std::vector<int32_t>& args) {
     std::vector<ChildRef> children;
+    children.reserve(args.size());
     for (int32_t a : args) {
         children.push_back(wrap(a));
     }

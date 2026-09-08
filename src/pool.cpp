@@ -249,7 +249,7 @@ SearchResult ParallelSearch::solve_deterministic(
     auto start = std::chrono::steady_clock::now();
 
     int elite_k = std::max(1, par_config.elite_pool_size);
-    int64_t epoch_iters = std::max(int64_t(1), par_config.epoch_iterations);
+    int64_t epoch_iters = std::max(int64_t{1}, par_config.epoch_iterations);
     int max_epochs = std::max(1, par_config.max_epochs);
 
     // Each thread owns its model; initialize from factory

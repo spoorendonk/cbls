@@ -71,6 +71,7 @@ inline CHPEDModel build_chped_model(const Instance& inst) {
     auto neg1_c = m.constant(-1.0);
     for (int t = 0; t < T; ++t) {
         std::vector<int32_t> supply_terms;
+        supply_terms.reserve(static_cast<size_t>(N));
         for (int i = 0; i < N; ++i) {
             supply_terms.push_back(m.prod(result.commit[i][t], result.power[i][t]));
         }

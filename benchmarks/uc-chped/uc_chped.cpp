@@ -556,8 +556,9 @@ void run_one(std::ostream& csv, const Args& args, const cbls::uc_chped::UCInstan
     }
 
     std::printf("  (%s, %ld vars, %ld nodes, %ld iters)\n",
-                result.feasible ? "feasible" : "INFEASIBLE", (long)ucm.model.num_vars(),
-                (long)ucm.model.num_nodes(), (long)result.iterations);
+                result.feasible ? "feasible" : "INFEASIBLE",
+                static_cast<long>(ucm.model.num_vars()), static_cast<long>(ucm.model.num_nodes()),
+                static_cast<long>(result.iterations));
 
     write_row(csv, row);
     csv.flush();

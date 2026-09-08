@@ -44,7 +44,7 @@ struct VerifyResult {
             fprintf(out, "verify: PASS\n");
             return;
         }
-        fprintf(out, "verify: FAIL (%d errors)\n", (int)errors.size());
+        fprintf(out, "verify: FAIL (%d errors)\n", static_cast<int>(errors.size()));
         for (const auto& e : errors) {
             const char* kind_str = "?";
             switch (e.kind) {

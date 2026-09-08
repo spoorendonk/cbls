@@ -123,6 +123,7 @@ TEST_CASE("perturb moves exactly one variable at probability zero", "[fj][pertur
     // forced move had leaked into the configured density).
     auto make = [](Model& m) {
         std::vector<int32_t> h;
+        h.reserve(20);
         for (int i = 0; i < 20; ++i) {
             h.push_back(m.float_var(0.0, 10.0));
         }
@@ -149,6 +150,7 @@ TEST_CASE("perturb keeps the configured density on a large model", "[fj][perturb
     const int n = 400;
     auto make = [n](Model& m) {
         std::vector<int32_t> h;
+        h.reserve(static_cast<size_t>(n));
         for (int i = 0; i < n; ++i) {
             h.push_back(m.float_var(0.0, 10.0));
         }

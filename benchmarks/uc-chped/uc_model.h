@@ -128,6 +128,7 @@ inline UCModel build_uc_model(const UCInstance& inst) {
     for (int t = 0; t < T; ++t) {
         // --- Demand constraint: demand[t] - sum(p[u][t]) <= 0 ---
         std::vector<int32_t> supply_terms;
+        supply_terms.reserve(static_cast<size_t>(N));
         for (int u = 0; u < N; ++u) {
             supply_terms.push_back(result.p[u][t]);
         }
@@ -138,6 +139,7 @@ inline UCModel build_uc_model(const UCInstance& inst) {
         // --- Reserve constraint: (demand[t] + reserve[t]) - sum(Pmax[u]*y[u][t]) <= 0 ---
         if (inst.reserve[t] > 0) {
             std::vector<int32_t> cap_terms;
+            cap_terms.reserve(static_cast<size_t>(N));
             for (int u = 0; u < N; ++u) {
                 cap_terms.push_back(m.prod(unit_pmax[u], result.y[u][t]));
             }
