@@ -413,8 +413,63 @@ the current engine's.
 | Instance | Verdict | Cause |
 |----------|---------|-------|
 | `elec25`, `elec50` | **bug** ([#110](https://github.com/spoorendonk/cbls/issues/110)) | Thomson problem: points on the unit sphere, Coulomb objective `+inf` wherever two coincide. **The objective-encoding defects (#100) are fixed and are no longer the blocker.** What remains: the `.nl` declares no finite variable bounds, so the box is the ±1e9 inf-clamp; random init starts ~1e9 out, and shrinking each variable toward 0 is a huge row improvement — which parks the search on the origin, a stationary point of every row `x²+y²+z²=1`. The Float jump offers a single *undamped* Newton step (`x0 - residual/grad`) plus `lb`/`ub`/midpoint; near the origin that step overshoots wildly and is rejected, and because a candidate was nonetheless *generated* the #107 escape probe is suppressed — so the variable freezes at score 0. Measured: escape probe fires only at exactly `x0 = 0`; at `x0 = 0.001/0.01/0.1` the score is 0 with the probe armed or not. Infeasible at violation ≈1 **both with the objective present and with it neutralised**, so it is not objective-related — the earlier "dropping the objective makes elec25 feasible in 20s" claim no longer reproduces. Tightening `inf_clamp` to 1 makes `elec25` feasible at violation 0 post-#100 (pre-#100 it was infeasible at *every* clamp), because clamping accidentally supplies the missing damping. |
-| `nvs01` ([#101](https://github.com/spoorendonk/cbls/issues/101)) | **superseded** — was `hard` | `420.169·√(x0²+900) == x2·x0·x1` needs `x0` and the product `x1·x2` changed together. While `x0 = 0` the product term vanishes, so `x1` and `x2` receive no gradient signal and no single-variable jump improves — the analysis that concluded escaping requires a compound move. **That conclusion does not survive #102.** Re-checked at engine commit `1559786` with `use_compound_moves` still `false`: `nvs01` is feasible on all four of seeds 42/1/2/3 at 10s (gaps 30.16 / 12.23 / 734.94 / 792.13 %), and at the issue's own 60s budget it reaches the BKS exactly on seeds 42/1 and lands at 169.83 / 266.00 % on seeds 2/3. A single-variable path reaches the feasible region, so the compound-move account is **refuted**, not merely incomplete, and #101 is closed as superseded. What is left is objective quality and its seed-to-seed spread, now tracked as [#134](https://github.com/spoorendonk/cbls/issues/134) — not an escape failure, and not fast-verifiable: the noise floor recorded below is 3-4 gap points on wall-clock runs, so any criterion there is a multi-seed timed run. The incumbent on seeds 2/3 *walks* (104.1→33.6 and 111.2→45.6 between 10s and 60s) while the 10s figures are seed-deterministic to the digit across two engine commits, which points at the slow bound-tightening walk documented for `eg_all_s` rather than at run-to-run randomness — a hypothesis, not a measurement. Note on provenance: `b7f8a50` is the pre-rebase tip of `issue-102-ex8_6_1` and `1559786` is its rebased equivalent, so `git diff b7f8a50 1559786 -- src include benchmarks/minlplib` is **empty** — the two arms share identical engine source and running both proves nothing about drift. An earlier revision of this row claimed otherwise. The determinism that *is* evidenced comes from re-running seeds 42/2/3 at `6f9d419`, a genuinely different tree, which reproduced 30.1611 / 734.942 / 792.13 to the digit. |
+| `nvs01` ([#101](https://github.com/spoorendonk/cbls/issues/101)) | **superseded** — was `hard` | `420.169·√(x0²+900) == x2·x0·x1` needs `x0` and the product `x1·x2` changed together. While `x0 = 0` the product term vanishes, so `x1` and `x2` receive no gradient signal and no single-variable jump improves — the analysis that concluded escaping requires a compound move. **That conclusion does not survive #102.** Re-checked at engine commit `1559786` with `use_compound_moves` still `false`: `nvs01` is feasible on all four of seeds 42/1/2/3 at 10s (gaps 30.16 / 12.23 / 734.94 / 792.13 %), and at the issue's own 60s budget it reaches the BKS exactly on seeds 42/1 and lands at 169.83 / 266.00 % on seeds 2/3. A single-variable path reaches the feasible region, so the compound-move account is **refuted**, not merely incomplete, and #101 is closed as superseded. What is left is objective quality and its seed-to-seed spread, now tracked as [#134](https://github.com/spoorendonk/cbls/issues/134) — not an escape failure, and not fast-verifiable: the noise floor recorded below is 3-4 gap points on wall-clock runs, so any criterion there is a multi-seed timed run. The incumbent on seeds 2/3 *walks* (104.1→33.6 and 111.2→45.6 between 10s and 60s) while the 10s figures are seed-deterministic to the digit across two engine commits, which points at a convergence-rate limit rather than at run-to-run randomness. **That hypothesis has since been tested and partly refuted — see the dedicated `nvs01` section below**: measured over eight seeds at `09097de`, the spread is seed-deterministic and is set at *first feasibility* (r = 0.945), not accumulated during the descent. Note on provenance: `b7f8a50` is the pre-rebase tip of `issue-102-ex8_6_1` and `1559786` is its rebased equivalent, so `git diff b7f8a50 1559786 -- src include benchmarks/minlplib` is **empty** — the two arms share identical engine source and running both proves nothing about drift. An earlier revision of this row claimed otherwise. The determinism that *is* evidenced comes from re-running seeds 42/2/3 at `6f9d419`, a genuinely different tree, which reproduced 30.1611 / 734.942 / 792.13 to the digit. |
 | `st_e40` ([#102](https://github.com/spoorendonk/cbls/issues/102)) | **fixed** — was an engine gap, not hardness | Rows C1–C3 are degree-7 polynomials `(x-1)(x-2)(x-3)(x-5)(x-8)(x-10)(x-12) == 0` restricting each integer to `{1,2,3,5,8,10,12}`; C0 pins the free `x3` to a bilinear function of them, and four linear rows bound the combination. That leaves 343 integer combinations, **52 of them feasible**. The search reached only 3 of the 343: it fell into a limit cycle within ~20 GLS iterations — `x1` flipping between two values and `x3` hopping between the roots of the four rows containing it — and neither trapped value appears in any feasible combination (all 52 need `x0 >= 5` and `x1 >= 5`). It then spent **92% of a 155 000-iteration run on GLS weight bumps that changed nothing**, because diversification was gated on 100 non-improving *batches* of 1000 iterations and, before a first feasible solution, no batch ever improves — a fixed cadence of one kick per 100 000 iterations with no feedback from the search. Two earlier explanations in this table were both wrong: a violation barrier between allowed integer values (`int_jump_candidates` enumerates the whole domain below 256 values, and these are `[1,12]`), and "the feasible combination" singular (there are 52). Fixed by `GFJConfig::unproductive_iterations`: a batch that stops reducing the real rows' violation ends, and `solve()` takes the diversification kick as due (without arming the Float escape probe, which stays gated on `perturbation_period` — see #107). Two things bound it, and the second is what took two rounds to get right: `solve()` arms the exit only once its own stagnation count reaches `perturbation_period / 20` batches, and — because that count is monotone across an unproductive kick, so a threshold only DELAYS a misfire rather than preventing it — once a feasible solution exists the kick draws only a perturb and never an LNS destroy-repair. The measure is blind to the artificial objective row in that phase, and an LNS repair launched on a blind signal is bounded in seconds and usually rejected; see the objective-quality section below for what it cost before it was bounded. Measured at engine commit `b7f8a50`, branch `issue-102-ex8_6_1`: reaches the BKS 30.4142135 at 10s on all four of seeds 42/1/2/3, and at 60s on seed 42 (both re-measured at that commit, not carried over from an earlier arm). The `comparison.csv` row still reads infeasible and is left alone deliberately; #123 is the re-run that regenerates it. |
+
+### `nvs01`: the seed spread is real, and it is set at first feasibility
+
+Measured at engine commit `09097de`, eight seeds (42/1/2/3/7/11/13/17) at the
+60s published budget, run serially on an idle machine through the driver's
+non-destructive subset mode. This is issue #134's measurement.
+
+**Feasibility is completely reliable; objective quality is not.** All 8 seeds
+reach feasibility. Three reach the BKS 12.4697 exactly; the rest spread from
+17% to 266%.
+
+| seed | first feasible obj | final obj | gap to BKS |
+|---|---:|---:|---:|
+| 1 | 16.49 | 12.4697 | **BKS** |
+| 17 | 16.76 | 12.4697 | **BKS** |
+| 42 | 17.03 | 12.4697 | **BKS** |
+| 11 | 18.60 | 14.62 | 17.2% |
+| 7 | 117.0 | 22.09 | 77.1% |
+| 2 | 186.8 | 33.65 | 169.9% |
+| 13 | 236.8 | 41.64 | 233.9% |
+| 3 | 176.9 | 45.64 | 266.0% |
+
+Median gap 47.2%, range 0.0-266.0%, BKS on 3 of 8.
+
+**The outcome is determined by where the first feasible solution lands**, not by
+what happens afterwards: Pearson `r = 0.945` between the first feasible objective
+and the final one, with a clean separation — every seed whose first feasible
+point is under ~19 finishes at or near the BKS, and every seed above ~100 never
+recovers within the budget.
+
+The anytime traces show why. The incumbent walks down in small, near-constant
+decrements, so the number of improvements needed scales with how far out the
+search starts: the three BKS seeds needed 16-20 improvements, while the seeds
+starting above 100 needed 72-141 and still did not arrive. Three seeds were
+still improving when the clock stopped (last improvement at 57.5-58.4s of 60s);
+the ones that stalled early either had already converged to the BKS or, in seed
+3's case, stalled at 45.64 with 26.5s left.
+
+**This refutes the run-to-run-noise reading and narrows the hypothesis this
+benchmark carried.** The spread is not noise — it is seed-deterministic and
+reproduces to the digit across engine commits (169.826 and 266.002 appear at
+`1559786`, `5f33c59` and `09097de`). It is also not an escape failure: #101
+established that, and feasibility is 8/8 here. What remains is a **convergence
+rate** limit, and the lever is the quality of the first feasible point rather
+than the descent that follows it.
+
+Two consequences worth noting for anyone reading this before a campaign:
+
+- A single-seed row for this instance is close to meaningless — it is a draw from
+  a distribution spanning the optimum to 266% above it. This is the sharpest
+  case in the roster for publishing per-seed results (#141).
+- With 3 of 8 seeds reaching the optimum, a portfolio of independent seeds would
+  very likely find it. That is a concrete prediction for the scaling study in
+  #135, and one of the few places in this roster where the portfolio's value
+  should be visible rather than assumed.
 
 ## SCIP baseline
 
