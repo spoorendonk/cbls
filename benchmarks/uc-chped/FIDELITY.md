@@ -11,8 +11,8 @@ self-consistency.
 |------|---------|
 | Source-vs-implementation severity | **Quantitative** (objective form matches verbatim, hot/cold `t_cold=0` divergence is bounded; the ramp-rate question is closed — the source is ramp-free too, §1.7) |
 | SCIP reference vs source | **Cosmetic** (PWL valve-point bound ≈ 0.1 % at 50 segments; same ramp-free relaxation as our model) |
-| Solver-internal-feasibility vs verifier | **Qualitative when this audit was written** (#32 + #33 meant the SA reported "feasible" while the verifier counted 44 / 134 / 166 violations). #33 and #34 have since been fixed; #32 is still open, so any current claim must come from a `--verify` run rather than from this row. |
-| `comparison.csv` may claim | **A gap against the Pedroso Table 2 bounds**, now that #77 has settled that those bounds describe the same ramp-free problem (§1.7). Each measured row must carry the feasibility tolerance it was produced at and should be `--verify`-checked, because #32 is still open. |
+| Solver-internal-feasibility vs verifier | **Qualitative when this audit was written** (#32 + #33 meant the SA reported "feasible" while the verifier counted 44 / 134 / 166 violations). #33, #34 and #32 have all since been closed — #32 as not planned, on a measured probe (see §2). Any current claim must still come from a `--verify` run rather than from this row. |
+| `comparison.csv` may claim | **A gap against the Pedroso Table 2 bounds**, now that #77 has settled that those bounds describe the same ramp-free problem (§1.7). Each measured row must carry the feasibility tolerance it was produced at and should be `--verify`-checked — not because #32 is open (it is closed), but because the verifier is the independent check and the engine's own `feasible` flag is not. |
 
 The remainder of this document records the equation-by-equation evidence.
 
@@ -228,15 +228,27 @@ audit. It was resolved by reading Pedroso 2014 directly, and follow-up
 These are not formulation deviations but they corrupt the meaning of the
 "feasible" annotation in `comparison.csv`:
 
-- **#32** — `FloatIntensifyHook` does not enforce indicator/float
-  coupling. When `y[u][t]` flips 1→0 the dispatch `p[u][t]` is not zeroed.
-  This is a *solver* bug, not a model bug, but it produces solutions that
-  the verifier rejects (44 / 134 / 166 errors on
-  ucp13-3p / ucp13-12p / ucp13-24p). The constraint `P − P_max · y ≤ 0`
-  *exists* in the model and is checked at every step; the issue is that
-  the SA's "feasible" flag uses a tolerance loose enough (and a
-  delta-evaluation order subtle enough) that the violation accumulates
-  across moves.
+- **#32 (closed, not planned)** — `FloatIntensifyHook` does not enforce
+  indicator/float coupling: when `y[u][t]` flips 1→0 the dispatch `p[u][t]`
+  is not zeroed. **The hook-level gap is real and still present; the
+  consequence claimed here is not.** As written this bullet cited 44 / 134 /
+  166 verifier errors on ucp13-3p / ucp13-12p / ucp13-24p — measurements of
+  the SA solver that #64 replaced with the ViolationLS port, from a source
+  document no longer in the tree.
+
+  Two things now close it. Structurally, `P − P_max · y ≤ 0` is a *scored*
+  constraint (`uc_model.h`), and the engine calls an assignment feasible only
+  when every constraint node is within `feas_tol` — so `p ≤ 1e-6` wherever
+  `y = 0`, two orders of magnitude inside the verifier's `1e-4`. The old
+  "violation accumulates across moves" mechanism was a property of the SA's
+  looser flag, and `cbls::verify_model()` re-evaluates every node anyway, so
+  delta-evaluation drift would surface as a `DagConsistency` error rather
+  than as this one. Empirically, a probe at engine commit `5f33c59` ran
+  ucp40 / ucp100 / ucp200 at horizons 1/3/6/12/24 across seeds 42/1/2/3/7 —
+  75 solves, **55 feasible rows, 55 verified, 0 rejections**, and zero
+  `dispatch above Pmax*y`, zero `dispatch below Pmin*y`, zero DAG-consistency
+  errors. Those three instances are exactly the ones that had never been
+  `--verify`-checked.
 
 - **#33 (fixed)** — the default `is_feasible` tolerance was `1e-9` when
   this audit was written. The complaint was that it is an *absolute*
@@ -264,8 +276,8 @@ These are not formulation deviations but they corrupt the meaning of the
   measurement, not against this bullet.
 
 The fidelity audit does not propose changes to these — they are tracked
-under #25 already, and the ViolationLS port (#64) has since landed. Of
-the five, only #32 is still open.
+under #25 already, and the ViolationLS port (#64) has since landed. All
+five are now closed.
 
 ## 3. Verifier — what it checks
 
@@ -359,7 +371,7 @@ problem, not a published BKS.
 | Hot/cold `t_cold = 0` (§2.3) | Cosmetic to quantitative | ≤30 currency units per affected startup; <0.1 % of objective on shipped instances. |
 | Pre-horizon `y_prev=0` lookback (§2.3) | Cosmetic | Vacuous on shipped instances (n_init ≥ t_cold for all off units). |
 | Ramp rates (§2.7) | None | Pedroso 2014 states no ramp constraints and their public instance code carries no ramp data. Our model, the SCIP reference and the source all solve the same ramp-free problem; #77 closed as not planned. |
-| Solver-feasibility vs verifier (#32) | **Qualitative, reduced** | #33 and #34 are fixed and the tolerance is now recorded per row; #32 is still open, so a published row should carry a `--verify` verdict rather than the engine's `feasible` flag alone. |
+| Solver-feasibility vs verifier (#32) | **Resolved** | #33 and #34 are fixed, the tolerance is recorded per row, and #32 closed as not planned after a probe found no verifier rejection in 55 feasible rows. A published row should still carry a `--verify` verdict rather than the engine's `feasible` flag alone. |
 | SCIP PWL approximation (§4.2) | Cosmetic | ~0.1 % objective error bound at 50 segments. |
 
 ### 5.2 Decision for `comparison.csv`
@@ -371,7 +383,7 @@ comparison, bounded on the SCIP side by the ~0.1 % PWL error of §4.2.
 
 What remains is a reporting question rather than a formulation one. The
 "INFEASIBLE" rows of the original table were partly real and partly an
-artefact of #32 + #33; #33 and #34 are fixed, #32 is still open.
+artefact of #32 + #33; #33 and #34 are fixed, and #32 is closed as not planned.
 
 **Decision (as revised):**
 
@@ -383,9 +395,9 @@ artefact of #32 + #33; #33 and #34 are fixed, #32 is still open.
 2. `feasible` and `verified` are separate columns because they are
    separate tolerances: the engine's recorded `feas_tol`, against the
    verifier's own `1e-4` on its UC-semantic checks plus the `1e-6` of the
-   `cbls::verify_model()` pass it runs first. While #32 is open,
-   `verified` is the column to
-   trust, and a row that fails it publishes no objective and no gap.
+   `cbls::verify_model()` pass it runs first. Independently of #32 (now
+   closed), `verified` is the column to trust, and a row that fails it
+   publishes no objective and no gap.
 3. The Pedroso numbers stay in the file as cited reference rows. The
    generator re-emits them from each instance's `known_bounds` map, and
    refuses to write at all unless every rostered instance loaded, so a
@@ -403,7 +415,7 @@ information. It annotates them.
   feasibility tolerance, so §2.8's failure mode — a published row that
   becomes uninterpretable when an engine default moves — cannot recur.
   The measurement pass it unblocks is tracked separately as **#131**.
-- All other deviations either are already tracked (**#32**, still open;
-  **#33** and **#34**, fixed; **#35** and **#36**, closed as not
+- All other deviations either are already tracked (**#32**, closed as not
+  planned; **#33** and **#34**, fixed; **#35** and **#36**, closed as not
   planned) or are cosmetic / vacuous on shipped instances (no issue
   filed).
