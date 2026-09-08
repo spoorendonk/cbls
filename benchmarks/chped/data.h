@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <string>
 #include <vector>
 
@@ -61,8 +62,9 @@ inline Instance make_24unit() {
     inst.reserve = {100.0};
 
     // Simple deterministic perturbation (no RNG dependency)
-    double scales[] = {0.95, 1.10, 0.85, 1.15, 1.00, 0.90, 1.05, 0.80, 1.20, 0.88, 1.12, 0.92,
-                       1.08, 0.83, 1.17, 0.97, 1.03, 0.87, 1.13, 0.91, 1.09, 0.84, 1.16, 0.96};
+    const std::array<double, 24> scales = {0.95, 1.10, 0.85, 1.15, 1.00, 0.90, 1.05, 0.80,
+                                           1.20, 0.88, 1.12, 0.92, 1.08, 0.83, 1.17, 0.97,
+                                           1.03, 0.87, 1.13, 0.91, 1.09, 0.84, 1.16, 0.96};
 
     for (int i = 0; i < 24; ++i) {
         int j = i % 4;

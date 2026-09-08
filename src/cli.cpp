@@ -127,7 +127,7 @@ bool parse_flag(const char* flag, const char* text, uint64_t& out) {
     return false;
 }
 
-int run_cli(int argc, char* argv[]) {
+int run_cli(int argc, char** argv) {
     std::string model_path;
     double time_limit = 10.0;
     uint64_t seed = 42;

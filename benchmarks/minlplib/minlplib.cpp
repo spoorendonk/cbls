@@ -7,6 +7,7 @@
 // published bounds come from `bounds.csv` (written by download.py).
 
 #include <algorithm>
+#include <array>
 #include <benchmarks/common/runner_args.h>
 #include <benchmarks/minlplib/note_policy.h>
 #include <cbls/cbls.h>
@@ -602,12 +603,12 @@ int run_benchmark(int argc, char** argv) {
             if (r.worst > args.feas_tol || frac > 0 || obj_mismatch) {
                 verified = false;
                 ++t.verify_failed;
-                char buf[192];
-                std::snprintf(buf, sizeof(buf),
+                std::array<char, 192> buf{};
+                std::snprintf(buf.data(), buf.size(),
                               "VERIFY-FAILED(residual=%.2g; %d fractional int; obj drift %.2g)",
                               r.worst, frac, obj_drift);
-                std::printf("%-22s  WARNING: %s\n", name.c_str(), buf);
-                note = buf;
+                std::printf("%-22s  WARNING: %s\n", name.c_str(), buf.data());
+                note = buf.data();
             }
         }
 
@@ -669,7 +670,7 @@ int run_benchmark(int argc, char** argv) {
             // from a search that never reached the feasible region. solve()
             // leaves the model at that closest-approach assignment.
             Residual r = worst_residual(prob, built, args.feas_tol);
-            char buf[192];
+            std::array<char, 192> buf{};
             // nl_row is -1 both when the worst offender is a range row's
             // unrecorded lower half AND when nothing is violated at all — solve()
             // can report infeasible on a feasible point whose objective is
@@ -693,14 +694,15 @@ int run_benchmark(int argc, char** argv) {
             }
             if (r.worst <= kNearMiss) {
                 ++t.near_miss;
-                std::snprintf(buf, sizeof(buf),
+                std::snprintf(buf.data(), buf.size(),
                               "infeasible(near-miss residual=%.2g; %d viol; worst %s)", r.worst,
                               r.n_violated, row_label.c_str());
             } else {
-                std::snprintf(buf, sizeof(buf), "infeasible(residual=%.2g; %d viol; worst %s)",
-                              r.worst, r.n_violated, row_label.c_str());
+                std::snprintf(buf.data(), buf.size(),
+                              "infeasible(residual=%.2g; %d viol; worst %s)", r.worst, r.n_violated,
+                              row_label.c_str());
             }
-            note = buf;
+            note = buf.data();
             max_violation = r.worst;
         }
         if (!integrality_note.empty()) {

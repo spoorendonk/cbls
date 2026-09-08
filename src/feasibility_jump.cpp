@@ -5,6 +5,7 @@
 #include "cbls/randomize.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 
@@ -338,7 +339,7 @@ bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
 // first-order model says nothing and any nonzero step is information; 1e-2
 // then covers ground, because the gain at a quadratic stationary point is
 // O(h^2) and a 1e-6 step alone makes the search crawl.
-constexpr double kEscapeRelSteps[] = {1e-6, 1e-2};
+constexpr std::array<double, 2> kEscapeRelSteps = {1e-6, 1e-2};
 
 // The local move Float otherwise lacks entirely. `int_jump_candidates` always
 // offers x0 +/- 1; Float had only a Newton step (length set by the target, and

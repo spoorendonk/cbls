@@ -25,6 +25,18 @@ if(NB_DIR_RESULT EQUAL 0 AND NB_DIR)
     nanobind_add_module(_cbls_core bindings.cpp)
     target_link_libraries(_cbls_core PRIVATE cbls_lib)
 
+    # nanobind ships its headers to consumers as a plain -I, so every diagnostic
+    # its macros generate is attributed to the expansion site in bindings.cpp --
+    # code we did not write and cannot change. NB_MODULE alone expands to a
+    # C-style array, which clang-tidy's modernize-avoid-c-arrays reports at
+    # `NB_MODULE(_cbls_core, m)`. clang-tidy is a hard block at push (#121), so
+    # re-declaring the same directory SYSTEM is what keeps third-party findings
+    # out of our ratchet; CMake de-duplicates and emits it once, as -isystem.
+    # Our own code in bindings.cpp is still fully checked. Spelled here rather
+    # than via nanobind's NB_SUPPRESS_WARNINGS option because pyproject.toml
+    # only requires nanobind>=1.8 and that option is much newer.
+    target_include_directories(_cbls_core SYSTEM PRIVATE "${NB_DIR}/include")
+
     install(TARGETS _cbls_core LIBRARY DESTINATION cbls)
 else()
     message(WARNING "nanobind not found, skipping Python bindings. Install with: pip install nanobind")
