@@ -142,10 +142,178 @@ static int32_t resolve(const std::string& name,
     return it->second;
 }
 
+namespace {
+
+using NameMap = std::unordered_map<std::string, int32_t>;
+
+// One `{"var": ...}` record. Returns the new variable's handle.
+int32_t load_var_record(Model& m, const json& j) {
+    std::string name = j["var"].get<std::string>();
+    VarType vtype = string_to_vartype(j.value("type", "Float"));
+    switch (vtype) {
+        case VarType::Bool:
+            return m.bool_var(name);
+        case VarType::Int:
+            return m.int_var(j.value("lb", 0), j.value("ub", 1), name);
+        case VarType::Float:
+            return m.float_var(j.value("lb", 0.0), j.value("ub", 1.0), name);
+        case VarType::List:
+            return m.list_var(j.at("n").get<int>(), name);
+        case VarType::Set: {
+            int n = j.at("n").get<int>();
+            int min_sz = j.value("min_size", 0);
+            int max_sz = j.value("max_size", -1);
+            return m.set_var(n, min_sz, max_sz, name);
+        }
+    }
+    return 0;  // unreachable: the switch is exhaustive over VarType
+}
+
+// The (Pair)Lambda payload: a tabulated function, stored as a flat array for
+// Lambda and a square matrix for PairLambda, keyed by list element value.
+const json& require_table(const json& j, const char* op_name, int line_num) {
+    if (!j.contains("table")) {
+        throw std::invalid_argument("line " + std::to_string(line_num) + ": " + op_name +
+                                    " node requires 'table' field");
+    }
+    return j["table"];
+}
+
+// Rebuild one non-Const node from its op and its already-resolved children.
+// Kept apart from the record-level plumbing above it precisely because it is a
+// wide table: one line per NodeOp, no shared state between the lines.
+int32_t build_node(Model& m, NodeOp op, const json& j, const std::vector<int32_t>& children,
+                   int line_num) {
+    switch (op) {
+        case NodeOp::Neg:
+            return m.neg(children.at(0));
+        case NodeOp::Sum:
+            return m.sum(children);
+        case NodeOp::Prod:
+            return m.prod(children.at(0), children.at(1));
+        case NodeOp::Div:
+            return m.div_expr(children.at(0), children.at(1));
+        case NodeOp::Pow:
+            return m.pow_expr(children.at(0), children.at(1));
+        case NodeOp::Min:
+            return m.min_expr(children);
+        case NodeOp::Max:
+            return m.max_expr(children);
+        case NodeOp::Abs:
+            return m.abs_expr(children.at(0));
+        case NodeOp::Sin:
+            return m.sin_expr(children.at(0));
+        case NodeOp::Cos:
+            return m.cos_expr(children.at(0));
+        case NodeOp::Tan:
+            return m.tan_expr(children.at(0));
+        case NodeOp::Exp:
+            return m.exp_expr(children.at(0));
+        case NodeOp::Log:
+            return m.log_expr(children.at(0));
+        case NodeOp::Sqrt:
+            return m.sqrt_expr(children.at(0));
+        case NodeOp::SignPower:
+            return m.signpower_expr(children.at(0), children.at(1));
+        case NodeOp::Tanh:
+            return m.tanh_expr(children.at(0));
+        case NodeOp::If:
+            return m.if_then_else(children.at(0), children.at(1), children.at(2));
+        case NodeOp::At:
+            return m.at(children.at(0), children.at(1));
+        case NodeOp::Count:
+            return m.count(children.at(0));
+        case NodeOp::Lambda: {
+            auto table = require_table(j, "Lambda", line_num).get<std::vector<double>>();
+            return m.lambda_sum(children.at(0), [table](int e) -> double { return table.at(e); });
+        }
+        case NodeOp::PairLambda: {
+            auto table =
+                require_table(j, "PairLambda", line_num).get<std::vector<std::vector<double>>>();
+            return m.pair_lambda_sum(children.at(0),
+                                     [table](int a, int b) -> double { return table.at(a).at(b); });
+        }
+        case NodeOp::Leq:
+            return m.leq(children.at(0), children.at(1));
+        case NodeOp::Eq:
+            return m.eq_expr(children.at(0), children.at(1));
+        case NodeOp::Geq:
+            return m.geq(children.at(0), children.at(1));
+        case NodeOp::Neq:
+            return m.neq(children.at(0), children.at(1));
+        case NodeOp::Lt:
+            return m.lt(children.at(0), children.at(1));
+        case NodeOp::Gt:
+            return m.gt(children.at(0), children.at(1));
+        case NodeOp::Const:
+            break;  // handled by the caller, which needs no children
+    }
+    return -1;
+}
+
+// One `{"node": ...}` record. Returns the new node's id.
+int32_t load_node_record(Model& m, const json& j, const NameMap& name_to_handle, int line_num) {
+    std::string op_str = j.at("op").get<std::string>();
+    NodeOp op = NodeOp::Const;
+    try {
+        op = string_to_op(op_str);
+    } catch (const std::invalid_argument&) {
+        throw std::invalid_argument("line " + std::to_string(line_num) + ": unknown op '" + op_str +
+                                    "'");
+    }
+
+    if (op == NodeOp::Const) {
+        return m.constant(j.at("value").get<double>());
+    }
+
+    std::vector<int32_t> children;
+    if (j.contains("children")) {
+        for (const auto& child_name : j["children"]) {
+            children.push_back(resolve(child_name.get<std::string>(), name_to_handle, line_num));
+        }
+    }
+    return build_node(m, op, j, children, line_num);
+}
+
+json parse_record(const std::string& line, int line_num) {
+    try {
+        return json::parse(line);
+    } catch (const json::parse_error& e) {
+        throw std::invalid_argument("line " + std::to_string(line_num) +
+                                    ": invalid JSON: " + e.what());
+    }
+}
+
+// Dispatch one already-parsed record to the loader for its kind, recording any
+// name it defines. Every record is exactly one of the five kinds.
+void load_record(Model& m, const json& j, NameMap& name_to_handle, int line_num) {
+    if (j.contains("var")) {
+        std::string name = j["var"].get<std::string>();
+        name_to_handle[name] = load_var_record(m, j);
+    } else if (j.contains("node")) {
+        // The node's own name is recorded only after its children are resolved,
+        // so a record cannot refer to itself.
+        std::string name = j["node"].get<std::string>();
+        int32_t node_id = load_node_record(m, j, name_to_handle, line_num);
+        name_to_handle[name] = node_id;
+    } else if (j.contains("constraint")) {
+        m.add_constraint(resolve(j["constraint"].get<std::string>(), name_to_handle, line_num));
+    } else if (j.contains("minimize")) {
+        m.minimize(resolve(j["minimize"].get<std::string>(), name_to_handle, line_num));
+    } else if (j.contains("maximize")) {
+        m.maximize(resolve(j["maximize"].get<std::string>(), name_to_handle, line_num));
+    } else {
+        throw std::invalid_argument("line " + std::to_string(line_num) +
+                                    ": unrecognized line type");
+    }
+}
+
+}  // namespace
+
 Model load_model(std::istream& input) {
     Model m;
     // name -> handle: var handles are negative -(var_id+1), node handles are node_id
-    std::unordered_map<std::string, int32_t> name_to_handle;
+    NameMap name_to_handle;
     int line_num = 0;
     std::string line;
 
@@ -155,191 +323,7 @@ Model load_model(std::istream& input) {
         if (line.empty() || line[0] == '#') {
             continue;
         }
-
-        json j;
-        try {
-            j = json::parse(line);
-        } catch (const json::parse_error& e) {
-            throw std::invalid_argument("line " + std::to_string(line_num) +
-                                        ": invalid JSON: " + e.what());
-        }
-
-        if (j.contains("var")) {
-            std::string name = j["var"].get<std::string>();
-            std::string type_str = j.value("type", "Float");
-            VarType vtype = string_to_vartype(type_str);
-            int32_t handle = 0;
-
-            switch (vtype) {
-                case VarType::Bool:
-                    handle = m.bool_var(name);
-                    break;
-                case VarType::Int:
-                    handle = m.int_var(j.value("lb", 0), j.value("ub", 1), name);
-                    break;
-                case VarType::Float:
-                    handle = m.float_var(j.value("lb", 0.0), j.value("ub", 1.0), name);
-                    break;
-                case VarType::List:
-                    handle = m.list_var(j.at("n").get<int>(), name);
-                    break;
-                case VarType::Set: {
-                    int n = j.at("n").get<int>();
-                    int min_sz = j.value("min_size", 0);
-                    int max_sz = j.value("max_size", -1);
-                    handle = m.set_var(n, min_sz, max_sz, name);
-                    break;
-                }
-            }
-            name_to_handle[name] = handle;
-
-        } else if (j.contains("node")) {
-            std::string name = j["node"].get<std::string>();
-            std::string op_str = j.at("op").get<std::string>();
-            NodeOp op;
-            try {
-                op = string_to_op(op_str);
-            } catch (const std::invalid_argument&) {
-                throw std::invalid_argument("line " + std::to_string(line_num) + ": unknown op '" +
-                                            op_str + "'");
-            }
-
-            int32_t node_id = -1;
-
-            if (op == NodeOp::Const) {
-                node_id = m.constant(j.at("value").get<double>());
-            } else {
-                // Resolve children
-                std::vector<int32_t> children;
-                if (j.contains("children")) {
-                    for (const auto& child_name : j["children"]) {
-                        children.push_back(
-                            resolve(child_name.get<std::string>(), name_to_handle, line_num));
-                    }
-                }
-
-                switch (op) {
-                    case NodeOp::Neg:
-                        node_id = m.neg(children.at(0));
-                        break;
-                    case NodeOp::Sum:
-                        node_id = m.sum(children);
-                        break;
-                    case NodeOp::Prod:
-                        node_id = m.prod(children.at(0), children.at(1));
-                        break;
-                    case NodeOp::Div:
-                        node_id = m.div_expr(children.at(0), children.at(1));
-                        break;
-                    case NodeOp::Pow:
-                        node_id = m.pow_expr(children.at(0), children.at(1));
-                        break;
-                    case NodeOp::Min:
-                        node_id = m.min_expr(children);
-                        break;
-                    case NodeOp::Max:
-                        node_id = m.max_expr(children);
-                        break;
-                    case NodeOp::Abs:
-                        node_id = m.abs_expr(children.at(0));
-                        break;
-                    case NodeOp::Sin:
-                        node_id = m.sin_expr(children.at(0));
-                        break;
-                    case NodeOp::Cos:
-                        node_id = m.cos_expr(children.at(0));
-                        break;
-                    case NodeOp::Tan:
-                        node_id = m.tan_expr(children.at(0));
-                        break;
-                    case NodeOp::Exp:
-                        node_id = m.exp_expr(children.at(0));
-                        break;
-                    case NodeOp::Log:
-                        node_id = m.log_expr(children.at(0));
-                        break;
-                    case NodeOp::Sqrt:
-                        node_id = m.sqrt_expr(children.at(0));
-                        break;
-                    case NodeOp::SignPower:
-                        node_id = m.signpower_expr(children.at(0), children.at(1));
-                        break;
-                    case NodeOp::Tanh:
-                        node_id = m.tanh_expr(children.at(0));
-                        break;
-                    case NodeOp::If:
-                        node_id = m.if_then_else(children.at(0), children.at(1), children.at(2));
-                        break;
-                    case NodeOp::At:
-                        node_id = m.at(children.at(0), children.at(1));
-                        break;
-                    case NodeOp::Count:
-                        node_id = m.count(children.at(0));
-                        break;
-                    case NodeOp::Lambda: {
-                        if (!j.contains("table")) {
-                            throw std::invalid_argument("line " + std::to_string(line_num) +
-                                                        ": Lambda node requires 'table' field");
-                        }
-                        auto table = j["table"].get<std::vector<double>>();
-                        node_id = m.lambda_sum(children.at(0),
-                                               [table](int e) -> double { return table.at(e); });
-                        break;
-                    }
-                    case NodeOp::PairLambda: {
-                        if (!j.contains("table")) {
-                            throw std::invalid_argument("line " + std::to_string(line_num) +
-                                                        ": PairLambda node requires 'table' field");
-                        }
-                        auto table = j["table"].get<std::vector<std::vector<double>>>();
-                        node_id = m.pair_lambda_sum(
-                            children.at(0),
-                            [table](int a, int b) -> double { return table.at(a).at(b); });
-                        break;
-                    }
-                    case NodeOp::Leq:
-                        node_id = m.leq(children.at(0), children.at(1));
-                        break;
-                    case NodeOp::Eq:
-                        node_id = m.eq_expr(children.at(0), children.at(1));
-                        break;
-                    case NodeOp::Geq:
-                        node_id = m.geq(children.at(0), children.at(1));
-                        break;
-                    case NodeOp::Neq:
-                        node_id = m.neq(children.at(0), children.at(1));
-                        break;
-                    case NodeOp::Lt:
-                        node_id = m.lt(children.at(0), children.at(1));
-                        break;
-                    case NodeOp::Gt:
-                        node_id = m.gt(children.at(0), children.at(1));
-                        break;
-                    case NodeOp::Const:
-                        break;  // handled above
-                }
-            }
-            name_to_handle[name] = node_id;
-
-        } else if (j.contains("constraint")) {
-            std::string ref = j["constraint"].get<std::string>();
-            int32_t handle = resolve(ref, name_to_handle, line_num);
-            m.add_constraint(handle);
-
-        } else if (j.contains("minimize")) {
-            std::string ref = j["minimize"].get<std::string>();
-            int32_t handle = resolve(ref, name_to_handle, line_num);
-            m.minimize(handle);
-
-        } else if (j.contains("maximize")) {
-            std::string ref = j["maximize"].get<std::string>();
-            int32_t handle = resolve(ref, name_to_handle, line_num);
-            m.maximize(handle);
-
-        } else {
-            throw std::invalid_argument("line " + std::to_string(line_num) +
-                                        ": unrecognized line type");
-        }
+        load_record(m, parse_record(line, line_num), name_to_handle, line_num);
     }
 
     m.close();
@@ -356,12 +340,14 @@ Model load_model(const std::string& path) {
 
 // Writer
 
-void save_model(const Model& model, std::ostream& out) {
-    // Build reverse maps: var_id -> name, node_id -> name
-    // For unnamed entities, generate names
-    std::unordered_map<int32_t, std::string> var_names;
-    std::unordered_map<int32_t, std::string> node_names;
+namespace {
 
+// id -> serialisation name, one table per handle space.
+using NameTable = std::unordered_map<int32_t, std::string>;
+
+// A variable keeps the name it was declared with; everything unnamed gets a
+// positional one. Nodes are always positional -- the DAG does not name them.
+void build_name_tables(const Model& model, NameTable& var_names, NameTable& node_names) {
     for (const auto& var : model.variables()) {
         if (!var.name.empty()) {
             var_names[var.id] = var.name;
@@ -369,131 +355,161 @@ void save_model(const Model& model, std::ostream& out) {
             var_names[var.id] = "v" + std::to_string(var.id);
         }
     }
-
     for (const auto& node : model.nodes()) {
         node_names[node.id] = "n" + std::to_string(node.id);
     }
+}
 
-    // Write variables
-    for (const auto& var : model.variables()) {
-        json j;
-        j["var"] = var_names[var.id];
-        j["type"] = vartype_to_string(var.type);
-        switch (var.type) {
-            case VarType::Bool:
-                break;
-            case VarType::Int:
-                j["lb"] = static_cast<int>(var.lb);
-                j["ub"] = static_cast<int>(var.ub);
-                break;
-            case VarType::Float:
-                j["lb"] = var.lb;
-                j["ub"] = var.ub;
-                break;
-            case VarType::List:
-                j["n"] = var.max_size;
-                break;
-            case VarType::Set:
-                j["n"] = var.universe_size;
-                j["min_size"] = var.min_size;
-                j["max_size"] = var.max_size;
-                break;
+// The tables are non-const and indexed with operator[] on purpose: that is what
+// the writer has always done, and it keeps an id that somehow escaped
+// build_name_tables writing an empty name rather than throwing mid-file.
+std::string child_name(const ChildRef& ref, NameTable& var_names, NameTable& node_names) {
+    if (ref.is_var) {
+        return var_names[ref.id];
+    }
+    return node_names[ref.id];
+}
+
+json var_record(const Variable& var, const std::string& name) {
+    json j;
+    j["var"] = name;
+    j["type"] = vartype_to_string(var.type);
+    switch (var.type) {
+        case VarType::Bool:
+            break;
+        case VarType::Int:
+            j["lb"] = static_cast<int>(var.lb);
+            j["ub"] = static_cast<int>(var.ub);
+            break;
+        case VarType::Float:
+            j["lb"] = var.lb;
+            j["ub"] = var.ub;
+            break;
+        case VarType::List:
+            j["n"] = var.max_size;
+            break;
+        case VarType::Set:
+            j["n"] = var.universe_size;
+            j["min_size"] = var.min_size;
+            j["max_size"] = var.max_size;
+            break;
+    }
+    return j;
+}
+
+// A (Pair)Lambda node holds a std::function, which the format cannot express, so
+// it is written as the function tabulated over its child variable's universe:
+// [func(0) .. func(n-1)] for Lambda, and the n x n matrix for PairLambda. The
+// size caps are what keeps a quadratic table from being written at all.
+void tabulate_lambda(const Model& model, const ExprNode& node, json& j) {
+    const auto& child_ref = node.children[0];
+    if (!child_ref.is_var) {
+        throw std::runtime_error("Lambda node child must be a variable");
+    }
+    const auto& var = model.var(child_ref.id);
+    int n = (var.type == VarType::Set) ? var.universe_size : var.max_size;
+    if (n > 10000) {
+        throw std::runtime_error("Lambda universe too large to tabulate (" + std::to_string(n) +
+                                 " > 10000)");
+    }
+    const auto& func = model.lambda_func(node.lambda_func_id);
+    j["table"] = json::array();
+    for (int i = 0; i < n; ++i) {
+        j["table"].push_back(func(i));
+    }
+}
+
+void tabulate_pair_lambda(const Model& model, const ExprNode& node, json& j) {
+    const auto& child_ref = node.children[0];
+    if (!child_ref.is_var) {
+        throw std::runtime_error("PairLambda node child must be a variable");
+    }
+    const auto& var = model.var(child_ref.id);
+    int n = var.max_size;
+    if (n > 1000) {
+        throw std::runtime_error("PairLambda universe too large to tabulate (" + std::to_string(n) +
+                                 " > 1000)");
+    }
+    const auto& func = model.pair_lambda_func(node.lambda_func_id);
+    j["table"] = json::array();
+    for (int i = 0; i < n; ++i) {
+        auto row = json::array();
+        for (int jj = 0; jj < n; ++jj) {
+            row.push_back(func(i, jj));
         }
-        out << j.dump() << '\n';
+        j["table"].push_back(row);
+    }
+}
+
+json node_record(const Model& model, const ExprNode& node, NameTable& var_names,
+                 NameTable& node_names) {
+    json j;
+    j["node"] = node_names[node.id];
+    j["op"] = op_to_string(node.op);
+
+    if (node.op == NodeOp::Const) {
+        j["value"] = node.const_value;
+        return j;
+    }
+    if (node.op == NodeOp::Lambda || node.op == NodeOp::PairLambda) {
+        if (node.op == NodeOp::Lambda) {
+            tabulate_lambda(model, node, j);
+        } else {
+            tabulate_pair_lambda(model, node, j);
+        }
+        // Only the tabulated child is written back; the tabulation subsumes any
+        // index expression the node carried.
+        j["children"] = json::array();
+        j["children"].push_back(child_name(node.children[0], var_names, node_names));
+        return j;
+    }
+    j["children"] = json::array();
+    for (const auto& ch : node.children) {
+        j["children"].push_back(child_name(ch, var_names, node_names));
+    }
+    return j;
+}
+
+json objective_record(const Model& model, NameTable& var_names, NameTable& node_names) {
+    json j;
+    if (model.is_maximizing()) {
+        // Unwrap the auto-generated Neg node to get the original expression
+        const auto& neg_node = model.node(model.objective_id());
+        j["maximize"] = child_name(neg_node.children[0], var_names, node_names);
+    } else {
+        j["minimize"] = node_names[model.objective_id()];
+    }
+    return j;
+}
+
+}  // namespace
+
+void save_model(const Model& model, std::ostream& out) {
+    NameTable var_names;
+    NameTable node_names;
+    build_name_tables(model, var_names, node_names);
+
+    for (const auto& var : model.variables()) {
+        out << var_record(var, var_names[var.id]).dump() << '\n';
     }
 
-    // Helper to get the name for a child reference
-    auto child_name = [&](const ChildRef& ref) -> std::string {
-        if (ref.is_var) {
-            return var_names[ref.id];
-        }
-        return node_names[ref.id];
-    };
-
-    // Write nodes in topological order
+    // Nodes in topological order, so a reader sees every child before its parent.
     for (int32_t nid : model.topo_order()) {
         // Skip the auto-generated Neg wrapper when maximizing
         if (model.is_maximizing() && nid == model.objective_id()) {
             continue;
         }
-
-        const auto& node = model.node(nid);
-        json j;
-        j["node"] = node_names[node.id];
-        j["op"] = op_to_string(node.op);
-
-        if (node.op == NodeOp::Const) {
-            j["value"] = node.const_value;
-        } else if (node.op == NodeOp::Lambda) {
-            // Tabulate: store [func(0), func(1), ..., func(n-1)]
-            const auto& child_ref = node.children[0];
-            if (!child_ref.is_var) {
-                throw std::runtime_error("Lambda node child must be a variable");
-            }
-            const auto& var = model.var(child_ref.id);
-            int n = (var.type == VarType::Set) ? var.universe_size : var.max_size;
-            if (n > 10000) {
-                throw std::runtime_error("Lambda universe too large to tabulate (" +
-                                         std::to_string(n) + " > 10000)");
-            }
-            const auto& func = model.lambda_func(node.lambda_func_id);
-            j["table"] = json::array();
-            for (int i = 0; i < n; ++i) {
-                j["table"].push_back(func(i));
-            }
-            j["children"] = json::array();
-            j["children"].push_back(child_name(child_ref));
-        } else if (node.op == NodeOp::PairLambda) {
-            // Tabulate: store [[func(i,j) for j in 0..n-1] for i in 0..n-1]
-            const auto& child_ref = node.children[0];
-            if (!child_ref.is_var) {
-                throw std::runtime_error("PairLambda node child must be a variable");
-            }
-            const auto& var = model.var(child_ref.id);
-            int n = var.max_size;
-            if (n > 1000) {
-                throw std::runtime_error("PairLambda universe too large to tabulate (" +
-                                         std::to_string(n) + " > 1000)");
-            }
-            const auto& func = model.pair_lambda_func(node.lambda_func_id);
-            j["table"] = json::array();
-            for (int i = 0; i < n; ++i) {
-                auto row = json::array();
-                for (int jj = 0; jj < n; ++jj) {
-                    row.push_back(func(i, jj));
-                }
-                j["table"].push_back(row);
-            }
-            j["children"] = json::array();
-            j["children"].push_back(child_name(child_ref));
-        } else {
-            j["children"] = json::array();
-            for (const auto& ch : node.children) {
-                j["children"].push_back(child_name(ch));
-            }
-        }
-        out << j.dump() << '\n';
+        out << node_record(model, model.node(nid), var_names, node_names).dump() << '\n';
     }
 
-    // Write constraints
     for (int32_t cid : model.constraint_ids()) {
         json j;
         j["constraint"] = node_names[cid];
         out << j.dump() << '\n';
     }
 
-    // Write objective
     if (model.objective_id() >= 0) {
-        json j;
-        if (model.is_maximizing()) {
-            // Unwrap the auto-generated Neg node to get the original expression
-            const auto& neg_node = model.node(model.objective_id());
-            const auto& child = neg_node.children[0];
-            j["maximize"] = child.is_var ? var_names[child.id] : node_names[child.id];
-        } else {
-            j["minimize"] = node_names[model.objective_id()];
-        }
-        out << j.dump() << '\n';
+        out << objective_record(model, var_names, node_names).dump() << '\n';
     }
 }
 

@@ -41,13 +41,19 @@ static int list_size(const ChildRef& ref, const Model& model) {
     return 0;
 }
 
-// One flat dispatch table over NodeOp: the cognitive-complexity score counts the
-// 28 cases, not branching logic. No case nests deeper than two levels, each is a
-// self-contained formula, and the switch is deliberately `default:`-free so the
-// compiler is what catches a NodeOp nobody handled. Grouping the cases behind
-// per-family helpers would hide a table a reader wants to read as a table, and
-// would put an extra call on the delta-evaluation hot path -- delta_evaluate
-// calls this once per dirtied node per candidate move.
+// A flat dispatch table over NodeOp's 28 cases, suppressed deliberately rather
+// than split. What the score measures here is not compounded logic: it is the
+// eighteen small guards the individual cases carry -- a loop over a variadic
+// node's children, a divide-by-zero test, an overflow test -- each charged
+// double because the metric adds the enclosing switch's nesting level to every
+// one of them. The cases are siblings, not a hierarchy: none runs past six lines
+// or nests deeper than two, and none can affect another.
+//
+// So the readable unit here is the table, and per-family helpers would hide it.
+// The switch is also deliberately `default:`-free, so the compiler rather than
+// this metric is what catches a NodeOp nobody handled, and delta_evaluate calls
+// this once per dirtied node per candidate move -- any split would have to stay
+// inlinable, which rules out the dispatch-through-a-table alternative outright.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 double evaluate(const ExprNode& node, const Model& model) {
     switch (node.op) {
@@ -249,10 +255,13 @@ double evaluate(const ExprNode& node, const Model& model) {
     return 0.0;
 }
 
-// The AD peer of evaluate() above, and suppressed for the same reason: one flat
-// `default:`-free dispatch table over the same 28 NodeOp cases, each holding one
-// derivative formula plus its guards against a non-finite or non-differentiable
-// point. Reverse-mode AD calls it once per edge, so it is on the same hot path.
+// The AD peer of evaluate() above, and suppressed for the same reason and by the
+// same argument: one flat `default:`-free dispatch table over the same 28 NodeOp
+// cases, where the score is the sum of each case's own guards against a
+// non-finite or non-differentiable point rather than any nesting between them.
+// It scores higher than evaluate() only because a derivative needs more such
+// guards, not because the cases interact. Reverse-mode AD calls it once per DAG
+// edge, so it sits on the same hot path.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 double local_derivative(const ExprNode& node, int child_idx, const Model& model) {
     switch (node.op) {
