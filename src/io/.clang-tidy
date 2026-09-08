@@ -22,11 +22,12 @@
 # because a system clang-tidy of another vintage merges a different default set
 # -- and check the root's check list is actually present in the output.
 #
-# Note the exemption below is DORMANT today: the root ratchet already carries
-# -readability-identifier-naming, so `clang-tidy --list-checks -p build` prints
-# the same enabled set here as at the root. This file only starts to bite when
-# issue #121 re-enables that check -- which is exactly why it must not be
-# deleted as dead weight in the meantime.
+# The exemption below is LIVE: issue #121 cleared readability-identifier-naming
+# from the root ratchet, so the check now runs everywhere except here. Deleting
+# this file, or the line below, turns the four vendored mps_reader.cpp findings
+# back into push-blocking warnings. Confirm it still bites after any edit with
+# the --dump-config command above: the root's check list must be present AND
+# followed by -readability-identifier-naming.
 InheritParentConfig: true
 Checks: >
   -readability-identifier-naming

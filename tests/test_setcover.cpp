@@ -25,7 +25,7 @@ namespace {
 // 3 rows, 4 columns. Column 0 covers everything for 5; columns 1-3 cover one
 // row each for 1. Optimum is 3 (columns 1,2,3); the coverage-greedy choice
 // (column 0) costs 5, so the search cannot reach the optimum by accident.
-const char* kTinyText =
+constexpr const char* kTinyText =
     "3 4\n"
     "5 1 1 1\n"
     "2\n1 2\n"
@@ -37,7 +37,7 @@ SetCoverInstance tiny() {
     return parse_setcover(in, "tiny");
 }
 
-const char* kScpe1Path = "benchmarks/instances/setcover/scpe1.txt";
+constexpr const char* kScpe1Path = "benchmarks/instances/setcover/scpe1.txt";
 constexpr double kScpe1Optimum = 5.0;  // proven; see benchmarks/instances/setcover/README.md
 
 }  // namespace

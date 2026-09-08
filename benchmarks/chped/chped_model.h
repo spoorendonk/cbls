@@ -16,16 +16,16 @@ struct CHPEDModel {
 inline CHPEDModel build_chped_model(const Instance& inst) {
     CHPEDModel result;
     auto& m = result.model;
-    int N = inst.n_units;
-    int T = inst.n_periods;
+    int n_units = inst.n_units;
+    int n_periods = inst.n_periods;
 
     // Variables
-    result.commit.resize(N);
-    result.power.resize(N);
-    for (int i = 0; i < N; ++i) {
-        result.commit[i].resize(T);
-        result.power[i].resize(T);
-        for (int t = 0; t < T; ++t) {
+    result.commit.resize(n_units);
+    result.power.resize(n_units);
+    for (int i = 0; i < n_units; ++i) {
+        result.commit[i].resize(n_periods);
+        result.power[i].resize(n_periods);
+        for (int t = 0; t < n_periods; ++t) {
             if (inst.all_committed) {
                 // All units forced on — use a constant 1 instead of a decision variable
                 result.commit[i][t] = m.constant(1.0);
@@ -40,9 +40,9 @@ inline CHPEDModel build_chped_model(const Instance& inst) {
 
     // Objective: total valve-point cost
     std::vector<int32_t> cost_terms;
-    for (int i = 0; i < N; ++i) {
-        for (int t = 0; t < T; ++t) {
-            auto P = result.power[i][t];
+    for (int i = 0; i < n_units; ++i) {
+        for (int t = 0; t < n_periods; ++t) {
+            auto p_h = result.power[i][t];
             auto ai = m.constant(inst.a[i]);
             auto bi = m.constant(inst.b[i]);
             auto ci = m.constant(inst.c[i]);
@@ -53,10 +53,10 @@ inline CHPEDModel build_chped_model(const Instance& inst) {
             auto neg1 = m.constant(-1.0);
 
             // base_cost = a[i] + b[i]*P + c[i]*P^2
-            auto base_cost = m.sum({ai, m.prod(bi, P), m.prod(ci, m.pow_expr(P, two))});
+            auto base_cost = m.sum({ai, m.prod(bi, p_h), m.prod(ci, m.pow_expr(p_h, two))});
 
             // valve_point = |d[i]*sin(e[i]*(P_min[i] - P))|
-            auto pmin_minus_p = m.sum({pmin_i, m.prod(neg1, P)});
+            auto pmin_minus_p = m.sum({pmin_i, m.prod(neg1, p_h)});
             auto valve_point = m.abs_expr(m.prod(di, m.sin_expr(m.prod(ei, pmin_minus_p))));
 
             auto unit_cost = m.sum({base_cost, valve_point});
@@ -69,10 +69,10 @@ inline CHPEDModel build_chped_model(const Instance& inst) {
 
     // Constraints
     auto neg1_c = m.constant(-1.0);
-    for (int t = 0; t < T; ++t) {
+    for (int t = 0; t < n_periods; ++t) {
         std::vector<int32_t> supply_terms;
-        supply_terms.reserve(static_cast<size_t>(N));
-        for (int i = 0; i < N; ++i) {
+        supply_terms.reserve(static_cast<size_t>(n_units));
+        for (int i = 0; i < n_units; ++i) {
             supply_terms.push_back(m.prod(result.commit[i][t], result.power[i][t]));
         }
         auto supply = m.sum(supply_terms);

@@ -15,30 +15,30 @@ namespace cbls::uc_chped {
 // respecting min up/down times by committing in blocks.
 // Sets dispatch to proportional share of demand among committed units.
 inline void greedy_uc_initialize(Model& model, const UCInstance& inst, const UCModel& ucm) {
-    int N = inst.n_units;
-    int T = inst.n_periods;
+    int n_units = inst.n_units;
+    int n_periods = inst.n_periods;
 
     // Commitment state: y[u][t]
-    std::vector<std::vector<int>> y(N, std::vector<int>(T, 0));
+    std::vector<std::vector<int>> y(n_units, std::vector<int>(n_periods, 0));
     // Dispatch state: p[u][t]
-    std::vector<std::vector<double>> p(N, std::vector<double>(T, 0.0));
+    std::vector<std::vector<double>> p(n_units, std::vector<double>(n_periods, 0.0));
 
     // Sort units by average cost per MW at Pmax (cheapest first)
     // F(Pmax)/Pmax gives a better ranking than F(Pmin) for large systems
-    std::vector<int> unit_order(N);
+    std::vector<int> unit_order(n_units);
     std::iota(unit_order.begin(), unit_order.end(), 0);
     std::sort(unit_order.begin(), unit_order.end(), [&](int a, int b) {
-        double Pa = inst.P_max[a];
-        double cost_a = (inst.a[a] + (inst.b[a] * Pa) + (inst.c[a] * Pa * Pa)) / Pa;
-        double Pb = inst.P_max[b];
-        double cost_b = (inst.a[b] + (inst.b[b] * Pb) + (inst.c[b] * Pb * Pb)) / Pb;
+        double pmax_a = inst.P_max[a];
+        double cost_a = (inst.a[a] + (inst.b[a] * pmax_a) + (inst.c[a] * pmax_a * pmax_a)) / pmax_a;
+        double pmax_b = inst.P_max[b];
+        double cost_b = (inst.a[b] + (inst.b[b] * pmax_b) + (inst.c[b] * pmax_b * pmax_b)) / pmax_b;
         return cost_a < cost_b;
     });
 
     // Track how long each unit has been continuously on/off
     // Positive = consecutive ON periods, negative = consecutive OFF periods
-    std::vector<int> run_length(N);
-    for (int u = 0; u < N; ++u) {
+    std::vector<int> run_length(n_units);
+    for (int u = 0; u < n_units; ++u) {
         if (inst.y_prev[u] == 1) {
             run_length[u] = inst.n_init[u];  // was ON for this many periods
         } else {
@@ -61,26 +61,26 @@ inline void greedy_uc_initialize(Model& model, const UCInstance& inst, const UCM
     };
 
     // Apply initial conditions: forced on/off for early periods
-    for (int u = 0; u < N; ++u) {
+    for (int u = 0; u < n_units; ++u) {
         if (inst.y_prev[u] == 1) {
             int remaining = std::max(0, inst.min_on[u] - inst.n_init[u]);
-            for (int t = 0; t < std::min(remaining, T); ++t) {
+            for (int t = 0; t < std::min(remaining, n_periods); ++t) {
                 y[u][t] = 1;
             }
         }
         if (inst.y_prev[u] == 0) {
             int remaining = std::max(0, inst.min_off[u] - inst.n_init[u]);
-            for (int t = 0; t < std::min(remaining, T); ++t) {
+            for (int t = 0; t < std::min(remaining, n_periods); ++t) {
                 y[u][t] = 0;  // forced off (already 0, but explicit)
             }
         }
     }
 
     // Greedy commitment: for each period, commit cheapest available units
-    for (int t = 0; t < T; ++t) {
+    for (int t = 0; t < n_periods; ++t) {
         // Update run lengths from previous period
         if (t > 0) {
-            for (int u = 0; u < N; ++u) {
+            for (int u = 0; u < n_units; ++u) {
                 if (y[u][t - 1] == 1) {
                     run_length[u] = (run_length[u] > 0) ? run_length[u] + 1 : 1;
                 } else {
@@ -91,7 +91,7 @@ inline void greedy_uc_initialize(Model& model, const UCInstance& inst, const UCM
 
         // Calculate capacity from already-committed units (forced by min_on)
         double committed_capacity = 0.0;
-        for (int u = 0; u < N; ++u) {
+        for (int u = 0; u < n_units; ++u) {
             if (y[u][t] == 1) {
                 committed_capacity += inst.P_max[u];
             }
@@ -110,7 +110,7 @@ inline void greedy_uc_initialize(Model& model, const UCInstance& inst, const UCM
                 }
 
                 // Commit this unit for min_on consecutive periods
-                int block_end = std::min(t + inst.min_on[u], T);
+                int block_end = std::min(t + inst.min_on[u], n_periods);
                 for (int tau = t; tau < block_end; ++tau) {
                     y[u][tau] = 1;
                 }
@@ -124,10 +124,10 @@ inline void greedy_uc_initialize(Model& model, const UCInstance& inst, const UCM
     }
 
     // Set dispatch: proportional share of demand among committed units
-    for (int t = 0; t < T; ++t) {
+    for (int t = 0; t < n_periods; ++t) {
         double total_cap = 0.0;
         std::vector<int> on_units;
-        for (int u = 0; u < N; ++u) {
+        for (int u = 0; u < n_units; ++u) {
             if (y[u][t] == 1) {
                 total_cap += inst.P_max[u] - inst.P_min[u];
                 on_units.push_back(u);
@@ -152,8 +152,8 @@ inline void greedy_uc_initialize(Model& model, const UCInstance& inst, const UCM
     }
 
     // Write to model variables (handles are negative-encoded: var_id = -(h+1))
-    for (int u = 0; u < N; ++u) {
-        for (int t = 0; t < T; ++t) {
+    for (int u = 0; u < n_units; ++u) {
+        for (int t = 0; t < n_periods; ++t) {
             int32_t yid = -(ucm.y[u][t] + 1);
             int32_t pid = -(ucm.p[u][t] + 1);
             model.var_mut(yid).value = static_cast<double>(y[u][t]);

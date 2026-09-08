@@ -137,8 +137,8 @@ TEST_CASE("an incumbent can be reported while the current point is infeasible",
 
 namespace {
 
-const char* kPk1Path = "benchmarks/instances/miplib-fj/pk1.mps.gz";
-const char* kMiplibSoluPath = "benchmarks/instances/miplib-fj/miplib2017-v22.solu";
+constexpr const char* kPk1Path = "benchmarks/instances/miplib-fj/pk1.mps.gz";
+constexpr const char* kMiplibSoluPath = "benchmarks/instances/miplib-fj/miplib2017-v22.solu";
 
 // The proven optimum recorded for `name` in a MIPLIB .solu file. Read rather
 // than hard-coded so the reference the test scores against is the vendored

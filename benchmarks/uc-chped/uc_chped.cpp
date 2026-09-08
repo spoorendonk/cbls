@@ -437,8 +437,8 @@ struct Tally {
 /// worse than omitting it.
 void write_reference_rows(std::ostream& csv, const cbls::uc_chped::UCInstance& base,
                           const std::vector<int>& periods) {
-    for (int T : periods) {
-        auto it = base.known_bounds.find(T);
+    for (int horizon : periods) {
+        auto it = base.known_bounds.find(horizon);
         if (it == base.known_bounds.end()) {
             continue;
         }
@@ -446,7 +446,7 @@ void write_reference_rows(std::ostream& csv, const cbls::uc_chped::UCInstance& b
         const double ub = it->second.second;
         Row r;
         r.instance = base.name;
-        r.periods = T;
+        r.periods = horizon;
         r.method = "Pedroso MIP (1hr)";
         r.objective = ub;
         r.lb = lb;
@@ -462,9 +462,9 @@ void write_reference_rows(std::ostream& csv, const cbls::uc_chped::UCInstance& b
 void run_one(std::ostream& csv, const Args& args, const cbls::uc_chped::UCInstance& inst,
              const std::string& instance_name, double tlim, Tally& tally) {
     auto ucm = cbls::uc_chped::build_uc_model(inst);
-    const int T = inst.n_periods;
+    const int horizon = inst.n_periods;
 
-    std::printf("%-20s %6d %6d ", inst.name.c_str(), inst.n_units, T);
+    std::printf("%-20s %6d %6d ", inst.name.c_str(), inst.n_units, horizon);
     std::fflush(stdout);
 
     // Greedy initialization + short FJ polish.
@@ -488,7 +488,7 @@ void run_one(std::ostream& csv, const Args& args, const cbls::uc_chped::UCInstan
 
     Row row;
     row.instance = instance_name;
-    row.periods = T;
+    row.periods = horizon;
     row.method = "CBLS ViolationLS";
     row.source = "this work";
     row.time_s = result.time_seconds;
@@ -499,7 +499,7 @@ void run_one(std::ostream& csv, const Args& args, const cbls::uc_chped::UCInstan
     row.feas_tol = args.feas_tol;
     row.commit_sha = args.commit_sha;
 
-    auto it = inst.known_bounds.find(T);
+    auto it = inst.known_bounds.find(horizon);
     const bool have_bounds = it != inst.known_bounds.end();
     if (have_bounds) {
         row.lb = it->second.first;
@@ -688,18 +688,18 @@ int run_benchmark(int argc, char** argv) {
         const InstanceSpec& spec = specs[i];
         const cbls::uc_chped::UCInstance& base = loaded[i];
 
-        for (int T : spec.periods) {
+        for (int horizon : spec.periods) {
             cbls::uc_chped::UCInstance inst;
-            if (T == base.n_periods) {
+            if (horizon == base.n_periods) {
                 inst = base;  // already the right size
-            } else if (T < base.n_periods) {
-                inst = cbls::uc_chped::make_subinstance(base, T);
+            } else if (horizon < base.n_periods) {
+                inst = cbls::uc_chped::make_subinstance(base, horizon);
             } else {
                 std::printf("%-20s %6d %6d  (skipped: T > n_periods)\n", base.name.c_str(),
-                            base.n_units, T);
+                            base.n_units, horizon);
                 Row r;
                 r.instance = base.name;
-                r.periods = T;
+                r.periods = horizon;
                 r.method = "CBLS ViolationLS";
                 r.note = "skipped: T > n_periods";
                 r.commit_sha = args.commit_sha;
@@ -709,7 +709,7 @@ int run_benchmark(int argc, char** argv) {
 
             double tlim = args.time_limit;
             if (!args.time_limit_set) {
-                auto lit = time_limits.find(T);
+                auto lit = time_limits.find(horizon);
                 tlim = lit != time_limits.end() ? lit->second : default_time_limit;
             }
             run_one(csv, args, inst, base.name, tlim, tally);

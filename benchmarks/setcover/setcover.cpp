@@ -30,17 +30,17 @@ namespace {
 // Proven optima, mirroring benchmarks/instances/setcover/download.py (which
 // carries the provenance). Absent name => the result is reported without a gap.
 const std::map<std::string, double>& published_optima() {
-    static const std::map<std::string, double> optima = {
+    static const std::map<std::string, double> kOptima = {
         {"scp41", 429}, {"scp42", 512}, {"scp43", 516}, {"scp44", 494}, {"scp45", 512},
         {"scpe1", 5},   {"scpe2", 5},   {"scpe3", 5},   {"scpe4", 5},   {"scpe5", 5},
     };
-    return optima;
+    return kOptima;
 }
 
 const std::vector<std::string>& default_roster() {
-    static const std::vector<std::string> roster = {"scp41", "scp42", "scp43", "scp44", "scp45",
-                                                    "scpe1", "scpe2", "scpe3", "scpe4", "scpe5"};
-    return roster;
+    static const std::vector<std::string> kRoster = {"scp41", "scp42", "scp43", "scp44", "scp45",
+                                                     "scpe1", "scpe2", "scpe3", "scpe4", "scpe5"};
+    return kRoster;
 }
 
 struct Options {

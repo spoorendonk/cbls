@@ -441,14 +441,14 @@ TEST_CASE("perturb's structural kick size scales with the probability",
         RNG rng(17);
         FeasibilityJump fj(m, vm, rng);
         fj.begin(/*set_initial_x=*/true);
-        constexpr int kicks = 20;
+        constexpr int kNumKicks = 20;
         double total = 0.0;
-        for (int k = 0; k < kicks; ++k) {
+        for (int k = 0; k < kNumKicks; ++k) {
             const std::vector<int32_t> before = m.var(0).elements;
             fj.perturb(probability);
             total += kept_adjacency_fraction(before, m.var(0).elements);
         }
-        return total / kicks;
+        return total / kNumKicks;
     };
 
     const double small = mean_kept(0.02);          // k = 4 moves

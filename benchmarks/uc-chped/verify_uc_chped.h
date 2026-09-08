@@ -14,26 +14,26 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst, 
     VerifyResult result = verify_model(ucm.model);
 
     const auto& m = ucm.model;
-    int N = inst.n_units;
-    int T = inst.n_periods;
+    int n_units = inst.n_units;
+    int n_periods = inst.n_periods;
 
     // Extract variable values (handles are negative: var_id = -(handle + 1))
     auto val = [&](int32_t handle) -> double { return m.var(-(handle + 1)).value; };
     auto ival = [&](int32_t handle) -> int { return static_cast<int>(std::round(val(handle))); };
 
     // Extract all variable values
-    std::vector<std::vector<int>> y_val(N, std::vector<int>(T));
-    std::vector<std::vector<double>> p_val(N, std::vector<double>(T));
-    for (int u = 0; u < N; ++u) {
-        for (int t = 0; t < T; ++t) {
+    std::vector<std::vector<int>> y_val(n_units, std::vector<int>(n_periods));
+    std::vector<std::vector<double>> p_val(n_units, std::vector<double>(n_periods));
+    for (int u = 0; u < n_units; ++u) {
+        for (int t = 0; t < n_periods; ++t) {
             y_val[u][t] = ival(ucm.y[u][t]);
             p_val[u][t] = val(ucm.p[u][t]);
         }
     }
 
     // 1. Commitment integrality: y must be exactly 0 or 1
-    for (int u = 0; u < N; ++u) {
-        for (int t = 0; t < T; ++t) {
+    for (int u = 0; u < n_units; ++u) {
+        for (int t = 0; t < n_periods; ++t) {
             if (y_val[u][t] != 0 && y_val[u][t] != 1) {
                 result.add_error({VerifyError::Kind::Custom,
                                   "y[" + std::to_string(u) + "][" + std::to_string(t) + "]", 0.0,
@@ -43,8 +43,8 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst, 
     }
 
     // 2. Dispatch bounds: Pmin*y <= p <= Pmax*y
-    for (int u = 0; u < N; ++u) {
-        for (int t = 0; t < T; ++t) {
+    for (int u = 0; u < n_units; ++u) {
+        for (int t = 0; t < n_periods; ++t) {
             double lb = inst.P_min[u] * y_val[u][t];
             double ub = inst.P_max[u] * y_val[u][t];
             if (p_val[u][t] < lb - tol) {
@@ -61,9 +61,9 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst, 
     }
 
     // 3. Demand balance: sum_u(p[u][t]) >= demand[t]
-    for (int t = 0; t < T; ++t) {
+    for (int t = 0; t < n_periods; ++t) {
         double supply = 0.0;
-        for (int u = 0; u < N; ++u) {
+        for (int u = 0; u < n_units; ++u) {
             supply += p_val[u][t];
         }
         if (supply < inst.demand[t] - tol) {
@@ -73,12 +73,12 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst, 
     }
 
     // 4. Reserve margin: sum_u(Pmax[u]*y[u][t]) >= demand[t] + reserve[t]
-    for (int t = 0; t < T; ++t) {
+    for (int t = 0; t < n_periods; ++t) {
         if (inst.reserve[t] <= 0) {
             continue;
         }
         double capacity = 0.0;
-        for (int u = 0; u < N; ++u) {
+        for (int u = 0; u < n_units; ++u) {
             capacity += inst.P_max[u] * y_val[u][t];
         }
         double required = inst.demand[t] + inst.reserve[t];
@@ -90,12 +90,12 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst, 
     }
 
     // 5. Min uptime: if y[u][t]=1 and y[u][t-1]=0, then y[u][tau]=1 for tau in [t+1, t+min_on-1]
-    for (int u = 0; u < N; ++u) {
-        for (int t = 0; t < T; ++t) {
+    for (int u = 0; u < n_units; ++u) {
+        for (int t = 0; t < n_periods; ++t) {
             int y_prev = (t == 0) ? inst.y_prev[u] : y_val[u][t - 1];
             if (y_val[u][t] == 1 && y_prev == 0) {
                 // Startup at t: must stay on for min_on periods
-                int end = std::min(t + inst.min_on[u], T);
+                int end = std::min(t + inst.min_on[u], n_periods);
                 for (int tau = t + 1; tau < end; ++tau) {
                     if (y_val[u][tau] != 1) {
                         result.add_error(
@@ -111,12 +111,12 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst, 
     }
 
     // 6. Min downtime: if y[u][t]=0 and y[u][t-1]=1, then y[u][tau]=0 for tau in [t+1, t+min_off-1]
-    for (int u = 0; u < N; ++u) {
-        for (int t = 0; t < T; ++t) {
+    for (int u = 0; u < n_units; ++u) {
+        for (int t = 0; t < n_periods; ++t) {
             int y_prev = (t == 0) ? inst.y_prev[u] : y_val[u][t - 1];
             if (y_val[u][t] == 0 && y_prev == 1) {
                 // Shutdown at t: must stay off for min_off periods
-                int end = std::min(t + inst.min_off[u], T);
+                int end = std::min(t + inst.min_off[u], n_periods);
                 for (int tau = t + 1; tau < end; ++tau) {
                     if (y_val[u][tau] != 0) {
                         result.add_error(
@@ -132,10 +132,10 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst, 
     }
 
     // 7. Initial conditions
-    for (int u = 0; u < N; ++u) {
+    for (int u = 0; u < n_units; ++u) {
         if (inst.y_prev[u] == 1) {
             int remaining = std::max(0, inst.min_on[u] - inst.n_init[u]);
-            for (int t = 0; t < std::min(remaining, T); ++t) {
+            for (int t = 0; t < std::min(remaining, n_periods); ++t) {
                 if (y_val[u][t] != 1) {
                     result.add_error({VerifyError::Kind::Custom,
                                       "y[" + std::to_string(u) + "][" + std::to_string(t) + "]",
@@ -147,7 +147,7 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst, 
         }
         if (inst.y_prev[u] == 0) {
             int remaining = std::max(0, inst.min_off[u] - inst.n_init[u]);
-            for (int t = 0; t < std::min(remaining, T); ++t) {
+            for (int t = 0; t < std::min(remaining, n_periods); ++t) {
                 if (y_val[u][t] != 0) {
                     result.add_error({VerifyError::Kind::Custom,
                                       "y[" + std::to_string(u) + "][" + std::to_string(t) + "]",
@@ -161,8 +161,8 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst, 
 
     // 8. Objective recomputation
     double total_cost = 0.0;
-    for (int u = 0; u < N; ++u) {
-        for (int t = 0; t < T; ++t) {
+    for (int u = 0; u < n_units; ++u) {
+        for (int t = 0; t < n_periods; ++t) {
             if (y_val[u][t] == 0) {
                 continue;
             }

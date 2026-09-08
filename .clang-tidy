@@ -122,7 +122,6 @@ Checks: >
   -bugprone-throwing-static-initialization,
   -readability-identifier-length,
   -readability-function-cognitive-complexity,
-  -readability-identifier-naming,
   -bugprone-easily-swappable-parameters,
   -modernize-use-auto,
   -performance-enum-size,
