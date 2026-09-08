@@ -169,6 +169,760 @@ static bool structural_pass(Model& model, ViolationManager& vm, RNG& rng, bool h
     return changed;
 }
 
+namespace {
+
+// The wall-clock budget, computed in solve() because FeasibilityJump has to be
+// handed it at construction, and then carried into the loop below.
+struct Budget {
+    std::chrono::steady_clock::time_point start;
+    std::chrono::steady_clock::time_point deadline;
+    bool has_deadline = false;
+    double seconds = 0.0;  // saturated; see make_budget
+};
+
+Budget make_budget(double time_limit) {
+    Budget b;
+    b.start = std::chrono::steady_clock::now();
+    // time_limit <= 0 means "no wall-clock budget": the run is bounded by
+    // config.max_iterations alone and is therefore fully deterministic, which is
+    // what tests need. Any positive limit is a hard deadline enforced at every
+    // sub-step below, not just between batches.
+    b.has_deadline = time_limit > 0.0;
+    // Saturate before converting to the clock's integer tick type: callers pass
+    // very large limits to mean "effectively unbounded", and casting e.g.
+    // double::max() seconds to nanoseconds overflows int64 and yields a deadline
+    // already in the past, which would end the search immediately.
+    constexpr double kMaxBudgetSeconds = 1.0e9;  // ~31 years
+    // Saturate once and reuse for FJ's deadline: FeasibilityJump::begin()
+    // performs the same integer-tick duration_cast, so handing it the raw value
+    // would reintroduce exactly the overflow this saturation prevents.
+    b.seconds = b.has_deadline ? std::min(time_limit, kMaxBudgetSeconds) : 0.0;
+    b.deadline = b.start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                               std::chrono::duration<double>(b.seconds));
+    return b;
+}
+
+// Effective structural-batch probability: explicit config overrides; <0 means
+// auto (0.33 with list/set vars, 0 otherwise). Zeroed on scalar-only models,
+// which skip the structural batch entirely.
+double effective_structural_probability(const Model& model, const SearchConfig& config) {
+    const bool has_structural =
+        std::any_of(model.variables().begin(), model.variables().end(),
+                    [](const Variable& v) { return is_structured(v.type); });
+    if (!has_structural) {
+        return 0.0;
+    }
+    return config.structural_batch_probability >= 0.0 ? config.structural_batch_probability : 0.33;
+}
+
+// Pick this batch's kind (paper Algorithm 6 alternates FJ/NJ; the
+// STRUCTURAL batch is the list/set peer added in P4). Structural and
+// Novelty batches commit changes outside the FJ scan-set/jump-table, so
+// they must be followed by a resync.
+enum class BatchKind : std::uint8_t { FeasibilityJump, NoveltyJump, Structural };
+
+// Second arming condition for the Float escape probe (#117).
+// `perturbation_period` counts BATCHES, and a batch is `batch_iterations`
+// GLS iterations: microseconds on a small model, seconds on an expensive
+// one, so the threshold is a wall-clock duration that varies by orders of
+// magnitude across a roster. Measured on MINLPLib elec25 at a 60s budget a
+// batch costs ~1.2s, so the run gets 52 batches against a threshold of 100
+// and the probe is never armed at all — the stagnation gate that makes it a
+// last resort (#107) is dead code on any model whose batches cost seconds.
+// Arm on whichever comes first: the batch count, or this fraction of the
+// wall-clock budget with no new best — the latter only while the run is
+// projected to fall short of the batch count (see the gate at the arming
+// site below, which is what keeps this from starving diversification).
+//
+// Guarded on has_deadline below: with no wall-clock budget no clock read may
+// influence control flow, or iteration-budgeted runs stop being
+// bit-reproducible. Deliberately does NOT also diversify — the kick cadence
+// is a tuned parameter, and making it time-aware is a separate question that
+// wants its own measurement.
+constexpr double kEscapeArmFraction = 0.25;
+
+// Second witness for #102's unproductive-batch exit. FeasibilityJump ends a
+// batch on ITS measure -- the real rows' unweighted violation -- and that
+// measure cannot see the artificial objective row at all. Before the first
+// feasible solution that is the whole point. After it, the search's work is
+// a trade between the two: the bound is tightened on every new best, FJ
+// pulls the assignment off the real-feasible set to chase the objective row,
+// and the real rows settle at a strictly positive equilibrium. Since the
+// measure's reference is a running MINIMUM over the batch, "no new all-time
+// low" is then the normal state of a search that is working, and the exit
+// fires unconditionally -- on MINLPLib ex8_6_1 it fired on a run improving
+// its incumbent on 152 of 162 batches, and the three LNS kicks that followed
+// took 4.7s of a 10s budget (#102).
+//
+// So arm the exit only once THIS loop's own stagnation count agrees the
+// search has stopped improving. That makes the mechanism an acceleration of
+// the stagnation window rather than a replacement for it: the kick arrives
+// after this many non-improving batches plus one unproductive one, instead
+// of after `perturbation_period` batches -- a 20x shortening at the default,
+// where leaving it unwitnessed shortened it by ~300x and turned a stall
+// detector into a diversification schedule.
+//
+// A FRACTION of `perturbation_period` rather than a fresh constant, so the
+// two windows keep their ratio when a caller retunes the one knob that
+// already exists; floored at 1, since 0 is "always armed", the regime this
+// is here to end.
+//
+// The divisor is the honest part to argue with, and it is tuned: a sweep of
+// {5, 10, 20} batches on MINLPLib at a 10s budget over four paired seeds.
+// All three remove the ex8_6_1 regression completely -- it matches or beats
+// main on 4/4 seeds at every one of them, because a search that improves
+// this often simply never reaches the threshold. They differ on the
+// instance the mechanism exists for: st_e40 reaches its BKS on 4/4 seeds at
+// 5 and on 2/4 at 10 or 20, since after the first feasible solution it needs
+// the accelerated kick to move between its 52 feasible integer combinations.
+// nvs01 is feasible on 4/4 at all three (main solves it on none) with
+// objective quality too noisy to separate them. So the smallest of the three
+// is chosen, which is also the one closest to the unwitnessed behaviour on
+// the instances that want it. Nothing here establishes that 20 transfers off
+// MINLPLib; it is the same standing complaint GFJConfig::
+// unproductive_iterations records against its own 300.
+// A fraction of perturbation_period rather than a fresh knob, so the two
+// windows keep their ratio when a caller retunes the one that already
+// exists. The max(1, ...) floor is also where that ratio stops holding: at
+// perturbation_period < kUnproductiveArmDivisor the window is 1 batch and
+// the shortening is whatever perturbation_period happens to be, not 20x.
+constexpr int kUnproductiveArmDivisor = 20;
+
+// The ViolationLS outer loop: its state, and the steps of one pass over it. Every
+// member below was a local of solve(), most of them closed over by one of its
+// lambdas -- which is why the complexity metric charged the whole loop for each
+// of them. They are gathered into one object rather than threaded through free
+// functions because the steps genuinely share this state; what the split buys is
+// that each step of docs/architecture.md's "Main Loop" can be read on its own,
+// under the name that section already gives it.
+class ViolationLSLoop {
+public:
+    ViolationLSLoop(Model& model, ViolationManager& vm, RNG& rng, FeasibilityJump& fj,
+                    const SearchConfig& config, const Budget& budget, InnerSolverHook* hook,
+                    LNS* lns, int lns_interval, SolveCallback* callback);
+
+    SearchResult run();
+
+private:
+    // ---- observations of the current assignment ----
+    // Largest violation over the *real* constraints (the artificial objective
+    // constraint excluded); 0.0 when every real constraint holds. Unweighted, so
+    // it is comparable across the run regardless of the GLS weight dynamics.
+    //
+    // NaN maps to +inf, not 0: a non-convex body can evaluate to NaN (inf-inf,
+    // 0*inf, log of a negative), and a bare `value > tol` test would read that
+    // as satisfied and hand back a "feasible" solution we have no evidence for.
+    // This mirrors the guard in ViolationManager's clamped_node_violation.
+    [[nodiscard]] double max_real_violation() const;
+    [[nodiscard]] bool real_feasible() const {
+        return max_real_violation() <= config_.feasibility_tolerance;
+    }
+    [[nodiscard]] double current_obj() const {
+        return has_obj_ ? model_.node(model_.objective_id()).value : 0.0;
+    }
+    [[nodiscard]] bool past_deadline() const {
+        return has_deadline_ && std::chrono::steady_clock::now() >= deadline_;
+    }
+    [[nodiscard]] double remaining() const {
+        if (!has_deadline_) {
+            return 0.0;  // unbounded: sub-steps use their own iteration budgets
+        }
+        return std::max(
+            0.0,
+            std::chrono::duration<double>(deadline_ - std::chrono::steady_clock::now()).count());
+    }
+
+    // ---- the incumbent, and the kicks that leave it ----
+    void sample_rho() { fj_.set_rho(rng_.random() < 0.5 ? 0.95 : 1.0); }
+    void emit_progress(bool new_best);
+    // Record the current (real-feasible) assignment if it improves the best and
+    // tighten the objective bound. Returns true on a new best.
+    //
+    // PRECONDITION: the caller has established real_feasible().
+    bool record_best();
+    // On stagnation: LNS diversification every lns_interval-th time, else perturb.
+    // `allow_lns` is false only for #102's unproductive route once a feasible
+    // solution exists. The kick itself is microseconds and st_e40 needs it to
+    // hop between its 52 feasible integer combinations; what cost ex8_6_1 its
+    // budget was the LNS half -- three repairs, each bounded by min(2.0,
+    // remaining()), took 4.7s of a 10s run and the search never used a result.
+    // Suppressing the repair rather than the kick keeps the cheap half of the
+    // mechanism for the models it helps, and removes the expensive half from the
+    // regime where the measure that triggers it has gone blind.
+    void diversify(bool allow_lns = true);
+
+    // ---- one pass of the main loop, in the order architecture.md lists it ----
+    // Whether a budget has run out. Records which one in termination_.
+    bool budget_exhausted();
+    BatchKind pick_batch_kind();
+    // Run the batch. Returns true if it committed changes outside FJ's scan-set
+    // and jump-table, i.e. if the loop owes an fj_.resync().
+    bool run_batch(BatchKind kind);
+    void note_closest_approach(double batch_violation);
+    // Steps 3-4: bank the feasible point, polish it, bank the polish. Returns
+    // whether the batch produced a new best, and may set `resync`.
+    bool polish_and_record(double batch_violation, bool& resync);
+    // Steps 5-6. Returns false when the run is over (pure feasibility: solved).
+    bool apply_batch_outcome(bool improved, bool resync);
+    void maybe_arm_escape_probe();
+    void maybe_diversify(BatchKind kind, bool improved);
+    void maybe_emit_periodic_progress();
+    SearchResult finish();
+
+    Model& model_;
+    ViolationManager& vm_;
+    RNG& rng_;
+    FeasibilityJump& fj_;
+    const SearchConfig& config_;
+    InnerSolverHook* hook_;
+    LNS* lns_;
+    int lns_interval_;
+    SolveCallback* callback_;
+
+    const std::chrono::steady_clock::time_point start_;
+    const std::chrono::steady_clock::time_point deadline_;
+    const bool has_deadline_;
+    const double budget_seconds_;
+
+    const bool has_obj_;
+    const int32_t obj_ci_;
+    const std::vector<int32_t>& cids_;
+    const double structural_probability_;
+    const int unproductive_arm_stagnation_;
+
+    double best_feasible_obj_ = std::numeric_limits<double>::infinity();
+    Model::State best_state_;
+    bool have_feasible_ = false;
+    // Closest approach to the feasible region, tracked so an infeasible run
+    // returns something diagnosable (which constraint is left violated, and by
+    // how much) instead of the untouched initial assignment.
+    double best_violation_ = std::numeric_limits<double>::infinity();
+    Model::State closest_state_;
+    int perturbations_ = 0;
+    int lns_repairs_ = 0;
+    // Counts only the kicks ELIGIBLE for an LNS repair, which is what
+    // `lns_interval` has always meant. Kept apart from `perturbations` because
+    // #102's route can be refused its LNS half: letting a refused kick advance
+    // the slot would shift -- and at some kick counts permanently freeze -- the
+    // phase at which the perturbation_period route runs LNS, making that route's
+    // cadence depend on how often the unproductive one fired.
+    int lns_slot_ = 0;
+    int stagnation_ = 0;
+    int64_t batches_ = 0;
+    std::chrono::steady_clock::time_point last_callback_;
+    std::chrono::steady_clock::time_point last_improvement_;
+    // Which budget ends the run. Assigned at every loop exit so it always
+    // describes the exit actually taken; the `while` condition below is the only
+    // exit that is not a `break`, so it seeds the value and each `break`
+    // overwrites it. Reported on SearchResult so callers — and the regression
+    // tests for the deadline bounds — can tell a budget-limited run from a
+    // converged one without timing the call (#104).
+    TerminationReason termination_ = TerminationReason::TimeLimit;
+};
+
+ViolationLSLoop::ViolationLSLoop(Model& model, ViolationManager& vm, RNG& rng, FeasibilityJump& fj,
+                                 const SearchConfig& config, const Budget& budget,
+                                 InnerSolverHook* hook, LNS* lns, int lns_interval,
+                                 SolveCallback* callback)
+    : model_(model),
+      vm_(vm),
+      rng_(rng),
+      fj_(fj),
+      config_(config),
+      hook_(hook),
+      lns_(lns),
+      lns_interval_(lns_interval),
+      callback_(callback),
+      start_(budget.start),
+      deadline_(budget.deadline),
+      has_deadline_(budget.has_deadline),
+      budget_seconds_(budget.seconds),
+      has_obj_(model.objective_id() >= 0),
+      obj_ci_(model.objective_constraint_idx()),
+      cids_(model.constraint_ids()),
+      structural_probability_(effective_structural_probability(model, config)),
+      unproductive_arm_stagnation_(
+          std::max(1, config.perturbation_period / kUnproductiveArmDivisor)),
+      best_state_(model.copy_state()),
+      closest_state_(best_state_),
+      last_callback_(budget.start),
+      last_improvement_(budget.start) {
+    sample_rho();
+}
+
+double ViolationLSLoop::max_real_violation() const {
+    double worst = 0.0;
+    for (size_t i = 0; i < cids_.size(); ++i) {
+        if (static_cast<int32_t>(i) == obj_ci_) {
+            continue;
+        }
+        double v = model_.node(cids_[i]).value;
+        if (std::isnan(v)) {
+            return std::numeric_limits<double>::infinity();
+        }
+        worst = std::max(worst, v);
+    }
+    return worst;
+}
+
+void ViolationLSLoop::emit_progress(bool new_best) {
+    if (callback_ == nullptr) {
+        return;
+    }
+    vm_.invalidate_cache();
+    double elapsed =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start_).count();
+    SolveProgress p;
+    p.iteration = batches_;
+    p.time_seconds = elapsed;
+    p.objective = best_feasible_obj_;
+    p.total_violation = vm_.total_violation();
+    p.feasible = real_feasible();
+    p.new_best = new_best;
+    p.perturbations = perturbations_;
+    callback_->on_progress(p);
+    last_callback_ = std::chrono::steady_clock::now();
+}
+
+bool ViolationLSLoop::record_best() {
+    double obj = current_obj();
+    // Feasibility is a property of the constraints alone. A non-convex
+    // objective can overflow to +inf/NaN on part of the feasible region
+    // (the Thomson problem's coincident-point configurations, say), and
+    // such a point is still a feasible point of the model — refusing to
+    // record it left have_feasible false and reported the whole instance
+    // infeasible (issue #100).
+    //
+    // It cannot serve as an objective incumbent, though: it must never
+    // become best_feasible_obj (nothing could ever beat +inf under the
+    // relative-improvement test), and the bound must never be DERIVED from
+    // it — `obj - eps` on a non-finite obj is +inf or NaN, and a NaN bound
+    // makes the `obj <= bound` row permanently and unfixably violated. So
+    // it is kept strictly as the first feasibility witness, and any later
+    // finite-objective feasible point displaces it.
+    if (!std::isfinite(obj)) {
+        if (have_feasible_) {
+            return false;  // already have a witness, and possibly a better one
+        }
+        have_feasible_ = true;
+        best_state_ = model_.copy_state();
+        // Leaving the bound at +inf as well, though, left the search with
+        // no objective signal at all (issue #116). `obj <= +inf` is vacuous
+        // by construction — comparison_residual reads a *written* +inf as
+        // "this side is absent" and returns residual 0 (#100) — so with the
+        // bound still at its initial value the objective row can never be
+        // violated, no jump candidate scores anything through it, and every
+        // later batch returns "feasible" having done no work.
+        //
+        // So install a finite bound that is NOT derived from obj: the
+        // loosest one there is. Its only job is to make "the objective is
+        // not a number" a violated row, so it sits at the violation
+        // machinery's own blowup clamp — 1e30 is what clamped_node_violation
+        // maps +inf and NaN to (kInfPenalty, shared from violation.h so the two
+        // cannot drift apart), i.e. the largest objective value that machinery can
+        // still tell apart from a blowup — and every finite objective under
+        // it satisfies the row. A feasible point whose objective is finite
+        // but *above* 1e30 is therefore indistinguishable from +inf here;
+        // that is pre-existing kInfPenalty behaviour, not new.
+        //
+        // Why the loosest rather than something tighter (e.g. the largest
+        // finite objective evaluated so far): a finite bound that some
+        // feasible point can meet is the whole safety property here, and
+        // this one is met by *every* finite-objective assignment, so the
+        // only points it rules out are the ones with no objective value at
+        // all. A tighter sentinel would keep pressure on after the
+        // objective goes finite, but it can rule out feasible
+        // finite-objective points, and it buys only the handful of batches
+        // until the first finite-objective feasible point tightens the
+        // bound properly through the path below.
+        //
+        // Guarded on the bound still being +inf, so this replaces "no bound
+        // at all" and never overwrites one derived from a real incumbent.
+        // (has_obj is implied — current_obj() returns a finite 0.0 when
+        // there is no objective — but it is kept as the guard on
+        // set_objective_bound's precondition.)
+        //
+        // Returning true below is load-bearing: the caller reads a new best
+        // as an improvement and calls fj.reset_weights(), which rebuilds
+        // FeasibilityJump's violated set. Without that rebuild the row just
+        // installed stays invisible to the jump table. The baseline already
+        // returned true from this same witness path, so nothing else on it
+        // changes.
+        //
+        // One consequence this DOES introduce, confined to the window where
+        // the sentinel is installed and the objective is still non-finite:
+        //
+        //   * progress reports pair feasible = true with total_violation
+        //     ~1e30 until the objective goes finite. Documented on
+        //     SolveProgress::total_violation rather than suppressed: that
+        //     field is the weighted total over *all* rows including this
+        //     artificial one, and feasible-with-positive-violation is
+        //     already the steady state after any bound tightening, so no
+        //     consumer can be reading it as "zero whenever feasible". Only
+        //     the magnitude is new.
+        //
+        // The invariant this row imposes on the rest of the window: anything
+        // that compares two assignments by violation must difference PER
+        // CONSTRAINT, because a row clamped to 1e30 swallows every O(1) real
+        // row when whole sums are subtracted instead. FJ's jump scoring
+        // already did (#100); structural_pass did not, and was blind for the
+        // whole window until #118 gave it the same treatment. LNS::state_key
+        // and max_real_violation are safe by exclusion — neither looks at the
+        // objective row at all.
+        //
+        // One deliberate interaction: with this row violated and its
+        // gradient non-finite, float_jump_candidates reports "gradient
+        // unusable" at a coincident-point configuration, which makes the
+        // Float escape probe eligible there for the first time. When the
+        // probe actually arms is #117's subject, so elec25 has to be
+        // measured with both changes in.
+        if (has_obj_ && !std::isfinite(model_.objective_bound())) {
+            model_.set_objective_bound(kInfPenalty);  // the shared clamp; see violation.h
+        }
+        emit_progress(/*new_best=*/true);
+        return true;
+    }
+    // isfinite(best_feasible_obj) guards the case where the incumbent is the
+    // +inf witness above: the relative-improvement test would compute
+    // `inf - inf` = NaN and decide by NaN comparison.
+    if (have_feasible_ && std::isfinite(best_feasible_obj_) &&
+        obj >= best_feasible_obj_ - (1e-12 * (std::abs(best_feasible_obj_) + 1.0))) {
+        return false;
+    }
+    have_feasible_ = true;
+    best_feasible_obj_ = obj;
+    best_state_ = model_.copy_state();
+    if (has_obj_) {
+        // The bound step doubles as the Newton step size toward the objective
+        // (the float jump chases obj <= bound), so it must be non-trivial for
+        // hook-less continuous descent.
+        double eps = 1e-3 * (std::abs(obj) + 1.0);
+        model_.set_objective_bound(obj - eps);
+    }
+    emit_progress(/*new_best=*/true);
+    return true;
+}
+
+void ViolationLSLoop::diversify(bool allow_lns) {
+    if (allow_lns && lns_ != nullptr && lns_interval_ > 0 &&
+        (lns_slot_ % lns_interval_ == lns_interval_ - 1)) {
+        // Bound the repair by whatever budget is left, so an LNS kick near
+        // the deadline cannot run its own independent 2s.
+        // Floored at a tiny positive value while a deadline exists:
+        // remaining() returns exactly 0.0 if the clock crossed the deadline
+        // since the past_deadline() check above, and 0 means "no wall-clock
+        // limit" downstream in fj_nl_initialize — the opposite of intent.
+        const double repair_limit =
+            has_deadline_ ? std::max(1e-9, std::min(2.0, remaining())) : 0.0;
+        lns_->destroy_repair(model_, vm_, rng_, repair_limit);
+        ++lns_repairs_;
+        fj_.reset_weights();  // LNS mutated state outside GFJ
+    } else {
+        fj_.perturb(config_.perturbation_probability);  // self-resyncs
+    }
+    sample_rho();
+    ++perturbations_;
+    if (allow_lns) {
+        ++lns_slot_;
+    }
+    stagnation_ = 0;
+}
+
+bool ViolationLSLoop::budget_exhausted() {
+    // Count *actual* GLS iterations, which is what the config documents and
+    // what SearchResult::iterations reports. Using batches *
+    // batch_iterations over-counts whenever a batch exits early on
+    // feasibility, so the budget expired after far less work than asked for.
+    if (config_.max_iterations > 0 && fj_.iterations() >= config_.max_iterations) {
+        termination_ = TerminationReason::IterationLimit;
+        return true;
+    }
+    // Structural and Novelty batches do not charge fj.iterations(), so on a
+    // List/Set model with no wall clock the iteration budget alone cannot
+    // guarantee termination (structural_batch_probability = 1.0 would spin
+    // forever). Batches <= iterations by construction, so this only bites
+    // when iterations have stalled.
+    if (config_.max_iterations > 0 && batches_ >= config_.max_iterations) {
+        termination_ = TerminationReason::IterationLimit;
+        return true;
+    }
+    if (!has_deadline_ && config_.max_iterations <= 0) {
+        // Neither budget set: nothing would ever stop the loop.
+        termination_ = TerminationReason::NoBudget;
+        return true;
+    }
+    return false;
+}
+
+BatchKind ViolationLSLoop::pick_batch_kind() {
+    if (rng_.random() < structural_probability_) {
+        return BatchKind::Structural;
+    }
+    if (config_.use_compound_moves && rng_.random() < config_.novelty_jump_probability) {
+        return BatchKind::NoveltyJump;
+    }
+    return BatchKind::FeasibilityJump;
+}
+
+bool ViolationLSLoop::run_batch(BatchKind kind) {
+    switch (kind) {
+        case BatchKind::Structural:
+            return structural_pass(model_, vm_, rng_, has_deadline_, deadline_);
+        case BatchKind::NoveltyJump:
+            fj_.apply_novelty_jump();
+            return true;
+        case BatchKind::FeasibilityJump:
+            fj_.batch(config_.batch_iterations);
+            return false;
+    }
+    return false;
+}
+
+void ViolationLSLoop::note_closest_approach(double batch_violation) {
+    // Only tracked until the first feasible solution: after that both the
+    // final restore and the returned state use best_state, so the snapshot
+    // would be pure allocation on every improving batch. The `batches == 1`
+    // clause guarantees one capture even on an all-NaN run (violation stays
+    // +inf, so `<` never fires) without re-snapshotting on every batch of a
+    // violation plateau — the common infeasible case.
+    if (!have_feasible_ && (batch_violation < best_violation_ || batches_ == 1)) {
+        best_violation_ = batch_violation;
+        closest_state_ = model_.copy_state();
+    }
+}
+
+bool ViolationLSLoop::polish_and_record(double batch_violation, bool& resync) {
+    if (batch_violation > config_.feasibility_tolerance) {
+        return false;
+    }
+    // Record the feasible point we already have *before* polishing. The
+    // hook descends the penalty-method objective and can land outside
+    // the feasible region; recording only afterwards silently threw away
+    // genuinely feasible solutions (an instance would be reported
+    // infeasible despite the search having visited a feasible point).
+    bool improved = record_best();
+    // The hook is unbounded in *time* — a custom InnerSolverHook may do
+    // arbitrary work, and even FloatIntensifyHook sweeps every Float
+    // max_sweeps times. Don't start one we have no budget for.
+    if (hook_ != nullptr && !past_deadline()) {
+        hook_->solve(model_, vm_, {});  // continuous-objective polish (mutates floats)
+        resync = true;
+        if (real_feasible()) {  // keep the polish only if it stayed feasible
+            improved = record_best() || improved;
+        }
+    }
+    return improved;
+}
+
+bool ViolationLSLoop::apply_batch_outcome(bool improved, bool resync) {
+    if (!improved) {
+        ++stagnation_;
+        if (resync) {
+            fj_.resync();  // re-sync after hook/structural mutation, keep GLS weights
+        }
+        return true;
+    }
+    // Gated so an iteration-budgeted run reads no clock AT ALL, not merely
+    // no clock that reaches control flow: this is the only writer of
+    // last_improvement and its only reader is the has_deadline-gated
+    // arming block below. Keeps architecture.md's "the loop reads no
+    // clock at all" literally true.
+    if (has_deadline_) {
+        last_improvement_ = std::chrono::steady_clock::now();
+    }
+    stagnation_ = 0;
+    // Making progress: the Float escape probe is not needed and is not free.
+    fj_.set_escape_probe(false);
+    fj_.reset_weights();  // new best: fresh GLS weights (paper) + new rho
+    sample_rho();
+    if (!has_obj_) {
+        // Pure feasibility: first solution is the answer.
+        termination_ = TerminationReason::Feasible;
+        return false;
+    }
+    return true;
+}
+
+void ViolationLSLoop::maybe_arm_escape_probe() {
+    // Time-based arming (#117); see kEscapeArmFraction above. Tested on every
+    // batch, not only stagnant ones, and costs ONE steady_clock::now() per
+    // batch on top of the loop's own deadline reads — immaterial against a
+    // batch of batch_iterations GLS iterations. Skipped entirely once the
+    // probe is armed: arming again would be a no-op, and a new best clears
+    // the flag and re-enables the check.
+    //
+    // This route carries no diversification kick, unlike the stagnation route
+    // below, and an earlier revision gated it on the run being projected to
+    // fall short of perturbation_period batches for fear of starving
+    // diversify(). That gate was removed: the drip it defended against cannot
+    // run away, because the improvement that resets `stagnation` also disarms
+    // the probe (see the `improved` branch above), so re-arming costs another
+    // kEscapeArmFraction of the budget and the route can arm at most
+    // 1/kEscapeArmFraction times per run. #107's measured 9x regression came
+    // from an always-on probe with no disarm, which is a different regime.
+    // The gate was also measured to cost objective quality on a probe-
+    // sensitive model while preventing nothing, and it is the ungated form
+    // that #117's roster numbers describe.
+    if (has_deadline_ && !fj_.escape_probe()) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now < deadline_ && std::chrono::duration<double>(now - last_improvement_).count() >=
+                                   kEscapeArmFraction * budget_seconds_) {
+            fj_.set_escape_probe(true);
+        }
+    }
+}
+
+void ViolationLSLoop::maybe_diversify(BatchKind kind, bool improved) {
+    // A Feasibility-Jump batch that reported itself unproductive stopped
+    // reducing the real rows' violation at all (GFJConfig::
+    // unproductive_iterations). Waiting out the rest of perturbation_period
+    // would be waiting for a batch that has already said it has nothing
+    // left, so the kick is due now (#102).
+    //
+    // Gated on !improved. FeasibilityJump ends a batch on ITS measure, the
+    // real rows; the outer loop's `improved` is a new best on the objective.
+    // After the first feasible point those come apart routinely: a batch
+    // satisfies every real row, keeps iterating because any_active_violated()
+    // still sees the artificial objective row, plateaus on the real rows and
+    // exits stuck -- having just recorded a new best. Without this guard that
+    // batch is kicked anyway, three lines after the `improved` block set
+    // stagnation to 0 and disarmed the escape probe. That would also falsify
+    // the reasoning the time-based arming route above rests on ("the
+    // improvement that resets stagnation also disarms the probe"), by
+    // re-arming the probe on the very batch that just improved.
+    //
+    // batch_stuck() can now only be true when the batch started with
+    // `stagnation >= unproductive_arm_stagnation`, so this is the second of
+    // two gates rather than the only one; it is kept because it reads on the
+    // state AFTER the batch, which the arming decision could not.
+    const bool unproductive_kick =
+        kind == BatchKind::FeasibilityJump && !improved && fj_.batch_stuck();
+    if (stagnation_ >= config_.perturbation_period && !past_deadline()) {
+        // Genuinely stuck. Arm the Float escape probe: a variable sitting at a
+        // stationary point of every violated constraint has no other candidate
+        // that can move it, and diversification alone cannot rescue it because
+        // the search re-converges to the same point. Disarmed again on the next
+        // improvement, so a productive search never pays for it.
+        fj_.set_escape_probe(true);
+        diversify();
+    } else if (unproductive_kick && !past_deadline()) {
+        // Kick early, but do NOT arm the escape probe and do NOT reset the
+        // stagnation counter.
+        //
+        // Not the probe: this route fires on an ITERATION count, so on a
+        // model with no reachable feasible point the very first batch trips
+        // it and every batch after it does too. Arming here would put the
+        // probe on from ~300 iterations into the run onward and leave it on
+        // -- the always-on regime #107 measured at a 9x regression -- and
+        // the mitigation that makes arming safe elsewhere (disarm on the
+        // next improvement) is worth nothing against a condition that
+        // recurs every batch. The probe keeps its two documented routes.
+        //
+        // Not the counter: diversify() zeroes `stagnation`, and an
+        // unproductive batch is by definition a non-improving one, so
+        // letting it zero the counter would mean a model that is
+        // unproductive every batch never reaches perturbation_period --
+        // which is the probe's own arming clock, and on an iteration-
+        // budgeted run (no wall clock) the only one it has. Carrying the
+        // count across keeps "100 non-improving batches" meaning what it
+        // says while still buying the early kick.
+        const int carried = stagnation_;
+        diversify(/*allow_lns=*/!have_feasible_);
+        stagnation_ = carried;
+    }
+}
+
+void ViolationLSLoop::maybe_emit_periodic_progress() {
+    // Periodic progress (~1s) even without improvement.
+    if (callback_ != nullptr &&
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - last_callback_).count() >=
+            1.0) {
+        emit_progress(/*new_best=*/false);
+    }
+}
+
+SearchResult ViolationLSLoop::finish() {
+    // On a feasible run the best-objective assignment is the answer; on an
+    // infeasible one, hand back the closest approach rather than the initial
+    // assignment (which carries no information about where the search got to).
+    model_.restore_state(have_feasible_ ? best_state_ : closest_state_);
+    // Release the artificial objective bound so post-solve feasibility checks
+    // (verifiers iterating model constraints) don't see it violated by ~eps.
+    if (has_obj_) {
+        model_.set_objective_bound(std::numeric_limits<double>::infinity());
+    }
+    full_evaluate(model_);
+
+    double elapsed =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start_).count();
+
+    SearchResult result;
+    result.objective =
+        have_feasible_ ? best_feasible_obj_ : std::numeric_limits<double>::infinity();
+    result.feasible = have_feasible_;
+    result.best_state = have_feasible_ ? best_state_ : closest_state_;
+    // Residual of the assignment actually being returned, from the fresh
+    // full_evaluate above rather than the incrementally-maintained node values.
+    result.best_violation = max_real_violation();
+    result.iterations = fj_.iterations();  // total GLS iterations (not batch count)
+    result.time_seconds = elapsed;
+    result.termination = termination_;
+    result.escape_probe_armed = fj_.escape_probe();
+    result.perturbations = perturbations_;
+    result.lns_repairs = lns_repairs_;
+    return result;
+}
+
+SearchResult ViolationLSLoop::run() {
+    while (!past_deadline()) {
+        if (budget_exhausted()) {
+            break;
+        }
+
+        const BatchKind kind = pick_batch_kind();
+        // Re-decided every batch, from the count as it stands BEFORE the batch
+        // runs; see unproductive_arm_stagnation above. Disarming also stops the
+        // batch ENDING early, which matters on its own: on ex8_6_1 the early
+        // exits cost about six gap points even with every kick suppressed.
+        //
+        // The rule is the stagnation count ALONE. Feasibility does not gate
+        // arming or the kick; it decides only whether the kick may draw LNS (see
+        // the kick site). Two alternatives were implemented and measured and both
+        // are worse, so do not "restore" either from these notes:
+        //
+        //  - Gating the kick on !have_feasible bounds the misfire completely, but
+        //    st_e40 then reaches its BKS on 2 of 4 seeds instead of 4 -- it uses
+        //    post-feasible kicks to move between its 52 feasible combinations.
+        //  - Rate-limiting the kick (arming on the advance since the last one)
+        //    starves it the other way: infeasible at seed 2 on the 15 000-
+        //    iteration regression budget.
+        //
+        // Note what this count does NOT do: it does not bound the number of
+        // kicks. The kick site restores `stagnation` deliberately, so once the
+        // count first crosses the threshold every later batch is armed until an
+        // improvement or a full-period diversify resets it. That is a DELAY on
+        // the first misfire, not a cap on the rate; what makes the misfire cheap
+        // is that the kick drops its LNS half once a feasible solution exists.
+        fj_.set_watch_progress(stagnation_ >= unproductive_arm_stagnation_);
+
+        bool resync = run_batch(kind);
+        ++batches_;
+
+        const double batch_violation = max_real_violation();
+        note_closest_approach(batch_violation);
+        const bool improved = polish_and_record(batch_violation, resync);
+        if (!apply_batch_outcome(improved, resync)) {
+            break;
+        }
+        maybe_arm_escape_probe();
+        maybe_diversify(kind, improved);
+        maybe_emit_periodic_progress();
+    }
+    return finish();
+}
+
+}  // namespace
+
 // ViolationLS (paper Algorithm 6): the objective is folded into the constraint
 // set as `obj <= bound`; GFJ batches drive the assignment to feasibility while
 // the bound is tightened on each new (real-)feasible solution. On stagnation the
@@ -189,34 +943,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     }
     ViolationManager vm(model);
 
-    const auto start = std::chrono::steady_clock::now();
-    // time_limit <= 0 means "no wall-clock budget": the run is bounded by
-    // config.max_iterations alone and is therefore fully deterministic, which is
-    // what tests need. Any positive limit is a hard deadline enforced at every
-    // sub-step below, not just between batches.
-    const bool has_deadline = time_limit > 0.0;
-    // Saturate before converting to the clock's integer tick type: callers pass
-    // very large limits to mean "effectively unbounded", and casting e.g.
-    // double::max() seconds to nanoseconds overflows int64 and yields a deadline
-    // already in the past, which would end the search immediately.
-    constexpr double kMaxBudgetSeconds = 1.0e9;  // ~31 years
-    // Saturate once and reuse for FJ's deadline below: FeasibilityJump::begin()
-    // performs the same integer-tick duration_cast, so handing it the raw value
-    // would reintroduce exactly the overflow this saturation prevents.
-    const double budget_seconds = has_deadline ? std::min(time_limit, kMaxBudgetSeconds) : 0.0;
-    const auto deadline = start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                                      std::chrono::duration<double>(budget_seconds));
-    auto past_deadline = [&]() {
-        return has_deadline && std::chrono::steady_clock::now() >= deadline;
-    };
-    auto remaining = [&]() {
-        if (!has_deadline) {
-            return 0.0;  // unbounded: sub-steps use their own iteration budgets
-        }
-        return std::max(
-            0.0,
-            std::chrono::duration<double>(deadline - std::chrono::steady_clock::now()).count());
-    };
+    const Budget budget = make_budget(time_limit);
 
     // Exactly one path initialises each variable (#108). FeasibilityJump owns the
     // scalar start — `begin(set_initial_x)` below sets every Bool/Int/Float to the
@@ -246,586 +973,14 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     // immediately below). A batch is 1000 GLS iterations, so without this a
     // batch entered just before the deadline runs to completion and overruns it
     // — measured at +45% on the largest MINLPLib instance.
-    gfj.time_limit = budget_seconds;  // saturated: begin() casts to integer ticks
+    gfj.time_limit = budget.seconds;  // saturated: begin() casts to integer ticks
     gfj.max_iterations = 0;
     gfj.unproductive_iterations = config.unproductive_iterations;
     FeasibilityJump fj(model, vm, rng, gfj);
     fj.begin(/*set_initial_x=*/!config.skip_init);
 
-    const int32_t obj_ci = model.objective_constraint_idx();
-    const auto& cids = model.constraint_ids();
-
-    // Largest violation over the *real* constraints (the artificial objective
-    // constraint excluded); 0.0 when every real constraint holds. Unweighted, so
-    // it is comparable across the run regardless of the GLS weight dynamics.
-    //
-    // NaN maps to +inf, not 0: a non-convex body can evaluate to NaN (inf-inf,
-    // 0*inf, log of a negative), and a bare `value > tol` test would read that
-    // as satisfied and hand back a "feasible" solution we have no evidence for.
-    // This mirrors the guard in ViolationManager's clamped_node_violation.
-    auto max_real_violation = [&]() {
-        double worst = 0.0;
-        for (size_t i = 0; i < cids.size(); ++i) {
-            if (static_cast<int32_t>(i) == obj_ci) {
-                continue;
-            }
-            double v = model.node(cids[i]).value;
-            if (std::isnan(v)) {
-                return std::numeric_limits<double>::infinity();
-            }
-            worst = std::max(worst, v);
-        }
-        return worst;
-    };
-    auto real_feasible = [&]() { return max_real_violation() <= config.feasibility_tolerance; };
-    auto current_obj = [&]() { return has_obj ? model.node(model.objective_id()).value : 0.0; };
-
-    double best_feasible_obj = std::numeric_limits<double>::infinity();
-    Model::State best_state = model.copy_state();
-    bool have_feasible = false;
-    // Closest approach to the feasible region, tracked so an infeasible run
-    // returns something diagnosable (which constraint is left violated, and by
-    // how much) instead of the untouched initial assignment.
-    double best_violation = std::numeric_limits<double>::infinity();
-    Model::State closest_state = best_state;
-    int perturbations = 0;
-    int lns_repairs = 0;
-    // Counts only the kicks ELIGIBLE for an LNS repair, which is what
-    // `lns_interval` has always meant. Kept apart from `perturbations` because
-    // #102's route can be refused its LNS half: letting a refused kick advance
-    // the slot would shift -- and at some kick counts permanently freeze -- the
-    // phase at which the perturbation_period route runs LNS, making that route's
-    // cadence depend on how often the unproductive one fired.
-    int lns_slot = 0;
-    int stagnation = 0;
-    int64_t batches = 0;
-    auto last_callback = start;
-
-    // Skip the structural batch entirely on scalar-only models.
-    const bool has_structural =
-        std::any_of(model.variables().begin(), model.variables().end(),
-                    [](const Variable& v) { return is_structured(v.type); });
-    // Effective structural-batch probability: explicit config overrides; <0 means
-    // auto (0.33 with list/set vars, 0 otherwise). Zeroed on scalar-only models.
-    const double structural_probability = [&] {
-        if (!has_structural) {
-            return 0.0;
-        }
-        return config.structural_batch_probability >= 0.0 ? config.structural_batch_probability
-                                                          : 0.33;
-    }();
-
-    auto sample_rho = [&]() { fj.set_rho(rng.random() < 0.5 ? 0.95 : 1.0); };
-    sample_rho();
-
-    auto emit_progress = [&](bool new_best) {
-        if (!callback) {
-            return;
-        }
-        vm.invalidate_cache();
-        double elapsed =
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-        SolveProgress p;
-        p.iteration = batches;
-        p.time_seconds = elapsed;
-        p.objective = best_feasible_obj;
-        p.total_violation = vm.total_violation();
-        p.feasible = real_feasible();
-        p.new_best = new_best;
-        p.perturbations = perturbations;
-        callback->on_progress(p);
-        last_callback = std::chrono::steady_clock::now();
-    };
-
-    // Record the current (real-feasible) assignment if it improves the best and
-    // tighten the objective bound. Returns true on a new best.
-    //
-    // PRECONDITION: the caller has established real_feasible().
-    auto record_best = [&]() -> bool {
-        double obj = current_obj();
-        // Feasibility is a property of the constraints alone. A non-convex
-        // objective can overflow to +inf/NaN on part of the feasible region
-        // (the Thomson problem's coincident-point configurations, say), and
-        // such a point is still a feasible point of the model — refusing to
-        // record it left have_feasible false and reported the whole instance
-        // infeasible (issue #100).
-        //
-        // It cannot serve as an objective incumbent, though: it must never
-        // become best_feasible_obj (nothing could ever beat +inf under the
-        // relative-improvement test), and the bound must never be DERIVED from
-        // it — `obj - eps` on a non-finite obj is +inf or NaN, and a NaN bound
-        // makes the `obj <= bound` row permanently and unfixably violated. So
-        // it is kept strictly as the first feasibility witness, and any later
-        // finite-objective feasible point displaces it.
-        if (!std::isfinite(obj)) {
-            if (have_feasible) {
-                return false;  // already have a witness, and possibly a better one
-            }
-            have_feasible = true;
-            best_state = model.copy_state();
-            // Leaving the bound at +inf as well, though, left the search with
-            // no objective signal at all (issue #116). `obj <= +inf` is vacuous
-            // by construction — comparison_residual reads a *written* +inf as
-            // "this side is absent" and returns residual 0 (#100) — so with the
-            // bound still at its initial value the objective row can never be
-            // violated, no jump candidate scores anything through it, and every
-            // later batch returns "feasible" having done no work.
-            //
-            // So install a finite bound that is NOT derived from obj: the
-            // loosest one there is. Its only job is to make "the objective is
-            // not a number" a violated row, so it sits at the violation
-            // machinery's own blowup clamp — 1e30 is what clamped_node_violation
-            // maps +inf and NaN to (kInfPenalty, shared from violation.h so the two
-            // cannot drift apart), i.e. the largest objective value that machinery can
-            // still tell apart from a blowup — and every finite objective under
-            // it satisfies the row. A feasible point whose objective is finite
-            // but *above* 1e30 is therefore indistinguishable from +inf here;
-            // that is pre-existing kInfPenalty behaviour, not new.
-            //
-            // Why the loosest rather than something tighter (e.g. the largest
-            // finite objective evaluated so far): a finite bound that some
-            // feasible point can meet is the whole safety property here, and
-            // this one is met by *every* finite-objective assignment, so the
-            // only points it rules out are the ones with no objective value at
-            // all. A tighter sentinel would keep pressure on after the
-            // objective goes finite, but it can rule out feasible
-            // finite-objective points, and it buys only the handful of batches
-            // until the first finite-objective feasible point tightens the
-            // bound properly through the path below.
-            //
-            // Guarded on the bound still being +inf, so this replaces "no bound
-            // at all" and never overwrites one derived from a real incumbent.
-            // (has_obj is implied — current_obj() returns a finite 0.0 when
-            // there is no objective — but it is kept as the guard on
-            // set_objective_bound's precondition.)
-            //
-            // Returning true below is load-bearing: the caller reads a new best
-            // as an improvement and calls fj.reset_weights(), which rebuilds
-            // FeasibilityJump's violated set. Without that rebuild the row just
-            // installed stays invisible to the jump table. The baseline already
-            // returned true from this same witness path, so nothing else on it
-            // changes.
-            //
-            // One consequence this DOES introduce, confined to the window where
-            // the sentinel is installed and the objective is still non-finite:
-            //
-            //   * progress reports pair feasible = true with total_violation
-            //     ~1e30 until the objective goes finite. Documented on
-            //     SolveProgress::total_violation rather than suppressed: that
-            //     field is the weighted total over *all* rows including this
-            //     artificial one, and feasible-with-positive-violation is
-            //     already the steady state after any bound tightening, so no
-            //     consumer can be reading it as "zero whenever feasible". Only
-            //     the magnitude is new.
-            //
-            // The invariant this row imposes on the rest of the window: anything
-            // that compares two assignments by violation must difference PER
-            // CONSTRAINT, because a row clamped to 1e30 swallows every O(1) real
-            // row when whole sums are subtracted instead. FJ's jump scoring
-            // already did (#100); structural_pass did not, and was blind for the
-            // whole window until #118 gave it the same treatment. LNS::state_key
-            // and max_real_violation are safe by exclusion — neither looks at the
-            // objective row at all.
-            //
-            // One deliberate interaction: with this row violated and its
-            // gradient non-finite, float_jump_candidates reports "gradient
-            // unusable" at a coincident-point configuration, which makes the
-            // Float escape probe eligible there for the first time. When the
-            // probe actually arms is #117's subject, so elec25 has to be
-            // measured with both changes in.
-            if (has_obj && !std::isfinite(model.objective_bound())) {
-                model.set_objective_bound(kInfPenalty);  // the shared clamp; see violation.h
-            }
-            emit_progress(/*new_best=*/true);
-            return true;
-        }
-        // isfinite(best_feasible_obj) guards the case where the incumbent is the
-        // +inf witness above: the relative-improvement test would compute
-        // `inf - inf` = NaN and decide by NaN comparison.
-        if (have_feasible && std::isfinite(best_feasible_obj) &&
-            obj >= best_feasible_obj - (1e-12 * (std::abs(best_feasible_obj) + 1.0))) {
-            return false;
-        }
-        have_feasible = true;
-        best_feasible_obj = obj;
-        best_state = model.copy_state();
-        if (has_obj) {
-            // The bound step doubles as the Newton step size toward the objective
-            // (the float jump chases obj <= bound), so it must be non-trivial for
-            // hook-less continuous descent.
-            double eps = 1e-3 * (std::abs(obj) + 1.0);
-            model.set_objective_bound(obj - eps);
-        }
-        emit_progress(/*new_best=*/true);
-        return true;
-    };
-
-    // On stagnation: LNS diversification every lns_interval-th time, else perturb.
-    // `allow_lns` is false only for #102's unproductive route once a feasible
-    // solution exists. The kick itself is microseconds and st_e40 needs it to
-    // hop between its 52 feasible integer combinations; what cost ex8_6_1 its
-    // budget was the LNS half -- three repairs, each bounded by min(2.0,
-    // remaining()), took 4.7s of a 10s run and the search never used a result.
-    // Suppressing the repair rather than the kick keeps the cheap half of the
-    // mechanism for the models it helps, and removes the expensive half from the
-    // regime where the measure that triggers it has gone blind.
-    auto diversify = [&](bool allow_lns = true) {
-        if (allow_lns && lns && lns_interval > 0 && (lns_slot % lns_interval == lns_interval - 1)) {
-            // Bound the repair by whatever budget is left, so an LNS kick near
-            // the deadline cannot run its own independent 2s.
-            // Floored at a tiny positive value while a deadline exists:
-            // remaining() returns exactly 0.0 if the clock crossed the deadline
-            // since the past_deadline() check above, and 0 means "no wall-clock
-            // limit" downstream in fj_nl_initialize — the opposite of intent.
-            const double repair_limit =
-                has_deadline ? std::max(1e-9, std::min(2.0, remaining())) : 0.0;
-            lns->destroy_repair(model, vm, rng, repair_limit);
-            ++lns_repairs;
-            fj.reset_weights();  // LNS mutated state outside GFJ
-        } else {
-            fj.perturb(config.perturbation_probability);  // self-resyncs
-        }
-        sample_rho();
-        ++perturbations;
-        if (allow_lns) {
-            ++lns_slot;
-        }
-        stagnation = 0;
-    };
-
-    // Which budget ends the run. Assigned at every loop exit so it always
-    // describes the exit actually taken; the `while` condition below is the only
-    // exit that is not a `break`, so it seeds the value and each `break`
-    // overwrites it. Reported on SearchResult so callers — and the regression
-    // tests for the deadline bounds — can tell a budget-limited run from a
-    // converged one without timing the call (#104).
-    TerminationReason termination = TerminationReason::TimeLimit;
-
-    // Second arming condition for the Float escape probe (#117).
-    // `perturbation_period` counts BATCHES, and a batch is `batch_iterations`
-    // GLS iterations: microseconds on a small model, seconds on an expensive
-    // one, so the threshold is a wall-clock duration that varies by orders of
-    // magnitude across a roster. Measured on MINLPLib elec25 at a 60s budget a
-    // batch costs ~1.2s, so the run gets 52 batches against a threshold of 100
-    // and the probe is never armed at all — the stagnation gate that makes it a
-    // last resort (#107) is dead code on any model whose batches cost seconds.
-    // Arm on whichever comes first: the batch count, or this fraction of the
-    // wall-clock budget with no new best — the latter only while the run is
-    // projected to fall short of the batch count (see the gate at the arming
-    // site below, which is what keeps this from starving diversification).
-    //
-    // Guarded on has_deadline below: with no wall-clock budget no clock read may
-    // influence control flow, or iteration-budgeted runs stop being
-    // bit-reproducible. Deliberately does NOT also diversify — the kick cadence
-    // is a tuned parameter, and making it time-aware is a separate question that
-    // wants its own measurement.
-    constexpr double kEscapeArmFraction = 0.25;
-    auto last_improvement = start;
-
-    // Second witness for #102's unproductive-batch exit. FeasibilityJump ends a
-    // batch on ITS measure -- the real rows' unweighted violation -- and that
-    // measure cannot see the artificial objective row at all. Before the first
-    // feasible solution that is the whole point. After it, the search's work is
-    // a trade between the two: the bound is tightened on every new best, FJ
-    // pulls the assignment off the real-feasible set to chase the objective row,
-    // and the real rows settle at a strictly positive equilibrium. Since the
-    // measure's reference is a running MINIMUM over the batch, "no new all-time
-    // low" is then the normal state of a search that is working, and the exit
-    // fires unconditionally -- on MINLPLib ex8_6_1 it fired on a run improving
-    // its incumbent on 152 of 162 batches, and the three LNS kicks that followed
-    // took 4.7s of a 10s budget (#102).
-    //
-    // So arm the exit only once THIS loop's own stagnation count agrees the
-    // search has stopped improving. That makes the mechanism an acceleration of
-    // the stagnation window rather than a replacement for it: the kick arrives
-    // after this many non-improving batches plus one unproductive one, instead
-    // of after `perturbation_period` batches -- a 20x shortening at the default,
-    // where leaving it unwitnessed shortened it by ~300x and turned a stall
-    // detector into a diversification schedule.
-    //
-    // A FRACTION of `perturbation_period` rather than a fresh constant, so the
-    // two windows keep their ratio when a caller retunes the one knob that
-    // already exists; floored at 1, since 0 is "always armed", the regime this
-    // is here to end.
-    //
-    // The divisor is the honest part to argue with, and it is tuned: a sweep of
-    // {5, 10, 20} batches on MINLPLib at a 10s budget over four paired seeds.
-    // All three remove the ex8_6_1 regression completely -- it matches or beats
-    // main on 4/4 seeds at every one of them, because a search that improves
-    // this often simply never reaches the threshold. They differ on the
-    // instance the mechanism exists for: st_e40 reaches its BKS on 4/4 seeds at
-    // 5 and on 2/4 at 10 or 20, since after the first feasible solution it needs
-    // the accelerated kick to move between its 52 feasible integer combinations.
-    // nvs01 is feasible on 4/4 at all three (main solves it on none) with
-    // objective quality too noisy to separate them. So the smallest of the three
-    // is chosen, which is also the one closest to the unwitnessed behaviour on
-    // the instances that want it. Nothing here establishes that 20 transfers off
-    // MINLPLib; it is the same standing complaint GFJConfig::
-    // unproductive_iterations records against its own 300.
-    // A fraction of perturbation_period rather than a fresh knob, so the two
-    // windows keep their ratio when a caller retunes the one that already
-    // exists. The max(1, ...) floor is also where that ratio stops holding: at
-    // perturbation_period < kUnproductiveArmDivisor the window is 1 batch and
-    // the shortening is whatever perturbation_period happens to be, not 20x.
-    constexpr int kUnproductiveArmDivisor = 20;
-    const int unproductive_arm_stagnation =
-        std::max(1, config.perturbation_period / kUnproductiveArmDivisor);
-
-    while (!past_deadline()) {
-        // Count *actual* GLS iterations, which is what the config documents and
-        // what SearchResult::iterations reports. Using batches *
-        // batch_iterations over-counts whenever a batch exits early on
-        // feasibility, so the budget expired after far less work than asked for.
-        if (config.max_iterations > 0 && fj.iterations() >= config.max_iterations) {
-            termination = TerminationReason::IterationLimit;
-            break;
-        }
-        // Structural and Novelty batches do not charge fj.iterations(), so on a
-        // List/Set model with no wall clock the iteration budget alone cannot
-        // guarantee termination (structural_batch_probability = 1.0 would spin
-        // forever). Batches <= iterations by construction, so this only bites
-        // when iterations have stalled.
-        if (config.max_iterations > 0 && batches >= config.max_iterations) {
-            termination = TerminationReason::IterationLimit;
-            break;
-        }
-        if (!has_deadline && config.max_iterations <= 0) {
-            // Neither budget set: nothing would ever stop the loop.
-            termination = TerminationReason::NoBudget;
-            break;
-        }
-
-        // Pick this batch's kind (paper Algorithm 6 alternates FJ/NJ; the
-        // STRUCTURAL batch is the list/set peer added in P4). Structural and
-        // Novelty batches commit changes outside the FJ scan-set/jump-table, so
-        // they must be followed by a resync.
-        enum class BatchKind : std::uint8_t { FeasibilityJump, NoveltyJump, Structural };
-        BatchKind kind = BatchKind::FeasibilityJump;
-        if (rng.random() < structural_probability) {
-            kind = BatchKind::Structural;
-        } else if (config.use_compound_moves && rng.random() < config.novelty_jump_probability) {
-            kind = BatchKind::NoveltyJump;
-        }
-
-        // Re-decided every batch, from the count as it stands BEFORE the batch
-        // runs; see unproductive_arm_stagnation above. Disarming also stops the
-        // batch ENDING early, which matters on its own: on ex8_6_1 the early
-        // exits cost about six gap points even with every kick suppressed.
-        //
-        // The rule is the stagnation count ALONE. Feasibility does not gate
-        // arming or the kick; it decides only whether the kick may draw LNS (see
-        // the kick site). Two alternatives were implemented and measured and both
-        // are worse, so do not "restore" either from these notes:
-        //
-        //  - Gating the kick on !have_feasible bounds the misfire completely, but
-        //    st_e40 then reaches its BKS on 2 of 4 seeds instead of 4 -- it uses
-        //    post-feasible kicks to move between its 52 feasible combinations.
-        //  - Rate-limiting the kick (arming on the advance since the last one)
-        //    starves it the other way: infeasible at seed 2 on the 15 000-
-        //    iteration regression budget.
-        //
-        // Note what this count does NOT do: it does not bound the number of
-        // kicks. The kick site restores `stagnation` deliberately, so once the
-        // count first crosses the threshold every later batch is armed until an
-        // improvement or a full-period diversify resets it. That is a DELAY on
-        // the first misfire, not a cap on the rate; what makes the misfire cheap
-        // is that the kick drops its LNS half once a feasible solution exists.
-        fj.set_watch_progress(stagnation >= unproductive_arm_stagnation);
-
-        bool resync = false;
-        switch (kind) {
-            case BatchKind::Structural:
-                resync = structural_pass(model, vm, rng, has_deadline, deadline);
-                break;
-            case BatchKind::NoveltyJump:
-                fj.apply_novelty_jump();
-                resync = true;
-                break;
-            case BatchKind::FeasibilityJump:
-                fj.batch(config.batch_iterations);
-                break;
-        }
-        ++batches;
-
-        double batch_violation = max_real_violation();
-        // Only tracked until the first feasible solution: after that both the
-        // final restore and the returned state use best_state, so the snapshot
-        // would be pure allocation on every improving batch. The `batches == 1`
-        // clause guarantees one capture even on an all-NaN run (violation stays
-        // +inf, so `<` never fires) without re-snapshotting on every batch of a
-        // violation plateau — the common infeasible case.
-        if (!have_feasible && (batch_violation < best_violation || batches == 1)) {
-            best_violation = batch_violation;
-            closest_state = model.copy_state();
-        }
-
-        bool improved = false;
-        if (batch_violation <= config.feasibility_tolerance) {
-            // Record the feasible point we already have *before* polishing. The
-            // hook descends the penalty-method objective and can land outside
-            // the feasible region; recording only afterwards silently threw away
-            // genuinely feasible solutions (an instance would be reported
-            // infeasible despite the search having visited a feasible point).
-            improved = record_best();
-            // The hook is unbounded in *time* — a custom InnerSolverHook may do
-            // arbitrary work, and even FloatIntensifyHook sweeps every Float
-            // max_sweeps times. Don't start one we have no budget for.
-            if (hook != nullptr && !past_deadline()) {
-                hook->solve(model, vm, {});  // continuous-objective polish (mutates floats)
-                resync = true;
-                if (real_feasible()) {  // keep the polish only if it stayed feasible
-                    improved = record_best() || improved;
-                }
-            }
-        }
-
-        if (improved) {
-            // Gated so an iteration-budgeted run reads no clock AT ALL, not merely
-            // no clock that reaches control flow: this is the only writer of
-            // last_improvement and its only reader is the has_deadline-gated
-            // arming block below. Keeps architecture.md's "the loop reads no
-            // clock at all" literally true.
-            if (has_deadline) {
-                last_improvement = std::chrono::steady_clock::now();
-            }
-            stagnation = 0;
-            // Making progress: the Float escape probe is not needed and is not free.
-            fj.set_escape_probe(false);
-            fj.reset_weights();  // new best: fresh GLS weights (paper) + new rho
-            sample_rho();
-            if (!has_obj) {
-                // Pure feasibility: first solution is the answer.
-                termination = TerminationReason::Feasible;
-                break;
-            }
-        } else {
-            ++stagnation;
-            if (resync) {
-                fj.resync();  // re-sync after hook/structural mutation, keep GLS weights
-            }
-        }
-
-        // Time-based arming (#117); see kEscapeArmFraction above. Tested on every
-        // batch, not only stagnant ones, and costs ONE steady_clock::now() per
-        // batch on top of the loop's own deadline reads — immaterial against a
-        // batch of batch_iterations GLS iterations. Skipped entirely once the
-        // probe is armed: arming again would be a no-op, and a new best clears
-        // the flag and re-enables the check.
-        //
-        // This route carries no diversification kick, unlike the stagnation route
-        // below, and an earlier revision gated it on the run being projected to
-        // fall short of perturbation_period batches for fear of starving
-        // diversify(). That gate was removed: the drip it defended against cannot
-        // run away, because the improvement that resets `stagnation` also disarms
-        // the probe (see the `improved` branch above), so re-arming costs another
-        // kEscapeArmFraction of the budget and the route can arm at most
-        // 1/kEscapeArmFraction times per run. #107's measured 9x regression came
-        // from an always-on probe with no disarm, which is a different regime.
-        // The gate was also measured to cost objective quality on a probe-
-        // sensitive model while preventing nothing, and it is the ungated form
-        // that #117's roster numbers describe.
-        if (has_deadline && !fj.escape_probe()) {
-            const auto now = std::chrono::steady_clock::now();
-            if (now < deadline && std::chrono::duration<double>(now - last_improvement).count() >=
-                                      kEscapeArmFraction * budget_seconds) {
-                fj.set_escape_probe(true);
-            }
-        }
-
-        // A Feasibility-Jump batch that reported itself unproductive stopped
-        // reducing the real rows' violation at all (GFJConfig::
-        // unproductive_iterations). Waiting out the rest of perturbation_period
-        // would be waiting for a batch that has already said it has nothing
-        // left, so the kick is due now (#102).
-        //
-        // Gated on !improved. FeasibilityJump ends a batch on ITS measure, the
-        // real rows; the outer loop's `improved` is a new best on the objective.
-        // After the first feasible point those come apart routinely: a batch
-        // satisfies every real row, keeps iterating because any_active_violated()
-        // still sees the artificial objective row, plateaus on the real rows and
-        // exits stuck -- having just recorded a new best. Without this guard that
-        // batch is kicked anyway, three lines after the `improved` block set
-        // stagnation to 0 and disarmed the escape probe. That would also falsify
-        // the reasoning the time-based arming route above rests on ("the
-        // improvement that resets stagnation also disarms the probe"), by
-        // re-arming the probe on the very batch that just improved.
-        //
-        // batch_stuck() can now only be true when the batch started with
-        // `stagnation >= unproductive_arm_stagnation`, so this is the second of
-        // two gates rather than the only one; it is kept because it reads on the
-        // state AFTER the batch, which the arming decision could not.
-        const bool unproductive_kick =
-            kind == BatchKind::FeasibilityJump && !improved && fj.batch_stuck();
-        if (stagnation >= config.perturbation_period && !past_deadline()) {
-            // Genuinely stuck. Arm the Float escape probe: a variable sitting at a
-            // stationary point of every violated constraint has no other candidate
-            // that can move it, and diversification alone cannot rescue it because
-            // the search re-converges to the same point. Disarmed again on the next
-            // improvement, so a productive search never pays for it.
-            fj.set_escape_probe(true);
-            diversify();
-        } else if (unproductive_kick && !past_deadline()) {
-            // Kick early, but do NOT arm the escape probe and do NOT reset the
-            // stagnation counter.
-            //
-            // Not the probe: this route fires on an ITERATION count, so on a
-            // model with no reachable feasible point the very first batch trips
-            // it and every batch after it does too. Arming here would put the
-            // probe on from ~300 iterations into the run onward and leave it on
-            // -- the always-on regime #107 measured at a 9x regression -- and
-            // the mitigation that makes arming safe elsewhere (disarm on the
-            // next improvement) is worth nothing against a condition that
-            // recurs every batch. The probe keeps its two documented routes.
-            //
-            // Not the counter: diversify() zeroes `stagnation`, and an
-            // unproductive batch is by definition a non-improving one, so
-            // letting it zero the counter would mean a model that is
-            // unproductive every batch never reaches perturbation_period --
-            // which is the probe's own arming clock, and on an iteration-
-            // budgeted run (no wall clock) the only one it has. Carrying the
-            // count across keeps "100 non-improving batches" meaning what it
-            // says while still buying the early kick.
-            const int carried = stagnation;
-            diversify(/*allow_lns=*/!have_feasible);
-            stagnation = carried;
-        }
-
-        // Periodic progress (~1s) even without improvement.
-        if (callback != nullptr &&
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - last_callback)
-                    .count() >= 1.0) {
-            emit_progress(/*new_best=*/false);
-        }
-    }
-
-    // On a feasible run the best-objective assignment is the answer; on an
-    // infeasible one, hand back the closest approach rather than the initial
-    // assignment (which carries no information about where the search got to).
-    model.restore_state(have_feasible ? best_state : closest_state);
-    // Release the artificial objective bound so post-solve feasibility checks
-    // (verifiers iterating model constraints) don't see it violated by ~eps.
-    if (has_obj) {
-        model.set_objective_bound(std::numeric_limits<double>::infinity());
-    }
-    full_evaluate(model);
-
-    double elapsed =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-
-    SearchResult result;
-    result.objective = have_feasible ? best_feasible_obj : std::numeric_limits<double>::infinity();
-    result.feasible = have_feasible;
-    result.best_state = have_feasible ? best_state : closest_state;
-    // Residual of the assignment actually being returned, from the fresh
-    // full_evaluate above rather than the incrementally-maintained node values.
-    result.best_violation = max_real_violation();
-    result.iterations = fj.iterations();  // total GLS iterations (not batch count)
-    result.time_seconds = elapsed;
-    result.termination = termination;
-    result.escape_probe_armed = fj.escape_probe();
-    result.perturbations = perturbations;
-    result.lns_repairs = lns_repairs;
-    return result;
+    ViolationLSLoop loop(model, vm, rng, fj, config, budget, hook, lns, lns_interval, callback);
+    return loop.run();
 }
 
 }  // namespace cbls
