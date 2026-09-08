@@ -33,10 +33,13 @@
 # bugprone-*/modernize-*/performance-*/readability-* can block at push starting
 # now. These are off because they are UNFIXED, not because they are wrong.
 #
-# Counts were re-derived at the commit that restored linting to src/io/, with
-# the sweep command in issue #121 and the 26 checks then in this list enabled.
-# They rose 248 -> 296 there for two independent reasons, so do not compare them
-# against an older revision of this list without re-running that sweep:
+# HISTORICAL, like the worked example further down: the 248 and 296 in this
+# paragraph are from older revisions of this list and are NOT current. The
+# current total is the TOTAL: below. Counts were re-derived at the commit that
+# restored linting to src/io/, with the sweep command in issue #121 and the 26
+# checks then in this list enabled. They rose 248 -> 296 there for two
+# independent reasons, so do not compare them against an older revision of this
+# list without re-running that sweep:
 #   * 36 of the findings are in src/io/, which contributed nothing before
 #     because its .clang-tidy was missing `InheritParentConfig: true` and so
 #     ran no checks at all. 4 of those 36 are readability-identifier-naming in

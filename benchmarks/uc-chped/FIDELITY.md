@@ -11,7 +11,7 @@ self-consistency.
 |------|---------|
 | Source-vs-implementation severity | **Quantitative** (objective form matches verbatim, hot/cold `t_cold=0` divergence is bounded; the ramp-rate question is closed — the source is ramp-free too, §1.7) |
 | SCIP reference vs source | **Cosmetic** (PWL valve-point bound ≈ 0.1 % at 50 segments; same ramp-free relaxation as our model) |
-| Solver-internal-feasibility vs verifier | **Qualitative when this audit was written** (#32 + #33 meant the SA reported "feasible" while the verifier counted 44 / 134 / 166 violations). #33, #34 and #32 have all since been closed — #32 as not planned, on a measured probe (see §2). Any current claim must still come from a `--verify` run rather than from this row. |
+| Solver-internal-feasibility vs verifier | **Qualitative when this audit was written** (#32 + #33 meant the SA reported "feasible" while the verifier counted 44 / 134 / 166 violations). #33, #34 and #32 have all since been closed — #32 as not planned, on a structural argument corroborated by a probe (see §2); its hook-level coupling gap is real and untouched, only the claimed consequence was refuted. Any current claim must still come from a `--verify` run rather than from this row. |
 | `comparison.csv` may claim | **A gap against the Pedroso Table 2 bounds**, now that #77 has settled that those bounds describe the same ramp-free problem (§1.7). Each measured row must carry the feasibility tolerance it was produced at and should be `--verify`-checked — not because #32 is open (it is closed), but because the verifier is the independent check and the engine's own `feasible` flag is not. |
 
 The remainder of this document records the equation-by-equation evidence.
@@ -225,8 +225,10 @@ audit. It was resolved by reading Pedroso 2014 directly, and follow-up
 
 ### 2.8 Cross-cutting solver-quality issues
 
-These are not formulation deviations but they corrupt the meaning of the
-"feasible" annotation in `comparison.csv`:
+These are not formulation deviations. They were recorded as corrupting the
+meaning of the "feasible" annotation in `comparison.csv`; all five are now
+closed, and for #32 the claimed corruption did not survive measurement — see
+its bullet:
 
 - **#32 (closed, not planned)** — `FloatIntensifyHook` does not enforce
   indicator/float coupling: when `y[u][t]` flips 1→0 the dispatch `p[u][t]`
@@ -236,19 +238,33 @@ These are not formulation deviations but they corrupt the meaning of the
   the SA solver that #64 replaced with the ViolationLS port, from a source
   document no longer in the tree.
 
-  Two things now close it. Structurally, `P − P_max · y ≤ 0` is a *scored*
-  constraint (`uc_model.h`), and the engine calls an assignment feasible only
-  when every constraint node is within `feas_tol` — so `p ≤ 1e-6` wherever
-  `y = 0`, two orders of magnitude inside the verifier's `1e-4`. The old
-  "violation accumulates across moves" mechanism was a property of the SA's
-  looser flag, and `cbls::verify_model()` re-evaluates every node anyway, so
-  delta-evaluation drift would surface as a `DagConsistency` error rather
-  than as this one. Empirically, a probe at engine commit `5f33c59` ran
-  ucp40 / ucp100 / ucp200 at horizons 1/3/6/12/24 across seeds 42/1/2/3/7 —
-  75 solves, **55 feasible rows, 55 verified, 0 rejections**, and zero
-  `dispatch above Pmax*y`, zero `dispatch below Pmin*y`, zero DAG-consistency
-  errors. Those three instances are exactly the ones that had never been
-  `--verify`-checked.
+  **The structural argument is what closes it.** `P − P_max · y ≤ 0` is a
+  *scored* constraint (`uc_model.h`), and the engine calls an assignment
+  feasible only when every constraint node is within `feas_tol` — so
+  `p ≤ 1e-6` wherever `y = 0`, two orders of magnitude inside the verifier's
+  `1e-4`. The old "violation accumulates across moves" mechanism was a property
+  of the SA's looser flag. Note the residual the runner publishes is not an
+  incremental one: `solve()` restores the best state and re-runs
+  `full_evaluate` before returning, so `max_violation` is a fresh recomputation.
+  Across the 55 feasible probe rows it is **≤ 2.91e-11** (46 rows exactly 0,
+  6 at 7.276e-12, 3 at 2.91e-11) — direct evidence the `feasible` flag was not
+  set on stale values. (An earlier revision of this paragraph said drift would
+  surface as a `DagConsistency` error. That is wrong: because the DAG is
+  re-evaluated before return, it is consistent by construction on this path and
+  that check cannot fire. A stale-value false positive would appear as
+  `verify_model()`'s `ConstraintViolation` on the `p − P_max·y` node, and as
+  the UC check's own `dispatch above Pmax*y`.)
+
+  **The probe corroborates it.** At engine commit `5f33c59`, ucp40 / ucp100 /
+  ucp200 at horizons 1/3/6/12/24 across seeds 42/1/2/3/7: 75 solves,
+  **55 feasible rows, 55 verified, 0 rejections**, zero `dispatch above
+  Pmax*y`, zero `dispatch below Pmin*y`. Those three instances are exactly the
+  ones that had never been `--verify`-checked. Two limits, stated so the
+  corroboration is not read as more than it is: `--verify` runs only on rows the
+  engine already called feasible, so the 20 infeasible rows — every 12p/24p
+  horizon on ucp40 and ucp200 — contribute nothing; and `ucp13`, the instance
+  this issue was originally filed on, is not in the probe at all. The probe
+  therefore covers the configurations where the search converged easily.
 
 - **#33 (fixed)** — the default `is_feasible` tolerance was `1e-9` when
   this audit was written. The complaint was that it is an *absolute*
@@ -371,7 +387,7 @@ problem, not a published BKS.
 | Hot/cold `t_cold = 0` (§2.3) | Cosmetic to quantitative | ≤30 currency units per affected startup; <0.1 % of objective on shipped instances. |
 | Pre-horizon `y_prev=0` lookback (§2.3) | Cosmetic | Vacuous on shipped instances (n_init ≥ t_cold for all off units). |
 | Ramp rates (§2.7) | None | Pedroso 2014 states no ramp constraints and their public instance code carries no ramp data. Our model, the SCIP reference and the source all solve the same ramp-free problem; #77 closed as not planned. |
-| Solver-feasibility vs verifier (#32) | **Resolved** | #33 and #34 are fixed, the tolerance is recorded per row, and #32 closed as not planned after a probe found no verifier rejection in 55 feasible rows. A published row should still carry a `--verify` verdict rather than the engine's `feasible` flag alone. |
+| Solver-feasibility vs verifier (#32) | **Resolved** | #33 and #34 are fixed, the tolerance is recorded per row, and #32 closed as not planned after a probe found no verifier rejection in 55 feasible rows. **The `FloatIntensifyHook` coupling gap itself is untouched** — it still does not zero `p` when `y` flips — but no engine-feasible solution has ever shown the consequence, because the coupling is a scored constraint. A published row should still carry a `--verify` verdict rather than the engine's `feasible` flag alone. |
 | SCIP PWL approximation (§4.2) | Cosmetic | ~0.1 % objective error bound at 50 segments. |
 
 ### 5.2 Decision for `comparison.csv`
