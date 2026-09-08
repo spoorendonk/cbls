@@ -453,7 +453,7 @@ TEST_CASE("a search starting feasible with a +inf objective still finds a finite
     REQUIRE(r.feasible);
     REQUIRE(std::isfinite(r.objective));
     // The box optimum is 1/81 at the opposite corners; nothing can beat it.
-    REQUIRE(r.objective >= 1.0 / 81.0 - 1e-9);
+    REQUIRE(r.objective >= (1.0 / 81.0) - 1e-9);
     REQUIRE(r.objective < 0.1);
 }
 

@@ -709,7 +709,7 @@ TEST_CASE("cheap iterations let the deadline stride grow", "[fj][deadline]") {
     // Still strictly fewer reads than a fixed 64 over the whole run, because the
     // ramp spends its first iterations at a coarser-than-1 stride only after
     // measuring: the ramp itself is 1, 8, 64.
-    REQUIRE(fj.deadline_checks() <= fj.iterations() / 64 + 3);
+    REQUIRE(fj.deadline_checks() <= (fj.iterations() / 64) + 3);
 }
 
 TEST_CASE("a run with no wall clock reads no clock at all", "[fj][deadline]") {

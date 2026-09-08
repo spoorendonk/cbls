@@ -288,7 +288,8 @@ constexpr int kStructuralKicks = 4;
 void add_list_vars(Model& m, int num_lists, int n) {
     for (int i = 0; i < num_lists; ++i) {
         int32_t lv = m.list_var(n);
-        auto len = m.pair_lambda_sum(lv, [](int a, int b) { return 1.0 + 0.5 * std::abs(a - b); });
+        auto len =
+            m.pair_lambda_sum(lv, [](int a, int b) { return 1.0 + (0.5 * std::abs(a - b)); });
         m.add_constraint(m.leq(len, m.constant(0.5)));
     }
 }
@@ -732,7 +733,8 @@ TEST_CASE("a deadline that expires mid-kick stops it within a stride",
     // match, landing on the same moves-per-check. The mutation only shows where
     // the 64-move cap binds instead of the time target -- see the small-structure
     // test below, which is the one that fails on it.
-    REQUIRE(fj.structural_kick_moves() <= FJ::kMaxDeadlineStride * fj.structural_kick_checks() + 1);
+    REQUIRE(fj.structural_kick_moves() <=
+            (FJ::kMaxDeadlineStride * fj.structural_kick_checks()) + 1);
 }
 
 TEST_CASE("a kick with no wall clock reads no clock at all",
@@ -802,7 +804,8 @@ TEST_CASE("a kick on many small structures is not cut short",
     // stride * 4 and the ramp reads at moves 1, 5, 37, 293 -- 4 reads, whose
     // budget of 4 * 64 + 1 = 257 no longer covers 400 moves, so this fails while
     // every other assertion in the file still passes.
-    REQUIRE(fj.structural_kick_moves() <= FJ::kMaxDeadlineStride * fj.structural_kick_checks() + 1);
+    REQUIRE(fj.structural_kick_moves() <=
+            (FJ::kMaxDeadlineStride * fj.structural_kick_checks()) + 1);
 }
 
 TEST_CASE("a kick past its deadline stops instead of walking the remaining structures",

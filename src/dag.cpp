@@ -368,7 +368,7 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
 
         case NodeOp::Tanh: {
             double t = std::tanh(child_val(node.children[0], model));
-            return 1.0 - t * t;
+            return 1.0 - (t * t);
         }
 
         case NodeOp::If: {

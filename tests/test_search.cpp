@@ -1196,7 +1196,7 @@ TEST_CASE("structural batch respects the wall-clock deadline", "[search][structu
         // Order-dependent (so list moves can change it) and unsatisfiable (so the
         // search never ends early on feasibility and always spends the budget).
         auto len = m.pair_lambda_sum(lists[static_cast<size_t>(i)],
-                                     [](int a, int b) { return 1.0 + 0.5 * std::abs(a - b); });
+                                     [](int a, int b) { return 1.0 + (0.5 * std::abs(a - b)); });
         m.add_constraint(m.leq(len, m.constant(0.5)));
     }
     auto z = m.float_var(0.0, 1.0);

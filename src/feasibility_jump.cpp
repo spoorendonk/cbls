@@ -323,7 +323,7 @@ bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
         saw_violated = true;
         double grad = compute_partial(model, cids[c], var_id);
         if (std::abs(grad) > 1e-12) {
-            consider(clamp_to_domain(var, x0 - residual / grad));
+            consider(clamp_to_domain(var, x0 - (residual / grad)));
             any_newton = true;
             --budget;
         }
@@ -645,7 +645,7 @@ bool FeasibilityJump::apply_jump(int sample_size) {
     double best_score = 0.0;
     int n = 0;
     int draws = 0;
-    const int max_draws = sample_size * 8 + 16;
+    const int max_draws = (sample_size * 8) + 16;
     examined_.clear();
     while (!queue_.empty() && n < sample_size && draws < max_draws) {
         ++draws;
@@ -813,7 +813,7 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
     // drift within one batch, or ulp noise resets the streak and the exit never
     // fires. Relative, because an absolute floor does not survive scale (#118).
     auto improves = [](double v, double best) {
-        return v < best - kProgressRelEps * std::max(1.0, best);
+        return v < best - (kProgressRelEps * std::max(1.0, best));
     };
 
     while (true) {

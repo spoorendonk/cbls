@@ -450,7 +450,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         // +inf witness above: the relative-improvement test would compute
         // `inf - inf` = NaN and decide by NaN comparison.
         if (have_feasible && std::isfinite(best_feasible_obj) &&
-            obj >= best_feasible_obj - 1e-12 * (std::abs(best_feasible_obj) + 1.0)) {
+            obj >= best_feasible_obj - (1e-12 * (std::abs(best_feasible_obj) + 1.0))) {
             return false;
         }
         have_feasible = true;

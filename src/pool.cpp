@@ -309,7 +309,7 @@ SearchResult ParallelSearch::solve_deterministic(
                 // -- it is the launch itself failing, before any work started.
                 threads.emplace_back([&, i, epoch]() {
                     // Deterministic seed: base_seed + epoch * n_threads + thread_id
-                    uint64_t thread_seed = seed + static_cast<uint64_t>(epoch) * n_threads + i;
+                    uint64_t thread_seed = seed + (static_cast<uint64_t>(epoch) * n_threads) + i;
 
                     SolveCallback* cb = (i == 0) ? callback : nullptr;
 

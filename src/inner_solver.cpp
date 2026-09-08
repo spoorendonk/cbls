@@ -52,7 +52,7 @@ void FloatIntensifyHook::solve(Model& model, ViolationManager& vm,
                     double step = initial_step_size;
                     double prev_candidate = old_val;
                     for (int ls = 0; ls < max_line_search_steps; ++ls) {
-                        double candidate = std::clamp(old_val - step * df, var.lb, var.ub);
+                        double candidate = std::clamp(old_val - (step * df), var.lb, var.ub);
                         if (std::abs(candidate - old_val) > 1e-15 &&
                             std::abs(candidate - prev_candidate) > 1e-15) {
                             model.var_mut(var.id).value = candidate;
@@ -127,7 +127,7 @@ void FloatIntensifyHook::solve(Model& model, ViolationManager& vm,
             changed_ids.reserve(grads.size());
             for (const auto& vg : grads) {
                 const auto& v = model.var(vg.id);
-                double new_val = std::clamp(vg.old_val + scale * vg.dg, v.lb, v.ub);
+                double new_val = std::clamp(vg.old_val + (scale * vg.dg), v.lb, v.ub);
                 model.var_mut(vg.id).value = new_val;
                 changed_ids.push_back(vg.id);
             }

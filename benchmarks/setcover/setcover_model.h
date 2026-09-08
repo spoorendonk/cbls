@@ -81,7 +81,7 @@ inline SetCoverModel build_set_model(const SetCoverInstance& inst) {
     scm.chosen = m.set_var(inst.cols, /*min_size=*/0, max_size, "columns");
 
     for (int i = 0; i < inst.rows; ++i) {
-        const uint8_t* row = inst.covers.data() + static_cast<size_t>(i) * inst.cols;
+        const uint8_t* row = inst.covers.data() + (static_cast<size_t>(i) * inst.cols);
         int32_t covered = m.lambda_sum(scm.chosen, [row](int col) { return row[col] ? 1.0 : 0.0; });
         m.add_constraint(m.geq(covered, m.constant(1.0)));
     }

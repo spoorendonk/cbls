@@ -543,7 +543,7 @@ TEST_CASE("MINLPLib st_e40 reaches feasibility on a small iteration budget", "[m
 
         // No feasible point of this instance beats the proven optimum. A
         // strictly better objective would mean the "feasible" verdict is wrong.
-        REQUIRE(result.objective >= primal_bks - 10.0 * kDefaultFeasibilityTolerance);
+        REQUIRE(result.objective >= primal_bks - (10.0 * kDefaultFeasibilityTolerance));
     }
 }
 

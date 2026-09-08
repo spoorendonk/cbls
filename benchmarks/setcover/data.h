@@ -32,7 +32,7 @@ struct SetCoverInstance {
     std::vector<uint8_t> covers;
 
     [[nodiscard]] bool covers_row(int row, int col) const {
-        return covers[static_cast<size_t>(row) * static_cast<size_t>(cols) +
+        return covers[(static_cast<size_t>(row) * static_cast<size_t>(cols)) +
                       static_cast<size_t>(col)] != 0;
     }
     [[nodiscard]] int nonzeros() const {
@@ -97,7 +97,7 @@ inline SetCoverInstance parse_setcover(std::istream& in, const std::string& name
                                          " outside 1.." + std::to_string(inst.cols));
             }
             covering[static_cast<size_t>(t)] = col - 1;
-            inst.covers[static_cast<size_t>(i) * static_cast<size_t>(inst.cols) +
+            inst.covers[(static_cast<size_t>(i) * static_cast<size_t>(inst.cols)) +
                         static_cast<size_t>(col - 1)] = 1;
         }
     }

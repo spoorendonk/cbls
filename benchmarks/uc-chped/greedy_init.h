@@ -29,9 +29,9 @@ inline void greedy_uc_initialize(Model& model, const UCInstance& inst, const UCM
     std::iota(unit_order.begin(), unit_order.end(), 0);
     std::sort(unit_order.begin(), unit_order.end(), [&](int a, int b) {
         double Pa = inst.P_max[a];
-        double cost_a = (inst.a[a] + inst.b[a] * Pa + inst.c[a] * Pa * Pa) / Pa;
+        double cost_a = (inst.a[a] + (inst.b[a] * Pa) + (inst.c[a] * Pa * Pa)) / Pa;
         double Pb = inst.P_max[b];
-        double cost_b = (inst.a[b] + inst.b[b] * Pb + inst.c[b] * Pb * Pb) / Pb;
+        double cost_b = (inst.a[b] + (inst.b[b] * Pb) + (inst.c[b] * Pb * Pb)) / Pb;
         return cost_a < cost_b;
     });
 

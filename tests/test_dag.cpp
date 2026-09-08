@@ -377,7 +377,7 @@ TEST_CASE("AD: composite x^2 + 2*x*y", "[dag]") {
     m.var_mut(vid(y)).value = 2.0;
     full_evaluate(m);
 
-    double expected = 2 * 3.0 + 2 * 2.0;  // 10
+    double expected = (2 * 3.0) + (2 * 2.0);  // 10
     REQUIRE_THAT(compute_partial(m, f, vid(x)), WithinAbs(expected, 1e-10));
 }
 
@@ -489,7 +489,7 @@ TEST_CASE("Tanh AD matches finite difference", "[dag]") {
         full_evaluate(m);
         double th = std::tanh(xv);
         // d/dx tanh(x) = 1 - tanh^2(x)
-        REQUIRE_THAT(compute_partial(m, t, vid(x)), WithinAbs(1.0 - th * th, 1e-10));
+        REQUIRE_THAT(compute_partial(m, t, vid(x)), WithinAbs(1.0 - (th * th), 1e-10));
         REQUIRE_THAT(compute_partial(m, t, vid(x)),
                      WithinAbs(fd_partial(m, t, vid(x), 1e-5), 1e-5));
     }

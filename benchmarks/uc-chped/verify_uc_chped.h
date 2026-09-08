@@ -169,7 +169,7 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst, 
 
             double p = p_val[u][t];
             // Fuel cost: a + b*p + c*p^2 + |d*sin(e*(Pmin-p))|
-            double fuel = inst.a[u] + inst.b[u] * p + inst.c[u] * p * p +
+            double fuel = inst.a[u] + (inst.b[u] * p) + (inst.c[u] * p * p) +
                           std::abs(inst.d[u] * std::sin(inst.e[u] * (inst.P_min[u] - p)));
             total_cost += fuel;
 
