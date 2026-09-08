@@ -34,6 +34,15 @@
 //   * Two `int32_t idx = static_cast<int32_t>(...)` declarations respelled
 //     `auto idx = static_cast<int32_t>(...)` (modernize-use-auto). The
 //     deduced type is unchanged. RE-APPLY THESE too, for the same reason.
+//   * Two `NOLINTNEXTLINE(readability-function-cognitive-complexity)` lines,
+//     above `read_mps` (score 159) and `LineReader::getlineBuffered` (26), each
+//     preceded by a comment giving the reason. They are the one clang-tidy
+//     finding in this file that cannot be answered by a respelling: clearing
+//     them means restructuring the functions, and that structural delta is
+//     precisely what this vendoring contract is meant to prevent. Unlike the
+//     respellings above these cost nothing if a sync drops them — the push gate
+//     just goes red and they get re-applied — but re-apply them anyway, and
+//     re-check the scores while you are there.
 
 #include "cbls/io_mps.h"
 
@@ -328,6 +337,14 @@ private:
         return true;
     }
 
+    // Cognitive complexity 26 against a threshold of 25. The refill/scan/overflow
+    // loop is one invariant — a line may straddle any number of buffer refills —
+    // and the only way to score it below the threshold is to split the buffer
+    // state across functions. This file is vendored (see the header): the
+    // suppression is here because a structural delta against upstream would have
+    // to be re-derived by hand at every sync, not because the code is beyond
+    // improvement. See `Local adaptations` at the top of this file.
+    // NOLINTNEXTLINE(readability-function-cognitive-complexity)
     bool getlineBuffered(std::string_view& out) {
         overflow_.clear();
 
@@ -515,6 +532,22 @@ using StringMap = std::unordered_map<std::string, int32_t>;
 
 }  // namespace
 
+// Cognitive complexity 159 against a threshold of 25 — by far the largest score
+// in the tree. The body is the MPS section state machine: one switch whose arms
+// are the per-section record grammars of the format, all writing into the same
+// bundle of parse state (the two name maps, the column cache, the INTORG/INTEND
+// flag, the BOUNDS-seen vector). Splitting it means introducing a parser-state
+// struct upstream does not have and threading it through eight handlers.
+//
+// This file is vendored from spoorendonk/mipx and carries a "port the diff here"
+// contract (see the header). The four adaptations listed there are one-line
+// respellings that survive a sync hunk by hunk; restructuring the file's largest
+// function would instead make every future sync a manual re-derivation, which is
+// the cost the vendoring contract exists to avoid. The suppression is therefore
+// about provenance, not about the code: if this reader is ever de-vendored, the
+// split above is the right change to make. See `Local adaptations` at the top of
+// this file.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 MpsProblem read_mps(const std::string& filename) {
     LineReader reader(filename);
 
