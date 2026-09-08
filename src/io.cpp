@@ -146,9 +146,9 @@ namespace {
 
 using NameMap = std::unordered_map<std::string, int32_t>;
 
-// One `{"var": ...}` record. Returns the new variable's handle.
-int32_t load_var_record(Model& m, const json& j) {
-    std::string name = j["var"].get<std::string>();
+// One `{"var": ...}` record, whose name the caller has already read. Returns the
+// new variable's handle.
+int32_t load_var_record(Model& m, const json& j, const std::string& name) {
     VarType vtype = string_to_vartype(j.value("type", "Float"));
     switch (vtype) {
         case VarType::Bool:
@@ -289,7 +289,7 @@ json parse_record(const std::string& line, int line_num) {
 void load_record(Model& m, const json& j, NameMap& name_to_handle, int line_num) {
     if (j.contains("var")) {
         std::string name = j["var"].get<std::string>();
-        name_to_handle[name] = load_var_record(m, j);
+        name_to_handle[name] = load_var_record(m, j, name);
     } else if (j.contains("node")) {
         // The node's own name is recorded only after its children are resolved,
         // so a record cannot refer to itself.
