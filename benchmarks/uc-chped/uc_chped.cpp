@@ -201,15 +201,17 @@ void resolve_out_csv(Args& a) {
 Args parse_args(int argc, char** argv) {
     Args a;
     bool inst_dir_set = false;
-    for (int i = 1; i < argc; ++i) {
-        std::string s = argv[i];
+    cbls::bench::ArgCursor c(argc, argv);
+    const char* v = nullptr;
+    while (c.advance()) {
+        const std::string s = c.arg();
         if (s == "--verify") {
             a.do_verify = true;
-        } else if (s == "--time-limit" && i + 1 < argc) {
-            a.time_limit = parse_double("--time-limit", argv[++i]);
+        } else if (c.value_flag("--time-limit", v)) {
+            a.time_limit = parse_double("--time-limit", v);
             a.time_limit_set = true;
-        } else if (s == "--seed" && i + 1 < argc) {
-            const int64_t seed = parse_int64("--seed", argv[++i]);
+        } else if (c.value_flag("--seed", v)) {
+            const int64_t seed = parse_int64("--seed", v);
             // The seed is published on every measured row so a run can be
             // repeated. A negative one wraps to a uint64_t that --seed itself
             // then rejects as out of range, so the recorded value would not be
@@ -220,15 +222,15 @@ Args parse_args(int argc, char** argv) {
                 std::exit(2);
             }
             a.seed = static_cast<uint64_t>(seed);
-        } else if (s == "--feas-tol" && i + 1 < argc) {
-            a.feas_tol = parse_double("--feas-tol", argv[++i]);
-        } else if (s == "--instance" && i + 1 < argc) {
-            a.instances.emplace_back(argv[++i]);
-        } else if (s == "--commit" && i + 1 < argc) {
-            a.commit_sha = argv[++i];
+        } else if (c.value_flag("--feas-tol", v)) {
+            a.feas_tol = parse_double("--feas-tol", v);
+        } else if (c.value_flag("--instance", v)) {
+            a.instances.emplace_back(v);
+        } else if (c.value_flag("--commit", v)) {
+            a.commit_sha = v;
             a.commit_set = true;
-        } else if (s == "--out" && i + 1 < argc) {
-            a.out_csv = argv[++i];
+        } else if (c.value_flag("--out", v)) {
+            a.out_csv = v;
         } else if (s == "--help" || s == "-h") {
             std::printf(
                 "Usage: cbls_uc_chped [inst-dir] [--verify] [--time-limit S] [--seed N]"

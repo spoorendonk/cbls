@@ -55,22 +55,24 @@ using cbls::bench::parse_int64;
 
 Args parse_args(int argc, char** argv) {
     Args a;
-    for (int i = 1; i < argc; ++i) {
-        std::string s = argv[i];
-        if (s == "--time-limit" && i + 1 < argc) {
-            a.time_limit = parse_double("--time-limit", argv[++i]);
-        } else if (s == "--seed" && i + 1 < argc) {
-            a.seed = static_cast<uint64_t>(parse_int64("--seed", argv[++i]));
-        } else if (s == "--feas-tol" && i + 1 < argc) {
-            a.feas_tol = parse_double("--feas-tol", argv[++i]);
-        } else if (s == "--instance" && i + 1 < argc) {
-            a.instances.emplace_back(argv[++i]);
-        } else if (s == "--commit" && i + 1 < argc) {
-            a.commit_sha = argv[++i];
-        } else if (s == "--out" && i + 1 < argc) {
-            a.out_csv = argv[++i];
-        } else if (s == "--trace" && i + 1 < argc) {
-            a.trace_csv = argv[++i];
+    cbls::bench::ArgCursor c(argc, argv);
+    const char* v = nullptr;
+    while (c.advance()) {
+        const std::string s = c.arg();
+        if (c.value_flag("--time-limit", v)) {
+            a.time_limit = parse_double("--time-limit", v);
+        } else if (c.value_flag("--seed", v)) {
+            a.seed = static_cast<uint64_t>(parse_int64("--seed", v));
+        } else if (c.value_flag("--feas-tol", v)) {
+            a.feas_tol = parse_double("--feas-tol", v);
+        } else if (c.value_flag("--instance", v)) {
+            a.instances.emplace_back(v);
+        } else if (c.value_flag("--commit", v)) {
+            a.commit_sha = v;
+        } else if (c.value_flag("--out", v)) {
+            a.out_csv = v;
+        } else if (c.value_flag("--trace", v)) {
+            a.trace_csv = v;
         } else if (s == "--help" || s == "-h") {
             std::printf(
                 "Usage: cbls_minlplib [inst-dir] [--time-limit S] [--seed N]"

@@ -88,44 +88,49 @@ void print_usage() {
 using cbls::bench::parse_double;
 using cbls::bench::parse_int64;
 
+/// Range-checked rather than cast: parse_int64 validates the syntax, but an
+/// out-of-range value would wrap to a small or negative pass count and silently
+/// disable propagation -- a different derived box, published at exit code 0.
+int parse_propagation_passes(const char* text) {
+    const int64_t passes = parse_int64("--max-propagation-passes", text);
+    if (passes < 0 || passes > std::numeric_limits<int>::max()) {
+        std::fprintf(stderr, "--max-propagation-passes must be in [0, %d]\n",
+                     std::numeric_limits<int>::max());
+        std::exit(2);
+    }
+    return static_cast<int>(passes);
+}
+
 Args parse_args(int argc, char** argv) {
     Args a;
-    for (int i = 1; i < argc; ++i) {
-        std::string s = argv[i];
-        if (s == "--instance" && i + 1 < argc) {
-            a.instance = argv[++i];
-        } else if (s == "--inst-dir" && i + 1 < argc) {
-            a.inst_dir = argv[++i];
-        } else if (s == "--out-dir" && i + 1 < argc) {
-            a.out_dir = argv[++i];
-        } else if (s == "--budget" && i + 1 < argc) {
-            a.budget = parse_double("--budget", argv[++i]);
-        } else if (s == "--seed" && i + 1 < argc) {
-            a.seed = static_cast<uint64_t>(parse_int64("--seed", argv[++i]));
-        } else if (s == "--feas-tol" && i + 1 < argc) {
-            a.feas_tol = parse_double("--feas-tol", argv[++i]);
-        } else if (s == "--inf-clamp" && i + 1 < argc) {
-            a.inf_clamp = parse_double("--inf-clamp", argv[++i]);
+    cbls::bench::ArgCursor c(argc, argv);
+    const char* v = nullptr;
+    while (c.advance()) {
+        const std::string s = c.arg();
+        if (c.value_flag("--instance", v)) {
+            a.instance = v;
+        } else if (c.value_flag("--inst-dir", v)) {
+            a.inst_dir = v;
+        } else if (c.value_flag("--out-dir", v)) {
+            a.out_dir = v;
+        } else if (c.value_flag("--budget", v)) {
+            a.budget = parse_double("--budget", v);
+        } else if (c.value_flag("--seed", v)) {
+            a.seed = static_cast<uint64_t>(parse_int64("--seed", v));
+        } else if (c.value_flag("--feas-tol", v)) {
+            a.feas_tol = parse_double("--feas-tol", v);
+        } else if (c.value_flag("--inf-clamp", v)) {
+            a.inf_clamp = parse_double("--inf-clamp", v);
         } else if (s == "--no-propagate-bounds") {
             a.propagate_bounds = false;
-        } else if (s == "--max-propagation-passes" && i + 1 < argc) {
-            // Range-checked rather than cast: parse_int64 validates the syntax, but
-            // an out-of-range value would wrap to a small or negative pass count and
-            // silently disable propagation -- a different derived box, published at
-            // exit code 0. That is the failure this commit set out to close.
-            const int64_t passes = parse_int64("--max-propagation-passes", argv[++i]);
-            if (passes < 0 || passes > std::numeric_limits<int>::max()) {
-                std::fprintf(stderr, "--max-propagation-passes must be in [0, %d]\n",
-                             std::numeric_limits<int>::max());
-                std::exit(2);
-            }
-            a.max_propagation_passes = static_cast<int>(passes);
+        } else if (c.value_flag("--max-propagation-passes", v)) {
+            a.max_propagation_passes = parse_propagation_passes(v);
         } else if (s == "--compound-moves") {
             a.compound_moves = true;
         } else if (s == "--no-compound-moves") {
             a.compound_moves = false;
-        } else if (s == "--commit" && i + 1 < argc) {
-            a.commit_sha = argv[++i];
+        } else if (c.value_flag("--commit", v)) {
+            a.commit_sha = v;
         } else if (s == "--help" || s == "-h") {
             print_usage();
             std::exit(0);
@@ -254,8 +259,12 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     }
 }
 
-int run_benchmark(int argc, char** argv) {
-    Args args = parse_args(argc, argv);
+/// Whether the arguments name a run that can produce a result at all. Returns 0
+/// when they do, otherwise the process exit code. Separate from run_benchmark
+/// because these guards are the parse layer's other half rather than part of
+/// running: parse_double reports a bad --budget and hands back NaN, and it is
+/// this function that turns that into an exit code the driver's tests pin.
+int validate_args(const Args& args) {
     if (args.instance.empty() || args.out_dir.empty()) {
         std::fprintf(stderr, "--instance and --out-dir are required\n");
         print_usage();
@@ -283,6 +292,70 @@ int run_benchmark(int argc, char** argv) {
     if (!(args.inf_clamp > 0.0)) {
         std::fprintf(stderr, "--inf-clamp must be a positive bound\n");
         return 2;
+    }
+    return 0;
+}
+
+/// The independent re-check of the assignment solve() returned, and the status
+/// it earns. Its own function because it is a publication policy, not part of
+/// running the search: it decides whether a row may carry an objective at all.
+struct Verdict {
+    const char* status = "no_solution";
+    bool have_solution = false;
+    int n_fractional_int = 0;
+    double obj_drift = 0.0;
+};
+
+/// Independent re-checks of the assignment solve() actually returned. It
+/// restores best_state and full-evaluates before returning, so the model holds
+/// that point now. Mirrors benchmarks/minlplib/minlplib.cpp, which already
+/// refuses to publish a row failing any of these:
+///
+///   * residual — the engine's verdict, recomputed, on its own DAG;
+///   * integrality — an Int variable left fractional means the point is not a
+///     solution of the MIP at all;
+///   * objective drift — result.objective is the search's *running best*, taken
+///     when the incumbent was recorded. The number published has to be what the
+///     model evaluates to at the point being returned.
+Verdict assess_result(const cbls::MpsToModelResult& built, const cbls::SearchResult& result,
+                      double feas_tol) {
+    Verdict v;
+    if (result.feasible) {
+        for (const auto& var : built.model.variables()) {
+            if (var.type == cbls::VarType::Int &&
+                std::abs(var.value - std::round(var.value)) > 1e-9) {
+                ++v.n_fractional_int;
+            }
+        }
+    }
+    const double model_obj = built.objective_node_id >= 0
+                                 ? built.model.node(built.objective_node_id).value
+                                 : result.objective;
+    // Only meaningful for a finite objective: a feasible point on which the
+    // objective is +inf/NaN (issue #100) makes this |inf - inf| = NaN, and
+    // `NaN <= tol` is false — which would report a perfectly consistent verdict
+    // as `violation_mismatch`. `have_solution` below already refuses such a
+    // point via isfinite, so skipping the drift check just gets it the right
+    // label (`no_solution`), matching minlplib's non-finite handling.
+    v.obj_drift = result.feasible && std::isfinite(result.objective)
+                      ? std::abs(model_obj - result.objective)
+                      : 0.0;
+    const bool verdict_consistent =
+        !result.feasible || (result.best_violation <= feas_tol && v.n_fractional_int == 0 &&
+                             v.obj_drift <= 1e-6 * (std::abs(result.objective) + 1.0));
+    v.have_solution = result.feasible && std::isfinite(result.objective) && verdict_consistent;
+    if (!verdict_consistent) {
+        v.status = "violation_mismatch";
+    } else if (v.have_solution) {
+        v.status = "feasible";
+    }
+    return v;
+}
+
+int run_benchmark(int argc, char** argv) {
+    Args args = parse_args(argc, argv);
+    if (const int rc = validate_args(args); rc != 0) {
+        return rc;
     }
 
     std::error_code ec;
@@ -352,55 +425,14 @@ int run_benchmark(int argc, char** argv) {
     const double wall =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 
-    // Independent re-checks of the assignment solve() actually returned. It
-    // restores best_state and full-evaluates before returning, so the model holds
-    // that point now. Mirrors benchmarks/minlplib/minlplib.cpp, which already
-    // refuses to publish a row failing any of these:
-    //
-    //   * residual — the engine's verdict, recomputed, on its own DAG;
-    //   * integrality — an Int variable left fractional means the point is not a
-    //     solution of the MIP at all;
-    //   * objective drift — result.objective is the search's *running best*, taken
-    //     when the incumbent was recorded. The number published has to be what the
-    //     model evaluates to at the point being returned.
-    int n_fractional_int = 0;
-    if (result.feasible) {
-        for (const auto& v : built.model.variables()) {
-            if (v.type == cbls::VarType::Int && std::abs(v.value - std::round(v.value)) > 1e-9) {
-                ++n_fractional_int;
-            }
-        }
-    }
-    const double model_obj = built.objective_node_id >= 0
-                                 ? built.model.node(built.objective_node_id).value
-                                 : result.objective;
-    // Only meaningful for a finite objective: a feasible point on which the
-    // objective is +inf/NaN (issue #100) makes this |inf - inf| = NaN, and
-    // `NaN <= tol` is false — which would report a perfectly consistent verdict
-    // as `violation_mismatch`. `have_solution` below already refuses such a
-    // point via isfinite, so skipping the drift check just gets it the right
-    // label (`no_solution`), matching minlplib's non-finite handling.
-    const double obj_drift = result.feasible && std::isfinite(result.objective)
-                                 ? std::abs(model_obj - result.objective)
-                                 : 0.0;
-    const bool verdict_consistent =
-        !result.feasible || (result.best_violation <= args.feas_tol && n_fractional_int == 0 &&
-                             obj_drift <= 1e-6 * (std::abs(result.objective) + 1.0));
-    const bool have_solution =
-        result.feasible && std::isfinite(result.objective) && verdict_consistent;
-    const char* status = "no_solution";
-    if (!verdict_consistent) {
-        status = "violation_mismatch";
-    } else if (have_solution) {
-        status = "feasible";
-    }
+    const Verdict verdict = assess_result(built, result, args.feas_tol);
     nlohmann::json j{
-        {"status", status},
+        {"status", verdict.status},
         {"wall_seconds", wall},
         {"iterations", result.iterations},
         {"max_violation", result.best_violation},
-        {"n_fractional_int", n_fractional_int},
-        {"objective_drift", obj_drift},
+        {"n_fractional_int", verdict.n_fractional_int},
+        {"objective_drift", verdict.obj_drift},
         {"n_vars", prob.vars.size()},
         {"n_cons", prob.rows.size()},
         {"n_int_vars", count_int_vars(prob)},
@@ -416,11 +448,13 @@ int run_benchmark(int argc, char** argv) {
         {"bound_propagation_infeasible", built.bound_stats.infeasible},
         {"bound_propagation_hit_pass_limit", built.bound_stats.hit_pass_limit},
     };
-    j["objective"] = have_solution ? nlohmann::json(result.objective) : nlohmann::json(nullptr);
+    j["objective"] =
+        verdict.have_solution ? nlohmann::json(result.objective) : nlohmann::json(nullptr);
     write_result(args, j);
 
-    std::printf("%-28s %-12s obj=%-16.8g viol=%-10.3g %8.2fs\n", args.instance.c_str(), status,
-                have_solution ? result.objective : std::numeric_limits<double>::quiet_NaN(),
+    std::printf("%-28s %-12s obj=%-16.8g viol=%-10.3g %8.2fs\n", args.instance.c_str(),
+                verdict.status,
+                verdict.have_solution ? result.objective : std::numeric_limits<double>::quiet_NaN(),
                 result.best_violation, wall);
     return 0;
 }
