@@ -255,8 +255,12 @@ its bullet:
   `verify_model()`'s `ConstraintViolation` on the `p − P_max·y` node, and as
   the UC check's own `dispatch above Pmax*y`.)
 
-  **The probe corroborates it.** At engine commit `5f33c59`, ucp40 / ucp100 /
-  ucp200 at horizons 1/3/6/12/24 across seeds 42/1/2/3/7: 75 solves,
+  **The probe corroborates it.** Run twice: first at engine commit `5f33c59`,
+  then re-run at `6f9d419` with `--commit` recorded per row after the first
+  pass was found to have written `commit_sha` empty. The two agree exactly, and
+  the engine source is identical between them (`6f9d419` and `5f33c59` differ
+  only in documentation). ucp40 / ucp100 / ucp200 at horizons 1/3/6/12/24
+  across seeds 42/1/2/3/7: 75 solves,
   **55 feasible rows, 55 verified, 0 rejections**, zero `dispatch above
   Pmax*y`, zero `dispatch below Pmin*y`. Those three instances are exactly the
   ones that had never been `--verify`-checked. Two limits, stated so the
