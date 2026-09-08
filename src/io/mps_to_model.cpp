@@ -29,24 +29,35 @@ double clamp_hi(double ub, double inf_clamp) {
     return (std::isnan(ub) || is_unbounded_above(ub)) ? inf_clamp : ub;
 }
 
+/// A row body's two-sided bounds. Returned as a pair rather than written
+/// through two `double&` out-parameters: `lo` and `hi` have the same type, so a
+/// transposed argument list is silently accepted by the compiler and inverts the
+/// constraint's sense. Named fields make that transposition unrepresentable.
+struct RowBounds {
+    double lo = -kMpsInf;
+    double hi = kMpsInf;
+};
+
 /// The row's body bounds `lo <= body <= hi`, matching exactly the constraints
 /// the adapter goes on to build from the same sense/rhs/range triple.
-void row_bounds(const MpsRow& r, double& lo, double& hi) {
+RowBounds row_bounds(const MpsRow& r) {
     const double rng = std::abs(r.range);
+    RowBounds b;
     switch (r.sense) {
         case MpsRowSense::L:
-            hi = r.rhs;
-            lo = r.range != 0.0 ? r.rhs - rng : -kMpsInf;
+            b.hi = r.rhs;
+            b.lo = r.range != 0.0 ? r.rhs - rng : -kMpsInf;
             break;
         case MpsRowSense::G:
-            lo = r.rhs;
-            hi = r.range != 0.0 ? r.rhs + rng : kMpsInf;
+            b.lo = r.rhs;
+            b.hi = r.range != 0.0 ? r.rhs + rng : kMpsInf;
             break;
         case MpsRowSense::E:
-            lo = r.range < 0.0 ? r.rhs + r.range : r.rhs;
-            hi = r.range > 0.0 ? r.rhs + r.range : r.rhs;
+            b.lo = r.range < 0.0 ? r.rhs + r.range : r.rhs;
+            b.hi = r.range > 0.0 ? r.rhs + r.range : r.rhs;
             break;
     }
+    return b;
 }
 
 /// Derive implied column bounds from the rows. The rows are handed to
@@ -62,7 +73,9 @@ BoundPropagationStats tighten_column_bounds(const MpsProblem& prob,
     std::vector<LinearRow> rows(prob.rows.size());
     for (std::size_t i = 0; i < prob.rows.size(); ++i) {
         LinearRow& row = rows[i];
-        row_bounds(prob.rows[i], row.lo, row.hi);
+        const RowBounds rb = row_bounds(prob.rows[i]);
+        row.lo = rb.lo;
+        row.hi = rb.hi;
         row.nnz = row_start[i + 1] - row_start[i];
         row.cols = csr_cols.data() + row_start[i];
         row.coefs = csr_coefs.data() + row_start[i];

@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -220,33 +221,41 @@ int32_t combine_body(Model& m, int32_t nonlinear, bool has_nonlinear, int32_t li
     return m.constant(0.0);
 }
 
+/// A row body's two-sided bounds. Returned as a pair rather than written
+/// through two `double&` out-parameters: `lo` and `hi` have the same type, so a
+/// transposed argument list is silently accepted by the compiler and inverts the
+/// constraint's sense. Named fields make that transposition unrepresentable.
+struct RowBounds {
+    double lo = -kNlInf;
+    double hi = kNlInf;
+};
+
 /// The row's body bounds `lo <= body <= hi`, read through the bound *type* so a
 /// stale value on the unused side cannot be mistaken for a real bound. The
 /// constraint builder is type-gated the same way; deriving a bound from a side
 /// no constraint enforces would be exactly the unsoundness #120 exists to
-/// remove. Returns false for a Free row, which builds no constraint at all.
-bool linear_row_bounds(const NlConBound& b, double& lo, double& hi) {
-    lo = -kNlInf;
-    hi = kNlInf;
+/// remove. Returns nullopt for a Free row, which builds no constraint at all.
+std::optional<RowBounds> linear_row_bounds(const NlConBound& b) {
+    RowBounds r;
     switch (b.type) {
         case NlBoundType::Range:
-            lo = b.lower;
-            hi = b.upper;
-            return true;
+            r.lo = b.lower;
+            r.hi = b.upper;
+            return r;
         case NlBoundType::Upper:
-            hi = b.upper;
-            return true;
+            r.hi = b.upper;
+            return r;
         case NlBoundType::Lower:
-            lo = b.lower;
-            return true;
+            r.lo = b.lower;
+            return r;
         case NlBoundType::Equal:
-            lo = b.lower;
-            hi = b.lower;
-            return true;
+            r.lo = b.lower;
+            r.hi = b.lower;
+            return r;
         case NlBoundType::Free:
-            return false;
+            return std::nullopt;
     }
-    return false;
+    return std::nullopt;
 }
 
 /// Derive implied column bounds from the *purely linear* rows. A row with a
@@ -271,10 +280,13 @@ BoundPropagationStats tighten_column_bounds(const NlProblem& prob, const NlToMod
         if (!c.nonlinear.empty() || c.linear.empty()) {
             continue;
         }
-        LinearRow row;
-        if (!linear_row_bounds(c.bound, row.lo, row.hi)) {
+        const std::optional<RowBounds> rb = linear_row_bounds(c.bound);
+        if (!rb.has_value()) {
             continue;
         }
+        LinearRow row;
+        row.lo = rb->lo;
+        row.hi = rb->hi;
         // `propagate_bounds` rejects an out-of-range column outright, but
         // `build_linear` drops one silently and io_nl.h promises "skip, don't
         // throw" on a malformed file. Drop the whole row instead: omitting a row
