@@ -169,20 +169,6 @@ static bool structural_pass(Model& model, ViolationManager& vm, RNG& rng, bool h
     return changed;
 }
 
-static SolveProgress make_progress(int64_t iteration, double elapsed, double best_feasible_obj,
-                                   double total_viol, bool feasible, bool new_best,
-                                   int perturbations) {
-    SolveProgress p;
-    p.iteration = iteration;
-    p.time_seconds = elapsed;
-    p.objective = best_feasible_obj;
-    p.total_violation = total_viol;
-    p.feasible = feasible;
-    p.new_best = new_best;
-    p.perturbations = perturbations;
-    return p;
-}
-
 // ViolationLS (paper Algorithm 6): the objective is folded into the constraint
 // set as `obj <= bound`; GFJ batches drive the assignment to feasibility while
 // the bound is tightened on each new (real-)feasible solution. On stagnation the
@@ -339,9 +325,15 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         vm.invalidate_cache();
         double elapsed =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-        callback->on_progress(make_progress(batches, elapsed, best_feasible_obj,
-                                            vm.total_violation(), real_feasible(), new_best,
-                                            perturbations));
+        SolveProgress p;
+        p.iteration = batches;
+        p.time_seconds = elapsed;
+        p.objective = best_feasible_obj;
+        p.total_violation = vm.total_violation();
+        p.feasible = real_feasible();
+        p.new_best = new_best;
+        p.perturbations = perturbations;
+        callback->on_progress(p);
         last_callback = std::chrono::steady_clock::now();
     };
 
