@@ -221,6 +221,71 @@ int32_t combine_body(Model& m, int32_t nonlinear, bool has_nonlinear, int32_t li
     return m.constant(0.0);
 }
 
+/// A translated constraint/objective body, or the reason it could not be built.
+/// The NL contract is "skip, don't throw" on an operator CBLS cannot express, so
+/// the failure travels back as data rather than as an exception.
+struct BodyResult {
+    int32_t node = 0;
+    bool ok = true;
+    std::string reason;
+};
+
+/// Translate the nonlinear part, build the linear part and combine them. This is
+/// the same three steps for a constraint and for the objective; only the label
+/// on the failure differs, and that belongs to the caller.
+BodyResult build_body(Model& m, const NlExpr& nonlinear, const std::vector<NlLinTerm>& linear,
+                      const std::vector<int32_t>& var_handles) {
+    BodyResult out;
+    int32_t nl_node = 0;
+    const bool has_nl = !nonlinear.empty();
+    if (has_nl) {
+        ExprTranslator tr(m, nonlinear, var_handles);
+        nl_node = tr.translate(nonlinear.root);
+        if (!tr.ok()) {
+            out.ok = false;
+            out.reason = tr.reason();
+            return out;
+        }
+    }
+    const int32_t lin_node = build_linear(m, linear, var_handles);
+    out.node = combine_body(m, nl_node, has_nl, lin_node, !linear.empty());
+    return out;
+}
+
+/// Translate a constraint's bound into the one or two CBLS comparisons it stands
+/// for, and return the primary constraint node — the upper side of a range. A
+/// Free row builds no constraint and returns -1.
+int32_t add_bound_constraints(Model& m, const NlConBound& b, int32_t body) {
+    switch (b.type) {
+        case NlBoundType::Upper: {
+            const int32_t cn = m.leq(body, m.constant(b.upper));
+            m.add_constraint(cn);
+            return cn;
+        }
+        case NlBoundType::Lower: {
+            const int32_t cn = m.geq(body, m.constant(b.lower));
+            m.add_constraint(cn);
+            return cn;
+        }
+        case NlBoundType::Equal: {
+            const int32_t cn = m.eq_expr(body, m.constant(b.lower));
+            m.add_constraint(cn);
+            return cn;
+        }
+        case NlBoundType::Range: {
+            // lower <= body <= upper -> two constraints.
+            const int32_t lo = m.geq(body, m.constant(b.lower));
+            const int32_t hi = m.leq(body, m.constant(b.upper));
+            m.add_constraint(lo);
+            m.add_constraint(hi);
+            return hi;  // primary = upper side
+        }
+        case NlBoundType::Free:
+            break;
+    }
+    return -1;
+}
+
 /// A row body's two-sided bounds. Returned as a pair rather than written
 /// through two `double&` out-parameters: `lo` and `hi` have the same type, so a
 /// transposed argument list is silently accepted by the compiler and inverts the
@@ -319,24 +384,26 @@ BoundPropagationStats tighten_column_bounds(const NlProblem& prob, const NlToMod
     return propagate_bounds(rows, integral, lb, ub, popts);
 }
 
-}  // namespace
+/// The per-column search box handed to variable creation, and which columns are
+/// integral. `lb`/`ub` are still in NL units here: the `inf_clamp` fallback is
+/// applied per column when the variable itself is created.
+struct ColumnBoxes {
+    std::vector<double> lb;
+    std::vector<double> ub;
+    std::vector<uint8_t> integral;
+};
 
-NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts) {
-    NlToModelResult result;
-    Model& m = result.model;
-
-    // ---------- Variables ----------
-    // Integer/binary NL columns become Int variables so the search respects
-    // integrality; everything else is a Float. `var_is_discrete` comes from the
-    // NL header counts plus Gay's variable ordering (see nl_reader.cpp).
-    // ---------- Implied bounds ----------
-    // Run before variable creation so the derived box is what the engine sees.
-    // A bound propagation derives is entailed by the constraints, so from here
-    // on it is treated exactly like one the file declared.
+/// The declared column boxes, tightened by propagation when it is enabled. Runs
+/// before variable creation so the derived box is what the engine sees; a bound
+/// propagation derives is entailed by the constraints, so from there on it is
+/// treated exactly like one the file declared.
+ColumnBoxes column_boxes(const NlProblem& prob, const NlToModelOptions& opts,
+                         BoundPropagationStats& stats) {
     const auto n_cols = static_cast<std::size_t>(prob.n_vars);
-    std::vector<double> col_lb(n_cols, -kNlInf);
-    std::vector<double> col_ub(n_cols, kNlInf);
-    std::vector<uint8_t> integral(n_cols, 0);
+    ColumnBoxes box;
+    box.lb.assign(n_cols, -kNlInf);
+    box.ub.assign(n_cols, kNlInf);
+    box.integral.assign(n_cols, 0);
     for (std::size_t j = 0; j < n_cols; ++j) {
         if (j < prob.var_bounds.size()) {
             // A NaN bound is "no bound" here, as clamp_lo/clamp_hi already read
@@ -345,174 +412,146 @@ NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts)
             // adapter.
             const double declared_lb = prob.var_bounds[j].lower;
             const double declared_ub = prob.var_bounds[j].upper;
-            col_lb[j] = std::isnan(declared_lb) ? -kNlInf : declared_lb;
-            col_ub[j] = std::isnan(declared_ub) ? kNlInf : declared_ub;
+            box.lb[j] = std::isnan(declared_lb) ? -kNlInf : declared_lb;
+            box.ub[j] = std::isnan(declared_ub) ? kNlInf : declared_ub;
         }
-        integral[j] = (j < prob.var_is_discrete.size() && prob.var_is_discrete[j] != 0) ? 1 : 0;
+        box.integral[j] = (j < prob.var_is_discrete.size() && prob.var_is_discrete[j] != 0) ? 1 : 0;
     }
-    if (opts.propagate_bounds) {
-        const std::vector<double> raw_lb = col_lb;
-        const std::vector<double> raw_ub = col_ub;
-        result.bound_stats = tighten_column_bounds(prob, opts, col_lb, col_ub, integral);
-        if (result.bound_stats.infeasible) {
-            // Propagation proved the linear part empty. That is either a
-            // genuinely infeasible instance or numerical trouble; either way the
-            // honest thing is to hand the search the box the file declared and
-            // let it report what it finds, rather than a derived empty one.
-            col_lb = raw_lb;
-            col_ub = raw_ub;
-            // Nothing was applied, so the counts must not say otherwise; only
-            // the verdict survives.
-            result.bound_stats = BoundPropagationStats{};
-            result.bound_stats.infeasible = true;
+    if (!opts.propagate_bounds) {
+        return box;
+    }
+    const std::vector<double> raw_lb = box.lb;
+    const std::vector<double> raw_ub = box.ub;
+    stats = tighten_column_bounds(prob, opts, box.lb, box.ub, box.integral);
+    if (stats.infeasible) {
+        // Propagation proved the linear part empty. That is either a
+        // genuinely infeasible instance or numerical trouble; either way the
+        // honest thing is to hand the search the box the file declared and
+        // let it report what it finds, rather than a derived empty one.
+        box.lb = raw_lb;
+        box.ub = raw_ub;
+        // Nothing was applied, so the counts must not say otherwise; only
+        // the verdict survives.
+        stats = BoundPropagationStats{};
+        stats.infeasible = true;
+    }
+    return box;
+}
+
+/// One CBLS variable built from one NL column, and whether a clamp had to narrow
+/// it. The flag travels with the handle because the caller counts *columns* that
+/// were narrowed, not narrowings: the int_inf_clamp fallback and the int32 clip
+/// can both bite on the same column.
+struct ColumnVar {
+    int32_t handle = 0;
+    bool clamped = false;
+};
+
+/// Map one NL column onto an Int (discrete) or Float variable. Integer/binary NL
+/// columns become Int so the search respects integrality; everything else is a
+/// Float. `discrete` comes from the NL header counts plus Gay's variable
+/// ordering (see nl_reader.cpp).
+ColumnVar add_column(Model& m, int32_t j, bool discrete, double box_lb, double box_ub,
+                     const NlToModelOptions& opts) {
+    ColumnVar out;
+    double lb = clamp_lo(box_lb, opts.inf_clamp);
+    double ub = clamp_hi(box_ub, opts.inf_clamp);
+    const bool clamp_used = lb != box_lb || ub != box_ub;
+    if (lb > ub) {
+        std::swap(lb, ub);  // defensive: degenerate bound ordering
+    }
+    const std::string name = "x" + std::to_string(j);
+    if (!discrete) {
+        out.clamped = clamp_used;
+        out.handle = m.float_var(lb, ub, name);
+        return out;
+    }
+    // Tighten to the integers inside [lb, ub]. A bound that exists —
+    // declared or derived — is always honoured; only a genuinely
+    // infinite one falls back to int_inf_clamp, since a ±1e9 integer box
+    // is not a searchable domain.
+    // Propagated, not as-declared: a derived bound is entailed, so it
+    // rightly suppresses the unsound int_inf_clamp fallback.
+    const double ilb = is_unbounded_below(box_lb) ? -opts.int_inf_clamp : std::ceil(lb - 1e-9);
+    const double iub = is_unbounded_above(box_ub) ? opts.int_inf_clamp : std::floor(ub + 1e-9);
+    const bool int_clamped = is_unbounded_below(box_lb) || is_unbounded_above(box_ub);
+    // A finite bound is honoured however wide, so one beyond the int
+    // range arrives here unclipped and would make the casts below UB.
+    // `Model::int_var` takes an int; that representational limit narrows
+    // the column, so it counts as clamped too.
+    constexpr auto kIntLo = static_cast<double>(std::numeric_limits<int>::min());
+    constexpr auto kIntHi = static_cast<double>(std::numeric_limits<int>::max());
+    const double clipped_lb = std::min(std::max(ilb, kIntLo), kIntHi);
+    double clipped_ub = std::min(std::max(iub, kIntLo), kIntHi);
+    out.clamped = int_clamped || clipped_lb != ilb || clipped_ub != iub;
+    // Bounds that admit no integer (degenerate) collapse to the single
+    // point clipped_lb, so the model still closes; the row's constraints will
+    // register the violation rather than the reader silently dropping it.
+    clipped_ub = std::max(clipped_lb, clipped_ub);
+    out.handle = m.int_var(static_cast<int>(clipped_lb), static_cast<int>(clipped_ub), name);
+    return out;
+}
+
+/// Seed initial values from the NL `x` segment where present.
+void seed_initial_values(Model& m, const NlProblem& prob) {
+    for (int32_t j = 0; j < prob.n_vars && j < static_cast<int32_t>(prob.initial_x.size()); ++j) {
+        double x0 = prob.initial_x[j];
+        if (!std::isfinite(x0)) {
+            continue;
         }
+        if (m.var(j).type == VarType::Int) {
+            x0 = std::round(x0);  // an Int column must not start fractional
+        }
+        m.var_mut(j).value = std::min(std::max(x0, m.var(j).lb), m.var(j).ub);
     }
+}
+
+}  // namespace
+
+NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts) {
+    NlToModelResult result;
+    Model& m = result.model;
+
+    const ColumnBoxes box = column_boxes(prob, opts, result.bound_stats);
 
     result.var_handles.reserve(prob.n_vars);
     for (int32_t j = 0; j < prob.n_vars; ++j) {
         const auto col = static_cast<std::size_t>(j);
-        double lb = clamp_lo(col_lb[col], opts.inf_clamp);
-        double ub = clamp_hi(col_ub[col], opts.inf_clamp);
-        const bool clamp_used = lb != col_lb[col] || ub != col_ub[col];
-        if (lb > ub) {
-            std::swap(lb, ub);  // defensive: degenerate bound ordering
+        const ColumnVar cv =
+            add_column(m, j, box.integral[col] != 0, box.lb[col], box.ub[col], opts);
+        if (cv.clamped) {
+            ++result.n_clamped_columns;
         }
-        const bool discrete = j < static_cast<int32_t>(prob.var_is_discrete.size()) &&
-                              prob.var_is_discrete[static_cast<size_t>(j)] != 0;
-        if (discrete) {
-            // Tighten to the integers inside [lb, ub]. A bound that exists —
-            // declared or derived — is always honoured; only a genuinely
-            // infinite one falls back to int_inf_clamp, since a ±1e9 integer box
-            // is not a searchable domain.
-            // Propagated, not as-declared: a derived bound is entailed, so it
-            // rightly suppresses the unsound int_inf_clamp fallback.
-            const double propagated_lb = col_lb[col];
-            const double propagated_ub = col_ub[col];
-            double ilb =
-                is_unbounded_below(propagated_lb) ? -opts.int_inf_clamp : std::ceil(lb - 1e-9);
-            double iub =
-                is_unbounded_above(propagated_ub) ? opts.int_inf_clamp : std::floor(ub + 1e-9);
-            const bool int_clamped =
-                is_unbounded_below(propagated_lb) || is_unbounded_above(propagated_ub);
-            // A finite bound is honoured however wide, so one beyond the int
-            // range arrives here unclipped and would make the casts below UB.
-            // `Model::int_var` takes an int; that representational limit narrows
-            // the column, so it counts as clamped too.
-            constexpr auto kIntLo = static_cast<double>(std::numeric_limits<int>::min());
-            constexpr auto kIntHi = static_cast<double>(std::numeric_limits<int>::max());
-            const double clipped_lb = std::min(std::max(ilb, kIntLo), kIntHi);
-            const double clipped_ub = std::min(std::max(iub, kIntLo), kIntHi);
-            // One column, one count: the fallback and the int32 clip can both
-            // narrow the same column.
-            if (int_clamped || clipped_lb != ilb || clipped_ub != iub) {
-                ++result.n_clamped_columns;
-            }
-            ilb = clipped_lb;
-            iub = clipped_ub;
-            // Bounds that admit no integer (degenerate) collapse to the single
-            // point ilb, so the model still closes; the row's constraints will
-            // register the violation rather than the reader silently dropping it.
-            iub = std::max(ilb, iub);
-            result.var_handles.push_back(
-                m.int_var(static_cast<int>(ilb), static_cast<int>(iub), "x" + std::to_string(j)));
-        } else {
-            if (clamp_used) {
-                ++result.n_clamped_columns;
-            }
-            result.var_handles.push_back(m.float_var(lb, ub, "x" + std::to_string(j)));
-        }
+        result.var_handles.push_back(cv.handle);
     }
 
-    // Seed initial values from the NL `x` segment where present.
-    for (int32_t j = 0; j < prob.n_vars && j < static_cast<int32_t>(prob.initial_x.size()); ++j) {
-        double x0 = prob.initial_x[j];
-        if (std::isfinite(x0)) {
-            if (m.var(j).type == VarType::Int) {
-                x0 = std::round(x0);  // an Int column must not start fractional
-            }
-            double lb = m.var(j).lb;
-            double ub = m.var(j).ub;
-            m.var_mut(j).value = std::min(std::max(x0, lb), ub);
-        }
-    }
+    seed_initial_values(m, prob);
 
     auto record_unsupported = [&](const std::string& reason) {
         result.supported = false;
         result.skipped_reasons.push_back(reason);
     };
 
-    // ---------- Constraints ----------
     result.constraint_node_ids.assign(prob.n_cons, -1);
     for (int32_t i = 0; i < prob.n_cons; ++i) {
         const NlConstraint& c = prob.constraints[i];
-
-        int32_t nl_node = 0;
-        bool has_nl = !c.nonlinear.empty();
-        if (has_nl) {
-            ExprTranslator tr(m, c.nonlinear, result.var_handles);
-            nl_node = tr.translate(c.nonlinear.root);
-            if (!tr.ok()) {
-                record_unsupported("constraint " + std::to_string(i) + ": " + tr.reason());
-                return result;
-            }
+        const BodyResult body = build_body(m, c.nonlinear, c.linear, result.var_handles);
+        if (!body.ok) {
+            record_unsupported("constraint " + std::to_string(i) + ": " + body.reason);
+            return result;
         }
-        int32_t lin_node = build_linear(m, c.linear, result.var_handles);
-        bool has_lin = !c.linear.empty();
-        int32_t body = combine_body(m, nl_node, has_nl, lin_node, has_lin);
-
-        // Translate the bound into one/two CBLS comparison constraints.
-        const NlConBound& b = c.bound;
-        switch (b.type) {
-            case NlBoundType::Upper: {
-                int32_t cn = m.leq(body, m.constant(b.upper));
-                m.add_constraint(cn);
-                result.constraint_node_ids[i] = cn;
-                break;
-            }
-            case NlBoundType::Lower: {
-                int32_t cn = m.geq(body, m.constant(b.lower));
-                m.add_constraint(cn);
-                result.constraint_node_ids[i] = cn;
-                break;
-            }
-            case NlBoundType::Equal: {
-                int32_t cn = m.eq_expr(body, m.constant(b.lower));
-                m.add_constraint(cn);
-                result.constraint_node_ids[i] = cn;
-                break;
-            }
-            case NlBoundType::Range: {
-                // lower <= body <= upper -> two constraints.
-                int32_t lo = m.geq(body, m.constant(b.lower));
-                int32_t hi = m.leq(body, m.constant(b.upper));
-                m.add_constraint(lo);
-                m.add_constraint(hi);
-                result.constraint_node_ids[i] = hi;  // primary = upper side
-                break;
-            }
-            case NlBoundType::Free:
-                // No constraint; leave node id at -1.
-                break;
-        }
+        result.constraint_node_ids[i] = add_bound_constraints(m, c.bound, body.node);
     }
 
-    // ---------- Objective (first objective only) ----------
+    // First objective only.
     if (prob.n_objs > 0) {
         const NlObjective& o = prob.objectives[0];
-        int32_t nl_node = 0;
-        bool has_nl = !o.nonlinear.empty();
-        if (has_nl) {
-            ExprTranslator tr(m, o.nonlinear, result.var_handles);
-            nl_node = tr.translate(o.nonlinear.root);
-            if (!tr.ok()) {
-                record_unsupported("objective: " + tr.reason());
-                return result;
-            }
+        const BodyResult body = build_body(m, o.nonlinear, o.linear, result.var_handles);
+        if (!body.ok) {
+            record_unsupported("objective: " + body.reason);
+            return result;
         }
-        int32_t lin_node = build_linear(m, o.linear, result.var_handles);
-        bool has_lin = !o.linear.empty();
-        int32_t obj = combine_body(m, nl_node, has_nl, lin_node, has_lin);
-
+        int32_t obj = body.node;
         // minimize/maximize reject a bare variable handle; wrap in a sum node.
         if (obj < 0) {
             obj = m.sum({obj});
