@@ -26,6 +26,9 @@
 //     `!std::isspace(c)` -> `std::isspace(c) == 0`
 //     (readability-implicit-bool-conversion). Behaviour-identical; the
 //     same RE-APPLY note as above applies.
+//   * Two `int32_t idx = static_cast<int32_t>(...)` declarations respelled
+//     `auto idx = static_cast<int32_t>(...)` (modernize-use-auto). The
+//     deduced type is unchanged. RE-APPLY THESE too, for the same reason.
 
 #include "cbls/io_mps.h"
 
@@ -550,7 +553,7 @@ MpsProblem read_mps(const std::string& filename) {
             cached_col_idx = it->second;
             return it->second;
         }
-        int32_t idx = static_cast<int32_t>(prob.vars.size());
+        auto idx = static_cast<int32_t>(prob.vars.size());
         auto [ins_it, _] = col_map.emplace(std::string(name), idx);
         cached_col_name = ins_it->first;
         cached_col_idx = idx;
@@ -631,7 +634,7 @@ MpsProblem read_mps(const std::string& filename) {
                         row_map.emplace(std::string(name), -2);
                     }
                 } else {
-                    int32_t idx = static_cast<int32_t>(prob.rows.size());
+                    auto idx = static_cast<int32_t>(prob.rows.size());
                     row_map.emplace(std::string(name), idx);
                     MpsRow r;
                     r.name = std::string(name);

@@ -38,7 +38,7 @@ static std::vector<Move> int_moves(const Variable& var, RNG& rng) {
     if (w.lo <= w.hi) {
         Move m;
         m.move_type = "int_rand";
-        double new_val = static_cast<double>(
+        auto new_val = static_cast<double>(
             rng.integers(static_cast<int64_t>(w.lo), static_cast<int64_t>(w.hi) + 1));
         m.changes.push_back({var.id, new_val, {}});
         moves.push_back(m);

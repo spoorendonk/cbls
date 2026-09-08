@@ -98,14 +98,14 @@ double random_different_in_domain(const Variable& var, RNG& rng) {
         case VarType::Int: {
             // Non-empty: movable_domain above rejected the empty case.
             const DomainWindow s = int_sample_window(var);
-            const int64_t lb = static_cast<int64_t>(s.lo);
-            const int64_t ub = static_cast<int64_t>(s.hi);
+            const auto lb = static_cast<int64_t>(s.lo);
+            const auto ub = static_cast<int64_t>(s.hi);
             if (!(var.value >= s.lo) || !(var.value <= s.hi)) {
                 // Outside the window (or NaN), so any draw differs. Compared in
                 // double: `var.value` need not be castable to int64_t at all.
                 return static_cast<double>(rng.integers(lb, ub + 1));
             }
-            const int64_t cur = static_cast<int64_t>(var.value);
+            const auto cur = static_cast<int64_t>(var.value);
             // Uniform over the domain minus the current value: draw from a
             // domain one value short, then step over the hole at `cur`.
             int64_t draw = rng.integers(lb, ub);  // [lb, ub-1]
@@ -166,7 +166,7 @@ double random_different_in_domain(const Variable& var, RNG& rng) {
 // already a full scramble, so a misconfigured p > 1 cannot turn a kick into
 // unbounded work. The comparison is written to reject NaN.
 int32_t structural_kick_size(const Variable& var, double probability) {
-    const int32_t n = static_cast<int32_t>(var.elements.size());
+    const auto n = static_cast<int32_t>(var.elements.size());
     const double scaled = std::round(probability * static_cast<double>(n));
     if (!(scaled > 1.0)) {
         return 1;
@@ -568,7 +568,7 @@ void FeasibilityJump::refresh_unweighted_violation() {
     const size_t nc = cids.size();
     double total = 0.0;
     for (size_t c = 0; c < nc; ++c) {
-        const int32_t ci = static_cast<int32_t>(c);
+        const auto ci = static_cast<int32_t>(c);
         if (ci == objective_ci_ || !active(ci)) {
             continue;  // objective row: see unweighted_violation_. Masked: not being solved.
         }
@@ -649,7 +649,7 @@ bool FeasibilityJump::apply_jump(int sample_size) {
     examined_.clear();
     while (!queue_.empty() && n < sample_size && draws < max_draws) {
         ++draws;
-        size_t idx = static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(queue_.size())));
+        auto idx = static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(queue_.size())));
         int32_t v = queue_[idx];
         if (std::find(examined_.begin(), examined_.end(), v) != examined_.end()) {
             continue;  // already sampled this call; redraw for a distinct var
@@ -718,7 +718,7 @@ int64_t FeasibilityJump::next_deadline_stride(int64_t stride, double elapsed_sec
     }
     // elapsed <= 0 means the interval was below the clock's resolution, i.e.
     // far inside the target: grow by the cap.
-    double scale = static_cast<double>(kStrideGrowth);
+    auto scale = static_cast<double>(kStrideGrowth);
     if (elapsed_seconds > 0.0) {
         scale = std::min(scale, target_seconds / elapsed_seconds);
     }
@@ -955,7 +955,7 @@ void FeasibilityJump::resync() {
 }
 
 int32_t FeasibilityJump::pick_forced_perturb_var() {
-    const int32_t num_vars = static_cast<int32_t>(model_.num_vars());
+    const auto num_vars = static_cast<int32_t>(model_.num_vars());
     auto eligible = [this](int32_t v) { return jumpable(v) && movable_domain(model_.var(v)); };
 
     int32_t count = 0;
@@ -1136,7 +1136,7 @@ bool FeasibilityJump::force_structural_move() {
     // where any movable structure will do. A single applied move always changes
     // the variable: the no-op candidates were filtered out before the draw.
     const size_t n = structured.size();
-    const size_t start = static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(n)));
+    const auto start = static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(n)));
     for (size_t i = 0; i < n; ++i) {
         if (apply_random_structural_move(model_, structured[(start + i) % n], rng_)) {
             return true;
@@ -1249,7 +1249,7 @@ FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, dou
     examined_.clear();
     while (!nj_queue_.empty() && sampled < 3 && draws < max_draws) {
         ++draws;
-        size_t idx = static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(nj_queue_.size())));
+        auto idx = static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(nj_queue_.size())));
         int32_t v = nj_queue_[idx];
         if (on_stack_[v] != 0 ||
             std::find(examined_.begin(), examined_.end(), v) != examined_.end()) {

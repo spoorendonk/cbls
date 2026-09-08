@@ -318,7 +318,7 @@ bool is_valid_set(const Variable& var) {
             return false;
         }
     }
-    const int32_t size = static_cast<int32_t>(var.elements.size());
+    const auto size = static_cast<int32_t>(var.elements.size());
     return size >= var.min_size && size <= var.max_size;
 }
 
@@ -639,7 +639,7 @@ TEST_CASE("a kick on one large Set is bounded by the deadline, not by the Set",
     fj.begin(/*set_initial_x=*/true);
 
     const std::vector<int32_t> before = m.var(0).elements;
-    const int64_t unbounded_moves =
+    const auto unbounded_moves =
         static_cast<int64_t>(std::llround(kBigP * static_cast<double>(before.size())));
     REQUIRE(unbounded_moves > FJ::kMaxDeadlineStride + 1);  // the bound is not vacuous here
     fj.perturb(kBigP);

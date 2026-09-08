@@ -235,7 +235,7 @@ int32_t Model::gt(int32_t a, int32_t b) {
 
 int32_t Model::lambda_sum(int32_t list_var_id, std::function<double(int)> func) {
     lambda_funcs_.push_back(std::move(func));
-    int32_t func_id = static_cast<int32_t>(lambda_funcs_.size() - 1);
+    auto func_id = static_cast<int32_t>(lambda_funcs_.size() - 1);
 
     int32_t nid = alloc_node(NodeOp::Lambda, {wrap(list_var_id)});
     nodes_[nid].lambda_func_id = func_id;
@@ -244,7 +244,7 @@ int32_t Model::lambda_sum(int32_t list_var_id, std::function<double(int)> func) 
 
 int32_t Model::pair_lambda_sum(int32_t list_var_id, std::function<double(int, int)> func) {
     pair_lambda_funcs_.push_back(std::move(func));
-    int32_t func_id = static_cast<int32_t>(pair_lambda_funcs_.size() - 1);
+    auto func_id = static_cast<int32_t>(pair_lambda_funcs_.size() - 1);
 
     int32_t nid = alloc_node(NodeOp::PairLambda, {wrap(list_var_id)});
     nodes_[nid].lambda_func_id = func_id;

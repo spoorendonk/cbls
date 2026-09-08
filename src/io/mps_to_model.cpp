@@ -111,7 +111,7 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
             if (nz.row_idx == -1) {
                 obj_nz.push_back(k);
             } else if (nz.row_idx >= 0 && nz.row_idx < n_rows) {
-                const std::size_t at = static_cast<std::size_t>(fill[nz.row_idx]++);
+                const auto at = static_cast<std::size_t>(fill[nz.row_idx]++);
                 csr_cols[at] = nz.col_idx;
                 csr_coefs[at] = nz.value;
             }
@@ -199,8 +199,8 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
             // otherwise keep an unclipped lower bound and invert. That is a
             // representational limit, not an implied bound, so where it bites it
             // narrows the column and counts as clamped.
-            constexpr double kIntLo = static_cast<double>(std::numeric_limits<int>::min());
-            constexpr double kIntHi = static_cast<double>(std::numeric_limits<int>::max());
+            constexpr auto kIntLo = static_cast<double>(std::numeric_limits<int>::min());
+            constexpr auto kIntHi = static_cast<double>(std::numeric_limits<int>::max());
             clamped = clamped || dlb < kIntLo || dub > kIntHi;
             const double ilb = std::min(std::max(dlb, kIntLo), kIntHi);
             const double iub = std::min(std::max(dub, kIntLo), kIntHi);

@@ -487,7 +487,7 @@ TEST_CASE("mps adapter clips an integer column to the int range and says so") {
     // Both bounds sit above INT_MAX, so both clip to it. Clipping only the far
     // side of each bound leaves the lower one unclipped, and casting it to int
     // is undefined — in practice it wraps to INT_MIN and the domain inverts.
-    const double int_hi = static_cast<double>(std::numeric_limits<int>::max());
+    const auto int_hi = static_cast<double>(std::numeric_limits<int>::max());
     const Variable& z = result.model.var(0);
     CHECK_THAT(z.lb, WithinAbs(int_hi, 1.0));
     CHECK_THAT(z.ub, WithinAbs(int_hi, 1.0));

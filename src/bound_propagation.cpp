@@ -124,7 +124,7 @@ struct Tightener {
         }
         const double eps = relaxation(value, opts);
         value = upper ? value + eps : value - eps;
-        const std::size_t j = static_cast<std::size_t>(col);
+        const auto j = static_cast<std::size_t>(col);
         if (integral[j] != 0) {
             value = upper ? std::floor(value + eps) : std::ceil(value - eps);
         }
@@ -177,7 +177,7 @@ struct Tightener {
     /// One row against the current bounds, updating them in place.
     void tighten_row(const LinearRow& row) {
         const double infinity = opts.infinity;
-        const std::size_t nnz = static_cast<std::size_t>(row.nnz);
+        const auto nnz = static_cast<std::size_t>(row.nnz);
         Activity min_act;
         Activity max_act;
         for (std::size_t k = 0; k < nnz; ++k) {
@@ -185,7 +185,7 @@ struct Tightener {
             if (a == 0.0) {
                 continue;
             }
-            const std::size_t j = static_cast<std::size_t>(row.cols[k]);
+            const auto j = static_cast<std::size_t>(row.cols[k]);
             const double lo = eff_lo(lb[j], infinity);
             const double hi = eff_hi(ub[j], infinity);
             min_act.add(min_contribution(a, lo, hi));
@@ -199,7 +199,7 @@ struct Tightener {
                 continue;
             }
             const int32_t col = row.cols[k];
-            const std::size_t j = static_cast<std::size_t>(col);
+            const auto j = static_cast<std::size_t>(col);
             // Contributions are recomputed from the *current* bounds while the
             // activity sums still aggregate the bounds at row entry. That is
             // stale but conservative in both directions — tightening only raises

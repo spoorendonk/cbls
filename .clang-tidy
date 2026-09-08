@@ -123,7 +123,6 @@ Checks: >
   -readability-identifier-length,
   -readability-function-cognitive-complexity,
   -bugprone-easily-swappable-parameters,
-  -modernize-use-auto,
   -performance-enum-size,
   -modernize-avoid-c-arrays
 

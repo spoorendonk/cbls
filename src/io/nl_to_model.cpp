@@ -321,7 +321,7 @@ NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts)
     // Run before variable creation so the derived box is what the engine sees.
     // A bound propagation derives is entailed by the constraints, so from here
     // on it is treated exactly like one the file declared.
-    const std::size_t n_cols = static_cast<std::size_t>(prob.n_vars);
+    const auto n_cols = static_cast<std::size_t>(prob.n_vars);
     std::vector<double> col_lb(n_cols, -kNlInf);
     std::vector<double> col_ub(n_cols, kNlInf);
     std::vector<uint8_t> integral(n_cols, 0);
@@ -358,7 +358,7 @@ NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts)
 
     result.var_handles.reserve(prob.n_vars);
     for (int32_t j = 0; j < prob.n_vars; ++j) {
-        const std::size_t col = static_cast<std::size_t>(j);
+        const auto col = static_cast<std::size_t>(j);
         double lb = clamp_lo(col_lb[col], opts.inf_clamp);
         double ub = clamp_hi(col_ub[col], opts.inf_clamp);
         const bool clamp_used = lb != col_lb[col] || ub != col_ub[col];
@@ -386,8 +386,8 @@ NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts)
             // range arrives here unclipped and would make the casts below UB.
             // `Model::int_var` takes an int; that representational limit narrows
             // the column, so it counts as clamped too.
-            constexpr double kIntLo = static_cast<double>(std::numeric_limits<int>::min());
-            constexpr double kIntHi = static_cast<double>(std::numeric_limits<int>::max());
+            constexpr auto kIntLo = static_cast<double>(std::numeric_limits<int>::min());
+            constexpr auto kIntHi = static_cast<double>(std::numeric_limits<int>::max());
             const double clipped_lb = std::min(std::max(ilb, kIntLo), kIntHi);
             const double clipped_ub = std::min(std::max(iub, kIntLo), kIntHi);
             // One column, one count: the fallback and the int32 clip can both
