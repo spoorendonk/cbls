@@ -123,6 +123,81 @@ bool is_positive_finite(double v) {
     return v > 0.0 && std::isfinite(v);
 }
 
+/// The numeric flags' guards. Kept apart from the flag table below because they
+/// are about the *values*, not about which flags were typed: the parse layer
+/// reports a bad token and hands the guard a NaN, and the guard is what decides
+/// the exit code (tests/python/test_run_benchmark.py pins both halves).
+void check_numeric_flags(const Args& a) {
+    // A NaN from parse_double fails this guard, as does a literal 0 or a
+    // negative: solve() with a non-positive budget returns having searched
+    // nothing, which would publish a full-looking table of empty results.
+    // std::stod also accepts "inf", which would never terminate, so the guard
+    // tests isfinite as well as positivity.
+    if (a.time_limit_set && !is_positive_finite(a.time_limit)) {
+        std::fprintf(stderr, "--time-limit must be > 0 (got %g)\n", a.time_limit);
+        std::exit(2);
+    }
+    // isfinite as well as > 0: std::stod accepts "inf", and an infinite
+    // tolerance calls every assignment feasible, publishing a full-looking table
+    // of rows the verifier would reject.
+    if (!is_positive_finite(a.feas_tol)) {
+        std::fprintf(stderr, "--feas-tol must be > 0 (got %g)\n", a.feas_tol);
+        std::exit(2);
+    }
+}
+
+/// Fills in `--out` and enforces what may overwrite the published comparison
+/// table. Its own step because the guards are about the FILE rather than about
+/// which flags were typed -- see the comment inside.
+void resolve_out_csv(Args& a) {
+    const std::string published = a.inst_dir + "/comparison.csv";
+    if (a.out_csv.empty()) {
+        a.out_csv = published;
+    }
+    // The guards below are about the FILE, not about which flags were typed. An
+    // earlier cut tested `--out` for emptiness, which meant the documented
+    // command -- which passes `--out <the published table>` explicitly --
+    // satisfied every guard while doing exactly the damage they exist to stop:
+    // a `--time-limit 60` pass over one instance rewrote the table and deleted
+    // the cited reference rows for every instance it did not run, at exit 0.
+    // So compare the resolved paths instead. Canonicalised where the file
+    // exists, because `./benchmarks/...` and an absolute path are the same file
+    // and a string compare says otherwise; a path that does not exist yet
+    // cannot be the published table, so the lexical fallback is safe.
+    if (!same_file(a.out_csv, published)) {
+        return;
+    }
+    // A run that is not the full published measurement must never overwrite
+    // the published results table. Both a partial roster and a shortened
+    // budget qualify -- `--time-limit 2` is the obvious smoke test, and it
+    // would otherwise replace the table with two-second results (the #88
+    // hazard).
+    const char* why = nullptr;
+    if (!a.instances.empty()) {
+        why = "--instance";
+    } else if (a.time_limit_set) {
+        why = "--time-limit";
+    }
+    if (why != nullptr) {
+        std::fprintf(stderr,
+                     "%s cannot write the published table %s "
+                     "(pass --out elsewhere for an unpublished run)\n",
+                     why, published.c_str());
+        std::exit(2);
+    }
+    // A full-roster run at the documented budgets is the only thing allowed
+    // to land here, and it still has to say which engine it measured:
+    // "unknown" is exactly the provenance a reader cannot tell engine drift
+    // from a bug with.
+    if (!a.commit_set) {
+        std::fprintf(stderr,
+                     "writing %s requires an explicit --commit SHA "
+                     "(pass --out elsewhere for an unpublished run)\n",
+                     published.c_str());
+        std::exit(2);
+    }
+}
+
 Args parse_args(int argc, char** argv) {
     Args a;
     bool inst_dir_set = false;
@@ -177,67 +252,8 @@ Args parse_args(int argc, char** argv) {
             inst_dir_set = true;
         }
     }
-    // A NaN from parse_double fails this guard, as does a literal 0 or a
-    // negative: solve() with a non-positive budget returns having searched
-    // nothing, which would publish a full-looking table of empty results.
-    // std::stod also accepts "inf", which would never terminate, so the guard
-    // tests isfinite as well as positivity.
-    if (a.time_limit_set && !is_positive_finite(a.time_limit)) {
-        std::fprintf(stderr, "--time-limit must be > 0 (got %g)\n", a.time_limit);
-        std::exit(2);
-    }
-    // isfinite as well as > 0: std::stod accepts "inf", and an infinite
-    // tolerance calls every assignment feasible, publishing a full-looking table
-    // of rows the verifier would reject.
-    if (!is_positive_finite(a.feas_tol)) {
-        std::fprintf(stderr, "--feas-tol must be > 0 (got %g)\n", a.feas_tol);
-        std::exit(2);
-    }
-    const std::string published = a.inst_dir + "/comparison.csv";
-    if (a.out_csv.empty()) {
-        a.out_csv = published;
-    }
-    // The guards below are about the FILE, not about which flags were typed. An
-    // earlier cut tested `--out` for emptiness, which meant the documented
-    // command -- which passes `--out <the published table>` explicitly --
-    // satisfied every guard while doing exactly the damage they exist to stop:
-    // a `--time-limit 60` pass over one instance rewrote the table and deleted
-    // the cited reference rows for every instance it did not run, at exit 0.
-    // So compare the resolved paths instead. Canonicalised where the file
-    // exists, because `./benchmarks/...` and an absolute path are the same file
-    // and a string compare says otherwise; a path that does not exist yet
-    // cannot be the published table, so the lexical fallback is safe.
-    if (same_file(a.out_csv, published)) {
-        // A run that is not the full published measurement must never overwrite
-        // the published results table. Both a partial roster and a shortened
-        // budget qualify -- `--time-limit 2` is the obvious smoke test, and it
-        // would otherwise replace the table with two-second results (the #88
-        // hazard).
-        const char* why = nullptr;
-        if (!a.instances.empty()) {
-            why = "--instance";
-        } else if (a.time_limit_set) {
-            why = "--time-limit";
-        }
-        if (why != nullptr) {
-            std::fprintf(stderr,
-                         "%s cannot write the published table %s "
-                         "(pass --out elsewhere for an unpublished run)\n",
-                         why, published.c_str());
-            std::exit(2);
-        }
-        // A full-roster run at the documented budgets is the only thing allowed
-        // to land here, and it still has to say which engine it measured:
-        // "unknown" is exactly the provenance a reader cannot tell engine drift
-        // from a bug with.
-        if (!a.commit_set) {
-            std::fprintf(stderr,
-                         "writing %s requires an explicit --commit SHA "
-                         "(pass --out elsewhere for an unpublished run)\n",
-                         published.c_str());
-            std::exit(2);
-        }
-    }
+    check_numeric_flags(a);
+    resolve_out_csv(a);
     return a;
 }
 
@@ -458,15 +474,11 @@ void write_reference_rows(std::ostream& csv, const cbls::uc_chped::UCInstance& b
     }
 }
 
-/// Solve one (instance, horizon) pair and append its row.
-void run_one(std::ostream& csv, const Args& args, const cbls::uc_chped::UCInstance& inst,
-             const std::string& instance_name, double tlim, Tally& tally) {
-    auto ucm = cbls::uc_chped::build_uc_model(inst);
-    const int horizon = inst.n_periods;
-
-    std::printf("%-20s %6d %6d ", inst.name.c_str(), inst.n_units, horizon);
-    std::fflush(stdout);
-
+/// Build, warm-start and search one model. Separated from run_one because it is
+/// the measured part -- what the published row is a measurement *of* -- and
+/// nothing about it depends on how the row is scored or printed.
+cbls::SearchResult solve_instance(const Args& args, const cbls::uc_chped::UCInstance& inst,
+                                  cbls::uc_chped::UCModel& ucm, double tlim) {
     // Greedy initialization + short FJ polish.
     cbls::uc_chped::greedy_uc_initialize(ucm.model, inst, ucm);
     {
@@ -480,15 +492,30 @@ void run_one(std::ostream& csv, const Args& args, const cbls::uc_chped::UCInstan
     cbls::SearchConfig cfg;
     cfg.skip_init = true;
     cfg.feasibility_tolerance = args.feas_tol;
-    auto result = cbls::solve(ucm.model, tlim, args.seed, false, &hook, &lns, 3, nullptr, cfg);
-    ++tally.solved;
-    if (result.feasible) {
-        ++tally.feasible;
-    }
+    return cbls::solve(ucm.model, tlim, args.seed, false, &hook, &lns, 3, nullptr, cfg);
+}
 
+/// A solve result scored against the instance's published bounds, before the
+/// verifier has had its say. `gap` is held apart from `row.gap_pct` because the
+/// console prints it either way while the CSV publishes it only for a row we
+/// stand behind.
+struct Scored {
     Row row;
+    double gap = kNaN;
+    bool have_bounds = false;
+    bool have_objective = false;
+};
+
+/// Scoring policy: which of the result's numbers are usable at all. This is
+/// where the row's numeric columns are decided, and it is deliberately a
+/// separate step from the verifier's veto below.
+Scored score_result(const Args& args, const cbls::uc_chped::UCInstance& inst,
+                    const std::string& instance_name, double tlim,
+                    const cbls::SearchResult& result) {
+    Scored s;
+    Row& row = s.row;
     row.instance = instance_name;
-    row.periods = horizon;
+    row.periods = inst.n_periods;
     row.method = "CBLS ViolationLS";
     row.source = "this work";
     row.time_s = result.time_seconds;
@@ -499,9 +526,9 @@ void run_one(std::ostream& csv, const Args& args, const cbls::uc_chped::UCInstan
     row.feas_tol = args.feas_tol;
     row.commit_sha = args.commit_sha;
 
-    auto it = inst.known_bounds.find(horizon);
-    const bool have_bounds = it != inst.known_bounds.end();
-    if (have_bounds) {
+    auto it = inst.known_bounds.find(inst.n_periods);
+    s.have_bounds = it != inst.known_bounds.end();
+    if (s.have_bounds) {
         row.lb = it->second.first;
         row.ub = it->second.second;
     }
@@ -510,47 +537,73 @@ void run_one(std::ostream& csv, const Args& args, const cbls::uc_chped::UCInstan
     // `feasible == true` with `objective == +inf` as a feasibility witness whose
     // objective overflowed (#100), and tells callers to test isfinite before
     // using the value. An "inf" in a numeric column would read as a solve result.
-    const bool have_objective = result.feasible && std::isfinite(result.objective);
-    double gap = kNaN;
-    if (have_bounds && have_objective && row.lb != 0.0) {
-        gap = 100.0 * (result.objective - row.lb) / row.lb;
+    s.have_objective = result.feasible && std::isfinite(result.objective);
+    if (s.have_bounds && s.have_objective && row.lb != 0.0) {
+        s.gap = 100.0 * (result.objective - row.lb) / row.lb;
     }
+    return s;
+}
 
-    // Console.
-    if (have_bounds && have_objective) {
-        std::printf("%12.1f %12.1f %7.2f%% %7.1fs", result.objective, row.lb, gap,
+void print_result_line(const cbls::SearchResult& result, const Scored& s) {
+    if (s.have_bounds && s.have_objective) {
+        std::printf("%12.1f %12.1f %7.2f%% %7.1fs", result.objective, s.row.lb, s.gap,
                     result.time_seconds);
     } else {
         std::printf("%12.1f %12s %8s %7.1fs", result.feasible ? result.objective : -1.0, "-",
                     result.feasible ? "-" : "INFEAS", result.time_seconds);
     }
+}
 
-    bool withhold = false;
-    if (args.do_verify && result.feasible) {
-        auto vr = cbls::uc_chped::verify_uc_chped(ucm, inst, kVerifierTolerance);
-        std::printf("  %s", vr.ok ? "VERIFIED" : "VERIFY FAIL");
-        row.verified = vr.ok ? "true" : "false";
-        if (vr.ok) {
-            ++tally.verified_pass;
-        } else {
-            ++tally.verified_fail;
-            // A row the independent checker rejected must not publish the
-            // objective or gap it was rejected for: those columns would describe
-            // a solution we do not stand behind.
-            withhold = true;
-            row.note = "verify-fail (" + std::to_string(vr.errors.size()) + " errors)";
-            vr.print_diagnostics(stdout);
-        }
+/// Runs the independent checker and records its verdict. Returns true when the
+/// row must not publish its objective or gap: a row the checker rejected would
+/// otherwise describe a solution we do not stand behind.
+bool verification_withholds(const Args& args, const cbls::uc_chped::UCModel& ucm,
+                            const cbls::uc_chped::UCInstance& inst,
+                            const cbls::SearchResult& result, Row& row, Tally& tally) {
+    if (!args.do_verify || !result.feasible) {
+        return false;
+    }
+    auto vr = cbls::uc_chped::verify_uc_chped(ucm, inst, kVerifierTolerance);
+    std::printf("  %s", vr.ok ? "VERIFIED" : "VERIFY FAIL");
+    row.verified = vr.ok ? "true" : "false";
+    if (vr.ok) {
+        ++tally.verified_pass;
+        return false;
+    }
+    ++tally.verified_fail;
+    row.note = "verify-fail (" + std::to_string(vr.errors.size()) + " errors)";
+    vr.print_diagnostics(stdout);
+    return true;
+}
+
+/// Solve one (instance, horizon) pair and append its row.
+void run_one(std::ostream& csv, const Args& args, const cbls::uc_chped::UCInstance& inst,
+             const std::string& instance_name, double tlim, Tally& tally) {
+    auto ucm = cbls::uc_chped::build_uc_model(inst);
+    const int horizon = inst.n_periods;
+
+    std::printf("%-20s %6d %6d ", inst.name.c_str(), inst.n_units, horizon);
+    std::fflush(stdout);
+
+    const cbls::SearchResult result = solve_instance(args, inst, ucm, tlim);
+    ++tally.solved;
+    if (result.feasible) {
+        ++tally.feasible;
     }
 
-    if (have_objective && !withhold) {
+    Scored scored = score_result(args, inst, instance_name, tlim, result);
+    Row& row = scored.row;
+    print_result_line(result, scored);
+
+    const bool withhold = verification_withholds(args, ucm, inst, result, row, tally);
+    if (scored.have_objective && !withhold) {
         row.objective = result.objective;
-        row.gap_pct = gap;
+        row.gap_pct = scored.gap;
     }
     if (row.note.empty()) {
         if (!result.feasible) {
             row.note = "infeasible at feas_tol";
-        } else if (!have_objective) {
+        } else if (!scored.have_objective) {
             row.note = "feasible; no finite objective";
         }
     }
