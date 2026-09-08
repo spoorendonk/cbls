@@ -75,80 +75,107 @@ void print_usage() {
         "                     [--csv OUT]\n");
 }
 
+// Flag values are read through this rather than through
+// benchmarks/common/runner_args.h, and the difference is policy rather than an
+// oversight. That header reports a bad integer and calls std::exit(2), and
+// hands a bad double back as NaN for a later `!(x > 0.0)` guard in the runner
+// to turn into exit 2. This runner has no such guard -- a negative
+// --struct-prob means "engine auto" and a NaN would sail through -- so it
+// rejects a malformed value where it reads it, records the failure, and lets
+// run_benchmark return 1. Unsigned rather than signed integers, NaN rejected
+// rather than passed on, and a failure flag rather than an exit: three
+// differences, so the two policies stay apart instead of being parameterised
+// into one helper that carries both.
+//
+// Numeric flags go through the strict parse rule rather than std::stod /
+// std::strtoull. strtoull in particular has no error path: `--seed abc`
+// silently yielded 0 and the roster ran to completion, publishing a CSV
+// row that looks like a result and names a seed nobody asked for. The
+// bare stod calls were only marginally better -- caught by main's try,
+// they reported `Error: stod` without naming the flag. NaN is rejected
+// for the same reason the CLI rejects it: it is a well-formed double
+// that yields a solve which never searched.
+struct FlagValues {
+    int argc = 0;
+    char** argv = nullptr;
+    int i = 0;       // index of the flag being read; advanced past its value
+    bool ok = true;  // cleared by the first malformed or missing value
+
+    std::string next(const char* what) {
+        if (i + 1 >= argc) {
+            fprintf(stderr, "%s needs a value (%s)\n", argv[i], what);
+            ok = false;
+            return "";
+        }
+        return argv[++i];
+    }
+
+    double number(const char* flag, const char* what) {
+        const std::string text = next(what);
+        double value = 0.0;
+        if (!ok) {
+            return 0.0;
+        }
+        if (!cbls::try_parse_double(text, value) || std::isnan(value)) {
+            fprintf(stderr, "%s: '%s' is not a number\n", flag, text.c_str());
+            ok = false;
+            return 0.0;
+        }
+        return value;
+    }
+
+    uint64_t integer(const char* flag, const char* what) {
+        const std::string text = next(what);
+        uint64_t value = 0;
+        if (!ok) {
+            return 0;
+        }
+        if (!cbls::try_parse_uint64(text, value)) {
+            fprintf(stderr, "%s: '%s' is not a non-negative integer\n", flag, text.c_str());
+            ok = false;
+            return 0;
+        }
+        return value;
+    }
+};
+
+/// --seeds is an `int` loop bound, so an in-range uint64 can still overflow it.
+int seed_count(FlagValues& v) {
+    const uint64_t seeds = v.integer("--seeds", "count");
+    if (v.ok && seeds > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+        fprintf(stderr, "--seeds: '%llu' is out of range\n",
+                static_cast<unsigned long long>(seeds));
+        v.ok = false;
+    }
+    return static_cast<int>(seeds);
+}
+
 Options parse_args(int argc, char** argv, bool* ok) {
     Options opt;
-    *ok = true;
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        auto next = [&](const char* what) -> std::string {
-            if (i + 1 >= argc) {
-                fprintf(stderr, "%s needs a value (%s)\n", arg.c_str(), what);
-                *ok = false;
-                return "";
-            }
-            return argv[++i];
-        };
-        // Numeric flags go through the strict parse rule rather than std::stod /
-        // std::strtoull. strtoull in particular has no error path: `--seed abc`
-        // silently yielded 0 and the roster ran to completion, publishing a CSV
-        // row that looks like a result and names a seed nobody asked for. The
-        // bare stod calls were only marginally better -- caught by main's try,
-        // they reported `Error: stod` without naming the flag. NaN is rejected
-        // for the same reason the CLI rejects it: it is a well-formed double
-        // that yields a solve which never searched.
-        auto number = [&](const char* flag, const char* what) -> double {
-            const std::string text = next(what);
-            double value = 0.0;
-            if (!*ok) {
-                return 0.0;
-            }
-            if (!cbls::try_parse_double(text, value) || std::isnan(value)) {
-                fprintf(stderr, "%s: '%s' is not a number\n", flag, text.c_str());
-                *ok = false;
-                return 0.0;
-            }
-            return value;
-        };
-        auto integer = [&](const char* flag, const char* what) -> uint64_t {
-            const std::string text = next(what);
-            uint64_t value = 0;
-            if (!*ok) {
-                return 0;
-            }
-            if (!cbls::try_parse_uint64(text, value)) {
-                fprintf(stderr, "%s: '%s' is not a non-negative integer\n", flag, text.c_str());
-                *ok = false;
-                return 0;
-            }
-            return value;
-        };
+    FlagValues v{argc, argv, 0, true};
+    for (v.i = 1; v.i < argc; ++v.i) {
+        std::string arg = argv[v.i];
         if (arg == "--dir") {
-            opt.dir = next("directory");
+            opt.dir = v.next("directory");
         } else if (arg == "--instance") {
-            opt.instance = next("path");
+            opt.instance = v.next("path");
         } else if (arg == "--time") {
-            opt.time_limit = number("--time", "seconds");
+            opt.time_limit = v.number("--time", "seconds");
         } else if (arg == "--seeds") {
-            const uint64_t seeds = integer("--seeds", "count");
-            if (*ok && seeds > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
-                fprintf(stderr, "--seeds: '%llu' is out of range\n",
-                        static_cast<unsigned long long>(seeds));
-                *ok = false;
-            }
-            opt.seeds = static_cast<int>(seeds);
+            opt.seeds = seed_count(v);
         } else if (arg == "--seed") {
-            opt.first_seed = integer("--seed", "seed");
+            opt.first_seed = v.integer("--seed", "seed");
         } else if (arg == "--struct-prob") {
-            opt.struct_prob = number("--struct-prob", "probability");
+            opt.struct_prob = v.number("--struct-prob", "probability");
         } else if (arg == "--csv") {
-            opt.csv_path = next("path");
+            opt.csv_path = v.next("path");
         } else if (arg == "--encoding") {
-            std::string enc = next("set|bool|both");
+            std::string enc = v.next("set|bool|both");
             opt.run_set = (enc == "set" || enc == "both");
             opt.run_bool = (enc == "bool" || enc == "both");
             if (!opt.run_set && !opt.run_bool) {
                 fprintf(stderr, "unknown encoding '%s'\n", enc.c_str());
-                *ok = false;
+                v.ok = false;
             }
         } else if (arg == "--help" || arg == "-h") {
             opt.help = true;
@@ -156,12 +183,13 @@ Options parse_args(int argc, char** argv, bool* ok) {
             break;
         } else {
             fprintf(stderr, "unknown argument '%s'\n", arg.c_str());
-            *ok = false;
+            v.ok = false;
         }
-        if (!*ok) {
+        if (!v.ok) {
             break;
         }
     }
+    *ok = v.ok;
     return opt;
 }
 
@@ -228,6 +256,56 @@ void write_csv(const std::string& path, const std::vector<Run>& runs) {
     printf("\nwrote %s\n", path.c_str());
 }
 
+/// The instances to run: an explicit --instance path, else the vendored roster
+/// resolved against --dir.
+std::vector<std::string> instance_paths(const Options& opt) {
+    if (!opt.instance.empty()) {
+        return {opt.instance};
+    }
+    std::vector<std::string> paths;
+    for (const std::string& name : default_roster()) {
+        paths.push_back(opt.dir + "/" + name + ".txt");
+    }
+    return paths;
+}
+
+/// The encodings --encoding selected, in the order the table reports them.
+std::vector<cbls::setcover::Encoding> selected_encodings(const Options& opt) {
+    std::vector<cbls::setcover::Encoding> encodings;
+    if (opt.run_set) {
+        encodings.push_back(cbls::setcover::Encoding::Set);
+    }
+    if (opt.run_bool) {
+        encodings.push_back(cbls::setcover::Encoding::Bool);
+    }
+    return encodings;
+}
+
+void print_table_header() {
+    printf("%-10s %-5s %5s %10s %9s %8s %5s %8s %8s\n", "Instance", "Enc", "Seed", "Objective",
+           "Optimum", "Gap%", "Cols", "Time(s)", "Feasible");
+    printf("%-10s %-5s %5s %10s %9s %8s %5s %8s %8s\n", "--------", "---", "----", "---------",
+           "-------", "----", "----", "-------", "--------");
+}
+
+/// One console row. The last column reports the verifier's verdict rather than
+/// the search's own: an infeasible run is "NO" whatever the verifier said, and
+/// a feasible one that failed verification is called out as UNVERIFIED rather
+/// than shown as a result.
+void print_run_row(const Run& run) {
+    auto it = published_optima().find(run.instance);
+    double optimum = (it == published_optima().end()) ? -1.0 : it->second;
+    const char* verified_label = "NO";
+    if (run.feasible) {
+        verified_label = run.verified ? "yes" : "UNVERIFIED";
+    }
+    printf("%-10s %-5s %5llu %10.1f %9.1f %8.1f %5d %8.2f %8s\n", run.instance.c_str(),
+           cbls::setcover::encoding_name(run.encoding), static_cast<unsigned long long>(run.seed),
+           run.objective, optimum, gap_percent(run.instance, run.objective), run.columns,
+           run.seconds, verified_label);
+    std::fflush(stdout);
+}
+
 int run_benchmark(int argc, char** argv) {
     bool ok = false;
     Options opt = parse_args(argc, argv, &ok);
@@ -238,27 +316,9 @@ int run_benchmark(int argc, char** argv) {
         return 1;
     }
 
-    std::vector<std::string> paths;
-    if (!opt.instance.empty()) {
-        paths.push_back(opt.instance);
-    } else {
-        for (const std::string& name : default_roster()) {
-            paths.push_back(opt.dir + "/" + name + ".txt");
-        }
-    }
-
-    std::vector<cbls::setcover::Encoding> encodings;
-    if (opt.run_set) {
-        encodings.push_back(cbls::setcover::Encoding::Set);
-    }
-    if (opt.run_bool) {
-        encodings.push_back(cbls::setcover::Encoding::Bool);
-    }
-
-    printf("%-10s %-5s %5s %10s %9s %8s %5s %8s %8s\n", "Instance", "Enc", "Seed", "Objective",
-           "Optimum", "Gap%", "Cols", "Time(s)", "Feasible");
-    printf("%-10s %-5s %5s %10s %9s %8s %5s %8s %8s\n", "--------", "---", "----", "---------",
-           "-------", "----", "----", "-------", "--------");
+    const std::vector<std::string> paths = instance_paths(opt);
+    const std::vector<cbls::setcover::Encoding> encodings = selected_encodings(opt);
+    print_table_header();
 
     std::vector<Run> runs;
     int failures = 0;
@@ -279,18 +339,7 @@ int run_benchmark(int argc, char** argv) {
                 if (!run.feasible || !run.verified) {
                     ++failures;
                 }
-                auto it = published_optima().find(run.instance);
-                double optimum = (it == published_optima().end()) ? -1.0 : it->second;
-                const char* verified_label = "NO";
-                if (run.feasible) {
-                    verified_label = run.verified ? "yes" : "UNVERIFIED";
-                }
-                printf("%-10s %-5s %5llu %10.1f %9.1f %8.1f %5d %8.2f %8s\n", run.instance.c_str(),
-                       cbls::setcover::encoding_name(run.encoding),
-                       static_cast<unsigned long long>(run.seed), run.objective, optimum,
-                       gap_percent(run.instance, run.objective), run.columns, run.seconds,
-                       verified_label);
-                std::fflush(stdout);
+                print_run_row(run);
             }
         }
     }
