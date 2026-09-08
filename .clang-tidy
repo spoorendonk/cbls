@@ -47,14 +47,18 @@
 # Re-derive, never increment: a count here is a floor for the work, and
 # deleting a line whose findings you sized from a stale number turns the push
 # gate red for everyone. The same goes for the running total below -- re-run
-# the sweep, do not subtract. Worked example: rewriting one loop as std::any_of
-# for readability-use-anyofallof -- `violated_[c] && active(c)` in
-# feasibility_jump.cpp -- also took a readability-implicit-bool-conversion with
-# it, so 296 minus the 24 findings actually fixed gives 272 where the tree
-# reports 271. Note that one was not fixed: the uint8_t -> bool conversion is
-# still there, the check just stops reporting it once the expression sits
-# inside the lambda. A count here can fall because the checker went blind, not
-# only because the code improved -- which is another reason to re-derive.
+# the sweep, do not subtract.
+#
+# HISTORICAL worked example -- the numbers in this paragraph are from an older
+# revision of this list and are NOT current; the current total is the TOTAL:
+# below. Rewriting one loop as std::any_of for readability-use-anyofallof --
+# `violated_[c] && active(c)` in feasibility_jump.cpp -- also took a
+# readability-implicit-bool-conversion with it, so 296 minus the 24 findings
+# actually fixed gave 272 where the tree reported 271. Note that one was not
+# fixed: the uint8_t -> bool conversion is still there, the check just stops
+# reporting it once the expression sits inside the lambda. A count here can fall
+# because the checker went blind, not only because the code improved -- which is
+# another reason to re-derive.
 #
 # One trap when re-deriving with `clang-tidy --checks=<names>` on the command
 # line: a positive name there is appended after src/io/.clang-tidy's
