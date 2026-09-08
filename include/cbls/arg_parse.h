@@ -32,7 +32,7 @@ namespace cbls {
 // collapse the distinction, which is what the benchmark runners want: their
 // wording and exit codes are pinned by their drivers' tests.
 
-enum class ParseStatus { kOk, kMalformed, kOutOfRange };
+enum class ParseStatus : std::uint8_t { kOk, kMalformed, kOutOfRange };
 
 inline ParseStatus parse_double_status(const std::string& text, double& out) {
     std::size_t used = 0;

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <vector>
 
@@ -606,7 +607,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         // STRUCTURAL batch is the list/set peer added in P4). Structural and
         // Novelty batches commit changes outside the FJ scan-set/jump-table, so
         // they must be followed by a resync.
-        enum class BatchKind { FeasibilityJump, NoveltyJump, Structural };
+        enum class BatchKind : std::uint8_t { FeasibilityJump, NoveltyJump, Structural };
         BatchKind kind = BatchKind::FeasibilityJump;
         if (rng.random() < structural_probability) {
             kind = BatchKind::Structural;

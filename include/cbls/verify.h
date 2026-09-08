@@ -2,6 +2,7 @@
 
 #include "model.h"
 
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -9,7 +10,7 @@
 namespace cbls {
 
 struct VerifyError {
-    enum class Kind {
+    enum class Kind : std::uint8_t {
         VarBounds,
         VarIntegrality,
         ConstraintViolation,

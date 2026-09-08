@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 // What to do with a curated root-cause note when a row is scored.
 //
 // analysis_notes.csv explains why an instance the runner could NOT solve came
@@ -24,7 +26,7 @@
 
 namespace cbls::minlplib {
 
-enum class NoteAction {
+enum class NoteAction : std::uint8_t {
     kNone,   ///< no curated note, or a feasible-but-unverified row
     kMerge,  ///< row is infeasible: the note still applies
     kStale,  ///< row solved and verified: warn, the note is out of date

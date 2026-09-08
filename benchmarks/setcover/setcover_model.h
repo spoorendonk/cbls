@@ -29,7 +29,7 @@
 
 namespace cbls::setcover {
 
-enum class Encoding { Set, Bool };
+enum class Encoding : std::uint8_t { Set, Bool };
 
 inline const char* encoding_name(Encoding e) {
     return e == Encoding::Set ? "set" : "bool";

@@ -3,6 +3,8 @@
 #include "dag.h"
 #include "rng.h"
 
+#include <cstdint>
+
 // Uniform randomisation of a single variable over its own domain.
 //
 // One implementation, three callers: `initialize_random` /
@@ -132,7 +134,7 @@ double random_in_domain(const Variable& var, RNG& rng);
 /// Both draw a uniformly random permutation and consume identical RNG draws, so
 /// this is not a distributional choice — it decides whether the incumbent order
 /// survives, and the two call sites genuinely want different answers.
-enum class ListOrder {
+enum class ListOrder : std::uint8_t {
     /// Discard the current order and lay out a fresh permutation of the whole
     /// universe. What the initialisers want: there is no incumbent to respect,
     /// and the result is well-formed even if `elements` was not.

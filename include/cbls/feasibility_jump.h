@@ -114,7 +114,7 @@ struct GFJConfig {
     int64_t unproductive_iterations = 300;
 };
 
-enum class GFJStatus { Feasible, Unsolved };
+enum class GFJStatus : std::uint8_t { Feasible, Unsolved };
 
 class FeasibilityJump {
 public:

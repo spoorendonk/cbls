@@ -8,6 +8,7 @@
 #include "rng.h"
 #include "violation.h"
 
+#include <cstdint>
 #include <limits>
 
 namespace cbls {
@@ -122,7 +123,7 @@ struct SearchConfig {
 /// distinguishable from one that converged inside it — which is exactly what a
 /// reader of the per-instance wall times published under epic #87 needs in order
 /// to read them correctly.
-enum class TerminationReason {
+enum class TerminationReason : std::uint8_t {
     /// The wall-clock deadline from `solve()`'s `time_limit` expired.
     TimeLimit,
     /// `SearchConfig::max_iterations` was reached (GLS iterations, or the batch

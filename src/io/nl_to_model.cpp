@@ -26,7 +26,7 @@ namespace cbls {
 namespace {
 
 // AMPL opcodes we map (subset of opcode.hd). Anything else is unsupported.
-enum AmplOp {
+enum AmplOp : std::uint8_t {
     OPPLUS = 0,
     OPMINUS = 1,
     OPMULT = 2,
