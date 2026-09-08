@@ -393,6 +393,454 @@ double safe_gap(double obj, double ref, bool maximizing) {
     return 100.0 * diff / denom;
 }
 
+using BoundsMap = std::unordered_map<std::string, Bounds>;
+using NotesMap = std::unordered_map<std::string, std::string>;
+
+// The runner's per-instance work is split along the questions it answers about
+// a row, each of which has its own policy and its own failure mode: could the
+// instance be read and built at all, is the assignment the search returned
+// really a solution, where does a verified objective stand against the published
+// bound, and why is an unverified one not one. run_instance below asks them in
+// order; run_benchmark owns only the roster, the output files and the tally.
+
+/// A CSV cell for a double: NaN spelled the way the readers of this table
+/// expect, rather than the stream's locale-dependent "nan".
+std::string cell(double v) {
+    if (std::isnan(v)) {
+        return "NaN";
+    }
+    std::ostringstream os;
+    os << v;
+    return os.str();
+}
+
+/// A row for an instance whose bounds have not been looked up yet -- nothing is
+/// known about it, so every numeric cell is NaN. Such a row is still written:
+/// bounds.csv is the roster of record, so a silently absent row would make the
+/// results table disagree with the roster it claims to cover, visible only on
+/// stdout.
+void write_preread_row(std::ostream& csv, const Args& args, const std::string& name,
+                       const std::string& note) {
+    csv << name << ",NaN,NaN,NaN,NaN,NaN,0,false," << note << "," << args.commit_sha
+        << ",NaN,NaN\n";
+}
+
+/// A row for an instance that was built but produced no publishable objective.
+void write_unsolved_row(std::ostream& csv, const Args& args, const std::string& name,
+                        const Bounds& b, double wall, const std::string& note, int n_discrete) {
+    csv << name << ",NaN," << b.primal << "," << b.dual << ",NaN,NaN," << wall << ",false," << note
+        << "," << args.commit_sha << ",NaN," << n_discrete << "\n";
+}
+
+/// Reads the instance's .nl. Returns false having written the row and bumped the
+/// tally when it cannot be read: an unknown opcode or unsupported segment is a
+/// coverage gap, not a malformed file, so it is bucketed as skipped(unsupported)
+/// rather than as an error.
+bool read_instance(std::ostream& csv, const Args& args, const std::string& name,
+                   const std::string& nl_path, cbls::NlProblem& prob, Tally& t) {
+    try {
+        prob = cbls::read_nl(nl_path);
+    } catch (const std::exception& e) {
+        std::string what = e.what();
+        bool unsupported = what.find("NL_UNKNOWN_OPCODE") != std::string::npos ||
+                           what.find("not supported by this reader") != std::string::npos;
+        std::replace(what.begin(), what.end(), ',', ';');
+        if (unsupported) {
+            std::printf("%-22s  (skipped: %s)\n", name.c_str(), what.c_str());
+            ++t.skipped_unsupported;
+            write_preread_row(csv, args, name, "unsupported: " + what);
+        } else {
+            std::printf("%-22s  ERROR reading: %s\n", name.c_str(), what.c_str());
+            ++t.errored;
+            write_preread_row(csv, args, name, "read-error");
+        }
+        return false;
+    }
+    ++t.parsed;
+    return true;
+}
+
+/// Integrality cross-check: the NL header declares how many columns are
+/// discrete, and Gay's variable ordering places them. If that disagrees with
+/// MINLPLib's own nbinvars+nintvars, the model just built is not the instance the
+/// published bound refers to -- say so rather than reporting a gap against a
+/// bound for a different problem. Called only on a row that will be written, so
+/// that a counted mismatch always has a row explaining it.
+std::string integrality_check(const cbls::NlProblem& prob, const Bounds& b, const std::string& name,
+                              Tally& t) {
+    if (b.n_disc < 0 || b.n_disc == prob.n_discrete_vars) {
+        return "";
+    }
+    ++t.integrality_mismatch;
+    std::string note = "integrality-mismatch(nl=" + std::to_string(prob.n_discrete_vars) +
+                       " catalogue=" + std::to_string(b.n_disc) + ")";
+    std::printf("%-22s  WARNING: %s\n", name.c_str(), note.c_str());
+    return note;
+}
+
+/// Independent re-check of the returned assignment. solve() restores best_state
+/// and full-evaluates, so this re-derives feasibility and integrality from the
+/// model rather than trusting the search's own bookkeeping. A reported-feasible
+/// row that fails here is a solver bug, and must not be published as a solved
+/// instance. Returns false having set `note` in that case.
+bool verify_assignment(const cbls::NlProblem& prob, const cbls::NlToModelResult& built,
+                       const Args& args, const cbls::SearchResult& result, double obj,
+                       const std::string& name, Tally& t, std::string& note,
+                       double& max_violation) {
+    Residual r = worst_residual(prob, built, args.feas_tol);
+    max_violation = r.worst;
+    int frac = 0;
+    for (const auto& v : built.model.variables()) {
+        if (v.type == cbls::VarType::Int && std::abs(v.value - std::round(v.value)) > 1e-9) {
+            ++frac;
+        }
+    }
+    // The published objective must also be the one the model reports at the
+    // returned assignment, not just the search's running best.
+    double model_obj =
+        built.objective_node_id >= 0 ? built.model.node(built.objective_node_id).value : obj;
+    if (built.model.is_maximizing()) {
+        model_obj = -model_obj;  // same un-negation applied to `obj` by the caller
+    }
+    const double obj_drift = std::abs(model_obj - obj);
+    const bool obj_mismatch = obj_drift > 1e-6 * (std::abs(obj) + 1.0);
+
+    if (r.worst <= args.feas_tol && frac == 0 && !obj_mismatch) {
+        return true;
+    }
+    ++t.verify_failed;
+    std::array<char, 192> buf{};
+    std::snprintf(buf.data(), buf.size(),
+                  "VERIFY-FAILED(residual=%.2g; %d fractional int; obj drift %.2g)", r.worst, frac,
+                  obj_drift);
+    std::printf("%-22s  WARNING: %s\n", name.c_str(), buf.data());
+    note = buf.data();
+    return false;
+}
+
+/// Where a verified objective stands against the published BKS.
+///
+/// Claiming to beat a published MINLPLib bound needs a margin that is actually
+/// meaningful. Two things set the floor: relative floating-point noise on the
+/// objective value, and the feasibility tolerance itself -- we accept solutions
+/// violating a constraint by up to feas_tol, and that slack buys a small
+/// objective gain. A "win" at that scale is a tolerance artifact, not a better
+/// solution. Anything inside the band is reported as a tie, so the
+/// better-than-bks count means something and warrants scrutiny.
+///
+/// Two different bands, deliberately not the same number. `win_slack` is the
+/// margin an improvement must exceed to be claimed. `tie_band` is much tighter
+/// and purely relative -- it is what it takes to call two objectives *equal*.
+/// Reusing win_slack for both published ex8_4_5 (BKS 3.07e-4) as "matches-bks"
+/// when it was in fact 1.38% worse: there the absolute floor of 10*feas_tol =
+/// 1e-5 dwarfs the objective's own magnitude.
+///
+/// Three outcomes, not two. A row can improve on BKS by more than the tie band
+/// yet less than win_slack: we will not claim that as a win (the feasibility
+/// slack alone could buy it), but calling it "worse than BKS" when its objective
+/// is better is simply false. It gets its own label so the worse count means
+/// what it says.
+std::string classify_against_bks(double obj, const Bounds& b, bool maximizing, double feas_tol,
+                                 Tally& t) {
+    const double win_slack = std::max(1e-6 * (std::abs(b.primal) + 1.0), 10.0 * feas_tol);
+    const double tie_band = 1e-6 * (std::abs(b.primal) + 1.0);
+    const double diff = obj - b.primal;                    // signed, in objective units
+    const double improvement = maximizing ? diff : -diff;  // >0 is better
+    if (improvement > win_slack) {
+        ++t.better;
+        return "better-than-bks";
+    }
+    if (std::abs(diff) <= tie_band) {
+        ++t.matches;
+        return "matches-bks";
+    }
+    if (improvement > 0.0) {
+        ++t.within_tol;
+        return "within-tolerance-of-bks";
+    }
+    ++t.worse;
+    return "feasible";
+}
+
+/// Why an infeasible row is infeasible: *where* the closest approach is still
+/// violated and by how much, so the row distinguishes a numerical near-miss from
+/// a search that never reached the feasible region. solve() leaves the model at
+/// that closest-approach assignment.
+std::string describe_infeasible(const cbls::NlProblem& prob, const cbls::NlToModelResult& built,
+                                const Args& args, Tally& t, double& max_violation) {
+    Residual r = worst_residual(prob, built, args.feas_tol);
+    max_violation = r.worst;
+    // nl_row is -1 both when the worst offender is a range row's unrecorded
+    // lower half AND when nothing is violated at all -- solve() can report
+    // infeasible on a feasible point whose objective is non-finite, since
+    // record_best refuses those. Don't name a range row in the latter case.
+    std::string row_label = "no violated row (non-finite objective)";
+    if (r.nl_row >= 0) {
+        row_label = "row" + std::to_string(r.nl_row) + " " + bound_type_name(r.row_type);
+    } else if (r.worst > 0.0) {
+        row_label = "range-lower-half";
+    }
+    // A non-finite objective at the closest approach is its own failure mode,
+    // not generic hardness: the objective is folded in as an `obj <= bound` soft
+    // constraint, so an infinite objective makes that constraint's violation
+    // swamp the real ones and the search loses the feasibility signal entirely.
+    // Call it out by name.
+    if (built.objective_node_id >= 0 &&
+        !std::isfinite(built.model.node(built.objective_node_id).value)) {
+        ++t.nonfinite_obj;
+        row_label += "; obj non-finite here";
+    }
+    std::array<char, 192> buf{};
+    if (r.worst <= kNearMiss) {
+        ++t.near_miss;
+        std::snprintf(buf.data(), buf.size(),
+                      "infeasible(near-miss residual=%.2g; %d viol; worst %s)", r.worst,
+                      r.n_violated, row_label.c_str());
+    } else {
+        std::snprintf(buf.data(), buf.size(), "infeasible(residual=%.2g; %d viol; worst %s)",
+                      r.worst, r.n_violated, row_label.c_str());
+    }
+    return buf.data();
+}
+
+/// Curated root-cause annotation, if this instance has one. Scoped to rows we
+/// could NOT solve: analysis_notes.csv explains why an *unsolved* instance is a
+/// solver defect or genuine hardness, so pasting that verdict onto a row that now
+/// solves would publish a stale claim the data itself contradicts. Warn loudly
+/// instead, so the note gets retired.
+void merge_analysis_note(const NotesMap& analysis_notes, const std::string& name,
+                         bool result_feasible, bool verified, std::string& note) {
+    auto an = analysis_notes.find(name);
+    // The three-way split lives in note_policy.h so it can be tested without a
+    // solve. It used to be a nested conditional here, guarded on !result.feasible
+    // with an inner `if (verified)` -- and `verified` is false throughout that
+    // branch, so the "now solved" warning was unreachable and a curated note on a
+    // row that had started solving was dropped in silence.
+    using cbls::minlplib::NoteAction;
+    switch (cbls::minlplib::note_action(an != analysis_notes.end(), result_feasible, verified)) {
+        case NoteAction::kStale:
+            std::printf("%-22s  WARNING: stale analysis note (now solved)\n", name.c_str());
+            note += "; stale-analysis-note";
+            break;
+        case NoteAction::kMerge:
+            note += " | " + an->second;
+            break;
+        case NoteAction::kNone:
+            // No note, or feasible-but-VERIFY-FAILED: that failure is a
+            // solver-bookkeeping mismatch, not the infeasibility the note
+            // describes, so it is neither retired nor pasted on.
+            break;
+    }
+}
+
+void print_console_row(const Bounds& b, bool verified, double obj, double gap_bks, double wall,
+                       const std::string& note) {
+    if (verified) {
+        std::printf("%12.4g ", obj);
+    } else {
+        std::printf("%12s ", "INFEAS");
+    }
+    if (b.have && !std::isnan(b.primal)) {
+        std::printf("%12.4g ", b.primal);
+    } else {
+        std::printf("%12s ", "?");
+    }
+    if (std::isnan(gap_bks)) {
+        std::printf("%10s ", "N/A");
+    } else {
+        std::printf("%9.2f%% ", gap_bks);
+    }
+    std::printf("%8.2fs  %s\n", wall, note.c_str());
+}
+
+/// Everything that has to go right before a solve: the .nl present, read, built
+/// and supported. Returns false having written the instance's row and bumped the
+/// tally when it never reaches one -- each of those outcomes is a different
+/// bucket in the tally and a differently shaped row, which is why they are
+/// answered here rather than folded into the scoring below.
+bool prepare_instance(std::ostream& csv, const Args& args, const std::string& name,
+                      const BoundsMap& bounds, cbls::NlProblem& prob, cbls::NlToModelResult& built,
+                      Bounds& b, Tally& t) {
+    std::string nl_path = args.inst_dir + "/" + name + ".nl";
+    if (!file_exists(nl_path)) {
+        std::printf("%-22s  (skipped: %s not found)\n", name.c_str(), nl_path.c_str());
+        ++t.not_found;
+        write_preread_row(csv, args, name, "not-found");
+        return false;
+    }
+
+    if (!read_instance(csv, args, name, nl_path, prob, t)) {
+        return false;
+    }
+
+    try {
+        built = cbls::nl_to_model(prob);
+    } catch (const std::exception& e) {
+        std::printf("%-22s  ERROR building model: %s\n", name.c_str(), e.what());
+        ++t.errored;
+        write_preread_row(csv, args, name, "build-error");
+        return false;
+    }
+
+    auto bit = bounds.find(name);
+    b = bit != bounds.end() ? bit->second : Bounds{};
+
+    if (!built.supported) {
+        std::string note = built.skipped_reasons.empty()
+                               ? "unsupported"
+                               : "unsupported: " + built.skipped_reasons[0];
+        // Sanitise commas in the note so the CSV stays well-formed.
+        std::replace(note.begin(), note.end(), ',', ';');
+        std::printf("%-22s  (skipped: %s)\n", name.c_str(), note.c_str());
+        ++t.skipped_unsupported;
+        write_unsolved_row(csv, args, name, b, 0.0, note, prob.n_discrete_vars);
+        return false;
+    }
+    ++t.closed;
+    // Counted here, not earlier, so the tally's mixed-integer count is a subset
+    // of the instances actually built (as the printout implies).
+    if (prob.n_discrete_vars > 0) {
+        ++t.mixed_integer;
+    }
+
+    return true;
+}
+
+/// Read, build, solve and score one instance, and write its row. Every exit
+/// writes exactly one row.
+void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
+                  const BoundsMap& bounds, const NotesMap& analysis_notes, const std::string& name,
+                  Tally& t) {
+    cbls::NlProblem prob;
+    cbls::NlToModelResult built;
+    Bounds b;
+    if (!prepare_instance(csv, args, name, bounds, prob, built, b, t)) {
+        return;
+    }
+    std::string note;
+    double max_violation = 0.0;  // closest-approach residual on infeasible rows
+
+    const std::string integrality_note = integrality_check(prob, b, name, t);
+
+    std::printf("%-22s ", name.c_str());
+    std::fflush(stdout);
+
+    auto t0 = std::chrono::steady_clock::now();
+    cbls::FloatIntensifyHook hook;
+    cbls::LNS lns(0.3);
+    cbls::SearchConfig cfg;
+    cfg.feasibility_tolerance = args.feas_tol;
+    cbls::SearchResult result;
+    try {
+        TraceRecorder recorder(trace, name);
+        result = cbls::solve(built.model, args.time_limit, args.seed,
+                             /*use_fj=*/true, &hook, &lns, /*lns_interval=*/3,
+                             trace.is_open() ? &recorder : nullptr, cfg);
+    } catch (const std::exception& e) {
+        std::printf(" ERROR solving: %s\n", e.what());
+        ++t.errored;
+        write_unsolved_row(csv, args, name, b, 0.0, "solve-error", prob.n_discrete_vars);
+        return;
+    }
+    auto t1 = std::chrono::steady_clock::now();
+    double wall = std::chrono::duration<double>(t1 - t0).count();
+
+    // solve() reports the *minimised* objective. For a maximize instance the
+    // model objective was negated, so un-negate to recover the true value and
+    // make gap-to-BKS comparable to the published (max-sense) bound.
+    double obj = result.feasible ? result.objective : std::numeric_limits<double>::quiet_NaN();
+    if (result.feasible && built.model.is_maximizing()) {
+        obj = -obj;
+    }
+
+    // A feasible-but-non-finite objective means the guard fired: count it as
+    // failed(non-finite), not feasible.
+    if (result.feasible && !std::isfinite(obj)) {
+        ++t.failed_nonfinite;
+        note = "non-finite";
+        if (!integrality_note.empty()) {
+            // else the tally reports a mismatch that no CSV row explains
+            note += "; " + integrality_note;
+        }
+        std::printf("%12s %12.4g %10s %8.2fs  %s\n", "NONFIN", b.primal, "N/A", wall, note.c_str());
+        write_unsolved_row(csv, args, name, b, wall, note, prob.n_discrete_vars);
+        return;
+    }
+
+    const bool maximizing = built.model.is_maximizing();
+    double gap_bks = safe_gap(obj, b.primal, maximizing);
+    double gap_dual = safe_gap(obj, b.dual, maximizing);
+
+    bool verified = result.feasible;
+    if (result.feasible) {
+        verified = verify_assignment(prob, built, args, result, obj, name, t, note, max_violation);
+    }
+
+    if (verified) {
+        ++t.feasible;
+        note = std::isnan(gap_bks) ? "feasible"
+                                   : classify_against_bks(obj, b, maximizing, args.feas_tol, t);
+    } else if (result.feasible) {
+        // Verify failed; `note` is already the VERIFY-FAILED string.
+    } else {
+        note = describe_infeasible(prob, built, args, t, max_violation);
+    }
+    if (!integrality_note.empty()) {
+        note += "; " + integrality_note;
+    }
+    merge_analysis_note(analysis_notes, name, result.feasible, verified, note);
+    std::replace(note.begin(), note.end(), ',', ';');
+
+    print_console_row(b, verified, obj, gap_bks, wall, note);
+
+    // A row that failed verification must not publish the objective or gaps it
+    // was rejected for: those columns describe a solution we do not stand behind.
+    // The note and max_violation still record what happened.
+    const double pub_obj = verified ? obj : std::numeric_limits<double>::quiet_NaN();
+    const double pub_gap_bks = verified ? gap_bks : std::numeric_limits<double>::quiet_NaN();
+    const double pub_gap_dual = verified ? gap_dual : std::numeric_limits<double>::quiet_NaN();
+    csv << name << "," << cell(pub_obj) << "," << cell(b.primal) << "," << cell(b.dual) << ","
+        << cell(pub_gap_bks) << "," << cell(pub_gap_dual) << "," << wall << ","
+        << (verified ? "true" : "false") << "," << note << "," << args.commit_sha << ","
+        << cell(max_violation) << "," << prob.n_discrete_vars << "\n";
+    csv.flush();
+}
+
+void print_tally(const Args& args, const Tally& t) {
+    std::printf("\n=== Tally ===\n");
+    std::printf("time limit:           %.0fs/instance, seed %llu, feas-tol %.0e\n", args.time_limit,
+                static_cast<unsigned long long>(args.seed), args.feas_tol);
+    std::printf("parsed:               %d\n", t.parsed);
+    std::printf("closed (built):       %d\n", t.closed);
+    std::printf("  mixed-integer:      %d  (integrality enforced)\n", t.mixed_integer);
+    std::printf("feasible:             %d\n", t.feasible);
+    std::printf("  better-than-BKS:    %d\n", t.better);
+    std::printf("  matches BKS:        %d\n", t.matches);
+    std::printf("  within tolerance:   %d  (better, but inside the tolerance slack)\n",
+                t.within_tol);
+    std::printf("  worse than BKS:     %d\n", t.worse);
+    std::printf("infeasible:           %d\n", t.closed - t.feasible - t.failed_nonfinite);
+    std::printf("  near-miss (<=%.0e): %d\n", kNearMiss, t.near_miss);
+    std::printf("  non-finite obj:     %d  (objective +inf/NaN at closest approach)\n",
+                t.nonfinite_obj);
+    std::printf("failed(non-finite):   %d\n", t.failed_nonfinite);
+    std::printf("skipped(unsupported): %d\n", t.skipped_unsupported);
+    std::printf("read/build errors:    %d\n", t.errored);
+    std::printf("not found:            %d\n", t.not_found);
+    std::printf("integrality mismatch: %d  (NL header vs MINLPLib catalogue)\n",
+                t.integrality_mismatch);
+    std::printf("verify failed:        %d  (reported feasible; re-check disagreed)\n",
+                t.verify_failed);
+    // Closed-model rate over everything we attempted to read (present .nl files):
+    // parsed + skipped-unsupported + errors. not_found excluded (no file).
+    int attempted = t.parsed + t.skipped_unsupported + t.errored;
+    if (attempted > 0) {
+        std::printf("closed-model rate:    %.0f%% of %d attempted (%d not found)\n",
+                    100.0 * t.closed / attempted, attempted, t.not_found);
+    }
+    std::printf("\nWrote %s\n", args.out_csv.c_str());
+}
+
 int run_benchmark(int argc, char** argv) {
     Args args = parse_args(argc, argv);
 
@@ -434,386 +882,11 @@ int run_benchmark(int argc, char** argv) {
                 "----");
 
     Tally t;
-
     for (const std::string& name : insts) {
-        std::string nl_path = args.inst_dir + "/" + name + ".nl";
-        if (!file_exists(nl_path)) {
-            std::printf("%-22s  (skipped: %s not found)\n", name.c_str(), nl_path.c_str());
-            ++t.not_found;
-            // Emit a row anyway: bounds.csv is the roster of record, so a
-            // silently absent row makes the results table disagree with the
-            // roster it claims to cover, visible only on stdout.
-            csv << name << ",NaN,NaN,NaN,NaN,NaN,0,false,not-found," << args.commit_sha
-                << ",NaN,NaN\n";
-            continue;
-        }
-
-        cbls::NlProblem prob;
-        try {
-            prob = cbls::read_nl(nl_path);
-        } catch (const std::exception& e) {
-            // An unknown opcode or unsupported segment is a coverage gap, not a
-            // malformed file: bucket it as skipped(unsupported), not an error.
-            std::string what = e.what();
-            bool unsupported = what.find("NL_UNKNOWN_OPCODE") != std::string::npos ||
-                               what.find("not supported by this reader") != std::string::npos;
-            std::replace(what.begin(), what.end(), ',', ';');
-            if (unsupported) {
-                std::printf("%-22s  (skipped: %s)\n", name.c_str(), what.c_str());
-                ++t.skipped_unsupported;
-                csv << name << ",NaN,NaN,NaN,NaN,NaN,0,false,unsupported: " << what << ","
-                    << args.commit_sha << ",NaN,NaN\n";
-            } else {
-                std::printf("%-22s  ERROR reading: %s\n", name.c_str(), what.c_str());
-                ++t.errored;
-                csv << name << ",NaN,NaN,NaN,NaN,NaN,0,false,read-error," << args.commit_sha
-                    << ",NaN,NaN\n";
-            }
-            continue;
-        }
-        ++t.parsed;
-
-        cbls::NlToModelResult built;
-        std::string note;
-        double max_violation = 0.0;  // closest-approach residual on infeasible rows
-        try {
-            built = cbls::nl_to_model(prob);
-        } catch (const std::exception& e) {
-            std::printf("%-22s  ERROR building model: %s\n", name.c_str(), e.what());
-            ++t.errored;
-            csv << name << ",NaN,NaN,NaN,NaN,NaN,0,false,build-error," << args.commit_sha
-                << ",NaN,NaN\n";
-            continue;
-        }
-
-        auto bit = bounds.find(name);
-        Bounds b = bit != bounds.end() ? bit->second : Bounds{};
-
-        if (!built.supported) {
-            note = built.skipped_reasons.empty() ? "unsupported"
-                                                 : "unsupported: " + built.skipped_reasons[0];
-            // Sanitise commas in the note so the CSV stays well-formed.
-            std::replace(note.begin(), note.end(), ',', ';');
-            std::printf("%-22s  (skipped: %s)\n", name.c_str(), note.c_str());
-            ++t.skipped_unsupported;
-            csv << name << ",NaN," << b.primal << "," << b.dual << ",NaN,NaN,0,false," << note
-                << "," << args.commit_sha << ",NaN," << prob.n_discrete_vars << "\n";
-            continue;
-        }
-        ++t.closed;
-        // Counted here, not earlier, so the tally's mixed-integer count is a
-        // subset of the instances actually built (as the printout implies).
-        if (prob.n_discrete_vars > 0) {
-            ++t.mixed_integer;
-        }
-
-        // Integrality cross-check: the NL header declares how many columns are
-        // discrete, and Gay's variable ordering places them. If that disagrees
-        // with MINLPLib's own nbinvars+nintvars, the model we just built is not
-        // the instance the published bound refers to — say so rather than
-        // reporting a gap against a bound for a different problem. Counted here,
-        // after the supported check, because only this path writes a row that can
-        // carry the note; counting earlier would report a mismatch no row explains.
-        std::string integrality_note;
-        if (b.n_disc >= 0 && b.n_disc != prob.n_discrete_vars) {
-            ++t.integrality_mismatch;
-            integrality_note = "integrality-mismatch(nl=" + std::to_string(prob.n_discrete_vars) +
-                               " catalogue=" + std::to_string(b.n_disc) + ")";
-            std::printf("%-22s  WARNING: %s\n", name.c_str(), integrality_note.c_str());
-        }
-
-        std::printf("%-22s ", name.c_str());
-        std::fflush(stdout);
-
-        auto t0 = std::chrono::steady_clock::now();
-        cbls::FloatIntensifyHook hook;
-        cbls::LNS lns(0.3);
-        cbls::SearchConfig cfg;
-        cfg.feasibility_tolerance = args.feas_tol;
-        cbls::SearchResult result;
-        try {
-            TraceRecorder recorder(trace, name);
-            result = cbls::solve(built.model, args.time_limit, args.seed,
-                                 /*use_fj=*/true, &hook, &lns, /*lns_interval=*/3,
-                                 trace.is_open() ? &recorder : nullptr, cfg);
-        } catch (const std::exception& e) {
-            std::printf(" ERROR solving: %s\n", e.what());
-            ++t.errored;
-            csv << name << ",NaN," << b.primal << "," << b.dual << ",NaN,NaN,0,false,solve-error,"
-                << args.commit_sha << ",NaN," << prob.n_discrete_vars << "\n";
-            continue;
-        }
-        auto t1 = std::chrono::steady_clock::now();
-        double wall = std::chrono::duration<double>(t1 - t0).count();
-
-        // solve() reports the *minimised* objective. For a maximize instance the
-        // model objective was negated, so un-negate to recover the true value and
-        // make gap-to-BKS comparable to the published (max-sense) bound.
-        double obj = result.feasible ? result.objective : std::numeric_limits<double>::quiet_NaN();
-        if (result.feasible && built.model.is_maximizing()) {
-            obj = -obj;
-        }
-
-        // A feasible-but-non-finite objective means the guard fired: count it as
-        // failed(non-finite), not feasible.
-        bool nonfinite = result.feasible && !std::isfinite(obj);
-        if (nonfinite) {
-            ++t.failed_nonfinite;
-            note = "non-finite";
-            if (!integrality_note.empty()) {
-                // else the tally reports a mismatch that no CSV row explains
-                note += "; " + integrality_note;
-            }
-            std::printf("%12s %12.4g %10s %8.2fs  %s\n", "NONFIN", b.primal, "N/A", wall,
-                        note.c_str());
-            csv << name << ",NaN," << b.primal << "," << b.dual << ",NaN,NaN," << wall << ",false,"
-                << note << "," << args.commit_sha << ",NaN," << prob.n_discrete_vars << "\n";
-            continue;
-        }
-
-        const bool maximizing = built.model.is_maximizing();
-        double gap_bks = safe_gap(obj, b.primal, maximizing);
-        double gap_dual = safe_gap(obj, b.dual, maximizing);
-
-        // Independent re-check of the returned assignment. solve() restores
-        // best_state and full-evaluates, so this re-derives feasibility and
-        // integrality from the model rather than trusting the search's own
-        // bookkeeping. A reported-feasible row that fails here is a solver bug,
-        // and must not be published as a solved instance.
-        bool verified = result.feasible;
-        if (result.feasible) {
-            Residual r = worst_residual(prob, built, args.feas_tol);
-            max_violation = r.worst;
-            int frac = 0;
-            for (const auto& v : built.model.variables()) {
-                if (v.type == cbls::VarType::Int &&
-                    std::abs(v.value - std::round(v.value)) > 1e-9) {
-                    ++frac;
-                }
-            }
-            // The published objective must also be the one the model reports at
-            // the returned assignment, not just the search's running best.
-            double model_obj = built.objective_node_id >= 0
-                                   ? built.model.node(built.objective_node_id).value
-                                   : obj;
-            if (built.model.is_maximizing()) {
-                model_obj = -model_obj;  // same un-negation applied to `obj` above
-            }
-            const double obj_drift = std::abs(model_obj - obj);
-            const bool obj_mismatch = obj_drift > 1e-6 * (std::abs(obj) + 1.0);
-
-            if (r.worst > args.feas_tol || frac > 0 || obj_mismatch) {
-                verified = false;
-                ++t.verify_failed;
-                std::array<char, 192> buf{};
-                std::snprintf(buf.data(), buf.size(),
-                              "VERIFY-FAILED(residual=%.2g; %d fractional int; obj drift %.2g)",
-                              r.worst, frac, obj_drift);
-                std::printf("%-22s  WARNING: %s\n", name.c_str(), buf.data());
-                note = buf.data();
-            }
-        }
-
-        if (verified) {
-            ++t.feasible;
-            if (!std::isnan(gap_bks)) {
-                // Claiming to beat a published MINLPLib bound needs a margin
-                // that is actually meaningful. Two things set the floor:
-                //   * relative floating-point noise on the objective value, and
-                //   * the feasibility tolerance itself — we accept solutions
-                //     violating a constraint by up to feas_tol, and that slack
-                //     buys a small objective gain. A "win" at that scale is a
-                //     tolerance artifact, not a better solution.
-                // Anything inside the band is reported as a tie, so the
-                // better-than-bks count means something and warrants scrutiny.
-                // Two different bands, deliberately not the same number.
-                //
-                // `win_slack` is the margin an improvement must exceed to be
-                // claimed: we accept solutions violating a constraint by up to
-                // feas_tol, and that slack buys a small objective gain, so a
-                // "win" at that scale is a tolerance artifact.
-                //
-                // `tie_band` is much tighter and purely relative — it is what it
-                // takes to call two objectives *equal*. Reusing win_slack for
-                // both published ex8_4_5 (BKS 3.07e-4) as "matches-bks" when it
-                // was in fact 1.38% worse: there the absolute floor of
-                // 10*feas_tol = 1e-5 dwarfs the objective's own magnitude.
-                const double win_slack =
-                    std::max(1e-6 * (std::abs(b.primal) + 1.0), 10.0 * args.feas_tol);
-                const double tie_band = 1e-6 * (std::abs(b.primal) + 1.0);
-                const double diff = obj - b.primal;                    // signed, in objective units
-                const double improvement = maximizing ? diff : -diff;  // >0 is better
-                // Three outcomes, not two. A row can improve on BKS by more than
-                // the tie band yet less than win_slack: we will not claim that as a
-                // win (the feasibility slack alone could buy it), but calling it
-                // "worse than BKS" when its objective is better is simply false.
-                // It gets its own label so the worse count means what it says.
-                if (improvement > win_slack) {
-                    ++t.better;
-                    note = "better-than-bks";
-                } else if (std::abs(diff) <= tie_band) {
-                    ++t.matches;
-                    note = "matches-bks";
-                } else if (improvement > 0.0) {
-                    ++t.within_tol;
-                    note = "within-tolerance-of-bks";
-                } else {
-                    ++t.worse;
-                    note = "feasible";
-                }
-            } else {
-                note = "feasible";
-            }
-        } else if (result.feasible) {
-            // Verify failed; `note` is already the VERIFY-FAILED string.
-        } else {
-            // Infeasible: report *where* the closest approach is still violated
-            // and by how much, so the row distinguishes a numerical near-miss
-            // from a search that never reached the feasible region. solve()
-            // leaves the model at that closest-approach assignment.
-            Residual r = worst_residual(prob, built, args.feas_tol);
-            std::array<char, 192> buf{};
-            // nl_row is -1 both when the worst offender is a range row's
-            // unrecorded lower half AND when nothing is violated at all — solve()
-            // can report infeasible on a feasible point whose objective is
-            // non-finite, since record_best refuses those. Don't name a range
-            // row in the latter case.
-            std::string row_label = "no violated row (non-finite objective)";
-            if (r.nl_row >= 0) {
-                row_label = "row" + std::to_string(r.nl_row) + " " + bound_type_name(r.row_type);
-            } else if (r.worst > 0.0) {
-                row_label = "range-lower-half";
-            }
-            // A non-finite objective at the closest approach is its own failure
-            // mode, not generic hardness: the objective is folded in as an
-            // `obj <= bound` soft constraint, so an infinite objective makes
-            // that constraint's violation swamp the real ones and the search
-            // loses the feasibility signal entirely. Call it out by name.
-            if (built.objective_node_id >= 0 &&
-                !std::isfinite(built.model.node(built.objective_node_id).value)) {
-                ++t.nonfinite_obj;
-                row_label += "; obj non-finite here";
-            }
-            if (r.worst <= kNearMiss) {
-                ++t.near_miss;
-                std::snprintf(buf.data(), buf.size(),
-                              "infeasible(near-miss residual=%.2g; %d viol; worst %s)", r.worst,
-                              r.n_violated, row_label.c_str());
-            } else {
-                std::snprintf(buf.data(), buf.size(),
-                              "infeasible(residual=%.2g; %d viol; worst %s)", r.worst, r.n_violated,
-                              row_label.c_str());
-            }
-            note = buf.data();
-            max_violation = r.worst;
-        }
-        if (!integrality_note.empty()) {
-            note += "; " + integrality_note;
-        }
-        // Curated root-cause annotation, if this instance has one. Scoped to
-        // rows we could NOT solve: analysis_notes.csv explains why an *unsolved*
-        // instance is a solver defect or genuine hardness, so pasting that
-        // verdict onto a row that now solves would publish a stale claim the
-        // data itself contradicts. Warn loudly instead, so the note gets retired.
-        {
-            auto an = analysis_notes.find(name);
-            // The three-way split lives in note_policy.h so it can be tested
-            // without a solve. It used to be a nested conditional here, guarded
-            // on !result.feasible with an inner `if (verified)` -- and `verified`
-            // is false throughout that branch, so the "now solved" warning was
-            // unreachable and a curated note on a row that had started solving
-            // was dropped in silence.
-            using cbls::minlplib::NoteAction;
-            switch (cbls::minlplib::note_action(an != analysis_notes.end(), result.feasible,
-                                                verified)) {
-                case NoteAction::kStale:
-                    std::printf("%-22s  WARNING: stale analysis note (now solved)\n", name.c_str());
-                    note += "; stale-analysis-note";
-                    break;
-                case NoteAction::kMerge:
-                    note += " | " + an->second;
-                    break;
-                case NoteAction::kNone:
-                    // No note, or feasible-but-VERIFY-FAILED: that failure is a
-                    // solver-bookkeeping mismatch, not the infeasibility the
-                    // note describes, so it is neither retired nor pasted on.
-                    break;
-            }
-        }
-        std::replace(note.begin(), note.end(), ',', ';');
-
-        // Console.
-        if (verified) {
-            std::printf("%12.4g ", obj);
-        } else {
-            std::printf("%12s ", "INFEAS");
-        }
-        if (b.have && !std::isnan(b.primal)) {
-            std::printf("%12.4g ", b.primal);
-        } else {
-            std::printf("%12s ", "?");
-        }
-        if (std::isnan(gap_bks)) {
-            std::printf("%10s ", "N/A");
-        } else {
-            std::printf("%9.2f%% ", gap_bks);
-        }
-        std::printf("%8.2fs  %s\n", wall, note.c_str());
-
-        // CSV row.
-        auto cell = [](double v) -> std::string {
-            if (std::isnan(v)) {
-                return "NaN";
-            }
-            std::ostringstream os;
-            os << v;
-            return os.str();
-        };
-        // A row that failed verification must not publish the objective or gaps
-        // it was rejected for: those columns describe a solution we do not stand
-        // behind. The note and max_violation still record what happened.
-        const double pub_obj = verified ? obj : std::numeric_limits<double>::quiet_NaN();
-        const double pub_gap_bks = verified ? gap_bks : std::numeric_limits<double>::quiet_NaN();
-        const double pub_gap_dual = verified ? gap_dual : std::numeric_limits<double>::quiet_NaN();
-        csv << name << "," << cell(pub_obj) << "," << cell(b.primal) << "," << cell(b.dual) << ","
-            << cell(pub_gap_bks) << "," << cell(pub_gap_dual) << "," << wall << ","
-            << (verified ? "true" : "false") << "," << note << "," << args.commit_sha << ","
-            << cell(max_violation) << "," << prob.n_discrete_vars << "\n";
-        csv.flush();
+        run_instance(csv, trace, args, bounds, analysis_notes, name, t);
     }
 
-    std::printf("\n=== Tally ===\n");
-    std::printf("time limit:           %.0fs/instance, seed %llu, feas-tol %.0e\n", args.time_limit,
-                static_cast<unsigned long long>(args.seed), args.feas_tol);
-    std::printf("parsed:               %d\n", t.parsed);
-    std::printf("closed (built):       %d\n", t.closed);
-    std::printf("  mixed-integer:      %d  (integrality enforced)\n", t.mixed_integer);
-    std::printf("feasible:             %d\n", t.feasible);
-    std::printf("  better-than-BKS:    %d\n", t.better);
-    std::printf("  matches BKS:        %d\n", t.matches);
-    std::printf("  within tolerance:   %d  (better, but inside the tolerance slack)\n",
-                t.within_tol);
-    std::printf("  worse than BKS:     %d\n", t.worse);
-    std::printf("infeasible:           %d\n", t.closed - t.feasible - t.failed_nonfinite);
-    std::printf("  near-miss (<=%.0e): %d\n", kNearMiss, t.near_miss);
-    std::printf("  non-finite obj:     %d  (objective +inf/NaN at closest approach)\n",
-                t.nonfinite_obj);
-    std::printf("failed(non-finite):   %d\n", t.failed_nonfinite);
-    std::printf("skipped(unsupported): %d\n", t.skipped_unsupported);
-    std::printf("read/build errors:    %d\n", t.errored);
-    std::printf("not found:            %d\n", t.not_found);
-    std::printf("integrality mismatch: %d  (NL header vs MINLPLib catalogue)\n",
-                t.integrality_mismatch);
-    std::printf("verify failed:        %d  (reported feasible; re-check disagreed)\n",
-                t.verify_failed);
-    // Closed-model rate over everything we attempted to read (present .nl files):
-    // parsed + skipped-unsupported + errors. not_found excluded (no file).
-    int attempted = t.parsed + t.skipped_unsupported + t.errored;
-    if (attempted > 0) {
-        std::printf("closed-model rate:    %.0f%% of %d attempted (%d not found)\n",
-                    100.0 * t.closed / attempted, attempted, t.not_found);
-    }
-    std::printf("\nWrote %s\n", args.out_csv.c_str());
+    print_tally(args, t);
     return 0;
 }
 
