@@ -294,8 +294,11 @@ int32_t add_row_constraints(Model& m, const MpsRow& r, int32_t lhs) {
             break;
         case MpsRowSense::E:
             if (rng > 0.0) {
+                // `hi` before the geq below, so the DAG node ids this row
+                // creates are unchanged from before the split.
+                const int32_t hi = m.constant(r.rhs + rng);
                 m.add_constraint(m.geq(lhs, rhs_node));
-                cn = m.leq(lhs, m.constant(r.rhs + rng));
+                cn = m.leq(lhs, hi);
                 m.add_constraint(cn);
             } else if (rng < 0.0) {
                 m.add_constraint(m.geq(lhs, m.constant(r.rhs + rng)));  // rng < 0
