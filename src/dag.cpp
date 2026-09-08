@@ -41,6 +41,14 @@ static int list_size(const ChildRef& ref, const Model& model) {
     return 0;
 }
 
+// One flat dispatch table over NodeOp: the cognitive-complexity score counts the
+// 28 cases, not branching logic. No case nests deeper than two levels, each is a
+// self-contained formula, and the switch is deliberately `default:`-free so the
+// compiler is what catches a NodeOp nobody handled. Grouping the cases behind
+// per-family helpers would hide a table a reader wants to read as a table, and
+// would put an extra call on the delta-evaluation hot path -- delta_evaluate
+// calls this once per dirtied node per candidate move.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 double evaluate(const ExprNode& node, const Model& model) {
     switch (node.op) {
         case NodeOp::Const:
@@ -241,6 +249,11 @@ double evaluate(const ExprNode& node, const Model& model) {
     return 0.0;
 }
 
+// The AD peer of evaluate() above, and suppressed for the same reason: one flat
+// `default:`-free dispatch table over the same 28 NodeOp cases, each holding one
+// derivative formula plus its guards against a non-finite or non-differentiable
+// point. Reverse-mode AD calls it once per edge, so it is on the same hot path.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 double local_derivative(const ExprNode& node, int child_idx, const Model& model) {
     switch (node.op) {
         case NodeOp::Const:

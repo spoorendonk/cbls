@@ -4,14 +4,18 @@
 
 namespace cbls {
 
-VerifyResult verify_model(const Model& model, double tol) {
-    VerifyResult result;
+namespace {
 
-    // 1. Variable bounds and type checks
+std::string var_label(const Variable& v, size_t i) {
+    return v.name.empty() ? "var[" + std::to_string(i) + "]"
+                          : "var[" + std::to_string(i) + "] '" + v.name + "'";
+}
+
+// 1. Variable bounds and type checks.
+void check_variables(const Model& model, double tol, VerifyResult& result) {
     for (size_t i = 0; i < model.num_vars(); ++i) {
         const auto& v = model.var(static_cast<int32_t>(i));
-        std::string name = v.name.empty() ? "var[" + std::to_string(i) + "]"
-                                          : "var[" + std::to_string(i) + "] '" + v.name + "'";
+        std::string name = var_label(v, i);
 
         // Bounds check (for scalar types)
         if (v.type == VarType::Bool || v.type == VarType::Int || v.type == VarType::Float) {
@@ -42,8 +46,10 @@ VerifyResult verify_model(const Model& model, double tol) {
             }
         }
     }
+}
 
-    // 2. Constraint feasibility: each constraint node value <= tol
+// 2. Constraint feasibility: each constraint node value <= tol.
+void check_constraints(const Model& model, double tol, VerifyResult& result) {
     for (int32_t cid : model.constraint_ids()) {
         double val = model.node(cid).value;
         if (val > tol) {
@@ -52,8 +58,10 @@ VerifyResult verify_model(const Model& model, double tol) {
                 {VerifyError::Kind::ConstraintViolation, name, 0.0, val, "constraint violated"});
         }
     }
+}
 
-    // 3. DAG consistency: re-evaluate each node and compare against stored value
+// 3. DAG consistency: re-evaluate each node and compare against stored value.
+void check_dag_consistency(const Model& model, double tol, VerifyResult& result) {
     for (const auto& node : model.nodes()) {
         double recomputed = evaluate(node, model);
         if (std::abs(recomputed - node.value) > tol) {
@@ -62,7 +70,15 @@ VerifyResult verify_model(const Model& model, double tol) {
                               "DAG node value inconsistent with recomputation"});
         }
     }
+}
 
+}  // namespace
+
+VerifyResult verify_model(const Model& model, double tol) {
+    VerifyResult result;
+    check_variables(model, tol, result);
+    check_constraints(model, tol, result);
+    check_dag_consistency(model, tol, result);
     return result;
 }
 

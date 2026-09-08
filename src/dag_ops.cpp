@@ -9,18 +9,21 @@ namespace cbls {
 
 namespace detail {
 
-std::vector<int32_t> compute_topo_order(Model& model) {
-    auto& nodes = model.nodes_mut();
+namespace {
 
-    // Clear parent/dependent pointers and rebuild
-    for (auto& nd : nodes) {
+// Rebuild the DAG's back-references: every node's parent_ids and every
+// variable's dependent_ids. These are what delta_evaluate walks to find the
+// nodes a changed variable dirties; they are pure derived state, so they are
+// cleared and recomputed wholesale rather than patched.
+void rebuild_back_references(Model& model) {
+    for (auto& nd : model.nodes_mut()) {
         nd.parent_ids.clear();
     }
     for (auto& v : model.variables_mut()) {
         v.dependent_ids.clear();
     }
 
-    for (auto& nd : nodes) {
+    for (auto& nd : model.nodes_mut()) {
         for (const auto& child : nd.children) {
             if (child.is_var) {
                 auto& v = model.var_mut(child.id);
@@ -37,13 +40,17 @@ std::vector<int32_t> compute_topo_order(Model& model) {
             }
         }
     }
+}
 
+// Kahn's algorithm over the node-to-node edges only (variable children are
+// sources and carry no in-degree). Children come out before their parents.
+std::vector<int32_t> kahn_sort(const std::vector<ExprNode>& nodes) {
     size_t n = nodes.size();
     std::vector<int> in_degree(n, 0);
     // Use flat vector instead of unordered_map for child->parents
     std::vector<std::vector<int32_t>> child_to_parents(n);
 
-    for (auto& nd : nodes) {
+    for (const auto& nd : nodes) {
         for (const auto& child : nd.children) {
             if (!child.is_var) {
                 in_degree[nd.id]++;
@@ -53,7 +60,7 @@ std::vector<int32_t> compute_topo_order(Model& model) {
     }
 
     std::queue<int32_t> queue;
-    for (auto& nd : nodes) {
+    for (const auto& nd : nodes) {
         if (in_degree[nd.id] == 0) {
             queue.push(nd.id);
         }
@@ -74,6 +81,13 @@ std::vector<int32_t> compute_topo_order(Model& model) {
     }
 
     return sorted;
+}
+
+}  // namespace
+
+std::vector<int32_t> compute_topo_order(Model& model) {
+    rebuild_back_references(model);
+    return kahn_sort(model.nodes());
 }
 
 }  // namespace detail

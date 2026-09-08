@@ -241,6 +241,27 @@ SearchResult ParallelSearch::solve_portfolio(
 
 // --- Deterministic epoch-sync mode ---
 
+namespace {
+
+// Seed the next epoch: hand every worker one of the pool's top-k solutions,
+// dealt round-robin so a pool smaller than the thread count still fills every
+// worker. A worker restores the state and re-grounds its DAG, since the epoch
+// that follows starts with skip_init and inherits whatever assignment it finds.
+// An empty pool leaves the workers on the assignment they already hold.
+void redistribute_elites(SolutionPool& pool, int elite_k, std::vector<Model>& models) {
+    auto elite = pool.top_k(elite_k);
+    if (elite.empty()) {
+        return;
+    }
+    for (size_t i = 0; i < models.size(); ++i) {
+        const auto& sol = elite[i % elite.size()];
+        models[i].restore_state(sol.state);
+        full_evaluate(models[i]);
+    }
+}
+
+}  // namespace
+
 SearchResult ParallelSearch::solve_deterministic(
     std::function<Model()>& model_factory, uint64_t seed, const SearchConfig& config,
     std::function<std::shared_ptr<InnerSolverHook>(Model&)>& hook_factory,
@@ -335,15 +356,7 @@ SearchResult ParallelSearch::solve_deterministic(
             total_iterations += epoch_results[i].iterations;
         }
 
-        // Redistribute elite solutions to threads for next epoch
-        auto elite = pool.top_k(elite_k);
-        if (!elite.empty()) {
-            for (int i = 0; i < n_threads; ++i) {
-                const auto& sol = elite[i % static_cast<int>(elite.size())];
-                models[i].restore_state(sol.state);
-                full_evaluate(models[i]);
-            }
-        }
+        redistribute_elites(pool, elite_k, models);
     }
 
     // Build final result from pool
