@@ -79,7 +79,7 @@ C++ tests use **Catch2** (not GoogleTest): files in `tests/`, registered in `tes
 
 - Name tests descriptively — `returns_optimal_for_feasible_input`, `test_solver_returns_optimal_for_feasible_input`.
 - Test nanobind bindings from Python with pytest, not from C++ — the binding is an implementation detail. Include round-trip tests: create in Python → pass to C++ → get result back.
-- An `std::optional` guarded by `REQUIRE(o.has_value())` still trips `bugprone-unchecked-optional-access`, which is enabled: the check cannot see through Catch2's expression templates, and `.value()` reads the same way to it. Write `if (!o.has_value()) { FAIL("..."); return; }` instead — the `return` is what makes the flow analysis see the guard, even though `FAIL` throws. Do **not** reach for a `NOLINT` or re-add the check to the ratchet; both routes are closed (see **Git Hooks**).
+- An `std::optional` guarded by `REQUIRE(o.has_value())` still trips `bugprone-unchecked-optional-access`, which is enabled: the check cannot see through Catch2's expression templates, and `.value()` reads the same way to it. Write `if (!o.has_value()) { FAIL("..."); return; }` instead — the `return` is what makes the flow analysis see the guard, even though `FAIL` throws. Do **not** reach for a `NOLINT` or add the check to `.clang-tidy`'s disabled list; both routes are closed (see **Git Hooks**).
 - A Python test that could **deadlock the interpreter** — anything handing a Python callable to C++ that spawns threads — must run its scenario in a **child process** under a wall-clock timeout. No in-process deadline can report it: `pytest-timeout`'s `thread` method runs its timer on a Python thread that needs the very GIL the test is starving, and its `signal` method only takes effect at the next bytecode in a main thread parked inside a C++ `join()`. `tests/python/test_pool.py` is the pattern — scenarios in a `__main__` block, `subprocess.run(..., timeout=...)` in the test.
 - Terse output is not configured anywhere — pass the flags. `ctest --progress` collapses the running list, `--tb=short -q` keeps pytest failures short, as the `## Build & Test` blocks below already do. `pyproject.toml` sets `testpaths`, ruff's rule set and `mypy strict`, but no `addopts`, `pretty` or `output-format`.
 
@@ -107,27 +107,30 @@ The hooks live in **`.githooks/`, tracked in this repo** — that directory is t
 - `commit-msg` — Conventional Commits format.
 - `pre-push` — the clean build + **full** suite from `## Build & Test` below, then **clang-tidy as a hard block**, and ruff-complexity/shellcheck/mypy as warnings. Both the ```build and ```test fences must resolve or the push is blocked; there is no auto-detect fallback, because guessing a build would gate a different one than the documented build.
 
-  clang-tidy blocks because the tree is held at **zero** warnings, which is only
-  true given the **ratchet** in `.clang-tidy`: a list of checks is disabled by
-  name, each with its unfixed finding count, so that everything still enabled is
-  something the tree already satisfies. A warning at push is therefore new code's
-  doing. **Fix it — do not add the check to the disabled list.** That list exists
-  for pre-existing findings and is meant to shrink; #121 tracks emptying it, and
-  a check comes back in the same commit that clears its findings.
+  clang-tidy blocks because the tree is held at **zero** warnings. Getting there
+  took a **ratchet** — a list in `.clang-tidy` of checks disabled by name, each
+  with its unfixed finding count — and **that list is now empty** (issue #121,
+  closed). Every `bugprone-*`/`modernize-*`/`performance-*`/`readability-*` check
+  is enabled except six structural exemptions, and each of those is off because
+  the *check* is wrong for this codebase, with the measurement that says so
+  written beside it in the file.
 
-  **`.clang-tidy` is the source of truth for the ratchet's counts.** How many
-  checks are left, and how many findings each still has, is written there;
-  restating either number *here* would give it a copy to go stale against, as
-  the test counts in *Fast vs. slow tests* below already do. Read the file.
-  Re-derive a count with the sweep in issue #121, never by subtracting from the
-  one you found — clearing one check has cleared another's finding, so the
-  arithmetic drifts.
+  So a warning at push is new code's doing. **Fix it — do not add the check to
+  the disabled list.** There is no backlog list left to append to: putting a
+  name there now has to clear the same bar as the six, a structural cause plus a
+  measurement, which is a case to argue rather than a way to get a push through.
+  `.clang-tidy` is the source of truth and carries its own sweep recipe — read
+  the file rather than a count restated somewhere else.
 
-  Issue #121's body **mirrors** that table, because a cold session picks the
-  work up from the tracker rather than from the config. That is the one copy
-  that has to exist, so it is not optional to update: the change that clears a
-  check edits `.clang-tidy`, and brings #121's rows and total level in the same
-  change. While such work sits on an unmerged branch, say so in the issue.
+  Two kinds of in-tree suppression are **sanctioned**, and both state their
+  reason at the site. `readability-function-cognitive-complexity` is
+  `NOLINTNEXTLINE`-ed on `src/dag.cpp`'s two 28-case `NodeOp` dispatch tables,
+  where the score counts a table a human reads as one unit and any split would
+  have to stay inlinable on the delta-evaluation hot path; and on the two
+  `src/io/mps_reader.cpp` functions that the vendored port-the-diff-upstream
+  contract keeps whole. That is the route **Complexity** below describes — split
+  along real responsibilities, or record why the function is irreducibly complex
+  — and it is specific to that check, not a general licence.
 
   Note `.clang-tidy`'s `Checks:` is a YAML `>` folded scalar, where `#` is *not*
   a comment — it is literal text that silently corrupts the check list, and a

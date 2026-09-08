@@ -198,13 +198,13 @@ if [ -n "$CPP_FILES" ] && [ -n "$CLANG_TIDY" ]; then
 		echo ""
 		echo "=== Running clang-tidy ==="
 
-		# clang-tidy BLOCKS. The tree is at zero warnings, held there by the
-		# ratchet in .clang-tidy: every check that still had findings is
-		# disabled by name with its count, so what remains enabled is exactly
-		# what the tree already satisfies. A warning here is therefore new,
-		# and the fix is to fix it -- not to add another name to that list.
-		# (Re-enabling a ratcheted check is a deliberate commit that clears
-		# its findings and deletes its line in the same change.)
+		# clang-tidy BLOCKS. The tree is at zero warnings. The ratchet that
+		# got it there -- checks disabled by name with their unfixed finding
+		# counts -- is empty as of issue #121; what is still disabled in
+		# .clang-tidy is six structural exemptions, each off because the
+		# check is wrong for this codebase and each carrying the measurement
+		# that says so. A warning here is therefore new code's, and the fix
+		# is to fix it -- not to add another name to that list.
 		# Match case-insensitively and gate on the exit status too. A
 		# misconfigured directory makes clang-tidy exit 1 with the single
 		# line "Error: no checks enabled." -- capital E, which the old
@@ -296,8 +296,10 @@ if [ -n "$TIDY_ISSUES" ]; then
 	else
 		echo "FAILED: the tree is kept at zero clang-tidy warnings."
 		echo "Fix the finding above. Do NOT silence it by adding the check to"
-		echo "the disabled list in .clang-tidy -- that list is a ratchet for"
-		echo "pre-existing findings only (issue #121) and is meant to shrink."
+		echo "the disabled list in .clang-tidy -- the ratchet of pre-existing"
+		echo "findings is empty (issue #121), and what is left there is six"
+		echo "structural exemptions, each with a measurement. Adding a seventh"
+		echo "needs the same standard, not a red gate."
 	fi
 	exit 1
 fi

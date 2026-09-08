@@ -1,5 +1,5 @@
 # Check contract for the clang-tidy runs in .githooks/pre-commit (safe --fix
-# subset) and .githooks/pre-push (full sweep, warn-only).
+# subset) and .githooks/pre-push (full sweep, hard block).
 #
 # Owned by this repository, like its sibling .clang-format.
 #
@@ -7,8 +7,40 @@
 # inline, with the measurement that justifies it. Nothing is turned off to
 # avoid work.
 ---
-# Three checks are disabled below the stock set, each for a structural reason
-# rather than to dodge work:
+# THE RATCHET IS EMPTY, and issue #121 -- which tracked emptying it -- is
+# closed. This file used to carry a second list below the exemptions: checks
+# disabled by name with their unfixed finding counts, so that the rest of
+# bugprone-*/modernize-*/performance-*/readability-* could block at push before
+# the tree satisfied all of it. It started at 26 checks and ran to zero. Every
+# check in those four groups is now enabled except the four structural
+# exemptions below, and each of those is off because the CHECK is wrong for
+# this codebase -- never because its findings are unfixed.
+#
+# So there is no list here to add a name to any more. A clang-tidy warning at
+# push is new code's doing: fix it. Putting a name below has to meet the same
+# standard the four already there meet -- a structural cause, and a measurement
+# -- and it is a case to argue, not a way to get a push through.
+#
+# Six checks are disabled below the stock set, each for a structural reason
+# rather than to dodge work. Two of them are the long-standing pair at the top
+# of the scalar, whose reasons were never written down until issue #121 closed:
+#
+#   modernize-use-trailing-return-type -- 731 hits, i.e. every function in the
+#     tree. It asks for `auto f() -> T` everywhere. Google style does not use
+#     that spelling and neither does this codebase; the check is a whole-tree
+#     style preference, not a defect class.
+#
+#   readability-magic-numbers -- 2058 hits, the largest count this config has
+#     ever measured. 1382 are in tests/, where the literal IS the assertion
+#     (`REQUIRE(v == 3.0)`), and 495 in benchmarks/, where they are instance
+#     data and published tolerances. Of the ~180 in src/ and include/cbls/, the
+#     ones worth naming already are named -- kEps, kMpsInf, kStrideGrowth and
+#     the rest of the k-constants the naming options below encode. Turning this
+#     on would demand a named constant for every coefficient in a formula
+#     transcribed from a paper, which is the same argument as
+#     readability-identifier-length below.
+#
+# The other four:
 #
 #   bugprone-chained-comparison -- Catch2's REQUIRE/CHECK decompose into an
 #     expression template, so every `REQUIRE(a == b)` reads to this check as the
@@ -28,88 +60,46 @@
 #     the identifier-naming options below: encode the convention the project
 #     actually has.
 #
-# Below those three sits a RATCHET. Every check that still fired once the safe
-# auto-fixes had landed is disabled here, so that the rest of
-# bugprone-*/modernize-*/performance-*/readability-* can block at push starting
-# now. These are off because they are UNFIXED, not because they are wrong.
+#   bugprone-easily-swappable-parameters -- 26 hits, of which 10 fire only
+#     through modelled int<->double conversions on a solver API that is numeric
+#     and positional by design. It also does not track the hazard it names:
+#     SuppressParametersUsedTogether keys on the CALLEE's body rather than on
+#     caller-side confusability, so ParallelSearch::solve(factory, double
+#     time_limit, uint64_t seed) is silent while cbls::solve's identical pair
+#     warns; and set_var(int n, int min_size, int max_size) is flagged on
+#     (n, min_size) rather than on (min_size, max_size), the pair a human would
+#     actually transpose. Closing the remainder means opaque handle types over
+#     int32_t, which python/bindings.cpp hands to Python as plain ints -- so the
+#     conversion the check models is exactly what the API boundary puts back.
+#     Same call as readability-identifier-length above.
 #
-# HISTORICAL, like the worked example further down: the 248 and 296 in this
-# paragraph are from older revisions of this list and are NOT current. The
-# current total is the TOTAL: below. Counts were re-derived at the commit that
-# restored linting to src/io/, with the sweep command in issue #121 and the 26
-# checks then in this list enabled. They rose 248 -> 296 there for two
-# independent reasons, so do not compare them against an older revision of this
-# list without re-running that sweep:
-#   * 36 of the findings are in src/io/, which contributed nothing before
-#     because its .clang-tidy was missing `InheritParentConfig: true` and so
-#     ran no checks at all. 4 of those 36 are readability-identifier-naming in
-#     the vendored mps_reader.cpp, which that directory still exempts by
-#     design -- they are excluded below, so that measurement totalled 296.
-#   * the rest is ordinary drift in the tree since the counts were first taken.
-#
-# Re-derive, never increment: a count here is a floor for the work, and
-# deleting a line whose findings you sized from a stale number turns the push
-# gate red for everyone. The same goes for the running total below -- re-run
-# the sweep, do not subtract.
-#
-# HISTORICAL worked example -- the numbers in this paragraph are from an older
-# revision of this list and are NOT current; the current total is the TOTAL:
-# below. Rewriting one loop as std::any_of for readability-use-anyofallof --
-# `violated_[c] && active(c)` in feasibility_jump.cpp -- also took a
-# readability-implicit-bool-conversion with it, so 296 minus the 24 findings
-# actually fixed gave 272 where the tree reported 271. Note that one was not
-# fixed: the uint8_t -> bool conversion is still there, the check just stops
-# reporting it once the expression sits inside the lambda. A count here can fall
-# because the checker went blind, not only because the code improved -- which is
-# another reason to re-derive.
-#
-# One trap when re-deriving with `clang-tidy --checks=<names>` on the command
-# line: a positive name there is appended after src/io/.clang-tidy's
-# subtraction and so re-enables what that directory turns off. The
-# readability-identifier-naming row comes back as 30 rather than 26, the extra
-# 4 being the vendored mps_reader.cpp findings that directory exempts by
-# design. Either subtract them or re-derive by deleting the line from this file.
-#
-# The table below was re-derived 2026-09-08 by copying this file with all
-# eight remaining ratchet lines deleted and running one sweep against that
-# copy, then bucketing by check name and subtracting the 4
-# readability-identifier-naming findings in the vendored src/io/mps_reader.cpp
-# that src/io/.clang-tidy exempts by design (`--config-file` overrides the
-# per-directory config, so those come back in the raw 238).
-#
-# It is again a standing demonstration that subtraction does not work: clearing
-# modernize-avoid-c-style-cast (17) and performance-inefficient-vector-operation
-# (7) off a stated 250 would predict 226, and the tree reports 234. Both cleared
-# checks were sized exactly right -- each reports 0 now -- so the whole 8 is
-# ordinary drift on main in the two days since the last sweep, spread over three
-# rows: readability-function-cognitive-complexity 66 -> 71,
-# readability-math-missing-parentheses 25 -> 27, modernize-use-auto 28 -> 29.
-# The other five rows held steady: readability-implicit-bool-conversion (38),
-# readability-identifier-naming (26), bugprone-easily-swappable-parameters (26),
-# performance-enum-size (9) and modernize-avoid-c-arrays (8). Which rows drift
-# is not stable between sweeps either -- the previous sweep had seven of its
-# ten rows move and three hold, this one has three move and five hold -- so
-# re-derive every row, not just the one you are clearing.
-#
-# TOTAL: 234
-#
-#    71  readability-function-cognitive-complexity
-#    38  readability-implicit-bool-conversion
-#    29  modernize-use-auto
-#    27  readability-math-missing-parentheses
-#    26  readability-identifier-naming
-#    26  bugprone-easily-swappable-parameters
-#     9  performance-enum-size
-#     8  modernize-avoid-c-arrays
-#
-# Deleting a line from that list is how a check comes back. Do it in the same
-# commit that fixes its warnings, never on its own. See the tracking issue for
-# the counts above and the suggested order: issue #121.
+#     Three of the 26 were fixed anyway, on their own merit rather than for the
+#     lint: make_progress deleted in favour of the SolveProgress its callers
+#     already build by field name, and row_bounds / linear_row_bounds returning
+#     a struct instead of a transposable pair of `double&` out-params. About
+#     five genuine transposition hazards remain -- RNG::choice(n, k),
+#     Model::set_var, Model::add_var_sequence, compute_partial(expr_id, var_id).
+#     Guarding those is a handle-typing task, not a lint gate, and turning this
+#     check on would not catch all of them anyway.
 #
 # Note `#` is NOT a comment inside a `>` folded scalar -- it is literal text
 # that silently corrupts the check list, and a trailing `# 25` on a check line
 # swallows the line after it. Every comment goes here, above the key; the
-# scalar itself holds check names and nothing else.
+# scalar itself holds check names and nothing else. A corrupted list fails
+# OPEN: checks silently stop running and a sweep goes green. Verify any edit to
+# this file, and to src/io/.clang-tidy, with `clang-tidy --dump-config`.
+#
+# A full sweep, from a configured build directory:
+#
+#   .venv/bin/clang-tidy -p build --quiet $(git ls-files 'src/*.cpp' \
+#       'src/io/*.cpp' 'tests/*.cpp' 'benchmarks/**/*.cpp' 'examples/*.cpp' \
+#       'python/*.cpp') | grep -iE '(warning|error):' | sort -u
+#
+# Match case-insensitively and mind the exit status: a directory that runs no
+# checks at all reports `Error: no checks enabled.` with a capital E, which a
+# lower-case-only pattern misses. That is how src/io/ went unlinted for as long
+# as it did. Use the pinned .venv copy -- a system clang-tidy of another
+# vintage merges a different default check set.
 Checks: >
   -*,
   bugprone-*,
@@ -121,12 +111,28 @@ Checks: >
   -bugprone-chained-comparison,
   -bugprone-throwing-static-initialization,
   -readability-identifier-length,
-  -readability-function-cognitive-complexity,
   -bugprone-easily-swappable-parameters
 
 CheckOptions:
   - key: readability-function-cognitive-complexity.Threshold
     value: 25
+  # IgnoreMacros stops the score counting code that came from a macro. It is
+  # here for Catch2 and nothing else: clang-tidy names a TEST_CASE body after
+  # the macro that generates it (`dummyFunction32`) and then charges it for
+  # every SECTION's `if` and every REQUIRE's try/catch. Measured at the commit
+  # that closed issue #121: 44 of that check's 71 findings were TEST_CASE
+  # bodies, one of them scoring 155 off 26 assertion macros against 7 real
+  # control-flow constructs. With this option all of tests/*.cpp reports zero
+  # and all 27 non-test findings survive at IDENTICAL scores, so it subtracts
+  # exactly the Catch2 noise and nothing else.
+  #
+  # It is not a way of switching the check off in tests/. A probe translation
+  # unit with a deliberately convoluted TEST_CASE body and no assertion macros
+  # at all still scores 47 and is still reported. That is why this is an option
+  # rather than a tests/.clang-tidy exemption, which would have dropped the
+  # coverage instead of the noise.
+  - key: readability-function-cognitive-complexity.IgnoreMacros
+    value: true
   - key: readability-identifier-naming.ClassCase
     value: CamelCase
   # Measured over include/cbls/*.h and src/*.cpp, this codebase runs 336
