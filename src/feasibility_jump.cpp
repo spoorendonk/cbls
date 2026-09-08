@@ -481,63 +481,64 @@ void FeasibilityJump::enqueue(int32_t var_id) {
     }
 }
 
-void FeasibilityJump::compute_linear_constraints() {
-    const auto& nodes = model_.nodes();
-    const size_t nn = nodes.size();
-    std::vector<uint8_t> is_const(nn, 0);
-    std::vector<uint8_t> is_affine(nn, 0);
+namespace {
 
+// True when no child of `nd` reaches a variable, i.e. the whole subtree is a
+// compile-time constant. Vacuously true for a leaf (a Const node has no
+// children); a variable child is never constant, since its value is search
+// state.
+bool children_all_const(const ExprNode& nd, const std::vector<uint8_t>& is_const) {
+    return std::all_of(nd.children.begin(), nd.children.end(),
+                       [&](const ChildRef& ch) { return !ch.is_var && is_const[ch.id] != 0; });
+}
+
+// Is this node affine in the variables, given the same classification already
+// settled for every node below it? Only called for nodes that are NOT wholly
+// constant, so `nd.children` is populated for every op that indexes it.
+bool node_is_affine(const ExprNode& nd, const std::vector<uint8_t>& is_const,
+                    const std::vector<uint8_t>& is_affine) {
     auto child_const = [&](const ChildRef& c) -> bool {
         return c.is_var ? false : static_cast<bool>(is_const[c.id]);
     };
     auto child_affine = [&](const ChildRef& c) -> bool {
         return c.is_var ? true : static_cast<bool>(is_affine[c.id]);
     };
+    switch (nd.op) {
+        case NodeOp::Const:
+        case NodeOp::Neg:
+        case NodeOp::Sum:
+            return std::all_of(nd.children.begin(), nd.children.end(), child_affine);
+        case NodeOp::Prod:  // affine if at most one child non-constant
+            return (child_const(nd.children[0]) && child_affine(nd.children[1])) ||
+                   (child_const(nd.children[1]) && child_affine(nd.children[0]));
+        case NodeOp::Div:  // affine / const
+            return child_affine(nd.children[0]) && child_const(nd.children[1]);
+        case NodeOp::Leq:
+        case NodeOp::Geq:
+        case NodeOp::Lt:
+        case NodeOp::Gt:  // residual lhs-rhs is affine if both sides affine
+            return child_affine(nd.children[0]) && child_affine(nd.children[1]);
+        default:  // Eq (abs), Neq (step), Pow, Min, Max, trig, etc.
+            return false;
+    }
+}
+
+}  // namespace
+
+void FeasibilityJump::compute_linear_constraints() {
+    const auto& nodes = model_.nodes();
+    const size_t nn = nodes.size();
+    std::vector<uint8_t> is_const(nn, 0);
+    std::vector<uint8_t> is_affine(nn, 0);
 
     // topo_order has children before parents.
     for (int32_t nid : model_.topo_order()) {
         const ExprNode& nd = nodes[nid];
-        bool all_const = true;
-        for (const auto& ch : nd.children) {
-            if (!child_const(ch)) {
-                all_const = false;
-                break;
-            }
-        }
-        bool affine = all_const;  // a constant subtree is affine
-        if (!affine) {
-            switch (nd.op) {
-                case NodeOp::Const:
-                case NodeOp::Neg:
-                case NodeOp::Sum:
-                    affine = true;
-                    for (const auto& ch : nd.children) {
-                        if (!child_affine(ch)) {
-                            affine = false;
-                            break;
-                        }
-                    }
-                    break;
-                case NodeOp::Prod:  // affine if at most one child non-constant
-                    affine = (child_const(nd.children[0]) && child_affine(nd.children[1])) ||
-                             (child_const(nd.children[1]) && child_affine(nd.children[0]));
-                    break;
-                case NodeOp::Div:  // affine / const
-                    affine = child_affine(nd.children[0]) && child_const(nd.children[1]);
-                    break;
-                case NodeOp::Leq:
-                case NodeOp::Geq:
-                case NodeOp::Lt:
-                case NodeOp::Gt:  // residual lhs-rhs is affine if both sides affine
-                    affine = child_affine(nd.children[0]) && child_affine(nd.children[1]);
-                    break;
-                default:  // Eq (abs), Neq (step), Pow, Min, Max, trig, etc.
-                    affine = false;
-                    break;
-            }
-        }
+        const bool all_const = children_all_const(nd, is_const);
         is_const[nid] = static_cast<uint8_t>(all_const);
-        is_affine[nid] = static_cast<uint8_t>(affine);
+        // A constant subtree is affine, and short-circuiting there is what keeps
+        // node_is_affine from indexing the children of a childless leaf.
+        is_affine[nid] = static_cast<uint8_t>(all_const || node_is_affine(nd, is_const, is_affine));
     }
 
     const auto& cids = model_.constraint_ids();
@@ -792,8 +793,112 @@ void FeasibilityJump::arm_deadline() {
 // check. And the interval between checks can span a batch boundary, so work the
 // *outer* loop does between batches (hook, LNS, structural sweep) is charged to
 // the stride, which shrinks it; that is conservative, never the reverse.
-GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
+// No improving jump anywhere in the scan set. Bump the GLS weights, then
+// invalidate and re-queue every variable of every active violated constraint, so
+// the next iteration re-scores them against the new penalty landscape.
+void FeasibilityJump::bump_weights_and_requeue() {
+    gls_update_weights(vm_, config_.rho);
     const size_t nc = model_.constraint_ids().size();
+    for (size_t c = 0; c < nc; ++c) {
+        if (violated_[c] != 0 && active(static_cast<int32_t>(c))) {
+            for (int32_t v : vars_of_constraint_[c]) {
+                jumps_.invalidate(v);
+                enqueue(v);
+            }
+        }
+    }
+}
+
+// Progress accounting for one GLS iteration. Returns true when the batch must
+// end because it has stopped reducing the real rows' violation. See the
+// unproductive-streak discussion on unweighted_violation_ in the header.
+bool FeasibilityJump::track_batch_progress(double& batch_best_violation, bool watch_progress) {
+    // A new minimum has to beat the incumbent by more than the accumulator can
+    // drift within one batch, or ulp noise resets the streak and the exit never
+    // fires. Relative, because an absolute floor does not survive scale (#118).
+    auto improves = [](double v, double best) {
+        return v < best - (kProgressRelEps * std::max(1.0, best));
+    };
+
+    // Holding ground counts as unproductive -- holding ground is exactly what
+    // the cycling case does -- so only a strict new minimum, by more than the
+    // drift floor, resets the streak.
+    if (improves(unweighted_violation_, batch_best_violation)) {
+        batch_best_violation = unweighted_violation_;
+        unproductive_streak_ = 0;
+        return false;
+    }
+    if (!watch_progress || ++unproductive_streak_ < config_.unproductive_iterations) {
+        return false;
+    }
+
+    // The streak was accumulated on the incremental measure; ending the batch is
+    // the one decision it drives, so make that decision on an exact sum instead.
+    // This also re-grounds the accumulator, which is how a run that drifted (or
+    // that lost a row to +inf and back) gets its measure repaired rather than
+    // staying wrong for the whole run.
+    refresh_unweighted_violation();
+    if (improves(unweighted_violation_, batch_best_violation)) {
+        batch_best_violation = unweighted_violation_;
+        unproductive_streak_ = 0;
+        return false;
+    }
+    if (unweighted_violation_ <= 0.0) {
+        // The measure has no usable signal, which covers TWO states and
+        // deliberately treats them alike. Either every real row is
+        // satisfied (progress_residual counts only residuals > kTol, the
+        // same threshold is_violated uses, so a zero sum means exactly
+        // that for finite rows) -- or every violated real row is +inf or
+        // NaN, which progress_residual also contributes 0 for. Both are
+        // "nothing to measure", and neither is evidence of a stall.
+        //
+        // Testing "is any real row violated" instead was tried and is
+        // WRONG: on a non-convex body that has gone non-finite it is
+        // permanently true while the measure is permanently pinned, so
+        // improves() can never fire and the batch reports stuck at every
+        // streak limit for the rest of the run -- pre-feasibility, where
+        // the kick still draws LNS. That trades a silently inert exit for
+        // a budget-burning one on exactly the elec-class instances.
+        //
+        // The measure then sums to zero and can never improve on itself,
+        // so every batch in the objective-descent phase would
+        // report stuck at exactly unproductive_iterations, turning a
+        // stall detector into an unconditional one. The search is not
+        // stalled there; it is descending against the artificial
+        // objective row, which this measure deliberately cannot see.
+        // Having no signal is not evidence of being stuck, so hand the
+        // batch back to its own limit and let perturbation_period keep
+        // owning that regime.
+        unproductive_streak_ = 0;
+        return false;
+    }
+    return true;
+}
+
+// Deadline observation, reached only when the stride countdown has expired.
+// Returns true if the deadline has passed; otherwise re-sizes the stride from
+// what the last one actually cost. See the long comment above gls_loop.
+bool FeasibilityJump::deadline_passed_and_retune() {
+    const auto now = std::chrono::steady_clock::now();
+    ++deadline_checks_;  // every clock read, including the one that stops the run
+    if (now >= deadline_) {
+        return true;
+    }
+    // Size the next stride against the budget that is LEFT, not the
+    // budget that was given. A fraction of the total permits an overrun
+    // of budget/64 right up to the deadline — 9.4 s on a 600 s
+    // benchmark run, by design — whereas remaining/64 tightens as the
+    // deadline approaches and costs nothing to compute.
+    const double remaining = std::chrono::duration<double>(deadline_ - now).count();
+    deadline_stride_ = next_deadline_stride(
+        deadline_stride_, std::chrono::duration<double>(now - last_deadline_check_).count(),
+        remaining * kStrideBudgetFraction);
+    deadline_countdown_ = deadline_stride_;
+    last_deadline_check_ = now;
+    return false;
+}
+
+GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
     int64_t batch_iters = 0;
     // Re-ground before taking the batch's reference minimum. Consecutive
     // non-improving FJ batches reach here without a rebuild in between, so
@@ -810,105 +915,33 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
     // violation (see THE SECOND WITNESS on unweighted_violation_).
     const bool watch_progress =
         watch_progress_ && batch_iter_limit > 0 && config_.unproductive_iterations > 0;
-    // A new minimum has to beat the incumbent by more than the accumulator can
-    // drift within one batch, or ulp noise resets the streak and the exit never
-    // fires. Relative, because an absolute floor does not survive scale (#118).
-    auto improves = [](double v, double best) {
-        return v < best - (kProgressRelEps * std::max(1.0, best));
-    };
 
     while (true) {
         if (!apply_jump(sample_size)) {
             if (!any_active_violated()) {
                 return GFJStatus::Feasible;
             }
-            gls_update_weights(vm_, config_.rho);
-            for (size_t c = 0; c < nc; ++c) {
-                if (violated_[c] != 0 && active(static_cast<int32_t>(c))) {
-                    for (int32_t v : vars_of_constraint_[c]) {
-                        jumps_.invalidate(v);
-                        enqueue(v);
-                    }
-                }
-            }
+            bump_weights_and_requeue();
         }
 
         ++iterations_;
         ++batch_iters;
-        // Holding ground counts as unproductive -- holding ground is exactly what
-        // the cycling case does -- so only a strict new minimum, by more than the
-        // drift floor, resets the streak.
-        if (improves(unweighted_violation_, batch_best_violation)) {
-            batch_best_violation = unweighted_violation_;
-            unproductive_streak_ = 0;
-        } else if (watch_progress && ++unproductive_streak_ >= config_.unproductive_iterations) {
-            // The streak was accumulated on the incremental measure; ending the
-            // batch is the one decision it drives, so make that decision on an
-            // exact sum instead. This also re-grounds the accumulator, which is
-            // how a run that drifted (or that lost a row to +inf and back) gets
-            // its measure repaired rather than staying wrong for the whole run.
-            refresh_unweighted_violation();
-            if (improves(unweighted_violation_, batch_best_violation)) {
-                batch_best_violation = unweighted_violation_;
-                unproductive_streak_ = 0;
-            } else if (unweighted_violation_ <= 0.0) {
-                // The measure has no usable signal, which covers TWO states and
-                // deliberately treats them alike. Either every real row is
-                // satisfied (progress_residual counts only residuals > kTol, the
-                // same threshold is_violated uses, so a zero sum means exactly
-                // that for finite rows) -- or every violated real row is +inf or
-                // NaN, which progress_residual also contributes 0 for. Both are
-                // "nothing to measure", and neither is evidence of a stall.
-                //
-                // Testing "is any real row violated" instead was tried and is
-                // WRONG: on a non-convex body that has gone non-finite it is
-                // permanently true while the measure is permanently pinned, so
-                // improves() can never fire and the batch reports stuck at every
-                // streak limit for the rest of the run -- pre-feasibility, where
-                // the kick still draws LNS. That trades a silently inert exit for
-                // a budget-burning one on exactly the elec-class instances.
-                //
-                // The measure then sums to zero and can never improve on itself,
-                // so every batch in the objective-descent phase would
-                // report stuck at exactly unproductive_iterations, turning a
-                // stall detector into an unconditional one. The search is not
-                // stalled there; it is descending against the artificial
-                // objective row, which this measure deliberately cannot see.
-                // Having no signal is not evidence of being stuck, so hand the
-                // batch back to its own limit and let perturbation_period keep
-                // owning that regime.
-                unproductive_streak_ = 0;
-            } else {
-                batch_stuck_ = true;
-                return any_active_violated() ? GFJStatus::Unsolved : GFJStatus::Feasible;
-            }
+        if (track_batch_progress(batch_best_violation, watch_progress)) {
+            batch_stuck_ = true;
+            return batch_end_status();
         }
         if (batch_iter_limit > 0 && batch_iters >= batch_iter_limit) {
-            return any_active_violated() ? GFJStatus::Unsolved : GFJStatus::Feasible;
+            return batch_end_status();
         }
         if (config_.max_iterations > 0 && iterations_ >= config_.max_iterations) {
             return GFJStatus::Unsolved;
         }
         // Short-circuited on has_deadline_, so a run with no wall clock neither
         // reads the clock nor touches any of the tuner state: iteration-budgeted
-        // runs stay bit-identical.
-        if (has_deadline_ && --deadline_countdown_ <= 0) {
-            const auto now = std::chrono::steady_clock::now();
-            ++deadline_checks_;  // every clock read, including the one that stops the run
-            if (now >= deadline_) {
-                return GFJStatus::Unsolved;
-            }
-            // Size the next stride against the budget that is LEFT, not the
-            // budget that was given. A fraction of the total permits an overrun
-            // of budget/64 right up to the deadline — 9.4 s on a 600 s
-            // benchmark run, by design — whereas remaining/64 tightens as the
-            // deadline approaches and costs nothing to compute.
-            const double remaining = std::chrono::duration<double>(deadline_ - now).count();
-            deadline_stride_ = next_deadline_stride(
-                deadline_stride_, std::chrono::duration<double>(now - last_deadline_check_).count(),
-                remaining * kStrideBudgetFraction);
-            deadline_countdown_ = deadline_stride_;
-            last_deadline_check_ = now;
+        // runs stay bit-identical. The countdown decrement is likewise inside the
+        // short circuit, and the clock read stays behind it, in the helper.
+        if (has_deadline_ && --deadline_countdown_ <= 0 && deadline_passed_and_retune()) {
+            return GFJStatus::Unsolved;
         }
     }
 }

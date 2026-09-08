@@ -240,6 +240,27 @@ private:
     // limit (<=0 for none) plus the global budget/deadline.
     GFJStatus gls_loop(int sample_size, int64_t batch_iter_limit);
     [[nodiscard]] bool any_active_violated() const;
+    // How a batch reports its own end when it ran out of budget rather than out
+    // of work: Feasible only if nothing active is still violated. Used at every
+    // budget exit of gls_loop so they cannot drift apart.
+    [[nodiscard]] GFJStatus batch_end_status() const {
+        return any_active_violated() ? GFJStatus::Unsolved : GFJStatus::Feasible;
+    }
+    // No improving jump exists anywhere in the scan set: bump the GLS weights of
+    // the violated constraints and re-queue their variables, so the next
+    // iteration scores them against the new penalty landscape.
+    void bump_weights_and_requeue();
+    // Fold the iteration just completed into the batch's progress state:
+    // `batch_best_violation` is the running minimum of the unweighted real-row
+    // violation and `unproductive_streak_` counts iterations since it last
+    // moved. Returns true when the streak has hit its limit AND an exact
+    // re-grounding confirms the batch really is stuck, i.e. the batch must end.
+    // `watch_progress` is the caller's arming decision, computed once per batch.
+    bool track_batch_progress(double& batch_best_violation, bool watch_progress);
+    // Read the clock and re-size the deadline stride. Returns true if the
+    // deadline has passed. Only called when the countdown has expired, so it is
+    // off the per-iteration path; see the comment above gls_loop.
+    bool deadline_passed_and_retune();
     // Recompute unweighted_violation_ from scratch: sum of the finite positive
     // residuals of the active REAL rows (objective row excluded, see that
     // member). This is the only thing that re-grounds the incremental
