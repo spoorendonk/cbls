@@ -43,7 +43,7 @@ inline CoverCheck check_cover(const SetCoverInstance& inst, const std::vector<in
             ++check.invalid_columns;
             continue;
         }
-        if (seen[static_cast<size_t>(col)]) {
+        if (seen[static_cast<size_t>(col)] != 0) {
             ++check.duplicate_columns;
             continue;  // a repeat neither adds coverage nor should be paid for twice
         }
@@ -56,7 +56,7 @@ inline CoverCheck check_cover(const SetCoverInstance& inst, const std::vector<in
         }
     }
     for (int i = 0; i < inst.rows; ++i) {
-        if (!covered[static_cast<size_t>(i)]) {
+        if (covered[static_cast<size_t>(i)] == 0) {
             ++check.uncovered_rows;
         }
     }

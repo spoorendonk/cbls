@@ -470,11 +470,11 @@ bool FeasibilityJump::active(int32_t constraint_idx) const {
 bool FeasibilityJump::participates_in_active_violated(int32_t var_id) const {
     const std::vector<int32_t>& cs = model_.constraints_of_var(var_id);
     return std::any_of(cs.begin(), cs.end(),
-                       [this](int32_t c) { return violated_[c] && active(c); });
+                       [this](int32_t c) { return violated_[c] != 0 && active(c); });
 }
 
 void FeasibilityJump::enqueue(int32_t var_id) {
-    if (!in_queue_[var_id]) {
+    if (in_queue_[var_id] == 0) {
         in_queue_[var_id] = 1;
         queue_.push_back(var_id);
     }
@@ -581,13 +581,13 @@ void FeasibilityJump::rebuild_violated_and_scan_set() {
     const auto& cids = model_.constraint_ids();
     const size_t nc = cids.size();
     for (size_t c = 0; c < nc; ++c) {
-        violated_[c] = is_violated(model_.node(cids[c]).value);
+        violated_[c] = static_cast<uint8_t>(is_violated(model_.node(cids[c]).value));
     }
     refresh_unweighted_violation();
     std::fill(in_queue_.begin(), in_queue_.end(), 0);
     queue_.clear();
     for (size_t c = 0; c < nc; ++c) {
-        if (violated_[c] && active(static_cast<int32_t>(c))) {
+        if (violated_[c] != 0 && active(static_cast<int32_t>(c))) {
             for (int32_t v : vars_of_constraint_[c]) {
                 enqueue(v);
             }
@@ -619,7 +619,7 @@ void FeasibilityJump::update_var(int32_t var_id) {
         if (c != objective_ci_ && active(c)) {
             violation_delta += progress_residual(after);
         }
-        violated_[c] = is_violated(after);
+        violated_[c] = static_cast<uint8_t>(is_violated(after));
     }
     unweighted_violation_ += violation_delta;
     for (int32_t c : gv) {
@@ -682,7 +682,7 @@ bool FeasibilityJump::apply_jump(int sample_size) {
 bool FeasibilityJump::any_active_violated() const {
     const size_t nc = violated_.size();
     for (size_t c = 0; c < nc; ++c) {
-        if (violated_[c] && active(static_cast<int32_t>(c))) {
+        if (violated_[c] != 0 && active(static_cast<int32_t>(c))) {
             return true;
         }
     }
@@ -823,7 +823,7 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
             }
             gls_update_weights(vm_, config_.rho);
             for (size_t c = 0; c < nc; ++c) {
-                if (violated_[c] && active(static_cast<int32_t>(c))) {
+                if (violated_[c] != 0 && active(static_cast<int32_t>(c))) {
                     for (int32_t v : vars_of_constraint_[c]) {
                         jumps_.invalidate(v);
                         enqueue(v);
@@ -1213,12 +1213,13 @@ void FeasibilityJump::init_novelty_weights() {
     const size_t nc = vm_.weights.size();
     novelty_weights_.resize(nc);
     for (size_t c = 0; c < nc; ++c) {
-        novelty_weights_[c] = violated_[c] ? vm_.weights[c] : kCompoundDiscount * vm_.weights[c];
+        novelty_weights_[c] =
+            violated_[c] != 0 ? vm_.weights[c] : kCompoundDiscount * vm_.weights[c];
     }
 }
 
 void FeasibilityJump::nj_enqueue(int32_t var_id) {
-    if (!nj_in_queue_[var_id]) {
+    if (nj_in_queue_[var_id] == 0) {
         nj_in_queue_[var_id] = 1;
         nj_queue_.push_back(var_id);
     }
@@ -1229,7 +1230,7 @@ void FeasibilityJump::seed_novelty_scan_set() {
     nj_queue_.clear();
     const auto& cids = model_.constraint_ids();
     for (size_t c = 0; c < cids.size(); ++c) {
-        if (violated_[c] && active(static_cast<int32_t>(c))) {
+        if (violated_[c] != 0 && active(static_cast<int32_t>(c))) {
             for (int32_t v : vars_of_constraint_[c]) {
                 nj_enqueue(v);
             }
@@ -1250,7 +1251,8 @@ FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, dou
         ++draws;
         size_t idx = static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(nj_queue_.size())));
         int32_t v = nj_queue_[idx];
-        if (on_stack_[v] || std::find(examined_.begin(), examined_.end(), v) != examined_.end()) {
+        if (on_stack_[v] != 0 ||
+            std::find(examined_.begin(), examined_.end(), v) != examined_.end()) {
             continue;  // on the stack (T) or already sampled this call
         }
         examined_.push_back(v);
@@ -1305,8 +1307,8 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         // Refresh violated_ for v's constraints; promote any now-broken
         // constraint to full novelty weight and add its vars to the scan set.
         for (int32_t c : model_.constraints_of_var(v)) {
-            violated_[c] = is_violated(model_.node(cids[c]).value);
-            if (violated_[c] && novelty_weights_[c] != vm_.weights[c]) {
+            violated_[c] = static_cast<uint8_t>(is_violated(model_.node(cids[c]).value));
+            if (violated_[c] != 0 && novelty_weights_[c] != vm_.weights[c]) {
                 novelty_weights_[c] = vm_.weights[c];
                 for (int32_t vp : vars_of_constraint_[c]) {
                     nj_enqueue(vp);
@@ -1327,7 +1329,7 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         model_.var_mut(v).value = old_value;
         delta_evaluate(model_, &v, 1);
         for (int32_t c : model_.constraints_of_var(v)) {
-            violated_[c] = is_violated(model_.node(cids[c]).value);
+            violated_[c] = static_cast<uint8_t>(is_violated(model_.node(cids[c]).value));
         }
         budget -= 1;
     }
@@ -1382,7 +1384,7 @@ GFJStatus FeasibilityJump::run() {
         // excludes them, and gls_update_weights leaves 0-weights at 0. Phase 2
         // restores all weights to 1 (the paper uses fresh weights per phase).
         for (size_t c = 0; c < nc; ++c) {
-            vm_.weights[c] = is_linear_[c] ? 1.0 : 0.0;
+            vm_.weights[c] = is_linear_[c] != 0 ? 1.0 : 0.0;
         }
         vm_.invalidate_cache();
         gls(config_.sample_size_linear);

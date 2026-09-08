@@ -209,7 +209,7 @@ double gap_percent(const std::string& instance, double objective) {
 
 void write_csv(const std::string& path, const std::vector<Run>& runs) {
     FILE* out = std::fopen(path.c_str(), "w");
-    if (!out) {
+    if (out == nullptr) {
         fprintf(stderr, "cannot write %s\n", path.c_str());
         return;
     }

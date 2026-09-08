@@ -113,7 +113,7 @@ double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count
     for (size_t ci = 0; ci < count; ++ci) {
         const auto& v = model.var(changed_var_ids[ci]);
         for (int32_t dep_id : v.dependent_ids) {
-            if (!dirty_flags[dep_id]) {
+            if (dirty_flags[dep_id] == 0) {
                 dirty_flags[dep_id] = 1;
                 dirty_list.push_back(dep_id);
             }
@@ -125,7 +125,7 @@ double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count
         int32_t nid = dirty_list[i];
         const auto& nd = model.node(nid);
         for (int32_t parent_id : nd.parent_ids) {
-            if (!dirty_flags[parent_id]) {
+            if (dirty_flags[parent_id] == 0) {
                 dirty_flags[parent_id] = 1;
                 dirty_list.push_back(parent_id);
             }
@@ -134,7 +134,7 @@ double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count
 
     // Recompute dirty nodes in topological order
     for (int32_t nid : model.topo_order()) {
-        if (dirty_flags[nid]) {
+        if (dirty_flags[nid] != 0) {
             auto& nd = model.node_mut(nid);
             nd.value = evaluate(nd, model);
         }

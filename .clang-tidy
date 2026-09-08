@@ -122,7 +122,6 @@ Checks: >
   -bugprone-throwing-static-initialization,
   -readability-identifier-length,
   -readability-function-cognitive-complexity,
-  -readability-implicit-bool-conversion,
   -readability-math-missing-parentheses,
   -readability-identifier-naming,
   -bugprone-easily-swappable-parameters,

@@ -24,8 +24,9 @@ TEST_CASE("CHPED 4-unit feasibility", "[chped]") {
 
     auto result = solve_deterministic(m, 186000, 42);
     REQUIRE(result.feasible);
-    printf("\n4-unit: feasible=%d, obj=%.2f, iters=%ld, time=%.3fs\n", result.feasible,
-           result.objective, result.iterations, result.time_seconds);
+    printf("\n4-unit: feasible=%d, obj=%.2f, iters=%ld, time=%.3fs\n",
+           static_cast<int>(result.feasible), result.objective, result.iterations,
+           result.time_seconds);
 }
 
 TEST_CASE("CHPED 4-unit solution quality", "[chped]") {
@@ -46,8 +47,8 @@ TEST_CASE("CHPED 7-unit feasibility", "[chped]") {
 
     auto result = solve_deterministic(m, 122000, 42);
     REQUIRE(result.feasible);
-    printf("\n7-unit: feasible=%d, obj=%.2f, iters=%ld\n", result.feasible, result.objective,
-           result.iterations);
+    printf("\n7-unit: feasible=%d, obj=%.2f, iters=%ld\n", static_cast<int>(result.feasible),
+           result.objective, result.iterations);
 }
 
 TEST_CASE("CHPED 24-unit feasibility", "[chped][slow]") {
@@ -56,8 +57,8 @@ TEST_CASE("CHPED 24-unit feasibility", "[chped][slow]") {
     auto& m = cm.model;
 
     auto result = solve_deterministic(m, 79000, 42);
-    printf("\n24-unit: feasible=%d, obj=%.2f, iters=%ld\n", result.feasible, result.objective,
-           result.iterations);
+    printf("\n24-unit: feasible=%d, obj=%.2f, iters=%ld\n", static_cast<int>(result.feasible),
+           result.objective, result.iterations);
     REQUIRE(result.iterations > 100);
     if (result.feasible) {
         REQUIRE(result.objective < 20000);
@@ -74,8 +75,8 @@ TEST_CASE("CHPED 13-unit feasibility and quality", "[chped]") {
     REQUIRE(result.objective >= inst.known_optimum);
     REQUIRE(result.objective < 19000);
     printf("\n13-unit: feasible=%d, obj=%.2f (known optimum ~%.0f), iters=%ld, time=%.3fs\n",
-           result.feasible, result.objective, inst.known_optimum, result.iterations,
-           result.time_seconds);
+           static_cast<int>(result.feasible), result.objective, inst.known_optimum,
+           result.iterations, result.time_seconds);
 }
 
 TEST_CASE("CHPED 40-unit feasibility and quality", "[chped][slow]") {
@@ -92,6 +93,6 @@ TEST_CASE("CHPED 40-unit feasibility and quality", "[chped][slow]") {
     REQUIRE(result.objective >= inst.known_optimum);
     REQUIRE(result.objective < 140000);
     printf("\n40-unit: feasible=%d, obj=%.2f (known optimum ~%.0f), iters=%ld, time=%.3fs\n",
-           result.feasible, result.objective, inst.known_optimum, result.iterations,
-           result.time_seconds);
+           static_cast<int>(result.feasible), result.objective, inst.known_optimum,
+           result.iterations, result.time_seconds);
 }

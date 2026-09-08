@@ -51,7 +51,7 @@ const char* termination_reason_name(TerminationReason reason) {
 int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations, RNG* rng_ptr,
                          double time_limit) {
     RNG local_rng(42);
-    RNG& rng = rng_ptr ? *rng_ptr : local_rng;
+    RNG& rng = rng_ptr != nullptr ? *rng_ptr : local_rng;
 
     GFJConfig config;
     config.max_iterations = max_iterations;
@@ -677,7 +677,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             // The hook is unbounded in *time* — a custom InnerSolverHook may do
             // arbitrary work, and even FloatIntensifyHook sweeps every Float
             // max_sweeps times. Don't start one we have no budget for.
-            if (hook && !past_deadline()) {
+            if (hook != nullptr && !past_deadline()) {
                 hook->solve(model, vm, {});  // continuous-objective polish (mutates floats)
                 resync = true;
                 if (real_feasible()) {  // keep the polish only if it stayed feasible
@@ -798,7 +798,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         }
 
         // Periodic progress (~1s) even without improvement.
-        if (callback &&
+        if (callback != nullptr &&
             std::chrono::duration<double>(std::chrono::steady_clock::now() - last_callback)
                     .count() >= 1.0) {
             emit_progress(/*new_best=*/false);

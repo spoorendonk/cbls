@@ -21,6 +21,11 @@
 //     that the three native adapters in this directory keep that coverage;
 //     the naming check is exempted there instead, because renaming
 //     upstream's public helpers is a far larger delta than two characters.
+//   * Explicit null/zero comparisons where upstream relied on an implicit
+//     conversion to bool: `if (ptr)` -> `if (ptr != nullptr)` and
+//     `!std::isspace(c)` -> `std::isspace(c) == 0`
+//     (readability-implicit-bool-conversion). Behaviour-identical; the
+//     same RE-APPLY note as above applies.
 
 #include "cbls/io_mps.h"
 
@@ -87,20 +92,20 @@ public:
 
     ~LineReader() {
 #ifdef __unix__
-        if (mmap_addr_) {
+        if (mmap_addr_ != nullptr) {
             munmap(const_cast<char*>(mmap_addr_), mmap_len_);
             ::close(fd_);
         }
 #endif
-        if (gz_file_) {
+        if (gz_file_ != nullptr) {
             gzclose(gz_file_);
         }
 #ifdef CBLS_HAS_BZIP2
-        if (bz_handle_) {
+        if (bz_handle_ != nullptr) {
             int bzerr;
             BZ2_bzReadClose(&bzerr, bz_handle_);
         }
-        if (bz_fp_)
+        if (bz_fp_ != nullptr)
             fclose(bz_fp_);
 #endif
     }
@@ -110,11 +115,11 @@ public:
 
     /// Returns next line (valid until next call).  Returns false at EOF.
     bool getline(std::string_view& out) {
-        if (data_) {
+        if (data_ != nullptr) {
             return getlineMemory(out);
         }
 #ifdef CBLS_HAS_BZIP2
-        if (bz_handle_)
+        if (bz_handle_ != nullptr)
             return getlineBz2(out);
 #endif
         return getlineBuffered(out);
@@ -187,7 +192,7 @@ private:
     void initGzBulk(const std::string& filename) {
         is_compressed_ = true;
         gzFile f = gzopen(filename.c_str(), "rb");
-        if (!f) {
+        if (f == nullptr) {
             throw std::runtime_error("Cannot open file: " + filename);
         }
 
@@ -219,7 +224,7 @@ private:
     void initGzStreaming(const std::string& filename) {
         is_compressed_ = true;
         gz_file_ = gzopen(filename.c_str(), "rb");
-        if (!gz_file_) {
+        if (gz_file_ == nullptr) {
             throw std::runtime_error("Cannot open file: " + filename);
         }
         gzbuffer(gz_file_, 1 << 17);  // 128 KB zlib internal buffer
@@ -229,7 +234,7 @@ private:
     void initBz2(const std::string& filename) {
         is_compressed_ = true;
         bz_fp_ = fopen(filename.c_str(), "rb");
-        if (!bz_fp_)
+        if (bz_fp_ == nullptr)
             throw std::runtime_error("Cannot open file: " + filename);
         int bzerr = BZ_OK;
         bz_handle_ = BZ2_bzReadOpen(&bzerr, bz_fp_, 0, 0, nullptr, 0);
@@ -300,7 +305,7 @@ private:
         const char* nl =
             static_cast<const char*>(std::memchr(start, '\n', static_cast<size_t>(end - start)));
 
-        if (nl) {
+        if (nl != nullptr) {
             out = std::string_view(start, static_cast<size_t>(nl - start));
             data_pos_ = static_cast<size_t>(nl - data_) + 1;
         } else {
@@ -322,7 +327,7 @@ private:
                 auto remaining = static_cast<size_t>(buf_len_ - buf_pos_);
                 const char* nl = static_cast<const char*>(std::memchr(start, '\n', remaining));
 
-                if (nl) {
+                if (nl != nullptr) {
                     auto len = static_cast<size_t>(nl - start);
                     buf_pos_ += static_cast<int>(len) + 1;
 
@@ -438,7 +443,7 @@ bool isSection(std::string_view line) {
     if (line.empty()) {
         return false;
     }
-    return !std::isspace(static_cast<unsigned char>(line[0]));
+    return std::isspace(static_cast<unsigned char>(line[0])) == 0;
 }
 
 enum class Section { None, Name, ObjSense, Rows, Columns, Rhs, Ranges, Bounds, Endata };

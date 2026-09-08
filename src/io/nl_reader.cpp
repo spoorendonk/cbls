@@ -67,7 +67,7 @@ public:
     std::string next_token() {
         skip_ws();
         size_t start = pos_;
-        while (pos_ < text_.size() && !std::isspace(static_cast<unsigned char>(text_[pos_]))) {
+        while (pos_ < text_.size() && std::isspace(static_cast<unsigned char>(text_[pos_])) == 0) {
             ++pos_;
         }
         if (start == pos_) {
@@ -102,7 +102,7 @@ private:
     void skip_ws() {
         while (pos_ < text_.size()) {
             char c = text_[pos_];
-            if (std::isspace(static_cast<unsigned char>(c))) {
+            if (std::isspace(static_cast<unsigned char>(c)) != 0) {
                 ++pos_;
             } else if (c == '#') {
                 while (pos_ < text_.size() && text_[pos_] != '\n') {
