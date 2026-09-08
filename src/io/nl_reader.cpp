@@ -642,7 +642,14 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
         if (!tok.peek_char(marker)) {
             break;
         }
-        parse_segment(tok, prob, tok.next_token());
+        // Read the marker into a named local first. Passing `tok.next_token()`
+        // as an argument while `tok` is also an argument leaves the cursor
+        // advance unsequenced against the other argument initialisations --
+        // well-defined only because parameter 1 binds a reference and so never
+        // reads `tok`. Make one of those two facts explicit rather than both
+        // implicit.
+        const std::string seg = tok.next_token();
+        parse_segment(tok, prob, seg);
     }
 
     return prob;

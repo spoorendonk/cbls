@@ -16,9 +16,11 @@
 //     (bugprone-implicit-widening-of-multiplication-result) and `1u << 30` ->
 //     `1U << 30` (readability-uppercase-literal-suffix); `enum class Section`
 //     given an explicit `: std::uint8_t` base (performance-enum-size); the two
-//     fixed-size buffers `Reader::buf_` and `Tokens::data` respelled as
+//     fixed-size buffers `LineReader::buf_` and `Tokens::data` respelled as
 //     `std::array` with `.data()` at the four sites that need a pointer
-//     (modernize-avoid-c-arrays). Every value, capacity and control flow is
+//     (modernize-avoid-c-arrays), which is what the `<array>` and `<cstdint>`
+//     includes below are for -- a sync that takes upstream's include block
+//     wholesale drops both and the file stops compiling. Every value, capacity and control flow is
 //     unchanged. RE-APPLY THESE after any sync that rewrites those lines --
 //     clang-tidy is a hard block at push, so an upstream hunk that reverts
 //     them turns the gate red on someone else's commit. They are fixed here
@@ -36,8 +38,8 @@
 //     deduced type is unchanged. RE-APPLY THESE too, for the same reason.
 //   * Two `NOLINTNEXTLINE(readability-function-cognitive-complexity)` lines,
 //     above `read_mps` (score 159) and `LineReader::getlineBuffered` (26), each
-//     preceded by a comment giving the reason. They are the one clang-tidy
-//     finding in this file that cannot be answered by a respelling: clearing
+//     preceded by a comment giving the reason. They are the only clang-tidy
+//     findings in this file that cannot be answered by a respelling: clearing
 //     them means restructuring the functions, and that structural delta is
 //     precisely what this vendoring contract is meant to prevent. Unlike the
 //     respellings above these cost nothing if a sync drops them — the push gate
@@ -540,8 +542,8 @@ using StringMap = std::unordered_map<std::string, int32_t>;
 // struct upstream does not have and threading it through eight handlers.
 //
 // This file is vendored from spoorendonk/mipx and carries a "port the diff here"
-// contract (see the header). The four adaptations listed there are one-line
-// respellings that survive a sync hunk by hunk; restructuring the file's largest
+// contract (see the header). The respellings listed there survive a sync hunk
+// by hunk; restructuring the file's largest
 // function would instead make every future sync a manual re-derivation, which is
 // the cost the vendoring contract exists to avoid. The suppression is therefore
 // about provenance, not about the code: if this reader is ever de-vendored, the

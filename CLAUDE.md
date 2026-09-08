@@ -122,15 +122,30 @@ The hooks live in **`.githooks/`, tracked in this repo** — that directory is t
   `.clang-tidy` is the source of truth and carries its own sweep recipe — read
   the file rather than a count restated somewhere else.
 
-  Two kinds of in-tree suppression are **sanctioned**, and both state their
-  reason at the site. `readability-function-cognitive-complexity` is
-  `NOLINTNEXTLINE`-ed on `src/dag.cpp`'s two 28-case `NodeOp` dispatch tables,
-  where the score counts a table a human reads as one unit and any split would
-  have to stay inlinable on the delta-evaluation hot path; and on the two
+  In-tree suppression is **sanctioned only where the reason is written at the
+  site**, and the tree has exactly five, across two checks —
+  `grep -rn NOLINT src/ include/ benchmarks/ tests/ python/` should return
+  nothing else, and a sixth needs the same standard as `.clang-tidy`'s six
+  exemptions. Four are `readability-function-cognitive-complexity`: on
+  `src/dag.cpp`'s two 28-case `NodeOp` dispatch tables, where the score counts a
+  table a human reads as one unit and any split would have to stay inlinable on
+  the delta-evaluation and reverse-mode-AD hot paths; and on the two
   `src/io/mps_reader.cpp` functions that the vendored port-the-diff-upstream
   contract keeps whole. That is the route **Complexity** below describes — split
   along real responsibilities, or record why the function is irreducibly complex
-  — and it is specific to that check, not a general licence.
+  — and it is specific to that check, not a general licence. The fifth is
+  `bugprone-float-loop-counter` in `src/feasibility_jump.cpp`, on an
+  integer-valued enumeration whose `steppable` guard on the line above is
+  exactly what makes `v += 1.0` exact and the loop finite.
+
+  One **check option** is tuned, which is otherwise the same fail-open move as
+  disabling a check: `readability-function-cognitive-complexity.IgnoreMacros`.
+  It is there because clang-tidy names a Catch2 `TEST_CASE` body after the macro
+  that generates it and charges it for every `SECTION`'s `if` and every
+  `REQUIRE`'s `try`/`catch`. `.clang-tidy` carries the measurement and the probe
+  showing the check still fires on a genuinely convoluted test body. Tuning any
+  other option to make a finding go away is not open — see the
+  `bugprone-easily-swappable-parameters` note in the same file for why.
 
   Note `.clang-tidy`'s `Checks:` is a YAML `>` folded scalar, where `#` is *not*
   a comment — it is literal text that silently corrupts the check list, and a
@@ -156,14 +171,14 @@ Three conventions therefore rest on you rather than on a tool: branch only from 
 
 ### Fast vs. slow tests
 
-The C++ suite is **325 `TEST_CASE`s**: 321 registered by `catch_discover_tests`
-plus the **4 `[timing]` cases registered by hand**. Of the 321, **6 carry the
+The C++ suite is **327 `TEST_CASE`s**: 323 registered by `catch_discover_tests`
+plus the **4 `[timing]` cases registered by hand**. Of the 323, **6 carry the
 Catch2 `[slow]` tag** — the CHPED and UC-CHPED benchmark solves, ~103s of
 aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~40s
 wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 316 tests, ~8s with `-j`. This is what **pre-commit** runs.
+- `ctest -LE slow` — the other 318 tests, ~8s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
 - `ctest -L timing` — 4 tests: `timing_structural_batch_deadline` plus the three
   `timing_throughput_*` floors added for #125. Each is registered by an explicit
@@ -289,7 +304,9 @@ When Claude gets something wrong, fix CLAUDE.md in the same commit. It's a livin
 
 ## Complexity
 
-When a complexity warning fires, don't extract methods mechanically. Ask: what are the independent responsibilities here? Split along those boundaries. If the function is genuinely complex because the domain is, add a comment explaining why and suppress the warning.
+When a complexity warning fires, don't extract methods mechanically. Ask: what are the independent responsibilities here? Split along those boundaries. If the function is genuinely complex because the domain is, say why in a comment directly above it and suppress that one warning with `NOLINTNEXTLINE(readability-function-cognitive-complexity)`.
+
+This is the **only** check a `NOLINT` is sanctioned for — plus one pre-existing `bugprone-float-loop-counter` — and only with the reason written at the site; **Git Hooks** above names all five in-tree examples. Every other clang-tidy finding gets fixed, not suppressed, and adding the check to `.clang-tidy`'s disabled list is not an option either.
 
 ## Plan Adherence
 
@@ -488,10 +505,16 @@ from disk rather than from a `data.h`, and no benchmark ships a custom
 by `examples/chped.cpp` and `tests/test_chped.cpp`, with no runner of its own.
 
 `benchmarks/common/` is **not** a benchmark. It holds headers shared across
-runners — currently `runner_args.h`, the flag-value *reporting policy* (a bad
-double reports and returns NaN for a later positivity guard to turn into exit 2;
-a bad integer reports and exits 2) layered over the pure parsing *rule* in
-`include/cbls/arg_parse.h`. The split is deliberate: the rule is a library
+runners — currently `runner_args.h`, which holds two things. First the
+flag-value *reporting policy* (a bad double reports and returns NaN for a later
+positivity guard to turn into exit 2; a bad integer reports and exits 2),
+layered over the pure parsing *rule* in `include/cbls/arg_parse.h`. Second
+`ArgCursor`, the value-flag matching rule: a flag that takes a value matches
+only when a value actually follows it, so a trailing `--budget` falls through to
+the runner's unknown-argument path instead of reading past `argv` or silently
+keeping a default that a published table would then be built on. `mipfeas`,
+`minlplib` and `uc-chped` share both; `setcover` deliberately does not, and says
+why at its own `parse_args`. The policy split is deliberate: the rule is a library
 concern, the policy writes to stderr and calls `std::exit` and is pinned by
 `tests/python/test_run_benchmark.py`, so it lives next to the programs those
 tests run. It has no CMake target — runners reach it through the

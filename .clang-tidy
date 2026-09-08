@@ -12,28 +12,28 @@
 # disabled by name with their unfixed finding counts, so that the rest of
 # bugprone-*/modernize-*/performance-*/readability-* could block at push before
 # the tree satisfied all of it. It started at 26 checks and ran to zero. Every
-# check in those four groups is now enabled except the four structural
+# check in those four groups is now enabled except the six structural
 # exemptions below, and each of those is off because the CHECK is wrong for
 # this codebase -- never because its findings are unfixed.
 #
 # So there is no list here to add a name to any more. A clang-tidy warning at
 # push is new code's doing: fix it. Putting a name below has to meet the same
-# standard the four already there meet -- a structural cause, and a measurement
+# standard the six already there meet -- a structural cause, and a measurement
 # -- and it is a case to argue, not a way to get a push through.
 #
 # Six checks are disabled below the stock set, each for a structural reason
 # rather than to dodge work. Two of them are the long-standing pair at the top
 # of the scalar, whose reasons were never written down until issue #121 closed:
 #
-#   modernize-use-trailing-return-type -- 731 hits, i.e. every function in the
+#   modernize-use-trailing-return-type -- 733 hits, i.e. every function in the
 #     tree. It asks for `auto f() -> T` everywhere. Google style does not use
 #     that spelling and neither does this codebase; the check is a whole-tree
 #     style preference, not a defect class.
 #
-#   readability-magic-numbers -- 2058 hits, the largest count this config has
-#     ever measured. 1382 are in tests/, where the literal IS the assertion
+#   readability-magic-numbers -- 2075 hits, the largest count this config has
+#     ever measured. 1399 are in tests/, where the literal IS the assertion
 #     (`REQUIRE(v == 3.0)`), and 495 in benchmarks/, where they are instance
-#     data and published tolerances. Of the ~180 in src/ and include/cbls/, the
+#     data and published tolerances. Of the 181 in src/ and include/cbls/, the
 #     ones worth naming already are named -- kEps, kMpsInf, kStrideGrowth and
 #     the rest of the k-constants the naming options below encode. Turning this
 #     on would demand a named constant for every coefficient in a formula
@@ -44,25 +44,35 @@
 #
 #   bugprone-chained-comparison -- Catch2's REQUIRE/CHECK decompose into an
 #     expression template, so every `REQUIRE(a == b)` reads to this check as the
-#     chained comparison `v0 <= v1 > v2`. Measured: 548 hits, all in tests/, all
-#     of them the macro rather than the test. Nothing to fix at the call site.
+#     chained comparison `v0 <= v1 > v2`. Measured: 688 hits, all 688 in
+#     tests/, all of them the macro rather than the test. Nothing to fix at the
+#     call site.
 #
 #   bugprone-throwing-static-initialization -- Catch2's TEST_CASE registers each
 #     case through a static (`dummyUser1`, ...) whose initialization the check
-#     cannot prove non-throwing. 276 hits, one per TEST_CASE; the construct is
-#     Catch2's, not ours.
+#     cannot prove non-throwing. 331 hits against the tree's 327 TEST_CASEs, so
+#     essentially one apiece; the construct is Catch2's, not ours.
 #
-#   readability-identifier-length -- 1515 hits, by far the largest single source
-#     of noise, objecting to `x`, `y`, `lb`, `ub`, `id`. This is a solver: those
+#   readability-identifier-length -- 1898 hits, second only to
+#     readability-magic-numbers above, objecting to `x`, `y`, `lb`, `ub`, `id`.
+#     1048 are in tests/ and 850 are not, so this is not a test-only artefact
+#     the way the two Catch2 checks are. This is a solver: those
 #     are the domain's own names and the papers the code implements use exactly
 #     them. Renaming `x` to `x_var` across the DAG and the AD paths would make
 #     the code read *less* like its reference. Same call, and same reasoning, as
 #     the identifier-naming options below: encode the convention the project
 #     actually has.
 #
-#   bugprone-easily-swappable-parameters -- 26 hits, of which 10 fire only
-#     through modelled int<->double conversions on a solver API that is numeric
-#     and positional by design. It also does not track the hazard it names:
+#   bugprone-easily-swappable-parameters -- 32 hits (16 under src/, 10 in
+#     tests/, 5 in benchmarks/, 1 in include/cbls/rng.h), of which 11 fire only
+#     through modelled conversions between adjacent numeric types on a solver
+#     API that is numeric and positional by design. That 11 is measured, not
+#     read off the message text: 15 findings are worded "of convertible types",
+#     but only 11 disappear when ModelImplicitConversions is turned off.
+#     Turning that option off is in any case the same fail-open move as
+#     disabling the check, and is not why it is off here.
+#
+#     It does not track the hazard it names:
 #     SuppressParametersUsedTogether keys on the CALLEE's body rather than on
 #     caller-side confusability, so ParallelSearch::solve(factory, double
 #     time_limit, uint64_t seed) is silent while cbls::solve's identical pair
@@ -73,14 +83,30 @@
 #     conversion the check models is exactly what the API boundary puts back.
 #     Same call as readability-identifier-length above.
 #
-#     Three of the 26 were fixed anyway, on their own merit rather than for the
+#     Three findings were fixed anyway, on their own merit rather than for the
 #     lint: make_progress deleted in favour of the SolveProgress its callers
 #     already build by field name, and row_bounds / linear_row_bounds returning
-#     a struct instead of a transposable pair of `double&` out-params. About
-#     five genuine transposition hazards remain -- RNG::choice(n, k),
+#     a struct instead of a transposable pair of `double&` out-params. Four
+#     genuine transposition hazards remain -- RNG::choice(n, k),
 #     Model::set_var, Model::add_var_sequence, compute_partial(expr_id, var_id).
 #     Guarding those is a handle-typing task, not a lint gate, and turning this
-#     check on would not catch all of them anyway.
+#     check on would not catch all of them anyway. They are deliberately NOT
+#     tracked in an issue: nobody is committing to the handle layer, and a
+#     ticket that says so would be a placeholder rather than work.
+#
+#     The count is also why this row could not simply be cleared. It was 26
+#     when issue #121 sized it and is 32 now, at the commit that closed #121 --
+#     three fixed, nine added, every one of the nine in a helper that did not
+#     exist before, because splitting a function for
+#     readability-function-cognitive-complexity gives its parameters to a new
+#     signature. The nine, all new symbols: read_instance and print_console_row
+#     (minlplib), build_name_tables and child_name (io.cpp), probe_candidate and
+#     line_search_candidates (inner_solver), node_is_affine (feasibility_jump),
+#     and setcover's number/integer. Three went the other way -- make_progress,
+#     row_bounds and linear_row_bounds are the three fixed above, and they are
+#     the only three that left the set. So this tree acquired six net findings
+#     by making the code more readable under another enabled check. The two
+#     pull against each other, and this project has chosen decomposition.
 #
 # Note `#` is NOT a comment inside a `>` folded scalar -- it is literal text
 # that silently corrupts the check list, and a trailing `# 25` on a check line
@@ -94,6 +120,11 @@
 #   .venv/bin/clang-tidy -p build --quiet $(git ls-files 'src/*.cpp' \
 #       'src/io/*.cpp' 'tests/*.cpp' 'benchmarks/**/*.cpp' 'examples/*.cpp' \
 #       'python/*.cpp') | grep -iE '(warning|error):' | sort -u
+#
+# That grep also matches the source-context lines clang-tidy echoes under a
+# diagnostic, so a raw line count runs a few high; bucket by the `[check-name]`
+# suffix rather than counting lines. It is deliberately loose in that
+# direction, because the failure that matters is the other one:
 #
 # Match case-insensitively and mind the exit status: a directory that runs no
 # checks at all reports `Error: no checks enabled.` with a capital E, which a
@@ -119,18 +150,24 @@ CheckOptions:
   # IgnoreMacros stops the score counting code that came from a macro. It is
   # here for Catch2 and nothing else: clang-tidy names a TEST_CASE body after
   # the macro that generates it (`dummyFunction32`) and then charges it for
-  # every SECTION's `if` and every REQUIRE's try/catch. Measured at the commit
-  # that closed issue #121: 44 of that check's 71 findings were TEST_CASE
-  # bodies, one of them scoring 155 off 26 assertion macros against 7 real
-  # control-flow constructs. With this option all of tests/*.cpp reports zero
-  # and all 27 non-test findings survive at IDENTICAL scores, so it subtracts
-  # exactly the Catch2 noise and nothing else.
+  # every SECTION's `if` and every REQUIRE's try/catch.
   #
-  # It is not a way of switching the check off in tests/. A probe translation
-  # unit with a deliberately convoluted TEST_CASE body and no assertion macros
-  # at all still scores 47 and is still reported. That is why this is an option
-  # rather than a tests/.clang-tidy exemption, which would have dropped the
-  # coverage instead of the noise.
+  # Sized when issue #121 first measured the check: 71 findings, of which 44
+  # were TEST_CASE bodies -- one scoring 155 off 26 assertion macros against 7
+  # real control-flow constructs -- and 27 were real. The 27 were then fixed
+  # (25 split along responsibility boundaries, 2 suppressed at the site in
+  # src/dag.cpp, plus 2 more in src/io/mps_reader.cpp under its vendoring
+  # contract). So re-measuring at THIS commit with the option off gives 44, not
+  # 71, and all 44 are in tests/: the non-test findings are gone from the tree
+  # rather than hidden by this option. Turning the option on takes tests/*.cpp
+  # to zero and changes nothing outside tests/ at all.
+  #
+  # It is not a way of switching the check off in tests/, which is why this is
+  # an option and not a tests/.clang-tidy exemption -- the exemption would have
+  # dropped the coverage rather than the noise. Reproduce: a translation unit
+  # whose TEST_CASE body is deliberately convoluted (nested loops and branches,
+  # a switch, no assertion macro anywhere) still scores 40 against the
+  # threshold of 25 with this option on, and is still reported.
   - key: readability-function-cognitive-complexity.IgnoreMacros
     value: true
   - key: readability-identifier-naming.ClassCase
@@ -139,9 +176,12 @@ CheckOptions:
   # lower_case functions to 14 CamelCase (all constructors, which take the
   # class name) -- `full_evaluate`, `delta_evaluate`,
   # `weighted_violation_delta`, `augmented_objective`. camelBack would flag
-  # 198 of them in src/search.cpp alone, i.e. a gate that objects to the
-  # convention the project actually has. Google style permits either
-  # spelling; encode the real one.
+  # 318 function names across include/cbls/ and src/, i.e. a gate that objects
+  # to the convention the project actually has. Google style permits either
+  # spelling; encode the real one. (Re-derived at the commit that closed issue
+  # #121. The figure here was previously a per-file one for src/search.cpp,
+  # which had gone stale twice; a tree-wide count is the one the argument
+  # actually rests on.)
   - key: readability-identifier-naming.FunctionCase
     value: lower_case
   # The typed-variable factory API on Model is deliberately CamelCase: each

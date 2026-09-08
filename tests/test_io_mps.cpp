@@ -83,6 +83,50 @@ const std::string kSmallBinary =
     " BV BND  X3\n"
     "ENDATA\n";
 
+// An E row carrying a RANGES entry, the only MPS shape that turns one row into
+// TWO constraints. `range > 0` means [rhs, rhs + range]; `range < 0` means
+// [rhs + range, rhs]. Nothing in the suite covered RANGES at all until the
+// adapter's per-row builder was split out, and the split silently reordered
+// this arm's node creation -- see the regression test below for why that
+// matters.
+//   min  x
+//   s.t. 2 <= x + y <= 5      (E row, rhs 2, range +3)
+//        0 <= x, y <= 10
+const std::string kRangedEqualityRow =
+    "NAME          RNGE\n"
+    "ROWS\n"
+    " N  COST\n"
+    " E  R1\n"
+    "COLUMNS\n"
+    "    X    COST    1.0   R1    1.0\n"
+    "    Y    R1      1.0\n"
+    "RHS\n"
+    "    RHS  R1      2.0\n"
+    "RANGES\n"
+    "    RNG  R1      3.0\n"
+    "BOUNDS\n"
+    " UP BND  X      10.0\n"
+    " UP BND  Y      10.0\n"
+    "ENDATA\n";
+
+// The same row with a negative range: [rhs + range, rhs] = [-1, 2].
+const std::string kRangedEqualityRowNegative =
+    "NAME          RNGN\n"
+    "ROWS\n"
+    " N  COST\n"
+    " E  R1\n"
+    "COLUMNS\n"
+    "    X    COST    1.0   R1    1.0\n"
+    "    Y    R1      1.0\n"
+    "RHS\n"
+    "    RHS  R1      2.0\n"
+    "RANGES\n"
+    "    RNG  R1     -3.0\n"
+    "BOUNDS\n"
+    " UP BND  X      10.0\n"
+    " UP BND  Y      10.0\n"
+    "ENDATA\n";
+
 }  // namespace
 
 TEST_CASE("read_mps parses a tiny continuous LP", "[mps][reader]") {
@@ -310,4 +354,74 @@ TEST_CASE("read_solu parses =opt= / =inf= / =best=", "[mps][reader]") {
     REQUIRE(entries[4].name == "inst_d");
     REQUIRE_FALSE(entries[4].is_optimal);
     REQUIRE_THAT(entries[4].value, WithinAbs(3.14, 1e-12));
+}
+
+TEST_CASE("RANGES on an E row becomes a two-sided constraint", "[mps][adapter]") {
+    SECTION("a positive range gives [rhs, rhs + range]") {
+        auto path = write_file("ranged_e.mps", kRangedEqualityRow);
+        auto res = cbls::mps_to_model(cbls::read_mps(path.string()));
+        REQUIRE(res.var_handles.size() == 2);
+        cbls::ViolationManager vm(res.model);
+
+        auto violation_at = [&](double x, double y) {
+            res.model.var_mut(vid(res.var_handles[0])).value = x;
+            res.model.var_mut(vid(res.var_handles[1])).value = y;
+            cbls::full_evaluate(res.model);
+            vm.invalidate_cache();
+            return vm.total_violation();
+        };
+
+        // Both boundaries of [2, 5] are feasible, and so is a point inside.
+        REQUIRE_THAT(violation_at(2.0, 0.0), WithinAbs(0.0, 1e-9));
+        REQUIRE_THAT(violation_at(3.5, 0.0), WithinAbs(0.0, 1e-9));
+        REQUIRE_THAT(violation_at(5.0, 0.0), WithinAbs(0.0, 1e-9));
+        // Below the range and above it are both violations -- a plain E row
+        // would have reported 3.5 and 5.0 as violations too.
+        REQUIRE(violation_at(1.5, 0.0) > 1e-9);
+        REQUIRE(violation_at(5.5, 0.0) > 1e-9);
+    }
+
+    SECTION("a negative range gives [rhs + range, rhs]") {
+        auto path = write_file("ranged_e_neg.mps", kRangedEqualityRowNegative);
+        auto res = cbls::mps_to_model(cbls::read_mps(path.string()));
+        REQUIRE(res.var_handles.size() == 2);
+        cbls::ViolationManager vm(res.model);
+
+        auto violation_at = [&](double x, double y) {
+            res.model.var_mut(vid(res.var_handles[0])).value = x;
+            res.model.var_mut(vid(res.var_handles[1])).value = y;
+            cbls::full_evaluate(res.model);
+            vm.invalidate_cache();
+            return vm.total_violation();
+        };
+
+        // [-1, 2]. The columns are bounded below at 0, so 0 is the lowest sum
+        // reachable here; it is inside the range, and 2 is its upper boundary.
+        REQUIRE_THAT(violation_at(0.0, 0.0), WithinAbs(0.0, 1e-9));
+        REQUIRE_THAT(violation_at(2.0, 0.0), WithinAbs(0.0, 1e-9));
+        REQUIRE(violation_at(3.0, 0.0) > 1e-9);
+    }
+}
+
+TEST_CASE("a ranged E row creates its upper bound before the geq node", "[mps][adapter]") {
+    // Node ids order the work the engine does, so the order in which a row's
+    // nodes are created is part of the model, not an implementation detail.
+    // Splitting the adapter's per-row builder out of mps_to_model moved this
+    // arm's `m.constant(rhs + range)` to AFTER its `m.geq(...)`, which shifts
+    // every later node id on such a row. Nothing caught it: the model is
+    // otherwise identical and the whole suite stayed green. This pins the
+    // order.
+    //
+    // The row's constraint node is the `leq`; the two nodes immediately before
+    // it must be the `geq` and, before that, the constant holding rhs + range.
+    auto path = write_file("ranged_e_order.mps", kRangedEqualityRow);
+    auto res = cbls::mps_to_model(cbls::read_mps(path.string()));
+    const auto& m = res.model;
+
+    const int32_t leq_id = res.constraint_node_ids[0];
+    REQUIRE(leq_id >= 2);
+    REQUIRE(m.node(leq_id).op == cbls::NodeOp::Leq);
+    REQUIRE(m.node(leq_id - 1).op == cbls::NodeOp::Geq);
+    REQUIRE(m.node(leq_id - 2).op == cbls::NodeOp::Const);
+    REQUIRE_THAT(m.node(leq_id - 2).const_value, WithinAbs(5.0, 1e-12));
 }

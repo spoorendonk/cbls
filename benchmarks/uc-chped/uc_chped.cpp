@@ -95,7 +95,7 @@ struct Args {
 // guard and so report and exit 2 directly.
 //
 // The rule and this policy are shared with the other runners rather than copied
-// a fourth time -- a copy is where a fix to one silently diverges from the
+// a third time -- a copy is where a fix to one silently diverges from the
 // rest, which is what #130 factored out.
 using cbls::bench::parse_double;
 using cbls::bench::parse_int64;
