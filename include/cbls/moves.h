@@ -27,7 +27,6 @@ struct SavedValues {
 
 // Move generators
 std::vector<Move> generate_standard_moves(const Variable& var, RNG& rng);
-std::vector<Move> generate_block_moves(int32_t var_id, const Model& model, RNG& rng);
 
 // Move application
 std::vector<int32_t> apply_move(Model& model, const Move& move);

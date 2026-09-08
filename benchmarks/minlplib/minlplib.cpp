@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <benchmarks/common/runner_args.h>
+#include <benchmarks/minlplib/note_policy.h>
 #include <cbls/cbls.h>
 #include <cbls/io_nl.h>
 #include <chrono>
@@ -712,16 +713,27 @@ int run_benchmark(int argc, char** argv) {
         // data itself contradicts. Warn loudly instead, so the note gets retired.
         {
             auto an = analysis_notes.find(name);
-            // Only for rows that are actually infeasible: a VERIFY-FAILED row is
-            // also !verified, but its failure is a solver-bookkeeping mismatch,
-            // not the infeasibility mechanism the note describes.
-            if (an != analysis_notes.end() && !result.feasible) {
-                if (verified) {
+            // The three-way split lives in note_policy.h so it can be tested
+            // without a solve. It used to be a nested conditional here, guarded
+            // on !result.feasible with an inner `if (verified)` -- and `verified`
+            // is false throughout that branch, so the "now solved" warning was
+            // unreachable and a curated note on a row that had started solving
+            // was dropped in silence.
+            using cbls::minlplib::NoteAction;
+            switch (cbls::minlplib::note_action(an != analysis_notes.end(), result.feasible,
+                                                verified)) {
+                case NoteAction::kStale:
                     std::printf("%-22s  WARNING: stale analysis note (now solved)\n", name.c_str());
                     note += "; stale-analysis-note";
-                } else {
+                    break;
+                case NoteAction::kMerge:
                     note += " | " + an->second;
-                }
+                    break;
+                case NoteAction::kNone:
+                    // No note, or feasible-but-VERIFY-FAILED: that failure is a
+                    // solver-bookkeeping mismatch, not the infeasibility the
+                    // note describes, so it is neither retired nor pasted on.
+                    break;
             }
         }
         std::replace(note.begin(), note.end(), ',', ';');

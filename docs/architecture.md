@@ -627,10 +627,12 @@ Moves come from `generate_standard_moves` (`src/moves.cpp`):
 | List  | `list_swap`, `list_2opt`, `list_relocate`, `list_or_opt_2`, `list_or_opt_3` |
 | Set   | `set_add`, `set_remove`, `set_swap` |
 
-(`generate_block_moves` provides sequence-aware block on/off moves for models
-that register variable sequences; the scalar move generators `flip`,
-`int_dec`/`int_inc`/`int_rand`, `float_perturb` also live here and are used by
-LNS randomization paths.)
+(The scalar move generators `flip`, `int_dec`/`int_inc`/`int_rand` and
+`float_perturb` also live here and are used by LNS randomization paths.
+There is **no** sequence-aware block on/off generator: one was written but never
+wired to a caller, and it was deleted rather than left to read as a live
+capability. Sequence structure is used by LNS, whose destroy step can remove a
+whole registered sequence at once — see the LNS section.)
 
 A batch is structural with probability `structural_batch_probability`: `< 0`
 auto-selects `0.33` when the model has any List/Set variable and `0.0`

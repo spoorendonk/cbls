@@ -7,6 +7,7 @@
 #include "test_helpers.h"
 
 #include <algorithm>
+#include <benchmarks/minlplib/note_policy.h>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -544,4 +545,32 @@ TEST_CASE("MINLPLib st_e40 reaches feasibility on a small iteration budget", "[m
         // strictly better objective would mean the "feasible" verdict is wrong.
         REQUIRE(result.objective >= primal_bks - 10.0 * kDefaultFeasibilityTolerance);
     }
+}
+
+// --- Curated-note policy (the "now solved" warning was dead code) -----------
+//
+// The runner's note handling used to sit inside `if (... && !result.feasible)`
+// with an inner `if (verified)`. `verified` is initialised from the feasibility
+// result and only ever assigned false, so inside a !feasible branch it is
+// always false: the "stale analysis note (now solved)" warning could not fire.
+// Both instances that now solve still carry curated notes, so the warning was
+// silently dropping them.
+
+TEST_CASE("curated note is retired when the instance now solves", "[minlplib]") {
+    using cbls::minlplib::note_action;
+    using cbls::minlplib::NoteAction;
+
+    // The case the old nesting made unreachable: solved, verified, note stale.
+    REQUIRE(note_action(true, true, true) == NoteAction::kStale);
+
+    // Still infeasible: the note describes the row, so it is merged.
+    REQUIRE(note_action(true, false, false) == NoteAction::kMerge);
+
+    // Feasible but verification failed: a bookkeeping mismatch, not the
+    // infeasibility the note describes -- neither retire it nor paste it on.
+    REQUIRE(note_action(true, true, false) == NoteAction::kNone);
+
+    // No curated note: nothing to do in any state.
+    REQUIRE(note_action(false, true, true) == NoteAction::kNone);
+    REQUIRE(note_action(false, false, false) == NoteAction::kNone);
 }
