@@ -11,16 +11,21 @@
 //     rely on the MPS-to-Model adapter to assemble the linear constraint.
 //   * `kInf` -> `cbls::kMpsInf`.
 //   * `MIPX_HAS_BZIP2` -> `CBLS_HAS_BZIP2`.
-//   * Two behaviour-identical spellings: `128 * 1024 * 1024` -> `128ULL * ...`
+//   * Behaviour-identical spellings demanded by clang-tidy checks this tree
+//     keeps enabled. `128 * 1024 * 1024` -> `128ULL * ...`
 //     (bugprone-implicit-widening-of-multiplication-result) and `1u << 30` ->
-//     `1U << 30` (readability-uppercase-literal-suffix). Both values are
+//     `1U << 30` (readability-uppercase-literal-suffix); `enum class Section`
+//     given an explicit `: std::uint8_t` base (performance-enum-size); the two
+//     fixed-size buffers `Reader::buf_` and `Tokens::data` respelled as
+//     `std::array` with `.data()` at the four sites that need a pointer
+//     (modernize-avoid-c-arrays). Every value, capacity and control flow is
 //     unchanged. RE-APPLY THESE after any sync that rewrites those lines --
 //     clang-tidy is a hard block at push, so an upstream hunk that reverts
 //     them turns the gate red on someone else's commit. They are fixed here
-//     rather than by switching the two checks off in src/io/.clang-tidy so
+//     rather than by switching the checks off in src/io/.clang-tidy so
 //     that the three native adapters in this directory keep that coverage;
 //     the naming check is exempted there instead, because renaming
-//     upstream's public helpers is a far larger delta than two characters.
+//     upstream's public helpers is a far larger delta than these respellings.
 //   * Explicit null/zero comparisons where upstream relied on an implicit
 //     conversion to bool: `if (ptr)` -> `if (ptr != nullptr)` and
 //     `!std::isspace(c)` -> `std::isspace(c) == 0`
@@ -33,10 +38,12 @@
 #include "cbls/io_mps.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cctype>
 #include <charconv>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -253,7 +260,7 @@ private:
 
         for (;;) {
             if (buf_pos_ < buf_len_) {
-                const char* start = buf_ + buf_pos_;
+                const char* start = buf_.data() + buf_pos_;
                 auto remaining = static_cast<size_t>(buf_len_ - buf_pos_);
                 const char* nl = static_cast<const char*>(std::memchr(start, '\n', remaining));
 
@@ -287,7 +294,7 @@ private:
             }
 
             int bzerr = BZ_OK;
-            buf_len_ = BZ2_bzRead(&bzerr, bz_handle_, buf_, sizeof(buf_));
+            buf_len_ = BZ2_bzRead(&bzerr, bz_handle_, buf_.data(), sizeof(buf_));
             buf_pos_ = 0;
             if (bzerr == BZ_STREAM_END || buf_len_ == 0) {
                 bz_eof_ = true;
@@ -326,7 +333,7 @@ private:
 
         for (;;) {
             if (buf_pos_ < buf_len_) {
-                const char* start = buf_ + buf_pos_;
+                const char* start = buf_.data() + buf_pos_;
                 auto remaining = static_cast<size_t>(buf_len_ - buf_pos_);
                 const char* nl = static_cast<const char*>(std::memchr(start, '\n', remaining));
 
@@ -351,7 +358,7 @@ private:
                 buf_pos_ = buf_len_;
             }
 
-            int n = gzread(gz_file_, buf_, sizeof(buf_));
+            int n = gzread(gz_file_, buf_.data(), sizeof(buf_));
             if (n <= 0) {
                 if (!overflow_.empty()) {
                     out = overflow_;
@@ -383,7 +390,7 @@ private:
 
     // Streaming gz mode.
     gzFile gz_file_ = nullptr;
-    char buf_[65536]{};
+    std::array<char, 65536> buf_{};
     int buf_pos_ = 0;
     int buf_len_ = 0;
     std::string overflow_;
@@ -400,7 +407,7 @@ private:
 
 /// Fixed-capacity token array (zero allocation).
 struct Tokens {
-    std::string_view data[6];
+    std::array<std::string_view, 6> data;
     int n = 0;
 
     [[nodiscard]] int size() const { return n; }
@@ -449,7 +456,17 @@ bool isSection(std::string_view line) {
     return std::isspace(static_cast<unsigned char>(line[0])) == 0;
 }
 
-enum class Section { None, Name, ObjSense, Rows, Columns, Rhs, Ranges, Bounds, Endata };
+enum class Section : std::uint8_t {
+    None,
+    Name,
+    ObjSense,
+    Rows,
+    Columns,
+    Rhs,
+    Ranges,
+    Bounds,
+    Endata
+};
 
 // MIPX-DIFF: ObjSense section is local to cbls; vendored mipx does not
 // parse OBJSENSE today (filed upstream).

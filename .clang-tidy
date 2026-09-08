@@ -122,9 +122,7 @@ Checks: >
   -bugprone-throwing-static-initialization,
   -readability-identifier-length,
   -readability-function-cognitive-complexity,
-  -bugprone-easily-swappable-parameters,
-  -performance-enum-size,
-  -modernize-avoid-c-arrays
+  -bugprone-easily-swappable-parameters
 
 CheckOptions:
   - key: readability-function-cognitive-complexity.Threshold
