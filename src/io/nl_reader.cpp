@@ -270,14 +270,57 @@ void parse_segment_expr(Tokenizer& tok, NlExpr& expr) {
     expr.root = parse_expr(tok, expr);
 }
 
-}  // namespace
+// The first non-space char of a segment line. Header lines all start with a
+// digit, '-' or space, so the first of these letters ends the header.
+bool is_segment_marker(char c) {
+    switch (c) {
+        case 'C':
+        case 'O':
+        case 'x':
+        case 'r':
+        case 'b':
+        case 'k':
+        case 'J':
+        case 'G':
+        case 'd':
+        case 'e':
+        case 'f':
+        case 'l':
+        case 'u':
+        case 'V':
+        case 'F':
+        case 'S':
+            return true;
+        default:
+            return false;
+    }
+}
 
-NlProblem parse_nl(const std::string& text, const std::string& name) {
-    NlProblem prob;
-    prob.name = name;
-    Tokenizer tok(text);
+// Read up to `count` integers off a header line, zero-filling a short line.
+std::vector<int64_t> read_ints(const std::string& line, int count) {
+    std::vector<int64_t> out(static_cast<size_t>(count), 0);
+    std::istringstream ss(line);
+    for (int k = 0; k < count && (ss >> out[static_cast<size_t>(k)]); ++k) {
+    }
+    return out;
+}
 
-    // ---- Header ----
+// The header counts needed to place the discrete columns. Everything else in
+// the header is consumed and discarded.
+struct NlHeaderCounts {
+    int64_t nlvc = 0;   ///< nonlinear in constraints (index bound)
+    int64_t nlvo = 0;   ///< nonlinear in objectives (index bound)
+    int64_t nlvb = 0;   ///< nonlinear in both
+    int64_t nbv = 0;    ///< linear binary
+    int64_t niv = 0;    ///< linear integer
+    int64_t nlvbi = 0;  ///< integer among the nonlinear-in-both block
+    int64_t nlvci = 0;  ///< integer among the nonlinear-in-constraints block
+    int64_t nlvoi = 0;  ///< integer among the nonlinear-in-objectives block
+};
+
+// Consume the whole NL header, filling `prob`'s counts and returning the
+// discrete-placement counts. Leaves the cursor on the first segment marker.
+NlHeaderCounts parse_header(Tokenizer& tok, NlProblem& prob) {
     // Line 1: format char + version, e.g. "g3 0 1 0".
     char fmt = 0;
     if (!tok.peek_char(fmt)) {
@@ -305,35 +348,13 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
             throw std::runtime_error("NL: malformed counts line: '" + line2 + "'");
         }
     }
+
     // Header continues with several more lines describing nonlinear counts,
     // network structure, etc. The number of header lines is not fixed across
     // versions, but every header line in the text format is a line of integers;
     // the first segment marker is a single letter optionally followed by an
-    // index. We consume header lines until we hit a line whose first non-space
-    // char is one of the segment markers (C O x r b k J G d e f l u V F G S).
-    auto is_segment_marker = [](char c) {
-        switch (c) {
-            case 'C':
-            case 'O':
-            case 'x':
-            case 'r':
-            case 'b':
-            case 'k':
-            case 'J':
-            case 'G':
-            case 'd':
-            case 'e':
-            case 'f':
-            case 'l':
-            case 'u':
-            case 'V':
-            case 'F':
-            case 'S':
-                return true;
-            default:
-                return false;
-        }
-    };
+    // index. We consume header lines until we hit a segment marker.
+    //
     // Peek ahead: the remaining header lines all start with a digit, '-', or
     // space. Consume them until a segment marker letter appears. While doing so,
     // capture the two lines needed to place the discrete variables. In the `g`
@@ -344,21 +365,7 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
     //    other-linear variables are always continuous and always precede the
     //    trailing nbv+niv block, so they never shift a discrete position.)
     //   #5 -> header line 7: "nbv niv nlvbi nlvci nlvoi"  (discrete counts)
-    auto read_ints = [](const std::string& line, int count) {
-        std::vector<int64_t> out(static_cast<size_t>(count), 0);
-        std::istringstream ss(line);
-        for (int k = 0; k < count && (ss >> out[static_cast<size_t>(k)]); ++k) {
-        }
-        return out;
-    };
-    int64_t nlvc = 0;
-    int64_t nlvo = 0;
-    int64_t nlvb = 0;
-    int64_t nbv = 0;
-    int64_t niv = 0;
-    int64_t nlvbi = 0;
-    int64_t nlvci = 0;
-    int64_t nlvoi = 0;
+    NlHeaderCounts h;
     int header_line_after_counts = 0;
     while (true) {
         char c = 0;
@@ -372,75 +379,257 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
         ++header_line_after_counts;
         if (header_line_after_counts == 3) {
             auto v = read_ints(hline, 3);
-            nlvc = v[0];
-            nlvo = v[1];
-            nlvb = v[2];
+            h.nlvc = v[0];
+            h.nlvo = v[1];
+            h.nlvb = v[2];
         } else if (header_line_after_counts == 5) {
             auto v = read_ints(hline, 5);
-            nbv = v[0];
-            niv = v[1];
-            nlvbi = v[2];
-            nlvci = v[3];
-            nlvoi = v[4];
-            prob.n_discrete_vars = static_cast<int32_t>(nbv + niv + nlvbi + nlvci + nlvoi);
+            h.nbv = v[0];
+            h.niv = v[1];
+            h.nlvbi = v[2];
+            h.nlvci = v[3];
+            h.nlvoi = v[4];
+            prob.n_discrete_vars =
+                static_cast<int32_t>(h.nbv + h.niv + h.nlvbi + h.nlvci + h.nlvoi);
         }
     }
+    return h;
+}
 
-    // Integer variable *positions* follow Gay's variable ordering ("Hooking Your
-    // Solver to AMPL", the variable-order table). Columns are laid out as:
-    //
-    //   1. nonlinear in both constraints and objectives   nlvb        (last nlvbi integer)
-    //   2. nonlinear in constraints only                  nlvc - nlvb (last nlvci integer)
-    //   3. nonlinear in objectives only                   nlvo - nlvc (last nlvoi integer)
-    //   4. linear arc variables                           nwv         (continuous)
-    //   5. other linear                                   remainder   (continuous)
-    //   6. binary                                         nbv
-    //   7. other integer                                  niv
-    //
-    // i.e. within each nonlinear block the integer columns are the trailing ones,
-    // and the purely-linear discrete columns are the last nbv+niv of the file.
-    prob.var_is_discrete.assign(static_cast<size_t>(prob.n_vars), 0);
-    auto mark_tail = [&prob](int64_t block_start, int64_t block_len, int64_t n_int) {
-        // The last `n_int` columns of [block_start, block_start+block_len) are integer.
-        int64_t first = block_start + block_len - n_int;
-        for (int64_t j = std::max<int64_t>(first, block_start); j < block_start + block_len; ++j) {
-            if (j >= 0 && j < prob.n_vars) {
-                prob.var_is_discrete[static_cast<size_t>(j)] = 1;
-            }
+// The last `n_int` columns of [block_start, block_start + block_len) are integer.
+void mark_tail(NlProblem& prob, int64_t block_start, int64_t block_len, int64_t n_int) {
+    int64_t first = block_start + block_len - n_int;
+    for (int64_t j = std::max<int64_t>(first, block_start); j < block_start + block_len; ++j) {
+        if (j >= 0 && j < prob.n_vars) {
+            prob.var_is_discrete[static_cast<size_t>(j)] = 1;
         }
-    };
-    const int64_t cat1 = nlvb;                               // nonlinear in both
-    const int64_t cat2 = std::max<int64_t>(nlvc - nlvb, 0);  // nonlinear in constraints only
+    }
+}
+
+// Integer variable *positions* follow Gay's variable ordering ("Hooking Your
+// Solver to AMPL", the variable-order table). Columns are laid out as:
+//
+//   1. nonlinear in both constraints and objectives   nlvb        (last nlvbi integer)
+//   2. nonlinear in constraints only                  nlvc - nlvb (last nlvci integer)
+//   3. nonlinear in objectives only                   nlvo - nlvc (last nlvoi integer)
+//   4. linear arc variables                           nwv         (continuous)
+//   5. other linear                                   remainder   (continuous)
+//   6. binary                                         nbv
+//   7. other integer                                  niv
+//
+// i.e. within each nonlinear block the integer columns are the trailing ones,
+// and the purely-linear discrete columns are the last nbv+niv of the file.
+void mark_discrete_vars(NlProblem& prob, const NlHeaderCounts& h) {
+    prob.var_is_discrete.assign(static_cast<size_t>(prob.n_vars), 0);
+    const int64_t cat1 = h.nlvb;                                 // nonlinear in both
+    const int64_t cat2 = std::max<int64_t>(h.nlvc - h.nlvb, 0);  // nonlinear in constraints only
     // Objective-only block. `nlvo` is an index bound *past* the constraint-only
     // block, not nlvb + (#objective-only) — the total nonlinear column count is
     // max(nlvc, nlvo) — so this block is [nlvc, nlvo) and is empty when
     // nlvo <= nlvc. Using `nlvo - nlvb` overshoots by nlvc - nlvb: on windfac
     // (nlvc=11, nlvo=13, 14 columns) the blocks would span 24 columns, either
     // mis-placing the nlvoi integers or pushing them past n_vars.
-    const int64_t cat3 = std::max<int64_t>(nlvo - (cat1 + cat2), 0);
-    mark_tail(0, cat1, nlvbi);
-    mark_tail(cat1, cat2, nlvci);
-    mark_tail(cat1 + cat2, cat3, nlvoi);
+    const int64_t cat3 = std::max<int64_t>(h.nlvo - (cat1 + cat2), 0);
+    mark_tail(prob, 0, cat1, h.nlvbi);
+    mark_tail(prob, cat1, cat2, h.nlvci);
+    mark_tail(prob, cat1 + cat2, cat3, h.nlvoi);
     // Trailing linear discrete block: the final nbv + niv columns.
-    mark_tail(0, prob.n_vars, nbv + niv);
+    mark_tail(prob, 0, prob.n_vars, h.nbv + h.niv);
 
     // Self-check: the positions we just derived must account for exactly the
     // count the header declares. A mismatch means the layout assumption above
     // does not hold for this file (overlapping blocks, or a variable-order
     // variant we don't model) — fail loudly rather than build a model whose
     // integrality is quietly wrong.
-    {
-        int32_t marked = 0;
-        for (uint8_t f : prob.var_is_discrete) {
-            marked += f;
-        }
-        if (marked != prob.n_discrete_vars) {
-            throw std::runtime_error(
-                "NL: discrete-variable placement disagrees with the header count (placed " +
-                std::to_string(marked) + ", header declares " +
-                std::to_string(prob.n_discrete_vars) + ") — unexpected variable ordering");
+    int32_t marked = 0;
+    for (uint8_t f : prob.var_is_discrete) {
+        marked += f;
+    }
+    if (marked != prob.n_discrete_vars) {
+        throw std::runtime_error(
+            "NL: discrete-variable placement disagrees with the header count (placed " +
+            std::to_string(marked) + ", header declares " + std::to_string(prob.n_discrete_vars) +
+            ") — unexpected variable ordering");
+    }
+}
+
+// One `<type> [values]` bound record. The `r` (constraint) and `b` (variable)
+// segments carry the identical grammar; only the struct it lands in differs.
+struct BoundRecord {
+    NlBoundType type = NlBoundType::Free;
+    double lower = -kNlInf;
+    double upper = kNlInf;
+};
+
+// Segment payload readers. Each owns one segment's grammar so the dispatch
+// below stays a table of "which segment", not a mixture of that and "how to
+// read one".
+
+// `x`: initial primal guess — `count` pairs of <varidx> <value>.
+void read_initial_guess(Tokenizer& tok, NlProblem& prob, int64_t count) {
+    for (int64_t k = 0; k < count; ++k) {
+        int64_t vi = tok.next_int();
+        double val = tok.next_double();
+        if (vi >= 0 && vi < prob.n_vars) {
+            prob.initial_x[vi] = val;
         }
     }
+}
+
+// `k`: Jacobian column-count header. Not needed — we store sparse J terms
+// directly — but the ints must be consumed to keep the cursor aligned.
+void skip_ints(Tokenizer& tok, int64_t count) {
+    for (int64_t k = 0; k < count; ++k) {
+        tok.next_int();
+    }
+}
+
+// `J` / `G`: `k` pairs of <varidx> <coef>, appended to a constraint's or an
+// objective's linear part.
+void read_linear_terms(Tokenizer& tok, int64_t k, std::vector<NlLinTerm>& out) {
+    for (int64_t t = 0; t < k; ++t) {
+        NlLinTerm term;
+        term.var = static_cast<int32_t>(tok.next_int());
+        term.coef = tok.next_double();
+        out.push_back(term);
+    }
+}
+
+// The index suffix on a segment marker, e.g. 3 in "J3".
+int64_t segment_index(const std::string& seg) {
+    if (seg.size() < 2) {
+        throw std::runtime_error("NL: segment '" + seg + "' missing index");
+    }
+    return std::stoll(seg.substr(1));
+}
+
+BoundRecord read_bound(Tokenizer& tok) {
+    BoundRecord b;
+    b.type = static_cast<NlBoundType>(tok.next_int());
+    switch (b.type) {
+        case NlBoundType::Range:
+            b.lower = tok.next_double();
+            b.upper = tok.next_double();
+            break;
+        case NlBoundType::Upper:
+            b.upper = tok.next_double();
+            b.lower = -kNlInf;
+            break;
+        case NlBoundType::Lower:
+            b.lower = tok.next_double();
+            b.upper = kNlInf;
+            break;
+        case NlBoundType::Free:
+            b.lower = -kNlInf;
+            b.upper = kNlInf;
+            break;
+        case NlBoundType::Equal:
+            b.lower = b.upper = tok.next_double();
+            break;
+    }
+    return b;
+}
+
+// `r`: one bound record per constraint, in constraint order.
+void read_con_bounds(Tokenizer& tok, NlProblem& prob) {
+    for (int64_t i = 0; i < prob.n_cons; ++i) {
+        const BoundRecord rec = read_bound(tok);
+        NlConBound& b = prob.constraints[i].bound;
+        b.type = rec.type;
+        b.lower = rec.lower;
+        b.upper = rec.upper;
+    }
+}
+
+// `b`: one bound record per variable, in column order.
+void read_var_bounds(Tokenizer& tok, NlProblem& prob) {
+    for (int64_t i = 0; i < prob.n_vars; ++i) {
+        const BoundRecord rec = read_bound(tok);
+        NlVarBound& vb = prob.var_bounds[i];
+        vb.type = rec.type;
+        vb.lower = rec.lower;
+        vb.upper = rec.upper;
+    }
+}
+
+// Dispatch one segment, named by its marker token (e.g. "C0", "O0", "r", "J3"),
+// onto the reader for its payload.
+void parse_segment(Tokenizer& tok, NlProblem& prob, const std::string& seg) {
+    const char kind = seg[0];
+    switch (kind) {
+        case 'C': {  // nonlinear part of constraint <i>
+            const int64_t i = segment_index(seg);
+            if (i < 0 || i >= prob.n_cons) {
+                throw std::runtime_error("NL: C-segment index out of range");
+            }
+            parse_segment_expr(tok, prob.constraints[i].nonlinear);
+            break;
+        }
+        case 'O': {  // objective <i> <sense>; then nonlinear expr
+            const int64_t i = segment_index(seg);
+            if (i < 0 || i >= prob.n_objs) {
+                throw std::runtime_error("NL: O-segment index out of range");
+            }
+            const int64_t sense = tok.next_int();  // 0 min, 1 max
+            prob.objectives[i].maximize = (sense != 0);
+            parse_segment_expr(tok, prob.objectives[i].nonlinear);
+            break;
+        }
+        case 'x':  // initial primal guess: count, then <varidx> <value> pairs
+            read_initial_guess(tok, prob, segment_index(seg));
+            break;
+        case 'r':  // constraint bounds: n_cons records of <type> [values]
+            read_con_bounds(tok, prob);
+            break;
+        case 'b':  // variable bounds: n_vars records of <type> [values]
+            read_var_bounds(tok, prob);
+            break;
+        case 'k':  // Jacobian column-count header: n_vars-1 cumulative ints
+            skip_ints(tok, segment_index(seg));
+            break;
+        case 'J': {  // linear part of constraint <i>: k pairs <varidx> <coef>
+            const int64_t i = segment_index(seg);
+            const int64_t k = tok.next_int();
+            if (i < 0 || i >= prob.n_cons) {
+                throw std::runtime_error("NL: J-segment index out of range");
+            }
+            read_linear_terms(tok, k, prob.constraints[i].linear);
+            break;
+        }
+        case 'G': {  // linear part of objective <i>: k pairs <varidx> <coef>
+            const int64_t i = segment_index(seg);
+            const int64_t k = tok.next_int();
+            if (i < 0 || i >= prob.n_objs) {
+                throw std::runtime_error("NL: G-segment index out of range");
+            }
+            read_linear_terms(tok, k, prob.objectives[i].linear);
+            break;
+        }
+        case 'd':  // dual initial guess: count then pairs
+        case 'V':  // defined variable: index then linear+nonlinear def
+        case 'F':  // imported function declaration
+        case 'S':  // suffix block
+            // These segments are not needed for the CBLS model. They have
+            // file-position-dependent payloads we can't blindly skip, so a
+            // clean error is safer than silent corruption. In practice the
+            // MINLPLib instances we select do not carry them.
+            throw std::runtime_error(std::string("NL: segment '") + kind +
+                                     "' is not supported by this reader");
+        default:
+            throw std::runtime_error(std::string("NL: unknown segment marker '") + kind + "'");
+    }
+}
+
+}  // namespace
+
+NlProblem parse_nl(const std::string& text, const std::string& name) {
+    NlProblem prob;
+    prob.name = name;
+    Tokenizer tok(text);
+
+    // ---- Header ----
+    const NlHeaderCounts header = parse_header(tok, prob);
+    mark_discrete_vars(prob, header);
 
     prob.constraints.resize(prob.n_cons);
     prob.objectives.resize(prob.n_objs);
@@ -453,153 +642,7 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
         if (!tok.peek_char(marker)) {
             break;
         }
-        std::string seg = tok.next_token();  // e.g. "C0", "O0", "r", "b", "J3"
-        char kind = seg[0];
-        std::string idx_str = seg.substr(1);
-        auto seg_index = [&]() -> int64_t {
-            if (idx_str.empty()) {
-                throw std::runtime_error("NL: segment '" + seg + "' missing index");
-            }
-            return std::stoll(idx_str);
-        };
-
-        switch (kind) {
-            case 'C': {  // nonlinear part of constraint <i>
-                int64_t i = seg_index();
-                if (i < 0 || i >= prob.n_cons) {
-                    throw std::runtime_error("NL: C-segment index out of range");
-                }
-                parse_segment_expr(tok, prob.constraints[i].nonlinear);
-                break;
-            }
-            case 'O': {  // objective <i> <sense>; then nonlinear expr
-                int64_t i = seg_index();
-                if (i < 0 || i >= prob.n_objs) {
-                    throw std::runtime_error("NL: O-segment index out of range");
-                }
-                int64_t sense = tok.next_int();  // 0 min, 1 max
-                prob.objectives[i].maximize = (sense != 0);
-                parse_segment_expr(tok, prob.objectives[i].nonlinear);
-                break;
-            }
-            case 'x': {  // initial primal guess: count, then <varidx> <value> pairs
-                int64_t count = seg_index();
-                for (int64_t k = 0; k < count; ++k) {
-                    int64_t vi = tok.next_int();
-                    double val = tok.next_double();
-                    if (vi >= 0 && vi < prob.n_vars) {
-                        prob.initial_x[vi] = val;
-                    }
-                }
-                break;
-            }
-            case 'r': {  // constraint bounds: n_cons lines of <type> [values]
-                for (int64_t i = 0; i < prob.n_cons; ++i) {
-                    int64_t t = tok.next_int();
-                    NlConBound& b = prob.constraints[i].bound;
-                    b.type = static_cast<NlBoundType>(t);
-                    switch (b.type) {
-                        case NlBoundType::Range:
-                            b.lower = tok.next_double();
-                            b.upper = tok.next_double();
-                            break;
-                        case NlBoundType::Upper:
-                            b.upper = tok.next_double();
-                            b.lower = -kNlInf;
-                            break;
-                        case NlBoundType::Lower:
-                            b.lower = tok.next_double();
-                            b.upper = kNlInf;
-                            break;
-                        case NlBoundType::Free:
-                            b.lower = -kNlInf;
-                            b.upper = kNlInf;
-                            break;
-                        case NlBoundType::Equal:
-                            b.lower = b.upper = tok.next_double();
-                            break;
-                    }
-                }
-                break;
-            }
-            case 'b': {  // variable bounds: n_vars lines of <type> [values]
-                for (int64_t i = 0; i < prob.n_vars; ++i) {
-                    int64_t t = tok.next_int();
-                    NlVarBound& vb = prob.var_bounds[i];
-                    vb.type = static_cast<NlBoundType>(t);
-                    switch (vb.type) {
-                        case NlBoundType::Range:
-                            vb.lower = tok.next_double();
-                            vb.upper = tok.next_double();
-                            break;
-                        case NlBoundType::Upper:
-                            vb.upper = tok.next_double();
-                            vb.lower = -kNlInf;
-                            break;
-                        case NlBoundType::Lower:
-                            vb.lower = tok.next_double();
-                            vb.upper = kNlInf;
-                            break;
-                        case NlBoundType::Free:
-                            vb.lower = -kNlInf;
-                            vb.upper = kNlInf;
-                            break;
-                        case NlBoundType::Equal:
-                            vb.lower = vb.upper = tok.next_double();
-                            break;
-                    }
-                }
-                break;
-            }
-            case 'k': {  // Jacobian column-count header: n_vars-1 cumulative ints
-                int64_t count = seg_index();
-                for (int64_t k = 0; k < count; ++k) {
-                    tok.next_int();  // not needed: we store sparse J terms directly
-                }
-                break;
-            }
-            case 'J': {  // linear part of constraint <i>: k pairs <varidx> <coef>
-                int64_t i = seg_index();
-                int64_t k = tok.next_int();
-                if (i < 0 || i >= prob.n_cons) {
-                    throw std::runtime_error("NL: J-segment index out of range");
-                }
-                for (int64_t t = 0; t < k; ++t) {
-                    NlLinTerm term;
-                    term.var = static_cast<int32_t>(tok.next_int());
-                    term.coef = tok.next_double();
-                    prob.constraints[i].linear.push_back(term);
-                }
-                break;
-            }
-            case 'G': {  // linear part of objective <i>: k pairs <varidx> <coef>
-                int64_t i = seg_index();
-                int64_t k = tok.next_int();
-                if (i < 0 || i >= prob.n_objs) {
-                    throw std::runtime_error("NL: G-segment index out of range");
-                }
-                for (int64_t t = 0; t < k; ++t) {
-                    NlLinTerm term;
-                    term.var = static_cast<int32_t>(tok.next_int());
-                    term.coef = tok.next_double();
-                    prob.objectives[i].linear.push_back(term);
-                }
-                break;
-            }
-            case 'd':    // dual initial guess: count then pairs
-            case 'V':    // defined variable: index then linear+nonlinear def
-            case 'F':    // imported function declaration
-            case 'S': {  // suffix block
-                // These segments are not needed for the CBLS model. They have
-                // file-position-dependent payloads we can't blindly skip, so a
-                // clean error is safer than silent corruption. In practice the
-                // MINLPLib instances we select do not carry them.
-                throw std::runtime_error(std::string("NL: segment '") + kind +
-                                         "' is not supported by this reader");
-            }
-            default:
-                throw std::runtime_error(std::string("NL: unknown segment marker '") + kind + "'");
-        }
+        parse_segment(tok, prob, tok.next_token());
     }
 
     return prob;
