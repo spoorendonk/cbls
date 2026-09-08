@@ -4,14 +4,17 @@
 #include "cbls/io.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <string>
 #include <thread>
+#include <variant>
 
 using namespace cbls;
 
@@ -127,92 +130,206 @@ bool parse_flag(const char* flag, const char* text, uint64_t& out) {
     return false;
 }
 
-int run_cli(int argc, char** argv) {
+// Everything the option loop can set, with the CLI's defaults.
+struct CliOptions {
     std::string model_path;
     double time_limit = 10.0;
     uint64_t seed = 42;
     bool use_fj = true;
     bool use_intensify = false;
     double lns_fraction = 0.0;
-    int lns_interval = 3;
-    SearchConfig config;
+    SearchConfig config;  // also holds lns_interval, which --lns-interval writes
     std::string format = "human";
     bool quiet = false;
     int n_threads = 1;
     bool deterministic = false;
     int64_t epoch_iters = 5000;
     int max_epochs = 10;
+};
 
+// Whether an option consumed the argument, and if so whether it was well formed.
+// kNotMine means "not this kind of option", so the loop keeps looking.
+enum class FlagStatus : std::uint8_t { kNotMine, kOk, kError };
+
+// The valueless switches. Returns true if `arg` was one of them.
+bool take_toggle_option(const std::string& arg, CliOptions& opt) {
+    if (arg == "--no-fj") {
+        opt.use_fj = false;
+        opt.config.use_fj = false;
+        return true;
+    }
+    if (arg == "--intensify") {
+        opt.use_intensify = true;
+        return true;
+    }
+    if (arg == "--deterministic") {
+        opt.deterministic = true;
+        return true;
+    }
+    if (arg == "--quiet") {
+        opt.quiet = true;
+        return true;
+    }
+    return false;
+}
+
+// The numeric options, each paired with the field it fills. A table rather than
+// a chain of branches because that is all they are: the plumbing around them --
+// is there a value after the flag, did it parse, report and stop -- is identical
+// for every one, and the parse_flag overload set is what varies with the type.
+struct ValueOption {
+    const char* flag;
+    std::variant<double*, int*, int64_t*, uint64_t*> target;
+};
+
+std::array<ValueOption, 7> numeric_options(CliOptions& opt) {
+    return {{{"--time-limit", &opt.time_limit},
+             {"--seed", &opt.seed},
+             {"--lns", &opt.lns_fraction},
+             {"--lns-interval", &opt.config.lns_interval},
+             {"--threads", &opt.n_threads},
+             {"--epoch-iters", &opt.epoch_iters},
+             {"--max-epochs", &opt.max_epochs}}};
+}
+
+// One `--flag VALUE` option. Advances `i` past the value when it takes one.
+//
+// A flag with nothing after it reports kNotMine rather than an error, so the
+// caller's unknown-option branch names it -- which is what a trailing `--seed`
+// has always produced.
+FlagStatus take_value_option(const std::string& arg, int& i, int argc, char** argv,
+                             CliOptions& opt) {
+    if (i + 1 >= argc) {
+        return FlagStatus::kNotMine;
+    }
+    // --format is the one value-taking option whose value the parser must also
+    // validate, so it is not in the table.
+    if (arg == "--format") {
+        opt.format = argv[++i];
+        if (opt.format != "human" && opt.format != "jsonl") {
+            std::cerr << "Error: --format must be 'human' or 'jsonl'\n";
+            return FlagStatus::kError;
+        }
+        return FlagStatus::kOk;
+    }
+    for (const auto& option : numeric_options(opt)) {
+        if (arg != option.flag) {
+            continue;
+        }
+        const char* text = argv[++i];
+        const bool ok = std::visit(
+            [&](auto* field) { return parse_flag(option.flag, text, *field); }, option.target);
+        return ok ? FlagStatus::kOk : FlagStatus::kError;
+    }
+    return FlagStatus::kNotMine;
+}
+
+// What the caller should do once the options are read.
+enum class ParseOutcome : std::uint8_t { kRun, kDone, kFailed };
+
+ParseOutcome parse_args(int argc, char** argv, CliOptions& opt) {
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") {
             print_help();
-            return 0;
+            return ParseOutcome::kDone;
         }
         if (arg == "--version") {
             std::cout << "cbls " << cbls::kVersion << "\n";
-            return 0;
+            return ParseOutcome::kDone;
         }
-        if (arg == "--time-limit" && i + 1 < argc) {
-            if (!parse_flag("--time-limit", argv[++i], time_limit)) {
-                return 1;
-            }
-        } else if (arg == "--seed" && i + 1 < argc) {
-            if (!parse_flag("--seed", argv[++i], seed)) {
-                return 1;
-            }
-        } else if (arg == "--no-fj") {
-            use_fj = false;
-            config.use_fj = false;
-        } else if (arg == "--lns" && i + 1 < argc) {
-            if (!parse_flag("--lns", argv[++i], lns_fraction)) {
-                return 1;
-            }
-        } else if (arg == "--lns-interval" && i + 1 < argc) {
-            if (!parse_flag("--lns-interval", argv[++i], lns_interval)) {
-                return 1;
-            }
-            config.lns_interval = lns_interval;
-        } else if (arg == "--intensify") {
-            use_intensify = true;
-        } else if (arg == "--format" && i + 1 < argc) {
-            format = argv[++i];
-            if (format != "human" && format != "jsonl") {
-                std::cerr << "Error: --format must be 'human' or 'jsonl'\n";
-                return 1;
-            }
-        } else if (arg == "--threads" && i + 1 < argc) {
-            if (!parse_flag("--threads", argv[++i], n_threads)) {
-                return 1;
-            }
-        } else if (arg == "--deterministic") {
-            deterministic = true;
-        } else if (arg == "--epoch-iters" && i + 1 < argc) {
-            if (!parse_flag("--epoch-iters", argv[++i], epoch_iters)) {
-                return 1;
-            }
-        } else if (arg == "--max-epochs" && i + 1 < argc) {
-            if (!parse_flag("--max-epochs", argv[++i], max_epochs)) {
-                return 1;
-            }
-        } else if (arg == "--quiet") {
-            quiet = true;
-        } else if (arg[0] == '-') {
+        if (take_toggle_option(arg, opt)) {
+            continue;
+        }
+        const FlagStatus status = take_value_option(arg, i, argc, argv, opt);
+        if (status == FlagStatus::kError) {
+            return ParseOutcome::kFailed;
+        }
+        if (status == FlagStatus::kOk) {
+            continue;
+        }
+        if (arg[0] == '-') {
             std::cerr << "Error: unknown option '" << arg << "'\n";
-            return 1;
-        } else {
-            model_path = arg;
+            return ParseOutcome::kFailed;
         }
+        opt.model_path = arg;
+    }
+    return ParseOutcome::kRun;
+}
+
+// Portfolio or epoch-sync mode. The model is re-read per worker rather than
+// copied, which is why this takes the path and not the loaded Model.
+// Returns false having already reported the failure.
+bool solve_parallel(const CliOptions& opt, int effective_threads, SolveCallback* callback,
+                    SearchResult& result) {
+    // Capture model_path for the factory (model is loaded once, factory re-loads)
+    auto model_factory = [&opt]() { return load_model(opt.model_path); };
+
+    std::function<std::shared_ptr<InnerSolverHook>(Model&)> hook_factory;
+    if (opt.use_intensify) {
+        hook_factory = [](Model&) -> std::shared_ptr<InnerSolverHook> {
+            return std::make_shared<FloatIntensifyHook>();
+        };
     }
 
-    if (model_path.empty()) {
+    std::function<std::shared_ptr<LNS>()> lns_factory;
+    if (opt.lns_fraction > 0.0) {
+        const double fraction = opt.lns_fraction;
+        lns_factory = [fraction]() -> std::shared_ptr<LNS> {
+            return std::make_shared<LNS>(fraction);
+        };
+    }
+
+    ParallelConfig par_config;
+    par_config.n_threads = effective_threads;
+    par_config.deterministic = opt.deterministic;
+    par_config.epoch_iterations = opt.epoch_iters;
+    par_config.max_epochs = opt.max_epochs;
+
+    ParallelSearch ps(effective_threads);
+    // solve() throws when every portfolio worker threw -- the factory could
+    // not re-read the model file, say. Report that the way the load failure
+    // in run_cli is reported; letting it escape main is std::terminate.
+    try {
+        result = ps.solve(model_factory, opt.time_limit, opt.seed, opt.config, hook_factory,
+                          lns_factory, callback, par_config);
+    } catch (const std::exception& e) {
+        std::cerr << "Error: parallel search failed: " << e.what() << "\n";
+        return false;
+    }
+    return true;
+}
+
+SearchResult solve_single(const CliOptions& opt, Model& model, SolveCallback* callback) {
+    FloatIntensifyHook intensify_hook;
+    InnerSolverHook* hook = opt.use_intensify ? &intensify_hook : nullptr;
+
+    LNS lns_obj(opt.lns_fraction);
+    LNS* lns_ptr = opt.lns_fraction > 0.0 ? &lns_obj : nullptr;
+
+    return solve(model, opt.time_limit, opt.seed, opt.use_fj, hook, lns_ptr,
+                 opt.config.lns_interval, callback, opt.config);
+}
+
+int run_cli(int argc, char** argv) {
+    CliOptions opt;
+    switch (parse_args(argc, argv, opt)) {
+        case ParseOutcome::kDone:
+            return 0;
+        case ParseOutcome::kFailed:
+            return 1;
+        case ParseOutcome::kRun:
+            break;
+    }
+
+    if (opt.model_path.empty()) {
         std::cerr << "Error: no model file specified. Use --help for usage.\n";
         return 1;
     }
 
     Model model;
     try {
-        model = load_model(model_path);
+        model = load_model(opt.model_path);
     } catch (const std::exception& e) {
         std::cerr << "Error loading model: " << e.what() << "\n";
         return 1;
@@ -223,74 +340,33 @@ int run_cli(int argc, char** argv) {
     JsonlFormatter jsonl_fmt(std::cout);
 
     SolveCallback* callback = nullptr;
-    if (!quiet) {
-        if (format == "human") {
-            human_fmt.print_header(model_path, model, seed, time_limit);
+    if (!opt.quiet) {
+        if (opt.format == "human") {
+            human_fmt.print_header(opt.model_path, model, opt.seed, opt.time_limit);
             callback = &human_fmt;
         } else {
-            jsonl_fmt.print_header(model_path, model, seed, time_limit);
+            jsonl_fmt.print_header(opt.model_path, model, opt.seed, opt.time_limit);
             callback = &jsonl_fmt;
         }
     }
 
     // Determine effective thread count
-    int effective_threads = n_threads;
+    int effective_threads = opt.n_threads;
     if (effective_threads == 0) {
         // hardware_concurrency() is allowed to return 0 when it cannot tell.
         effective_threads = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
     }
 
     SearchResult result;
-
-    if (effective_threads > 1 || deterministic) {
-        // Parallel mode: use ParallelSearch
-        // Capture model_path for the factory (model is loaded once, factory re-loads)
-        auto model_factory = [&model_path]() { return load_model(model_path); };
-
-        std::function<std::shared_ptr<InnerSolverHook>(Model&)> hook_factory;
-        if (use_intensify) {
-            hook_factory = [](Model&) -> std::shared_ptr<InnerSolverHook> {
-                return std::make_shared<FloatIntensifyHook>();
-            };
-        }
-
-        std::function<std::shared_ptr<LNS>()> lns_factory;
-        if (lns_fraction > 0.0) {
-            lns_factory = [lns_fraction]() -> std::shared_ptr<LNS> {
-                return std::make_shared<LNS>(lns_fraction);
-            };
-        }
-
-        ParallelConfig par_config;
-        par_config.n_threads = effective_threads;
-        par_config.deterministic = deterministic;
-        par_config.epoch_iterations = epoch_iters;
-        par_config.max_epochs = max_epochs;
-
-        ParallelSearch ps(effective_threads);
-        // solve() throws when every portfolio worker threw -- the factory could
-        // not re-read the model file, say. Report that the way the load failure
-        // above is reported; letting it escape main is std::terminate.
-        try {
-            result = ps.solve(model_factory, time_limit, seed, config, hook_factory, lns_factory,
-                              callback, par_config);
-        } catch (const std::exception& e) {
-            std::cerr << "Error: parallel search failed: " << e.what() << "\n";
+    if (effective_threads > 1 || opt.deterministic) {
+        if (!solve_parallel(opt, effective_threads, callback, result)) {
             return 1;
         }
     } else {
-        // Single-thread mode: use solve() directly
-        FloatIntensifyHook intensify_hook;
-        InnerSolverHook* hook = use_intensify ? &intensify_hook : nullptr;
-
-        LNS lns_obj(lns_fraction);
-        LNS* lns_ptr = lns_fraction > 0.0 ? &lns_obj : nullptr;
-
-        result =
-            solve(model, time_limit, seed, use_fj, hook, lns_ptr, lns_interval, callback, config);
+        result = solve_single(opt, model, callback);
     }
 
-    if (format == "human") {
+    if (opt.format == "human") {
         human_fmt.print_result(result, model);
     } else {
         jsonl_fmt.print_result(result, model);
