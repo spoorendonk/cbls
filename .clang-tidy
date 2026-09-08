@@ -153,8 +153,9 @@ CheckOptions:
   # clang-tidy applies "constant" to every `const` local and `const`
   # parameter as well as to file-scope tables. Split by scope to match the
   # code: file-scope, static, class and constexpr constants are k-prefixed
-  # CamelCase (15 measured, e.g. `kMaxStaleRounds`); `const` locals and
-  # parameters are ordinary lower_case and carry no marker.
+  # CamelCase (29 measured across include/cbls and src, e.g.
+  # `kMaxDeadlineStride`); `const` locals and parameters are ordinary
+  # lower_case and carry no marker.
   - key: readability-identifier-naming.LocalConstantCase
     value: lower_case
   - key: readability-identifier-naming.LocalConstantPointerCase
