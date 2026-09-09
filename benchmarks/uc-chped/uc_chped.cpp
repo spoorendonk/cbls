@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <array>
 #include <benchmarks/common/runner_args.h>
+#include <benchmarks/common/search_config_flags.h>
 #include <cbls/cbls.h>
 #include <cmath>
 #include <cstdint>
@@ -79,6 +80,11 @@ struct Args {
     bool commit_set = false;
     std::string commit_sha = "unknown";
     std::string out_csv;  // default: <inst_dir>/comparison.csv
+    // The ablation arm (#136). Its canonical spelling is recorded on every
+    // measured row, so a results file states the configuration it was produced
+    // under instead of leaving the reader to remember which binary produced it.
+    cbls::bench::SearchFlags search;
+    std::string search_config;  // search_config_string(search); filled in by parse_args
 };
 
 // The parse rule itself lives in include/cbls/arg_parse.h and the runners'
@@ -99,22 +105,10 @@ struct Args {
 // rest, which is what #130 factored out.
 using cbls::bench::parse_double;
 using cbls::bench::parse_int64;
-/// Whether two paths name the same file. Canonicalised when both exist, so that
-/// `./benchmarks/x` and an absolute path to it compare equal; a path that does
-/// not exist yet cannot be the published table, so falling back to the lexical
-/// form is safe rather than merely convenient.
-bool same_file(const std::string& a, const std::string& b) {
-    std::error_code ec;
-    const std::filesystem::path pa = std::filesystem::weakly_canonical(a, ec);
-    if (ec) {
-        return a == b;
-    }
-    const std::filesystem::path pb = std::filesystem::weakly_canonical(b, ec);
-    if (ec) {
-        return a == b;
-    }
-    return pa == pb;
-}
+// The published-table guard's path comparison is shared with the other runners
+// (benchmarks/common/runner_args.h): every runner that publishes a table needs
+// it, and a second copy is where a fix to one silently diverges from the rest.
+using cbls::bench::same_file;
 
 /// True when a double flag names a usable positive quantity. Both failure modes
 /// of the parse layer fall out here: NaN (the token was not a number) and inf
@@ -127,13 +121,27 @@ bool is_positive_finite(double v) {
 /// are about the *values*, not about which flags were typed: the parse layer
 /// reports a bad token and hands the guard a NaN, and the guard is what decides
 /// the exit code (tests/python/test_run_benchmark.py pins both halves).
-void check_numeric_flags(const Args& a) {
+void check_numeric_flags(Args& a) {
+    std::string flag_error;
+    if (!cbls::bench::validate_search_flags(a.search, a.time_limit_set, flag_error)) {
+        std::fprintf(stderr, "%s\n", flag_error.c_str());
+        std::exit(2);
+    }
+    a.search_config = cbls::bench::search_config_string(a.search);
     // A NaN from parse_double fails this guard, as does a literal 0 or a
     // negative: solve() with a non-positive budget returns having searched
     // nothing, which would publish a full-looking table of empty results.
     // std::stod also accepts "inf", which would never terminate, so the guard
     // tests isfinite as well as positivity.
-    if (a.time_limit_set && !is_positive_finite(a.time_limit)) {
+    // The wall-clock-free arm (#136) is the one way past the guard below:
+    // solve() disables its clock at `time_limit <= 0`, and
+    // validate_search_flags has already insisted on a positive
+    // --max-iterations, so such a run still has a budget rather than returning
+    // instantly with a table of empty results.
+    if (a.search.no_time_limit) {
+        a.time_limit_set = true;
+        a.time_limit = 0.0;
+    } else if (a.time_limit_set && !is_positive_finite(a.time_limit)) {
         std::fprintf(stderr, "--time-limit must be > 0 (got %g)\n", a.time_limit);
         std::exit(2);
     }
@@ -172,9 +180,17 @@ void resolve_out_csv(Args& a) {
     // budget qualify -- `--time-limit 2` is the obvious smoke test, and it
     // would otherwise replace the table with two-second results (the #88
     // hazard).
+    // An ablation arm is not the published protocol either, and it is the more
+    // dangerous case: its rows would look exactly like the published ones while
+    // having been produced by a different search (#136). Tested before
+    // --time-limit so that `--no-time-limit`, which forces a uniform budget of
+    // zero, is reported by the name it was typed under.
+    const char* arm = cbls::bench::first_non_default_search_flag(a.search);
     const char* why = nullptr;
     if (!a.instances.empty()) {
         why = "--instance";
+    } else if (arm != nullptr) {
+        why = arm;
     } else if (a.time_limit_set) {
         why = "--time-limit";
     }
@@ -231,10 +247,15 @@ Args parse_args(int argc, char** argv) {
             a.commit_set = true;
         } else if (c.value_flag("--out", v)) {
             a.out_csv = v;
+        } else if (cbls::bench::match_search_flag(c, s, a.search)) {
+            // A search-configuration flag (#136); the table, the parse and the
+            // recorded spelling all live in benchmarks/common/search_config_flags.h.
         } else if (s == "--help" || s == "-h") {
             std::printf(
                 "Usage: cbls_uc_chped [inst-dir] [--verify] [--time-limit S] [--seed N]"
-                " [--feas-tol T] [--instance NAME ...] [--commit SHA] [--out CSV]\n");
+                " [--feas-tol T] [--instance NAME ...] [--commit SHA] [--out CSV]\n"
+                "       %s\n",
+                cbls::bench::search_flags_usage().c_str());
             std::exit(0);
         } else if (!s.empty() && s[0] == '-') {
             // A typo'd flag must not silently become the instance directory:
@@ -314,6 +335,10 @@ struct Row {
     double max_violation = kNaN;
     double feas_tol = kNaN;
     std::string commit_sha;
+    // Empty on the cited Pedroso rows, which are not measurements of this
+    // engine and so carry no configuration, exactly as they carry no seed or
+    // tolerance. Every row this runner MEASURES carries it (#136).
+    std::string search_config;
 };
 
 /// A NaN prints as an empty cell rather than "NaN": the published table already
@@ -356,7 +381,7 @@ std::string csv_text(std::string s) {
 
 const char* const kCsvHeader =
     "instance,periods,method,objective,lb,gap_pct,time_s,source,note,"
-    "ub,time_limit_s,seed,feasible,verified,max_violation,feas_tol,commit_sha";
+    "ub,time_limit_s,seed,feasible,verified,max_violation,feas_tol,commit_sha,search_config";
 
 void write_row(std::ostream& csv, const Row& r) {
     csv << csv_text(r.instance) << "," << r.periods << "," << csv_text(r.method) << ","
@@ -364,7 +389,7 @@ void write_row(std::ostream& csv, const Row& r) {
         << num(r.time_s, 4) << "," << csv_text(r.source) << "," << csv_text(r.note) << ","
         << num(r.ub) << "," << num(r.time_limit_s, 4) << "," << r.seed << "," << r.feasible << ","
         << r.verified << "," << num(r.max_violation, 4) << "," << num(r.feas_tol, 3) << ","
-        << csv_text(r.commit_sha) << "\n";
+        << csv_text(r.commit_sha) << "," << csv_text(r.search_config) << "\n";
 }
 
 /// The provenance block. Emitted by the generator so that regenerating the table
@@ -412,12 +437,15 @@ void write_header_comment(std::ostream& csv, const Args& args) {
            "#\n";
     csv << "# Run: commit " << csv_text(args.commit_sha) << ", seed " << args.seed << ", feas-tol "
         << num(args.feas_tol, 3) << ", time limit ";
-    if (args.time_limit_set) {
+    if (args.search.no_time_limit) {
+        csv << "none (--no-time-limit; the iteration budget is the only one)";
+    } else if (args.time_limit_set) {
         csv << num(args.time_limit, 4) << "s (uniform override)";
     } else {
         csv << "per-horizon default map";
     }
     csv << ", verify " << (args.do_verify ? "on" : "off");
+    csv << ", search config " << csv_text(args.search_config);
     // A filtered table otherwise looks exactly like a full one minus rows.
     if (!args.instances.empty()) {
         csv << ", roster filtered to";
@@ -494,7 +522,14 @@ cbls::SearchResult solve_instance(const Args& args, const cbls::uc_chped::UCInst
     cbls::SearchConfig cfg;
     cfg.skip_init = true;
     cfg.feasibility_tolerance = args.feas_tol;
-    return cbls::solve(ucm.model, tlim, args.seed, false, &hook, &lns, 3, nullptr, cfg);
+    // The ablation arm. Everything the flags touch is applied here and nowhere
+    // else, so the `search_config` cell on the row describes exactly the
+    // configuration this call received (#136).
+    cbls::bench::apply_search_flags(args.search, cfg);
+    return cbls::solve(ucm.model, cbls::bench::time_limit_argument(args.search, tlim), args.seed,
+                       false, cbls::bench::hook_argument(args.search, hook),
+                       cbls::bench::lns_argument(args.search, lns),
+                       cbls::bench::lns_interval_argument(args.search), nullptr, cfg);
 }
 
 /// A solve result scored against the instance's published bounds, before the
@@ -527,6 +562,7 @@ Scored score_result(const Args& args, const cbls::uc_chped::UCInstance& inst,
     row.max_violation = result.best_violation;
     row.feas_tol = args.feas_tol;
     row.commit_sha = args.commit_sha;
+    row.search_config = args.search_config;
 
     auto it = inst.known_bounds.find(inst.n_periods);
     s.have_bounds = it != inst.known_bounds.end();
@@ -657,6 +693,7 @@ void print_tally(const Args& args, const Tally& tally) {
     std::printf("commit:               %s\n", args.commit_sha.c_str());
     std::printf("seed:                 %llu\n", static_cast<unsigned long long>(args.seed));
     std::printf("feas-tol:             %g   (engine 'feasible')\n", args.feas_tol);
+    std::printf("search config:        %s\n", args.search_config.c_str());
     std::printf("verifier tolerance:   %g   (independent 'verified'; its\n", kVerifierTolerance);
     std::printf("                              verify_model() pass uses 1e-6)\n");
     std::printf("solved:               %d\n", tally.solved);
@@ -758,6 +795,7 @@ int run_benchmark(int argc, char** argv) {
                 r.method = "CBLS ViolationLS";
                 r.note = "skipped: T > n_periods";
                 r.commit_sha = args.commit_sha;
+                r.search_config = args.search_config;
                 write_row(csv, r);
                 continue;
             }

@@ -5,8 +5,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <string>
+#include <system_error>
 
 namespace cbls::bench {
 
@@ -78,6 +80,29 @@ private:
     char** argv_;
     int i_ = 0;
 };
+
+/// Whether two paths name the same file. Canonicalised when both exist, so that
+/// `./benchmarks/x` and an absolute path to it compare equal; a path that does
+/// not exist yet cannot be an existing published table, so falling back to the
+/// lexical form is safe rather than merely convenient.
+///
+/// Shared because every runner that publishes a table needs the same guard, and
+/// the guard is only worth anything if it compares the FILE rather than which
+/// flags were typed: testing `--out` for emptiness instead let the documented
+/// command -- which spells `--out <the published table>` out -- satisfy the
+/// guard while doing exactly the damage it exists to stop.
+inline bool same_file(const std::string& a, const std::string& b) {
+    std::error_code ec;
+    const std::filesystem::path pa = std::filesystem::weakly_canonical(a, ec);
+    if (ec) {
+        return a == b;
+    }
+    const std::filesystem::path pb = std::filesystem::weakly_canonical(b, ec);
+    if (ec) {
+        return a == b;
+    }
+    return pa == pb;
+}
 
 inline int64_t parse_int64(const char* flag, const std::string& text) {
     int64_t value = 0;

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <benchmarks/common/runner_args.h>
+#include <benchmarks/common/search_config_flags.h>
 #include <benchmarks/minlplib/note_policy.h>
 #include <cbls/cbls.h>
 #include <cbls/io_nl.h>
@@ -33,6 +34,7 @@ struct Args {
     // 60s per instance. The previously published run used 5s, which is a stingy
     // budget for a general-purpose non-convex MINLP heuristic (issue #88).
     double time_limit = 60.0;
+    bool time_limit_set = false;
     uint64_t seed = 1;
     // Absolute constraint-violation tolerance for "feasible". Stated explicitly
     // rather than inherited, because it is a published property of these
@@ -43,6 +45,12 @@ struct Args {
     std::string commit_sha = "unknown";
     std::string out_csv;    // default: <inst_dir>/comparison.csv
     std::string trace_csv;  // optional: anytime profile (best objective vs time)
+    // The ablation arm (#136). Its canonical spelling is recorded on every row
+    // this run writes, so a results file states the configuration it was
+    // produced under instead of leaving the reader to remember which binary
+    // produced which table.
+    cbls::bench::SearchFlags search;
+    std::string search_config;  // search_config_string(search); filled in by parse_args
 };
 
 // Flag-value parsing lives in benchmarks/common/runner_args.h, shared with the
@@ -53,6 +61,67 @@ struct Args {
 using cbls::bench::parse_double;
 using cbls::bench::parse_int64;
 
+/// The numeric and search-configuration flags' guards. Kept apart from the flag
+/// table because they are about the *values*, not about which flags were typed:
+/// the parse layer reports a bad token and hands the guard a NaN, and the guard
+/// is what decides the exit code.
+void check_flag_values(Args& a) {
+    std::string flag_error;
+    if (!cbls::bench::validate_search_flags(a.search, a.time_limit_set, flag_error)) {
+        std::fprintf(stderr, "%s\n", flag_error.c_str());
+        std::exit(2);
+    }
+    a.search_config = cbls::bench::search_config_string(a.search);
+    if (a.search.no_time_limit) {
+        // The wall-clock-free arm (#136): solve() disables its clock at
+        // `time_limit <= 0`, which is what makes an iteration-budgeted run
+        // deterministic. validate_search_flags has already insisted on a
+        // positive --max-iterations, so the run still has a budget and cannot
+        // return instantly with a table of empty results.
+        a.time_limit = 0.0;
+    } else if (!(a.time_limit > 0.0)) {
+        std::fprintf(stderr, "--time-limit must be > 0 (got %g)\n", a.time_limit);
+        std::exit(2);
+    }
+    if (!(a.feas_tol > 0.0)) {
+        std::fprintf(stderr, "--feas-tol must be > 0 (got %g)\n", a.feas_tol);
+        std::exit(2);
+    }
+}
+
+/// Fills in `--out` and enforces what may overwrite the published comparison
+/// table. Its own step because the guards are about the FILE rather than about
+/// which flags were typed: a run that names the published table explicitly --
+/// which is the shape the documented command uses -- must be held to the same
+/// rule as one that defaults into it.
+void resolve_out_csv(Args& a) {
+    const std::string published = a.inst_dir + "/comparison.csv";
+    if (a.out_csv.empty()) {
+        a.out_csv = published;
+    }
+    if (!cbls::bench::same_file(a.out_csv, published)) {
+        return;
+    }
+    // A run that is not the full published measurement must never overwrite the
+    // published results table. A partial roster would truncate it to the rows it
+    // ran; an ablation arm would republish it as though the default
+    // configuration had produced it, which is worse -- the numbers would look
+    // like the published ones and would not be (#136).
+    const char* why = nullptr;
+    if (!a.instances.empty()) {
+        why = "--instance";
+    } else {
+        why = cbls::bench::first_non_default_search_flag(a.search);
+    }
+    if (why != nullptr) {
+        std::fprintf(stderr,
+                     "%s cannot write the published table %s "
+                     "(pass --out elsewhere for an unpublished run)\n",
+                     why, published.c_str());
+        std::exit(2);
+    }
+}
+
 Args parse_args(int argc, char** argv) {
     Args a;
     cbls::bench::ArgCursor c(argc, argv);
@@ -61,6 +130,7 @@ Args parse_args(int argc, char** argv) {
         const std::string s = c.arg();
         if (c.value_flag("--time-limit", v)) {
             a.time_limit = parse_double("--time-limit", v);
+            a.time_limit_set = true;
         } else if (c.value_flag("--seed", v)) {
             a.seed = static_cast<uint64_t>(parse_int64("--seed", v));
         } else if (c.value_flag("--feas-tol", v)) {
@@ -73,11 +143,16 @@ Args parse_args(int argc, char** argv) {
             a.out_csv = v;
         } else if (c.value_flag("--trace", v)) {
             a.trace_csv = v;
+        } else if (cbls::bench::match_search_flag(c, s, a.search)) {
+            // A search-configuration flag (#136); the table, the parse and the
+            // recorded spelling all live in benchmarks/common/search_config_flags.h.
         } else if (s == "--help" || s == "-h") {
             std::printf(
                 "Usage: cbls_minlplib [inst-dir] [--time-limit S] [--seed N]"
                 " [--feas-tol T] [--instance NAME ...] [--commit SHA] [--out CSV]"
-                " [--trace CSV]\n");
+                " [--trace CSV]\n"
+                "       %s\n",
+                cbls::bench::search_flags_usage().c_str());
             std::exit(0);
         } else if (s.rfind("--", 0) == 0) {
             // A typo'd flag must not silently become the instance directory:
@@ -89,26 +164,8 @@ Args parse_args(int argc, char** argv) {
             a.inst_dir = s;
         }
     }
-    if (!(a.time_limit > 0.0)) {
-        std::fprintf(stderr, "--time-limit must be > 0 (got %g)\n", a.time_limit);
-        std::exit(2);
-    }
-    if (!(a.feas_tol > 0.0)) {
-        std::fprintf(stderr, "--feas-tol must be > 0 (got %g)\n", a.feas_tol);
-        std::exit(2);
-    }
-    if (a.out_csv.empty()) {
-        if (!a.instances.empty()) {
-            // A partial roster must never overwrite the published results table:
-            // the default --out is the file the README publishes, and a
-            // single-instance debugging run would silently truncate it to one row.
-            std::fprintf(stderr,
-                         "--instance requires an explicit --out (refusing to overwrite %s)\n",
-                         (a.inst_dir + "/comparison.csv").c_str());
-            std::exit(2);
-        }
-        a.out_csv = a.inst_dir + "/comparison.csv";
-    }
+    check_flag_values(a);
+    resolve_out_csv(a);
     return a;
 }
 
@@ -421,15 +478,15 @@ std::string cell(double v) {
 /// stdout.
 void write_preread_row(std::ostream& csv, const Args& args, const std::string& name,
                        const std::string& note) {
-    csv << name << ",NaN,NaN,NaN,NaN,NaN,0,false," << note << "," << args.commit_sha
-        << ",NaN,NaN\n";
+    csv << name << ",NaN,NaN,NaN,NaN,NaN,0,false," << note << "," << args.commit_sha << ",NaN,NaN,"
+        << args.search_config << "\n";
 }
 
 /// A row for an instance that was built but produced no publishable objective.
 void write_unsolved_row(std::ostream& csv, const Args& args, const std::string& name,
                         const Bounds& b, double wall, const std::string& note, int n_discrete) {
     csv << name << ",NaN," << b.primal << "," << b.dual << ",NaN,NaN," << wall << ",false," << note
-        << "," << args.commit_sha << ",NaN," << n_discrete << "\n";
+        << "," << args.commit_sha << ",NaN," << n_discrete << "," << args.search_config << "\n";
 }
 
 /// Reads the instance's .nl. Returns false having written the row and bumped the
@@ -730,12 +787,19 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
     cbls::LNS lns(0.3);
     cbls::SearchConfig cfg;
     cfg.feasibility_tolerance = args.feas_tol;
+    // The ablation arm. Everything the flags touch is applied here and nowhere
+    // else, so the `search_config` cell on the row below describes exactly the
+    // configuration this call received (#136).
+    cbls::bench::apply_search_flags(args.search, cfg);
     cbls::SearchResult result;
     try {
         TraceRecorder recorder(trace, name);
-        result = cbls::solve(built.model, args.time_limit, args.seed,
-                             /*use_fj=*/true, &hook, &lns, /*lns_interval=*/3,
-                             trace.is_open() ? &recorder : nullptr, cfg);
+        result =
+            cbls::solve(built.model, cbls::bench::time_limit_argument(args.search, args.time_limit),
+                        args.seed, /*use_fj=*/true, cbls::bench::hook_argument(args.search, hook),
+                        cbls::bench::lns_argument(args.search, lns),
+                        cbls::bench::lns_interval_argument(args.search),
+                        trace.is_open() ? &recorder : nullptr, cfg);
     } catch (const std::exception& e) {
         std::printf(" ERROR solving: %s\n", e.what());
         ++t.errored;
@@ -802,7 +866,7 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
     csv << name << "," << cell(pub_obj) << "," << cell(b.primal) << "," << cell(b.dual) << ","
         << cell(pub_gap_bks) << "," << cell(pub_gap_dual) << "," << wall << ","
         << (verified ? "true" : "false") << "," << note << "," << args.commit_sha << ","
-        << cell(max_violation) << "," << prob.n_discrete_vars << "\n";
+        << cell(max_violation) << "," << prob.n_discrete_vars << "," << args.search_config << "\n";
     csv.flush();
 }
 
@@ -810,6 +874,7 @@ void print_tally(const Args& args, const Tally& t) {
     std::printf("\n=== Tally ===\n");
     std::printf("time limit:           %.0fs/instance, seed %llu, feas-tol %.0e\n", args.time_limit,
                 static_cast<unsigned long long>(args.seed), args.feas_tol);
+    std::printf("search config:        %s\n", args.search_config.c_str());
     std::printf("parsed:               %d\n", t.parsed);
     std::printf("closed (built):       %d\n", t.closed);
     std::printf("  mixed-integer:      %d  (integrality enforced)\n", t.mixed_integer);
@@ -873,8 +938,12 @@ int run_benchmark(int argc, char** argv) {
         std::fprintf(stderr, "Failed to open %s for writing\n", args.out_csv.c_str());
         return 2;
     }
+    // `search_config` is appended last and is written on EVERY row, the
+    // early-exit ones included: a short row would make a reader's column count
+    // depend on how the instance failed, and a row with no configuration on it
+    // is a row nobody can reproduce (#136).
     csv << "instance,objective,primal_bks,dual_bound,gap_to_bks%,gap_to_dual%,"
-           "wall_seconds,feasible,note,commit_sha,max_violation,n_int_vars\n";
+           "wall_seconds,feasible,note,commit_sha,max_violation,n_int_vars,search_config\n";
 
     std::printf("\n%-22s %12s %12s %10s %9s  %s\n", "Instance", "Objective", "BKS", "Gap%",
                 "Time(s)", "Note");
