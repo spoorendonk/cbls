@@ -237,10 +237,14 @@ void resolve_out_csv(Args& a) {
     // from a bug with. It is the trace's provenance too -- every trace row
     // carries the commit for the same reason.
     if (!a.commit_set) {
+        // Named for the flag that actually redirects the file in question: a
+        // trace-only run told to "pass --out elsewhere" would be sent to change
+        // a path it never set.
         std::fprintf(stderr,
                      "writing %s requires an explicit --commit SHA "
-                     "(pass --out elsewhere for an unpublished run)\n",
-                     (writes_table ? published : published_trace).c_str());
+                     "(pass %s elsewhere for an unpublished run)\n",
+                     (writes_table ? published : published_trace).c_str(),
+                     writes_table ? "--out" : "--trace");
         std::exit(2);
     }
 }

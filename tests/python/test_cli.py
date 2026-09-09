@@ -442,6 +442,59 @@ def test_uc_chped_refuses_a_trace_onto_the_published_trace(tmp_path: Path) -> No
     assert published_trace.read_bytes() == before, "the published trace was modified"
 
 
+def test_uc_chped_requires_a_commit_to_write_the_published_trace(tmp_path: Path) -> None:
+    """A full-roster run may write the published trace, but only while saying
+    which engine it profiled -- and the diagnostic names --trace, the flag that
+    redirects the file it is refusing, not --out."""
+    if not UC_CHPED_BINARY.exists():
+        pytest.skip("cbls_uc_chped not built")
+    inst_dir = _uc_chped_scratch(tmp_path)
+    published_trace = inst_dir / "anytime_trace.csv"
+    published_trace.write_text("published rows nobody may overwrite\n")
+    before = published_trace.read_bytes()
+
+    # No --instance and no budget override, so the run IS the published protocol
+    # and is refused for the commit alone. It exits during argument resolution,
+    # before a single instance is read, which is what keeps this cheap.
+    result = subprocess.run(
+        [
+            str(UC_CHPED_BINARY),
+            str(inst_dir),
+            "--out",
+            str(tmp_path / "elsewhere.csv"),
+            "--trace",
+            str(published_trace),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert "requires an explicit --commit" in result.stderr, result.stderr
+    assert "pass --trace elsewhere" in result.stderr, result.stderr
+    assert published_trace.read_bytes() == before, "the published trace was modified"
+
+
+def test_uc_chped_rejects_a_trace_flag_with_no_value(tmp_path: Path) -> None:
+    """The shared ArgCursor rule: a trailing --trace must not read past argv nor
+    silently run without the trace it was asked for."""
+    if not UC_CHPED_BINARY.exists():
+        pytest.skip("cbls_uc_chped not built")
+    inst_dir = _uc_chped_scratch(tmp_path)
+
+    result = subprocess.run(
+        [str(UC_CHPED_BINARY), str(inst_dir), "--out", str(tmp_path / "o.csv"), "--trace"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert "Unknown or incomplete option: --trace" in result.stderr, result.stderr
+    assert not (tmp_path / "o.csv").exists()
+
+
 # The same two properties on the MINLPLib runner. Its rows are cheap to provoke:
 # a roster naming an instance whose .nl is absent writes the runner's
 # "not found" row without solving anything, and that row is exactly the
