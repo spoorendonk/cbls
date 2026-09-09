@@ -149,14 +149,20 @@ TEST_CASE("search flags default to the engine's own configuration", "[bench][fla
 }
 
 TEST_CASE("every search flag sets the field it claims", "[bench][flags]") {
+    // Every flag at once, and a combination that is actually runnable: the two
+    // no-effect pairs (--no-lns with --lns-interval, --novelty-prob without
+    // --compound-moves) are refused by validate_search_flags, so --no-lns is
+    // checked on its own below rather than folded in here.
     const ParseOutcome parsed =
-        parse({"--no-float-hook", "--no-lns", "--lns-interval", "7", "--compound-moves",
-               "--novelty-prob", "0.25", "--unproductive-iters", "0", "--perturbation-period", "9",
+        parse({"--no-float-hook", "--lns-interval", "7", "--compound-moves", "--novelty-prob",
+               "0.25", "--unproductive-iters", "0", "--perturbation-period", "9",
                "--max-iterations", "1234", "--no-time-limit"});
     REQUIRE(parsed.unmatched.empty());
+    std::string error;
+    REQUIRE(cbls::bench::validate_search_flags(parsed.flags, /*time_limit_set=*/false, error));
     const SearchFlags& f = parsed.flags;
     REQUIRE_FALSE(f.float_hook);
-    REQUIRE_FALSE(f.lns);
+    REQUIRE(f.lns);
     REQUIRE(f.lns_interval == 7);
     REQUIRE(f.compound_moves);
     REQUIRE(f.novelty_prob == 0.25);
@@ -177,9 +183,14 @@ TEST_CASE("every search flag sets the field it claims", "[bench][flags]") {
     cbls::FloatIntensifyHook hook;
     LNS lns(0.3);
     REQUIRE(cbls::bench::hook_argument(f, hook) == nullptr);
-    REQUIRE(cbls::bench::lns_argument(f, lns) == nullptr);
+    REQUIRE(cbls::bench::lns_argument(f, lns) == &lns);
     REQUIRE(cbls::bench::lns_interval_argument(f) == 7);
     REQUIRE(cbls::bench::time_limit_argument(f, 60.0) == 0.0);
+
+    // The one flag the line above cannot carry.
+    const SearchFlags no_lns = parse({"--no-lns"}).flags;
+    REQUIRE_FALSE(no_lns.lns);
+    REQUIRE(cbls::bench::lns_argument(no_lns, lns) == nullptr);
 }
 
 TEST_CASE("the on/off pairs are order-independent", "[bench][flags]") {
@@ -216,13 +227,13 @@ TEST_CASE("the search config cell is canonical and deterministic", "[bench][flag
             "unproductive_iters=300;perturbation_period=100;max_iterations=0;time_limit=on");
 
     const SearchFlags f =
-        parse({"--no-float-hook", "--no-lns", "--lns-interval", "7", "--compound-moves",
-               "--novelty-prob", "0.25", "--unproductive-iters", "0", "--perturbation-period", "9",
+        parse({"--no-float-hook", "--lns-interval", "7", "--compound-moves", "--novelty-prob",
+               "0.25", "--unproductive-iters", "0", "--perturbation-period", "9",
                "--max-iterations", "1234", "--no-time-limit"})
             .flags;
     const std::string cell = cbls::bench::search_config_string(f);
     REQUIRE(cell ==
-            "float_hook=off;lns=off;lns_interval=7;compound_moves=on;novelty_prob=0.25;"
+            "float_hook=off;lns=on;lns_interval=7;compound_moves=on;novelty_prob=0.25;"
             "unproductive_iters=0;perturbation_period=9;max_iterations=1234;time_limit=off");
     // No comma, or the cell would shift every column after it in a CSV that
     // does not quote (both runners' writers do not).
@@ -232,8 +243,35 @@ TEST_CASE("the search config cell is canonical and deterministic", "[bench][flag
     REQUIRE(cbls::bench::search_config_string(
                 parse({"--max-iterations", "1234", "--no-time-limit", "--perturbation-period", "9",
                        "--unproductive-iters", "0", "--novelty-prob", "0.25", "--compound-moves",
-                       "--lns-interval", "7", "--no-lns", "--no-float-hook"})
+                       "--lns-interval", "7", "--no-float-hook"})
                     .flags) == cell);
+}
+
+TEST_CASE("one run cannot be recorded under two different cells", "[bench][flags]") {
+    // The cell is meant to be a census of RUNS, and the engine short-circuits
+    // twice: it tests the LNS pointer before the interval, and the compound
+    // switch before the probability. So `--no-lns --lns-interval 5` IS
+    // `--no-lns`, and would otherwise be stamped as a different arm. Refusing
+    // the pair keeps the claim true -- and is the same no-effect rule the rho
+    // and use_fj rejections rest on.
+    std::string error;
+    REQUIRE_FALSE(cbls::bench::validate_search_flags(
+        parse({"--no-lns", "--lns-interval", "5"}).flags, false, error));
+    REQUIRE(error.find("--lns-interval") != std::string::npos);
+    REQUIRE_FALSE(
+        cbls::bench::validate_search_flags(parse({"--novelty-prob", "0.25"}).flags, false, error));
+    REQUIRE(error.find("--novelty-prob") != std::string::npos);
+
+    // Restating the default alongside the switch is not a no-effect flag; it is
+    // a no-op, and nothing was asked for that the run does not do.
+    REQUIRE(cbls::bench::validate_search_flags(parse({"--no-lns", "--lns-interval", "3"}).flags,
+                                               false, error));
+    REQUIRE(
+        cbls::bench::validate_search_flags(parse({"--novelty-prob", "0.5"}).flags, false, error));
+    // ...and each is fine in the combination the engine actually reads.
+    REQUIRE(cbls::bench::validate_search_flags(parse({"--lns-interval", "5"}).flags, false, error));
+    REQUIRE(cbls::bench::validate_search_flags(
+        parse({"--compound-moves", "--novelty-prob", "0.25"}).flags, false, error));
 }
 
 TEST_CASE("the usage line documents exactly the recorded flags", "[bench][flags]") {
@@ -256,7 +294,7 @@ TEST_CASE("a non-default arm is named for the published-table guard", "[bench][f
         {"--no-lns"},
         {"--lns-interval", "5"},
         {"--compound-moves"},
-        {"--novelty-prob", "0.1"},
+        {"--compound-moves", "--novelty-prob", "0.1"},
         {"--unproductive-iters", "0"},
         {"--perturbation-period", "7"},
         {"--max-iterations", "10"},
@@ -334,12 +372,13 @@ TEST_CASE("the --unproductive-iters flag takes a non-positive value on purpose",
 // ---------------------------------------------------------------------------
 
 TEST_CASE("the --no-lns flag stops the repairs the default arm makes", "[bench][flags][probe]") {
-    // batch_iterations = 1 puts a batch boundary after every GLS iteration, and
-    // --perturbation-period 1 makes every one of them a kick; --lns-interval 1
-    // makes every kick an LNS repair. Nothing here depends on machine speed: the
-    // budget is 25 GLS iterations and the clock is off.
-    const std::vector<std::string> base = {"--perturbation-period", "1", "--lns-interval", "1",
-                                           "--max-iterations",      "25"};
+    // batch_iterations = 1 puts a batch boundary after every GLS iteration and
+    // --perturbation-period 1 makes every one of them a kick, so the default
+    // interval of 3 turns roughly a third of them into repairs. The two arms
+    // differ in exactly one flag -- `--lns-interval` cannot appear here, since
+    // it has no effect alongside `--no-lns` and is refused with it. Nothing
+    // depends on machine speed: the budget is 25 GLS iterations, clock off.
+    const std::vector<std::string> base = {"--perturbation-period", "1", "--max-iterations", "25"};
     std::vector<std::string> without = base;
     without.emplace_back("--no-lns");
 

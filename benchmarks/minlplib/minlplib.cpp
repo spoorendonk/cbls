@@ -96,11 +96,9 @@ void check_flag_values(Args& a) {
 /// rule as one that defaults into it.
 void resolve_out_csv(Args& a) {
     const std::string published = a.inst_dir + "/comparison.csv";
+    const std::string published_trace = a.inst_dir + "/anytime_trace.csv";
     if (a.out_csv.empty()) {
         a.out_csv = published;
-    }
-    if (!cbls::bench::same_file(a.out_csv, published)) {
-        return;
     }
     // A run that is not the full published measurement must never overwrite the
     // published results table. A partial roster would truncate it to the rows it
@@ -113,11 +111,25 @@ void resolve_out_csv(Args& a) {
     } else {
         why = cbls::bench::first_non_default_search_flag(a.search);
     }
-    if (why != nullptr) {
+    if (why == nullptr) {
+        return;
+    }
+    // BOTH published artifacts, not just the table: `anytime_trace.csv` is
+    // committed and cited too, and `--trace` opens it with a truncating
+    // ofstream before any solving, so an arm aimed at it would replace the
+    // published anytime profile at exit 0 while `--out` pointed somewhere
+    // harmless.
+    const char* target = nullptr;
+    if (cbls::bench::same_file(a.out_csv, published)) {
+        target = published.c_str();
+    } else if (!a.trace_csv.empty() && cbls::bench::same_file(a.trace_csv, published_trace)) {
+        target = published_trace.c_str();
+    }
+    if (target != nullptr) {
         std::fprintf(stderr,
                      "%s cannot write the published table %s "
                      "(pass --out elsewhere for an unpublished run)\n",
-                     why, published.c_str());
+                     why, target);
         std::exit(2);
     }
 }

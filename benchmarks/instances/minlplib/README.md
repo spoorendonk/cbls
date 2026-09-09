@@ -145,7 +145,6 @@ rebuild only the merge after a fresh CBLS run, add `--merge-only` — which is
 what `run_benchmark.py` does for you, so the SCIP baseline is never re-solved
 by a CBLS re-run.
 
-
 ### Ablation arms
 
 The runner's search configuration is settable per run rather than per build, and
@@ -162,11 +161,17 @@ file states the configuration it was produced under (#136):
 --no-time-limit            disable the wall clock; requires --max-iterations
 ```
 
-Any non-default value refuses to write the published `comparison.csv`: an arm's
-rows would look exactly like the published ones while describing a different
-search. `cbls_uc_chped` carries the same flags, and
+Two combinations are refused rather than accepted: `--lns-interval` with
+`--no-lns`, and `--novelty-prob` without `--compound-moves`. The engine
+short-circuits past the second flag in each pair, so accepting them would record
+an arm that the run did not have.
+
+Any non-default value refuses to write the published `comparison.csv` (and
+`anytime_trace.csv`): an arm's rows would look exactly like the published ones
+while describing a different search. `cbls_uc_chped` carries the same flags, and
 `benchmarks/common/search_config_flags.h` is the single definition of all of
 them.
+
 ## Re-running the CBLS rows
 
 **One command**, from a configured Release build directory and a clean checkout:

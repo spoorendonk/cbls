@@ -169,6 +169,27 @@ inline bool validate_search_flags(const SearchFlags& f, bool time_limit_set, std
         error = "--max-iterations must be >= 0 (0 = unlimited)";
         return false;
     }
+    // Two combinations in which a flag the caller typed would be READ BY
+    // NOTHING, and so must be refused rather than accepted, recorded and
+    // silently ignored -- the failure this whole header exists to prevent, and
+    // the same standard the rho and use_fj rejections are held to.
+    //
+    // They are short-circuits in the engine, not opinions:
+    // `src/search.cpp`'s kick site tests `lns_ != nullptr` before
+    // `lns_interval_`, and its batch picker tests `config_.use_compound_moves`
+    // before drawing against `novelty_jump_probability`. Refusing them also
+    // keeps the recorded cell a census of RUNS rather than of typing: with
+    // these out, no two accepted command lines that produce the same run can
+    // produce two different `search_config` strings.
+    const SearchFlags defaults;
+    if (!f.lns && f.lns_interval != defaults.lns_interval) {
+        error = "--lns-interval has no effect with --no-lns";
+        return false;
+    }
+    if (!f.compound_moves && f.novelty_prob != defaults.novelty_prob) {
+        error = "--novelty-prob has no effect without --compound-moves";
+        return false;
+    }
     // No positivity guard on --unproductive-iters, deliberately: SearchConfig
     // documents `<= 0` as "restore the old fixed cadence", which is a
     // legitimate arm and the control case for the #102 exit. Only a
@@ -259,7 +280,9 @@ inline std::array<std::string, kSearchFlagCount> search_config_values(const Sear
 /// Deterministic, comma-free (so it needs no CSV quoting) and emitted in one
 /// fixed order for every runner, so two rows produced by the same arm compare
 /// equal as strings and `sort | uniq -c` over a results file is a census of the
-/// arms it holds.
+/// arms it holds. That last claim is what validate_search_flags' two
+/// no-effect-in-this-combination rules protect: without them `--no-lns` and
+/// `--no-lns --lns-interval 5` would be one run under two different cells.
 inline std::string search_config_string(const SearchFlags& f) {
     const auto values = search_config_values(f);
     std::string out;

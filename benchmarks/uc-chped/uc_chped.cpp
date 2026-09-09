@@ -183,8 +183,10 @@ void resolve_out_csv(Args& a) {
     // An ablation arm is not the published protocol either, and it is the more
     // dangerous case: its rows would look exactly like the published ones while
     // having been produced by a different search (#136). Tested before
-    // --time-limit so that `--no-time-limit`, which forces a uniform budget of
-    // zero, is reported by the name it was typed under.
+    // --time-limit because `--no-time-limit` forces a uniform budget of zero,
+    // and reporting such a run as "--time-limit" would name a flag the caller
+    // never typed. (It is reported as --max-iterations, which --no-time-limit
+    // requires and which sorts first among the arm's non-default flags.)
     const char* arm = cbls::bench::first_non_default_search_flag(a.search);
     const char* why = nullptr;
     if (!a.instances.empty()) {

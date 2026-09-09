@@ -397,6 +397,8 @@ def test_minlplib_refuses_an_ablation_arm_onto_the_published_table(
         ["--max-iterations", "1.5"],  # trailing characters, so not an integer
         ["--novelty-prob", "2"],  # a number, but not one the engine can use
         ["--no-time-limit"],  # no iteration budget, so no budget at all
+        ["--no-lns", "--lns-interval", "5"],  # the interval is read by nothing
+        ["--novelty-prob", "0.25"],  # read by nothing without --compound-moves
     ],
 )
 def test_minlplib_rejects_a_bad_search_flag_value(bad: list[str], tmp_path: Path) -> None:
@@ -407,7 +409,11 @@ def test_minlplib_rejects_a_bad_search_flag_value(bad: list[str], tmp_path: Path
     inst_dir = _minlplib_scratch(tmp_path)
     out = tmp_path / "scratch.csv"
 
-    result = _run_minlplib(str(inst_dir), *bad, "--out", str(out))
+    # The bad flag goes LAST. With it in the middle, `--lns-interval --out` is
+    # a value flag that finds a value: it swallows "--out", and the exit 2 comes
+    # from the integer parse rather than from the trailing-flag path the first
+    # case is meant to exercise.
+    result = _run_minlplib(str(inst_dir), "--out", str(out), *bad)
 
     assert result.returncode == 2, result.stdout
     assert result.stderr.strip(), "a rejected value must say what was wrong"
@@ -434,6 +440,32 @@ def test_minlplib_records_the_arm_on_an_early_exit_row(tmp_path: Path) -> None:
     assert cells[-1] == MINLPLIB_DEFAULT_ARM.replace(
         "compound_moves=off", "compound_moves=on"
     ).replace("novelty_prob=0.5", "novelty_prob=0.25")
+
+
+def test_minlplib_refuses_an_ablation_arm_onto_the_published_trace(tmp_path: Path) -> None:
+    """`--trace` opens its file with a truncating stream before any solving, and
+    `anytime_trace.csv` is published too -- so an arm aimed at it would replace
+    the published anytime profile at exit 0 while `--out` pointed somewhere
+    harmless."""
+    if not MINLPLIB_BINARY.exists():
+        pytest.skip("cbls_minlplib not built")
+    inst_dir = _minlplib_scratch(tmp_path)
+    trace = inst_dir / "anytime_trace.csv"
+    trace.write_text("published trace nobody may overwrite\n")
+    before = trace.read_bytes()
+
+    result = _run_minlplib(
+        str(inst_dir),
+        "--no-lns",
+        "--out",
+        str(tmp_path / "scratch.csv"),
+        "--trace",
+        str(trace),
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert "cannot write the published table" in result.stderr, result.stderr
+    assert trace.read_bytes() == before, "the published trace was modified"
 
 
 def test_minlplib_help_lists_the_search_flags() -> None:
