@@ -205,30 +205,44 @@ void resolve_out_csv(Args& a) {
     // exists, because `./benchmarks/...` and an absolute path are the same file
     // and a string compare says otherwise; a path that does not exist yet
     // cannot be the published table, so the lexical fallback is safe.
-    const bool writes_table = same_file(a.out_csv, published);
-    // BOTH published artifacts, not just the table (#147). `--trace` opens its
-    // file with a truncating ofstream before any solving, so an unpublished run
-    // aimed at the published trace would replace the anytime profile at exit 0
-    // while `--out` pointed somewhere harmless. The name is reserved whether or
-    // not a trace has been committed yet: the guard has to exist before the
-    // file does, not after the first one is lost.
-    const bool writes_trace = !a.trace_csv.empty() && same_file(a.trace_csv, published_trace);
+    // Both flags write a file, so pointing them at one path means the table's
+    // closing rename lands on top of the trace -- losing it at exit 0, which is
+    // the failure mode this whole guard exists to refuse.
+    const bool trace_set = !a.trace_csv.empty();
+    if (trace_set && same_file(a.out_csv, a.trace_csv)) {
+        std::fprintf(stderr,
+                     "--out and --trace name the same file %s; the table would replace it\n",
+                     a.out_csv.c_str());
+        std::exit(2);
+    }
+    // BOTH published names, tested against BOTH flags (#147). The guard is
+    // about the FILES, so it cannot be keyed on which flag happens to name one:
+    // `--trace` opens its file with a truncating ofstream before any solving,
+    // so `--trace <the comparison table>` replaces the published results with a
+    // trace header at exit 0 while `--out` points somewhere harmless. That is
+    // the same #88 hazard the table guard exists for, reached through the other
+    // door, and it deleted the ten cited Pedroso rows in a probe. Both names are
+    // reserved whether or not a trace has been committed yet: the guard has to
+    // exist before the file does, not after the first one is lost.
+    const bool writes_table =
+        same_file(a.out_csv, published) || (trace_set && same_file(a.trace_csv, published));
+    const bool writes_trace = same_file(a.out_csv, published_trace) ||
+                              (trace_set && same_file(a.trace_csv, published_trace));
     if (!writes_table && !writes_trace) {
         return;
     }
+    // Report the artifact being refused and the flag that actually redirects
+    // it: a trace-only run told to "pass --out elsewhere" would be sent to
+    // change a path it never set.
+    const std::string& target = writes_table ? published : published_trace;
+    const char* const artifact = writes_table ? "table" : "anytime trace";
+    const char* const redirect = same_file(a.out_csv, target) ? "--out" : "--trace";
     const char* why = non_published_protocol(a);
     if (why != nullptr) {
-        if (writes_table) {
-            std::fprintf(stderr,
-                         "%s cannot write the published table %s "
-                         "(pass --out elsewhere for an unpublished run)\n",
-                         why, published.c_str());
-        } else {
-            std::fprintf(stderr,
-                         "%s cannot write the published anytime trace %s "
-                         "(pass --trace elsewhere for an unpublished run)\n",
-                         why, published_trace.c_str());
-        }
+        std::fprintf(stderr,
+                     "%s cannot write the published %s %s "
+                     "(pass %s elsewhere for an unpublished run)\n",
+                     why, artifact, target.c_str(), redirect);
         std::exit(2);
     }
     // A full-roster run at the documented budgets is the only thing allowed
@@ -237,14 +251,10 @@ void resolve_out_csv(Args& a) {
     // from a bug with. It is the trace's provenance too -- every trace row
     // carries the commit for the same reason.
     if (!a.commit_set) {
-        // Named for the flag that actually redirects the file in question: a
-        // trace-only run told to "pass --out elsewhere" would be sent to change
-        // a path it never set.
         std::fprintf(stderr,
                      "writing %s requires an explicit --commit SHA "
                      "(pass %s elsewhere for an unpublished run)\n",
-                     (writes_table ? published : published_trace).c_str(),
-                     writes_table ? "--out" : "--trace");
+                     target.c_str(), redirect);
         std::exit(2);
     }
 }
@@ -663,7 +673,7 @@ void run_one(std::ostream& csv, std::ofstream& trace, const Args& args,
     // The trace rows carry the horizon as well as the instance name: this
     // runner solves one row per (instance, horizon) pair, so a trace keyed on
     // the instance alone could not be read back to the row it describes (#147).
-    cbls::uc_chped::TraceRecorder recorder(trace, instance_name, horizon, args.commit_sha);
+    cbls::uc_chped::TraceRecorder recorder(trace, instance_name, horizon, tlim, args.commit_sha);
     const cbls::SearchResult result =
         solve_instance(args, inst, ucm, tlim, trace.is_open() ? &recorder : nullptr);
     ++tally.solved;
@@ -804,9 +814,9 @@ bool load_roster(const Args& args, const std::vector<InstanceSpec>& specs,
 /// `--trace` leaves the stream closed, which is what run_one reads as "pass no
 /// callback".
 ///
-/// Called only once the roster has loaded: `--trace` truncates on open, and a
-/// run that cannot proceed must leave every output file it was pointed at
-/// exactly as it found it. Written in place rather than through the table's
+/// Called only once the roster has loaded AND the table's temp file is open:
+/// `--trace` truncates on open, so a run that cannot proceed must leave the
+/// trace it was pointed at exactly as it found it. Written in place rather than through the table's
 /// rename dance on purpose -- the value of a trace from an interrupted run is
 /// the rows it already has, so each is flushed as it is written and a killed
 /// job keeps its partial profile.
@@ -876,11 +886,6 @@ int run_benchmark(int argc, char** argv) {
         return 2;
     }
 
-    std::ofstream trace;
-    if (!open_trace(args, trace)) {
-        return 2;
-    }
-
     // Write-then-rename, as benchmarks/mipfeas does: this run takes over an hour
     // at the documented budgets, and a job killed mid-write must leave either
     // the previous table or none, never a truncated one.
@@ -889,6 +894,15 @@ int run_benchmark(int argc, char** argv) {
     std::ofstream csv(tmp_csv);
     if (!csv.is_open()) {
         std::fprintf(stderr, "Failed to open %s for writing\n", tmp_csv.c_str());
+        return 2;
+    }
+
+    // Opened last of the two output files: the table goes through a temp file
+    // and can fail its open harmlessly, while `--trace` truncates in place. A
+    // run that dies on the table's open must not already have emptied the trace
+    // it was pointed at.
+    std::ofstream trace;
+    if (!open_trace(args, trace)) {
         return 2;
     }
     write_header_comment(csv, args);

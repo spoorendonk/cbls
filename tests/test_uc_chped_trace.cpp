@@ -67,6 +67,19 @@ cbls::SolveProgress incumbent(double time_seconds, double objective, bool new_be
     return p;
 }
 
+/// Column indices into a trace row, so a reordering of kTraceHeader breaks the
+/// assertions rather than silently moving what they check.
+enum Column {
+    kInstance,
+    kPeriods,
+    kTimeLimit,
+    kTimeSeconds,
+    kBatches,
+    kObjective,
+    kNewBest,
+    kCommit
+};
+
 /// The runner's own start: greedy commitment plus a short FJ polish, with the
 /// polish's wall clock disabled so nothing in the run depends on the machine.
 void warm_start(cbls::uc_chped::UCModel& ucm, const cbls::uc_chped::UCInstance& inst,
@@ -84,21 +97,28 @@ TEST_CASE("the uc-chped trace header names exactly the cells a row carries", "[u
     // a header that drifts from the rows underneath it is worse than no trace:
     // every column after the drift is silently misread.
     REQUIRE(std::string(kTraceHeader) ==
-            "instance,periods,time_seconds,objective,new_best,commit_sha");
+            "instance,periods,time_limit_s,time_seconds,batches,objective,new_best,commit_sha");
 
     std::ostringstream out;
-    TraceRecorder recorder(out, "ucp13", 24, "abc1234");
-    recorder.on_progress(incumbent(1.5, 496191.8, /*new_best=*/true));
+    TraceRecorder recorder(out, "ucp13", 24, /*time_limit_s=*/300.0, "abc1234");
+    cbls::SolveProgress p = incumbent(1.5, 496191.8, /*new_best=*/true);
+    p.iteration = 77;
+    recorder.on_progress(p);
 
     const auto header = split(kTraceHeader, ',');
     const auto rows = rows_of(out.str());
     REQUIRE(rows.size() == 1);
     const auto cells = split(rows[0], ',');
     REQUIRE(cells.size() == header.size());
-    CHECK(cells[0] == "ucp13");
-    CHECK(cells[1] == "24");
-    CHECK(cells[4] == "1");
-    CHECK(cells[5] == "abc1234");
+    CHECK(cells[kInstance] == "ucp13");
+    CHECK(cells[kPeriods] == "24");
+    // The budget the row was measured against. Without it a trace cannot say
+    // whether the incumbent flattened BEFORE the clock stopped, and the budget
+    // map these traces exist to change is not a stable external reference.
+    CHECK(cells[kTimeLimit] == "300");
+    CHECK(cells[kBatches] == "77");
+    CHECK(cells[kNewBest] == "1");
+    CHECK(cells[kCommit] == "abc1234");
 }
 
 TEST_CASE("the trace identifies the horizon, not just the instance", "[uc-chped][trace]") {
@@ -106,22 +126,25 @@ TEST_CASE("the trace identifies the horizon, not just the instance", "[uc-chped]
     // horizon cell the two blocks below would be indistinguishable, and a trace
     // that cannot be read back to the row it describes defends no budget.
     std::ostringstream out;
-    TraceRecorder one(out, "ucp13", 1, "abc1234");
-    TraceRecorder twentyfour(out, "ucp13", 24, "abc1234");
+    TraceRecorder one(out, "ucp13", 1, /*time_limit_s=*/10.0, "abc1234");
+    TraceRecorder twentyfour(out, "ucp13", 24, /*time_limit_s=*/300.0, "abc1234");
     one.on_progress(incumbent(0.1, 12782.0, true));
     twentyfour.on_progress(incumbent(0.2, 496191.0, true));
 
     const auto rows = rows_of(out.str());
     REQUIRE(rows.size() == 2);
-    CHECK(split(rows[0], ',')[1] == "1");
-    CHECK(split(rows[1], ',')[1] == "24");
+    CHECK(split(rows[0], ',')[kPeriods] == "1");
+    CHECK(split(rows[1], ',')[kPeriods] == "24");
+    // Each horizon carries its own budget, which is the whole point of a map.
+    CHECK(split(rows[0], ',')[kTimeLimit] == "10");
+    CHECK(split(rows[1], ',')[kTimeLimit] == "300");
 }
 
 TEST_CASE("the trace records nothing before there is an incumbent", "[uc-chped][trace]") {
     std::ostringstream out;
-    TraceRecorder recorder(out, "ucp13", 24, "abc1234");
+    TraceRecorder recorder(out, "ucp13", 24, /*time_limit_s=*/300.0, "abc1234");
 
-    cbls::SolveProgress searching;  // feasible defaults to false
+    cbls::SolveProgress searching;  // objective defaults to +inf: no incumbent
     searching.time_seconds = 0.5;
     recorder.on_progress(searching);
 
@@ -134,29 +157,54 @@ TEST_CASE("the trace records nothing before there is an incumbent", "[uc-chped][
     CHECK(out.str().empty());
 }
 
+TEST_CASE("the trace samples the incumbent while the search is infeasible", "[uc-chped][trace]") {
+    // `SolveProgress::feasible` is the CURRENT assignment's feasibility, while
+    // `objective` is the incumbent's. The search spends most of its time off
+    // the feasible point it last recorded -- the objective bound is tightened
+    // below the incumbent on every improvement, which pushes it off -- so a
+    // recorder that also tested `feasible` would drop the periodic samples that
+    // make up the flat tail. The flat tail is what says a budget was long
+    // enough, so it must be recorded.
+    std::ostringstream out;
+    TraceRecorder recorder(out, "ucp13", 24, /*time_limit_s=*/300.0, "abc1234");
+
+    cbls::SolveProgress periodic = incumbent(250.0, 496191.8, /*new_best=*/false);
+    periodic.feasible = false;  // mid-flight, incumbent unchanged
+    recorder.on_progress(periodic);
+
+    const auto rows = rows_of(out.str());
+    REQUIRE(rows.size() == 1);
+    CHECK(split(rows[0], ',')[kNewBest] == "0");
+    CHECK(split(rows[0], ',')[kObjective] == "496191.8");
+}
+
 TEST_CASE("a comma in an identifier cannot shift the trace's columns", "[uc-chped][trace]") {
     std::ostringstream out;
-    TraceRecorder recorder(out, "ucp13", 24, "abc1234,dirty");
+    TraceRecorder recorder(out, "ucp13", 24, /*time_limit_s=*/300.0, "abc1234,dirty");
     recorder.on_progress(incumbent(1.0, 5.0, true));
 
     const auto rows = rows_of(out.str());
     REQUIRE(rows.size() == 1);
     CHECK(split(rows[0], ',').size() == split(kTraceHeader, ',').size());
-    CHECK(split(rows[0], ',')[5] == "abc1234;dirty");
+    CHECK(split(rows[0], ',')[kCommit] == "abc1234;dirty");
 }
 
 TEST_CASE("a recorder handed to solve() records the run's incumbents", "[uc-chped][trace]") {
-    // The wiring test. Hand solve() the recorder the way benchmarks/uc-chped/
-    // uc_chped.cpp does and require that rows come back: with the callback
-    // argument back at `nullptr` -- which is what this issue found -- solve()
-    // reports nothing and this file stays empty.
+    // The recorder against a REAL solve() rather than against hand-built
+    // SolveProgress values: this is what shows the filter and the columns
+    // survive contact with what the search actually emits. It hands solve() the
+    // recorder the way benchmarks/uc-chped/uc_chped.cpp does, but it cannot
+    // prove the RUNNER still does -- uc_chped.cpp is a main() with no header,
+    // so this builds its own solve() call and stays green if the runner's
+    // argument reverts to `nullptr`. The case that goes red for that is
+    // tests/python/test_cli.py::test_uc_chped_records_an_anytime_trace.
     auto ucp13 = cbls::uc_chped::load_jsonl("benchmarks/instances/uc-chped/ucp13.jsonl");
     auto inst = cbls::uc_chped::make_subinstance(ucp13, 3);
     auto ucm = cbls::uc_chped::build_uc_model(inst);
     warm_start(ucm, inst, /*seed=*/42);
 
     std::ostringstream out;
-    TraceRecorder recorder(out, "ucp13", inst.n_periods, "abc1234");
+    TraceRecorder recorder(out, "ucp13", inst.n_periods, /*time_limit_s=*/0.0, "abc1234");
 
     cbls::FloatIntensifyHook hook;
     cbls::LNS lns(0.3);
@@ -167,6 +215,9 @@ TEST_CASE("a recorder handed to solve() records the run's incumbents", "[uc-chpe
         cbls::solve(ucm.model, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/false, &hook, &lns,
                     /*lns_interval=*/3, &recorder, cfg);
     REQUIRE(result.feasible);
+    // Guards the final comparison below: a non-finite objective would turn its
+    // relative band into inf and decide it by a NaN compare.
+    REQUIRE(std::isfinite(result.objective));
 
     const auto rows = rows_of(out.str());
     REQUIRE(!rows.empty());
@@ -177,20 +228,26 @@ TEST_CASE("a recorder handed to solve() records the run's incumbents", "[uc-chpe
     for (const auto& row : rows) {
         const auto cells = split(row, ',');
         REQUIRE(cells.size() == n_columns);
-        CHECK(cells[0] == "ucp13");
-        CHECK(cells[1] == "3");
-        CHECK(cells[5] == "abc1234");
-        CHECK(std::stod(cells[2]) >= 0.0);  // wall time, the one machine-dependent cell
-        if (cells[4] == "1") {
-            const double objective = std::stod(cells[3]);
-            // The incumbent only ever improves, so a trace whose new_best rows
-            // are not decreasing is not an anytime profile.
-            CHECK(objective < previous_best);
+        CHECK(cells[kInstance] == "ucp13");
+        CHECK(cells[kPeriods] == "3");
+        CHECK(cells[kCommit] == "abc1234");
+        CHECK(std::stod(cells[kTimeSeconds]) >= 0.0);  // the one machine-dependent cell
+        CHECK(std::stoll(cells[kBatches]) >= 0);
+        if (cells[kNewBest] == "1") {
+            const double objective = std::stod(cells[kObjective]);
+            // The incumbent never worsens, so a trace whose new_best rows are
+            // not non-increasing is not an anytime profile. Non-STRICT on
+            // purpose: the engine accepts an improvement at a 1e-12 relative
+            // threshold while the cell is printed to ten significant digits, so
+            // two genuine improvements can render as the same string.
+            CHECK(objective <= previous_best);
             previous_best = objective;
             ++improvements;
         }
     }
-    CHECK(improvements > 0);
+    // REQUIRE, not CHECK: with no improvement at all `previous_best` is still
+    // +inf and the comparison below reports a second, misleading failure.
+    REQUIRE(improvements > 0);
     // The last recorded incumbent is the one solve() returns: a trace that
     // stopped short of the answer would understate what the budget bought.
     // Compared on a relative band, not bit-for-bit: the cell was formatted to

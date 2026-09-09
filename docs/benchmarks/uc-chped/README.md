@@ -200,8 +200,9 @@ roster. The last two are refused outright when the resolved `--out` path *is*
 the published table above — a partial roster or a shortened budget cannot become
 the published result, whether the path was defaulted or spelled out. Writing
 that file at all requires `--commit`, so a published row always names the engine
-it measured. Point `--out` anywhere else and none of this applies; that is the
-shape a smoke run should take. Note that `feasible` is
+it measured. Point `--out` at a scratch path and none of this applies — but see
+the anytime-trace section below, where `--trace` is held to the same rule
+against both published names. Note that `feasible` is
 the engine's verdict at the row's `feas_tol` while `verified` is an independent
 re-check by `verify_uc_chped()` at its own tolerances — `1e-4` on its
 UC-semantic checks and `1e-6` on the generic `cbls::verify_model()` pass it runs
@@ -218,26 +219,48 @@ first — so the two columns answer different questions.
                       --commit "$(git rev-parse --short=7 HEAD)"
 ```
 
-Columns are `instance,periods,time_seconds,objective,new_best,commit_sha`. The
-horizon is there because this runner solves **one row per (instance, horizon)
-pair** — unlike the MINLPLib runner, whose trace needs only an instance name —
-so without it a trace cannot be read back to the row it describes. `new_best`
-is 1 on an improvement and 0 on the periodic (~1s) report the search emits
-regardless, and the commit is on every row for the same reason `comparison.csv`
-carries it: a search-trajectory change silently invalidates a profile.
+Columns are
+`instance,periods,time_limit_s,time_seconds,batches,objective,new_best,commit_sha`.
+Four of those are not in the sibling MINLPLib runner's trace and each is here
+for a reason:
 
-Only rows with a feasible incumbent and a finite objective appear, so the first
-row of a block is that horizon's time-to-first-feasible and the last is where
-the budget left it.
+- **`periods`** — this runner solves one row per (instance, horizon) pair, so
+  without the horizon a trace row cannot be read back to the row it describes.
+- **`time_limit_s`** — the question is whether the incumbent flattened *before
+  the budget*, so a trace that does not carry its budget is not self-contained.
+  The per-horizon map is exactly what these traces exist to argue about, so it
+  is not a stable external reference an archived trace can point at.
+- **`batches`** — `SolveProgress::iteration`, the ViolationLS batch count (not
+  `comparison.csv`'s `iterations`, which is the GLS count). It separates a flat
+  tail meaning "converged" from one meaning "barely got going" — opposite
+  arguments about the budget.
+- **`commit_sha`** — a search-trajectory change silently invalidates a profile,
+  and without the commit the next reader cannot tell drift from a bug.
 
-Why it exists: every published number here is a gap measured **at** a
-per-horizon budget (`horizon_budget()` in the runner), and without a record of
-what the incumbent was doing when the clock stopped, an engine limitation and a
-budget that was simply too short look identical. `<inst-dir>/anytime_trace.csv`
-is reserved as the published profile and is refused to any run that is not the
-full published measurement, exactly as `comparison.csv` is — `--trace`
-truncates on open, so an ablation arm aimed at it would replace it at exit 0
-while `--out` pointed somewhere harmless.
+`new_best` is 1 on an improvement and 0 on the periodic (~1s) sample the search
+emits regardless. A row is written whenever a finite-objective incumbent
+exists — **not** only while the current assignment is feasible. That
+distinction matters: the search moves off each feasible point as soon as the
+objective bound is tightened below it, so filtering on the current assignment
+would delete most of the periodic samples and with them the flat tail, which is
+the one thing the trace is for.
+
+Two caveats on reading `time_seconds`. It is measured from `solve()` entry, and
+the greedy commitment plus the 200-iteration FJ polish run *before* that call,
+so `t = 0` is not the start of work. And the first row of a horizon's block is
+its time to first feasible incumbent **with a finite objective** — a
+feasibility witness whose objective overflowed (#100) is feasible but has no
+value to plot, so it does not appear.
+
+`<inst-dir>/anytime_trace.csv` is reserved as the published profile, exactly as
+`comparison.csv` is, and both names are refused to any run that is not the full
+published measurement. The guard is about the **files**, not about which flag
+names them: `--trace` pointed at `comparison.csv` would empty the published
+table at exit 0 (it truncates on open), so either flag aimed at either
+published name is refused. Naming one path for both flags is refused too — the
+table's closing rename would land on the trace. Point both flags at scratch
+paths and none of this applies; that is the shape a smoke run or an ablation
+arm should take.
 
 Archived results:
 

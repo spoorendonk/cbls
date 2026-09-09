@@ -347,7 +347,9 @@ def test_uc_chped_records_the_arm_on_every_measured_row(tmp_path: Path) -> None:
 # recorder's contract; what only the shell can prove is that the RUNNER hands it
 # to solve() -- with the argument back at `nullptr` the file below still gets its
 # header and no rows at all.
-UC_CHPED_TRACE_HEADER = "instance,periods,time_seconds,objective,new_best,commit_sha"
+UC_CHPED_TRACE_HEADER = (
+    "instance,periods,time_limit_s,time_seconds,batches,objective,new_best,commit_sha"
+)
 
 
 def test_uc_chped_records_an_anytime_trace(tmp_path: Path) -> None:
@@ -400,10 +402,14 @@ def test_uc_chped_records_an_anytime_trace(tmp_path: Path) -> None:
         # One row per (instance, horizon) pair, so the horizon is what makes a
         # trace row attributable at all.
         assert cells[1] in {"1", "3", "6", "12", "24"}, cells
-        assert float(cells[2]) >= 0.0
-        assert math.isfinite(float(cells[3]))
-        assert cells[4] in {"0", "1"}
-        assert cells[5] == "deadbee"
+        # The budget the row was measured against. This arm is clock-free, so it
+        # is 0 -- which is itself the honest statement of what bounded the run.
+        assert float(cells[2]) == 0.0, cells
+        assert float(cells[3]) >= 0.0
+        assert int(cells[4]) >= 0
+        assert math.isfinite(float(cells[5]))
+        assert cells[6] in {"0", "1"}
+        assert cells[7] == "deadbee"
         horizons.add(cells[1])
     # Every horizon this run solved appears, not just the first: a trace that
     # covered one row could not defend a budget map with a number per horizon.
@@ -440,6 +446,61 @@ def test_uc_chped_refuses_a_trace_onto_the_published_trace(tmp_path: Path) -> No
     assert result.returncode == 2, result.stdout
     assert "cannot write the published anytime trace" in result.stderr, result.stderr
     assert published_trace.read_bytes() == before, "the published trace was modified"
+
+
+@pytest.mark.parametrize("flag", ["--out", "--trace"])
+def test_uc_chped_refuses_either_flag_onto_either_published_artifact(
+    flag: str, tmp_path: Path
+) -> None:
+    """The guard is about the FILES, not about which flag names them.
+
+    An earlier cut tested --out only against comparison.csv and --trace only
+    against anytime_trace.csv, so `--trace <the comparison table>` fell through
+    both: the trace's truncating open emptied the published results and the run
+    exited 0, deleting the ten cited Pedroso rows. Verified against that cut --
+    a 3789-byte comparison.csv came back as 688 bytes of trace rows.
+    """
+    if not UC_CHPED_BINARY.exists():
+        pytest.skip("cbls_uc_chped not built")
+    inst_dir = _uc_chped_scratch(tmp_path)
+    published_table = inst_dir / "comparison.csv"
+    published_trace = inst_dir / "anytime_trace.csv"
+    published_trace.write_text("published rows nobody may overwrite\n")
+    before = {p: p.read_bytes() for p in (published_table, published_trace)}
+
+    for target in (published_table, published_trace):
+        args = [str(UC_CHPED_BINARY), str(inst_dir), "--instance", "ucp13", flag, str(target)]
+        # Keep the OTHER flag pointed somewhere harmless, so the only thing that
+        # can trip the guard is the one under test.
+        if flag == "--trace":
+            args += ["--out", str(tmp_path / "elsewhere.csv")]
+        result = subprocess.run(args, capture_output=True, text=True, timeout=300)
+
+        assert result.returncode == 2, f"{flag} {target.name}: {result.stdout}"
+        assert "cannot write the published" in result.stderr, result.stderr
+        assert flag in result.stderr, result.stderr
+        for path, content in before.items():
+            assert path.read_bytes() == content, f"{path.name} was modified"
+
+
+def test_uc_chped_refuses_one_path_for_both_outputs(tmp_path: Path) -> None:
+    """The table's closing rename lands on top of the trace, so one path for
+    both flags silently destroys the profile at exit 0."""
+    if not UC_CHPED_BINARY.exists():
+        pytest.skip("cbls_uc_chped not built")
+    inst_dir = _uc_chped_scratch(tmp_path)
+    both = tmp_path / "both.csv"
+
+    result = subprocess.run(
+        [str(UC_CHPED_BINARY), str(inst_dir), "--out", str(both), "--trace", str(both)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert "name the same file" in result.stderr, result.stderr
+    assert not both.exists()
 
 
 def test_uc_chped_requires_a_commit_to_write_the_published_trace(tmp_path: Path) -> None:
