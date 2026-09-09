@@ -19,6 +19,7 @@
 
 #include "data.h"
 #include "greedy_init.h"
+#include "trace_recorder.h"
 #include "uc_model.h"
 #include "verify_uc_chped.h"
 
@@ -79,7 +80,8 @@ struct Args {
     std::vector<std::string> instances;  // optional roster filter (base names)
     bool commit_set = false;
     std::string commit_sha = "unknown";
-    std::string out_csv;  // default: <inst_dir>/comparison.csv
+    std::string out_csv;    // default: <inst_dir>/comparison.csv
+    std::string trace_csv;  // optional: anytime profile (incumbent vs wall time, #147)
     // The ablation arm (#136). Its canonical spelling is recorded on every
     // measured row, so a results file states the configuration it was produced
     // under instead of leaving the reader to remember which binary produced it.
@@ -154,11 +156,42 @@ void check_numeric_flags(Args& a) {
     }
 }
 
-/// Fills in `--out` and enforces what may overwrite the published comparison
-/// table. Its own step because the guards are about the FILE rather than about
-/// which flags were typed -- see the comment inside.
+/// The reason this run is not the full published measurement, or nullptr when
+/// it is. Held apart from the files it guards because it is the same answer for
+/// BOTH published artifacts -- the results table and the anytime trace (#147).
+///
+/// A run that is not the full published measurement must never overwrite a
+/// published artifact. Both a partial roster and a shortened budget qualify --
+/// `--time-limit 2` is the obvious smoke test, and it would otherwise replace
+/// the table with two-second results (the #88 hazard).
+///
+/// An ablation arm is not the published protocol either, and it is the more
+/// dangerous case: its rows would look exactly like the published ones while
+/// having been produced by a different search (#136). Tested before
+/// --time-limit because `--no-time-limit` forces a uniform budget of zero, and
+/// reporting such a run as "--time-limit" would name a flag the caller never
+/// typed. (It is reported as --max-iterations, which --no-time-limit requires
+/// and which sorts first among the arm's non-default flags.)
+const char* non_published_protocol(const Args& a) {
+    if (!a.instances.empty()) {
+        return "--instance";
+    }
+    const char* arm = cbls::bench::first_non_default_search_flag(a.search);
+    if (arm != nullptr) {
+        return arm;
+    }
+    if (a.time_limit_set) {
+        return "--time-limit";
+    }
+    return nullptr;
+}
+
+/// Fills in `--out` and enforces what may overwrite this benchmark's published
+/// artifacts. Its own step because the guards are about the FILES rather than
+/// about which flags were typed -- see the comment inside.
 void resolve_out_csv(Args& a) {
     const std::string published = a.inst_dir + "/comparison.csv";
+    const std::string published_trace = a.inst_dir + "/anytime_trace.csv";
     if (a.out_csv.empty()) {
         a.out_csv = published;
     }
@@ -172,46 +205,42 @@ void resolve_out_csv(Args& a) {
     // exists, because `./benchmarks/...` and an absolute path are the same file
     // and a string compare says otherwise; a path that does not exist yet
     // cannot be the published table, so the lexical fallback is safe.
-    if (!same_file(a.out_csv, published)) {
+    const bool writes_table = same_file(a.out_csv, published);
+    // BOTH published artifacts, not just the table (#147). `--trace` opens its
+    // file with a truncating ofstream before any solving, so an unpublished run
+    // aimed at the published trace would replace the anytime profile at exit 0
+    // while `--out` pointed somewhere harmless. The name is reserved whether or
+    // not a trace has been committed yet: the guard has to exist before the
+    // file does, not after the first one is lost.
+    const bool writes_trace = !a.trace_csv.empty() && same_file(a.trace_csv, published_trace);
+    if (!writes_table && !writes_trace) {
         return;
     }
-    // A run that is not the full published measurement must never overwrite
-    // the published results table. Both a partial roster and a shortened
-    // budget qualify -- `--time-limit 2` is the obvious smoke test, and it
-    // would otherwise replace the table with two-second results (the #88
-    // hazard).
-    // An ablation arm is not the published protocol either, and it is the more
-    // dangerous case: its rows would look exactly like the published ones while
-    // having been produced by a different search (#136). Tested before
-    // --time-limit because `--no-time-limit` forces a uniform budget of zero,
-    // and reporting such a run as "--time-limit" would name a flag the caller
-    // never typed. (It is reported as --max-iterations, which --no-time-limit
-    // requires and which sorts first among the arm's non-default flags.)
-    const char* arm = cbls::bench::first_non_default_search_flag(a.search);
-    const char* why = nullptr;
-    if (!a.instances.empty()) {
-        why = "--instance";
-    } else if (arm != nullptr) {
-        why = arm;
-    } else if (a.time_limit_set) {
-        why = "--time-limit";
-    }
+    const char* why = non_published_protocol(a);
     if (why != nullptr) {
-        std::fprintf(stderr,
-                     "%s cannot write the published table %s "
-                     "(pass --out elsewhere for an unpublished run)\n",
-                     why, published.c_str());
+        if (writes_table) {
+            std::fprintf(stderr,
+                         "%s cannot write the published table %s "
+                         "(pass --out elsewhere for an unpublished run)\n",
+                         why, published.c_str());
+        } else {
+            std::fprintf(stderr,
+                         "%s cannot write the published anytime trace %s "
+                         "(pass --trace elsewhere for an unpublished run)\n",
+                         why, published_trace.c_str());
+        }
         std::exit(2);
     }
     // A full-roster run at the documented budgets is the only thing allowed
     // to land here, and it still has to say which engine it measured:
     // "unknown" is exactly the provenance a reader cannot tell engine drift
-    // from a bug with.
+    // from a bug with. It is the trace's provenance too -- every trace row
+    // carries the commit for the same reason.
     if (!a.commit_set) {
         std::fprintf(stderr,
                      "writing %s requires an explicit --commit SHA "
                      "(pass --out elsewhere for an unpublished run)\n",
-                     published.c_str());
+                     (writes_table ? published : published_trace).c_str());
         std::exit(2);
     }
 }
@@ -249,13 +278,16 @@ Args parse_args(int argc, char** argv) {
             a.commit_set = true;
         } else if (c.value_flag("--out", v)) {
             a.out_csv = v;
+        } else if (c.value_flag("--trace", v)) {
+            a.trace_csv = v;
         } else if (cbls::bench::match_search_flag(c, s, a.search)) {
             // A search-configuration flag (#136); the table, the parse and the
             // recorded spelling all live in benchmarks/common/search_config_flags.h.
         } else if (s == "--help" || s == "-h") {
             std::printf(
                 "Usage: cbls_uc_chped [inst-dir] [--verify] [--time-limit S] [--seed N]"
-                " [--feas-tol T] [--instance NAME ...] [--commit SHA] [--out CSV]\n"
+                " [--feas-tol T] [--instance NAME ...] [--commit SHA] [--out CSV]"
+                " [--trace CSV]\n"
                 "       %s\n",
                 cbls::bench::search_flags_usage().c_str());
             std::exit(0);
@@ -365,21 +397,11 @@ std::string fixed2(double v) {
     return {buf.data()};
 }
 
-/// A comma inside a free-text cell would shift every column after it, so the
-/// writer substitutes rather than quoting: these cells are short diagnostics,
-/// and a quoted field would need escaping rules the readers of this table
-/// (grep, awk, a spreadsheet import) do not all implement.
-std::string csv_text(std::string s) {
-    // Nothing here quotes, so every character that would end a field or a
-    // record has to be substituted rather than escaped -- including '"', which
-    // a reader that does honour quoting would otherwise treat as opening one,
-    // and '\r', which turns a row into two on a CRLF-aware reader.
-    std::replace(s.begin(), s.end(), ',', ';');
-    std::replace(s.begin(), s.end(), '"', '\'');
-    std::replace(s.begin(), s.end(), '\n', ' ');
-    std::replace(s.begin(), s.end(), '\r', ' ');
-    return s;
-}
+// The CSV cell rule is shared with the anytime trace (benchmarks/uc-chped/
+// trace_recorder.h) rather than written twice: this runner now emits two CSV
+// files, and a second copy of the substitution list is where one of them
+// silently stops escaping something the other does.
+using cbls::uc_chped::csv_text;
 
 const char* const kCsvHeader =
     "instance,periods,method,objective,lb,gap_pct,time_s,source,note,"
@@ -510,7 +532,8 @@ void write_reference_rows(std::ostream& csv, const cbls::uc_chped::UCInstance& b
 /// the measured part -- what the published row is a measurement *of* -- and
 /// nothing about it depends on how the row is scored or printed.
 cbls::SearchResult solve_instance(const Args& args, const cbls::uc_chped::UCInstance& inst,
-                                  cbls::uc_chped::UCModel& ucm, double tlim) {
+                                  cbls::uc_chped::UCModel& ucm, double tlim,
+                                  cbls::SolveCallback* callback) {
     // Greedy initialization + short FJ polish.
     cbls::uc_chped::greedy_uc_initialize(ucm.model, inst, ucm);
     {
@@ -538,7 +561,7 @@ cbls::SearchResult solve_instance(const Args& args, const cbls::uc_chped::UCInst
     return cbls::solve(ucm.model, cbls::bench::time_limit_argument(args.search, tlim), args.seed,
                        false, cbls::bench::hook_argument(args.search, hook),
                        cbls::bench::lns_argument(args.search, lns),
-                       cbls::bench::lns_interval_argument(args.search), nullptr, cfg);
+                       cbls::bench::lns_interval_argument(args.search), callback, cfg);
 }
 
 /// A solve result scored against the instance's published bounds, before the
@@ -624,15 +647,21 @@ bool verification_withholds(const Args& args, const cbls::uc_chped::UCModel& ucm
 }
 
 /// Solve one (instance, horizon) pair and append its row.
-void run_one(std::ostream& csv, const Args& args, const cbls::uc_chped::UCInstance& inst,
-             const std::string& instance_name, double tlim, Tally& tally) {
+void run_one(std::ostream& csv, std::ofstream& trace, const Args& args,
+             const cbls::uc_chped::UCInstance& inst, const std::string& instance_name, double tlim,
+             Tally& tally) {
     auto ucm = cbls::uc_chped::build_uc_model(inst);
     const int horizon = inst.n_periods;
 
     std::printf("%-20s %6d %6d ", inst.name.c_str(), inst.n_units, horizon);
     std::fflush(stdout);
 
-    const cbls::SearchResult result = solve_instance(args, inst, ucm, tlim);
+    // The trace rows carry the horizon as well as the instance name: this
+    // runner solves one row per (instance, horizon) pair, so a trace keyed on
+    // the instance alone could not be read back to the row it describes (#147).
+    cbls::uc_chped::TraceRecorder recorder(trace, instance_name, horizon, args.commit_sha);
+    const cbls::SearchResult result =
+        solve_instance(args, inst, ucm, tlim, trace.is_open() ? &recorder : nullptr);
     ++tally.solved;
     if (result.feasible) {
         ++tally.feasible;
@@ -699,6 +728,9 @@ bool filter_specs(const Args& args, std::vector<InstanceSpec>& specs) {
 void print_tally(const Args& args, const Tally& tally) {
     std::printf("=== Tally ===\n");
     std::printf("wrote:                %s\n", args.out_csv.c_str());
+    if (!args.trace_csv.empty()) {
+        std::printf("trace:                %s\n", args.trace_csv.c_str());
+    }
     std::printf("commit:               %s\n", args.commit_sha.c_str());
     std::printf("seed:                 %llu\n", static_cast<unsigned long long>(args.seed));
     std::printf("feas-tol:             %g   (engine 'feasible')\n", args.feas_tol);
@@ -759,6 +791,23 @@ int run_benchmark(int argc, char** argv) {
         return 2;
     }
 
+    // The anytime trace (#147), opened only now: `--trace` truncates on open,
+    // and a run that could not load its roster must leave every output file it
+    // was pointed at exactly as it found it. Written in place rather than
+    // through the table's rename dance on purpose -- its value on an
+    // interrupted run is the rows it already has, so each is flushed as it is
+    // written and a killed job keeps its partial profile.
+    std::ofstream trace;
+    if (!args.trace_csv.empty()) {
+        trace.open(args.trace_csv);
+        if (!trace.is_open()) {
+            std::fprintf(stderr, "Failed to open %s for writing\n", args.trace_csv.c_str());
+            return 2;
+        }
+        trace << cbls::uc_chped::kTraceHeader << "\n";
+        trace.flush();
+    }
+
     // Write-then-rename, as benchmarks/mipfeas does: this run takes over an hour
     // at the documented budgets, and a job killed mid-write must leave either
     // the previous table or none, never a truncated one.
@@ -814,7 +863,7 @@ int run_benchmark(int argc, char** argv) {
                 auto lit = time_limits.find(horizon);
                 tlim = lit != time_limits.end() ? lit->second : default_time_limit;
             }
-            run_one(csv, args, inst, base.name, tlim, tally);
+            run_one(csv, trace, args, inst, base.name, tlim, tally);
         }
         std::printf("\n");
     }
@@ -840,6 +889,16 @@ int run_benchmark(int argc, char** argv) {
     }
 
     print_tally(args, tally);
+
+    // A stream error on the trace is reported but does not unpublish the table:
+    // the table is already renamed into place and is valid on its own. The
+    // nonzero exit is what tells the operator that the profile beside it is
+    // short rows -- a truncated trace read as a complete one would defend a
+    // budget on evidence that was never written.
+    if (!args.trace_csv.empty() && !trace) {
+        std::fprintf(stderr, "Error writing %s; the trace is incomplete\n", args.trace_csv.c_str());
+        return 2;
+    }
     return 0;
 }
 
