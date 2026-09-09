@@ -111,7 +111,10 @@ documents. No published Yuck numbers exist for these instances.
   catalogue integer-variable count.
 - `comparison.csv` — written by the `cbls_minlplib` runner: CBLS objective,
   gap-to-BKS, gap-to-dual, feasibility, notes, commit SHA, closest-approach
-  residual (`max_violation`) and integer-variable count (`n_int_vars`).
+  residual (`max_violation`), integer-variable count (`n_int_vars`) and the
+  search configuration the row was produced under (`search_config`, a canonical
+  `key=value;...` cell — see below). The committed table predates that last
+  column and so does not carry it; the next full regeneration writes it.
 - `analysis_notes.csv` — curated per-instance root-cause verdicts
   (`bug` vs `hard`) for instances the runner cannot solve. Merged into
   `comparison.csv`'s note column, so the data carries its own explanation.
@@ -142,6 +145,28 @@ rebuild only the merge after a fresh CBLS run, add `--merge-only` — which is
 what `run_benchmark.py` does for you, so the SCIP baseline is never re-solved
 by a CBLS re-run.
 
+
+### Ablation arms
+
+The runner's search configuration is settable per run rather than per build, and
+whatever was set is recorded in each row's `search_config` cell, so a results
+file states the configuration it was produced under (#136):
+
+```
+--no-float-hook            drop the FloatIntensifyHook
+--no-lns / --lns-interval N   drop LNS, or change how often a kick is a repair
+--compound-moves / --no-compound-moves, --novelty-prob P
+--unproductive-iters N     the #102 unproductive-batch exit (<= 0 = old cadence)
+--perturbation-period N    batches without improvement before a kick
+--max-iterations N         GLS iteration budget (0 = unlimited)
+--no-time-limit            disable the wall clock; requires --max-iterations
+```
+
+Any non-default value refuses to write the published `comparison.csv`: an arm's
+rows would look exactly like the published ones while describing a different
+search. `cbls_uc_chped` carries the same flags, and
+`benchmarks/common/search_config_flags.h` is the single definition of all of
+them.
 ## Re-running the CBLS rows
 
 **One command**, from a configured Release build directory and a clean checkout:
@@ -319,9 +344,12 @@ The spread is wider than that on some rows: re-running the *unmodified* binary
 at the same seed and budget moved `kall_ellipsoids_tc02b` from 55.1% to 78.2%,
 and `eq6_1` spans 7.6–28.7% across four seeds. Treat any single row as one draw,
 not a measurement. Reporting a median over
-several seeds is the fix; it is not done here, and the runner has no flag for a
-deterministic budget yet (the engine supports one — `time_limit = 0` plus
-`SearchConfig::max_iterations` — but `cbls_minlplib` requires `--time-limit > 0`).
+several seeds is the fix; it is not done here. A deterministic budget IS
+available now: `--no-time-limit --max-iterations N` disables the wall clock and
+bounds the run by GLS iterations alone, so a given seed reproduces bit for bit
+(#136). It is not what the published rows above were measured under — they are
+wall-clock runs at 60s — so an iteration-budgeted re-run is a different
+measurement, not a replication of this table.
 
 | | count |
 |---|---|

@@ -234,3 +234,221 @@ def test_uc_chped_requires_a_commit_to_write_the_published_table(tmp_path: Path)
     assert result.returncode == 2, result.stdout
     assert "requires an explicit --commit" in result.stderr, result.stderr
     assert published.read_bytes() == before, "the published table was modified"
+
+
+# The search-configuration flags (#136). An ablation arm is a command-line change
+# recorded in the row, which puts two things at the shell level: the arm must not
+# be able to regenerate the published table as a side effect, and every row the
+# runner writes has to say which arm produced it.
+@pytest.mark.parametrize(
+    "arm",
+    [
+        ["--no-lns"],
+        ["--lns-interval", "5"],
+        ["--no-float-hook"],
+        ["--no-time-limit", "--max-iterations", "100"],
+    ],
+)
+def test_uc_chped_refuses_an_ablation_arm_onto_the_published_table(
+    arm: list[str], tmp_path: Path
+) -> None:
+    if not UC_CHPED_BINARY.exists():
+        pytest.skip("cbls_uc_chped not built")
+    inst_dir = _uc_chped_scratch(tmp_path)
+    published = inst_dir / "comparison.csv"
+    before = published.read_bytes()
+
+    result = subprocess.run(
+        [str(UC_CHPED_BINARY), str(inst_dir), *arm, "--out", str(published)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert "cannot write the published table" in result.stderr, result.stderr
+    assert published.read_bytes() == before, "the published table was modified"
+
+
+def test_uc_chped_rejects_a_clock_free_run_with_no_iteration_budget(tmp_path: Path) -> None:
+    """--no-time-limit alone is a run with no budget at all, which solve() ends
+    immediately -- a full-looking table of empty results."""
+    if not UC_CHPED_BINARY.exists():
+        pytest.skip("cbls_uc_chped not built")
+    inst_dir = _uc_chped_scratch(tmp_path)
+
+    result = subprocess.run(
+        [str(UC_CHPED_BINARY), str(inst_dir), "--no-time-limit", "--out", str(tmp_path / "o.csv")],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert "--max-iterations" in result.stderr, result.stderr
+    assert not (tmp_path / "o.csv").exists()
+
+
+def test_uc_chped_records_the_arm_on_every_measured_row(tmp_path: Path) -> None:
+    """The iteration-budgeted arm end to end: it runs without a wall clock, and
+    every row it measures carries the configuration it was measured under."""
+    if not UC_CHPED_BINARY.exists():
+        pytest.skip("cbls_uc_chped not built")
+    inst_dir = _uc_chped_scratch(tmp_path)
+    out = tmp_path / "arm.csv"
+
+    result = subprocess.run(
+        [
+            str(UC_CHPED_BINARY),
+            str(inst_dir),
+            "--instance",
+            "ucp13",
+            "--no-time-limit",
+            "--max-iterations",
+            "200",
+            "--lns-interval",
+            "5",
+            "--out",
+            str(out),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stderr
+
+    lines = [ln for ln in out.read_text().splitlines() if not ln.startswith("#")]
+    header = lines[0].split(",")
+    assert header[-1] == "search_config"
+    expected = (
+        "float_hook=on;lns=on;lns_interval=5;compound_moves=off;novelty_prob=0.5;"
+        "unproductive_iters=300;perturbation_period=100;max_iterations=200;time_limit=off"
+    )
+    measured = 0
+    for line in lines[1:]:
+        cells = line.split(",")
+        # No short rows: a reader's column count must not depend on the row.
+        assert len(cells) == len(header), line
+        if "CBLS ViolationLS" in line:
+            assert cells[-1] == expected, line
+            measured += 1
+        else:
+            # A cited Pedroso row is not our measurement, so it carries no
+            # configuration -- as it carries no seed or tolerance either.
+            assert cells[-1] == "", line
+    assert measured > 0, "no measured rows in the table"
+
+
+# The same two properties on the MINLPLib runner. Its rows are cheap to provoke:
+# a roster naming an instance whose .nl is absent writes the runner's
+# "not found" row without solving anything, and that row is exactly the
+# early-exit case a new trailing column can silently turn into a short row.
+MINLPLIB_BINARY = Path(__file__).resolve().parents[2] / "build" / "cbls_minlplib"
+
+MINLPLIB_DEFAULT_ARM = (
+    "float_hook=on;lns=on;lns_interval=3;compound_moves=off;novelty_prob=0.5;"
+    "unproductive_iters=300;perturbation_period=100;max_iterations=0;time_limit=on"
+)
+
+
+def _minlplib_scratch(tmp_path: Path) -> Path:
+    inst_dir = tmp_path / "minlplib"
+    inst_dir.mkdir()
+    (inst_dir / "bounds.csv").write_text(
+        "instance,structure,nvars,ncons,objsense,primal_bks,dual_bound\nnosuch,NLP,1,1,min,1,1\n"
+    )
+    return inst_dir
+
+
+def _run_minlplib(*args: str, timeout: int = 120) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(MINLPLIB_BINARY), *args], capture_output=True, text=True, timeout=timeout
+    )
+
+
+@pytest.mark.parametrize("explicit_out", [True, False])
+def test_minlplib_refuses_an_ablation_arm_onto_the_published_table(
+    explicit_out: bool, tmp_path: Path
+) -> None:
+    if not MINLPLIB_BINARY.exists():
+        pytest.skip("cbls_minlplib not built")
+    inst_dir = _minlplib_scratch(tmp_path)
+    published = inst_dir / "comparison.csv"
+    published.write_text("published rows nobody may overwrite\n")
+    before = published.read_bytes()
+
+    args = [str(inst_dir), "--no-float-hook"]
+    if explicit_out:
+        # Naming the published table explicitly must not buy a way past the
+        # guard; that is the shape the documented full-roster command uses.
+        args += ["--out", str(published)]
+    result = _run_minlplib(*args)
+
+    assert result.returncode == 2, result.stdout
+    assert "cannot write the published table" in result.stderr, result.stderr
+    assert published.read_bytes() == before, "the published table was modified"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        ["--lns-interval"],  # a value flag with no value: the ArgCursor rule
+        ["--lns-interval", "x"],  # not an integer
+        ["--max-iterations", "1.5"],  # trailing characters, so not an integer
+        ["--novelty-prob", "2"],  # a number, but not one the engine can use
+        ["--no-time-limit"],  # no iteration budget, so no budget at all
+    ],
+)
+def test_minlplib_rejects_a_bad_search_flag_value(bad: list[str], tmp_path: Path) -> None:
+    """A bad value reports and exits rather than silently keeping the default --
+    the shared policy the runners' other flags already follow."""
+    if not MINLPLIB_BINARY.exists():
+        pytest.skip("cbls_minlplib not built")
+    inst_dir = _minlplib_scratch(tmp_path)
+    out = tmp_path / "scratch.csv"
+
+    result = _run_minlplib(str(inst_dir), *bad, "--out", str(out))
+
+    assert result.returncode == 2, result.stdout
+    assert result.stderr.strip(), "a rejected value must say what was wrong"
+    assert not out.exists()
+
+
+def test_minlplib_records_the_arm_on_an_early_exit_row(tmp_path: Path) -> None:
+    if not MINLPLIB_BINARY.exists():
+        pytest.skip("cbls_minlplib not built")
+    inst_dir = _minlplib_scratch(tmp_path)
+    out = tmp_path / "arm.csv"
+
+    result = _run_minlplib(
+        str(inst_dir), "--compound-moves", "--novelty-prob", "0.25", "--out", str(out)
+    )
+    assert result.returncode == 0, result.stderr
+
+    lines = out.read_text().splitlines()
+    header = lines[0].split(",")
+    assert header[-1] == "search_config"
+    assert len(lines) == 2, lines  # the roster's one instance, which has no .nl
+    cells = lines[1].split(",")
+    assert len(cells) == len(header), lines[1]
+    assert cells[-1] == MINLPLIB_DEFAULT_ARM.replace(
+        "compound_moves=off", "compound_moves=on"
+    ).replace("novelty_prob=0.5", "novelty_prob=0.25")
+
+
+def test_minlplib_help_lists_the_search_flags() -> None:
+    if not MINLPLIB_BINARY.exists():
+        pytest.skip("cbls_minlplib not built")
+    result = _run_minlplib("--help")
+    assert result.returncode == 0
+    for flag in (
+        "--no-float-hook",
+        "--no-lns",
+        "--lns-interval",
+        "--novelty-prob",
+        "--unproductive-iters",
+        "--perturbation-period",
+        "--max-iterations",
+        "--no-time-limit",
+    ):
+        assert flag in result.stdout, flag

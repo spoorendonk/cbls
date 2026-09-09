@@ -171,14 +171,14 @@ Three conventions therefore rest on you rather than on a tool: branch only from 
 
 ### Fast vs. slow tests
 
-The C++ suite is **327 `TEST_CASE`s**: 323 registered by `catch_discover_tests`
-plus the **4 `[timing]` cases registered by hand**. Of the 323, **6 carry the
+The C++ suite is **347 `TEST_CASE`s**: 343 registered by `catch_discover_tests`
+plus the **4 `[timing]` cases registered by hand**. Of the 343, **6 carry the
 Catch2 `[slow]` tag** — the CHPED and UC-CHPED benchmark solves, ~103s of
 aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~40s
 wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 318 tests, ~8s with `-j`. This is what **pre-commit** runs.
+- `ctest -LE slow` — the other 338 tests, ~9s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
 - `ctest -L timing` — 4 tests: `timing_structural_batch_deadline` plus the three
   `timing_throughput_*` floors added for #125. Each is registered by an explicit
@@ -205,7 +205,7 @@ agree:
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
 4. the comment above the `ctest` call in `.githooks/pre-commit`,
-5. the `.venv/bin/pytest` line in `README.md` for the Python side (275 tests, 81
+5. the `.venv/bin/pytest` line in `README.md` for the Python side (290 tests, 81
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`),
 6. the `-LE slow` guidance and the ~40s/~304s figures in `docs/profiling.md`.
@@ -505,22 +505,42 @@ from disk rather than from a `data.h`, and no benchmark ships a custom
 by `examples/chped.cpp` and `tests/test_chped.cpp`, with no runner of its own.
 
 `benchmarks/common/` is **not** a benchmark. It holds headers shared across
-runners — currently `runner_args.h`, which holds two things. First the
-flag-value *reporting policy* (a bad double reports and returns NaN for a later
-positivity guard to turn into exit 2; a bad integer reports and exits 2),
-layered over the pure parsing *rule* in `include/cbls/arg_parse.h`. Second
-`ArgCursor`, the value-flag matching rule: a flag that takes a value matches
-only when a value actually follows it, so a trailing `--budget` falls through to
-the runner's unknown-argument path instead of reading past `argv` or silently
-keeping a default that a published table would then be built on. `mipfeas`,
-`minlplib` and `uc-chped` share both; `setcover` deliberately does not, and says
-why at its own `parse_args`. The policy split is deliberate: the rule is a library
-concern, the policy writes to stderr and calls `std::exit` and is pinned by
+runners: `runner_args.h` and `search_config_flags.h`.
+
+`runner_args.h` holds three things. First the flag-value *reporting policy* (a
+bad double reports and returns NaN for a later positivity guard to turn into
+exit 2; a bad integer reports and exits 2), layered over the pure parsing *rule*
+in `include/cbls/arg_parse.h`. Second `ArgCursor`, the value-flag matching rule:
+a flag that takes a value matches only when a value actually follows it, so a
+trailing `--budget` falls through to the runner's unknown-argument path instead
+of reading past `argv` or silently keeping a default that a published table would
+then be built on. Third `same_file`, the published-table guard's path
+comparison — canonicalised where the file exists, so that naming the published
+table explicitly (which the documented commands do) is held to the same rule as
+defaulting into it. `mipfeas`, `minlplib` and `uc-chped` share the first two;
+`setcover` deliberately does not, and says why at its own `parse_args`. The
+policy split is deliberate: the rule is a library concern, the policy writes to
+stderr and calls `std::exit` and is pinned by
 `tests/python/test_run_benchmark.py`, so it lives next to the programs those
-tests run. It has no CMake target — runners reach it through the
+tests run.
+
+`search_config_flags.h` is the per-arm search configuration (#136): the flag
+table, its parse, its validation, its application onto `cbls::SearchConfig` and
+`solve()`'s arguments, and the canonical `search_config` cell every row carries.
+`minlplib` and `uc-chped` share it. Two rules it exists to enforce: **a flag
+whose field the engine ignores must not ship** (the header names the two
+rejected — the GLS ρ and `use_fj`, whose argument `solve()` opens by discarding),
+and **a non-default arm may never write a published comparison table**, which is
+why `first_non_default_search_flag` feeds both runners' `resolve_out_csv`. Every
+flag has a behavioural probe in `tests/test_bench_flags.cpp`; add one with the
+next flag, and check it fails when the apply step is neutered.
+
+Neither header has a CMake target — runners reach them through the
 `target_include_directories(<target> PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})` line
 each already carries, so a new runner target that omits that line will not
-compile `<benchmarks/common/...>`.
+compile `<benchmarks/common/...>`. `cbls_tests` carries the same line for
+`${CMAKE_SOURCE_DIR}`, which is what lets a Catch2 test include them without a
+runner `main()`.
 
 ### Benchmark priority
 
