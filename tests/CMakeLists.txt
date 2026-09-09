@@ -17,6 +17,7 @@ add_executable(cbls_tests
     test_io_mps.cpp
     test_bound_propagation.cpp
     test_mipfeas.cpp
+    test_bench_flags.cpp
     test_minlplib.cpp
     test_setcover.cpp
     test_throughput.cpp
