@@ -658,6 +658,10 @@ def test_minlplib_records_the_arm_on_an_early_exit_row(tmp_path: Path) -> None:
     assert cells[-1] == MINLPLIB_DEFAULT_ARM.replace(
         "compound_moves=off", "compound_moves=on"
     ).replace("novelty_prob=0.5", "novelty_prob=0.25")
+    # The #143 LNS counter is on the row too, and on THIS row it must read NaN:
+    # no solve ran, and a 0 here would be indistinguishable from "LNS ran and
+    # never repaired" -- the reading the ablation's LNS gate is decided on.
+    assert dict(zip(header, cells, strict=True))["lns_repairs"] == "NaN"
 
 
 def test_minlplib_refuses_an_ablation_arm_onto_the_published_trace(tmp_path: Path) -> None:

@@ -111,10 +111,12 @@ documents. No published Yuck numbers exist for these instances.
   catalogue integer-variable count.
 - `comparison.csv` — written by the `cbls_minlplib` runner: CBLS objective,
   gap-to-BKS, gap-to-dual, feasibility, notes, commit SHA, closest-approach
-  residual (`max_violation`), integer-variable count (`n_int_vars`) and the
-  search configuration the row was produced under (`search_config`, a canonical
-  `key=value;...` cell — see below). The committed table predates that last
-  column and so does not carry it; the next full regeneration writes it.
+  residual (`max_violation`), integer-variable count (`n_int_vars`), the LNS
+  destroy-repair count of the run (`lns_repairs`, `NaN` on a row where no solve
+  completed) and the search configuration the row was produced under
+  (`search_config`, a canonical `key=value;...` cell — see below). The committed
+  table predates the last two columns and so does not carry them; the next full
+  regeneration writes both.
 - `analysis_notes.csv` — curated per-instance root-cause verdicts
   (`bug` vs `hard`) for instances the runner cannot solve. Merged into
   `comparison.csv`'s note column, so the data carries its own explanation.

@@ -490,15 +490,22 @@ std::string cell(double v) {
 /// stdout.
 void write_preread_row(std::ostream& csv, const Args& args, const std::string& name,
                        const std::string& note) {
-    csv << name << ",NaN,NaN,NaN,NaN,NaN,0,false," << note << "," << args.commit_sha << ",NaN,NaN,"
-        << args.search_config << "\n";
+    csv << name << ",NaN,NaN,NaN,NaN,NaN,0,false," << note << "," << args.commit_sha
+        << ",NaN,NaN,NaN," << args.search_config << "\n";
 }
 
 /// A row for an instance that was built but produced no publishable objective.
+///
+/// `lns_repairs` is the run's LNS destroy-repair count as a cell, which is
+/// "NaN" wherever no solve completed. Writing 0 there would be a different
+/// claim -- "LNS ran and never repaired" is the reading that gates the #143
+/// LNS arm, and a row where nothing ran must not be able to vote in it.
 void write_unsolved_row(std::ostream& csv, const Args& args, const std::string& name,
-                        const Bounds& b, double wall, const std::string& note, int n_discrete) {
+                        const Bounds& b, double wall, const std::string& note, int n_discrete,
+                        const std::string& lns_repairs) {
     csv << name << ",NaN," << b.primal << "," << b.dual << ",NaN,NaN," << wall << ",false," << note
-        << "," << args.commit_sha << ",NaN," << n_discrete << "," << args.search_config << "\n";
+        << "," << args.commit_sha << ",NaN," << n_discrete << "," << lns_repairs << ","
+        << args.search_config << "\n";
 }
 
 /// Reads the instance's .nl. Returns false having written the row and bumped the
@@ -762,7 +769,7 @@ bool prepare_instance(std::ostream& csv, const Args& args, const std::string& na
         std::replace(note.begin(), note.end(), ',', ';');
         std::printf("%-22s  (skipped: %s)\n", name.c_str(), note.c_str());
         ++t.skipped_unsupported;
-        write_unsolved_row(csv, args, name, b, 0.0, note, prob.n_discrete_vars);
+        write_unsolved_row(csv, args, name, b, 0.0, note, prob.n_discrete_vars, "NaN");
         return false;
     }
     ++t.closed;
@@ -815,7 +822,7 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
     } catch (const std::exception& e) {
         std::printf(" ERROR solving: %s\n", e.what());
         ++t.errored;
-        write_unsolved_row(csv, args, name, b, 0.0, "solve-error", prob.n_discrete_vars);
+        write_unsolved_row(csv, args, name, b, 0.0, "solve-error", prob.n_discrete_vars, "NaN");
         return;
     }
     auto t1 = std::chrono::steady_clock::now();
@@ -839,7 +846,8 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
             note += "; " + integrality_note;
         }
         std::printf("%12s %12.4g %10s %8.2fs  %s\n", "NONFIN", b.primal, "N/A", wall, note.c_str());
-        write_unsolved_row(csv, args, name, b, wall, note, prob.n_discrete_vars);
+        write_unsolved_row(csv, args, name, b, wall, note, prob.n_discrete_vars,
+                           std::to_string(result.lns_repairs));
         return;
     }
 
@@ -878,7 +886,8 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
     csv << name << "," << cell(pub_obj) << "," << cell(b.primal) << "," << cell(b.dual) << ","
         << cell(pub_gap_bks) << "," << cell(pub_gap_dual) << "," << wall << ","
         << (verified ? "true" : "false") << "," << note << "," << args.commit_sha << ","
-        << cell(max_violation) << "," << prob.n_discrete_vars << "," << args.search_config << "\n";
+        << cell(max_violation) << "," << prob.n_discrete_vars << "," << result.lns_repairs << ","
+        << args.search_config << "\n";
     csv.flush();
 }
 
@@ -957,12 +966,16 @@ int run_benchmark(int argc, char** argv) {
         std::fprintf(stderr, "Failed to open %s for writing\n", args.out_csv.c_str());
         return 2;
     }
-    // `search_config` is appended last and is written on EVERY row, the
-    // early-exit ones included: a short row would make a reader's column count
-    // depend on how the instance failed, and a row with no configuration on it
-    // is a row nobody can reproduce (#136).
+    // `search_config` stays last and is written on EVERY row, the early-exit
+    // ones included: a short row would make a reader's column count depend on
+    // how the instance failed, and a row with no configuration on it is a row
+    // nobody can reproduce (#136). `lns_repairs` goes in front of it for the
+    // same reason the other counters do -- it describes the run, not the arm --
+    // and it is published because an ablation that asks whether LNS is worth
+    // its budget has to be able to read whether LNS did anything at all (#143).
     csv << "instance,objective,primal_bks,dual_bound,gap_to_bks%,gap_to_dual%,"
-           "wall_seconds,feasible,note,commit_sha,max_violation,n_int_vars,search_config\n";
+           "wall_seconds,feasible,note,commit_sha,max_violation,n_int_vars,lns_repairs,"
+           "search_config\n";
 
     std::printf("\n%-22s %12s %12s %10s %9s  %s\n", "Instance", "Objective", "BKS", "Gap%",
                 "Time(s)", "Note");
