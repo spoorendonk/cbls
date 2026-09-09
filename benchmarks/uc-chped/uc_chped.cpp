@@ -514,7 +514,14 @@ cbls::SearchResult solve_instance(const Args& args, const cbls::uc_chped::UCInst
     {
         cbls::RNG init_rng(args.seed);
         cbls::ViolationManager init_vm(ucm.model);
-        cbls::fj_nl_initialize(ucm.model, init_vm, 200, &init_rng, 1.0);
+        // The polish pass is bounded by its 200 iterations; the 1s is only a
+        // safety cap on a pathological model. Under --no-time-limit it is
+        // dropped (0 = no wall clock), because a clock anywhere in the run is
+        // exactly what makes an iteration-budgeted arm stop being reproducible
+        // -- a slow machine would truncate the warm start and start the search
+        // from a different point (#136).
+        const double init_limit = args.search.no_time_limit ? 0.0 : 1.0;
+        cbls::fj_nl_initialize(ucm.model, init_vm, 200, &init_rng, init_limit);
     }
 
     cbls::FloatIntensifyHook hook;

@@ -872,8 +872,15 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
 
 void print_tally(const Args& args, const Tally& t) {
     std::printf("\n=== Tally ===\n");
-    std::printf("time limit:           %.0fs/instance, seed %llu, feas-tol %.0e\n", args.time_limit,
-                static_cast<unsigned long long>(args.seed), args.feas_tol);
+    // "0s/instance" would read as a bug rather than as the clock-free arm, and
+    // the tally is what a reader checks a run against.
+    if (args.search.no_time_limit) {
+        std::printf("time limit:           none (--no-time-limit), seed %llu, feas-tol %.0e\n",
+                    static_cast<unsigned long long>(args.seed), args.feas_tol);
+    } else {
+        std::printf("time limit:           %.0fs/instance, seed %llu, feas-tol %.0e\n",
+                    args.time_limit, static_cast<unsigned long long>(args.seed), args.feas_tol);
+    }
     std::printf("search config:        %s\n", args.search_config.c_str());
     std::printf("parsed:               %d\n", t.parsed);
     std::printf("closed (built):       %d\n", t.closed);
