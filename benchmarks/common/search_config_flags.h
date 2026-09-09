@@ -5,6 +5,7 @@
 #include <cbls/inner_solver.h>
 #include <cbls/lns.h>
 #include <cbls/search.h>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -149,9 +150,14 @@ inline bool validate_search_flags(const SearchFlags& f, bool time_limit_set, std
         error = "--lns-interval must be >= 1 (use --no-lns to switch LNS off)";
         return false;
     }
-    // Written as the negation so that NaN -- what parse_double returns for a
-    // value that is not a number -- fails the check rather than passing it.
-    if (!(f.novelty_prob >= 0.0 && f.novelty_prob <= 1.0)) {
+    // NaN is tested first and by name. parse_double returns NaN for a value
+    // that is not a number, and NaN compares false against every bound, so a
+    // range test alone would ACCEPT the typo it is meant to catch. (Written as
+    // `!(p >= 0 && p <= 1)` instead, the NaN case is covered but
+    // readability-simplify-boolean-expr asks for a DeMorgan rewrite that
+    // silently loses it -- so the check is right about the form and wrong about
+    // the meaning, and this spelling satisfies both.)
+    if (std::isnan(f.novelty_prob) || f.novelty_prob < 0.0 || f.novelty_prob > 1.0) {
         error = "--novelty-prob must be in [0, 1]";
         return false;
     }
