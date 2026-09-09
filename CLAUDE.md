@@ -171,14 +171,14 @@ Three conventions therefore rest on you rather than on a tool: branch only from 
 
 ### Fast vs. slow tests
 
-The C++ suite is **348 `TEST_CASE`s**: 344 registered by `catch_discover_tests`
-plus the **4 `[timing]` cases registered by hand**. Of the 344, **6 carry the
+The C++ suite is **353 `TEST_CASE`s**: 349 registered by `catch_discover_tests`
+plus the **4 `[timing]` cases registered by hand**. Of the 349, **6 carry the
 Catch2 `[slow]` tag** — the CHPED and UC-CHPED benchmark solves, ~103s of
 aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~40s
 wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 339 tests, ~9s with `-j`. This is what **pre-commit** runs.
+- `ctest -LE slow` — the other 344 tests, ~9s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
 - `ctest -L timing` — 4 tests: `timing_structural_batch_deadline` plus the three
   `timing_throughput_*` floors added for #125. Each is registered by an explicit
@@ -205,7 +205,7 @@ agree:
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
 4. the comment above the `ctest` call in `.githooks/pre-commit`,
-5. the `.venv/bin/pytest` line in `README.md` for the Python side (293 tests, 81
+5. the `.venv/bin/pytest` line in `README.md` for the Python side (295 tests, 81
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`),
 6. the `-LE slow` guidance and the ~40s/~304s figures in `docs/profiling.md`.

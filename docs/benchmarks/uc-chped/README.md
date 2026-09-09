@@ -207,6 +207,38 @@ re-check by `verify_uc_chped()` at its own tolerances — `1e-4` on its
 UC-semantic checks and `1e-6` on the generic `cbls::verify_model()` pass it runs
 first — so the two columns answer different questions.
 
+### The anytime trace
+
+`--trace PATH` writes an incumbent-versus-wall-time profile beside the results
+(issue #147):
+
+```bash
+./build/cbls_uc_chped --instance ucp13 --out /tmp/ucp13.csv \
+                      --trace /tmp/ucp13-trace.csv \
+                      --commit "$(git rev-parse --short=7 HEAD)"
+```
+
+Columns are `instance,periods,time_seconds,objective,new_best,commit_sha`. The
+horizon is there because this runner solves **one row per (instance, horizon)
+pair** — unlike the MINLPLib runner, whose trace needs only an instance name —
+so without it a trace cannot be read back to the row it describes. `new_best`
+is 1 on an improvement and 0 on the periodic (~1s) report the search emits
+regardless, and the commit is on every row for the same reason `comparison.csv`
+carries it: a search-trajectory change silently invalidates a profile.
+
+Only rows with a feasible incumbent and a finite objective appear, so the first
+row of a block is that horizon's time-to-first-feasible and the last is where
+the budget left it.
+
+Why it exists: every published number here is a gap measured **at** a
+per-horizon budget (`horizon_budget()` in the runner), and without a record of
+what the incumbent was doing when the clock stopped, an engine limitation and a
+budget that was simply too short look identical. `<inst-dir>/anytime_trace.csv`
+is reserved as the published profile and is refused to any run that is not the
+full published measurement, exactly as `comparison.csv` is — `--trace`
+truncates on open, so an ablation arm aimed at it would replace it at exit 0
+while `--out` pointed somewhere harmless.
+
 Archived results:
 
 ### 13-Unit System

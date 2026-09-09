@@ -11,6 +11,7 @@ Nothing in-process can distinguish that from a clean non-zero exit.
 
 from __future__ import annotations
 
+import math
 import subprocess
 from pathlib import Path
 
@@ -337,6 +338,108 @@ def test_uc_chped_records_the_arm_on_every_measured_row(tmp_path: Path) -> None:
             # configuration -- as it carries no seed or tolerance either.
             assert cells[-1] == "", line
     assert measured > 0, "no measured rows in the table"
+
+
+# The anytime trace (#147). The defect was that this runner passed `nullptr`
+# where solve() takes a SolveCallback, so nothing recorded what the incumbent was
+# doing when the clock stopped and every published gap was a number at an
+# undefended budget. The Catch2 side (tests/test_uc_chped_trace.cpp) pins the
+# recorder's contract; what only the shell can prove is that the RUNNER hands it
+# to solve() -- with the argument back at `nullptr` the file below still gets its
+# header and no rows at all.
+UC_CHPED_TRACE_HEADER = "instance,periods,time_seconds,objective,new_best,commit_sha"
+
+
+def test_uc_chped_records_an_anytime_trace(tmp_path: Path) -> None:
+    """--trace writes an incumbent-versus-time profile that names the (instance,
+    horizon) row it belongs to and the engine commit it was measured on."""
+    if not UC_CHPED_BINARY.exists():
+        pytest.skip("cbls_uc_chped not built")
+    inst_dir = _uc_chped_scratch(tmp_path)
+    out = tmp_path / "run.csv"
+    trace = tmp_path / "trace.csv"
+
+    # Iteration-budgeted, so the run is bounded by work rather than by this
+    # machine's speed: the same reason test_uc_chped_records_the_arm_on_every
+    # _measured_row uses it. The wall-clock cells in the trace are still real
+    # seconds; nothing below asserts on their values.
+    result = subprocess.run(
+        [
+            str(UC_CHPED_BINARY),
+            str(inst_dir),
+            "--instance",
+            "ucp13",
+            "--no-time-limit",
+            "--max-iterations",
+            "200",
+            "--commit",
+            "deadbee",
+            "--out",
+            str(out),
+            "--trace",
+            str(trace),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stderr
+    assert str(trace) in result.stdout, "the tally does not say where the trace went"
+
+    lines = trace.read_text().splitlines()
+    assert lines[0] == UC_CHPED_TRACE_HEADER
+    rows = [ln.split(",") for ln in lines[1:] if ln]
+    # The point of the test: rows, not just a header. A header-only file is
+    # exactly what the unfixed runner produces.
+    assert rows, "the trace has no rows, so no callback reached solve()"
+
+    horizons = set()
+    for cells in rows:
+        assert len(cells) == len(UC_CHPED_TRACE_HEADER.split(",")), cells
+        assert cells[0] == "ucp13"
+        # One row per (instance, horizon) pair, so the horizon is what makes a
+        # trace row attributable at all.
+        assert cells[1] in {"1", "3", "6", "12", "24"}, cells
+        assert float(cells[2]) >= 0.0
+        assert math.isfinite(float(cells[3]))
+        assert cells[4] in {"0", "1"}
+        assert cells[5] == "deadbee"
+        horizons.add(cells[1])
+    # Every horizon this run solved appears, not just the first: a trace that
+    # covered one row could not defend a budget map with a number per horizon.
+    assert horizons == {"1", "3", "6", "12", "24"}, horizons
+
+
+def test_uc_chped_refuses_a_trace_onto_the_published_trace(tmp_path: Path) -> None:
+    """`--trace` truncates on open before any solving, so an unpublished run
+    aimed at the reserved trace name would replace the published profile at exit
+    0 while --out pointed somewhere harmless."""
+    if not UC_CHPED_BINARY.exists():
+        pytest.skip("cbls_uc_chped not built")
+    inst_dir = _uc_chped_scratch(tmp_path)
+    published_trace = inst_dir / "anytime_trace.csv"
+    published_trace.write_text("published rows nobody may overwrite\n")
+    before = published_trace.read_bytes()
+
+    result = subprocess.run(
+        [
+            str(UC_CHPED_BINARY),
+            str(inst_dir),
+            "--instance",
+            "ucp13",
+            "--out",
+            str(tmp_path / "elsewhere.csv"),
+            "--trace",
+            str(published_trace),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert "cannot write the published anytime trace" in result.stderr, result.stderr
+    assert published_trace.read_bytes() == before, "the published trace was modified"
 
 
 # The same two properties on the MINLPLib runner. Its rows are cheap to provoke:
