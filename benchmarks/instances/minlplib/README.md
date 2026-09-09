@@ -136,6 +136,11 @@ documents. No published Yuck numbers exist for these instances.
 - `../../minlplib/run_benchmark.py` — the CBLS re-run driver. See
   "Re-running the CBLS rows" below; that is the supported way to regenerate
   `comparison.csv`.
+- `../../minlplib/run_ablation.py`, `../../minlplib/ablation_report.py` — the
+  ablation campaign driver and its scoring (issue #143). See "The ablation
+  campaign" below. It writes only to a scratch `--out-dir` and refuses one
+  anywhere inside `benchmarks/instances/`, so it can never touch the files
+  listed above.
 
 Regenerate `scip_baseline.csv` and `comparison_all.csv` with (needs the
 `benchmarks` extra — `pip install -e '.[benchmarks]'`):
@@ -173,6 +178,49 @@ Any non-default value refuses to write the published `comparison.csv` (and
 while describing a different search. `cbls_uc_chped` carries the same flags, and
 `benchmarks/common/search_config_flags.h` is the single definition of all of
 them.
+
+### The ablation campaign
+
+`benchmarks/minlplib/run_ablation.py` runs the arms above as one interleaved
+campaign (issue #143) and `ablation_report.py` scores it:
+
+    .venv/bin/python3 -m benchmarks.minlplib.run_ablation --out-dir /scratch/ablation
+
+The same command resumes after an interruption; `--dry-run` prints the plan and
+the cost, `--report-only` re-scores an existing `results.csv`. Four properties
+are the point of it and each is pinned by a test in
+`tests/python/test_minlplib_ablation.py`:
+
+* **Interleaved per instance.** Every (arm, seed) for one instance runs back to
+  back before the next instance, with the arms innermost, so a control and its
+  arm are minutes apart rather than a roster pass apart. Arm-major order would
+  make every comparison a comparison across an hour of machine drift.
+* **Serial, and asserted.** One solve process at a time, under an exclusive lock
+  on the out-dir plus a load-average refusal at start.
+* **Scratch only.** `--out-dir` is refused anywhere inside
+  `benchmarks/instances/`, and the runner is always invoked with `--instance`,
+  which is its own refusal to write the published table. The control arm needs
+  both: its flags are all default, so the runner's arm guard alone would let it
+  through.
+* **Resumable.** Each completed run is appended to `<out-dir>/results.csv` and
+  fsynced before the next starts; a restart skips exactly the recorded
+  `(instance, arm, seed)` triples and refuses an out-dir stamped with another
+  commit, budget, seed set or arm set.
+
+The `--no-lns` arm is **gated on data, not on judgement**: a one-seed control
+pass over the roster is run first purely to read the `lns_repairs` column, and
+the arm runs only if some instance recorded a repair. With no repair anywhere
+the engine takes the same branch at every diversification kick with or without
+LNS, so the arm would measure nothing; the reading and the verdict are written
+to `<out-dir>/lns_gate.json` either way.
+
+The **noise floor is measured**, from the control's own across-seed spread —
+per instance `2 * s_i * sqrt(1/k_arm + 1/k_control)`, and on the aggregate the
+same quantity propagated through the mean. `ablation_report.py`'s module
+docstring is the definition of record. Any effect at or inside its floor is
+reported as "inside the noise" with the floor quoted; an instance where one arm
+is feasible and the other is not contributes no gap delta at all and is counted
+in its own bucket instead.
 
 ## Re-running the CBLS rows
 
