@@ -747,14 +747,113 @@ void print_tally(const Args& args, const Tally& tally) {
     }
 }
 
-int run_benchmark(int argc, char** argv) {
-    const Args args = parse_args(argc, argv);
-
-    // Time limits per number of periods, used unless --time-limit overrides.
-    std::map<int, double> time_limits = {
+/// The per-horizon wall-clock budget, unless `--time-limit` overrides it
+/// uniformly.
+///
+/// This map is the thing issue #147's traces exist to defend: every published
+/// gap percentage is a measurement AT one of these numbers, so a horizon whose
+/// incumbent was still improving when its budget expired publishes a budget
+/// artifact rather than an engine result. Collect the evidence with `--trace`
+/// before changing a number here.
+double horizon_budget(const Args& args, int horizon) {
+    if (args.time_limit_set) {
+        return args.time_limit;
+    }
+    static const std::map<int, double> kBudgets = {
         {1, 10.0}, {3, 30.0}, {6, 60.0}, {12, 120.0}, {24, 300.0}, {48, 600.0}, {168, 600.0},
     };
-    const double default_time_limit = 300.0;
+    constexpr double kDefaultBudget = 300.0;
+    auto it = kBudgets.find(horizon);
+    return it != kBudgets.end() ? it->second : kDefaultBudget;
+}
+
+/// Reads every rostered instance, reporting each failure by name. Returns false
+/// if ANY of them failed.
+///
+/// The whole roster is loaded BEFORE any output file is opened. The cited
+/// Pedroso rows are regenerated from each instance's known_bounds, so a run
+/// started from the wrong directory would otherwise replace the published table
+/// with one that has no cited rows at all -- the failure that emptied the
+/// miplib-fj table. Every uc-chped instance is committed in this repo and
+/// nothing downloads them, so a missing .jsonl is a setup error, not a result:
+/// report it and leave the existing files untouched.
+bool load_roster(const Args& args, const std::vector<InstanceSpec>& specs,
+                 std::vector<cbls::uc_chped::UCInstance>& loaded) {
+    loaded.assign(specs.size(), cbls::uc_chped::UCInstance{});
+    bool all_loaded = true;
+    for (size_t i = 0; i < specs.size(); ++i) {
+        try {
+            loaded[i] = cbls::uc_chped::load_jsonl(args.inst_dir + "/" + specs[i].filename);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "Cannot load %s: %s\n", specs[i].filename.c_str(), e.what());
+            all_loaded = false;
+        }
+    }
+    if (!all_loaded) {
+        std::fprintf(stderr, "Refusing to write %s from an incomplete roster.\n",
+                     args.out_csv.c_str());
+    }
+    return all_loaded;
+}
+
+/// Opens the anytime trace (#147) and writes its header. A run without
+/// `--trace` leaves the stream closed, which is what run_one reads as "pass no
+/// callback".
+///
+/// Called only once the roster has loaded: `--trace` truncates on open, and a
+/// run that cannot proceed must leave every output file it was pointed at
+/// exactly as it found it. Written in place rather than through the table's
+/// rename dance on purpose -- the value of a trace from an interrupted run is
+/// the rows it already has, so each is flushed as it is written and a killed
+/// job keeps its partial profile.
+bool open_trace(const Args& args, std::ofstream& trace) {
+    if (args.trace_csv.empty()) {
+        return true;
+    }
+    trace.open(args.trace_csv);
+    if (!trace.is_open()) {
+        std::fprintf(stderr, "Failed to open %s for writing\n", args.trace_csv.c_str());
+        return false;
+    }
+    trace << cbls::uc_chped::kTraceHeader << "\n";
+    trace.flush();
+    return true;
+}
+
+/// The measurement itself: every (instance, horizon) pair in roster order.
+/// Separated from run_benchmark because that function's remaining job is files
+/// -- which ones may be written, opening them, and publishing the table -- and
+/// this one's is the solves.
+void solve_roster(std::ostream& csv, std::ofstream& trace, const Args& args,
+                  const std::vector<InstanceSpec>& specs,
+                  const std::vector<cbls::uc_chped::UCInstance>& loaded, Tally& tally) {
+    for (size_t i = 0; i < specs.size(); ++i) {
+        const cbls::uc_chped::UCInstance& base = loaded[i];
+        for (int horizon : specs[i].periods) {
+            if (horizon > base.n_periods) {
+                std::printf("%-20s %6d %6d  (skipped: T > n_periods)\n", base.name.c_str(),
+                            base.n_units, horizon);
+                Row r;
+                r.instance = base.name;
+                r.periods = horizon;
+                r.method = "CBLS ViolationLS";
+                r.note = "skipped: T > n_periods";
+                r.commit_sha = args.commit_sha;
+                r.search_config = args.search_config;
+                write_row(csv, r);
+                continue;
+            }
+            // `horizon == base.n_periods` is already the right size.
+            const cbls::uc_chped::UCInstance inst =
+                horizon < base.n_periods ? cbls::uc_chped::make_subinstance(base, horizon) : base;
+            run_one(csv, trace, args, inst, base.name, horizon_budget(args, horizon), tally);
+        }
+        std::printf("\n");
+    }
+}
+
+int run_benchmark(int argc, char** argv) {
+    const Args args = parse_args(argc, argv);
 
     // Instance specs: filename + period options.
     std::vector<InstanceSpec> specs = {
@@ -768,44 +867,14 @@ int run_benchmark(int argc, char** argv) {
         return 2;
     }
 
-    // Load the whole roster BEFORE opening the output file. The cited Pedroso
-    // rows are regenerated from each instance's known_bounds, so a run started
-    // from the wrong directory would otherwise replace the published table with
-    // one that has no cited rows at all -- the failure that emptied the
-    // miplib-fj table. Every uc-chped instance is committed in this repo and
-    // nothing downloads them, so a missing .jsonl is a setup error, not a
-    // result: report it and leave the existing file untouched.
-    std::vector<cbls::uc_chped::UCInstance> loaded(specs.size());
-    bool all_loaded = true;
-    for (size_t i = 0; i < specs.size(); ++i) {
-        try {
-            loaded[i] = cbls::uc_chped::load_jsonl(args.inst_dir + "/" + specs[i].filename);
-        } catch (const std::exception& e) {
-            std::fprintf(stderr, "Cannot load %s: %s\n", specs[i].filename.c_str(), e.what());
-            all_loaded = false;
-        }
-    }
-    if (!all_loaded) {
-        std::fprintf(stderr, "Refusing to write %s from an incomplete roster.\n",
-                     args.out_csv.c_str());
+    std::vector<cbls::uc_chped::UCInstance> loaded;
+    if (!load_roster(args, specs, loaded)) {
         return 2;
     }
 
-    // The anytime trace (#147), opened only now: `--trace` truncates on open,
-    // and a run that could not load its roster must leave every output file it
-    // was pointed at exactly as it found it. Written in place rather than
-    // through the table's rename dance on purpose -- its value on an
-    // interrupted run is the rows it already has, so each is flushed as it is
-    // written and a killed job keeps its partial profile.
     std::ofstream trace;
-    if (!args.trace_csv.empty()) {
-        trace.open(args.trace_csv);
-        if (!trace.is_open()) {
-            std::fprintf(stderr, "Failed to open %s for writing\n", args.trace_csv.c_str());
-            return 2;
-        }
-        trace << cbls::uc_chped::kTraceHeader << "\n";
-        trace.flush();
+    if (!open_trace(args, trace)) {
+        return 2;
     }
 
     // Write-then-rename, as benchmarks/mipfeas does: this run takes over an hour
@@ -834,39 +903,7 @@ int run_benchmark(int argc, char** argv) {
         write_reference_rows(csv, loaded[i], specs[i].periods);
     }
 
-    for (size_t i = 0; i < specs.size(); ++i) {
-        const InstanceSpec& spec = specs[i];
-        const cbls::uc_chped::UCInstance& base = loaded[i];
-
-        for (int horizon : spec.periods) {
-            cbls::uc_chped::UCInstance inst;
-            if (horizon == base.n_periods) {
-                inst = base;  // already the right size
-            } else if (horizon < base.n_periods) {
-                inst = cbls::uc_chped::make_subinstance(base, horizon);
-            } else {
-                std::printf("%-20s %6d %6d  (skipped: T > n_periods)\n", base.name.c_str(),
-                            base.n_units, horizon);
-                Row r;
-                r.instance = base.name;
-                r.periods = horizon;
-                r.method = "CBLS ViolationLS";
-                r.note = "skipped: T > n_periods";
-                r.commit_sha = args.commit_sha;
-                r.search_config = args.search_config;
-                write_row(csv, r);
-                continue;
-            }
-
-            double tlim = args.time_limit;
-            if (!args.time_limit_set) {
-                auto lit = time_limits.find(horizon);
-                tlim = lit != time_limits.end() ? lit->second : default_time_limit;
-            }
-            run_one(csv, trace, args, inst, base.name, tlim, tally);
-        }
-        std::printf("\n");
-    }
+    solve_roster(csv, trace, args, specs, loaded, tally);
 
     // A stream error means the table on disk is short rows nobody can see are
     // missing, so it must not be published or reported as success.
