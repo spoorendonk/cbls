@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import csv
 import math
+import os
 import subprocess
 from pathlib import Path
 
@@ -686,7 +687,10 @@ def test_minlplib_refuses_an_ablation_arm_onto_the_published_trace(tmp_path: Pat
     )
 
     assert result.returncode == 2, result.stdout
-    assert "cannot write the published table" in result.stderr, result.stderr
+    # Names the artifact it is actually refusing. It said "table" for both
+    # before, which sent a reader of a --trace refusal looking at --out.
+    assert "cannot write the published anytime trace" in result.stderr, result.stderr
+    assert "--trace" in result.stderr, result.stderr
     assert trace.read_bytes() == before, "the published trace was modified"
 
 
@@ -704,6 +708,10 @@ def test_minlplib_help_lists_the_search_flags() -> None:
         "--perturbation-period",
         "--max-iterations",
         "--no-time-limit",
+        # The ninth. Listed last because it was the one the original assertion
+        # missed, and a help text that omits a shipped arm is how an ablation
+        # gets run without it.
+        "--compound-moves",
     ):
         assert flag in result.stdout, flag
 
@@ -848,3 +856,166 @@ def test_uc_chped_trace_ends_every_solve_at_its_budget(tmp_path: Path) -> None:
             f"the record for {periods}p stops {budget - float(last['time_seconds']):.2f}s "
             "short of the budget"
         )
+
+
+def test_minlplib_records_a_probability_it_can_be_read_back_from(tmp_path: Path) -> None:
+    """The recorded cell must name the value the search actually received.
+
+    `%g`'s six significant digits could not: `--novelty-prob 0.1234567` and
+    `--novelty-prob 0.1234568` are two different runs that both recorded
+    `novelty_prob=0.123457`, so a results file did not, in fact, state the
+    configuration it was produced under.
+    """
+    if not MINLPLIB_BINARY.exists():
+        pytest.skip("cbls_minlplib not built")
+    cells = []
+    for value in ("0.1234567", "0.1234568"):
+        sub = tmp_path / value
+        sub.mkdir()
+        out = tmp_path / f"arm{value}.csv"
+        result = _run_minlplib(
+            str(_minlplib_scratch(sub)),
+            "--compound-moves",
+            "--novelty-prob",
+            value,
+            "--out",
+            str(out),
+        )
+        assert result.returncode == 0, result.stderr
+        cells.append(out.read_text().splitlines()[1].split(",")[-1])
+
+    assert cells[0] != cells[1], cells
+    assert "0.1234567" in cells[0], cells[0]
+
+
+@pytest.mark.parametrize("value", ["-1", "-300"])
+def test_minlplib_rejects_a_negative_unproductive_iters(value: str, tmp_path: Path) -> None:
+    """A negative and a zero are the SAME run -- the engine arms the
+    unproductive-batch exit only on `> 0` -- so accepting both would put two
+    different `search_config` cells on one configuration.
+
+    That invariant is what justifies refusing the two no-effect flag
+    combinations, so it has to hold. 0 stays as the documented spelling for the
+    fixed-cadence arm.
+    """
+    if not MINLPLIB_BINARY.exists():
+        pytest.skip("cbls_minlplib not built")
+    result = _run_minlplib(
+        "--unproductive-iters", value, "--instance", "alkylation", "--out", str(tmp_path / "o.csv")
+    )
+    assert result.returncode == 2, result.stdout
+    assert "--unproductive-iters must be >= 0" in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("flag", ["--time-limit", "--seed", "--feas-tol"])
+def test_minlplib_refuses_an_off_protocol_run_onto_the_published_table(
+    flag: str, tmp_path: Path
+) -> None:
+    """The budget and the numerics belong in the guard, not just the roster.
+
+    `--time-limit 1` over the full roster satisfied every other rung and
+    republished the published table with one-second results at exit 0 -- the #88
+    hazard by name. `--seed` and `--feas-tol` did the same with rows differing
+    from the published protocol in a way no column records. The sibling uc-chped
+    runner has always guarded these; minlplib was the odd one out.
+    """
+    if not MINLPLIB_BINARY.exists():
+        pytest.skip("cbls_minlplib not built")
+    inst_dir = _minlplib_scratch(tmp_path)
+    published = inst_dir / "comparison.csv"
+    published.write_text("published rows nobody may overwrite\n")
+    before = published.read_bytes()
+
+    result = subprocess.run(
+        [str(MINLPLIB_BINARY), str(inst_dir), flag, "1"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert flag in result.stderr, result.stderr
+    assert published.read_bytes() == before, "the published table was modified"
+
+
+def test_minlplib_requires_a_commit_to_write_the_published_table(tmp_path: Path) -> None:
+    """A published row whose provenance reads "unknown" is one a later reader
+    cannot tell engine drift from a bug with."""
+    if not MINLPLIB_BINARY.exists():
+        pytest.skip("cbls_minlplib not built")
+    inst_dir = _minlplib_scratch(tmp_path)
+    published = inst_dir / "comparison.csv"
+    published.write_text("published rows nobody may overwrite\n")
+    before = published.read_bytes()
+
+    result = subprocess.run(
+        [str(MINLPLIB_BINARY), str(inst_dir)], capture_output=True, text=True, timeout=300
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert "requires an explicit --commit" in result.stderr, result.stderr
+    assert published.read_bytes() == before
+
+
+def test_minlplib_refuses_a_crossed_artifact(tmp_path: Path) -> None:
+    """Only --out writes the table and only --trace writes the trace.
+
+    `--trace` truncates its file on open before any solving, so `--trace <the
+    comparison table>` empties the published results at exit 0 -- reproduced on
+    the sibling uc-chped runner against a real table.
+    """
+    if not MINLPLIB_BINARY.exists():
+        pytest.skip("cbls_minlplib not built")
+    inst_dir = _minlplib_scratch(tmp_path)
+    published = inst_dir / "comparison.csv"
+    published.write_text("published rows nobody may overwrite\n")
+    before = published.read_bytes()
+
+    result = subprocess.run(
+        [
+            str(MINLPLIB_BINARY),
+            str(inst_dir),
+            "--commit",
+            "deadbee",
+            "--trace",
+            str(published),
+            "--out",
+            str(tmp_path / "elsewhere.csv"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert "--trace cannot write the published table" in result.stderr, result.stderr
+    assert published.read_bytes() == before
+
+
+def test_a_hardlink_to_the_published_table_is_still_the_published_table(tmp_path: Path) -> None:
+    """A hardlink is the same file under two names that no path comparison can
+    equate: `weakly_canonical` resolves symlinks, but a hardlink is not an
+    indirection to resolve -- both names ARE the file.
+
+    Measured against the path-only guard: `ln comparison.csv alias.csv` then
+    `--out alias.csv` rewrote the published inode at exit 0 with every guard
+    satisfied.
+    """
+    if not MINLPLIB_BINARY.exists():
+        pytest.skip("cbls_minlplib not built")
+    inst_dir = _minlplib_scratch(tmp_path)
+    published = inst_dir / "comparison.csv"
+    published.write_text("published rows nobody may overwrite\n")
+    alias = inst_dir / "alias.csv"
+    os.link(published, alias)
+    before = published.read_bytes()
+
+    result = subprocess.run(
+        [str(MINLPLIB_BINARY), str(inst_dir), "--no-lns", "--out", str(alias)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert published.read_bytes() == before, "the published inode was rewritten through an alias"

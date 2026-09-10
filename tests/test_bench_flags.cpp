@@ -353,17 +353,30 @@ TEST_CASE("a non-number double is rejected rather than defaulted", "[bench][flag
     REQUIRE(error.find("--novelty-prob") != std::string::npos);
 }
 
-TEST_CASE("the --unproductive-iters flag takes a non-positive value on purpose", "[bench][flags]") {
+TEST_CASE("the --unproductive-iters flag takes zero on purpose", "[bench][flags]") {
     // SearchConfig documents `<= 0` as "restore the old fixed cadence", which is
     // the control arm for the #102 early exit -- so this flag must NOT get the
-    // positivity guard every other integer flag has.
+    // positivity guard every other integer flag has. Zero is its spelling.
     std::string error;
-    for (const std::string& value : {"0", "-1"}) {
+    const ParseOutcome parsed = parse({"--unproductive-iters", "0"});
+    REQUIRE(cbls::bench::validate_search_flags(parsed.flags, false, error));
+    SearchConfig cfg;
+    cbls::bench::apply_search_flags(parsed.flags, cfg);
+    REQUIRE(cfg.unproductive_iterations == 0);
+}
+
+TEST_CASE("a negative --unproductive-iters is the same run as zero, so it is refused",
+          "[bench][flags]") {
+    // The engine arms the early exit only on `> 0`, so -1 and 0 produce the
+    // IDENTICAL run -- but they record two different `search_config` cells.
+    // That breaks the invariant search_config_string() states outright, and
+    // that invariant is the justification for refusing the two no-effect flag
+    // combinations elsewhere in this file. An earlier cut accepted both.
+    std::string error;
+    for (const std::string& value : {"-1", "-300"}) {
         const ParseOutcome parsed = parse({"--unproductive-iters", value});
-        REQUIRE(cbls::bench::validate_search_flags(parsed.flags, false, error));
-        SearchConfig cfg;
-        cbls::bench::apply_search_flags(parsed.flags, cfg);
-        REQUIRE(cfg.unproductive_iterations <= 0);
+        REQUIRE_FALSE(cbls::bench::validate_search_flags(parsed.flags, false, error));
+        REQUIRE(error.find("--unproductive-iters") != std::string::npos);
     }
 }
 

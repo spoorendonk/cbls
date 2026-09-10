@@ -92,7 +92,18 @@ private:
 /// command -- which spells `--out <the published table>` out -- satisfy the
 /// guard while doing exactly the damage it exists to stop.
 inline bool same_file(const std::string& a, const std::string& b) {
+    // A HARDLINK is the same file under two names that no path comparison can
+    // equate: `weakly_canonical` resolves symlinks, but a hardlink is not an
+    // indirection to resolve -- both names are the file. Measured: `ln
+    // comparison.csv alias.csv` then `--out alias.csv` rewrote the published
+    // inode at exit 0 with every path-based guard satisfied. `equivalent`
+    // compares the inode, which is the question actually being asked, so it is
+    // tried first and the path compare stays as the answer for a file that
+    // does not exist yet (which cannot be an existing published table).
     std::error_code ec;
+    if (std::filesystem::equivalent(a, b, ec)) {
+        return true;
+    }
     const std::filesystem::path pa = std::filesystem::weakly_canonical(a, ec);
     if (ec) {
         return a == b;

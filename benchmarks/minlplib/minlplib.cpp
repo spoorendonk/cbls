@@ -36,12 +36,15 @@ struct Args {
     double time_limit = 60.0;
     bool time_limit_set = false;
     uint64_t seed = 1;
+    bool seed_set = false;
     // Absolute constraint-violation tolerance for "feasible". Stated explicitly
     // rather than inherited, because it is a published property of these
     // results: it matches SCIP's numerics/feastol default, which keeps the SCIP
     // baseline (#89) comparable. Same value as the engine default.
     double feas_tol = cbls::kDefaultFeasibilityTolerance;
+    bool feas_tol_set = false;
     std::vector<std::string> instances;  // optional override
+    bool commit_set = false;
     std::string commit_sha = "unknown";
     std::string out_csv;    // default: <inst_dir>/comparison.csv
     std::string trace_csv;  // optional: anytime profile (best objective vs time)
@@ -100,36 +103,71 @@ void resolve_out_csv(Args& a) {
     if (a.out_csv.empty()) {
         a.out_csv = published;
     }
+    // A CROSSED artifact is refused for every run, ahead of any question of
+    // which protocol it is: only `--out` ever writes the table and only
+    // `--trace` ever writes the trace. The protocol ladder below cannot police
+    // this, because the run it lets through is the legitimate published one --
+    // and `--trace` truncates its file on open, before any solving, so
+    // `--trace <the comparison table>` empties the published results at exit 0.
+    // The sibling uc-chped runner had the identical hole and it was
+    // reproduced there against a real table.
+    if (!a.trace_csv.empty() && cbls::bench::same_file(a.trace_csv, published)) {
+        std::fprintf(stderr, "--trace cannot write the published table %s (only --out writes it)\n",
+                     published.c_str());
+        std::exit(2);
+    }
+    if (cbls::bench::same_file(a.out_csv, published_trace)) {
+        std::fprintf(stderr,
+                     "--out cannot write the published anytime trace %s (only --trace writes it)\n",
+                     published_trace.c_str());
+        std::exit(2);
+    }
     // A run that is not the full published measurement must never overwrite the
     // published results table. A partial roster would truncate it to the rows it
     // ran; an ablation arm would republish it as though the default
     // configuration had produced it, which is worse -- the numbers would look
     // like the published ones and would not be (#136).
+    //
+    // The BUDGET and the numerics belong in this ladder too, and the sibling
+    // uc-chped runner has always had them. `--time-limit 1` over the full
+    // roster satisfies every other rung and republishes the table with
+    // one-second results -- the #88 hazard by name -- and `--seed`/`--feas-tol`
+    // do the same with rows that differ from the published protocol in a way no
+    // column records. `--commit` is required for the converse reason: a
+    // published row whose provenance reads "unknown" is one a later reader
+    // cannot tell engine drift from a bug with.
     const char* why = nullptr;
     if (!a.instances.empty()) {
         why = "--instance";
+    } else if (a.time_limit_set) {
+        why = "--time-limit";
+    } else if (a.seed_set) {
+        why = "--seed";
+    } else if (a.feas_tol_set) {
+        why = "--feas-tol";
     } else {
         why = cbls::bench::first_non_default_search_flag(a.search);
     }
-    if (why == nullptr) {
+    const bool writes_table = cbls::bench::same_file(a.out_csv, published);
+    const bool writes_trace =
+        !a.trace_csv.empty() && cbls::bench::same_file(a.trace_csv, published_trace);
+    if (!writes_table && !writes_trace) {
         return;
     }
-    // BOTH published artifacts, not just the table: `anytime_trace.csv` is
-    // committed and cited too, and `--trace` opens it with a truncating
-    // ofstream before any solving, so an arm aimed at it would replace the
-    // published anytime profile at exit 0 while `--out` pointed somewhere
-    // harmless.
-    const char* target = nullptr;
-    if (cbls::bench::same_file(a.out_csv, published)) {
-        target = published.c_str();
-    } else if (!a.trace_csv.empty() && cbls::bench::same_file(a.trace_csv, published_trace)) {
-        target = published_trace.c_str();
-    }
-    if (target != nullptr) {
+    const char* const target = writes_table ? published.c_str() : published_trace.c_str();
+    const char* const redirect = writes_table ? "--out" : "--trace";
+    if (why != nullptr) {
         std::fprintf(stderr,
-                     "%s cannot write the published table %s "
-                     "(pass --out elsewhere for an unpublished run)\n",
-                     why, target);
+                     "%s cannot write the published %s %s "
+                     "(pass %s elsewhere for an unpublished run)\n",
+                     why, writes_table ? "table" : "anytime trace", target, redirect);
+        std::exit(2);
+    }
+    if (!a.commit_set) {
+        std::fprintf(stderr,
+                     "writing %s requires an explicit --commit SHA "
+                     "(pass %s elsewhere for an unpublished run)\n",
+                     target, redirect);
         std::exit(2);
     }
 }
@@ -145,12 +183,15 @@ Args parse_args(int argc, char** argv) {
             a.time_limit_set = true;
         } else if (c.value_flag("--seed", v)) {
             a.seed = static_cast<uint64_t>(parse_int64("--seed", v));
+            a.seed_set = true;
         } else if (c.value_flag("--feas-tol", v)) {
             a.feas_tol = parse_double("--feas-tol", v);
+            a.feas_tol_set = true;
         } else if (c.value_flag("--instance", v)) {
             a.instances.emplace_back(v);
         } else if (c.value_flag("--commit", v)) {
             a.commit_sha = v;
+            a.commit_set = true;
         } else if (c.value_flag("--out", v)) {
             a.out_csv = v;
         } else if (c.value_flag("--trace", v)) {
@@ -321,6 +362,7 @@ public:
         // ratios are invariant under that, but raw values are not.
         out_ << instance_ << "," << p.time_seconds << "," << p.objective << ","
              << (p.new_best ? 1 : 0) << '\n';
+        out_.flush();
     }
 
 private:

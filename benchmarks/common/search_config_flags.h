@@ -161,6 +161,16 @@ inline bool validate_search_flags(const SearchFlags& f, bool time_limit_set, std
         error = "--novelty-prob must be in [0, 1]";
         return false;
     }
+    // A negative and a zero are THE SAME RUN -- the engine arms the
+    // unproductive-batch exit only on `> 0` -- so accepting both would put two
+    // different `search_config` cells on one configuration, breaking the
+    // invariant search_config_string() states and that the two no-effect
+    // refusals below are justified by. 0 is the documented spelling for the
+    // fixed-cadence arm; a negative is a typo.
+    if (f.unproductive_iters < 0) {
+        error = "--unproductive-iters must be >= 0 (0 restores the fixed kick cadence)";
+        return false;
+    }
     if (f.perturbation_period < 1 || f.perturbation_period > kIntMax) {
         error = "--perturbation-period must be >= 1";
         return false;
@@ -248,11 +258,18 @@ inline const char* first_non_default_search_flag(const SearchFlags& f) {
     return nullptr;
 }
 
-/// A double as the `search_config` cell spells it: `%g`, which is stable across
-/// runs (nothing here calls setlocale) and short enough to read in a table.
+/// A double as the `search_config` cell spells it.
+///
+/// `%.17g`, not `%g`. The cell exists so a results file states the
+/// configuration it was produced under, and `%g`'s six significant digits
+/// cannot: `--novelty-prob 0.1234567` and `--novelty-prob 0.1234568` are two
+/// different runs that both recorded `novelty_prob=0.123457`. Seventeen digits
+/// is what round-trips an IEEE double exactly, so the cell names the value the
+/// search actually received. Stable across runs -- nothing here calls
+/// setlocale -- and the trailing digits only appear for a value that has them.
 inline std::string search_flag_number(double v) {
     std::array<char, 32> buf{};
-    std::snprintf(buf.data(), buf.size(), "%g", v);
+    std::snprintf(buf.data(), buf.size(), "%.17g", v);
     return {buf.data()};
 }
 
