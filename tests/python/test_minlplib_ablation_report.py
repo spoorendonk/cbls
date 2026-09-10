@@ -8,6 +8,7 @@ noise" means. A test that recomputed the formula would agree with any formula.
 
 from __future__ import annotations
 
+import argparse
 import csv
 import math
 from typing import TYPE_CHECKING
@@ -34,6 +35,7 @@ from benchmarks.minlplib.ablation_report import (
     summarize_arm,
     t_multiplier,
 )
+from benchmarks.minlplib.run_ablation import Arm, Run, failed_row
 from benchmarks.minlplib.run_benchmark import CLAIM_EXCLUDED
 
 if TYPE_CHECKING:
@@ -514,3 +516,232 @@ def test_a_crashed_run_is_not_a_lost_feasibility(tmp_path: Path) -> None:
     assert summary.comparisons[0].treatment.failed_runs == 3
     assert summary.comparisons[0].treatment.runs == 3
     assert summary.feasibility_delta == 0
+
+
+# --- rows where no search completed (issue #151) --------------------------------
+
+
+def crash_rows(instance: str, arm: str, seeds: Sequence[int]) -> list[dict[str, object]]:
+    """Rows exactly as the DRIVER writes them for a process that exited nonzero.
+
+    Built from `run_ablation.failed_row` rather than hand-rolled, so the note
+    prefix the report keys on stays the driver's own.
+    """
+    args = argparse.Namespace(time_limit=60.0)
+    return [
+        dict(failed_row(Run(instance, Arm(arm, ()), seed), args, "deadbeef", 139)) for seed in seeds
+    ]
+
+
+def solve_error_rows(instance: str, arm: str, seeds: Sequence[int]) -> list[dict[str, object]]:
+    """Rows as the RUNNER writes them when `cbls::solve` throws.
+
+    `minlplib.cpp` catches the exception, bumps `Tally::errored`, writes an
+    unsolved row and carries on; `main` returns 0 regardless of the tally. The
+    row is therefore well-formed, `feasible=false`, every measured cell NaN --
+    and the driver records it as a normal result.
+    """
+    return [
+        {
+            "instance": instance,
+            "arm": arm,
+            "seed": seed,
+            "feasible": "false",
+            "gap_to_bks%": "NaN",
+            "lns_repairs": "NaN",
+            "note": "solve-error",
+        }
+        for seed in seeds
+    ]
+
+
+def test_a_cell_whose_every_run_crashed_is_in_no_feasibility_bucket(tmp_path: Path) -> None:
+    """`feasible_runs == 0` is true of a cell whose every row crashed, so a
+    bucket decided from it manufactures a verdict out of a process table.
+
+    The disclosure line already said these rows record no measurement; the
+    bucket said the arm lost feasibility here. Both cannot be true.
+    """
+    rows = [
+        *run_rows("crashy", CONTROL_ARM, [7.0, 7.1, 7.2]),
+        *crash_rows("crashy", "x", [1, 2, 3]),
+    ]
+    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
+    summary = summarize_arm("x", cells, ["crashy"])
+
+    assert summary.comparisons[0].bucket == "no-runs-recorded"
+    assert summary.counts["control-only-feasible"] == 0
+    assert summary.counts["no-runs-recorded"] == 1
+    assert summary.feasibility_delta == 0
+    assert summary.feasibility_delta_balanced == 0
+
+
+def test_crashes_on_the_control_side_cannot_produce_an_arm_win(tmp_path: Path) -> None:
+    """The mirror case is the worse one: three segfaults on the CONTROL hand the
+    arm `arm-only-feasible`, an arm win produced by a process table."""
+    rows = [
+        *crash_rows("crashy", CONTROL_ARM, [1, 2, 3]),
+        *run_rows("crashy", "x", [7.0, 7.1, 7.2]),
+    ]
+    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
+    summary = summarize_arm("x", cells, ["crashy"])
+
+    assert summary.comparisons[0].bucket == "no-runs-recorded"
+    assert summary.counts["arm-only-feasible"] == 0
+    assert summary.feasibility_delta == 0
+    assert summary.feasibility_delta_balanced == 0
+
+
+def test_a_cell_whose_every_run_is_a_solve_error_is_in_no_feasibility_bucket(
+    tmp_path: Path,
+) -> None:
+    """An exit-0 `solve-error` row is a well-formed row no exclusion caught.
+
+    Whether a solve throws can depend on the search configuration, i.e. on the
+    ARM, so scoring it reads an exception as an arm losing feasibility.
+    """
+    rows = [
+        *run_rows("throws", CONTROL_ARM, [7.0, 7.1, 7.2]),
+        *solve_error_rows("throws", "x", [1, 2, 3]),
+    ]
+    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
+    summary = summarize_arm("x", cells, ["throws"])
+
+    assert summary.comparisons[0].bucket == "no-runs-recorded"
+    assert summary.counts["control-only-feasible"] == 0
+    assert summary.comparisons[0].treatment.no_search_runs == 3
+    assert summary.comparisons[0].treatment.runs == 0
+
+
+def test_a_solve_error_row_does_not_contaminate_the_balanced_feasibility_delta(
+    tmp_path: Path,
+) -> None:
+    """`feasibility_delta_balanced` is the figure the report presents as the
+    result rather than as bookkeeping.
+
+    A `solve-error` row has the same run count as a successful one, so the
+    instance stayed "balanced" and contributed a -2 that no line disclosed.
+    """
+    rows = [
+        *run_rows("a", CONTROL_ARM, [7.0, 7.1, 7.2]),
+        *run_rows("a", "x", [7.0]),
+        *solve_error_rows("a", "x", [2, 3]),
+    ]
+    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
+    summary = summarize_arm("x", cells, ["a"])
+
+    assert summary.feasibility_delta_balanced == 0
+    assert summary.feasibility_unbalanced == 1
+
+
+def test_the_report_discloses_both_kinds_of_held_out_row_and_agrees_with_them(
+    tmp_path: Path,
+) -> None:
+    """No bucket count may contradict the disclosure printed beneath it."""
+    rows = [
+        *run_rows("crashy", CONTROL_ARM, [7.0, 7.1, 7.2]),
+        *crash_rows("crashy", "x", [1, 2, 3]),
+        *run_rows("throws", CONTROL_ARM, [7.0, 7.1, 7.2]),
+        *solve_error_rows("throws", "x", [1, 2, 3]),
+    ]
+    report = render_report(write_results(tmp_path / "r.csv", rows))
+
+    assert "control-only-feasible=0" in report
+    assert "no-runs-recorded=2" in report
+    assert "3 run(s) crashed" in report
+    assert "3 run(s) completed no search" in report
+    assert "2 instance(s) recorded no completed run on at least one side" in report
+    assert "crashy, throws" in report
+
+
+# --- the near-zero floor (issue #151) -------------------------------------------
+
+
+def near_zero_rows(names: Sequence[str], delta: float) -> list[dict[str, object]]:
+    """Controls that landed within 1e-7 of their bound on every seed.
+
+    The published roster has four instances at gap exactly 0 and roughly
+    fourteen more within 1e-7. Their measured band is ~3.5e-7 gap points.
+    """
+    rows: list[dict[str, object]] = []
+    for name in names:
+        control = [0.0, 1e-7, 2e-7]
+        rows += run_rows(name, CONTROL_ARM, control)
+        rows += run_rows(name, "x", [g + delta for g in control])
+    return rows
+
+
+def test_a_delta_below_the_resolution_of_its_own_gap_is_not_a_move(tmp_path: Path) -> None:
+    """A spread of ~1e-7 gap points is a measurement of nothing the gap can
+    resolve, and a 1e-5 delta against it is not a result.
+
+    Four such instances moving 1e-5 the same way was enough to print "the arm is
+    WORSE than the control" beside "median gap delta +0.00 points", with the
+    quoted floor (the roster median, +/-3.51) three million times the movers'
+    own. The floor now cannot fall below the resolution at which the campaign
+    knows an objective at all.
+    """
+    rows = near_zero_rows(["p", "q", "r", "s"], 1e-5)
+    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
+    summary = summarize_arm("x", cells, ["p", "q", "r", "s"])
+
+    assert summary.moved_worse == 0
+    assert "WORSE" not in summary.verdict
+    assert "INSIDE THE NOISE" in summary.verdict
+    assert summary.floor.floored == 4
+
+
+def test_a_named_direction_carries_a_delta_the_table_can_show(tmp_path: Path) -> None:
+    """The guard must not silence real movers, and a direction must come with a
+    number in the units it is a claim about -- printed at a resolution that
+    makes it visible, here and in the per-instance table."""
+    rows = near_zero_rows(["p", "q", "r", "s"], 1e-3)
+    results = write_results(tmp_path / "r.csv", rows)
+    summary = summarize_arm("x", build_cells(load_rows(results)), ["p", "q", "r", "s"])
+
+    assert summary.moved_worse == 4
+    assert "the arm is WORSE than the control" in summary.verdict
+    assert "over the 4 mover(s) +0.001 points" in summary.verdict
+    # ... and the instances that drove it are identifiable in the table below.
+    assert "+0.001" in render_report(results).split("--- x ---")[1]
+
+
+def test_the_median_and_the_mean_each_state_their_own_denominator(tmp_path: Path) -> None:
+    """They are statistics over different sets, and were printed as parallel
+    lines with neither saying so: two scored instances at delta 0 beside two
+    unscored at +900 prints median +0.00 next to mean +450.00."""
+    rows = []
+    for name in ("s1", "s2"):
+        rows += run_rows(name, CONTROL_ARM, [10.0, 10.1, 10.2])
+        rows += run_rows(name, "x", [10.0, 10.1, 10.2])
+    for name in ("u1", "u2"):  # zero control spread -- comparable, never scored
+        rows += run_rows(name, CONTROL_ARM, [5.0, 5.0, 5.0])
+        rows += run_rows(name, "x", [905.0, 905.0, 905.0])
+    report = render_report(write_results(tmp_path / "r.csv", rows))
+
+    assert "median per-instance gap delta: +0.00 points over the 2 SCORED instance(s)" in report
+    assert "mean per-instance gap delta: +450.00 points over the 4 COMPARABLE instance(s)" in report
+
+
+def test_the_unmeasurable_floor_line_names_both_reasons(tmp_path: Path) -> None:
+    """Every control here produced three feasible runs with finite gaps, so
+    "no instance has two comparable control runs" is false. The verdict on the
+    next line has given the two-part reason since the zero-spread guard went in;
+    this string was not updated with it."""
+    rows = [
+        *run_rows("flat", CONTROL_ARM, [5.0, 5.0, 5.0]),
+        *run_rows("flat", "x", [6.0, 6.0, 6.0]),
+    ]
+    report = render_report(write_results(tmp_path / "r.csv", rows))
+
+    assert "no instance has two comparable control runs" not in report
+    assert "returned an identical gap on every seed" in report
+
+
+def test_the_student_multiplier_never_narrows_below_the_next_lower_df(tmp_path: Path) -> None:
+    """df 11-14 fell off the table and returned 1.96 -- narrower than both the
+    true t (2.20-2.15) and the tabulated df=10 value, contradicting the comment
+    saying it takes the next LOWER df's wider band."""
+    assert t_multiplier(11) == pytest.approx(2.228)
+    assert t_multiplier(14) == pytest.approx(2.228)
+    assert t_multiplier(11) > 1.96

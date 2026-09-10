@@ -79,6 +79,71 @@ CONTROL_ARM = "control"
 #: is held out of every count rather than read as an infeasible run.
 RUNNER_FAILED_NOTE = "runner-failed"
 
+#: Notes the RUNNER itself writes on a row where NO SEARCH COMPLETED, plus the
+#: driver's own crash prefix. Every one of these rows is `feasible=false` with
+#: every measured cell NaN and the process exiting 0, so nothing distinguishes
+#: it from a genuine infeasibility except this cell -- and whether a solve
+#: throws can depend on the search configuration, i.e. on the ARM, so an arm
+#: that provokes an exception would otherwise be scored as an arm that loses
+#: feasibility. Matched as prefixes: the runner appends `; <integrality note>`
+#: and a curated analysis note to some of these, and replaces commas with `;`.
+#:
+#: NOT shared with `benchmarks/minlplib/note_policy.h`, which was checked: that
+#: header is the three-way merge policy for `analysis_notes.csv` (kNone/kMerge/
+#: kStale) and enumerates no note strings at all. The literals below are the
+#: runner's, from `minlplib.cpp`:
+#:
+#:   * `not-found`, `read-error`, `build-error`  -- `write_preread_row`, before
+#:     a model exists at all;
+#:   * `unsupported`/`unsupported: <reason>`     -- the reader or the adapter
+#:     declined the instance;
+#:   * `solve-error`                             -- `cbls::solve` threw; the
+#:     runner counts it in `Tally::errored` and returns 0 from `main`.
+#:
+#: `non-finite` and `VERIFY-FAILED(...)` are deliberately NOT here: a search ran
+#: to completion on those rows and reported something, so they are measurements
+#: of the arm and belong in the counts.
+NO_SEARCH_NOTES: tuple[str, ...] = (
+    RUNNER_FAILED_NOTE,
+    "solve-error",
+    "read-error",
+    "build-error",
+    "not-found",
+    "unsupported",
+)
+
+#: An absolute floor, in gap points, below which a delta is not a move at all.
+#:
+#: WHY AN ABSOLUTE FLOOR AND NOT A RELATIVE ONE (issue #151 lists three options;
+#: this is the first, and the other two were checked against the numbers in the
+#: report that prompted it and do not fix it):
+#:
+#:   * A RELATIVE-SPREAD test -- score only where `s_i` is a large enough
+#:     fraction of the gap -- passes the exact instances at issue. Their control
+#:     gaps are ~1e-7 and their spreads ~1e-7, so the ratio is order 1: the
+#:     spread is as large as the quantity it describes and every relative test
+#:     waves it through.
+#:   * REFUSING to score an instance whose spread is below a multiple of its own
+#:     gap's NUMERICAL resolution fails for the same reason from the other side:
+#:     a double near 1e-7 resolves to ~1e-23, so a 1e-7 spread is ~1e16 ulps and
+#:     clears any sane multiple.
+#:
+#: The defect is absolute, so the fix is. The runner knows an objective only to
+#: `--feas-tol` (default `cbls::kDefaultFeasibilityTolerance`, 1e-6): its
+#: verifier accepts a residual up to that, and `classify_against_bks` reads the
+#: bound against it. `safe_gap` then reports 100*(obj-ref)/|ref| where the
+#: reference is nonzero, so a 1e-6 objective difference is 1e-4 gap points at
+#: |ref| = 1 -- and the absolute-residual branch (|ref| < 1e-12) is a raw 1e-6.
+#: 1e-4 is therefore the percentage-branch resolution at unit scale and a
+#: conservative (100x looser) bound on the absolute branch. Below it the
+#: campaign did not measure the objective, so it cannot have measured a change
+#: in it, whatever the seeds happened to agree on.
+#:
+#: Applied as a LOWER BOUND on the per-instance band rather than as a separate
+#: gate, so `moved`, `held` and the quoted typical floor all stay consistent
+#: with one another.
+MIN_MOVE_POINTS = 1e-4
+
 #: The gate probe's rows. Same configuration as the control, run over the roster
 #: hours earlier for the sole purpose of reading `lns_repairs`, so they are held
 #: out of every effect estimate and reported on their own as a drift check.
@@ -124,7 +189,7 @@ def t_multiplier(df: int) -> float:
     # move from being called a result. Past the table the normal value is close
     # enough that the difference does not survive rounding.
     wider = [k for k in T_95 if k < df]
-    return T_95[max(wider)] if max(wider) > 10 else NORMAL_Z_95
+    return T_95[max(wider)] if max(wider) >= 10 else NORMAL_Z_95
 
 
 def sign_test_p(worse: int, better: int) -> float:
@@ -141,12 +206,33 @@ def sign_test_p(worse: int, better: int) -> float:
     return min(1.0, 2.0 * tail)
 
 
+def format_points(value: float, *, signed: bool = True) -> str:
+    """A gap-point quantity with enough digits to be visible.
+
+    `%.2f` was the only format this report used, and it renders EVERY quantity
+    the report calls significant -- anything above `MIN_MOVE_POINTS`, 1e-4 -- as
+    `0.00`. That is how a verdict naming a direction came to sit beside "median
+    gap delta +0.00 points" with four movers whose deltas all printed as
+    `+0.00 / 0.00`, leaving a reader unable to identify the instances that drove
+    it. Two decimals where two decimals say something, three significant figures
+    where they do not; an exact zero keeps the familiar `+0.00`, because there
+    it is the truth rather than a rounding of one.
+    """
+    if value == 0.0 or abs(value) >= 0.005:
+        return f"{value:+.2f}" if signed else f"{value:.2f}"
+    return f"{value:+.3g}" if signed else f"{value:.3g}"
+
+
 #: Per-instance comparison buckets. Every compared instance lands in exactly one.
 BOTH_FEASIBLE = "both-feasible"
 ARM_ONLY_FEASIBLE = "arm-only-feasible"
 CONTROL_ONLY_FEASIBLE = "control-only-feasible"
 NEITHER_FEASIBLE = "neither-feasible"
 NO_COMPARABLE_GAP = "no-comparable-gap"
+#: One side recorded no completed run at all -- every row there crashed, or the
+#: runner wrote one of `NO_SEARCH_NOTES`. There is nothing to compare, in either
+#: direction: an absence of runs is not an absence of feasibility.
+NO_RUNS_RECORDED = "no-runs-recorded"
 
 BUCKETS = (
     BOTH_FEASIBLE,
@@ -154,6 +240,7 @@ BUCKETS = (
     CONTROL_ONLY_FEASIBLE,
     NEITHER_FEASIBLE,
     NO_COMPARABLE_GAP,
+    NO_RUNS_RECORDED,
 )
 
 
@@ -178,6 +265,16 @@ class RunRow:
     def runner_failed(self) -> bool:
         """Whether this row records a crashed process rather than a solve."""
         return self.note.startswith(RUNNER_FAILED_NOTE)
+
+    @property
+    def no_search(self) -> bool:
+        """Whether NO SEARCH COMPLETED on this row, crash or exit-0 alike.
+
+        A superset of `runner_failed`. The two are counted separately in the
+        report because the reader needs to know which happened, but they are
+        held out of the scoring identically: neither is a measurement.
+        """
+        return any(self.note.startswith(prefix) for prefix in NO_SEARCH_NOTES)
 
 
 def _number(text: str | None) -> float:
@@ -226,6 +323,11 @@ class Cell:
     #: `feasible_runs` so they cannot read as a lost feasibility, and surfaced
     #: in the report so they are not silently dropped either.
     failed_runs: int = 0
+    #: Rows the RUNNER wrote for a solve that never completed -- `solve-error`
+    #: and the rest of `NO_SEARCH_NOTES`, all of them exit-0 and so invisible to
+    #: the driver. Held out exactly as `failed_runs` is, and counted separately
+    #: only so the report can say which of the two happened.
+    no_search_runs: int = 0
     #: The same gaps keyed by seed, so a same-seed comparison is possible. The
     #: drift check needs it: averaging the seed away first is what turned an
     #: earlier drift line into a measurement of seed variance. Defaulted because
@@ -247,21 +349,24 @@ def build_cells(rows: Iterable[RunRow]) -> dict[tuple[str, str], Cell]:
         key: Cell(
             instance=key[0],
             arm=key[1],
-            # Crashed rows are not runs. Counting them would put an arm that
-            # segfaulted into `control-only-feasible` -- the bucket that means
-            # "this arm lost feasibility here", which is a claim about the
-            # search, not about the process table.
-            runs=sum(1 for r in group if not r.runner_failed),
-            feasible_runs=sum(1 for r in group if r.feasible and not r.runner_failed),
+            # Rows where no search completed are not runs. Counting them would
+            # put an arm that segfaulted -- or an arm whose configuration
+            # provoked an exception, which exits 0 and looks well-formed -- into
+            # `control-only-feasible`, the bucket that means "this arm lost
+            # feasibility here", which is a claim about the search rather than
+            # about the process table.
+            runs=sum(1 for r in group if not r.no_search),
+            feasible_runs=sum(1 for r in group if r.feasible and not r.no_search),
             failed_runs=sum(1 for r in group if r.runner_failed),
+            no_search_runs=sum(1 for r in group if r.no_search and not r.runner_failed),
             gaps=tuple(
-                r.gap for r in group if r.feasible and not r.runner_failed and math.isfinite(r.gap)
+                r.gap for r in group if r.feasible and not r.no_search and math.isfinite(r.gap)
             ),
-            repairs=tuple(r.lns_repairs for r in group if not r.runner_failed),
+            repairs=tuple(r.lns_repairs for r in group if not r.no_search),
             seed_gaps={
                 r.seed: r.gap
                 for r in group
-                if r.feasible and not r.runner_failed and math.isfinite(r.gap)
+                if r.feasible and not r.no_search and math.isfinite(r.gap)
             },
         )
         for key, group in grouped.items()
@@ -288,6 +393,15 @@ class Comparison:
 
 def classify(control: Cell, treatment: Cell) -> str:
     """Which bucket an instance falls in for this arm."""
+    if control.runs == 0 or treatment.runs == 0:
+        # NO RUNS IS NOT NO FEASIBILITY, and this test has to come first.
+        # `feasible_runs == 0` is true of a cell whose every row crashed or
+        # errored, so deciding the bucket from it manufactures a verdict out of
+        # a process table: three segfaults on the arm read as
+        # `control-only-feasible` ("this arm lost feasibility here") and three
+        # on the CONTROL read as `arm-only-feasible` -- an arm win produced by
+        # three crashes. Neither claim is measured, so neither is made.
+        return NO_RUNS_RECORDED
     if control.feasible_runs == 0 and treatment.feasible_runs == 0:
         return NEITHER_FEASIBLE
     if control.feasible_runs == 0:
@@ -331,6 +445,10 @@ class NoiseFloor:
     #: onto it manufactures results on this roster.
     measured: int
     unmeasured: int
+    #: Measured instances whose Student band came out BELOW `MIN_MOVE_POINTS`
+    #: and were raised to it. Reported, because "the floor is measured" stops
+    #: being the whole truth for them.
+    floored: int
     #: The typical per-instance floor -- the headline number to quote.
     median_floor: float
     #: The median control standard deviation behind those floors.
@@ -375,7 +493,7 @@ def noise_floor(comparisons: Sequence[Comparison], spreads: dict[str, float]) ->
     """
     compared = [c for c in comparisons if c.bucket == BOTH_FEASIBLE]
     per_instance: dict[str, float] = {}
-    measured = unmeasured = 0
+    measured = unmeasured = floored = 0
     for comparison in compared:
         spread = spreads.get(comparison.instance)
         if spread is None:
@@ -385,13 +503,23 @@ def noise_floor(comparisons: Sequence[Comparison], spreads: dict[str, float]) ->
             continue
         measured += 1
         scale = math.sqrt(1.0 / len(comparison.treatment.gaps) + 1.0 / len(comparison.control.gaps))
-        per_instance[comparison.instance] = (
-            t_multiplier(len(comparison.control.gaps) - 1) * spread * scale
-        )
+        band = t_multiplier(len(comparison.control.gaps) - 1) * spread * scale
+        # A floor must be meaningful in the UNITS OF THE THING IT BOUNDS. The
+        # spread guard above rejects only an EXACT zero, and this roster's
+        # near-zero instances are not exact: a control at gap ~1e-7 on all three
+        # seeds gives a band of ~3e-7 gap points, which a 1e-5 delta clears --
+        # and four such instances clearing it was enough to print "the arm is
+        # WORSE than the control" beside "median gap delta +0.00". See
+        # MIN_MOVE_POINTS for why the bound is absolute rather than relative.
+        if band < MIN_MOVE_POINTS:
+            floored += 1
+            band = MIN_MOVE_POINTS
+        per_instance[comparison.instance] = band
     return NoiseFloor(
         per_instance=per_instance,
         measured=measured,
         unmeasured=unmeasured,
+        floored=floored,
         median_floor=statistics.median(per_instance.values()) if per_instance else math.nan,
         median_spread=statistics.median(spreads.values()) if spreads else math.nan,
     )
@@ -418,6 +546,13 @@ class ArmSummary:
     largest_delta: float
     largest_delta_instance: str
     median_delta: float | None
+    #: Median delta over the MOVERS alone. Quoted whenever a direction is named,
+    #: so that "the arm is WORSE" always carries a number that is nonzero by
+    #: construction: every mover exceeds its own floor, which is at least
+    #: `MIN_MOVE_POINTS`. The roster median is quoted beside it -- it can be a
+    #: true `+0.00` when most scored instances did not move, and saying so is
+    #: the point -- but it is no longer the only figure the sentence offers.
+    mover_median_delta: float | None
     #: Instances whose delta exceeds THEIR OWN floor, by direction.
     moved_worse: int
     moved_better: int
@@ -438,6 +573,18 @@ class ArmSummary:
     #: this module's own promise that every instance lands in exactly one bucket
     #: is false for precisely the instances a reader would want to ask about.
     uncompared: int = 0
+
+    @property
+    def comparable(self) -> int:
+        """Instances with a delta at all -- the denominator of `mean_delta`.
+
+        Distinct from `scored`, which is the denominator of `median_delta`, and
+        the two were printed as parallel lines with neither naming its own. Ten
+        scored instances at delta 0 beside ten unscored at +900 prints a median
+        of +0.00 and a mean of +450.00, and a reader with no denominators cannot
+        tell that they are statistics over different sets.
+        """
+        return sum(1 for c in self.comparisons if c.delta is not None)
 
     @property
     def scored(self) -> int:
@@ -479,19 +626,28 @@ class ArmSummary:
             )
         if self.median_delta is None:
             return "no scored instance has a delta; read the buckets below"
-        typical = f"typical per-instance floor +/-{self.floor.median_floor:.2f} points"
+        band = format_points(self.floor.median_floor, signed=False)
+        typical = f"typical per-instance floor +/-{band} points"
         moved = self.moved_worse + self.moved_better
         if moved == 0:
             return (
                 f"INSIDE THE NOISE: none of {self.scored} scored instance(s) moved outside its "
-                f"own measured floor ({typical}); median gap delta "
-                f"{self.median_delta:+.2f} points"
+                f"own measured floor ({typical}); median gap delta over those {self.scored} "
+                f"instance(s) {format_points(self.median_delta)} points"
             )
         summary = (
             f"{moved} of {self.scored} scored instance(s) moved outside their own floor "
             f"({self.moved_worse} worse, {self.moved_better} better; sign test p = "
-            f"{self.sign_p:.3f}, {typical}); median gap delta {self.median_delta:+.2f} points"
+            f"{self.sign_p:.3f}, {typical}); median gap delta over the {self.scored} scored "
+            f"instance(s) {format_points(self.median_delta)} points"
         )
+        if self.mover_median_delta is not None:
+            # The movers' own median, so a named direction always carries a
+            # number in the units it is a claim about. The roster median can
+            # legitimately be +0.00 when most scored instances held.
+            summary += (
+                f", over the {moved} mover(s) {format_points(self.mover_median_delta)} points"
+            )
         # A roster-level direction needs either a significant sign test or
         # enough unanimous movers to be worth the name. One mover is not a
         # roster verdict: an earlier cut named a direction off a single
@@ -544,11 +700,24 @@ def summarize_arm(
     scored_deltas = [
         c.delta for c in comparisons if c.delta is not None and c.instance in floor.per_instance
     ]
+    mover_deltas = [
+        c.delta
+        for c in comparisons
+        if c.delta is not None
+        and c.instance in floor.per_instance
+        and abs(c.delta) > floor.per_instance[c.instance]
+    ]
     largest = max(
         ((abs(c.delta), c.instance) for c in comparisons if c.delta is not None),
         default=(math.nan, ""),
     )
-    balanced = [c for c in comparisons if c.control.runs == c.treatment.runs and c.control.runs > 0]
+    balanced = [
+        c
+        for c in comparisons
+        if c.bucket != NO_RUNS_RECORDED
+        and c.control.runs == c.treatment.runs
+        and c.control.runs > 0
+    ]
     return ArmSummary(
         arm=arm,
         comparisons=tuple(comparisons),
@@ -560,12 +729,19 @@ def summarize_arm(
         # so the sentence "none of N scored instances moved" cannot sit beside
         # a median drawn from a wider set that includes an unscored +900.
         median_delta=statistics.median(scored_deltas) if scored_deltas else None,
+        mover_median_delta=statistics.median(mover_deltas) if mover_deltas else None,
         moved_worse=moved_worse,
         moved_better=moved_better,
         sign_p=sign_test_p(moved_worse, moved_better),
-        feasibility_delta=sum(c.feasibility_delta for c in comparisons),
+        # A cell with no completed run on one side contributes no feasibility
+        # comparison EITHER WAY -- summing its `feasible_runs` difference is the
+        # same manufactured claim `classify` refuses to bucket.
+        feasibility_delta=sum(
+            c.feasibility_delta for c in comparisons if c.bucket != NO_RUNS_RECORDED
+        ),
         feasibility_delta_balanced=sum(c.feasibility_delta for c in balanced),
-        feasibility_unbalanced=len(comparisons) - len(balanced),
+        feasibility_unbalanced=sum(1 for c in comparisons if c.bucket != NO_RUNS_RECORDED)
+        - len(balanced),
         floor=floor,
         uncompared=uncompared,
     )
@@ -646,11 +822,12 @@ def _instance_lines(summary: ArmSummary) -> list[str]:
         lines.append(
             f"  {comparison.instance:<22} "
             f"{comparison.control.feasible_runs:>3}/{comparison.control.runs:<4} "
-            f"{'-' if control_mean is None else f'{control_mean:.2f}':>9} "
+            f"{'-' if control_mean is None else format_points(control_mean, signed=False):>9} "
             f"{comparison.treatment.feasible_runs:>3}/{comparison.treatment.runs:<4} "
-            f"{'-' if treatment_mean is None else f'{treatment_mean:.2f}':>9} "
-            f"{'-' if comparison.delta is None else f'{comparison.delta:+.2f}':>9} "
-            f"{'-' if math.isnan(floor) else f'{floor:.2f}':>8}  {comparison.bucket}"
+            f"{'-' if treatment_mean is None else format_points(treatment_mean, signed=False):>9} "
+            f"{'-' if comparison.delta is None else format_points(comparison.delta):>9} "
+            f"{'-' if math.isnan(floor) else format_points(floor, signed=False):>8}  "
+            f"{comparison.bucket}"
         )
     return lines
 
@@ -658,12 +835,29 @@ def _instance_lines(summary: ArmSummary) -> list[str]:
 def _floor_lines(summary: ArmSummary) -> list[str]:
     floor = summary.floor
     if not floor.per_instance:
-        return ["  noise floor: not measurable -- no instance has two comparable control runs"]
+        # The reason is TWO-PART, and the verdict on the next line has said so
+        # since the exact-zero-spread guard went in: an instance is unmeasurable
+        # either because its control produced fewer than two comparable runs OR
+        # because every seed returned an identical gap. This string named only
+        # the first, and so contradicted the verdict beneath it on a campaign
+        # where every control had three feasible runs with finite gaps.
+        return [
+            "  noise floor: not measurable -- every control either produced fewer than two "
+            "comparable runs or returned an identical gap on every seed"
+        ]
     lines = [
-        f"  noise floor: typical per-instance +/-{floor.median_floor:.2f} points",
+        f"  noise floor: typical per-instance "
+        f"+/-{format_points(floor.median_floor, signed=False)} points",
         f"    from the control's own across-seed spread (median s = {floor.median_spread:.2f} "
         f"gap points, two-sided 95% Student band); {floor.measured} instance(s) measured",
     ]
+    if floor.floored:
+        lines.append(
+            f"    {floor.floored} instance(s) measured a band below the {MIN_MOVE_POINTS:g}-point "
+            "resolution at which this campaign knows an objective at all, and were raised to it: "
+            "a control that returned ~1e-7 on every seed measures a spread, but not one the gap "
+            "it bounds can resolve"
+        )
     if floor.unmeasured:
         lines.append(
             f"    {floor.unmeasured} comparable instance(s) NOT SCORED: their control either "
@@ -753,22 +947,44 @@ def render_report(results: Path, gate: dict[str, object] | None = None) -> str:
                 "record no measurement, so reading them as infeasible would score a process "
                 "failure as an arm losing feasibility"
             )
+        no_search = sum(
+            c.control.no_search_runs + c.treatment.no_search_runs for c in summary.comparisons
+        )
+        if no_search:
+            lines.append(
+                f"  {no_search} run(s) completed no search ({', '.join(NO_SEARCH_NOTES[1:])}) and "
+                "are held out of every count above. The runner exits 0 on these, so the row is "
+                "well-formed and `feasible=false` -- and whether a solve throws can depend on the "
+                "arm, so scoring them would read an exception as a lost feasibility"
+            )
+        held_out = [c.instance for c in summary.comparisons if c.bucket == NO_RUNS_RECORDED]
+        if held_out:
+            lines.append(
+                f"  {len(held_out)} instance(s) recorded no completed run on at least one side "
+                f"and are in no feasibility bucket and in no feasible-run delta: "
+                f"{', '.join(held_out)}"
+            )
         if summary.uncompared:
             lines.append(
                 f"  {summary.uncompared} scored instance(s) have rows on only one side and are "
                 "in no bucket -- the campaign is incomplete for this arm"
             )
         if summary.median_delta is not None:
-            lines.append(f"  median per-instance gap delta: {summary.median_delta:+.2f} points")
+            lines.append(
+                f"  median per-instance gap delta: {format_points(summary.median_delta)} points "
+                f"over the {summary.scored} SCORED instance(s)"
+            )
         if summary.mean_delta is not None:
             largest = (
                 ""
                 if math.isnan(summary.largest_delta)
-                else f"; largest single-instance |delta| {summary.largest_delta:.2f} points "
+                else "; largest single-instance |delta| "
+                f"{format_points(summary.largest_delta, signed=False)} points "
                 f"({summary.largest_delta_instance})"
             )
             lines.append(
-                f"  mean per-instance gap delta: {summary.mean_delta:+.2f} points{largest} "
+                f"  mean per-instance gap delta: {format_points(summary.mean_delta)} points over "
+                f"the {summary.comparable} COMPARABLE instance(s){largest} "
                 "-- NOT the verdict statistic, see the module docstring"
             )
         lines += _floor_lines(summary)
