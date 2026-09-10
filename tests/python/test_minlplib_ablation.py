@@ -166,6 +166,36 @@ def test_a_second_campaign_on_the_same_out_dir_is_refused(tmp_path: Path) -> Non
             pass
 
 
+def test_the_refused_driver_can_still_name_the_holder(tmp_path: Path) -> None:
+    """A truncating open would wipe the pid line before flock had even failed,
+    so the refusal would destroy the one diagnostic it needs to quote."""
+    out_dir = tmp_path / "scratch"
+    with campaign_lock(out_dir):
+        holder = (out_dir / LOCK_NAME).read_text()
+        assert holder.startswith("pid=")
+        with pytest.raises(RuntimeError, match=r"pid=\d+"), campaign_lock(out_dir):
+            pass
+        assert (out_dir / LOCK_NAME).read_text() == holder, "the holder's pid was overwritten"
+
+
+def test_the_lock_refusal_does_not_advise_deleting_the_lock(tmp_path: Path) -> None:
+    """flock is held on the inode. Deleting a LIVE lock file lets the next
+    driver create a fresh inode and lock that -- two wall-clock-budgeted
+    campaigns on one machine, invited by the driver's own error message. A file
+    left by a crashed driver is already unlocked, so the advice is never needed
+    either."""
+    out_dir = tmp_path / "scratch"
+    with (
+        campaign_lock(out_dir),
+        pytest.raises(RuntimeError) as caught,
+        campaign_lock(out_dir),
+    ):
+        pass
+    message = str(caught.value)
+    assert "Do NOT delete the lock file" in message
+    assert "already unlocked" in message
+
+
 def test_the_lock_is_released_when_the_campaign_ends(tmp_path: Path) -> None:
     out_dir = tmp_path / "scratch"
     with campaign_lock(out_dir):

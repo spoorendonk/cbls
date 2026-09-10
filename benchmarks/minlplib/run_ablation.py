@@ -301,15 +301,28 @@ def campaign_lock(out_dir: Path) -> Iterator[None]:
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / LOCK_NAME
-    handle = path.open("w")
+    # "a+" and not "w": a truncating open would wipe the holder's pid line
+    # BEFORE the flock below has even failed, so the refusal could not name the
+    # process it lost to -- the one diagnostic the file exists to carry,
+    # destroyed by the event that needs it.
+    handle = path.open("a+")
     try:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
+            handle.seek(0)
+            holder = handle.read().strip() or "pid unknown"
             raise RuntimeError(
-                f"another campaign holds {path}; timed comparisons must never share the "
-                "machine. Wait for it to finish, or delete the lock if no driver is running."
+                f"another campaign holds {path} ({holder}); timed comparisons must never "
+                "share the machine. Wait for it to finish. Do NOT delete the lock file: the "
+                "lock is the flock, which is held on the INODE and which the kernel drops "
+                "when the holder exits -- so a file left by a crashed driver is already "
+                "unlocked and deleting it gains nothing, while deleting a live one only lets "
+                "this driver create a fresh inode, flock that, and run beside the first."
             ) from exc
+        # Truncated only now that the lock is ours, so the file holds one line.
+        handle.seek(0)
+        handle.truncate()
         handle.write(f"pid={os.getpid()}\n")
         handle.flush()
         yield
