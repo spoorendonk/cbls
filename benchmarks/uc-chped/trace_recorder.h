@@ -48,6 +48,7 @@
 #include <algorithm>
 #include <cbls/search.h>
 #include <cmath>
+#include <cstdint>
 #include <ostream>
 #include <sstream>
 #include <string>
@@ -93,8 +94,13 @@ inline std::string trace_num(double v) {
 inline constexpr const char* kTraceHeader =
     "instance,periods,time_limit_s,time_seconds,batches,objective,new_best,commit_sha";
 
-/// Writes one row per progress report that has an incumbent, identifying the
-/// (instance, horizon) solve it belongs to.
+/// Writes one row per progress report that has an incumbent, plus one closing
+/// row per solve, identifying the (instance, horizon) solve each belongs to.
+///
+/// Every solve the runner starts therefore appears in the trace, and the last
+/// row for a (instance, periods) pair is always the one at the run's final
+/// time -- see record_final for why the file is unreadable without both
+/// guarantees.
 class TraceRecorder : public cbls::SolveCallback {
 public:
     TraceRecorder(std::ostream& out, std::string instance, int periods, double time_limit_s,
@@ -122,24 +128,72 @@ public:
         // flat tail, which is the one thing #147 exists to collect. It would
         // also make the last row "the last instant the search was incidentally
         // feasible" rather than "where the budget left it".
+        last_batches_ = p.iteration;
         if (!std::isfinite(p.objective)) {
             return;
         }
         // Flushed per row, as the results CSV is: a full run is over an hour and
         // an interrupted one must not lose its buffered profile -- which is the
         // half of the record that says whether a budget was long enough.
-        out_ << instance_ << "," << periods_ << "," << trace_num(time_limit_s_) << ","
-             << trace_num(p.time_seconds) << "," << p.iteration << "," << trace_num(p.objective)
-             << "," << (p.new_best ? 1 : 0) << "," << commit_sha_ << '\n';
-        out_.flush();
+        write_row(p.time_seconds, p.iteration, trace_num(p.objective), p.new_best);
+    }
+
+    /// One closing row per solve, written after `solve()` returns.
+    ///
+    /// Without it the trace answers the wrong question twice over.
+    ///
+    ///   1. The engine emits a periodic report at most once a second and
+    ///      `record_best` resets that timer, so an improvement inside the final
+    ///      second is the last thing in the file and the record then ends on a
+    ///      rising incumbent with budget apparently left -- which reads as
+    ///      "still improving when the clock stopped" when what actually
+    ///      followed was a flat second nobody sampled. Measured before this
+    ///      existed: every horizon's last row fell 0.65-1.45s short of its
+    ///      budget, and on one the last row WAS an improvement.
+    ///   2. A solve that never finds a valued incumbent writes no rows at all,
+    ///      and an absent (instance, horizon) is indistinguishable from a
+    ///      filtered roster, an interrupted campaign, or the callback
+    ///      regressing to the `nullptr` this issue exists to remove. "There was
+    ///      never anything to flatten" is a real answer to #147's question and
+    ///      the trace has to be able to state it: the row is written with an
+    ///      EMPTY objective cell, which no periodic row can produce.
+    ///
+    /// So every solve appears in the trace exactly once at its final time,
+    /// `max(time_seconds)` per (instance, periods) is the end of the run rather
+    /// than the last thing that happened to be sampled, and `new_best` is 0
+    /// because this row reports where the budget left the search, not an
+    /// improvement.
+    ///
+    /// `batches` carries the last figure `on_progress` saw, NOT
+    /// `SearchResult::iterations` -- that is the GLS iteration count, a
+    /// different quantity from this column's batch count, and putting it here
+    /// would silently change what the column means on exactly one row per
+    /// solve. A solve that never reported leaves the cell empty.
+    void record_final(const cbls::SearchResult& result) {
+        const std::string objective =
+            std::isfinite(result.objective) ? trace_num(result.objective) : std::string();
+        write_row(result.time_seconds, last_batches_, objective, /*new_best=*/false);
     }
 
 private:
+    void write_row(double time_seconds, int64_t batches, const std::string& objective,
+                   bool new_best) {
+        out_ << instance_ << "," << periods_ << "," << trace_num(time_limit_s_) << ","
+             << trace_num(time_seconds) << ",";
+        if (batches >= 0) {
+            out_ << batches;
+        }
+        out_ << "," << objective << "," << (new_best ? 1 : 0) << "," << commit_sha_ << '\n';
+        out_.flush();
+    }
+
     std::ostream& out_;
     std::string instance_;
     int periods_;
     double time_limit_s_;
     std::string commit_sha_;
+    /// Last batch count seen, or -1 when `solve()` never reported progress.
+    int64_t last_batches_ = -1;
 };
 
 }  // namespace cbls::uc_chped

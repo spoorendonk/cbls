@@ -215,19 +215,49 @@ void resolve_out_csv(Args& a) {
                      a.out_csv.c_str());
         std::exit(2);
     }
-    // BOTH published names, tested against BOTH flags (#147). The guard is
-    // about the FILES, so it cannot be keyed on which flag happens to name one:
-    // `--trace` opens its file with a truncating ofstream before any solving,
-    // so `--trace <the comparison table>` replaces the published results with a
-    // trace header at exit 0 while `--out` points somewhere harmless. That is
-    // the same #88 hazard the table guard exists for, reached through the other
-    // door, and it deleted the ten cited Pedroso rows in a probe. Both names are
-    // reserved whether or not a trace has been committed yet: the guard has to
-    // exist before the file does, not after the first one is lost.
-    const bool writes_table =
-        same_file(a.out_csv, published) || (trace_set && same_file(a.trace_csv, published));
-    const bool writes_trace = same_file(a.out_csv, published_trace) ||
-                              (trace_set && same_file(a.trace_csv, published_trace));
+    // ...and the table's TEMP path is that same file too. The table is written
+    // to `<out>.tmp` and renamed into place, so `--trace <out>.tmp` puts two
+    // truncating streams on one inode at independent offsets and then PUBLISHES
+    // the interleave under the table's name, at exit 0. With `--out` left at
+    // its default that is the published table itself, corrupted by a typo.
+    if (trace_set && same_file(a.trace_csv, a.out_csv + ".tmp")) {
+        std::fprintf(stderr,
+                     "--trace names the table's temp file %s; the two writers would interleave "
+                     "and the result would be published as the table\n",
+                     a.trace_csv.c_str());
+        std::exit(2);
+    }
+    // A CROSSED artifact is refused unconditionally, ahead of any question of
+    // which protocol the run is: only `--out` may ever write the table, and
+    // only `--trace` may ever write the trace.
+    //
+    // The protocol ladder below cannot police this, and that is not a
+    // hypothetical gap. A run that IS the published protocol -- no --instance,
+    // no --time-limit, no arm flag -- carrying --commit satisfies every rung
+    // and reaches the permit path; `--trace <the comparison table>` then
+    // truncated the published table to trace rows within a second of launch,
+    // the ten cited Pedroso rows gone, before any solve had started. The run
+    // is legitimate; only the pairing of file to flag is wrong, so the pairing
+    // is what has to be refused, and it has to be refused for every run rather
+    // than for the unpublished ones.
+    if (trace_set && same_file(a.trace_csv, published)) {
+        std::fprintf(stderr, "--trace cannot write the published table %s (only --out writes it)\n",
+                     published.c_str());
+        std::exit(2);
+    }
+    if (same_file(a.out_csv, published_trace)) {
+        std::fprintf(stderr,
+                     "--out cannot write the published anytime trace %s (only --trace writes it)\n",
+                     published_trace.c_str());
+        std::exit(2);
+    }
+    // Past the crossed-artifact refusals above, each published name can only be
+    // reached by its own flag, so what is left to decide is whether this RUN is
+    // allowed to write the published artifact it names. Both names are reserved
+    // whether or not a file exists there yet: the guard has to exist before the
+    // first one is lost, not after.
+    const bool writes_table = same_file(a.out_csv, published);
+    const bool writes_trace = trace_set && same_file(a.trace_csv, published_trace);
     if (!writes_table && !writes_trace) {
         return;
     }
@@ -236,7 +266,7 @@ void resolve_out_csv(Args& a) {
     // change a path it never set.
     const std::string& target = writes_table ? published : published_trace;
     const char* const artifact = writes_table ? "table" : "anytime trace";
-    const char* const redirect = same_file(a.out_csv, target) ? "--out" : "--trace";
+    const char* const redirect = writes_table ? "--out" : "--trace";
     const char* why = non_published_protocol(a);
     if (why != nullptr) {
         std::fprintf(stderr,
@@ -676,6 +706,17 @@ void run_one(std::ostream& csv, std::ofstream& trace, const Args& args,
     cbls::uc_chped::TraceRecorder recorder(trace, instance_name, horizon, tlim, args.commit_sha);
     const cbls::SearchResult result =
         solve_instance(args, inst, ucm, tlim, trace.is_open() ? &recorder : nullptr);
+    // Close the trace for this solve, so every (instance, horizon) the runner
+    // started appears in it exactly once at its final time. Without this the
+    // record stops at the last periodic sample -- up to a second and a half
+    // short of the budget, and on a solve that improved inside that window it
+    // ends on a rising incumbent, which reads as "still improving when the
+    // clock stopped" when a flat tail followed. A horizon that never found a
+    // valued incumbent would write no rows at all, and an absent horizon is
+    // indistinguishable from a filtered roster or a regressed callback.
+    if (trace.is_open()) {
+        recorder.record_final(result);
+    }
     ++tally.solved;
     if (result.feasible) {
         ++tally.feasible;

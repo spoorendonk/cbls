@@ -238,27 +238,60 @@ for a reason:
   and without the commit the next reader cannot tell drift from a bug.
 
 `new_best` is 1 on an improvement and 0 on the periodic (~1s) sample the search
-emits regardless. A row is written whenever a finite-objective incumbent
+emits regardless. **Read flatness off the `objective` column, not off
+`new_best`**: the engine accepts an improvement at a 1e-12 *relative*
+threshold, which on a six-figure UC objective is far below the tenth
+significant digit the trace prints, so a tail of `new_best = 1` rows can all
+carry the same printed objective. A run of identical objective values is a flat
+tail whatever the flag says.
+
+A row is written whenever a finite-objective incumbent
 exists — **not** only while the current assignment is feasible. That
 distinction matters: the search moves off each feasible point as soon as the
 objective bound is tightened below it, so filtering on the current assignment
 would delete most of the periodic samples and with them the flat tail, which is
 the one thing the trace is for.
 
+Every solve the runner starts writes a **closing row** at the time the run
+actually ended, with `new_best = 0`. Without it the record stops at the last
+periodic sample — measured at 0.65–1.45 s short of the budget — and a solve
+that improved inside that window ends on a rising incumbent with budget
+apparently to spare, which reads as "still improving when the clock stopped"
+when what followed was a flat tail nobody sampled. So `max(time_seconds)`
+within a horizon's block is the end of the run, not the last thing that
+happened to be sampled.
+
+The closing row is also how a horizon that **never** found a valued incumbent
+states itself: it is the block's only row and its `objective` cell is **empty**.
+No periodic row can produce an empty objective, so that cell distinguishes
+"there was never anything to flatten" — a legitimate and important answer here
+— from a filtered roster, an interrupted run, or a callback that regressed to
+`nullptr`. Its `batches` cell is empty too when `solve()` never reported.
+
 Two caveats on reading `time_seconds`. It is measured from `solve()` entry, and
 the greedy commitment plus the 200-iteration FJ polish run *before* that call,
-so `t = 0` is not the start of work. And the first row of a horizon's block is
-its time to first feasible incumbent **with a finite objective** — a
+so `t = 0` is not the start of work. And the first *periodic* row of a horizon's
+block is its time to first feasible incumbent **with a finite objective** — a
 feasibility witness whose objective overflowed (#100) is feasible but has no
 value to plot, so it does not appear.
 
 `<inst-dir>/anytime_trace.csv` is reserved as the published profile, exactly as
 `comparison.csv` is, and both names are refused to any run that is not the full
 published measurement. The guard is about the **files**, not about which flag
-names them: `--trace` pointed at `comparison.csv` would empty the published
-table at exit 0 (it truncates on open), so either flag aimed at either
-published name is refused. Naming one path for both flags is refused too — the
-table's closing rename would land on the trace. Point both flags at scratch
+names them, and it has two layers.
+
+A **crossed** artifact is refused outright, for every run: only `--out` ever
+writes the table and only `--trace` ever writes the trace. `--trace` pointed at
+`comparison.csv` truncates the published table on open, before any solving, and
+a run that *is* the published protocol — full roster, default budgets, explicit
+`--commit` — satisfies every protocol rung, so nothing but the file-to-flag
+pairing can refuse it. Beyond that, each published name is refused to any run
+that is not the full published measurement.
+
+Naming one path for both flags is refused too — the table's closing rename
+would land on the trace — as is aiming `--trace` at the table's `<out>.tmp`
+staging path, where two truncating writers would interleave and the result be
+published under the table's name. Point both flags at scratch
 paths and none of this applies; that is the shape a smoke run or an ablation
 arm should take.
 

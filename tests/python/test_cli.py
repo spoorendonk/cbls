@@ -11,6 +11,7 @@ Nothing in-process can distinguish that from a clean non-zero exit.
 
 from __future__ import annotations
 
+import csv
 import math
 import subprocess
 from pathlib import Path
@@ -701,3 +702,145 @@ def test_minlplib_help_lists_the_search_flags() -> None:
         "--no-time-limit",
     ):
         assert flag in result.stdout, flag
+
+
+@pytest.mark.parametrize(
+    ("flag", "target_name", "other"),
+    [
+        ("--trace", "comparison.csv", "--out"),
+        ("--out", "anytime_trace.csv", "--trace"),
+    ],
+)
+def test_uc_chped_refuses_a_crossed_artifact_on_a_published_run(
+    flag: str, target_name: str, other: str, tmp_path: Path
+) -> None:
+    """Only --out ever writes the table and only --trace ever writes the trace.
+
+    The protocol ladder cannot police this pairing, because the run it lets
+    through is the legitimate published one: no --instance, no --time-limit, no
+    arm flag, and an explicit --commit satisfies every rung. Against the cut
+    that keyed the refusal on the protocol, this command truncated a 3789-byte
+    published comparison.csv to 3362 bytes of trace rows -- the ten cited
+    Pedroso rows gone -- within a second of launch, before any solve started,
+    and would have exited 0.
+
+    The run is refused during argument resolution, so no solving happens and
+    the test stays cheap.
+    """
+    if not UC_CHPED_BINARY.exists():
+        pytest.skip("cbls_uc_chped not built")
+    inst_dir = _uc_chped_scratch(tmp_path)
+    (inst_dir / "anytime_trace.csv").write_text("published trace rows nobody may overwrite\n")
+    target = inst_dir / target_name
+    before = {p: p.read_bytes() for p in inst_dir.glob("*.csv")}
+
+    result = subprocess.run(
+        [
+            str(UC_CHPED_BINARY),
+            str(inst_dir),
+            "--commit",
+            "deadbee",
+            flag,
+            str(target),
+            other,
+            str(tmp_path / "elsewhere.csv"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert flag in result.stderr, result.stderr
+    for path, content in before.items():
+        assert path.read_bytes() == content, f"{path.name} was modified"
+
+
+def test_uc_chped_refuses_a_trace_onto_the_tables_temp_path(tmp_path: Path) -> None:
+    """`--trace <out>.tmp` is the same file as the table, one rename later.
+
+    The table is written to `<out>.tmp` and renamed into place, so aiming the
+    trace at that path puts two truncating streams on one inode and then
+    publishes the interleave under the table's name at exit 0.
+    """
+    if not UC_CHPED_BINARY.exists():
+        pytest.skip("cbls_uc_chped not built")
+    inst_dir = _uc_chped_scratch(tmp_path)
+    out = tmp_path / "run.csv"
+
+    result = subprocess.run(
+        [
+            str(UC_CHPED_BINARY),
+            str(inst_dir),
+            "--instance",
+            "ucp13",
+            "--out",
+            str(out),
+            "--trace",
+            str(out) + ".tmp",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert "temp file" in result.stderr, result.stderr
+    assert not out.exists()
+
+
+def test_uc_chped_trace_ends_every_solve_at_its_budget(tmp_path: Path) -> None:
+    """Every (instance, horizon) the runner starts appears in the trace, and its
+    last row is the one at the run's final time.
+
+    Two failures this pins, both of which make a trace unreadable rather than
+    wrong: the engine samples at most once a second and `record_best` resets
+    that timer, so without a closing row the record ends up to ~1.5s short of
+    the budget and -- when the last thing before the gap was an improvement --
+    reads as "still improving when the clock stopped"; and a solve that never
+    finds a valued incumbent writes no rows at all, which is indistinguishable
+    from a filtered roster or a callback that regressed to nullptr.
+    """
+    if not UC_CHPED_BINARY.exists():
+        pytest.skip("cbls_uc_chped not built")
+    inst_dir = _uc_chped_scratch(tmp_path)
+    trace = tmp_path / "trace.csv"
+    budget = 3.0
+
+    result = subprocess.run(
+        [
+            str(UC_CHPED_BINARY),
+            str(inst_dir),
+            "--instance",
+            "ucp13",
+            "--time-limit",
+            str(budget),
+            "--out",
+            str(tmp_path / "run.csv"),
+            "--trace",
+            str(trace),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert result.returncode == 0, result.stderr
+
+    rows = list(csv.DictReader(trace.read_text().splitlines()))
+    assert rows, "no trace rows, so no callback reached solve()"
+
+    # ucp13 runs five horizons; every one of them must be present.
+    horizons = {int(r["periods"]) for r in rows}
+    assert horizons == {1, 3, 6, 12, 24}, horizons
+
+    for periods in sorted(horizons):
+        block = [r for r in rows if int(r["periods"]) == periods]
+        last = block[-1]
+        # The closing row is at the run's final time, not at the last sample
+        # that happened to be taken, and it does not claim an improvement.
+        assert last["new_best"] == "0", block
+        assert float(last["time_seconds"]) == max(float(r["time_seconds"]) for r in block)
+        assert float(last["time_seconds"]) >= budget - 0.5, (
+            f"the record for {periods}p stops {budget - float(last['time_seconds']):.2f}s "
+            "short of the budget"
+        )

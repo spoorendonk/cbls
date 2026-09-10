@@ -254,3 +254,88 @@ TEST_CASE("a recorder handed to solve() records the run's incumbents", "[uc-chpe
     // ten significant digits and parsed back.
     CHECK(std::abs(previous_best - result.objective) <= 1e-6 * std::abs(result.objective));
 }
+
+TEST_CASE("the trace closes every solve at the time the run ended", "[uc-chped][trace]") {
+    // The engine reports at most once a second and `record_best` resets that
+    // timer, so an improvement inside the final second is the last thing the
+    // periodic sampling writes. Measured before the closing row existed, every
+    // horizon's last row fell 0.65-1.45s short of its budget, and on one the
+    // last row WAS an improvement -- a record that ends on a rising incumbent
+    // with budget apparently left, which reads as the opposite of what
+    // happened.
+    std::ostringstream out;
+    TraceRecorder recorder(out, "ucp13", 24, /*time_limit_s=*/300.0, "abc1234");
+
+    cbls::SolveProgress improved = incumbent(299.1, 496191.8, /*new_best=*/true);
+    improved.iteration = 412;
+    recorder.on_progress(improved);
+
+    cbls::SearchResult result;
+    result.feasible = true;
+    result.objective = 496191.8;
+    result.time_seconds = 300.0004;
+    recorder.record_final(result);
+
+    const auto rows = rows_of(out.str());
+    REQUIRE(rows.size() == 2);
+    const auto last = split(rows[1], ',');
+    CHECK(last[kTimeSeconds] == "300.0004");
+    // Not an improvement: this row says where the budget left the search.
+    CHECK(last[kNewBest] == "0");
+    // The batch count carried forward from the last report. NOT
+    // SearchResult::iterations, which counts GLS iterations -- a different
+    // quantity, which would silently change what this column means on exactly
+    // one row per solve.
+    CHECK(last[kBatches] == "412");
+    CHECK(last[kObjective] == "496191.8");
+}
+
+TEST_CASE("a horizon that never found an incumbent still appears", "[uc-chped][trace]") {
+    // "There was never anything to flatten" is a real answer to #147's
+    // question, and the trace has to be able to state it. Without the closing
+    // row such a solve writes nothing at all, and an absent (instance, horizon)
+    // is indistinguishable from a filtered roster, an interrupted campaign, or
+    // the callback regressing to the nullptr this issue exists to remove.
+    std::ostringstream out;
+    TraceRecorder recorder(out, "ucp200", 168, /*time_limit_s=*/600.0, "abc1234");
+
+    cbls::SolveProgress searching;  // objective defaults to +inf: no incumbent
+    searching.time_seconds = 300.0;
+    searching.iteration = 9;
+    recorder.on_progress(searching);
+
+    cbls::SearchResult result;  // objective stays +inf: nothing was ever found
+    result.time_seconds = 600.01;
+    recorder.record_final(result);
+
+    const auto rows = rows_of(out.str());
+    REQUIRE(rows.size() == 1);
+    const auto cells = split(rows[0], ',');
+    REQUIRE(cells.size() == split(kTraceHeader, ',').size());
+    CHECK(cells[kPeriods] == "168");
+    CHECK(cells[kTimeSeconds] == "600.01");
+    // Empty, not "inf" and not a number: no periodic row can produce an empty
+    // objective, so this cell is what distinguishes "never found one" from a
+    // solve whose incumbent simply stopped moving.
+    CHECK(cells[kObjective].empty());
+    CHECK(cells[kBatches] == "9");
+}
+
+TEST_CASE("a solve that never reported leaves the batch cell empty", "[uc-chped][trace]") {
+    // A run bounded so tightly that solve() emits no progress at all still gets
+    // its closing row, and the batch count it never learned is left blank
+    // rather than written as a 0 a reader would take for a measurement.
+    std::ostringstream out;
+    TraceRecorder recorder(out, "ucp13", 1, /*time_limit_s=*/0.0, "abc1234");
+
+    cbls::SearchResult result;
+    result.time_seconds = 0.0001;
+    recorder.record_final(result);
+
+    const auto rows = rows_of(out.str());
+    REQUIRE(rows.size() == 1);
+    const auto cells = split(rows[0], ',');
+    REQUIRE(cells.size() == split(kTraceHeader, ',').size());
+    CHECK(cells[kBatches].empty());
+    CHECK(cells[kObjective].empty());
+}
