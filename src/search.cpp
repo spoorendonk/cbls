@@ -400,6 +400,10 @@ private:
     Model::State closest_state_;
     int perturbations_ = 0;
     int lns_repairs_ = 0;
+    // The subset of lns_repairs_ that destroy_repair reported as accepted.
+    // Instrumentation only: the value is recorded and never branched on, so the
+    // trajectory is byte-identical to the run that discarded this return (#150).
+    int lns_repairs_accepted_ = 0;
     // Counts only the kicks ELIGIBLE for an LNS repair, which is what
     // `lns_interval` has always meant. Kept apart from `perturbations` because
     // #102's route can be refused its LNS half: letting a refused kick advance
@@ -614,8 +618,9 @@ void ViolationLSLoop::diversify(bool allow_lns) {
         // limit" downstream in fj_nl_initialize — the opposite of intent.
         const double repair_limit =
             has_deadline_ ? std::max(1e-9, std::min(2.0, remaining())) : 0.0;
-        lns_->destroy_repair(model_, vm_, rng_, repair_limit);
+        const bool accepted = lns_->destroy_repair(model_, vm_, rng_, repair_limit);
         ++lns_repairs_;
+        lns_repairs_accepted_ += accepted ? 1 : 0;
         fj_.reset_weights();  // LNS mutated state outside GFJ
     } else {
         fj_.perturb(config_.perturbation_probability);  // self-resyncs
@@ -870,6 +875,7 @@ SearchResult ViolationLSLoop::finish() {
     result.escape_probe_armed = fj_.escape_probe();
     result.perturbations = perturbations_;
     result.lns_repairs = lns_repairs_;
+    result.lns_repairs_accepted = lns_repairs_accepted_;
     return result;
 }
 

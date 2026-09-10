@@ -201,8 +201,32 @@ struct SearchResult {
     /// model its result is usually rejected outright. #102's unproductive route
     /// draws only the cheap half once a feasible solution exists, and this is
     /// what lets a regression test assert that without timing the run.
+    ///
+    /// This counts repairs ATTEMPTED. `lns_repairs_accepted` below is the
+    /// subset that improved the search state; read the two together, because a
+    /// nonzero count here says only that LNS spent budget, not that it helped.
     /// Single-`solve()` only, as above.
     int lns_repairs = 0;
+
+    /// The subset of `lns_repairs` whose repair was ACCEPTED -- i.e. the calls
+    /// where `LNS::destroy_repair` returned true, having found a state that
+    /// beat the incumbent on the lexicographic (real violation, objective) key
+    /// and therefore kept it instead of rolling back.
+    ///
+    /// Separate from `lns_repairs` because "LNS ran" and "LNS helped" are
+    /// different questions and only the first was answerable before #150. The
+    /// `unproductive_iterations` note above records the measurement that makes
+    /// the difference worth publishing: on a converged continuous model a
+    /// post-feasible repair is rejected outright, so an arm can burn seconds
+    /// per kick at an acceptance rate of zero and nothing in the result record
+    /// would say so.
+    ///
+    /// Never greater than `lns_repairs`. A rejected repair is NOT free and is
+    /// not a no-op either -- it draws from the RNG and rolls the state back --
+    /// so `lns_repairs_accepted == 0` does not make an LNS arm equivalent to a
+    /// no-LNS one; it only says the budget bought nothing.
+    /// Single-`solve()` only, as above.
+    int lns_repairs_accepted = 0;
 };
 
 struct SolveProgress {

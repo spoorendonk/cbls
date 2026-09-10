@@ -930,7 +930,9 @@ While time and `max_iterations` remain, each pass:
      progress measure cannot see the artificial `obj <= bound` row the search is
      then working against, so "no new all-time low" stops being evidence of a
      stall, and an LNS repair launched on that signal is bounded in *seconds* and
-     is usually rejected. See `SearchResult::lns_repairs`.
+     is usually rejected. See `SearchResult::lns_repairs`, and
+     `SearchResult::lns_repairs_accepted` for how many of those repairs the
+     lexicographic accept rule actually kept.
 9. Emit a progress callback (~1 s cadence, or immediately on a new best).
 
 At the end, restore the best state — or, on an infeasible run, the *closest
@@ -1264,6 +1266,11 @@ LNS-eligible kick (when an `LNS` is supplied), runs [LNS](#large-neighborhood-se
 destroy-repair (then resets FJ weights, since LNS mutates state outside the
 engine). Otherwise it calls `fj.perturb(perturbation_probability)`. Either way
 it resamples `rho`.
+
+The repair's own verdict is recorded, not discarded: `destroy_repair` returns
+whether it kept its repaired state, which bumps `lns_repairs_accepted` alongside
+the `lns_repairs` attempt counter. Nothing branches on it — the two counters are
+instrumentation, so an LNS run's trajectory is unchanged by their presence.
 
 `perturb(p)` randomises each jumpable variable independently with probability
 `p`, and then — **only if that moved nothing** — forces one uniformly chosen
