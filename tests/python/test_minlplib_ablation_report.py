@@ -21,7 +21,6 @@ from benchmarks.minlplib.ablation_report import (
     CONTROL_ONLY_FEASIBLE,
     NEITHER_FEASIBLE,
     NO_COMPARABLE_GAP,
-    NOISE_Z,
     PROBE_ARM_NAME,
     Cell,
     build_cells,
@@ -33,6 +32,7 @@ from benchmarks.minlplib.ablation_report import (
     render_report,
     scored_instances,
     summarize_arm,
+    t_multiplier,
 )
 from benchmarks.minlplib.run_benchmark import CLAIM_EXCLUDED
 
@@ -167,36 +167,48 @@ def test_a_nan_gap_never_reaches_a_cell(tmp_path: Path) -> None:
 
 
 def test_the_floor_is_computed_from_the_control_s_own_across_seed_spread() -> None:
-    """s = stdev([10, 12, 14]) = 2; scale = sqrt(1/3 + 1/3); floor = 2 * s * scale."""
+    """s = stdev([10, 12, 14]) = 2; scale = sqrt(1/3 + 1/3); floor = t(df=2) * s * scale."""
     control = cell("a", CONTROL_ARM, [10.0, 12.0, 14.0])
     treatment = cell("a", "x", [20.0, 22.0, 24.0])
     spreads = control_spreads({("a", CONTROL_ARM): control}, ["a"])
     assert spreads["a"] == pytest.approx(2.0)
     floor = noise_floor([compare(control, treatment)], spreads)
-    expected = NOISE_Z * 2.0 * math.sqrt(1 / 3 + 1 / 3)
+    expected = t_multiplier(2) * 2.0 * math.sqrt(1 / 3 + 1 / 3)
     assert floor.per_instance["a"] == pytest.approx(expected)
-    assert floor.aggregate == pytest.approx(expected)  # one instance: the mean is that instance
     assert floor.measured == 1
-    assert floor.imputed == 0
+    assert floor.unmeasured == 0
 
 
-def test_the_aggregate_floor_is_the_floor_on_the_mean_of_the_deltas() -> None:
-    """Two identical instances: averaging two independent deltas halves the
-    standard error by sqrt(2), so the aggregate floor is the per-instance one
-    divided by sqrt(2) -- not equal to it, and not the sum."""
-    comparisons = [
-        compare(cell(name, CONTROL_ARM, [10.0, 12.0, 14.0]), cell(name, "x", [20.0, 22.0, 24.0]))
-        for name in ("a", "b")
-    ]
-    spreads = {"a": 2.0, "b": 2.0}
-    floor = noise_floor(comparisons, spreads)
-    per_instance = NOISE_Z * 2.0 * math.sqrt(1 / 3 + 1 / 3)
-    assert floor.aggregate == pytest.approx(per_instance / math.sqrt(2))
+def test_the_band_widens_when_the_control_has_fewer_seeds() -> None:
+    """Three seeds is df = 2 and a multiplier of 4.30; two seeds is df = 1 and
+    12.71. A flat 2.0 (an earlier cut) prints a band about half its nominal
+    width at three seeds and a sixth of it at two."""
+    three = noise_floor(
+        [compare(cell("a", CONTROL_ARM, [10.0, 12.0, 14.0]), cell("a", "x", [1.0, 2.0, 3.0]))],
+        {"a": 2.0},
+    )
+    two = noise_floor(
+        [
+            compare(
+                cell("a", CONTROL_ARM, [10.0, 14.0], runs=2, feasible=2),
+                cell("a", "x", [1.0, 2.0], runs=2, feasible=2),
+            )
+        ],
+        {"a": 2.0},
+    )
+    assert three.per_instance["a"] < two.per_instance["a"]
 
 
-def test_an_instance_without_two_control_runs_borrows_the_median_spread() -> None:
-    """Dropping it instead would shrink the floor by discarding exactly the
-    instances the control found hardest."""
+def test_an_instance_without_two_control_runs_is_not_scored() -> None:
+    """It is counted and listed, never given a borrowed floor.
+
+    Imputing the median absolute spread onto it is unsound on this roster: the
+    gaps span six orders of magnitude, so a ~1-point median spread lent to an
+    instance whose gap is ~1e6 hands it a floor it clears automatically. That
+    manufactures a significant result instead of measuring one -- and the
+    instance most likely to have only one feasible control run is exactly the
+    enormous one.
+    """
     comparisons = [
         compare(cell("a", CONTROL_ARM, [10.0, 12.0, 14.0]), cell("a", "x", [11.0, 13.0, 15.0])),
         compare(
@@ -215,16 +227,15 @@ def test_an_instance_without_two_control_runs_borrows_the_median_spread() -> Non
         ),
     )
     assert floor.measured == 1
-    assert floor.imputed == 1
-    assert floor.median_spread == pytest.approx(2.0)
-    # b has one run per side, so its scale is sqrt(1/1 + 1/1) = sqrt(2).
-    assert floor.per_instance["b"] == pytest.approx(NOISE_Z * 2.0 * math.sqrt(2.0))
+    assert floor.unmeasured == 1
+    assert "b" not in floor.per_instance
 
 
 def test_a_campaign_with_no_control_spread_at_all_reports_no_floor() -> None:
     comparisons = [compare(cell("a", CONTROL_ARM, [5.0], runs=1), cell("a", "x", [6.0], runs=1))]
     floor = noise_floor(comparisons, {})
-    assert math.isnan(floor.aggregate)
+    assert not floor.per_instance
+    assert math.isnan(floor.median_floor)
 
 
 def test_the_floor_tracks_the_control_spread_rather_than_a_constant() -> None:
@@ -235,7 +246,7 @@ def test_the_floor_tracks_the_control_spread_rather_than_a_constant() -> None:
     wide = compare(cell("a", CONTROL_ARM, [10.0, 14.0, 18.0]), cell("a", "x", [1.0, 2.0, 3.0]))
     narrow = noise_floor([tight], {"a": 2.0})
     broad = noise_floor([wide], {"a": 4.0})
-    assert broad.aggregate == pytest.approx(2.0 * narrow.aggregate)
+    assert broad.median_floor == pytest.approx(2.0 * narrow.median_floor)
 
 
 # --- verdicts ------------------------------------------------------------------
@@ -252,9 +263,15 @@ def test_an_effect_inside_the_floor_is_reported_as_such_with_the_floor_quoted(
     ]
     cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
     summary = summarize_arm("x", cells, ["a", "b"])
-    assert summary.mean_delta == pytest.approx(0.5)
+    assert summary.median_delta == pytest.approx(0.5)
     assert "INSIDE THE NOISE" in summary.verdict
-    assert f"{summary.floor.aggregate:.2f}" in summary.verdict
+    # The floor is quoted, which is the acceptance criterion. It is the typical
+    # PER-INSTANCE floor: each instance is judged against its own, because an
+    # aggregate gap-point floor is meaningless on a roster spanning six orders
+    # of magnitude.
+    assert f"{summary.floor.median_floor:.2f}" in summary.verdict
+    assert summary.moved_worse == 0
+    assert summary.moved_better == 0
 
 
 def test_an_effect_outside_the_floor_names_its_direction(tmp_path: Path) -> None:
@@ -266,9 +283,10 @@ def test_an_effect_outside_the_floor_names_its_direction(tmp_path: Path) -> None
     ]
     cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
     summary = summarize_arm("x", cells, ["a", "b"])
-    assert summary.mean_delta == pytest.approx(30.0)
+    assert summary.median_delta == pytest.approx(30.0)
     assert "WORSE than" in summary.verdict
-    assert "outside the measured floor" in summary.verdict
+    assert "moved outside their own floor" in summary.verdict
+    assert summary.moved_worse == 2
 
 
 def test_an_arm_that_only_wins_on_feasibility_is_reported_on_the_counts(
@@ -393,3 +411,38 @@ def test_the_report_states_the_sign_convention_and_the_gate(tmp_path: Path) -> N
 
 def test_an_empty_results_file_reports_rather_than_raises(tmp_path: Path) -> None:
     assert "no rows" in render_report(write_results(tmp_path / "r.csv", []))
+
+
+def test_a_split_decision_is_reported_as_mixed_not_as_an_effect(tmp_path: Path) -> None:
+    """Instances moving in BOTH directions in comparable numbers is not a result.
+
+    Unanimity is what lets a small number of moved instances name a direction;
+    once both directions are present the sign test decides, so a bare majority
+    is reported as mixed rather than as an arm effect.
+    """
+    rows = []
+    for name in ("a", "b", "c"):  # worse
+        rows += run_rows(name, CONTROL_ARM, [10.0, 10.1, 10.2])
+        rows += run_rows(name, "x", [40.0, 40.1, 40.2])
+    for name in ("d", "e"):  # better
+        rows += run_rows(name, CONTROL_ARM, [40.0, 40.1, 40.2])
+        rows += run_rows(name, "x", [10.0, 10.1, 10.2])
+    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
+    summary = summarize_arm("x", cells, ["a", "b", "c", "d", "e"])
+
+    assert (summary.moved_worse, summary.moved_better) == (3, 2)
+    assert "MIXED, no consistent direction" in summary.verdict
+
+
+def test_every_moved_instance_agreeing_names_a_direction(tmp_path: Path) -> None:
+    """Two instances cannot reach p <= 0.05 on a sign test, but two instances
+    that both cleared their own floor by 30 points are still a direction."""
+    rows = []
+    for name in ("a", "b"):
+        rows += run_rows(name, CONTROL_ARM, [10.0, 10.1, 10.2])
+        rows += run_rows(name, "x", [40.0, 40.1, 40.2])
+    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
+    summary = summarize_arm("x", cells, ["a", "b"])
+
+    assert summary.sign_p > 0.05
+    assert "WORSE than" in summary.verdict

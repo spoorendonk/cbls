@@ -56,10 +56,14 @@ import argparse
 import contextlib
 import csv
 import fcntl
+import hashlib
+import io
 import json
+import math
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -171,12 +175,27 @@ DEFAULT_SEEDS: tuple[int, ...] = (1, 2, 3)
 LNS_GATE_MIN_REPAIRS = 1
 LNS_GATE_MIN_INSTANCES = 1
 
-#: One-minute load average above which the campaign refuses to start. Roughly
-#: one busy core: these are wall-clock-budgeted solves and a shared machine
-#: measures a different engine. Overridable with `--allow-busy`, which is there
-#: for the case this cannot distinguish -- the average still decaying from the
-#: campaign that just died.
-MAX_LOAD_AVERAGE = 1.0
+#: The share of probe runs that must actually carry an `lns_repairs` reading
+#: before a SKIP decision is allowed to stand on them. Below it the arm runs:
+#: the acceptance criterion asks for "the counter reading that justified
+#: skipping", and a reading assembled mostly from runs that never solved is not
+#: one. Costs machine time in the ambiguous case, which is the right direction
+#: to fail.
+GATE_MIN_READABLE_FRACTION = 0.9
+
+#: One-minute load average above which the campaign refuses to start.
+#:
+#: Well BELOW one busy core, deliberately. The runner is single-threaded, so a
+#: running campaign holds the one-minute average at about 1.00 and oscillates
+#: either side of it: a threshold of 1.0 would let a second campaign start
+#: roughly half the time it was tried, and every timing in both would then be
+#: invalid with nothing in either record saying so. The lock below is per
+#: out-dir, so two campaigns writing to different directories are not otherwise
+#: mutually excluded and this check is the only thing between them.
+#:
+#: Overridable with `--allow-busy`, which is there for the case this cannot
+#: distinguish -- the average still decaying from the campaign that just died.
+MAX_LOAD_AVERAGE = 0.4
 
 #: The columns of `results.csv`. `instance,arm,seed` is the resume key; the
 #: provenance columns after it are what let a row be read years later without
@@ -330,13 +349,31 @@ def campaign_lock(out_dir: Path) -> Iterator[None]:
         handle.close()
 
 
-def campaign_stamp(sha: str, time_limit: float, seeds: Sequence[int], arms: Sequence[Arm]) -> str:
-    """The configuration an out-dir's rows belong to, one field per line."""
+def campaign_stamp(
+    sha: str,
+    time_limit: float,
+    seeds: Sequence[int],
+    arms: Sequence[Arm],
+    roster: Sequence[str] = (),
+    lns_arm: str = "auto",
+) -> str:
+    """The configuration an out-dir's rows belong to, one field per line.
+
+    The roster and the gate setting are in here for the same reason the commit
+    is: resuming with `--instances a b` otherwise passes every check and quietly
+    produces a partial campaign, and resuming with `--lns-arm on|off` passes too
+    and then overwrites the recorded gate reading with a forced non-decision --
+    destroying exactly the "counter reading that justified skipping" the
+    acceptance criterion asks for.
+    """
+    roster_key = hashlib.sha256(",".join(roster).encode()).hexdigest()[:12] if roster else "all"
     return (
         f"commit={sha}\n"
         f"time-limit={time_limit:g}\n"
         f"seeds={','.join(str(s) for s in seeds)}\n"
         f"arms={','.join(arm.name for arm in arms)}\n"
+        f"roster={len(roster)}:{roster_key}\n"
+        f"lns-arm={lns_arm}\n"
     )
 
 
@@ -375,8 +412,22 @@ def repair_torn_tail(path: Path) -> bool:
     if not data or data.endswith(b"\n"):
         return False
     cut = data.rfind(b"\n")
-    path.write_bytes(data[: cut + 1] if cut >= 0 else b"")
+    # Write-then-rename, not write_bytes: this is the one function whose job is
+    # protecting the campaign record against a kill, and `write_bytes`
+    # truncates to zero before writing, so a kill inside that window destroys
+    # up to thirteen hours of solving outright.
+    _atomic_write(path, data[: cut + 1] if cut >= 0 else b"")
     return True
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    """Replace `path`'s contents without ever leaving it truncated."""
+    tmp = path.with_name(path.name + ".repair.tmp")
+    with tmp.open("wb") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
 
 
 def recorded_keys(path: Path) -> set[tuple[str, str, int]]:
@@ -483,6 +534,28 @@ def result_row(
     return row
 
 
+def failed_row(run: Run, args: argparse.Namespace, sha: str, returncode: int) -> dict[str, str]:
+    """A row for a run whose process exited nonzero.
+
+    Every measured cell is "NaN" and `feasible` is "false", so nothing here can
+    be read as a result: the report's `_number` maps "NaN" to NaN and a NaN
+    never reaches a mean, and the gate's `_repairs_of` reads it as "no reading"
+    rather than as zero repairs.
+    """
+    row = {
+        "instance": run.instance,
+        "arm": run.arm.name,
+        "arm_flags": " ".join(run.arm.flags),
+        "seed": str(run.seed),
+        "time_limit": f"{args.time_limit:g}",
+        "commit_sha": sha,
+    }
+    row.update({column: "NaN" for column in _RUNNER_COLUMNS})
+    row["feasible"] = "false"
+    row["note"] = f"runner-failed-exit-{returncode}"
+    return row
+
+
 def _progress(index: int, total: int, run: Run, started: float, elapsed_each: list[float]) -> str:
     """The stderr line the orchestrator watches for hours."""
     done = len(elapsed_each)
@@ -493,6 +566,83 @@ def _progress(index: int, total: int, run: Run, started: float, elapsed_each: li
         spent = time.monotonic() - started
         line += f"  (elapsed {spent / 3600:.2f}h, eta {remaining / 3600:.2f}h)"
     return line
+
+
+def block_of(run: Run) -> tuple[str, int]:
+    """The interleave block a run belongs to: one (instance, seed) pair.
+
+    Every arm in a block runs back to back, which is what makes the comparison
+    between them a comparison at one point in the machine's life.
+    """
+    return (run.instance, run.seed)
+
+
+def drop_partial_block(
+    results: Path, runs: Sequence[Run], done: set[tuple[str, str, int]]
+) -> set[tuple[str, str, int]]:
+    """Un-record the trailing block a resume would otherwise finish hours late.
+
+    THE INTERLEAVE IS THE PROTOCOL, and a plain resume breaks it. The plan runs
+    every arm for one (instance, seed) back to back precisely so the control
+    and the arms meet the same machine; an interruption lands inside such a
+    block with probability (k-1)/k -- 80% at five arms -- and a resume that
+    simply skips what is recorded then finishes that block after however long
+    the campaign was down. Nothing downstream can see it: the rows look like
+    every other row.
+
+    So the trailing partial block is dropped and re-run whole. Its rows are
+    moved aside rather than deleted -- `--no-resume` already keeps what it
+    replaces, and a discarded solve is still a measurement someone may want to
+    look at.
+
+    Only the LAST block with any recorded run is considered: earlier blocks were
+    completed in one sitting, and a block that is partial for any other reason
+    (a roster filter, a gate that ran the arm later) is not something to redo.
+    """
+    ordered_blocks = list(dict.fromkeys(block_of(r) for r in runs))
+    with_rows = {block_of(r) for r in runs if r.key in done}
+    recorded_blocks = [b for b in ordered_blocks if b in with_rows]
+    if not recorded_blocks:
+        return done
+    last = recorded_blocks[-1]
+    block_runs = [r for r in runs if block_of(r) == last]
+    if all(r.key in done for r in block_runs):
+        return done  # complete: nothing to redo
+    dropped = {r.key for r in block_runs if r.key in done}
+    if not dropped:
+        return done
+    kept: list[list[str]] = []
+    moved: list[list[str]] = []
+    with results.open(newline="") as fh:
+        reader = csv.DictReader(fh)
+        fields = reader.fieldnames or list(RESULT_COLUMNS)
+        for row in reader:
+            try:
+                key = (row["instance"], row["arm"], int(row["seed"]))
+            except (KeyError, TypeError, ValueError):
+                kept.append([row.get(f, "") for f in fields])
+                continue
+            (moved if key in dropped else kept).append([row.get(f, "") for f in fields])
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(fields)
+    writer.writerows(kept)
+    _atomic_write(results, buffer.getvalue().encode())
+    aside = results.with_name("results.split-block.csv")
+    with aside.open("a", newline="") as fh:
+        out = csv.writer(fh)
+        if aside.stat().st_size == 0:
+            out.writerow(fields)
+        out.writerows(moved)
+    print(
+        f"resume: the interrupted block {last[0]} seed {last[1]} was {len(dropped)} of "
+        f"{len(block_runs)} run(s) complete. Those {len(dropped)} row(s) were moved to "
+        f"{aside.name} and the block will be re-run whole, so its arms are compared at one "
+        "point in the machine's life rather than across the interruption.",
+        file=sys.stderr,
+        flush=True,
+    )
+    return done - dropped
 
 
 def execute_runs(
@@ -512,6 +662,8 @@ def execute_runs(
     # column names and resume past it.
     open_results(results)
     done = recorded_keys(results) if args.resume else set()
+    if args.resume:
+        done = drop_partial_block(results, runs, done)
     started = time.monotonic()
     elapsed_each: list[float] = []
     print(
@@ -533,10 +685,21 @@ def execute_runs(
         completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
         (out_dir / "runs" / f"{run.slug}.log").write_text(completed.stdout + completed.stderr)
         if completed.returncode != 0:
-            raise RuntimeError(
-                f"{run.slug} failed (exit {completed.returncode}); see "
-                f"{out_dir / 'runs' / f'{run.slug}.log'}. Re-running resumes from here."
+            # Recorded as a failed run rather than raised. An instance that
+            # crashes only under one arm, at hour nine, otherwise makes the
+            # campaign unfinishable except by hand-listing the rest of the
+            # roster -- and a resume would retry the same crash forever. The
+            # row enters the resume set so the campaign moves on, and the
+            # report counts it in its own bucket instead of averaging it in.
+            print(
+                f"    -> FAILED (exit {completed.returncode}); recorded as a failed run, see "
+                f"{out_dir / 'runs' / f'{run.slug}.log'}",
+                file=sys.stderr,
+                flush=True,
             )
+            append_result(results, failed_row(run, args, sha, completed.returncode))
+            elapsed_each.append(time.monotonic() - began)
+            continue
         runner = read_runner_row(out_dir / "runs" / f"{run.slug}.csv", run, sha)
         append_result(results, result_row(run, args, sha, runner))
         elapsed_each.append(time.monotonic() - began)
@@ -556,7 +719,10 @@ class GateDecision:
     reason: str
     instances_with_repairs: int
     total_repairs: int
+    #: Probe runs that produced an lns_repairs reading, and those that did not.
+    #: Held apart because a row where no solve ran is not a reading of zero.
     probed_runs: int
+    unread_runs: int = 0
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -564,18 +730,31 @@ class GateDecision:
             "reason": self.reason,
             "instances_with_repairs": self.instances_with_repairs,
             "total_repairs": self.total_repairs,
+            "unread_runs": self.unread_runs,
             "probed_runs": self.probed_runs,
             "min_repairs_per_instance": LNS_GATE_MIN_REPAIRS,
             "min_instances": LNS_GATE_MIN_INSTANCES,
         }
 
 
-def _repairs_of(row: dict[str, str]) -> int:
-    """A row's `lns_repairs` as a count, with "NaN" (no solve ran) reading as 0."""
+def _repairs_of(row: dict[str, str]) -> int | None:
+    """A row's `lns_repairs` as a count, or None where the row has no reading.
+
+    None, NOT zero. The runner writes "NaN" for an instance it skipped as
+    unsupported and for a solve that threw, and exits 0 in both cases, so such
+    rows reach the gate looking like completed runs. Folding them to 0 let a
+    row where nothing ran vote for SKIP -- the opposite of what the runner's own
+    comment on that cell says must happen, and a skip decided partly by
+    instances that never solved would not be the "counter reading that
+    justified skipping" the acceptance criterion asks for.
+    """
     try:
-        return int(float(row["lns_repairs"]))
+        value = float(row["lns_repairs"])
     except (KeyError, TypeError, ValueError):
-        return 0
+        return None
+    if not math.isfinite(value):
+        return None
+    return int(value)
 
 
 def decide_lns_gate(rows: Sequence[dict[str, str]]) -> GateDecision:
@@ -586,24 +765,47 @@ def decide_lns_gate(rows: Sequence[dict[str, str]]) -> GateDecision:
     would have measured nothing.
     """
     per_instance: dict[str, int] = {}
+    unread = 0
     for row in rows:
-        per_instance[row["instance"]] = per_instance.get(row["instance"], 0) + _repairs_of(row)
+        repairs = _repairs_of(row)
+        if repairs is None:
+            unread += 1
+            continue
+        per_instance[row["instance"]] = per_instance.get(row["instance"], 0) + repairs
     hits = sum(1 for total in per_instance.values() if total >= LNS_GATE_MIN_REPAIRS)
     total = sum(per_instance.values())
+    read = len(rows) - unread
+    unread_note = (
+        ""
+        if not unread
+        else f"; {unread} probe row(s) carried no reading (no solve ran) and "
+        "were excluded from the denominator rather than counted as zero repairs"
+    )
     if hits >= LNS_GATE_MIN_INSTANCES:
         reason = (
             f"{hits} instance(s) reached {LNS_GATE_MIN_REPAIRS}+ LNS repair(s) "
-            f"({total} repairs over {len(rows)} probe run(s)); LNS is doing work at this "
-            "budget, so --no-lns is a real arm"
+            f"({total} repairs over {read} probe run(s) with a reading); LNS is doing work at "
+            f"this budget, so --no-lns is a real arm{unread_note}"
         )
-        return GateDecision(True, reason, hits, total, len(rows))
+        return GateDecision(True, reason, hits, total, read, unread)
+    # A skip has to be a reading, not an absence of one. If most of the probe
+    # produced no counter at all there is nothing to skip on, so the arm runs:
+    # the campaign spends the time rather than publishing a decision its own
+    # data does not support.
+    if read < GATE_MIN_READABLE_FRACTION * len(rows):
+        reason = (
+            f"only {read} of {len(rows)} probe run(s) produced an lns_repairs reading, below "
+            f"the {GATE_MIN_READABLE_FRACTION:.0%} the gate needs to stand on; running the arm "
+            "rather than skipping it on a reading this thin"
+        )
+        return GateDecision(True, reason, hits, total, read, unread)
     reason = (
         f"only {hits} instance(s) reached {LNS_GATE_MIN_REPAIRS}+ LNS repair(s) "
-        f"({total} repairs over {len(rows)} probe run(s)), below the {LNS_GATE_MIN_INSTANCES}-"
-        "instance threshold; with no repair the engine takes the same branch at every kick, "
-        "so --no-lns would measure nothing"
+        f"({total} repairs over {read} probe run(s) with a reading), below the "
+        f"{LNS_GATE_MIN_INSTANCES}-instance threshold; with no repair the engine takes the "
+        f"same branch at every kick, so --no-lns would measure nothing{unread_note}"
     )
-    return GateDecision(False, reason, hits, total, len(rows))
+    return GateDecision(False, reason, hits, total, read, unread)
 
 
 def probe_rows(results: Path) -> list[dict[str, str]]:
@@ -632,7 +834,20 @@ def resolve_gate(
     else:
         execute_runs(args, sha, probe_plan(roster, args.seeds[0]), out_dir, "gate probe")
         decision = decide_lns_gate(probe_rows(out_dir / RESULTS_NAME))
-    (out_dir / GATE_NAME).write_text(json.dumps(decision.as_dict(), indent=2) + "\n")
+    gate_path = out_dir / GATE_NAME
+    # A forced --lns-arm must never overwrite a recorded reading with a
+    # non-reading. The acceptance criterion asks for the counter reading that
+    # justified a skip, and only the probe produces one; a `probed_runs: 0,
+    # total_repairs: 0` record written over it would destroy exactly that.
+    if args.lns_arm != "auto" and gate_path.exists():
+        print(
+            f"--lns-arm {args.lns_arm}: keeping the recorded gate reading in {gate_path.name} "
+            "rather than overwriting it with a forced non-decision",
+            file=sys.stderr,
+            flush=True,
+        )
+    else:
+        gate_path.write_text(json.dumps(decision.as_dict(), indent=2) + "\n")
     print(
         f"LNS gate: {'RUN' if decision.run_arm else 'SKIP'} -- {decision.reason}",
         file=sys.stderr,
@@ -687,7 +902,9 @@ def execute(args: argparse.Namespace, sha: str, roster: Sequence[str], out_dir: 
     """The campaign: probe, gate, interleaved arms, report."""
     stamp_arms = [*ARMS, GATED_ARM]
     conflict = stamp_conflict(
-        out_dir, campaign_stamp(sha, args.time_limit, args.seeds, stamp_arms), resume=args.resume
+        out_dir,
+        campaign_stamp(sha, args.time_limit, args.seeds, stamp_arms, roster, args.lns_arm),
+        resume=args.resume,
     )
     if conflict:
         print(conflict, file=sys.stderr)
@@ -783,16 +1000,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not results.exists():
             print(f"{results} not found; nothing to report on", file=sys.stderr)
             return 2
-        # `execute` repairs the file before it runs; --report-only is the path
-        # that reads one nothing has repaired, and `load_rows` raises on a torn
-        # final row rather than skipping it the way `recorded_keys` does. Killed
-        # mid-append is the normal state of a ten-hour campaign, so this is the
-        # common case for the only read-only way to look at the results.
-        if repair_torn_tail(results):
-            print(f"dropped a torn final line from {results} before scoring it", file=sys.stderr)
-        gate_path = out_dir / GATE_NAME
-        gate = json.loads(gate_path.read_text()) if gate_path.exists() else None
-        print(render_report(results, gate=gate))
+        # A torn final row is the normal state of a campaign that was killed
+        # mid-append, and `load_rows` raises on one rather than skipping it the
+        # way `recorded_keys` does. So it has to be repaired before scoring --
+        # but NOT IN PLACE. This is the way the README invites a reader to watch
+        # a running campaign from a second terminal, and the row that looks torn
+        # from here is very often one the running driver has already fsynced and
+        # already struck off its in-memory `done` set: repairing the live file
+        # would delete that run from the record permanently. Score a copy.
+        with tempfile.TemporaryDirectory() as scratch:
+            snapshot = Path(scratch) / RESULTS_NAME
+            snapshot.write_bytes(results.read_bytes())
+            if repair_torn_tail(snapshot):
+                print(
+                    f"{results} ends in a torn row (a campaign is probably still appending "
+                    "to it); scoring a repaired COPY and leaving the original alone",
+                    file=sys.stderr,
+                )
+            gate_path = out_dir / GATE_NAME
+            gate = json.loads(gate_path.read_text()) if gate_path.exists() else None
+            print(render_report(snapshot, gate=gate))
         return 0
 
     sha = commit_sha()

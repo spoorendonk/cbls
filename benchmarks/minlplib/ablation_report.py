@@ -15,18 +15,38 @@ spread across its seeds, and that is what the floor is built from:
 * The effect statistic for an instance is a difference of per-arm mean gaps, so
   its noise scale is `se_i = s_i * sqrt(1/k_arm + 1/k_control)`, with `k` the
   number of comparable runs on each side.
-* The **per-instance floor** is `NOISE_Z * se_i`, a two-sided ~95% normal band.
-  At three seeds that band is coarse and this file says so rather than dressing
-  it up as a t-interval it has no degrees of freedom for.
-* The **aggregate floor** is the floor on the mean of the per-instance deltas:
-  `NOISE_Z * sqrt(sum(se_i^2)) / n`.
-* An instance whose control produced fewer than two comparable runs has no
-  measured spread. Its `s_i` is imputed as the median `s_i` over the instances
-  that do have one, and the report says how many were imputed -- dropping them
-  instead would quietly shrink the floor by discarding the noisiest cases.
+* The **per-instance floor** is `t * se_i`, a two-sided 95% band, with `t` the
+  Student multiplier for `k_control - 1` degrees of freedom -- 4.30 at three
+  seeds, not 1.96. Three seeds is a small sample and the band has to say so;
+  using 2.0 there would print a band about half its nominal width.
+* An instance whose control produced **fewer than two** comparable runs has no
+  measured spread and is **not scored**. It is counted and listed in its own
+  line instead. Noise cannot be imputed onto it from other instances: this
+  roster's gaps span six orders of magnitude, so borrowing the median absolute
+  spread (~1 gap point) onto an instance whose gap is ~1e6 hands it a floor it
+  clears automatically, which manufactures a significant result rather than
+  measuring one.
 
-An effect whose magnitude is at or below its floor is reported as "inside the
-noise", with the floor quoted, which is the acceptance criterion.
+THE VERDICT IS SCALE-FREE, AND THIS IS THE POINT ON WHICH AN EARLIER CUT WAS
+WRONG. Gap-to-BKS is a percentage of wildly differing magnitudes across this
+roster: in the committed table `gear4` alone is 1.65e6 gap points, 98.5% of the
+sum over all finite gaps, where the median instance is 1.00. An unweighted mean
+of per-instance deltas is therefore not an average over the roster at all -- it
+is `gear4`'s seed draw, and a uniform 10-point regression on all 45 other
+instances moves it by less than its own noise. So the verdict is built from
+statistics that do not care about scale:
+
+* Each instance is judged against **its own** floor. `moved worse` and
+  `moved better` count the instances whose delta exceeds it.
+* Those counts are read with an exact two-sided **sign test**. An arm that
+  moved nothing outside its own floor is "inside the noise", with the typical
+  floor quoted; an arm that moved instances in both directions in comparable
+  numbers is reported as mixed rather than as an effect.
+* The **median** delta is the location statistic quoted, never the mean.
+
+The mean is still printed, immediately followed by the share of it contributed
+by the single largest instance, so a reader who reaches for it can see at once
+whether it describes the roster or one instance.
 
 WHAT DOES NOT GET AVERAGED. A gap is defined only for a run that was feasible
 AND has a finite published bound to be scored against, so an arm that is
@@ -42,7 +62,7 @@ from __future__ import annotations
 import csv
 import math
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from benchmarks.minlplib.run_benchmark import CLAIM_EXCLUDED
@@ -59,9 +79,35 @@ CONTROL_ARM = "control"
 #: out of every effect estimate and reported on their own as a drift check.
 PROBE_ARM_NAME = "gate-probe"
 
-#: Two-sided ~95% normal band. Named so the report can quote it and a reader can
-#: recompute the floor at another confidence without guessing what was used.
-NOISE_Z = 2.0
+#: Two-sided 95% Student multipliers by degrees of freedom (`k_control - 1`).
+#: At three seeds df = 2 and the multiplier is 4.30, not the 1.96 a normal
+#: approximation would use -- an earlier cut used 2.0 flat and printed a band
+#: roughly half its nominal width. Beyond the table the normal value is close
+#: enough that the difference does not survive rounding.
+T_95: dict[int, float] = {1: 12.71, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447}
+NORMAL_Z_95 = 1.96
+
+
+def t_multiplier(df: int) -> float:
+    """The two-sided 95% multiplier for `df` degrees of freedom."""
+    if df < 1:
+        return math.nan
+    return T_95.get(df, NORMAL_Z_95)
+
+
+def sign_test_p(worse: int, better: int) -> float:
+    """Exact two-sided binomial p-value for `worse` vs `better` under p = 1/2.
+
+    Written out rather than pulled from scipy: the campaign's dependencies are
+    the repository's, and this is six lines.
+    """
+    n = worse + better
+    if n == 0:
+        return 1.0
+    extreme = min(worse, better)
+    tail = math.fsum(math.comb(n, k) for k in range(extreme + 1)) / (2.0**n)
+    return min(1.0, 2.0 * tail)
+
 
 #: Per-instance comparison buckets. Every compared instance lands in exactly one.
 BOTH_FEASIBLE = "both-feasible"
@@ -133,6 +179,12 @@ class Cell:
     #: Finite gaps of the feasible runs -- the only values a mean may be taken of.
     gaps: tuple[float, ...]
     repairs: tuple[float, ...]
+    #: The same gaps keyed by seed, so a same-seed comparison is possible. The
+    #: drift check needs it: averaging the seed away first is what turned an
+    #: earlier drift line into a measurement of seed variance. Defaulted because
+    #: only that check reads it, and every other construction site would
+    #: otherwise carry a field it never uses.
+    seed_gaps: dict[int, float] = field(default_factory=dict)
 
     @property
     def mean_gap(self) -> float | None:
@@ -152,6 +204,7 @@ def build_cells(rows: Iterable[RunRow]) -> dict[tuple[str, str], Cell]:
             feasible_runs=sum(1 for r in group if r.feasible),
             gaps=tuple(r.gap for r in group if r.feasible and math.isfinite(r.gap)),
             repairs=tuple(r.lns_repairs for r in group),
+            seed_gaps={r.seed: r.gap for r in group if r.feasible and math.isfinite(r.gap)},
         )
         for key, group in grouped.items()
     }
@@ -214,14 +267,15 @@ class NoiseFloor:
     """The measured noise floor for one arm's comparison against the control."""
 
     per_instance: dict[str, float]
-    aggregate: float
-    #: Instances whose control supplied a real `s_i`, and those whose `s_i` was
-    #: imputed from the median of those.
+    #: Instances whose control supplied a real `s_i`, and those whose control
+    #: gave fewer than two comparable runs so no floor could be measured. The
+    #: second group is NOT scored -- see the module docstring for why imputing
+    #: onto it manufactures results on this roster.
     measured: int
-    imputed: int
+    unmeasured: int
     #: The typical per-instance floor -- the headline number to quote.
     median_floor: float
-    #: The median control standard deviation the imputation used.
+    #: The median control standard deviation behind those floors.
     median_spread: float
 
 
@@ -243,32 +297,34 @@ def control_spreads(
 
 
 def noise_floor(comparisons: Sequence[Comparison], spreads: dict[str, float]) -> NoiseFloor:
-    """The floor for this arm, from the control's own across-seed spread."""
+    """The floor for this arm, from the control's own across-seed spread.
+
+    One floor per instance and no aggregate floor: an aggregate would only ever
+    be read against an aggregate effect, and on a roster whose gaps span six
+    orders of magnitude the only aggregate worth quoting is a rank statistic,
+    which has no gap-point floor to be compared with.
+    """
     compared = [c for c in comparisons if c.bucket == BOTH_FEASIBLE]
-    median_spread = statistics.median(spreads.values()) if spreads else math.nan
     per_instance: dict[str, float] = {}
-    squares: list[float] = []
-    measured = imputed = 0
+    measured = unmeasured = 0
     for comparison in compared:
-        spread = spreads.get(comparison.instance, median_spread)
-        if comparison.instance in spreads:
-            measured += 1
-        else:
-            imputed += 1
+        spread = spreads.get(comparison.instance)
+        if spread is None:
+            # No measured spread, so no floor. Not imputed: see the module
+            # docstring. The instance is counted and listed, never scored.
+            unmeasured += 1
+            continue
+        measured += 1
         scale = math.sqrt(1.0 / len(comparison.treatment.gaps) + 1.0 / len(comparison.control.gaps))
-        standard_error = spread * scale
-        per_instance[comparison.instance] = NOISE_Z * standard_error
-        squares.append(standard_error * standard_error)
-    if not squares or math.isnan(median_spread):
-        return NoiseFloor(per_instance, math.nan, measured, imputed, math.nan, median_spread)
-    aggregate = NOISE_Z * math.sqrt(math.fsum(squares)) / len(squares)
+        per_instance[comparison.instance] = (
+            t_multiplier(len(comparison.control.gaps) - 1) * spread * scale
+        )
     return NoiseFloor(
         per_instance=per_instance,
-        aggregate=aggregate,
         measured=measured,
-        imputed=imputed,
-        median_floor=statistics.median(per_instance.values()),
-        median_spread=median_spread,
+        unmeasured=unmeasured,
+        median_floor=statistics.median(per_instance.values()) if per_instance else math.nan,
+        median_spread=statistics.median(spreads.values()) if spreads else math.nan,
     )
 
 
@@ -279,9 +335,25 @@ class ArmSummary:
     arm: str
     comparisons: tuple[Comparison, ...]
     counts: dict[str, int]
+    #: Printed, never used for the verdict, and always beside `mean_share` --
+    #: see the module docstring on why a mean over this roster is one
+    #: instance's number wearing the roster's name.
     mean_delta: float | None
+    #: The share of |mean_delta| contributed by the single largest instance.
+    mean_share: float
     median_delta: float | None
+    #: Instances whose delta exceeds THEIR OWN floor, by direction.
+    moved_worse: int
+    moved_better: int
+    #: Exact two-sided sign-test p-value over those two counts.
+    sign_p: float
     feasibility_delta: int
+    #: Feasible-run delta restricted to instances with equal run counts on both
+    #: sides, and how many instances that leaves out. An unequal-`k` instance
+    #: (the in-progress one on an interrupted campaign) otherwise contributes a
+    #: difference that is bookkeeping rather than a result.
+    feasibility_delta_balanced: int
+    feasibility_unbalanced: int
     floor: NoiseFloor
     #: Scored instances with rows on only one side, so in no bucket at all. An
     #: interrupted campaign always ends mid-instance-block, so its last instance
@@ -292,25 +364,62 @@ class ArmSummary:
     uncompared: int = 0
 
     @property
-    def verdict(self) -> str:
-        if self.mean_delta is None:
-            return "no instance is comparable on gap; read the feasibility counts instead"
-        if math.isnan(self.floor.aggregate):
-            return (
-                f"mean gap delta {self.mean_delta:+.2f} points, but the control produced no "
-                "instance with two comparable runs, so this campaign measured no noise floor "
-                "and the effect cannot be called"
-            )
-        if abs(self.mean_delta) <= self.floor.aggregate:
-            return (
-                f"mean gap delta {self.mean_delta:+.2f} points is INSIDE THE NOISE "
-                f"(measured floor +/-{self.floor.aggregate:.2f} points)"
-            )
-        direction = "WORSE than" if self.mean_delta > 0 else "BETTER than"
-        return (
-            f"mean gap delta {self.mean_delta:+.2f} points is outside the measured floor "
-            f"(+/-{self.floor.aggregate:.2f}); the arm is {direction} the control"
+    def scored(self) -> int:
+        """Instances with both a delta and a measured floor to judge it by."""
+        return self.moved_worse + self.moved_better + self.held
+
+    @property
+    def held(self) -> int:
+        """Scored instances whose delta stayed inside their own floor."""
+        return sum(
+            1
+            for c in self.comparisons
+            if c.delta is not None
+            and c.instance in self.floor.per_instance
+            and abs(c.delta) <= self.floor.per_instance[c.instance]
         )
+
+    @property
+    def verdict(self) -> str:
+        """The arm's effect, judged instance by instance and then by sign test.
+
+        Never from the mean: this roster's gaps span six orders of magnitude, so
+        an unweighted mean is the largest instance's seed draw. See the module
+        docstring.
+        """
+        if self.median_delta is None:
+            return "no instance is comparable on gap; read the feasibility counts instead"
+        if not self.floor.per_instance:
+            return (
+                f"median gap delta {self.median_delta:+.2f} points, but no instance has two "
+                "comparable control runs, so this campaign measured no noise floor and the "
+                "effect cannot be called"
+            )
+        typical = f"typical per-instance floor +/-{self.floor.median_floor:.2f} points"
+        moved = self.moved_worse + self.moved_better
+        if moved == 0:
+            return (
+                f"INSIDE THE NOISE: none of {self.scored} scored instance(s) moved outside its "
+                f"own measured floor ({typical}); median gap delta "
+                f"{self.median_delta:+.2f} points"
+            )
+        summary = (
+            f"{moved} of {self.scored} scored instance(s) moved outside their own floor "
+            f"({self.moved_worse} worse, {self.moved_better} better; sign test p = "
+            f"{self.sign_p:.3f}, {typical}); median gap delta {self.median_delta:+.2f} points"
+        )
+        # Unanimity is the signal, and the sign test is how strong it is. Every
+        # instance that cleared its own floor moving the same way is a
+        # direction to report even when few did: at two instances no sign test
+        # can reach 0.05, and refusing to name a direction there would call a
+        # 30-point move on both "no consistent direction". Where the two
+        # directions are both present, the sign test decides, so a 3-against-2
+        # split is not read as an effect.
+        unanimous = self.moved_worse == 0 or self.moved_better == 0
+        if not unanimous and self.sign_p > 0.05:
+            return f"MIXED, no consistent direction: {summary}"
+        direction = "WORSE than" if self.moved_worse > self.moved_better else "BETTER than"
+        return f"the arm is {direction} the control: {summary}"
 
 
 def summarize_arm(
@@ -327,14 +436,36 @@ def summarize_arm(
             continue
         comparisons.append(compare(control, treatment))
     deltas = [c.delta for c in comparisons if c.delta is not None]
+    floor = noise_floor(comparisons, control_spreads(cells, instances))
+    moved_worse = moved_better = 0
+    for comparison in comparisons:
+        band = floor.per_instance.get(comparison.instance)
+        if comparison.delta is None or band is None:
+            continue
+        if comparison.delta > band:
+            moved_worse += 1
+        elif comparison.delta < -band:
+            moved_better += 1
+    # The mean is reported only alongside the share of it one instance owns, so
+    # a reader can see immediately whether it describes the roster.
+    mean_delta = statistics.fmean(deltas) if deltas else None
+    total = math.fsum(abs(d) for d in deltas)
+    mean_share = (max(abs(d) for d in deltas) / total) if deltas and total > 0.0 else math.nan
+    balanced = [c for c in comparisons if c.control.runs == c.treatment.runs and c.control.runs > 0]
     return ArmSummary(
         arm=arm,
         comparisons=tuple(comparisons),
         counts={bucket: sum(1 for c in comparisons if c.bucket == bucket) for bucket in BUCKETS},
-        mean_delta=statistics.fmean(deltas) if deltas else None,
+        mean_delta=mean_delta,
+        mean_share=mean_share,
         median_delta=statistics.median(deltas) if deltas else None,
+        moved_worse=moved_worse,
+        moved_better=moved_better,
+        sign_p=sign_test_p(moved_worse, moved_better),
         feasibility_delta=sum(c.feasibility_delta for c in comparisons),
-        floor=noise_floor(comparisons, control_spreads(cells, instances)),
+        feasibility_delta_balanced=sum(c.feasibility_delta for c in balanced),
+        feasibility_unbalanced=len(comparisons) - len(balanced),
+        floor=floor,
         uncompared=uncompared,
     )
 
@@ -366,22 +497,29 @@ def drift_check(cells: dict[tuple[str, str], Cell], instances: Sequence[str]) ->
     for instance in instances:
         probe = cells.get((instance, PROBE_ARM_NAME))
         control = cells.get((instance, CONTROL_ARM))
-        if probe is None or control is None or not probe.gaps or not control.gaps:
+        if probe is None or control is None:
             continue
-        control_mean = control.mean_gap
-        probe_mean = probe.mean_gap
-        if control_mean is None or probe_mean is None:
-            continue
-        pairs.append(abs(probe_mean - control_mean))
+        # SAME SEED ON BOTH SIDES, and this is what makes the line a drift
+        # measurement rather than a restatement of seed variance. The probe is
+        # one seed; comparing it against the control's mean over all three
+        # would differ by ~s*sqrt(2/3) from seeds alone, which is not drift and
+        # which an earlier cut printed as though it were, under a closing
+        # sentence telling the reader to discount arm effects smaller than it.
+        shared = set(probe.seed_gaps) & set(control.seed_gaps)
+        for seed in sorted(shared):
+            pairs.append(abs(probe.seed_gaps[seed] - control.seed_gaps[seed]))
     if not pairs:
-        return "drift check: no instance has both a probe row and a control row"
+        return (
+            "drift check: no instance has a probe row and a control row at the same seed, "
+            "so this campaign measured no drift"
+        )
     return (
-        f"drift check: {len(pairs)} instance(s) ran the control configuration twice at "
-        f"different points in the sitting (gate probe vs campaign control). Mean absolute "
-        f"gap difference "
-        f"{statistics.fmean(pairs):.2f} points, median {statistics.median(pairs):.2f}. This is "
-        "drift plus run-to-run noise for one configuration; an arm effect smaller than it is "
-        "not an arm effect."
+        f"drift check: {len(pairs)} same-seed pair(s) ran the control configuration twice at "
+        f"different points in the sitting (gate probe vs campaign control). Mean absolute gap "
+        f"difference {statistics.fmean(pairs):.2f} points, median "
+        f"{statistics.median(pairs):.2f}, max {max(pairs):.2f}. Same configuration, same seed, "
+        "hours apart: the difference is machine drift. It is descriptive -- no verdict above "
+        "is computed from it."
     )
 
 
@@ -418,15 +556,21 @@ def _instance_lines(summary: ArmSummary) -> list[str]:
 
 def _floor_lines(summary: ArmSummary) -> list[str]:
     floor = summary.floor
-    if math.isnan(floor.aggregate):
+    if not floor.per_instance:
         return ["  noise floor: not measurable -- no instance has two comparable control runs"]
-    return [
-        f"  noise floor: typical per-instance +/-{floor.median_floor:.2f} points, "
-        f"aggregate +/-{floor.aggregate:.2f} points",
+    lines = [
+        f"  noise floor: typical per-instance +/-{floor.median_floor:.2f} points",
         f"    from the control's own across-seed spread (median s = {floor.median_spread:.2f} "
-        f"gap points, z = {NOISE_Z:g}); {floor.measured} instance(s) measured, "
-        f"{floor.imputed} imputed from that median",
+        f"gap points, two-sided 95% Student band); {floor.measured} instance(s) measured",
     ]
+    if floor.unmeasured:
+        lines.append(
+            f"    {floor.unmeasured} comparable instance(s) NOT SCORED: fewer than two "
+            "comparable control runs, so no floor could be measured for them. Their deltas "
+            "are listed below with a '-' floor. Imputing one from other instances would be "
+            "unsound here -- the roster's gaps span six orders of magnitude."
+        )
+    return lines
 
 
 def _excluded_lines(cells: dict[tuple[str, str], Cell], arms: Sequence[str]) -> list[str]:
@@ -478,7 +622,17 @@ def render_report(results: Path, gate: dict[str, object] | None = None) -> str:
         summary = summarize_arm(arm, cells, instances)
         lines.append(f"--- {arm} ---")
         lines.append("  " + "  ".join(f"{k}={v}" for k, v in summary.counts.items()))
-        lines.append(f"  feasible-run delta over the roster: {summary.feasibility_delta:+d}")
+        lines.append(
+            f"  feasible-run delta over the roster: {summary.feasibility_delta_balanced:+d} "
+            f"over instances with equal run counts on both sides"
+            + (
+                ""
+                if not summary.feasibility_unbalanced
+                else f" ({summary.feasibility_unbalanced} instance(s) left out for unequal run "
+                f"counts; counting them gives {summary.feasibility_delta:+d}, which is "
+                "bookkeeping on an incomplete campaign rather than a result)"
+            )
+        )
         # Issue #143 asks for the repair counts wherever the LNS arm is RUN, not
         # only for the reading that would justify skipping it. Both sides are
         # printed for every arm: the control's is the campaign's own answer to
@@ -496,6 +650,16 @@ def render_report(results: Path, gate: dict[str, object] | None = None) -> str:
             )
         if summary.median_delta is not None:
             lines.append(f"  median per-instance gap delta: {summary.median_delta:+.2f} points")
+        if summary.mean_delta is not None:
+            share = (
+                ""
+                if math.isnan(summary.mean_share)
+                else f", {summary.mean_share:.0%} of it contributed by a single instance"
+            )
+            lines.append(
+                f"  mean per-instance gap delta: {summary.mean_delta:+.2f} points{share} "
+                "-- NOT the verdict statistic, see the module docstring"
+            )
         lines += _floor_lines(summary)
         lines.append(f"  VERDICT: {summary.verdict}")
         lines.append("")

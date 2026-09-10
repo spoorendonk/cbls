@@ -16,7 +16,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from benchmarks.minlplib.ablation_report import CONTROL_ARM, PROBE_ARM_NAME
+from benchmarks.minlplib.ablation_report import (
+    CONTROL_ARM,
+    PROBE_ARM_NAME,
+    render_report,
+    sign_test_p,
+    t_multiplier,
+)
 from benchmarks.minlplib.run_ablation import (
     ARMS,
     GATED_ARM,
@@ -32,9 +38,11 @@ from benchmarks.minlplib.run_ablation import (
     campaign_plan,
     campaign_stamp,
     decide_lns_gate,
+    drop_partial_block,
     estimate_hours,
     execute,
     execute_runs,
+    failed_row,
     load_refusal,
     main,
     probe_plan,
@@ -326,9 +334,18 @@ def write_results(path: Path, keys: Sequence[tuple[str, str, int]]) -> None:
             writer.writerow([row[column] for column in RESULT_COLUMNS])
 
 
-def test_resume_skips_exactly_the_recorded_triples(
+def test_resume_skips_recorded_triples_outside_the_interrupted_block(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Resume skips what is recorded -- EXCEPT the block the interruption split.
+
+    `("a", control, 1)` sits in a block that was left half-finished, so its
+    whole block is re-run: the interleave is the protocol, and finishing a block
+    after however long the campaign was down compares its arms across the
+    interruption. `("b", no-float-hook, 2)` is in the last recorded block, which
+    is likewise partial and likewise redone. What must NOT happen is redoing
+    blocks that completed in one sitting.
+    """
     out_dir = tmp_path / "scratch"
     write_results(out_dir / RESULTS_NAME, [("a", CONTROL_ARM, 1), ("b", "no-float-hook", 2)])
     seen: list[str] = []
@@ -336,9 +353,13 @@ def test_resume_skips_exactly_the_recorded_triples(
     plan = campaign_plan(["a", "b"], [1, 2], [ARMS[0], ARMS[1]])
     execute_runs(make_args(tmp_path), "abc1234", plan, out_dir, "campaign")
     ran = {tuple(slug.split("__")) for slug in seen}
+    # ("a", control, 1) is in an EARLIER block, so it is still skipped.
     assert ("a", CONTROL_ARM, "seed1") not in ran
-    assert ("b", "no-float-hook", "seed2") not in ran
-    assert len(seen) == len(plan) - 2
+    # ("b", no-float-hook, 2) is in the trailing partial block, so it is redone
+    # together with the rest of that block rather than finished in isolation.
+    assert ("b", "no-float-hook", "seed2") in ran
+    assert ("b", CONTROL_ARM, "seed2") in ran
+    assert len(seen) == len(plan) - 1
 
 
 def test_no_resume_re_runs_every_triple(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -475,11 +496,19 @@ def test_the_gate_skips_the_arm_when_nothing_repaired() -> None:
 
 
 def test_a_row_where_no_solve_ran_does_not_vote_in_the_gate() -> None:
-    """`lns_repairs` is NaN on a row the runner wrote without solving. It must
-    not read as a repair, and it must not crash the gate either."""
+    """`lns_repairs` is NaN on a row the runner wrote without solving.
+
+    It must not read as a repair, it must not crash the gate -- and it must not
+    read as a reading of ZERO repairs either, which is what an earlier cut did.
+    A skip assembled from rows where nothing ran is not "the counter reading
+    that justified skipping"; with no reading at all the arm runs and the
+    campaign spends the time.
+    """
     decision = decide_lns_gate([probe_row("a", "NaN"), probe_row("b", "")])
-    assert decision.run_arm is False
+    assert decision.run_arm is True
     assert decision.total_repairs == 0
+    assert decision.probed_runs == 0
+    assert decision.unread_runs == 2
 
 
 def test_the_gate_decision_is_recorded_as_data() -> None:
@@ -494,3 +523,281 @@ def test_the_gate_decision_is_recorded_as_data() -> None:
 def test_the_estimate_is_derived_from_the_budget() -> None:
     assert estimate_hours(750, 60.0) == pytest.approx(12.5)
     assert estimate_hours(50, 60.0) == pytest.approx(50 / 60)
+
+
+def _campaign_csv(path: Path, rows: Sequence[dict[str, object]]) -> Path:
+    """A results.csv holding exactly `rows`, every other cell a benign default."""
+    with path.open("w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(RESULT_COLUMNS)
+        for row in rows:
+            cells = dict.fromkeys(RESULT_COLUMNS, "0")
+            cells["feasible"] = "true"
+            cells["lns_repairs"] = "0"
+            cells.update({k: str(v) for k, v in row.items()})
+            writer.writerow([cells[column] for column in RESULT_COLUMNS])
+    return path
+
+
+def _flat_campaign(
+    huge_gap: float, huge_noise: float, arm_shift: float = 0.0
+) -> list[dict[str, object]]:
+    """45 small instances plus one enormous one, with NO true arm effect.
+
+    This is the shape of the real roster: in the committed comparison.csv
+    `gear4` is 1.65e6 gap points and the median instance is 1.00, so one
+    instance owns 98.5% of the sum. `arm_shift` adds a uniform regression to
+    every small instance, which is the effect a roster-wide statistic has to be
+    able to see past the big one.
+    """
+    rows: list[dict[str, object]] = []
+    for i in range(45):
+        for seed in (1, 2, 3):
+            base = 1.0 + 0.01 * ((i + seed) % 3)
+            rows.append(
+                {"instance": f"small{i}", "arm": "control", "seed": seed, "gap_to_bks%": base}
+            )
+            rows.append(
+                {
+                    "instance": f"small{i}",
+                    "arm": "no-float-hook",
+                    "seed": seed,
+                    "gap_to_bks%": base + arm_shift,
+                }
+            )
+    for seed in (1, 2, 3):
+        # The big instance's own run-to-run noise. The two sides differ by one
+        # noise step, which is well INSIDE this instance's own floor (its
+        # across-seed spread is the same size) -- but in raw gap points it is
+        # four orders of magnitude larger than anything the small instances do,
+        # so it is the whole of any unweighted mean.
+        rows.append(
+            {
+                "instance": "gear4",
+                "arm": "control",
+                "seed": seed,
+                "gap_to_bks%": huge_gap + huge_noise * (seed - 2),
+            }
+        )
+        rows.append(
+            {
+                "instance": "gear4",
+                "arm": "no-float-hook",
+                "seed": seed,
+                "gap_to_bks%": huge_gap + huge_noise * (seed - 1),
+            }
+        )
+    return rows
+
+
+def test_one_enormous_instance_cannot_decide_the_verdict(tmp_path: Path) -> None:
+    """The roster's gaps span six orders of magnitude, so an unweighted mean is
+    not an average over the roster -- it is the largest instance's seed draw.
+
+    Against the cut that took `statistics.fmean` of raw per-instance deltas,
+    this exact campaign printed `mean gap delta -1140.74 points is INSIDE THE
+    NOISE (measured floor +/-3733.20 points)`, where both numbers were entirely
+    `gear4`. Here there is no arm effect at all, so the only honest verdict is
+    that nothing moved.
+    """
+    results = _campaign_csv(
+        tmp_path / RESULTS_NAME, _flat_campaign(huge_gap=1.65e6, huge_noise=8.0e4)
+    )
+    report = render_report(results)
+
+    assert "INSIDE THE NOISE" in report
+    # And the mean, which is still printed, has to disclose that it is one
+    # instance's number wearing the roster's name.
+    assert "NOT the verdict statistic" in report
+    assert "contributed by a single instance" in report
+
+
+def test_a_uniform_regression_is_not_hidden_by_the_enormous_instance(tmp_path: Path) -> None:
+    """The other half of the same defect: a real, uniform regression on every
+    small instance moved the old mean by 9.8 points against a floor of 3733,
+    and was reported as inside the noise. It must now be seen."""
+    results = _campaign_csv(
+        tmp_path / RESULTS_NAME,
+        _flat_campaign(huge_gap=1.65e6, huge_noise=8.0e4, arm_shift=10.0),
+    )
+    report = render_report(results)
+
+    assert "INSIDE THE NOISE" not in report
+    assert "WORSE than the control" in report
+    assert "45 worse" in report
+
+
+def test_an_instance_with_one_control_run_is_not_scored(tmp_path: Path) -> None:
+    """No spread, no floor, no score -- and it is counted, not dropped.
+
+    Imputing the median absolute spread (~1 gap point on this roster) onto an
+    instance whose gap is ~1e6 hands it a floor it clears automatically, which
+    manufactures a significant result. `gear4` is exactly the instance most
+    likely to be feasible on only one seed.
+    """
+    rows: list[dict[str, object]] = [
+        {"instance": "small0", "arm": "control", "seed": s, "gap_to_bks%": 1.0 + 0.01 * s}
+        for s in (1, 2, 3)
+    ] + [
+        {"instance": "small0", "arm": "no-float-hook", "seed": s, "gap_to_bks%": 1.0}
+        for s in (1, 2, 3)
+    ]
+    # One comparable control run, an enormous delta on the arm side.
+    rows.append({"instance": "gear4", "arm": "control", "seed": 1, "gap_to_bks%": 1.0e6})
+    rows += [
+        {"instance": "gear4", "arm": "no-float-hook", "seed": s, "gap_to_bks%": 2.0e6}
+        for s in (1, 2, 3)
+    ]
+    report = render_report(_campaign_csv(tmp_path / RESULTS_NAME, rows))
+
+    assert "NOT SCORED" in report
+    assert "fewer than two comparable control runs" in report
+    # It must not have been scored as a move despite its 1e6 delta.
+    assert "1 worse" not in report
+
+
+def test_the_floor_uses_a_student_multiplier_at_three_seeds() -> None:
+    """df = 2 at three seeds, so the two-sided 95% multiplier is 4.30, not 2.0.
+
+    An earlier cut used 2.0 flat and said in its docstring that it had "no
+    degrees of freedom for" a t-interval, which is wrong in both directions:
+    there are two, and the band it printed was about half its nominal width.
+    """
+    assert t_multiplier(2) == pytest.approx(4.303)
+    assert t_multiplier(1) == pytest.approx(12.71)
+    assert t_multiplier(50) == pytest.approx(1.96)
+
+
+def test_the_sign_test_needs_more_than_a_bare_majority() -> None:
+    """Two instances one way and one the other is not a direction."""
+    assert sign_test_p(0, 0) == pytest.approx(1.0)
+    assert sign_test_p(2, 1) > 0.05
+    assert sign_test_p(10, 0) < 0.01
+    assert sign_test_p(5, 5) == pytest.approx(1.0)
+
+
+def test_a_row_with_no_reading_cannot_vote_to_skip_the_lns_arm() -> None:
+    """ "NaN" is what the runner writes when no solve ran, and it exits 0 doing
+    it -- for an unsupported instance and for a solve that threw.
+
+    Folding those to zero let rows where nothing happened vote for SKIP, which
+    is the opposite of what the runner's own comment on that cell says. A skip
+    assembled from runs that never solved would not be the "counter reading
+    that justified skipping" the acceptance criterion asks for.
+    """
+    unread = [{"instance": f"i{i}", "arm": PROBE_ARM.name, "lns_repairs": "NaN"} for i in range(20)]
+    decision = decide_lns_gate([dict.fromkeys(RESULT_COLUMNS, "0") | r for r in unread])
+
+    # Nothing was read, so nothing may be skipped on it: the arm runs.
+    assert decision.run_arm
+    assert decision.probed_runs == 0
+    assert decision.unread_runs == 20
+    assert "produced an lns_repairs reading" in decision.reason
+
+
+def test_a_genuine_zero_reading_still_skips_the_arm() -> None:
+    """The gate must still be able to fire: a real reading of zero repairs
+    across the roster means --no-lns is trajectory-identical to control."""
+    rows = [
+        dict.fromkeys(RESULT_COLUMNS, "0")
+        | {"instance": f"i{i}", "arm": PROBE_ARM.name, "lns_repairs": "0"}
+        for i in range(20)
+    ]
+    decision = decide_lns_gate(rows)
+
+    assert not decision.run_arm
+    assert decision.probed_runs == 20
+    assert decision.unread_runs == 0
+
+
+def test_the_load_threshold_is_below_one_busy_core() -> None:
+    """The runner is single-threaded, so a running campaign holds the 1-minute
+    average at about 1.00 and oscillates either side of it. A threshold of 1.0
+    let a second campaign start about half the time it was tried, and the lock
+    is per out-dir so nothing else stands between them."""
+    assert MAX_LOAD_AVERAGE < 1.0
+
+
+def test_resume_re_runs_the_block_the_interruption_split(tmp_path: Path) -> None:
+    """The interleave is the protocol, and a plain resume breaks it.
+
+    Every arm for one (instance, seed) runs back to back so the control and the
+    arms meet the same machine. An interruption lands inside such a block with
+    probability (k-1)/k -- 80% at five arms -- and a resume that just skips what
+    is recorded finishes that block after however long the campaign was down,
+    with nothing downstream able to see it.
+    """
+    arms = [Arm("control", ()), Arm("a", ("--x",)), Arm("b", ("--y",))]
+    runs = campaign_plan(["i1", "i2"], [7], arms)
+    results = tmp_path / RESULTS_NAME
+    # i1's block is 2 of 3 complete: the interruption split it.
+    recorded = [("i1", "control", 7), ("i1", "a", 7)]
+    _campaign_csv(
+        results,
+        [{"instance": i, "arm": a, "seed": s} for i, a, s in recorded],
+    )
+
+    done = drop_partial_block(results, runs, set(recorded))
+
+    # The whole block is re-run, not just its missing arm.
+    assert done == set()
+    # And the discarded rows are kept, not deleted -- they are real solves.
+    aside = tmp_path / "results.split-block.csv"
+    assert aside.exists()
+    assert len(aside.read_text().strip().splitlines()) == 3  # header + 2 rows
+    assert len(results.read_text().strip().splitlines()) == 1  # header only
+
+
+def test_resume_leaves_a_complete_block_alone(tmp_path: Path) -> None:
+    """A block that finished in one sitting is not redone -- that would burn
+    hours re-measuring something already measured correctly."""
+    arms = [Arm("control", ()), Arm("a", ("--x",))]
+    runs = campaign_plan(["i1", "i2"], [7], arms)
+    results = tmp_path / RESULTS_NAME
+    recorded = [("i1", "control", 7), ("i1", "a", 7)]
+    _campaign_csv(results, [{"instance": i, "arm": a, "seed": s} for i, a, s in recorded])
+
+    done = drop_partial_block(results, runs, set(recorded))
+
+    assert done == set(recorded)
+    assert not (tmp_path / "results.split-block.csv").exists()
+
+
+def test_report_only_does_not_repair_the_file_a_campaign_is_appending_to(
+    tmp_path: Path,
+) -> None:
+    """The README invites watching a running campaign from a second terminal.
+
+    The row that looks torn from there is very often one the running driver has
+    already fsynced and already struck off its in-memory resume set, so
+    repairing the live file would delete that run from the record permanently.
+    """
+    out_dir = tmp_path / "scratch"
+    out_dir.mkdir()
+    results = _campaign_csv(
+        out_dir / RESULTS_NAME,
+        [{"instance": "small0", "arm": "control", "seed": 1, "gap_to_bks%": 1.0}],
+    )
+    torn = results.read_text() + "small0,no-float-hook,,2,60,abc"  # no trailing newline
+    results.write_text(torn)
+
+    rc = main(["--out-dir", str(out_dir), "--report-only"])
+
+    assert rc == 0
+    assert results.read_text() == torn, "the live results file was modified"
+
+
+def test_a_failed_run_is_recorded_rather_than_ending_the_campaign(tmp_path: Path) -> None:
+    """An instance that crashes only under one arm, at hour nine, must not make
+    the campaign unfinishable -- and a resume must not retry the same crash
+    forever. The row carries no measurement, so nothing can read it as one."""
+    args = make_args(tmp_path)
+    row = failed_row(Run("i1", ARMS[0], 7), args, "abc1234", 139)
+
+    assert row["note"] == "runner-failed-exit-139"
+    assert row["feasible"] == "false"
+    assert row["gap_to_bks%"] == "NaN"
+    assert row["lns_repairs"] == "NaN"
+    # A NaN repair cell is "no reading", which is what keeps a crashed run out
+    # of the LNS gate's denominator.
+    assert decide_lns_gate([{**row, "arm": PROBE_ARM.name}]).unread_runs == 1
