@@ -308,6 +308,30 @@ def test_an_instance_with_rows_on_one_side_only_is_counted_not_dropped(
     assert "incomplete for this arm" in report
 
 
+def test_the_report_states_the_repair_counts_when_the_lns_arm_runs(tmp_path: Path) -> None:
+    """#143 asks for the arm to be "run with its repair counts reported", not
+    only for the reading that justifies skipping it. The gate JSON covers the
+    skip half; this is the run half."""
+    rows = [
+        *run_rows("a", CONTROL_ARM, [10.0, 12.0, 14.0], repairs=4),
+        *run_rows("a", "no-lns", [11.0, 13.0, 15.0], repairs=0),
+    ]
+    report = render_report(write_results(tmp_path / "r.csv", rows))
+    assert "LNS repairs over the roster: control 12, arm 0" in report
+
+
+def test_a_row_with_no_reading_is_not_counted_as_zero_repairs(tmp_path: Path) -> None:
+    """The runner writes NaN where no solve completed. Summing it as 0 would
+    make "nothing ran" indistinguishable from "LNS ran and never repaired"."""
+    rows = [
+        *run_rows("a", CONTROL_ARM, [10.0, 12.0, 14.0], repairs=2),
+        *run_rows("a", "x", [11.0, 13.0, 15.0], repairs=0),
+    ]
+    rows[0]["lns_repairs"] = "NaN"
+    report = render_report(write_results(tmp_path / "r.csv", rows))
+    assert "control 4," in report  # the two readable rows, not three
+
+
 # --- what is held out ----------------------------------------------------------
 
 

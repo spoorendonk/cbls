@@ -385,6 +385,16 @@ def drift_check(cells: dict[tuple[str, str], Cell], instances: Sequence[str]) ->
     )
 
 
+def _repair_total(cells: Iterable[Cell]) -> float:
+    """LNS destroy-repairs summed over cells.
+
+    A NaN is skipped rather than read as zero: the runner writes it on a row
+    where no solve completed, and "no reading" is not "no repairs" -- that is
+    the same distinction the gate turns on.
+    """
+    return math.fsum(r for cell in cells for r in cell.repairs if math.isfinite(r))
+
+
 def _instance_lines(summary: ArmSummary) -> list[str]:
     lines = [
         f"  {'instance':<22} {'ctl feas':>8} {'ctl gap':>9} {'arm feas':>8} "
@@ -469,6 +479,16 @@ def render_report(results: Path, gate: dict[str, object] | None = None) -> str:
         lines.append(f"--- {arm} ---")
         lines.append("  " + "  ".join(f"{k}={v}" for k, v in summary.counts.items()))
         lines.append(f"  feasible-run delta over the roster: {summary.feasibility_delta:+d}")
+        # Issue #143 asks for the repair counts wherever the LNS arm is RUN, not
+        # only for the reading that would justify skipping it. Both sides are
+        # printed for every arm: the control's is the campaign's own answer to
+        # "is LNS doing work at this budget", measured over all three seeds
+        # rather than the gate probe's one.
+        lines.append(
+            "  LNS repairs over the roster: control "
+            f"{_repair_total(c.control for c in summary.comparisons):g}, "
+            f"arm {_repair_total(c.treatment for c in summary.comparisons):g}"
+        )
         if summary.uncompared:
             lines.append(
                 f"  {summary.uncompared} scored instance(s) have rows on only one side and are "
