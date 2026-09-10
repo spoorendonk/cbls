@@ -79,6 +79,7 @@ if __package__ in (None, ""):
 from benchmarks.minlplib.ablation_report import (  # noqa: E402
     CONTROL_ARM,
     PROBE_ARM_NAME,
+    RUNNER_FAILED_NOTE,
     render_report,
 )
 from benchmarks.minlplib.run_benchmark import (  # noqa: E402
@@ -534,7 +535,9 @@ def result_row(
     return row
 
 
-def failed_row(run: Run, args: argparse.Namespace, sha: str, returncode: int) -> dict[str, str]:
+def failed_row(
+    run: Run, args: argparse.Namespace, sha: str, returncode: int, kind: str = ""
+) -> dict[str, str]:
     """A row for a run whose process exited nonzero.
 
     Every measured cell is "NaN" and `feasible` is "false", so nothing here can
@@ -552,7 +555,9 @@ def failed_row(run: Run, args: argparse.Namespace, sha: str, returncode: int) ->
     }
     row.update({column: "NaN" for column in _RUNNER_COLUMNS})
     row["feasible"] = "false"
-    row["note"] = f"runner-failed-exit-{returncode}"
+    # The prefix is the contract with the report, which holds these rows out of
+    # every count rather than reading `feasible=false` as a lost feasibility.
+    row["note"] = f"{RUNNER_FAILED_NOTE}-{kind or f'exit-{returncode}'}"
     return row
 
 
@@ -623,17 +628,26 @@ def drop_partial_block(
                 kept.append([row.get(f, "") for f in fields])
                 continue
             (moved if key in dropped else kept).append([row.get(f, "") for f in fields])
+    # THE ASIDE IS WRITTEN AND FSYNCED FIRST, then the results file is
+    # rewritten. The other order commits the truncated file before the rows
+    # exist anywhere else, so a Ctrl-C, an OOM kill or a full disk in that
+    # window loses those completed solves from BOTH files -- which is deletion,
+    # not the "moved aside" this function documents. Doing it this way can
+    # duplicate rows if the process dies between the two steps; a duplicate is
+    # recoverable by hand and a loss is not.
+    aside = results.with_name("results.split-block.csv")
+    with aside.open("a", newline="") as fh:
+        out = csv.writer(fh)
+        if fh.tell() == 0:
+            out.writerow(fields)
+        out.writerows(moved)
+        fh.flush()
+        os.fsync(fh.fileno())
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(fields)
     writer.writerows(kept)
     _atomic_write(results, buffer.getvalue().encode())
-    aside = results.with_name("results.split-block.csv")
-    with aside.open("a", newline="") as fh:
-        out = csv.writer(fh)
-        if aside.stat().st_size == 0:
-            out.writerow(fields)
-        out.writerows(moved)
     print(
         f"resume: the interrupted block {last[0]} seed {last[1]} was {len(dropped)} of "
         f"{len(block_runs)} run(s) complete. Those {len(dropped)} row(s) were moved to "
@@ -700,7 +714,17 @@ def execute_runs(
             append_result(results, failed_row(run, args, sha, completed.returncode))
             elapsed_each.append(time.monotonic() - began)
             continue
-        runner = read_runner_row(out_dir / "runs" / f"{run.slug}.csv", run, sha)
+        try:
+            runner = read_runner_row(out_dir / "runs" / f"{run.slug}.csv", run, sha)
+        except (RuntimeError, OSError) as exc:
+            # The runner exited 0 but its row cannot be read -- a full disk
+            # reaches this. Raising instead would wedge the campaign: every
+            # resume re-drops the block and dies at the same run, on an
+            # unattended thirteen-hour job.
+            print(f"    -> UNREADABLE row ({exc}); recorded as a failed run", file=sys.stderr)
+            append_result(results, failed_row(run, args, sha, 0, "unreadable-row"))
+            elapsed_each.append(time.monotonic() - began)
+            continue
         append_result(results, result_row(run, args, sha, runner))
         elapsed_each.append(time.monotonic() - began)
         print(

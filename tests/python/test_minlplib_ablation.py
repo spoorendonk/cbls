@@ -609,7 +609,8 @@ def test_one_enormous_instance_cannot_decide_the_verdict(tmp_path: Path) -> None
     # And the mean, which is still printed, has to disclose that it is one
     # instance's number wearing the roster's name.
     assert "NOT the verdict statistic" in report
-    assert "contributed by a single instance" in report
+    assert "largest single-instance |delta|" in report
+    assert "gear4" in report
 
 
 def test_a_uniform_regression_is_not_hidden_by_the_enormous_instance(tmp_path: Path) -> None:
@@ -651,7 +652,7 @@ def test_an_instance_with_one_control_run_is_not_scored(tmp_path: Path) -> None:
     report = render_report(_campaign_csv(tmp_path / RESULTS_NAME, rows))
 
     assert "NOT SCORED" in report
-    assert "fewer than two comparable control runs" in report
+    assert "fewer than two comparable runs" in report
     # It must not have been scored as a move despite its 1e6 delta.
     assert "1 worse" not in report
 
@@ -665,7 +666,11 @@ def test_the_floor_uses_a_student_multiplier_at_three_seeds() -> None:
     """
     assert t_multiplier(2) == pytest.approx(4.303)
     assert t_multiplier(1) == pytest.approx(12.71)
-    assert t_multiplier(50) == pytest.approx(1.96)
+    # Off the tabulated points the NEXT LOWER df's multiplier is used, which is
+    # the wider band: a floor that errs generous keeps a marginal move from
+    # being called a result. Never narrower than the normal value.
+    assert t_multiplier(50) >= 1.96
+    assert t_multiplier(7) == pytest.approx(2.365)
 
 
 def test_the_sign_test_needs_more_than_a_bare_majority() -> None:

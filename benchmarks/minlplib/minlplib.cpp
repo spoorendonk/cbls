@@ -103,6 +103,18 @@ void resolve_out_csv(Args& a) {
     if (a.out_csv.empty()) {
         a.out_csv = published;
     }
+    // One path for both flags is two truncating writers on one inode, and the
+    // table's closing write then publishes whatever interleaved. The temp path
+    // is the same file one rename later. uc-chped has both guards; this runner
+    // is reached by hand more often now that publishing requires --commit.
+    if (!a.trace_csv.empty() && cbls::bench::same_file(a.out_csv, a.trace_csv)) {
+        std::fprintf(stderr, "--out and --trace name the same file %s\n", a.out_csv.c_str());
+        std::exit(2);
+    }
+    if (!a.trace_csv.empty() && cbls::bench::same_file(a.trace_csv, a.out_csv + ".tmp")) {
+        std::fprintf(stderr, "--trace names the table's temp file %s\n", a.trace_csv.c_str());
+        std::exit(2);
+    }
     // A CROSSED artifact is refused for every run, ahead of any question of
     // which protocol it is: only `--out` ever writes the table and only
     // `--trace` ever writes the trace. The protocol ladder below cannot police

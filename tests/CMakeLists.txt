@@ -40,7 +40,7 @@ include(Catch)
 # slow solves into one serial invocation would make the full suite far slower
 # than it is.
 #
-# Measured at Release: 6 of 350 discovered tests exceed ~10s and account for
+# Measured at Release: 6 of 354 discovered tests exceed ~10s and account for
 # ~103s of the suite's aggregate (summed per-test) time; with `-j$(nproc)` the
 # full run is ~40s of wall clock. The remaining 349 (348 plus
 # timing_structural_batch_deadline, the one hand-registered test that carries no

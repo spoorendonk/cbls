@@ -275,18 +275,19 @@ def test_an_effect_inside_the_floor_is_reported_as_such_with_the_floor_quoted(
 
 
 def test_an_effect_outside_the_floor_names_its_direction(tmp_path: Path) -> None:
-    rows = [
-        *run_rows("a", CONTROL_ARM, [10.0, 10.1, 10.2]),
-        *run_rows("a", "x", [40.0, 40.1, 40.2]),
-        *run_rows("b", CONTROL_ARM, [20.0, 20.1, 20.2]),
-        *run_rows("b", "x", [50.0, 50.1, 50.2]),
-    ]
+    """Enough instances moving the same way IS a roster-level direction."""
+    names = ["a", "b", "c", "d", "e"]
+    rows = []
+    for i, name in enumerate(names):
+        base = 10.0 * (i + 1)
+        rows += run_rows(name, CONTROL_ARM, [base, base + 0.1, base + 0.2])
+        rows += run_rows(name, "x", [base + 30.0, base + 30.1, base + 30.2])
     cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
-    summary = summarize_arm("x", cells, ["a", "b"])
+    summary = summarize_arm("x", cells, names)
     assert summary.median_delta == pytest.approx(30.0)
     assert "WORSE than" in summary.verdict
     assert "moved outside their own floor" in summary.verdict
-    assert summary.moved_worse == 2
+    assert summary.moved_worse == 5
 
 
 def test_an_arm_that_only_wins_on_feasibility_is_reported_on_the_counts(
@@ -434,15 +435,82 @@ def test_a_split_decision_is_reported_as_mixed_not_as_an_effect(tmp_path: Path) 
     assert "MIXED, no consistent direction" in summary.verdict
 
 
-def test_every_moved_instance_agreeing_names_a_direction(tmp_path: Path) -> None:
-    """Two instances cannot reach p <= 0.05 on a sign test, but two instances
-    that both cleared their own floor by 30 points are still a direction."""
+def test_one_or_two_movers_are_reported_as_isolated_not_as_a_direction(
+    tmp_path: Path,
+) -> None:
+    """A couple of instances clearing their own floors is a fact about those
+    instances, not an arm effect over the roster.
+
+    An earlier cut named a direction off a SINGLE mover, printing "the arm is
+    WORSE than the control" in the same sentence as "sign test p = 1.000" and
+    "median gap delta +0.00 points".
+    """
     rows = []
     for name in ("a", "b"):
         rows += run_rows(name, CONTROL_ARM, [10.0, 10.1, 10.2])
         rows += run_rows(name, "x", [40.0, 40.1, 40.2])
+    for name in ("c", "d", "e"):  # unmoved
+        rows += run_rows(name, CONTROL_ARM, [10.0, 10.1, 10.2])
+        rows += run_rows(name, "x", [10.0, 10.1, 10.2])
     cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
-    summary = summarize_arm("x", cells, ["a", "b"])
+    summary = summarize_arm("x", cells, ["a", "b", "c", "d", "e"])
 
     assert summary.sign_p > 0.05
-    assert "WORSE than" in summary.verdict
+    assert "ISOLATED MOVERS" in summary.verdict
+    assert "WORSE than" not in summary.verdict
+
+
+def test_an_instance_whose_control_never_varied_is_not_scored(tmp_path: Path) -> None:
+    """A control spread of exactly zero is three seeds landing on one value, not
+    a measurement that there is no noise.
+
+    Scored with a floor of 0.0, ANY nonzero delta clears it. The published
+    roster has four instances at gap exactly 0 and around fourteen more within
+    1e-7, so this turned a 1e-9 move into "outside the measured floor" -- and,
+    with the old unanimity rule, into a roster-wide verdict.
+    """
+    rows = [
+        *run_rows("flat", CONTROL_ARM, [0.0, 0.0, 0.0]),
+        *run_rows("flat", "x", [1e-9, 1e-9, 1e-9]),
+        *run_rows("real", CONTROL_ARM, [10.0, 10.1, 10.2]),
+        *run_rows("real", "x", [10.0, 10.1, 10.2]),
+    ]
+    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
+    summary = summarize_arm("x", cells, ["flat", "real"])
+
+    assert summary.floor.unmeasured == 1
+    assert "flat" not in summary.floor.per_instance
+    assert summary.moved_worse == 0
+    assert "INSIDE THE NOISE" in summary.verdict
+
+
+def test_a_crashed_run_is_not_a_lost_feasibility(tmp_path: Path) -> None:
+    """A row the DRIVER wrote for a process that exited nonzero carries
+    feasible=false like any infeasible run, and nothing else distinguishes them.
+
+    Three segfaults on one instance under one arm would otherwise bucket it
+    `control-only-feasible` -- which means "this arm lost feasibility here", a
+    claim about the search rather than about the process table.
+    """
+    rows = [
+        *run_rows("a", CONTROL_ARM, [10.0, 10.1, 10.2]),
+        *run_rows("a", "x", [10.0, 10.1, 10.2]),
+    ]
+    crashed = [
+        {
+            **rows[0],
+            "arm": "x",
+            "seed": 90 + i,
+            "feasible": "false",
+            "gap_to_bks%": "NaN",
+            "note": "runner-failed-exit-139",
+        }
+        for i in range(3)
+    ]
+    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", [*rows, *crashed])))
+    summary = summarize_arm("x", cells, ["a"])
+
+    assert summary.comparisons[0].bucket == "both-feasible"
+    assert summary.comparisons[0].treatment.failed_runs == 3
+    assert summary.comparisons[0].treatment.runs == 3
+    assert summary.feasibility_delta == 0
