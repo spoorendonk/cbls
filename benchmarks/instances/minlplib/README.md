@@ -215,9 +215,14 @@ LNS, so the arm would measure nothing; the reading and the verdict are written
 to `<out-dir>/lns_gate.json` either way.
 
 The **noise floor is measured**, from the control's own across-seed spread —
-per instance `2 * s_i * sqrt(1/k_arm + 1/k_control)`, and on the aggregate the
-same quantity propagated through the mean. `ablation_report.py`'s module
-docstring is the definition of record. Any effect at or inside its floor is
+per instance `t * s_i * sqrt(1/k_arm + 1/k_control)`, a two-sided 95% Student
+band (`t` = 4.30 at three seeds, not 2.0), bounded below by the runner's own
+tie band for that instance's published bound so that a control agreeing to
+~1e-7 on every seed cannot hand an arm a floor it clears by rounding. One floor
+per instance and no aggregate floor: on a roster whose gaps span six orders of
+magnitude the only aggregate worth quoting is a rank statistic, which has no
+gap-point floor to be read against. `ablation_report.py`'s module docstring is
+the definition of record. Any effect at or inside its floor is
 reported as "inside the noise" with the floor quoted; an instance where one arm
 is feasible and the other is not contributes no gap delta at all and is counted
 in its own bucket instead.

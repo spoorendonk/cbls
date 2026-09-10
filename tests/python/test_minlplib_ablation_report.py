@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import re
 from typing import TYPE_CHECKING
 
 import pytest
@@ -22,13 +23,16 @@ from benchmarks.minlplib.ablation_report import (
     CONTROL_ONLY_FEASIBLE,
     NEITHER_FEASIBLE,
     NO_COMPARABLE_GAP,
+    NO_SEARCH_NOTES,
     PROBE_ARM_NAME,
     Cell,
     build_cells,
     classify,
     compare,
     control_spreads,
+    format_points,
     load_rows,
+    min_move_points,
     noise_floor,
     render_report,
     scored_instances,
@@ -36,7 +40,7 @@ from benchmarks.minlplib.ablation_report import (
     t_multiplier,
 )
 from benchmarks.minlplib.run_ablation import Arm, Run, failed_row
-from benchmarks.minlplib.run_benchmark import CLAIM_EXCLUDED
+from benchmarks.minlplib.run_benchmark import CLAIM_EXCLUDED, REPO_ROOT
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -90,9 +94,19 @@ def write_results(path: Path, rows: Sequence[dict[str, object]]) -> Path:
 
 
 def run_rows(
-    instance: str, arm: str, gaps: Sequence[float | None], *, repairs: int = 0
+    instance: str,
+    arm: str,
+    gaps: Sequence[float | None],
+    *,
+    repairs: int = 0,
+    primal_bks: float | None = None,
 ) -> list[dict[str, object]]:
-    """One row per seed; a None gap is an infeasible run."""
+    """One row per seed; a None gap is an infeasible run.
+
+    `primal_bks` is left empty unless a test needs it: it reads back as NaN,
+    which sizes the floor at its scale-free infimum and so leaves every test
+    written before the floor became per-instance saying what it said.
+    """
     return [
         {
             "instance": instance,
@@ -101,6 +115,7 @@ def run_rows(
             "feasible": "true" if gap is not None else "false",
             "gap_to_bks%": "NaN" if gap is None else gap,
             "lns_repairs": repairs,
+            **({} if primal_bks is None else {"primal_bks": primal_bks}),
         }
         for seed, gap in enumerate(gaps, start=1)
     ]
@@ -271,7 +286,7 @@ def test_an_effect_inside_the_floor_is_reported_as_such_with_the_floor_quoted(
     # PER-INSTANCE floor: each instance is judged against its own, because an
     # aggregate gap-point floor is meaningless on a roster spanning six orders
     # of magnitude.
-    assert f"{summary.floor.median_floor:.2f}" in summary.verdict
+    assert format_points(summary.floor.median_floor, signed=False) in summary.verdict
     assert summary.moved_worse == 0
     assert summary.moved_better == 0
 
@@ -657,7 +672,9 @@ def test_the_report_discloses_both_kinds_of_held_out_row_and_agrees_with_them(
 # --- the near-zero floor (issue #151) -------------------------------------------
 
 
-def near_zero_rows(names: Sequence[str], delta: float) -> list[dict[str, object]]:
+def near_zero_rows(
+    names: Sequence[str], delta: float, *, primal_bks: float | None = None
+) -> list[dict[str, object]]:
     """Controls that landed within 1e-7 of their bound on every seed.
 
     The published roster has four instances at gap exactly 0 and roughly
@@ -666,8 +683,8 @@ def near_zero_rows(names: Sequence[str], delta: float) -> list[dict[str, object]
     rows: list[dict[str, object]] = []
     for name in names:
         control = [0.0, 1e-7, 2e-7]
-        rows += run_rows(name, CONTROL_ARM, control)
-        rows += run_rows(name, "x", [g + delta for g in control])
+        rows += run_rows(name, CONTROL_ARM, control, primal_bks=primal_bks)
+        rows += run_rows(name, "x", [g + delta for g in control], primal_bks=primal_bks)
     return rows
 
 
@@ -745,3 +762,168 @@ def test_the_student_multiplier_never_narrows_below_the_next_lower_df(tmp_path: 
     assert t_multiplier(11) == pytest.approx(2.228)
     assert t_multiplier(14) == pytest.approx(2.228)
     assert t_multiplier(11) > 1.96
+
+
+def test_a_row_where_a_search_did_complete_is_never_held_out(tmp_path: Path) -> None:
+    """The prefix match must not sweep in a note the runner writes AFTER a search.
+
+    `non-finite`, `VERIFY-FAILED(...)` and `infeasible(...)` are measurements of
+    the arm: a search ran to completion and reported something. `minlplib.cpp`
+    appends `; <integrality note>` and ` | <analysis note>` to some of them, so
+    the match is on the START of the cell -- which is also what makes the long
+    `unsupported: <reason>` form still hold out.
+    """
+    rows = [
+        *run_rows("a", CONTROL_ARM, [7.0, 7.1, 7.2]),
+        {"instance": "a", "arm": "x", "seed": 1, "feasible": "false", "note": "non-finite"},
+        {
+            "instance": "a",
+            "arm": "x",
+            "seed": 2,
+            "feasible": "false",
+            "note": "infeasible(residual=1e-3; 2 viol; worst row4 <=); integrality-mismatch(nl=3)",
+        },
+        {
+            "instance": "a",
+            "arm": "x",
+            "seed": 3,
+            "feasible": "false",
+            "note": "VERIFY-FAILED(residual=2e-05; 1 fractional int; obj drift 0)",
+        },
+    ]
+    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
+    summary = summarize_arm("x", cells, ["a"])
+
+    assert summary.comparisons[0].treatment.runs == 3
+    assert summary.comparisons[0].treatment.no_search_runs == 0
+    assert summary.comparisons[0].bucket == CONTROL_ONLY_FEASIBLE
+    assert summary.feasibility_delta_balanced == -3
+
+
+def test_the_long_unsupported_note_is_still_held_out(tmp_path: Path) -> None:
+    """`minlplib.cpp` writes `unsupported: <reason>` with commas replaced by
+    `;`, so the cell is matched on its prefix rather than compared whole."""
+    rows = [
+        *run_rows("a", CONTROL_ARM, [7.0, 7.1, 7.2]),
+        {
+            "instance": "a",
+            "arm": "x",
+            "seed": 1,
+            "feasible": "false",
+            "note": "unsupported: NL_UNKNOWN_OPCODE 42; at row 3",
+        },
+    ]
+    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
+    summary = summarize_arm("x", cells, ["a"])
+
+    assert summary.comparisons[0].bucket == "no-runs-recorded"
+    assert summary.comparisons[0].treatment.no_search_notes == ("unsupported",)
+
+
+def test_every_preread_note_the_runner_writes_is_held_out() -> None:
+    """The scorer's list of no-search notes is a DENYLIST, and a denylist that
+    falls behind the runner fails open -- a seventh preread outcome would be
+    scored as a lost feasibility, which is exactly what #151 was filed for.
+
+    `write_preread_row` is the tight half of the contract: it exists only for a
+    row where nothing is known about the instance yet, so EVERY literal it is
+    called with must be covered. (`write_unsolved_row` is called with measured
+    notes too, so it cannot be swept the same way.)
+    """
+    source = (REPO_ROOT / "benchmarks" / "minlplib" / "minlplib.cpp").read_text()
+    literals = re.findall(r'write_preread_row\(csv, args, name, "([^"]*)"', source)
+
+    assert len(literals) == 4, literals  # the regex still finds the call sites
+    for literal in literals:
+        assert any(literal.startswith(note) for note in NO_SEARCH_NOTES), literal
+
+
+# --- the floor is sized in the units of the gap it bounds (issue #151) ---------
+
+
+def test_the_floor_is_the_runners_own_tie_band_pushed_through_safe_gap() -> None:
+    """`safe_gap` is `100*(obj-ref)/|ref|`, so a gap point is a percentage of the
+    published bound and the same objective difference is a different number of
+    points at every scale on this roster.
+
+    1e-4 points is the runner's tie band only as |ref| grows; at `ex6_2_6`'s
+    bound (-2.6e-6) the same band is ~38 POINTS, wider than that instance's
+    entire recorded gap. A single constant is five orders of magnitude too
+    permissive there.
+    """
+    assert min_move_points(1e9) == pytest.approx(1e-4, rel=1e-3)
+    assert min_move_points(582.236) == pytest.approx(1.00172e-4, rel=1e-3)
+    assert min_move_points(-2.60e-6) == pytest.approx(38.46, rel=1e-2)
+    # `safe_gap`'s absolute-residual branch: a gap point IS an objective unit.
+    assert min_move_points(0.0) == pytest.approx(1e-6)
+    # A row with no recorded bound falls back to the scale-free infimum.
+    assert min_move_points(math.nan) == pytest.approx(1e-4)
+
+
+def test_the_floor_tracks_the_published_bound_and_not_a_constant(tmp_path: Path) -> None:
+    """The same near-zero control and the same 1e-3 delta, judged against two
+    different published bounds, must not get the same verdict."""
+    names = ["p", "q", "r", "s"]
+    tiny = write_results(tmp_path / "tiny.csv", near_zero_rows(names, 1e-3, primal_bks=-2.60e-6))
+    large = write_results(tmp_path / "large.csv", near_zero_rows(names, 1e-3, primal_bks=582.236))
+
+    assert summarize_arm("x", build_cells(load_rows(tiny)), names).moved_worse == 0
+    assert summarize_arm("x", build_cells(load_rows(large)), names).moved_worse == 4
+
+
+def test_a_named_direction_quotes_the_movers_own_floor_not_only_the_rosters(
+    tmp_path: Path,
+) -> None:
+    """#151: "The quoted floor (+/-3.51) is the roster median, while those four
+    movers' own floors are ~3.5e-7" -- so a reader could not tell that the
+    instances driving the verdict were judged against a wholly different band."""
+    rows = near_zero_rows(["p", "q", "r", "s"], 1e-3, primal_bks=1000.0)
+    for name in ("h1", "h2", "h3", "h4", "h5"):  # wide floors, and they hold
+        rows += run_rows(name, CONTROL_ARM, [10.0, 10.5, 11.0])
+        rows += run_rows(name, "x", [10.0, 10.5, 11.0])
+    names = ["p", "q", "r", "s", "h1", "h2", "h3", "h4", "h5"]
+    summary = summarize_arm(
+        "x", build_cells(load_rows(write_results(tmp_path / "r.csv", rows))), names
+    )
+
+    assert summary.moved_worse == 4
+    assert summary.floor.median_floor == pytest.approx(1.757, rel=1e-2)
+    assert "typical per-instance floor +/-1.76 points" in summary.verdict
+    assert "against their own median floor +/-0.0001" in summary.verdict
+
+
+def test_the_held_out_rows_are_reported_by_side(tmp_path: Path) -> None:
+    """A total hides the one thing these rows are evidence of: whether a solve
+    crashes or throws can depend on the configuration, so which SIDE produced
+    them is the arm property being reported."""
+    rows = [
+        *run_rows("crashy", CONTROL_ARM, [7.0, 7.1, 7.2]),
+        *crash_rows("crashy", "x", [1, 2, 3]),
+        *run_rows("throws", CONTROL_ARM, [7.0, 7.1, 7.2]),
+        *solve_error_rows("throws", "x", [1, 2, 3]),
+    ]
+    report = render_report(write_results(tmp_path / "r.csv", rows))
+
+    assert "3 run(s) crashed (control 0, arm 3)" in report
+    assert "3 run(s) completed no search (control 0, arm 3; solve-error)" in report
+    # ... and the notes listed are the ones that occurred, not the whole category
+    assert "not-found" not in report
+
+
+def test_the_wall_average_excludes_the_rows_that_recorded_no_search(tmp_path: Path) -> None:
+    """`write_preread_row` and the `solve-error` `write_unsolved_row` both write
+    a 0.0 wall, so averaging them in drags the headline toward zero while every
+    other line insists those rows record nothing."""
+    rows = [
+        *run_rows("a", CONTROL_ARM, [7.0, 7.1, 7.2]),
+        *run_rows("a", "x", [7.0, 7.1, 7.2]),
+    ]
+    for row in rows:
+        row["wall_seconds"] = "60"
+    zero_wall = solve_error_rows("a", "x", [4, 5, 6])
+    for row in zero_wall:
+        row["wall_seconds"] = "0"
+    report = render_report(write_results(tmp_path / "r.csv", [*rows, *zero_wall]))
+
+    assert "mean wall per run:    60.0s" in report
+    assert "rows recorded:        9 (6 completed a search)" in report
