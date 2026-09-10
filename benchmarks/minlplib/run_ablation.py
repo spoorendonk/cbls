@@ -166,12 +166,21 @@ DEFAULT_SEEDS: tuple[int, ...] = (1, 2, 3)
 #: identically. Zero repairs means the arm is provably a no-op; one repair means
 #: the trajectories genuinely diverge on that instance.
 #:
-#: Note what the counter cannot answer: whether a repair was ACCEPTED. Nothing
-#: publishes that, so "repairs are rare or never accepted" (issue #143's
-#: wording) can only be half-answered from the record, and the acceptance half
-#: has to be answered by running the arm. The gate is therefore deliberately
-#: conservative in the direction of running it. Both numbers are flags, so a
-#: campaign that comes back with two repairs in 50 instances can be re-gated
+#: The gate reads ATTEMPTS, deliberately, even though `lns_repairs_accepted`
+#: (#150) now publishes the acceptance half the earlier version of this comment
+#: said nothing could answer. Acceptance is a stronger reading of "was LNS
+#: worth its budget", but it is NOT a stronger reading of the question this
+#: gate asks, which is whether `--no-lns` is a distinguishable arm. A REJECTED
+#: repair is not a no-op: it randomises variables, runs `fj_nl_initialize` and
+#: rolls back, so it consumes the RNG and seconds of the budget that the
+#: `--no-lns` run spends on search instead. An arm with 50 attempts and zero
+#: acceptances therefore still diverges -- and the divergence is precisely the
+#: budget cost the arm exists to price. Skipping on acceptance would skip the
+#: measurement that matters most.
+#:
+#: So acceptance is reported, not gated on: `ablation_report.py` prints it
+#: beside the attempt total for every arm it scores. Both numbers are flags, so
+#: a campaign that comes back with two repairs in 50 instances can be re-gated
 #: without editing this file.
 LNS_GATE_MIN_REPAIRS = 1
 LNS_GATE_MIN_INSTANCES = 1
@@ -219,6 +228,7 @@ RESULT_COLUMNS: tuple[str, ...] = (
     "max_violation",
     "n_int_vars",
     "lns_repairs",
+    "lns_repairs_accepted",
     "search_config",
 )
 
@@ -729,7 +739,8 @@ def execute_runs(
         elapsed_each.append(time.monotonic() - began)
         print(
             f"    -> {runner['note']} feasible={runner['feasible']} "
-            f"gap={runner['gap_to_bks%']} lns_repairs={runner['lns_repairs']}",
+            f"gap={runner['gap_to_bks%']} lns_repairs={runner['lns_repairs']}"
+            f"/{runner['lns_repairs_accepted']} accepted",
             file=sys.stderr,
             flush=True,
         )

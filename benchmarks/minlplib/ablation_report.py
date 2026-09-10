@@ -347,6 +347,12 @@ class RunRow:
     #: different scales. Already a recorded column -- nothing new is measured.
     primal_bks: float
     lns_repairs: float
+    #: Of those repairs, the ones LNS actually KEPT (#150). Read alongside
+    #: `lns_repairs` because the two answer different questions: the attempt
+    #: count says LNS spent budget, this one says whether any of it bought a
+    #: better search state. NaN carries the same "no reading" meaning here as
+    #: everywhere else -- a row where no solve ran has neither number.
+    lns_repairs_accepted: float
     wall: float
     #: The runner's note cell. Read because a row the DRIVER wrote for a process
     #: that crashed carries `feasible=false` like any infeasible run, and
@@ -395,6 +401,7 @@ def load_rows(path: Path) -> list[RunRow]:
                 gap=_number(row.get("gap_to_bks%")),
                 primal_bks=_number(row.get("primal_bks")),
                 lns_repairs=_number(row.get("lns_repairs")),
+                lns_repairs_accepted=_number(row.get("lns_repairs_accepted")),
                 wall=_number(row.get("wall_seconds")),
                 note=row.get("note") or "",
             )
@@ -430,6 +437,11 @@ class Cell:
     #: The instance's published primal bound, for sizing the floor. NaN where no
     #: row recorded one.
     primal_bks: float = math.nan
+    #: The `repairs` entries' accepted halves, in the same row order. Defaulted
+    #: for the same reason `seed_gaps` is: only the repair line reads it, and a
+    #: hand-built cell that says nothing about acceptance should contribute
+    #: nothing to that line rather than a fabricated zero.
+    repairs_accepted: tuple[float, ...] = ()
     #: The same gaps keyed by seed, so a same-seed comparison is possible. The
     #: drift check needs it: averaging the seed away first is what turned an
     #: earlier drift line into a measurement of seed variance. Defaulted because
@@ -469,6 +481,7 @@ def build_cells(rows: Iterable[RunRow]) -> dict[tuple[str, str], Cell]:
                 r.gap for r in group if r.feasible and not r.no_search and math.isfinite(r.gap)
             ),
             repairs=tuple(r.lns_repairs for r in group if not r.no_search),
+            repairs_accepted=tuple(r.lns_repairs_accepted for r in group if not r.no_search),
             seed_gaps={
                 r.seed: r.gap
                 for r in group
@@ -945,14 +958,21 @@ def drift_check(cells: dict[tuple[str, str], Cell], instances: Sequence[str]) ->
     )
 
 
-def _repair_total(cells: Iterable[Cell]) -> float:
-    """LNS destroy-repairs summed over cells.
+def _repair_totals(cells: Iterable[Cell]) -> tuple[float, float]:
+    """LNS destroy-repairs summed over cells: attempted, then accepted.
 
     A NaN is skipped rather than read as zero: the runner writes it on a row
     where no solve completed, and "no reading" is not "no repairs" -- that is
-    the same distinction the gate turns on.
+    the same distinction the gate turns on. The two sums are taken
+    independently for that reason; they are not a count and a subset of the
+    same rows once unreadable cells are dropped from each.
     """
-    return math.fsum(r for cell in cells for r in cell.repairs if math.isfinite(r))
+    materialised = list(cells)
+    attempted = math.fsum(r for cell in materialised for r in cell.repairs if math.isfinite(r))
+    accepted = math.fsum(
+        r for cell in materialised for r in cell.repairs_accepted if math.isfinite(r)
+    )
+    return attempted, accepted
 
 
 def _instance_lines(summary: ArmSummary) -> list[str]:
@@ -1097,10 +1117,19 @@ def render_report(results: Path, gate: dict[str, object] | None = None) -> str:
         # printed for every arm: the control's is the campaign's own answer to
         # "is LNS doing work at this budget", measured over all three seeds
         # rather than the gate probe's one.
+        #
+        # The accepted half (#150) is printed beside it because the attempt
+        # count alone cannot separate "LNS is working" from "LNS is spending".
+        # It is reported and not gated on: a rejected repair still randomises,
+        # still repairs and still costs seconds, so zero acceptances does NOT
+        # make an LNS arm equivalent to a no-LNS one -- see run_ablation.py's
+        # LNS_GATE_MIN_REPAIRS note.
+        control_attempted, control_accepted = _repair_totals(c.control for c in summary.comparisons)
+        arm_attempted, arm_accepted = _repair_totals(c.treatment for c in summary.comparisons)
         lines.append(
             "  LNS repairs over the roster: control "
-            f"{_repair_total(c.control for c in summary.comparisons):g}, "
-            f"arm {_repair_total(c.treatment for c in summary.comparisons):g}"
+            f"{control_attempted:g} attempted, {control_accepted:g} accepted; "
+            f"arm {arm_attempted:g} attempted, {arm_accepted:g} accepted"
         )
         # SPLIT BY SIDE. The reason these rows are held out is that whether a
         # solve crashes or throws can depend on the configuration, which makes

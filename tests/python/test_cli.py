@@ -661,8 +661,12 @@ def test_minlplib_records_the_arm_on_an_early_exit_row(tmp_path: Path) -> None:
     ).replace("novelty_prob=0.5", "novelty_prob=0.25")
     # The #143 LNS counter is on the row too, and on THIS row it must read NaN:
     # no solve ran, and a 0 here would be indistinguishable from "LNS ran and
-    # never repaired" -- the reading the ablation's LNS gate is decided on.
-    assert dict(zip(header, cells, strict=True))["lns_repairs"] == "NaN"
+    # never repaired" -- the reading the ablation's LNS gate is decided on. The
+    # #150 acceptance counter obeys the same rule for the same reason, and is
+    # asserted beside it so a row cannot end up half-NaN.
+    row = dict(zip(header, cells, strict=True))
+    assert row["lns_repairs"] == "NaN"
+    assert row["lns_repairs_accepted"] == "NaN"
 
 
 def test_minlplib_refuses_an_ablation_arm_onto_the_published_trace(tmp_path: Path) -> None:

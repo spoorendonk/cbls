@@ -64,6 +64,7 @@ COLUMNS = (
     "max_violation",
     "n_int_vars",
     "lns_repairs",
+    "lns_repairs_accepted",
     "search_config",
 )
 
@@ -78,6 +79,7 @@ def cell(
         feasible_runs=len(gaps) if feasible is None else feasible,
         gaps=tuple(gaps),
         repairs=(0.0,) * runs,
+        repairs_accepted=(0.0,) * runs,
     )
 
 
@@ -87,7 +89,14 @@ def write_results(path: Path, rows: Sequence[dict[str, object]]) -> Path:
         writer.writerow(COLUMNS)
         for row in rows:
             full = dict.fromkeys(COLUMNS, "")
-            full.update({"wall_seconds": "60", "lns_repairs": "0", "seed": "1"})
+            full.update(
+                {
+                    "wall_seconds": "60",
+                    "lns_repairs": "0",
+                    "lns_repairs_accepted": "0",
+                    "seed": "1",
+                }
+            )
             full.update({k: str(v) for k, v in row.items()})
             writer.writerow([full[column] for column in COLUMNS])
     return path
@@ -99,6 +108,7 @@ def run_rows(
     gaps: Sequence[float | None],
     *,
     repairs: int = 0,
+    repairs_accepted: int = 0,
     primal_bks: float | None = None,
 ) -> list[dict[str, object]]:
     """One row per seed; a None gap is an infeasible run.
@@ -115,6 +125,7 @@ def run_rows(
             "feasible": "true" if gap is not None else "false",
             "gap_to_bks%": "NaN" if gap is None else gap,
             "lns_repairs": repairs,
+            "lns_repairs_accepted": repairs_accepted,
             **({} if primal_bks is None else {"primal_bks": primal_bks}),
         }
         for seed, gap in enumerate(gaps, start=1)
@@ -349,11 +360,39 @@ def test_the_report_states_the_repair_counts_when_the_lns_arm_runs(tmp_path: Pat
     only for the reading that justifies skipping it. The gate JSON covers the
     skip half; this is the run half."""
     rows = [
-        *run_rows("a", CONTROL_ARM, [10.0, 12.0, 14.0], repairs=4),
+        *run_rows("a", CONTROL_ARM, [10.0, 12.0, 14.0], repairs=4, repairs_accepted=1),
         *run_rows("a", "no-lns", [11.0, 13.0, 15.0], repairs=0),
     ]
     report = render_report(write_results(tmp_path / "r.csv", rows))
-    assert "LNS repairs over the roster: control 12, arm 0" in report
+    assert "LNS repairs over the roster: control 12 attempted, 3 accepted; " in report
+    assert "arm 0 attempted, 0 accepted" in report
+
+
+def test_the_report_separates_repairs_attempted_from_repairs_accepted(tmp_path: Path) -> None:
+    """#150: the attempt count alone cannot tell "LNS is working" from "LNS is
+    spending". An arm that repaired constantly and kept none of it has to be
+    readable as such, and the two numbers must not be able to collapse onto
+    each other."""
+    rows = [
+        *run_rows("a", CONTROL_ARM, [10.0, 12.0, 14.0], repairs=9, repairs_accepted=0),
+        *run_rows("a", "x", [11.0, 13.0, 15.0], repairs=9, repairs_accepted=9),
+    ]
+    report = render_report(write_results(tmp_path / "r.csv", rows))
+    assert "LNS repairs over the roster: control 27 attempted, 0 accepted; " in report
+    assert "arm 27 attempted, 27 accepted" in report
+
+
+def test_an_accepted_cell_with_no_reading_is_not_counted_as_zero(tmp_path: Path) -> None:
+    """The accepted column obeys the same NaN rule as the attempt column: the
+    runner writes NaN where no solve completed, and summing that as 0 would make
+    "nothing ran" read as "LNS repaired and kept nothing"."""
+    rows = [
+        *run_rows("a", CONTROL_ARM, [10.0, 12.0, 14.0], repairs=2, repairs_accepted=2),
+        *run_rows("a", "x", [11.0, 13.0, 15.0], repairs=0),
+    ]
+    rows[0]["lns_repairs_accepted"] = "NaN"
+    report = render_report(write_results(tmp_path / "r.csv", rows))
+    assert "control 6 attempted, 4 accepted; " in report  # the two readable rows, not three
 
 
 def test_a_row_with_no_reading_is_not_counted_as_zero_repairs(tmp_path: Path) -> None:
@@ -365,7 +404,7 @@ def test_a_row_with_no_reading_is_not_counted_as_zero_repairs(tmp_path: Path) ->
     ]
     rows[0]["lns_repairs"] = "NaN"
     report = render_report(write_results(tmp_path / "r.csv", rows))
-    assert "control 4," in report  # the two readable rows, not three
+    assert "control 4 attempted," in report  # the two readable rows, not three
 
 
 # --- what is held out ----------------------------------------------------------
@@ -553,8 +592,8 @@ def solve_error_rows(instance: str, arm: str, seeds: Sequence[int]) -> list[dict
 
     `minlplib.cpp` catches the exception, bumps `Tally::errored`, writes an
     unsolved row and carries on; `main` returns 0 regardless of the tally. The
-    row is therefore well-formed and `feasible=false` -- objective, gap and
-    `lns_repairs` are NaN, while `primal_bks`/`dual_bound` carry the published
+    row is therefore well-formed and `feasible=false` -- objective, gap and both
+    LNS counters are NaN, while `primal_bks`/`dual_bound` carry the published
     bounds and the wall is 0.0, since `write_unsolved_row` knows those without
     having solved. The driver records it as a normal result.
     """
@@ -566,6 +605,7 @@ def solve_error_rows(instance: str, arm: str, seeds: Sequence[int]) -> list[dict
             "feasible": "false",
             "gap_to_bks%": "NaN",
             "lns_repairs": "NaN",
+            "lns_repairs_accepted": "NaN",
             "note": "solve-error",
         }
         for seed in seeds

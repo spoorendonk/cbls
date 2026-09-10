@@ -112,11 +112,13 @@ documents. No published Yuck numbers exist for these instances.
 - `comparison.csv` — written by the `cbls_minlplib` runner: CBLS objective,
   gap-to-BKS, gap-to-dual, feasibility, notes, commit SHA, closest-approach
   residual (`max_violation`), integer-variable count (`n_int_vars`), the LNS
-  destroy-repair count of the run (`lns_repairs`, `NaN` on a row where no solve
-  completed) and the search configuration the row was produced under
-  (`search_config`, a canonical `key=value;...` cell — see below). The committed
-  table predates the last two columns and so does not carry them; the next full
-  regeneration writes both.
+  destroy-repair count of the run (`lns_repairs`), how many of those repairs the
+  accept rule kept (`lns_repairs_accepted`) and the search configuration the row
+  was produced under (`search_config`, a canonical `key=value;...` cell — see
+  below). Both LNS counters read `NaN` on a row where no solve completed: 0
+  there would be the different — and false — claim that LNS ran and repaired
+  nothing. The committed table predates the last three columns and so does not
+  carry them; the next full regeneration writes all three.
 - `analysis_notes.csv` — curated per-instance root-cause verdicts
   (`bug` vs `hard`) for instances the runner cannot solve. Merged into
   `comparison.csv`'s note column, so the data carries its own explanation.
@@ -213,6 +215,14 @@ the arm runs only if some instance recorded a repair. With no repair anywhere
 the engine takes the same branch at every diversification kick with or without
 LNS, so the arm would measure nothing; the reading and the verdict are written
 to `<out-dir>/lns_gate.json` either way.
+
+The gate reads repairs **attempted**, not repairs accepted, even though
+`lns_repairs_accepted` publishes the latter. A rejected repair randomises
+variables, runs a repair pass and rolls back, so it consumes both the RNG stream
+and seconds of the budget — the arm still diverges from the control, and that
+budget cost is the thing the arm exists to price. Acceptance is reported instead:
+`ablation_report.py` prints both totals per arm, which is what makes "LNS is
+working" separable from "LNS is only spending".
 
 The **noise floor is measured**, from the control's own across-seed spread —
 per instance `t * s_i * sqrt(1/k_arm + 1/k_control)`, a two-sided 95% Student

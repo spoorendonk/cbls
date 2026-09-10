@@ -61,7 +61,8 @@ if TYPE_CHECKING:
 
 RUNNER_HEADER = (
     "instance,objective,primal_bks,dual_bound,gap_to_bks%,gap_to_dual%,"
-    "wall_seconds,feasible,note,commit_sha,max_violation,n_int_vars,lns_repairs,search_config"
+    "wall_seconds,feasible,note,commit_sha,max_violation,n_int_vars,lns_repairs,"
+    "lns_repairs_accepted,search_config"
 )
 DEFAULT_ARM_CELL = (
     "float_hook=on;lns=on;lns_interval=3;compound_moves=off;novelty_prob=0.5;"
@@ -110,7 +111,7 @@ def fake_runner(
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(
             f"{RUNNER_HEADER}\n"
-            f"{name},1,1,1,5,5,60,true,feasible,{sha},0,0,{repairs},{DEFAULT_ARM_CELL}\n"
+            f"{name},1,1,1,5,5,60,true,feasible,{sha},0,0,{repairs},0,{DEFAULT_ARM_CELL}\n"
         )
         return FakeCompleted(returncode)
 
@@ -452,14 +453,14 @@ def test_a_runner_row_for_another_instance_is_refused(tmp_path: Path) -> None:
     """A stale file from an earlier invocation would otherwise be recorded under
     this run's arm and seed."""
     path = tmp_path / "row.csv"
-    path.write_text(f"{RUNNER_HEADER}\nother,1,1,1,5,5,60,true,feasible,abc1234,0,0,0,x\n")
+    path.write_text(f"{RUNNER_HEADER}\nother,1,1,1,5,5,60,true,feasible,abc1234,0,0,0,0,x\n")
     with pytest.raises(RuntimeError, match="is for other"):
         read_runner_row(path, Run("nvs01", ARMS[0], 1), "abc1234")
 
 
 def test_a_runner_row_from_another_commit_is_refused(tmp_path: Path) -> None:
     path = tmp_path / "row.csv"
-    path.write_text(f"{RUNNER_HEADER}\nnvs01,1,1,1,5,5,60,true,feasible,old0000,0,0,0,x\n")
+    path.write_text(f"{RUNNER_HEADER}\nnvs01,1,1,1,5,5,60,true,feasible,old0000,0,0,0,0,x\n")
     with pytest.raises(RuntimeError, match="written at old0000"):
         read_runner_row(path, Run("nvs01", ARMS[0], 1), "abc1234")
 
