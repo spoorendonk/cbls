@@ -33,6 +33,7 @@ from benchmarks.minlplib.run_ablation import (
     campaign_stamp,
     decide_lns_gate,
     estimate_hours,
+    execute,
     execute_runs,
     load_refusal,
     probe_plan,
@@ -317,6 +318,27 @@ def test_no_resume_re_runs_every_triple(tmp_path: Path, monkeypatch: pytest.Monk
     plan = campaign_plan(["a"], [1], [ARMS[0]])
     execute_runs(make_args(tmp_path, resume=False), "abc1234", plan, out_dir, "campaign")
     assert seen == ["a__control__seed1"]
+
+
+def test_no_resume_moves_the_previous_rows_aside_instead_of_adding_to_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--no-resume` is what the stamp conflict offers as the way out of a
+    configuration mismatch, so it must not leave the mismatched rows in the file
+    for the scorer to average in. Two rows for one triple would also shrink the
+    measured noise floor, which decides every verdict."""
+    out_dir = tmp_path / "scratch"
+    results = out_dir / RESULTS_NAME
+    write_results(results, [("a", CONTROL_ARM, 1)])
+    monkeypatch.setattr(subprocess, "run", fake_runner())
+    args = make_args(tmp_path, resume=False, lns_arm="off")
+    assert execute(args, "abc1234", ["a"], out_dir) == 0
+    with results.open(newline="") as fh:
+        triples = [(r["instance"], r["arm"], r["seed"]) for r in csv.DictReader(fh)]
+    assert len(triples) == len(set(triples)), f"a triple was recorded twice: {triples}"
+    superseded = list(out_dir.glob("results.superseded-*.csv"))
+    assert len(superseded) == 1, "the old rows must be kept, not deleted"
+    assert recorded_keys(superseded[0]) == {("a", CONTROL_ARM, 1)}
 
 
 def test_every_completed_run_is_on_disk_before_the_next_one_starts(

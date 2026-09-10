@@ -340,8 +340,9 @@ def stamp_conflict(out_dir: Path, stamp: str, *, resume: bool) -> str | None:
         return (
             f"{path} was written by a different configuration:\n"
             f"--- recorded ---\n{path.read_text()}--- now ---\n{stamp}"
-            "Use a fresh --out-dir, or pass --no-resume to start this one over; mixing two "
-            "configurations into one campaign measures the configurations, not the arms."
+            "Use a fresh --out-dir, or pass --no-resume to start this one over (which moves "
+            "the recorded rows aside rather than adding to them); mixing two configurations "
+            "into one campaign measures the configurations, not the arms."
         )
     path.write_text(stamp)
     return None
@@ -679,6 +680,20 @@ def execute(args: argparse.Namespace, sha: str, roster: Sequence[str], out_dir: 
         print(conflict, file=sys.stderr)
         return 2
     results = out_dir / RESULTS_NAME
+    if not args.resume and results.exists():
+        # `--no-resume` means "start this one over", and it is what the
+        # stamp-conflict message above offers as the way out of a configuration
+        # mismatch. Without this it does the opposite: `open_results` will not
+        # truncate a file that already holds rows and `execute_runs` appends, so
+        # the old rows stay and `build_cells` averages two sittings -- across
+        # commits, two engines -- into one cell. Duplicating a triple also
+        # inflates `k` in the noise-floor scale while deflating the control's
+        # stdev, which shrinks the floor by roughly a third at three seeds and
+        # promotes effects from "inside the noise" to results. Moved aside
+        # rather than deleted: they are hours of solving.
+        superseded = results.with_suffix(f".superseded-{int(time.time())}.csv")
+        results.rename(superseded)
+        print(f"--no-resume: moved the previous rows to {superseded}", file=sys.stderr)
     if repair_torn_tail(results):
         print(
             f"dropped a torn final line from {results} (a previous run was killed mid-append)",
@@ -726,7 +741,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--no-resume",
         dest="resume",
         action="store_false",
-        help="ignore results.csv and re-run every triple (it is still appended to)",
+        help="move the existing results.csv aside and re-run every triple",
     )
     parser.add_argument(
         "--no-build", dest="build", action="store_false", help="use the runner binary as it stands"
