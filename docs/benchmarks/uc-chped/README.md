@@ -295,6 +295,100 @@ published under the table's name. Point both flags at scratch
 paths and none of this applies; that is the shape a smoke run or an ablation
 arm should take.
 
+### Budget defence: what the traces establish (issue #147)
+
+Every gap percentage this benchmark publishes is a measurement **at** a
+per-horizon budget (`horizon_budget()` in the runner). Those budgets were
+asserted, never derived, and until #147 nothing in the repository recorded what
+the incumbent was doing when the clock stopped — which made a bad gap
+uninterpretable in both directions at once.
+
+The traces below settle that, per horizon, for the two families carrying
+published Pedroso bounds. They are committed at
+[`benchmarks/instances/uc-chped/traces/`](../../../benchmarks/instances/uc-chped/traces/),
+every row carries `commit_sha`, and every number in this section is
+reproducible from them.
+
+**Measurement**: engine commit `4a320c5`, seed 42, `feas-tol 1e-6`, `--verify`
+on, per-horizon map budgets, serial on an otherwise idle machine. ucp13
+verified 5/5; ucp40 verified 3/5 (two horizons found nothing to verify).
+
+*Idle tail* is the budget minus the time of the last change in the incumbent,
+as a fraction of the budget. Read off the `objective` column rather than
+`new_best`, per the warning above — on this data the two agree exactly at every
+horizon, no horizon having a tail of same-valued `new_best` rows, but that is a
+property of this run and not something to assume next time.
+
+| Family | T | Budget | First feasible | Last gain | Idle tail | Gap | Verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| ucp13 |   1 |  10s | <0.01s |   2.17s | 78% | 0.03% | **defended**, generous |
+| ucp13 |   3 |  30s | <0.01s |   9.66s | 68% | 2.11% | **defended**, generous |
+| ucp13 |   6 |  60s | <0.01s |   6.67s | 89% | 3.20% | **defended**, generous |
+| ucp13 |  12 | 120s | <0.01s | 105.86s | 12% | 2.99% | **defended**, the one marginal case |
+| ucp13 |  24 | 300s | <0.01s |  14.78s | 95% | 4.97% | **defended**, generous |
+| ucp40 |   1 |  10s | <0.01s |   4.90s | 51% | 4.17% | **defended**, generous |
+| ucp40 |   3 |  30s | <0.01s |   0.35s | 99% | 3.68% | **defended**, generous |
+| ucp40 |   6 |  60s | <0.01s |   2.74s | 95% | 3.15% | **defended**, generous |
+| ucp40 |  12 | 120s | never | — | — | — | **unchanged**; the clock is not what binds |
+| ucp40 |  24 | 300s | never | — | — | — | **unchanged**; the clock is not what binds |
+
+**No budget was changed.** Seven horizons are flat with idle tails of 51–99%;
+at ucp40/3p the incumbent stops moving after 0.35s of a 30s budget. The
+sharpest single statement is the convergence time: **every horizon that reaches
+feasibility is within 1% of its own final objective in under 13 seconds**, including
+the two carrying 120s and 300s budgets. The map is not tight anywhere it works.
+
+The headroom is kept deliberately rather than trimmed to the observed
+convergence times. A budget cut to where the search converges *today* becomes
+binding after any trajectory change, and would do so silently — turning a
+future engine regression into what looks like a budget artifact, which is the
+exact confusion this issue exists to remove. Generous budgets cost machine time;
+tight ones cost interpretability.
+
+**ucp13/12p is the one genuinely marginal case, and it is marginal in time
+rather than in value.** Its last improvement lands at 105.9s of 120s — an idle
+tail of only 12% — so on the clock alone it reads as "still improving". But that
+improvement is worth 384.6 absolute: **1.97% of the run's total gain and 0.166%
+of the lower bound**, against a published gap of 2.99%. The run was already
+within 1% of its final objective at 9.99s. A longer budget here buys tenths of a
+percentage point, not the gap. The budget stands; this is the horizon to re-check
+first if the map is ever revisited.
+
+**What the traces establish about the gap numbers.** This is the reading nobody
+could make before #147. A 4.97% gap at ucp13/24p is **a statement about the
+search stagnating, not about the budget**: the incumbent stopped moving at 14.8s
+of 300s and the remaining 95% of the budget bought nothing. The same holds at
+ucp13/6p and across ucp40's three feasible horizons. So these gaps are evidence
+about *search quality* — diversification, LNS, structural moves — and any work
+aimed at closing them should target the search, not the clock. Conversely,
+nobody may now explain these gaps away as "it needed more time"; the traces
+refuse that explanation.
+
+**ucp40/12p and 24p never reach a feasible incumbent at all**, so there is no
+incumbent to flatten and raising the budget is unjustified without evidence.
+Two independent signals say the clock is not the binding constraint:
+
+1. Both end at a maximum real violation of **exactly 6**, at budgets differing
+   by 2.5x (120s and 300s). Had the clock been binding, the longer run should
+   have closed more residual than the shorter one. It closed none.
+2. They are not short of search. ucp40/12p completed **115** ViolationLS
+   batches and 24p completed **178** — *more* than the **97** and **98** with
+   which ucp40/3p and 6p reached feasibility and then converged. These horizons
+   get more batches than the siblings that succeed, and still find nothing, so
+   "too few iterations" does not describe the failure. (Batch throughput does
+   fall with horizon — 11.6, 3.23, 1.63, 0.96, 0.59 batches/s across ucp40 — but
+   the batch *counts* are what the comparison rests on.)
+
+**Open, and not tested — an honest limitation.** A longer-budget probe (ucp40 at
+a uniform 600s) was attempted to settle whether these two horizons are
+budget-limited or feasibility-limited. It was killed three times by the
+measurement machine's low-memory reaper before producing usable rows, so **that
+question is open**. The two signals above are suggestive, not conclusive: neither
+rules out a feasible point sitting just beyond a 300s budget. Do not read this
+section as having tested a longer budget on ucp40/12p and 24p. Nothing here
+should be cited as evidence that a longer budget *cannot* help — only that
+nothing measured so far suggests it would.
+
 Archived results:
 
 ### 13-Unit System
