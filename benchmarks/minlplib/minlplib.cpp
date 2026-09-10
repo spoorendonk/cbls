@@ -555,8 +555,13 @@ void write_preread_row(std::ostream& csv, const Args& args, const std::string& n
 /// completed. Writing 0 there would be a different claim -- "LNS ran and never
 /// repaired" is the reading that gates the #143 LNS arm, and a row where
 /// nothing ran must not be able to vote in it. The same rule binds the accepted
-/// cell for the same reason, and bundling the pair is what keeps one of them
-/// from being given a number while the other is left at NaN.
+/// cell, where a 0 would claim the repairs ran and were all rolled back.
+///
+/// Bundling the pair is what keeps one of them from being given a number while
+/// the other is left at NaN, so EVERY row writer below goes through this type
+/// -- the completed-solve row included, where the two cells are always known
+/// together and routing them separately would leave the invariant resting on
+/// nobody editing the stream expression.
 struct LnsCells {
     std::string attempted = "NaN";
     std::string accepted = "NaN";
@@ -951,11 +956,12 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
     const double pub_obj = verified ? obj : std::numeric_limits<double>::quiet_NaN();
     const double pub_gap_bks = verified ? gap_bks : std::numeric_limits<double>::quiet_NaN();
     const double pub_gap_dual = verified ? gap_dual : std::numeric_limits<double>::quiet_NaN();
+    const LnsCells solved = lns_cells(result);
     csv << name << "," << cell(pub_obj) << "," << cell(b.primal) << "," << cell(b.dual) << ","
         << cell(pub_gap_bks) << "," << cell(pub_gap_dual) << "," << wall << ","
         << (verified ? "true" : "false") << "," << note << "," << args.commit_sha << ","
-        << cell(max_violation) << "," << prob.n_discrete_vars << "," << result.lns_repairs << ","
-        << result.lns_repairs_accepted << "," << args.search_config << "\n";
+        << cell(max_violation) << "," << prob.n_discrete_vars << "," << solved.attempted << ","
+        << solved.accepted << "," << args.search_config << "\n";
     csv.flush();
 }
 

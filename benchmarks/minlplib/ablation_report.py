@@ -439,8 +439,9 @@ class Cell:
     primal_bks: float = math.nan
     #: The `repairs` entries' accepted halves, in the same row order. Defaulted
     #: for the same reason `seed_gaps` is: only the repair line reads it, and a
-    #: hand-built cell that says nothing about acceptance should contribute
-    #: nothing to that line rather than a fabricated zero.
+    #: hand-built cell that says nothing about acceptance contributes nothing to
+    #: that line -- which the line then reports as "no accepted reading", not as
+    #: a fabricated zero. See `_repair_cell`.
     repairs_accepted: tuple[float, ...] = ()
     #: The same gaps keyed by seed, so a same-seed comparison is possible. The
     #: drift check needs it: averaging the seed away first is what turned an
@@ -965,14 +966,38 @@ def _repair_totals(cells: Iterable[Cell]) -> tuple[float, float]:
     where no solve completed, and "no reading" is not "no repairs" -- that is
     the same distinction the gate turns on. The two sums are taken
     independently for that reason; they are not a count and a subset of the
-    same rows once unreadable cells are dropped from each.
+    same rows once unreadable cells are dropped from each. (So a row that
+    somehow carried one reading and not the other could make accepted exceed
+    attempted. The runner cannot write such a row -- `LnsCells` gives a row
+    both cells or neither -- and the alternative, dropping a row from both
+    sums, would turn a whole missing COLUMN into "0 attempted, 0 accepted",
+    which is the louder lie.)
+
+    A side on which NOTHING carried a reading totals NaN, not 0.0 -- see
+    `_repair_cell`. `math.fsum(())` is 0.0, and 0 here is the strongest claim
+    either counter can make.
     """
     materialised = list(cells)
-    attempted = math.fsum(r for cell in materialised for r in cell.repairs if math.isfinite(r))
-    accepted = math.fsum(
-        r for cell in materialised for r in cell.repairs_accepted if math.isfinite(r)
+    attempted = [r for cell in materialised for r in cell.repairs if math.isfinite(r)]
+    accepted = [r for cell in materialised for r in cell.repairs_accepted if math.isfinite(r)]
+    return (
+        math.fsum(attempted) if attempted else math.nan,
+        math.fsum(accepted) if accepted else math.nan,
     )
-    return attempted, accepted
+
+
+def _repair_cell(total: float, noun: str) -> str:
+    """One half of the repair line, or the fact that nothing measured it.
+
+    NaN is not zero. It is a side on which no row carried that counter at all --
+    every campaign written before the column existed, which `--report-only`
+    re-scores from its own `results.csv`. `lns_repairs` predates
+    `lns_repairs_accepted` by seven issues, so the two columns went missing at
+    different times and both cases are live. Printing 0 for either would
+    publish the strongest claim the counter can make ("LNS repaired nothing",
+    "LNS kept nothing") out of a file that never measured it.
+    """
+    return f"no {noun} reading" if math.isnan(total) else f"{total:g} {noun}"
 
 
 def _instance_lines(summary: ArmSummary) -> list[str]:
@@ -1128,8 +1153,10 @@ def render_report(results: Path, gate: dict[str, object] | None = None) -> str:
         arm_attempted, arm_accepted = _repair_totals(c.treatment for c in summary.comparisons)
         lines.append(
             "  LNS repairs over the roster: control "
-            f"{control_attempted:g} attempted, {control_accepted:g} accepted; "
-            f"arm {arm_attempted:g} attempted, {arm_accepted:g} accepted"
+            f"{_repair_cell(control_attempted, 'attempted')}, "
+            f"{_repair_cell(control_accepted, 'accepted')}; "
+            f"arm {_repair_cell(arm_attempted, 'attempted')}, "
+            f"{_repair_cell(arm_accepted, 'accepted')}"
         )
         # SPLIT BY SIDE. The reason these rows are held out is that whether a
         # solve crashes or throws can depend on the configuration, which makes

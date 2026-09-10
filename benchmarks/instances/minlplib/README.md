@@ -117,8 +117,9 @@ documents. No published Yuck numbers exist for these instances.
   was produced under (`search_config`, a canonical `key=value;...` cell — see
   below). Both LNS counters read `NaN` on a row where no solve completed: 0
   there would be the different — and false — claim that LNS ran and repaired
-  nothing. The committed table predates the last three columns and so does not
-  carry them; the next full regeneration writes all three.
+  nothing, and on the accepted cell that it repaired and rolled every one back.
+  The committed table predates the last three columns and so does not carry
+  them; the next full regeneration writes all three.
 - `analysis_notes.csv` — curated per-instance root-cause verdicts
   (`bug` vs `hard`) for instances the runner cannot solve. Merged into
   `comparison.csv`'s note column, so the data carries its own explanation.

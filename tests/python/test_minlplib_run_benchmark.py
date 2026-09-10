@@ -630,15 +630,24 @@ def test_summary_holds_elec_out_of_the_counted_rows(tmp_path: Path) -> None:
 
 
 def test_the_published_header_still_matches_what_the_runner_writes() -> None:
-    """Every HEADER column name appears in `minlplib.cpp`.
+    """Every HEADER column name appears in `minlplib.cpp`, delimited as a cell.
 
     A substring search per name, so it catches a *renamed* or deleted column but
     not a reordered or inserted one — several of these names also occur in that
     file's prose. The exact pin is the next test, which compares the header
     against the committed table field for field.
+
+    The delimiter is load-bearing and not decoration: a bare `column in source`
+    is satisfied for `lns_repairs` by the presence of `lns_repairs_accepted`, so
+    deleting the shorter column would leave this green. Requiring the trailing
+    comma (or, for the last column, the literal's closing newline) separates the
+    two. It works only because the header literal is split BETWEEN cells in that
+    file, never mid-name — which is itself a thing this assertion pins.
     """
     source = (REPO_ROOT / "benchmarks" / "minlplib" / "minlplib.cpp").read_text()
-    assert all(column in source for column in HEADER.split(","))
+    columns = HEADER.split(",")
+    assert all(f"{column}," in source for column in columns[:-1])
+    assert f'{columns[-1]}\\n"' in source
     assert 'trace << "' + TRACE_HEADER + '\\n"' in source
 
 

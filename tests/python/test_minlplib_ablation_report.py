@@ -83,12 +83,19 @@ def cell(
     )
 
 
-def write_results(path: Path, rows: Sequence[dict[str, object]]) -> Path:
+def _columns_without(dropped: str) -> tuple[str, ...]:
+    """`COLUMNS` as an older driver wrote it, before `dropped` was a column."""
+    return tuple(column for column in COLUMNS if column != dropped)
+
+
+def write_results(
+    path: Path, rows: Sequence[dict[str, object]], columns: Sequence[str] = COLUMNS
+) -> Path:
     with path.open("w", newline="") as fh:
         writer = csv.writer(fh)
-        writer.writerow(COLUMNS)
+        writer.writerow(columns)
         for row in rows:
-            full = dict.fromkeys(COLUMNS, "")
+            full = dict.fromkeys(columns, "")
             full.update(
                 {
                     "wall_seconds": "60",
@@ -97,8 +104,8 @@ def write_results(path: Path, rows: Sequence[dict[str, object]]) -> Path:
                     "seed": "1",
                 }
             )
-            full.update({k: str(v) for k, v in row.items()})
-            writer.writerow([full[column] for column in COLUMNS])
+            full.update({k: str(v) for k, v in row.items() if k in full})
+            writer.writerow([full[column] for column in columns])
     return path
 
 
@@ -393,6 +400,28 @@ def test_an_accepted_cell_with_no_reading_is_not_counted_as_zero(tmp_path: Path)
     rows[0]["lns_repairs_accepted"] = "NaN"
     report = render_report(write_results(tmp_path / "r.csv", rows))
     assert "control 6 attempted, 4 accepted; " in report  # the two readable rows, not three
+
+
+def test_a_side_with_no_reading_at_all_is_not_reported_as_zero(tmp_path: Path) -> None:
+    """A campaign written before a counter existed has no column for it, so every
+    row reads NaN and the sum is over an empty set.
+
+    `math.fsum(())` is 0.0, and 0 is the STRONGEST claim either counter can make
+    -- "LNS repaired nothing", "LNS kept nothing". Publishing that out of a file
+    that never measured it is the same defect as folding a single NaN row to
+    zero, one level up. `--report-only` re-scores exactly such files: #150's
+    counter landed after the #143 campaign was already running.
+    """
+    rows = [
+        *run_rows("a", CONTROL_ARM, [10.0, 12.0, 14.0], repairs=4),
+        *run_rows("a", "x", [11.0, 13.0, 15.0], repairs=0),
+    ]
+    for row in rows:
+        del row["lns_repairs_accepted"]
+    path = write_results(tmp_path / "r.csv", rows, columns=_columns_without("lns_repairs_accepted"))
+    report = render_report(path)
+    assert "control 12 attempted, no accepted reading; " in report
+    assert "arm 0 attempted, no accepted reading" in report
 
 
 def test_a_row_with_no_reading_is_not_counted_as_zero_repairs(tmp_path: Path) -> None:

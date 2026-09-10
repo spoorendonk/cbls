@@ -1437,6 +1437,17 @@ namespace {
 /// (its upper bound), so at most four of the first batch's twenty iterations are
 /// needed to reach the floor, and the first kick cannot come before the batch
 /// boundary.
+///
+/// Two further facts are what carry the argument to kicks 2..N rather than only
+/// the first, and they are named here because a change to either would turn
+/// this test from provable back into lucky:
+///
+///   * `FeasibilityJump::apply_jump` moves a variable only on a POSITIVE score
+///     and drops the rest from the scan set. At the floor every candidate
+///     raises violation, so no GLS weight makes any jump positive and FJ cannot
+///     walk the state back off the floor between kicks.
+///   * the escape probe the first kick arms is Float-only, so it cannot perturb
+///     an Int jump value.
 constexpr double kRejectFloor = 2460.0;
 
 void build_repair_proof_model(Model& m) {
@@ -1462,25 +1473,27 @@ SearchConfig repair_proof_config() {
     return cfg;
 }
 
-/// Reports every repair as rejected without touching the model or the RNG.
-class RejectingLNS : public LNS {
+/// Runs the REAL destroy-repair and then overrides only the verdict it reports.
+///
+/// Deliberately not a do-nothing stub. Two stubs that touch neither the model
+/// nor the RNG are identical because nothing happens, which says nothing about
+/// whether the verdict is inert. This delegates first, so both arms draw the
+/// same values from the same RNG, destroy the same variables and leave the
+/// model in the same place -- the base has already kept or rolled back by the
+/// time the verdict is replaced -- and the ONLY difference between two runs is
+/// the bool handed back to the kick site.
+class VerdictOverridingLNS : public LNS {
 public:
-    bool destroy_repair(Model& /*model*/, ViolationManager& /*vm*/, RNG& /*rng*/,
-                        double /*repair_time_limit*/) override {
-        return false;
-    }
-};
+    explicit VerdictOverridingLNS(bool verdict) : verdict_(verdict) {}
 
-/// Identical, except that it reports every repair as accepted. Accepting costs
-/// it nothing: the base class's accept branch is exactly the one that keeps the
-/// state it already has, so this arm leaves the model in the same place the
-/// rejecting one does and the two runs are the same trajectory.
-class AcceptingLNS : public LNS {
-public:
-    bool destroy_repair(Model& /*model*/, ViolationManager& /*vm*/, RNG& /*rng*/,
-                        double /*repair_time_limit*/) override {
-        return true;
+    bool destroy_repair(Model& model, ViolationManager& vm, RNG& rng,
+                        double repair_time_limit) override {
+        LNS::destroy_repair(model, vm, rng, repair_time_limit);
+        return verdict_;
     }
+
+private:
+    bool verdict_;
 };
 
 }  // namespace
@@ -1517,17 +1530,18 @@ TEST_CASE("solve separates LNS repairs attempted from repairs accepted", "[searc
 TEST_CASE("the accepted counter follows destroy_repair's verdict, not the kick count",
           "[search][lns]") {
     // The test above pins a zero, and a field that is never written reads zero
-    // too. Two stub LNSes that differ in nothing but their return value settle
-    // it: same model, same seed, same config, so the attempt counter and the
-    // whole trajectory must agree and only the acceptance counter may move.
+    // too. Two LNSes that do identical work and differ in nothing but the bool
+    // they report settle it: same model, same seed, same config, so the attempt
+    // counter and the whole trajectory must agree and only the acceptance
+    // counter may move.
     Model rejecting_model;
     build_repair_proof_model(rejecting_model);
     Model accepting_model;
     build_repair_proof_model(accepting_model);
 
     SearchConfig cfg = repair_proof_config();
-    RejectingLNS rejecting;
-    AcceptingLNS accepting;
+    VerdictOverridingLNS rejecting(false);
+    VerdictOverridingLNS accepting(true);
     const SearchResult reject =
         solve(rejecting_model, /*time_limit=*/0.0, /*seed=*/7, /*use_fj=*/true, nullptr, &rejecting,
               /*lns_interval=*/1, nullptr, cfg);
@@ -1542,15 +1556,64 @@ TEST_CASE("the accepted counter follows destroy_repair's verdict, not the kick c
     REQUIRE(accept.lns_repairs_accepted == accept.lns_repairs);
     REQUIRE(accept.lns_repairs_accepted > 0);
 
-    // The verdict is instrumentation and nothing else reads it: the two arms
-    // took the same number of kicks, the same number of GLS iterations and
-    // landed on the same assignment. That is the "no search behaviour changes"
-    // criterion of #150 pinned as a test rather than asserted in a commit
-    // message -- if the return value ever starts steering the search, this is
-    // the assertion that goes red.
+    // The verdict is instrumentation and nothing else reads it. Be precise about
+    // what these lines can actually pin ON THIS MODEL: `lns_repairs` and
+    // `perturbations` are the two that discriminate, and they go red on any
+    // branch that adds, skips or re-times a kick. The other three are cheap
+    // corroboration and could not go red here -- `iterations` is nailed to
+    // max_iterations by construction, and `best_violation`/`best_state` are the
+    // box's UNIQUE floor, which the search re-converges to from any disturbance.
+    // Catching a branch that changed only the assignment would need a model with
+    // more than one attractor. The stronger half of the argument is the LNS
+    // above doing real work in both arms, not these five comparisons.
     REQUIRE(accept.lns_repairs == reject.lns_repairs);
     REQUIRE(accept.perturbations == reject.perturbations);
     REQUIRE(accept.iterations == reject.iterations);
     REQUIRE(accept.best_violation == reject.best_violation);
     REQUIRE(accept.best_state.values == reject.best_state.values);
+}
+
+TEST_CASE("the real LNS records repairs it kept, on a model where some are kept", "[search][lns]") {
+    // The two cases above pin a zero and pin the plumbing with an overridden
+    // verdict. Neither shows the built-in `LNS` ever reporting an acceptance,
+    // so on the engine's own accept rule the counter is still only known to be
+    // able to read 0 -- and #150 exists to make "rare or never accepted"
+    // separable from "never ran".
+    //
+    // This is the same shape as the proof model but with the floor put out of
+    // reach: eight variables instead of four, and an objective (minimise the
+    // sum) that pulls AGAINST the constraint's pressure to maximise it. The key
+    // therefore has no attractor the search can sit on, `lns_interval = 2`
+    // leaves a perturb between repairs to move the incumbent off wherever it
+    // settled, and a repair launched from there can genuinely beat it.
+    //
+    // Clock-free, so each seed is a fixed trajectory -- and the assertion is a
+    // strict two-sided one, so a counter stuck at either end fails.
+    for (uint64_t seed = 1; seed <= 3; ++seed) {
+        INFO("seed " << seed);
+        Model m;
+        std::vector<int32_t> vars;
+        vars.reserve(8);
+        for (int i = 0; i < 8; ++i) {
+            vars.push_back(m.int_var(0, 10));
+        }
+        std::vector<int32_t> args(vars.begin(), vars.end());
+        args.push_back(m.constant(-2500.0));
+        m.add_constraint(m.abs_expr(m.sum(args)));
+        m.minimize(m.sum(vars));
+        m.close();
+
+        SearchConfig cfg;
+        cfg.batch_iterations = 1;     // a batch boundary after every iteration
+        cfg.perturbation_period = 1;  // ...and a kick at every one of them
+        cfg.max_iterations = 30;
+        LNS lns(0.3);
+        const SearchResult r = solve(m, /*time_limit=*/0.0, seed, /*use_fj=*/true, nullptr, &lns,
+                                     /*lns_interval=*/2, nullptr, cfg);
+
+        CAPTURE(r.iterations, r.perturbations, r.lns_repairs, r.lns_repairs_accepted);
+        REQUIRE(r.termination == TerminationReason::IterationLimit);
+        REQUIRE(r.lns_repairs_accepted > 0);
+        REQUIRE(r.lns_repairs_accepted < r.lns_repairs);
+    }
 }

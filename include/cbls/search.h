@@ -208,10 +208,13 @@ struct SearchResult {
     /// Single-`solve()` only, as above.
     int lns_repairs = 0;
 
-    /// The subset of `lns_repairs` whose repair was ACCEPTED -- i.e. the calls
-    /// where `LNS::destroy_repair` returned true, having found a state that
-    /// beat the incumbent on the lexicographic (real violation, objective) key
-    /// and therefore kept it instead of rolling back.
+    /// The subset of `lns_repairs` whose repair was ACCEPTED -- the calls where
+    /// `LNS::destroy_repair` returned true. It records the RETURN, not a rule:
+    /// the built-in `LNS` returns true exactly when the repaired state beat the
+    /// incumbent on the lexicographic (real violation, objective) key and was
+    /// therefore kept instead of rolled back, but `destroy_repair` is a virtual
+    /// extension point and an override decides for itself what its `true`
+    /// means.
     ///
     /// Separate from `lns_repairs` because "LNS ran" and "LNS helped" are
     /// different questions and only the first was answerable before #150. The

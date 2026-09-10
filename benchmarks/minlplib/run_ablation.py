@@ -739,8 +739,8 @@ def execute_runs(
         elapsed_each.append(time.monotonic() - began)
         print(
             f"    -> {runner['note']} feasible={runner['feasible']} "
-            f"gap={runner['gap_to_bks%']} lns_repairs={runner['lns_repairs']}"
-            f"/{runner['lns_repairs_accepted']} accepted",
+            f"gap={runner['gap_to_bks%']} lns_repairs={runner['lns_repairs']} "
+            f"lns_accepted={runner['lns_repairs_accepted']}",
             file=sys.stderr,
             flush=True,
         )
