@@ -553,8 +553,10 @@ def solve_error_rows(instance: str, arm: str, seeds: Sequence[int]) -> list[dict
 
     `minlplib.cpp` catches the exception, bumps `Tally::errored`, writes an
     unsolved row and carries on; `main` returns 0 regardless of the tally. The
-    row is therefore well-formed, `feasible=false`, every measured cell NaN --
-    and the driver records it as a normal result.
+    row is therefore well-formed and `feasible=false` -- objective, gap and
+    `lns_repairs` are NaN, while `primal_bks`/`dual_bound` carry the published
+    bounds and the wall is 0.0, since `write_unsolved_row` knows those without
+    having solved. The driver records it as a normal result.
     """
     return [
         {
@@ -723,6 +725,46 @@ def test_a_named_direction_carries_a_delta_the_table_can_show(tmp_path: Path) ->
     assert "+0.001" in render_report(results).split("--- x ---")[1]
 
 
+def test_a_named_direction_never_quotes_a_median_delta_of_zero(tmp_path: Path) -> None:
+    """Issue #151's criterion, as an invariant rather than as a readability aim:
+    "a verdict naming a direction cannot coexist with a median delta of +0.00".
+
+    Naming the denominators was not enough. Six scored instances holding at
+    delta 0 and four movers at +0.001 put the roster median at exactly 0.00,
+    and the verdict still read "the arm is WORSE than the control ... median gap
+    delta over the 10 scored instance(s) +0.00 points" -- the forbidden sentence,
+    reached through the fix for the floor rather than through the floor bug.
+
+    The roster median is not suppressed; it moves to the report line that owns
+    it, where it sits beside its denominator and no direction is claimed.
+    """
+    names = ["h1", "h2", "h3", "h4", "h5", "h6"]
+    rows: list[dict[str, object]] = []
+    for name in names:
+        rows += run_rows(name, CONTROL_ARM, [10.0, 10.1, 10.2])
+        rows += run_rows(name, "x", [10.0, 10.1, 10.2])
+    movers = ["p", "q", "r", "s"]
+    rows += near_zero_rows(movers, 1e-3)
+    results = write_results(tmp_path / "r.csv", rows)
+    summary = summarize_arm("x", build_cells(load_rows(results)), [*names, *movers])
+
+    assert summary.moved_worse == 4
+    assert summary.held == 6
+    # The roster median really is zero -- this test would be vacuous otherwise.
+    assert summary.median_delta == 0.0
+    assert "the arm is WORSE than the control" in summary.verdict
+    # No delta the verdict calls a median may render as +0.00. Matched as a
+    # pattern rather than as `"+0.00" not in verdict`, which "+0.001" satisfies.
+    assert not re.search(r"median gap delta[^;]*\+0\.00 points", summary.verdict)
+    assert "median gap delta over the 4 mover(s) +0.001 points" in summary.verdict
+    assert "the other 6 scored instance(s) held inside their own floor" in summary.verdict
+    # Not suppressed: still reported where its denominator is named.
+    assert (
+        "median per-instance gap delta: +0.00 points over the 10 SCORED instance(s)"
+        in render_report(results)
+    )
+
+
 def test_the_median_and_the_mean_each_state_their_own_denominator(tmp_path: Path) -> None:
     """They are statistics over different sets, and were printed as parallel
     lines with neither saying so: two scored instances at delta 0 beside two
@@ -831,9 +873,14 @@ def test_every_preread_note_the_runner_writes_is_held_out() -> None:
     notes too, so it cannot be swept the same way.)
     """
     source = (REPO_ROOT / "benchmarks" / "minlplib" / "minlplib.cpp").read_text()
+    # EVERY call site, not every string literal: counting only the literals
+    # lets a fifth call site added with a variable note keep the count at four
+    # and the test green, which is the vacuity the guard exists to avoid.
+    call_sites = re.findall(r"write_preread_row\(csv, args, name, (.+?)\);", source, re.S)
     literals = re.findall(r'write_preread_row\(csv, args, name, "([^"]*)"', source)
 
-    assert len(literals) == 4, literals  # the regex still finds the call sites
+    assert len(call_sites) == 4, call_sites  # the regex still finds the call sites
+    assert len(literals) == len(call_sites), call_sites  # each note starts with a literal
     for literal in literals:
         assert any(literal.startswith(note) for note in NO_SEARCH_NOTES), literal
 

@@ -106,9 +106,11 @@ RUNNER_FAILED_NOTE = "runner-failed"
 #: well-formed) and the driver's `runner-failed-<kind>`. The other four are
 #: written whole -- the runner returns before `integrality_check` and
 #: `merge_analysis_note` can append anything to a row of this kind, which is
-#: also why no note a COMPLETED search produces (`feasible`, `matches-bks`,
-#: `non-finite`, `VERIFY-FAILED(...)`, `infeasible(...)`, with those suffixes)
-#: can collide with one of these prefixes.
+#: also why no note a COMPLETED search produces can collide with one of these
+#: prefixes. That set is, in full: `feasible`, `matches-bks`, `better-than-bks`,
+#: `within-tolerance-of-bks`, `non-finite`, `VERIFY-FAILED(...)` and
+#: `infeasible(...)`, each optionally carrying an appended
+#: `; integrality-mismatch(...)`, `; stale-analysis-note` or ` | <curated>`.
 #:
 #: `RUNNER_FAILED_NOTE` is deliberately first: the report lists the runner's own
 #: notes as `NO_SEARCH_NOTES[1:]`, because the driver's crashes get their own
@@ -264,8 +266,12 @@ def t_multiplier(df: int) -> float:
     # so NORMAL_Z_95 is a guard against a future edit to T_95 rather than a
     # branch this table can reach; past df=30 the returned 2.042 is deliberately
     # the wider of it and the asymptotic 1.96.
+    # `wider` is tested before it is indexed: `max([])` raises, so writing
+    # this as a conditional on `max(wider)` made NORMAL_Z_95 a fallback that
+    # could not actually fire. The tabulated value is always the wider band, so
+    # there is no df at which falling back to 1.96 is the safer answer.
     wider = [k for k in T_95 if k < df]
-    return T_95[max(wider)] if max(wider) >= 10 else NORMAL_Z_95
+    return T_95[max(wider)] if wider else NORMAL_Z_95
 
 
 def sign_test_p(worse: int, better: int) -> float:
@@ -487,8 +493,12 @@ class Comparison:
     #: bucket is `both-feasible`.
     delta: float | None
     #: Feasible-run count difference, which is a result in its own right on the
-    #: instances where no gap comparison exists.
-    feasibility_delta: int
+    #: instances where no gap comparison exists. **None where either side
+    #: recorded no run at all**: a difference taken against an absence is the
+    #: same manufactured claim `classify` refuses to bucket, and leaving a
+    #: number here would leave defect 1 sitting in the data model for the next
+    #: summariser to find.
+    feasibility_delta: int | None
 
 
 def classify(control: Cell, treatment: Cell) -> str:
@@ -530,7 +540,9 @@ def compare(control: Cell, treatment: Cell) -> Comparison:
         control=control,
         treatment=treatment,
         delta=delta,
-        feasibility_delta=treatment.feasible_runs - control.feasible_runs,
+        feasibility_delta=(
+            None if bucket == NO_RUNS_RECORDED else treatment.feasible_runs - control.feasible_runs
+        ),
     )
 
 
@@ -669,6 +681,10 @@ class ArmSummary:
     #: Exact two-sided sign-test p-value over those two counts.
     sign_p: float
     feasibility_delta: int
+    #: How many instances the balanced delta above is summed over -- the
+    #: denominator that makes a `+0` on it readable as "no difference over N"
+    #: rather than as "no difference" over an empty set.
+    feasibility_balanced: int
     #: Feasible-run delta restricted to instances with equal run counts on both
     #: sides, and how many instances that leaves out. An unequal-`k` instance
     #: (the in-progress one on an interrupted campaign) otherwise contributes a
@@ -745,23 +761,31 @@ class ArmSummary:
                 f"own measured floor ({typical}); median gap delta over those {self.scored} "
                 f"instance(s) {format_points(self.median_delta)} points"
             )
+        # THE DELTA A NAMED DIRECTION IS A CLAIM ABOUT IS THE MOVERS' OWN.
+        # The roster-wide median is legitimately +0.00 whenever most scored
+        # instances held inside their floors, and printing it in the same
+        # sentence as "the arm is WORSE than the control" is exactly the
+        # contradiction issue #151 forbids -- a verdict naming a direction may
+        # not coexist with a median delta of +0.00. It is not suppressed, only
+        # moved: `median per-instance gap delta` in the report below still
+        # reports it over the scored instances, with its denominator named.
+        #
+        # The movers' median CANNOT be zero here, which is what makes this a
+        # fix rather than a relabelling: every mover's |delta| exceeds its own
+        # floor, which is itself bounded below by the runner's tie band, and a
+        # direction is named only when the movers are unanimous or the sign
+        # test resolves -- either way more than half of them share a sign, so
+        # the median sits on that side.
+        mover_delta = self.mover_median_delta
         summary = (
             f"{moved} of {self.scored} scored instance(s) moved outside their own floor "
             f"({self.moved_worse} worse, {self.moved_better} better; sign test p = "
-            f"{self.sign_p:.3f}, {typical}); median gap delta over the {self.scored} scored "
-            f"instance(s) {format_points(self.median_delta)} points"
+            f"{self.sign_p:.3f}, {typical}); median gap delta over the {moved} mover(s) "
+            f"{format_points(mover_delta if mover_delta is not None else 0.0)} points against "
+            f"their own median floor "
+            f"+/-{format_points(self.mover_median_floor or 0.0, signed=False)}; the other "
+            f"{self.held} scored instance(s) held inside their own floor"
         )
-        if self.mover_median_delta is not None:
-            # The movers' own median delta AND their own median floor, so a
-            # named direction always carries the two numbers it is a claim
-            # about. The roster median can legitimately be +0.00 when most
-            # scored instances held, and the roster's typical floor can be
-            # orders of magnitude away from the floors that actually decided.
-            summary += (
-                f", over the {moved} mover(s) {format_points(self.mover_median_delta)} points "
-                f"against their own median floor "
-                f"+/-{format_points(self.mover_median_floor or 0.0, signed=False)}"
-            )
         # A roster-level direction needs either a significant sign test or
         # enough unanimous movers to be worth the name. One mover is not a
         # roster verdict: an earlier cut named a direction off a single
@@ -854,9 +878,12 @@ def summarize_arm(
         # comparison EITHER WAY -- summing its `feasible_runs` difference is the
         # same manufactured claim `classify` refuses to bucket.
         feasibility_delta=sum(
-            c.feasibility_delta for c in comparisons if c.bucket != NO_RUNS_RECORDED
+            c.feasibility_delta for c in comparisons if c.feasibility_delta is not None
         ),
-        feasibility_delta_balanced=sum(c.feasibility_delta for c in balanced),
+        feasibility_delta_balanced=sum(
+            c.feasibility_delta for c in balanced if c.feasibility_delta is not None
+        ),
+        feasibility_balanced=len(balanced),
         feasibility_unbalanced=sum(1 for c in comparisons if c.bucket != NO_RUNS_RECORDED)
         - len(balanced),
         floor=floor,
@@ -1026,7 +1053,12 @@ def render_report(results: Path, gate: dict[str, object] | None = None) -> str:
         f"(excluding {', '.join(CLAIM_EXCLUDED)}, published as documented failures)",
         f"seeds:                {sorted({r.seed for r in rows})}",
         f"arms:                 {', '.join([CONTROL_ARM, *arms])}",
-        f"mean wall per run:    {mean_wall:.1f}s",
+        "mean wall per run:    "
+        + (
+            f"{mean_wall:.1f}s"
+            if math.isfinite(mean_wall)
+            else "not measured (no row completed a search)"
+        ),
         "",
         "Sign convention: delta = arm mean gap-to-BKS minus control mean gap-to-BKS,",
         "in gap points. POSITIVE IS WORSE. Only `both-feasible` instances have one.",
@@ -1043,15 +1075,21 @@ def render_report(results: Path, gate: dict[str, object] | None = None) -> str:
         summary = summarize_arm(arm, cells, instances)
         lines.append(f"--- {arm} ---")
         lines.append("  " + "  ".join(f"{k}={v}" for k, v in summary.counts.items()))
+        # The denominator is printed even when it is zero. `+0 over instances
+        # with equal run counts` is unreadable on an all-held-out campaign,
+        # where the honest reading is "+0 over 0 instances" -- a sum over an
+        # empty set, not a measurement that the arm changed nothing.
         lines.append(
             f"  feasible-run delta over the roster: {summary.feasibility_delta_balanced:+d} "
-            f"over instances with equal run counts on both sides"
+            f"over the {summary.feasibility_balanced} instance(s) with equal run counts on "
+            "both sides"
             + (
                 ""
                 if not summary.feasibility_unbalanced
                 else f" ({summary.feasibility_unbalanced} instance(s) left out for unequal run "
                 f"counts; counting them gives {summary.feasibility_delta:+d}, which is "
-                "bookkeeping on an incomplete campaign rather than a result)"
+                "bookkeeping on run counts that do not correspond -- either an incomplete "
+                "campaign or rows held out above -- rather than a result)"
             )
         )
         # Issue #143 asks for the repair counts wherever the LNS arm is RUN, not
@@ -1088,12 +1126,34 @@ def render_report(results: Path, gate: dict[str, object] | None = None) -> str:
             key=NO_SEARCH_NOTES.index,
         )
         if unsearched_control or unsearched_arm:
+            # The justification differs by note and the line has to say which
+            # it is making. `solve-error` is the arm-dependent one -- whether a
+            # solve throws can depend on the configuration -- while
+            # `not-found`/`read-error`/`build-error`/`unsupported` hit every arm
+            # identically and are roster problems, not arm properties. Printing
+            # the arm-dependence argument under a list of `not-found` would be
+            # the same overreach in miniature.
+            arm_dependent = [n for n in observed if n == "solve-error"]
+            roster_wide = [n for n in observed if n != "solve-error"]
+            why = "; ".join(
+                part
+                for part in (
+                    "whether a solve throws can depend on the arm, so scoring "
+                    f"{', '.join(arm_dependent)} would read an exception as a lost feasibility"
+                    if arm_dependent
+                    else "",
+                    f"{', '.join(roster_wide)} is a roster problem that hits every arm alike, "
+                    "so scoring it would read a missing or unsupported instance as one"
+                    if roster_wide
+                    else "",
+                )
+                if part
+            )
             lines.append(
                 f"  {unsearched_control + unsearched_arm} run(s) completed no search "
                 f"(control {unsearched_control}, arm {unsearched_arm}; {', '.join(observed)}) and "
                 "are held out of every count above. The runner exits 0 on these, so the row is "
-                "well-formed and `feasible=false` -- and whether a solve throws can depend on the "
-                "arm, so scoring them would read an exception as a lost feasibility"
+                f"well-formed and `feasible=false` -- and {why}"
             )
         held_out = [c.instance for c in summary.comparisons if c.bucket == NO_RUNS_RECORDED]
         if held_out:
