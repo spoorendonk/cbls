@@ -460,6 +460,41 @@ def recorded_keys(path: Path) -> set[tuple[str, str, int]]:
     return keys
 
 
+def header_conflict(path: Path) -> str | None:
+    """The reason an existing `results.csv` cannot be appended to, or None.
+
+    `open_results` leaves a non-empty file alone, and `append_result` writes one
+    value per `RESULT_COLUMNS` entry -- so a file whose header is a DIFFERENT
+    schema gains rows that are wider or narrower than the header above them, at
+    exit 0. `csv.DictReader` then binds each value to the wrong name (a row
+    written after #150 read under a pre-#150 header hands the repair count to
+    `search_config` and drops the last cell into `restkey`), and the campaign
+    scores columns that never described it.
+
+    The campaign stamp usually catches this first, because a schema change
+    coincides with a commit change and the stamp records the commit. Usually is
+    not always: the stamp file can be absent -- deleted, or an out-dir from a
+    driver that predates it -- and then nothing between the old header and the
+    new rows. Checked here rather than inside `open_results` so the refusal
+    reads like the campaign's other refusals, and so `execute_runs`' own call
+    stays a create-if-missing.
+    """
+    if not path.exists() or not path.read_bytes():
+        return None
+    with path.open(newline="") as fh:
+        header = next(csv.reader(fh), [])
+    if header == list(RESULT_COLUMNS):
+        return None
+    missing = [c for c in RESULT_COLUMNS if c not in header]
+    extra = [c for c in header if c not in RESULT_COLUMNS]
+    return (
+        f"{path} was written under a different row schema and appending to it would bind "
+        f"values to the wrong columns (missing: {missing or 'none'}; unexpected: "
+        f"{extra or 'none'}). Score it where it stands with --report-only, or start a new "
+        "campaign with --no-resume or a fresh --out-dir."
+    )
+
+
 def open_results(path: Path) -> None:
     """Create `results.csv` with its header if it is not there yet."""
     if path.exists() and path.read_bytes():
@@ -964,6 +999,10 @@ def execute(args: argparse.Namespace, sha: str, roster: Sequence[str], out_dir: 
             f"dropped a torn final line from {results} (a previous run was killed mid-append)",
             file=sys.stderr,
         )
+    schema = header_conflict(results)
+    if schema:
+        print(schema, file=sys.stderr)
+        return 2
     open_results(results)
     decision = resolve_gate(args, sha, roster, out_dir)
     arms = [*ARMS, GATED_ARM] if decision.run_arm else list(ARMS)

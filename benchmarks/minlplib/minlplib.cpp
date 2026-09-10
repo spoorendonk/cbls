@@ -537,17 +537,6 @@ std::string cell(double v) {
     return os.str();
 }
 
-/// A row for an instance whose bounds have not been looked up yet -- nothing is
-/// known about it, so every numeric cell is NaN. Such a row is still written:
-/// bounds.csv is the roster of record, so a silently absent row would make the
-/// results table disagree with the roster it claims to cover, visible only on
-/// stdout.
-void write_preread_row(std::ostream& csv, const Args& args, const std::string& name,
-                       const std::string& note) {
-    csv << name << ",NaN,NaN,NaN,NaN,NaN,0,false," << note << "," << args.commit_sha
-        << ",NaN,NaN,NaN,NaN," << args.search_config << "\n";
-}
-
 /// The row's two LNS counter cells: destroy-repairs ATTEMPTED, and the subset
 /// of those the accept rule KEPT.
 ///
@@ -561,7 +550,10 @@ void write_preread_row(std::ostream& csv, const Args& args, const std::string& n
 /// the other is left at NaN, so EVERY row writer below goes through this type
 /// -- the completed-solve row included, where the two cells are always known
 /// together and routing them separately would leave the invariant resting on
-/// nobody editing the stream expression.
+/// nobody editing the stream expression. `write_preread_row` below included:
+/// its cells are always NaN, which is exactly why hard-coding them there
+/// would leave the one writer that can never be right by accident as the
+/// only one outside the rule.
 struct LnsCells {
     std::string attempted = "NaN";
     std::string accepted = "NaN";
@@ -570,6 +562,21 @@ struct LnsCells {
 /// The counters of a completed solve, as cells.
 LnsCells lns_cells(const cbls::SearchResult& result) {
     return {std::to_string(result.lns_repairs), std::to_string(result.lns_repairs_accepted)};
+}
+
+/// A row for an instance whose bounds have not been looked up yet -- nothing is
+/// known about it, so every numeric cell is NaN. Such a row is still written:
+/// bounds.csv is the roster of record, so a silently absent row would make the
+/// results table disagree with the roster it claims to cover, visible only on
+/// stdout.
+void write_preread_row(std::ostream& csv, const Args& args, const std::string& name,
+                       const std::string& note) {
+    // Through `LnsCells` like the other two, rather than a hard-coded pair of
+    // NaNs: the invariant that type carries is worth nothing if the writer for
+    // the rows that are ALWAYS unmeasured is the one exempt from it.
+    const LnsCells lns;
+    csv << name << ",NaN,NaN,NaN,NaN,NaN,0,false," << note << "," << args.commit_sha << ",NaN,NaN,"
+        << lns.attempted << "," << lns.accepted << "," << args.search_config << "\n";
 }
 
 /// A row for an instance that was built but produced no publishable objective.

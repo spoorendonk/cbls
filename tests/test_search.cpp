@@ -1573,6 +1573,13 @@ TEST_CASE("the accepted counter follows destroy_repair's verdict, not the kick c
     REQUIRE(accept.best_state.values == reject.best_state.values);
 }
 
+// The two bounds below are pinned to THIS model at THESE seeds: whether the
+// built-in accept rule keeps a given repair depends on the FJ scan order and the
+// RNG draws the repair consumes, so an unrelated change to either can move the
+// counts and turn this red. That is a report about the search, not about the
+// counter -- read a failure here alongside the two cases above, which do not
+// depend on any draw: if those are green, the acceptance plumbing is intact and
+// what moved is the trajectory.
 TEST_CASE("the real LNS records repairs it kept, on a model where some are kept", "[search][lns]") {
     // The two cases above pin a zero and pin the plumbing with an overridden
     // verdict. Neither shows the built-in `LNS` ever reporting an acceptance,

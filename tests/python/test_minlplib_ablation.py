@@ -43,6 +43,7 @@ from benchmarks.minlplib.run_ablation import (
     execute,
     execute_runs,
     failed_row,
+    header_conflict,
     load_refusal,
     main,
     probe_plan,
@@ -449,6 +450,32 @@ def test_the_stamp_refuses_a_resume_from_another_budget(tmp_path: Path) -> None:
     assert stamp_conflict(out_dir, other, resume=False) is None
 
 
+def test_a_results_file_written_under_another_schema_is_refused(tmp_path: Path) -> None:
+    """The campaign stamp usually catches a schema change first, because the
+    schema moves with the engine commit and the stamp records the commit. It
+    cannot when the stamp file is absent -- deleted, or an out-dir from a driver
+    that predates it -- and then `open_results` leaves the old header in place
+    while `append_result` writes a row of the NEW width beneath it, at exit 0.
+
+    `csv.DictReader` binds by position from there on: under a pre-#150 header a
+    post-#150 row hands `lns_repairs_accepted` to `search_config` and drops the
+    last cell into `restkey`. The campaign then scores columns that never
+    described it, and nothing says so.
+    """
+    results = tmp_path / RESULTS_NAME
+    assert header_conflict(results) is None  # absent: nothing to conflict with
+
+    results.write_text(",".join(RESULT_COLUMNS) + "\n")
+    assert header_conflict(results) is None  # this schema: appendable
+
+    older = [c for c in RESULT_COLUMNS if c != "lns_repairs_accepted"]
+    results.write_text(",".join(older) + "\n")
+    conflict = header_conflict(results)
+    assert conflict is not None
+    assert "lns_repairs_accepted" in conflict
+    assert "--report-only" in conflict  # the way to read it where it stands
+
+
 def test_a_runner_row_for_another_instance_is_refused(tmp_path: Path) -> None:
     """A stale file from an earlier invocation would otherwise be recorded under
     this run's arm and seed."""
@@ -806,6 +833,10 @@ def test_a_failed_run_is_recorded_rather_than_ending_the_campaign(tmp_path: Path
     assert row["feasible"] == "false"
     assert row["gap_to_bks%"] == "NaN"
     assert row["lns_repairs"] == "NaN"
+    # Both cells, not just the first: a half-read row is the one shape the
+    # scorer cannot represent -- it would sum an accepted count against an
+    # attempted count that was never taken.
+    assert row["lns_repairs_accepted"] == "NaN"
     # A NaN repair cell is "no reading", which is what keeps a crashed run out
     # of the LNS gate's denominator.
     assert decide_lns_gate([{**row, "arm": PROBE_ARM.name}]).unread_runs == 1

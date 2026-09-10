@@ -203,8 +203,9 @@ struct SearchResult {
     /// what lets a regression test assert that without timing the run.
     ///
     /// This counts repairs ATTEMPTED. `lns_repairs_accepted` below is the
-    /// subset that improved the search state; read the two together, because a
-    /// nonzero count here says only that LNS spent budget, not that it helped.
+    /// subset whose `destroy_repair` returned true; read the two together,
+    /// because a nonzero count here says only that LNS spent budget, not that
+    /// it helped.
     /// Single-`solve()` only, as above.
     int lns_repairs = 0;
 
