@@ -69,7 +69,7 @@ cbls::SolveProgress incumbent(double time_seconds, double objective, bool new_be
 
 /// Column indices into a trace row, so a reordering of kTraceHeader breaks the
 /// assertions rather than silently moving what they check.
-enum Column {
+enum Column : std::uint8_t {
     kInstance,
     kPeriods,
     kTimeLimit,
