@@ -636,10 +636,12 @@ def test_an_instance_with_one_control_run_is_not_scored(tmp_path: Path) -> None:
     manufactures a significant result. `gear4` is exactly the instance most
     likely to be feasible on only one seed.
     """
-    rows: list[dict[str, object]] = [
+    rows: list[dict[str, object]] = []
+    rows += [
         {"instance": "small0", "arm": "control", "seed": s, "gap_to_bks%": 1.0 + 0.01 * s}
         for s in (1, 2, 3)
-    ] + [
+    ]
+    rows += [
         {"instance": "small0", "arm": "no-float-hook", "seed": s, "gap_to_bks%": 1.0}
         for s in (1, 2, 3)
     ]
