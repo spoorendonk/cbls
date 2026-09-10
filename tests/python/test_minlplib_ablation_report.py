@@ -287,6 +287,27 @@ def test_an_arm_that_only_wins_on_feasibility_is_reported_on_the_counts(
     assert "feasibility counts" in summary.verdict
 
 
+def test_an_instance_with_rows_on_one_side_only_is_counted_not_dropped(
+    tmp_path: Path,
+) -> None:
+    """An interrupted campaign always ends mid-instance-block, so its last
+    instance has control rows and not the arm's. Dropping it silently is the
+    "instances scored" line disagreeing with the bucket counts and nothing
+    saying why -- the silent drop the acceptance criterion names."""
+    rows = [
+        *run_rows("a", CONTROL_ARM, [10.0, 12.0, 14.0]),
+        *run_rows("a", "x", [11.0, 13.0, 15.0]),
+        *run_rows("b", CONTROL_ARM, [20.0, 22.0, 24.0]),
+    ]
+    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
+    summary = summarize_arm("x", cells, ["a", "b"])
+    assert summary.uncompared == 1
+    assert sum(summary.counts.values()) + summary.uncompared == 2
+    report = render_report(tmp_path / "r.csv")
+    assert "rows on only one side" in report
+    assert "incomplete for this arm" in report
+
+
 # --- what is held out ----------------------------------------------------------
 
 

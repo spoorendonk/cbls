@@ -283,6 +283,13 @@ class ArmSummary:
     median_delta: float | None
     feasibility_delta: int
     floor: NoiseFloor
+    #: Scored instances with rows on only one side, so in no bucket at all. An
+    #: interrupted campaign always ends mid-instance-block, so its last instance
+    #: has control rows and not every arm's. It has to be visible: without it the
+    #: bucket counts sit quietly short of the "instances scored" line above, and
+    #: this module's own promise that every instance lands in exactly one bucket
+    #: is false for precisely the instances a reader would want to ask about.
+    uncompared: int = 0
 
     @property
     def verdict(self) -> str:
@@ -311,10 +318,12 @@ def summarize_arm(
 ) -> ArmSummary:
     """Compare one arm against the control over `instances`."""
     comparisons: list[Comparison] = []
+    uncompared = 0
     for instance in instances:
         control = cells.get((instance, CONTROL_ARM))
         treatment = cells.get((instance, arm))
         if control is None or treatment is None:
+            uncompared += 1
             continue
         comparisons.append(compare(control, treatment))
     deltas = [c.delta for c in comparisons if c.delta is not None]
@@ -326,6 +335,7 @@ def summarize_arm(
         median_delta=statistics.median(deltas) if deltas else None,
         feasibility_delta=sum(c.feasibility_delta for c in comparisons),
         floor=noise_floor(comparisons, control_spreads(cells, instances)),
+        uncompared=uncompared,
     )
 
 
@@ -459,6 +469,11 @@ def render_report(results: Path, gate: dict[str, object] | None = None) -> str:
         lines.append(f"--- {arm} ---")
         lines.append("  " + "  ".join(f"{k}={v}" for k, v in summary.counts.items()))
         lines.append(f"  feasible-run delta over the roster: {summary.feasibility_delta:+d}")
+        if summary.uncompared:
+            lines.append(
+                f"  {summary.uncompared} scored instance(s) have rows on only one side and are "
+                "in no bucket -- the campaign is incomplete for this arm"
+            )
         if summary.median_delta is not None:
             lines.append(f"  median per-instance gap delta: {summary.median_delta:+.2f} points")
         lines += _floor_lines(summary)
