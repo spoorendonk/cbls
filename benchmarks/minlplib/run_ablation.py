@@ -783,6 +783,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not results.exists():
             print(f"{results} not found; nothing to report on", file=sys.stderr)
             return 2
+        # `execute` repairs the file before it runs; --report-only is the path
+        # that reads one nothing has repaired, and `load_rows` raises on a torn
+        # final row rather than skipping it the way `recorded_keys` does. Killed
+        # mid-append is the normal state of a ten-hour campaign, so this is the
+        # common case for the only read-only way to look at the results.
+        if repair_torn_tail(results):
+            print(f"dropped a torn final line from {results} before scoring it", file=sys.stderr)
         gate_path = out_dir / GATE_NAME
         gate = json.loads(gate_path.read_text()) if gate_path.exists() else None
         print(render_report(results, gate=gate))

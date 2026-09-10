@@ -36,6 +36,7 @@ from benchmarks.minlplib.run_ablation import (
     execute,
     execute_runs,
     load_refusal,
+    main,
     probe_plan,
     read_runner_row,
     recorded_keys,
@@ -399,6 +400,17 @@ def test_a_torn_final_line_is_dropped_before_it_can_be_resumed(tmp_path: Path) -
     assert repair_torn_tail(results) is True
     assert recorded_keys(results) == {("a", CONTROL_ARM, 1)}
     assert repair_torn_tail(results) is False
+
+
+def test_report_only_survives_the_torn_file_it_exists_to_read(tmp_path: Path) -> None:
+    """Killed mid-append is the normal state of a ten-hour campaign, and
+    --report-only is the only read-only way to look at what it produced."""
+    out_dir = tmp_path / "scratch"
+    results = out_dir / RESULTS_NAME
+    write_results(results, [("a", CONTROL_ARM, 1)])
+    with results.open("a") as fh:
+        fh.write("b,control,,")
+    assert main(["--out-dir", str(out_dir), "--report-only"]) == 0
 
 
 def test_the_stamp_refuses_a_resume_from_another_budget(tmp_path: Path) -> None:
