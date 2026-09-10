@@ -1413,3 +1413,144 @@ TEST_CASE("the unproductive-batch exit draws no LNS after the first feasible sol
     REQUIRE(off.perturbations == 0);  // the off arm really is the no-kick control
     REQUIRE(on.lns_repairs == 0);
 }
+
+// ---------------------------------------------------------------------------
+// The LNS repair counters: attempted vs accepted (#150)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Four ints in [0, 10] under `|sum - 2500| <= 0`, and no objective.
+///
+/// The constraint is unreachable, which is the point: the search never finishes
+/// and keeps diversifying. What makes the model useful is that LNS's accept rule
+/// -- the lexicographic (real violation, objective) key in `src/lns.cpp` -- has a
+/// PROVABLE global minimum here. `sum` cannot exceed 40, so the real violation is
+/// `2500 - sum >= 2460` with equality only at `sum = 40`, and with no objective
+/// the second component is 0 everywhere. Once the search sits at 2460 no
+/// assignment in the box beats the key, so every destroy-repair launched from
+/// there must roll back and report a rejection -- not usually, not for these
+/// seeds, but for any state the search can be in.
+///
+/// Four variables against `batch_iterations = 20` is what puts the search there
+/// before the first kick: one violated row gives every Int the same jump target
+/// (its upper bound), so at most four of the first batch's twenty iterations are
+/// needed to reach the floor, and the first kick cannot come before the batch
+/// boundary.
+constexpr double kRejectFloor = 2460.0;
+
+void build_repair_proof_model(Model& m) {
+    std::vector<int32_t> vars;
+    vars.reserve(4);
+    for (int i = 0; i < 4; ++i) {
+        vars.push_back(m.int_var(0, 10));
+    }
+    std::vector<int32_t> args(vars.begin(), vars.end());
+    args.push_back(m.constant(-2500.0));
+    m.add_constraint(m.abs_expr(m.sum(args)));
+    m.close();
+}
+
+SearchConfig repair_proof_config() {
+    SearchConfig cfg;
+    cfg.batch_iterations = 20;
+    cfg.perturbation_period = 1;  // every batch boundary is a kick
+    // Clock-free, so the run is fully seed-determined -- and short, because each
+    // kick's repair runs `fj_nl_initialize` for up to 2000 iterations. Five
+    // kicks a seed is what keeps twenty seeds under a second.
+    cfg.max_iterations = 100;
+    return cfg;
+}
+
+/// Reports every repair as rejected without touching the model or the RNG.
+class RejectingLNS : public LNS {
+public:
+    bool destroy_repair(Model& /*model*/, ViolationManager& /*vm*/, RNG& /*rng*/,
+                        double /*repair_time_limit*/) override {
+        return false;
+    }
+};
+
+/// Identical, except that it reports every repair as accepted. Accepting costs
+/// it nothing: the base class's accept branch is exactly the one that keeps the
+/// state it already has, so this arm leaves the model in the same place the
+/// rejecting one does and the two runs are the same trajectory.
+class AcceptingLNS : public LNS {
+public:
+    bool destroy_repair(Model& /*model*/, ViolationManager& /*vm*/, RNG& /*rng*/,
+                        double /*repair_time_limit*/) override {
+        return true;
+    }
+};
+
+}  // namespace
+
+TEST_CASE("solve separates LNS repairs attempted from repairs accepted", "[search][lns]") {
+    // The real LNS, on the model whose accept rule cannot be satisfied. Twenty
+    // seeds rather than one, because a counter that reads zero is exactly the
+    // shape a single lucky seed can fake.
+    for (uint64_t seed = 1; seed <= 20; ++seed) {
+        INFO("seed " << seed);
+        Model m;
+        build_repair_proof_model(m);
+        SearchConfig cfg = repair_proof_config();
+        LNS lns(0.3);
+        const SearchResult r = solve(m, /*time_limit=*/0.0, seed, /*use_fj=*/true, nullptr, &lns,
+                                     /*lns_interval=*/1, nullptr, cfg);
+
+        CAPTURE(r.iterations, r.perturbations, r.lns_repairs, r.lns_repairs_accepted,
+                r.best_violation);
+        // The premise, asserted rather than assumed: the run really did sit at
+        // the key's global floor, which is what makes rejection provable rather
+        // than merely observed.
+        REQUIRE(r.termination == TerminationReason::IterationLimit);
+        REQUIRE_FALSE(r.feasible);
+        REQUIRE(r.best_violation == kRejectFloor);
+
+        // Not vacuous: LNS really ran, so a zero acceptance count is a reading
+        // about the repairs and not about their absence.
+        REQUIRE(r.lns_repairs > 0);
+        REQUIRE(r.lns_repairs_accepted == 0);
+    }
+}
+
+TEST_CASE("the accepted counter follows destroy_repair's verdict, not the kick count",
+          "[search][lns]") {
+    // The test above pins a zero, and a field that is never written reads zero
+    // too. Two stub LNSes that differ in nothing but their return value settle
+    // it: same model, same seed, same config, so the attempt counter and the
+    // whole trajectory must agree and only the acceptance counter may move.
+    Model rejecting_model;
+    build_repair_proof_model(rejecting_model);
+    Model accepting_model;
+    build_repair_proof_model(accepting_model);
+
+    SearchConfig cfg = repair_proof_config();
+    RejectingLNS rejecting;
+    AcceptingLNS accepting;
+    const SearchResult reject =
+        solve(rejecting_model, /*time_limit=*/0.0, /*seed=*/7, /*use_fj=*/true, nullptr, &rejecting,
+              /*lns_interval=*/1, nullptr, cfg);
+    const SearchResult accept =
+        solve(accepting_model, /*time_limit=*/0.0, /*seed=*/7, /*use_fj=*/true, nullptr, &accepting,
+              /*lns_interval=*/1, nullptr, cfg);
+
+    CAPTURE(reject.lns_repairs, reject.lns_repairs_accepted, accept.lns_repairs,
+            accept.lns_repairs_accepted);
+    REQUIRE(reject.lns_repairs > 0);
+    REQUIRE(reject.lns_repairs_accepted == 0);
+    REQUIRE(accept.lns_repairs_accepted == accept.lns_repairs);
+    REQUIRE(accept.lns_repairs_accepted > 0);
+
+    // The verdict is instrumentation and nothing else reads it: the two arms
+    // took the same number of kicks, the same number of GLS iterations and
+    // landed on the same assignment. That is the "no search behaviour changes"
+    // criterion of #150 pinned as a test rather than asserted in a commit
+    // message -- if the return value ever starts steering the search, this is
+    // the assertion that goes red.
+    REQUIRE(accept.lns_repairs == reject.lns_repairs);
+    REQUIRE(accept.perturbations == reject.perturbations);
+    REQUIRE(accept.iterations == reject.iterations);
+    REQUIRE(accept.best_violation == reject.best_violation);
+    REQUIRE(accept.best_state.values == reject.best_state.values);
+}
