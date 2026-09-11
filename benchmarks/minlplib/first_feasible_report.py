@@ -96,6 +96,13 @@ MIN_ELIGIBLE_INSTANCES = 10
 #: raise it for a sensitivity check.
 MIN_SEEDS_PER_INSTANCE = 4
 
+#: How the campaign driver marks a row whose RUNNER died rather than whose search
+#: failed. Spelled here rather than imported, because this module is run as a
+#: script and has no package context to reach a sibling through -- and pinned
+#: equal to `ablation_report.RUNNER_FAILED_NOTE` by a test, since that is where
+#: the note vocabulary is defined and swept against the runner's source.
+RUNNER_FAILED_NOTE = "runner-failed"
+
 #: The columns every input table must carry for this report to mean anything.
 #: Checked in `usage_error`, by name, because a table missing them does not fail
 #: -- it drops every row into the tally and returns a well-formed INCONCLUSIVE at
@@ -140,12 +147,20 @@ class Skipped:
     of it, and the reader cannot tell which they have without these.
     """
 
-    #: Rows whose `feasible` cell is not "true". Wider than its name: the runner
-    #: writes `feasible=false` on a verify-failed row and on its `NONFIN` row
-    #: too, both of which DID reach feasibility. Right to drop either way --
-    #: neither publishes an objective we stand behind -- but do not read this
-    #: count as "runs that never found a feasible point".
+    #: Rows whose `feasible` cell is not "true", and whose note says a search
+    #: ran. Wider than its name: the runner writes `feasible=false` on a
+    #: verify-failed row and on its `NONFIN` row too, both of which DID reach
+    #: feasibility. Right to drop either way -- neither publishes an objective we
+    #: stand behind -- but do not read this count as "runs that never found a
+    #: feasible point".
     infeasible: int = 0
+    #: Rows whose note says the RUNNER died rather than that the search failed.
+    #: Counted apart from `infeasible` since #153 made the runner exit 3 on a
+    #: throw and the campaign driver record those rows with a `runner-failed-*`
+    #: note: both carry `feasible=false`, and folding them together makes the
+    #: tally a reader uses to judge campaign health say "the search found
+    #: nothing" where the truth is "the process died".
+    runner_failed: int = 0
     #: Feasible rows with no `time_to_first_feasible` -- a table written by an
     #: engine older than #149, or a row the runner wrote without solving.
     no_first_feasible: int = 0
@@ -153,7 +168,13 @@ class Skipped:
     claim_excluded: int = 0
 
     def total(self) -> int:
-        return self.infeasible + self.no_first_feasible + self.non_finite + self.claim_excluded
+        return (
+            self.infeasible
+            + self.runner_failed
+            + self.no_first_feasible
+            + self.non_finite
+            + self.claim_excluded
+        )
 
 
 #: One instance's verdict, and the whole reason this is a four-way bucket rather
@@ -245,7 +266,7 @@ def read_table(path: Path, seed: int | None, arm: str | None) -> tuple[list[Obse
     on so the control rows are not averaged with an ablation arm's.
     """
     observations: list[Observation] = []
-    infeasible = no_first = non_finite = excluded = 0
+    infeasible = no_first = non_finite = excluded = crashed = 0
     with path.open(newline="") as fh:
         reader = csv.DictReader(fh)
         for row in reader:
@@ -256,7 +277,11 @@ def read_table(path: Path, seed: int | None, arm: str | None) -> tuple[list[Obse
                 excluded += 1
                 continue
             if row.get("feasible") != "true":
-                infeasible += 1
+                # "the process died" is not "the search found nothing" (#153).
+                if str(row.get("note", "")).startswith(RUNNER_FAILED_NOTE):
+                    crashed += 1
+                else:
+                    infeasible += 1
                 continue
             first = _number(row.get("first_feasible_objective"))
             seconds = _number(row.get("time_to_first_feasible"))
@@ -283,7 +308,7 @@ def read_table(path: Path, seed: int | None, arm: str | None) -> tuple[list[Obse
                     seconds_to_first_feasible=seconds,
                 )
             )
-    return observations, Skipped(infeasible, no_first, non_finite, excluded)
+    return observations, Skipped(infeasible, crashed, no_first, non_finite, excluded)
 
 
 def _pearson(xs: Sequence[float], ys: Sequence[float]) -> float:
@@ -490,7 +515,8 @@ def render(results: Sequence[InstanceResult], skipped: Skipped, rows: int, min_s
         "",
         f"rows considered:        {rows}  (rows filtered out by --arm are not counted)",
         f"rows dropped:           {skipped.total()}"
-        f"  (infeasible {skipped.infeasible}, no first-feasible reading "
+        f"  (infeasible {skipped.infeasible}, runner failed {skipped.runner_failed}, "
+        f"no first-feasible reading "
         f"{skipped.no_first_feasible}, non-finite objective {skipped.non_finite}, "
         f"excluded from claims {skipped.claim_excluded})",
         f"instances scored:       {len(results)}",
@@ -615,7 +641,7 @@ def parse_table(spec: str) -> tuple[int, Path]:
 def collect(args: argparse.Namespace) -> tuple[list[Observation], Skipped, int]:
     """Every observation the inputs carry, the drop tally, and the rows read."""
     observations: list[Observation] = []
-    infeasible = no_first = non_finite = excluded = 0
+    infeasible = no_first = non_finite = excluded = crashed = 0
     rows = 0
     sources: list[tuple[int | None, Path]] = [(None, p) for p in args.results]
     sources += [(seed, path) for seed, path in args.table]
@@ -623,11 +649,12 @@ def collect(args: argparse.Namespace) -> tuple[list[Observation], Skipped, int]:
         found, dropped = read_table(path, seed, args.arm)
         observations += found
         infeasible += dropped.infeasible
+        crashed += dropped.runner_failed
         no_first += dropped.no_first_feasible
         non_finite += dropped.non_finite
         excluded += dropped.claim_excluded
         rows += len(found) + dropped.total()
-    return observations, Skipped(infeasible, no_first, non_finite, excluded), rows
+    return observations, Skipped(infeasible, crashed, no_first, non_finite, excluded), rows
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

@@ -82,8 +82,10 @@ also does a clean rebuild plus the full `ctest` suite.
 
 **But `benchmarks/` is not actually unchecked, and the trap is worth knowing.**
 `ruff` sees only the gated list, so `benchmarks/` really is outside it — but
-`mypy` **follows imports**, and eight test modules import benchmark packages, so
-every benchmark module reachable from a gated file is hard-gated too. The tree is
+`mypy` **follows imports**, and every test module that imports a benchmark
+package drags it in, so every benchmark module reachable from a gated file is
+hard-gated too. (A count belongs here even less than usual: it was written as
+eight and was eleven by the end of the same day's work.) The tree is
 green today only because the three benchmark files carrying `mypy` errors are
 ones nothing gated imports. Add one test that imports
 `benchmarks/chped/data.py` and the next push blocks on 16 pre-existing
@@ -251,7 +253,7 @@ agree:
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
 4. the comment above the `ctest` call in `.githooks/pre-commit`,
-5. the `.venv/bin/pytest` line in `README.md` for the Python side (688 tests, 81
+5. the `.venv/bin/pytest` line in `README.md` for the Python side (690 tests, 81
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`),
 6. the `-LE slow` guidance and the ~40s/~304s figures in `docs/profiling.md`.

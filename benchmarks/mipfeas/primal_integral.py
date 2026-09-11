@@ -2073,7 +2073,12 @@ def main() -> int:
         Path(args.report) if args.report else out_path.with_name(f"{out_path.stem}_report.md")
     )
     run_record, run_count = read_run_record(results_dir)
-    report_path.write_text(
+    # Temp-then-rename, like the table above. The report is a published artifact
+    # and is written AFTER the table, so a kill between the two would otherwise
+    # leave a fresh table beside a torn or empty report -- the same failure, one
+    # function later.
+    report_tmp = report_path.with_name(f"{report_path.name}.tmp")
+    report_tmp.write_text(
         render_report(
             rows,
             summaries,
@@ -2084,6 +2089,7 @@ def main() -> int:
             run_count=run_count,
         )
     )
+    report_tmp.replace(report_path)
 
     parity = compare_feasibility(rows)
     defects = collect_defects(rows, summaries)

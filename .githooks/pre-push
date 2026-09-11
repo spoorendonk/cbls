@@ -117,8 +117,11 @@ CODE_FILES=$(echo "$CHANGED_FILES" | grep -vE '^(LICENSE|CHANGELOG)' | grep -vE 
 # allowlist is fail-open in the one direction that matters, because a Python
 # directory that does not exist yet would be gated by nothing and could rot
 # exactly as those five modules did. So the gate is every tracked .py except
-# the one tree that cannot be clean yet (issue #155), read from `git ls-tree
-# HEAD` so it inspects the commits being pushed rather than the working tree.
+# the one tree that cannot be clean yet (issue #155). The LIST comes from
+# `git ls-tree HEAD`, so an untracked .py is not gated and a .py added in an
+# unpushed commit is; the CONTENT the tools read is the working tree, so an
+# uncommitted delete of a gated file is reported as a tooling fault rather than
+# as a code finding. The failure message says so.
 #
 # ruff sees exactly that list. mypy FOLLOWS IMPORTS, so an excluded module that
 # a gated file imports is type-checked too -- which today is most of

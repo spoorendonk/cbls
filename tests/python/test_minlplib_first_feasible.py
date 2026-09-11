@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from benchmarks.minlplib import ablation_report
 from benchmarks.minlplib.first_feasible_report import (
     ARRIVAL_INVARIANT,
     DETERMINED,
@@ -29,6 +30,7 @@ from benchmarks.minlplib.first_feasible_report import (
     NOT_DETERMINED,
     R_DETERMINED,
     REFERENCE_INSTANCE,
+    RUNNER_FAILED_NOTE,
     TOO_FEW_SEEDS,
     InstanceResult,
     collect,
@@ -328,6 +330,38 @@ def test_a_seed_appearing_twice_is_not_weighted_double(tmp_path: Path) -> None:
     (result,) = score(["--results", str(path), "--arm", "control"])
     assert result.seeds == 5
     assert result.pearson == pytest.approx(statistics.correlation(firsts, finals))
+
+
+def test_a_crashed_run_is_not_tallied_as_a_search_that_found_nothing(tmp_path: Path) -> None:
+    """#153 made the runner exit 3 on a throw; the driver records those rows too.
+
+    Both carry `feasible=false`, so folding them together makes the tally a
+    reader uses to judge campaign health say "the search found nothing" where
+    the truth is "the process died".
+    """
+    path = tmp_path / "results.csv"
+    with path.open("w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["instance", "seed", *RUNNER_HEADER[1:]])
+        crashed = runner_row(
+            "a",
+            objective="NaN",
+            first_feasible="NaN",
+            seconds="NaN",
+            feasible=False,
+            note="runner-failed-exit-3",
+        )
+        writer.writerow([crashed[0], "1", *crashed[1:]])
+    _, skipped = read_table(path, seed=1, arm=None)
+
+    assert skipped.runner_failed == 1
+    assert skipped.infeasible == 0
+    assert skipped.total() == 1
+
+
+def test_the_runner_failed_prefix_matches_the_scorer_s(tmp_path: Path) -> None:
+    """Spelled in two modules because one of them is run as a script."""
+    assert RUNNER_FAILED_NOTE == ablation_report.RUNNER_FAILED_NOTE
 
 
 def test_a_table_without_the_first_feasible_columns_is_refused_by_name(tmp_path: Path) -> None:

@@ -437,7 +437,10 @@ def check_preconditions(
             print(f"  {problem}", file=sys.stderr)
         print(
             "\nA published row measured the pinned bytes, not these. Restore them, or "
-            f"re-pin deliberately:\n  python {args.inst_dir}/download.py --verify",
+            "re-pin deliberately -- `--verify` only re-reports this mismatch and exits "
+            "1:\n"
+            f"  python {args.inst_dir}/download.py --update-manifest      # instance bytes\n"
+            f"  python {args.inst_dir}/download.py --update-references    # the yardstick",
             file=sys.stderr,
         )
         return 2
@@ -1127,8 +1130,9 @@ def main() -> int:
         f"--results-dir {results_dir} --roster {roster_path} --budget {args.budget} "
         f"--out {results_dir}/{out_name}\n"
         f"Then copy it to {args.inst_dir}/{out_name} if it is the run you mean to "
-        f"publish, along with {results_dir}/{RUN_RECORD_FILENAME} -- the report quotes "
-        f"the machine record, and a published table without one is an anecdote."
+        f"publish, along with {results_dir}/{RUN_RECORD_FILENAME} and the "
+        f"{out_name.removesuffix('.csv')}_report.md beside it -- the report quotes the "
+        f"machine record, and a published table without one is an anecdote."
         + (
             ""
             if args.verify
