@@ -745,12 +745,59 @@ def test_skip_preconditions_proceeds_but_says_the_run_is_not_publishable(
     assert "not publishable" in capsys.readouterr().err
 
 
-def test_the_preflight_is_not_paid_for_a_cbls_only_run(tmp_path: Path) -> None:
+def test_a_broken_preflight_refuses_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The preflight tests elsewhere pin what it concludes; this pins that the driver
+    # acts on it. A release that moved a subsolver flag has to stop the run, not
+    # merely print about it, or the roster burns its budget on an empty baseline.
+    inst_dir = _pinned_dir(tmp_path, {"a": b"instance bytes"})
+    monkeypatch.setattr(
+        run_benchmark,
+        "run_cpsat_preflight",
+        lambda _workers: (False, "PREFLIGHT FAILED on ortools 9.16: log format broke."),
+    )
+    args = _driver_args(inst_dir=inst_dir, skip_preconditions=False)
+
+    assert run_benchmark.check_preconditions(args, ["a"], ("cbls", "cpsat")) == 2
+
+
+def test_the_preflight_runs_at_the_worker_count_the_roster_will_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The announcement carries a multiplicity at two or more, and the thread-count
+    # assertion is about the CPU share the baseline gets -- so preflighting one
+    # worker for an eight-worker run checks a configuration nothing will run.
+    inst_dir = _pinned_dir(tmp_path, {"a": b"instance bytes"})
+    seen: list[int] = []
+
+    def record_workers(workers: int) -> tuple[bool, str]:
+        seen.append(workers)
+        return True, "preflight OK"
+
+    monkeypatch.setattr(run_benchmark, "run_cpsat_preflight", record_workers)
+    args = _driver_args(inst_dir=inst_dir, skip_preconditions=False, cpsat_workers=8)
+
+    assert run_benchmark.check_preconditions(args, ["a"], ("cpsat",)) is None
+    assert seen == [8]
+
+
+def test_the_preflight_is_not_paid_for_a_cbls_only_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # It asserts the CP-SAT baseline; a run without that engine has nothing to check.
     inst_dir = _pinned_dir(tmp_path, {"a": b"instance bytes"})
+    called: list[int] = []
+
+    def record_workers(workers: int) -> tuple[bool, str]:
+        called.append(workers)
+        return True, "preflight OK"
+
+    monkeypatch.setattr(run_benchmark, "run_cpsat_preflight", record_workers)
     args = _driver_args(inst_dir=inst_dir, skip_preconditions=False)
 
     assert run_benchmark.check_preconditions(args, ["a"], ("cbls",)) is None
+    assert called == []
 
 
 # --- The machine record -------------------------------------------------------
@@ -815,6 +862,50 @@ def test_the_run_record_identifies_the_yardstick_the_gaps_will_be_scored_against
     assert isinstance(pinned, dict)
     assert set(pinned) == set(run_benchmark.PINNED_REFERENCE_FILES)
     assert references["manifest_sha256"]
+
+
+def test_the_run_record_names_the_roster_file_actually_read(tmp_path: Path) -> None:
+    # `--roster` accepts any CSV, and the reference values a run is scored against
+    # are the ones in the file it read -- so quoting only the pinned tables would
+    # name a yardstick the run never used.
+    inst_dir = _pinned_dir(tmp_path, {"a": b"instance bytes"})
+    roster = tmp_path / "elsewhere.csv"
+    roster.write_text("instance,reference_value,reference_kind\na,1.0,opt\n")
+
+    record = run_benchmark.build_run_record(_record_args(inst_dir), roster, ["a"], ("cbls",), 1, 1)
+
+    references = record["references"]
+    assert isinstance(references, dict)
+    assert references["roster_path"] == str(roster)
+    assert references["roster_sha256"] == hashlib.sha256(roster.read_bytes()).hexdigest()
+
+
+def test_the_run_record_says_whether_the_preconditions_were_checked(tmp_path: Path) -> None:
+    # --skip-preconditions is what makes a run unpublishable, and stderr does not
+    # survive to whoever reads the table.
+    skipped = run_benchmark.build_run_record(
+        _record_args(tmp_path, skip_preconditions=True),
+        tmp_path / "roster.csv",
+        ["a"],
+        ("cbls",),
+        1,
+        1,
+    )
+    checked = run_benchmark.build_run_record(
+        _record_args(tmp_path), tmp_path / "roster.csv", ["a"], ("cbls",), 1, 1
+    )
+
+    assert skipped["run"]["preconditions_checked"] is False  # type: ignore[index]
+    assert checked["run"]["preconditions_checked"] is True  # type: ignore[index]
+
+
+def test_the_drivers_copy_of_the_pinned_reference_files_matches_acquisition() -> None:
+    # Deliberately duplicated so the driver needs no import of the roster package,
+    # but one of the three names carries a MIPLIB version -- so the copies are tied
+    # together here rather than drifting the day the yardstick is revised.
+    from benchmarks.instances.mipfeas import download
+
+    assert download.PINNED_REFERENCE_FILES == run_benchmark.PINNED_REFERENCE_FILES
 
 
 def test_a_resumed_run_adds_a_record_rather_than_overwriting_the_first(tmp_path: Path) -> None:

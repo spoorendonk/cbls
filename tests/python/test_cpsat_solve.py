@@ -169,6 +169,47 @@ def test_a_release_that_reformatted_the_solution_line_fails_as_a_log_format_brea
     assert "improving-solution line" in failures[0].message
 
 
+def test_the_full_portfolio_running_alongside_fj_and_ls_is_a_restriction_failure() -> None:
+    # An unrestricted CP-SAT run announces `full problem subsolvers`, not `full`.
+    # A role whitelist spelling it the short way never matches the line at all, so
+    # the preflight passed clean while the baseline was CP-SAT's default portfolio
+    # -- the comparison epic #87 rejects -- across the whole roster.
+    log = (
+        RESTRICTED_HEADER.replace(
+            "3 helper subsolvers",
+            "8 full problem subsolvers: [default_lp, no_lp, max_lp, core]\n3 helper subsolvers",
+        )
+        + IMPROVING_LINE
+    )
+    failures = check_preflight_log(log, status="FEASIBLE", workers=1, found_solution=True)
+
+    assert _checks(failures) == {WORKER_RESTRICTION_CHECK}
+    assert "default_lp" in failures[0].message
+
+
+def test_a_role_this_harness_has_never_seen_is_not_waved_through() -> None:
+    # The general form of the case above: any announced role outside the fj + ls
+    # pairing and the bookkeeping ones means workers are running that should not be.
+    log = RESTRICTED_HEADER + "5 background subsolvers: [default_lp, core]\n" + IMPROVING_LINE
+    failures = check_preflight_log(log, status="FEASIBLE", workers=1, found_solution=True)
+
+    assert _checks(failures) == {WORKER_RESTRICTION_CHECK}
+
+
+def test_a_dropped_restriction_is_not_reported_as_a_log_format_break() -> None:
+    # With `filter_subsolvers` gone, CP-SAT logs `1 full problem subsolver: [main]`
+    # and neither of the two roles this harness expects. The log format is intact;
+    # naming it would send the reader to check the parser instead of the parameter.
+    log = (
+        "Starting search at 0.00s with 1 workers.\n"
+        "1 full problem subsolver: [main]\n"
+        "3 helper subsolvers: [neighborhood_helper, synchronization_agent]\n"
+    ) + IMPROVING_LINE
+    failures = check_preflight_log(log, status="FEASIBLE", workers=1, found_solution=True)
+
+    assert _checks(failures) == {WORKER_RESTRICTION_CHECK}
+
+
 def test_a_missing_subsolver_announcement_is_a_log_format_break() -> None:
     # Shape versus content: a line that is gone is the log format moving, and the
     # restriction simply cannot be read -- which is reported as such rather than

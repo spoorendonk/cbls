@@ -823,3 +823,43 @@ def test_the_scorer_warns_when_no_machine_record_is_beside_the_results(tmp_path:
 
     assert "no run_record.json" in completed.stderr
     assert "No machine record was written" in (tmp_path / "out_report.md").read_text()
+
+
+def test_a_field_the_driver_could_not_measure_says_so_rather_than_none() -> None:
+    # Off Linux there is no /proc/meminfo and no sched_getaffinity, and os.cpu_count()
+    # can be None. `| cores | None |` in a published table reads as a scorer bug
+    # rather than as a fact about the machine.
+    section = "\n".join(run_record_section({}, 1))
+
+    assert "None" not in section
+    assert "| host | not recorded |" in section
+    assert "| concurrency | not recorded |" in section
+
+
+def test_a_resume_that_ran_nothing_does_not_claim_to_be_the_machine_that_measured() -> None:
+    # The driver appends a record on every invocation, so confirming a finished
+    # directory from a laptop would otherwise publish the laptop as the machine.
+    record = dict(_RECORD, outcome={"jobs_run": 0, "failures": 0, "rejected": 0})
+    section = "\n".join(run_record_section(record, 2))
+
+    assert "This invocation ran no jobs" in section
+
+
+def test_an_invocation_that_ran_jobs_carries_no_such_caveat() -> None:
+    record = dict(_RECORD, outcome={"jobs_run": 26, "failures": 0, "rejected": 0})
+    assert "This invocation ran no jobs" not in "\n".join(run_record_section(record, 1))
+
+
+def test_a_run_that_skipped_its_preconditions_says_so_in_the_report() -> None:
+    # The flag is what makes a run unpublishable, and terminal scrollback does not
+    # reach whoever reads the table.
+    record = dict(_RECORD, run={"preconditions_checked": False})
+    section = "\n".join(run_record_section(record, 1))
+
+    assert "NOT CHECKED" in section
+    assert "not publishable" in section
+
+
+def test_a_checked_run_carries_no_preconditions_row() -> None:
+    record = dict(_RECORD, run={"preconditions_checked": True})
+    assert "NOT CHECKED" not in "\n".join(run_record_section(record, 1))

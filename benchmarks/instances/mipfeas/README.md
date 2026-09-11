@@ -205,8 +205,11 @@ Overwriting a pin takes an explicit flag, and the update prints what it changes:
   An instance the manifest has never seen is simply added: an acquisition is not
   an overwrite.
 
-The `reference_kind` column survives every rewrite, because a gap against the one
-best-known value does not mean what a gap against a proven optimum means.
+The `reference_kind` column is never dropped or flattened by a rewrite, and a
+change to it is reported like a changed value — because a gap against the one
+best-known value does not mean what a gap against a proven optimum means. It is
+re-derived from the solution file's tag rather than frozen, so an upstream
+`=best=` → `=opt=` does move it, visibly.
 
 ### The baseline is the one documented
 
@@ -240,8 +243,11 @@ the roster has burned its budget.
 first job — host, platform, core count and the cores actually available to the
 process, total memory, **the concurrency the run used** (jobs at a time, large
 instances at a time, CP-SAT workers, address-space cap), the budget, the engine
-commit, the OR-Tools / PySCIPOpt / Python versions, and the hashes of the
-reference files the gaps will be scored against. A resumed run **appends** an
+commit, the OR-Tools / PySCIPOpt / Python versions, the hashes of the pinned
+reference files, and the path and hash of the roster CSV actually read — `--roster`
+accepts any file, and the reference values a run is scored against are the ones in
+the file it read. It also records whether the preconditions above were checked at
+all, since `--skip-preconditions` is what makes a run unpublishable. A resumed run **appends** an
 entry rather than overwriting the first, because such a directory was produced by
 two machines and two concurrencies.
 
@@ -350,11 +356,11 @@ result are the **solve's**, so they do not bound a job's peak on their own.
 And a resumed run whose results predate the solution dump re-**solves** those
 instances: nothing but the search can produce the solution vector. A verification
 the driver had to kill (its timeout or the memory cap) is retried on the next
-resume rather than being treated as a final verdict — twice, after which the
-verdict stands and the row stays withheld.
+resume rather than being treated as a final verdict — once, for two attempts in
+all, after which the verdict stands and the row stays withheld.
 
 A row in that state is counted and the driver **exits non-zero** on it, over every
-planned job rather than only the ones an invocation ran. Otherwise the third
+planned job rather than only the ones an invocation ran. Otherwise the second
 resume of such a directory prints "0 jobs to run" and exits 0, reporting as a
 clean run a row that was never successfully checked and whose objective the
 scorer withholds.

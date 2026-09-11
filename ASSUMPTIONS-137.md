@@ -53,3 +53,23 @@
   Because: the two verdicts it classifies cannot be produced on demand in a test,
   and a pure function is the only way to pin the message a published row will
   carry without provoking the solver into an invalid state.
+
+## Revised during self-review
+
+- **Which of the two a missing announcement is** (revises the entry above). The
+  original rule — a missing line is always a log-format break — attributed the
+  most likely restriction failure to the wrong half: with `filter_subsolvers`
+  dropped, CP-SAT announces `full problem subsolver: [main]` and neither expected
+  role, and the log format is perfectly intact. Resolved as a sharper rule that is
+  still checkable rather than a guess: **if any subsolver announcement parsed at
+  all, the block's format is intact**, so a missing role is the restriction; only
+  a block that parsed nothing is a format break. Because: it names the right half
+  in the case that actually occurs, and the shape-versus-content split survives.
+- **The subsolver role is captured, not whitelisted.** The original regex listed
+  the roles it knew, which meant an unrestricted run — announcing `full problem
+  subsolvers`, a spelling the list did not carry — matched no line at all and
+  passed the preflight clean. Resolved as capturing any role and rejecting the
+  unknown ones. Because: a whitelist fails open on exactly the announcement the
+  check exists to catch, and failing closed on a benign new role is a one-line
+  addition to `UNRESTRICTED_ROLES` after a check — the same workflow the ortools
+  bound already uses.

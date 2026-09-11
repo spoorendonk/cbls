@@ -54,6 +54,10 @@ SOLU_URL = "https://miplib.zib.de/downloads/miplib2017-v36.solu"
 BENCHMARK_ZIP_URL = "https://miplib.zib.de/downloads/benchmark.zip"
 INSTANCE_URL_TEMPLATE = "https://miplib.zib.de/WebData/instances/{name}.mps.gz"
 
+#: Carries a MIPLIB version, so bumping it is a roster change rather than a rename.
+#: `benchmarks/mipfeas/run_benchmark.py` keeps its own copy of
+#: `PINNED_REFERENCE_FILES` (it must run without this package importable) and a test
+#: ties the two together -- bump both, or the driver checks a file that is gone.
 SOLU_FILENAME = "miplib2017-v36.solu"
 ROSTER_FILENAME = "roster.csv"
 MANIFEST_FILENAME = "manifest.csv"
@@ -247,10 +251,17 @@ def read_pin_table(path: Path, key_column: str) -> dict[str, tuple[str, int]]:
 
 
 def write_pin_table(path: Path, key_column: str, rows: dict[str, tuple[str, int]]) -> None:
-    with open(path, "w", newline="") as fh:
+    # Temp-then-rename, like every other file this benchmark writes. This one is
+    # committed data the run driver gates on, and a truncated table does not merely
+    # lose rows: `write_manifest` reads an instance it cannot find as a first
+    # acquisition and re-pins whatever is on disk with no flag, which is exactly the
+    # overwrite the flag exists to require.
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow([key_column, "sha256", "bytes"])
         writer.writerows((key, sha, size) for key, (sha, size) in sorted(rows.items()))
+    tmp.replace(path)
 
 
 def pin_mismatch(label: str, data: bytes, pinned: tuple[str, int] | None) -> str | None:
@@ -409,6 +420,36 @@ def write_manifest(names: list[str], target_dir: Path, path: Path, *, update: bo
     return changed
 
 
+def pin_fetched_instances(names: list[str], here: Path, *, update: bool) -> int:
+    """Re-pin what was fetched. Returns an exit code: 0 to carry on, 3 to refuse.
+
+    Adding an instance the manifest has never seen is an acquisition and needs no
+    flag; accepting bytes that *moved* is an overwrite of what a published row was
+    measured on, and is refused without `--update-manifest`.
+    """
+    moved = write_manifest(names, here, here / MANIFEST_FILENAME, update=update)
+    if not moved:
+        return 0
+    if update:
+        # The same visible-diff rule --update-references follows: accepting moved
+        # bytes re-pins a published row's input, so it names the rows rather than
+        # only reporting that the file was rewritten. `refreshed` cannot stand in --
+        # it counts every row written, which is the same number whether one instance
+        # moved or none did.
+        print(f"[update] instance bytes: {len(moved)} re-pinned")
+        for name in sorted(moved):
+            print(f"  ~ changed  {name}.mps.gz")
+        return 0
+    print(
+        f"\nFAILED: {len(moved)} instance file(s) no longer match their pinned bytes "
+        f"(e.g. {moved[:3]}). manifest.csv was left untouched.\n"
+        "A published row measured the pinned bytes. Re-run with --update-manifest to "
+        "accept the new ones.",
+        file=sys.stderr,
+    )
+    return 3
+
+
 def verify_mode(here: Path, names: list[str]) -> int:
     """`--verify`: check every pin against what is on disk. No network."""
     problems = verify_references(here)
@@ -444,9 +485,13 @@ def update_references(here: Path, solu_bytes: bytes, roster: list[RosterEntry]) 
     for line in changes:
         print(line)
 
+    # Smoke first: it is the only step that can refuse -- a smoke name the new
+    # roster no longer carries -- so running it first keeps the update
+    # all-or-nothing instead of leaving the solution file and roster replaced under
+    # the old pins.
+    write_smoke_csv(roster, here / SMOKE_FILENAME)
     (here / SOLU_FILENAME).write_bytes(solu_bytes)
     write_roster_csv(roster, roster_path)
-    write_smoke_csv(roster, here / SMOKE_FILENAME)
     pins = {
         name: (sha256_of((here / name).read_bytes()), (here / name).stat().st_size)
         for name in PINNED_REFERENCE_FILES
@@ -473,7 +518,14 @@ def check_reference_pins(here: Path, solu_bytes: bytes, roster: list[RosterEntry
         )
     # The committed derivation is checked too: a hand-edited roster.csv is the same
     # defect as a revised upstream, and only this catches it.
-    problems += [p for p in verify_references(here) if not p.startswith(SOLU_FILENAME + ":")]
+    local = verify_references(here)
+    if upstream is not None:
+        # Already reported against the upstream bytes; saying it twice adds nothing.
+        # Filtered only in that case: when upstream matches its pin, a local copy
+        # that does not is new information rather than a duplicate, and dropping it
+        # would let the script print "match their pins" about a tampered file.
+        local = [p for p in local if not p.startswith(SOLU_FILENAME + ":")]
+    problems += local
     return problems
 
 
@@ -489,7 +541,9 @@ def main() -> int:
     parser.add_argument(
         "--roster-only",
         action="store_true",
-        help="derive roster.csv / smoke.csv without downloading any instance",
+        help="check (or, with --update-references, rewrite) the roster tables and stop "
+        "before fetching any instance. Without --update-references nothing is written: "
+        "the tables are pinned, and this only verifies the derivation against them",
     )
     parser.add_argument(
         "--verify",
@@ -562,16 +616,9 @@ def main() -> int:
     else:
         failed = fetch_via_zip(names, here, args.force)
 
-    moved = write_manifest(names, here, here / MANIFEST_FILENAME, update=args.update_manifest)
-    if moved and not args.update_manifest:
-        print(
-            f"\nFAILED: {len(moved)} instance file(s) no longer match their pinned bytes "
-            f"(e.g. {moved[:3]}). manifest.csv was left untouched.\n"
-            "A published row measured the pinned bytes. Re-run with --update-manifest to "
-            "accept the new ones.",
-            file=sys.stderr,
-        )
-        return 3
+    refusal = pin_fetched_instances(names, here, update=args.update_manifest)
+    if refusal:
+        return refusal
 
     have = sum(1 for n in names if (here / f"{n}.mps.gz").exists())
     print(f"\nDone. {have}/{len(names)} instances present, {len(failed)} failed.")

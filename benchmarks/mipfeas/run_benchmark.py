@@ -81,6 +81,11 @@ VERIFY_TIMEOUT_SECONDS = 900.0
 #: came off one.
 RUN_RECORD_FILENAME = "run_record.json"
 
+#: Wall clock the CP-SAT preflight subprocess gets. Its solve is capped at 2s and
+#: the rest is an OR-Tools import, so this is generous by an order of magnitude and
+#: exists only so a hang cannot become the run's first six hours.
+PREFLIGHT_TIMEOUT_SECONDS = 120.0
+
 #: Pin tables read before a run starts. `manifest.csv` pins the instance bytes and
 #: `references.csv` the yardstick every gap is scored against; both are written by
 #: `benchmarks/instances/mipfeas/download.py`.
@@ -159,6 +164,12 @@ def read_pins(path: Path, key_column: str) -> dict[str, tuple[str, int]]:
 
 
 def _pin_complaint(label: str, path: Path, pinned: tuple[str, int] | None) -> str | None:
+    """The complaint about `path` against its pin, or None when it matches.
+
+    Both halves are compared: a size-only check passes a byte-for-byte substitution
+    of the same length, and a hash-only one throws away the cheapest thing to say
+    about a truncated download.
+    """
     if pinned is None:
         return f"{label}: present but not pinned (no recorded hash)"
     data = path.read_bytes()
@@ -215,19 +226,35 @@ def verify_preconditions(inst_dir: Path, instances: list[str]) -> list[str]:
     return problems
 
 
-def run_cpsat_preflight() -> tuple[bool, str]:
+def run_cpsat_preflight(workers: int) -> tuple[bool, str]:
     """Ask the baseline script to assert its own preconditions. `(ok, output)`.
 
     Out of process because that is how every CP-SAT job runs here, so the check
     exercises the same interpreter and the same import of OR-Tools the roster will.
     One tiny in-memory model; no instance and no network.
+
+    At the worker count the roster will actually use: the announcement carries a
+    multiplicity at two or more (`fj(2)`) and the thread-count assertion is about
+    the share of CPU the baseline gets against CBLS's one thread, so preflighting a
+    configuration the run does not use checks the wrong thing.
     """
-    completed = subprocess.run(
-        [sys.executable, str(CPSAT_SCRIPT), "--preflight"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(CPSAT_SCRIPT), "--preflight", "--workers", str(workers)],
+            capture_output=True,
+            text=True,
+            check=False,
+            # The check exists to fail at second zero. Without a bound, a release
+            # that ignores the solve deadline hangs the driver here instead --
+            # a fail-open gate on the gate.
+            timeout=PREFLIGHT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return False, (
+            f"the CP-SAT preflight did not finish within {PREFLIGHT_TIMEOUT_SECONDS}s. It "
+            "solves one tiny in-memory model under a 2s limit, so a release that runs this "
+            "long is not honouring the deadline the whole baseline is budgeted by."
+        )
     return completed.returncode == 0, (completed.stdout + completed.stderr).strip()
 
 
@@ -270,14 +297,25 @@ def machine_record() -> dict[str, object]:
     }
 
 
-def reference_record(inst_dir: Path) -> dict[str, object]:
-    """Which yardstick a table was scored against, by name and by hash."""
+def reference_record(inst_dir: Path, roster_path: Path) -> dict[str, object]:
+    """Which yardstick a table was scored against, by name and by hash.
+
+    The roster is recorded by full path and by its own hash, not only through the
+    pinned tables: `--roster` accepts any CSV, and the reference values a run is
+    scored against are the ones in the file it actually read. Quoting the pinned
+    hashes alone for a roster that is not one of them would name a yardstick the run
+    never used.
+    """
     pins = read_pins(inst_dir / REFERENCES_FILENAME, "file")
     manifest = inst_dir / MANIFEST_FILENAME
     return {
         "instance_dir": str(inst_dir),
         "solution_file": PINNED_REFERENCE_FILES[0],
         "pinned": {name: pins[name][0] for name in PINNED_REFERENCE_FILES if name in pins},
+        "roster_path": str(roster_path),
+        "roster_sha256": hashlib.sha256(roster_path.read_bytes()).hexdigest()
+        if roster_path.exists()
+        else None,
         "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest()
         if manifest.exists()
         else None,
@@ -312,6 +350,11 @@ def build_run_record(
             "engines": list(engines),
             "seed": args.seed,
             "verify": args.verify,
+            # The one flag that makes a run unpublishable: with it off, the pinned
+            # hashes above were never checked against the files on disk and the
+            # baseline was never preflighted. Nothing else in the record would show
+            # that, and stderr does not survive to whoever reads the table.
+            "preconditions_checked": not args.skip_preconditions,
             "force": args.force,
             "inf_clamp": args.inf_clamp,
             "compound_moves": args.compound_moves,
@@ -327,7 +370,7 @@ def build_run_record(
             "ortools": package_version("ortools"),
             "pyscipopt": package_version("PySCIPOpt"),
         },
-        "references": reference_record(args.inst_dir),
+        "references": reference_record(args.inst_dir, roster_path),
         "outcome": None,
     }
 
@@ -404,7 +447,7 @@ def check_preconditions(
     )
     if "cpsat" not in engines:
         return None
-    ok, output = run_cpsat_preflight()
+    ok, output = run_cpsat_preflight(args.cpsat_workers)
     print(output.splitlines()[0] if output else "CP-SAT preflight produced no output")
     if ok:
         return None

@@ -352,3 +352,33 @@ def test_write_manifest_keeps_rows_outside_the_fetched_subset(tmp_path: Path) ->
     write_manifest(["a"], tmp_path, manifest, update=False)
 
     assert set(read_pin_table(manifest, "instance")) == {"a", "b"}
+
+
+def test_a_tampered_local_solution_file_is_reported_even_when_upstream_matches(
+    tmp_path: Path,
+) -> None:
+    # The duplicate-suppression that keeps the solution file from being reported
+    # twice must not swallow the case where upstream is fine and the committed copy
+    # is not -- the script would otherwise print "match their pins" about it.
+    here = _reference_dir(tmp_path, [RosterEntry("inst0", 100.0, "opt")])
+    (here / SOLU_FILENAME).write_bytes(b"=opt= inst0 100\n# tampered\n")
+
+    problems = check_reference_pins(
+        here, b"=opt= inst0 100\n", [RosterEntry("inst0", 100.0, "opt")]
+    )
+
+    assert [p for p in problems if p.startswith(f"{SOLU_FILENAME}:")]
+
+
+def test_a_refused_reference_update_leaves_the_committed_files_alone(tmp_path: Path) -> None:
+    # write_smoke_csv is the only step that can refuse, so it runs first: a MIPLIB
+    # revision that drops a smoke instance must not leave the solution file and the
+    # roster replaced under the old pins.
+    here = _reference_dir(tmp_path, [RosterEntry(name, 100.0, "opt") for name in SMOKE_INSTANCES])
+    before = (here / SOLU_FILENAME).read_bytes(), (here / ROSTER_FILENAME).read_bytes()
+
+    with pytest.raises(RuntimeError, match="Smoke instances not in the roster"):
+        update_references(here, b"=opt= other 1\n", [RosterEntry("other", 1.0, "opt")])
+
+    assert ((here / SOLU_FILENAME).read_bytes(), (here / ROSTER_FILENAME).read_bytes()) == before
+    assert verify_references(here) == []

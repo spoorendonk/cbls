@@ -52,8 +52,9 @@ bounded by the deadline.
 
 **The run record is constructed too**, and deliberately so: it is what makes the
 report's section 8 render in the fixture and therefore be pinned byte for byte
-like every other section (issue #137). Its host, core count, memory and timings
-are invented; its concurrency (2 jobs at a time, one CP-SAT worker, a 6 GB cap)
+like every other section (issue #137). Its host, core count, memory, timings and
+solver versions are invented — the version strings are plausible, not a record of
+what was installed; its concurrency (2 jobs at a time, one CP-SAT worker, a 6 GB cap)
 is the shape a real one has, not a machine anyone ran this on. `engine_commit` is
 `fixture`, matching the two real rows' own `commit_sha`.
 

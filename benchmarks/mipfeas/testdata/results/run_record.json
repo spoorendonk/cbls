@@ -27,6 +27,7 @@
         "failures": 1,
         "jobs_run": 26,
         "rejected": 1,
+        "unchecked": 1,
         "wall_seconds": 60.0
       },
       "references": {

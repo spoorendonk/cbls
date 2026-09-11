@@ -1378,7 +1378,10 @@ def read_run_record(results_dir: Path) -> tuple[dict[str, object] | None, int]:
         return None, 0
     try:
         parsed = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
+    except (ValueError, OSError):
+        # ValueError rather than JSONDecodeError: a file corrupted to binary raises
+        # UnicodeDecodeError out of read_text(), and the scorer must not abort on a
+        # record that is only ever supplementary to the numbers.
         return None, 0
     runs = parsed.get("runs") if isinstance(parsed, dict) else None
     if not isinstance(runs, list) or not runs:
@@ -1397,6 +1400,17 @@ def _record_field(record: dict[str, object], *path: str) -> object:
     return value
 
 
+def _or_not_recorded(value: object) -> str:
+    """A field the driver could not measure says so rather than printing `None`.
+
+    Off Linux there is no `/proc/meminfo` and no `sched_getaffinity`, and
+    `os.cpu_count()` may return None -- so these are legitimately absent. `cores |
+    None` in a published table reads as a bug in the scorer rather than as a fact
+    about the machine, which is the opposite of what this section is for.
+    """
+    return "not recorded" if value is None else str(value)
+
+
 def _format_memory(kib: object) -> str:
     return f"{int(kib) / 1024 / 1024:.1f} GiB" if isinstance(kib, int) else "not recorded"
 
@@ -1407,6 +1421,8 @@ def _format_concurrency(record: dict[str, object]) -> str:
     large = _record_field(record, "concurrency", "large_instance_jobs")
     workers = _record_field(record, "concurrency", "cpsat_workers")
     cap = _record_field(record, "concurrency", "mem_limit_gb")
+    if jobs is None and large is None and workers is None:
+        return "not recorded"
     return (
         f"**{jobs} job(s) at a time**, large instances {large} at a time, "
         f"CP-SAT {workers} worker(s), "
@@ -1454,14 +1470,23 @@ def run_record_section(record: dict[str, object] | None, run_count: int) -> list
         )
         if value is not None
     ]
+    budget = record.get("budget_seconds")
     rows = [
-        ["host", str(_record_field(record, "machine", "host"))],
-        ["platform", str(_record_field(record, "machine", "platform"))],
-        ["cores", f"{cores} ({affinity} available to the process)"],
+        ["host", _or_not_recorded(_record_field(record, "machine", "host"))],
+        ["platform", _or_not_recorded(_record_field(record, "machine", "platform"))],
+        [
+            "cores",
+            f"{cores} ({affinity} available to the process)"
+            if cores is not None and affinity is not None
+            else _or_not_recorded(cores),
+        ],
         ["memory", _format_memory(_record_field(record, "machine", "memory_total_kib"))],
         ["concurrency", _format_concurrency(record)],
-        ["budget", f"{record.get('budget_seconds')}s per instance-engine pair"],
-        ["engine commit", str(_record_field(record, "versions", "engine_commit"))],
+        [
+            "budget",
+            f"{budget}s per instance-engine pair" if budget is not None else "not recorded",
+        ],
+        ["engine commit", _or_not_recorded(_record_field(record, "versions", "engine_commit"))],
         ["solver versions", ", ".join(versions) if versions else "not recorded"],
         [
             "reference file",
@@ -1469,12 +1494,26 @@ def run_record_section(record: dict[str, object] | None, run_count: int) -> list
             if reference_sha
             else "not recorded",
         ],
-        ["started", str(record.get("started_at"))],
+        ["started", _or_not_recorded(record.get("started_at"))],
         ["finished", str(record.get("finished_at") or "did not finish")],
-        ["status", str(record.get("status"))],
+        ["status", _or_not_recorded(record.get("status"))],
     ]
+    if _record_field(record, "run", "preconditions_checked") is False:
+        # The run was made with --skip-preconditions, so the pinned hashes quoted
+        # above were never checked against the files on disk and the baseline was
+        # never preflighted. That is the difference between a measurement and an
+        # anecdote, and it belongs in the artifact rather than in lost scrollback.
+        rows.append(["preconditions", "**NOT CHECKED** (--skip-preconditions): not publishable"])
     out += _md_table(["field", "value"], rows)
     out.append("")
+    if _record_field(record, "outcome", "jobs_run") == 0:
+        out += [
+            "**This invocation ran no jobs** -- it resumed a directory that was already "
+            "complete. The machine and concurrency above are therefore the ones that "
+            "resumed it, not necessarily the ones that produced the rows; read the "
+            f"earlier entries in `{RUN_RECORD_FILENAME}` for those.",
+            "",
+        ]
     if run_count > 1:
         out += [
             f"`{RUN_RECORD_FILENAME}` holds **{run_count} invocations**: this directory "

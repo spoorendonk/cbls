@@ -76,9 +76,12 @@ SOLUTION_LINE = re.compile(r"^#(\d+)\s+([0-9.]+)s\s+best:(-?[0-9.eE+-]+)\b")
 #: This is the only place the *effect* of `filter_subsolvers` is observable, so the
 #: preflight reads the restriction off it rather than trusting that the parameter
 #: was accepted. At higher worker counts a name carries a multiplicity, `fj(2)`.
-SUBSOLVER_LINE = re.compile(
-    r"^\d+\s+(first solution|interleaved|full|helper|ignored)\s+subsolvers?:\s*\[(.*)\]\s*$"
-)
+#:
+#: The role is captured rather than whitelisted. A whitelist misses the single
+#: announcement that means the restriction is gone -- an unrestricted CP-SAT run
+#: says `full problem subsolvers`, not `full` -- and a line that does not match is
+#: a silent pass, which is the failure mode this whole check exists to close.
+SUBSOLVER_LINE = re.compile(r"^\d+\s+([a-z][a-z ]*?)\s+subsolvers?:\s*\[(.*)\]\s*$")
 
 #: `Starting search at 0.00s with 1 workers.`
 SEARCH_WORKERS_LINE = re.compile(r"^Starting search at [0-9.]+s with (\d+) workers?\.?$")
@@ -203,14 +206,26 @@ def check_preflight_log(
         ]
 
     announced = parse_subsolvers(log_text)
+    # The announcement block is one block. If any line in it parsed, the format is
+    # intact and a *role* missing from it is the restriction having gone, not the
+    # parser having gone stale -- an unrestricted run announces `full problem` and
+    # neither of the two below. Only a block that parsed nothing at all is a format
+    # break. That keeps the shape/content split of the two checks checkable rather
+    # than a guess: what is read is shape, what it says is content.
+    block_parsed = bool(announced)
     for role, expected in EXPECTED_SUBSOLVERS.items():
         if role not in announced:
             failures.append(
                 PreflightFailure(
-                    LOG_FORMAT_CHECK,
-                    f"the `N {role} subsolver: [...]` announcement is absent from the log, "
-                    "so the restriction cannot be read off it. The line this harness "
-                    "parses has moved or gone.",
+                    WORKER_RESTRICTION_CHECK if block_parsed else LOG_FORMAT_CHECK,
+                    f"the `N {role} subsolver: [...]` announcement is absent from the log. "
+                    + (
+                        f"Other subsolver roles were announced ({sorted(announced)}), so the "
+                        "log format is intact and this worker is simply not running."
+                        if block_parsed
+                        else "No subsolver announcement parsed at all, so the line this "
+                        "harness reads the restriction off has moved or gone."
+                    ),
                 )
             )
         elif announced[role] != expected:
@@ -485,7 +500,8 @@ def solve(
     solver = model_builder.ModelSolver("SAT")
     solver.enable_output(True)
     solver.set_time_limit_in_seconds(budget)
-    solver.set_solver_specific_parameters(build_parameters(workers, seed))
+    parameters = build_parameters(workers, seed)
+    solver.set_solver_specific_parameters(parameters)
     setup_seconds = time.monotonic() - setup_started
     # Counted after the setup clock stops: this is the scorer's cross-check, not
     # work the baseline needs, and charging it to `setup_seconds` would inflate
@@ -515,7 +531,7 @@ def solve(
         "n_free_cons": free_cons,
         "objective": None,
     }
-    note = status_note(status.name, has_solution, build_parameters(workers, seed))
+    note = status_note(status.name, has_solution, parameters)
     if note is not None:
         record["status"], record["message"] = note
 
