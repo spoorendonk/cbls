@@ -386,6 +386,42 @@ def count_free_constraints(model: model_builder.ModelBuilder) -> int:
     )
 
 
+def status_note(status_name: str, has_solution: bool, parameters: str) -> tuple[str, str] | None:
+    """`(status, message)` for a verdict that means "did not search", else None.
+
+    CP-SAT scales continuous columns to integers and rejects what it cannot express
+    (MODEL_INVALID), and ABNORMAL means it errored out. Both are "did not search",
+    not "searched and found nothing", so they are tallied apart rather than counted
+    against the baseline as a search failure.
+
+    NOT_SOLVED deliberately gets no note: it is the ordinary outcome of a
+    time-limited run that found nothing, which is exactly what the metric is asking
+    about. The precise verdict survives in `cpsat_status` and reaches the comparison
+    table as `solver_status`.
+
+    Each carries a message, because the scorer publishes one per withheld row and a
+    row reading "no message recorded" is the least useful form of the most important
+    defect class this baseline has -- and it is the class the preflight exists to
+    catch before a roster rather than after it.
+    """
+    if status_name == "INVALID_SOLVER_PARAMETERS":
+        return (
+            "invalid_parameters",
+            f"CP-SAT rejected the parameter string `{parameters}`. The worker "
+            "restriction this baseline is defined by is not in force; run "
+            "`cpsat_solve.py --preflight` to see which part of it moved.",
+        )
+    if not has_solution and status_name in ("MODEL_INVALID", "ABNORMAL"):
+        return (
+            "invalid_model",
+            f"CP-SAT returned {status_name}: it did not search. MODEL_INVALID means "
+            "it could not express the model (it scales continuous columns to "
+            "integers and rejects what will not scale); ABNORMAL means it errored "
+            "out. Either way this row is a baseline limitation, not a search result.",
+        )
+    return None
+
+
 @contextlib.contextmanager
 def capture_stdout_fd(sink_path: Path) -> Iterator[None]:
     """Redirect fd 1 (including writes from C++) to `sink_path` for the block's duration.
@@ -479,22 +515,9 @@ def solve(
         "n_free_cons": free_cons,
         "objective": None,
     }
-    if status == model_builder.SolveStatus.INVALID_SOLVER_PARAMETERS:
-        record["status"] = "invalid_parameters"
-    elif not has_solution and status in (
-        model_builder.SolveStatus.MODEL_INVALID,
-        model_builder.SolveStatus.ABNORMAL,
-    ):
-        # CP-SAT scales continuous columns to integers and rejects what it cannot
-        # express (MODEL_INVALID), and ABNORMAL means it errored out. Both are "did
-        # not search", not "searched and found nothing", so they are tallied apart
-        # rather than counted against the baseline as a search failure.
-        #
-        # NOT_SOLVED deliberately stays `no_solution`: it is the ordinary outcome of
-        # a time-limited run that found nothing, which is exactly what the metric is
-        # asking about. The precise verdict survives in `cpsat_status` and reaches
-        # the comparison table as `solver_status`.
-        record["status"] = "invalid_model"
+    note = status_note(status.name, has_solution, build_parameters(workers, seed))
+    if note is not None:
+        record["status"], record["message"] = note
 
     # Whether the incumbent profile came from the log or is a single end-point.
     # A systematic regex miss after an OR-Tools log-format change would otherwise

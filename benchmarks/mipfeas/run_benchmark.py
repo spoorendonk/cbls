@@ -177,13 +177,19 @@ def verify_preconditions(inst_dir: Path, instances: list[str]) -> list[str]:
     a run measured in CPU-days, so it is done unconditionally rather than trusted.
     """
     problems: list[str] = []
+    # The yardstick is checked when the directory carries one. `--inst-dir` may
+    # point at a bare collection of instances (the vendored miplib-fj set, say),
+    # which has no roster tables to pin; a directory that holds them and no
+    # `references.csv` is the unpinned-yardstick state and is refused.
     reference_pins = read_pins(inst_dir / REFERENCES_FILENAME, "file")
-    if not reference_pins:
+    present_references = [n for n in PINNED_REFERENCE_FILES if (inst_dir / n).exists()]
+    if present_references and not reference_pins:
         problems.append(
-            f"{REFERENCES_FILENAME} is absent from {inst_dir}: the reference values every "
-            f"gap is scored against are not pinned. Run download.py --update-references."
+            f"{inst_dir} holds {', '.join(present_references)} but no {REFERENCES_FILENAME}: "
+            f"the reference values every gap is scored against are not pinned. "
+            f"Run download.py --update-references."
         )
-    else:
+    elif reference_pins:
         for name in PINNED_REFERENCE_FILES:
             path = inst_dir / name
             if not path.exists():
@@ -750,6 +756,33 @@ def count_rejected(jobs: list[Job], results_dir: Path) -> int:
     )
 
 
+def count_unchecked(jobs: list[Job], results_dir: Path, verify: bool) -> int:
+    """Feasible rows that never got a verdict saying they were actually checked.
+
+    A row whose check the driver could not complete is retried up to
+    `MAX_VERIFY_ATTEMPTS` and then stops being retried -- at which point
+    `needs_verification` is false, `has_usable_result` is true and the job is
+    dropped from every later resume. From the third pass onward such a directory
+    prints "0 jobs to run" and the driver exits 0, reporting as a clean run a row
+    that was never successfully checked and whose objective the scorer withholds.
+    Counted over every planned job, like `count_rejected`, and for the same reason.
+
+    `fail` is excluded because it *was* checked, and is counted (and shouted about)
+    separately.
+    """
+    if not verify:
+        return 0
+    total = 0
+    for job in jobs:
+        result = _read_json(job.result_path(results_dir))
+        if result is None or result.get("status") != "feasible":
+            continue
+        verdict = _read_json(job.verification_path(results_dir)) or {}
+        if verdict.get("verdict") not in ("pass", "fail"):
+            total += 1
+    return total
+
+
 def plan_jobs(
     instances: list[str], engines: tuple[str, ...], sizes: dict[str, int], large_bytes: int
 ) -> tuple[list[Job], list[Job]]:
@@ -1011,12 +1044,14 @@ def main() -> int:
     # already holds a rejected solution runs nothing, and would otherwise exit 0
     # and tell an unattended wrapper the run was clean.
     rejected = count_rejected(planned, results_dir)
+    unchecked = count_unchecked(planned, results_dir, args.verify)
     record["status"] = "complete"
     record["finished_at"] = datetime.now(UTC).isoformat(timespec="seconds")
     record["outcome"] = {
         "jobs_run": total,
         "failures": failures,
         "rejected": rejected,
+        "unchecked": unchecked,
         "wall_seconds": round(elapsed, 3),
     }
     close_run_record(results_dir, record)
@@ -1025,6 +1060,17 @@ def main() -> int:
             f"\nDEFECT: {rejected} solution(s) in {results_dir} were rejected by the "
             f"independent check against the instance file. Score the run to see "
             f"which, or read the .verify.json files.",
+            file=sys.stderr,
+        )
+    if unchecked:
+        # Same shape as `rejected`, and counted over every planned job for the same
+        # reason: a resume that runs nothing must not report a clean run.
+        print(
+            f"\nUNCHECKED: {unchecked} feasible row(s) in {results_dir} carry no verdict "
+            f"saying they were checked -- the verification was exhausted after "
+            f"{MAX_VERIFY_ATTEMPTS} attempts, refused to run, or never happened. Those "
+            f"rows publish no objective. Read their .verify.json files, or re-run them "
+            f"with --force once the cause is fixed.",
             file=sys.stderr,
         )
     # Score beside the results, not into the instance directory: both
@@ -1047,7 +1093,7 @@ def main() -> int:
             "--allow-unverified and the table it writes is not publishable."
         )
     )
-    return 1 if failures or rejected else 0
+    return 1 if failures or rejected or unchecked else 0
 
 
 if __name__ == "__main__":

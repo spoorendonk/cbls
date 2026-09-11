@@ -35,3 +35,21 @@
   parameter and log fact was established against. Because: OR-Tools ships
   subsolver and log changes in minor releases, and the preflight (not the bound)
   is what allows raising it after a check.
+- **How strict the driver's reference-pin check is**: `--inst-dir` may legitimately
+  point at a bare instance directory (the vendored `miplib-fj` set) that has no
+  roster tables to pin. Resolved as: the instance manifest is always required, and
+  the reference pins are required only when the directory actually holds one of
+  the three reference files. Because: demanding `references.csv` of every
+  directory would make the documented ad-hoc sweeps impossible, while a directory
+  holding `roster.csv` and nothing pinning it is exactly the unpinned-yardstick
+  state this issue exists to end.
+- **What counts as "never checked"** (orchestrator finding 1): resolved as any
+  feasible row whose verdict is neither `pass` nor `fail` — an exhausted driver
+  retry, a verifier error, or no verdict file at all. Because: all three mean the
+  scorer withholds the row, and `fail` is excluded precisely so the loudest signal
+  the benchmark has is not buried under a harness counter.
+- **Where the CP-SAT "did not search" messages live** (orchestrator finding 2):
+  resolved as a pure `status_note()` helper rather than inline in `solve()`.
+  Because: the two verdicts it classifies cannot be produced on demand in a test,
+  and a pure function is the only way to pin the message a published row will
+  carry without provoking the solver into an invalid state.

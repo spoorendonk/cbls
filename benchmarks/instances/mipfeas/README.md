@@ -350,7 +350,14 @@ result are the **solve's**, so they do not bound a job's peak on their own.
 And a resumed run whose results predate the solution dump re-**solves** those
 instances: nothing but the search can produce the solution vector. A verification
 the driver had to kill (its timeout or the memory cap) is retried on the next
-resume rather than being treated as a final verdict.
+resume rather than being treated as a final verdict — twice, after which the
+verdict stands and the row stays withheld.
+
+A row in that state is counted and the driver **exits non-zero** on it, over every
+planned job rather than only the ones an invocation ran. Otherwise the third
+resume of such a directory prints "0 jobs to run" and exits 0, reporting as a
+clean run a row that was never successfully checked and whose objective the
+scorer withholds.
 
 ## Running it
 

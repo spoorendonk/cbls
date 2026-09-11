@@ -29,6 +29,7 @@ from benchmarks.mipfeas.cpsat_solve import (  # noqa: E402
     parse_trace,
     report_preflight,
     run_preflight,
+    status_note,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -242,3 +243,44 @@ def test_the_documented_ortools_range_matches_the_declared_dependency() -> None:
     # message tells a reader to install a version the project would not resolve.
     pyproject = (REPO_ROOT / "pyproject.toml").read_text()
     assert f'"ortools{SUPPORTED_ORTOOLS_RANGE}"' in pyproject
+
+
+# --- A withheld baseline row says why -----------------------------------------
+#
+# The scorer publishes one message per withheld row, and "no message recorded" is
+# the least useful form of the most important defect class this baseline has. It
+# is also the class the preflight exists to catch before a roster rather than
+# after one.
+
+
+def test_a_rejected_parameter_string_records_why_the_row_is_withheld() -> None:
+    note = status_note("INVALID_SOLVER_PARAMETERS", False, build_parameters(1, 42))
+
+    assert note is not None
+    status, message = note
+    assert status == "invalid_parameters"
+    assert "filter_subsolvers" in message
+    assert "--preflight" in message
+
+
+def test_a_model_cp_sat_cannot_express_records_why_the_row_is_withheld() -> None:
+    note = status_note("MODEL_INVALID", False, "")
+
+    assert note is not None
+    status, message = note
+    assert status == "invalid_model"
+    assert "MODEL_INVALID" in message
+
+
+def test_a_solver_that_errored_out_is_reported_apart_from_finding_nothing() -> None:
+    assert status_note("ABNORMAL", False, "")[0] == "invalid_model"  # type: ignore[index]
+
+
+def test_a_time_limited_run_that_found_nothing_is_not_a_harness_fault() -> None:
+    # NOT_SOLVED is the ordinary outcome the metric is asking about, so it stays
+    # `no_solution` and carries no message.
+    assert status_note("NOT_SOLVED", False, "") is None
+
+
+def test_a_model_invalid_verdict_that_still_produced_a_solution_is_not_withheld() -> None:
+    assert status_note("MODEL_INVALID", True, "") is None

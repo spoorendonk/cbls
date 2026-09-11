@@ -20,6 +20,7 @@ from benchmarks.mipfeas.run_benchmark import (
     Job,
     build_command,
     count_rejected,
+    count_unchecked,
     drop_completed,
     execute,
     needs_solve,
@@ -543,7 +544,15 @@ def test_the_driver_verifies_what_it_ran(tmp_path: Path) -> None:
 
     inst_dir = tmp_path / "instances"
     inst_dir.mkdir()
-    (inst_dir / "tiny.mps.gz").write_bytes(gzip.compress(TINY_MPS.encode()))
+    instance_bytes = gzip.compress(TINY_MPS.encode())
+    (inst_dir / "tiny.mps.gz").write_bytes(instance_bytes)
+    # Pinned, because the driver now refuses to run an instance whose bytes are
+    # not recorded anywhere (issue #137) -- so this chain covers that joint too.
+    _write_csv(
+        inst_dir / "manifest.csv",
+        ["instance", "sha256", "bytes"],
+        [["tiny", hashlib.sha256(instance_bytes).hexdigest(), len(instance_bytes)]],
+    )
     roster = tmp_path / "roster.csv"
     _write_csv(roster, ["instance", "reference_value", "reference_kind"], [["tiny", 9.0, "opt"]])
     results_dir = tmp_path / "results"
@@ -677,7 +686,35 @@ def test_a_revised_reference_file_refuses_the_run(tmp_path: Path) -> None:
 def test_an_unpinned_instance_directory_is_refused_rather_than_trusted(tmp_path: Path) -> None:
     (tmp_path / "a.mps.gz").write_bytes(b"x")
     problems = run_benchmark.verify_preconditions(tmp_path, ["a"])
-    assert len(problems) == 2, problems  # neither table is there
+    assert len(problems) == 1, problems
+    assert "manifest.csv" in problems[0]
+
+
+def test_roster_tables_with_no_pins_beside_them_are_refused(tmp_path: Path) -> None:
+    # A directory holding the yardstick but nothing pinning it is the state this
+    # issue exists to end; a bare instance directory that has no yardstick at all
+    # is not, and is checked only against manifest.csv.
+    inst_dir = _pinned_dir(tmp_path, {"a": b"instance bytes"})
+    (inst_dir / "references.csv").unlink()
+
+    problems = run_benchmark.verify_preconditions(inst_dir, ["a"])
+
+    assert len(problems) == 1
+    assert "references.csv" in problems[0]
+
+
+def test_a_bare_instance_directory_is_checked_against_its_manifest_alone(
+    tmp_path: Path,
+) -> None:
+    # `--inst-dir` may point at a vendored set with no roster tables of its own.
+    (tmp_path / "a.mps.gz").write_bytes(b"instance bytes")
+    _write_csv(
+        tmp_path / "manifest.csv",
+        ["instance", "sha256", "bytes"],
+        [["a", hashlib.sha256(b"instance bytes").hexdigest(), len(b"instance bytes")]],
+    )
+
+    assert run_benchmark.verify_preconditions(tmp_path, ["a"]) == []
 
 
 def test_an_absent_instance_is_left_to_the_drivers_own_report(tmp_path: Path) -> None:
@@ -826,3 +863,117 @@ def test_an_unfinished_run_still_left_a_record_behind(tmp_path: Path) -> None:
     written = json.loads((results / run_benchmark.RUN_RECORD_FILENAME).read_text())["runs"][0]
     assert written["status"] == "running"
     assert written["finished_at"] is None
+
+
+# --- A resume that runs nothing must not report a clean run --------------------
+
+
+def _feasible_row(results_dir: Path, verdict: dict[str, object] | None) -> list[Job]:
+    job = Job("cbls", "inst")
+    (results_dir / "cbls").mkdir(parents=True, exist_ok=True)
+    job.result_path(results_dir).write_text(json.dumps({"status": "feasible", "objective": 1.0}))
+    job.solution_path(results_dir).write_text("=obj= 1.0\n")
+    if verdict is not None:
+        job.verification_path(results_dir).write_text(json.dumps(verdict))
+    return [job]
+
+
+def test_an_exhausted_verification_is_counted_rather_than_forgotten(tmp_path: Path) -> None:
+    # After MAX_VERIFY_ATTEMPTS the row stops being retried, so every later resume
+    # drops the job and runs nothing. Without this count the driver would print
+    # "0 jobs to run" and exit 0 on a row that was never successfully checked.
+    jobs = _feasible_row(
+        tmp_path,
+        {
+            "verdict": "error",
+            "reason": "verifier_died",
+            "attempts": run_benchmark.MAX_VERIFY_ATTEMPTS,
+        },
+    )
+
+    assert all(run_benchmark.has_usable_result(j, tmp_path, True) for j in jobs)
+    assert count_unchecked(jobs, tmp_path, verify=True) == 1
+
+
+def test_a_feasible_row_with_no_verdict_at_all_is_counted_unchecked(tmp_path: Path) -> None:
+    assert count_unchecked(_feasible_row(tmp_path, None), tmp_path, verify=True) == 1
+
+
+def test_a_checked_row_is_not_counted_unchecked(tmp_path: Path) -> None:
+    jobs = _feasible_row(tmp_path, {"verdict": "pass"})
+    assert count_unchecked(jobs, tmp_path, verify=True) == 0
+
+
+def test_a_rejected_row_is_counted_as_rejected_not_as_unchecked(tmp_path: Path) -> None:
+    # It *was* checked. Conflating the two would bury the loudest signal this
+    # benchmark has under a harness counter.
+    jobs = _feasible_row(tmp_path, {"verdict": "fail"})
+    assert count_unchecked(jobs, tmp_path, verify=True) == 0
+    assert count_rejected(jobs, tmp_path) == 1
+
+
+def test_nothing_is_unchecked_when_verification_is_off(tmp_path: Path) -> None:
+    jobs = _feasible_row(tmp_path, None)
+    assert count_unchecked(jobs, tmp_path, verify=False) == 0
+
+
+def test_a_row_that_found_nothing_has_nothing_to_check(tmp_path: Path) -> None:
+    job = Job("cbls", "inst")
+    (tmp_path / "cbls").mkdir(parents=True)
+    job.result_path(tmp_path).write_text(json.dumps({"status": "no_solution", "objective": None}))
+
+    assert count_unchecked([job], tmp_path, verify=True) == 0
+
+
+def test_a_resume_with_nothing_left_to_run_still_exits_non_zero(tmp_path: Path) -> None:
+    """End to end: the driver over a directory whose only row was never checked."""
+    repo_root = Path(__file__).resolve().parents[2]
+    binary = repo_root / "build" / "cbls_mipfeas"
+    if not binary.exists():
+        pytest.skip("cbls_mipfeas not built")
+
+    inst_dir = tmp_path / "instances"
+    inst_dir.mkdir()
+    instance_bytes = gzip.compress(b"NAME tiny\nENDATA\n")
+    (inst_dir / "inst.mps.gz").write_bytes(instance_bytes)
+    _write_csv(
+        inst_dir / "manifest.csv",
+        ["instance", "sha256", "bytes"],
+        [["inst", hashlib.sha256(instance_bytes).hexdigest(), len(instance_bytes)]],
+    )
+    roster = tmp_path / "roster.csv"
+    _write_csv(roster, ["instance", "reference_value", "reference_kind"], [["inst", 1.0, "opt"]])
+    results_dir = tmp_path / "results"
+    _feasible_row(
+        results_dir,
+        {
+            "verdict": "error",
+            "reason": "verifier_died",
+            "attempts": run_benchmark.MAX_VERIFY_ATTEMPTS,
+        },
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "benchmarks" / "mipfeas" / "run_benchmark.py"),
+            "--roster",
+            str(roster),
+            "--inst-dir",
+            str(inst_dir),
+            "--results-dir",
+            str(results_dir),
+            "--cbls-bin",
+            str(binary),
+            "--engines",
+            "cbls",
+            "--budget",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert "0 jobs to run" in completed.stdout, completed.stdout
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    assert "UNCHECKED" in completed.stderr
