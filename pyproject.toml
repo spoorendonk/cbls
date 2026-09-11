@@ -12,13 +12,22 @@ requires-python = ">=3.12"
 dev = [
     "pytest>=7.0",
     "pytest-timeout>=2.1",
-    # The pre-commit and pre-push hooks guard every ruff/mypy step on the
-    # binary existing in the venv, and skip in silence when it doesn't. Without
-    # these, the documented `pip install -e '.[dev]'` bootstrap yields a
-    # pre-push that lints and type-checks nothing while printing "All checks
-    # passed."
-    "ruff>=0.5",
-    "mypy>=1.10",
+    # Without these, the documented `pip install -e '.[dev]'` bootstrap yields
+    # a pre-push whose Python gate cannot run at all. (That gate now reports a
+    # missing tool as a finding rather than skipping in silence; the older
+    # advisory ruff/mypy steps still guard on the binary existing and skip
+    # quietly, which is why they are advisory.)
+    #
+    # Pinned exactly, for the same reason as the clang tools below and stated
+    # once there: both are a HARD BLOCK at push over every tracked .py outside
+    # benchmarks/ (issue #154), and both change their finding set and their
+    # formatter style between releases. Unpinned, "the gated files are at zero"
+    # silently means "at zero on whichever version this checkout resolved", and
+    # a fresh clone six months from now goes red with no code change — whose
+    # only documented escape is the `--no-verify` CLAUDE.md forbids. Bump them
+    # deliberately, in their own commit, the way the clang pins are bumped.
+    "ruff==0.16.1",
+    "mypy==2.3.0",
     # clang-format and clang-tidy come from PyPI rather than the system, and
     # are pinned exactly: clang-format's output and clang-tidy's finding set
     # both change between major releases, so an unpinned or system copy would

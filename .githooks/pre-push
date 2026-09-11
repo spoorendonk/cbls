@@ -3,8 +3,9 @@
 # Final gate before sharing code — catches what pre-commit doesn't.
 #
 # Flow:
-#   1. Clean build + test → block on failure
-#   2. Remaining issues (complexity, type errors, warnings) → warn and continue
+#   1. Python lint + type gate → block on failure (cheapest, so it runs first)
+#   2. Clean build + test → block on failure
+#   3. Remaining issues (complexity, type errors, warnings) → warn and continue
 #
 # There is no /review stamp gate. It was removed with the .claude/ review
 # command when .claude/ became gitignored local tooling: the gate could only
@@ -13,10 +14,11 @@
 #
 # This directory is the source for the git hooks — edit them here.
 #
-# SC2086: the *_FILES variables hold newline-separated path lists that are
-# meant to word-split into multiple arguments; quoting them would pass one
-# argument containing newlines and break every tool invocation.  SC1091: the
-# sourced resolve-venv.sh is not followed without -x.
+# SC2086: the *_FILES variables -- PY_GATE_FILES included -- hold
+# newline-separated path lists that are meant to word-split into multiple
+# arguments; quoting them would pass one argument containing newlines and break
+# every tool invocation.  SC1091: the sourced resolve-venv.sh is not followed
+# without -x.
 # shellcheck disable=SC2086,SC1091
 
 set -e
@@ -91,7 +93,129 @@ fi
 CODE_FILES=$(echo "$CHANGED_FILES" | grep -vE '^(LICENSE|CHANGELOG)' | grep -vE '\.(md|rst)$' | grep -vE '^\.(gitignore|gitattributes)$' | grep -vE '^\.githooks/' || true)
 
 # ============================================================
-# Step 1: Clean build + test (hard block)
+# Step 1: Python lint + type gate (hard block)
+# ============================================================
+#
+# First because it is the cheapest hard block in this file and, unlike
+# clang-tidy, it depends on nothing the build produces. Reported from Step 3
+# instead, a missing `-> None` costs a clean rebuild and the full suite before
+# the developer hears about it, then the same again after the one-line fix.
+#
+# BLOCKING, and over the whole tracked Python surface rather than over the
+# files this push happens to touch. The advisory ruff/mypy steps in Step 3 see
+# only $PY_FILES, which is two independent escape routes at once: a module
+# nobody has edited in months is never staged (so pre-commit never lints it)
+# and never appears in $PY_FILES (so those steps never see it); and even when
+# it does appear, a finding there only prints a warning. pre-commit is weaker
+# still than "staged files only" suggests -- its ruff step auto-fixes and
+# swallows the rest, so a non-fixable finding such as E741 survives staging
+# however often the file is edited. Five binding-test modules accumulated 139
+# `mypy --strict` errors and 9 ruff errors that way, with every gate green
+# throughout (issue #154).
+#
+# The scope is an EXCLUSION, not an allowlist, and that is the point: an
+# allowlist is fail-open in the one direction that matters, because a Python
+# directory that does not exist yet would be gated by nothing and could rot
+# exactly as those five modules did. So the gate is every tracked .py except
+# the one tree that cannot be clean yet (issue #155), read from `git ls-tree
+# HEAD` so it inspects the commits being pushed rather than the working tree.
+#
+# ruff sees exactly that list. mypy FOLLOWS IMPORTS, so an excluded module that
+# a gated file imports is type-checked too -- which today is most of
+# benchmarks/, and is why adding one test that imports an unclean benchmark
+# module blocks the next push on errors nobody in that push wrote. CLAUDE.md's
+# "Where that standard is actually enforced" is the single place the scope, the
+# measurements behind it and that trap are written down; don't restate them
+# here.
+PY_GATE_EXCLUDE='^benchmarks/'
+PY_GATE_FILES=$(git ls-tree -r HEAD --name-only | grep -E '\.py$' | grep -vE "$PY_GATE_EXCLUDE" || true)
+PY_GATE_ISSUES=""
+PY_GATE_TOOL_ERR=0
+
+# Every precondition is a finding, never a skip. There is deliberately no
+# `[ -n "$VENV_BIN" ]` wrapper: resolve-venv.sh above either sets VENV_BIN or
+# exits 2, because this repo always has a pyproject.toml, so an empty VENV_BIN
+# here means the resolve step never ran -- a fault, not a reason to pass the
+# push. Same for a missing tool and for an empty file list. Every other Python
+# step in these hooks guards on `-x` and skips in silence, which is precisely
+# how a gate reports success without having run.
+if [ -z "$VENV_BIN" ]; then
+	PY_GATE_ISSUES="resolve-venv.sh left VENV_BIN empty -- the Python gate could not run"$'\n'
+	PY_GATE_TOOL_ERR=1
+fi
+if [ -z "$PY_GATE_FILES" ]; then
+	PY_GATE_ISSUES="${PY_GATE_ISSUES}no tracked .py outside ${PY_GATE_EXCLUDE} -- the gate matched nothing"$'\n'
+	PY_GATE_TOOL_ERR=1
+fi
+for tool in ruff mypy; do
+	if [ -n "$VENV_BIN" ] && [ ! -x "$VENV_BIN/$tool" ]; then
+		PY_GATE_ISSUES="${PY_GATE_ISSUES}${tool} is not in ${VENV_BIN} -- run: ${VENV_BIN}/pip install -e '.[dev]'"$'\n'
+		PY_GATE_TOOL_ERR=1
+	fi
+done
+
+# Run one gate step, naming it in any finding it produces.
+#
+# `out=$(...)` on its own line rather than `local out=$(...)`: `local` is a
+# command, so it would swallow the exit status this whole function is about.
+# The `&& rc=0 || rc=$?` pair is what keeps `set -e` from aborting the hook on
+# a finding instead of collecting it.
+#
+# rc 1 is a finding, rc >= 2 is a tool or configuration fault -- ruff and mypy
+# both draw the line there, and the two get different advice at the bottom, the
+# way clang-tidy's config faults already do. Without the split, "mypy: cannot
+# read file" would print "an untyped test function wants `-> None`".
+py_gate_run() {
+	local label="$1"
+	shift
+	local out rc
+	out=$("$@" $PY_GATE_FILES 2>&1) && rc=0 || rc=$?
+	[ "$rc" -eq 0 ] && return 0
+	[ "$rc" -lt 2 ] || PY_GATE_TOOL_ERR=1
+	PY_GATE_ISSUES="${PY_GATE_ISSUES}--- ${label} (exit ${rc}) ---"$'\n'"${out}"$'\n'
+	return 0
+}
+
+if [ "$PY_GATE_TOOL_ERR" -eq 0 ]; then
+	echo ""
+	echo "=== Running ruff + mypy over every tracked .py outside benchmarks/ (blocking) ==="
+	# --no-fix explicitly, as the advisory ruff step does. Inert while
+	# pyproject.toml sets no `fix = true`, but a gate that rewrites the working
+	# tree mid-push and then reports clean is the same fail-open class this
+	# whole block is written against.
+	py_gate_run "ruff check" "$VENV_BIN/ruff" check --no-fix
+	py_gate_run "ruff format --check" "$VENV_BIN/ruff" format --check
+	py_gate_run "mypy --strict" "$VENV_BIN/mypy" --strict
+	[ -n "$PY_GATE_ISSUES" ] || echo "ruff + mypy: clean"
+fi
+
+if [ -n "$PY_GATE_ISSUES" ]; then
+	echo ""
+	echo "═══════════════════════════════════════════"
+	echo "  Python findings (blocking):"
+	echo "═══════════════════════════════════════════"
+	echo "$PY_GATE_ISSUES"
+	echo "═══════════════════════════════════════════"
+	echo ""
+	if [ "$PY_GATE_TOOL_ERR" -ne 0 ]; then
+		echo "FAILED: the Python gate could not run. That is a tooling or"
+		echo "configuration fault, not a code finding -- ruff and mypy exit 1"
+		echo "for findings and 2 or more for a fault -- so the advice below"
+		echo "does not apply. Check the venv (\`.venv/bin/pip install -e '.[dev]'\`)"
+		echo "and that the gated paths still exist."
+	else
+		echo "FAILED: every tracked .py outside benchmarks/ is kept ruff-clean,"
+		echo "ruff-format-clean and mypy --strict clean (issue #154). Fix the"
+		echo "finding above -- \`ruff check --fix\` and \`ruff format\` handle most"
+		echo "of it, and an untyped test function wants \`-> None\`. Do NOT widen"
+		echo "an ignore list or add to PY_GATE_EXCLUDE to get a push through;"
+		echo "that is the .clang-tidy disabled-list move in a different file."
+	fi
+	exit 1
+fi
+
+# ============================================================
+# Step 2: Clean build + test (hard block)
 # ============================================================
 
 # Extract a fenced code block under "## Build & Test" by tag (e.g. ```build ... ```)
@@ -174,7 +298,7 @@ else
 fi
 
 # ============================================================
-# Step 2: Remaining issues (warn and continue)
+# Step 3: Remaining issues (clang-tidy blocks; everything else warns)
 # ============================================================
 
 ISSUES=""
@@ -278,55 +402,6 @@ if [ -n "$MYPY_FILES" ] && [ -x "$VENV_BIN/mypy" ]; then
 	fi
 fi
 
-# Python lint + type gate -- BLOCKING, and over whole directories rather than
-# over the files this push happens to touch.
-#
-# The two steps above are advisory and see only $PY_FILES, which is two
-# independent escape routes at once. A module nobody has edited in months is
-# never staged (so pre-commit never lints it) and never appears in $PY_FILES
-# (so the steps above never see it); and even when it does appear, a finding
-# only prints a warning. Five binding-test modules accumulated 139
-# `mypy --strict` errors and 9 ruff errors that way, with every gate green
-# throughout -- issue #154.
-#
-# Scope is the directories already at zero findings, NOT the whole tree.
-# benchmarks/ still carries 22 ruff findings, 5 unformatted files and 37 mypy
-# errors, and benchmarks/instances/uc-chped/ cannot be type-checked at all: it
-# has an __init__.py inside a hyphenated directory, which makes mypy refuse the
-# entire run with "not a valid Python package name" before checking anything.
-# Widening the scope is issue #155; until then benchmarks/ is covered only by
-# the advisory steps above.
-#
-# Cost, measured: ruff ~0.02s, mypy --strict ~4.5s cold and ~0.15s warm, on a
-# gate that already spends a clean rebuild plus the full ctest suite.
-PY_GATE_DIRS="tests/python python"
-PY_GATE_ISSUES=""
-if [ -n "$VENV_BIN" ]; then
-	echo ""
-	echo "=== Running ruff + mypy over $PY_GATE_DIRS (blocking) ==="
-	for tool in ruff mypy; do
-		# A missing tool is a finding, not a skip. Every other Python step in
-		# these hooks guards on `-x` and skips in silence, which is how a gate
-		# reports success without having run -- the same fail-open class as the
-		# clang-tidy config faults above. A blocking step must not do that.
-		if [ ! -x "$VENV_BIN/$tool" ]; then
-			PY_GATE_ISSUES="${PY_GATE_ISSUES}${tool} is not in ${VENV_BIN} -- run: ${VENV_BIN}/pip install -e '.[dev]'"$'\n'
-		fi
-	done
-	if [ -z "$PY_GATE_ISSUES" ]; then
-		# `RESULT=$(cmd) || ...` rather than a bare assignment: `set -e` is on,
-		# so an unguarded assignment from a failing command would abort the
-		# hook here instead of collecting the finding and reporting it below.
-		RESULT=$("$VENV_BIN/ruff" check $PY_GATE_DIRS 2>&1) ||
-			PY_GATE_ISSUES="${PY_GATE_ISSUES}${RESULT}"$'\n'
-		RESULT=$("$VENV_BIN/ruff" format --check $PY_GATE_DIRS 2>&1) ||
-			PY_GATE_ISSUES="${PY_GATE_ISSUES}${RESULT}"$'\n'
-		RESULT=$("$VENV_BIN/mypy" --strict $PY_GATE_DIRS 2>&1) ||
-			PY_GATE_ISSUES="${PY_GATE_ISSUES}${RESULT}"$'\n'
-		[ -n "$PY_GATE_ISSUES" ] || echo "ruff + mypy: clean"
-	fi
-fi
-
 # clang-tidy findings are a hard block; everything below stays advisory.
 if [ -n "$TIDY_ISSUES" ]; then
 	echo ""
@@ -350,24 +425,6 @@ if [ -n "$TIDY_ISSUES" ]; then
 		echo "structural exemptions, each with a measurement. Adding a seventh"
 		echo "needs the same standard, not a red gate."
 	fi
-	exit 1
-fi
-
-# Python findings are a hard block too. Reported after clang-tidy's block,
-# which exits first when it has findings -- fix whichever gate printed.
-if [ -n "$PY_GATE_ISSUES" ]; then
-	echo ""
-	echo "═══════════════════════════════════════════"
-	echo "  Python findings (blocking):"
-	echo "═══════════════════════════════════════════"
-	echo "$PY_GATE_ISSUES"
-	echo "═══════════════════════════════════════════"
-	echo ""
-	echo "FAILED: $PY_GATE_DIRS is kept ruff-clean, ruff-format-clean and"
-	echo "mypy --strict clean (issue #154). Fix the finding above --"
-	echo "\`ruff check --fix\` and \`ruff format\` handle most of it, and an"
-	echo "untyped test function wants \`-> None\`. Do not widen an ignore list"
-	echo "or drop a directory from PY_GATE_DIRS to get a push through."
 	exit 1
 fi
 
