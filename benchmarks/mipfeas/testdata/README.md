@@ -9,6 +9,7 @@ model-shape verdicts, the trace-health counts and the timing split.
 ```
 roster.csv                13 instances with reference values
 results/<engine>/         result, incumbent trace and independent verdict per job
+results/run_record.json   the machine record the driver writes beside a run
 expected_comparison.csv   what primal_integral.py writes from results/
 expected_report.md        the parity report it writes beside that table
 ```
@@ -48,6 +49,13 @@ does **not** account for, `degraded-trace` an anytime profile that collapsed to 
 single end point, and `slow-start` the two timing effects at once — a long model
 build and a solve that ran past the budget because search initialisation is not
 bounded by the deadline.
+
+**The run record is constructed too**, and deliberately so: it is what makes the
+report's section 8 render in the fixture and therefore be pinned byte for byte
+like every other section (issue #137). Its host, core count, memory and timings
+are invented; its concurrency (2 jobs at a time, one CP-SAT worker, a 6 GB cap)
+is the shape a real one has, not a machine anyone ran this on. `engine_commit` is
+`fixture`, matching the two real rows' own `commit_sha`.
 
 Nothing here may be quoted as a measurement. Every aggregate — the defect totals,
 the parity counts, the anytime table, the timing split — is a fixture number:

@@ -1,0 +1,68 @@
+{
+  "runs": [
+    {
+      "budget_seconds": 2.0,
+      "concurrency": {
+        "cpsat_workers": 1,
+        "jobs": 2,
+        "large_instance_jobs": 1,
+        "mem_limit_gb": 6.0
+      },
+      "finished_at": "2026-01-01T00:01:00+00:00",
+      "machine": {
+        "cpu_affinity": 4,
+        "cpu_count": 8,
+        "host": "fixture-host",
+        "load_average": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "machine": "x86_64",
+        "memory_total_kib": 16777216,
+        "platform": "fixture-platform",
+        "processor": ""
+      },
+      "outcome": {
+        "failures": 1,
+        "jobs_run": 26,
+        "rejected": 1,
+        "wall_seconds": 60.0
+      },
+      "references": {
+        "instance_dir": "benchmarks/instances/mipfeas",
+        "manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "pinned": {
+          "miplib2017-v36.solu": "9236602294c1a5aca5248b6f7d03689a7533ea3cb3f3d92cff962e752e20af84"
+        },
+        "solution_file": "miplib2017-v36.solu"
+      },
+      "run": {
+        "compound_moves": true,
+        "engines": [
+          "cbls",
+          "cpsat"
+        ],
+        "force": false,
+        "inf_clamp": 10000000.0,
+        "instances": 13,
+        "jobs_planned": 26,
+        "jobs_to_run": 26,
+        "large_bytes": 5000000,
+        "propagate_bounds": true,
+        "roster": "roster.csv",
+        "seed": 42,
+        "verify": true
+      },
+      "started_at": "2026-01-01T00:00:00+00:00",
+      "status": "complete",
+      "versions": {
+        "cbls_binary": "build/cbls_mipfeas",
+        "engine_commit": "fixture",
+        "ortools": "9.15.6755",
+        "pyscipopt": "6.2.1",
+        "python": "3.12.0"
+      }
+    }
+  ]
+}

@@ -31,7 +31,9 @@ from benchmarks.mipfeas.primal_integral import (
     job_failures,
     parity_verdict,
     read_roster,
+    read_run_record,
     render_report,
+    run_record_section,
     score_instance,
     shape_notes_by_instance,
     summarize,
@@ -673,3 +675,151 @@ def test_the_fixture_exercises_every_branch_the_report_has(tmp_path: Path) -> No
         "3.204 (slow-start)",
     ):
         assert expected in report, expected
+
+
+# --- Section 8: the machine record --------------------------------------------
+#
+# A wall-clock-limited comparison is a statement about a machine as much as about
+# an algorithm, so the report quotes what the driver recorded rather than leaving
+# it in a results directory nobody publishes (issue #137).
+
+_RECORD: dict[str, object] = {
+    "budget_seconds": 600.0,
+    "concurrency": {
+        "jobs": 4,
+        "large_instance_jobs": 1,
+        "cpsat_workers": 1,
+        "mem_limit_gb": 6.0,
+    },
+    "machine": {
+        "host": "bench-01",
+        "platform": "Linux-6.8.0",
+        "cpu_count": 16,
+        "cpu_affinity": 8,
+        "memory_total_kib": 33554432,
+    },
+    "versions": {
+        "engine_commit": "deadbee",
+        "ortools": "9.15.6755",
+        "pyscipopt": "6.2.1",
+        "python": "3.12.0",
+    },
+    "references": {
+        "solution_file": "miplib2017-v36.solu",
+        "pinned": {"miplib2017-v36.solu": "9236602294c1a5aca5248b6f7d03689a"},
+    },
+    "started_at": "2026-01-01T00:00:00+00:00",
+    "finished_at": "2026-01-01T06:00:00+00:00",
+    "status": "complete",
+}
+
+
+def test_the_record_section_states_the_concurrency_the_run_used() -> None:
+    section = "\n".join(run_record_section(_RECORD, 1))
+
+    assert "**4 job(s) at a time**" in section
+    assert "large instances 1 at a time" in section
+    assert "CP-SAT 1 worker(s)" in section
+    assert "address-space cap 6.0 GB" in section
+
+
+def test_the_record_section_names_the_host_cores_memory_and_budget() -> None:
+    section = "\n".join(run_record_section(_RECORD, 1))
+
+    assert "| host | bench-01 |" in section
+    assert "16 (8 available to the process)" in section
+    assert "32.0 GiB" in section
+    assert "600.0s per instance-engine pair" in section
+
+
+def test_the_record_section_names_the_engine_commit_and_solver_versions() -> None:
+    section = "\n".join(run_record_section(_RECORD, 1))
+
+    assert "| engine commit | deadbee |" in section
+    assert "ortools 9.15.6755" in section
+    assert "PySCIPOpt 6.2.1" in section
+
+
+def test_the_record_section_names_the_yardstick_the_gaps_were_scored_against() -> None:
+    # An upstream revision of the solution file moves every gap in the table at
+    # once, so which one produced it is part of the result.
+    section = "\n".join(run_record_section(_RECORD, 1))
+
+    assert "`miplib2017-v36.solu`" in section
+    assert "9236602294c1a5ac" in section
+
+
+def test_a_resumed_results_directory_says_so_rather_than_claiming_one_machine() -> None:
+    section = "\n".join(run_record_section(_RECORD, 3))
+    assert "3 invocations" in section
+
+
+def test_results_with_no_machine_record_are_called_an_anecdote() -> None:
+    # Silence here is the failure mode: a published table whose concurrency nobody
+    # recorded reads exactly like one whose concurrency was stated.
+    section = "\n".join(run_record_section(None, 0))
+
+    assert "## 8. Machine and run record" in section
+    assert "No machine record was written" in section
+    assert "concurrency" in section
+
+
+def test_read_run_record_returns_the_last_invocation_and_the_count(tmp_path: Path) -> None:
+    (tmp_path / "run_record.json").write_text(
+        json.dumps({"runs": [{"status": "complete"}, {"status": "running"}]})
+    )
+
+    record, count = read_run_record(tmp_path)
+
+    assert count == 2
+    assert record == {"status": "running"}
+
+
+def test_read_run_record_treats_a_truncated_file_as_absent(tmp_path: Path) -> None:
+    # A driver killed mid-write must not make the scorer abort on the file.
+    (tmp_path / "run_record.json").write_text('{"runs": [')
+
+    assert read_run_record(tmp_path) == (None, 0)
+
+
+def test_read_run_record_of_a_directory_that_has_none(tmp_path: Path) -> None:
+    assert read_run_record(tmp_path) == (None, 0)
+
+
+def test_the_report_of_the_frozen_fixture_carries_its_machine_record() -> None:
+    # The fixture holds a (constructed) run record precisely so that section 8 is
+    # pinned byte for byte like every other section.
+    report = (FIXTURE / "expected_report.md").read_text()
+
+    assert "## 8. Machine and run record" in report
+    assert "| host | fixture-host |" in report
+    assert "**2 job(s) at a time**" in report
+
+
+def test_the_scorer_warns_when_no_machine_record_is_beside_the_results(tmp_path: Path) -> None:
+    results = tmp_path / "results"
+    _write(results, "cbls", "only-cbls", {"status": "no_solution", "objective": None})
+    _write(results, "cpsat", "only-cbls", {"status": "no_solution", "objective": None})
+    roster = tmp_path / "roster.csv"
+    roster.write_text("instance,reference_value,reference_kind\nonly-cbls,1.0,opt\n")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "benchmarks" / "mipfeas" / "primal_integral.py"),
+            "--results-dir",
+            str(results),
+            "--roster",
+            str(roster),
+            "--budget",
+            "2",
+            "--out",
+            str(tmp_path / "out.csv"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert "no run_record.json" in completed.stderr
+    assert "No machine record was written" in (tmp_path / "out_report.md").read_text()

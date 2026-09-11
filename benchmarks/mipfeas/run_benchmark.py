@@ -13,7 +13,18 @@ Built for an unattended multi-hour run on a bigger machine, so:
 * every feasible solution is checked against the ORIGINAL instance file by
   `verify_solution.py`, which shares no reader with either engine (issue #138).
   The verdict lands beside the result as `<instance>.verify.json`, and a row
-  without a passing verdict publishes no objective and no score.
+  without a passing verdict publishes no objective and no score;
+* the run's preconditions are checked before the first job rather than trusted
+  (issue #137): every roster instance and every reference file is hashed against
+  its pin, and the CP-SAT baseline is preflighted on one tiny in-memory model. A
+  substituted instance and an OR-Tools release that moved a subsolver flag or a
+  log line are both silent failures that only show at scoring time;
+* the machine is recorded. `run_record.json` lands beside the results holding one
+  entry per invocation -- host, cores, memory, the concurrency and memory cap the
+  run used, the engine commit and solver versions, the budget, and which
+  yardstick file the gaps will be scored against. A budgeted comparison is a
+  statement about a machine as much as about an algorithm, and a resumed run adds
+  an entry rather than overwriting the one before it.
 
 Usage:
     python run_benchmark.py --roster smoke --budget 60 --jobs 2
@@ -25,12 +36,18 @@ from __future__ import annotations
 import argparse
 import contextlib
 import csv
+import hashlib
+import importlib.metadata
 import json
+import os
+import platform
+import socket
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -57,6 +74,29 @@ TIMEOUT_SLACK_SECONDS = 900.0
 #: budget for reading the instance a second time and summing every nonzero in
 #: Python, on models up to 27.4M nonzeros.
 VERIFY_TIMEOUT_SECONDS = 900.0
+
+#: Where the machine record for a results directory lives. One file per results
+#: directory, holding one entry per invocation: a resumed run is a second machine
+#: and a second concurrency, and overwriting the first would claim the whole set
+#: came off one.
+RUN_RECORD_FILENAME = "run_record.json"
+
+#: Pin tables read before a run starts. `manifest.csv` pins the instance bytes and
+#: `references.csv` the yardstick every gap is scored against; both are written by
+#: `benchmarks/instances/mipfeas/download.py`.
+MANIFEST_FILENAME = "manifest.csv"
+REFERENCES_FILENAME = "references.csv"
+
+#: Files `references.csv` pins. Duplicated from the acquisition script rather than
+#: imported, for the same reason `write_failure_verdict` duplicates a shape: this
+#: driver is run as a script, from any directory, and `--inst-dir` may point at a
+#: roster directory that is not the one in this repository -- so it must not
+#: depend on the package being importable.
+PINNED_REFERENCE_FILES: tuple[str, ...] = (
+    "miplib2017-v36.solu",
+    "roster.csv",
+    "smoke.csv",
+)
 
 
 @dataclass(frozen=True)
@@ -108,6 +148,266 @@ def commit_sha() -> str:
     except (subprocess.CalledProcessError, OSError):
         return "unknown"
     return out.stdout.strip() or "unknown"
+
+
+def read_pins(path: Path, key_column: str) -> dict[str, tuple[str, int]]:
+    """`{key: (sha256, bytes)}` from a pin table, empty when the file is absent."""
+    if not path.exists():
+        return {}
+    with open(path, newline="") as fh:
+        return {row[key_column]: (row["sha256"], int(row["bytes"])) for row in csv.DictReader(fh)}
+
+
+def _pin_complaint(label: str, path: Path, pinned: tuple[str, int] | None) -> str | None:
+    if pinned is None:
+        return f"{label}: present but not pinned (no recorded hash)"
+    data = path.read_bytes()
+    actual = hashlib.sha256(data).hexdigest()
+    if actual == pinned[0] and len(data) == pinned[1]:
+        return None
+    return f"{label}: pinned {pinned[0]} ({pinned[1]} bytes), found {actual} ({len(data)} bytes)"
+
+
+def verify_preconditions(inst_dir: Path, instances: list[str]) -> list[str]:
+    """Check the roster's bytes and its yardstick against the pins, before solving.
+
+    A corrupted, truncated or upstream-revised instance is indistinguishable from
+    the one a published row was measured on, and a revised reference file moves
+    every gap in the table at once. Hashing the roster costs a few seconds against
+    a run measured in CPU-days, so it is done unconditionally rather than trusted.
+    """
+    problems: list[str] = []
+    reference_pins = read_pins(inst_dir / REFERENCES_FILENAME, "file")
+    if not reference_pins:
+        problems.append(
+            f"{REFERENCES_FILENAME} is absent from {inst_dir}: the reference values every "
+            f"gap is scored against are not pinned. Run download.py --update-references."
+        )
+    else:
+        for name in PINNED_REFERENCE_FILES:
+            path = inst_dir / name
+            if not path.exists():
+                problems.append(f"{name}: pinned but absent")
+                continue
+            complaint = _pin_complaint(name, path, reference_pins.get(name))
+            if complaint is not None:
+                problems.append(complaint)
+
+    instance_pins = read_pins(inst_dir / MANIFEST_FILENAME, "instance")
+    if not instance_pins:
+        problems.append(
+            f"{MANIFEST_FILENAME} is absent from {inst_dir}: no instance bytes are pinned."
+        )
+        return problems
+    for instance in instances:
+        path = inst_dir / f"{instance}.mps.gz"
+        if not path.exists():
+            continue  # main() reports absent instances on its own, with a fetch command
+        complaint = _pin_complaint(f"{instance}.mps.gz", path, instance_pins.get(instance))
+        if complaint is not None:
+            problems.append(complaint)
+    return problems
+
+
+def run_cpsat_preflight() -> tuple[bool, str]:
+    """Ask the baseline script to assert its own preconditions. `(ok, output)`.
+
+    Out of process because that is how every CP-SAT job runs here, so the check
+    exercises the same interpreter and the same import of OR-Tools the roster will.
+    One tiny in-memory model; no instance and no network.
+    """
+    completed = subprocess.run(
+        [sys.executable, str(CPSAT_SCRIPT), "--preflight"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed.returncode == 0, (completed.stdout + completed.stderr).strip()
+
+
+def package_version(name: str) -> str | None:
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def memory_total_kib() -> int | None:
+    """Total RAM, or None off Linux. The record says what it could not measure."""
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemTotal:"):
+                return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def machine_record() -> dict[str, object]:
+    """What produced a wall-clock-limited result, beyond the code that ran.
+
+    A budgeted comparison is a statement about a machine as much as about an
+    algorithm: the same roster on half the cores, or four-up instead of one-up, is
+    a different measurement. Cores are reported twice because they differ under
+    cgroup or taskset confinement, and that difference is exactly the sort of thing
+    that makes two runs of "the same" benchmark disagree.
+    """
+    return {
+        "host": socket.gethostname(),
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "processor": platform.processor(),
+        "cpu_count": os.cpu_count(),
+        "cpu_affinity": len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
+        "memory_total_kib": memory_total_kib(),
+        "load_average": list(os.getloadavg()) if hasattr(os, "getloadavg") else None,
+    }
+
+
+def reference_record(inst_dir: Path) -> dict[str, object]:
+    """Which yardstick a table was scored against, by name and by hash."""
+    pins = read_pins(inst_dir / REFERENCES_FILENAME, "file")
+    manifest = inst_dir / MANIFEST_FILENAME
+    return {
+        "instance_dir": str(inst_dir),
+        "solution_file": PINNED_REFERENCE_FILES[0],
+        "pinned": {name: pins[name][0] for name in PINNED_REFERENCE_FILES if name in pins},
+        "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest()
+        if manifest.exists()
+        else None,
+    }
+
+
+def build_run_record(
+    args: argparse.Namespace,
+    roster_path: Path,
+    instances: list[str],
+    engines: tuple[str, ...],
+    planned: int,
+    to_run: int,
+) -> dict[str, object]:
+    """The machine record published beside the results."""
+    return {
+        "started_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "finished_at": None,
+        "status": "running",
+        "machine": machine_record(),
+        # The thing a wall-clock-limited result cannot be read without.
+        "concurrency": {
+            "jobs": args.jobs,
+            "large_instance_jobs": 1,
+            "cpsat_workers": args.cpsat_workers,
+            "mem_limit_gb": args.mem_limit_gb,
+        },
+        "budget_seconds": args.budget,
+        "run": {
+            "roster": roster_path.name,
+            "instances": len(instances),
+            "engines": list(engines),
+            "seed": args.seed,
+            "verify": args.verify,
+            "force": args.force,
+            "inf_clamp": args.inf_clamp,
+            "compound_moves": args.compound_moves,
+            "propagate_bounds": args.propagate_bounds,
+            "large_bytes": args.large_bytes,
+            "jobs_planned": planned,
+            "jobs_to_run": to_run,
+        },
+        "versions": {
+            "engine_commit": args.commit,
+            "cbls_binary": str(args.cbls_bin),
+            "python": platform.python_version(),
+            "ortools": package_version("ortools"),
+            "pyscipopt": package_version("PySCIPOpt"),
+        },
+        "references": reference_record(args.inst_dir),
+        "outcome": None,
+    }
+
+
+def append_run_record(results_dir: Path, record: dict[str, object]) -> Path:
+    """Add `record` to the results directory's run log, keeping earlier entries."""
+    path = results_dir / RUN_RECORD_FILENAME
+    existing = _read_json(path) or {}
+    previous = existing.get("runs")
+    runs = list(previous) if isinstance(previous, list) else []
+    runs.append(record)
+    _write_run_records(path, runs)
+    return path
+
+
+def close_run_record(results_dir: Path, record: dict[str, object]) -> None:
+    """Replace the entry `append_run_record` added with its finished form."""
+    path = results_dir / RUN_RECORD_FILENAME
+    existing = _read_json(path) or {}
+    previous = existing.get("runs")
+    runs = list(previous) if isinstance(previous, list) else []
+    if runs:
+        runs[-1] = record
+    else:
+        runs = [record]
+    _write_run_records(path, runs)
+
+
+def _write_run_records(path: Path, runs: list[object]) -> None:
+    # Temp-then-rename, like every other file this benchmark writes: a driver
+    # killed mid-write must leave the previous record rather than a truncated one.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps({"runs": runs}, indent=2, sort_keys=True) + "\n")
+    tmp.replace(path)
+
+
+def check_preconditions(
+    args: argparse.Namespace, instances: list[str], engines: tuple[str, ...]
+) -> int | None:
+    """Refuse to start a run whose inputs or baseline are not what they claim.
+
+    Returns an exit code to stop on, or None to proceed. Both failures it looks
+    for are silent: a substituted instance measures a different program under a
+    published row's name, and an OR-Tools release that moved a subsolver flag or a
+    log line produces a degraded baseline across all 233 instances at exit 0,
+    discovered only at scoring time (issue #137).
+    """
+    if args.skip_preconditions:
+        print(
+            "WARNING: --skip-preconditions: instance bytes are unchecked and the CP-SAT "
+            "baseline is unverified. This run is not publishable.",
+            file=sys.stderr,
+        )
+        return None
+
+    problems = verify_preconditions(args.inst_dir, instances)
+    if problems:
+        print(
+            f"\n{len(problems)} pinned file(s) in {args.inst_dir} do not match what is recorded:",
+            file=sys.stderr,
+        )
+        for problem in problems:
+            print(f"  {problem}", file=sys.stderr)
+        print(
+            "\nA published row measured the pinned bytes, not these. Restore them, or "
+            f"re-pin deliberately:\n  python {args.inst_dir}/download.py --verify",
+            file=sys.stderr,
+        )
+        return 2
+    print(
+        f"Preconditions: {len(instances)} instance(s) and the reference files match "
+        f"their pinned bytes."
+    )
+    if "cpsat" not in engines:
+        return None
+    ok, output = run_cpsat_preflight()
+    print(output.splitlines()[0] if output else "CP-SAT preflight produced no output")
+    if ok:
+        return None
+    print(
+        "\n" + output + "\n\nRefusing to start: the CP-SAT baseline would be degraded or "
+        "empty across the whole roster and would only show it at scoring time.",
+        file=sys.stderr,
+    )
+    return 2
 
 
 def build_command(job: Job, args: argparse.Namespace, results_dir: Path) -> list[str]:
@@ -620,6 +920,15 @@ def main() -> int:
         "--force", action="store_true", help="re-run jobs that already have results"
     )
     parser.add_argument(
+        "--skip-preconditions",
+        action="store_true",
+        help="skip the pinned-bytes check and the CP-SAT preflight. For harness "
+        "debugging only: the first is what stops a corrupted or substituted instance "
+        "being measured as if it were the pinned one, and the second is what stops an "
+        "OR-Tools release that moved a subsolver flag or a log line producing a "
+        "degraded baseline across the whole roster at exit 0 (issue #137)",
+    )
+    parser.add_argument(
         "--no-verify",
         dest="verify",
         action="store_false",
@@ -651,6 +960,7 @@ def main() -> int:
         return 2
 
     instances = read_roster(roster_path)
+    engines = tuple(args.engines)
     missing = [i for i in instances if not (args.inst_dir / f"{i}.mps.gz").exists()]
     if missing:
         print(
@@ -660,9 +970,12 @@ def main() -> int:
         )
         return 2
 
+    refusal = check_preconditions(args, instances, engines)
+    if refusal is not None:
+        return refusal
+
     results_dir = Path(args.results_dir)
-    engines = tuple(args.engines)
-    sizes = read_sizes(args.inst_dir / "manifest.csv")
+    sizes = read_sizes(args.inst_dir / MANIFEST_FILENAME)
     normal, large = plan_jobs(instances, engines, sizes, args.large_bytes)
     planned = normal + large
 
@@ -674,11 +987,19 @@ def main() -> int:
         f"= {total} jobs to run at {args.budget}s, {args.jobs} at a time "
         f"({len(large)} large jobs run alone at the end)."
     )
+    # Written before the first job, not after the last: a run killed at hour six
+    # still has to say what machine and what concurrency produced the results it
+    # did leave behind.
+    record = build_run_record(args, roster_path, instances, engines, len(planned), total)
+    record_path = append_run_record(results_dir, record)
+    print(f"Machine record -> {record_path}")
+
     started = time.monotonic()
     failures = execute(normal, args, results_dir, args.jobs)
     failures += execute(large, args, results_dir, 1)
+    elapsed = time.monotonic() - started
     print(
-        f"\nDone in {(time.monotonic() - started) / 60:.1f} min -> {results_dir} "
+        f"\nDone in {elapsed / 60:.1f} min -> {results_dir} "
         f"({total - failures}/{total} jobs succeeded)"
     )
     if failures:
@@ -690,6 +1011,15 @@ def main() -> int:
     # already holds a rejected solution runs nothing, and would otherwise exit 0
     # and tell an unattended wrapper the run was clean.
     rejected = count_rejected(planned, results_dir)
+    record["status"] = "complete"
+    record["finished_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+    record["outcome"] = {
+        "jobs_run": total,
+        "failures": failures,
+        "rejected": rejected,
+        "wall_seconds": round(elapsed, 3),
+    }
+    close_run_record(results_dir, record)
     if rejected:
         print(
             f"\nDEFECT: {rejected} solution(s) in {results_dir} were rejected by the "
@@ -707,7 +1037,9 @@ def main() -> int:
         f"  python {Path(__file__).parent}/primal_integral.py "
         f"--results-dir {results_dir} --roster {roster_path} --budget {args.budget} "
         f"--out {results_dir}/{out_name}\n"
-        f"Then copy it to {args.inst_dir}/{out_name} if it is the run you mean to publish."
+        f"Then copy it to {args.inst_dir}/{out_name} if it is the run you mean to "
+        f"publish, along with {results_dir}/{RUN_RECORD_FILENAME} -- the report quotes "
+        f"the machine record, and a published table without one is an anecdote."
         + (
             ""
             if args.verify

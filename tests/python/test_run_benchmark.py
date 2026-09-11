@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import gzip
+import hashlib
 import json
 import subprocess
 import sys
@@ -180,6 +181,11 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         "cpsat_workers": 1,
         "commit": "abc1234",
         "verify": True,
+        "skip_preconditions": False,
+        "jobs": 1,
+        "mem_limit_gb": None,
+        "force": False,
+        "large_bytes": 5_000_000,
     }
     return argparse.Namespace(**{**defaults, **overrides})
 
@@ -611,3 +617,212 @@ def test_a_resolve_discards_the_verdict_on_the_previous_point(
     run_benchmark.run_job(job, _driver_args(mem_limit_gb=None), tmp_path)
 
     assert not job.verification_path(tmp_path).exists()
+
+
+# --- Preconditions: the bytes are what the pins say ---------------------------
+#
+# A corrupted or substituted instance measures a different program under a
+# published row's name, and a revised reference file moves every gap in the table
+# at once. Both are silent, so the driver refuses to start (issue #137). These
+# fixtures are a few bytes each: the real roster is 546 MiB and re-fetching it is
+# the very substitution the pins exist to catch.
+
+
+def _pinned_dir(tmp_path: Path, instances: dict[str, bytes]) -> Path:
+    """An instance directory whose manifest and references both match its files."""
+    for name, data in instances.items():
+        (tmp_path / f"{name}.mps.gz").write_bytes(data)
+    _write_csv(
+        tmp_path / "manifest.csv",
+        ["instance", "sha256", "bytes"],
+        [
+            [name, hashlib.sha256(data).hexdigest(), len(data)]
+            for name, data in sorted(instances.items())
+        ],
+    )
+    reference_rows = []
+    for name in run_benchmark.PINNED_REFERENCE_FILES:
+        (tmp_path / name).write_text(f"contents of {name}\n")
+        data = (tmp_path / name).read_bytes()
+        reference_rows.append([name, hashlib.sha256(data).hexdigest(), len(data)])
+    _write_csv(tmp_path / "references.csv", ["file", "sha256", "bytes"], reference_rows)
+    return tmp_path
+
+
+def test_an_intact_instance_directory_raises_no_precondition_problem(tmp_path: Path) -> None:
+    inst_dir = _pinned_dir(tmp_path, {"a": b"instance bytes"})
+    assert run_benchmark.verify_preconditions(inst_dir, ["a"]) == []
+
+
+def test_a_substituted_instance_refuses_the_run(tmp_path: Path) -> None:
+    inst_dir = _pinned_dir(tmp_path, {"a": b"instance bytes"})
+    (inst_dir / "a.mps.gz").write_bytes(b"different bytes")
+
+    problems = run_benchmark.verify_preconditions(inst_dir, ["a"])
+
+    assert len(problems) == 1
+    assert "a.mps.gz" in problems[0]
+
+
+def test_a_revised_reference_file_refuses_the_run(tmp_path: Path) -> None:
+    # The yardstick every gap is scored against; a revision moves the whole table.
+    inst_dir = _pinned_dir(tmp_path, {"a": b"instance bytes"})
+    (inst_dir / "roster.csv").write_text("edited\n")
+
+    problems = run_benchmark.verify_preconditions(inst_dir, ["a"])
+
+    assert [p for p in problems if p.startswith("roster.csv:")]
+
+
+def test_an_unpinned_instance_directory_is_refused_rather_than_trusted(tmp_path: Path) -> None:
+    (tmp_path / "a.mps.gz").write_bytes(b"x")
+    problems = run_benchmark.verify_preconditions(tmp_path, ["a"])
+    assert len(problems) == 2, problems  # neither table is there
+
+
+def test_an_absent_instance_is_left_to_the_drivers_own_report(tmp_path: Path) -> None:
+    # main() already names missing instances with the command that fetches them;
+    # reporting them twice would bury the substitution this check is for.
+    inst_dir = _pinned_dir(tmp_path, {"a": b"instance bytes"})
+    (inst_dir / "a.mps.gz").unlink()
+
+    assert run_benchmark.verify_preconditions(inst_dir, ["a"]) == []
+
+
+def test_check_preconditions_stops_the_run_on_a_substituted_instance(tmp_path: Path) -> None:
+    inst_dir = _pinned_dir(tmp_path, {"a": b"instance bytes"})
+    (inst_dir / "a.mps.gz").write_bytes(b"other")
+    args = _driver_args(inst_dir=inst_dir, skip_preconditions=False)
+
+    assert run_benchmark.check_preconditions(args, ["a"], ("cbls",)) == 2
+
+
+def test_skip_preconditions_proceeds_but_says_the_run_is_not_publishable(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    inst_dir = _pinned_dir(tmp_path, {"a": b"instance bytes"})
+    (inst_dir / "a.mps.gz").write_bytes(b"other")
+    args = _driver_args(inst_dir=inst_dir, skip_preconditions=True)
+
+    assert run_benchmark.check_preconditions(args, ["a"], ("cbls",)) is None
+    assert "not publishable" in capsys.readouterr().err
+
+
+def test_the_preflight_is_not_paid_for_a_cbls_only_run(tmp_path: Path) -> None:
+    # It asserts the CP-SAT baseline; a run without that engine has nothing to check.
+    inst_dir = _pinned_dir(tmp_path, {"a": b"instance bytes"})
+    args = _driver_args(inst_dir=inst_dir, skip_preconditions=False)
+
+    assert run_benchmark.check_preconditions(args, ["a"], ("cbls",)) is None
+
+
+# --- The machine record -------------------------------------------------------
+
+
+def _record_args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
+    return _driver_args(**{"inst_dir": tmp_path, "jobs": 4, "mem_limit_gb": 6.0, **overrides})
+
+
+def test_the_run_record_states_the_concurrency_the_run_used(tmp_path: Path) -> None:
+    # The one thing a wall-clock-limited result cannot be read without: the same
+    # roster four-up is a different measurement from the same roster one-up.
+    record = run_benchmark.build_run_record(
+        _record_args(tmp_path), tmp_path / "roster.csv", ["a"], ("cbls", "cpsat"), 2, 2
+    )
+
+    assert record["concurrency"] == {
+        "jobs": 4,
+        "large_instance_jobs": 1,
+        "cpsat_workers": 1,
+        "mem_limit_gb": 6.0,
+    }
+
+
+def test_the_run_record_names_the_machine_and_the_budget(tmp_path: Path) -> None:
+    record = run_benchmark.build_run_record(
+        _record_args(tmp_path), tmp_path / "roster.csv", ["a"], ("cbls",), 1, 1
+    )
+
+    machine = record["machine"]
+    assert isinstance(machine, dict)
+    assert machine["host"]
+    assert isinstance(machine["cpu_count"], int)
+    assert machine["memory_total_kib"] is None or isinstance(machine["memory_total_kib"], int)
+    assert record["budget_seconds"] == 600.0
+
+
+def test_the_run_record_carries_the_engine_commit_and_solver_versions(tmp_path: Path) -> None:
+    record = run_benchmark.build_run_record(
+        _record_args(tmp_path), tmp_path / "roster.csv", ["a"], ("cbls",), 1, 1
+    )
+
+    versions = record["versions"]
+    assert isinstance(versions, dict)
+    assert versions["engine_commit"] == "abc1234"
+    assert versions["python"]
+
+
+def test_the_run_record_identifies_the_yardstick_the_gaps_will_be_scored_against(
+    tmp_path: Path,
+) -> None:
+    # An upstream revision of the solution file moves every gap in the table, so a
+    # later reader has to be able to tell which one a table was scored against.
+    inst_dir = _pinned_dir(tmp_path, {"a": b"instance bytes"})
+    record = run_benchmark.build_run_record(
+        _record_args(inst_dir), inst_dir / "roster.csv", ["a"], ("cbls",), 1, 1
+    )
+
+    references = record["references"]
+    assert isinstance(references, dict)
+    pinned = references["pinned"]
+    assert isinstance(pinned, dict)
+    assert set(pinned) == set(run_benchmark.PINNED_REFERENCE_FILES)
+    assert references["manifest_sha256"]
+
+
+def test_a_resumed_run_adds_a_record_rather_than_overwriting_the_first(tmp_path: Path) -> None:
+    # A resumed directory was produced by two machines and two concurrencies;
+    # keeping only the last would claim the whole set came off one.
+    results = tmp_path / "results"
+    first = run_benchmark.build_run_record(
+        _record_args(tmp_path, jobs=1), tmp_path / "roster.csv", ["a"], ("cbls",), 1, 1
+    )
+    run_benchmark.append_run_record(results, first)
+    second = run_benchmark.build_run_record(
+        _record_args(tmp_path, jobs=8), tmp_path / "roster.csv", ["a"], ("cbls",), 1, 1
+    )
+    run_benchmark.append_run_record(results, second)
+
+    runs = json.loads((results / run_benchmark.RUN_RECORD_FILENAME).read_text())["runs"]
+    assert [r["concurrency"]["jobs"] for r in runs] == [1, 8]
+
+
+def test_closing_the_record_replaces_the_entry_this_run_opened(tmp_path: Path) -> None:
+    results = tmp_path / "results"
+    record = run_benchmark.build_run_record(
+        _record_args(tmp_path), tmp_path / "roster.csv", ["a"], ("cbls",), 1, 1
+    )
+    run_benchmark.append_run_record(results, record)
+    assert record["status"] == "running"
+
+    record["status"] = "complete"
+    record["outcome"] = {"jobs_run": 1, "failures": 0, "rejected": 0, "wall_seconds": 1.0}
+    run_benchmark.close_run_record(results, record)
+
+    runs = json.loads((results / run_benchmark.RUN_RECORD_FILENAME).read_text())["runs"]
+    assert len(runs) == 1
+    assert runs[0]["status"] == "complete"
+
+
+def test_an_unfinished_run_still_left_a_record_behind(tmp_path: Path) -> None:
+    # Written before the first job, not after the last: a run killed at hour six
+    # still has to say what produced the results it did leave.
+    results = tmp_path / "results"
+    record = run_benchmark.build_run_record(
+        _record_args(tmp_path), tmp_path / "roster.csv", ["a"], ("cbls",), 1, 1
+    )
+    run_benchmark.append_run_record(results, record)
+
+    written = json.loads((results / run_benchmark.RUN_RECORD_FILENAME).read_text())["runs"][0]
+    assert written["status"] == "running"
+    assert written["finished_at"] is None

@@ -1361,6 +1361,130 @@ def _shape_section(
     return [*out, "No instance could be cross-checked: no pair of rows carried both shapes."]
 
 
+#: Where the driver writes the machine record, relative to the results directory.
+RUN_RECORD_FILENAME = "run_record.json"
+
+
+def read_run_record(results_dir: Path) -> tuple[dict[str, object] | None, int]:
+    """`(the last run's record, how many invocations the file holds)`.
+
+    `run_record.json` carries one entry per invocation, because a resumed run is a
+    second machine and a second concurrency. The last entry describes the run that
+    finished the directory; the count is reported so a reader can see the results
+    did not all come off one machine.
+    """
+    path = results_dir / RUN_RECORD_FILENAME
+    if not path.exists():
+        return None, 0
+    try:
+        parsed = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None, 0
+    runs = parsed.get("runs") if isinstance(parsed, dict) else None
+    if not isinstance(runs, list) or not runs:
+        return None, 0
+    last = runs[-1]
+    return (last if isinstance(last, dict) else None), len(runs)
+
+
+def _record_field(record: dict[str, object], *path: str) -> object:
+    """`record[path[0]][path[1]]...`, or None as soon as a level is missing."""
+    value: object = record
+    for key in path:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value
+
+
+def _format_memory(kib: object) -> str:
+    return f"{int(kib) / 1024 / 1024:.1f} GiB" if isinstance(kib, int) else "not recorded"
+
+
+def _format_concurrency(record: dict[str, object]) -> str:
+    """The one thing a wall-clock-limited comparison cannot be read without."""
+    jobs = _record_field(record, "concurrency", "jobs")
+    large = _record_field(record, "concurrency", "large_instance_jobs")
+    workers = _record_field(record, "concurrency", "cpsat_workers")
+    cap = _record_field(record, "concurrency", "mem_limit_gb")
+    return (
+        f"**{jobs} job(s) at a time**, large instances {large} at a time, "
+        f"CP-SAT {workers} worker(s), "
+        + (f"address-space cap {cap} GB" if cap else "no address-space cap")
+    )
+
+
+def run_record_section(record: dict[str, object] | None, run_count: int) -> list[str]:
+    """Section 8: what produced these numbers, beyond the code that ran.
+
+    A budgeted comparison is a statement about a machine as much as about an
+    algorithm -- the same roster on half the cores, or four-up instead of one-up,
+    is a different measurement. The driver writes the record; this quotes it into
+    the published report so a reader does not have to be handed the results
+    directory to see it.
+    """
+    out = ["## 8. Machine and run record", ""]
+    if record is None:
+        out += [
+            "**No machine record was written beside these results**, so the host, the "
+            f"core count and -- most consequentially -- the concurrency this "
+            "wall-clock-limited run used are unknown. A table in that state is an "
+            "anecdote rather than a measurement. The driver writes "
+            f"`{RUN_RECORD_FILENAME}` into the results directory; a directory without "
+            "one predates that or was filled by something else.",
+            "",
+        ]
+        return out
+
+    cores = _record_field(record, "machine", "cpu_count")
+    affinity = _record_field(record, "machine", "cpu_affinity")
+    pinned = _record_field(record, "references", "pinned")
+    solution_file = _record_field(record, "references", "solution_file")
+    reference_sha = (
+        pinned.get(solution_file)
+        if isinstance(pinned, dict) and isinstance(solution_file, str)
+        else None
+    )
+    versions = [
+        f"{label} {value}"
+        for label, value in (
+            ("ortools", _record_field(record, "versions", "ortools")),
+            ("PySCIPOpt", _record_field(record, "versions", "pyscipopt")),
+            ("Python", _record_field(record, "versions", "python")),
+        )
+        if value is not None
+    ]
+    rows = [
+        ["host", str(_record_field(record, "machine", "host"))],
+        ["platform", str(_record_field(record, "machine", "platform"))],
+        ["cores", f"{cores} ({affinity} available to the process)"],
+        ["memory", _format_memory(_record_field(record, "machine", "memory_total_kib"))],
+        ["concurrency", _format_concurrency(record)],
+        ["budget", f"{record.get('budget_seconds')}s per instance-engine pair"],
+        ["engine commit", str(_record_field(record, "versions", "engine_commit"))],
+        ["solver versions", ", ".join(versions) if versions else "not recorded"],
+        [
+            "reference file",
+            f"`{solution_file}` (sha256 {str(reference_sha)[:16]})"
+            if reference_sha
+            else "not recorded",
+        ],
+        ["started", str(record.get("started_at"))],
+        ["finished", str(record.get("finished_at") or "did not finish")],
+        ["status", str(record.get("status"))],
+    ]
+    out += _md_table(["field", "value"], rows)
+    out.append("")
+    if run_count > 1:
+        out += [
+            f"`{RUN_RECORD_FILENAME}` holds **{run_count} invocations**: this directory "
+            "was resumed, so the rows in it were not all produced under the record "
+            "above. Read the file for the earlier ones.",
+            "",
+        ]
+    return out
+
+
 def render_report(
     rows: list[Scored],
     summaries: list[Summary],
@@ -1368,6 +1492,8 @@ def render_report(
     roster_path: Path,
     table_path: Path,
     engines: tuple[str, ...] = ENGINES,
+    run_record: dict[str, object] | None = None,
+    run_count: int = 0,
 ) -> str:
     """The parity report that is published beside the comparison table.
 
@@ -1584,6 +1710,7 @@ def render_report(
             "the `setup measured` column states how many that is."
         )
     out.append("")
+    out += run_record_section(run_record, run_count)
     return "\n".join(out) + "\n"
 
 
@@ -1874,7 +2001,18 @@ def main() -> int:
     report_path = (
         Path(args.report) if args.report else out_path.with_name(f"{out_path.stem}_report.md")
     )
-    report_path.write_text(render_report(rows, summaries, args.budget, roster_path, out_path))
+    run_record, run_count = read_run_record(results_dir)
+    report_path.write_text(
+        render_report(
+            rows,
+            summaries,
+            args.budget,
+            roster_path,
+            out_path,
+            run_record=run_record,
+            run_count=run_count,
+        )
+    )
 
     parity = compare_feasibility(rows)
     defects = collect_defects(rows, summaries)
@@ -1935,6 +2073,13 @@ def main() -> int:
             f"\nDEFECT: {defects.shape_flagged} model-shape disagreement(s) the stated rule "
             "does not account for. The two engines did not read the same program; see section 4 "
             "of the report and the shape_agreement column.",
+            file=sys.stderr,
+        )
+    if run_record is None:
+        print(
+            f"\nWARNING: no {RUN_RECORD_FILENAME} beside {results_dir}, so this table "
+            "records no host, no core count and no concurrency. A wall-clock-limited "
+            "comparison without those is not reproducible; see section 8 of the report.",
             file=sys.stderr,
         )
     incomplete = [s for s in summaries if s.not_run]

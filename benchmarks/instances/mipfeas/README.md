@@ -60,7 +60,11 @@ the correctness sweep is for and keeps the anytime score as a co-equal section:
 6. **anytime quality** — the Primal Integral aggregate, labelled with the exact
    pairing it measures: CP-SAT's `fj` + `ls` subsolvers under `num_violation_ls`,
    never "solvers" in general;
-7. **where the time went** — setup and solve time in separate columns.
+7. **where the time went** — setup and solve time in separate columns;
+8. **the machine and run record** — host, cores, memory, the concurrency the run
+   used, the memory cap, the engine commit, the solver versions, the budget and
+   which yardstick file the gaps were scored against. A results directory with no
+   record says so in this section rather than quietly omitting it.
 
 A compact form of 1, 2, 4 and 5 also leads the table's own header, because that
 is what a reader quoting the CSV will see. The table additionally carries
@@ -140,9 +144,11 @@ the shifted geometric mean (shift 0.001).
 
 ```
 benchmarks/instances/mipfeas/
-  download.py     roster derivation + instance fetch
-  roster.csv           233 instances with reference values  (committed)
-  smoke.csv            11-instance subset for wiring checks (committed)
+  download.py     roster derivation + instance fetch + pin verification
+  roster.csv           233 instances with reference values  (committed, pinned)
+  smoke.csv            11-instance subset for wiring checks (committed, pinned)
+  miplib2017-v36.solu  the MIPLIB solution file it derives from (committed, pinned)
+  references.csv       sha256 + byte size of the three above (committed)
   manifest.csv         sha256 + byte size per instance      (committed)
   smoke_comparison.csv the wiring check's output            (committed)
   comparison.csv       scored results                       (committed once a run is published)
@@ -157,6 +163,9 @@ benchmarks/mipfeas/
   testdata/          a frozen results directory and the two artifacts scored
                      from it, compared byte for byte by the test suite
 
+results/mipfeas/
+  run_record.json       machine + concurrency, one entry per invocation
+
 results/mipfeas/<engine>/
   <instance>.json       result record
   <instance>.trace.csv  incumbent profile
@@ -168,6 +177,79 @@ The instances are too large to vendor, so `manifest.csv` pins the exact bytes th
 roster refers to. Because they can be absent, both runners **refuse to write a
 result for a missing instance** rather than recording it as "found nothing" —
 that failure mode is what emptied a published table in #103.
+
+## Preconditions: the pins are checked, not merely written
+
+The pins used to be computed and never read back. Three things are now verified
+before a run rather than discovered at scoring time (issue #137).
+
+### The bytes are what the pins say
+
+`manifest.csv` pins every instance and `references.csv` pins the yardstick — the
+MIPLIB solution file and both roster tables derived from it. `download.py
+--verify` checks all of them offline and exits non-zero naming each mismatch, and
+`run_benchmark.py` runs the same check before it dispatches the first job. A
+corrupted, truncated or upstream-revised file therefore stops the run instead of
+being measured under a published row's name.
+
+Overwriting a pin takes an explicit flag, and the update prints what it changes:
+
+* `download.py --update-references` accepts a moved solution file, rewrites
+  `roster.csv` / `smoke.csv` and re-pins all three, printing the per-instance
+  reference value and kind changes first. Without it a moved solution file
+  **fails the download and nothing is written**. MIPLIB does revise its solution
+  file — the shipped one carries a version in its name — and a silent revision
+  moves every gap in the published table at once, which is strictly worse than a
+  changed instance moving one row.
+* `download.py --update-manifest` accepts instance bytes that no longer match.
+  An instance the manifest has never seen is simply added: an acquisition is not
+  an overwrite.
+
+The `reference_kind` column survives every rewrite, because a gap against the one
+best-known value does not mean what a gap against a proven optimum means.
+
+### The baseline is the one documented
+
+Every parameter and log-format fact about CP-SAT in this harness was established
+empirically against ortools 9.15, and the whole incumbent trace is scraped from a
+debug log that carries no stability guarantee. A release that renames a subsolver
+flag or reformats a log line does not crash — it produces a degraded or empty
+baseline across all 233 instances at exit 0.
+
+`cpsat_solve.py --preflight` solves one tiny model built in memory (no instance,
+no network, ~2s) and asserts both halves, naming which broke:
+
+* **worker restriction** — CP-SAT accepted the parameter string, the log's
+  subsolver announcement lists exactly `fj` as first-solution and `ls` as
+  interleaved, the thread count is the one asked for, and the configuration can
+  actually find a solution;
+* **log format** — the announcement lines and the search header are present in
+  the shape the harness parses, and the improving-solution lines still match the
+  regex the incumbent trace is recovered from.
+
+The split is by what moved: the *shape* of a line is the log format, its
+*content* is the restriction. `pyproject.toml` bounds `ortools` to the range the
+parsing was established against (`>=9.7,<9.16`); raise it by running the
+preflight, not by editing the bound. The driver runs the preflight once before
+dispatching any job, so a broken release fails at second zero rather than after
+the roster has burned its budget.
+
+### The machine is recorded
+
+`run_benchmark.py` writes `run_record.json` into the results directory before the
+first job — host, platform, core count and the cores actually available to the
+process, total memory, **the concurrency the run used** (jobs at a time, large
+instances at a time, CP-SAT workers, address-space cap), the budget, the engine
+commit, the OR-Tools / PySCIPOpt / Python versions, and the hashes of the
+reference files the gaps will be scored against. A resumed run **appends** an
+entry rather than overwriting the first, because such a directory was produced by
+two machines and two concurrencies.
+
+The report quotes the latest entry as its section 8, so a published table carries
+its machine record rather than leaving it in a results directory nobody publishes.
+
+`--skip-preconditions` turns off the byte check and the preflight. It is for
+harness debugging, and a run made with it is not publishable.
 
 ## Verification: every reported solution is checked against the instance file
 
@@ -276,11 +358,15 @@ resume rather than being treated as a final verdict.
 # 1. Fetch the roster (~546 MiB via benchmark.zip; --subset smoke for the 11)
 python benchmarks/instances/mipfeas/download.py
 
+# 1b. Check the pinned bytes at any later point (offline, no download)
+python benchmarks/instances/mipfeas/download.py --verify
+
 # 2. Build the CBLS runner
 cmake -B build && cmake --build build -j$(nproc) --target cbls_mipfeas
 
 # 3. Install the baseline (OR-Tools) and the verifier's reader (PySCIPOpt)
 pip install -e '.[benchmarks]'
+python benchmarks/mipfeas/cpsat_solve.py --preflight   # ~2s, no instance, no network
 
 # 4. Wiring check: 11 instances, both engines, short budget
 python benchmarks/mipfeas/run_benchmark.py --roster smoke --budget 60 --jobs 2
@@ -491,7 +577,8 @@ it is not a configuration to publish, because the bounds it restores are not
 implied by the constraints.
 
 Two configuration facts are worth knowing before changing anything here, both
-established empirically against ortools 9.15:
+established empirically against ortools 9.15 and both re-checked by
+`cpsat_solve.py --preflight` (see **Preconditions** above) rather than assumed:
 
 * `filter_subsolvers` is the **only** parameter that accepts `fj`/`ls`.
   `subsolvers` and `ignore_subsolvers` validate against full-problem subsolver

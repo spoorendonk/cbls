@@ -109,3 +109,20 @@ Two different effects, kept in two columns because a single wall-clock number ca
 - **overrun** is `solve_seconds` past the budget. Search initialisation is not bounded by the deadline, so the first batch of a large model runs to completion whatever the clock says. A row can overrun with a negligible setup time and vice versa.
 
 
+## 8. Machine and run record
+
+| field | value |
+|---|---|
+| host | fixture-host |
+| platform | fixture-platform |
+| cores | 8 (4 available to the process) |
+| memory | 16.0 GiB |
+| concurrency | **2 job(s) at a time**, large instances 1 at a time, CP-SAT 1 worker(s), address-space cap 6.0 GB |
+| budget | 2.0s per instance-engine pair |
+| engine commit | fixture |
+| solver versions | ortools 9.15.6755, PySCIPOpt 6.2.1, Python 3.12.0 |
+| reference file | `miplib2017-v36.solu` (sha256 9236602294c1a5ac) |
+| started | 2026-01-01T00:00:00+00:00 |
+| finished | 2026-01-01T00:01:00+00:00 |
+| status | complete |
+
