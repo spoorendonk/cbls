@@ -45,9 +45,15 @@ The `1e-6` absolute terms are the engine's own stated feasibility tolerance
 (`--feas-tol`, `cbls::kDefaultFeasibilityTolerance`), so the two checks are
 *comparable* — a point the engine accepts at its limit is not rejected here for
 being at that limit — while remaining *independent*, since nothing else is
-shared. The `1e-9` relative terms sit about seven orders of magnitude above
-double-precision round-off (`2.2e-16`), which is what accumulating a row of
-millions of nonzeros can cost.
+shared. The objective's relative term is likewise the runner's own drift gate
+(`1e-6 * (|objective| + 1)`); the row and bound ones are `1e-9`, about seven
+orders of magnitude above double-precision round-off (`2.2e-16`) — this module
+sums each row with `math.fsum`, which is exact, so that margin covers only the
+*engine's* accumulation over a row of millions of nonzeros.
+
+Integrality is judged at the point as written and rows are evaluated on those
+same unrounded values: a point cannot buy row feasibility by being rounded to
+integers after the fact.
 
 The borderline rule
 -------------------
@@ -80,6 +86,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+
     from pyscipopt import Model
 
 #: Absolute and relative slack on a row activity. See the module docstring.
@@ -97,8 +105,16 @@ INTEGRALITY_TOLERANCE = 1e-6
 
 #: Absolute and relative slack between the objective the engine published and the
 #: one this module computes from the solution vector and the instance file.
+#:
+#: The relative term is 1e-6, NOT the 1e-9 the row and bound checks use, and for
+#: the same reason those use 1e-6 absolutely: this check re-measures exactly the
+#: quantity the CBLS runner's own objective-drift gate accepts, at
+#: `1e-6 * (|objective| + 1)` (benchmarks/mipfeas/mipfeas.cpp, assess_result).
+#: A tighter rule downstream of that gate would not be more independent -- it
+#: would reject runs the engine was entitled to publish, and at |obj| = 1e6 a
+#: 1e-9 relative term is a thousand times tighter than the gate upstream of it.
 OBJECTIVE_ABS_TOLERANCE = 1e-6
-OBJECTIVE_REL_TOLERANCE = 1e-9
+OBJECTIVE_REL_TOLERANCE = 1e-6
 
 #: A pass whose worst violation reaches this fraction of its tolerance is marked
 #: `marginal`. It is a flag on a passing row, never a reason to withhold one.
@@ -135,17 +151,24 @@ class Row:
 
 @dataclass(frozen=True)
 class Instance:
-    """The original program, as a third-party reader sees it."""
+    """The original program, as a third-party reader sees it.
 
-    path: Path
+    `rows` is a factory rather than a list, and that is load-bearing rather than
+    stylistic. PySCIPOpt's `getValsLinear` builds a fresh `str` key per nonzero,
+    measured at ~245 bytes each (`supportcase7`: 2.85M nonzeros, 698 MiB RSS), so
+    holding the whole matrix would cost ~6.7 GB on `square47`'s 27.4M nonzeros --
+    on top of SCIP's own copy, inside the job's `--mem-limit-gb` slot. Streaming
+    one row at a time keeps the peak at SCIP's model plus a single row. A factory
+    rather than a bare generator so the caller may iterate more than once.
+    """
+
     columns: dict[str, Column]
-    rows: list[Row]
+    rows: Callable[[], Iterator[Row]]
+    #: Constraints SCIP holds, linear or not. Informational; `rows()` yields only
+    #: the linear ones and names the rest.
+    n_rows: int
     objective: dict[str, float]
     objective_offset: float
-    sense: str
-    #: Constraint handlers this module cannot check, by name. Non-empty means the
-    #: verdict can only be `error`.
-    unsupported: list[str]
 
 
 @dataclass
@@ -209,6 +232,10 @@ def checker_provenance() -> str:
     """Which reader produced the verdict, recorded per result like every other tool."""
     from pyscipopt import Model
 
+    scip = Model()
+    # Silenced: this runs inside the driver, which slices the verifier's stdout
+    # into its own log, and a chattier SCIP build prints a banner on construction.
+    scip.hideOutput()
     try:
         binding = pkg_version("pyscipopt")
     except PackageNotFoundError:  # pragma: no cover - source checkouts only
@@ -229,44 +256,57 @@ def _read_columns(model: Model) -> dict[str, Column]:
     return columns
 
 
-def _read_rows(model: Model) -> tuple[list[Row], list[str]]:
-    rows: list[Row] = []
-    unsupported: list[str] = []
+def _row_stream(model: Model, unsupported: list[str]) -> Iterator[Row]:
+    """Yield one linear row at a time, appending anything else to `unsupported`.
+
+    The caller must consume the whole stream before reading `unsupported`: a
+    constraint type nobody checked must not read as a constraint that held, and
+    that is only knowable once every constraint has been seen.
+    """
+    unsupported.clear()
     for cons in model.getConss():
         handler = cons.getConshdlrName()
         if handler != LINEAR_HANDLER:
             unsupported.append(f"{cons.name}({handler})")
             continue
-        rows.append(
-            Row(
-                name=cons.name,
-                lower=model.getLhs(cons),
-                upper=model.getRhs(cons),
-                coefficients=model.getValsLinear(cons),
-            )
+        yield Row(
+            name=cons.name,
+            lower=model.getLhs(cons),
+            upper=model.getRhs(cons),
+            coefficients=model.getValsLinear(cons),
         )
-    return rows, unsupported
 
 
-def read_instance(mps_path: Path) -> Instance:
-    """Parse `mps_path` with SCIP. Raises whatever SCIP raises on a bad file."""
+def read_instance(mps_path: Path) -> tuple[Instance, list[str]]:
+    """Parse `mps_path` with SCIP. Raises whatever SCIP raises on a bad file.
+
+    Returns the instance and the list constraint handlers this module cannot
+    check accumulate into; the list is empty until `Instance.rows()` has been
+    consumed, and `check` reads it afterwards.
+
+    The objective sense is deliberately not carried: the identity checked here is
+    `c.x + offset`, the same number under either sense, and SCIP returns
+    original-problem coefficients. No roster instance carries an OBJSENSE section
+    (surveyed, 233/233) and the CBLS adapter rejects one outright.
+    """
     from pyscipopt import Model
 
     model = Model()
     model.hideOutput()
     model.readProblem(str(mps_path))
-    rows, unsupported = _read_rows(model)
-    return Instance(
-        path=mps_path,
-        columns=_read_columns(model),
-        rows=rows,
-        objective={var.name: var.getObj() for var in model.getVars() if var.getObj() != 0.0},
-        # `getObjoffset()` only: the transformed-problem variant segfaults in the
-        # problem-creation stage on PySCIPOpt 6.2.1, which is where a model that
-        # was read but never solved sits.
-        objective_offset=model.getObjoffset(),
-        sense=model.getObjectiveSense(),
-        unsupported=unsupported,
+    unsupported: list[str] = []
+    return (
+        Instance(
+            columns=_read_columns(model),
+            rows=lambda: _row_stream(model, unsupported),
+            n_rows=model.getNConss(),
+            objective={var.name: var.getObj() for var in model.getVars() if var.getObj() != 0.0},
+            # `getObjoffset()` only: the transformed-problem variant segfaults in
+            # the problem-creation stage on PySCIPOpt 6.2.1, which is where a
+            # model that was read but never solved sits.
+            objective_offset=model.getObjoffset(),
+        ),
+        unsupported,
     )
 
 
@@ -311,14 +351,16 @@ def _check_columns(instance: Instance, values: dict[str, float], out: Verificati
 
 
 def _check_rows(instance: Instance, values: dict[str, float], out: Verification) -> None:
-    """Row activities against the ranges the file declares for them."""
-    for row in instance.rows:
-        activity = 0.0
-        absolute_terms = 0.0
-        for name, coefficient in row.coefficients.items():
-            term = coefficient * values[name]
-            activity += term
-            absolute_terms += abs(term)
+    """Row activities against the ranges the file declares for them.
+
+    One row at a time, and each activity summed with `math.fsum`, which is exact:
+    the tolerance below then has to cover only the *engine's* accumulation error,
+    not this checker's as well.
+    """
+    for row in instance.rows():
+        terms = [coefficient * values[name] for name, coefficient in row.coefficients.items()]
+        activity = math.fsum(terms)
+        absolute_terms = math.fsum(abs(term) for term in terms)
         violation, _ = bound_violation(activity, row.lower, row.upper)
         scale = absolute_terms
         for side in (row.lower, row.upper):
@@ -341,12 +383,24 @@ def _check_objective(
     a cost coefficient or lost the objective constant is caught here rather than
     read as search quality.
     """
-    recomputed = instance.objective_offset + sum(
-        coefficient * values[name] for name, coefficient in instance.objective.items()
+    recomputed = math.fsum(
+        [instance.objective_offset]
+        + [coefficient * values[name] for name, coefficient in instance.objective.items()]
     )
     out.objective_recomputed = recomputed
     out.objective_reported = reported
     if reported is None:
+        # Unreachable from either runner -- both always write `=obj=` -- but a row
+        # whose objective nobody stated cannot have it checked, and the scorer
+        # would then publish an unchecked number.
+        out.objective_violation = math.inf
+        out.objective_ratio = math.inf
+        return
+    if not (math.isfinite(reported) and math.isfinite(recomputed)):
+        # An objective of inf or NaN is not a number a row can publish, and every
+        # comparison below would be False — so the check would pass on it.
+        out.objective_violation = math.inf
+        out.objective_ratio = math.inf
         return
     out.objective_violation = abs(reported - recomputed)
     tolerance = OBJECTIVE_ABS_TOLERANCE + OBJECTIVE_REL_TOLERANCE * max(
@@ -366,15 +420,37 @@ _RATIO_CHECKS = (
 
 
 def check(
-    instance: Instance, values: dict[str, float], reported_objective: float | None
+    instance: Instance,
+    values: dict[str, float],
+    reported_objective: float | None,
+    unsupported: list[str] | None = None,
 ) -> Verification:
-    """Check `values` against `instance`; the verdict is the whole story of it."""
+    """Check `values` against `instance`; the verdict is the whole story of it.
+
+    `unsupported` is the list `read_instance` returned alongside the instance:
+    iterating the rows fills it with any constraint type this module cannot
+    model, and a non-empty one can only be an `error`.
+    """
+    unsupported = [] if unsupported is None else unsupported
     out = Verification(
         verdict=PASS,
         reason="",
         n_columns=len(instance.columns),
-        n_rows=len(instance.rows),
+        n_rows=instance.n_rows,
     )
+    # Before anything else: every comparison against a NaN is False, so a NaN
+    # value would sail through every check below and verify as `pass`. This is
+    # the one module where failing open is the cardinal sin, so a value that is
+    # not a real number makes the file unusable rather than acceptable.
+    unreal = sorted(name for name, value in values.items() if not math.isfinite(value))
+    if unreal:
+        return _error(
+            "non_finite_solution",
+            f"{len(unreal)} values are not finite (e.g. {unreal[:3]}); the file does "
+            f"not describe a point",
+            n_columns=len(instance.columns),
+            n_rows=instance.n_rows,
+        )
     missing = sorted(set(instance.columns) - set(values))
     extra = sorted(set(values) - set(instance.columns))
     if missing or extra:
@@ -385,20 +461,20 @@ def check(
             f"solution covers {len(values)} of {len(instance.columns)} columns "
             f"(missing e.g. {missing[:3]}, unknown e.g. {extra[:3]})",
             n_columns=len(instance.columns),
-            n_rows=len(instance.rows),
+            n_rows=instance.n_rows,
         )
-    if instance.unsupported:
-        return _error(
-            "unsupported_constraint",
-            f"{len(instance.unsupported)} constraints this checker does not model "
-            f"(e.g. {instance.unsupported[:3]}); a constraint nobody checked must "
-            f"not read as one that held",
-            n_columns=len(instance.columns),
-            n_rows=len(instance.rows),
-        )
-
     _check_columns(instance, values, out)
     _check_rows(instance, values, out)
+    # Read only after the row stream has been consumed, which is what fills it.
+    if unsupported:
+        return _error(
+            "unsupported_constraint",
+            f"{len(unsupported)} constraints this checker does not model "
+            f"(e.g. {unsupported[:3]}); a constraint nobody checked must not read "
+            f"as one that held",
+            n_columns=len(instance.columns),
+            n_rows=instance.n_rows,
+        )
     _check_objective(instance, values, reported_objective, out)
 
     out.failed_checks = [name for name, attr in _RATIO_CHECKS if getattr(out, attr) > 1.0]
@@ -432,14 +508,19 @@ def describe(out: Verification) -> str:
 def parse_solution(text: str) -> tuple[dict[str, float], float | None]:
     """Parse the MIPLIB-style solution format both runners write.
 
-    `#` comments and blank lines are ignored; `=obj= <value>` carries the
-    objective the engine published, and every other line is `<name> <value>`.
+    Whole-line `#` comments and blank lines are ignored; `=obj= <value>` carries
+    the objective the engine published, and every other line is `<name> <value>`.
     """
     values: dict[str, float] = {}
     objective: float | None = None
     for lineno, raw in enumerate(text.splitlines(), start=1):
-        line = raw.split("#", 1)[0].strip()
-        if not line:
+        # A comment is a WHOLE line. MIPLIB column names contain `#` -- 13 of the
+        # 233 roster instances name columns `x#1#1`, `delay#1`, `P#0#0` -- so
+        # stripping from the first `#` anywhere on the line would turn every
+        # solution on those instances into a parse error and withhold the row for
+        # both engines, for a format bug.
+        line = raw.strip()
+        if not line or line.startswith("#"):
             continue
         fields = line.split()
         if len(fields) != 2:
@@ -508,15 +589,15 @@ def verify_result(instance: str, inst_dir: Path, result_dir: Path) -> Verificati
     if reported is None:
         reported = file_objective
     try:
-        parsed = read_instance(mps_path)
-    except Exception as exc:  # noqa: BLE001 - any reader failure is one verdict
+        parsed, unsupported = read_instance(mps_path)
+        out = check(parsed, values, reported, unsupported)
+    except Exception as exc:  # any reader failure becomes one verdict, not a crash
         return _error(
             "instance_read_error",
             f"{mps_path}: {type(exc).__name__}: {exc}",
             instance=instance,
             engine=engine,
         )
-    out = check(parsed, values, reported)
     out.instance = instance
     out.engine = engine
     out.checker = checker_provenance()

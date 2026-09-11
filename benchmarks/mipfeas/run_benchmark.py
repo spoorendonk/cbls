@@ -3,8 +3,9 @@
 Built for an unattended multi-hour run on a bigger machine, so:
 
 * one process per (instance, engine) — a job that dies takes only itself;
-* resumable — a job whose result file already exists is skipped, so an
-  interrupted run continues where it stopped;
+* resumable — a job that already has a result *and* a verdict is skipped, so an
+  interrupted run continues where it stopped, and a results directory that was
+  solved but not checked is verified without re-solving;
 * size-aware — the largest instances run on their own after the rest, instead of
   four-up against a memory limit;
 * every job is bounded by a wall-clock timeout and, optionally, an address-space
@@ -50,6 +51,12 @@ DEFAULT_LARGE_BYTES = 5_000_000
 #: killed here is scored as a failure, so the slack has to cover the worst case rather
 #: than the typical one.
 TIMEOUT_SLACK_SECONDS = 900.0
+
+#: Wall clock a verification gets. Its own constant rather than the slack above,
+#: which is a budget *overhead* justified by model build: this is an absolute
+#: budget for reading the instance a second time and summing every nonzero in
+#: Python, on models up to 27.4M nonzeros.
+VERIFY_TIMEOUT_SECONDS = 900.0
 
 
 @dataclass(frozen=True)
@@ -193,6 +200,12 @@ def write_failure_result(
     )
 
 
+#: Reasons only the driver writes, for a checker that died rather than a solution
+#: that was checked. Retried on resume; every verdict the verifier writes itself
+#: is final.
+DRIVER_WRITTEN_VERDICT_REASONS = ("verifier_timeout", "verifier_died")
+
+
 def write_failure_verdict(job: Job, results_dir: Path, reason: str, message: str) -> None:
     """Record a verification the driver could not complete.
 
@@ -242,9 +255,15 @@ def run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
         return _run_job(job, args, results_dir)
     except Exception as exc:  # noqa: BLE001 - deliberate catch-all; see docstring
         with contextlib.suppress(OSError):
-            # If even this fails there is nothing left to do; the returned line
-            # still reports the failure.
-            write_failure_result(job, results_dir, "killed", f"driver error: {exc!r}", args.budget)
+            # Only when the job has no result of its own. This catch-all now spans
+            # the verification step too, and a failure there must not overwrite a
+            # finished search: resume, seeing a "killed" record, would never redo
+            # it, so a 600s solve would be discarded and the row scored 2.0. Left
+            # alone, the result is simply re-verified on the next pass.
+            if not job.result_path(results_dir).exists():
+                write_failure_result(
+                    job, results_dir, "killed", f"driver error: {exc!r}", args.budget
+                )
         return f"{job.engine}/{job.instance}: DRIVER-ERROR {exc!r}"
 
 
@@ -261,6 +280,9 @@ def _run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
         line, solved = _run_solver(job, args, results_dir)
         if not solved:
             return line
+        # The search just produced a new point, so any verdict sitting beside it
+        # describes the previous one and would read as current.
+        job.verification_path(results_dir).unlink(missing_ok=True)
     if needs_verification(job, results_dir, args.verify):
         line = f"{line} | {_verify(job, args, results_dir)}"
     return line
@@ -293,19 +315,22 @@ def _verify(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
             command,
             capture_output=True,
             text=True,
-            timeout=TIMEOUT_SLACK_SECONDS,
+            timeout=VERIFY_TIMEOUT_SECONDS,
             start_new_session=True,
         )
     except subprocess.TimeoutExpired:
         write_failure_verdict(
-            job, results_dir, "verifier_timeout", f"exceeded {TIMEOUT_SLACK_SECONDS}s"
+            job, results_dir, "verifier_timeout", f"exceeded {VERIFY_TIMEOUT_SECONDS}s"
         )
         return "VERIFY-ERROR timeout"
     if completed.returncode == 0:
         return f"verified {completed.stdout.strip()[:200]}"
-    if completed.returncode == 1:
+    if completed.returncode == 1 and job.verification_path(results_dir).exists():
         # Exit 1 is the verifier's "I checked it and it is wrong", and it wrote
-        # the verdict itself.
+        # the verdict itself. Python also exits 1 on an uncaught traceback, which
+        # writes nothing -- reporting that as a rejected solution would fire this
+        # benchmark's loudest alarm for a harness fault, so it falls through to
+        # the error path below instead.
         return f"VERIFY-FAILED {completed.stdout.strip()[:200]}"
     if not job.verification_path(results_dir).exists():
         write_failure_verdict(
@@ -367,6 +392,15 @@ def _run_solver(job: Job, args: argparse.Namespace, results_dir: Path) -> tuple[
     )
 
 
+def count_rejected(jobs: list[Job], results_dir: Path) -> int:
+    """How many of `jobs` carry a verdict that rejected the engine's solution."""
+    return sum(
+        1
+        for job in jobs
+        if (_read_json(job.verification_path(results_dir)) or {}).get("verdict") == "fail"
+    )
+
+
 def plan_jobs(
     instances: list[str], engines: tuple[str, ...], sizes: dict[str, int], large_bytes: int
 ) -> tuple[list[Job], list[Job]]:
@@ -400,6 +434,12 @@ def needs_solve(job: Job, results_dir: Path, verify: bool) -> bool:
     result = _read_json(job.result_path(results_dir))
     if result is None:
         return True
+    if verify and result.get("status") == "solution_write_error":
+        # The search found a point and only the dump failed (a full disk, a
+        # read-only directory). Nothing else can produce the solution vector, and
+        # the scorer withholds the row until one exists.
+        print(f"Re-running {job.engine}/{job.instance}: the solution could not be written.")
+        return True
     if (
         verify
         and result.get("status") == "feasible"
@@ -425,7 +465,16 @@ def needs_verification(job: Job, results_dir: Path, verify: bool) -> bool:
     result = _read_json(job.result_path(results_dir))
     if result is None or result.get("status") != "feasible":
         return False
-    return _read_json(job.verification_path(results_dir)) is None
+    verdict = _read_json(job.verification_path(results_dir))
+    if verdict is None:
+        return True
+    # The driver's own error verdicts describe a checker that died, not a solution
+    # that was checked, and both causes are transient (a memory cap under load, a
+    # timeout). Without this the row is withheld for good, recoverable only by
+    # --force, which pays for the whole search again. The verifier's own verdicts
+    # -- including its `error`s -- are sticky, because re-running a check that
+    # cannot succeed never converges.
+    return verdict.get("reason") in DRIVER_WRITTEN_VERDICT_REASONS
 
 
 def has_usable_result(job: Job, results_dir: Path, verify: bool = False) -> bool:
@@ -561,6 +610,7 @@ def main() -> int:
     engines = tuple(args.engines)
     sizes = read_sizes(args.inst_dir / "manifest.csv")
     normal, large = plan_jobs(instances, engines, sizes, args.large_bytes)
+    planned = normal + large
 
     normal, large = drop_completed(normal, large, results_dir, force=args.force, verify=args.verify)
 
@@ -581,6 +631,18 @@ def main() -> int:
         # Non-zero exit, so an unattended run's wrapper can tell "finished" from
         # "finished having failed every job" — otherwise indistinguishable.
         print(f"{failures} of {total} jobs failed; see the lines above.", file=sys.stderr)
+    # Counted over every planned job rather than only the ones this invocation
+    # ran, and kept out of the job tally above: a resume of a directory that
+    # already holds a rejected solution runs nothing, and would otherwise exit 0
+    # and tell an unattended wrapper the run was clean.
+    rejected = count_rejected(planned, results_dir)
+    if rejected:
+        print(
+            f"\nDEFECT: {rejected} solution(s) in {results_dir} were rejected by the "
+            f"independent check against the instance file. Score the run to see "
+            f"which, or read the .verify.json files.",
+            file=sys.stderr,
+        )
     # Score beside the results, not into the instance directory: both
     # comparison.csv and smoke_comparison.csv there are committed, README-cited
     # artifacts, and following a printed command must not be able to overwrite one
@@ -599,7 +661,7 @@ def main() -> int:
             "--allow-unverified and the table it writes is not publishable."
         )
     )
-    return 1 if failures else 0
+    return 1 if failures or rejected else 0
 
 
 if __name__ == "__main__":

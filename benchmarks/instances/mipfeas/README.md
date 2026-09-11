@@ -78,7 +78,7 @@ results/mipfeas/<engine>/
   <instance>.json       result record
   <instance>.trace.csv  incumbent profile
   <instance>.sol        solution vector of a feasible run (MIPLIB format)
-  <instance>.verify.json the independent verdict on that solution
+  <instance>.verify.json  the independent verdict on that solution
 ```
 
 The instances are too large to vendor, so `manifest.csv` pins the exact bytes the
@@ -117,14 +117,24 @@ unmeetable on a small one:
 | row activity | `max(0, lower - a.x, a.x - upper)` | `1e-6 + 1e-9 * row_scale` |
 | variable bound | `max(0, lower - x, x - upper)` | `1e-6 + 1e-9 * \|bound\|` |
 | integrality | `\|x - round(x)\|` | `1e-6` |
-| objective | `\|reported - (c.x + offset)\|` | `1e-6 + 1e-9 * \|objective\|` |
+| objective | `\|reported - (c.x + offset)\|` | `1e-6 + 1e-6 * \|objective\|` |
 
 `row_scale` is `max(\|lower\|, \|upper\|, sum \|a_ij x_j\|)` over the finite sides — the
 sum of absolute terms rather than the activity, so a row whose terms cancel is
-still judged against the magnitudes actually added up. The `1e-6` absolute terms
-are the engine's own stated feasibility tolerance, which keeps the two *comparable*
-without sharing anything; the `1e-9` relative terms sit ~7 orders above double
-round-off, which is what a row of millions of nonzeros can accumulate.
+still judged against the magnitudes actually added up.
+
+Each absolute term is the engine's own stated feasibility tolerance, which keeps
+the two checks *comparable* without sharing anything. The objective's relative
+term is likewise the runner's own drift gate, `1e-6 * (|objective| + 1)` — this
+check re-measures exactly the quantity that gate accepts, so a tighter rule
+downstream of it would reject runs the engine was entitled to publish rather than
+being more independent. The row and bound relative terms are `1e-9`, ~7 orders
+above double round-off; activities here are summed with `math.fsum`, which is
+exact, so that margin covers the *engine's* accumulation and not the checker's.
+
+Integrality is judged at the point as written, and the rows are evaluated on
+those same unrounded values — a point cannot buy row feasibility by being rounded
+to integers after the fact.
 
 **The rule is the threshold, and nothing else.** A solution fails if and only if
 some violation exceeds its tolerance; at or below it, it passes. There is no
@@ -149,11 +159,33 @@ on the scorer publishes rows that carry no verdict. Both are for harness
 debugging and for results directories filled before this existed; a table scored
 with either is not publishable.
 
-Two costs worth knowing. Verification reads each instance a second time, in
-Python, so on the largest models it is not free — `square47` has 27.4M nonzeros —
-and it runs inside the job, under the same memory cap. And a resumed run whose
-results predate the solution dump re-**solves** those instances: nothing but the
-search can produce the solution vector.
+### What it holds on real instances
+
+Swept over the vendored `benchmarks/instances/miplib-fj/` set — 11 real MIPLIB
+2017 instances, both engines, short budgets — **19 solutions, all `pass`**, and
+none close to a threshold. The worst row violation observed is `1.7e-10`
+(9e-5 of its tolerance, CBLS on `pk1`) and the worst objective mismatch `5.2e-09`
+(7e-7 of its tolerance, CP-SAT on `binkar10_1`). So the tolerances are nowhere
+near tight enough to manufacture a false defect, and CP-SAT's integer scaling of
+continuous columns — the one plausible source of systematic *baseline* failures —
+does not produce violations at this scale. Reproduce by pointing either runner's
+`--inst-dir` at that directory and running `verify_solution.py` over the results;
+`tests/python/test_verify_solution.py` pins the `pk1` case in the suite.
+
+### Two costs worth knowing
+
+Verification reads each instance a second time and sums every nonzero in Python,
+inside the job slot and under the same memory cap as the solve. It checks one row
+at a time and never holds the matrix: PySCIPOpt builds a fresh `str` key per
+nonzero, measured at ~245 bytes each, so retaining it would cost ~6.7 GB on
+`square47`'s 27.4M nonzeros — more than the `--mem-limit-gb 6` below. Peak is
+SCIP's own model plus a single row. The `peak_rss_kib` figures recorded per
+result are the **solve's**, so they do not bound a job's peak on their own.
+
+And a resumed run whose results predate the solution dump re-**solves** those
+instances: nothing but the search can produce the solution vector. A verification
+the driver had to kill (its timeout or the memory cap) is retried on the next
+resume rather than being treated as a final verdict.
 
 ## Running it
 
@@ -184,7 +216,8 @@ The driver is resumable: a job whose result file exists is skipped, so an
 interrupted run continues where it stopped.
 
 Sizing `--jobs` is a memory question rather than a core-count one. Every result
-records its `peak_rss_kib`. From the wiring check, `neos-5114902-kasavu` (710k
+records its `peak_rss_kib` — of the **solve only**; verification runs afterwards
+in the same job slot (see above). From the wiring check, `neos-5114902-kasavu` (710k
 columns, 961k rows, 4.9M nonzeros) peaked at **1.2 GB under CBLS and 3.2 GB
 under CP-SAT**, and CP-SAT carries a ~100 MB floor on even the smallest models.
 
@@ -202,11 +235,14 @@ rather than reading 6 GB off the RSS figures above.
 ## What the wiring check found
 
 `smoke_comparison.csv` is 11 instances at 60s — enough to prove the harness end
-to end, and **not** a result. It also predates the verification columns above and
-was not regenerated for them: its rows carry no verdict, so re-scoring that run
-needs `--allow-unverified` and a fresh wiring check is the better move. Both engines honoured the budget, the largest
+to end, and **not** a result. Both engines honoured the budget, the largest
 instance in the subset ran without OOM, and the driver resumed correctly after
 being interrupted.
+
+That table predates the verification columns — and the `n_unbounded_columns` /
+`n_bounds_tightened` ones before them — and was not regenerated for any of them.
+Its rows carry no verdict, so re-scoring that run would need
+`--allow-unverified`; a fresh wiring check is the better move.
 
 The first run of it found two defects in the harness rather than in either
 solver, which is what a wiring check is for. The MPS reader was binarising

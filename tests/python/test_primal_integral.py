@@ -456,8 +456,8 @@ def test_a_rejected_solution_publishes_no_objective(tmp_path: Path) -> None:
         tmp_path,
         "cbls",
         "inst",
-        {"status": "feasible", "objective": 90.0},
-        trace=[(1.0, 90.0)],
+        {"status": "feasible", "objective": 110.0},
+        trace=[(1.0, 110.0)],
         verification=_rejected(),
     )
     scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
@@ -466,11 +466,30 @@ def test_a_rejected_solution_publishes_no_objective(tmp_path: Path) -> None:
     assert scored.verification_reason == "row_violation"
     assert scored.withheld
     assert scored.objective is None
-    # And no derived score either: not the gap, not the Primal Integral, and not
-    # a below_reference flag computed from a number that was withdrawn.
+    # And no derived score either: not the gap and not the Primal Integral.
     assert math.isnan(scored.final_gap)
     assert math.isnan(scored.primal_integral)
-    assert not scored.below_reference
+
+
+def test_withholding_does_not_disable_the_proven_optimum_defect_gate(tmp_path: Path) -> None:
+    # `below_reference` is a defect flag, not a published number, and a solution
+    # the checker rejected is the likeliest place for one. Dropping it with the
+    # objective would blind the cheapest gate the benchmark has (232 of the 233
+    # references are proven optima) on exactly the rows that need it.
+    _write_result(
+        tmp_path,
+        "cbls",
+        "inst",
+        {"status": "feasible", "objective": 90.0},
+        trace=[(1.0, 90.0)],
+        verification=_rejected(),
+    )
+    scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
+
+    assert scored.withheld
+    assert scored.objective is None
+    assert scored.below_reference
+    assert summarize([scored], "cbls").below_reference == 1
 
 
 def test_a_rejected_row_is_excluded_from_the_aggregates_not_scored_two(tmp_path: Path) -> None:
@@ -660,3 +679,81 @@ def test_a_withheld_row_writes_no_objective_into_the_table(tmp_path: Path) -> No
     assert body[0][header.index("objective")] == ""
     assert body[0][header.index("primal_integral")] == "nan"
     assert body[0][header.index("verification_reason")] == "integrality_violation"
+
+
+def test_a_solution_the_runner_could_not_write_is_withheld_not_scored_two(tmp_path: Path) -> None:
+    # The search found a point and only the dump failed. Scoring it 2.0 would
+    # publish a derived number for a row nothing could check -- and charge a disk
+    # error to the search.
+    _write_result(
+        tmp_path,
+        "cbls",
+        "inst",
+        {"status": "solution_write_error", "objective": None, "message": "disk full"},
+    )
+    scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
+
+    assert scored.withheld
+    assert math.isnan(scored.primal_integral)
+    assert summarize([scored], "cbls").unverified == 1
+
+
+def test_a_row_with_nothing_to_verify_says_so(tmp_path: Path) -> None:
+    # A run that found no solution has no point to check, so it must not read as a
+    # row nobody verified -- a defect counter grouping on the column would
+    # otherwise count every one of them.
+    _write_result(tmp_path, "cbls", "inst", {"status": "no_solution", "objective": None})
+    scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
+
+    assert scored.verification == "not_applicable"
+    assert summarize([scored], "cbls").unverified == 0
+
+
+def test_a_table_published_with_unverified_rows_says_so_in_its_header(tmp_path: Path) -> None:
+    # The "Verified:" note is unconditional, so --allow-unverified would otherwise
+    # produce a table asserting the one thing that is not true of it, with the
+    # evidence only in a per-row column.
+    _write_result(
+        tmp_path,
+        "cbls",
+        "inst",
+        {"status": "feasible", "objective": 10.0},
+        trace=[(0.0, 10.0)],
+        verification=None,
+    )
+    scored = score_instance(
+        "inst", "cbls", 10.0, "opt", tmp_path, budget=60.0, require_verification=False
+    )
+    out = tmp_path / "comparison.csv"
+    write_comparison(out, [scored], [summarize([scored], "cbls")], 60.0, tmp_path / "roster.csv")
+
+    text = out.read_text()
+    assert "SCORED WITH --allow-unverified" in text
+    assert "1 feasible row(s) are published with no independent" in text
+
+
+def test_a_fully_verified_table_carries_no_such_banner(tmp_path: Path) -> None:
+    _write_result(tmp_path, "cbls", "inst", {"status": "feasible", "objective": 10.0})
+    scored = score_instance("inst", "cbls", 10.0, "opt", tmp_path, budget=60.0)
+    out = tmp_path / "comparison.csv"
+    write_comparison(out, [scored], [summarize([scored], "cbls")], 60.0, tmp_path / "roster.csv")
+
+    assert "--allow-unverified" not in out.read_text()
+
+
+def test_unverified_rows_are_counted_even_when_they_are_published(tmp_path: Path) -> None:
+    # The counter used to key on `withheld`, which --allow-unverified turns off --
+    # so the one mode that publishes unchecked numbers reported none of them.
+    _write_result(
+        tmp_path,
+        "cbls",
+        "inst",
+        {"status": "feasible", "objective": 10.0},
+        trace=[(0.0, 10.0)],
+        verification=None,
+    )
+    scored = score_instance(
+        "inst", "cbls", 10.0, "opt", tmp_path, budget=60.0, require_verification=False
+    )
+    assert not scored.withheld
+    assert summarize([scored], "cbls").unverified == 1

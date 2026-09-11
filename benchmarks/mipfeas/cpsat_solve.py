@@ -263,9 +263,12 @@ def write_outputs(
         solution_dir = Path(args.solution_dir)
         solution_dir.mkdir(parents=True, exist_ok=True)
         try:
-            (solution_dir / f"{instance}.sol").write_text(
-                solution_text(instance, record["objective"], values)
-            )
+            # Temp-then-rename, like every other file this benchmark writes: a job
+            # killed mid-write must leave no solution rather than a truncated one,
+            # which would verify as an infeasible point.
+            tmp_solution = solution_dir / f"{instance}.sol.tmp"
+            tmp_solution.write_text(solution_text(instance, record["objective"], values))
+            tmp_solution.replace(solution_dir / f"{instance}.sol")
         except OSError as exc:
             # No solution file means no independent verdict, and a row with no
             # verdict must not publish a number (#138).

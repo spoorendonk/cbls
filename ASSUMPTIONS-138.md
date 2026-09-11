@@ -12,7 +12,10 @@
   absolute+relative. Resolved as, all constants of `verify_solution.py`:
   row activity `1e-6 + 1e-9 * row_scale` (row_scale = max(|lhs|, |rhs|,
   sum |a_ij x_j|) over the finite sides); variable bound `1e-6 + 1e-9 * |bound|`;
-  integrality `1e-6` absolute; objective consistency `1e-6 + 1e-9 * |objective|`.
+  integrality `1e-6` absolute; objective consistency `1e-6 + 1e-6 * |objective|`
+  (the relative term is the CBLS runner's own objective-drift gate, since this
+  check re-measures the very quantity that gate accepts — a tighter rule
+  downstream of it would reject runs the engine was entitled to publish).
   Because: the `1e-6` absolute terms are the engine's own stated feasibility
   tolerance (`--feas-tol`, `kDefaultFeasibilityTolerance`), which keeps the two
   checks comparable without sharing anything; the `1e-9` relative terms sit ~7
@@ -67,12 +70,29 @@
 - **Test instance**: the issue asked for "a small instance with a known solution".
   Resolved as: a hand-written 3-column / 3-row MPS (integer + continuous columns,
   L/G/E rows, a RANGES entry, an objective constant) with a known optimum,
-  written by the test itself; plus an end-to-end pass over the vendored
-  `benchmarks/instances/miplib-fj/pk1.mps.gz` through both runners. Because: the
-  233 roster instances are gitignored (~546 MiB) and a default-suite test cannot
-  depend on them.
+  written by the test itself — its integer column named `x#1`, because 13 roster
+  instances name columns that way and a `#`-anywhere comment rule would make
+  every solution on them unparseable. Plus an end-to-end pass over the vendored
+  `benchmarks/instances/miplib-fj/pk1.mps.gz` (86 columns, 45 rows) through the
+  CBLS runner, which is the only place the two readers' agreement on a real
+  fixed-format MPS is pinned. Because: the 233 roster instances are gitignored
+  (~546 MiB) and a default-suite test cannot depend on them.
 
 - **`smoke_comparison.csv` is not regenerated**: the committed wiring-check table
   predates these columns. Resolved as: left as-is with a note in the benchmark
   README. Because: regenerating it means an 11-instance timed run, which this
   session is forbidden to do (and which would be invalid on a shared machine).
+
+- **The verifier streams the constraint matrix**: not called for by the issue.
+  Resolved as: `Instance.rows` is a factory yielding one row at a time, never a
+  list. Because: PySCIPOpt builds a fresh `str` key per nonzero (~245 bytes,
+  measured on `supportcase7`: 2.85M nonzeros, 698 MiB RSS), so holding the matrix
+  would cost ~6.7 GB on `square47` — more than the `--mem-limit-gb 6` the README's
+  own run command sets, and the verifier runs inside that cap.
+
+- **A verification the driver killed is retried; one the verifier itself reached
+  is final**: resolved as `DRIVER_WRITTEN_VERDICT_REASONS` in `run_benchmark.py`.
+  Because: a timeout or a memory cap under load is transient, and treating it as
+  final would withhold the row for good — recoverable only by `--force`, which
+  pays for the whole 600s search again. Re-running a check that cannot succeed
+  (an unsupported constraint type) never converges, so those stay sticky.

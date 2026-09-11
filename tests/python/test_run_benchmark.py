@@ -12,12 +12,15 @@ from pathlib import Path
 
 import pytest
 
+from benchmarks.mipfeas import run_benchmark
 from benchmarks.mipfeas.primal_integral import NO_SOLUTION_GAP, score_instance, summarize
 from benchmarks.mipfeas.run_benchmark import (
     FAILURE_MARKERS,
     Job,
     build_command,
+    count_rejected,
     drop_completed,
+    execute,
     needs_solve,
     needs_verification,
     plan_jobs,
@@ -333,11 +336,113 @@ def test_write_failure_verdict_records_a_checker_that_died(tmp_path: Path) -> No
     assert record["engine"] == "cpsat"
 
 
-def test_a_rejected_solution_counts_as_a_failed_job() -> None:
+def test_a_rejected_solution_counts_as_a_failed_job(monkeypatch: pytest.MonkeyPatch) -> None:
     # This is the correctness benchmark: a run that published a point the checker
-    # refused must not exit 0.
+    # refused must not exit 0. Asserting the marker is in the list only restates a
+    # constant, so drive the counter the exit code is actually computed from.
     assert "VERIFY-FAILED" in FAILURE_MARKERS
     assert "VERIFY-ERROR" in FAILURE_MARKERS
+    monkeypatch.setattr(
+        run_benchmark,
+        "run_job",
+        lambda job, args, results_dir: f"{job.engine}/{job.instance}: done | VERIFY-FAILED row",
+    )
+    assert execute([Job("cbls", "inst")], _driver_args(), Path("/results"), workers=1) == 1
+
+
+def _verdict_file(job: Job, results_dir: Path, verdict: str, reason: str = "") -> None:
+    path = job.verification_path(results_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"verdict": verdict, "reason": reason}))
+
+
+class _FakeRun:
+    """Stands in for subprocess.run so _verify's return-code mapping can be driven."""
+
+    def __init__(self, returncode: int, raises: bool = False) -> None:
+        self.returncode = returncode
+        self.raises = raises
+        self.stdout = "out"
+        self.stderr = "err"
+
+    def __call__(self, *args: object, **kwargs: object) -> _FakeRun:
+        if self.raises:
+            raise subprocess.TimeoutExpired(cmd="verify", timeout=1.0)
+        return self
+
+
+def test_a_verifier_that_times_out_leaves_an_error_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job = Job("cbls", "inst")
+    monkeypatch.setattr(subprocess, "run", _FakeRun(0, raises=True))
+    line = run_benchmark._verify(job, _driver_args(mem_limit_gb=None), tmp_path)
+
+    assert "VERIFY-ERROR" in line
+    assert json.loads(job.verification_path(tmp_path).read_text())["reason"] == "verifier_timeout"
+
+
+def test_a_verifier_that_crashed_is_not_reported_as_a_rejected_solution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Python exits 1 on any uncaught traceback, writing no verdict. Reporting that
+    # as VERIFY-FAILED would fire this benchmark's loudest alarm -- "the engine
+    # published an infeasible point" -- for a harness fault.
+    job = Job("cbls", "inst")
+    monkeypatch.setattr(subprocess, "run", _FakeRun(1))
+    line = run_benchmark._verify(job, _driver_args(mem_limit_gb=None), tmp_path)
+
+    assert "VERIFY-ERROR" in line
+    assert json.loads(job.verification_path(tmp_path).read_text())["reason"] == "verifier_died"
+
+
+def test_a_rejected_solution_keeps_the_verifier_s_own_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job = Job("cbls", "inst")
+    _verdict_file(job, tmp_path, "fail", "row_violation")
+    monkeypatch.setattr(subprocess, "run", _FakeRun(1))
+    line = run_benchmark._verify(job, _driver_args(mem_limit_gb=None), tmp_path)
+
+    assert "VERIFY-FAILED" in line
+    assert json.loads(job.verification_path(tmp_path).read_text())["reason"] == "row_violation"
+
+
+def test_a_checker_the_driver_killed_is_checked_again_on_resume(tmp_path: Path) -> None:
+    # Both causes are transient -- a memory cap under load, a timeout. Treating the
+    # verdict as final would withhold the row for good, recoverable only by
+    # --force, which pays for the whole search again.
+    job = Job("cbls", "inst")
+    _write_result_file(job, tmp_path, "feasible")
+    job.solution_path(tmp_path).write_text("=obj= 1.0\nx 1\n")
+    _verdict_file(job, tmp_path, "error", "verifier_died")
+    assert needs_verification(job, tmp_path, verify=True)
+
+
+def test_a_verdict_the_checker_itself_reached_is_final(tmp_path: Path) -> None:
+    # Re-running a check that cannot succeed never converges.
+    job = Job("cbls", "inst")
+    _write_result_file(job, tmp_path, "feasible")
+    job.solution_path(tmp_path).write_text("=obj= 1.0\nx 1\n")
+    _verdict_file(job, tmp_path, "error", "unsupported_constraint")
+    assert not needs_verification(job, tmp_path, verify=True)
+
+
+def test_a_solution_the_runner_could_not_write_is_solved_again(tmp_path: Path) -> None:
+    # The search found a point and only the dump failed; nothing else can produce
+    # the solution vector, and the scorer withholds the row until one exists.
+    job = Job("cbls", "inst")
+    _write_result_file(job, tmp_path, "solution_write_error")
+    assert needs_solve(job, tmp_path, verify=True)
+
+
+def test_a_resumed_run_still_reports_an_already_rejected_solution(tmp_path: Path) -> None:
+    # A resume runs nothing, so without counting the verdicts already on disk the
+    # driver would exit 0 and tell an unattended wrapper the run was clean.
+    job = Job("cbls", "inst")
+    _verdict_file(job, tmp_path, "fail", "row_violation")
+    assert count_rejected([job], tmp_path) == 1
+    assert count_rejected([Job("cpsat", "inst")], tmp_path) == 0
 
 
 def test_the_driver_verifies_what_it_ran(tmp_path: Path) -> None:

@@ -44,13 +44,18 @@ if TYPE_CHECKING:
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-#: min x + 2y - z + 5
-#:   6 <= x + y <= 10     (L row at 10 with a RANGES entry of 4)
-#:        x + z >= 2
-#:       2x - z  = 4
-#:   x integer in [0, 8], y in [-3, 6], z in [0, 5]
+#: min x#1 + 2y - z + 5
+#:   6 <= x#1 + y <= 10     (L row at 10 with a RANGES entry of 4)
+#:        x#1 + z >= 2
+#:       2 x#1 - z  = 4
+#:   x#1 integer in [0, 8], y in [-3, 6], z in [0, 5]
 #:
-#: Optimum: x=4, y=2, z=4, objective 9 -- derived by hand below, and reached by
+#: The integer column is named `x#1` on purpose: 13 of the 233 roster instances
+#: name columns that way (`x#1#1`, `delay#1`, `P#0#0`), and a `#` treated as a
+#: comment marker anywhere on a line makes every solution on those instances
+#: unparseable -- withheld, for both engines, for a format bug.
+#:
+#: Optimum: x#1=4, y=2, z=4, objective 9 -- derived by hand below, and reached by
 #: both engines in the end-to-end tests at the bottom.
 TINY_MPS = """NAME          TINY
 ROWS
@@ -60,8 +65,8 @@ ROWS
  E  C3
 COLUMNS
     MARKER                 'MARKER'                 'INTORG'
-    x         COST             1.0   C1               1.0
-    x         C2               1.0   C3               2.0
+    x#1       COST             1.0   C1               1.0
+    x#1       C2               1.0   C3               2.0
     MARKER                 'MARKER'                 'INTEND'
     y         COST             2.0   C1               1.0
     z         COST            -1.0   C2               1.0
@@ -72,7 +77,7 @@ RHS
 RANGES
     RNG       C1               4.0
 BOUNDS
- UI BND       x                8.0
+ UI BND       x#1              8.0
  LO BND       y               -3.0
  UP BND       y                6.0
  UP BND       z                5.0
@@ -80,7 +85,7 @@ ENDATA
 """
 
 #: The known optimum of TINY_MPS, and its objective.
-OPTIMUM = {"x": 4.0, "y": 2.0, "z": 4.0}
+OPTIMUM = {"x#1": 4.0, "y": 2.0, "z": 4.0}
 OPTIMUM_OBJECTIVE = 9.0
 
 
@@ -93,7 +98,7 @@ def instance_file(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def instance(instance_file: Path) -> Instance:
-    return read_instance(instance_file)
+    return read_instance(instance_file)[0]
 
 
 def test_the_reader_sees_the_program_the_file_declares(instance: Instance) -> None:
@@ -101,10 +106,10 @@ def test_the_reader_sees_the_program_the_file_declares(instance: Instance) -> No
     # objective constant lives on the objective row's RHS with its sign flipped.
     # A reader that dropped either would accept solutions this one rejects.
     assert instance.objective_offset == pytest.approx(5.0)
-    assert instance.columns["x"].integral
+    assert instance.columns["x#1"].integral
     assert not instance.columns["y"].integral
     assert instance.columns["y"].lower == pytest.approx(-3.0)
-    c1 = next(row for row in instance.rows if row.name == "C1")
+    c1 = next(row for row in instance.rows() if row.name == "C1")
     assert (c1.lower, c1.upper) == pytest.approx((6.0, 10.0))
 
 
@@ -132,7 +137,7 @@ def test_a_corrupted_solution_is_rejected(instance: Instance) -> None:
 
 
 def test_a_solution_outside_a_variable_bound_is_rejected(instance: Instance) -> None:
-    verified = check(instance, {**OPTIMUM, "z": 5.5, "x": 4.75}, 8.25)
+    verified = check(instance, {**OPTIMUM, "z": 5.5, "x#1": 4.75}, 8.25)
     assert verified.verdict == FAIL
     assert "bound_violation" in verified.failed_checks
     assert verified.worst_bound_column == "z"
@@ -140,10 +145,10 @@ def test_a_solution_outside_a_variable_bound_is_rejected(instance: Instance) -> 
 
 def test_a_fractional_integer_is_rejected(instance: Instance) -> None:
     # x=4.5, z=5 keeps 2x - z = 4 exactly, so only integrality is violated.
-    verified = check(instance, {"x": 4.5, "y": 1.5, "z": 5.0}, 7.5)
+    verified = check(instance, {"x#1": 4.5, "y": 1.5, "z": 5.0}, 7.5)
     assert verified.verdict == FAIL
     assert verified.reason == "integrality_violation"
-    assert verified.worst_integral_column == "x"
+    assert verified.worst_integral_column == "x#1"
 
 
 def test_an_objective_that_is_not_the_point_s_objective_is_rejected(instance: Instance) -> None:
@@ -177,14 +182,31 @@ def test_a_violation_outside_the_tolerance_fails(instance: Instance) -> None:
 
 def test_an_integer_just_off_by_more_than_the_tolerance_fails(instance: Instance) -> None:
     off = 10 * INTEGRALITY_TOLERANCE
-    verified = check(instance, {"x": 4.0 + off, "y": 2.0 - off, "z": 4.0 + 2 * off}, 9.0 - off)
+    verified = check(instance, {"x#1": 4.0 + off, "y": 2.0 - off, "z": 4.0 + 2 * off}, 9.0 - off)
     assert verified.verdict == FAIL
     assert "integrality_violation" in verified.failed_checks
 
 
+def test_a_not_a_number_value_cannot_verify(instance: Instance) -> None:
+    # Every comparison against a NaN is False, so without an explicit guard a NaN
+    # sails through every check and verifies as `pass` -- failing open, in the one
+    # module where that is the cardinal sin.
+    verified = check(instance, {**OPTIMUM, "y": float("nan")}, OPTIMUM_OBJECTIVE)
+    assert verified.verdict == ERROR
+    assert verified.reason == "non_finite_solution"
+
+
+def test_an_infinite_objective_cannot_verify(instance: Instance) -> None:
+    # Same hazard on the objective: |inf - 9| is inf, but `inf <= tolerance` and
+    # every NaN comparison are both False, so the check would report no violation.
+    verified = check(instance, OPTIMUM, float("inf"))
+    assert verified.verdict == FAIL
+    assert verified.reason == "objective_mismatch"
+
+
 def test_a_solution_missing_a_column_is_an_error_not_a_pass(instance: Instance) -> None:
     # A partial dump must never read as "everything checked out".
-    verified = check(instance, {"x": 4.0, "y": 2.0}, OPTIMUM_OBJECTIVE)
+    verified = check(instance, {"x#1": 4.0, "y": 2.0}, OPTIMUM_OBJECTIVE)
     assert verified.verdict == ERROR
     assert verified.reason == "solution_variable_mismatch"
 
@@ -197,10 +219,19 @@ def test_a_solution_naming_an_unknown_column_is_an_error(instance: Instance) -> 
 
 def test_parse_solution_reads_the_format_the_runners_write() -> None:
     values, objective = parse_solution(
-        "# instance tiny\n# engine cbls\n=obj= 9.0\n\nx 4\ny 2.0\nz 4e0\n"
+        "# instance tiny\n# engine cbls\n=obj= 9.0\n\nx#1 4\ny 2.0\nz 4e0\n"
     )
     assert values == OPTIMUM
     assert objective == pytest.approx(OPTIMUM_OBJECTIVE)
+
+
+def test_parse_solution_keeps_a_hash_inside_a_column_name() -> None:
+    # 13 roster instances name columns `x#1#1` / `delay#1` / `P#0#0`. Treating `#`
+    # as a comment marker anywhere on the line makes every solution on those
+    # instances unparseable, so both engines' rows are withheld for a format bug.
+    values, objective = parse_solution("# engine cbls\n=obj= 6.0\nx#1#1 4\ny 2\n")
+    assert values == {"x#1#1": 4.0, "y": 2.0}
+    assert objective == pytest.approx(6.0)
 
 
 def test_parse_solution_rejects_a_repeated_variable() -> None:
@@ -211,6 +242,24 @@ def test_parse_solution_rejects_a_repeated_variable() -> None:
 def test_parse_solution_rejects_a_malformed_line() -> None:
     with pytest.raises(ValueError, match="expected"):
         parse_solution("x 1 2\n")
+
+
+def test_a_constraint_type_the_checker_cannot_model_is_an_error(instance: Instance) -> None:
+    # No roster instance carries an SOS or indicator section today, so nothing but
+    # this pins the rule: a constraint nobody checked must not read as one that
+    # held. Without it a future instance with an SOS row would verify `pass` on
+    # the linear rows alone.
+    verified = check(instance, OPTIMUM, OPTIMUM_OBJECTIVE, ["c1(SOS1)"])
+    assert verified.verdict == ERROR
+    assert verified.reason == "unsupported_constraint"
+
+
+def test_an_objective_nobody_stated_is_not_checked_off(instance: Instance) -> None:
+    # A row whose objective is unknown cannot have it verified, and the scorer
+    # would otherwise publish that unchecked number.
+    verified = check(instance, OPTIMUM, None)
+    assert verified.verdict == FAIL
+    assert verified.reason == "objective_mismatch"
 
 
 def _write_job(directory: Path, values: dict[str, float], objective: float) -> Path:
@@ -244,6 +293,14 @@ def test_verify_result_without_a_solution_file_is_an_error(tmp_path: Path) -> No
     verified = verify_result("tiny", _gzipped_instance(tmp_path), result_dir)
     assert verified.verdict == ERROR
     assert verified.reason == "missing_solution_file"
+
+
+def test_verify_result_of_an_unreadable_result_file_is_an_error(tmp_path: Path) -> None:
+    result_dir = _write_job(tmp_path / "cbls", OPTIMUM, OPTIMUM_OBJECTIVE)
+    (result_dir / "tiny.json").write_text('{"status": "feasi')
+    verified = verify_result("tiny", _gzipped_instance(tmp_path), result_dir)
+    assert verified.verdict == ERROR
+    assert verified.reason == "unreadable_result"
 
 
 def test_verify_result_without_the_instance_is_an_error(tmp_path: Path) -> None:
@@ -382,3 +439,42 @@ def test_the_cpsat_baseline_writes_a_solution_that_verifies(tmp_path: Path) -> N
     assert verified.verdict == PASS, verified.message
     assert verified.engine == "cpsat"
     assert verified.objective_recomputed == pytest.approx(OPTIMUM_OBJECTIVE, abs=1e-6)
+
+
+def test_a_real_miplib_instance_verifies_through_both_readers(tmp_path: Path) -> None:
+    """The cross-reader risk the hand-written instance cannot carry.
+
+    `check` returns `error` unless SCIP's column-name set exactly equals the
+    engine's, so a real fixed-format MPS -- INTORG markers, MIPLIB naming, 86
+    columns over 45 rows -- has to round-trip between two independent readers or
+    every row on the roster verifies as `error`. The 233-instance roster is
+    gitignored (~546 MiB); `pk1` is vendored, so this is the only place that
+    agreement can be pinned against a real file.
+    """
+    binary = REPO_ROOT / "build" / "cbls_mipfeas"
+    if not binary.exists():
+        pytest.skip("cbls_mipfeas not built")
+    inst_dir = REPO_ROOT / "benchmarks" / "instances" / "miplib-fj"
+    out_dir = tmp_path / "cbls"
+    subprocess.run(
+        [
+            str(binary),
+            "--instance",
+            "pk1",
+            "--inst-dir",
+            str(inst_dir),
+            "--out-dir",
+            str(out_dir),
+            "--solution-dir",
+            str(out_dir),
+            "--budget",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    verified = verify_result("pk1", inst_dir, out_dir)
+    assert verified.verdict == PASS, verified.message
+    assert verified.n_columns == 86
+    assert verified.n_columns == len(parse_solution((out_dir / "pk1.sol").read_text())[0])

@@ -247,15 +247,13 @@ int count_unbounded_columns(const cbls::MpsProblem& prob) {
 /// clean. Returns false (having said why) when the file cannot be written, and
 /// the caller then publishes no objective -- an unverifiable row must not carry
 /// a number, which is the whole of issue #138.
-bool write_solution(const Args& args, const cbls::MpsProblem& prob,
-                    const cbls::MpsToModelResult& built, double objective) {
+bool write_solution_to(const std::string& tmp_path, const Args& args, const cbls::MpsProblem& prob,
+                       const cbls::MpsToModelResult& built, double objective) {
     if (built.var_handles.size() != prob.vars.size()) {
         std::fprintf(stderr, "%s: %zu handles for %zu columns; no solution written\n",
                      args.instance.c_str(), built.var_handles.size(), prob.vars.size());
         return false;
     }
-    const std::string path = args.solution_dir + "/" + args.instance + ".sol";
-    const std::string tmp_path = path + ".tmp";
     {
         std::ofstream out(tmp_path);
         if (!out.is_open()) {
@@ -271,11 +269,16 @@ bool write_solution(const Args& args, const cbls::MpsProblem& prob,
         const auto& vars = built.model.variables();
         for (size_t i = 0; i < prob.vars.size(); ++i) {
             const std::string& name = prob.vars[i].name;
-            // The format is whitespace-separated, so a name carrying a space
-            // would produce a file that parses as a different program. Fixed
-            // MPS permits one; refuse rather than emit it.
-            if (name.find_first_of(" \t") != std::string::npos) {
-                std::fprintf(stderr, "%s: column name %s contains whitespace\n",
+            // Only a name the format genuinely cannot carry is refused: the
+            // lines are whitespace-separated, a whole line starting with '#' is
+            // a comment, and `=obj=` is the objective sentinel. A '#' *inside* a
+            // name is fine and common in MIPLIB (`x#1#1`), which is why the
+            // reader treats comments as whole lines.
+            if (name.empty() || name.find_first_of(" \t") != std::string::npos ||
+                name.front() == '#' || name == "=obj=") {
+                std::fprintf(stderr,
+                             "%s: column name '%s' is not representable in the solution "
+                             "format; no solution written\n",
                              args.instance.c_str(), name.c_str());
                 return false;
             }
@@ -292,14 +295,27 @@ bool write_solution(const Args& args, const cbls::MpsProblem& prob,
             return false;
         }
     }
-    // Renamed into place for the same reason the result file is: the driver
-    // reads this file only after the result appears, and a truncated solution
-    // would verify as an infeasible one.
-    std::error_code rename_ec;
-    std::filesystem::rename(tmp_path, path, rename_ec);
-    if (rename_ec) {
+    return true;
+}
+
+/// Writes the solution and renames it into place, leaving no partial file behind
+/// on any failure path. Renamed for the same reason the result file is: the
+/// driver reads this file only after the result appears, and a truncated
+/// solution would verify as an infeasible one.
+bool write_solution(const Args& args, const cbls::MpsProblem& prob,
+                    const cbls::MpsToModelResult& built, double objective) {
+    const std::string path = args.solution_dir + "/" + args.instance + ".sol";
+    const std::string tmp_path = path + ".tmp";
+    std::error_code ec;
+    if (!write_solution_to(tmp_path, args, prob, built, objective)) {
+        std::filesystem::remove(tmp_path, ec);
+        return false;
+    }
+    std::filesystem::rename(tmp_path, path, ec);
+    if (ec) {
         std::fprintf(stderr, "Failed to rename %s -> %s: %s\n", tmp_path.c_str(), path.c_str(),
-                     rename_ec.message().c_str());
+                     ec.message().c_str());
+        std::filesystem::remove(tmp_path, ec);
         return false;
     }
     return true;
@@ -524,12 +540,14 @@ int run_benchmark(int argc, char** argv) {
     // result file's existence and verifies what it finds next to it, so a
     // result that appeared first would leave a window in which the row looks
     // complete and unverifiable at once.
+    bool solution_write_failed = false;
     if (verdict.have_solution && !args.solution_dir.empty() &&
         !write_solution(args, prob, built, result.objective)) {
         // No solution file means no independent verdict, and a row with no
         // verdict must not publish a number (#138).
         verdict.have_solution = false;
         verdict.status = "solution_write_error";
+        solution_write_failed = true;
     }
     nlohmann::json j{
         {"status", verdict.status},
@@ -563,7 +581,7 @@ int run_benchmark(int argc, char** argv) {
                 result.best_violation, wall);
     // Non-zero when the solution could not be written: the job did run, but it
     // produced a row nothing can verify, and the driver has to see that.
-    return std::string(verdict.status) == "solution_write_error" ? 1 : 0;
+    return solution_write_failed ? 1 : 0;
 }
 
 }  // namespace

@@ -70,6 +70,14 @@ ENGINES = ("cbls", "cpsat")
 #: withhold, and both stay distinguishable in the published row.
 VERIFICATION_PASS = "pass"
 
+#: A solution the checker read and rejected, as opposed to one it could not check.
+VERIFICATION_FAIL = "fail"
+
+#: What a row that had nothing to verify reports: the run found no solution, so
+#: there is no point to check and no objective to withhold. Kept distinct from
+#: `unverified` so a defect counter cannot mistake one for the other.
+NOT_APPLICABLE = "not_applicable"
+
 #: What a feasible row with no verdict file at all reports.
 UNVERIFIED = "unverified"
 
@@ -144,6 +152,12 @@ def withholds(status: str, verification: Verification, require_verification: boo
     with. A `fail` always withholds; a missing verdict withholds unless the
     caller opted out, which is what an older results directory needs.
     """
+    if status == "solution_write_error":
+        # The search found a point and only the dump failed. Publishing it would
+        # score the row 2.0 -- a derived number for a row nothing could check,
+        # which is exactly what this rule exists to prevent -- and charge a disk
+        # error to the search.
+        return True
     if status != "feasible":
         return False
     if verification.verdict == VERIFICATION_PASS:
@@ -341,8 +355,18 @@ def score_instance(
     status = str(result.get("status", "unknown"))
     raw_objective = result.get("objective")
     objective = float(raw_objective) if isinstance(raw_objective, (int, float)) else None
+    # Kept across the withholding below. `below_reference` is a defect flag, not a
+    # published number, and 232 of the 233 references are proven optima -- dropping
+    # it for a row the checker rejected would disable the cheapest gate this
+    # benchmark has on precisely the rows most likely to trip it.
+    reported_objective = objective
 
     verification = read_verification(results_dir, engine, instance)
+    if status not in ("feasible", "solution_write_error"):
+        # Nothing was reported, so nothing is unchecked. Said explicitly, because a
+        # counter grouping on this column would otherwise read every no-solution
+        # row as one nobody verified.
+        verification = Verification(NOT_APPLICABLE, "", False, verification.tolerances)
     withheld = withholds(status, verification, require_verification)
     if withheld:
         # The whole of the rule: no objective, and therefore no gap, no Primal
@@ -376,8 +400,9 @@ def score_instance(
         final_gap=math.nan if withheld else primal_gap(objective, reference_value),
         below_reference=(
             reference_kind == "opt"
-            and objective is not None
-            and objective < reference_value - BELOW_REFERENCE_TOLERANCE * (abs(reference_value) + 1)
+            and reported_objective is not None
+            and reported_objective
+            < reference_value - BELOW_REFERENCE_TOLERANCE * (abs(reference_value) + 1)
         ),
         primal_integral=(math.nan if withheld else primal_integral(trace, reference_value, budget)),
         wall_seconds=float(wall) if isinstance(wall, (int, float)) else None,
@@ -451,13 +476,22 @@ def summarize(rows: list[Scored], engine: str) -> Summary:
         not_run=len(mine) - len(ran),
         feasible=sum(1 for r in published if r.status == "feasible"),
         matched_reference=sum(1 for r in published if r.final_gap < ZERO_TOLERANCE),
-        below_reference=sum(1 for r in published if r.below_reference),
+        # Over every row that ran, withheld or not: beating a proven optimum is a
+        # defect signal rather than a published number, and a rejected solution is
+        # the likeliest place for one.
+        below_reference=sum(1 for r in ran if r.below_reference),
         invalid_model=sum(1 for r in published if r.status == "invalid_model"),
         errored=sum(
             1 for r in published if r.status not in ("feasible", "no_solution", "invalid_model")
         ),
-        verification_failed=sum(1 for r in ran if r.verification == "fail"),
-        unverified=sum(1 for r in ran if r.withheld and r.verification != "fail"),
+        verification_failed=sum(1 for r in ran if r.verification == VERIFICATION_FAIL),
+        # Keyed on the verdict, not on `withheld`: --allow-unverified withholds
+        # nothing, and that is the run where a count of unchecked rows matters most.
+        unverified=sum(
+            1
+            for r in ran
+            if r.verification not in (VERIFICATION_PASS, VERIFICATION_FAIL, NOT_APPLICABLE)
+        ),
         verification_marginal=sum(1 for r in published if r.verification_marginal),
         shifted_geomean=shifted_geometric_mean(integrals),
         arithmetic_mean=statistics.fmean(integrals) if integrals else math.nan,
@@ -559,6 +593,22 @@ def write_comparison(
         header += [
             "# *** INCOMPLETE RUN — AGGREGATES COVER ONLY THE JOBS THAT RAN ***",
             "# " + "; ".join(f"{s.engine}: {s.not_run} of {instances} not run" for s in partial),
+            "#",
+        ]
+    unverified_published = [
+        r
+        for r in rows
+        if r.status == "feasible" and not r.withheld and r.verification != VERIFICATION_PASS
+    ]
+    if unverified_published:
+        # The "Verified:" note above is unconditional, and --allow-unverified makes
+        # it untrue for these rows while leaving them in the aggregates. Banner it
+        # for the same reason a partial roster is bannered: the per-row column is
+        # not what a reader quoting this table will look at.
+        header += [
+            "# *** SCORED WITH --allow-unverified — NOT A PUBLISHABLE RESULT ***",
+            f"# {len(unverified_published)} feasible row(s) are published with no independent",
+            "# verdict; the 'Verified:' note above does not hold for them.",
             "#",
         ]
     if instances != FULL_ROSTER_SIZE:
@@ -712,12 +762,18 @@ def main() -> int:
         )
     unverified = [s for s in summaries if s.unverified]
     if unverified:
+        consequence = (
+            "Those rows publish no objective; re-run them so they are checked."
+            if not args.allow_unverified
+            else "They were PUBLISHED UNCHECKED because --allow-unverified was given."
+        )
         print(
             "\nWARNING: "
             + ", ".join(
                 f"{s.engine}: {s.unverified} feasible row(s) with no verdict" for s in unverified
             )
-            + ". Those rows publish no objective; re-run them so they are checked.",
+            + ". "
+            + consequence,
             file=sys.stderr,
         )
     incomplete = [s for s in summaries if s.not_run]
