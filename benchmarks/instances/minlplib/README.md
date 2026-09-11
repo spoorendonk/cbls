@@ -532,6 +532,15 @@ Both rows stay in this table, with their verdicts updated, until #123
 regenerates them. The `infeasible = 4` tally above is the published run's, not
 the current engine's.
 
+**Re-confirmed at `eb9e1a5`** (2026-09-11), eight seeds at the 60s budget on an
+idle machine: `nvs01` is feasible on **8 of 8**, three of them landing on the
+proven optimum 12.4697. The published row for it says `feasible=false` with a
+residual of 1.3e+04. So the gap between this table and the engine is not a
+rounding difference on one cell — it is the opposite answer on whether an
+instance is solved at all, and every row's `stale-analysis-note` warning fires.
+**Treat the whole table as stale until #123 regenerates it**, and do not quote
+its feasibility counts against the current engine.
+
 | Instance | Verdict | Cause |
 |----------|---------|-------|
 | `elec25`, `elec50` | **bug** ([#110](https://github.com/spoorendonk/cbls/issues/110)) | Thomson problem: points on the unit sphere, Coulomb objective `+inf` wherever two coincide. **The objective-encoding defects (#100) are fixed and are no longer the blocker.** What remains: the `.nl` declares no finite variable bounds, so the box is the ±1e9 inf-clamp; random init starts ~1e9 out, and shrinking each variable toward 0 is a huge row improvement — which parks the search on the origin, a stationary point of every row `x²+y²+z²=1`. The Float jump offers a single *undamped* Newton step (`x0 - residual/grad`) plus `lb`/`ub`/midpoint; near the origin that step overshoots wildly and is rejected, and because a candidate was nonetheless *generated* the #107 escape probe is suppressed — so the variable freezes at score 0. Measured: escape probe fires only at exactly `x0 = 0`; at `x0 = 0.001/0.01/0.1` the score is 0 with the probe armed or not. Infeasible at violation ≈1 **both with the objective present and with it neutralised**, so it is not objective-related — the earlier "dropping the objective makes elec25 feasible in 20s" claim no longer reproduces. Tightening `inf_clamp` to 1 makes `elec25` feasible at violation 0 post-#100 (pre-#100 it was infeasible at *every* clamp), because clamping accidentally supplies the missing damping. |
@@ -595,10 +604,22 @@ Two consequences worth noting for anyone reading this before a campaign:
 
 ### Is the final objective set by the first feasible point? (#149)
 
-The section above measured that on **one** instance. Issue #149 asks whether it
-generalises, and forbids any engine change until it is answered — the effect
+The section above measured that on **one** instance. Issue #149 asked whether it
+generalises, and forbade any engine change until that was answered — the effect
 could easily be an artefact of `nvs01`, which is a three-variable instance with a
 product term.
+
+> **Status: #149 is closed with `nvs01` treated as an outlier, and the
+> roster-wide campaign below was NOT run.** Re-measured at `eb9e1a5`, the effect
+> reproduces on `nvs01` itself — 8 of 8 seeds feasible, Pearson **r = 0.9399**
+> against #134's 0.945 at `09097de`, 106 commits earlier — so it is real and
+> stable on that instance, not a one-commit artefact. What is unmeasured is
+> whether it holds anywhere else. That question is deferred to the campaign that
+> regenerates this table (#123), where the per-seed columns come for free rather
+> than costing a dedicated 6.7-hour run. Until then **nothing here supports a
+> claim about the engine in general**, and no engine change may be made on it.
+>
+> The protocol below stays as the recipe for whoever does run it.
 
 Everything needed is in the tree. The runner publishes
 `first_feasible_objective` and `time_to_first_feasible` on every row (recording
