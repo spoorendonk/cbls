@@ -71,13 +71,89 @@ benchmarks/mipfeas/
   mipfeas.cpp        CBLS runner, one instance per process
   cpsat_solve.py     CP-SAT fj+ls baseline, same result schema
   run_benchmark.py   driver: parallel, resumable, memory-capped
+  verify_solution.py independent feasibility check against the instance file
   primal_integral.py scoring -> comparison.csv
+
+results/mipfeas/<engine>/
+  <instance>.json       result record
+  <instance>.trace.csv  incumbent profile
+  <instance>.sol        solution vector of a feasible run (MIPLIB format)
+  <instance>.verify.json the independent verdict on that solution
 ```
 
 The instances are too large to vendor, so `manifest.csv` pins the exact bytes the
 roster refers to. Because they can be absent, both runners **refuse to write a
 result for a missing instance** rather than recording it as "found nothing" —
 that failure mode is what emptied a published table in #103.
+
+## Verification: every reported solution is checked against the instance file
+
+This is the correctness benchmark, so a reported solution is not taken on trust.
+Both runners write the solution vector of any run they report feasible, and
+`verify_solution.py` re-reads the **original** `.mps.gz` and checks that point
+against it: row activities, variable bounds, integrality, and that the published
+objective is the objective *of that point*.
+
+The check is deliberately independent of both engines. It reads the instance
+with **SCIP** (PySCIPOpt), which neither engine uses: CBLS reads MPS with
+`src/io/mps_reader.cpp` and CP-SAT with OR-Tools' own reader, so verifying
+either with its own reader would let a shared defect cancel out. This matters
+because every *other* check in the harness is downstream of the engine's reader —
+CBLS's residual, integrality and objective-drift checks all run against the model
+the MPS-to-model adapter built, so a misread bound, a dropped row or a flipped
+sign is invisible to all of them. The `.solu` reference values catch only the
+other direction, an objective that is *too good*.
+
+### Tolerances, and what "borderline" means
+
+All four are constants of `verify_solution.py`, and every verdict file records
+the set it was reached under (the comparison table quotes it back). Each is
+`absolute + relative * scale`, because MIPLIB coefficient ranges span many orders
+of magnitude and a purely absolute rule is either vacuous on a large row or
+unmeetable on a small one:
+
+| check | violation | tolerance |
+|---|---|---|
+| row activity | `max(0, lower - a.x, a.x - upper)` | `1e-6 + 1e-9 * row_scale` |
+| variable bound | `max(0, lower - x, x - upper)` | `1e-6 + 1e-9 * \|bound\|` |
+| integrality | `\|x - round(x)\|` | `1e-6` |
+| objective | `\|reported - (c.x + offset)\|` | `1e-6 + 1e-9 * \|objective\|` |
+
+`row_scale` is `max(\|lower\|, \|upper\|, sum \|a_ij x_j\|)` over the finite sides — the
+sum of absolute terms rather than the activity, so a row whose terms cancel is
+still judged against the magnitudes actually added up. The `1e-6` absolute terms
+are the engine's own stated feasibility tolerance, which keeps the two *comparable*
+without sharing anything; the `1e-9` relative terms sit ~7 orders above double
+round-off, which is what a row of millions of nonzeros can accumulate.
+
+**The rule is the threshold, and nothing else.** A solution fails if and only if
+some violation exceeds its tolerance; at or below it, it passes. There is no
+judgement call at scoring time. A pass whose worst violation reaches 10% of its
+tolerance is published as `pass` with `verification_marginal=1` — a signal to
+look, never a reason to withhold. (CBLS routinely lands ~1e-9 inside a row, which
+is 0.001x the tolerance and not marginal.)
+
+### What a failure does
+
+A row without a `pass` publishes **no objective and no Primal Integral**, and is
+left out of the aggregates rather than scored 2.0 — the run did find a point, it
+was rejected, and scoring it would be publishing a derived number of its own. The
+`verification` and `verification_reason` columns say which rows and why, the
+scorer prints a `DEFECT:` line naming the counts, and both the driver and the
+scorer exit non-zero. Three verdicts exist: `pass`, `fail` (checked and wrong)
+and `error` (could not check — a missing solution file, an unreadable instance, a
+constraint type the checker does not model). Only `pass` publishes.
+
+`--no-verify` on the driver turns the whole thing off, and `--allow-unverified`
+on the scorer publishes rows that carry no verdict. Both are for harness
+debugging and for results directories filled before this existed; a table scored
+with either is not publishable.
+
+Two costs worth knowing. Verification reads each instance a second time, in
+Python, so on the largest models it is not free — `square47` has 27.4M nonzeros —
+and it runs inside the job, under the same memory cap. And a resumed run whose
+results predate the solution dump re-**solves** those instances: nothing but the
+search can produce the solution vector.
 
 ## Running it
 
@@ -88,7 +164,7 @@ python benchmarks/instances/mipfeas/download.py
 # 2. Build the CBLS runner
 cmake -B build && cmake --build build -j$(nproc) --target cbls_mipfeas
 
-# 3. Install the baseline
+# 3. Install the baseline (OR-Tools) and the verifier's reader (PySCIPOpt)
 pip install -e '.[benchmarks]'
 
 # 4. Wiring check: 11 instances, both engines, short budget
@@ -126,7 +202,9 @@ rather than reading 6 GB off the RSS figures above.
 ## What the wiring check found
 
 `smoke_comparison.csv` is 11 instances at 60s — enough to prove the harness end
-to end, and **not** a result. Both engines honoured the budget, the largest
+to end, and **not** a result. It also predates the verification columns above and
+was not regenerated for them: its rows carry no verdict, so re-scoring that run
+needs `--allow-unverified` and a fresh wiring check is the better move. Both engines honoured the budget, the largest
 instance in the subset ran without OOM, and the driver resumed correctly after
 being interrupted.
 
@@ -197,6 +275,7 @@ inherited, so a published number cannot silently change when a default moves:
 | Feasibility tolerance | `1e-6`, stated explicitly | CP-SAT's own |
 | Unbounded column falls back to | `1e7` (`--inf-clamp`), where propagation derives nothing | not clamped |
 | Recorded per result | commit SHA, seed, tolerance, clamp + columns it still narrows, columns declared unbounded, columns tightened, propagation verdict and pass cap, compound-move and propagation flags, peak RSS | OR-Tools version, seed, full parameter string, solver verdict, peak RSS |
+| Solution verified against the instance file | yes, by SCIP | yes, by SCIP |
 
 Two of those are deliberate departures from the engine's own defaults, both made
 to keep the two sides comparable rather than to flatter either:
@@ -303,3 +382,6 @@ than left to be discovered.
   (`benchmark-v2.test`, `miplib2017-v36.solu`, `benchmark.zip`).
 - Metric and roster definition: the MIPfeas announcement linked above.
 - Baseline: OR-Tools CP-SAT (Apache-2.0), version recorded per result.
+- Verification reader: SCIP via PySCIPOpt (Apache-2.0), version recorded in every
+  `.verify.json`. Used only to re-read the instance and check a solution against
+  it; it never solves anything here.
