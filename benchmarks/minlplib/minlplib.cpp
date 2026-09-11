@@ -406,15 +406,6 @@ std::vector<std::string> roster_from_bounds(const std::string& path) {
     return names;
 }
 
-// Exit status for a run that reached the end of its roster. 1 and 2 are already
-// taken -- 1 for "no roster to run" and for an exception escaping main, 2 for a
-// bad flag or an unwritable output file (benchmarks/common/runner_args.h) -- so
-// an error tally gets a code of its own and a consumer can tell the two apart.
-//
-// Mirrored in Python as `run_benchmark.RUNNER_EXIT_ERRORED`; a test pins that
-// constant against this literal, because the drivers branch on the value.
-constexpr int kExitErrored = 3;
-
 struct Tally {
     int parsed = 0;
     int closed = 0;
@@ -427,12 +418,32 @@ struct Tally {
     int failed_nonfinite = 0;
     int skipped_unsupported = 0;
     int not_found = 0;
-    int errored = 0;  // read/build/solve exceptions
+    int errored = 0;  // read/build/solve exceptions; decides the exit status
+    // Of `errored`, the ones that threw INSIDE solve(). Held apart because the
+    // model was closed first, so such an instance is counted in `closed` and
+    // would otherwise be reported as an infeasibility -- the very claim the
+    // nonzero exit status exists to deny.
+    int solve_errored = 0;
+    // Instances whose .nl file was present, counted once each. Derived from the
+    // buckets it used to be summed from, `parsed + skipped_unsupported +
+    // errored`, double-counted every outcome reached AFTER the read succeeded:
+    // a build error, a solve error and an adapter-declined instance each landed
+    // in two of those three.
+    int with_file = 0;
     int integrality_mismatch = 0;
     int verify_failed = 0;  // reported feasible but failed the independent re-check
     int near_miss = 0;      // infeasible, but residual within kNearMiss of feasible
     int nonfinite_obj = 0;  // infeasible with a non-finite objective at the closest approach
 };
+
+// Exit status for a run that reached the end of its roster. 1 and 2 are already
+// taken -- 1 for "no roster to run" and for an exception escaping main, 2 for a
+// bad flag or an unwritable output file (benchmarks/common/runner_args.h) -- so
+// an error tally gets a code of its own and a consumer can tell the two apart.
+//
+// Mirrored in Python as `run_benchmark.RUNNER_EXIT_ERRORED`; a test pins that
+// constant against this literal, because the drivers branch on the value.
+constexpr int kExitErrored = 3;
 
 /// The process exit status for a run that reached the end of its roster.
 ///
@@ -846,6 +857,7 @@ bool prepare_instance(std::ostream& csv, const Args& args, const std::string& na
         write_preread_row(csv, args, name, "not-found");
         return false;
     }
+    ++t.with_file;
 
     if (!read_instance(csv, args, name, nl_path, prob, t)) {
         return false;
@@ -924,6 +936,7 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
     } catch (const std::exception& e) {
         std::printf(" ERROR solving: %s\n", e.what());
         ++t.errored;
+        ++t.solve_errored;
         write_unsolved_row(csv, args, name, b, 0.0, "solve-error", prob.n_discrete_vars,
                            LnsCells{});
         return;
@@ -1015,21 +1028,25 @@ void print_tally(const Args& args, const Tally& t) {
     std::printf("  within tolerance:   %d  (better, but inside the tolerance slack)\n",
                 t.within_tol);
     std::printf("  worse than BKS:     %d\n", t.worse);
-    std::printf("infeasible:           %d\n", t.closed - t.feasible - t.failed_nonfinite);
+    // A solve that threw is subtracted: its model was closed, but no search
+    // ran, so calling it infeasible would contradict the row's own note and the
+    // nonzero exit status this run reports.
+    std::printf("infeasible:           %d\n",
+                t.closed - t.feasible - t.failed_nonfinite - t.solve_errored);
     std::printf("  near-miss (<=%.0e): %d\n", kNearMiss, t.near_miss);
     std::printf("  non-finite obj:     %d  (objective +inf/NaN at closest approach)\n",
                 t.nonfinite_obj);
     std::printf("failed(non-finite):   %d\n", t.failed_nonfinite);
     std::printf("skipped(unsupported): %d\n", t.skipped_unsupported);
-    std::printf("read/build errors:    %d\n", t.errored);
+    std::printf("read/build/solve err: %d  (exit %d when nonzero)\n", t.errored, kExitErrored);
     std::printf("not found:            %d\n", t.not_found);
     std::printf("integrality mismatch: %d  (NL header vs MINLPLib catalogue)\n",
                 t.integrality_mismatch);
     std::printf("verify failed:        %d  (reported feasible; re-check disagreed)\n",
                 t.verify_failed);
-    // Closed-model rate over everything we attempted to read (present .nl files):
-    // parsed + skipped-unsupported + errors. not_found excluded (no file).
-    int attempted = t.parsed + t.skipped_unsupported + t.errored;
+    // Closed-model rate over everything we attempted to read (present .nl
+    // files), counted once per instance. not_found excluded (no file).
+    int attempted = t.with_file;
     if (attempted > 0) {
         std::printf("closed-model rate:    %.0f%% of %d attempted (%d not found)\n",
                     100.0 * t.closed / attempted, attempted, t.not_found);

@@ -276,6 +276,7 @@ What the driver refuses, and why each refusal matters:
 | `--instances` with `--out` resolving to `comparison.csv` | same, via a relative path the explicit-`--out` guard would otherwise wave through |
 | a staging directory stamped with another commit, budget or seed | resuming it would mix two configurations into one table |
 | missing `scip_baseline.csv` (unless `--no-merge`) | the merge would publish `comparison_all.csv` without SCIP rows |
+| a roster instance whose read, build or solve **throws** (runner exit 3) | its row carries `read-error`/`build-error`/`solve-error` and measures nothing, so publishing it would put a non-result in the table. The staged row is *structurally* complete, so the resume check refuses it by name (#153) and a re-run hits the same throw rather than skipping past it. A coverage gap — `unsupported`, or a missing `.nl` — exits 0 and does **not** trip this |
 
 It also rebuilds the runner target itself, so the binary cannot lag the SHA it
 is about to be labelled with. `--dry-run` prints the plan and exits non-zero if
@@ -286,7 +287,11 @@ any refusal applies, so it works as a precheck.
 that instance's runner output and tally). A re-invocation skips instances that
 already have a *complete* staged row. Incomplete means any of: a header-only
 file (what a killed job leaves behind), a torn last line, a row stamped with a
-different `commit_sha`, or a missing `.trace.csv` — all are re-solved.
+different `commit_sha`, a missing `.trace.csv`, or a row whose note says the
+runner **threw** (`read-error`/`build-error`/`solve-error`) — all are re-solved.
+The last is there because such a row is whole in every other respect: the run
+that produced it aborted the driver, and without this the next resume would skip
+the instance and publish a row that measured nothing.
 `build/minlplib-rerun/stamp.txt` records the commit, budget and seed the
 directory's rows belong to, and a resume against a different one is refused
 outright rather than silently mixed. `--no-resume` forces a full re-solve.

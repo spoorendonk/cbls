@@ -560,7 +560,11 @@ def read_runner_row(path: Path, run: Run, sha: str) -> dict[str, str]:
         raise RuntimeError(f"{path} is for {row['instance']}, expected {run.instance}")
     if row["commit_sha"] != sha:
         raise RuntimeError(f"{path} was written at {row['commit_sha']}, expected {sha}")
-    missing = [column for column in _RUNNER_COLUMNS if column not in row]
+    # `row.get(...) is None`, not `column not in row`: `csv.DictReader` pads a
+    # TRUNCATED data line by binding the missing columns to None, so the key is
+    # present and a torn row would pass this check and then hand None to
+    # everything downstream. The runner writes "NaN", never an empty cell.
+    missing = [column for column in _RUNNER_COLUMNS if row.get(column) is None]
     if missing:
         raise RuntimeError(f"{path} is missing column(s) {', '.join(missing)}")
     return row
@@ -608,8 +612,16 @@ def failed_row(
     return row
 
 
+#: Everything `read_runner_row` can raise on a file a dead process left behind.
+#: Wider than `(RuntimeError, OSError)`: a torn header reaches `row["instance"]`
+#: as a `KeyError`, a half-written line can be invalid UTF-8 (`ValueError`), and
+#: `csv` raises its own `Error` on a malformed field. Any of them escaping would
+#: wedge a thirteen-hour campaign at the one point built to survive a bad file.
+UNREADABLE_ROW = (RuntimeError, OSError, KeyError, ValueError, csv.Error)
+
+
 def _failed_run_row(
-    out_dir: Path, run: Run, args: argparse.Namespace, sha: str, returncode: int
+    run: Run, args: argparse.Namespace, sha: str, returncode: int, out_dir: Path
 ) -> dict[str, str]:
     """The row to record for a run whose process exited nonzero.
 
@@ -636,7 +648,7 @@ def _failed_run_row(
         return failed_row(run, args, sha, returncode)
     try:
         runner = read_runner_row(out_dir / "runs" / f"{run.slug}.csv", run, sha)
-    except (RuntimeError, OSError):
+    except UNREADABLE_ROW:
         return failed_row(run, args, sha, returncode)
     if completed_search(runner["note"]):
         # The process failed, but the row it left behind says a search ran and
@@ -789,7 +801,7 @@ def execute_runs(
             # roster -- and a resume would retry the same crash forever. The
             # row enters the resume set so the campaign moves on, and the
             # report counts it in its own bucket instead of averaging it in.
-            row = _failed_run_row(out_dir, run, args, sha, completed.returncode)
+            row = _failed_run_row(run, args, sha, completed.returncode, out_dir)
             print(
                 f"    -> FAILED (exit {completed.returncode}); recorded as a failed run "
                 f"(note={row['note']}), see {out_dir / 'runs' / f'{run.slug}.log'}",
@@ -801,7 +813,7 @@ def execute_runs(
             continue
         try:
             runner = read_runner_row(out_dir / "runs" / f"{run.slug}.csv", run, sha)
-        except (RuntimeError, OSError) as exc:
+        except UNREADABLE_ROW as exc:
             # The runner exited 0 but its row cannot be read -- a full disk
             # reaches this. Raising instead would wedge the campaign: every
             # resume re-drops the block and dies at the same run, on an
@@ -851,8 +863,9 @@ def _repairs_of(row: dict[str, str]) -> int | None:
     """A row's `lns_repairs` as a count, or None where the row has no reading.
 
     None, NOT zero. The runner writes "NaN" for an instance it skipped as
-    unsupported and for a solve that threw, and exits 0 in both cases, so such
-    rows reach the gate looking like completed runs. Folding them to 0 let a
+    unsupported (exit 0) and for a solve that threw (exit 3 since #153, whose
+    row `_failed_run_row` still records), so such rows reach the gate looking
+    like completed runs. Folding them to 0 let a
     row where nothing ran vote for SKIP -- the opposite of what the runner's own
     comment on that cell says must happen, and a skip decided partly by
     instances that never solved would not be the "counter reading that

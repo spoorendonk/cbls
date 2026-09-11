@@ -66,12 +66,54 @@
 - **`run_benchmark.py` (the publish driver) now stops on a thrown instance**:
   its `run_roster` already raises on any nonzero exit, so the exit-code change
   means a solve that throws halts the publish run instead of staging a
-  `solve-error` row into the published table. Resolved as: kept, with the
-  message extended to say what happened and that a re-run will hit the same
-  throw. Because: publishing a comparison table containing a row that measured
-  nothing is the defect one level up, and the committed
+  `solve-error` row into the published table. Resolved as: kept AND made
+  permanent. Because: three cold reviews all found that the abort alone only
+  delayed the bad publish by one invocation — the staged error row is complete
+  by every structural check and `--resume` is the default, so the next run
+  skipped the instance and published it. `staged_complete` now refuses a staged
+  row whose note says the runner threw, keyed on `RUNNER_ERROR_NOTES` and NOT on
+  the wider no-search set, so `unsupported`/`not-found` coverage gaps still stage
+  and publish as before. Publishing a comparison table containing a row that
+  measured nothing is the defect one level up, and the committed
   `comparison.csv` contains no such row today.
 
-- **Test counts**: the Python suite went 411 -> 423 (12 new tests, none of them
-  binding tests). README.md line 75 updated; the C++ roster is untouched at 361,
-  so the other six hard-coded places are unchanged.
+- **The runner's printed tally contradicted the new exit status**: a thrown
+  solve was counted in `infeasible:` (its model had been closed) and
+  double-counted in the `closed-model rate`'s `attempted` figure, so the tally
+  said "infeasible: 1" two lines above a stderr message saying these are not
+  infeasibility results. Resolved as: added `Tally::solve_errored` (subtracted
+  from the infeasible line) and `Tally::with_file` (counted once per instance
+  with an `.nl`, replacing the `parsed + skipped_unsupported + errored` sum that
+  double-counted every outcome reached after a successful read). Pre-existing,
+  but the exit-status change is what made it a contradiction.
+
+- **Test counts**: the Python suite went 411 -> 426 (15 new tests, none of them
+  binding tests). TWO of CLAUDE.md's seven hard-coded places carry this number,
+  not one: README.md line 75, and CLAUDE.md's own item 5, which restates the
+  README figure. Both updated. The C++ roster is untouched at 361, so the
+  remaining five places are unchanged.
+
+## Review findings I resolved rather than escalating
+
+- **The `elec` precedent vs. the new publish refusal**: one reviewer asked
+  whether refusing to publish a thrown instance contradicts the roster's
+  documented practice of publishing `elec25`/`elec50` as failures. Resolved as:
+  no contradiction. Those rows are `infeasible(...)` — a search ran to
+  completion and reported something. An error row is not a measurement at all.
+
+- **`THROWS_ON_SOLVE_NL` relies on `cbls::solve` throwing on an empty model**,
+  which is arguably an engine defect someone may fix. Resolved as: kept, with a
+  comment at the fixture saying so. Because: the alternative is production code
+  that exists only to be broken by a test, which the brief forbids, and if the
+  engine is fixed the test fails loudly rather than silently.
+
+- **The two exit-status tests pinned `matches-bks`** on the healthy instance,
+  coupling a process-contract test to search quality. Resolved as: relaxed to
+  membership in `COMPLETED_VERDICTS`. The `solve-error`/`read-error` assertions
+  stay exact — those are the contract.
+
+- **The disclosure line's headline still says "completed no search"** for a row
+  held out only because its note is unrecognised, which is more than the
+  allowlist knows. Resolved as: left. The `why` clause immediately after names
+  the unrecognised notes and says the scorer could not classify them, and the
+  headline wording is pinned by an existing test.

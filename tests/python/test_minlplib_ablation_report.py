@@ -47,6 +47,11 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
+#: A note `describe_infeasible` could have written, for a fixture row that says
+#: `feasible=false`. Its exact text is never asserted on; what matters is that it
+#: is on the completed-search allowlist, because a search DID run on such a row.
+INFEASIBLE_NOTE = "infeasible(residual=0.5; 1 viol; worst row0 <=)"
+
 COLUMNS = (
     "instance",
     "arm",
@@ -103,15 +108,18 @@ def write_results(
                     "lns_repairs": "0",
                     "lns_repairs_accepted": "0",
                     "seed": "1",
-                    # The scorer allowlists the notes a COMPLETED search writes
-                    # (#153), so a fixture row that leaves the cell empty is a
-                    # row the runner could never have written and is now held
-                    # out. Default to the plainest completed-search note; every
-                    # row that is testing the note cell names its own.
-                    "note": "feasible",
                 }
             )
             full.update({k: str(v) for k, v in row.items() if k in full})
+            # The scorer allowlists the notes a COMPLETED search writes (#153),
+            # so a fixture row that leaves the cell empty is a row the runner
+            # could never have written and is now held out of every count.
+            # Filled from the row's own `feasible` cell, after the merge, so the
+            # pair stays a combination the runner could actually produce. Keyed
+            # on whether the row NAMED a note, not on whether the cell is empty:
+            # a row that asks for an empty note is testing exactly that.
+            if "note" not in row:
+                full["note"] = "feasible" if full["feasible"] == "true" else INFEASIBLE_NOTE
             writer.writerow([full[column] for column in columns])
     return path
 
@@ -142,9 +150,7 @@ def run_rows(
             "seed": seed,
             "feasible": "true" if gap is not None else "false",
             "gap_to_bks%": "NaN" if gap is None else gap,
-            "note": "feasible"
-            if gap is not None
-            else "infeasible(residual=0.5; 1 viol; worst row0 <=)",
+            "note": "feasible" if gap is not None else INFEASIBLE_NOTE,
             "lns_repairs": repairs,
             "lns_repairs_accepted": repairs_accepted,
             **({} if primal_bks is None else {"primal_bks": primal_bks}),
@@ -634,11 +640,12 @@ def solve_error_rows(instance: str, arm: str, seeds: Sequence[int]) -> list[dict
     """Rows as the RUNNER writes them when `cbls::solve` throws.
 
     `minlplib.cpp` catches the exception, bumps `Tally::errored`, writes an
-    unsolved row and carries on; `main` returns 0 regardless of the tally. The
-    row is therefore well-formed and `feasible=false` -- objective, gap and both
+    unsolved row and carries on; since #153 the process then exits 3, and
+    `run_ablation._failed_run_row` records this very row rather than downgrading
+    it. The row is well-formed and `feasible=false` -- objective, gap and both
     LNS counters are NaN, while `primal_bks`/`dual_bound` carry the published
     bounds and the wall is 0.0, since `write_unsolved_row` knows those without
-    having solved. The driver records it as a normal result.
+    having solved. Nothing but the note says no search ran.
     """
     return [
         {
@@ -695,7 +702,7 @@ def test_crashes_on_the_control_side_cannot_produce_an_arm_win(tmp_path: Path) -
 def test_a_cell_whose_every_run_is_a_solve_error_is_in_no_feasibility_bucket(
     tmp_path: Path,
 ) -> None:
-    """An exit-0 `solve-error` row is a well-formed row no exclusion caught.
+    """A `solve-error` row is a well-formed row no exclusion caught.
 
     Whether a solve throws can depend on the search configuration, i.e. on the
     ARM, so scoring it reads an exception as an arm losing feasibility.
@@ -946,9 +953,12 @@ def test_the_long_unsupported_note_is_still_held_out(tmp_path: Path) -> None:
 
 
 def test_every_preread_note_the_runner_writes_is_held_out() -> None:
-    """The scorer's list of no-search notes is a DENYLIST, and a denylist that
-    falls behind the runner fails open -- a seventh preread outcome would be
-    scored as a lost feasibility, which is exactly what #151 was filed for.
+    """Since #153 the classification is an ALLOWLIST, so a preread note is held
+    out whether or not this list knows it. What this guards now is the other
+    half: every preread literal must collapse to a NAMED label under
+    `no_search_label`, or the disclosure line degrades into one
+    `unrecognised-note(...)` bucket per distinct reason string -- and none of
+    them may be allowlisted, which would score it as a measurement.
 
     `write_preread_row` is the tight half of the contract: it exists only for a
     row where nothing is known about the instance yet, so EVERY literal it is
@@ -966,6 +976,7 @@ def test_every_preread_note_the_runner_writes_is_held_out() -> None:
     assert len(literals) == len(call_sites), call_sites  # each note starts with a literal
     for literal in literals:
         assert any(literal.startswith(note) for note in NO_SEARCH_NOTES), literal
+        assert not any(literal.startswith(note) for note in COMPLETED_SEARCH_NOTES), literal
 
 
 # --- the classification is an allowlist, not a denylist (issue #153) ----------
@@ -1102,6 +1113,17 @@ def test_every_completed_search_note_the_runner_writes_is_allowlisted() -> None:
             # ... and the two lists must not overlap, or a measurement would be
             # held out by whichever match was tried first.
             assert not any(literal.startswith(note) for note in NO_SEARCH_NOTES), literal
+
+    # The per-site sweep above is blind to a note composed in a FIFTH function,
+    # which is the likeliest way the allowlist falls behind. So also pin the
+    # file-wide set of literals a `note` can START with, wherever they are
+    # written. `integrality-mismatch(` and `unsupported` are the two that are
+    # not sentence-initial notes in their own right: the first is only ever
+    # appended after `; `, and the second is a no-search note.
+    file_wide = set(re.findall(r'note = [^;]*?"([^"]+)"', source, re.S))
+    assert file_wide == {"integrality-mismatch(nl=", "unsupported", "non-finite", "feasible"}, (
+        file_wide
+    )
 
 
 # --- the floor is sized in the units of the gap it bounds (issue #151) ---------

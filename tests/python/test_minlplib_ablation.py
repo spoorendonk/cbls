@@ -741,8 +741,8 @@ def test_the_sign_test_needs_more_than_a_bare_majority() -> None:
 
 
 def test_a_row_with_no_reading_cannot_vote_to_skip_the_lns_arm() -> None:
-    """ "NaN" is what the runner writes when no solve ran, and it exits 0 doing
-    it -- for an unsupported instance and for a solve that threw.
+    """ "NaN" is what the runner writes when no solve ran -- for an unsupported
+    instance (exit 0) and for a solve that threw (exit 3 since #153).
 
     Folding those to zero let rows where nothing happened vote for SKIP, which
     is the opposite of what the runner's own comment on that cell says. A skip
@@ -888,9 +888,6 @@ def test_a_runner_that_reports_an_error_is_recorded_from_its_own_row(
     assert rows[0]["n_int_vars"] == "4"
     # Still not a measurement: the scorer holds every non-completed note out.
     assert not completed_search(rows[0]["note"])
-    # And the campaign carried on rather than raising -- the whole point of
-    # recording a failed run.
-    assert len(_recorded(out_dir)) == 1
 
 
 def test_a_crash_is_still_recorded_as_the_drivers_own_failed_row(

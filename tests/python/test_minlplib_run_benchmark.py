@@ -462,15 +462,26 @@ def path_after(cmd: Sequence[str], flag: str) -> Path:
     return Path(cmd[cmd.index(flag) + 1])
 
 
-def fake_runner(returncode: int = 0, *, write_row: bool = True) -> Callable[..., FakeCompleted]:
-    """Stand in for `subprocess.run(cbls_minlplib ...)` without solving anything."""
+def fake_runner(
+    returncode: int = 0,
+    *,
+    write_row: bool = True,
+    note: str = "feasible",
+    feasible: str = "true",
+) -> Callable[..., FakeCompleted]:
+    """Stand in for `subprocess.run(cbls_minlplib ...)` without solving anything.
+
+    `note`/`feasible` are for the tests that pair a row with an exit status --
+    the runner writes a row for a thrown instance too, and what the driver does
+    next depends on what that row says.
+    """
 
     def run(cmd: Sequence[str], **kwargs: object) -> FakeCompleted:
         text = HEADER + "\n"
         if write_row:
             name = cmd[cmd.index("--instance") + 1]
             sha = cmd[cmd.index("--commit") + 1]
-            text += f"{name},1,1,1,0,0,60,true,feasible,{sha},0,0,0,0,{DEFAULT_ARM}\n"
+            text += f"{name},1,1,1,0,0,60,{feasible},{note},{sha},0,0,0,0,{DEFAULT_ARM}\n"
         path_after(cmd, "--out").write_text(text)
         if "--trace" in cmd:
             path_after(cmd, "--trace").write_text(TRACE_HEADER + "\n")
@@ -688,10 +699,12 @@ def test_the_committed_table_uses_the_columns_the_driver_assembles() -> None:
 # "success" while the tally said otherwise.
 
 
-#: A minimal but valid `g3` NL header for `nv` vars, `nc` cons, `no` objs.
-#: Mirrors the fixture layout in `tests/test_minlplib.cpp`; counts past the first
-#: line are cosmetic to the reader.
 def nl_header(nvars: int, ncons: int, nobjs: int) -> str:
+    """A minimal but valid `g3` NL header for `nvars`/`ncons`/`nobjs`.
+
+    Mirrors the fixture layout in `tests/test_minlplib.cpp`; the counts past the
+    first line are cosmetic to the reader.
+    """
     return (
         "g3 0 1 0\t# header\n"
         f" {nvars} {ncons} {nobjs} 0 0\t# vars, cons, objs, ranges, eqns\n"
@@ -705,7 +718,9 @@ SOLVABLE_NL = nl_header(1, 1, 1) + "b\n0 0 10\nr\n1 7\nO0 0\nn0\nG0 1\n0 1\nC0\n
 #: Zero variables, one objective. It reads and it builds -- and then `cbls::solve`
 #: throws `var id out of range` reaching for a variable that is not there, which
 #: is the runner's `solve-error` path with nothing added to production code to
-#: provoke it.
+#: provoke it. If the engine ever handles an empty model gracefully this stops
+#: being a solve-error and the fixture needs replacing -- loudly, since the
+#: tally and the exit status both move.
 THROWS_ON_SOLVE_NL = nl_header(0, 0, 1) + "b\nr\nO0 0\nn0\n"
 
 #: An opcode outside the adapter's set. A COVERAGE GAP, not an error: the runner
@@ -715,6 +730,15 @@ UNSUPPORTED_NL = nl_header(1, 0, 1) + "b\n0 0 10\nr\nO0 0\no999\nv0\n"
 #: Not an NL file at all. `read_nl` throws something that is not an unsupported
 #: opcode, so the runner counts it in the same error tally as a thrown solve.
 UNREADABLE_NL = "g3 0 1 0\n 1 1 1 0 0\nb\nZZZ not a bound\n"
+
+
+#: Every verdict `classify_against_bks` can return for a row that solved. The
+#: exit-status tests assert membership rather than a value: which of the four a
+#: one-second solve earns is a property of the engine, and these tests are about
+#: the process contract.
+COMPLETED_VERDICTS = frozenset(
+    {"feasible", "matches-bks", "better-than-bks", "within-tolerance-of-bks"}
+)
 
 
 def minlplib_binary() -> Path:
@@ -775,9 +799,20 @@ def test_a_solve_that_throws_makes_the_runner_exit_nonzero(tmp_path: Path) -> No
     assert result.returncode == RUNNER_EXIT_ERRORED
     assert "ERROR solving" in result.stdout
     assert "exiting 3" in result.stderr
+    # ... and the tally agrees with that message. The thrown instance's model
+    # WAS closed, so without holding it apart the tally printed "infeasible: 1"
+    # two lines above a stderr line saying these are not infeasibility results,
+    # and counted the instance twice in the closed-model rate's denominator.
+    assert "infeasible:           0" in result.stdout
+    assert "closed-model rate:    100% of 2 attempted" in result.stdout
     # The row is still written: the exit status is an addition to the record,
     # not a replacement for it.
-    assert notes_of(tmp_path / "out.csv") == {"ok": "matches-bks", "boom": "solve-error"}
+    notes = notes_of(tmp_path / "out.csv")
+    assert notes["boom"] == "solve-error"
+    # The healthy instance still solved and was still scored. Its exact verdict
+    # is the engine's business, not this test's -- pinning `matches-bks` would
+    # red a process-contract test on a tie-band change.
+    assert notes["ok"] in COMPLETED_VERDICTS
 
 
 def test_an_unreadable_instance_makes_the_runner_exit_nonzero(tmp_path: Path) -> None:
@@ -803,12 +838,71 @@ def test_a_coverage_gap_is_not_an_error_and_the_runner_still_exits_zero(
     assert result.returncode == 0
     assert "exiting" not in result.stderr
     notes = notes_of(tmp_path / "out.csv")
-    assert notes["ok"] == "matches-bks"
+    assert notes["ok"] in COMPLETED_VERDICTS
     assert notes["exotic"].startswith("unsupported")
     assert notes["absent"] == "not-found"
 
 
-def test_the_drivers_exit_constant_is_the_runners_own(tmp_path: Path) -> None:
+def test_a_staged_row_from_a_thrown_instance_cannot_stand_in_for_a_solve(
+    tmp_path: Path,
+) -> None:
+    """The abort alone would only delay the bad publish by one invocation.
+
+    The row a thrown instance leaves is COMPLETE by every structural check --
+    header, one whole line, the right commit -- and `--resume` is the default.
+    So `run_roster` aborts on the first run, and without this the next run would
+    skip the instance and `publish` would assemble a row that measured nothing
+    into `comparison.csv`.
+    """
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "a.trace.csv").write_text(TRACE_HEADER + "\n")
+    errored = (
+        HEADER + f"\na,NaN,1,1,NaN,NaN,0,false,solve-error,abc1234,NaN,0,NaN,NaN,{DEFAULT_ARM}\n"
+    )
+    (stage / "a.csv").write_text(errored)
+
+    # Structurally whole -- which is exactly why it has to be named separately.
+    assert staged_row_complete(stage / "a.csv", "abc1234")
+    assert not staged_complete(make_args(tmp_path), "abc1234", "a", stage)
+
+
+def test_a_coverage_gap_staged_row_still_stands_in_for_a_solve(tmp_path: Path) -> None:
+    """`unsupported` and `not-found` exit 0 and are documented rows, not errors.
+
+    The staging refusal must key on the notes that come with the nonzero exit,
+    or a roster with one unsupported instance would abort every publish run.
+    """
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "a.trace.csv").write_text(TRACE_HEADER + "\n")
+    note = "unsupported: NL_UNKNOWN_OPCODE 42"
+    row = f"a,NaN,NaN,NaN,NaN,NaN,0,false,{note},abc1234,NaN,NaN,NaN,NaN,{DEFAULT_ARM}"
+    (stage / "a.csv").write_text(f"{HEADER}\n{row}\n")
+
+    assert staged_complete(make_args(tmp_path), "abc1234", "a", stage)
+
+
+def test_run_roster_says_what_to_do_when_the_runner_reports_its_error_tally(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exit 3 is not the generic failure, and its message must not say it is.
+
+    "Re-running resumes from here" is true of a killed job and false of a
+    deterministic throw; the operator needs to be told the difference.
+    """
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        fake_runner(returncode=RUNNER_EXIT_ERRORED, note="solve-error", feasible="false"),
+    )
+    with pytest.raises(RuntimeError, match="measures nothing"):
+        run_roster(make_args(tmp_path), "abc1234", ["a"], stage)
+
+
+def test_the_drivers_exit_constant_is_the_runners_own() -> None:
     """`RUNNER_EXIT_ERRORED` is mirrored from C++, and both drivers branch on it.
 
     Pinned against the literal rather than against a run, so a change to one side
@@ -818,4 +912,7 @@ def test_the_drivers_exit_constant_is_the_runners_own(tmp_path: Path) -> None:
     source = (REPO_ROOT / "benchmarks" / "minlplib" / "minlplib.cpp").read_text()
     assert f"constexpr int kExitErrored = {RUNNER_EXIT_ERRORED};" in source
     # ... and it is what the roster loop actually returns.
-    assert "const int status = run_exit_status(t.errored);" in source
+    # The tally the status is computed FROM, not just the constant: a status
+    # read off `skipped_unsupported` or `verify_failed` would be the same
+    # integer for the wrong reason.
+    assert "run_exit_status(t.errored)" in source

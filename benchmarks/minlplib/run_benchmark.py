@@ -87,6 +87,19 @@ RUNNER_TARGET = "cbls_minlplib"
 #: constant against it.
 RUNNER_EXIT_ERRORED = 3
 
+#: The notes the runner writes on the rows that come WITH `RUNNER_EXIT_ERRORED`:
+#: the instance threw while being read, built or solved, so the row records no
+#: search. Deliberately narrower than the ablation report's no-search set --
+#: `unsupported` and `not-found` are coverage gaps, exit 0, and are staged and
+#: published like any other row.
+RUNNER_ERROR_NOTES: tuple[str, ...] = ("read-error", "build-error", "solve-error")
+
+
+def errored_note(note: str) -> bool:
+    """Whether this row's note says the runner THREW on the instance."""
+    return any(note.startswith(prefix) for prefix in RUNNER_ERROR_NOTES)
+
+
 #: Seconds per instance. The runner's own documented default (issue #88), argued
 #: from the committed anytime trace in the benchmark README ("Why 60s").
 DEFAULT_TIME_LIMIT = 60.0
@@ -364,14 +377,40 @@ def staged_row_complete(path: Path, sha: str) -> bool:
     return dict(zip(rows[0], rows[1], strict=True)).get("commit_sha") == sha
 
 
+def staged_errored(path: Path) -> bool:
+    """Whether a staging CSV's row says the runner threw on this instance.
+
+    Read apart from `staged_row_complete`, which asks whether the FILE is whole.
+    Such a row is whole -- header, one full line, the right commit -- and that is
+    the problem: it would otherwise stand in for a solve on the next resume.
+    """
+    if not path.exists():
+        return False
+    rows = list(csv.reader(path.read_text().splitlines()))
+    if len(rows) < 2 or len(rows[1]) != len(rows[0]):
+        return False
+    return errored_note(dict(zip(rows[0], rows[1], strict=True)).get("note", ""))
+
+
 def staged_complete(args: argparse.Namespace, sha: str, name: str, stage: Path) -> bool:
     """Whether `name`'s staged output can stand in for a fresh solve.
 
     Both files matter: a run made with `--no-trace` leaves a complete CSV and no
     trace at all, and skipping on the CSV alone would replace `comparison.csv`
     and only then fail to assemble the trace.
+
+    A row the runner wrote after THROWING is refused (#153). It is complete by
+    every structural check -- which is exactly why it has to be named here: the
+    runner exits nonzero on it and `run_roster` aborts, but `--resume` is the
+    default, so without this the next invocation would skip the instance and
+    `publish` would assemble a row that measured nothing into `comparison.csv`.
+    The abort would have delayed the bad publish by one invocation rather than
+    preventing it. A coverage gap -- `unsupported`, or a missing `.nl` -- exits 0
+    and is NOT refused here; it is a documented row like any other.
     """
     if not staged_row_complete(stage / f"{name}.csv", sha):
+        return False
+    if staged_errored(stage / f"{name}.csv"):
         return False
     return not args.trace or (stage / f"{name}.trace.csv").exists()
 
@@ -495,17 +534,17 @@ def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage:
         log = stage / f"{name}.log"
         log.write_text(completed.stdout + completed.stderr)
         if completed.returncode != 0 or not staged_complete(args, sha, name, stage):
-            why = (
-                " The runner threw on this instance and its staged row carries "
+            what_next = (
+                "The runner threw on this instance and its staged row carries "
                 "read-error/build-error/solve-error: no search ran, so publishing the table "
-                "would put a row in it that measures nothing. Fix the instance or drop it from "
-                "the roster; re-running will hit the same throw."
+                "would put a row in it that measures nothing. `staged_complete` refuses that "
+                "row, so a re-run hits the same throw rather than resuming past it -- fix the "
+                "instance or drop it from the roster."
                 if completed.returncode == RUNNER_EXIT_ERRORED
-                else ""
+                else "Re-running resumes from here."
             )
             raise RuntimeError(
-                f"{name} failed (exit {completed.returncode}); see {log}. Re-running resumes "
-                f"from here.{why}"
+                f"{name} failed (exit {completed.returncode}); see {log}. {what_next}"
             )
 
 

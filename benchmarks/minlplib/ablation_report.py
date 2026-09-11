@@ -106,8 +106,9 @@ RUNNER_FAILED_NOTE = "runner-failed"
 #: unrecognised note is held out, counted, and named on the report's disclosure
 #: line, so it announces itself instead of moving a number. The cost of that
 #: polarity is that an allowlist which falls behind the runner DISCARDS real
-#: measurements, which is why `test_every_completed_search_note_is_allowlisted`
-#: sweeps `minlplib.cpp` for the literals a completed search can write.
+#: measurements, which is why
+#: `test_every_completed_search_note_the_runner_writes_is_allowlisted` sweeps
+#: `minlplib.cpp` for the literals a completed search can write.
 #:
 #: From `minlplib.cpp`, in full: `classify_against_bks` returns `better-than-bks`,
 #: `matches-bks`, `within-tolerance-of-bks` or `feasible` (which `run_instance`
@@ -140,9 +141,11 @@ COMPLETED_SEARCH_NOTES: tuple[str, ...] = (
 #: report lists them; a note matching none of them keeps its own text and is
 #: called out as unrecognised.
 #:
-#: `RUNNER_FAILED_NOTE` is deliberately first: the report lists the runner's own
-#: notes as `NO_SEARCH_NOTES[1:]`, because the driver's crashes get their own
-#: line. The runner's five are, by writer:
+#: `RUNNER_FAILED_NOTE` is first because `note_order` sorts the disclosure line
+#: by this tuple's index and the driver's crashes are reported ahead of the
+#: runner's own notes -- on their own line, which is also why nothing starting
+#: with it ever reaches `no_search_label`: `build_cells` filters `runner_failed`
+#: rows out before labelling. The runner's five are, by writer:
 #:
 #:   * `not-found`, `read-error`, `build-error`  -- `write_preread_row`, before
 #:     a model exists at all;
@@ -373,8 +376,9 @@ ARM_ONLY_FEASIBLE = "arm-only-feasible"
 CONTROL_ONLY_FEASIBLE = "control-only-feasible"
 NEITHER_FEASIBLE = "neither-feasible"
 NO_COMPARABLE_GAP = "no-comparable-gap"
-#: One side recorded no completed run at all -- every row there crashed, or the
-#: runner wrote one of `NO_SEARCH_NOTES`. There is nothing to compare, in either
+#: One side recorded no completed run at all -- every row there crashed, or
+#: carried a note no completed search writes (a known no-search note, or one
+#: this module does not recognise). There is nothing to compare, in either
 #: direction: an absence of runs is not an absence of feasibility.
 NO_RUNS_RECORDED = "no-runs-recorded"
 
@@ -528,7 +532,8 @@ def build_cells(rows: Iterable[RunRow]) -> dict[tuple[str, str], Cell]:
             arm=key[1],
             # Rows where no search completed are not runs. Counting them would
             # put an arm that segfaulted -- or an arm whose configuration
-            # provoked an exception, which exits 0 and looks well-formed -- into
+            # provoked an exception, whose row is well-formed and reaches the
+            # campaign through the driver's failed-run path (#153) -- into
             # `control-only-feasible`, the bucket that means "this arm lost
             # feasibility here", which is a claim about the search rather than
             # about the process table.
