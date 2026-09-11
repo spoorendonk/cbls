@@ -242,7 +242,9 @@ Trunk-based development with linear history on main. Commit directly to main and
 
 Feature branches are optional for larger changes:
 - Always branch from main. Run `git checkout main && git pull` first.
-- Never branch from another feature branch.
+- Never branch from another feature branch, with one exception: serialized
+  issues under **Parallel Issue Workflow**, where the second issue's branch is
+  cut from the first's so the pair lands as one fast-forward.
 - Keep branches short-lived; rebase or squash merge — no merge commits on main.
 
 After a successful push:
@@ -284,11 +286,42 @@ If a benchmark is ever retired, it is a tracker job as well as a tree job:
 
 When the user brings multiple gh issues to work on at once:
 
-1. **Propose parallelism first.** Offer it explicitly and wait for confirmation — don't silently start serial work.
-2. **Orchestrator role.** Spawn one subagent per issue (Agent tool with `isolation: "worktree"`). Subagents branch from main, not from the orchestrator's working branch, and work in their own git worktree. Pass each subagent its gh issue number and any plan file path.
-3. **Subagents self-review** per the Agent Self-Review rule above. Subagents commit locally in their worktree and **do not push** — worktrees share `.git`, so the orchestrator sees their commits via `git log <branch>` with no network round-trip.
-4. **No merging without user OK.** Subagents never merge into main; the orchestrator never merges a subagent's branch without explicit user approval.
-5. **Final combined review, then push.** The orchestrator merges all approved branches into local main, runs `/review` over the merged result, and only then runs `git push origin main`. No pushes — of main or feature branches — happen before that final review.
+1. **Propose parallelism first**, unless a goal already settled it. Offer it
+   explicitly and wait for confirmation — don't silently start serial work. A
+   `/goal` that names the issues and says how to take them has already answered
+   this; don't ask again.
+2. **Serialize issues that touch the same files or interfaces.** Two agents
+   editing one file, or one row schema, is a merge conflict dressed up as
+   parallelism. Decide this before spawning anything: name the shared files and
+   say which issue goes first and why. The second issue's branch is then cut
+   **from the first issue's branch**, not from main — that is the one sanctioned
+   exception to **Git Workflow**'s "always branch from main", and it is what
+   keeps the final merge a single fast-forward. Genuinely independent issues
+   still branch from main and run concurrently.
+3. **Orchestrator role.** Spawn one subagent per issue (Agent tool with
+   `isolation: "worktree"`). Pass each subagent its gh issue number, its
+   worktree path, and any plan file path.
+4. **Subagents self-review** per the Agent Self-Review rule above. Subagents
+   commit locally in their worktree and **do not push, merge, or touch another
+   branch** — worktrees share `.git`, so the orchestrator sees their commits via
+   `git log <branch>` with no network round-trip.
+5. **Merging and pushing are the orchestrator's own call when the work is part
+   of a stated goal.** A goal that names the issues to take *is* the
+   authorisation to land them; stopping to ask again mid-run breaks the "no
+   interruptions" half of the same instruction and buys nothing, because the
+   thing actually standing between a bad merge and main is the pre-push hook and
+   the cold review, not a second yes. **Outside a goal** — an ad-hoc "have a look
+   at these two issues" — ask before merging.
+6. **Final combined review, then push.** The orchestrator merges every approved
+   branch into local main, runs `/review` over the merged result, and only then
+   runs `git push origin main`. No pushes — of main or of a feature branch —
+   happen before that final review. Then close the issues the push resolved and
+   delete the branches and worktrees, per **Git Workflow**.
+
+If the harness denies the merge or the push, that is a permission layer, not a
+review finding: say so plainly, hand over the exact commands, and do not report
+the work as shipped. Committed-on-a-branch is not pushed, and the final report
+must not say otherwise.
 
 A subagent worktree may READ sibling worktrees to understand patterns, but must never WRITE to one or to its git branch. A fresh worktree has no `.venv`; see **Build & Test** for the symlink it needs before building or testing.
 
