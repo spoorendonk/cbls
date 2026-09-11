@@ -1624,3 +1624,141 @@ TEST_CASE("the real LNS records repairs it kept, on a model where some are kept"
         REQUIRE(r.lns_repairs_accepted < r.lns_repairs);
     }
 }
+
+namespace {
+
+/// The objective of the first progress report that announces a new best on a
+/// feasible assignment -- i.e. the first `record_best` on a feasible point.
+///
+/// This is an INDEPENDENT witness of the quantity `SearchResult`'s
+/// first-feasible pair reports, taken through the public callback rather than
+/// from the field under test, so the two agreeing says the field records the
+/// first feasible point and not merely some feasible point.
+class FirstFeasibleProgress : public SolveCallback {
+public:
+    void on_progress(const SolveProgress& p) override {
+        ++events;
+        if (captured || !p.feasible || !p.new_best) {
+            return;
+        }
+        captured = true;
+        objective = p.objective;
+        time_seconds = p.time_seconds;
+    }
+
+    bool captured = false;
+    int events = 0;
+    double objective = std::numeric_limits<double>::quiet_NaN();
+    double time_seconds = std::numeric_limits<double>::quiet_NaN();
+};
+
+/// Minimise a sum of squares under a lower bound on the plain sum.
+///
+/// Chosen because feasibility is trivial -- almost any assignment of
+/// non-negative integers clears the bound -- while the objective is a different
+/// function from the constraint, so the point the search first ARRIVES at is
+/// nowhere near the balanced optimum and the run spends the rest of its budget
+/// descending. That gap between arrival and finish is the whole subject of
+/// #149, and without it a test of "the FIRST feasible objective" cannot tell
+/// the first from the last: with the objective equal to the constrained sum,
+/// the initialiser lands on the optimum at the moment it reaches feasibility
+/// and the two numbers coincide.
+void build_arrive_then_descend_model(Model& m) {
+    const int32_t two = m.constant(2.0);
+    std::vector<int32_t> vars;
+    std::vector<int32_t> squares;
+    vars.reserve(6);
+    squares.reserve(6);
+    for (int i = 0; i < 6; ++i) {
+        vars.push_back(m.int_var(0, 200));
+        squares.push_back(m.pow_expr(vars.back(), two));
+    }
+    const std::vector<int32_t> args(vars.begin(), vars.end());
+    m.add_constraint(m.sum({m.constant(30.0), m.neg(m.sum(args))}));  // 30 - sum <= 0
+    m.minimize(m.sum(squares));
+    m.close();
+}
+
+}  // namespace
+
+TEST_CASE("solve records the FIRST feasible objective, not the incumbent",
+          "[search][first-feasible]") {
+    // Three seeds: the claim is about which feasible point is latched, and one
+    // seed cannot distinguish "the first" from "whichever one this trajectory
+    // happens to end on".
+    for (uint64_t seed = 1; seed <= 3; ++seed) {
+        INFO("seed " << seed);
+        Model m;
+        build_arrive_then_descend_model(m);
+
+        SearchConfig cfg;
+        cfg.max_iterations = 4000;
+        FirstFeasibleProgress probe;
+        const SearchResult r = solve(m, /*time_limit=*/0.0, seed, /*use_fj=*/true, nullptr, nullptr,
+                                     /*lns_interval=*/3, &probe, cfg);
+
+        CAPTURE(r.objective, r.first_feasible_objective, r.time_to_first_feasible, probe.objective,
+                probe.events);
+        REQUIRE(r.feasible);
+        REQUIRE(probe.captured);
+
+        // The pair is recorded at all, and the time is a real reading rather
+        // than the "nothing happened" NaN.
+        REQUIRE_FALSE(std::isnan(r.time_to_first_feasible));
+        REQUIRE(r.time_to_first_feasible >= 0.0);
+        REQUIRE(r.time_to_first_feasible <= r.time_seconds);
+
+        // It is the FIRST feasible point's objective: the callback saw that
+        // point independently and reports the same number.
+        REQUIRE(r.first_feasible_objective == probe.objective);
+
+        // Not vacuous. The run really did improve after arriving, so "the
+        // first" and "the best" are different numbers here and the assertion
+        // above could have failed.
+        REQUIRE(r.objective < r.first_feasible_objective);
+    }
+}
+
+TEST_CASE("a run that never reaches feasibility reports no first-feasible pair",
+          "[search][first-feasible]") {
+    // Eight [0,10] integers cannot sum to 2500, so the search cannot reach
+    // feasibility however long it runs. Both cells must stay NaN: a 0 in either
+    // would read as "arrived instantly, at objective zero" -- a measurement --
+    // and #149's correlation would take it as one.
+    Model m;
+    std::vector<int32_t> vars;
+    vars.reserve(8);
+    for (int i = 0; i < 8; ++i) {
+        vars.push_back(m.int_var(0, 10));
+    }
+    std::vector<int32_t> args(vars.begin(), vars.end());
+    args.push_back(m.constant(-2500.0));
+    m.add_constraint(m.abs_expr(m.sum(args)));
+    m.minimize(m.sum(vars));
+    m.close();
+
+    SearchConfig cfg;
+    cfg.max_iterations = 500;
+    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/1, /*use_fj=*/true, nullptr,
+                                 nullptr, /*lns_interval=*/3, nullptr, cfg);
+
+    CAPTURE(r.objective, r.best_violation, r.first_feasible_objective, r.time_to_first_feasible);
+    REQUIRE_FALSE(r.feasible);
+    REQUIRE(std::isnan(r.first_feasible_objective));
+    REQUIRE(std::isnan(r.time_to_first_feasible));
+}
+
+TEST_CASE("ParallelSearch leaves the first-feasible pair unrecorded", "[pool][first-feasible]") {
+    // The documented caveat on the field, pinned rather than left to prose:
+    // `solve_portfolio` composes its SearchResult field by field from the pool's
+    // best solution, and the pool carries only the state and the objective. So a
+    // parallel run reports NaN for both cells even though it IS feasible --
+    // "not recorded", which is the honest reading, and exactly what a consumer
+    // must not mistake for "arrived at NaN".
+    ParallelSearch ps(2);
+    const SearchResult r = ps.solve(simple_model_factory(), 1.0, 42);
+    CAPTURE(r.objective, r.first_feasible_objective, r.time_to_first_feasible);
+    REQUIRE(r.feasible);
+    REQUIRE(std::isnan(r.first_feasible_objective));
+    REQUIRE(std::isnan(r.time_to_first_feasible));
+}

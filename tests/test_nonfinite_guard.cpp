@@ -430,6 +430,39 @@ TEST_CASE("a feasible point with a non-finite objective gets a finite bound",
     REQUIRE_FALSE(probe.objective_row <= 0.0);
 }
 
+TEST_CASE("the first-feasible pair reports the witness point's non-finite objective",
+          "[nonfinite][nonfinite-objective][first-feasible]") {
+    // The one case where #149's two cells disagree about whether anything was
+    // recorded, pinned so the documented rule stays true: the search DID reach
+    // feasibility, so `time_to_first_feasible` is a number, but the point it
+    // reached is the non-finite-objective witness of #100, so
+    // `first_feasible_objective` is not.
+    //
+    // This is why the time is the field that says whether a feasible point was
+    // recorded at all, and why a consumer of the objective must test
+    // `std::isfinite` rather than assume a reading. A rule stated only in a
+    // comment would go stale the first time the witness path moved.
+    Model m;
+    build_diagonal_blowup_model(m);
+
+    SearchConfig cfg;
+    cfg.skip_init = true;  // keep the diagonal start
+    cfg.max_iterations = 20000;
+    cfg.perturbation_period = 1 << 30;  // no diversification within the budget
+
+    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr,
+                                 nullptr, 3, nullptr, cfg);
+
+    CAPTURE(r.objective, r.first_feasible_objective, r.time_to_first_feasible);
+    REQUIRE(r.feasible);
+    // The premise: the search started ON the blowup diagonal, so the first
+    // feasible point it recorded is the witness and nothing else.
+    REQUIRE_FALSE(std::isfinite(r.first_feasible_objective));
+    // ...and it was still recorded.
+    REQUIRE_FALSE(std::isnan(r.time_to_first_feasible));
+    REQUIRE(r.time_to_first_feasible >= 0.0);
+}
+
 TEST_CASE("a search starting feasible with a +inf objective still finds a finite one",
           "[nonfinite][nonfinite-objective]") {
     // Diversification is switched off deliberately. A random kick off the
