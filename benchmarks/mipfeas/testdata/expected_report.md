@@ -59,7 +59,7 @@ Excluded from the parity sets:
 
 | instance | engine | kind | reason |
 |---|---|---|---|
-| invalid-for-cpsat | cpsat | invalid_model | no message recorded |
+| invalid-for-cpsat | cpsat | invalid_model | MODEL_INVALID |
 | killed-job | cbls | killed | exceeded 902.0s wall clock |
 | missing-job | cpsat | not_run | no result file was written for this job |
 | rejected-solution | cbls | verification fail | row_violation -- row 4.5 (4.5e+06x tol at R7) |
@@ -67,7 +67,9 @@ Excluded from the parity sets:
 
 ## 4. Model-shape cross-check
 
-Variable counts must agree exactly: every reader enumerates the same MPS COLUMNS section, so a difference there is a reader defect, never benign. Constraint counts may differ by exactly the free rows the baseline keeps -- the MPS `N` rows after the first, which is the objective. OR-Tools' ModelBuilder holds each remaining `N` row as a linear constraint with infinite bounds; the CBLS adapter drops them, and so does SCIP. A free row constrains nothing, so the two programs have the same feasible set and the difference is benign. Any other difference, in either direction, is flagged.
+Variable counts must agree exactly: every reader enumerates the same MPS COLUMNS section, so a difference there is a reader defect, never benign. Constraint counts may differ by exactly the free rows the baseline keeps -- the MPS `N` rows after the first, which is the objective. OR-Tools' ModelBuilder holds each remaining `N` row as a linear constraint with infinite bounds; the CBLS adapter drops them, and so does SCIP. A free row constrains nothing, so the two programs have the same feasible set and the difference is benign. Any other difference, in either direction, is flagged. The excuse also needs a THIRD reading to stand: the free-row count is self-reported by the baseline, so it is certified by the reader under test. A difference is benign only when the independent checker recorded a count and that count agrees with the CBLS adapter. Where no verdict exists -- neither engine reported a solution on that instance, or the checker was killed -- the excuse is unchecked and the row is flagged, because an instance both engines failed is exactly where a translation defect is the likeliest explanation for the double failure.
+
+Cross-checked 11 of 13 instance(s): the rest carry no shape from at least one engine (a killed job, a job that never ran, or a runner that died before publishing one) and are reported `not_compared`, not `agree`.
 
 | instance | kind | counts | verdict | explanation |
 |---|---|---|---|---|
@@ -76,12 +78,12 @@ Variable counts must agree exactly: every reader enumerates the same MPS COLUMNS
 
 ## 5. Trace health
 
-| engine | genuine | degraded | unrecorded | denominator |
-|---|---|---|---|---|
-| cbls | 10 | 0 | 0 | 10 |
-| cpsat | 8 | 1 | 0 | 9 |
+| engine | genuine | of which single-point | degraded | unrecorded | denominator |
+|---|---|---|---|---|---|
+| cbls | 10 | 9 | 0 | 0 | 10 |
+| cpsat | 8 | 6 | 1 | 0 | 9 |
 
-Denominator: rows the engine **reported feasible** -- including any whose objective was later withheld, which section 2 excludes, so this count can exceed the feasible count there. The profile exists either way, and its health is a fact about the harness rather than about the verdict. A run that found nothing has no incumbent profile to have, so it is not counted here. A degraded row is one whose profile collapsed to the final objective alone -- a harness condition (a changed log format, a callback that stopped firing), not a search result, and it scores near the no-solution penalty either way.
+Denominator: rows the engine **reported feasible** -- including any whose objective was later withheld, which section 2 excludes, so this count can exceed the feasible count there. The profile exists either way, and its health is a fact about the harness rather than about the verdict. A run that found nothing has no incumbent profile to have, so it is not counted here. A single-point column counts genuine profiles that nonetheless record at most one incumbent: not a defect (one improvement is one improvement), but a run where it is most of the denominator is one to look at before quoting the anytime aggregate. A degraded row is one whose profile collapsed to the final objective alone -- a harness condition (a changed log format, a callback that stopped firing), not a search result, and it scores near the no-solution penalty either way.
 
 - cpsat degraded: degraded-trace
 

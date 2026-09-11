@@ -244,6 +244,12 @@ class Scored(NamedTuple):
     #: point. A systematic log-format change would otherwise score every CP-SAT
     #: instance near 2.0, indistinguishable from "CP-SAT is bad".
     trace_source: str
+    #: How many incumbents the profile actually records, counted from the trace
+    #: FILE so it is the same measurement for both engines rather than either
+    #: runner's self-report. `trace_source` says the recorder ran; this says how
+    #: much it recorded, and the two come apart: a callback that fired once and
+    #: stopped is `callback` with one point.
+    trace_points: int
     #: The engine's own verdict, where it has one finer than `status` (CP-SAT's
     #: OPTIMAL / FEASIBLE / NOT_SOLVED / MODEL_INVALID). An INFEASIBLE here on a
     #: roster of known-feasible instances is a red flag about CP-SAT's integer
@@ -395,6 +401,7 @@ def score_instance(
             message="no result file was written for this job",
             config="",
             trace_source="",
+            trace_points=0,
             solver_status="",
             provenance="n/a",
             verification=UNVERIFIED,
@@ -449,6 +456,7 @@ def score_instance(
         objective = None
 
     trace = load_trace(results_dir / engine / f"{instance}.trace.csv")
+    trace_points = len(trace)
     if status == "feasible" and objective is not None and not trace:
         # A result without a profile still has a known end state; treat the solution
         # as arriving at the buzzer rather than dropping the instance.
@@ -499,6 +507,7 @@ def score_instance(
         message=str(result.get("message", "")),
         config=";".join(f"{k}={result[k]}" for k in CONFIG_KEYS if k in result),
         trace_source=str(result.get("trace_source", "")),
+        trace_points=trace_points,
         solver_status=str(result.get("cpsat_status", "")),
         provenance=_provenance(result),
         verification=verification.verdict,
@@ -781,7 +790,15 @@ SHAPE_RULE = (
     "ModelBuilder holds each remaining `N` row as a linear constraint with "
     "infinite bounds; the CBLS adapter drops them, and so does SCIP. A free row "
     "constrains nothing, so the two programs have the same feasible set and the "
-    "difference is benign. Any other difference, in either direction, is flagged."
+    "difference is benign. Any other difference, in either direction, is flagged. "
+    "The excuse also needs a THIRD reading to stand: the free-row count is "
+    "self-reported by the baseline, so it is certified by the reader under test. "
+    "A difference is benign only when the independent checker recorded a count "
+    "and that count agrees with the CBLS adapter. Where no verdict exists -- "
+    "neither engine reported a solution on that instance, or the checker was "
+    "killed -- the excuse is unchecked and the row is flagged, because an "
+    "instance both engines failed is exactly where a translation defect is the "
+    "likeliest explanation for the double failure."
 )
 
 
@@ -823,19 +840,31 @@ def _constraint_disagreement(
         # different program entirely is published as `benign` the moment the two
         # engines happen to differ by exactly the free-row count -- which is the
         # disagreement this cross-check exists to catch.
-        checker_agrees = checker is None or checker == mine
+        #
+        # An ABSENT checker is not agreement. A verdict exists only for a row that
+        # reported a solution, so on every instance where NEITHER engine found one
+        # there is no third reading -- and `free_rows` itself is written only by
+        # cpsat_solve.py, so without SCIP the excuse is certified by the reader
+        # under test alone. Those instances are exactly where a translation defect
+        # is the likeliest explanation for the double failure, so absence flags.
+        checker_agrees = checker is not None and checker == mine
+        if explained and checker_agrees:
+            explanation = f"{second} keeps {free} free row(s) the CBLS adapter drops"
+        elif explained and checker is None:
+            explanation = (
+                f"the free rows would explain {second}, but no verdict recorded a third "
+                "reading, so the excuse is unchecked"
+            )
+        elif explained:
+            explanation = f"the free rows explain {second}, but the checker read a third count"
+        else:
+            explanation = "not accounted for by the free rows the baseline keeps"
         return ShapeDisagreement(
             instance=instance,
             kind="constraints",
             counts=counts,
             benign=explained and checker_agrees,
-            explanation=(
-                f"{second} keeps {free} free row(s) the CBLS adapter drops"
-                if explained and checker_agrees
-                else f"the free rows explain {second}, but the checker read a third count"
-                if explained
-                else "not accounted for by the free rows the baseline keeps"
-            ),
+            explanation=explanation,
         )
     if checker is not None and checker != mine:
         # The engines agree and the third reader does not, which the free-row rule
@@ -848,6 +877,28 @@ def _constraint_disagreement(
             explanation="the checker read a different constraint count from both engines",
         )
     return None
+
+
+def cross_checked_instances(rows: list[Scored], engines: tuple[str, ...] = ENGINES) -> set[str]:
+    """The instances where a shape comparison actually happened.
+
+    Both engines must have a row AND both must have published counts. A killed
+    job, a job that never ran, and a runner that died before writing its shape
+    all leave `n_vars`/`n_cons` at None, and an instance like that was not
+    checked -- it must not be reported as agreeing, which is this benchmark's
+    entire admission ground asserted from no evidence.
+    """
+    if len(engines) != 2:
+        raise ValueError(f"the cross-check compares exactly two engines, got {engines}")
+    by_instance: dict[str, dict[str, Scored]] = {}
+    for row in rows:
+        by_instance.setdefault(row.instance, {})[row.engine] = row
+    checked = set()
+    for instance, per_engine in by_instance.items():
+        sides = [per_engine.get(engines[0]), per_engine.get(engines[1])]
+        if all(s is not None and s.n_vars is not None and s.n_cons is not None for s in sides):
+            checked.add(instance)
+    return checked
 
 
 def cross_check_shapes(
@@ -930,6 +981,12 @@ class TraceHealth(NamedTuple):
     degraded: int
     #: Rows from a results directory that recorded no `trace_source` at all.
     unrecorded: int
+    #: Rows counted `healthy` whose profile nonetheless records at most one
+    #: incumbent. Reported rather than reclassified: one improvement is a real
+    #: profile, and a recorder that fired once and stopped is not distinguishable
+    #: from it here -- but a run where this is most of the denominator is one to
+    #: look at before quoting its anytime aggregate.
+    single_point: int
     degraded_instances: list[str]
     unrecorded_instances: list[str]
 
@@ -941,11 +998,13 @@ def trace_health(rows: list[Scored], engine: str) -> TraceHealth:
         r.instance for r in mine if r.trace_source and r.trace_source not in HEALTHY_TRACE_SOURCES
     )
     unrecorded = sorted(r.instance for r in mine if not r.trace_source)
+    thin = [r for r in mine if r.trace_source in HEALTHY_TRACE_SOURCES and r.trace_points <= 1]
     return TraceHealth(
         engine=engine,
         reported_feasible=len(mine),
         healthy=len(mine) - len(degraded) - len(unrecorded),
         degraded=len(degraded),
+        single_point=len(thin),
         unrecorded=len(unrecorded),
         degraded_instances=degraded,
         unrecorded_instances=unrecorded,
@@ -978,7 +1037,12 @@ def job_failures(rows: list[Scored]) -> list[JobFailure]:
                     instance=row.instance,
                     engine=row.engine,
                     kind=row.status,
-                    reason=row.message or "no message recorded",
+                    # `solver_status` before giving up: the baseline's
+                    # `invalid_model` / `invalid_parameters` paths set no
+                    # message, and that is the CP-SAT defect class most likely to
+                    # reach a published table -- "no message recorded" preserves
+                    # nothing for exactly the failure worth preserving.
+                    reason=row.message or row.solver_status or "no message recorded",
                 )
             )
         elif row.verification in (VERIFICATION_FAIL, "error") or (
@@ -1256,6 +1320,47 @@ def _scope_banners(rows: list[Scored], summaries: list[Summary], parity: Parity)
     return banners
 
 
+def _shape_section(
+    rows: list[Scored], shapes: list[ShapeDisagreement], engines: tuple[str, ...]
+) -> list[str]:
+    """Section 4, with its own denominator.
+
+    Section 5 states the set its counts are over; this one did not, and a reader
+    cannot tell "every instance agreed" from "one instance agreed and 232 were
+    never compared" without it.
+    """
+    checked = cross_checked_instances(rows, engines)
+    roster = {row.instance for row in rows}
+    out = [
+        "",
+        "## 4. Model-shape cross-check",
+        "",
+        SHAPE_RULE,
+        "",
+        f"Cross-checked {len(checked)} of {len(roster)} instance(s): the rest carry no shape "
+        "from at least one engine (a killed job, a job that never ran, or a runner that died "
+        "before publishing one) and are reported `not_compared`, not `agree`.",
+        "",
+    ]
+    if shapes:
+        return out + _md_table(
+            ["instance", "kind", "counts", "verdict", "explanation"],
+            [
+                [d.instance, d.kind, d.counts, "benign" if d.benign else "FLAGGED", d.explanation]
+                for d in shapes
+            ],
+        )
+    if checked:
+        return [
+            *out,
+            f"Every one of the {len(checked)} cross-checked instance(s) reads the same shape "
+            "from every reader.",
+        ]
+    # Without this the sentence above is printed over zero comparisons, which is
+    # how a run where every job was killed asserts that every instance agreed.
+    return [*out, "No instance could be cross-checked: no pair of rows carried both shapes."]
+
+
 def render_report(
     rows: list[Scored],
     summaries: list[Summary],
@@ -1362,30 +1467,15 @@ def render_report(
         )
     else:
         out.append("No job failed and no solution was refused.")
-    out += [
-        "",
-        "## 4. Model-shape cross-check",
-        "",
-        SHAPE_RULE,
-        "",
-    ]
-    if shapes:
-        out += _md_table(
-            ["instance", "kind", "counts", "verdict", "explanation"],
-            [
-                [d.instance, d.kind, d.counts, "benign" if d.benign else "FLAGGED", d.explanation]
-                for d in shapes
-            ],
-        )
-    else:
-        out.append("Every instance reads the same shape from every reader.")
+    out += _shape_section(rows, shapes, engines)
     out += ["", "## 5. Trace health", ""]
     out += _md_table(
-        ["engine", "genuine", "degraded", "unrecorded", "denominator"],
+        ["engine", "genuine", "of which single-point", "degraded", "unrecorded", "denominator"],
         [
             [
                 h.engine,
                 str(h.healthy),
+                str(h.single_point),
                 str(h.degraded),
                 str(h.unrecorded),
                 str(h.reported_feasible),
@@ -1400,6 +1490,9 @@ def render_report(
         "exceed the feasible count there. The profile exists either way, and its "
         "health is a fact about the harness rather than about the verdict. A run that "
         "found nothing has no incumbent profile to have, so it is not counted here. A "
+        "single-point column counts genuine profiles that nonetheless record at most one "
+        "incumbent: not a defect (one improvement is one improvement), but a run where it is "
+        "most of the denominator is one to look at before quoting the anytime aggregate. A "
         "degraded row is one whose profile collapsed to the final objective alone -- a "
         "harness condition (a changed log format, a callback that stopped firing), not "
         "a search result, and it scores near the no-solution penalty either way.",
@@ -1495,11 +1588,23 @@ def render_report(
 
 
 def read_roster(path: Path) -> list[tuple[str, float, str]]:
+    """The roster, refusing a repeated instance.
+
+    A duplicate line double-counts the instance in every aggregate and makes the
+    two published artifacts disagree about the roster size: the CSV derives it as
+    `len(rows) // len(summaries)` and the report as the number of distinct
+    instances. Neither is wrong given the input; the input is.
+    """
     with open(path, newline="") as fh:
-        return [
+        entries = [
             (row["instance"], float(row["reference_value"]), row["reference_kind"])
             for row in csv.DictReader(fh)
         ]
+    names = [name for name, _, _ in entries]
+    repeated = sorted({name for name in names if names.count(name) > 1})
+    if repeated:
+        raise ValueError(f"{path} repeats {', '.join(repeated)}; a roster names each instance once")
+    return entries
 
 
 def _tolerance_line(rows: list[Scored]) -> str:
@@ -1521,9 +1626,16 @@ def shape_notes_by_instance(
     """Per-instance cell for the table's `shape_agreement` column.
 
     `agree` where every reader read the same program, `benign:<kind>` where the
-    stated rule accounts for the difference, `FLAGGED:<kind>` where it does not.
+    stated rule accounts for the difference, `FLAGGED:<kind>` where it does not,
+    and `not_compared` where no comparison was possible -- a killed job, a job
+    that never ran, or a runner that died before publishing its shape. That last
+    case used to read `agree`, which asserted the benchmark's admission ground
+    from an instance nobody had looked at.
     """
-    notes: dict[str, str] = {r.instance: "agree" for r in rows}
+    checked = cross_checked_instances(rows, engines)
+    notes: dict[str, str] = {
+        r.instance: ("agree" if r.instance in checked else "not_compared") for r in rows
+    }
     for disagreement in cross_check_shapes(rows, engines):
         prefix = "benign" if disagreement.benign else "FLAGGED"
         notes[disagreement.instance] = f"{prefix}:{disagreement.kind}"
@@ -1814,6 +1926,17 @@ def main() -> int:
             + consequence,
             file=sys.stderr,
         )
+    if defects.shape_flagged:
+        # Same standing as a rejected solution, and for the same reason: "both
+        # engines solved the same program" is this benchmark's entire admission
+        # ground, so a run that demonstrably breaks it must not score at exit 0
+        # for an unattended wrapper that only checks `$?`.
+        print(
+            f"\nDEFECT: {defects.shape_flagged} model-shape disagreement(s) the stated rule "
+            "does not account for. The two engines did not read the same program; see section 4 "
+            "of the report and the shape_agreement column.",
+            file=sys.stderr,
+        )
     incomplete = [s for s in summaries if s.not_run]
     if incomplete:
         print(
@@ -1823,9 +1946,11 @@ def main() -> int:
             "published MIPfeas score.",
             file=sys.stderr,
         )
-    # Non-zero when a solution was rejected: a correctness benchmark whose
-    # checker refused a published point must not score at exit 0.
-    return 1 if rejected else 0
+    # Non-zero when a solution was rejected, or when the two engines demonstrably
+    # read different programs: a correctness benchmark whose checker refused a
+    # published point -- or whose admission ground is broken -- must not score at
+    # exit 0.
+    return 1 if rejected or defects.shape_flagged else 0
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import ast
 import importlib.util
 import os
 import re
@@ -29,17 +30,65 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 # to lint quietly when ruff is missing from the venv.
 _ignored_binding_tests: list[str] = []
 
+#: The compiled module a binding test needs.
+BINDING_MODULE = "_cbls_core"
+
+
+def imports_module(text: str, module: str) -> bool:
+    """Whether this source really imports `module` -- by AST, not by substring.
+
+    A substring search gets this wrong in both directions, and this file has
+    shipped both mistakes. `"_cbls_core" in text` collect-ignored the very suite
+    that polices this announcement, because its DOCSTRING names the module. The
+    narrower `"import _cbls_core" in text` that replaced it then missed
+    `from _cbls_core import X` and `importlib.import_module("_cbls_core")` --
+    and a missed binding test does not merely run, it raises ImportError during
+    collection, which aborts the WHOLE session: pytest exits 2 having run
+    nothing.
+
+    Docstrings and comments are not in the AST, so neither hazard survives
+    parsing. All three import spellings are recognised.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        # Let pytest report an unparseable file itself; guessing from a broken
+        # parse is how a binding test would be ignored for a typo.
+        return False
+    prefix = f"{module}."
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(a.name == module or a.name.startswith(prefix) for a in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom):
+            name = node.module or ""
+            if name == module or name.startswith(prefix):
+                return True
+        elif isinstance(node, ast.Call):
+            # importlib.import_module("_cbls_core"), which no `import` statement
+            # spelling would catch.
+            func = node.func
+            called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if called == "import_module" and node.args:
+                first = node.args[0]
+                if isinstance(first, ast.Constant) and first.value == module:
+                    return True
+    return False
+
+
+def binding_test_files(directory: Path) -> list[str]:
+    """The test files in `directory` that import the compiled bindings."""
+    return [
+        path.name
+        for path in sorted(directory.glob("test_*.py"))
+        if imports_module(path.read_text(), BINDING_MODULE)
+    ]
+
+
 try:
     import _cbls_core  # noqa: F401
 except ImportError:
-    _ignored_binding_tests = [
-        path.name
-        for path in sorted(Path(__file__).parent.glob("test_*.py"))
-        # The import, not a mention: a test file that merely names the module in
-        # prose is not a binding test, and dropping it would silently remove a
-        # suite -- including, once, the very one that polices this announcement.
-        if "import _cbls_core" in path.read_text()
-    ]
+    _ignored_binding_tests = binding_test_files(Path(__file__).parent)
     collect_ignore = _ignored_binding_tests
 
     if os.environ.get("CBLS_REQUIRE_BINDINGS") == "1":

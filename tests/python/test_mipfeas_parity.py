@@ -26,11 +26,14 @@ from benchmarks.mipfeas.primal_integral import (
     collect_defects,
     compare_feasibility,
     cross_check_shapes,
+    cross_checked_instances,
     headline_lines,
     job_failures,
     parity_verdict,
+    read_roster,
     render_report,
     score_instance,
+    shape_notes_by_instance,
     summarize,
     timing_summary,
     trace_health,
@@ -372,6 +375,89 @@ def test_the_checker_disagreeing_with_both_engines_is_flagged(tmp_path: Path) ->
     (disagreement,) = cross_check_shapes(_score(tmp_path, [("odd", 1.0)]))
     assert not disagreement.benign
     assert "checker" in disagreement.explanation
+
+
+def test_a_free_row_excuse_with_no_third_reading_is_flagged(tmp_path: Path) -> None:
+    """Absence of a checker is not agreement with one.
+
+    A verdict exists only for a row that reported a solution, so on every
+    instance where NEITHER engine found one there is no third reading -- and
+    `free_rows` is written only by the baseline, so without SCIP the excuse is
+    certified by the reader under test. Those are exactly the instances where a
+    translation defect best explains the double failure.
+    """
+    _write(tmp_path, "cbls", "dark", _shaped("no_solution", n_vars=10, n_cons=40), [])
+    _write(
+        tmp_path,
+        "cpsat",
+        "dark",
+        _shaped("no_solution", n_vars=10, n_cons=44, n_free_cons=4),
+        [],
+    )
+    (disagreement,) = cross_check_shapes(_score(tmp_path, [("dark", 1.0)]))
+    assert not disagreement.benign
+    assert "unchecked" in disagreement.explanation
+
+
+def test_an_instance_with_no_shape_from_one_engine_is_not_reported_as_agreeing(
+    tmp_path: Path,
+) -> None:
+    """A killed job carries no counts, so nothing about it was compared."""
+    _write(tmp_path, "cbls", "gone", _shaped("killed"), [])
+    _write(tmp_path, "cpsat", "gone", _shaped("feasible", n_vars=10, n_cons=5), [(1.0, 1.0)])
+    rows = _score(tmp_path, [("gone", 1.0)])
+    assert cross_checked_instances(rows) == set()
+    assert shape_notes_by_instance(rows)["gone"] == "not_compared"
+
+
+def test_an_instance_both_engines_shaped_is_reported_as_agreeing(tmp_path: Path) -> None:
+    for engine in ENGINES:
+        _write(
+            tmp_path,
+            engine,
+            "same",
+            _shaped("feasible", n_vars=10, n_cons=5, n_free_cons=0),
+            [(1.0, 1.0)],
+            _verdict(10, 5),
+        )
+    rows = _score(tmp_path, [("same", 1.0)])
+    assert cross_checked_instances(rows) == {"same"}
+    assert shape_notes_by_instance(rows)["same"] == "agree"
+
+
+def test_every_fixture_file_is_tracked_by_git() -> None:
+    """An untracked fixture file is green here and red nowhere else.
+
+    The regeneration test reads the working tree, not the index.
+
+    This already happened once: `.gitignore`'s blanket `results/` swallowed the
+    whole fixture directory, so criterion 8 passed only on the machine that
+    generated it, while the guard test beside it stayed green because it reads
+    the tracked expected file.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z", "benchmarks/mipfeas/testdata"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split("\0")
+    on_disk = {
+        str(path.relative_to(REPO_ROOT))
+        for path in (FIXTURE).rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts
+    }
+    missing = sorted(on_disk - {name for name in tracked if name})
+    assert missing == [], f"fixture files not tracked by git: {missing}"
+
+
+def test_a_roster_that_repeats_an_instance_is_refused(tmp_path: Path) -> None:
+    """A duplicate double-counts the instance and makes the two artifacts
+    disagree about the roster size."""
+    roster = tmp_path / "roster.csv"
+    roster.write_text("instance,reference_value,reference_kind\na,1.0,opt\nb,2.0,opt\na,1.0,opt\n")
+    with pytest.raises(ValueError, match="repeats a"):
+        read_roster(roster)
 
 
 def test_agreeing_shapes_produce_no_finding(tmp_path: Path) -> None:
