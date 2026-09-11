@@ -251,7 +251,7 @@ agree:
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
 4. the comment above the `ctest` call in `.githooks/pre-commit`,
-5. the `.venv/bin/pytest` line in `README.md` for the Python side (480 tests, 81
+5. the `.venv/bin/pytest` line in `README.md` for the Python side (515 tests, 81
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`),
 6. the `-LE slow` guidance and the ~40s/~304s figures in `docs/profiling.md`.
@@ -430,7 +430,7 @@ has it (`apt install ccache`), which matters because pre-push's ```clean fence i
 without it just builds normally.
 
 ```test
-ctest --test-dir build --output-on-failure -j$(nproc) && (CBLS_REQUIRE_BINDINGS=1 .venv/bin/pytest --tb=short -q; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 5 ])
+ctest --test-dir build --output-on-failure -j$(nproc) && (CBLS_REQUIRE_BINDINGS=1 CBLS_REQUIRE_BENCHMARKS=1 .venv/bin/pytest --tb=short -q; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 5 ])
 ```
 
 **The gated build turns the Python bindings on, and the gated test run requires
@@ -440,6 +440,15 @@ without the flag would leave 81 binding tests silently unrun.
 `CBLS_REQUIRE_BINDINGS=1` turns that skip into a hard error. Bindings cost ~2.4s
 of build and ~6s of pytest against a suite that already spends ~340s in `ctest` —
 always build them.
+
+**`CBLS_REQUIRE_BENCHMARKS=1` is the same rule for the `benchmarks` extra.**
+`ortools` and `pyscipopt` are not in `[dev]`, so the documented
+`.venv/bin/pip install -e '.[dev]'` bootstrap leaves every test of the CP-SAT
+baseline and of the independent solution verifier on a module-level
+`pytest.importorskip` — dozens of tests, including the one that is #138's whole
+acceptance criterion, disappearing into a green summary. Install the extra
+(`.venv/bin/pip install -e '.[benchmarks]'`); the flag makes the skip a hard
+error instead of a silent one.
 
 `pytest` is **only** in `.venv/` — a bare `pytest` is not on PATH and
 `python3 -m pytest` has no module, so always spell out `.venv/bin/pytest`.

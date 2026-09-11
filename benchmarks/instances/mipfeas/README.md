@@ -40,6 +40,71 @@ instances are `bnatt500`, `cryptanalysiskb128n5obj14`, `fhnw-binpack4-4`,
 Of the 233, 232 have a proven optimum in the solution file and one carries a
 best-known value; `roster.csv` records which per instance.
 
+## What the scorer reports
+
+`primal_integral.py` writes two files: the comparison table, and a parity report
+beside it (`--report`, default `<out stem>_report.md`). The report leads with what
+the correctness sweep is for and keeps the anytime score as a co-equal section:
+
+1. **defects** — rejected solutions, unverified rows, runs that beat a proven
+   optimum, rejected models, killed jobs, jobs that never ran, flagged shape
+   disagreements, degraded traces;
+2. **feasibility parity** — each engine's feasible count over the roster, the
+   instances both engines can be compared on, the agreement count, and **both
+   asymmetric difference sets named instance by instance**;
+3. **job failures** — the driver's kill message and the verifier's refusal
+   reason, which used to live only in a results directory nobody publishes;
+4. **the model-shape cross-check** — see below;
+5. **trace health** — how many anytime profiles are genuine, over a stated
+   denominator (rows the engine reported feasible);
+6. **anytime quality** — the Primal Integral aggregate, labelled with the exact
+   pairing it measures: CP-SAT's `fj` + `ls` subsolvers under `num_violation_ls`,
+   never "solvers" in general;
+7. **where the time went** — setup and solve time in separate columns.
+
+A compact form of 1, 2, 4 and 5 also leads the table's own header, because that
+is what a reader quoting the CSV will see.
+
+### The model-shape cross-check
+
+"Both engines solved the same program" is this benchmark's entire admission
+ground, and each side used to merely *disclose* its own shape. Now they are
+compared, against each other and against the count SCIP recorded while verifying
+the row. The rule:
+
+* **Variable counts must agree exactly.** Every reader enumerates the same MPS
+  `COLUMNS` section, so a difference is a reader defect and never benign.
+* **Constraint counts may differ by exactly the free rows the baseline keeps** —
+  the `N` rows after the first, which is the objective. OR-Tools' `ModelBuilder`
+  holds each remaining `N` row as a linear constraint with infinite bounds; the
+  CBLS adapter drops them, and so does SCIP. A free row constrains nothing, so
+  the feasible sets are identical. `cpsat_solve.py` records the count as
+  `n_free_cons`, so the rule subtracts a measured number rather than an argued
+  one.
+* **Anything else is flagged**, in either direction, including the third reader
+  disagreeing with both engines.
+
+`mad` is the live case: CBLS and SCIP read 51 rows, ModelBuilder 52, and the
+instance has two `N` rows.
+
+### Where the time went
+
+The wall-clock column has only ever bracketed the solve call, and two different
+effects hide behind that:
+
+* **setup** (`setup_seconds`) — instance read, model build and bound propagation,
+  all of which happen before the bracket. Both runners now measure it: CBLS as
+  `read_seconds` + `build_seconds`, CP-SAT as the `import_from_mps_file` call
+  that does both at once. It is not charged against the search, but it is charged
+  against the wall clock a run must be scheduled for.
+* **overrun** — `solve_seconds` past the budget, because search initialisation is
+  not bounded by the deadline: a large model's first batch runs to completion
+  whatever the clock says. This is why the driver allows 900s of slack.
+
+They are separate columns because a row can have one without the other. No
+magnitude for setup is quoted here: the published smoke table predates the
+measurement, so the only figures in the tree are fixture numbers.
+
 ## Metric: Primal Integral
 
 MIPfeas ranks on the Primal Integral rather than the gap at the time limit,
@@ -72,7 +137,9 @@ benchmarks/mipfeas/
   cpsat_solve.py     CP-SAT fj+ls baseline, same result schema
   run_benchmark.py   driver: parallel, resumable, memory-capped
   verify_solution.py independent feasibility check against the instance file
-  primal_integral.py scoring -> comparison.csv
+  primal_integral.py scoring -> comparison.csv + <stem>_report.md
+  testdata/          a frozen results directory and the two artifacts scored
+                     from it, compared byte for byte by the test suite
 
 results/mipfeas/<engine>/
   <instance>.json       result record
@@ -212,6 +279,9 @@ python benchmarks/mipfeas/primal_integral.py \
     --budget 600 --out benchmarks/instances/mipfeas/comparison.csv
 ```
 
+Step 6 writes `comparison_report.md` beside the table; see **What the scorer
+reports** above. It exits non-zero when a solution was rejected.
+
 The driver is resumable: a job whose result file exists is skipped, so an
 interrupted run continues where it stopped.
 
@@ -239,10 +309,20 @@ to end, and **not** a result. Both engines honoured the budget, the largest
 instance in the subset ran without OOM, and the driver resumed correctly after
 being interrupted.
 
-That table predates the verification columns — and the `n_unbounded_columns` /
-`n_bounds_tightened` ones before them — and was not regenerated for any of them.
-Its rows carry no verdict, so re-scoring that run would need
-`--allow-unverified`; a fresh wiring check is the better move.
+That table predates the verification columns — the `n_unbounded_columns` /
+`n_bounds_tightened` ones before them, and the parity report and timing split
+after them — and was not regenerated for any of them. It **cannot** be: the
+results directory it was scored from was never committed, and its rows carry no
+independent verdict, so even re-scoring what survives would need
+`--allow-unverified` and would publish nothing. A fresh wiring check is the only
+way to get a current table, and is the better move anyway.
+
+What *is* pinned is the report itself: `benchmarks/mipfeas/testdata/` holds a
+frozen results directory with the two artifacts scored from it, and
+`tests/python/test_mipfeas_parity.py` regenerates both and compares them byte for
+byte. Two of its thirteen instances are a real run; the rest are constructed, one
+per branch of the report. That directory's README says which is which, and none
+of its numbers is a measurement of either engine.
 
 The first run of it found two defects in the harness rather than in either
 solver, which is what a wiring check is for. The MPS reader was binarising

@@ -357,17 +357,33 @@ def _verdict_file(job: Job, results_dir: Path, verdict: str, reason: str = "") -
 
 
 class _FakeRun:
-    """Stands in for subprocess.run so _verify's return-code mapping can be driven."""
+    """Stands in for subprocess.run so _verify's return-code mapping can be driven.
 
-    def __init__(self, returncode: int, raises: bool = False) -> None:
+    `writes` is the verdict the stand-in drops where the real verifier would, and
+    it matters: `_verify` clears any verdict already on disk before starting, so a
+    stand-in that writes nothing is a checker that crashed, and one that writes is
+    a checker that reached a verdict. Conflating the two is the bug this
+    distinction exists to keep out.
+    """
+
+    def __init__(
+        self,
+        returncode: int,
+        raises: bool = False,
+        writes: tuple[Job, Path, str, str] | None = None,
+    ) -> None:
         self.returncode = returncode
         self.raises = raises
+        self.writes = writes
         self.stdout = "out"
         self.stderr = "err"
 
     def __call__(self, *args: object, **kwargs: object) -> _FakeRun:
         if self.raises:
             raise subprocess.TimeoutExpired(cmd="verify", timeout=1.0)
+        if self.writes is not None:
+            job, results_dir, verdict, reason = self.writes
+            _verdict_file(job, results_dir, verdict, reason)
         return self
 
 
@@ -400,12 +416,71 @@ def test_a_rejected_solution_keeps_the_verifier_s_own_verdict(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     job = Job("cbls", "inst")
-    _verdict_file(job, tmp_path, "fail", "row_violation")
-    monkeypatch.setattr(subprocess, "run", _FakeRun(1))
+    monkeypatch.setattr(
+        subprocess, "run", _FakeRun(1, writes=(job, tmp_path, "fail", "row_violation"))
+    )
     line = run_benchmark._verify(job, _driver_args(mem_limit_gb=None), tmp_path)
 
     assert "VERIFY-FAILED" in line
     assert json.loads(job.verification_path(tmp_path).read_text())["reason"] == "row_violation"
+
+
+def test_a_crash_next_to_an_earlier_attempts_verdict_is_not_a_rejected_solution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A resumed run retries a driver-written verdict, so the previous attempt's
+    # file is on disk when the verifier starts. A traceback exits 1 and writes
+    # nothing, and finding that stale file would report the crash as "the engine
+    # published an infeasible point" -- this benchmark's loudest alarm, fired for
+    # a harness fault.
+    job = Job("cbls", "inst")
+    job.verification_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    job.verification_path(tmp_path).write_text(
+        json.dumps({"verdict": "error", "reason": "verifier_died", "attempts": 1})
+    )
+    monkeypatch.setattr(subprocess, "run", _FakeRun(1))
+    line = run_benchmark._verify(job, _driver_args(mem_limit_gb=None), tmp_path)
+
+    assert "VERIFY-FAILED" not in line
+    assert "VERIFY-ERROR" in line
+    record = json.loads(job.verification_path(tmp_path).read_text())
+    assert record["reason"] == "verifier_died"
+    assert record["attempts"] == 2
+
+
+def test_a_verifier_that_a_signal_killed_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The address-space cap and the OOM killer both arrive as a signal, and that
+    # is the difference between "try again with more memory" and "this checker
+    # crashes on this model".
+    job = Job("cbls", "inst")
+    monkeypatch.setattr(subprocess, "run", _FakeRun(-9))
+    run_benchmark._verify(job, _driver_args(mem_limit_gb=None), tmp_path)
+
+    assert "signal 9" in json.loads(job.verification_path(tmp_path).read_text())["message"]
+
+
+def test_a_driver_verdict_stops_being_retried_once_the_attempts_run_out(
+    tmp_path: Path,
+) -> None:
+    # `verifier_died` is written for a deterministic cause too -- a pyscipopt
+    # segfault, an OOM on a model that does not fit the cap. Retrying one on every
+    # resume of a 233-instance roster re-pays the whole verification and never
+    # converges.
+    job = Job("cbls", "inst")
+    _write_result_file(job, tmp_path, "feasible")
+    job.solution_path(tmp_path).write_text("=obj= 1.0\nx 1\n")
+    job.verification_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "verdict": "error",
+                "reason": "verifier_died",
+                "attempts": run_benchmark.MAX_VERIFY_ATTEMPTS,
+            }
+        )
+    )
+    assert not needs_verification(job, tmp_path, verify=True)
 
 
 def test_a_checker_the_driver_killed_is_checked_again_on_resume(tmp_path: Path) -> None:

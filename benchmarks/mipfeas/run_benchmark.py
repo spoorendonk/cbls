@@ -201,12 +201,26 @@ def write_failure_result(
 
 
 #: Reasons only the driver writes, for a checker that died rather than a solution
-#: that was checked. Retried on resume; every verdict the verifier writes itself
-#: is final.
+#: that was checked. Retried on resume up to MAX_VERIFY_ATTEMPTS; every verdict
+#: the verifier writes itself is final.
 DRIVER_WRITTEN_VERDICT_REASONS = ("verifier_timeout", "verifier_died")
 
+#: How many times a driver-written verdict is retried before it sticks.
+#:
+#: The transient causes these reasons were introduced for -- a memory cap hit
+#: under load, a timeout on a busy machine -- clear on a second pass. The
+#: deterministic ones do not: a pyscipopt segfault, or an OOM on a model that
+#: simply does not fit the cap, reproduces every time, and retrying it forever
+#: re-pays the whole verification on every resume of a roster that can never
+#: converge. Two attempts is the smallest number that still recovers a transient
+#: failure; past that the verdict stands and the row stays withheld, which is the
+#: honest outcome.
+MAX_VERIFY_ATTEMPTS = 2
 
-def write_failure_verdict(job: Job, results_dir: Path, reason: str, message: str) -> None:
+
+def write_failure_verdict(
+    job: Job, results_dir: Path, reason: str, message: str, attempts: int = 1
+) -> None:
     """Record a verification the driver could not complete.
 
     Mirrors `write_failure_result`: a verifier killed by the timeout or the
@@ -228,6 +242,11 @@ def write_failure_verdict(job: Job, results_dir: Path, reason: str, message: str
                 "message": message,
                 "marginal": False,
                 "failed_checks": [],
+                # How many times the driver has now tried and failed to check this
+                # row. Read back by `needs_verification` so a deterministic failure
+                # stops being retried; absent from the verifier's own verdicts,
+                # which are final on the first pass.
+                "attempts": attempts,
             },
             indent=2,
             sort_keys=True,
@@ -310,6 +329,17 @@ def _verify(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
         ],
         args.mem_limit_gb,
     )
+    # The verdict this attempt is retrying, if any, and then out of the way. A
+    # stale file left in place is indistinguishable from one this run wrote: the
+    # verifier exits 1 both for "I checked it and it is wrong" and, as any Python
+    # program does, for an uncaught traceback that writes nothing -- and a
+    # traceback landing next to a previous attempt's `verifier_died` would be
+    # reported as a rejected solution, which is this benchmark's loudest alarm
+    # fired for a harness fault.
+    previous = _read_json(job.verification_path(results_dir)) or {}
+    attempts = previous.get("attempts")
+    attempt = (attempts if isinstance(attempts, int) else 0) + 1
+    job.verification_path(results_dir).unlink(missing_ok=True)
     try:
         completed = subprocess.run(
             command,
@@ -320,24 +350,33 @@ def _verify(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
         )
     except subprocess.TimeoutExpired:
         write_failure_verdict(
-            job, results_dir, "verifier_timeout", f"exceeded {VERIFY_TIMEOUT_SECONDS}s"
+            job, results_dir, "verifier_timeout", f"exceeded {VERIFY_TIMEOUT_SECONDS}s", attempt
         )
         return "VERIFY-ERROR timeout"
     if completed.returncode == 0:
         return f"verified {completed.stdout.strip()[:200]}"
     if completed.returncode == 1 and job.verification_path(results_dir).exists():
         # Exit 1 is the verifier's "I checked it and it is wrong", and it wrote
-        # the verdict itself. Python also exits 1 on an uncaught traceback, which
-        # writes nothing -- reporting that as a rejected solution would fire this
-        # benchmark's loudest alarm for a harness fault, so it falls through to
-        # the error path below instead.
+        # the verdict itself -- this attempt's, since any earlier one was removed
+        # above. A traceback exits 1 too and writes nothing, so it falls through
+        # to the error path below instead of being reported as a rejected
+        # solution.
         return f"VERIFY-FAILED {completed.stdout.strip()[:200]}"
     if not job.verification_path(results_dir).exists():
+        # A negative return code is a signal: the address-space cap or the OOM
+        # killer. Said in the message because it is the difference between "try
+        # again with more memory" and "this checker crashes on this model".
+        how = (
+            f"signal {-completed.returncode}"
+            if completed.returncode < 0
+            else f"exit {completed.returncode}"
+        )
         write_failure_verdict(
             job,
             results_dir,
             "verifier_died",
-            f"exit {completed.returncode}: {completed.stderr.strip()[:400]}",
+            f"{how} (attempt {attempt} of {MAX_VERIFY_ATTEMPTS}): {completed.stderr.strip()[:400]}",
+            attempt,
         )
     return f"VERIFY-ERROR (exit {completed.returncode}) {completed.stderr.strip()[:200]}"
 
@@ -469,12 +508,17 @@ def needs_verification(job: Job, results_dir: Path, verify: bool) -> bool:
     if verdict is None:
         return True
     # The driver's own error verdicts describe a checker that died, not a solution
-    # that was checked, and both causes are transient (a memory cap under load, a
-    # timeout). Without this the row is withheld for good, recoverable only by
-    # --force, which pays for the whole search again. The verifier's own verdicts
-    # -- including its `error`s -- are sticky, because re-running a check that
-    # cannot succeed never converges.
-    return verdict.get("reason") in DRIVER_WRITTEN_VERDICT_REASONS
+    # that was checked. Without a retry the row is withheld for good, recoverable
+    # only by --force, which pays for the whole search again -- so a transient
+    # cause (a memory cap hit under load, a timeout on a busy machine) gets
+    # another pass. Only MAX_VERIFY_ATTEMPTS of them: the same reasons are written
+    # for deterministic causes too, and retrying a segfault on every resume of a
+    # 233-instance roster never converges. The verifier's own verdicts --
+    # including its `error`s -- are sticky from the first pass.
+    if verdict.get("reason") not in DRIVER_WRITTEN_VERDICT_REASONS:
+        return False
+    attempts = verdict.get("attempts")
+    return (attempts if isinstance(attempts, int) else 0) < MAX_VERIFY_ATTEMPTS
 
 
 def has_usable_result(job: Job, results_dir: Path, verify: bool = False) -> bool:

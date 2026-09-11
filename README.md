@@ -72,7 +72,15 @@ With Python bindings:
 ```bash
 cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build
-.venv/bin/pytest          # 480 tests, 81 of them for the bindings
+.venv/bin/pytest          # 515 tests, 81 of them for the bindings
+```
+
+Tests of the benchmark baselines skip themselves when `ortools` or `pyscipopt` is
+absent, so install the extra before treating a green run as complete:
+
+```bash
+.venv/bin/pip install -e '.[benchmarks]'
+CBLS_REQUIRE_BENCHMARKS=1 .venv/bin/pytest   # turns that skip into an error
 ```
 
 Or install as a Python package:

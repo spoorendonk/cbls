@@ -1,3 +1,4 @@
+import importlib.util
 import os
 import sys
 from pathlib import Path
@@ -49,8 +50,55 @@ except ImportError:
         ) from None
 
 
+# The same hazard one layer out. `ortools` and `pyscipopt` live in the
+# `benchmarks` extra, not `dev`, so a checkout bootstrapped with the documented
+# `.venv/bin/pip install -e '.[dev]'` has neither -- and every test of the CP-SAT
+# baseline and of the independent solution verifier opens with
+# `pytest.importorskip`, so all of them vanish into a green summary. That is the
+# same failure shape as the 81 binding tests, and gets the same answer: the skip
+# is named in the summary, and CBLS_REQUIRE_BENCHMARKS=1 (set by the ```test
+# fence in CLAUDE.md) turns it into a hard error.
+#
+# Detected from the source rather than hardcoded, so a new benchmark-dependency
+# test is covered without touching this file.
+BENCHMARK_IMPORTS = ("ortools", "pyscipopt")
+
+
+def missing_imports(names: tuple[str, ...]) -> list[str]:
+    """Which of `names` this interpreter cannot import."""
+    return [name for name in names if importlib.util.find_spec(name) is None]
+
+
+def files_skipping_on(missing: list[str], directory: Path) -> list[str]:
+    """Test files in `directory` that skip themselves when `missing` is absent.
+
+    Matched on the `pytest.importorskip("<name>"` call itself rather than a list
+    kept here, so a new test guarded the same way is covered without an edit.
+    """
+    if not missing:
+        return []
+    return [
+        path.name
+        for path in sorted(directory.glob("test_*.py"))
+        if any(f'importorskip("{name}"' in path.read_text() for name in missing)
+    ]
+
+
+_missing_benchmark_imports = missing_imports(BENCHMARK_IMPORTS)
+_ignored_benchmark_tests = files_skipping_on(_missing_benchmark_imports, Path(__file__).parent)
+
+if _ignored_benchmark_tests and os.environ.get("CBLS_REQUIRE_BENCHMARKS") == "1":
+    raise pytest.UsageError(
+        f"CBLS_REQUIRE_BENCHMARKS=1, but {', '.join(_missing_benchmark_imports)} "
+        f"{'is' if len(_missing_benchmark_imports) == 1 else 'are'} not importable, so "
+        f"tests in these files would be skipped: {', '.join(_ignored_benchmark_tests)}. "
+        "Install them with:\n"
+        "  .venv/bin/pip install -e '.[benchmarks]'"
+    )
+
+
 def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
-    """Announce skipped binding tests so a short run cannot look complete.
+    """Announce every silently skipped suite so a short run cannot look complete.
 
     Reported here, next to the pass count, rather than printed at import or via
     `pytest_report_header`: pytest captures stdout/stderr during conftest import
@@ -59,12 +107,20 @@ def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
     invisible in the one case that matters. `get_terminal_writer()` is not usable
     from `pytest_configure` either; it asserts before the reporter exists.
     """
-    if not _ignored_binding_tests:
-        return
-    terminalreporter.write_line(
-        f"WARNING: _cbls_core not built — skipped {len(_ignored_binding_tests)} binding "
-        f"test file(s): {', '.join(_ignored_binding_tests)}. "
-        "Set CBLS_REQUIRE_BINDINGS=1 to make this an error.",
-        yellow=True,
-        bold=True,
-    )
+    if _ignored_binding_tests:
+        terminalreporter.write_line(
+            f"WARNING: _cbls_core not built — skipped {len(_ignored_binding_tests)} binding "
+            f"test file(s): {', '.join(_ignored_binding_tests)}. "
+            "Set CBLS_REQUIRE_BINDINGS=1 to make this an error.",
+            yellow=True,
+            bold=True,
+        )
+    if _ignored_benchmark_tests:
+        terminalreporter.write_line(
+            f"WARNING: {', '.join(_missing_benchmark_imports)} not installed — skipped tests "
+            f"in {len(_ignored_benchmark_tests)} file(s): "
+            f"{', '.join(_ignored_benchmark_tests)}. "
+            "Set CBLS_REQUIRE_BENCHMARKS=1 to make this an error.",
+            yellow=True,
+            bold=True,
+        )
