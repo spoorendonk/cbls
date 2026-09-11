@@ -1,0 +1,14 @@
+instance,reference_value,reference_kind
+mad,0.0268,opt
+gen-ip054,6840.96564179,opt
+only-cbls,100.0,opt
+only-cpsat,50.0,opt
+neither,10.0,opt
+killed-job,200.0,opt
+rejected-solution,30.0,opt
+shape-mismatch,5.0,opt
+degraded-trace,7.0,opt
+slow-start,1000.0,opt
+unverified-row,12.0,opt
+invalid-for-cpsat,80.0,opt
+missing-job,15.0,opt
