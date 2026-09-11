@@ -36,10 +36,21 @@ def test_nothing_is_named_when_nothing_is_missing(tmp_path: Path) -> None:
     assert files_skipping_on([], tmp_path) == []
 
 
-def test_both_benchmark_extras_are_watched() -> None:
-    # The `benchmarks` extra is exactly these two, and a test guarded on one that
-    # this tuple does not list would vanish with no announcement.
-    assert set(BENCHMARK_IMPORTS) == {"ortools", "pyscipopt"}
+def test_every_package_in_the_benchmarks_extra_is_watched() -> None:
+    """Read off pyproject rather than restated here.
+
+    A third package added to the extra would otherwise leave this green while a
+    test guarded on it vanished with no announcement -- which is the drift the
+    gate exists to stop.
+    """
+    import re
+    import tomllib
+    from pathlib import Path
+
+    pyproject = tomllib.loads((Path(__file__).resolve().parents[2] / "pyproject.toml").read_text())
+    extra = pyproject["project"]["optional-dependencies"]["benchmarks"]
+    declared = {re.split(r"[<>=!~\[ ]", requirement, maxsplit=1)[0] for requirement in extra}
+    assert declared == set(BENCHMARK_IMPORTS)
 
 
 def test_every_importorskipped_dependency_is_one_this_gate_watches() -> None:
@@ -48,13 +59,13 @@ def test_every_importorskipped_dependency_is_one_this_gate_watches() -> None:
     The gate can only announce what `BENCHMARK_IMPORTS` names, so the names in
     use and the names watched have to be the same set.
     """
-    import re
     from pathlib import Path
 
-    pattern = re.compile(r"""importorskip\(\s*["']([A-Za-z_][\w.]*)["']""")
+    from conftest import IMPORTORSKIP
+
     guarded = {
-        match.group(1)
+        name
         for path in sorted(Path(__file__).parent.glob("test_*.py"))
-        for match in pattern.finditer(path.read_text())
+        for name in IMPORTORSKIP.findall(path.read_text())
     }
     assert guarded <= set(BENCHMARK_IMPORTS), sorted(guarded - set(BENCHMARK_IMPORTS))

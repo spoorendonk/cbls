@@ -18,6 +18,12 @@ compile_commands.json
 .pytest_cache/
 *.o
 results/
+# ...except the MIPfeas parity fixture, which is a committed test *input* rather
+# than a run artifact: tests/python/test_mipfeas_parity.py regenerates the two
+# artifacts beside it from this directory and compares them byte for byte, so
+# `results/` above swallowing it would leave that test passing only on the
+# machine that generated it (issue #139).
+!benchmarks/mipfeas/testdata/results/
 
 # Profiling artifacts. docs/profiling.md says to run these in a scratch
 # directory; this is the backstop for when one lands here anyway.

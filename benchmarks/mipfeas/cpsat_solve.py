@@ -107,7 +107,7 @@ def _parse_lines(lines: Iterable[str]) -> list[tuple[float, float]]:
 
 
 #: Magnitude at or past which ModelBuilder reports a constraint bound as infinite.
-#: Its own sentinel is 1e30; compared with a margin rather than for equality so a
+#: Its own sentinel is 1e30; compared as a threshold rather than for equality so a
 #: bound the reader scaled or rounded still reads as infinite.
 MODEL_BUILDER_INFINITY = 1e30
 
@@ -122,11 +122,18 @@ def count_free_constraints(model: model_builder.ModelBuilder) -> int:
     differ, so it is recorded rather than reasoned about after the fact -- the
     scorer's model-shape cross-check subtracts exactly this and flags whatever is
     left (issue #139).
+
+    Read off the model helper rather than `get_linear_constraints()`, which
+    materialises a pandas Index holding one Python proxy per constraint. This is
+    instrumentation for a cross-check, and on a roster whose largest models run to
+    a million rows it must not cost what it measures.
     """
+    helper = model.helper
     return sum(
         1
-        for con in model.get_linear_constraints()
-        if con.lower_bound <= -MODEL_BUILDER_INFINITY and con.upper_bound >= MODEL_BUILDER_INFINITY
+        for i in range(helper.num_constraints())
+        if helper.constraint_lower_bound(i) <= -MODEL_BUILDER_INFINITY
+        and helper.constraint_upper_bound(i) >= MODEL_BUILDER_INFINITY
     )
 
 
@@ -168,6 +175,7 @@ def solve(
     # wall-clock column has only ever bracketed the solve.
     setup_started = time.monotonic()
     if not model.import_from_mps_file(str(mps_path)):
+        failed_after = time.monotonic() - setup_started
         # Carries every key main() and the scorer read unconditionally. A key
         # missing here crashes the job *after* write_outputs has written its
         # result, and the driver — seeing a result file — reports that as a clean
@@ -177,8 +185,10 @@ def solve(
                 "status": "read_error",
                 "message": f"CP-SAT could not import {mps_path.name}",
                 "wall_seconds": 0.0,
-                "read_seconds": time.monotonic() - setup_started,
-                "setup_seconds": time.monotonic() - setup_started,
+                # One reading, not two: the same failure must not report two
+                # different durations for the same measurement.
+                "read_seconds": failed_after,
+                "setup_seconds": failed_after,
                 "objective": None,
             },
             [],
@@ -186,13 +196,16 @@ def solve(
         )
 
     read_seconds = time.monotonic() - setup_started
-    free_cons = count_free_constraints(model)
 
     solver = model_builder.ModelSolver("SAT")
     solver.enable_output(True)
     solver.set_time_limit_in_seconds(budget)
     solver.set_solver_specific_parameters(build_parameters(workers, seed))
     setup_seconds = time.monotonic() - setup_started
+    # Counted after the setup clock stops: this is the scorer's cross-check, not
+    # work the baseline needs, and charging it to `setup_seconds` would inflate
+    # exactly the number the timing split exists to publish.
+    free_cons = count_free_constraints(model)
 
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="cpsat-log-") as tmpdir:

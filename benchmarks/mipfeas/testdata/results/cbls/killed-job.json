@@ -1,0 +1,15 @@
+{
+  "budget_seconds": 2.0,
+  "commit_sha": "fixture",
+  "compound_moves": true,
+  "engine": "cbls",
+  "feasibility_tolerance": 1e-06,
+  "inf_clamp": 10000000.0,
+  "instance": "killed-job",
+  "max_propagation_passes": 10,
+  "message": "exceeded 902.0s wall clock",
+  "objective": null,
+  "propagate_bounds": true,
+  "seed": 42,
+  "status": "killed"
+}

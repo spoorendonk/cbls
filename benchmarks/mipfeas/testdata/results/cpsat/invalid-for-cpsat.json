@@ -1,0 +1,21 @@
+{
+  "budget_seconds": 2.0,
+  "build_seconds": 0.001,
+  "cpsat_status": "MODEL_INVALID",
+  "engine": "cpsat",
+  "instance": "invalid-for-cpsat",
+  "n_cons": 55,
+  "n_free_cons": 0,
+  "n_vars": 70,
+  "objective": null,
+  "ortools_version": "9.15.6755",
+  "parameters": "num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true",
+  "peak_rss_kib": 103000,
+  "read_seconds": 0.0008,
+  "seed": 42,
+  "setup_seconds": 0.0018,
+  "status": "invalid_model",
+  "trace_source": "log",
+  "wall_seconds": 2.0002,
+  "workers": 1
+}

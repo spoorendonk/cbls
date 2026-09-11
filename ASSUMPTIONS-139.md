@@ -74,3 +74,51 @@
   and signal-classification alone would still never converge; the signal is
   recorded in the message, where it distinguishes "try again with more memory"
   from "this checker crashes on this model".
+
+## Added after self-review
+
+- **The fixture results directory was gitignored.** `.gitignore`'s blanket
+  `results/` swallowed `benchmarks/mipfeas/testdata/results/`, so criterion 8's
+  test passed only on this machine and failed on every fresh clone — while the
+  guard test beside it stayed green, because it reads the *tracked*
+  `expected_report.md`. Resolved as: a `!benchmarks/mipfeas/testdata/results/`
+  negation with the reason written beside it, and the 67 files committed.
+  Because: a fixture is a test *input*, not a run artifact, and this is exactly
+  the failure the criterion exists to make impossible.
+
+- **The shape cross-check did not implement the rule it prints.** All three
+  reviewers found it independently: when the two engines' constraint counts
+  differed by the free-row count, the verdict was `benign` without consulting the
+  checker at all, so a SCIP reading that matched neither engine was published as
+  benign. Resolved as: a benign verdict now requires the checker to agree with the
+  adapter, and two verdicts disagreeing with *each other* about the same file are
+  themselves flagged. Three new tests, each shown red on the pre-fix code.
+
+- **`verification_row_tolerance` has no producer on this branch.** The keys it
+  reads (`max_row_tolerance`, `loosest_row`) are written by `f42f883`, which is on
+  `feat/138`'s tip and **not** in this branch's history — the merge base is
+  `eee18fd`. Resolved as: keep the columns, read them defensively, and say in both
+  READMEs that they are blank for a verdict reached before the verifier recorded
+  the figure. Because: the orchestrator has said it will rebase onto that tip, and
+  a column that fills in on rebase is better than one deleted and re-added. **The
+  orchestrator must not resolve `verify_solution.py` in this branch's favour** —
+  a diff against `feat/138`'s tip reads as though 139 reverted `f42f883`.
+
+- **Two "feasible" counts in one report.** Parity counts rows that published a
+  feasible objective; trace health counts rows the engine *reported* feasible,
+  withheld ones included. Resolved as: keep both denominators and say in §5 that
+  it can exceed §2's, rather than narrowing trace health. Because: a withheld
+  row's profile still exists, and its health is a fact about the harness rather
+  than about the verdict.
+
+- **Parity excludes a killed job; the anytime aggregate still scores it 2.0.**
+  Pre-existing aggregate behaviour that the new §2 made visibly contradictory.
+  Resolved as: a sentence in §6 saying so and pointing at the defect counters,
+  not a change to the metric. Because: changing what `scored` covers moves a
+  published number, and the two sections genuinely answer different questions.
+
+- **Criterion 7's "separate columns".** Read as one column for read+build+
+  propagate (`setup_seconds`) and one for solve (`solve_seconds`), which is what
+  the criterion's wording asks for. Both runners record the halves in the result
+  JSON (`read_seconds`, `build_seconds`) for diagnosis; propagation is inside
+  `build_seconds` and is not separable without timing it inside `mps_to_model`.

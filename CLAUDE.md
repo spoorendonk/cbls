@@ -24,7 +24,7 @@ Know the symbol → LSP. Know a string, not its location → Grep. Full-file Rea
 ## C++
 
 - **C++17** (`CMAKE_CXX_STANDARD 17`). `std::expected`, concepts and ranges are *not* available here; don't reach for them.
-- Style: Google-based, enforced by `.clang-format` and `.clang-tidy` at the repo root. Both tools are **pinned PyPI wheels in `.venv/`** (`clang-format==22.1.8`, `clang-tidy==22.1.8`), not system packages — `.venv/bin/pip install -e '.[dev]'` installs them, and the hooks prefer `.venv/bin` over `PATH`. The exact pin keeps formatter and tidy output identical across checkouts.
+- Style: Google-based, enforced by `.clang-format` and `.clang-tidy` at the repo root. Both tools are **pinned PyPI wheels in `.venv/`** (`clang-format==22.1.8`, `clang-tidy==22.1.8`), not system packages — `.venv/bin/pip install -e '.[dev]'` installs them, and the hooks prefer `.venv/bin` over `PATH`. Install `'.[benchmarks]'` too — the gated test fence requires it (see **Build & Test**). The exact pin keeps formatter and tidy output identical across checkouts.
 - Naming is **not** Google's default — `.clang-tidy` encodes what this codebase actually does:
 
   | Kind | Style | Example |
@@ -251,7 +251,7 @@ agree:
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
 4. the comment above the `ctest` call in `.githooks/pre-commit`,
-5. the `.venv/bin/pytest` line in `README.md` for the Python side (515 tests, 81
+5. the `.venv/bin/pytest` line in `README.md` for the Python side (519 tests, 81
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`),
 6. the `-LE slow` guidance and the ~40s/~304s figures in `docs/profiling.md`.

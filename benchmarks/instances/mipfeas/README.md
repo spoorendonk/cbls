@@ -64,10 +64,12 @@ the correctness sweep is for and keeps the anytime score as a co-equal section:
 
 A compact form of 1, 2, 4 and 5 also leads the table's own header, because that
 is what a reader quoting the CSV will see. The table additionally carries
-`verification_row_tolerance` / `verification_loosest_row` per row: the row check
-is `1e-6 + 1e-9 * sum|a_ij x_j|`, which is unbounded in the activity, so a pass
-says less on a model with large coefficients than on a small one, and the number
-is published rather than argued about.
+`verification_row_tolerance` / `verification_loosest_row` per row, read off the
+verdict where the verifier recorded them: the row check is
+`1e-6 + 1e-9 * max(|lower|, |upper|, sum|a_ij x_j|)`, which is unbounded in that
+scale, so a pass says less on a model with large coefficients than on a small
+one, and the number is published rather than argued about. Both cells are blank
+for a verdict reached before the verifier recorded the figure.
 
 ### The model-shape cross-check
 
@@ -81,9 +83,11 @@ the row. The rule:
 * **Constraint counts may differ by exactly the free rows the baseline keeps** —
   the `N` rows after the first, which is the objective. OR-Tools' `ModelBuilder`
   holds each remaining `N` row as a linear constraint with infinite bounds; the
-  CBLS adapter drops them, and so does SCIP. A free row constrains nothing, so
-  the feasible sets are identical. `cpsat_solve.py` records the count as
-  `n_free_cons`, so the rule subtracts a measured number rather than an argued
+  CBLS adapter drops them, and so does SCIP as the verifier reads it (observed on
+  SCIP 10.0.2 / PySCIPOpt 6.2.1, the pair the verdicts record: `mad` has two `N`
+  rows and `getNConss()` returns 51, matching the adapter). A free row constrains
+  nothing, so the feasible sets are identical. `cpsat_solve.py` records the count
+  as `n_free_cons`, so the rule subtracts a measured number rather than an argued
   one.
 * **Anything else is flagged**, in either direction, including the third reader
   disagreeing with both engines.
@@ -105,9 +109,17 @@ effects hide behind that:
   not bounded by the deadline: a large model's first batch runs to completion
   whatever the clock says. This is why the driver allows 900s of slack.
 
-They are separate columns because a row can have one without the other. No
-magnitude for setup is quoted here: the published smoke table predates the
-measurement, so the only figures in the tree are fixture numbers.
+They are separate columns because a row can have one without the other.
+
+No *aggregate* setup magnitude is quoted for the roster, because no per-row
+figure from a real run is committed: the published smoke table predates the
+measurement and was not regenerated. What is already measured elsewhere in this
+file bounds it rather than states it — propagation, one of setup's three parts,
+costs ~1.1s worst case and ~7s summed over the roster (**Implied bounds shrink
+that restriction**), and the read+build asymmetry under **Configuration, and
+what is recorded** is a few seconds on the largest instances against a 600s
+budget. Both are well under the double digits an earlier planning note asserted,
+and neither is a substitute for the per-row columns.
 
 ## Metric: Primal Integral
 
@@ -325,8 +337,9 @@ What *is* pinned is the report itself: `benchmarks/mipfeas/testdata/` holds a
 frozen results directory with the two artifacts scored from it, and
 `tests/python/test_mipfeas_parity.py` regenerates both and compares them byte for
 byte. Two of its thirteen instances are a real run; the rest are constructed, one
-per branch of the report. That directory's README says which is which, and none
-of its numbers is a measurement of either engine.
+per branch of the report. That directory's README says which is which. No
+aggregate in it is a measurement, and the two real rows record no engine commit,
+so they are not quotable either.
 
 The first run of it found two defects in the harness rather than in either
 solver, which is what a wiring check is for. The MPS reader was binarising
@@ -394,7 +407,7 @@ inherited, so a published number cannot silently change when a default moves:
 | Presolve | implied variable bounds only (activity-based propagation) | default, i.e. on |
 | Feasibility tolerance | `1e-6`, stated explicitly | CP-SAT's own |
 | Unbounded column falls back to | `1e7` (`--inf-clamp`), where propagation derives nothing | not clamped |
-| Recorded per result | commit SHA, seed, tolerance, clamp + columns it still narrows, columns declared unbounded, columns tightened, propagation verdict and pass cap, compound-move and propagation flags, peak RSS | OR-Tools version, seed, full parameter string, solver verdict, peak RSS |
+| Recorded per result | commit SHA, seed, tolerance, clamp + columns it still narrows, columns declared unbounded, columns tightened, propagation verdict and pass cap, compound-move and propagation flags, peak RSS, read/build/setup seconds, trace point count and trace source | OR-Tools version, seed, full parameter string, solver verdict, peak RSS, read/setup seconds, free-row count, trace source |
 | Solution verified against the instance file | yes, by SCIP | yes, by SCIP |
 
 Two of those are deliberate departures from the engine's own defaults, both made
@@ -493,8 +506,9 @@ established empirically against ortools 9.15:
 One asymmetry is not configuration and cannot be tuned away: CBLS's clock starts
 inside `solve()`, so its MPS read and model build are free, while CP-SAT's log
 timestamps include its presolve. On the largest instances that is a few seconds
-against a 600s budget — under 1%, but it favours CBLS and is stated here rather
-than left to be discovered.
+against a 600s budget — under 1%, but it favours CBLS. Since #139 both runners
+measure it and the table carries it as `setup_seconds`, so it is a number a
+reader can check per row rather than a caveat taken on trust.
 
 ## Provenance
 

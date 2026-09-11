@@ -49,6 +49,9 @@ single end point, and `slow-start` the two timing effects at once — a long mod
 build and a solve that ran past the budget because search initialisation is not
 bounded by the deadline.
 
-These are fixture numbers. Nothing here is a measurement of either engine, and
-nothing here may be quoted as one: the roster is 13 instances at 2 seconds where
-the benchmark is 233 at 600, and eleven of the thirteen never ran at all.
+Nothing here may be quoted as a measurement. Every aggregate — the defect totals,
+the parity counts, the anytime table, the timing split — is a fixture number:
+eleven of the thirteen rows never ran at all. The two that did are two instances
+at 2 seconds against a benchmark of 233 at 600, and their CBLS side records
+`commit_sha: "fixture"`, so not even the engine that produced them is identified.
+The report the scorer writes from this directory says as much in its own banner.

@@ -1,0 +1,20 @@
+{
+  "budget_seconds": 2.0,
+  "cpsat_status": "FEASIBLE",
+  "engine": "cpsat",
+  "instance": "gen-ip054",
+  "n_cons": 27,
+  "n_free_cons": 0,
+  "n_vars": 30,
+  "objective": 6926.013503517,
+  "ortools_version": "9.15.6755",
+  "parameters": "num_workers:1,num_violation_ls:1,filter_subsolvers:'fj',filter_subsolvers:'ls',random_seed:42,log_search_progress:true",
+  "peak_rss_kib": 101976,
+  "read_seconds": 0.0004502660012803972,
+  "seed": 42,
+  "setup_seconds": 0.0012801890261471272,
+  "status": "feasible",
+  "trace_source": "log",
+  "wall_seconds": 2.001601168012712,
+  "workers": 1
+}

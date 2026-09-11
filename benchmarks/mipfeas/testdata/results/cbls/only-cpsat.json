@@ -1,0 +1,22 @@
+{
+  "budget_seconds": 2.0,
+  "build_seconds": 0.001,
+  "commit_sha": "fixture",
+  "compound_moves": true,
+  "engine": "cbls",
+  "feasibility_tolerance": 1e-06,
+  "inf_clamp": 10000000.0,
+  "instance": "only-cpsat",
+  "max_propagation_passes": 10,
+  "n_cons": 18,
+  "n_vars": 25,
+  "objective": null,
+  "peak_rss_kib": 6000,
+  "propagate_bounds": true,
+  "read_seconds": 0.0008,
+  "seed": 42,
+  "setup_seconds": 0.0018,
+  "status": "no_solution",
+  "trace_source": "callback",
+  "wall_seconds": 2.0002
+}

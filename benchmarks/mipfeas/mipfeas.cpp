@@ -202,7 +202,7 @@ public:
     /// from one the scorer had to invent from the final objective: a callback
     /// that stopped firing would otherwise score every instance near the
     /// no-solution penalty, indistinguishable from "the search is bad".
-    long n_points() const { return n_points_; }
+    [[nodiscard]] long n_points() const { return n_points_; }
 
 private:
     std::ofstream& out_;
@@ -210,14 +210,14 @@ private:
     long n_points_ = 0;
 };
 
-// Peak resident set of this process, in KiB. Reported per result so the
-// concurrency for a full-roster run can be sized from measurement rather than
-// guessed: the roster spans models from tens of KB to millions of nonzeros.
 // Seconds elapsed since `start`, on the monotonic clock.
 double seconds_since(const std::chrono::steady_clock::time_point& start) {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 }
 
+// Peak resident set of this process, in KiB. Reported per result so the
+// concurrency for a full-roster run can be sized from measurement rather than
+// guessed: the roster spans models from tens of KB to millions of nonzeros.
 long peak_rss_kib() {
     struct rusage usage{};
     if (getrusage(RUSAGE_SELF, &usage) != 0) {
@@ -594,7 +594,10 @@ int run_benchmark(int argc, char** argv) {
         // Mirrors cpsat_solve.py's key of the same name. `callback` is this
         // runner's analogue of CP-SAT's log: a genuine anytime profile. Anything
         // else means the scorer had to stand in a single end point, which is a
-        // harness condition rather than a search result.
+        // harness condition rather than a search result. The scorer keys its
+        // trace-health counts on `trace_source`; the raw count beside it is for
+        // reading a single result by hand, where "one point" and "four thousand"
+        // are the difference between a profile and a coincidence.
         {"trace_points", trace_points},
         {"trace_source", trace_points > 0 ? "callback" : "final_only"},
         {"iterations", result.iterations},

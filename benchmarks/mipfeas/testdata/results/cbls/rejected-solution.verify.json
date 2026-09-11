@@ -1,0 +1,24 @@
+{
+  "checker": "SCIP 10.0.2 / PySCIPOpt 6.2.1",
+  "engine": "cbls",
+  "failed_checks": [
+    "rows"
+  ],
+  "instance": "rejected-solution",
+  "marginal": false,
+  "message": "row 4.5 (4.5e+06x tol at R7)",
+  "n_columns": 33,
+  "n_rows": 21,
+  "reason": "row_violation",
+  "tolerances": {
+    "bound_absolute": 1e-06,
+    "bound_relative": 1e-09,
+    "integrality_absolute": 1e-06,
+    "marginal_fraction": 0.1,
+    "objective_absolute": 1e-06,
+    "objective_relative": 1e-06,
+    "row_absolute": 1e-06,
+    "row_relative": 1e-09
+  },
+  "verdict": "fail"
+}

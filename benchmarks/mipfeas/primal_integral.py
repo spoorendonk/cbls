@@ -126,11 +126,11 @@ class Verification(NamedTuple):
     n_columns: int | None = None
     n_rows: int | None = None
     #: The loosest row tolerance any row of this instance earned, and the row that
-    #: earned it. The row check is `1e-6 + 1e-9 * sum|a_ij x_j|`, which is
-    #: unbounded in the activity, so "the solution satisfies every row to
-    #: tolerance" is only as strong as the largest tolerance that was granted.
-    #: Published rather than argued about. Absent from a verdict written before
-    #: the verifier recorded it.
+    #: earned it. The row check is `1e-6 + 1e-9 * row_scale`, where `row_scale` is
+    #: `max(|lower|, |upper|, sum|a_ij x_j|)` -- unbounded, so "the solution
+    #: satisfies every row to tolerance" is only as strong as the largest
+    #: tolerance that was granted. Published rather than argued about. Absent from
+    #: a verdict written before the verifier recorded it.
     max_row_tolerance: float | None = None
     loosest_row: str = ""
 
@@ -215,7 +215,7 @@ class Scored(NamedTuple):
     #: two are separate columns so a reader can tell them apart (issue #139).
     solve_seconds: float | None
     #: Instance read + model build + bound propagation: everything outside the
-    #: solve bracket, which no published MIPfeas table had ever measured. Blank
+    #: solve bracket, which no table this harness has published had ever measured. Blank
     #: for a results directory written before the runners recorded it.
     setup_seconds: float | None
     n_vars: int | None
@@ -281,8 +281,9 @@ class Scored(NamedTuple):
     checker_n_vars: int | None
     checker_n_cons: int | None
     #: The loosest row tolerance this row's verdict granted, and the row that
-    #: earned it. The row tolerance grows with the activity, so a pass says less
-    #: on a model with large coefficients than on a small one.
+    #: earned it. The row tolerance grows with the row's scale, so a pass says
+    #: less on a model with large coefficients than on a small one. Blank for a
+    #: verdict written before the verifier recorded it.
     verification_row_tolerance: float | None
     verification_loosest_row: str
 
@@ -660,7 +661,8 @@ BUDGET_OVERRUN_TOLERANCE = 1.0
 
 def parity_verdict(row: Scored) -> str:
     """Where `row` stands on the feasibility question: one of the PARITY_* codes."""
-    if row.status == "not_run" or row.withheld or row.status not in SEARCHED_STATUSES:
+    # `not_run` is covered by the status test: it is not a status that searched.
+    if row.withheld or row.status not in SEARCHED_STATUSES:
         return PARITY_EXCLUDED
     return PARITY_FEASIBLE if row.status == PARITY_FEASIBLE else PARITY_NO_SOLUTION
 
@@ -692,9 +694,14 @@ class Parity(NamedTuple):
 def _exclusion_reason(row: Scored) -> str:
     if row.status == "not_run":
         return "not run"
+    if row.status not in SEARCHED_STATUSES:
+        # Checked before `withheld`, which is also true of a row whose solution
+        # could not be written: "the disk failed" is the reason there, not
+        # "nobody checked a solution that was never written".
+        return f"did not search (status {row.status})"
     if row.withheld:
         return f"withheld ({row.verification}: {row.verification_reason or 'no reason recorded'})"
-    return f"did not search (status {row.status})"
+    return f"status {row.status}"
 
 
 def compare_feasibility(rows: list[Scored], engines: tuple[str, ...] = ENGINES) -> Parity:
@@ -809,15 +816,24 @@ def _constraint_disagreement(
     if free is not None:
         counts += f" free_rows={free}"
     if mine != theirs:
-        benign = free is not None and free > 0 and theirs - mine == free
+        explained = free is not None and free > 0 and theirs - mine == free
+        # The free rows excuse the baseline, never the third reader: SCIP drops
+        # them too, so a genuinely benign difference still leaves the checker
+        # agreeing with the adapter. Without this leg a checker that read a
+        # different program entirely is published as `benign` the moment the two
+        # engines happen to differ by exactly the free-row count -- which is the
+        # disagreement this cross-check exists to catch.
+        checker_agrees = checker is None or checker == mine
         return ShapeDisagreement(
             instance=instance,
             kind="constraints",
             counts=counts,
-            benign=benign,
+            benign=explained and checker_agrees,
             explanation=(
                 f"{second} keeps {free} free row(s) the CBLS adapter drops"
-                if benign
+                if explained and checker_agrees
+                else f"the free rows explain {second}, but the checker read a third count"
+                if explained
                 else "not accounted for by the free rows the baseline keeps"
             ),
         )
@@ -856,16 +872,25 @@ def cross_check_shapes(
         a, b = per_engine.get(pair[0]), per_engine.get(pair[1])
         if a is None or b is None:
             continue
-        variables = {
-            pair[0]: a.n_vars,
-            pair[1]: b.n_vars,
-            "checker": _first_known(a.checker_n_vars, b.checker_n_vars),
-        }
-        constraints = {
-            pair[0]: a.n_cons,
-            pair[1]: b.n_cons,
-            "checker": _first_known(a.checker_n_cons, b.checker_n_cons),
-        }
+        checker_vars, *split_vars = _checker_reading(
+            instance, "variables", a.checker_n_vars, b.checker_n_vars
+        )
+        checker_cons, *split_cons = _checker_reading(
+            instance, "constraints", a.checker_n_cons, b.checker_n_cons
+        )
+        for kind, split in (("variables", split_vars), ("constraints", split_cons)):
+            if split:
+                found.append(
+                    ShapeDisagreement(
+                        instance=instance,
+                        kind=kind,
+                        counts=" ".join(f"checker={v}" for v in split),
+                        benign=False,
+                        explanation="the checker read two different shapes for the same file",
+                    )
+                )
+        variables = {pair[0]: a.n_vars, pair[1]: b.n_vars, "checker": checker_vars}
+        constraints = {pair[0]: a.n_cons, pair[1]: b.n_cons, "checker": checker_cons}
         free = b.n_free_cons if b.n_free_cons is not None else a.n_free_cons
         found += [
             d
@@ -878,8 +903,19 @@ def cross_check_shapes(
     return found
 
 
-def _first_known(*values: int | None) -> int | None:
-    return next((v for v in values if v is not None), None)
+def _checker_reading(instance: str, kind: str, *values: int | None) -> tuple[int | None, ...]:
+    """The checker's count for one instance, and any disagreement about it.
+
+    The two verdicts are two SCIP readings of the *same* file, so them differing
+    from each other is itself a finding -- and one that would otherwise vanish,
+    because a single reading is all the rest of the cross-check consumes. Returns
+    `(value, )` when they agree or only one exists, and `(None, a, b)` when they
+    do not, so the caller can flag it and fall back to having no third opinion.
+    """
+    known = [v for v in values if v is not None]
+    if len(set(known)) > 1:
+        return (None, *known)
+    return (known[0] if known else None,)
 
 
 class TraceHealth(NamedTuple):
@@ -945,7 +981,7 @@ def job_failures(rows: list[Scored]) -> list[JobFailure]:
                     reason=row.message or "no message recorded",
                 )
             )
-        if row.verification in (VERIFICATION_FAIL, "error") or (
+        elif row.verification in (VERIFICATION_FAIL, "error") or (
             row.withheld and row.verification == UNVERIFIED
         ):
             failures.append(
@@ -1089,11 +1125,11 @@ ANYTIME_LABEL = (
 )
 
 
-def _names(instances: list[str], limit: int = 12) -> str:
-    """Instance names for a one-line summary, truncated with a count."""
+def _names(instances: list[str], limit: int | None = 12) -> str:
+    """Instance names, truncated with a count. `limit=None` lists them all."""
     if not instances:
         return "none"
-    if len(instances) <= limit:
+    if limit is None or len(instances) <= limit:
         return ", ".join(instances)
     return ", ".join(instances[:limit]) + f", ... (+{len(instances) - limit} more)"
 
@@ -1178,7 +1214,46 @@ def _md_table(headers: list[str], body: list[list[str]]) -> list[str]:
 
 
 def _num(value: float, digits: int = 3) -> str:
-    return "n/a" if value is None or math.isnan(value) else f"{value:.{digits}f}"
+    return "n/a" if math.isnan(value) else f"{value:.{digits}f}"
+
+
+def _scope_banners(rows: list[Scored], summaries: list[Summary], parity: Parity) -> list[str]:
+    """The scope caveats the comparison table carries, for the report as well.
+
+    A report renders as a page and is the artifact that travels, so a caveat that
+    exists only in the CSV header is a caveat the reader quoting the report never
+    sees -- and a partial roster, a half-finished run and an unverified one all
+    produce a report that otherwise reads as a result.
+    """
+    banners: list[str] = []
+    if parity.roster_size != FULL_ROSTER_SIZE:
+        banners += [
+            "> **WIRING CHECK, NOT A PUBLISHABLE RESULT.** The MIPfeas roster is "
+            f"{FULL_ROSTER_SIZE} instances; this report covers {parity.roster_size}. "
+            "These numbers are not comparable to a MIPfeas score, and the two engines' "
+            "relative standing on a subset need not hold on the full roster.",
+            "",
+        ]
+    short = [s for s in summaries if s.not_run]
+    if short:
+        banners += [
+            "> **INCOMPLETE RUN** — every aggregate below covers only the jobs that ran: "
+            + "; ".join(f"{s.engine}: {s.not_run} not run" for s in short)
+            + ".",
+            "",
+        ]
+    unchecked = sum(
+        1
+        for r in rows
+        if r.status == PARITY_FEASIBLE and not r.withheld and r.verification != VERIFICATION_PASS
+    )
+    if unchecked:
+        banners += [
+            "> **SCORED WITH `--allow-unverified` — NOT A PUBLISHABLE RESULT.** "
+            f"{unchecked} feasible row(s) are published with no independent verdict.",
+            "",
+        ]
+    return banners
 
 
 def render_report(
@@ -1212,6 +1287,9 @@ def render_report(
         "algorithm. This is a correctness-and-parity sweep against that one worker",
         "pairing, never a claim against any solver's default portfolio (epic #87).",
         "",
+    ]
+    out += _scope_banners(rows, summaries, parity)
+    out += [
         "## 1. Defects",
         "",
     ]
@@ -1260,14 +1338,14 @@ def render_report(
         others = "/".join(e for e in engines if e != engine)
         out.append(
             f"- **{engine} only** ({len(parity.only[engine])}) -- feasible for {engine}, "
-            f"not for {others}: {_names(parity.only[engine], limit=10**6)}"
+            f"not for {others}: {_names(parity.only[engine], limit=None)}"
         )
     out += [
         "",
-        f"Both feasible ({len(parity.both_feasible)}): {_names(parity.both_feasible, limit=10**6)}",
+        f"Both feasible ({len(parity.both_feasible)}): {_names(parity.both_feasible, limit=None)}",
         "",
         f"Neither feasible ({len(parity.neither_feasible)}): "
-        f"{_names(parity.neither_feasible, limit=10**6)}",
+        f"{_names(parity.neither_feasible, limit=None)}",
         "",
     ]
     if parity.excluded:
@@ -1317,22 +1395,25 @@ def render_report(
     )
     out += [
         "",
-        "Denominator: rows the engine **reported feasible**. A run that found nothing "
-        "has no incumbent profile to have, so it is not counted here. A degraded row "
-        "is one whose profile collapsed to the final objective alone -- a harness "
-        "condition (a changed log format, a callback that stopped firing), not a "
-        "search result, and it scores near the no-solution penalty either way.",
+        "Denominator: rows the engine **reported feasible** -- including any whose "
+        "objective was later withheld, which section 2 excludes, so this count can "
+        "exceed the feasible count there. The profile exists either way, and its "
+        "health is a fact about the harness rather than about the verdict. A run that "
+        "found nothing has no incumbent profile to have, so it is not counted here. A "
+        "degraded row is one whose profile collapsed to the final objective alone -- a "
+        "harness condition (a changed log format, a callback that stopped firing), not "
+        "a search result, and it scores near the no-solution penalty either way.",
         "",
     ]
     named: list[str] = []
     for engine in engines:
         health = trace_health(rows, engine)
         if health.degraded_instances:
-            named.append(f"- {engine} degraded: {_names(health.degraded_instances, limit=10**6)}")
+            named.append(f"- {engine} degraded: {_names(health.degraded_instances, limit=None)}")
         if health.unrecorded_instances:
             named.append(
                 f"- {engine} with no `trace_source` recorded: "
-                f"{_names(health.unrecorded_instances, limit=10**6)}"
+                f"{_names(health.unrecorded_instances, limit=None)}"
             )
     out += [*named, ""] if named else []
     out += [f"## 6. {ANYTIME_LABEL}", ""]
@@ -1355,7 +1436,12 @@ def render_report(
         "Lower is better; the Primal Integral runs from 0 (optimal immediately) to 2 "
         "(never feasible) and is budget-relative, so this is comparable only to "
         "another table scored at the same budget. `scored` excludes rows that never "
-        "ran and rows whose objective was withheld.",
+        "ran and rows whose objective was withheld. It does **not** exclude a job the "
+        "driver killed or a model the baseline rejected: those score the full "
+        "no-solution penalty of 2.0 here, where section 2 leaves them out entirely. "
+        "The two sections answer different questions -- parity asks who reached "
+        "feasibility, the aggregate asks what a run of this budget delivered -- and "
+        "the defect counters in section 1 are where such a row is meant to be read.",
         "",
         "## 7. Where the time went",
         "",
@@ -1383,8 +1469,8 @@ def render_report(
         "number cannot tell them apart:",
         "",
         "- **setup** (`setup_seconds`) is instance read + model build + bound "
-        "propagation. It happens before the solve bracket, so no published MIPfeas "
-        "table has ever measured it; it is not charged against the search, but it is "
+        "propagation. It happens before the solve bracket, so no table this harness has "
+        "published has ever measured it; it is not charged against the search, but it is "
         "charged against the wall clock a run has to be scheduled for.",
         "- **overrun** is `solve_seconds` past the budget. Search initialisation is "
         "not bounded by the deadline, so the first batch of a large model runs to "

@@ -247,6 +247,96 @@ def test_a_constraint_difference_the_free_rows_do_not_explain_is_flagged(tmp_pat
     assert not disagreement.benign
 
 
+def test_a_checker_that_read_a_third_count_outranks_the_free_row_excuse(
+    tmp_path: Path,
+) -> None:
+    # The free rows excuse the baseline, never the third reader. Without this the
+    # verdict on a checker that read a different program entirely is `benign` the
+    # moment the two engines happen to differ by exactly the free-row count.
+    checked = _verdict(220, 99)
+    _write(
+        tmp_path, "cbls", "mad", _shaped("feasible", n_vars=220, n_cons=51), [(1.0, 1.0)], checked
+    )
+    _write(
+        tmp_path,
+        "cpsat",
+        "mad",
+        _shaped("feasible", n_vars=220, n_cons=52, n_free_cons=1),
+        [(1.0, 1.0)],
+        checked,
+    )
+    (disagreement,) = cross_check_shapes(_score(tmp_path, [("mad", 1.0)]))
+    assert not disagreement.benign
+    assert "checker" in disagreement.explanation
+
+
+def test_extra_constraints_on_the_cbls_side_are_never_benign(tmp_path: Path) -> None:
+    # The rule is directional: only the baseline keeps free rows. CBLS holding
+    # MORE rows than CP-SAT is a reader defect in the other direction, and the
+    # free-row count can never excuse it.
+    checked = _verdict(48, 41)
+    _write(
+        tmp_path, "cbls", "odd", _shaped("feasible", n_vars=48, n_cons=41), [(1.0, 1.0)], checked
+    )
+    _write(
+        tmp_path,
+        "cpsat",
+        "odd",
+        _shaped("feasible", n_vars=48, n_cons=40, n_free_cons=1),
+        [(1.0, 1.0)],
+        checked,
+    )
+    (disagreement,) = cross_check_shapes(_score(tmp_path, [("odd", 1.0)]))
+    assert not disagreement.benign
+
+
+def test_two_verdicts_disagreeing_about_the_same_file_are_flagged(tmp_path: Path) -> None:
+    # The two verdicts are two SCIP readings of one file. Them differing from each
+    # other is a finding of its own, and one that would otherwise vanish: a single
+    # reading is all the rest of the cross-check consumes.
+    _write(
+        tmp_path,
+        "cbls",
+        "odd",
+        _shaped("feasible", n_vars=10, n_cons=5, n_free_cons=0),
+        [(1.0, 1.0)],
+        _verdict(10, 5),
+    )
+    _write(
+        tmp_path,
+        "cpsat",
+        "odd",
+        _shaped("feasible", n_vars=10, n_cons=5, n_free_cons=0),
+        [(1.0, 1.0)],
+        _verdict(10, 77),
+    )
+    (disagreement,) = cross_check_shapes(_score(tmp_path, [("odd", 1.0)]))
+    assert not disagreement.benign
+    assert "two different shapes" in disagreement.explanation
+
+
+def test_a_row_the_runner_could_not_dump_says_so_rather_than_reading_as_unchecked(
+    tmp_path: Path,
+) -> None:
+    # `withholds` is true for a solution_write_error too, so testing `withheld`
+    # first would report a disk failure as "nobody checked the solution".
+    _write(
+        tmp_path,
+        "cbls",
+        "nodisk",
+        {"status": "solution_write_error", "objective": 1.0, "message": "no space left"},
+        [(1.0, 1.0)],
+        verification=None,
+    )
+    _write(tmp_path, "cpsat", "nodisk", _shaped("feasible"), [(1.0, 1.0)])
+    rows = _score(tmp_path, [("nodisk", 1.0)])
+    ((_, engine, why),) = compare_feasibility(rows).excluded
+    assert engine == "cbls"
+    assert "solution_write_error" in why
+    # And it appears once in the failure table, not twice.
+    assert [f.engine for f in job_failures(rows)] == ["cbls"]
+
+
 def test_a_variable_count_difference_is_never_benign(tmp_path: Path) -> None:
     checked = _verdict(48, 10)
     _write(

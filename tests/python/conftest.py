@@ -1,5 +1,6 @@
 import importlib.util
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -34,7 +35,10 @@ except ImportError:
     _ignored_binding_tests = [
         path.name
         for path in sorted(Path(__file__).parent.glob("test_*.py"))
-        if "_cbls_core" in path.read_text()
+        # The import, not a mention: a test file that merely names the module in
+        # prose is not a binding test, and dropping it would silently remove a
+        # suite -- including, once, the very one that polices this announcement.
+        if "import _cbls_core" in path.read_text()
     ]
     collect_ignore = _ignored_binding_tests
 
@@ -59,9 +63,16 @@ except ImportError:
 # is named in the summary, and CBLS_REQUIRE_BENCHMARKS=1 (set by the ```test
 # fence in CLAUDE.md) turns it into a hard error.
 #
-# Detected from the source rather than hardcoded, so a new benchmark-dependency
-# test is covered without touching this file.
+# The *files* are detected from the source rather than listed here, so a new test
+# guarded on one of these packages is covered without an edit. The package names
+# themselves are not: a guard on a third package needs this tuple extended, which
+# `test_every_importorskipped_dependency_is_one_this_gate_watches` enforces.
 BENCHMARK_IMPORTS = ("ortools", "pyscipopt")
+
+#: How a test file says it needs one of them. One pattern, shared with the audit
+#: test, because the gate matching a narrower shape than the audit is how a
+#: single-quoted `importorskip` would pass the audit and still skip in silence.
+IMPORTORSKIP = re.compile(r"""importorskip\(\s*["']([A-Za-z_][\w.]*)["']""")
 
 
 def missing_imports(names: tuple[str, ...]) -> list[str]:
@@ -77,10 +88,12 @@ def files_skipping_on(missing: list[str], directory: Path) -> list[str]:
     """
     if not missing:
         return []
+    wanted = set(missing)
+    # One read per file, not one per missing name.
     return [
         path.name
         for path in sorted(directory.glob("test_*.py"))
-        if any(f'importorskip("{name}"' in path.read_text() for name in missing)
+        if wanted & set(IMPORTORSKIP.findall(path.read_text()))
     ]
 
 

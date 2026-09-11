@@ -1,0 +1,22 @@
+{
+  "budget_seconds": 2.0,
+  "build_seconds": 1.3033,
+  "commit_sha": "fixture",
+  "compound_moves": true,
+  "engine": "cbls",
+  "feasibility_tolerance": 1e-06,
+  "inf_clamp": 10000000.0,
+  "instance": "slow-start",
+  "max_propagation_passes": 10,
+  "n_cons": 120000,
+  "n_vars": 90000,
+  "objective": 1400.0,
+  "peak_rss_kib": 480000,
+  "propagate_bounds": true,
+  "read_seconds": 1.9011,
+  "seed": 42,
+  "setup_seconds": 3.2044,
+  "status": "feasible",
+  "trace_source": "callback",
+  "wall_seconds": 8.5312
+}

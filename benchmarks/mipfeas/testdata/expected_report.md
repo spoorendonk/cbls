@@ -7,6 +7,10 @@ CBLS against CP-SAT restricted to its `fj` + `ls` subsolvers under
 algorithm. This is a correctness-and-parity sweep against that one worker
 pairing, never a claim against any solver's default portfolio (epic #87).
 
+> **WIRING CHECK, NOT A PUBLISHABLE RESULT.** The MIPfeas roster is 233 instances; this report covers 13. These numbers are not comparable to a MIPfeas score, and the two engines' relative standing on a subset need not hold on the full roster.
+
+> **INCOMPLETE RUN** — every aggregate below covers only the jobs that ran: cpsat: 1 not run.
+
 ## 1. Defects
 
 | counter | cbls | cpsat | total |
@@ -77,7 +81,7 @@ Variable counts must agree exactly: every reader enumerates the same MPS COLUMNS
 | cbls | 10 | 0 | 0 | 10 |
 | cpsat | 8 | 1 | 0 | 9 |
 
-Denominator: rows the engine **reported feasible**. A run that found nothing has no incumbent profile to have, so it is not counted here. A degraded row is one whose profile collapsed to the final objective alone -- a harness condition (a changed log format, a callback that stopped firing), not a search result, and it scores near the no-solution penalty either way.
+Denominator: rows the engine **reported feasible** -- including any whose objective was later withheld, which section 2 excludes, so this count can exceed the feasible count there. The profile exists either way, and its health is a fact about the harness rather than about the verdict. A run that found nothing has no incumbent profile to have, so it is not counted here. A degraded row is one whose profile collapsed to the final objective alone -- a harness condition (a changed log format, a callback that stopped firing), not a search result, and it scores near the no-solution penalty either way.
 
 - cpsat degraded: degraded-trace
 
@@ -88,7 +92,7 @@ Denominator: rows the engine **reported feasible**. A run that found nothing has
 | cbls | 0.8827 | 1.1918 | 1.0455 | [0.6386, 2.0000] | 11 |
 | cpsat | 0.9828 | 1.2148 | 1.1325 | [0.6277, 2.0000] | 12 |
 
-Lower is better; the Primal Integral runs from 0 (optimal immediately) to 2 (never feasible) and is budget-relative, so this is comparable only to another table scored at the same budget. `scored` excludes rows that never ran and rows whose objective was withheld.
+Lower is better; the Primal Integral runs from 0 (optimal immediately) to 2 (never feasible) and is budget-relative, so this is comparable only to another table scored at the same budget. `scored` excludes rows that never ran and rows whose objective was withheld. It does **not** exclude a job the driver killed or a model the baseline rejected: those score the full no-solution penalty of 2.0 here, where section 2 leaves them out entirely. The two sections answer different questions -- parity asks who reached feasibility, the aggregate asks what a run of this budget delivered -- and the defect counters in section 1 are where such a row is meant to be read.
 
 ## 7. Where the time went
 
@@ -99,7 +103,7 @@ Lower is better; the Primal Integral runs from 0 (optimal immediately) to 2 (nev
 
 Two different effects, kept in two columns because a single wall-clock number cannot tell them apart:
 
-- **setup** (`setup_seconds`) is instance read + model build + bound propagation. It happens before the solve bracket, so no published MIPfeas table has ever measured it; it is not charged against the search, but it is charged against the wall clock a run has to be scheduled for.
+- **setup** (`setup_seconds`) is instance read + model build + bound propagation. It happens before the solve bracket, so no table this harness has published has ever measured it; it is not charged against the search, but it is charged against the wall clock a run has to be scheduled for.
 - **overrun** is `solve_seconds` past the budget. Search initialisation is not bounded by the deadline, so the first batch of a large model runs to completion whatever the clock says. A row can overrun with a negligible setup time and vice versa.
 
 

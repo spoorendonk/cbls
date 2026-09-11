@@ -215,6 +215,10 @@ DRIVER_WRITTEN_VERDICT_REASONS = ("verifier_timeout", "verifier_died")
 #: converge. Two attempts is the smallest number that still recovers a transient
 #: failure; past that the verdict stands and the row stays withheld, which is the
 #: honest outcome.
+#:
+#: A verdict written before this counter existed carries no `attempts` key and is
+#: read as zero, so such a directory gets one extra pass. One-off and
+#: self-healing: the first retry writes the key.
 MAX_VERIFY_ATTEMPTS = 2
 
 
@@ -335,7 +339,13 @@ def _verify(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
     # program does, for an uncaught traceback that writes nothing -- and a
     # traceback landing next to a previous attempt's `verifier_died` would be
     # reported as a rejected solution, which is this benchmark's loudest alarm
-    # fired for a harness fault.
+    # fired for a harness fault. Only a driver-written verdict can be here at all
+    # -- `needs_verification` is false for every verdict the verifier reached
+    # itself -- so a `fail` is never at risk of being removed.
+    #
+    # The attempt count lives in the file this removes, so a driver killed during
+    # the check restarts the budget. The cost is bounded re-work on the next
+    # resume, never a wrong verdict, which is the right way round.
     previous = _read_json(job.verification_path(results_dir)) or {}
     attempts = previous.get("attempts")
     attempt = (attempts if isinstance(attempts, int) else 0) + 1
