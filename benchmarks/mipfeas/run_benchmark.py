@@ -8,7 +8,11 @@ Built for an unattended multi-hour run on a bigger machine, so:
 * size-aware — the largest instances run on their own after the rest, instead of
   four-up against a memory limit;
 * every job is bounded by a wall-clock timeout and, optionally, an address-space
-  limit, and a job killed by either leaves a result recording that.
+  limit, and a job killed by either leaves a result recording that;
+* every feasible solution is checked against the ORIGINAL instance file by
+  `verify_solution.py`, which shares no reader with either engine (issue #138).
+  The verdict lands beside the result as `<instance>.verify.json`, and a row
+  without a passing verdict publishes no objective and no score.
 
 Usage:
     python run_benchmark.py --roster smoke --budget 60 --jobs 2
@@ -32,6 +36,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_INSTANCE_DIR = REPO_ROOT / "benchmarks" / "instances" / "mipfeas"
 DEFAULT_CBLS_BIN = REPO_ROOT / "build" / "cbls_mipfeas"
 CPSAT_SCRIPT = Path(__file__).resolve().parent / "cpsat_solve.py"
+VERIFY_SCRIPT = Path(__file__).resolve().parent / "verify_solution.py"
 
 ENGINES = ("cbls", "cpsat")
 
@@ -54,6 +59,12 @@ class Job:
 
     def result_path(self, results_dir: Path) -> Path:
         return results_dir / self.engine / f"{self.instance}.json"
+
+    def solution_path(self, results_dir: Path) -> Path:
+        return results_dir / self.engine / f"{self.instance}.sol"
+
+    def verification_path(self, results_dir: Path) -> Path:
+        return results_dir / self.engine / f"{self.instance}.verify.json"
 
 
 def read_roster(path: Path) -> list[str]:
@@ -93,7 +104,15 @@ def commit_sha() -> str:
 
 
 def build_command(job: Job, args: argparse.Namespace, results_dir: Path) -> list[str]:
+    """The runner invocation for one job.
+
+    The solution directory is the result directory: `verify_solution.py` reads
+    `<instance>.sol` and `<instance>.json` from one place, and keeping them
+    together is what makes a resumed run able to tell a verified row from an
+    unverified one.
+    """
     out_dir = str(results_dir / job.engine)
+    solution_flags = ["--solution-dir", out_dir] if args.verify else []
     if job.engine == "cbls":
         return [
             str(args.cbls_bin),
@@ -111,6 +130,7 @@ def build_command(job: Job, args: argparse.Namespace, results_dir: Path) -> list
             str(args.inf_clamp),
             "--compound-moves" if args.compound_moves else "--no-compound-moves",
             *([] if args.propagate_bounds else ["--no-propagate-bounds"]),
+            *solution_flags,
             "--commit",
             args.commit,
         ]
@@ -129,6 +149,7 @@ def build_command(job: Job, args: argparse.Namespace, results_dir: Path) -> list
         str(args.seed),
         "--workers",
         str(args.cpsat_workers),
+        *solution_flags,
     ]
 
 
@@ -172,8 +193,40 @@ def write_failure_result(
     )
 
 
+def write_failure_verdict(job: Job, results_dir: Path, reason: str, message: str) -> None:
+    """Record a verification the driver could not complete.
+
+    Mirrors `write_failure_result`: a verifier killed by the timeout or the
+    memory cap writes nothing itself, and a row with no verdict file at all is
+    indistinguishable from one nobody tried to check. The shape is the subset of
+    `verify_solution.Verification` the scorer reads; it is written here rather
+    than imported because this driver is run as a script, from any directory,
+    and must not depend on the package being importable.
+    """
+    path = job.verification_path(results_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "instance": job.instance,
+                "engine": job.engine,
+                "verdict": "error",
+                "reason": reason,
+                "message": message,
+                "marginal": False,
+                "failed_checks": [],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+
 #: Markers run_job puts on a line that did not produce an honest search result.
-FAILURE_MARKERS = ("TIMEOUT", "FAILED", "DRIVER-ERROR")
+#: A rejected solution is one of them: this is the correctness benchmark, and a
+#: run that published a point the checker refused must not exit 0.
+FAILURE_MARKERS = ("TIMEOUT", "FAILED", "DRIVER-ERROR", "VERIFY-FAILED", "VERIFY-ERROR")
 
 
 def run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
@@ -196,7 +249,75 @@ def run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
 
 
 def _run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
+    """Solve the job if it still needs solving, then verify what it produced.
+
+    Two steps rather than one because they resume independently: a results
+    directory whose solves are done but whose verdicts are missing must be
+    verifiable without paying for the search again.
+    """
     (results_dir / job.engine).mkdir(parents=True, exist_ok=True)
+    line = f"{job.engine}/{job.instance}: already solved"
+    if needs_solve(job, results_dir, args.verify):
+        line, solved = _run_solver(job, args, results_dir)
+        if not solved:
+            return line
+    if needs_verification(job, results_dir, args.verify):
+        line = f"{line} | {_verify(job, args, results_dir)}"
+    return line
+
+
+def _verify(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
+    """Check the job's solution against the original instance file.
+
+    Runs out of process under the same memory cap as the solve: it reads the
+    instance a second time, with a different reader, and on the largest models
+    that is not a small allocation. A verifier that dies leaves an explicit error
+    verdict, because the scorer must be able to tell "checked and rejected" from
+    "never checked" from "the checker crashed".
+    """
+    command = with_memory_limit(
+        [
+            sys.executable,
+            str(VERIFY_SCRIPT),
+            "--instance",
+            job.instance,
+            "--inst-dir",
+            str(args.inst_dir),
+            "--result-dir",
+            str(results_dir / job.engine),
+        ],
+        args.mem_limit_gb,
+    )
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_SLACK_SECONDS,
+            start_new_session=True,
+        )
+    except subprocess.TimeoutExpired:
+        write_failure_verdict(
+            job, results_dir, "verifier_timeout", f"exceeded {TIMEOUT_SLACK_SECONDS}s"
+        )
+        return "VERIFY-ERROR timeout"
+    if completed.returncode == 0:
+        return f"verified {completed.stdout.strip()[:200]}"
+    if completed.returncode == 1:
+        # Exit 1 is the verifier's "I checked it and it is wrong", and it wrote
+        # the verdict itself.
+        return f"VERIFY-FAILED {completed.stdout.strip()[:200]}"
+    if not job.verification_path(results_dir).exists():
+        write_failure_verdict(
+            job,
+            results_dir,
+            "verifier_died",
+            f"exit {completed.returncode}: {completed.stderr.strip()[:400]}",
+        )
+    return f"VERIFY-ERROR (exit {completed.returncode}) {completed.stderr.strip()[:200]}"
+
+
+def _run_solver(job: Job, args: argparse.Namespace, results_dir: Path) -> tuple[str, bool]:
     command = with_memory_limit(build_command(job, args, results_dir), args.mem_limit_gb)
 
     started = time.monotonic()
@@ -219,7 +340,7 @@ def _run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
             f"exceeded {args.budget + TIMEOUT_SLACK_SECONDS}s wall clock",
             args.budget,
         )
-        return f"{job.engine}/{job.instance}: TIMEOUT"
+        return f"{job.engine}/{job.instance}: TIMEOUT", False
 
     elapsed = time.monotonic() - started
     if completed.returncode != 0:
@@ -237,9 +358,13 @@ def _run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
         # "done" is how a systematic crash goes unnoticed for a whole roster.
         return (
             f"{job.engine}/{job.instance}: FAILED (exit {completed.returncode}) "
-            f"{completed.stderr.strip()[:200]}"
+            f"{completed.stderr.strip()[:200]}",
+            False,
         )
-    return f"{job.engine}/{job.instance}: {completed.stdout.strip() or 'done'} [{elapsed:.1f}s]"
+    return (
+        f"{job.engine}/{job.instance}: {completed.stdout.strip() or 'done'} [{elapsed:.1f}s]",
+        True,
+    )
 
 
 def plan_jobs(
@@ -254,42 +379,84 @@ def plan_jobs(
     return normal, large
 
 
-def has_usable_result(job: Job, results_dir: Path) -> bool:
-    """Whether `job` can be skipped on resume.
+def _read_json(path: Path) -> dict[str, object] | None:
+    """The object at `path`, or None when it is absent or unreadable.
 
-    A result truncated by an OOM kill or a reboot mid-write must not count: the
-    driver would make the damage permanent, and scoring would later abort on the
-    unparseable file.
+    A file truncated by an OOM kill or a reboot mid-write reads as absent: the
+    driver would otherwise make the damage permanent, and scoring would later
+    abort on the unparseable file.
     """
-    path = job.result_path(results_dir)
     if not path.exists():
-        return False
+        return None
     try:
-        json.loads(path.read_text())
+        parsed = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
-        print(f"Re-running {job.engine}/{job.instance}: unreadable result file.")
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def needs_solve(job: Job, results_dir: Path, verify: bool) -> bool:
+    """Whether the search still has to run for `job`."""
+    result = _read_json(job.result_path(results_dir))
+    if result is None:
+        return True
+    if (
+        verify
+        and result.get("status") == "feasible"
+        and not job.solution_path(results_dir).exists()
+    ):
+        # Nothing else can produce the solution vector, and a feasible row
+        # without one can never earn a verdict — so the search has to run again.
+        # Reachable by ordinary use: a directory filled before #138, or one whose
+        # earlier pass ran with --no-verify.
+        print(f"Re-running {job.engine}/{job.instance}: feasible result with no solution file.")
+        return True
+    return False
+
+
+def needs_verification(job: Job, results_dir: Path, verify: bool) -> bool:
+    """Whether `job` still needs an independent verdict.
+
+    Only a feasible row does: there is nothing to check about a run that found
+    no solution, and its objective is already absent.
+    """
+    if not verify:
         return False
-    return True
+    result = _read_json(job.result_path(results_dir))
+    if result is None or result.get("status") != "feasible":
+        return False
+    return _read_json(job.verification_path(results_dir)) is None
+
+
+def has_usable_result(job: Job, results_dir: Path, verify: bool = False) -> bool:
+    """Whether `job` can be skipped on resume: solved, and verified if required."""
+    return not needs_solve(job, results_dir, verify) and not needs_verification(
+        job, results_dir, verify
+    )
 
 
 def drop_completed(
-    normal: list[Job], large: list[Job], results_dir: Path, force: bool
+    normal: list[Job], large: list[Job], results_dir: Path, force: bool, verify: bool = False
 ) -> tuple[list[Job], list[Job]]:
     """Filter out jobs already done, or clear their results when forcing."""
     if force:
         # Drop the old results first. A forced re-run that dies before writing would
         # otherwise leave the previous run's result in place — possibly from another
         # budget — with nothing downstream able to tell it apart from a fresh one.
+        # The solution and its verdict go with it: a stale verdict describing the
+        # previous run's point is worse than none, since it reads as current.
         for job in normal + large:
             job.result_path(results_dir).unlink(missing_ok=True)
+            job.solution_path(results_dir).unlink(missing_ok=True)
+            job.verification_path(results_dir).unlink(missing_ok=True)
         return normal, large
 
-    done = sum(1 for j in normal + large if has_usable_result(j, results_dir))
+    done = sum(1 for j in normal + large if has_usable_result(j, results_dir, verify))
     if done:
         print(f"Resuming: {done} jobs already have results.")
     return (
-        [j for j in normal if not has_usable_result(j, results_dir)],
-        [j for j in large if not has_usable_result(j, results_dir)],
+        [j for j in normal if not has_usable_result(j, results_dir, verify)],
+        [j for j in large if not has_usable_result(j, results_dir, verify)],
     )
 
 
@@ -349,6 +516,16 @@ def main() -> int:
     parser.add_argument(
         "--force", action="store_true", help="re-run jobs that already have results"
     )
+    parser.add_argument(
+        "--no-verify",
+        dest="verify",
+        action="store_false",
+        help="skip the independent feasibility check of every reported solution "
+        "against the original instance file. Off only for harness debugging: the "
+        "scorer then publishes no objective for any feasible row unless it is run "
+        "with --allow-unverified, because an unchecked row is what #138 exists to "
+        "stop publishing",
+    )
     args = parser.parse_args()
     if args.budget <= 0 or args.jobs < 1:
         # A non-positive budget makes every runner return instantly with a
@@ -385,7 +562,7 @@ def main() -> int:
     sizes = read_sizes(args.inst_dir / "manifest.csv")
     normal, large = plan_jobs(instances, engines, sizes, args.large_bytes)
 
-    normal, large = drop_completed(normal, large, results_dir, force=args.force)
+    normal, large = drop_completed(normal, large, results_dir, force=args.force, verify=args.verify)
 
     total = len(normal) + len(large)
     print(
@@ -415,6 +592,12 @@ def main() -> int:
         f"--results-dir {results_dir} --roster {roster_path} --budget {args.budget} "
         f"--out {results_dir}/{out_name}\n"
         f"Then copy it to {args.inst_dir}/{out_name} if it is the run you mean to publish."
+        + (
+            ""
+            if args.verify
+            else "\nThis run skipped verification, so scoring it needs "
+            "--allow-unverified and the table it writes is not publishable."
+        )
     )
     return 1 if failures else 0
 

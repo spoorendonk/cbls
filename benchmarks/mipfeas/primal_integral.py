@@ -16,6 +16,16 @@ so P lies in [0, 2]: 0 is "optimal immediately", 2 is "never feasible". Rewardin
 *early* good solutions is the point — it is the question a local-search heuristic
 is built to answer, unlike gap-to-optimal at the time limit.
 
+Every row reported feasible must also carry an independent verdict from
+`verify_solution.py` — its solution checked against the original instance file
+with a reader neither engine uses (issue #138). A row whose solution fails that
+check, or that carries no verdict at all, publishes **no objective and no Primal
+Integral**, and is left out of the aggregates rather than scored as a failure:
+the run did find a point, it was simply rejected, and scoring it 2.0 would be
+publishing a derived number of its own. `--allow-unverified` relaxes the
+"carries no verdict" half for an older results directory; nothing relaxes a
+failed check.
+
 Usage:
     python primal_integral.py --results-dir results --budget 600 \
         --roster benchmarks/instances/mipfeas/roster.csv \
@@ -55,6 +65,14 @@ GEOMETRIC_MEAN_SHIFT = 0.001
 
 ENGINES = ("cbls", "cpsat")
 
+#: The only verification verdict that lets a feasible row publish its objective.
+#: `fail` is a rejected solution and `error` a check that could not run; both
+#: withhold, and both stay distinguishable in the published row.
+VERIFICATION_PASS = "pass"
+
+#: What a feasible row with no verdict file at all reports.
+UNVERIFIED = "unverified"
+
 #: Size of the full MIPfeas roster. Anything smaller is a wiring check, and the
 #: table says so in its header — a partial run read as the published result is
 #: the recurring way this repo has published a wrong number.
@@ -75,6 +93,62 @@ CONFIG_KEYS = (
     "workers",
     "parameters",
 )
+
+
+class Verification(NamedTuple):
+    """One row's independent verdict, as `verify_solution.py` recorded it."""
+
+    #: `pass`, `fail`, `error`, or `unverified` when no verdict file exists.
+    verdict: str
+    #: Stable machine-readable code: `row_violation`, `missing_solution_file`, ...
+    reason: str
+    #: A pass whose worst violation reached 10% of its tolerance. A flag to look
+    #: at, never a reason to withhold.
+    marginal: bool
+    #: The tolerances the verdict was reached under, so a table cannot silently
+    #: mix two of them.
+    tolerances: str
+
+
+#: The verdict of a row nobody checked. Not a NamedTuple default, because a row
+#: that was never *reported feasible* has nothing to verify and gets this too.
+NO_VERDICT = Verification(UNVERIFIED, "no_verdict_file", False, "")
+
+
+def read_verification(results_dir: Path, engine: str, instance: str) -> Verification:
+    """Read `<engine>/<instance>.verify.json`, or report that there is none."""
+    path = results_dir / engine / f"{instance}.verify.json"
+    if not path.exists():
+        return NO_VERDICT
+    try:
+        record: dict[str, object] = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path} is not valid JSON (a job killed mid-write?)") from exc
+    tolerances = record.get("tolerances")
+    return Verification(
+        verdict=str(record.get("verdict", UNVERIFIED)),
+        reason=str(record.get("reason", "")),
+        marginal=bool(record.get("marginal", False)),
+        tolerances=(
+            ";".join(f"{k}={v}" for k, v in sorted(tolerances.items()))
+            if isinstance(tolerances, dict)
+            else ""
+        ),
+    )
+
+
+def withholds(status: str, verification: Verification, require_verification: bool) -> bool:
+    """Whether this row must publish no objective and no derived score.
+
+    Only a feasible row can be withheld — the others have no objective to begin
+    with. A `fail` always withholds; a missing verdict withholds unless the
+    caller opted out, which is what an older results directory needs.
+    """
+    if status != "feasible":
+        return False
+    if verification.verdict == VERIFICATION_PASS:
+        return False
+    return not (verification.verdict == UNVERIFIED and not require_verification)
 
 
 class Scored(NamedTuple):
@@ -121,6 +195,18 @@ class Scored(NamedTuple):
     #: scaling, and would otherwise be indistinguishable from a plain timeout.
     solver_status: str
     provenance: str
+    #: The independent verdict on this row's solution: `pass`, `fail`, `error`,
+    #: or `unverified`. Only `pass` lets the objective above be a number.
+    verification: str
+    #: Why, as a stable code a counter can group on.
+    verification_reason: str
+    #: A pass that came within 10% of a tolerance. Published, never withheld.
+    verification_marginal: bool
+    #: True when the objective and the score were withheld because of the verdict.
+    withheld: bool
+    #: The tolerances the verdict was reached under; not a column, but compared
+    #: across rows so one table cannot mix two of them.
+    verification_tolerances: str
 
 
 def primal_gap(incumbent: float | None, reference: float) -> float:
@@ -202,6 +288,7 @@ def score_instance(
     reference_kind: str,
     results_dir: Path,
     budget: float,
+    require_verification: bool = True,
 ) -> Scored:
     result_path = results_dir / engine / f"{instance}.json"
     if not result_path.exists():
@@ -228,6 +315,11 @@ def score_instance(
             trace_source="",
             solver_status="",
             provenance="n/a",
+            verification=UNVERIFIED,
+            verification_reason="not_run",
+            verification_marginal=False,
+            withheld=False,
+            verification_tolerances="",
         )
 
     try:
@@ -250,12 +342,21 @@ def score_instance(
     raw_objective = result.get("objective")
     objective = float(raw_objective) if isinstance(raw_objective, (int, float)) else None
 
+    verification = read_verification(results_dir, engine, instance)
+    withheld = withholds(status, verification, require_verification)
+    if withheld:
+        # The whole of the rule: no objective, and therefore no gap, no Primal
+        # Integral and no place in the aggregates. An empty trace below makes the
+        # profile unscorable rather than scoring it as never-feasible, which
+        # would be a derived number of its own.
+        objective = None
+
     trace = load_trace(results_dir / engine / f"{instance}.trace.csv")
     if status == "feasible" and objective is not None and not trace:
         # A result without a profile still has a known end state; treat the solution
         # as arriving at the buzzer rather than dropping the instance.
         trace = [(budget, objective)]
-    if status != "feasible":
+    if status != "feasible" or withheld:
         trace = []
 
     wall = result.get("wall_seconds")
@@ -272,13 +373,13 @@ def score_instance(
         objective=objective,
         reference_value=reference_value,
         reference_kind=reference_kind,
-        final_gap=primal_gap(objective, reference_value),
+        final_gap=math.nan if withheld else primal_gap(objective, reference_value),
         below_reference=(
             reference_kind == "opt"
             and objective is not None
             and objective < reference_value - BELOW_REFERENCE_TOLERANCE * (abs(reference_value) + 1)
         ),
-        primal_integral=primal_integral(trace, reference_value, budget),
+        primal_integral=(math.nan if withheld else primal_integral(trace, reference_value, budget)),
         wall_seconds=float(wall) if isinstance(wall, (int, float)) else None,
         n_vars=int(n_vars) if isinstance(n_vars, int) else None,
         n_cons=int(n_cons) if isinstance(n_cons, int) else None,
@@ -290,6 +391,11 @@ def score_instance(
         trace_source=str(result.get("trace_source", "")),
         solver_status=str(result.get("cpsat_status", "")),
         provenance=_provenance(result),
+        verification=verification.verdict,
+        verification_reason=verification.reason,
+        verification_marginal=verification.marginal,
+        withheld=withheld,
+        verification_tolerances=verification.tolerances,
     )
 
 
@@ -308,6 +414,14 @@ class Summary(NamedTuple):
     #: as no-solution, but surfaced separately: a harness failure and a search
     #: failure look identical in the aggregate otherwise.
     errored: int
+    #: Rows whose solution the independent checker rejected. Any non-zero value
+    #: is a defect to chase before anything else in this table means anything.
+    verification_failed: int
+    #: Feasible rows with no usable verdict — never checked, or the checker
+    #: itself could not run. Withheld like a failure, counted apart from one.
+    unverified: int
+    #: Passing rows whose worst violation came within 10% of its tolerance.
+    verification_marginal: int
     shifted_geomean: float
     arithmetic_mean: float
     median: float
@@ -318,7 +432,11 @@ class Summary(NamedTuple):
 def summarize(rows: list[Scored], engine: str) -> Summary:
     mine = [r for r in rows if r.engine == engine]
     ran = [r for r in mine if r.status != "not_run"]
-    integrals = [r.primal_integral for r in ran]
+    # A withheld row ran, but published nothing: it is excluded from the
+    # aggregates exactly as a not-run row is, and counted where a reader will see
+    # it instead of averaged into a number that would look like a search result.
+    published = [r for r in ran if not r.withheld]
+    integrals = [r.primal_integral for r in published]
     # "inclusive": the default extrapolates on small samples and can report an IQR
     # bound outside the metric's own [0, 2] range — a negative Primal Integral in a
     # file whose whole job is to be quoted.
@@ -329,13 +447,18 @@ def summarize(rows: list[Scored], engine: str) -> Summary:
     )
     return Summary(
         engine=engine,
-        scored=len(ran),
+        scored=len(published),
         not_run=len(mine) - len(ran),
-        feasible=sum(1 for r in ran if r.status == "feasible"),
-        matched_reference=sum(1 for r in ran if r.final_gap < ZERO_TOLERANCE),
-        below_reference=sum(1 for r in ran if r.below_reference),
-        invalid_model=sum(1 for r in ran if r.status == "invalid_model"),
-        errored=sum(1 for r in ran if r.status not in ("feasible", "no_solution", "invalid_model")),
+        feasible=sum(1 for r in published if r.status == "feasible"),
+        matched_reference=sum(1 for r in published if r.final_gap < ZERO_TOLERANCE),
+        below_reference=sum(1 for r in published if r.below_reference),
+        invalid_model=sum(1 for r in published if r.status == "invalid_model"),
+        errored=sum(
+            1 for r in published if r.status not in ("feasible", "no_solution", "invalid_model")
+        ),
+        verification_failed=sum(1 for r in ran if r.verification == "fail"),
+        unverified=sum(1 for r in ran if r.withheld and r.verification != "fail"),
+        verification_marginal=sum(1 for r in published if r.verification_marginal),
         shifted_geomean=shifted_geometric_mean(integrals),
         arithmetic_mean=statistics.fmean(integrals) if integrals else math.nan,
         median=statistics.median(integrals) if integrals else math.nan,
@@ -361,6 +484,14 @@ def check_uniform_configuration(rows: list[Scored]) -> None:
                 f"invocations lands in the same results directory. Re-run the odd ones "
                 f"out with --force, or score them into separate tables."
             )
+    # The same hazard one layer down: verdicts reached under two different
+    # tolerance sets are two different claims, and the table states only one.
+    tolerances = {r.verification_tolerances for r in rows if r.verification_tolerances}
+    if len(tolerances) > 1:
+        raise ValueError(
+            f"the verdicts span {len(tolerances)} tolerance sets: {sorted(tolerances)}. "
+            f"Re-verify them under one, or score them into separate tables."
+        )
 
 
 def read_roster(path: Path) -> list[tuple[str, float, str]]:
@@ -369,6 +500,19 @@ def read_roster(path: Path) -> list[tuple[str, float, str]]:
             (row["instance"], float(row["reference_value"]), row["reference_kind"])
             for row in csv.DictReader(fh)
         ]
+
+
+def _tolerance_line(rows: list[Scored]) -> str:
+    """The tolerance set the verdicts were reached under, as the verdicts record it.
+
+    Read back off the rows rather than restated here: a table must quote the
+    thresholds its own verdicts used, not the ones this scorer was written
+    against. `check_uniform_configuration` has already refused a mixture.
+    """
+    for row in rows:
+        if row.verification_tolerances:
+            return row.verification_tolerances
+    return "none recorded (no row carried a verdict)"
 
 
 def write_comparison(
@@ -389,6 +533,16 @@ def write_comparison(
         "#          to another scored at the same budget.",
         "# Metric:  Primal Integral over the budget, in [0, 2]; lower is better.",
         "#          0 = optimal immediately, 2 = never feasible.",
+        "#",
+        "# Verified: every row reported feasible was checked against the ORIGINAL instance",
+        "#          file by benchmarks/mipfeas/verify_solution.py, which reads it with SCIP",
+        "#          -- a reader neither engine uses, so a shared reader defect cannot cancel",
+        "#          out. Row activities, variable bounds, integrality and the objective are",
+        "#          all re-derived there. A row that fails, or that carries no verdict,",
+        "#          publishes no objective and no Primal Integral and is left out of the",
+        "#          aggregates; the verification / verification_reason columns say why.",
+        "#          A `marginal` pass came within 10% of a tolerance: a flag, not a failure.",
+        f"#          Tolerances: {_tolerance_line(rows)}",
         "#",
         "# NOT a MIPfeas leaderboard entry: the published MIPfeas runs give each",
         "# solver 24 threads, and both engines here get 1. These numbers are",
@@ -425,7 +579,9 @@ def write_comparison(
             f"median={s.median:.4f} iqr=[{s.q1:.4f},{s.q3:.4f}] "
             f"feasible={s.feasible}/{s.scored} matched_reference={s.matched_reference} "
             f"invalid_model={s.invalid_model} errored={s.errored} "
-            f"below_reference={s.below_reference} not_run={s.not_run}"
+            f"below_reference={s.below_reference} verification_failed={s.verification_failed} "
+            f"unverified={s.unverified} verification_marginal={s.verification_marginal} "
+            f"not_run={s.not_run}"
         )
     header.append("#")
 
@@ -452,6 +608,9 @@ def write_comparison(
                 "n_bounds_tightened",
                 "trace_source",
                 "solver_status",
+                "verification",
+                "verification_reason",
+                "verification_marginal",
                 "provenance",
                 "config",
             ]
@@ -477,6 +636,9 @@ def write_comparison(
                     "" if r.n_bounds_tightened is None else r.n_bounds_tightened,
                     r.trace_source,
                     r.solver_status,
+                    r.verification,
+                    r.verification_reason,
+                    int(r.verification_marginal),
                     r.provenance,
                     r.config,
                 ]
@@ -489,6 +651,14 @@ def main() -> int:
     parser.add_argument("--roster", default="benchmarks/instances/mipfeas/roster.csv")
     parser.add_argument("--budget", type=float, required=True, help="seconds the runs were given")
     parser.add_argument("--out", required=True, help="comparison.csv to write")
+    parser.add_argument(
+        "--allow-unverified",
+        action="store_true",
+        help="publish a feasible row that carries no verdict from verify_solution.py. "
+        "For an older results directory only: a run made since #138 verifies as it "
+        "goes, and a row nobody checked is what that issue exists to stop publishing. "
+        "Never relaxes a verdict that says `fail`",
+    )
     args = parser.parse_args()
 
     roster_path = Path(args.roster)
@@ -496,7 +666,15 @@ def main() -> int:
     results_dir = Path(args.results_dir)
 
     rows = [
-        score_instance(name, engine, value, kind, results_dir, args.budget)
+        score_instance(
+            name,
+            engine,
+            value,
+            kind,
+            results_dir,
+            args.budget,
+            require_verification=not args.allow_unverified,
+        )
         for name, value, kind in roster
         for engine in ENGINES
     ]
@@ -513,7 +691,34 @@ def main() -> int:
         print(
             f"  {s.engine:<6} sgm={s.shifted_geomean:.4f} mean={s.arithmetic_mean:.4f} "
             f"median={s.median:.4f} feasible={s.feasible}/{s.scored} "
-            f"matched_reference={s.matched_reference} not_run={s.not_run}"
+            f"matched_reference={s.matched_reference} "
+            f"verification_failed={s.verification_failed} unverified={s.unverified} "
+            f"not_run={s.not_run}"
+        )
+    rejected = [s for s in summaries if s.verification_failed]
+    if rejected:
+        # Louder than the incomplete-run warning below, because this is the one
+        # thing the benchmark exists to detect: a solution the engine reported
+        # feasible that is not feasible for the program in the file.
+        print(
+            "\nDEFECT: "
+            + ", ".join(
+                f"{s.engine}: {s.verification_failed} solution(s) rejected by the independent check"
+                for s in rejected
+            )
+            + ". Their objectives are withheld; see the verification_reason column "
+            "and the .verify.json files.",
+            file=sys.stderr,
+        )
+    unverified = [s for s in summaries if s.unverified]
+    if unverified:
+        print(
+            "\nWARNING: "
+            + ", ".join(
+                f"{s.engine}: {s.unverified} feasible row(s) with no verdict" for s in unverified
+            )
+            + ". Those rows publish no objective; re-run them so they are checked.",
+            file=sys.stderr,
         )
     incomplete = [s for s in summaries if s.not_run]
     if incomplete:
@@ -524,7 +729,9 @@ def main() -> int:
             "published MIPfeas score.",
             file=sys.stderr,
         )
-    return 0
+    # Non-zero when a solution was rejected: a correctness benchmark whose
+    # checker refused a published point must not score at exit 0.
+    return 1 if rejected else 0
 
 
 if __name__ == "__main__":

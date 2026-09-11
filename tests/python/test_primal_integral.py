@@ -28,6 +28,16 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+#: The verdict a run since #138 writes for a solution the independent checker
+#: accepted. Feasible results in these tests carry it unless they say otherwise.
+_PASSING: dict[str, object] = {
+    "verdict": "pass",
+    "reason": "",
+    "marginal": False,
+    "tolerances": {"row_absolute": 1e-06},
+}
+
+
 def test_primal_gap_is_zero_at_the_reference() -> None:
     assert primal_gap(100.0, 100.0) == 0.0
 
@@ -126,13 +136,22 @@ def _write_result(
     instance: str,
     record: dict[str, object],
     trace: list[tuple[float, float]] | None = None,
+    verification: dict[str, object] | None = _PASSING,
 ) -> None:
+    """Write one job's outputs.
+
+    A feasible result gets a passing verdict by default, because that is what a
+    run since #138 produces and what the rest of these tests are about. Pass
+    `verification=None` for a row nobody checked, or a dict for any other verdict.
+    """
     engine_dir = directory / engine
     engine_dir.mkdir(parents=True, exist_ok=True)
     (engine_dir / f"{instance}.json").write_text(json.dumps(record))
     if trace is not None:
         lines = ["time_seconds,objective"] + [f"{t},{o}" for t, o in trace]
         (engine_dir / f"{instance}.trace.csv").write_text("\n".join(lines) + "\n")
+    if verification is not None and record.get("status") == "feasible":
+        (engine_dir / f"{instance}.verify.json").write_text(json.dumps(verification))
 
 
 def test_score_instance_reads_a_result_and_its_trace(tmp_path: Path) -> None:
@@ -422,3 +441,222 @@ def test_a_results_directory_mixing_two_budgets_is_still_refused(tmp_path: Path)
     with pytest.raises(ValueError, match="60.0s budget but is being scored at 600"):
         for name in ("long", "short"):
             score_instance(name, "cbls", 10.0, "opt", tmp_path, budget=600.0)
+
+
+# ---------------------------------------------------------------------------
+# Verification (#138): a row nobody could check publishes nothing.
+
+
+def _rejected(reason: str = "row_violation") -> dict[str, object]:
+    return {"verdict": "fail", "reason": reason, "marginal": False, "tolerances": {}}
+
+
+def test_a_rejected_solution_publishes_no_objective(tmp_path: Path) -> None:
+    _write_result(
+        tmp_path,
+        "cbls",
+        "inst",
+        {"status": "feasible", "objective": 90.0},
+        trace=[(1.0, 90.0)],
+        verification=_rejected(),
+    )
+    scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
+
+    assert scored.verification == "fail"
+    assert scored.verification_reason == "row_violation"
+    assert scored.withheld
+    assert scored.objective is None
+    # And no derived score either: not the gap, not the Primal Integral, and not
+    # a below_reference flag computed from a number that was withdrawn.
+    assert math.isnan(scored.final_gap)
+    assert math.isnan(scored.primal_integral)
+    assert not scored.below_reference
+
+
+def test_a_rejected_row_is_excluded_from_the_aggregates_not_scored_two(tmp_path: Path) -> None:
+    # Scoring it 2.0 would be publishing a derived number of its own -- and a
+    # wrong one: the run did find a point, it was rejected.
+    for instance, verification in (("good", _PASSING), ("bad", _rejected())):
+        _write_result(
+            tmp_path,
+            "cbls",
+            instance,
+            {"status": "feasible", "objective": 100.0},
+            trace=[(0.0, 100.0)],
+            verification=verification,
+        )
+    rows = [
+        score_instance(name, "cbls", 100.0, "opt", tmp_path, budget=60.0)
+        for name in ("good", "bad")
+    ]
+    summary = summarize(rows, "cbls")
+
+    assert summary.scored == 1
+    assert summary.feasible == 1
+    assert summary.verification_failed == 1
+    assert summary.arithmetic_mean == pytest.approx(0.0)
+
+
+def test_a_feasible_row_with_no_verdict_is_withheld_by_default(tmp_path: Path) -> None:
+    # Acceptance criterion of #138: every row reported feasible carries an
+    # independent verdict. Only a default-on rule can guarantee that.
+    _write_result(
+        tmp_path,
+        "cbls",
+        "inst",
+        {"status": "feasible", "objective": 100.0},
+        trace=[(0.0, 100.0)],
+        verification=None,
+    )
+    scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
+
+    assert scored.verification == "unverified"
+    assert scored.withheld
+    assert scored.objective is None
+    assert summarize([scored], "cbls").unverified == 1
+
+
+def test_allow_unverified_publishes_a_row_that_carries_no_verdict(tmp_path: Path) -> None:
+    # The escape hatch for a results directory filled before #138. It relaxes
+    # "nobody checked", never "checked and rejected".
+    _write_result(
+        tmp_path,
+        "cbls",
+        "inst",
+        {"status": "feasible", "objective": 100.0},
+        trace=[(0.0, 100.0)],
+        verification=None,
+    )
+    scored = score_instance(
+        "inst", "cbls", 100.0, "opt", tmp_path, budget=60.0, require_verification=False
+    )
+
+    assert not scored.withheld
+    assert scored.objective == pytest.approx(100.0)
+    assert scored.primal_integral == pytest.approx(0.0)
+
+
+def test_allow_unverified_does_not_publish_a_rejected_row(tmp_path: Path) -> None:
+    _write_result(
+        tmp_path,
+        "cbls",
+        "inst",
+        {"status": "feasible", "objective": 100.0},
+        trace=[(0.0, 100.0)],
+        verification=_rejected(),
+    )
+    scored = score_instance(
+        "inst", "cbls", 100.0, "opt", tmp_path, budget=60.0, require_verification=False
+    )
+    assert scored.withheld
+    assert scored.objective is None
+
+
+def test_a_verdict_the_checker_could_not_reach_also_withholds(tmp_path: Path) -> None:
+    # `error` is "could not check", not "checked and fine", so it withholds like a
+    # failure -- and is counted apart from one, since it is a harness fault.
+    _write_result(
+        tmp_path,
+        "cbls",
+        "inst",
+        {"status": "feasible", "objective": 100.0},
+        trace=[(0.0, 100.0)],
+        verification={"verdict": "error", "reason": "missing_solution_file", "marginal": False},
+    )
+    scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
+
+    assert scored.withheld
+    assert scored.verification_reason == "missing_solution_file"
+    summary = summarize([scored], "cbls")
+    assert summary.verification_failed == 0
+    assert summary.unverified == 1
+
+
+def test_a_marginal_pass_is_published_and_flagged(tmp_path: Path) -> None:
+    # "Just inside the tolerance" is a signal to look, never a reason to withhold.
+    _write_result(
+        tmp_path,
+        "cbls",
+        "inst",
+        {"status": "feasible", "objective": 100.0},
+        trace=[(0.0, 100.0)],
+        verification={"verdict": "pass", "reason": "", "marginal": True, "tolerances": {}},
+    )
+    scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
+
+    assert not scored.withheld
+    assert scored.verification_marginal
+    assert scored.objective == pytest.approx(100.0)
+    assert summarize([scored], "cbls").verification_marginal == 1
+
+
+def test_a_run_that_found_nothing_needs_no_verdict(tmp_path: Path) -> None:
+    # There is nothing to verify about a run with no solution, and its objective
+    # is already absent -- so the requirement must not turn it into a second
+    # failure mode.
+    _write_result(tmp_path, "cbls", "inst", {"status": "no_solution", "objective": None})
+    scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
+
+    assert not scored.withheld
+    assert scored.primal_integral == pytest.approx(NO_SOLUTION_GAP)
+
+
+def test_scoring_refuses_verdicts_from_two_tolerance_sets(tmp_path: Path) -> None:
+    # The same hazard as two configurations in one directory, one layer down:
+    # verdicts reached under different thresholds are two different claims and
+    # the table states only one.
+    for instance, tolerance in (("a", 1e-6), ("b", 1e-4)):
+        _write_result(
+            tmp_path,
+            "cbls",
+            instance,
+            {"status": "feasible", "objective": 100.0},
+            trace=[(1.0, 100.0)],
+            verification={
+                "verdict": "pass",
+                "reason": "",
+                "marginal": False,
+                "tolerances": {"row_absolute": tolerance},
+            },
+        )
+    rows = [
+        score_instance(name, "cbls", 100.0, "opt", tmp_path, budget=60.0) for name in ("a", "b")
+    ]
+    with pytest.raises(ValueError, match="2 tolerance sets"):
+        check_uniform_configuration(rows)
+
+
+def test_the_table_states_the_tolerances_its_verdicts_used(tmp_path: Path) -> None:
+    _write_result(tmp_path, "cbls", "inst", {"status": "feasible", "objective": 10.0})
+    scored = score_instance("inst", "cbls", 10.0, "opt", tmp_path, budget=60.0)
+    out = tmp_path / "comparison.csv"
+    write_comparison(out, [scored], [summarize([scored], "cbls")], 60.0, tmp_path / "roster.csv")
+
+    text = out.read_text()
+    # Read back off the verdicts, not restated in the scorer: a table has to quote
+    # the thresholds its own rows were judged by.
+    assert "row_absolute=1e-06" in text
+    rows = [r for r in csv.reader(text.splitlines()) if r and not r[0].startswith("#")]
+    header, body = rows[0], rows[1:]
+    assert body[0][header.index("verification")] == "pass"
+    assert body[0][header.index("verification_reason")] == ""
+
+
+def test_a_withheld_row_writes_no_objective_into_the_table(tmp_path: Path) -> None:
+    _write_result(
+        tmp_path,
+        "cbls",
+        "inst",
+        {"status": "feasible", "objective": 10.0},
+        trace=[(0.0, 10.0)],
+        verification=_rejected("integrality_violation"),
+    )
+    scored = score_instance("inst", "cbls", 10.0, "opt", tmp_path, budget=60.0)
+    out = tmp_path / "comparison.csv"
+    write_comparison(out, [scored], [summarize([scored], "cbls")], 60.0, tmp_path / "roster.csv")
+
+    rows = [r for r in csv.reader(out.read_text().splitlines()) if r and not r[0].startswith("#")]
+    header, body = rows[0], rows[1:]
+    assert body[0][header.index("objective")] == ""
+    assert body[0][header.index("primal_integral")] == "nan"
+    assert body[0][header.index("verification_reason")] == "integrality_violation"
