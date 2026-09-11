@@ -20,9 +20,14 @@ from typing import TYPE_CHECKING
 import pytest
 
 from benchmarks.minlplib.first_feasible_report import (
+    DETERMINED,
+    FINAL_INVARIANT,
     MIN_ELIGIBLE_INSTANCES,
+    NO_SPREAD,
+    NOT_DETERMINED,
     R_DETERMINED,
     REFERENCE_INSTANCE,
+    TOO_FEW_SEEDS,
     InstanceResult,
     collect,
     group,
@@ -326,20 +331,23 @@ def test_an_instance_with_too_few_seeds_gets_no_correlation(tmp_path: Path) -> N
     )
     (result,) = score([*argv, "--min-seeds", "4"])
     assert not result.eligible
+    assert result.bucket == TOO_FEW_SEEDS
     assert math.isnan(result.pearson)
-    assert "below --min-seeds 4" in result.ineligible
+    assert "below --min-seeds 4" in result.note
 
 
-def test_an_instance_that_lands_on_the_same_objective_every_seed_is_ineligible(
+def test_an_instance_whose_outcome_never_moves_is_evidence_against_the_effect(
     tmp_path: Path,
 ) -> None:
-    """Zero spread is not r = 0.
+    """Arrival varied; the final objective did not. That is a refutation.
 
-    An instance solved to the same objective on every seed has no across-seed
-    variance to explain, so it can neither support nor refute the effect.
-    Scoring it 0 would drag the roster median down with instances that are
-    evidence of nothing; and `statistics.correlation` raises on it rather than
-    returning NaN, so this also pins that the report survives one.
+    Pearson r is formally undefined here -- zero variance in the final objective,
+    and `statistics.correlation` RAISES on it rather than returning NaN -- but the
+    instance is not silent: it says the search reached the same answer however far
+    out it started, which is exactly the opposite of #149's claim. Filing it with
+    the uninformative instances would let a roster full of them come back
+    "inconclusive" when it had actually refuted the effect, so it is eligible and
+    counts as not-determined.
     """
     argv = seed_tables(
         tmp_path,
@@ -349,14 +357,21 @@ def test_an_instance_that_lands_on_the_same_objective_every_seed_is_ineligible(
         },
     )
     (result,) = score(argv)
-    assert not result.eligible
+    assert result.bucket == FINAL_INVARIANT
+    assert result.eligible
+    assert not result.determined
     assert math.isnan(result.pearson)
-    assert "final objective is identical on every seed" in result.ineligible
+    assert "every seed finished at the same objective" in result.note
 
 
 def test_an_instance_that_always_arrives_at_the_same_point_is_ineligible(
     tmp_path: Path,
 ) -> None:
+    """The genuinely uninformative case: the experiment never varied its input.
+
+    Distinguished from the one above on purpose. Here nothing can be concluded;
+    there, something can.
+    """
     argv = seed_tables(
         tmp_path,
         {
@@ -365,15 +380,26 @@ def test_an_instance_that_always_arrives_at_the_same_point_is_ineligible(
         },
     )
     (result,) = score(argv)
+    assert result.bucket == NO_SPREAD
     assert not result.eligible
-    assert "first feasible objective is identical on every seed" in result.ineligible
+    assert "first feasible objective is identical on every seed" in result.note
 
 
 # --- the pre-registered verdict ------------------------------------------------
 
 
 def _results(pearsons: list[float]) -> list[InstanceResult]:
-    return [InstanceResult(f"i{n}", 8, r, r, "") for n, r in enumerate(pearsons)]
+    return [
+        InstanceResult(f"i{n}", 8, r, r, DETERMINED if r >= R_DETERMINED else NOT_DETERMINED, "")
+        for n, r in enumerate(pearsons)
+    ]
+
+
+def _final_invariant(count: int) -> list[InstanceResult]:
+    return [
+        InstanceResult(f"flat{n}", 8, math.nan, math.nan, FINAL_INVARIANT, "flat")
+        for n in range(count)
+    ]
 
 
 def test_too_few_eligible_instances_is_inconclusive_not_a_refutation() -> None:
@@ -411,9 +437,34 @@ def test_ineligible_instances_do_not_count_toward_the_minimum() -> None:
     A roster of flat instances must read as "not measured", not as a verdict
     assembled from instances that carry no correlation at all.
     """
-    flat = [InstanceResult(f"f{n}", 8, math.nan, math.nan, "no spread") for n in range(40)]
+    flat = [
+        InstanceResult(f"f{n}", 8, math.nan, math.nan, NO_SPREAD, "no spread") for n in range(40)
+    ]
     call = verdict([*_results([0.99] * 3), *flat])
     assert call.word == "INCONCLUSIVE"
+
+
+def test_a_roster_whose_outcomes_never_move_refutes_rather_than_abstains() -> None:
+    """Every eligible instance FINAL_INVARIANT: no r anywhere, and that is an answer.
+
+    The median is NaN here, so the rule's first half cannot be evaluated -- and it
+    must not fall through to "inconclusive", because the campaign did measure the
+    thing and found the outcome independent of the arrival.
+    """
+    call = verdict(_final_invariant(MIN_ELIGIBLE_INSTANCES))
+    assert call.word == "DOES NOT GENERALISE"
+    assert "no eligible instance has a defined r" in call.detail
+
+
+def test_final_invariant_instances_count_against_the_majority() -> None:
+    """Six instances at r = 0.99 and six flat ones is not a majority.
+
+    Without the FINAL_INVARIANT bucket in the denominator this would be 6 of 6
+    and would read as a clean generalisation.
+    """
+    call = verdict([*_results([0.99] * 6), *_final_invariant(6)])
+    assert call.word == "DOES NOT GENERALISE"
+    assert "only 6 of 12 eligible instances" in call.detail
 
 
 # --- the command line ----------------------------------------------------------
@@ -459,7 +510,7 @@ def test_the_report_names_the_reference_instance_and_states_a_verdict(
     assert "VERDICT: INCONCLUSIVE" in text
 
 
-def test_the_per_instance_csv_records_the_ineligible_reason(
+def test_the_per_instance_csv_records_the_bucket_and_its_reason(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     out = tmp_path / "per_instance.csv"
@@ -478,9 +529,11 @@ def test_the_per_instance_csv_records_the_ineligible_reason(
     with out.open(newline="") as fh:
         rows = {row["instance"]: row for row in csv.DictReader(fh)}
     assert rows["varies"]["pearson_r"] == "1.000000"
-    assert rows["varies"]["ineligible_reason"] == ""
+    assert rows["varies"]["bucket"] == DETERMINED
+    assert rows["varies"]["note"] == ""
     assert rows["flat"]["pearson_r"] == "NaN"
-    assert "identical on every seed" in rows["flat"]["ineligible_reason"]
+    assert rows["flat"]["bucket"] == FINAL_INVARIANT
+    assert "same objective" in rows["flat"]["note"]
 
 
 def test_a_bad_table_spec_is_rejected_by_the_parser() -> None:

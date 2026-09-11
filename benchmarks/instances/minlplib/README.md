@@ -658,15 +658,26 @@ a verdict.
 `MIN_SEEDS_PER_INSTANCE`, each with the argument for its value, and it is fixed
 before the campaign rather than chosen once the numbers are in:
 
-- an instance counts when it has at least **4** usable seeds and its outcomes
-  actually vary across them (an instance solved to the same objective every seed
-  has no correlation to report, and is listed as ineligible rather than scored
-  `r = 0`);
-- the effect **generalises** when the median `r` over those instances is at least
-  **0.7** — half the across-seed variance explained — and a strict majority of
-  them reach it;
+- an instance is **eligible** when it has at least **4** usable seeds and its
+  first feasible objective actually varied across them. An instance that arrived
+  at the same objective every seed never varied the experiment's input and is
+  listed as `no-spread`, outside the count;
+- an eligible instance whose **final** objective did not vary has no defined `r`
+  — zero variance in *y* — but is not silent: arrival moved and the outcome did
+  not, which is evidence *against* the effect. It is bucketed `final-invariant`
+  and counted as not-determined, so a roster full of them refutes rather than
+  abstains;
+- the effect **generalises** when the median `r` is at least **0.7** — half the
+  across-seed variance explained — and a strict majority of eligible instances
+  reach it;
 - fewer than **10** eligible instances is **inconclusive**, which is not the same
   answer as "does not generalise".
+
+A plausible outcome worth being ready for: much of this roster is solved to the
+same objective on every seed at 60s, so a large `no-spread` or `final-invariant`
+count is not a failed campaign. `no-spread` instances say nothing;
+`final-invariant` ones say the effect is absent there. Read the bucket line the
+report prints before reading the verdict.
 
 Sanity check before believing any of it: the report prints `nvs01`'s own `r`
 beside #134's 0.945. A campaign that disagrees there has a measurement problem,

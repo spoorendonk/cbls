@@ -122,29 +122,57 @@ class Skipped:
         return self.infeasible + self.no_first_feasible + self.non_finite + self.claim_excluded
 
 
+#: One instance's verdict, and the whole reason this is a four-way bucket rather
+#: than "has an r / does not".
+#:
+#: `FINAL_INVARIANT` is the bucket that matters. An instance whose runs ARRIVED
+#: at different objectives and all FINISHED at the same one has a Pearson r that
+#: is formally undefined -- zero variance in y -- but it is not silent about
+#: #149's question: it says the effect is absent there, and loudly. Filing it
+#: with the genuinely uninformative instances would let a roster full of them
+#: come back "inconclusive" when what it actually showed was a refutation. So it
+#: is eligible, and it counts as not-determined.
+#:
+#: `NO_SPREAD` is the genuinely uninformative one: every seed arrived at the same
+#: place, so the experiment never varied its input and the instance cannot speak
+#: either way.
+DETERMINED = "determined"
+NOT_DETERMINED = "not-determined"
+FINAL_INVARIANT = "final-invariant"
+NO_SPREAD = "no-spread"
+TOO_FEW_SEEDS = "too-few-seeds"
+
+#: The buckets that count toward the majority test and the eligible floor.
+ELIGIBLE_BUCKETS = (DETERMINED, NOT_DETERMINED, FINAL_INVARIANT)
+
+
 @dataclass(frozen=True)
 class InstanceResult:
     """One instance's across-seed correlation, or the reason there is none."""
 
     instance: str
     seeds: int
-    #: Pearson r, or NaN when the instance is not eligible for one.
+    #: Pearson r, or NaN where the instance has no defined one -- which includes
+    #: the eligible `FINAL_INVARIANT` bucket, so NaN here does NOT mean "not
+    #: eligible". Read `bucket`.
     pearson: float
     #: Spearman rank correlation, or NaN. Reported beside Pearson as a
     #: robustness check: Pearson is the statistic #134 used and the one #149
     #: asks about, but it is sensitive to a single far-out seed, which is
     #: exactly the shape these runs produce.
     spearman: float
-    #: Why `pearson` is NaN, or "" when it is a number.
-    ineligible: str
+    #: One of the five constants above.
+    bucket: str
+    #: What the bucket means for this instance, in words; "" for a plain r.
+    note: str
 
     @property
     def eligible(self) -> bool:
-        return not self.ineligible
+        return self.bucket in ELIGIBLE_BUCKETS
 
     @property
     def determined(self) -> bool:
-        return self.eligible and self.pearson >= R_DETERMINED
+        return self.bucket == DETERMINED
 
 
 def _number(text: str | None) -> float:
@@ -257,6 +285,7 @@ def score_instance(
             len(seeds),
             math.nan,
             math.nan,
+            TOO_FEW_SEEDS,
             f"only {len(seeds)} usable seed(s), below --min-seeds {min_seeds}",
         )
     # One observation per seed, so a table accidentally supplied twice cannot
@@ -264,15 +293,31 @@ def score_instance(
     by_seed = {o.seed: o for o in observations}
     firsts = [by_seed[s].first_feasible for s in seeds]
     finals = [by_seed[s].final for s in seeds]
-    pearson = _pearson(firsts, finals)
-    if math.isnan(pearson):
-        reason = (
-            "the final objective is identical on every seed"
-            if len(set(finals)) < 2
-            else "the first feasible objective is identical on every seed"
+    if len(set(firsts)) < 2:
+        # Every seed arrived at the same objective. The experiment never varied
+        # its input, so this instance cannot speak to #149 either way.
+        return InstanceResult(
+            instance,
+            len(seeds),
+            math.nan,
+            math.nan,
+            NO_SPREAD,
+            "the first feasible objective is identical on every seed",
         )
-        return InstanceResult(instance, len(seeds), math.nan, math.nan, reason)
-    return InstanceResult(instance, len(seeds), pearson, _spearman(firsts, finals), "")
+    if len(set(finals)) < 2:
+        # Arrival varied; the outcome did not. No r exists, but the reading is
+        # unambiguous -- see FINAL_INVARIANT above.
+        return InstanceResult(
+            instance,
+            len(seeds),
+            math.nan,
+            math.nan,
+            FINAL_INVARIANT,
+            "arrival varied but every seed finished at the same objective",
+        )
+    pearson = _pearson(firsts, finals)
+    bucket = DETERMINED if pearson >= R_DETERMINED else NOT_DETERMINED
+    return InstanceResult(instance, len(seeds), pearson, _spearman(firsts, finals), bucket, "")
 
 
 def group(observations: Iterable[Observation]) -> dict[str, list[Observation]]:
@@ -290,6 +335,19 @@ class Verdict:
     detail: str
 
 
+def median_r(results: Sequence[InstanceResult]) -> float:
+    """Median Pearson r over the eligible instances that HAVE one, or NaN.
+
+    `FINAL_INVARIANT` instances are eligible and have no r, so they are absent
+    here and present in the majority test. That asymmetry is deliberate: the
+    median is a descriptive statistic about the instances where a correlation
+    exists, while the majority test is the rule, and it is the majority test
+    that must see an instance whose outcome did not move.
+    """
+    values = [r.pearson for r in results if r.eligible and not math.isnan(r.pearson)]
+    return statistics.median(values) if values else math.nan
+
+
 def verdict(results: Sequence[InstanceResult]) -> Verdict:
     """Apply the pre-registered rule to the scored instances.
 
@@ -305,7 +363,7 @@ def verdict(results: Sequence[InstanceResult]) -> Verdict:
             "requires; the campaign has not measured the effect either way",
         )
     determined = [r for r in eligible if r.determined]
-    median = statistics.median(r.pearson for r in eligible)
+    median = median_r(results)
     majority = len(determined) * 2 > len(eligible)
     if median >= R_DETERMINED and majority:
         return Verdict(
@@ -314,7 +372,15 @@ def verdict(results: Sequence[InstanceResult]) -> Verdict:
             f"{len(eligible)} eligible instances are at or above it",
         )
     why = []
-    if median < R_DETERMINED:
+    if math.isnan(median):
+        # Every eligible instance is FINAL_INVARIANT: no correlation exists
+        # anywhere, because no outcome moved. That is a refutation, not a
+        # missing measurement.
+        why.append(
+            f"no eligible instance has a defined r -- all {len(eligible)} finished at the same "
+            "objective on every seed, however they arrived"
+        )
+    elif median < R_DETERMINED:
         why.append(f"median r = {median:.3f} is below {R_DETERMINED}")
     if not majority:
         why.append(
@@ -327,6 +393,7 @@ def verdict(results: Sequence[InstanceResult]) -> Verdict:
 def render(results: Sequence[InstanceResult], skipped: Skipped, rows: int, min_seeds: int) -> str:
     """The whole report, as text."""
     eligible = [r for r in results if r.eligible]
+    buckets = {bucket: sum(1 for r in results if r.bucket == bucket) for bucket in _BUCKET_ORDER}
     lines = [
         "=== #149: first feasible objective vs final objective ===",
         "",
@@ -336,19 +403,18 @@ def render(results: Sequence[InstanceResult], skipped: Skipped, rows: int, min_s
         f"{skipped.no_first_feasible}, non-finite objective {skipped.non_finite}, "
         f"excluded from claims {skipped.claim_excluded})",
         f"instances scored:       {len(results)}",
-        f"instances eligible:     {len(eligible)}  "
-        f"(>= {min_seeds} usable seeds and a spread in both columns)",
+        f"instances eligible:     {len(eligible)}  (>= {min_seeds} usable seeds and a spread "
+        "in the first feasible objective)",
+        "  " + ", ".join(f"{bucket} {count}" for bucket, count in buckets.items()),
         "",
-        f"  {'instance':<22} {'seeds':>5} {'pearson r':>10} {'spearman':>9}  note",
+        f"  {'instance':<22} {'seeds':>5} {'pearson r':>10} {'spearman':>9}  {'bucket':<15} note",
     ]
-    for result in sorted(
-        results, key=lambda r: (not r.eligible, -r.pearson if r.eligible else 0.0)
-    ):
+    for result in sorted(results, key=_report_order):
         r_cell = "-" if math.isnan(result.pearson) else f"{result.pearson:10.3f}"
         rho_cell = "-" if math.isnan(result.spearman) else f"{result.spearman:9.3f}"
         lines.append(
             f"  {result.instance:<22} {result.seeds:>5} {r_cell:>10} {rho_cell:>9}  "
-            f"{result.ineligible}"
+            f"{result.bucket:<15} {result.note}"
         )
     lines.append("")
     reference = next((r for r in results if r.instance == REFERENCE_INSTANCE), None)
@@ -357,20 +423,22 @@ def render(results: Sequence[InstanceResult], skipped: Skipped, rows: int, min_s
             f"{REFERENCE_INSTANCE}: not in this run -- #134's r = {REFERENCE_R} cannot be "
             "cross-checked, so read the verdict with that caveat"
         )
-    elif reference.eligible:
+    elif math.isnan(reference.pearson):
+        lines.append(
+            f"{REFERENCE_INSTANCE} (the #134 instance): no r this time -- {reference.note}"
+        )
+    else:
         lines.append(
             f"{REFERENCE_INSTANCE} (the #134 instance): r = {reference.pearson:.3f} here "
             f"against {REFERENCE_R} in #134, over {reference.seeds} seed(s)"
         )
-    else:
-        lines.append(
-            f"{REFERENCE_INSTANCE} (the #134 instance): no r this time -- {reference.ineligible}"
-        )
     if eligible:
+        median = median_r(results)
         lines += [
-            f"median r over eligible: {statistics.median(r.pearson for r in eligible):.3f}",
-            f"instances at r >= {R_DETERMINED}:  "
-            f"{sum(1 for r in eligible if r.determined)} of {len(eligible)}",
+            f"median r over eligible: {'-' if math.isnan(median) else f'{median:.3f}'}  "
+            f"(over the {sum(1 for r in eligible if not math.isnan(r.pearson))} with a "
+            "defined r)",
+            f"instances at r >= {R_DETERMINED}:  {buckets[DETERMINED]} of {len(eligible)} eligible",
         ]
     call = verdict(results)
     lines += [
@@ -378,10 +446,14 @@ def render(results: Sequence[InstanceResult], skipped: Skipped, rows: int, min_s
         f"VERDICT: {call.word}",
         f"  {call.detail}",
         "",
-        "  Rule, fixed before the campaign: an instance counts when it has at least",
-        f"  {min_seeds} usable seeds and its outcomes vary; the effect GENERALISES when the",
-        f"  median Pearson r over those instances is >= {R_DETERMINED} and a strict majority of",
-        f"  them reach it; fewer than {MIN_ELIGIBLE_INSTANCES} such instances is INCONCLUSIVE.",
+        "  Rule, fixed before the campaign: an instance is ELIGIBLE when it has at",
+        f"  least {min_seeds} usable seeds and its first feasible objective varied across",
+        "  them. An eligible instance whose FINAL objective did not vary counts as",
+        "  not-determined -- arrival moved and the outcome did not, which is evidence",
+        "  against the effect rather than an absence of evidence. The effect",
+        f"  GENERALISES when the median Pearson r is >= {R_DETERMINED} and a strict majority of",
+        f"  eligible instances reach it; fewer than {MIN_ELIGIBLE_INSTANCES} eligible instances is",
+        "  INCONCLUSIVE.",
         "",
         "  A verdict is not a licence to change the engine. #149's fourth criterion",
         "  stands: any change needs its own issue, hypothesis and regression test.",
@@ -389,11 +461,22 @@ def render(results: Sequence[InstanceResult], skipped: Skipped, rows: int, min_s
     return "\n".join(lines)
 
 
+#: Bucket order for the summary line and the per-instance listing: the two that
+#: answer the question, then the two that cannot, then the unrun.
+_BUCKET_ORDER = (DETERMINED, NOT_DETERMINED, FINAL_INVARIANT, NO_SPREAD, TOO_FEW_SEEDS)
+
+
+def _report_order(result: InstanceResult) -> tuple[int, float, str]:
+    """Bucket first, then r descending within a bucket, then name."""
+    rank = _BUCKET_ORDER.index(result.bucket)
+    return (rank, -result.pearson if not math.isnan(result.pearson) else 0.0, result.instance)
+
+
 def write_csv(path: Path, results: Sequence[InstanceResult]) -> None:
     """The per-instance numbers, for a reader who wants to re-plot them."""
     with path.open("w", newline="") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["instance", "seeds", "pearson_r", "spearman_rho", "ineligible_reason"])
+        writer.writerow(["instance", "seeds", "pearson_r", "spearman_rho", "bucket", "note"])
         for result in sorted(results, key=lambda r: r.instance):
             writer.writerow(
                 [
@@ -401,7 +484,8 @@ def write_csv(path: Path, results: Sequence[InstanceResult]) -> None:
                     result.seeds,
                     "NaN" if math.isnan(result.pearson) else f"{result.pearson:.6f}",
                     "NaN" if math.isnan(result.spearman) else f"{result.spearman:.6f}",
-                    result.ineligible,
+                    result.bucket,
+                    result.note,
                 ]
             )
 
