@@ -9,11 +9,29 @@ harness — after a 39 CPU-hour run. These are the golden lines that pin it down
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("ortools", reason="ortools is in the 'benchmarks' extra, not 'dev'")
 
-from benchmarks.mipfeas.cpsat_solve import build_parameters, parse_trace  # noqa: E402
+from benchmarks.mipfeas.cpsat_solve import (  # noqa: E402
+    LOG_FORMAT_CHECK,
+    PREFLIGHT_COLUMNS,
+    PREFLIGHT_ROWS,
+    SUPPORTED_ORTOOLS_RANGE,
+    WORKER_RESTRICTION_CHECK,
+    PreflightFailure,
+    build_parameters,
+    build_preflight_model,
+    check_preflight_log,
+    parse_subsolvers,
+    parse_trace,
+    report_preflight,
+    run_preflight,
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Verbatim from an ortools 9.15 run of this harness.
 GOLDEN_LOG = """\
@@ -73,3 +91,154 @@ def test_build_parameters_does_not_set_the_time_limit() -> None:
     # set_time_limit_in_seconds already populates max_time_in_seconds and this
     # string merges on top of it; stating the budget twice invites the two to drift.
     assert "max_time_in_seconds" not in build_parameters(workers=1, seed=42)
+
+
+# --- Preflight ----------------------------------------------------------------
+#
+# The baseline's whole configuration is empirical against one OR-Tools release,
+# while the parsing runs against whatever is installed. These pin the two things
+# that can break silently (issue #137) and, crucially, that the failure names
+# which one -- so they are driven from captured log text rather than from a
+# solve, which is what lets a broken release be tested without installing it.
+
+#: The subsolver announcement and search header a correctly restricted run emits.
+RESTRICTED_HEADER = """\
+Starting search at 0.00s with 1 workers.
+1 first solution subsolver: [fj]
+1 interleaved subsolver: [ls]
+3 helper subsolvers: [neighborhood_helper, synchronization_agent, update_gap_integral]
+30 ignored subsolvers: [core, default_lp, fixed, fj_lin, ls_lin, no_lp, probing]
+"""
+
+#: One improving-solution line, the shape the incumbent trace is recovered from.
+IMPROVING_LINE = "#1       0.00s best:181   next:[0,180]    fj_restart_compound(batch:1)\n"
+
+GOOD_PREFLIGHT_LOG = RESTRICTED_HEADER + IMPROVING_LINE
+
+
+def _checks(failures: list[PreflightFailure]) -> set[str]:
+    return {failure.check for failure in failures}
+
+
+def test_preflight_passes_a_log_from_the_release_it_was_written_against() -> None:
+    assert (
+        check_preflight_log(GOOD_PREFLIGHT_LOG, status="FEASIBLE", workers=1, found_solution=True)
+        == []
+    )
+
+
+def test_parse_subsolvers_strips_the_multiplicity_a_second_worker_adds() -> None:
+    # `num_workers: 2` announces `fj(2)` / `ls(2)`; the restriction is unchanged.
+    announced = parse_subsolvers(
+        "2 first solution subsolver: [fj(2)]\n2 interleaved subsolver: [ls(2)]\n"
+    )
+    assert announced["first solution"] == frozenset({"fj"})
+    assert announced["interleaved"] == frozenset({"ls"})
+
+
+def test_a_release_that_lost_the_worker_restriction_fails_and_says_so() -> None:
+    # `filter_subsolvers` renamed: CP-SAT runs its default portfolio instead, which
+    # is a different (and rejected) baseline — epic #87.
+    log = GOOD_PREFLIGHT_LOG.replace(
+        "1 first solution subsolver: [fj]",
+        "4 first solution subsolvers: [fj, default_lp, no_lp, quick_restart]",
+    )
+    failures = check_preflight_log(log, status="FEASIBLE", workers=1, found_solution=True)
+
+    assert _checks(failures) == {WORKER_RESTRICTION_CHECK}
+    assert "default_lp" in failures[0].message
+
+
+def test_a_rejected_parameter_string_is_a_worker_restriction_failure() -> None:
+    failures = check_preflight_log(
+        "", status="INVALID_SOLVER_PARAMETERS", workers=1, found_solution=False
+    )
+
+    assert _checks(failures) == {WORKER_RESTRICTION_CHECK}
+    assert "filter_subsolvers" in failures[0].message
+
+
+def test_a_release_that_reformatted_the_solution_line_fails_as_a_log_format_break() -> None:
+    # The line still exists, in a shape the trace regex no longer matches. Nothing
+    # crashes: every CP-SAT row would score ~2.0 and read as "CP-SAT is bad".
+    log = RESTRICTED_HEADER + "solution 1 at 0.00s objective 181\n"
+    failures = check_preflight_log(log, status="FEASIBLE", workers=1, found_solution=True)
+
+    assert _checks(failures) == {LOG_FORMAT_CHECK}
+    assert "improving-solution line" in failures[0].message
+
+
+def test_a_missing_subsolver_announcement_is_a_log_format_break() -> None:
+    # Shape versus content: a line that is gone is the log format moving, and the
+    # restriction simply cannot be read -- which is reported as such rather than
+    # guessed at.
+    log = IMPROVING_LINE + "Starting search at 0.00s with 1 workers.\n"
+    failures = check_preflight_log(log, status="FEASIBLE", workers=1, found_solution=True)
+
+    assert _checks(failures) == {LOG_FORMAT_CHECK}
+    assert len(failures) == 2, "both announcement lines are missing"
+
+
+def test_both_breaks_at_once_are_both_named() -> None:
+    log = "1 first solution subsolvers: [fj, default_lp]\n1 interleaved subsolver: [ls]\n"
+    failures = check_preflight_log(log, status="FEASIBLE", workers=1, found_solution=True)
+
+    assert _checks(failures) == {WORKER_RESTRICTION_CHECK, LOG_FORMAT_CHECK}
+
+
+def test_a_thread_count_the_solver_did_not_honour_is_a_restriction_failure() -> None:
+    # The baseline getting more CPU than CBLS in the same wall clock is not a
+    # comparison, and `num_workers` is the parameter that would have moved.
+    log = GOOD_PREFLIGHT_LOG.replace("with 1 workers", "with 8 workers")
+    failures = check_preflight_log(log, status="FEASIBLE", workers=1, found_solution=True)
+
+    assert _checks(failures) == {WORKER_RESTRICTION_CHECK}
+    assert "8 workers" in failures[0].message
+
+
+def test_a_restricted_configuration_that_cannot_search_fails() -> None:
+    # `ls` without `fj` never bootstraps a first solution; so would a release in
+    # which the filter leaves nothing runnable.
+    failures = check_preflight_log(
+        RESTRICTED_HEADER, status="UNKNOWN", workers=1, found_solution=False
+    )
+
+    assert _checks(failures) == {WORKER_RESTRICTION_CHECK}
+
+
+def test_report_preflight_exits_non_zero_and_names_the_broken_check(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code = report_preflight([PreflightFailure(LOG_FORMAT_CHECK, "the line moved")], workers=1)
+
+    assert code == 3
+    captured = capsys.readouterr()
+    assert LOG_FORMAT_CHECK in captured.err
+    assert "the line moved" in captured.err
+
+
+def test_report_preflight_exits_zero_when_nothing_is_broken(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert report_preflight([], workers=1) == 0
+    assert "preflight OK" in capsys.readouterr().out
+
+
+def test_the_installed_ortools_passes_the_preflight_it_documents() -> None:
+    # The whole point: run it against whatever is actually installed. One tiny
+    # in-memory model, no instance file and no network.
+    assert run_preflight() == []
+
+
+def test_the_preflight_model_is_the_same_one_on_every_machine() -> None:
+    # A check whose input drifts cannot say whether the solver moved.
+    first, second = build_preflight_model(), build_preflight_model()
+    assert first.num_variables == second.num_variables == PREFLIGHT_COLUMNS
+    assert first.num_constraints == second.num_constraints == PREFLIGHT_ROWS
+
+
+def test_the_documented_ortools_range_matches_the_declared_dependency() -> None:
+    # The bound and the constant say the same thing, or the preflight's failure
+    # message tells a reader to install a version the project would not resolve.
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text()
+    assert f'"ortools{SUPPORTED_ORTOOLS_RANGE}"' in pyproject

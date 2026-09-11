@@ -19,3 +19,19 @@
   every gap in the table at once, a moved instance invalidates one row — and a
   single flag would let an accepted instance re-fetch silently carry a yardstick
   revision with it.
+- **Which of the two a missing log line is**: the issue asks the preflight to name
+  "which of the two broke", but a subsolver announcement that is simply absent
+  could be either. Resolved as a stated rule: the *shape* of a line the harness
+  parses is the log format, its *content* is the worker restriction. So a missing
+  announcement is a log-format failure and an announcement listing `default_lp` is
+  a restriction failure. Because: any other split would have the preflight guess,
+  and a guess in the failure message is worse than a rule a reader can check.
+- **Where the preflight runs**: per-solve or once per run. Resolved as
+  `cpsat_solve.py --preflight` (a standalone mode), invoked once by the driver
+  before it dispatches any job. Because: the check costs ~2.3s, and 233 instances
+  x 2 engines would pay it 233 times for one answer — while the driver is the only
+  place that can refuse to start the run.
+- **ortools upper bound**: `<9.16`, i.e. the next minor after the 9.15 every
+  parameter and log fact was established against. Because: OR-Tools ships
+  subsolver and log changes in minor releases, and the preflight (not the bound)
+  is what allows raising it after a check.

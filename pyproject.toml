@@ -45,8 +45,15 @@ dev = [
 ]
 benchmarks = [
     # CP-SAT's violation_ls worker, the MIPfeas baseline. 9.7 is when the
-    # num_violation_ls parameter shipped.
-    "ortools>=9.7",
+    # num_violation_ls parameter shipped. The upper bound is not caution about
+    # bugs: benchmarks/mipfeas/cpsat_solve.py reads the worker restriction and the
+    # whole incumbent trace out of a debug log that carries no stability
+    # guarantee, and every parameter fact in it was established against 9.15. A
+    # release that renames a subsolver flag or reformats a log line produces a
+    # degraded or empty baseline across the roster without crashing, so the range
+    # is pinned to what was checked and `cpsat_solve.py --preflight` re-checks it
+    # at run time. Raise the bound by running the preflight, not by editing it.
+    "ortools>=9.7,<9.16",
     # SCIP's nonconvex spatial branch-and-bound, the MINLPLib baseline. The 6.x
     # wheels bundle SCIP 9/10, whose AMPL .nl reader lets the baseline consume
     # the exact same instance files the CBLS runner reads, with no re-modelling.

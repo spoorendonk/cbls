@@ -31,7 +31,17 @@ With --solution-dir, a feasible run also writes its solution vector as
 instance file with a reader that is not OR-Tools' (issue #138). The objective
 this script reports is otherwise taken entirely on trust.
 
+Every fact above is empirical, and the dependency range it was established
+against is pinned in `pyproject.toml` (`ortools>=9.7,<9.16`). A release that renames a
+subsolver flag or reformats a log line does not crash -- it silently produces a
+degraded or empty baseline across the whole roster, visible only at scoring time.
+`--preflight` is the cheap check for exactly that: one tiny in-memory model, no
+instance and no network, asserting that the restriction is in force and that the
+log still carries the lines the trace is recovered from, and naming which of the
+two broke. The run driver runs it once before dispatching any job.
+
 Usage:
+    python cpsat_solve.py --preflight
     python cpsat_solve.py --instance pk1 --out-dir results/cpsat --budget 600
 """
 
@@ -48,7 +58,7 @@ import tempfile
 import time
 from importlib.metadata import version
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from ortools.linear_solver.python import model_builder
 
@@ -60,7 +70,50 @@ if TYPE_CHECKING:
 #: Bound-only lines (`#Bound`) and model lines (`#Model`) do not match.
 SOLUTION_LINE = re.compile(r"^#(\d+)\s+([0-9.]+)s\s+best:(-?[0-9.eE+-]+)\b")
 
+#: CP-SAT announces which subsolvers a filtered run actually started, e.g.
+#:   `1 first solution subsolver: [fj]`
+#:   `1 interleaved subsolver: [ls]`
+#: This is the only place the *effect* of `filter_subsolvers` is observable, so the
+#: preflight reads the restriction off it rather than trusting that the parameter
+#: was accepted. At higher worker counts a name carries a multiplicity, `fj(2)`.
+SUBSOLVER_LINE = re.compile(
+    r"^\d+\s+(first solution|interleaved|full|helper|ignored)\s+subsolvers?:\s*\[(.*)\]\s*$"
+)
+
+#: `Starting search at 0.00s with 1 workers.`
+SEARCH_WORKERS_LINE = re.compile(r"^Starting search at [0-9.]+s with (\d+) workers?\.?$")
+
 DEFAULT_WORKERS = 1
+
+#: The OR-Tools range every parameter and log-format fact in this file was
+#: established against, mirrored by the `ortools` bound in `pyproject.toml`. The
+#: bound is what stops a resolver silently installing a release this parsing was
+#: never checked on; the preflight is what catches one installed anyway.
+SUPPORTED_ORTOOLS_RANGE = ">=9.7,<9.16"
+
+#: The two things the preflight can find broken, named in the failure so a run
+#: that refuses to start says which. The split is by *what moved*: the shape of a
+#: line the harness reads is the log format; what the line says is the restriction.
+WORKER_RESTRICTION_CHECK = "worker restriction"
+LOG_FORMAT_CHECK = "log format"
+
+#: Which subsolvers the restriction is supposed to leave running, by announcement
+#: role. `ls` alone never bootstraps a first solution, so both are required and
+#: anything else running means the filter stopped expressing "LS only".
+EXPECTED_SUBSOLVERS: dict[str, frozenset[str]] = {
+    "first solution": frozenset({"fj"}),
+    "interleaved": frozenset({"ls"}),
+}
+
+#: Roles whose contents are not the restriction: helpers are bookkeeping agents and
+#: `ignored` is the complement of the filter, i.e. the evidence it is working.
+UNRESTRICTED_ROLES = frozenset({"helper", "ignored"})
+
+#: Seconds the preflight solve is given. It has to reach a first solution and log
+#: at least one improving line on a model that presolve cannot crack; it does that
+#: in milliseconds, and the cap is what keeps a broken configuration from hanging
+#: the check it exists to make fast.
+PREFLIGHT_BUDGET_SECONDS = 2.0
 
 
 def build_parameters(workers: int, seed: int) -> str:
@@ -104,6 +157,202 @@ def _parse_lines(lines: Iterable[str]) -> list[tuple[float, float]]:
             continue
         trace.append((float(match.group(2)), float(match.group(3))))
     return trace
+
+
+class PreflightFailure(NamedTuple):
+    """One thing the preflight found broken, and which of the two checks found it."""
+
+    #: `WORKER_RESTRICTION_CHECK` or `LOG_FORMAT_CHECK`.
+    check: str
+    message: str
+
+
+def parse_subsolvers(log_text: str) -> dict[str, frozenset[str]]:
+    """Role -> the subsolver names CP-SAT announced for it, multiplicities stripped."""
+    found: dict[str, frozenset[str]] = {}
+    for raw in log_text.splitlines():
+        match = SUBSOLVER_LINE.match(raw.strip())
+        if match is None:
+            continue
+        names = {
+            re.sub(r"\(\d+\)$", "", name.strip())
+            for name in match.group(2).split(",")
+            if name.strip()
+        }
+        found[match.group(1)] = frozenset(names)
+    return found
+
+
+def check_preflight_log(
+    log_text: str, *, status: str, workers: int, found_solution: bool
+) -> list[PreflightFailure]:
+    """Everything the preflight can conclude from one solve, without solving again.
+
+    Pure, so the failure modes it exists for can be tested against a log captured
+    from the release that is broken rather than by installing that release.
+    """
+    failures: list[PreflightFailure] = []
+    if status == "INVALID_SOLVER_PARAMETERS":
+        return [
+            PreflightFailure(
+                WORKER_RESTRICTION_CHECK,
+                "CP-SAT rejected the parameter string outright "
+                f"(status {status}). `filter_subsolvers` no longer accepts these "
+                "names, or a parameter in the string was renamed or removed.",
+            )
+        ]
+
+    announced = parse_subsolvers(log_text)
+    for role, expected in EXPECTED_SUBSOLVERS.items():
+        if role not in announced:
+            failures.append(
+                PreflightFailure(
+                    LOG_FORMAT_CHECK,
+                    f"the `N {role} subsolver: [...]` announcement is absent from the log, "
+                    "so the restriction cannot be read off it. The line this harness "
+                    "parses has moved or gone.",
+                )
+            )
+        elif announced[role] != expected:
+            failures.append(
+                PreflightFailure(
+                    WORKER_RESTRICTION_CHECK,
+                    f"{role} subsolvers are {sorted(announced[role])}, expected "
+                    f"{sorted(expected)}. The solve is no longer restricted to the "
+                    "fj + ls workers, so it would not be the baseline this benchmark "
+                    "compares against.",
+                )
+            )
+    extra = {
+        role: names
+        for role, names in announced.items()
+        if role not in EXPECTED_SUBSOLVERS and role not in UNRESTRICTED_ROLES and names
+    }
+    if extra:
+        failures.append(
+            PreflightFailure(
+                WORKER_RESTRICTION_CHECK,
+                f"subsolvers outside the fj + ls pairing are running: "
+                f"{ {role: sorted(names) for role, names in sorted(extra.items())} }.",
+            )
+        )
+
+    worker_line = [SEARCH_WORKERS_LINE.match(line.strip()) for line in log_text.splitlines()]
+    matched = [m for m in worker_line if m is not None]
+    if not matched:
+        failures.append(
+            PreflightFailure(
+                LOG_FORMAT_CHECK,
+                "the `Starting search at Xs with N workers.` line is absent, so the "
+                "thread count the baseline ran at cannot be confirmed from the log.",
+            )
+        )
+    elif int(matched[0].group(1)) != workers:
+        failures.append(
+            PreflightFailure(
+                WORKER_RESTRICTION_CHECK,
+                f"CP-SAT started {matched[0].group(1)} workers, not the {workers} asked "
+                "for. The baseline would get a different share of CPU than CBLS.",
+            )
+        )
+
+    if not found_solution:
+        failures.append(
+            PreflightFailure(
+                WORKER_RESTRICTION_CHECK,
+                "the restricted configuration found no solution at all on a model the "
+                "fj + ls pairing solves in milliseconds. The workers the filter leaves "
+                "running cannot search.",
+            )
+        )
+    elif not parse_trace(log_text):
+        failures.append(
+            PreflightFailure(
+                LOG_FORMAT_CHECK,
+                "the solve found a solution but no improving-solution line matched "
+                f"`{SOLUTION_LINE.pattern}`. Every CP-SAT incumbent profile is "
+                "recovered from those lines, so the whole roster would score as if "
+                "the baseline never improved.",
+            )
+        )
+    return failures
+
+
+#: Shape of the model the preflight solves: enough covering rows over enough
+#: binaries that presolve cannot close it, small enough to build and search in
+#: milliseconds. Built in memory, so the check needs no instance file and no
+#: network -- it has to be runnable before the roster is even fetched.
+PREFLIGHT_COLUMNS = 40
+PREFLIGHT_ROWS = 25
+
+
+def build_preflight_model() -> model_builder.ModelBuilder:
+    """A tiny set-covering model, generated deterministically rather than read.
+
+    The coefficients come from a fixed integer recurrence rather than a random
+    seed so that the preflight solves the same model on every machine and every
+    release: a check whose input drifts cannot say whether the solver moved.
+    """
+    model = model_builder.ModelBuilder()  # type: ignore[no-untyped-call]
+    columns = [model.new_bool_var(f"x{i}") for i in range(PREFLIGHT_COLUMNS)]
+    for row in range(PREFLIGHT_ROWS):
+        weights = [1 + (7 * row + 13 * i + row * i) % 20 for i in range(PREFLIGHT_COLUMNS)]
+        model.add(sum(w * x for w, x in zip(weights, columns, strict=True)) >= 60)
+    model.minimize(sum((1 + (5 * i) % 30) * x for i, x in enumerate(columns)))
+    return model
+
+
+def run_preflight(workers: int = DEFAULT_WORKERS, seed: int = 42) -> list[PreflightFailure]:
+    """Solve the preflight model and report what the release broke, if anything.
+
+    Run once before a roster, not once per instance: an OR-Tools release that
+    renames a subsolver flag or reformats a log line does not crash, it silently
+    produces a degraded or empty baseline across every instance, discovered only
+    at scoring time. This is the same failure at second zero.
+    """
+    model = build_preflight_model()
+    solver = model_builder.ModelSolver("SAT")
+    solver.enable_output(True)
+    solver.set_time_limit_in_seconds(PREFLIGHT_BUDGET_SECONDS)
+    solver.set_solver_specific_parameters(build_parameters(workers, seed))
+    with tempfile.TemporaryDirectory(prefix="cpsat-preflight-") as tmpdir:
+        log_path = Path(tmpdir) / "preflight.log"
+        with capture_stdout_fd(log_path):
+            status = solver.solve(model)
+        log_text = log_path.read_text()
+    return check_preflight_log(
+        log_text,
+        status=status.name,
+        workers=workers,
+        found_solution=status
+        in (model_builder.SolveStatus.OPTIMAL, model_builder.SolveStatus.FEASIBLE),
+    )
+
+
+def report_preflight(failures: list[PreflightFailure], workers: int) -> int:
+    """Print the verdict; 0 when the baseline is the one this harness documents."""
+    installed = version("ortools")
+    if not failures:
+        print(
+            f"preflight OK: ortools {installed}, {workers} worker(s), restricted to "
+            f"{sorted(EXPECTED_SUBSOLVERS['first solution'] | EXPECTED_SUBSOLVERS['interleaved'])}"
+            ", improving-solution lines parse."
+        )
+        return 0
+    broken = sorted({failure.check for failure in failures})
+    print(
+        f"PREFLIGHT FAILED on ortools {installed}: {' and '.join(broken)} broke.",
+        file=sys.stderr,
+    )
+    for failure in failures:
+        print(f"  [{failure.check}] {failure.message}", file=sys.stderr)
+    print(
+        f"\nThis harness's parsing was established against ortools {SUPPORTED_ORTOOLS_RANGE}. "
+        "A run started now would produce a degraded or empty CP-SAT baseline across the "
+        "whole roster and only show it at scoring time, so it is refused here.",
+        file=sys.stderr,
+    )
+    return 3
 
 
 #: Magnitude at or past which ModelBuilder reports a constraint bound as infinite.
@@ -338,9 +587,17 @@ def write_outputs(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--instance", required=True)
+    parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="assert the worker restriction and the log format on one tiny in-memory "
+        "model, then exit. No instance, no network. The run driver does this once "
+        "before any real solving, so a release that broke either fails at second zero "
+        "instead of after the roster has burned its budget",
+    )
+    parser.add_argument("--instance", default=None)
     parser.add_argument("--inst-dir", default="benchmarks/instances/mipfeas")
-    parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--out-dir", default=None)
     parser.add_argument("--budget", type=float, default=600.0, help="seconds (MIPfeas uses 600)")
     parser.add_argument(
         "--workers",
@@ -356,6 +613,15 @@ def main() -> int:
         "verify_solution.py to check against the original instance file",
     )
     args = parser.parse_args()
+
+    if args.preflight:
+        return report_preflight(run_preflight(args.workers, args.seed), args.workers)
+    missing = [f for f in ("instance", "out_dir") if getattr(args, f) is None]
+    if missing:
+        parser.error(
+            f"{', '.join('--' + f.replace('_', '-') for f in missing)} "
+            "required unless --preflight is given"
+        )
 
     mps_path = Path(args.inst_dir) / f"{args.instance}.mps.gz"
     if not mps_path.exists():
