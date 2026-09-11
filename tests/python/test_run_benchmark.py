@@ -497,3 +497,42 @@ def test_the_driver_verifies_what_it_ran(tmp_path: Path) -> None:
     assert scored.verification == "pass"
     assert not scored.withheld
     assert scored.objective is not None
+
+
+def test_a_verification_error_does_not_destroy_a_finished_solve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # run_job's catch-all now spans verification too. Overwriting the result with
+    # a "killed" record there would discard a 600s search that already succeeded,
+    # and resume -- seeing a non-feasible status -- would never redo it.
+    job = Job("cbls", "inst")
+    _write_result_file(job, tmp_path, "feasible")
+    job.solution_path(tmp_path).write_text("=obj= 1.0\nx 1\n")
+
+    def explode(*args: object, **kwargs: object) -> None:
+        raise OSError("cannot fork")
+
+    monkeypatch.setattr(subprocess, "run", explode)
+    line = run_benchmark.run_job(job, _driver_args(mem_limit_gb=None), tmp_path)
+
+    assert "DRIVER-ERROR" in line
+    assert json.loads(job.result_path(tmp_path).read_text())["status"] == "feasible"
+
+
+def test_a_resolve_discards_the_verdict_on_the_previous_point(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The search produced a new point, so the verdict beside it describes the old
+    # one -- and would read as current, which is worse than no verdict at all.
+    job = Job("cbls", "inst")
+    _write_result_file(job, tmp_path, "solution_write_error")
+    _verdict_file(job, tmp_path, "pass")
+    monkeypatch.setattr(
+        run_benchmark, "_run_solver", lambda job, args, results_dir: ("solved", True)
+    )
+    monkeypatch.setattr(
+        run_benchmark, "_verify", lambda job, args, results_dir: "verified tiny pass"
+    )
+    run_benchmark.run_job(job, _driver_args(mem_limit_gb=None), tmp_path)
+
+    assert not job.verification_path(tmp_path).exists()
