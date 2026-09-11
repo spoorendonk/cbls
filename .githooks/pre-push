@@ -123,10 +123,13 @@ CODE_FILES=$(echo "$CHANGED_FILES" | grep -vE '^(LICENSE|CHANGELOG)' | grep -vE 
 # ruff sees exactly that list. mypy FOLLOWS IMPORTS, so an excluded module that
 # a gated file imports is type-checked too -- which today is most of
 # benchmarks/, and is why adding one test that imports an unclean benchmark
-# module blocks the next push on errors nobody in that push wrote. CLAUDE.md's
-# "Where that standard is actually enforced" is the single place the scope, the
-# measurements behind it and that trap are written down; don't restate them
-# here.
+# module blocks the next push on errors nobody in that push wrote.
+#
+# PY_GATE_EXCLUDE below is the scope itself -- the source of truth, and the one
+# string to edit when #155 lands; every message here interpolates it rather than
+# spelling the directory out again. CLAUDE.md's "Where that standard is actually
+# enforced" carries the reasoning, the measurements and that trap; don't restate
+# those here.
 PY_GATE_EXCLUDE='^benchmarks/'
 PY_GATE_FILES=$(git ls-tree -r HEAD --name-only | grep -E '\.py$' | grep -vE "$PY_GATE_EXCLUDE" || true)
 PY_GATE_ISSUES=""
@@ -178,7 +181,7 @@ py_gate_run() {
 
 if [ "$PY_GATE_TOOL_ERR" -eq 0 ]; then
 	echo ""
-	echo "=== Running ruff + mypy over every tracked .py outside benchmarks/ (blocking) ==="
+	echo "=== Running ruff + mypy over every tracked .py outside ${PY_GATE_EXCLUDE} (blocking) ==="
 	# --no-fix explicitly, as the advisory ruff step does. Inert while
 	# pyproject.toml sets no `fix = true`, but a gate that rewrites the working
 	# tree mid-push and then reports clean is the same fail-open class this
@@ -204,7 +207,7 @@ if [ -n "$PY_GATE_ISSUES" ]; then
 		echo "does not apply. Check the venv (\`.venv/bin/pip install -e '.[dev]'\`)"
 		echo "and that the gated paths still exist."
 	else
-		echo "FAILED: every tracked .py outside benchmarks/ is kept ruff-clean,"
+		echo "FAILED: every tracked .py outside ${PY_GATE_EXCLUDE} is kept ruff-clean,"
 		echo "ruff-format-clean and mypy --strict clean (issue #154). Fix the"
 		echo "finding above -- \`ruff check --fix\` and \`ruff format\` handle most"
 		echo "of it, and an untyped test function wants \`-> None\`. Do NOT widen"

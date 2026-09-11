@@ -57,16 +57,18 @@ Install `clangd-lsp@claude-plugins-official` plus `clangd` itself (`apt install 
 
 `pre-push` runs `ruff check`, `ruff format --check` and `mypy --strict` over
 **every tracked `.py` outside `benchmarks/`** as a **hard block** — the same
-standing as clang-tidy, and for the same reason. This is the one place that
-scope is stated; issue #155 is what removes the exclusion. Because they block,
-`ruff` and `mypy` are **pinned exactly** in `pyproject.toml`, on the same
+standing as clang-tidy, and for the same reason. The scope itself is the
+`PY_GATE_EXCLUDE` regex in `.githooks/pre-push` — that string is the source of
+truth and the one place to edit; this section carries the reasoning and the
+measurements behind it, and issue #155 is what removes the exclusion. Because
+they block, `ruff` and `mypy` are **pinned exactly** in `pyproject.toml`, on the same
 argument the clang tools are: a floating version turns "these files are at zero"
 into "at zero on whichever version this checkout resolved".
 
-The scope is written in `.githooks/pre-push` as an *exclusion*
-(`PY_GATE_EXCLUDE`), never an allowlist. An allowlist would be fail-open in the
-one direction that matters: a Python directory nobody has created yet would be
-gated by nothing and could rot exactly as the five binding-test modules did.
+It is written as an *exclusion*, never an allowlist. An allowlist would be
+fail-open in the one direction that matters: a Python directory nobody has
+created yet would be gated by nothing and could rot exactly as the five
+binding-test modules did.
 
 `benchmarks/` is excluded on a measurement, not a preference. It carries 22 ruff
 findings, 5 unformatted files and 37 `mypy --strict` errors — that last counted
@@ -79,11 +81,12 @@ invocation spanning the tree even completes. Cost was never the objection —
 also does a clean rebuild plus the full `ctest` suite.
 
 **But `benchmarks/` is not actually unchecked, and the trap is worth knowing.**
-`ruff` sees exactly the excluded list; `mypy` **follows imports**, and eight
-test modules import benchmark packages, so every benchmark module reachable from
-a gated file is hard-gated too. The tree is green today only because the three
-benchmark files carrying `mypy` errors are ones nothing gated imports. Add one test that
-imports `benchmarks/chped/data.py` and the next push blocks on 16 pre-existing
+`ruff` sees only the gated list, so `benchmarks/` really is outside it — but
+`mypy` **follows imports**, and eight test modules import benchmark packages, so
+every benchmark module reachable from a gated file is hard-gated too. The tree is
+green today only because the three benchmark files carrying `mypy` errors are
+ones nothing gated imports. Add one test that imports
+`benchmarks/chped/data.py` and the next push blocks on 16 pre-existing
 errors nobody in that push wrote — fix them, or fix #155, rather than widening
 `PY_GATE_EXCLUDE`.
 
