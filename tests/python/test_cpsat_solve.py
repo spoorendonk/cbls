@@ -196,14 +196,36 @@ def test_a_role_this_harness_has_never_seen_is_not_waved_through() -> None:
     assert _checks(failures) == {WORKER_RESTRICTION_CHECK}
 
 
-def test_a_dropped_restriction_is_not_reported_as_a_log_format_break() -> None:
-    # With `filter_subsolvers` gone, CP-SAT logs `1 full problem subsolver: [main]`
-    # and neither of the two roles this harness expects. The log format is intact;
-    # naming it would send the reader to check the parser instead of the parameter.
+def test_a_dropped_restriction_is_reported_and_the_ambiguity_is_named() -> None:
+    """Both roles gone at once is the case the log cannot attribute.
+
+    An earlier form of this test asserted the restriction check ALONE, on the
+    premise that an unrestricted run announces neither expected role. A log
+    captured from live ortools 9.15 says otherwise -- an unrestricted run
+    announces `2 first solution subsolvers: [fj, fs_random_no_lp]` -- so losing
+    both roles is as likely to be the labels being renamed. Naming one check
+    exonerates the other and sends the reader to the wrong place, so both are
+    named and the ambiguity is stated.
+    """
     log = (
         "Starting search at 0.00s with 1 workers.\n"
         "1 full problem subsolver: [main]\n"
         "3 helper subsolvers: [neighborhood_helper, synchronization_agent]\n"
+    ) + IMPROVING_LINE
+    failures = check_preflight_log(log, status="FEASIBLE", workers=1, found_solution=True)
+
+    assert _checks(failures) == {WORKER_RESTRICTION_CHECK, LOG_FORMAT_CHECK}
+    assert any("as likely to be these role labels" in f.message for f in failures)
+
+
+def test_a_real_unrestricted_run_is_reported_as_a_restriction_break_alone() -> None:
+    """The shape a live unrestricted CP-SAT actually logs: the roles are there,
+    their membership is wrong. Nothing about the format is in doubt."""
+    log = (
+        "Starting search at 0.00s with 8 workers.\n"
+        "6 full problem subsolvers: [default_lp, no_lp, max_lp, quick_restart]\n"
+        "2 first solution subsolvers: [fj, fs_random_no_lp]\n"
+        "1 interleaved subsolver: [ls]\n"
     ) + IMPROVING_LINE
     failures = check_preflight_log(log, status="FEASIBLE", workers=1, found_solution=True)
 

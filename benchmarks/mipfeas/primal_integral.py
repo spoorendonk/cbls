@@ -1037,11 +1037,11 @@ def job_failures(rows: list[Scored]) -> list[JobFailure]:
                     instance=row.instance,
                     engine=row.engine,
                     kind=row.status,
-                    # `solver_status` before giving up: the baseline's
-                    # `invalid_model` / `invalid_parameters` paths set no
-                    # message, and that is the CP-SAT defect class most likely to
-                    # reach a published table -- "no message recorded" preserves
-                    # nothing for exactly the failure worth preserving.
+                    # `solver_status` before giving up. The baseline sets a
+                    # message on these paths now (#137), but a results directory
+                    # written before that does not, and that is the CP-SAT defect
+                    # class most likely to reach a published table -- "no message
+                    # recorded" preserves nothing for the failure worth preserving.
                     reason=row.message or row.solver_status or "no message recorded",
                 )
             )
@@ -1412,7 +1412,16 @@ def _or_not_recorded(value: object) -> str:
 
 
 def _format_memory(kib: object) -> str:
-    return f"{int(kib) / 1024 / 1024:.1f} GiB" if isinstance(kib, int) else "not recorded"
+    """Total memory, as GiB.
+
+    `float` as well as `int`, because a record that round-tripped through JSON in
+    anything but this driver can carry `16777216.0` -- which the int-only test
+    reported as "not recorded", discarding a number the run did measure. `bool` is
+    excluded explicitly: it is an `int` in Python, and `True` rendered "0.0 GiB".
+    """
+    if isinstance(kib, bool) or not isinstance(kib, (int, float)):
+        return "not recorded"
+    return f"{kib / 1024 / 1024:.1f} GiB"
 
 
 def _format_concurrency(record: dict[str, object]) -> str:
@@ -1421,11 +1430,16 @@ def _format_concurrency(record: dict[str, object]) -> str:
     large = _record_field(record, "concurrency", "large_instance_jobs")
     workers = _record_field(record, "concurrency", "cpsat_workers")
     cap = _record_field(record, "concurrency", "mem_limit_gb")
-    if jobs is None and large is None and workers is None:
+    if jobs is None and large is None and workers is None and cap is None:
         return "not recorded"
+    # Per field, not all-or-nothing. The previous guard only fired when all three
+    # were absent, so a partial record printed a literal `None` into the published
+    # table for the one field criterion 4 names -- and a record carrying only the
+    # memory cap reported "not recorded", discarding the cap it did record.
     return (
-        f"**{jobs} job(s) at a time**, large instances {large} at a time, "
-        f"CP-SAT {workers} worker(s), "
+        f"**{_or_not_recorded(jobs)} job(s) at a time**, "
+        f"large instances {_or_not_recorded(large)} at a time, "
+        f"CP-SAT {_or_not_recorded(workers)} worker(s), "
         + (f"address-space cap {cap} GB" if cap else "no address-space cap")
     )
 
@@ -1498,12 +1512,18 @@ def run_record_section(record: dict[str, object] | None, run_count: int) -> list
         ["finished", str(record.get("finished_at") or "did not finish")],
         ["status", _or_not_recorded(record.get("status"))],
     ]
-    if _record_field(record, "run", "preconditions_checked") is False:
+    checked = _record_field(record, "run", "preconditions_checked")
+    if checked is False:
         # The run was made with --skip-preconditions, so the pinned hashes quoted
         # above were never checked against the files on disk and the baseline was
         # never preflighted. That is the difference between a measurement and an
         # anecdote, and it belongs in the artifact rather than in lost scrollback.
         rows.append(["preconditions", "**NOT CHECKED** (--skip-preconditions): not publishable"])
+    elif checked is None:
+        # Three states, not two. `is False` alone fails OPEN on an absent key: a
+        # record written by an older driver, or by anything else, rendered exactly
+        # like a properly-checked run. Absence is not a passing check.
+        rows.append(["preconditions", "not recorded -- this record does not say either way"])
     out += _md_table(["field", "value"], rows)
     out.append("")
     if _record_field(record, "outcome", "jobs_run") == 0:

@@ -186,6 +186,64 @@ def parse_subsolvers(log_text: str) -> dict[str, frozenset[str]]:
     return found
 
 
+def _announcement_failures(announced: dict[str, frozenset[str]]) -> list[PreflightFailure]:
+    """What the subsolver announcement block says about the restriction.
+
+    Split out of `check_preflight_log` because it is one question with its own
+    attribution rule, and because that rule is the part most likely to need
+    revisiting when a release moves the block.
+    """
+    failures: list[PreflightFailure] = []
+    block_parsed = bool(announced)
+    # BOTH expected roles missing while other roles parsed is the case the
+    # shape/content split cannot decide. A real unrestricted run still announces
+    # `first solution` -- captured against live 9.15, which logs
+    # `2 first solution subsolvers: [fj, fs_random_no_lp]` -- so losing both roles
+    # at once is as likely to be the role LABELS being renamed as the restriction
+    # being gone. Naming one check exonerates the other, and sends the reader to
+    # the wrong place; criterion 3 asks which broke, and the honest answer here is
+    # that the log cannot say. So both are named and the ambiguity is stated.
+    both_absent = all(role not in announced for role in EXPECTED_SUBSOLVERS)
+    ambiguous = block_parsed and both_absent
+    for role, expected in EXPECTED_SUBSOLVERS.items():
+        if role not in announced:
+            failures.append(
+                PreflightFailure(
+                    WORKER_RESTRICTION_CHECK if block_parsed else LOG_FORMAT_CHECK,
+                    f"the `N {role} subsolver: [...]` announcement is absent from the log. "
+                    + (
+                        f"Other subsolver roles were announced ({sorted(announced)}), so the "
+                        "log format is intact and this worker is simply not running."
+                        if block_parsed
+                        else "No subsolver announcement parsed at all, so the line this "
+                        "harness reads the restriction off has moved or gone."
+                    ),
+                )
+            )
+        elif announced[role] != expected:
+            failures.append(
+                PreflightFailure(
+                    WORKER_RESTRICTION_CHECK,
+                    f"{role} subsolvers are {sorted(announced[role])}, expected "
+                    f"{sorted(expected)}. The solve is no longer restricted to the "
+                    "fj + ls workers, so it would not be the baseline this benchmark "
+                    "compares against.",
+                )
+            )
+    if ambiguous:
+        failures.append(
+            PreflightFailure(
+                LOG_FORMAT_CHECK,
+                f"neither expected role was announced, but others were ({sorted(announced)}). "
+                "An unrestricted run still announces `first solution`, so losing BOTH roles "
+                "at once is as likely to be these role labels having been renamed as the "
+                "restriction having gone. Both checks are named because the log does not say "
+                "which: compare the announcement block against EXPECTED_SUBSOLVERS by hand.",
+            )
+        )
+    return failures
+
+
 def check_preflight_log(
     log_text: str, *, status: str, workers: int, found_solution: bool
 ) -> list[PreflightFailure]:
@@ -212,32 +270,7 @@ def check_preflight_log(
     # neither of the two below. Only a block that parsed nothing at all is a format
     # break. That keeps the shape/content split of the two checks checkable rather
     # than a guess: what is read is shape, what it says is content.
-    block_parsed = bool(announced)
-    for role, expected in EXPECTED_SUBSOLVERS.items():
-        if role not in announced:
-            failures.append(
-                PreflightFailure(
-                    WORKER_RESTRICTION_CHECK if block_parsed else LOG_FORMAT_CHECK,
-                    f"the `N {role} subsolver: [...]` announcement is absent from the log. "
-                    + (
-                        f"Other subsolver roles were announced ({sorted(announced)}), so the "
-                        "log format is intact and this worker is simply not running."
-                        if block_parsed
-                        else "No subsolver announcement parsed at all, so the line this "
-                        "harness reads the restriction off has moved or gone."
-                    ),
-                )
-            )
-        elif announced[role] != expected:
-            failures.append(
-                PreflightFailure(
-                    WORKER_RESTRICTION_CHECK,
-                    f"{role} subsolvers are {sorted(announced[role])}, expected "
-                    f"{sorted(expected)}. The solve is no longer restricted to the "
-                    "fj + ls workers, so it would not be the baseline this benchmark "
-                    "compares against.",
-                )
-            )
+    failures += _announcement_failures(announced)
     extra = {
         role: names
         for role, names in announced.items()

@@ -850,6 +850,30 @@ def test_an_invocation_that_ran_jobs_carries_no_such_caveat() -> None:
     assert "This invocation ran no jobs" not in "\n".join(run_record_section(record, 1))
 
 
+def test_a_partial_concurrency_block_does_not_print_none_into_the_table() -> None:
+    """The all-or-nothing guard only fired when all three were absent.
+
+    A record carrying `jobs` alone published `large instances None at a time`
+    into the field criterion 4 exists for.
+    """
+    record = dict(_RECORD, concurrency={"jobs": 4})
+    section = "\n".join(run_record_section(record, 1))
+    assert "None" not in section
+    assert "**4 job(s) at a time**" in section
+
+
+def test_a_memory_figure_that_round_tripped_through_json_is_still_reported() -> None:
+    """`isinstance(kib, int)` discarded a float the run did measure."""
+    record = dict(_RECORD, machine={"memory_total_kib": 16777216.0})
+    assert "16.0 GiB" in "\n".join(run_record_section(record, 1))
+
+
+def test_a_boolean_is_not_rendered_as_a_memory_figure() -> None:
+    """`bool` is an `int` in Python, and `True` rendered as `0.0 GiB`."""
+    record = dict(_RECORD, machine={"memory_total_kib": True})
+    assert "not recorded" in "\n".join(run_record_section(record, 1))
+
+
 def test_a_run_that_skipped_its_preconditions_says_so_in_the_report() -> None:
     # The flag is what makes a run unpublishable, and terminal scrollback does not
     # reach whoever reads the table.
@@ -862,4 +886,18 @@ def test_a_run_that_skipped_its_preconditions_says_so_in_the_report() -> None:
 
 def test_a_checked_run_carries_no_preconditions_row() -> None:
     record = dict(_RECORD, run={"preconditions_checked": True})
-    assert "NOT CHECKED" not in "\n".join(run_record_section(record, 1))
+    section = "\n".join(run_record_section(record, 1))
+    assert "NOT CHECKED" not in section
+    assert "not recorded -- this record does not say either way" not in section
+
+
+def test_a_record_that_does_not_say_whether_preconditions_ran_is_not_read_as_yes() -> None:
+    """Three states, and `is False` alone fails open on the third.
+
+    A record with no such key -- one written by an older driver, or by anything
+    other than this driver -- rendered exactly like a properly-checked run.
+    """
+    record = dict(_RECORD, run={"jobs_planned": 26})
+    section = "\n".join(run_record_section(record, 1))
+    assert "not recorded -- this record does not say either way" in section
+    assert "NOT CHECKED" not in section

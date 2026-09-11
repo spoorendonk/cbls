@@ -399,6 +399,7 @@ def write_manifest(names: list[str], target_dir: Path, path: Path, *, update: bo
     """
     rows = read_pin_table(path, "instance")
     changed: list[str] = []
+    added: list[str] = []
     refreshed = 0
     for name in names:
         src_path = target_dir / f"{name}.mps.gz"
@@ -407,7 +408,9 @@ def write_manifest(names: list[str], target_dir: Path, path: Path, *, update: bo
         data = src_path.read_bytes()
         pin = (sha256_of(data), len(data))
         previous = rows.get(name)
-        if previous is not None and previous != pin:
+        if previous is None:
+            added.append(name)
+        elif previous != pin:
             changed.append(name)
             if not update:
                 continue
@@ -417,7 +420,30 @@ def write_manifest(names: list[str], target_dir: Path, path: Path, *, update: bo
         return changed
     write_pin_table(path, "instance", rows)
     print(f"[write] {path.name} ({len(rows)} instances, {refreshed} refreshed)")
+    # Named, not counted. `N refreshed` is the same number whether one row was
+    # added or two hundred were, so a file that lost its rows and re-pinned
+    # whatever happened to be on disk reported exactly like a normal run.
+    for name in sorted(added):
+        print(f"  + added {name}")
     return changed
+
+
+def unpinned_present(names: list[str], target_dir: Path, path: Path) -> list[str]:
+    """Instance files on disk that the pin table does not cover.
+
+    The add path is flagless on purpose -- acquiring an instance nobody has pinned
+    is not an overwrite. But it doubles as an unflagged RE-pin whenever the table
+    itself is missing or short: delete `manifest.csv`, substitute an instance, and
+    the next run pins the substituted bytes and exits 0, after which
+    `verify_preconditions` passes because the manifest now agrees with the file.
+    So the add path stays flagless only for a file that is genuinely NEW to a
+    directory; a file already on disk that the table does not cover is the
+    absent-table case and is refused.
+    """
+    pinned = read_pin_table(path, "instance")
+    return sorted(
+        name for name in names if name not in pinned and (target_dir / f"{name}.mps.gz").exists()
+    )
 
 
 def pin_fetched_instances(names: list[str], here: Path, *, update: bool) -> int:
@@ -427,6 +453,21 @@ def pin_fetched_instances(names: list[str], here: Path, *, update: bool) -> int:
     flag; accepting bytes that *moved* is an overwrite of what a published row was
     measured on, and is refused without `--update-manifest`.
     """
+    unpinned = unpinned_present(names, here, here / MANIFEST_FILENAME)
+    if unpinned and not update:
+        print(
+            f"{MANIFEST_FILENAME} does not cover {len(unpinned)} instance file(s) already on "
+            f"disk (e.g. {', '.join(unpinned[:3])}).",
+            file=sys.stderr,
+        )
+        print(
+            "Pinning bytes that are already there is not an acquisition: a deleted or "
+            "truncated manifest would otherwise re-pin whatever is on disk and exit 0, and "
+            "every later --verify would pass against it. Re-run with --update-manifest to "
+            "accept them, or restore the manifest.",
+            file=sys.stderr,
+        )
+        return 3
     moved = write_manifest(names, here, here / MANIFEST_FILENAME, update=update)
     if not moved:
         return 0
@@ -472,7 +513,19 @@ def verify_mode(here: Path, names: list[str]) -> int:
             file=sys.stderr,
         )
         return 1
-    print("OK: every pinned file matches.")
+    # What was checked, not just that nothing failed. "every pinned file matches"
+    # over zero present instances is a green light after a fetch that fell over,
+    # and the README sells --verify as the offline check of all of them.
+    print(
+        f"OK: {len(PINNED_REFERENCE_FILES)} reference file(s) and {checked}/{len(names)} "
+        "instance(s) match what is pinned."
+    )
+    if absent:
+        print(
+            f"NOTE: {len(absent)} of {len(names)} rostered instance(s) are not on disk, so "
+            "this run verified nothing about them.",
+            file=sys.stderr,
+        )
     return 0
 
 

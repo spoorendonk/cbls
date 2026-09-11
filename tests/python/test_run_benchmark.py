@@ -1016,6 +1016,66 @@ def test_a_row_that_found_nothing_has_nothing_to_check(tmp_path: Path) -> None:
     assert count_unchecked([job], tmp_path, verify=True) == 0
 
 
+def test_the_machine_record_exists_before_the_first_job_is_dispatched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The point of writing it first: a run killed at hour six still has one.
+
+    Nothing pinned this. Moving the write after `execute`, or deleting it from
+    `main` outright, left the whole Python suite green -- criterion 4's central
+    property held up by a comment. The spy asserts the file is on disk at the
+    moment the first job would be dispatched, which is the only moment that
+    distinguishes the two orderings.
+    """
+    inst_dir = tmp_path / "instances"
+    inst_dir.mkdir()
+    instance_bytes = gzip.compress(b"NAME tiny\nENDATA\n")
+    (inst_dir / "inst.mps.gz").write_bytes(instance_bytes)
+    _write_csv(
+        inst_dir / "manifest.csv",
+        ["instance", "sha256", "bytes"],
+        [["inst", hashlib.sha256(instance_bytes).hexdigest(), len(instance_bytes)]],
+    )
+    roster = tmp_path / "roster.csv"
+    _write_csv(roster, ["instance", "reference_value", "reference_kind"], [["inst", 1.0, "opt"]])
+    results_dir = tmp_path / "results"
+    binary = tmp_path / "cbls_mipfeas"
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o755)
+
+    seen: list[bool] = []
+
+    def spy(jobs: list[run_benchmark.Job], *args: object, **kwargs: object) -> int:
+        seen.append((results_dir / run_benchmark.RUN_RECORD_FILENAME).exists())
+        return 0
+
+    monkeypatch.setattr(run_benchmark, "execute", spy)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_benchmark.py",
+            "--roster",
+            str(roster),
+            "--inst-dir",
+            str(inst_dir),
+            "--results-dir",
+            str(results_dir),
+            "--cbls-bin",
+            str(binary),
+            "--engines",
+            "cbls",
+            "--budget",
+            "1",
+            "--skip-preconditions",
+        ],
+    )
+    run_benchmark.main()
+
+    assert seen, "execute was never called, so the ordering was not exercised"
+    assert all(seen), "a job was dispatched before the machine record was written"
+
+
 def test_a_resume_with_nothing_left_to_run_still_exits_non_zero(tmp_path: Path) -> None:
     """End to end: the driver over a directory whose only row was never checked."""
     repo_root = Path(__file__).resolve().parents[2]

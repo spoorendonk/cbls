@@ -26,6 +26,7 @@ from benchmarks.instances.mipfeas.download import (
     check_reference_pins,
     parse_solu,
     parse_test_file,
+    pin_fetched_instances,
     read_pin_table,
     read_roster_csv,
     reference_changes,
@@ -342,6 +343,36 @@ def test_write_manifest_adds_an_instance_it_has_never_pinned(tmp_path: Path) -> 
 
     assert write_manifest(["a", "b"], tmp_path, manifest, update=False) == []
     assert read_pin_table(manifest, "instance")["b"] == (sha256_of(b"yy"), 2)
+
+
+def test_an_absent_manifest_does_not_silently_re_pin_what_is_on_disk(tmp_path: Path) -> None:
+    """The add path is flagless; a missing pin table must not borrow that.
+
+    Delete `manifest.csv`, substitute an instance, and the unflagged add path
+    pinned the substituted bytes and exited 0 -- after which every later
+    `--verify` passed, because the manifest agreed with the file.
+    """
+    (tmp_path / "a.mps.gz").write_bytes(b"SUBSTITUTED")
+
+    assert pin_fetched_instances(["a"], tmp_path, update=False) == 3
+    assert not (tmp_path / MANIFEST_FILENAME).exists()
+
+
+def test_a_manifest_missing_one_row_does_not_silently_re_pin_it(tmp_path: Path) -> None:
+    """The same hole through a short table rather than an absent one."""
+    _pin_instances(tmp_path, {"a": b"x"})
+    (tmp_path / "b.mps.gz").write_bytes(b"SUBSTITUTED")
+
+    assert pin_fetched_instances(["a", "b"], tmp_path, update=False) == 3
+    assert "b" not in read_pin_table(tmp_path / MANIFEST_FILENAME, "instance")
+
+
+def test_the_flag_accepts_a_file_the_manifest_does_not_cover(tmp_path: Path) -> None:
+    _pin_instances(tmp_path, {"a": b"x"})
+    (tmp_path / "b.mps.gz").write_bytes(b"yy")
+
+    assert pin_fetched_instances(["a", "b"], tmp_path, update=True) == 0
+    assert read_pin_table(tmp_path / MANIFEST_FILENAME, "instance")["b"] == (sha256_of(b"yy"), 2)
 
 
 def test_write_manifest_keeps_rows_outside_the_fetched_subset(tmp_path: Path) -> None:

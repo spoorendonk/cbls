@@ -50,6 +50,7 @@
         "jobs_planned": 26,
         "jobs_to_run": 26,
         "large_bytes": 5000000,
+        "preconditions_checked": true,
         "propagate_bounds": true,
         "roster": "roster.csv",
         "seed": 42,
