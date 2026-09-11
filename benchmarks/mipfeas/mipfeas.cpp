@@ -8,6 +8,13 @@
 //   <instance>.json       result record (schema shared with cpsat_solve.py)
 //   <instance>.trace.csv  incumbent objective vs wall time, the input to the
 //                         Primal Integral (primal_integral.py)
+//   <instance>.sol        the solution vector, when --solution-dir is given and
+//                         the run reports a feasible solution. Written for
+//                         verify_solution.py to check against the ORIGINAL
+//                         instance file with a third-party reader (#138) --
+//                         every other check this runner performs is downstream
+//                         of the MPS-to-model adapter and so cannot see an
+//                         adapter defect at all.
 //
 // Deliberately refuses to write anything when the instance file is absent: a
 // missing instance must not be scored as "found nothing" (see issue #103, where
@@ -68,6 +75,10 @@ struct Args {
     // Changes the derived box, so it is recorded per result like every other
     // setting that does.
     int max_propagation_passes = 10;
+    // Where to write the solution vector of a feasible run, for independent
+    // verification against the original instance file (#138). Empty means "do
+    // not write one" -- the driver passes it, a bare invocation need not.
+    std::string solution_dir;
     std::string commit_sha = "unknown";
 };
 
@@ -77,7 +88,8 @@ void print_usage() {
         "                    [--budget SECONDS] [--seed N] [--feas-tol T]\n"
         "                    [--inf-clamp B] [--no-propagate-bounds]\n"
         "                    [--max-propagation-passes N]\n"
-        "                    [--no-compound-moves] [--commit SHA]\n");
+        "                    [--no-compound-moves] [--solution-dir DIR]\n"
+        "                    [--commit SHA]\n");
 }
 
 // Flag-value parsing lives in benchmarks/common/runner_args.h, shared with the
@@ -129,6 +141,8 @@ Args parse_args(int argc, char** argv) {
             a.compound_moves = true;
         } else if (s == "--no-compound-moves") {
             a.compound_moves = false;
+        } else if (c.value_flag("--solution-dir", v)) {
+            a.solution_dir = v;
         } else if (c.value_flag("--commit", v)) {
             a.commit_sha = v;
         } else if (s == "--help" || s == "-h") {
@@ -221,6 +235,74 @@ int count_unbounded_columns(const cbls::MpsProblem& prob) {
         }
     }
     return n;
+}
+
+/// Writes the solution vector in the MIPLIB-style format verify_solution.py
+/// reads: `=obj= <value>` followed by one `<name> <value>` line per MPS column,
+/// at full round-trip precision.
+///
+/// Keyed by the MPS column name rather than by position, because the point of
+/// the file is to be re-read against the ORIGINAL instance by a reader that
+/// shares no code with this one: a mis-ordered column would otherwise verify
+/// clean. Returns false (having said why) when the file cannot be written, and
+/// the caller then publishes no objective -- an unverifiable row must not carry
+/// a number, which is the whole of issue #138.
+bool write_solution(const Args& args, const cbls::MpsProblem& prob,
+                    const cbls::MpsToModelResult& built, double objective) {
+    if (built.var_handles.size() != prob.vars.size()) {
+        std::fprintf(stderr, "%s: %zu handles for %zu columns; no solution written\n",
+                     args.instance.c_str(), built.var_handles.size(), prob.vars.size());
+        return false;
+    }
+    const std::string path = args.solution_dir + "/" + args.instance + ".sol";
+    const std::string tmp_path = path + ".tmp";
+    {
+        std::ofstream out(tmp_path);
+        if (!out.is_open()) {
+            std::fprintf(stderr, "Failed to open %s for writing\n", tmp_path.c_str());
+            return false;
+        }
+        // 17 significant digits: a rounded value can violate a row the true one
+        // satisfies, which would read as an engine defect rather than as a
+        // lossy dump.
+        out << std::setprecision(17);
+        out << "# instance " << args.instance << "\n# engine cbls\n";
+        out << "=obj= " << objective << '\n';
+        const auto& vars = built.model.variables();
+        for (size_t i = 0; i < prob.vars.size(); ++i) {
+            const std::string& name = prob.vars[i].name;
+            // The format is whitespace-separated, so a name carrying a space
+            // would produce a file that parses as a different program. Fixed
+            // MPS permits one; refuse rather than emit it.
+            if (name.find_first_of(" \t") != std::string::npos) {
+                std::fprintf(stderr, "%s: column name %s contains whitespace\n",
+                             args.instance.c_str(), name.c_str());
+                return false;
+            }
+            const int32_t var_id = cbls::handle_to_var_id(built.var_handles[i]);
+            if (var_id < 0 || var_id >= static_cast<int32_t>(vars.size())) {
+                std::fprintf(stderr, "%s: column %s has no variable\n", args.instance.c_str(),
+                             name.c_str());
+                return false;
+            }
+            out << name << ' ' << vars[static_cast<size_t>(var_id)].value << '\n';
+        }
+        if (!out.good()) {
+            std::fprintf(stderr, "Failed while writing %s\n", tmp_path.c_str());
+            return false;
+        }
+    }
+    // Renamed into place for the same reason the result file is: the driver
+    // reads this file only after the result appears, and a truncated solution
+    // would verify as an infeasible one.
+    std::error_code rename_ec;
+    std::filesystem::rename(tmp_path, path, rename_ec);
+    if (rename_ec) {
+        std::fprintf(stderr, "Failed to rename %s -> %s: %s\n", tmp_path.c_str(), path.c_str(),
+                     rename_ec.message().c_str());
+        return false;
+    }
+    return true;
 }
 
 void write_result(const Args& args, const nlohmann::json& extra) {
@@ -360,6 +442,18 @@ int run_benchmark(int argc, char** argv) {
 
     std::error_code ec;
     std::filesystem::create_directories(args.out_dir, ec);
+    if (!args.solution_dir.empty()) {
+        // Created before the solve, not after it: an unwritable --solution-dir
+        // must cost a millisecond, not a 600s run whose solution then has
+        // nowhere to go.
+        std::error_code sol_ec;
+        std::filesystem::create_directories(args.solution_dir, sol_ec);
+        if (sol_ec && !std::filesystem::is_directory(args.solution_dir)) {
+            std::fprintf(stderr, "Cannot create --solution-dir %s: %s\n", args.solution_dir.c_str(),
+                         sol_ec.message().c_str());
+            return 2;
+        }
+    }
 
     const std::string mps_path = args.inst_dir + "/" + args.instance + ".mps.gz";
     if (!file_exists(mps_path)) {
@@ -425,7 +519,18 @@ int run_benchmark(int argc, char** argv) {
     const double wall =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 
-    const Verdict verdict = assess_result(built, result, args.feas_tol);
+    Verdict verdict = assess_result(built, result, args.feas_tol);
+    // The solution goes out before the result does. The driver resumes on the
+    // result file's existence and verifies what it finds next to it, so a
+    // result that appeared first would leave a window in which the row looks
+    // complete and unverifiable at once.
+    if (verdict.have_solution && !args.solution_dir.empty() &&
+        !write_solution(args, prob, built, result.objective)) {
+        // No solution file means no independent verdict, and a row with no
+        // verdict must not publish a number (#138).
+        verdict.have_solution = false;
+        verdict.status = "solution_write_error";
+    }
     nlohmann::json j{
         {"status", verdict.status},
         {"wall_seconds", wall},
@@ -456,7 +561,9 @@ int run_benchmark(int argc, char** argv) {
                 verdict.status,
                 verdict.have_solution ? result.objective : std::numeric_limits<double>::quiet_NaN(),
                 result.best_violation, wall);
-    return 0;
+    // Non-zero when the solution could not be written: the job did run, but it
+    // produced a row nothing can verify, and the driver has to see that.
+    return std::string(verdict.status) == "solution_write_error" ? 1 : 0;
 }
 
 }  // namespace

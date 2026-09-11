@@ -26,6 +26,11 @@ Configuration notes, all established empirically against ortools 9.15:
   fd 1 around the solve call. That works precisely because this script runs one
   instance per process.
 
+With --solution-dir, a feasible run also writes its solution vector as
+`<instance>.sol`, for `verify_solution.py` to check against the original
+instance file with a reader that is not OR-Tools' (issue #138). The objective
+this script reports is otherwise taken entirely on trust.
+
 Usage:
     python cpsat_solve.py --instance pk1 --out-dir results/cpsat --budget 600
 """
@@ -123,8 +128,13 @@ def capture_stdout_fd(sink_path: Path) -> Iterator[None]:
 
 def solve(
     mps_path: Path, budget: float, workers: int, seed: int
-) -> tuple[dict[str, object], list[tuple[float, float]]]:
-    """Run the LS-only CP-SAT configuration; return (result record, incumbent trace)."""
+) -> tuple[dict[str, object], list[tuple[float, float]], dict[str, float]]:
+    """Run the LS-only CP-SAT configuration.
+
+    Returns (result record, incumbent trace, solution values). The values are
+    keyed by the MPS column name, empty when the run found nothing; they are what
+    `verify_solution.py` checks against the instance file.
+    """
     # ortools ships no annotations for ModelBuilder's constructor; the rest of the
     # model_builder surface used here is typed.
     model = model_builder.ModelBuilder()  # type: ignore[no-untyped-call]
@@ -133,12 +143,16 @@ def solve(
         # missing here crashes the job *after* write_outputs has written its
         # result, and the driver — seeing a result file — reports that as a clean
         # run. The scorer .get()s the rest.
-        return {
-            "status": "read_error",
-            "message": f"CP-SAT could not import {mps_path.name}",
-            "wall_seconds": 0.0,
-            "objective": None,
-        }, []
+        return (
+            {
+                "status": "read_error",
+                "message": f"CP-SAT could not import {mps_path.name}",
+                "wall_seconds": 0.0,
+                "objective": None,
+            },
+            [],
+            {},
+        )
 
     solver = model_builder.ModelSolver("SAT")
     solver.enable_output(True)
@@ -187,15 +201,31 @@ def solve(
     # score every CP-SAT instance ~2.0, indistinguishable from "CP-SAT is bad".
     record["trace_source"] = "log" if trace else "final_only"
 
+    values: dict[str, float] = {}
     if has_solution:
         objective = float(solver.objective_value)
         record["objective"] = objective
+        # Keyed by name, not by index: the verifier re-reads the instance with a
+        # different reader, so a positional dump would verify clean against a
+        # differently ordered parse of the same file.
+        values = {var.name: float(solver.value(var)) for var in model.get_variables()}
         # The log is the source of truth for *when* each incumbent appeared, but it
         # prints rounded values and the final solution can land after the last logged
         # line. Append the exact final objective so the tail of the profile is right.
         if not trace or trace[-1][1] != objective:
             trace.append((min(wall, budget), objective))
-    return record, trace
+    return record, trace, values
+
+
+def solution_text(instance: str, objective: object, values: dict[str, float]) -> str:
+    """The MIPLIB-style solution format, shared with the CBLS runner.
+
+    `repr` rather than a format string: a rounded value can violate a row the true
+    one satisfies, which would read as a solver defect rather than a lossy dump.
+    """
+    lines = [f"# instance {instance}", "# engine cpsat", f"=obj= {objective!r}"]
+    lines += [f"{name} {value!r}" for name, value in values.items()]
+    return "\n".join(lines) + "\n"
 
 
 def write_outputs(
@@ -204,7 +234,14 @@ def write_outputs(
     record: dict[str, object],
     trace: list[tuple[float, float]],
     args: argparse.Namespace,
-) -> None:
+    values: dict[str, float] | None = None,
+) -> dict[str, object]:
+    """Write the trace, the solution vector and the result; return what was written.
+
+    Returns the record rather than mutating the caller's, because a solution the
+    job could not write downgrades the status and withholds the objective — and
+    main() has to report and exit on what actually landed on disk.
+    """
     record = dict(record)
     record.update(
         engine="cpsat",
@@ -222,12 +259,27 @@ def write_outputs(
     lines += [f"{t},{obj}" for t, obj in trace]
     (out_dir / f"{instance}.trace.csv").write_text("\n".join(lines) + "\n")
 
+    if args.solution_dir and values:
+        solution_dir = Path(args.solution_dir)
+        solution_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            (solution_dir / f"{instance}.sol").write_text(
+                solution_text(instance, record["objective"], values)
+            )
+        except OSError as exc:
+            # No solution file means no independent verdict, and a row with no
+            # verdict must not publish a number (#138).
+            record["status"] = "solution_write_error"
+            record["message"] = f"could not write the solution vector: {exc}"
+            record["objective"] = None
+
     # Result last, and via a rename. The driver resumes on the result file's
     # existence, so it must not appear before the trace it is scored with, and it
     # must never appear truncated.
     tmp = out_dir / f"{instance}.json.tmp"
     tmp.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
     tmp.replace(out_dir / f"{instance}.json")
+    return record
 
 
 def main() -> int:
@@ -243,6 +295,12 @@ def main() -> int:
         help="CP-SAT threads; 1 runs both the fj and ls workers, matching CBLS",
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--solution-dir",
+        default=None,
+        help="write the solution vector of a feasible run here, for "
+        "verify_solution.py to check against the original instance file",
+    )
     args = parser.parse_args()
 
     mps_path = Path(args.inst_dir) / f"{args.instance}.mps.gz"
@@ -257,8 +315,8 @@ def main() -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    record, trace = solve(mps_path, args.budget, args.workers, args.seed)
-    write_outputs(out_dir, args.instance, record, trace, args)
+    record, trace, values = solve(mps_path, args.budget, args.workers, args.seed)
+    record = write_outputs(out_dir, args.instance, record, trace, args, values)
 
     objective = record.get("objective")
     print(
@@ -269,8 +327,11 @@ def main() -> int:
     # A rejected parameter string or an unreadable instance is a harness fault, not
     # a search outcome. An OR-Tools release renaming `filter_subsolvers` would
     # otherwise score every CP-SAT instance at 2.0 across a 39 CPU-hour run, at exit
-    # 0. Matches the CBLS runner, which also exits 1 on a read error.
-    return 1 if record["status"] in ("invalid_parameters", "read_error") else 0
+    # 0. Matches the CBLS runner, which also exits 1 on a read error — and on a
+    # solution it could not write, which leaves a row nothing can verify.
+    return (
+        1 if record["status"] in ("invalid_parameters", "read_error", "solution_write_error") else 0
+    )
 
 
 if __name__ == "__main__":
