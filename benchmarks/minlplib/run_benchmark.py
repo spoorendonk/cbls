@@ -42,6 +42,11 @@ Guards, because this file's output is published:
 * refuses a subset run (`--instances`) that has not been given scratch output
   *and staging* paths, so a debug run can neither truncate a fifty-row table nor
   leave short-budget rows for a later run's resume to publish;
+* refuses any whole-roster run that would write exactly one of the two published
+  artifacts, in either direction — `--out` moved off `comparison.csv` with
+  `--trace-out` left at its default would replace the published anytime trace at
+  exit 0 while reporting a scratch table, and the converse publishes
+  `comparison.csv` at this engine beside a trace from the previous one (#149);
 * refuses to resume a staging directory written by a different commit, budget or
   seed, and re-solves any individual staged row whose `commit_sha` disagrees.
 
@@ -326,11 +331,18 @@ def usage_error(args: argparse.Namespace, published_out: Path) -> str | None:
         # the trace would leave anytime_trace.csv describing the previous engine
         # with nothing in either file saying the two disagree — and the README's
         # post-run step recomputes its budget table from that stale trace.
-        if not args.trace and (args.out is None or args.out.resolve() == published_out.resolve()):
-            published_trace = args.trace_out or args.inst_dir / "anytime_trace.csv"
+        # EITHER way of not writing the published trace, not just --no-trace: a
+        # scratch --trace-out with a defaulted --out leaves anytime_trace.csv at
+        # the previous engine just as surely, and slips past the guard below too
+        # (that one keys on --out having moved, and here it has not).
+        if (not args.trace or args.trace_out is not None) and (
+            args.out is None or args.out.resolve() == published_out.resolve()
+        ):
+            published_trace = args.inst_dir / "anytime_trace.csv"
+            how = "--no-trace" if not args.trace else f"--trace-out {args.trace_out}"
             return (
-                "--no-trace on a whole-roster run would publish comparison.csv at this engine "
-                f"while leaving {published_trace} at the previous one; drop --no-trace, or "
+                f"{how} on a whole-roster run would publish comparison.csv at this engine "
+                f"while leaving {published_trace} at the previous one; drop it, or "
                 "pass --out to write somewhere other than the published table"
             )
         # The converse hazard, and the one the #149 campaign walks straight into:

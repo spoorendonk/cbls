@@ -125,10 +125,12 @@ documents. No published Yuck numbers exist for these instances.
   `inf` on a row that *did* reach feasibility, because the point of arrival can
   be the non-finite-objective witness of #100.
   **The committed table predates the last five columns and does not carry
-  them**, which is also how a reader dates a `comparison.csv`: a header stopping
-  at `n_int_vars` is pre-#136; one carrying `search_config` but not
-  `lns_repairs` is #136-era; one carrying the two first-feasible columns is #149
-  or later. The next full regeneration writes all five.
+  them**, which is also how a reader dates a `comparison.csv`: each column names
+  the issue that added it, so the trailing set *is* the provenance. In order —
+  `search_config` (#136), `lns_repairs` (#143), `lns_repairs_accepted` (#150),
+  then the first-feasible pair (#149). A header stopping at `n_int_vars`, as the
+  committed one does, predates all four. The next full regeneration writes all
+  five columns.
 - `analysis_notes.csv` — curated per-instance root-cause verdicts
   (`bug` vs `hard`) for instances the runner cannot solve. Merged into
   `comparison.csv`'s note column, so the data carries its own explanation.
@@ -288,6 +290,8 @@ What the driver refuses, and why each refusal matters:
 | `--no-build` with no runner binary | nothing to run, found at the first solve |
 | `--instances` without `--out`/`--trace-out`/`--staging-dir` | a debug subset would truncate a fifty-row table, or leave short-budget rows for the next run's resume to publish |
 | `--instances` with `--out` resolving to `comparison.csv` | same, via a relative path the explicit-`--out` guard would otherwise wave through |
+| a whole-roster run writing exactly one of the two published artifacts | `--out` moved off `comparison.csv` with `--trace-out` left at its default would replace the published anytime trace at exit 0 while reporting a scratch table; the converse republishes `comparison.csv` at this engine beside a trace from the previous one. Refused in both directions (#149) |
+| build dir configured with `CBLS_SANITIZE` or `CBLS_PROFILE` | a sanitizer or profiling build measures a different engine, and both are sticky cache entries a later flag-less `cmake -B build` keeps |
 | a staging directory stamped with another commit, budget or seed | resuming it would mix two configurations into one table |
 | missing `scip_baseline.csv` (unless `--no-merge`) | the merge would publish `comparison_all.csv` without SCIP rows |
 | a roster instance whose read, build or solve **throws** (runner exit 3) | its row carries `read-error`/`build-error`/`solve-error` and measures nothing, so publishing it would put a non-result in the table. The staged row is *structurally* complete, so the resume check refuses it by name (#153) and a re-run hits the same throw rather than skipping past it. A coverage gap — `unsupported`, or a missing `.nl` — exits 0 and does **not** trip this |
@@ -604,9 +608,10 @@ columns. **What is missing is the campaign**: it is wall-clock-limited, so it
 has to be run serially on an idle machine and cannot be run beside anything
 else.
 
-**Protocol.** Engine commit: whatever `git rev-parse --short HEAD` reports on a
-clean tree (the driver refuses a dirty one, and the report is only about the
-engine it was measured at). Budget: **60s per instance**, the published one.
+**Protocol.** Engine commit: whatever `git rev-parse --short=7 HEAD` reports on
+a clean tree — the driver refuses a dirty one, and `--short=7` matches
+`run_benchmark.commit_sha()`, so the recorded verdict names the same string the
+rows' `commit_sha` column carries. Budget: **60s per instance**, the published one.
 Seeds: **1 2 3 7 11 13 17 42** — the eight #134 used, so the roster result and
 the `nvs01` result are the same measurement on different instances rather than
 two protocols. Roster: all 50 from `bounds.csv`; `elec25`/`elec50` are dropped by
@@ -626,21 +631,31 @@ for SEED in 1 2 3 7 11 13 17 42; do
         --time-limit 60 \
         --out "$FF/seed$SEED.csv" \
         --staging-dir "$FF/stage-seed$SEED" \
-        --no-trace
+        --no-trace || { echo "seed $SEED failed; stopping" >&2; break; }
 done
 ```
+
+The `|| break` is not decoration: the driver exits 2 on a refusal and 1 on an
+instance that throws, and without it a dirty tree fires eight identical refusals
+in a second, while a throw at seed 3 burns the remaining five hours before the
+scoring step fails on a missing file.
 
 Each invocation resumes: a killed run picks up from its staging directory, and
 the loop can simply be re-run. Nothing here touches a published table —
 `--out` keeps the results in `$FF`, `--no-trace` keeps `anytime_trace.csv`
-alone (and the driver refuses a scratch `--out` with a defaulted trace path
-rather than letting the second half of that pair slip through), and `--seed`
-makes the runner refuse the published paths independently.
+alone (and the driver refuses either half of that pair without the other,
+in both directions). The runner's *own* published-path guard is **not** a second
+layer here: every instance is staged to `$FF`, so `--out` never names a published
+file and the guard never fires. The driver's `usage_error` is the only thing
+between this recipe and the published tables.
 
-Then score it, which takes a second and solves nothing:
+Then score it, which takes a second and solves nothing. Invoked **by path**,
+like the driver above: the module puts the repo root on `sys.path` itself so that
+form works from any directory, whereas `-m benchmarks.minlplib.…` needs the repo
+root to already be the working directory.
 
 ```bash
-.venv/bin/python3 -m benchmarks.minlplib.first_feasible_report \
+.venv/bin/python3 benchmarks/minlplib/first_feasible_report.py \
     --table 1="$FF/seed1.csv"   --table 2="$FF/seed2.csv" \
     --table 3="$FF/seed3.csv"   --table 7="$FF/seed7.csv" \
     --table 11="$FF/seed11.csv" --table 13="$FF/seed13.csv" \
@@ -649,39 +664,52 @@ Then score it, which takes a second and solves nothing:
 ```
 
 The report prints, per instance, the across-seed Pearson `r` between the first
-feasible objective and the final one (plus Spearman, as a check that one far-out
-seed is not carrying the number), the count of rows it had to drop and why, and
-a verdict.
+feasible objective and the final one and the Spearman rank correlation beside it,
+its bucket, and the reason where there is no `r`. Above the table it prints a
+global tally of the rows it dropped and why; below it, the verdict.
 
 **The decision rule is pre-registered** — it is written into
 `first_feasible_report.py` as `R_DETERMINED`, `MIN_ELIGIBLE_INSTANCES` and
 `MIN_SEEDS_PER_INSTANCE`, each with the argument for its value, and it is fixed
 before the campaign rather than chosen once the numbers are in:
 
-- an instance is **eligible** when it has at least **4** usable seeds and its
-  first feasible objective actually varied across them. An instance that arrived
-  at the same objective every seed never varied the experiment's input and is
-  listed as `no-spread`, outside the count;
-- an eligible instance whose **final** objective did not vary has no defined `r`
-  — zero variance in *y* — but is not silent: arrival moved and the outcome did
-  not, which is evidence *against* the effect. It is bucketed `final-invariant`
-  and counted as not-determined, so a roster full of them refutes rather than
-  abstains;
-- the effect **generalises** when the median `r` is at least **0.7** — half the
-  across-seed variance explained — and a strict majority of eligible instances
-  reach it;
+- an instance is **eligible** when it has at least **4** usable seeds and
+  *something* varied across them. Only `no-spread` — the same arrival and the
+  same outcome on every seed — is outside the count, because there the
+  experiment never varied its input *and* never varied its output;
+- an eligible instance where exactly one end held still has no defined `r`
+  (zero variance on one axis) and is **not** silent. `final-invariant` — arrival
+  varied, every seed finished at the same objective — says the search got to the
+  same answer however far out it started. `arrival-invariant` is its mirror:
+  every seed arrived at the same point and they still finished apart, so arrival
+  explains none of the outcome. Both count as not-determined, so a roster full of
+  either refutes rather than abstains;
+- an instance is **determined** when it reaches **0.7** on *both* Pearson and
+  Spearman. Pearson alone is the statistic #134 used, but on this roster the
+  common shape is several seeds tied at the published optimum and one far out,
+  and a Pearson `r` over that is carried by the single outlying seed. Requiring
+  the rank correlation too is what stops the count being built from one-point
+  correlations, and it errs toward *not* finding an effect;
+- the effect **generalises** when the median `r` is at least **0.7** and a strict
+  majority of eligible instances are determined;
 - fewer than **10** eligible instances is **inconclusive**, which is not the same
   answer as "does not generalise".
 
-A plausible outcome worth being ready for: much of this roster is solved to the
-same objective on every seed at 60s, so a large `no-spread` or `final-invariant`
-count is not a failed campaign. `no-spread` instances say nothing;
-`final-invariant` ones say the effect is absent there. Read the bucket line the
-report prints before reading the verdict.
+Two things to hold while reading the output. First, "varied" means "differs in
+the cell the runner published", which is six significant figures — `cell()`
+streams a double through a default-precision `std::ostringstream` — so eight
+seeds finishing within ~1e-6 relative read as `final-invariant`. That is the
+intended reading (a 1e-6 spread is not a descent) but it is a property of the
+table's precision, and it belongs in any write-up. Second, much of this roster is
+solved to the same objective on every seed at 60s, so a large `no-spread` or
+`final-invariant` count is not a failed campaign. Read the bucket line the report
+prints before reading the verdict.
 
 Sanity check before believing any of it: the report prints `nvs01`'s own `r`
-beside #134's 0.945. A campaign that disagrees there has a measurement problem,
-not a finding.
+beside #134's 0.945. A large disagreement is a reason to stop and find out why
+before reading the roster line — either the measurement is wrong, or the engine
+has drifted since `09097de`, which is worth knowing on its own. It is not
+evidence about the roster either way.
 
 Record the verdict — and the commit, seed set and budget it was measured at — in
 this README, beside the `nvs01` section above. Whatever it says, **it does not

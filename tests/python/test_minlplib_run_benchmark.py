@@ -330,6 +330,22 @@ def test_a_scratch_table_with_a_defaulted_trace_is_rejected(tmp_path: Path) -> N
     assert "--trace-out" in message and "anytime_trace.csv" in message
 
 
+def test_a_published_table_with_a_scratch_trace_out_is_rejected(tmp_path: Path) -> None:
+    """The mirror of the case above, and it slips past both other guards.
+
+    `--out` defaulted (so the published `comparison.csv` IS the target) with
+    `--trace-out` pointed at scratch: `args.trace` is True so the `--no-trace`
+    guard misses it, and `--out` has not moved so the scratch-table guard misses
+    it. The result is exactly what the `--no-trace` guard exists to prevent --
+    `comparison.csv` republished at this engine beside an `anytime_trace.csv`
+    from the previous one, with nothing in either file saying they disagree.
+    """
+    args = make_args(tmp_path, trace_out=tmp_path / "scratch.trace.csv")
+    message = usage_error(args, tmp_path / "comparison.csv")
+    assert message is not None
+    assert "--trace-out" in message and "anytime_trace.csv" in message
+
+
 def test_a_scratch_table_with_an_explicit_trace_out_is_accepted(tmp_path: Path) -> None:
     args = make_args(
         tmp_path, out=tmp_path / "scratch.csv", trace_out=tmp_path / "scratch.trace.csv"

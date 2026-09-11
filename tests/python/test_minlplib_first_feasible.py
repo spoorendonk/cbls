@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from benchmarks.minlplib.first_feasible_report import (
+    ARRIVAL_INVARIANT,
     DETERMINED,
     FINAL_INVARIANT,
     MIN_ELIGIBLE_INSTANCES,
@@ -364,13 +365,33 @@ def test_an_instance_whose_outcome_never_moves_is_evidence_against_the_effect(
     assert "every seed finished at the same objective" in result.note
 
 
-def test_an_instance_that_always_arrives_at_the_same_point_is_ineligible(
+def test_an_instance_where_nothing_moved_at_all_is_ineligible(tmp_path: Path) -> None:
+    """The genuinely uninformative case: neither end varied.
+
+    Distinguished from the two invariant buckets on purpose. Here nothing can be
+    concluded; there, something can.
+    """
+    argv = seed_tables(
+        tmp_path,
+        {seed: [runner_row("a", objective=7.0, first_feasible=3.0)] for seed in range(1, 6)},
+    )
+    (result,) = score(argv)
+    assert result.bucket == NO_SPREAD
+    assert not result.eligible
+    assert "neither the first feasible objective nor the final one varied" in result.note
+
+
+def test_an_instance_that_always_arrives_at_the_same_point_but_finishes_apart(
     tmp_path: Path,
 ) -> None:
-    """The genuinely uninformative case: the experiment never varied its input.
+    """The mirror of FINAL_INVARIANT, and a refutation just as directly.
 
-    Distinguished from the one above on purpose. Here nothing can be concluded;
-    there, something can.
+    Every seed arrived at the same objective and they still finished apart, so
+    the arrival explains none of the outcome's variance. Bucketing this with the
+    uninformative instances would drop it from the denominator and bias the
+    verdict toward GENERALISES -- the one direction #149 is written to guard
+    against, since a false positive there buys engine work on a premise that was
+    never there.
     """
     argv = seed_tables(
         tmp_path,
@@ -380,9 +401,11 @@ def test_an_instance_that_always_arrives_at_the_same_point_is_ineligible(
         },
     )
     (result,) = score(argv)
-    assert result.bucket == NO_SPREAD
-    assert not result.eligible
-    assert "first feasible objective is identical on every seed" in result.note
+    assert result.bucket == ARRIVAL_INVARIANT
+    assert result.eligible
+    assert not result.determined
+    assert math.isnan(result.pearson)
+    assert "arrived at the same objective and still finished apart" in result.note
 
 
 # --- the pre-registered verdict ------------------------------------------------
@@ -541,3 +564,102 @@ def test_a_bad_table_spec_is_rejected_by_the_parser() -> None:
         parse_args(["--table", "no-equals-sign"])
     with pytest.raises(SystemExit):
         parse_args(["--table", "notaseed=/tmp/x.csv"])
+
+
+def test_a_pearson_carried_by_one_outlying_seed_is_not_determined(tmp_path: Path) -> None:
+    """The Spearman half of the threshold, which is what makes it load-bearing.
+
+    Seven seeds tied at the published optimum and one far out is the common
+    shape on this roster -- it is `nvs01`'s own shape, less extreme. Pearson over
+    that is carried entirely by the outlying seed; the rank correlation is not.
+    Requiring both at the threshold is what stops a `DETERMINED` count being
+    built from one-point correlations.
+    """
+    finals = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 500.0]
+    # Arrivals deliberately in an order that disagrees with the finals' ranking
+    # among the tied seeds, so Spearman is well below Pearson.
+    firsts = [40.0, 10.0, 30.0, 20.0, 60.0, 50.0, 70.0, 900.0]
+    argv = seed_tables(
+        tmp_path,
+        {
+            seed: [runner_row("a", objective=final, first_feasible=first)]
+            for seed, (first, final) in enumerate(zip(firsts, finals, strict=True), start=1)
+        },
+    )
+    (result,) = score(argv)
+    # The premise: Pearson alone would have called this determined.
+    assert result.pearson >= R_DETERMINED
+    assert result.spearman < R_DETERMINED
+    assert result.bucket == NOT_DETERMINED
+    assert result.eligible
+
+
+def test_a_results_file_without_a_seed_column_is_refused(tmp_path: Path) -> None:
+    """`--results` on a per-run `comparison.csv` is the likeliest single mistake.
+
+    The documented campaign produces eight seedless tables and `--results` is one
+    word from `--table`. Without this it dies on a raw `KeyError: 'seed'`, when
+    every other input mistake gets a clean refusal.
+    """
+    path = write_table(
+        tmp_path / "comparison.csv", [runner_row("a", objective=1, first_feasible=2)]
+    )
+    refusal = usage_error(parse_args(["--results", str(path)]))
+    assert refusal is not None
+    assert "no `seed` column" in refusal
+    assert "--table SEED=PATH" in refusal
+
+
+def _campaign_results(path: Path, arms: list[str]) -> Path:
+    with path.open("w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["instance", "arm", "seed", *RUNNER_HEADER[1:]])
+        for arm in arms:
+            for seed in range(1, 6):
+                row = runner_row("a", objective=float(seed), first_feasible=10.0 * seed)
+                writer.writerow([row[0], arm, str(seed), *row[1:]])
+    return path
+
+
+def test_an_arm_that_matches_no_row_is_refused(tmp_path: Path) -> None:
+    """Otherwise a typo yields a well-formed INCONCLUSIVE.
+
+    After six hours of solving, a verdict indistinguishable from a real one is
+    the worst available failure mode: the arm filter drops every row, and the
+    report prints a complete, correctly formatted answer about nothing.
+    """
+    path = _campaign_results(tmp_path / "results.csv", ["control", "no-lns"])
+    refusal = usage_error(parse_args(["--results", str(path), "--arm", "contorl"]))
+    assert refusal is not None
+    assert "matches no row" in refusal
+    assert "control, no-lns" in refusal
+
+
+def test_the_registered_arm_is_accepted(tmp_path: Path) -> None:
+    path = _campaign_results(tmp_path / "results.csv", ["control"])
+    assert usage_error(parse_args(["--results", str(path)])) is None
+
+
+def test_an_overridden_min_seeds_is_flagged_as_not_the_registered_rule(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--min-seeds` must not silently rewrite the block headed "fixed before".
+
+    `usage_error` allows anything >= 2, so a sensitivity check at 2 would
+    otherwise print a report that reads exactly like the campaign's verdict at a
+    threshold nobody registered.
+    """
+    argv = seed_tables(
+        tmp_path,
+        {
+            seed: [runner_row("a", objective=float(seed), first_feasible=10.0 * seed)]
+            for seed in range(1, 4)
+        },
+    )
+    assert main([*argv, "--min-seeds", "3"]) == 0
+    text = capsys.readouterr().out
+    assert "NOT THE REGISTERED RULE" in text
+    assert "overrides the pre-registered" in text
+
+    assert main(argv) == 0
+    assert "NOT THE REGISTERED RULE" not in capsys.readouterr().out

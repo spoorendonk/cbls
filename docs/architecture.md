@@ -942,6 +942,12 @@ feasible objective (or `+inf` / infeasible). `SearchResult::best_violation`
 carries the largest real-constraint residual at the returned assignment.
 `SearchResult::iterations` is the total GLS iteration count, not the batch count.
 `SearchResult::termination` says which budget ended the run — see below.
+`SearchResult::first_feasible_objective` and `time_to_first_feasible` record
+where the run *arrived* in the feasible region, as against where the descent
+afterwards left it: they are latched at the first `record_best` on a feasible
+point, before the inner-solver polish in that same batch (#149). Observational
+only — nothing reads them back — so the split between arrival and descent can be
+measured without a bespoke instrumented build.
 
 ### Wall-clock budget
 
@@ -1121,8 +1127,10 @@ strided checks all short-circuit on their `has_deadline` flag — so with no
 `SolveCallback` attached
 the loop reads no clock at all, and iteration-budgeted runs stay bit-identical
 and deterministic. (`solve()` still timestamps entry and exit to fill
-`time_seconds`, and a callback's ~1s progress cadence reads the clock once per
-batch; neither reaches the search trajectory.)
+`time_seconds`, a callback's ~1s progress cadence reads the clock once per
+batch, and `SearchResult::time_to_first_feasible` costs ONE read, at the first
+feasible point and latched thereafter (#149); none of the three reaches the
+search trajectory.)
 
 #### Why this is tested the way it is
 

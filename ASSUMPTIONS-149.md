@@ -58,11 +58,24 @@ Scratch file for the orchestrator; delete before merging.
   numbers is worth nothing, and #149's own framing ("check whether the effect
   generalises **before** changing anything") is exactly that concern.
 
-- **Zero-spread instances**: an instance that reaches the same objective on every
-  seed has an undefined r (`statistics.correlation` raises). Resolved as: listed
-  as ineligible with the reason, excluded from the median and from the eligible
-  count — not scored 0. Because: it is evidence of nothing, and scoring it 0
-  would let a roster of easy instances refute the effect by arithmetic.
+- **Instances with no across-seed spread at one end**: `r` is undefined when
+  either column is constant (`statistics.correlation` raises). Resolved, after
+  review, as a three-way split rather than one "ineligible" bucket. Arrival
+  varied and outcome constant (`final-invariant`), or the mirror
+  (`arrival-invariant`), are both EVIDENCE AGAINST the effect: one end moved and
+  the other did not. They are eligible, carry no `r`, and count as
+  not-determined. Only `no-spread` — nothing moved at either end — is dropped.
+  Because: filing a refutation with the uninformative instances biases the
+  verdict toward GENERALISES, which is the direction #149 exists to guard; and
+  an end-to-end smoke on four instances put three of them in
+  `arrival-invariant`, so the bucket is not hypothetical.
+
+- **Which statistic decides `determined`**: Pearson is what #134 used, but this
+  roster's common shape is several seeds tied at the published optimum and one
+  far out, where Pearson is carried by the single outlier. Resolved as: an
+  instance is determined only at `>= 0.7` on BOTH Pearson and Spearman. Because:
+  it makes the Spearman column load-bearing rather than decorative, and it errs
+  toward not finding an effect, which is the cheaper error here.
 
 - **`elec25`/`elec50`**: excluded, via `run_benchmark.CLAIM_EXCLUDED`. Because:
   a roster-wide correlation is a quality claim and those rows are published as
@@ -74,7 +87,9 @@ Scratch file for the orchestrator; delete before merging.
   — which lives at exactly that path. Resolved as: edit the README, change no
   `.csv` under `benchmarks/instances/`. The diff over that directory is therefore
   README-only; verify with
-  `git diff b4be81f HEAD --stat -- benchmarks/instances/`. Flagged in the report.
+  `git diff 41a90fc HEAD --stat -- benchmarks/instances/` (`41a90fc` is this
+  branch's base — it was cut from `fix/153-minlplib-exit-code`, not from main).
+  Flagged in the report.
 
 - **The published table's header now disagrees with the schema**: it already did
   (it predates `search_config`, `lns_repairs`, `lns_repairs_accepted`). Resolved

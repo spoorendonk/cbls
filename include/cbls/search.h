@@ -234,8 +234,11 @@ struct SearchResult {
 
     /// The objective at the FIRST feasible point this run recorded, and the
     /// seconds it took to reach it (#149). Observational only: nothing in the
-    /// search reads either field, so a run that computes them is
-    /// byte-for-byte the run that did not.
+    /// search reads either field back, so the trajectory is the one the run
+    /// without them would have taken. The one added cost is a single
+    /// `steady_clock::now()` at the first feasible point, latched thereafter --
+    /// which is why `docs/architecture.md`'s "reads no clock at all" invariant
+    /// for an iteration-budgeted run now names three reads rather than two.
     ///
     /// "First feasible" is the moment `have_feasible` first turns true --
     /// before the inner-solver polish that follows in the same batch, and
@@ -250,6 +253,12 @@ struct SearchResult {
     /// feasibility -- the first feasible point can be the non-finite-objective
     /// witness of #100 -- so test the time, not the objective, and test
     /// `std::isfinite(first_feasible_objective)` before using the value.
+    ///
+    /// On a model with NO objective it is `0.0`, not NaN: the loop's
+    /// `current_obj()` reports a finite 0.0 there, exactly as `objective`
+    /// reports 0.0 for such a model. A consumer that mixes objective-free
+    /// models into an aggregate must exclude them on the model, not on this
+    /// field -- a 0.0 here is indistinguishable from a real objective of zero.
     ///
     /// NaN rather than `objective`'s `+inf` for "nothing to report", because
     /// +inf is a value the #100 witness path genuinely produces here and the

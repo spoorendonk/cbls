@@ -624,8 +624,11 @@ struct FirstFeasibleCells {
 /// cell is un-negated: `solve()` minimises, so a maximize instance was built
 /// with a negated objective and the raw value is the wrong sign for the
 /// published bound it will be read beside. Applied unconditionally rather than
-/// under an `isfinite` guard, exactly as the final objective is, so a first
-/// feasible point whose objective blew up keeps the sign its magnitude implies.
+/// under an `isfinite` guard, so a first feasible point whose objective blew up
+/// keeps the sign its magnitude implies. No `result.feasible` guard either --
+/// the final objective's un-negation carries one, but it would be redundant
+/// here: a run that never reached feasibility latched nothing, so both cells
+/// are already NaN and `-NaN` is NaN.
 FirstFeasibleCells first_feasible_cells(const cbls::SearchResult& result, bool maximizing) {
     double obj = result.first_feasible_objective;
     if (maximizing) {

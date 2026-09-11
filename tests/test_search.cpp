@@ -1698,7 +1698,7 @@ TEST_CASE("solve records the FIRST feasible objective, not the incumbent",
                                      /*lns_interval=*/3, &probe, cfg);
 
         CAPTURE(r.objective, r.first_feasible_objective, r.time_to_first_feasible, probe.objective,
-                probe.events);
+                probe.time_seconds, probe.events);
         REQUIRE(r.feasible);
         REQUIRE(probe.captured);
 
@@ -1707,6 +1707,12 @@ TEST_CASE("solve records the FIRST feasible objective, not the incumbent",
         REQUIRE_FALSE(std::isnan(r.time_to_first_feasible));
         REQUIRE(r.time_to_first_feasible >= 0.0);
         REQUIRE(r.time_to_first_feasible <= r.time_seconds);
+        // The latch is sampled inside record_best, strictly before the progress
+        // report the probe captured from that same call -- so on a monotonic
+        // clock the engine's reading can never be the later of the two. Pins the
+        // ORDER, which is what makes "the first feasible point" mean the point
+        // of arrival rather than anything the same batch did afterwards.
+        REQUIRE(r.time_to_first_feasible <= probe.time_seconds);
 
         // It is the FIRST feasible point's objective: the callback saw that
         // point independently and reports the same number.
@@ -1750,15 +1756,36 @@ TEST_CASE("a run that never reaches feasibility reports no first-feasible pair",
 
 TEST_CASE("ParallelSearch leaves the first-feasible pair unrecorded", "[pool][first-feasible]") {
     // The documented caveat on the field, pinned rather than left to prose:
-    // `solve_portfolio` composes its SearchResult field by field from the pool's
-    // best solution, and the pool carries only the state and the objective. So a
-    // parallel run reports NaN for both cells even though it IS feasible --
-    // "not recorded", which is the honest reading, and exactly what a consumer
-    // must not mistake for "arrived at NaN".
-    ParallelSearch ps(2);
-    const SearchResult r = ps.solve(simple_model_factory(), 1.0, 42);
-    CAPTURE(r.objective, r.first_feasible_objective, r.time_to_first_feasible);
-    REQUIRE(r.feasible);
-    REQUIRE(std::isnan(r.first_feasible_objective));
-    REQUIRE(std::isnan(r.time_to_first_feasible));
+    // both aggregation paths compose their SearchResult field by field from the
+    // pool's best solution, and the pool carries only the state and the
+    // objective. So a parallel run reports NaN for both cells even though it IS
+    // feasible -- "not recorded", which is the honest reading, and exactly what
+    // a consumer must not mistake for "arrived at NaN".
+    //
+    // BOTH paths, because the header says "paths" in the plural and one test
+    // cannot carry a plural claim: a later change to the epoch-sync compose
+    // could start propagating a worker's value while the portfolio one still
+    // dropped it, and nothing would say so.
+    SECTION("portfolio") {
+        ParallelSearch ps(2);
+        const SearchResult r = ps.solve(simple_model_factory(), 1.0, 42);
+        CAPTURE(r.objective, r.first_feasible_objective, r.time_to_first_feasible);
+        REQUIRE(r.feasible);
+        REQUIRE(std::isnan(r.first_feasible_objective));
+        REQUIRE(std::isnan(r.time_to_first_feasible));
+    }
+    SECTION("deterministic (epoch-sync)") {
+        ParallelSearch ps(2);
+        ParallelConfig pc;
+        pc.n_threads = 2;
+        pc.deterministic = true;
+        pc.epoch_iterations = 200;
+        pc.max_epochs = 2;
+        const SearchResult r = ps.solve(simple_model_factory(), /*time_limit=*/0.0, /*seed=*/42,
+                                        SearchConfig{}, nullptr, nullptr, nullptr, pc);
+        CAPTURE(r.objective, r.first_feasible_objective, r.time_to_first_feasible);
+        REQUIRE(r.feasible);
+        REQUIRE(std::isnan(r.first_feasible_objective));
+        REQUIRE(std::isnan(r.time_to_first_feasible));
+    }
 }
