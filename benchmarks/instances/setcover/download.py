@@ -139,7 +139,11 @@ def fetch(name: str) -> str:
     url = URL_TEMPLATE.format(name=name)
     try:
         with urllib.request.urlopen(url, timeout=120) as response:  # noqa: S310 - fixed https URL
-            return response.read().decode("ascii")
+            # Narrowed at the boundary rather than suppressed: `read()` is `Any`,
+            # so a bare `return` would satisfy the declared `-> str` without
+            # anything having checked it.
+            text: str = response.read().decode("ascii")
+            return text
     except urllib.error.URLError as exc:
         raise SystemExit(f"{name}: download failed ({url}): {exc}") from exc
 

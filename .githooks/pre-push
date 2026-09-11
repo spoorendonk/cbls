@@ -123,18 +123,26 @@ CODE_FILES=$(echo "$CHANGED_FILES" | grep -vE '^(LICENSE|CHANGELOG)' | grep -vE 
 # uncommitted delete of a gated file is reported as a tooling fault rather than
 # as a code finding. The failure message says so.
 #
-# ruff sees exactly that list. mypy FOLLOWS IMPORTS, so an excluded module that
-# a gated file imports is type-checked too -- which today is most of
-# benchmarks/, and is why adding one test that imports an unclean benchmark
-# module blocks the next push on errors nobody in that push wrote.
+# ruff sees exactly that list. mypy FOLLOWS IMPORTS, so anything an excluded
+# module imports would be type-checked anyway -- which is why a partial exclusion
+# was never the safety it looked like, and why #155 emptied it rather than
+# maintaining one.
 #
 # PY_GATE_EXCLUDE below is the scope itself -- the source of truth, and the one
 # string to edit when #155 lands; every message here interpolates it rather than
 # spelling the directory out again. CLAUDE.md's "Where that standard is actually
 # enforced" carries the reasoning, the measurements and that trap; don't restate
 # those here.
-PY_GATE_EXCLUDE='^benchmarks/'
-PY_GATE_FILES=$(git ls-tree -r HEAD --name-only | grep -E '\.py$' | grep -vE "$PY_GATE_EXCLUDE" || true)
+# Empty: the gate now covers every tracked .py, benchmarks included (#155). Kept
+# as a variable rather than deleted, because the messages below interpolate it and
+# because an exclusion is how a future tree that genuinely cannot be clean gets
+# carved out -- with the reason written here, not by widening in silence.
+PY_GATE_EXCLUDE=''
+if [ -n "$PY_GATE_EXCLUDE" ]; then
+	PY_GATE_FILES=$(git ls-tree -r HEAD --name-only | grep -E '\.py$' | grep -vE "$PY_GATE_EXCLUDE" || true)
+else
+	PY_GATE_FILES=$(git ls-tree -r HEAD --name-only | grep -E '\.py$' || true)
+fi
 PY_GATE_ISSUES=""
 PY_GATE_TOOL_ERR=0
 
@@ -150,7 +158,7 @@ if [ -z "$VENV_BIN" ]; then
 	PY_GATE_TOOL_ERR=1
 fi
 if [ -z "$PY_GATE_FILES" ]; then
-	PY_GATE_ISSUES="${PY_GATE_ISSUES}no tracked .py outside ${PY_GATE_EXCLUDE} -- the gate matched nothing"$'\n'
+	PY_GATE_ISSUES="${PY_GATE_ISSUES}no tracked .py file matched -- the gate ran on nothing"$'\n'
 	PY_GATE_TOOL_ERR=1
 fi
 for tool in ruff mypy; do
@@ -184,7 +192,7 @@ py_gate_run() {
 
 if [ "$PY_GATE_TOOL_ERR" -eq 0 ]; then
 	echo ""
-	echo "=== Running ruff + mypy over every tracked .py outside ${PY_GATE_EXCLUDE} (blocking) ==="
+	echo "=== Running ruff + mypy over every tracked .py (blocking) ==="
 	# --no-fix explicitly, as the advisory ruff step does. Inert while
 	# pyproject.toml sets no `fix = true`, but a gate that rewrites the working
 	# tree mid-push and then reports clean is the same fail-open class this
@@ -210,7 +218,7 @@ if [ -n "$PY_GATE_ISSUES" ]; then
 		echo "does not apply. Check the venv (\`.venv/bin/pip install -e '.[dev]'\`)"
 		echo "and that the gated paths still exist."
 	else
-		echo "FAILED: every tracked .py outside ${PY_GATE_EXCLUDE} is kept ruff-clean,"
+		echo "FAILED: every tracked .py is kept ruff-clean,"
 		echo "ruff-format-clean and mypy --strict clean (issue #154). Fix the"
 		echo "finding above -- \`ruff check --fix\` and \`ruff format\` handle most"
 		echo "of it, and an untyped test function wants \`-> None\`. Do NOT widen"

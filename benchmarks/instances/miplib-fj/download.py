@@ -7,9 +7,11 @@ Usage:
     python download.py            # fetch all instances in INSTANCES
     python download.py --force    # re-download even if file exists
 """
+
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import os
 import sys
@@ -67,15 +69,15 @@ def fetch(url: str, dest: Path, force: bool = False) -> bool:
         with urllib.request.urlopen(req, timeout=60) as resp:
             data = resp.read()
         # Content validation: .mps.gz must start with the gzip magic.
-        if dest.suffix == ".gz":
-            if not data.startswith(b"\x1f\x8b") or _looks_like_html(data):
-                print(f"[fail]  {url}: server returned HTML / non-gzip "
-                      f"(probably 404 disguised as 200)")
-                return False
+        if dest.suffix == ".gz" and (not data.startswith(b"\x1f\x8b") or _looks_like_html(data)):
+            print(f"[fail]  {url}: server returned HTML / non-gzip (probably 404 disguised as 200)")
+            return False
         with open(dest, "wb") as out:
             out.write(data)
-        print(f"        -> {dest.name} ({len(data)} bytes, "
-              f"sha256 {hashlib.sha256(data).hexdigest()[:12]}...)")
+        print(
+            f"        -> {dest.name} ({len(data)} bytes, "
+            f"sha256 {hashlib.sha256(data).hexdigest()[:12]}...)"
+        )
         return True
     except urllib.error.HTTPError as e:
         print(f"[fail]  {url}: HTTP {e.code}")
@@ -84,17 +86,14 @@ def fetch(url: str, dest: Path, force: bool = False) -> bool:
     except Exception as e:  # noqa: BLE001
         print(f"[fail]  {url}: {e}")
     if dest.exists():
-        try:
+        with contextlib.suppress(OSError):
             dest.unlink()
-        except OSError:
-            pass
     return False
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--force", action="store_true",
-                        help="re-download even if file exists")
+    parser.add_argument("--force", action="store_true", help="re-download even if file exists")
     args = parser.parse_args()
 
     here = Path(__file__).resolve().parent

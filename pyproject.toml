@@ -86,11 +86,35 @@ select = [
 [tool.ruff.lint.mccabe]
 max-complexity = 10
 
+# pep8-naming, waived for ONE file and TWO rules. `benchmarks/chped/reference_solve.py`
+# is a reference solver implementing a published unit-commitment formulation, and
+# `P` (dispatch vector), `A` (constraint matrix) and `T` (periods) are that
+# formulation's own symbols. Renaming them to lower_case makes the code harder to
+# check line-by-line against the paper it exists to reproduce -- and this solver's
+# numbers are published in benchmarks/instances/uc-chped/comparison.csv, so being
+# able to audit it against the source is the point. Same argument, and the same
+# shape, as src/io/.clang-tidy waiving the naming check for the vendored readers.
+# Scoped per file and per rule: nothing else in the tree may drift.
+[tool.ruff.lint.per-file-ignores]
+"benchmarks/chped/reference_solve.py" = ["N803", "N806"]
+# `base_T` is the same formulation's symbol for the horizon length, in the
+# function that extends an instance to more periods.
+"benchmarks/instances/uc-chped/data.py" = ["N806"]
+
 [tool.mypy]
 strict = true
 python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
+
+# `data` is imported by bare module name because reference_solve.py is run from
+# inside its own directory (`cd benchmarks/chped && python reference_solve.py`),
+# and `scipy`/`pyscipopt` ship no type stubs. Scoped per module rather than set
+# globally, on the same argument as the _cbls_core override below: a blanket
+# ignore_missing_imports would hide a genuinely mistyped import anywhere.
+[[tool.mypy.overrides]]
+module = ["data", "scipy.*", "pyscipopt"]
+ignore_missing_imports = true
 
 # _cbls_core is a compiled nanobind extension with no stubs, so mypy cannot
 # resolve it and reported import-not-found on every run -- including when the

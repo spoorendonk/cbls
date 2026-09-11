@@ -15,9 +15,16 @@ Startup cost: hot if off < t_cold periods, cold otherwise.
 
 import importlib.util
 import os
+from typing import Any
 
 _chped_path = os.path.join(os.path.dirname(__file__), "..", "..", "chped", "data.py")
+#: A UC-CHPED instance: a heterogeneous mapping of scalars and per-unit lists,
+#: the same shape `benchmarks/chped/data.py` defines.
+Instance = dict[str, Any]
+
 _spec = importlib.util.spec_from_file_location("chped_data", _chped_path)
+if _spec is None or _spec.loader is None:  # pragma: no cover - a broken checkout
+    raise SystemExit(f"cannot load the CHPED unit data from {_chped_path}")
 _chped_data = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_chped_data)
 CHPED_13UNIT = _chped_data.CHPED_13UNIT
@@ -61,15 +68,57 @@ UCP_10UNIT = {
     "a_cold": list(_KAZARLIS_A_COLD),
     # 24-hour demand profile
     "demand": [
-        700, 750, 850, 950, 1000, 1100, 1150, 1200,
-        1300, 1400, 1450, 1500, 1400, 1300, 1200, 1050,
-        1000, 1100, 1200, 1400, 1300, 1100, 900, 800,
+        700,
+        750,
+        850,
+        950,
+        1000,
+        1100,
+        1150,
+        1200,
+        1300,
+        1400,
+        1450,
+        1500,
+        1400,
+        1300,
+        1200,
+        1050,
+        1000,
+        1100,
+        1200,
+        1400,
+        1300,
+        1100,
+        900,
+        800,
     ],
     # 10% spinning reserve
     "reserve": [
-        70, 75, 85, 95, 100, 110, 115, 120,
-        130, 140, 145, 150, 140, 130, 120, 105,
-        100, 110, 120, 140, 130, 110, 90, 80,
+        70,
+        75,
+        85,
+        95,
+        100,
+        110,
+        115,
+        120,
+        130,
+        140,
+        145,
+        150,
+        140,
+        130,
+        120,
+        105,
+        100,
+        110,
+        120,
+        140,
+        130,
+        110,
+        90,
+        80,
     ],
     # No known bounds for 10-unit with valve-point (Pedroso Table 2 is for 13/40)
     "known_bounds": {},
@@ -83,7 +132,7 @@ UCP_10UNIT = {
 _UCP13_MAP = [0, 1, 2, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]  # 0-indexed into Kazarlis
 
 
-def _build_ucp13():
+def _build_ucp13() -> Instance:
     n = 13
     kmap = _UCP13_MAP
     return {
@@ -108,15 +157,57 @@ def _build_ucp13():
         "a_cold": [_KAZARLIS_A_COLD[kmap[i]] for i in range(n)],
         # 24-hour demand profile
         "demand": [
-            1250, 1340, 1510, 1690, 1780, 1960, 2050, 2140,
-            2320, 2490, 2580, 2670, 2490, 2320, 2140, 1870,
-            1780, 1960, 2140, 2490, 2320, 1960, 1600, 1420,
+            1250,
+            1340,
+            1510,
+            1690,
+            1780,
+            1960,
+            2050,
+            2140,
+            2320,
+            2490,
+            2580,
+            2670,
+            2490,
+            2320,
+            2140,
+            1870,
+            1780,
+            1960,
+            2140,
+            2490,
+            2320,
+            1960,
+            1600,
+            1420,
         ],
         # 10% spinning reserve
         "reserve": [
-            125, 134, 151, 169, 178, 196, 205, 214,
-            232, 249, 258, 267, 249, 232, 214, 187,
-            178, 196, 214, 249, 232, 196, 160, 142,
+            125,
+            134,
+            151,
+            169,
+            178,
+            196,
+            205,
+            214,
+            232,
+            249,
+            258,
+            267,
+            249,
+            232,
+            214,
+            187,
+            178,
+            196,
+            214,
+            249,
+            232,
+            196,
+            160,
+            142,
         ],
         # Known bounds from Pedroso Table 2 (1hr MIP): {periods: (LB, UB)}
         "known_bounds": {
@@ -138,7 +229,7 @@ UCP_13UNIT = _build_ucp13()
 # ---------------------------------------------------------------------------
 
 
-def _build_ucp40():
+def _build_ucp40() -> Instance:
     n = 40
     return {
         "name": "ucp40",
@@ -162,15 +253,57 @@ def _build_ucp40():
         "a_cold": [_KAZARLIS_A_COLD[i % 10] for i in range(n)],
         # 24-hour demand profile
         "demand": [
-            5360, 5740, 6510, 7270, 7650, 8420, 8800, 9190,
-            9950, 10720, 11100, 11480, 10720, 9950, 9190, 8040,
-            7650, 8420, 9190, 10720, 9950, 8420, 6890, 6120,
+            5360,
+            5740,
+            6510,
+            7270,
+            7650,
+            8420,
+            8800,
+            9190,
+            9950,
+            10720,
+            11100,
+            11480,
+            10720,
+            9950,
+            9190,
+            8040,
+            7650,
+            8420,
+            9190,
+            10720,
+            9950,
+            8420,
+            6890,
+            6120,
         ],
         # 10% spinning reserve
         "reserve": [
-            536, 574, 651, 727, 765, 842, 880, 919,
-            995, 1072, 1110, 1148, 1072, 995, 919, 804,
-            765, 842, 919, 1072, 995, 842, 689, 612,
+            536,
+            574,
+            651,
+            727,
+            765,
+            842,
+            880,
+            919,
+            995,
+            1072,
+            1110,
+            1148,
+            1072,
+            995,
+            919,
+            804,
+            765,
+            842,
+            919,
+            1072,
+            995,
+            842,
+            689,
+            612,
         ],
         # Known bounds from Pedroso Table 2 (1hr MIP): {periods: (LB, UB)}
         "known_bounds": {
@@ -192,7 +325,7 @@ UCP_40UNIT = _build_ucp40()
 # ---------------------------------------------------------------------------
 
 
-def _build_ucp100():
+def _build_ucp100() -> Instance:
     n = 100
     base40 = CHPED_40UNIT
     return {
@@ -228,7 +361,7 @@ UCP_100UNIT = _build_ucp100()
 # ---------------------------------------------------------------------------
 
 
-def _build_ucp200():
+def _build_ucp200() -> Instance:
     n = 200
     base40 = CHPED_40UNIT
     return {
@@ -263,7 +396,7 @@ UCP_200UNIT = _build_ucp200()
 # ---------------------------------------------------------------------------
 
 
-def make_subinstance(inst, n_periods):
+def make_subinstance(inst: Instance, n_periods: int) -> Instance:
     """Create a sub-instance using the first n_periods of the demand profile."""
     assert 1 <= n_periods <= inst["n_periods"], f"n_periods must be 1..{inst['n_periods']}"
     sub = dict(inst)
@@ -277,7 +410,7 @@ def make_subinstance(inst, n_periods):
     return sub
 
 
-def extend_horizon(inst, n_periods):
+def extend_horizon(inst: Instance, n_periods: int) -> Instance:
     """Extend an instance to n_periods by repeating the 24h demand profile.
 
     Each repeated day gets a slight variation (±3% sinusoidal) to avoid
