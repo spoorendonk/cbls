@@ -1,15 +1,14 @@
 """Tests for C++ search via Python bindings."""
 
-import pytest
 import _cbls_core as cbls
 
 
-def vid(handle):
+def vid(handle: int) -> int:
     return -(handle + 1)
 
 
 class TestSolver:
-    def test_unconstrained(self):
+    def test_unconstrained(self) -> None:
         m = cbls.Model()
         x = m.float_var(-10, 10)
         y = m.float_var(-10, 10)
@@ -20,7 +19,7 @@ class TestSolver:
         assert result.feasible
         assert result.objective < 1.0
 
-    def test_constrained(self):
+    def test_constrained(self) -> None:
         m = cbls.Model()
         x = m.float_var(0, 10)
         y = m.float_var(0, 10)
@@ -33,7 +32,7 @@ class TestSolver:
         assert result.feasible
         assert result.objective < 5.0
 
-    def test_returns_result(self):
+    def test_returns_result(self) -> None:
         m = cbls.Model()
         x = m.float_var(0, 1)
         m.minimize(m.sum([x]))
@@ -92,7 +91,7 @@ class TestFjNlInitialize:
 
 
 class TestViolation:
-    def test_feasible(self):
+    def test_feasible(self) -> None:
         m = cbls.Model()
         x = m.float_var(0, 10)
         neg5 = m.constant(-5.0)
@@ -105,7 +104,7 @@ class TestViolation:
         assert vm.total_violation() == 0.0
         assert vm.is_feasible()
 
-    def test_infeasible(self):
+    def test_infeasible(self) -> None:
         m = cbls.Model()
         x = m.float_var(0, 10)
         neg5 = m.constant(-5.0)

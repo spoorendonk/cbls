@@ -3,24 +3,24 @@
 import _cbls_core as cbls
 
 
-def vid(handle):
+def vid(handle: int) -> int:
     return -(handle + 1)
 
 
-def _naive_total(m, vm, var_id, j):
+def _naive_total(m: "cbls.Model", vm: "cbls.ViolationManager", var_id: int, j: float) -> float:
     """Weighted total violation after setting var_id <- j, then restore."""
     old = m.var(var_id).value
     m.var_mut(var_id).value = j
     cbls.full_evaluate(m)
     vm.invalidate_cache()
-    total = vm.total_violation()
+    total: float = vm.total_violation()
     m.var_mut(var_id).value = old
     cbls.full_evaluate(m)
     vm.invalidate_cache()
     return total
 
 
-def test_per_constraint_delta_roundtrips_to_list_of_tuples():
+def test_per_constraint_delta_roundtrips_to_list_of_tuples() -> None:
     m = cbls.Model()
     x = m.float_var(0, 10)
     m.add_constraint(m.leq(x, m.constant(2.0)))
@@ -36,7 +36,7 @@ def test_per_constraint_delta_roundtrips_to_list_of_tuples():
     assert {ci for ci, _ in pcd} == {0, 1}
 
 
-def test_weighted_delta_matches_naive_recompute():
+def test_weighted_delta_matches_naive_recompute() -> None:
     m = cbls.Model()
     x = m.float_var(1, 5)
     y = m.float_var(1, 5)
@@ -61,7 +61,7 @@ def test_weighted_delta_matches_naive_recompute():
     assert abs(vm.total_violation() - base) < 1e-12
 
 
-def test_weights_are_applied():
+def test_weights_are_applied() -> None:
     m = cbls.Model()
     x = m.float_var(0, 10)
     m.add_constraint(m.leq(x, m.constant(2.0)))

@@ -1,18 +1,18 @@
 """Tests for Expr wrapper and operator overloading via Python bindings."""
 
 import math
-import pytest
+
 import _cbls_core as cbls
 
 
-def vid(handle):
+def vid(handle: int) -> int:
     return -(handle + 1)
 
 
 class TestNewOps:
     """Test the 8 new operators via int32_t API."""
 
-    def test_tan(self):
+    def test_tan(self) -> None:
         m = cbls.Model()
         x = m.float_var(-1, 1)
         t = m.tan_expr(x)
@@ -22,7 +22,7 @@ class TestNewOps:
         cbls.full_evaluate(m)
         assert abs(m.node(t).value - math.tan(0.5)) < 1e-10
 
-    def test_exp(self):
+    def test_exp(self) -> None:
         m = cbls.Model()
         x = m.float_var(-10, 10)
         e = m.exp_expr(x)
@@ -32,17 +32,17 @@ class TestNewOps:
         cbls.full_evaluate(m)
         assert abs(m.node(e).value - math.exp(1.0)) < 1e-10
 
-    def test_log(self):
+    def test_log(self) -> None:
         m = cbls.Model()
         x = m.float_var(0.01, 10)
-        l = m.log_expr(x)
-        m.minimize(l)
+        log_node = m.log_expr(x)
+        m.minimize(log_node)
         m.close()
         m.var_mut(vid(x)).value = math.e
         cbls.full_evaluate(m)
-        assert abs(m.node(l).value - 1.0) < 1e-10
+        assert abs(m.node(log_node).value - 1.0) < 1e-10
 
-    def test_sqrt(self):
+    def test_sqrt(self) -> None:
         m = cbls.Model()
         x = m.float_var(0, 100)
         s = m.sqrt_expr(x)
@@ -52,7 +52,7 @@ class TestNewOps:
         cbls.full_evaluate(m)
         assert abs(m.node(s).value - 3.0) < 1e-10
 
-    def test_geq(self):
+    def test_geq(self) -> None:
         m = cbls.Model()
         x = m.float_var(0, 10)
         y = m.float_var(0, 10)
@@ -64,7 +64,7 @@ class TestNewOps:
         cbls.full_evaluate(m)
         assert m.node(g).value <= 0.0
 
-    def test_neq(self):
+    def test_neq(self) -> None:
         m = cbls.Model()
         x = m.float_var(0, 10)
         y = m.float_var(0, 10)
@@ -80,19 +80,19 @@ class TestNewOps:
         cbls.full_evaluate(m)
         assert m.node(n).value == 0.0  # satisfied
 
-    def test_lt(self):
+    def test_lt(self) -> None:
         m = cbls.Model()
         x = m.float_var(0, 10)
         y = m.float_var(0, 10)
-        l = m.lt(x, y)
-        m.minimize(m.abs_expr(l))
+        lt_node = m.lt(x, y)
+        m.minimize(m.abs_expr(lt_node))
         m.close()
         m.var_mut(vid(x)).value = 2.0
         m.var_mut(vid(y)).value = 5.0
         cbls.full_evaluate(m)
-        assert m.node(l).value < 0.0  # satisfied
+        assert m.node(lt_node).value < 0.0  # satisfied
 
-    def test_gt(self):
+    def test_gt(self) -> None:
         m = cbls.Model()
         x = m.float_var(0, 10)
         y = m.float_var(0, 10)
@@ -108,7 +108,7 @@ class TestNewOps:
 class TestExprArithmetic:
     """Test Expr operator overloading."""
 
-    def test_add(self):
+    def test_add(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         y = m.Float(0, 10)
@@ -120,7 +120,7 @@ class TestExprArithmetic:
         cbls.full_evaluate(m)
         assert m.node(f.handle).value == 7.0
 
-    def test_sub(self):
+    def test_sub(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         y = m.Float(0, 10)
@@ -132,7 +132,7 @@ class TestExprArithmetic:
         cbls.full_evaluate(m)
         assert abs(m.node(f.handle).value - 4.0) < 1e-10
 
-    def test_mul(self):
+    def test_mul(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         y = m.Float(0, 10)
@@ -144,7 +144,7 @@ class TestExprArithmetic:
         cbls.full_evaluate(m)
         assert m.node(f.handle).value == 12.0
 
-    def test_div(self):
+    def test_div(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         y = m.Float(1, 10)
@@ -156,7 +156,7 @@ class TestExprArithmetic:
         cbls.full_evaluate(m)
         assert m.node(f.handle).value == 2.0
 
-    def test_neg(self):
+    def test_neg(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         f = -x
@@ -166,7 +166,7 @@ class TestExprArithmetic:
         cbls.full_evaluate(m)
         assert m.node(f.handle).value == -5.0
 
-    def test_scalar_add(self):
+    def test_scalar_add(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         f = x + 3.0
@@ -176,7 +176,7 @@ class TestExprArithmetic:
         cbls.full_evaluate(m)
         assert m.node(f.handle).value == 5.0
 
-    def test_radd(self):
+    def test_radd(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         f = 2.0 + x
@@ -186,7 +186,7 @@ class TestExprArithmetic:
         cbls.full_evaluate(m)
         assert m.node(f.handle).value == 5.0
 
-    def test_scalar_mul(self):
+    def test_scalar_mul(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         f = 2.0 * x
@@ -196,7 +196,7 @@ class TestExprArithmetic:
         cbls.full_evaluate(m)
         assert m.node(f.handle).value == 8.0
 
-    def test_rsub(self):
+    def test_rsub(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         f = 10.0 - x
@@ -206,30 +206,30 @@ class TestExprArithmetic:
         cbls.full_evaluate(m)
         assert abs(m.node(f.handle).value - 7.0) < 1e-10
 
-    def test_pow_float(self):
+    def test_pow_float(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
-        f = x ** 2.0
+        f = x**2.0
         m.minimize(f)
         m.close()
         m.var_mut(x.var_id()).value = 3.0
         cbls.full_evaluate(m)
         assert m.node(f.handle).value == 9.0
 
-    def test_pow_int(self):
+    def test_pow_int(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
-        f = x ** 2
+        f = x**2
         m.minimize(f)
         m.close()
         m.var_mut(x.var_id()).value = 3.0
         cbls.full_evaluate(m)
         assert m.node(f.handle).value == 9.0
 
-    def test_rpow(self):
+    def test_rpow(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
-        f = 2.0 ** x
+        f = 2.0**x
         m.minimize(f)
         m.close()
         m.var_mut(x.var_id()).value = 3.0
@@ -238,7 +238,7 @@ class TestExprArithmetic:
 
 
 class TestExprScalarComparison:
-    def test_le_scalar(self):
+    def test_le_scalar(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         c = x <= 5.0
@@ -249,7 +249,7 @@ class TestExprScalarComparison:
         cbls.full_evaluate(m)
         assert m.node(c.handle).value <= 0.0
 
-    def test_ge_scalar(self):
+    def test_ge_scalar(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         c = x >= 2.0
@@ -260,7 +260,7 @@ class TestExprScalarComparison:
         cbls.full_evaluate(m)
         assert m.node(c.handle).value <= 0.0
 
-    def test_lt_scalar(self):
+    def test_lt_scalar(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         c = x < 5.0
@@ -271,7 +271,7 @@ class TestExprScalarComparison:
         cbls.full_evaluate(m)
         assert m.node(c.handle).value < 0.0
 
-    def test_gt_scalar(self):
+    def test_gt_scalar(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         c = x > 2.0
@@ -284,7 +284,7 @@ class TestExprScalarComparison:
 
 
 class TestExprComparison:
-    def test_le(self):
+    def test_le(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         y = m.Float(0, 10)
@@ -297,7 +297,7 @@ class TestExprComparison:
         cbls.full_evaluate(m)
         assert m.node(c.handle).value <= 0.0
 
-    def test_ge(self):
+    def test_ge(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         y = m.Float(0, 10)
@@ -310,7 +310,7 @@ class TestExprComparison:
         cbls.full_evaluate(m)
         assert m.node(c.handle).value <= 0.0
 
-    def test_lt(self):
+    def test_lt(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         y = m.Float(0, 10)
@@ -323,7 +323,7 @@ class TestExprComparison:
         cbls.full_evaluate(m)
         assert m.node(c.handle).value < 0.0
 
-    def test_gt(self):
+    def test_gt(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         y = m.Float(0, 10)
@@ -336,7 +336,7 @@ class TestExprComparison:
         cbls.full_evaluate(m)
         assert m.node(c.handle).value < 0.0
 
-    def test_eq(self):
+    def test_eq(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         y = m.Float(0, 10)
@@ -349,7 +349,7 @@ class TestExprComparison:
         cbls.full_evaluate(m)
         assert m.node(c.handle).value == 0.0
 
-    def test_neq(self):
+    def test_neq(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         y = m.Float(0, 10)
@@ -364,7 +364,7 @@ class TestExprComparison:
 
 
 class TestExprMathFunctions:
-    def test_sin(self):
+    def test_sin(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         f = cbls.sin(x)
@@ -374,7 +374,7 @@ class TestExprMathFunctions:
         cbls.full_evaluate(m)
         assert abs(m.node(f.handle).value - 1.0) < 1e-10
 
-    def test_cos(self):
+    def test_cos(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         f = cbls.cos(x)
@@ -384,7 +384,7 @@ class TestExprMathFunctions:
         cbls.full_evaluate(m)
         assert abs(m.node(f.handle).value - 1.0) < 1e-10
 
-    def test_tan(self):
+    def test_tan(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 1)
         f = cbls.tan(x)
@@ -394,7 +394,7 @@ class TestExprMathFunctions:
         cbls.full_evaluate(m)
         assert abs(m.node(f.handle).value - math.tan(0.5)) < 1e-10
 
-    def test_exp(self):
+    def test_exp(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         f = cbls.exp(x)
@@ -404,7 +404,7 @@ class TestExprMathFunctions:
         cbls.full_evaluate(m)
         assert abs(m.node(f.handle).value - math.exp(1.0)) < 1e-10
 
-    def test_log(self):
+    def test_log(self) -> None:
         m = cbls.Model()
         x = m.Float(0.01, 10)
         f = cbls.log(x)
@@ -414,7 +414,7 @@ class TestExprMathFunctions:
         cbls.full_evaluate(m)
         assert abs(m.node(f.handle).value - 1.0) < 1e-10
 
-    def test_sqrt(self):
+    def test_sqrt(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 100)
         f = cbls.sqrt(x)
@@ -424,7 +424,7 @@ class TestExprMathFunctions:
         cbls.full_evaluate(m)
         assert abs(m.node(f.handle).value - 3.0) < 1e-10
 
-    def test_abs(self):
+    def test_abs(self) -> None:
         m = cbls.Model()
         x = m.Float(-10, 10)
         f = cbls.abs(x)
@@ -436,7 +436,7 @@ class TestExprMathFunctions:
 
 
 class TestExprNested:
-    def test_complex_expression(self):
+    def test_complex_expression(self) -> None:
         m = cbls.Model()
         x = m.Float(-10, 10)
         y = m.Float(-10, 10)
@@ -449,7 +449,7 @@ class TestExprNested:
         expected = 4.0 + 4.0 + math.sin(1.0)
         assert abs(m.node(f.handle).value - expected) < 1e-10
 
-    def test_expr_matches_int32_api(self):
+    def test_expr_matches_int32_api(self) -> None:
         # Build same model with int32_t API
         m1 = cbls.Model()
         x1 = m1.float_var(-10, 10)
@@ -477,7 +477,7 @@ class TestExprNested:
 
 
 class TestExprFreeFunctions:
-    def test_pow_free(self):
+    def test_pow_free(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         two = m.Constant(2.0)
@@ -488,7 +488,7 @@ class TestExprFreeFunctions:
         cbls.full_evaluate(m)
         assert m.node(f.handle).value == 9.0
 
-    def test_min(self):
+    def test_min(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         y = m.Float(0, 10)
@@ -500,7 +500,7 @@ class TestExprFreeFunctions:
         cbls.full_evaluate(m)
         assert m.node(f.handle).value == 3.0
 
-    def test_max(self):
+    def test_max(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         y = m.Float(0, 10)
@@ -512,7 +512,7 @@ class TestExprFreeFunctions:
         cbls.full_evaluate(m)
         assert m.node(f.handle).value == 7.0
 
-    def test_if_then_else(self):
+    def test_if_then_else(self) -> None:
         m = cbls.Model()
         cond = m.Float(-10, 10)
         a = m.Float(0, 10)
@@ -526,7 +526,7 @@ class TestExprFreeFunctions:
         cbls.full_evaluate(m)
         assert m.node(f.handle).value == 5.0
 
-    def test_abs_builtin(self):
+    def test_abs_builtin(self) -> None:
         m = cbls.Model()
         x = m.Float(-10, 10)
         f = abs(x)
@@ -538,12 +538,12 @@ class TestExprFreeFunctions:
 
 
 class TestExprIsVar:
-    def test_var_expr(self):
+    def test_var_expr(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         assert x.is_var() is True
 
-    def test_node_expr(self):
+    def test_node_expr(self) -> None:
         m = cbls.Model()
         x = m.Float(0, 10)
         f = x + 1.0

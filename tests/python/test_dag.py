@@ -1,17 +1,17 @@
 """Tests for C++ DAG via Python bindings."""
 
 import math
-import pytest
+
 import _cbls_core as cbls
 
 
-def vid(handle):
+def vid(handle: int) -> int:
     """Get internal var ID from handle."""
     return -(handle + 1)
 
 
 class TestBasicEvaluation:
-    def test_sum(self):
+    def test_sum(self) -> None:
         m = cbls.Model()
         x = m.float_var(0, 10)
         y = m.float_var(0, 10)
@@ -23,7 +23,7 @@ class TestBasicEvaluation:
         cbls.full_evaluate(m)
         assert m.node(s).value == 7.0
 
-    def test_prod(self):
+    def test_prod(self) -> None:
         m = cbls.Model()
         x = m.float_var(0, 10)
         y = m.float_var(0, 10)
@@ -35,7 +35,7 @@ class TestBasicEvaluation:
         cbls.full_evaluate(m)
         assert m.node(p).value == 12.0
 
-    def test_pow(self):
+    def test_pow(self) -> None:
         m = cbls.Model()
         x = m.float_var(0, 10)
         two = m.constant(2)
@@ -46,7 +46,7 @@ class TestBasicEvaluation:
         cbls.full_evaluate(m)
         assert m.node(p).value == 9.0
 
-    def test_sin(self):
+    def test_sin(self) -> None:
         m = cbls.Model()
         x = m.float_var(-10, 10)
         s = m.sin_expr(x)
@@ -56,7 +56,7 @@ class TestBasicEvaluation:
         cbls.full_evaluate(m)
         assert abs(m.node(s).value - 1.0) < 1e-10
 
-    def test_nested(self):
+    def test_nested(self) -> None:
         m = cbls.Model()
         x = m.float_var(-10, 10)
         y = m.float_var(-10, 10)
@@ -76,7 +76,7 @@ class TestBasicEvaluation:
 
 
 class TestDeltaEvaluation:
-    def test_delta_matches_full(self):
+    def test_delta_matches_full(self) -> None:
         m = cbls.Model()
         x = m.float_var(0, 10)
         y = m.float_var(0, 10)
@@ -97,7 +97,7 @@ class TestDeltaEvaluation:
 
 
 class TestAD:
-    def test_sum_partials(self):
+    def test_sum_partials(self) -> None:
         m = cbls.Model()
         x = m.float_var(0, 10)
         y = m.float_var(0, 10)
@@ -110,7 +110,7 @@ class TestAD:
         assert cbls.compute_partial(m, s, vid(x)) == 1.0
         assert cbls.compute_partial(m, s, vid(y)) == 1.0
 
-    def test_chain_rule(self):
+    def test_chain_rule(self) -> None:
         m = cbls.Model()
         x = m.float_var(0, 10)
         two = m.constant(2)

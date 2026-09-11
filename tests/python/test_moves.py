@@ -1,15 +1,15 @@
 """Tests for C++ moves/LNS/pool via Python bindings."""
 
-import pytest
 import _cbls_core as cbls
+import pytest
 
 
-def vid(handle):
+def vid(handle: int) -> int:
     return -(handle + 1)
 
 
 class TestMoves:
-    def test_generate_float_moves(self):
+    def test_generate_float_moves(self) -> None:
         m = cbls.Model()
         x = m.float_var(0, 10)
         m.minimize(m.sum([x]))
@@ -21,7 +21,7 @@ class TestMoves:
         assert len(moves) > 0
         assert moves[0].move_type == "float_perturb"
 
-    def test_apply_undo_move(self):
+    def test_apply_undo_move(self) -> None:
         m = cbls.Model()
         x = m.float_var(0, 10)
         m.minimize(m.sum([x]))
@@ -39,7 +39,7 @@ class TestMoves:
 
 
 class TestCopyRestore:
-    def test_copy_restore_state(self):
+    def test_copy_restore_state(self) -> None:
         m = cbls.Model()
         x = m.float_var(0, 10)
         y = m.float_var(0, 10)
@@ -56,13 +56,13 @@ class TestCopyRestore:
 
 
 class TestErrorPaths:
-    def test_var_out_of_range(self):
+    def test_var_out_of_range(self) -> None:
         m = cbls.Model()
         m.float_var(0, 1)
         with pytest.raises(IndexError):
             m.var(999)
 
-    def test_add_constraint_rejects_var_handle(self):
+    def test_add_constraint_rejects_var_handle(self) -> None:
         m = cbls.Model()
         x = m.float_var(0, 10)
         with pytest.raises(ValueError):
@@ -70,7 +70,7 @@ class TestErrorPaths:
 
 
 class TestLNS:
-    def test_lns_destroy_repair(self):
+    def test_lns_destroy_repair(self) -> None:
         m = cbls.Model()
         x = m.float_var(0, 10)
         y = m.float_var(0, 10)
@@ -88,7 +88,7 @@ class TestLNS:
         lns.destroy_repair(m, vm, rng)
         # Just check it doesn't crash
 
-    def test_lns_destroy_repair_cycle(self):
+    def test_lns_destroy_repair_cycle(self) -> None:
         m = cbls.Model()
         x = m.float_var(0, 10)
         y = m.float_var(0, 10)
@@ -108,7 +108,7 @@ class TestLNS:
 
 
 class TestSolutionPool:
-    def test_pool_ordering(self):
+    def test_pool_ordering(self) -> None:
         pool = cbls.SolutionPool(3)
         s1 = cbls.Solution()
         s1.objective = 10.0

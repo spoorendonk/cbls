@@ -278,6 +278,55 @@ if [ -n "$MYPY_FILES" ] && [ -x "$VENV_BIN/mypy" ]; then
 	fi
 fi
 
+# Python lint + type gate -- BLOCKING, and over whole directories rather than
+# over the files this push happens to touch.
+#
+# The two steps above are advisory and see only $PY_FILES, which is two
+# independent escape routes at once. A module nobody has edited in months is
+# never staged (so pre-commit never lints it) and never appears in $PY_FILES
+# (so the steps above never see it); and even when it does appear, a finding
+# only prints a warning. Five binding-test modules accumulated 139
+# `mypy --strict` errors and 9 ruff errors that way, with every gate green
+# throughout -- issue #154.
+#
+# Scope is the directories already at zero findings, NOT the whole tree.
+# benchmarks/ still carries 22 ruff findings, 5 unformatted files and 37 mypy
+# errors, and benchmarks/instances/uc-chped/ cannot be type-checked at all: it
+# has an __init__.py inside a hyphenated directory, which makes mypy refuse the
+# entire run with "not a valid Python package name" before checking anything.
+# Widening the scope is issue #155; until then benchmarks/ is covered only by
+# the advisory steps above.
+#
+# Cost, measured: ruff ~0.02s, mypy --strict ~4.5s cold and ~0.15s warm, on a
+# gate that already spends a clean rebuild plus the full ctest suite.
+PY_GATE_DIRS="tests/python python"
+PY_GATE_ISSUES=""
+if [ -n "$VENV_BIN" ]; then
+	echo ""
+	echo "=== Running ruff + mypy over $PY_GATE_DIRS (blocking) ==="
+	for tool in ruff mypy; do
+		# A missing tool is a finding, not a skip. Every other Python step in
+		# these hooks guards on `-x` and skips in silence, which is how a gate
+		# reports success without having run -- the same fail-open class as the
+		# clang-tidy config faults above. A blocking step must not do that.
+		if [ ! -x "$VENV_BIN/$tool" ]; then
+			PY_GATE_ISSUES="${PY_GATE_ISSUES}${tool} is not in ${VENV_BIN} -- run: ${VENV_BIN}/pip install -e '.[dev]'"$'\n'
+		fi
+	done
+	if [ -z "$PY_GATE_ISSUES" ]; then
+		# `RESULT=$(cmd) || ...` rather than a bare assignment: `set -e` is on,
+		# so an unguarded assignment from a failing command would abort the
+		# hook here instead of collecting the finding and reporting it below.
+		RESULT=$("$VENV_BIN/ruff" check $PY_GATE_DIRS 2>&1) ||
+			PY_GATE_ISSUES="${PY_GATE_ISSUES}${RESULT}"$'\n'
+		RESULT=$("$VENV_BIN/ruff" format --check $PY_GATE_DIRS 2>&1) ||
+			PY_GATE_ISSUES="${PY_GATE_ISSUES}${RESULT}"$'\n'
+		RESULT=$("$VENV_BIN/mypy" --strict $PY_GATE_DIRS 2>&1) ||
+			PY_GATE_ISSUES="${PY_GATE_ISSUES}${RESULT}"$'\n'
+		[ -n "$PY_GATE_ISSUES" ] || echo "ruff + mypy: clean"
+	fi
+fi
+
 # clang-tidy findings are a hard block; everything below stays advisory.
 if [ -n "$TIDY_ISSUES" ]; then
 	echo ""
@@ -301,6 +350,24 @@ if [ -n "$TIDY_ISSUES" ]; then
 		echo "structural exemptions, each with a measurement. Adding a seventh"
 		echo "needs the same standard, not a red gate."
 	fi
+	exit 1
+fi
+
+# Python findings are a hard block too. Reported after clang-tidy's block,
+# which exits first when it has findings -- fix whichever gate printed.
+if [ -n "$PY_GATE_ISSUES" ]; then
+	echo ""
+	echo "═══════════════════════════════════════════"
+	echo "  Python findings (blocking):"
+	echo "═══════════════════════════════════════════"
+	echo "$PY_GATE_ISSUES"
+	echo "═══════════════════════════════════════════"
+	echo ""
+	echo "FAILED: $PY_GATE_DIRS is kept ruff-clean, ruff-format-clean and"
+	echo "mypy --strict clean (issue #154). Fix the finding above --"
+	echo "\`ruff check --fix\` and \`ruff format\` handle most of it, and an"
+	echo "untyped test function wants \`-> None\`. Do not widen an ignore list"
+	echo "or drop a directory from PY_GATE_DIRS to get a push through."
 	exit 1
 fi
 

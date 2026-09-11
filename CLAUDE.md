@@ -53,6 +53,32 @@ Install `clangd-lsp@claude-plugins-official` plus `clangd` itself (`apt install 
 - Use built-in generics (`list[int]`, `dict[str, Any]`) and `|` union syntax.
 - Pin dependencies with `>=` lower bounds in `pyproject.toml`. Use `uv` or `pip`.
 
+### Where that standard is actually enforced
+
+Two directories, `tests/python/` and `python/`, and only those. `pre-push` runs
+`ruff check`, `ruff format --check` and `mypy --strict` over **those whole
+directories** as a **hard block** — the same standing as clang-tidy, and for the
+same reason. `benchmarks/` is covered only by the advisory, changed-files-only
+steps, so for that tree the standard above is aspirational. Issue #155 is what
+closes the gap; don't restate the split anywhere else.
+
+The scope is a measurement, not a preference. `benchmarks/` carries 22 ruff
+findings, 5 unformatted files and 37 `mypy --strict` errors, and
+`benchmarks/instances/uc-chped/` cannot be type-checked *at all* — an
+`__init__.py` inside a hyphenated directory makes mypy abort the whole run with
+`not a valid Python package name` before checking anything, so no single
+whole-tree invocation even runs today. Cost of the blocking step is `ruff`
+~0.02s and `mypy` ~4.5s cold / ~0.15s warm, against a gate that already spends a
+clean rebuild plus the full `ctest` suite — cost was never the objection.
+
+Both older escape routes are closed for those two directories, and both mattered:
+pre-commit lints only **staged** files, so a module nobody edits is never linted,
+and pre-push's other Python steps see only the pushed file list and merely warn.
+Five binding-test modules accumulated 139 `mypy --strict` errors and 9 ruff
+errors that way with every gate green throughout (#154). Do not narrow
+`PY_GATE_DIRS` in `.githooks/pre-push` to get a push through — that is the
+`.clang-tidy` disabled-list move in a different file.
+
 ### LSP
 
 Install `pyright-lsp@claude-plugins-official`. Pyright reads `[tool.mypy]` and project layout from `pyproject.toml` — no extra config needed.
@@ -105,7 +131,7 @@ The hooks live in **`.githooks/`, tracked in this repo** — that directory is t
 
 - `pre-commit` — auto-formats staged C++/Python/shell (clang-format, ruff, shfmt), applies safe clang-tidy fixes, re-stages, then runs the affected test suite. Hard block on failure. The clang tools come from `.venv/bin` (resolved by `.githooks/resolve-venv.sh`); if neither the venv nor `PATH` has them it says so rather than skipping quietly.
 - `commit-msg` — Conventional Commits format.
-- `pre-push` — the clean build + **full** suite from `## Build & Test` below, then **clang-tidy as a hard block**, and ruff-complexity/shellcheck/mypy as warnings. Both the ```build and ```test fences must resolve or the push is blocked; there is no auto-detect fallback, because guessing a build would gate a different one than the documented build.
+- `pre-push` — the clean build + **full** suite from `## Build & Test` below, then **clang-tidy as a hard block** and **ruff + `mypy --strict` over `tests/python/` and `python/` as a hard block** (see **Where that standard is actually enforced** above), with ruff-complexity/shellcheck/mypy over the pushed file list remaining warnings. Both the ```build and ```test fences must resolve or the push is blocked; there is no auto-detect fallback, because guessing a build would gate a different one than the documented build.
 
   clang-tidy blocks because the tree is held at **zero** warnings. Getting there
   took a **ratchet** — a list in `.clang-tidy` of checks disabled by name, each
