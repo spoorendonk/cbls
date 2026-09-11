@@ -609,17 +609,22 @@ generalises, and forbade any engine change until that was answered — the effec
 could easily be an artefact of `nvs01`, which is a three-variable instance with a
 product term.
 
-> **Status: #149 is closed with `nvs01` treated as an outlier, and the
-> roster-wide campaign below was NOT run.** Re-measured at `eb9e1a5`, the effect
-> reproduces on `nvs01` itself — 8 of 8 seeds feasible, Pearson **r = 0.9399**
-> against #134's 0.945 at `09097de`, 106 commits earlier — so it is real and
-> stable on that instance, not a one-commit artefact. What is unmeasured is
-> whether it holds anywhere else. That question is deferred to the campaign that
-> regenerates this table (#123), where the per-seed columns come for free rather
-> than costing a dedicated 6.7-hour run. Until then **nothing here supports a
-> claim about the engine in general**, and no engine change may be made on it.
+> **Status: #149 is closed with the roster-wide question deferred, and the
+> campaign below was NOT run.** Re-measured at `eb9e1a5`, the effect reproduces
+> on `nvs01` itself — 8 of 8 seeds feasible, Pearson **r = 0.9399** against
+> #134's 0.945 at `09097de`, 106 commits earlier — so it is real and stable on
+> that instance, not a one-commit artefact.
 >
-> The protocol below stays as the recipe for whoever does run it.
+> **Whether `nvs01` is unusual or typical is undetermined.** Saying it is "an
+> outlier" would be a claim about the other 49 instances, and not one of them has
+> been measured: the first-feasible columns did not exist when this table was
+> written. One instance is one instance, in both directions — it supports no
+> claim about the engine in general, and equally no claim that the engine is
+> generally fine. No engine change may be made on it either way.
+>
+> That question is deferred to the campaign that regenerates this table (#123),
+> where the per-seed columns come for free rather than costing a dedicated
+> 6.7-hour run. The protocol below stays as the recipe for whoever runs it.
 
 Everything needed is in the tree. The runner publishes
 `first_feasible_objective` and `time_to_first_feasible` on every row (recording
