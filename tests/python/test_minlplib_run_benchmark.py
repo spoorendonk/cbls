@@ -961,7 +961,7 @@ def test_a_staged_row_whose_note_is_unrecognised_cannot_stand_in_for_a_solve(
     stage = tmp_path / "stage"
     stage.mkdir()
     (stage / "a.trace.csv").write_text(TRACE_HEADER + "\n")
-    row = f"a,NaN,1,1,NaN,NaN,0,false,convert-error,abc1234,NaN,0,NaN,NaN,{DEFAULT_ARM}"
+    row = f"a,NaN,1,1,NaN,NaN,0,false,convert-error,abc1234,NaN,0,NaN,NaN,NaN,NaN,{DEFAULT_ARM}"
     (stage / "a.csv").write_text(f"{HEADER}\n{row}\n")
 
     assert staged_row_complete(stage / "a.csv", "abc1234")
@@ -975,7 +975,7 @@ def test_a_staged_row_with_no_note_at_all_cannot_stand_in_for_a_solve(
     stage = tmp_path / "stage"
     stage.mkdir()
     (stage / "a.trace.csv").write_text(TRACE_HEADER + "\n")
-    row = f"a,NaN,1,1,NaN,NaN,0,false,,abc1234,NaN,0,NaN,NaN,{DEFAULT_ARM}"
+    row = f"a,NaN,1,1,NaN,NaN,0,false,,abc1234,NaN,0,NaN,NaN,NaN,NaN,{DEFAULT_ARM}"
     (stage / "a.csv").write_text(f"{HEADER}\n{row}\n")
 
     assert not staged_complete(make_args(tmp_path), "abc1234", "a", stage)
