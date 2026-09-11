@@ -106,6 +106,30 @@ def _parse_lines(lines: Iterable[str]) -> list[tuple[float, float]]:
     return trace
 
 
+#: Magnitude at or past which ModelBuilder reports a constraint bound as infinite.
+#: Its own sentinel is 1e30; compared with a margin rather than for equality so a
+#: bound the reader scaled or rounded still reads as infinite.
+MODEL_BUILDER_INFINITY = 1e30
+
+
+def count_free_constraints(model: model_builder.ModelBuilder) -> int:
+    """Linear constraints CP-SAT holds that bound nothing on either side.
+
+    These are the MPS `N` rows after the first: the first is the objective, and
+    every reader treats it as such, but ModelBuilder keeps the rest as
+    unconstrained linear constraints where the CBLS adapter (and SCIP) drop them.
+    That is the whole of the known-benign way the two engines' constraint counts
+    differ, so it is recorded rather than reasoned about after the fact -- the
+    scorer's model-shape cross-check subtracts exactly this and flags whatever is
+    left (issue #139).
+    """
+    return sum(
+        1
+        for con in model.get_linear_constraints()
+        if con.lower_bound <= -MODEL_BUILDER_INFINITY and con.upper_bound >= MODEL_BUILDER_INFINITY
+    )
+
+
 @contextlib.contextmanager
 def capture_stdout_fd(sink_path: Path) -> Iterator[None]:
     """Redirect fd 1 (including writes from C++) to `sink_path` for the block's duration.
@@ -138,6 +162,11 @@ def solve(
     # ortools ships no annotations for ModelBuilder's constructor; the rest of the
     # model_builder surface used here is typed.
     model = model_builder.ModelBuilder()  # type: ignore[no-untyped-call]
+    # Read and build are one call here -- ModelBuilder parses the MPS straight
+    # into its own protobuf -- so this is the whole of the setup CBLS splits into
+    # `read_seconds` + `build_seconds`. Timed on both sides because the published
+    # wall-clock column has only ever bracketed the solve.
+    setup_started = time.monotonic()
     if not model.import_from_mps_file(str(mps_path)):
         # Carries every key main() and the scorer read unconditionally. A key
         # missing here crashes the job *after* write_outputs has written its
@@ -148,16 +177,22 @@ def solve(
                 "status": "read_error",
                 "message": f"CP-SAT could not import {mps_path.name}",
                 "wall_seconds": 0.0,
+                "read_seconds": time.monotonic() - setup_started,
+                "setup_seconds": time.monotonic() - setup_started,
                 "objective": None,
             },
             [],
             {},
         )
 
+    read_seconds = time.monotonic() - setup_started
+    free_cons = count_free_constraints(model)
+
     solver = model_builder.ModelSolver("SAT")
     solver.enable_output(True)
     solver.set_time_limit_in_seconds(budget)
     solver.set_solver_specific_parameters(build_parameters(workers, seed))
+    setup_seconds = time.monotonic() - setup_started
 
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="cpsat-log-") as tmpdir:
@@ -175,8 +210,11 @@ def solve(
         "status": "feasible" if has_solution else "no_solution",
         "cpsat_status": status.name,
         "wall_seconds": wall,
+        "read_seconds": read_seconds,
+        "setup_seconds": setup_seconds,
         "n_vars": model.num_variables,
         "n_cons": model.num_constraints,
+        "n_free_cons": free_cons,
         "objective": None,
     }
     if status == model_builder.SolveStatus.INVALID_SOLVER_PARAMETERS:

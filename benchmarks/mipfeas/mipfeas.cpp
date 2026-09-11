@@ -191,19 +191,33 @@ public:
             return;
         }
         last_written_ = p.objective;
+        ++n_points_;
         // Flushed per row: a run is minutes long and an interrupted one must
         // still leave a scorable prefix behind.
         out_ << p.time_seconds << "," << p.objective << '\n';
     }
 
+    /// How many incumbents the callback actually recorded. Published as
+    /// `trace_source`, which is how a scorer tells a genuine anytime profile
+    /// from one the scorer had to invent from the final objective: a callback
+    /// that stopped firing would otherwise score every instance near the
+    /// no-solution penalty, indistinguishable from "the search is bad".
+    long n_points() const { return n_points_; }
+
 private:
     std::ofstream& out_;
     double last_written_ = std::numeric_limits<double>::infinity();
+    long n_points_ = 0;
 };
 
 // Peak resident set of this process, in KiB. Reported per result so the
 // concurrency for a full-roster run can be sized from measurement rather than
 // guessed: the roster spans models from tens of KB to millions of nonzeros.
+// Seconds elapsed since `start`, on the monotonic clock.
+double seconds_since(const std::chrono::steady_clock::time_point& start) {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+}
+
 long peak_rss_kib() {
     struct rusage usage{};
     if (getrusage(RUSAGE_SELF, &usage) != 0) {
@@ -481,19 +495,30 @@ int run_benchmark(int argc, char** argv) {
         return 2;
     }
 
+    // Read and build are timed separately from the solve. The solve bracket
+    // below is the only thing `wall_seconds` has ever measured, so every second
+    // spent parsing the MPS, lowering it into a DAG and propagating bounds was
+    // invisible in the published table -- on a roster whose largest models spend
+    // minutes there. Reported, never subtracted: two whole-program timings
+    // differenced is not a measurement (CLAUDE.md).
+    const auto t_read = std::chrono::steady_clock::now();
     cbls::MpsProblem prob;
     try {
         prob = cbls::read_mps(mps_path);
     } catch (const std::exception& e) {
-        write_result(args, {{"status", "read_error"}, {"message", e.what()}});
+        write_result(args, {{"status", "read_error"},
+                            {"message", e.what()},
+                            {"read_seconds", seconds_since(t_read)}});
         std::fprintf(stderr, "%s: read error: %s\n", args.instance.c_str(), e.what());
         return 1;
     }
+    const double read_seconds = seconds_since(t_read);
 
     cbls::MpsToModelOptions mps_opts;
     mps_opts.inf_clamp = args.inf_clamp;
     mps_opts.propagate_bounds = args.propagate_bounds;
     mps_opts.max_propagation_passes = args.max_propagation_passes;
+    const auto t_build = std::chrono::steady_clock::now();
     cbls::MpsToModelResult built;
     try {
         built = cbls::mps_to_model(prob, mps_opts);
@@ -502,10 +527,14 @@ int run_benchmark(int argc, char** argv) {
                             {"message", e.what()},
                             {"n_vars", prob.vars.size()},
                             {"n_cons", prob.rows.size()},
-                            {"n_int_vars", count_int_vars(prob)}});
+                            {"n_int_vars", count_int_vars(prob)},
+                            {"read_seconds", read_seconds},
+                            {"build_seconds", seconds_since(t_build)}});
         std::fprintf(stderr, "%s: build error: %s\n", args.instance.c_str(), e.what());
         return 1;
     }
+    // Bound propagation runs inside mps_to_model, so it is inside this number.
+    const double build_seconds = seconds_since(t_build);
 
     const std::string trace_path = args.out_dir + "/" + args.instance + ".trace.csv";
     std::ofstream trace(trace_path);
@@ -523,17 +552,21 @@ int run_benchmark(int argc, char** argv) {
 
     const auto t0 = std::chrono::steady_clock::now();
     cbls::SearchResult result;
+    long trace_points = 0;
     try {
         TraceRecorder recorder(trace);
         result = cbls::solve(built.model, args.budget, args.seed, /*use_fj=*/true, &hook, &lns,
                              /*lns_interval=*/3, &recorder, cfg);
+        trace_points = recorder.n_points();
     } catch (const std::exception& e) {
-        write_result(args, {{"status", "solve_error"}, {"message", e.what()}});
+        write_result(args, {{"status", "solve_error"},
+                            {"message", e.what()},
+                            {"read_seconds", read_seconds},
+                            {"build_seconds", build_seconds}});
         std::fprintf(stderr, "%s: solve error: %s\n", args.instance.c_str(), e.what());
         return 1;
     }
-    const double wall =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    const double wall = seconds_since(t0);
 
     Verdict verdict = assess_result(built, result, args.feas_tol);
     // The solution goes out before the result does. The driver resumes on the
@@ -551,7 +584,19 @@ int run_benchmark(int argc, char** argv) {
     }
     nlohmann::json j{
         {"status", verdict.status},
+        // The solve bracket, unchanged: `wall_seconds` has always meant this and
+        // published tables are scored against it. The setup keys beside it are
+        // the part that used to go unreported.
         {"wall_seconds", wall},
+        {"read_seconds", read_seconds},
+        {"build_seconds", build_seconds},
+        {"setup_seconds", read_seconds + build_seconds},
+        // Mirrors cpsat_solve.py's key of the same name. `callback` is this
+        // runner's analogue of CP-SAT's log: a genuine anytime profile. Anything
+        // else means the scorer had to stand in a single end point, which is a
+        // harness condition rather than a search result.
+        {"trace_points", trace_points},
+        {"trace_source", trace_points > 0 ? "callback" : "final_only"},
         {"iterations", result.iterations},
         {"max_violation", result.best_violation},
         {"n_fractional_int", verdict.n_fractional_int},
