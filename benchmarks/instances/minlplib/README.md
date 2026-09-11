@@ -696,14 +696,29 @@ before the campaign rather than chosen once the numbers are in:
   answer as "does not generalise".
 
 Two things to hold while reading the output. First, "varied" means "differs in
-the cell the runner published", which is six significant figures — `cell()`
-streams a double through a default-precision `std::ostringstream` — so eight
-seeds finishing within ~1e-6 relative read as `final-invariant`. That is the
-intended reading (a 1e-6 spread is not a descent) but it is a property of the
-table's precision, and it belongs in any write-up. Second, much of this roster is
-solved to the same objective on every seed at 60s, so a large `no-spread` or
-`final-invariant` count is not a failed campaign. Read the bucket line the report
-prints before reading the verdict.
+the cell the runner published". The **final** objective is six significant
+figures — `cell()` streams a double through a default-precision
+`std::ostringstream` — so eight seeds finishing within ~1e-6 relative read as
+`final-invariant`. That is the intended reading (a 1e-6 spread is not a descent)
+but it is a property of the table's precision, and it belongs in any write-up.
+The **first-feasible** objective is written by `precise_cell()` at 17 digits
+instead, and deliberately: `arrival-invariant` is an *eligible* bucket that
+counts as evidence **against** the effect, so a rounding artefact there would
+manufacture a refutation rather than merely withhold evidence. Second, much of
+this roster is solved to the same objective on every seed at 60s, so a large
+`no-spread`, `final-invariant` or `arrival-invariant` count is not a failed
+campaign. Read the bucket line the report prints before reading the verdict.
+
+**Before spending the 6.7 hours, buy the eligibility floor cheaply.** The
+verdict is `INCONCLUSIVE` below 10 eligible instances, and eligibility needs a
+spread at one end — which much of this roster does not have. Run a three-seed,
+10-second pilot over the whole roster first (~25 minutes, same commands with
+`--time-limit 10` and seeds `1 42 7` into a separate scratch directory), and read
+**only the bucket line** from it: if `determined + not-determined +
+final-invariant + arrival-invariant` is already at or above 10 there, the real
+campaign will clear the floor comfortably. The pilot's own verdict is **not** the
+campaign's verdict and must never be quoted as one — a 10-second budget is a
+different experiment.
 
 Sanity check before believing any of it: the report prints `nvs01`'s own `r`
 beside #134's 0.945. A large disagreement is a reason to stop and find out why

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import math
+import statistics
 from typing import TYPE_CHECKING
 
 import pytest
@@ -306,17 +307,60 @@ def test_a_seed_appearing_twice_is_not_weighted_double(tmp_path: Path) -> None:
     otherwise weight that seed twice and shrink the spread the correlation sits
     on.
     """
+    # Deliberately NOT a perfect line: on a perfect line a repeated point leaves
+    # r at 1.0, so the test would pass with the dedup removed. `seeds` is a set
+    # either way, so `pearson` against the five intended pairs is what actually
+    # pins the behaviour.
+    firsts = [10.0, 20.0, 30.0, 40.0, 100.0]
+    finals = [1.0, 2.0, 3.0, 4.0, 4.5]
     path = tmp_path / "results.csv"
     with path.open("w", newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow(["instance", "arm", "seed", *RUNNER_HEADER[1:]])
-        for seed in range(1, 6):
-            row = runner_row("a", objective=float(seed), first_feasible=10.0 * seed)
+        for seed, (first, final) in enumerate(zip(firsts, finals, strict=True), start=1):
+            row = runner_row("a", objective=final, first_feasible=first)
             writer.writerow([row[0], "control", str(seed), *row[1:]])
-        duplicate = runner_row("a", objective=1.0, first_feasible=10.0)
+        # An exact copy of seed 1's row, which is what a re-run without
+        # `--no-resume` leaves behind. Last-wins, so the pair it carries is
+        # unchanged -- only its WEIGHT would change.
+        duplicate = runner_row("a", objective=finals[0], first_feasible=firsts[0])
         writer.writerow([duplicate[0], "control", "1", *duplicate[1:]])
     (result,) = score(["--results", str(path), "--arm", "control"])
     assert result.seeds == 5
+    assert result.pearson == pytest.approx(statistics.correlation(firsts, finals))
+
+
+def test_a_table_without_the_first_feasible_columns_is_refused_by_name(tmp_path: Path) -> None:
+    """A pre-#149 table does not fail -- it returns a clean INCONCLUSIVE.
+
+    Every row lands in the drop tally and the verdict comes back well-formed at
+    exit 0, which after a six-hour campaign cannot be told apart from a campaign
+    that genuinely measured nothing. So the missing column is named instead.
+    """
+    path = tmp_path / "old.csv"
+    with path.open("w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["instance", "objective", "feasible"])
+        writer.writerow(["a", "1.0", "true"])
+    refusal = usage_error(parse_args(["--table", f"1={path}"]))
+    if refusal is None:
+        pytest.fail("a table with no first-feasible columns was accepted")
+    assert "first_feasible_objective" in refusal
+    assert "time_to_first_feasible" in refusal
+
+
+def test_the_same_results_file_passed_twice_is_refused(tmp_path: Path) -> None:
+    """`--table` repeats are refused by seed; this is the same mistake, other flag."""
+    path = tmp_path / "results.csv"
+    with path.open("w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["instance", "seed", *RUNNER_HEADER[1:]])
+        row = runner_row("a", objective=1.0, first_feasible=10.0)
+        writer.writerow([row[0], "1", *row[1:]])
+    refusal = usage_error(parse_args(["--results", str(path), "--results", str(path)]))
+    if refusal is None:
+        pytest.fail("the same results file was accepted twice")
+    assert "counted twice" in refusal
 
 
 # --- eligibility ---------------------------------------------------------------

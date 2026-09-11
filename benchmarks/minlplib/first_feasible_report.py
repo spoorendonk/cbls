@@ -96,6 +96,19 @@ MIN_ELIGIBLE_INSTANCES = 10
 #: raise it for a sensitivity check.
 MIN_SEEDS_PER_INSTANCE = 4
 
+#: The columns every input table must carry for this report to mean anything.
+#: Checked in `usage_error`, by name, because a table missing them does not fail
+#: -- it drops every row into the tally and returns a well-formed INCONCLUSIVE at
+#: exit 0, which after a six-hour campaign is indistinguishable from a campaign
+#: that genuinely measured nothing.
+REQUIRED_TABLE_COLUMNS = (
+    "instance",
+    "objective",
+    "feasible",
+    "first_feasible_objective",
+    "time_to_first_feasible",
+)
+
 #: The instance #134 measured. Its r is printed on its own line so the campaign
 #: can be checked against the result that raised the issue before its verdict is
 #: believed: a roster-wide r that disagrees with 0.945 HERE is a bug in the
@@ -447,7 +460,7 @@ def verdict(results: Sequence[InstanceResult]) -> Verdict:
         return Verdict(
             "GENERALISES",
             f"median r = {median:.3f} (>= {R_DETERMINED}) and {len(determined)} of "
-            f"{len(eligible)} eligible instances are at or above it",
+            f"{len(eligible)} eligible instances are at or above the threshold",
         )
     why = []
     if math.isnan(median):
@@ -516,7 +529,8 @@ def render(results: Sequence[InstanceResult], skipped: Skipped, rows: int, min_s
             f"median r over eligible: {'-' if math.isnan(median) else f'{median:.3f}'}  "
             f"(over the {sum(1 for r in eligible if not math.isnan(r.pearson))} with a "
             "defined r)",
-            f"instances at r >= {R_DETERMINED}:  {buckets[DETERMINED]} of {len(eligible)} eligible",
+            f"instances at r and rho >= {R_DETERMINED}:  {buckets[DETERMINED]} of "
+            f"{len(eligible)} eligible",
         ]
     call = verdict(results)
     lines += [
@@ -643,45 +657,94 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def usage_error(args: argparse.Namespace) -> str | None:
-    """The reason to reject the argument combination outright, or None."""
-    if not args.table and not args.results:
-        return "nothing to score: pass --table SEED=PATH or --results PATH"
-    if args.min_seeds < 2:
-        return f"--min-seeds must be >= 2 (got {args.min_seeds}); a correlation needs two points"
+def _duplicate_input_refusal(args: argparse.Namespace) -> str | None:
+    """One input passed twice, through either flag: one draw counted twice."""
     seeds = [seed for seed, _ in args.table]
     if len(set(seeds)) != len(seeds):
         return (
             f"--table repeats a seed ({sorted(seeds)}); two tables at one seed are two draws of "
             "the same run and would weight it double"
         )
-    missing = [str(p) for _, p in args.table] + [str(p) for p in args.results]
-    absent = [p for p in missing if not Path(p).exists()]
+    paths = [str(path) for path in args.results]
+    if len(set(paths)) != len(paths):
+        # The same mistake through the other flag, where the last-wins dedup in
+        # `score_instance` is all that stands between it and a doubled seed.
+        return (
+            f"--results repeats a file ({sorted(paths)}); one run passed twice is one draw "
+            "counted twice"
+        )
+    return None
+
+
+def _columns_refusal(flag: str, path: Path, header: list[str]) -> str | None:
+    """A table that cannot answer the question, named rather than scored.
+
+    A pre-#149 table, or the wrong file entirely -- `anytime_trace.csv` also has
+    an `instance` column -- does not fail: every row lands in the drop tally and
+    the report returns a well-formed INCONCLUSIVE at exit 0, indistinguishable
+    after six hours of solving from a campaign that measured nothing.
+    """
+    lacking = [column for column in REQUIRED_TABLE_COLUMNS if column not in header]
+    if not lacking:
+        return None
+    return (
+        f"{flag} {path} has no {', '.join(lacking)} column; it predates the first-feasible "
+        "columns (#149) or is not a results table at all"
+    )
+
+
+def _results_refusal(args: argparse.Namespace, path: Path, header: list[str]) -> str | None:
+    """What only a `--results` campaign file can get wrong: its seed and its arm."""
+    # The documented campaign produces eight seedless per-run tables and
+    # --results is one word away from --table, so this is the likeliest single
+    # user error here. Refuse it by name rather than dying on the KeyError that
+    # reading `row["seed"]` would raise.
+    if "seed" not in header:
+        return (
+            f"--results {path} has no `seed` column, so every row would belong to an "
+            "unknown seed; a per-run comparison.csv is passed as --table SEED=PATH"
+        )
+    if "arm" not in header:
+        return None
+    with path.open(newline="") as fh:
+        arms = {row["arm"] for row in csv.DictReader(fh)}
+    # Otherwise a mistyped arm drops every row and the report comes back a
+    # well-formed INCONCLUSIVE -- indistinguishable, after six hours of solving,
+    # from a campaign that genuinely measured nothing.
+    if args.arm not in arms:
+        return f"--arm {args.arm!r} matches no row in {path}; it carries {', '.join(sorted(arms))}"
+    return None
+
+
+def _header_of(path: Path) -> list[str]:
+    with path.open(newline="") as fh:
+        return next(csv.reader(fh), [])
+
+
+def usage_error(args: argparse.Namespace) -> str | None:
+    """The reason to reject the argument combination outright, or None."""
+    if not args.table and not args.results:
+        return "nothing to score: pass --table SEED=PATH or --results PATH"
+    if args.min_seeds < 2:
+        return f"--min-seeds must be >= 2 (got {args.min_seeds}); a correlation needs two points"
+    duplicate = _duplicate_input_refusal(args)
+    if duplicate is not None:
+        return duplicate
+    paths = [path for _, path in args.table] + list(args.results)
+    absent = [str(path) for path in paths if not path.exists()]
     if absent:
         return f"no such file: {', '.join(absent)}"
+    for _, path in args.table:
+        refusal = _columns_refusal("--table", path, _header_of(path))
+        if refusal is not None:
+            return refusal
     for path in args.results:
-        with path.open(newline="") as fh:
-            header = next(csv.reader(fh), [])
-        # The documented campaign produces eight seedless per-run tables and
-        # --results is one word away from --table, so this is the likeliest
-        # single user error here. Refuse it by name rather than dying on the
-        # KeyError that reading `row["seed"]` would raise.
-        if "seed" not in header:
-            return (
-                f"--results {path} has no `seed` column, so every row would belong to an "
-                "unknown seed; a per-run comparison.csv is passed as --table SEED=PATH"
-            )
-        if "arm" in header:
-            with path.open(newline="") as fh:
-                arms = {row["arm"] for row in csv.DictReader(fh)}
-            # Otherwise a mistyped arm drops every row and the report comes back
-            # a well-formed INCONCLUSIVE -- indistinguishable, after six hours of
-            # solving, from a campaign that genuinely measured nothing.
-            if args.arm not in arms:
-                return (
-                    f"--arm {args.arm!r} matches no row in {path}; it carries "
-                    f"{', '.join(sorted(arms))}"
-                )
+        header = _header_of(path)
+        refusal = _columns_refusal("--results", path, header) or _results_refusal(
+            args, path, header
+        )
+        if refusal is not None:
+            return refusal
     return None
 
 

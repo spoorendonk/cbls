@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <exception>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -570,6 +571,25 @@ std::string cell(double v) {
     return os.str();
 }
 
+/// `cell` at a precision that round-trips a double, for a value the analysis
+/// COMPARES rather than displays.
+///
+/// `cell`'s default stream rounds to six significant figures, which is right for
+/// a table a human reads. It is wrong for `first_feasible_objective`: the #149
+/// analysis buckets an instance as `arrival-invariant` when every seed's first
+/// feasible objective is EQUAL, and that bucket counts as *evidence against* the
+/// effect. At six figures 1234567.1 and 1234567.9 print identically, so the
+/// rounding could manufacture the refutation on a badly-scaled instance. Two
+/// seeds that genuinely arrive at the same point still print the same string.
+std::string precise_cell(double v) {
+    if (std::isnan(v)) {
+        return "NaN";
+    }
+    std::ostringstream os;
+    os << std::setprecision(17) << v;
+    return os.str();
+}
+
 /// The row's two LNS counter cells: destroy-repairs ATTEMPTED, and the subset
 /// of those the accept rule KEPT.
 ///
@@ -634,7 +654,9 @@ FirstFeasibleCells first_feasible_cells(const cbls::SearchResult& result, bool m
     if (maximizing) {
         obj = -obj;
     }
-    return {cell(obj), cell(result.time_to_first_feasible)};
+    // The objective at full precision, the time at display precision: only the
+    // objective is compared for equality by the bucket rule.
+    return {precise_cell(obj), cell(result.time_to_first_feasible)};
 }
 
 /// A row for an instance whose bounds have not been looked up yet -- nothing is
