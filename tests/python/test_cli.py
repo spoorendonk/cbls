@@ -667,6 +667,12 @@ def test_minlplib_records_the_arm_on_an_early_exit_row(tmp_path: Path) -> None:
     row = dict(zip(header, cells, strict=True))
     assert row["lns_repairs"] == "NaN"
     assert row["lns_repairs_accepted"] == "NaN"
+    # #149's pair obeys the same rule, and for the sharper version of the same
+    # reason: a 0 in `time_to_first_feasible` would read as "reached feasibility
+    # instantly", which is the single most favourable reading a row that never
+    # ran could be given, and the #149 correlation would consume it as data.
+    assert row["first_feasible_objective"] == "NaN"
+    assert row["time_to_first_feasible"] == "NaN"
 
 
 def test_minlplib_refuses_an_ablation_arm_onto_the_published_trace(tmp_path: Path) -> None:

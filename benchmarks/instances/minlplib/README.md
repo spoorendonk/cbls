@@ -113,13 +113,22 @@ documents. No published Yuck numbers exist for these instances.
   gap-to-BKS, gap-to-dual, feasibility, notes, commit SHA, closest-approach
   residual (`max_violation`), integer-variable count (`n_int_vars`), the LNS
   destroy-repair count of the run (`lns_repairs`), how many of those repairs the
-  accept rule kept (`lns_repairs_accepted`) and the search configuration the row
-  was produced under (`search_config`, a canonical `key=value;...` cell — see
-  below). Both LNS counters read `NaN` on a row where no solve completed: 0
-  there would be the different — and false — claim that LNS ran and repaired
-  nothing, and on the accepted cell that it repaired and rolled every one back.
-  The committed table predates the last three columns and so does not carry
-  them; the next full regeneration writes all three.
+  accept rule kept (`lns_repairs_accepted`), where the run first reached
+  feasibility (`first_feasible_objective`, `time_to_first_feasible` — issue
+  #149) and the search configuration the row was produced under
+  (`search_config`, a canonical `key=value;...` cell — see below). Both LNS
+  counters read `NaN` on a row where no solve completed: 0 there would be the
+  different — and false — claim that LNS ran and repaired nothing, and on the
+  accepted cell that it repaired and rolled every one back. The first-feasible
+  pair obeys the same rule, with `time_to_first_feasible` as the cell that says
+  whether a feasible point was recorded at all — its objective can be `NaN` or
+  `inf` on a row that *did* reach feasibility, because the point of arrival can
+  be the non-finite-objective witness of #100.
+  **The committed table predates the last five columns and does not carry
+  them**, which is also how a reader dates a `comparison.csv`: a header stopping
+  at `n_int_vars` is pre-#136; one carrying `search_config` but not
+  `lns_repairs` is #136-era; one carrying the two first-feasible columns is #149
+  or later. The next full regeneration writes all five.
 - `analysis_notes.csv` — curated per-instance root-cause verdicts
   (`bug` vs `hard`) for instances the runner cannot solve. Merged into
   `comparison.csv`'s note column, so the data carries its own explanation.
@@ -139,6 +148,11 @@ documents. No published Yuck numbers exist for these instances.
 - `../../minlplib/run_benchmark.py` — the CBLS re-run driver. See
   "Re-running the CBLS rows" below; that is the supported way to regenerate
   `comparison.csv`.
+- `../../minlplib/first_feasible_report.py` — scores issue #149's question
+  (does the first feasible point determine the final objective?) from the
+  `first_feasible_objective` column of a multi-seed run. Reads CSVs and writes
+  at most the per-instance table you name; it solves nothing. See "Is the final
+  objective set by the first feasible point?" below.
 - `../../minlplib/run_ablation.py`, `../../minlplib/ablation_report.py` — the
   ablation campaign driver and its scoring (issue #143). See "The ablation
   campaign" below. It writes only to a scratch `--out-dir` and refuses one
@@ -574,6 +588,94 @@ Two consequences worth noting for anyone reading this before a campaign:
   very likely find it. That is a concrete prediction for the scaling study in
   #135, and one of the few places in this roster where the portfolio's value
   should be visible rather than assumed.
+
+### Is the final objective set by the first feasible point? (#149)
+
+The section above measured that on **one** instance. Issue #149 asks whether it
+generalises, and forbids any engine change until it is answered — the effect
+could easily be an artefact of `nvs01`, which is a three-variable instance with a
+product term.
+
+Everything needed is in the tree. The runner publishes
+`first_feasible_objective` and `time_to_first_feasible` on every row (recording
+them changes no trajectory — see `SearchResult::first_feasible_objective`), and
+`benchmarks/minlplib/first_feasible_report.py` scores the roster from those
+columns. **What is missing is the campaign**: it is wall-clock-limited, so it
+has to be run serially on an idle machine and cannot be run beside anything
+else.
+
+**Protocol.** Engine commit: whatever `git rev-parse --short HEAD` reports on a
+clean tree (the driver refuses a dirty one, and the report is only about the
+engine it was measured at). Budget: **60s per instance**, the published one.
+Seeds: **1 2 3 7 11 13 17 42** — the eight #134 used, so the roster result and
+the `nvs01` result are the same measurement on different instances rather than
+two protocols. Roster: all 50 from `bounds.csv`; `elec25`/`elec50` are dropped by
+the scorer, as they are from every other claim. Serial, one process at a time:
+**about 6.7 hours** (50 × 60s × 8, plus per-instance overhead).
+
+Run it from a configured Release build directory on an otherwise idle machine —
+check `uptime` first, and re-run anything measured while the load average was
+not near zero. **Staging goes outside `build/`**, which pre-push deletes.
+
+```bash
+FF=/var/tmp/cbls-149            # anywhere outside the repo and outside build/
+mkdir -p "$FF"
+for SEED in 1 2 3 7 11 13 17 42; do
+    .venv/bin/python3 benchmarks/minlplib/run_benchmark.py \
+        --seed "$SEED" \
+        --time-limit 60 \
+        --out "$FF/seed$SEED.csv" \
+        --staging-dir "$FF/stage-seed$SEED" \
+        --no-trace
+done
+```
+
+Each invocation resumes: a killed run picks up from its staging directory, and
+the loop can simply be re-run. Nothing here touches a published table —
+`--out` keeps the results in `$FF`, `--no-trace` keeps `anytime_trace.csv`
+alone (and the driver refuses a scratch `--out` with a defaulted trace path
+rather than letting the second half of that pair slip through), and `--seed`
+makes the runner refuse the published paths independently.
+
+Then score it, which takes a second and solves nothing:
+
+```bash
+.venv/bin/python3 -m benchmarks.minlplib.first_feasible_report \
+    --table 1="$FF/seed1.csv"   --table 2="$FF/seed2.csv" \
+    --table 3="$FF/seed3.csv"   --table 7="$FF/seed7.csv" \
+    --table 11="$FF/seed11.csv" --table 13="$FF/seed13.csv" \
+    --table 17="$FF/seed17.csv" --table 42="$FF/seed42.csv" \
+    --csv "$FF/first_feasible_per_instance.csv"
+```
+
+The report prints, per instance, the across-seed Pearson `r` between the first
+feasible objective and the final one (plus Spearman, as a check that one far-out
+seed is not carrying the number), the count of rows it had to drop and why, and
+a verdict.
+
+**The decision rule is pre-registered** — it is written into
+`first_feasible_report.py` as `R_DETERMINED`, `MIN_ELIGIBLE_INSTANCES` and
+`MIN_SEEDS_PER_INSTANCE`, each with the argument for its value, and it is fixed
+before the campaign rather than chosen once the numbers are in:
+
+- an instance counts when it has at least **4** usable seeds and its outcomes
+  actually vary across them (an instance solved to the same objective every seed
+  has no correlation to report, and is listed as ineligible rather than scored
+  `r = 0`);
+- the effect **generalises** when the median `r` over those instances is at least
+  **0.7** — half the across-seed variance explained — and a strict majority of
+  them reach it;
+- fewer than **10** eligible instances is **inconclusive**, which is not the same
+  answer as "does not generalise".
+
+Sanity check before believing any of it: the report prints `nvs01`'s own `r`
+beside #134's 0.945. A campaign that disagrees there has a measurement problem,
+not a finding.
+
+Record the verdict — and the commit, seed set and budget it was measured at — in
+this README, beside the `nvs01` section above. Whatever it says, **it does not
+authorise an engine change**: #149's fourth criterion is that any change gets its
+own issue, its own hypothesis and its own regression test.
 
 ## SCIP baseline
 

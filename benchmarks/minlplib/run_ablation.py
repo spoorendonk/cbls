@@ -231,6 +231,8 @@ RESULT_COLUMNS: tuple[str, ...] = (
     "n_int_vars",
     "lns_repairs",
     "lns_repairs_accepted",
+    "first_feasible_objective",
+    "time_to_first_feasible",
     "search_config",
 )
 

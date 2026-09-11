@@ -48,13 +48,14 @@ if TYPE_CHECKING:
 HEADER = (
     "instance,objective,primal_bks,dual_bound,gap_to_bks%,gap_to_dual%,"
     "wall_seconds,feasible,note,commit_sha,max_violation,n_int_vars,lns_repairs,"
-    "lns_repairs_accepted,search_config"
+    "lns_repairs_accepted,first_feasible_objective,time_to_first_feasible,"
+    "search_config"
 )
 DEFAULT_ARM = (
     "float_hook=on;lns=on;lns_interval=3;compound_moves=off;novelty_prob=0.5;"
     "unproductive_iters=300;perturbation_period=100;max_iterations=0;time_limit=on"
 )
-ROW = "nvs01,1,1,1,0,0,60,true,feasible,abc1234,0,3,7,2," + DEFAULT_ARM
+ROW = "nvs01,1,1,1,0,0,60,true,feasible,abc1234,0,3,7,2,9,0.25," + DEFAULT_ARM
 TRACE_HEADER = "instance,time_seconds,objective,new_best"
 
 
@@ -310,6 +311,32 @@ def test_no_trace_is_allowed_when_the_table_goes_to_scratch(tmp_path: Path) -> N
     assert usage_error(args, tmp_path / "comparison.csv") is None
 
 
+def test_a_scratch_table_with_a_defaulted_trace_is_rejected(tmp_path: Path) -> None:
+    """`--out` moved off the published table does NOT move the trace with it.
+
+    `resolve_paths` defaults `trace_out` to the published `anytime_trace.csv`
+    regardless of `--out`, and `publish` assembles into it unconditionally -- so
+    a scratch run at another seed or budget would replace the published anytime
+    profile at exit 0 while reporting that it wrote a scratch table. The runner's
+    own guard cannot catch it: every instance is staged, so the published path
+    never reaches the runner at all.
+
+    This is the shape the #149 campaign uses (whole roster, per-seed scratch
+    outputs), which is how it was found.
+    """
+    args = make_args(tmp_path, out=tmp_path / "scratch.csv")
+    message = usage_error(args, tmp_path / "comparison.csv")
+    assert message is not None
+    assert "--trace-out" in message and "anytime_trace.csv" in message
+
+
+def test_a_scratch_table_with_an_explicit_trace_out_is_accepted(tmp_path: Path) -> None:
+    args = make_args(
+        tmp_path, out=tmp_path / "scratch.csv", trace_out=tmp_path / "scratch.trace.csv"
+    )
+    assert usage_error(args, tmp_path / "comparison.csv") is None
+
+
 def test_a_whole_roster_run_with_tracing_on_is_accepted(tmp_path: Path) -> None:
     assert usage_error(make_args(tmp_path), tmp_path / "comparison.csv") is None
 
@@ -483,7 +510,7 @@ def fake_runner(
         if write_row:
             name = cmd[cmd.index("--instance") + 1]
             sha = cmd[cmd.index("--commit") + 1]
-            text += f"{name},1,1,1,0,0,60,{feasible},{note},{sha},0,0,0,0,{DEFAULT_ARM}\n"
+            text += f"{name},1,1,1,0,0,60,{feasible},{note},{sha},0,0,0,0,1,0.5,{DEFAULT_ARM}\n"
         path_after(cmd, "--out").write_text(text)
         if "--trace" in cmd:
             path_after(cmd, "--trace").write_text(TRACE_HEADER + "\n")
@@ -509,7 +536,7 @@ def test_run_roster_skips_an_instance_already_staged_at_this_commit(
     stage = tmp_path / "stage"
     stage.mkdir()
     (stage / "a.csv").write_text(
-        HEADER + f"\na,1,1,1,0,0,60,true,feasible,abc1234,0,0,0,0,{DEFAULT_ARM}\n"
+        HEADER + f"\na,1,1,1,0,0,60,true,feasible,abc1234,0,0,0,0,1,0.5,{DEFAULT_ARM}\n"
     )
     (stage / "a.trace.csv").write_text(TRACE_HEADER + "\n")
     monkeypatch.setattr(subprocess, "run", fake_runner())
@@ -524,7 +551,7 @@ def test_run_roster_re_solves_an_instance_staged_at_another_commit(
     stage = tmp_path / "stage"
     stage.mkdir()
     (stage / "a.csv").write_text(
-        HEADER + f"\na,1,1,1,0,0,60,true,feasible,old0000,0,0,0,0,{DEFAULT_ARM}\n"
+        HEADER + f"\na,1,1,1,0,0,60,true,feasible,old0000,0,0,0,0,1,0.5,{DEFAULT_ARM}\n"
     )
     (stage / "a.trace.csv").write_text(TRACE_HEADER + "\n")
     monkeypatch.setattr(subprocess, "run", fake_runner())
@@ -672,14 +699,22 @@ def test_the_published_header_still_matches_what_the_runner_writes() -> None:
 def test_the_committed_table_uses_the_columns_the_driver_assembles() -> None:
     """The assembled table must slot into the published one column-for-column.
 
-    Three exceptions, all dated rather than permanent: `search_config` (#136),
-    `lns_repairs` (#143) and `lns_repairs_accepted` (#150) were added to the
-    runner after this table was measured, so the committed rows do not carry
+    Five exceptions, all dated rather than permanent: `search_config` (#136),
+    `lns_repairs` (#143), `lns_repairs_accepted` (#150),
+    `first_feasible_objective` and `time_to_first_feasible` (#149) were added to
+    the runner after this table was measured, so the committed rows do not carry
     them. They cannot be given them retroactively either -- nobody recorded what
-    configuration those rows were produced under, nor how often LNS repaired
-    during them, nor how many of those repairs were kept, which is the whole
-    reason the columns now exist. The next full regeneration writes all three,
-    and this assertion goes back to a plain equality then.
+    configuration those rows were produced under, how often LNS repaired during
+    them, how many of those repairs were kept, or where each run first reached
+    feasibility, which is the whole reason the columns now exist. The next full
+    regeneration writes all five, and this assertion goes back to a plain
+    equality then.
+
+    The disagreement is also how a reader tells an old table from a new one: a
+    `comparison.csv` whose header stops at `n_int_vars` predates #136, and one
+    that carries the two first-feasible columns is from #149 or later. The
+    column count IS the provenance, which is why this test states the trailing
+    set explicitly rather than allowing any suffix.
     """
     published = REPO_ROOT / "benchmarks" / "instances" / "minlplib" / "comparison.csv"
     with published.open(newline="") as fh:
@@ -688,6 +723,8 @@ def test_the_committed_table_uses_the_columns_the_driver_assembles() -> None:
         *columns,
         "lns_repairs",
         "lns_repairs_accepted",
+        "first_feasible_objective",
+        "time_to_first_feasible",
         "search_config",
     ]
 
@@ -869,7 +906,8 @@ def test_a_staged_row_from_a_thrown_instance_cannot_stand_in_for_a_solve(
     stage.mkdir()
     (stage / "a.trace.csv").write_text(TRACE_HEADER + "\n")
     errored = (
-        HEADER + f"\na,NaN,1,1,NaN,NaN,0,false,solve-error,abc1234,NaN,0,NaN,NaN,{DEFAULT_ARM}\n"
+        HEADER
+        + f"\na,NaN,1,1,NaN,NaN,0,false,solve-error,abc1234,NaN,0,NaN,NaN,NaN,NaN,{DEFAULT_ARM}\n"
     )
     (stage / "a.csv").write_text(errored)
 
@@ -888,7 +926,7 @@ def test_a_coverage_gap_staged_row_still_stands_in_for_a_solve(tmp_path: Path) -
     stage.mkdir()
     (stage / "a.trace.csv").write_text(TRACE_HEADER + "\n")
     note = "unsupported: NL_UNKNOWN_OPCODE 42"
-    row = f"a,NaN,NaN,NaN,NaN,NaN,0,false,{note},abc1234,NaN,NaN,NaN,NaN,{DEFAULT_ARM}"
+    row = f"a,NaN,NaN,NaN,NaN,NaN,0,false,{note},abc1234,NaN,NaN,NaN,NaN,NaN,NaN,{DEFAULT_ARM}"
     (stage / "a.csv").write_text(f"{HEADER}\n{row}\n")
 
     assert staged_complete(make_args(tmp_path), "abc1234", "a", stage)

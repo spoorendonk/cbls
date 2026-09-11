@@ -333,6 +333,25 @@ def usage_error(args: argparse.Namespace, published_out: Path) -> str | None:
                 f"while leaving {published_trace} at the previous one; drop --no-trace, or "
                 "pass --out to write somewhere other than the published table"
             )
+        # The converse hazard, and the one the #149 campaign walks straight into:
+        # `--out` moved off the published table but `--trace-out` left to its
+        # default, which is the published `anytime_trace.csv`. Nothing else stops
+        # it -- `publish` assembles the staged traces into `trace_out` whatever
+        # `out` is, and the runner's own guard never sees the published path
+        # because each instance is staged. A scratch run would then replace the
+        # published anytime profile with one measured at another seed or budget,
+        # at exit 0, while reporting that it wrote a scratch table.
+        if (
+            args.trace
+            and args.trace_out is None
+            and args.out is not None
+            and args.out.resolve() != published_out.resolve()
+        ):
+            return (
+                f"--out writes {args.out} but --trace-out is unset, so the trace would replace "
+                f"the published {args.inst_dir / 'anytime_trace.csv'}; pass --trace-out, or "
+                "--no-trace"
+            )
         return None
     # A subset rewrites the same whole files a full run does, and its rows would
     # be resumed by the next full run, so it must name scratch paths throughout.

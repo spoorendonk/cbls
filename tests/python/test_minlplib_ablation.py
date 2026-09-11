@@ -64,7 +64,8 @@ if TYPE_CHECKING:
 RUNNER_HEADER = (
     "instance,objective,primal_bks,dual_bound,gap_to_bks%,gap_to_dual%,"
     "wall_seconds,feasible,note,commit_sha,max_violation,n_int_vars,lns_repairs,"
-    "lns_repairs_accepted,search_config"
+    "lns_repairs_accepted,first_feasible_objective,time_to_first_feasible,"
+    "search_config"
 )
 DEFAULT_ARM_CELL = (
     "float_hook=on;lns=on;lns_interval=3;compound_moves=off;novelty_prob=0.5;"
@@ -124,7 +125,8 @@ def fake_runner(
         template = (
             row
             if row is not None
-            else f"{{name}},1,1,1,5,5,60,true,feasible,{{sha}},0,0,{repairs},0,{DEFAULT_ARM_CELL}"
+            else f"{{name}},1,1,1,5,5,60,true,feasible,{{sha}},0,0,{repairs},0,3,0.5,"
+            f"{DEFAULT_ARM_CELL}"
         )
         text = f"{RUNNER_HEADER}\n"
         if write_row:
@@ -140,7 +142,7 @@ def fake_runner(
 #: and the discrete-variable count filled in, because the runner looked them up
 #: before it ever tried to solve.
 SOLVE_ERROR_ROW = (
-    "{name},NaN,-1161.34,-1161.34,NaN,NaN,0,false,solve-error,{sha},NaN,4,NaN,NaN,"
+    "{name},NaN,-1161.34,-1161.34,NaN,NaN,0,false,solve-error,{sha},NaN,4,NaN,NaN,NaN,NaN,"
     + DEFAULT_ARM_CELL
 )
 
