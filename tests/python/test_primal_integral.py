@@ -351,6 +351,30 @@ def test_scored_tolerates_results_predating_bound_propagation(tmp_path: Path) ->
     assert scored.status == "feasible"
 
 
+def test_a_write_that_dies_leaves_the_previous_table_intact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`open(path, "w")` truncates before a single row is written.
+
+    CLAUDE.md's rule for anything that writes a published table: a job killed
+    mid-write must not replace it with a header and nothing else, at exit 0. The
+    C++ runners already write to a temp path and rename; this one did not.
+    """
+    _write_result(tmp_path, "cbls", "inst", {"status": "feasible", "objective": 10.0})
+    scored = score_instance("inst", "cbls", 10.0, "opt", tmp_path, budget=60.0)
+    out = tmp_path / "comparison.csv"
+    out.write_text("the published table\n")
+
+    def die(*args: object, **kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(csv, "writer", die)
+    with pytest.raises(KeyboardInterrupt):
+        write_comparison(out, [scored], [], 60.0, tmp_path / "roster.csv")
+
+    assert out.read_text() == "the published table\n"
+
+
 def test_comparison_csv_header_and_rows_stay_aligned(tmp_path: Path) -> None:
     """write_comparison builds its header and its rows as two parallel lists.
 

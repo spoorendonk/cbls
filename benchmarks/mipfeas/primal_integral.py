@@ -29,7 +29,12 @@ failed check.
 Usage:
     python primal_integral.py --results-dir results --budget 600 \
         --roster benchmarks/instances/mipfeas/roster.csv \
-        --out benchmarks/instances/mipfeas/comparison.csv
+        --out results/comparison.csv --report results/parity.md
+
+The table is scored BESIDE the results, not into `benchmarks/instances/mipfeas/`.
+Following a printed command must not be able to replace a published table with a
+half-finished run (issue #103), which is the same rule `run_benchmark.py` prints
+at the end of a run.
 """
 
 from __future__ import annotations
@@ -1934,7 +1939,13 @@ def write_comparison(
         )
     header.append("#")
 
-    with open(path, "w", newline="") as fh:
+    # Temp-then-rename, like the C++ runners: `open(path, "w")` truncates before
+    # a single row is written, so a job killed mid-write leaves a header and
+    # nothing else where a table used to be, at exit 0. Everything below is
+    # already computed, so this covers only the kill, which is the case the rule
+    # is for.
+    tmp = path.with_name(f"{path.name}.tmp")
+    with open(tmp, "w", newline="") as fh:
         fh.write("\n".join(header) + "\n")
         writer = csv.writer(fh)
         writer.writerow(
@@ -2009,6 +2020,7 @@ def write_comparison(
                     r.config,
                 ]
             )
+    tmp.replace(path)
 
 
 def main() -> int:
