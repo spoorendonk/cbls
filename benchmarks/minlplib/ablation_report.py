@@ -166,6 +166,15 @@ NO_SEARCH_NOTES: tuple[str, ...] = (
 #: asserts on it.
 UNRECOGNISED_NOTE = "unrecognised-note"
 
+#: How much of an unfamiliar note the disclosure line reproduces. A known note
+#: collapses to its prefix, but an unknown one is printed verbatim so a reader
+#: can see what the row said -- and the runner's own `infeasible(...)` notes run
+#: to several hundred characters with a curated root-cause paragraph glued on.
+#: One such note added to the allowlist's blind side would otherwise put a
+#: paragraph on the report's headline. Enough to identify the note, not enough to
+#: swallow the line.
+UNRECOGNISED_NOTE_CHARS = 60
+
 
 def completed_search(note: str) -> bool:
     """Whether this row's note is one a COMPLETED search produces.
@@ -189,7 +198,10 @@ def no_search_label(note: str) -> str:
     for prefix in NO_SEARCH_NOTES:
         if note.startswith(prefix):
             return prefix
-    return f"{UNRECOGNISED_NOTE}({note.strip() or '<empty>'})"
+    text = note.strip() or "<empty>"
+    if len(text) > UNRECOGNISED_NOTE_CHARS:
+        text = f"{text[:UNRECOGNISED_NOTE_CHARS]}..."
+    return f"{UNRECOGNISED_NOTE}({text})"
 
 
 def note_order(label: str) -> tuple[int, str]:
@@ -1287,8 +1299,14 @@ def render_report(results: Path, gate: dict[str, object] | None = None) -> str:
                 )
                 if part
             )
+            # "not scored" rather than "completed no search": a row held out
+            # only because its note is UNRECOGNISED may well have completed a
+            # search -- an allowlist that has fallen behind the runner is the
+            # acknowledged cost of the inversion, and the headline is the part a
+            # reader quotes. The `why` clause below draws the distinction; the
+            # count above it must not assert the stronger claim.
             lines.append(
-                f"  {unsearched_control + unsearched_arm} run(s) completed no search "
+                f"  {unsearched_control + unsearched_arm} run(s) not scored "
                 f"(control {unsearched_control}, arm {unsearched_arm}; {', '.join(observed)}) and "
                 "are held out of every count above. The row is well-formed and "
                 f"`feasible=false`, so nothing but the note says so -- and {why}"

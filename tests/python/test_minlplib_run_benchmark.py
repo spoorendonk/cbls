@@ -17,11 +17,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from benchmarks.minlplib.ablation_report import COMPLETED_SEARCH_NOTES
 from benchmarks.minlplib.run_benchmark import (
     CLAIM_EXCLUDED,
     REPO_ROOT,
     RUNNER_EXIT_ERRORED,
     RUNNER_TARGET,
+    STAGEABLE_NOTES,
     STAMP_NAME,
     assemble,
     cmake_build_type,
@@ -751,8 +753,8 @@ def minlplib_binary() -> Path:
 def run_the_runner(tmp_path: Path, fixtures: dict[str, str]) -> subprocess.CompletedProcess[str]:
     """Run the real binary over a roster built from `fixtures`.
 
-    A name mapped to None-like absence (a name in `bounds.csv` with no `.nl`
-    written) is the runner's `not-found` bucket.
+    A name mapped to the empty string gets a `bounds.csv` entry and no `.nl`
+    file, which is the runner's `not-found` bucket.
     """
     binary = minlplib_binary()
     inst_dir = tmp_path / "instances"
@@ -803,8 +805,17 @@ def test_a_solve_that_throws_makes_the_runner_exit_nonzero(tmp_path: Path) -> No
     # WAS closed, so without holding it apart the tally printed "infeasible: 1"
     # two lines above a stderr line saying these are not infeasibility results,
     # and counted the instance twice in the closed-model rate's denominator.
-    assert "infeasible:           0" in result.stdout
-    assert "closed-model rate:    100% of 2 attempted" in result.stdout
+    #
+    # Asserted on a `boom`-ONLY roster: with `ok` in it, a healthy instance that
+    # misses its one-second budget would print "infeasible: 1" and red a
+    # process-contract test for a reason that has nothing to do with the
+    # contract. Alone, the two numbers can only move if the arithmetic regresses.
+    alone_dir = tmp_path / "alone"
+    alone_dir.mkdir()
+    alone = run_the_runner(alone_dir, {"boom": THROWS_ON_SOLVE_NL})
+    assert alone.returncode == RUNNER_EXIT_ERRORED
+    assert "infeasible:           0" in alone.stdout
+    assert "closed-model rate:    100% of 1 attempted" in alone.stdout
     # The row is still written: the exit status is an addition to the record,
     # not a replacement for it.
     notes = notes_of(tmp_path / "out.csv")
@@ -881,6 +892,53 @@ def test_a_coverage_gap_staged_row_still_stands_in_for_a_solve(tmp_path: Path) -
     (stage / "a.csv").write_text(f"{HEADER}\n{row}\n")
 
     assert staged_complete(make_args(tmp_path), "abc1234", "a", stage)
+
+
+def test_a_staged_row_whose_note_is_unrecognised_cannot_stand_in_for_a_solve(
+    tmp_path: Path,
+) -> None:
+    """The guard is an allowlist, so a note added later fails safe.
+
+    Naming the three notes a throw writes today would fail open the moment the
+    runner grows a fourth `++t.errored` site: that row is structurally whole, so
+    the next resume would skip the instance and `publish` would assemble a row
+    that measured nothing. `convert-error` stands in for any such future note.
+    """
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "a.trace.csv").write_text(TRACE_HEADER + "\n")
+    row = f"a,NaN,1,1,NaN,NaN,0,false,convert-error,abc1234,NaN,0,NaN,NaN,{DEFAULT_ARM}"
+    (stage / "a.csv").write_text(f"{HEADER}\n{row}\n")
+
+    assert staged_row_complete(stage / "a.csv", "abc1234")
+    assert not staged_complete(make_args(tmp_path), "abc1234", "a", stage)
+
+
+def test_a_staged_row_with_no_note_at_all_cannot_stand_in_for_a_solve(
+    tmp_path: Path,
+) -> None:
+    """An empty note is not a measurement either, and the allowlist says so."""
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "a.trace.csv").write_text(TRACE_HEADER + "\n")
+    row = f"a,NaN,1,1,NaN,NaN,0,false,,abc1234,NaN,0,NaN,NaN,{DEFAULT_ARM}"
+    (stage / "a.csv").write_text(f"{HEADER}\n{row}\n")
+
+    assert not staged_complete(make_args(tmp_path), "abc1234", "a", stage)
+
+
+def test_the_stageable_notes_are_the_scorer_s_completed_set_plus_the_two_gaps() -> None:
+    """Pins the driver's allowlist to the scorer's, which is swept against the runner.
+
+    `run_benchmark.py` is run as a script and has no package context to import
+    `ablation_report` through, so the seven completed-search prefixes are spelled
+    out in both files. That duplication is only safe while something fails when
+    the two drift, and this is that something: `ablation_report`'s own sweep test
+    keeps `COMPLETED_SEARCH_NOTES` honest against every note literal in
+    `minlplib.cpp`, and this carries that guarantee across to the driver.
+    """
+    scorer_plus_gaps = (*COMPLETED_SEARCH_NOTES, "unsupported", "not-found")
+    assert scorer_plus_gaps == STAGEABLE_NOTES
 
 
 def test_run_roster_says_what_to_do_when_the_runner_reports_its_error_tally(

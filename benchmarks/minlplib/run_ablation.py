@@ -614,10 +614,16 @@ def failed_row(
 
 #: Everything `read_runner_row` can raise on a file a dead process left behind.
 #: Wider than `(RuntimeError, OSError)`: a torn header reaches `row["instance"]`
-#: as a `KeyError`, a half-written line can be invalid UTF-8 (`ValueError`), and
-#: `csv` raises its own `Error` on a malformed field. Any of them escaping would
-#: wedge a thirteen-hour campaign at the one point built to survive a bad file.
-UNREADABLE_ROW = (RuntimeError, OSError, KeyError, ValueError, csv.Error)
+#: as a `KeyError`, a half-written line can be invalid UTF-8
+#: (`UnicodeDecodeError`), and `csv` raises its own `Error` on a malformed
+#: field. Any of them escaping would wedge a thirteen-hour campaign at the one
+#: point built to survive a bad file.
+#:
+#: `UnicodeDecodeError` rather than its `ValueError` base class, deliberately:
+#: the base would also catch a bad `int()`/`float()` inside `read_runner_row`
+#: itself and convert a genuine bug in this module into a plausible-looking
+#: `runner-failed-unreadable-row`, which is the one outcome nobody re-reads.
+UNREADABLE_ROW = (RuntimeError, OSError, KeyError, UnicodeDecodeError, csv.Error)
 
 
 def _failed_run_row(

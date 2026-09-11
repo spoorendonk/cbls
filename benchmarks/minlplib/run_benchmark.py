@@ -87,17 +87,46 @@ RUNNER_TARGET = "cbls_minlplib"
 #: constant against it.
 RUNNER_EXIT_ERRORED = 3
 
-#: The notes the runner writes on the rows that come WITH `RUNNER_EXIT_ERRORED`:
-#: the instance threw while being read, built or solved, so the row records no
-#: search. Deliberately narrower than the ablation report's no-search set --
-#: `unsupported` and `not-found` are coverage gaps, exit 0, and are staged and
-#: published like any other row.
-RUNNER_ERROR_NOTES: tuple[str, ...] = ("read-error", "build-error", "solve-error")
+#: The notes a staged row may carry and still stand in for a fresh solve.
+#:
+#: An ALLOWLIST, matched on the START of the cell, and an allowlist for the same
+#: reason `ablation_report.COMPLETED_SEARCH_NOTES` is one: the first draft of this
+#: guard named the three notes a throw writes, which fails open the moment the
+#: runner grows a fourth. A note this list has not heard of is then a row nobody
+#: has decided about, and `publish` would assemble it into `comparison.csv` as a
+#: measurement. Refusing it costs one re-solve; accepting it publishes a number
+#: that measured nothing.
+#:
+#: Two groups, and the split is the exit-status split:
+#:
+#:   * the seven notes a COMPLETED search writes -- pinned equal to
+#:     `ablation_report.COMPLETED_SEARCH_NOTES` by a test rather than imported,
+#:     because this module is run as a script (`python3 run_benchmark.py`) and so
+#:     has no package context to import a sibling through;
+#:   * the two coverage gaps -- `unsupported` and `not-found` exit 0, are
+#:     bucketed apart by the runner, and are documented rows published like any
+#:     other.
+#:
+#: Everything else -- `read-error`, `build-error`, `solve-error`, and any note
+#: added later -- is refused. Those come WITH `RUNNER_EXIT_ERRORED`: the row is
+#: complete by every structural check, which is exactly why it has to be named
+#: here.
+STAGEABLE_NOTES: tuple[str, ...] = (
+    "better-than-bks",
+    "matches-bks",
+    "within-tolerance-of-bks",
+    "feasible",
+    "non-finite",
+    "VERIFY-FAILED",
+    "infeasible",
+    "unsupported",
+    "not-found",
+)
 
 
-def errored_note(note: str) -> bool:
-    """Whether this row's note says the runner THREW on the instance."""
-    return any(note.startswith(prefix) for prefix in RUNNER_ERROR_NOTES)
+def stageable_note(note: str) -> bool:
+    """Whether a staged row carrying this note may stand in for a fresh solve."""
+    return any(note.startswith(prefix) for prefix in STAGEABLE_NOTES)
 
 
 #: Seconds per instance. The runner's own documented default (issue #88), argued
@@ -377,19 +406,24 @@ def staged_row_complete(path: Path, sha: str) -> bool:
     return dict(zip(rows[0], rows[1], strict=True)).get("commit_sha") == sha
 
 
-def staged_errored(path: Path) -> bool:
-    """Whether a staging CSV's row says the runner threw on this instance.
+def staged_unpublishable(path: Path) -> bool:
+    """Whether a staging CSV's row must NOT stand in for a fresh solve.
 
     Read apart from `staged_row_complete`, which asks whether the FILE is whole.
     Such a row is whole -- header, one full line, the right commit -- and that is
     the problem: it would otherwise stand in for a solve on the next resume.
+
+    True for a row the runner wrote after throwing, and for any note
+    `STAGEABLE_NOTES` does not recognise, an absent `note` column included. An
+    unreadable file is left to `staged_row_complete` and reported as incomplete,
+    not as unpublishable.
     """
     if not path.exists():
         return False
     rows = list(csv.reader(path.read_text().splitlines()))
     if len(rows) < 2 or len(rows[1]) != len(rows[0]):
         return False
-    return errored_note(dict(zip(rows[0], rows[1], strict=True)).get("note", ""))
+    return not stageable_note(dict(zip(rows[0], rows[1], strict=True)).get("note", ""))
 
 
 def staged_complete(args: argparse.Namespace, sha: str, name: str, stage: Path) -> bool:
@@ -399,18 +433,19 @@ def staged_complete(args: argparse.Namespace, sha: str, name: str, stage: Path) 
     trace at all, and skipping on the CSV alone would replace `comparison.csv`
     and only then fail to assemble the trace.
 
-    A row the runner wrote after THROWING is refused (#153). It is complete by
-    every structural check -- which is exactly why it has to be named here: the
-    runner exits nonzero on it and `run_roster` aborts, but `--resume` is the
-    default, so without this the next invocation would skip the instance and
-    `publish` would assemble a row that measured nothing into `comparison.csv`.
-    The abort would have delayed the bad publish by one invocation rather than
-    preventing it. A coverage gap -- `unsupported`, or a missing `.nl` -- exits 0
-    and is NOT refused here; it is a documented row like any other.
+    A row the runner wrote after THROWING is refused (#153), as is any row whose
+    note `STAGEABLE_NOTES` does not recognise. It is complete by every structural
+    check -- which is exactly why it has to be named here: the runner exits
+    nonzero on it and `run_roster` aborts, but `--resume` is the default, so
+    without this the next invocation would skip the instance and `publish` would
+    assemble a row that measured nothing into `comparison.csv`. The abort would
+    have delayed the bad publish by one invocation rather than preventing it. A
+    coverage gap -- `unsupported`, or a missing `.nl` -- exits 0 and is NOT
+    refused here; it is a documented row like any other.
     """
     if not staged_row_complete(stage / f"{name}.csv", sha):
         return False
-    if staged_errored(stage / f"{name}.csv"):
+    if staged_unpublishable(stage / f"{name}.csv"):
         return False
     return not args.trace or (stage / f"{name}.trace.csv").exists()
 

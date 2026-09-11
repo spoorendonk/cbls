@@ -756,7 +756,7 @@ def test_the_report_discloses_both_kinds_of_held_out_row_and_agrees_with_them(
     assert "control-only-feasible=0" in report
     assert "no-runs-recorded=2" in report
     assert "3 run(s) crashed" in report
-    assert "3 run(s) completed no search" in report
+    assert "3 run(s) not scored" in report
     assert "2 instance(s) recorded no completed run on at least one side" in report
     assert "crashy, throws" in report
 
@@ -1044,7 +1044,7 @@ def test_an_unrecognised_note_discloses_itself_rather_than_disappearing(
     report = render_report(write_results(tmp_path / "r.csv", rows))
 
     assert "unrecognised-note(budget-exhausted-before-init)" in report
-    assert "3 run(s) completed no search (control 0, arm 3;" in report
+    assert "3 run(s) not scored (control 0, arm 3;" in report
     assert "does not recognise" in report
 
 
@@ -1193,7 +1193,7 @@ def test_the_held_out_rows_are_reported_by_side(tmp_path: Path) -> None:
     report = render_report(write_results(tmp_path / "r.csv", rows))
 
     assert "3 run(s) crashed (control 0, arm 3)" in report
-    assert "3 run(s) completed no search (control 0, arm 3; solve-error)" in report
+    assert "3 run(s) not scored (control 0, arm 3; solve-error)" in report
     # ... and the notes listed are the ones that occurred, not the whole category
     assert "not-found" not in report
 
