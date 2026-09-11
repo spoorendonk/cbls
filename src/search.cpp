@@ -347,7 +347,7 @@ private:
     void note_first_feasible(double obj);
     // Seconds since solve() started. finish() reports the same quantity as
     // SearchResult::time_seconds.
-    double elapsed() const {
+    [[nodiscard]] double elapsed() const {
         return std::chrono::duration<double>(std::chrono::steady_clock::now() - start_).count();
     }
     // On stagnation: LNS diversification every lns_interval-th time, else perturb.
