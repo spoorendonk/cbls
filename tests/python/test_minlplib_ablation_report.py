@@ -19,6 +19,7 @@ import pytest
 from benchmarks.minlplib.ablation_report import (
     ARM_ONLY_FEASIBLE,
     BOTH_FEASIBLE,
+    COMPLETED_SEARCH_NOTES,
     CONTROL_ARM,
     CONTROL_ONLY_FEASIBLE,
     NEITHER_FEASIBLE,
@@ -102,6 +103,12 @@ def write_results(
                     "lns_repairs": "0",
                     "lns_repairs_accepted": "0",
                     "seed": "1",
+                    # The scorer allowlists the notes a COMPLETED search writes
+                    # (#153), so a fixture row that leaves the cell empty is a
+                    # row the runner could never have written and is now held
+                    # out. Default to the plainest completed-search note; every
+                    # row that is testing the note cell names its own.
+                    "note": "feasible",
                 }
             )
             full.update({k: str(v) for k, v in row.items() if k in full})
@@ -123,6 +130,10 @@ def run_rows(
     `primal_bks` is left empty unless a test needs it: it reads back as NaN,
     which sizes the floor at its scale-free infimum and so leaves every test
     written before the floor became per-instance saying what it said.
+
+    The `note` is the one the runner would have written for the row: a search
+    completed either way, and since #153 that is what decides whether the row is
+    scored at all.
     """
     return [
         {
@@ -131,6 +142,9 @@ def run_rows(
             "seed": seed,
             "feasible": "true" if gap is not None else "false",
             "gap_to_bks%": "NaN" if gap is None else gap,
+            "note": "feasible"
+            if gap is not None
+            else "infeasible(residual=0.5; 1 viol; worst row0 <=)",
             "lns_repairs": repairs,
             "lns_repairs_accepted": repairs_accepted,
             **({} if primal_bks is None else {"primal_bks": primal_bks}),
@@ -952,6 +966,142 @@ def test_every_preread_note_the_runner_writes_is_held_out() -> None:
     assert len(literals) == len(call_sites), call_sites  # each note starts with a literal
     for literal in literals:
         assert any(literal.startswith(note) for note in NO_SEARCH_NOTES), literal
+
+
+# --- the classification is an allowlist, not a denylist (issue #153) ----------
+
+
+def unknown_note_rows(
+    instance: str, arm: str, seeds: Sequence[int], note: str
+) -> list[dict[str, object]]:
+    """Rows carrying a note neither list has heard of.
+
+    The shape a SEVENTH runner outcome would arrive in: a well-formed row with
+    every measured cell NaN and `feasible=false`, and nothing but the note cell
+    to say that no search ran.
+    """
+    return [
+        {
+            "instance": instance,
+            "arm": arm,
+            "seed": seed,
+            "feasible": "false",
+            "gap_to_bks%": "NaN",
+            "lns_repairs": "NaN",
+            "lns_repairs_accepted": "NaN",
+            "note": note,
+        }
+        for seed in seeds
+    ]
+
+
+def test_a_note_the_scorer_does_not_recognise_is_held_out_rather_than_scored(
+    tmp_path: Path,
+) -> None:
+    """The denylist failed open. A seventh runner outcome -- one added after the
+    list was written -- carried `feasible=false` like any infeasible run, matched
+    no held-out prefix, and was counted as this arm losing feasibility on the
+    instance: precisely the defect #151 was filed for, re-armed.
+
+    Scoring is now decided by the notes a COMPLETED search writes, so the
+    unfamiliar note falls out of every count instead of into a bucket.
+    """
+    rows = [
+        *run_rows("a", CONTROL_ARM, [7.0, 7.1, 7.2]),
+        *unknown_note_rows("a", "x", [1, 2, 3], "budget-exhausted-before-init"),
+    ]
+    summary = summarize_arm(
+        "x", build_cells(load_rows(write_results(tmp_path / "r.csv", rows))), ["a"]
+    )
+
+    assert summary.comparisons[0].bucket == "no-runs-recorded"
+    assert summary.comparisons[0].treatment.runs == 0
+    assert summary.comparisons[0].treatment.no_search_runs == 3
+    assert summary.feasibility_delta_balanced == 0
+
+
+def test_an_unrecognised_note_discloses_itself_rather_than_disappearing(
+    tmp_path: Path,
+) -> None:
+    """Failing safe is only half of it: a row held out for a reason the scorer
+    cannot name has to say so, or an allowlist that has fallen behind the runner
+    silently discards real measurements instead of silently scoring fake ones."""
+    rows = [
+        *run_rows("a", CONTROL_ARM, [7.0, 7.1, 7.2]),
+        *unknown_note_rows("a", "x", [1, 2, 3], "budget-exhausted-before-init"),
+    ]
+    report = render_report(write_results(tmp_path / "r.csv", rows))
+
+    assert "unrecognised-note(budget-exhausted-before-init)" in report
+    assert "3 run(s) completed no search (control 0, arm 3;" in report
+    assert "does not recognise" in report
+
+
+def test_an_empty_note_is_not_a_completed_search(tmp_path: Path) -> None:
+    """The runner writes a note on every row it writes, so a blank one means the
+    cell did not come from the runner -- a truncated line, a schema the driver
+    misread. Not something to score."""
+    rows = [
+        *run_rows("a", CONTROL_ARM, [7.0, 7.1, 7.2]),
+        *unknown_note_rows("a", "x", [1, 2, 3], ""),
+    ]
+    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
+
+    assert cells[("a", "x")].runs == 0
+    assert cells[("a", "x")].no_search_notes == ("unrecognised-note(<empty>)",)
+
+
+def _function_body(source: str, signature: str) -> str:
+    """The braced body of the one function whose declaration starts `signature`.
+
+    Brace-matched rather than regex-matched so a `{}` inside the body cannot end
+    it early. None of these bodies has a brace inside a string literal.
+    """
+    start = source.index(signature)
+    opening = source.index("{", start)
+    depth = 0
+    for index in range(opening, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[opening : index + 1]
+    raise AssertionError(f"unbalanced braces after {signature}")
+
+
+#: Every place `minlplib.cpp` composes a note for a row where a search RAN, and
+#: the pattern that pulls the literal out of it. Enumerated by call site rather
+#: than by scanning the file for strings: a note added at a new site is what the
+#: allowlist has to keep up with, and a literal count alone would not notice one.
+COMPLETED_NOTE_SITES: tuple[tuple[str, str, int], ...] = (
+    ("std::string classify_against_bks(", r'return "([^"]+)";', 4),
+    ("bool verify_assignment(", r'buf\.size\(\),\s*"([^"]+)"', 1),
+    ("std::string describe_infeasible(", r'buf\.size\(\),\s*"([^"]+)"', 2),
+    ("void run_instance(", r'note = [^;]*?"([^"]+)"', 2),
+)
+
+
+def test_every_completed_search_note_the_runner_writes_is_allowlisted() -> None:
+    """The cost of inverting the polarity, paid here instead of in a campaign.
+
+    An allowlist cannot score a note it has never heard of -- but it also cannot
+    score one the runner grew and nobody added, and THAT failure discards real
+    measurements. It is the exact mirror of the denylist hole, so it gets the
+    same kind of guard: sweep the runner for the literals a completed search can
+    put on a row and hold every one of them against the list.
+    """
+    source = (REPO_ROOT / "benchmarks" / "minlplib" / "minlplib.cpp").read_text()
+    for signature, pattern, expected in COMPLETED_NOTE_SITES:
+        literals = re.findall(pattern, _function_body(source, signature), re.S)
+        # The count is asserted so a refactor that moves a note elsewhere fails
+        # here rather than leaving the sweep quietly matching nothing.
+        assert len(literals) == expected, (signature, literals)
+        for literal in literals:
+            assert any(literal.startswith(note) for note in COMPLETED_SEARCH_NOTES), literal
+            # ... and the two lists must not overlap, or a measurement would be
+            # held out by whichever match was tried first.
+            assert not any(literal.startswith(note) for note in NO_SEARCH_NOTES), literal
 
 
 # --- the floor is sized in the units of the gap it bounds (issue #151) ---------

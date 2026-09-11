@@ -95,42 +95,60 @@ CONTROL_ARM = "control"
 #: is held out of every count rather than read as an infeasible run.
 RUNNER_FAILED_NOTE = "runner-failed"
 
-#: Notes the RUNNER itself writes on a row where NO SEARCH COMPLETED, plus the
-#: driver's own crash prefix. Every one of these rows is `feasible=false` with
-#: every measured cell NaN and the process exiting 0, so nothing distinguishes
-#: it from a genuine infeasibility except this cell -- and whether a solve
-#: throws can depend on the search configuration, i.e. on the ARM, so an arm
-#: that provokes an exception would otherwise be scored as an arm that loses
-#: feasibility. Matched as PREFIXES, for the two that carry a suffix: the
-#: runner's `unsupported: <reason>` (commas sanitised to `;` so the CSV stays
-#: well-formed) and the driver's `runner-failed-<kind>`. The other four are
-#: written whole -- the runner returns before `integrality_check` and
-#: `merge_analysis_note` can append anything to a row of this kind, which is
-#: also why no note a COMPLETED search produces can collide with one of these
-#: prefixes. That set is, in full: `feasible`, `matches-bks`, `better-than-bks`,
-#: `within-tolerance-of-bks`, `non-finite`, `VERIFY-FAILED(...)` and
-#: `infeasible(...)`, each optionally carrying an appended
-#: `; integrality-mismatch(...)`, `; stale-analysis-note` or ` | <curated>`.
+#: Notes a COMPLETED search produces -- the ALLOWLIST that decides whether a row
+#: is a measurement. A row whose note starts with one of these ran a search and
+#: reported something, so it is scored; anything else is held out and disclosed.
 #:
-#: `RUNNER_FAILED_NOTE` is deliberately first: the report lists the runner's own
-#: notes as `NO_SEARCH_NOTES[1:]`, because the driver's crashes get their own
-#: line.
+#: The polarity is deliberate (#153). This was a denylist of the six notes that
+#: mean "no search completed", and a denylist FAILS OPEN: a seventh outcome added
+#: to the runner later would be scored as a lost feasibility -- exactly the
+#: defect #151 was filed for, re-armed. An allowlist fails the other way: an
+#: unrecognised note is held out, counted, and named on the report's disclosure
+#: line, so it announces itself instead of moving a number. The cost of that
+#: polarity is that an allowlist which falls behind the runner DISCARDS real
+#: measurements, which is why `test_every_completed_search_note_is_allowlisted`
+#: sweeps `minlplib.cpp` for the literals a completed search can write.
+#:
+#: From `minlplib.cpp`, in full: `classify_against_bks` returns `better-than-bks`,
+#: `matches-bks`, `within-tolerance-of-bks` or `feasible` (which `run_instance`
+#: also writes directly when there is no published bound to classify against);
+#: `verify_assignment` writes `VERIFY-FAILED(...)`; `describe_infeasible` writes
+#: `infeasible(...)`; and the non-finite-objective guard writes `non-finite`.
+#: Each may carry an appended `; integrality-mismatch(...)`,
+#: `; stale-analysis-note` or ` | <curated note>`, which is why the match is on
+#: the START of the cell.
 #:
 #: NOT shared with `benchmarks/minlplib/note_policy.h`, which was checked: that
 #: header is the three-way merge policy for `analysis_notes.csv` (kNone/kMerge/
-#: kStale) and enumerates no note strings at all. The literals below are the
-#: runner's, from `minlplib.cpp`:
+#: kStale) and enumerates no note strings at all.
+COMPLETED_SEARCH_NOTES: tuple[str, ...] = (
+    "better-than-bks",
+    "matches-bks",
+    "within-tolerance-of-bks",
+    "feasible",
+    "non-finite",
+    "VERIFY-FAILED",
+    "infeasible",
+)
+
+#: Notes known to mean NO SEARCH COMPLETED. Nothing is classified by this tuple
+#: any more -- `completed_search` decides that from `COMPLETED_SEARCH_NOTES`
+#: alone -- but a held-out row still has to be REPORTED, and "3 run(s) completed
+#: no search (solve-error)" is a different sentence from
+#: "(unsupported: NL_UNKNOWN_OPCODE 42; at row 3)" repeated three times. So these
+#: are the labels `no_search_label` collapses a known note to, in the order the
+#: report lists them; a note matching none of them keeps its own text and is
+#: called out as unrecognised.
+#:
+#: `RUNNER_FAILED_NOTE` is deliberately first: the report lists the runner's own
+#: notes as `NO_SEARCH_NOTES[1:]`, because the driver's crashes get their own
+#: line. The runner's five are, by writer:
 #:
 #:   * `not-found`, `read-error`, `build-error`  -- `write_preread_row`, before
 #:     a model exists at all;
 #:   * `unsupported`/`unsupported: <reason>`     -- the reader or the adapter
 #:     declined the instance;
-#:   * `solve-error`                             -- `cbls::solve` threw; the
-#:     runner counts it in `Tally::errored` and returns 0 from `main`.
-#:
-#: `non-finite` and `VERIFY-FAILED(...)` are deliberately NOT here: a search ran
-#: to completion on those rows and reported something, so they are measurements
-#: of the arm and belong in the counts.
+#:   * `solve-error`                             -- `cbls::solve` threw.
 NO_SEARCH_NOTES: tuple[str, ...] = (
     RUNNER_FAILED_NOTE,
     "solve-error",
@@ -139,6 +157,44 @@ NO_SEARCH_NOTES: tuple[str, ...] = (
     "not-found",
     "unsupported",
 )
+
+#: What `no_search_label` prefixes a note no list recognises with. Kept as a
+#: constant because the report keys its third disclosure clause off it and a test
+#: asserts on it.
+UNRECOGNISED_NOTE = "unrecognised-note"
+
+
+def completed_search(note: str) -> bool:
+    """Whether this row's note is one a COMPLETED search produces.
+
+    The scorer's one classification question. Everything else -- a crash the
+    driver recorded, a row the runner wrote before any search ran, and any note
+    neither list has heard of -- is held out of every count.
+    """
+    return any(note.startswith(prefix) for prefix in COMPLETED_SEARCH_NOTES)
+
+
+def no_search_label(note: str) -> str:
+    """A held-out row's note collapsed to the label the report lists it under.
+
+    A known no-search note collapses to its prefix, so the long
+    `unsupported: <reason>` form and the driver's `runner-failed-exit-139` do
+    not each become their own histogram bucket. Anything else keeps its text and
+    is marked unrecognised: it is held out either way, and a reader who is being
+    told a row was not scored needs to be able to see what the row said.
+    """
+    for prefix in NO_SEARCH_NOTES:
+        if note.startswith(prefix):
+            return prefix
+    return f"{UNRECOGNISED_NOTE}({note.strip() or '<empty>'})"
+
+
+def note_order(label: str) -> tuple[int, str]:
+    """Sort key for the disclosure line: the known labels first, in list order."""
+    if label in NO_SEARCH_NOTES:
+        return (NO_SEARCH_NOTES.index(label), "")
+    return (len(NO_SEARCH_NOTES), label)
+
 
 #: The relative band inside which the RUNNER ITSELF calls two objectives equal.
 #: `classify_against_bks` (minlplib.cpp) returns `matches-bks` when the two
@@ -372,8 +428,12 @@ class RunRow:
         A superset of `runner_failed`. The two are counted separately in the
         report because the reader needs to know which happened, but they are
         held out of the scoring identically: neither is a measurement.
+
+        Decided by the ALLOWLIST, not by a list of failures (#153): a note this
+        module has never heard of is not a measurement of anything, so it is
+        held out and disclosed rather than read as a lost feasibility.
         """
-        return any(self.note.startswith(prefix) for prefix in NO_SEARCH_NOTES)
+        return not completed_search(self.note)
 
 
 def _number(text: str | None) -> float:
@@ -425,14 +485,16 @@ class Cell:
     #: in the report so they are not silently dropped either.
     failed_runs: int = 0
     #: Rows the RUNNER wrote for a solve that never completed -- `solve-error`
-    #: and the rest of `NO_SEARCH_NOTES`, all of them exit-0 and so invisible to
-    #: the driver. Held out exactly as `failed_runs` is, and counted separately
+    #: and the rest of `NO_SEARCH_NOTES`, plus any note this module does not
+    #: recognise. Held out exactly as `failed_runs` is, and counted separately
     #: only so the report can say which of the two happened.
     no_search_runs: int = 0
-    #: Which of `NO_SEARCH_NOTES` those rows actually carried, in roster order.
-    #: The distinction is not cosmetic: `not-found` and `unsupported` are roster
-    #: problems that hit every arm alike, where `solve-error` can depend on the
-    #: configuration and so is a property OF THE ARM.
+    #: What those rows' notes collapse to under `no_search_label`, in
+    #: `note_order`. The distinction is not cosmetic: `not-found` and
+    #: `unsupported` are roster problems that hit every arm alike, where
+    #: `solve-error` can depend on the configuration and so is a property OF THE
+    #: ARM -- and an `unrecognised-note(...)` entry says the scorer held a row
+    #: out because it could not tell which of those it was.
     no_search_notes: tuple[str, ...] = ()
     #: The instance's published primal bound, for sizing the floor. NaN where no
     #: row recorded one.
@@ -475,7 +537,10 @@ def build_cells(rows: Iterable[RunRow]) -> dict[tuple[str, str], Cell]:
             failed_runs=sum(1 for r in group if r.runner_failed),
             no_search_runs=sum(1 for r in group if r.no_search and not r.runner_failed),
             no_search_notes=tuple(
-                note for note in NO_SEARCH_NOTES[1:] if any(r.note.startswith(note) for r in group)
+                sorted(
+                    {no_search_label(r.note) for r in group if r.no_search and not r.runner_failed},
+                    key=note_order,
+                )
             ),
             primal_bks=next((r.primal_bks for r in group if math.isfinite(r.primal_bks)), math.nan),
             gaps=tuple(
@@ -1179,7 +1244,7 @@ def render_report(results: Path, gate: dict[str, object] | None = None) -> str:
                 for c in summary.comparisons
                 for note in c.control.no_search_notes + c.treatment.no_search_notes
             },
-            key=NO_SEARCH_NOTES.index,
+            key=note_order,
         )
         if unsearched_control or unsearched_arm:
             # The justification differs by note and the line has to say which
@@ -1190,7 +1255,10 @@ def render_report(results: Path, gate: dict[str, object] | None = None) -> str:
             # the arm-dependence argument under a list of `not-found` would be
             # the same overreach in miniature.
             arm_dependent = [n for n in observed if n == "solve-error"]
-            roster_wide = [n for n in observed if n != "solve-error"]
+            unrecognised = [n for n in observed if n.startswith(UNRECOGNISED_NOTE)]
+            roster_wide = [
+                n for n in observed if n != "solve-error" and not n.startswith(UNRECOGNISED_NOTE)
+            ]
             why = "; ".join(
                 part
                 for part in (
@@ -1202,14 +1270,23 @@ def render_report(results: Path, gate: dict[str, object] | None = None) -> str:
                     "so scoring it would read a missing or unsupported instance as one"
                     if roster_wide
                     else "",
+                    # The allowlist's whole point: a note nobody taught this
+                    # module cannot be classified, so it is held out and SAID,
+                    # rather than scored as an infeasibility on the strength of
+                    # its `feasible=false` cell.
+                    f"{', '.join(unrecognised)} is a note this report does not recognise, and it "
+                    "scores only the notes a completed search is known to write -- so an "
+                    "unfamiliar one is held out and named here rather than counted"
+                    if unrecognised
+                    else "",
                 )
                 if part
             )
             lines.append(
                 f"  {unsearched_control + unsearched_arm} run(s) completed no search "
                 f"(control {unsearched_control}, arm {unsearched_arm}; {', '.join(observed)}) and "
-                "are held out of every count above. The runner exits 0 on these, so the row is "
-                f"well-formed and `feasible=false` -- and {why}"
+                "are held out of every count above. The row is well-formed and "
+                f"`feasible=false`, so nothing but the note says so -- and {why}"
             )
         held_out = [c.instance for c in summary.comparisons if c.bucket == NO_RUNS_RECORDED]
         if held_out:

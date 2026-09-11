@@ -20,6 +20,7 @@ import pytest
 from benchmarks.minlplib.run_benchmark import (
     CLAIM_EXCLUDED,
     REPO_ROOT,
+    RUNNER_EXIT_ERRORED,
     RUNNER_TARGET,
     STAMP_NAME,
     assemble,
@@ -532,7 +533,11 @@ def test_run_roster_raises_and_keeps_the_log_when_the_runner_fails(
 def test_run_roster_raises_when_the_runner_exits_zero_without_a_row(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The runner exits 0 on a read/build error, having written a header only."""
+    """A runner that wrote its header and died leaves no row to record.
+
+    Not a read or build error: those write a row and, since #153, exit nonzero.
+    This is the exit-0-with-nothing-to-stage case, which the row check catches.
+    """
     stage = tmp_path / "stage"
     stage.mkdir()
     monkeypatch.setattr(subprocess, "run", fake_runner(write_row=False))
@@ -672,3 +677,145 @@ def test_the_committed_table_uses_the_columns_the_driver_assembles() -> None:
         "lns_repairs_accepted",
         "search_config",
     ]
+
+
+# --- the runner's exit status (issue #153) ------------------------------------
+#
+# These run the REAL binary. The exit status is a property of the process
+# contract every automated consumer depends on -- `run_roster` above raises on
+# it and `run_ablation.execute_runs` records a failed run from it -- not a
+# property of any function, and the whole defect was that the contract said
+# "success" while the tally said otherwise.
+
+
+#: A minimal but valid `g3` NL header for `nv` vars, `nc` cons, `no` objs.
+#: Mirrors the fixture layout in `tests/test_minlplib.cpp`; counts past the first
+#: line are cosmetic to the reader.
+def nl_header(nvars: int, ncons: int, nobjs: int) -> str:
+    return (
+        "g3 0 1 0\t# header\n"
+        f" {nvars} {ncons} {nobjs} 0 0\t# vars, cons, objs, ranges, eqns\n"
+        " 0 0\n 0 0\n 0 0 0\n 0 0 0 1\n 0 0 0 0 0\n 0 0\n 0 0\n 0 0 0 0 0\n"
+    )
+
+
+#: One variable in [0,10], one constraint `x <= 7`, minimise `x`. Solves.
+SOLVABLE_NL = nl_header(1, 1, 1) + "b\n0 0 10\nr\n1 7\nO0 0\nn0\nG0 1\n0 1\nC0\nn0\nJ0 1\n0 1\n"
+
+#: Zero variables, one objective. It reads and it builds -- and then `cbls::solve`
+#: throws `var id out of range` reaching for a variable that is not there, which
+#: is the runner's `solve-error` path with nothing added to production code to
+#: provoke it.
+THROWS_ON_SOLVE_NL = nl_header(0, 0, 1) + "b\nr\nO0 0\nn0\n"
+
+#: An opcode outside the adapter's set. A COVERAGE GAP, not an error: the runner
+#: buckets it as skipped(unsupported) and it must not move the exit status.
+UNSUPPORTED_NL = nl_header(1, 0, 1) + "b\n0 0 10\nr\nO0 0\no999\nv0\n"
+
+#: Not an NL file at all. `read_nl` throws something that is not an unsupported
+#: opcode, so the runner counts it in the same error tally as a thrown solve.
+UNREADABLE_NL = "g3 0 1 0\n 1 1 1 0 0\nb\nZZZ not a bound\n"
+
+
+def minlplib_binary() -> Path:
+    binary = REPO_ROOT / "build" / RUNNER_TARGET
+    if not binary.exists():
+        pytest.skip(f"{RUNNER_TARGET} not built")
+    return binary
+
+
+def run_the_runner(tmp_path: Path, fixtures: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    """Run the real binary over a roster built from `fixtures`.
+
+    A name mapped to None-like absence (a name in `bounds.csv` with no `.nl`
+    written) is the runner's `not-found` bucket.
+    """
+    binary = minlplib_binary()
+    inst_dir = tmp_path / "instances"
+    inst_dir.mkdir(exist_ok=True)
+    bounds = ["instance,structure,nvars,ncons,objsense,primal_bks,dual_bound,n_disc_vars_bks"]
+    for name, text in fixtures.items():
+        if text:
+            (inst_dir / f"{name}.nl").write_text(text)
+        # BKS 0.0: the solvable fixture minimises x over x<=7, x>=0, so a
+        # completed search lands on the published bound and the note is stable.
+        bounds.append(f"{name},linear,1,1,min,0.0,0.0,0")
+    (inst_dir / "bounds.csv").write_text("\n".join(bounds) + "\n")
+    return subprocess.run(
+        [
+            str(binary),
+            str(inst_dir),
+            "--time-limit",
+            "1",
+            "--commit",
+            "abc1234",
+            "--out",
+            str(tmp_path / "out.csv"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def notes_of(out: Path) -> dict[str, str]:
+    with out.open(newline="") as fh:
+        return {row["instance"]: row["note"] for row in csv.DictReader(fh)}
+
+
+def test_a_solve_that_throws_makes_the_runner_exit_nonzero(tmp_path: Path) -> None:
+    """The #153 defect: `run_benchmark` returned 0 whatever its error tally said.
+
+    A thrown solve still writes a well-formed row -- `feasible=false`,
+    `note=solve-error`, measured cells NaN -- so the row alone cannot stop a
+    consumer that checks `$?`, and every one of them saw success.
+    """
+    result = run_the_runner(tmp_path, {"ok": SOLVABLE_NL, "boom": THROWS_ON_SOLVE_NL})
+
+    assert result.returncode == RUNNER_EXIT_ERRORED
+    assert "ERROR solving" in result.stdout
+    assert "exiting 3" in result.stderr
+    # The row is still written: the exit status is an addition to the record,
+    # not a replacement for it.
+    assert notes_of(tmp_path / "out.csv") == {"ok": "matches-bks", "boom": "solve-error"}
+
+
+def test_an_unreadable_instance_makes_the_runner_exit_nonzero(tmp_path: Path) -> None:
+    """`read-error` and `build-error` feed the same tally as `solve-error`."""
+    result = run_the_runner(tmp_path, {"ok": SOLVABLE_NL, "junk": UNREADABLE_NL})
+
+    assert result.returncode == RUNNER_EXIT_ERRORED
+    assert notes_of(tmp_path / "out.csv")["junk"] == "read-error"
+
+
+def test_a_coverage_gap_is_not_an_error_and_the_runner_still_exits_zero(
+    tmp_path: Path,
+) -> None:
+    """An instance skipped as unsupported, and one whose `.nl` is not there, are
+    gaps in what this adapter covers -- not failures of the run.
+
+    The runner has always bucketed them apart from `Tally::errored`, and the
+    exit status must keep that distinction rather than collapsing every
+    non-result into one failure signal.
+    """
+    result = run_the_runner(tmp_path, {"ok": SOLVABLE_NL, "exotic": UNSUPPORTED_NL, "absent": ""})
+
+    assert result.returncode == 0
+    assert "exiting" not in result.stderr
+    notes = notes_of(tmp_path / "out.csv")
+    assert notes["ok"] == "matches-bks"
+    assert notes["exotic"].startswith("unsupported")
+    assert notes["absent"] == "not-found"
+
+
+def test_the_drivers_exit_constant_is_the_runners_own(tmp_path: Path) -> None:
+    """`RUNNER_EXIT_ERRORED` is mirrored from C++, and both drivers branch on it.
+
+    Pinned against the literal rather than against a run, so a change to one side
+    fails here instead of being discovered by a campaign that stopped recording
+    failed runs.
+    """
+    source = (REPO_ROOT / "benchmarks" / "minlplib" / "minlplib.cpp").read_text()
+    assert f"constexpr int kExitErrored = {RUNNER_EXIT_ERRORED};" in source
+    # ... and it is what the roster loop actually returns.
+    assert "const int status = run_exit_status(t.errored);" in source

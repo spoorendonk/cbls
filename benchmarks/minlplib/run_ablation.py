@@ -80,6 +80,7 @@ from benchmarks.minlplib.ablation_report import (  # noqa: E402
     CONTROL_ARM,
     PROBE_ARM_NAME,
     RUNNER_FAILED_NOTE,
+    completed_search,
     render_report,
 )
 from benchmarks.minlplib.run_benchmark import (  # noqa: E402
@@ -87,6 +88,7 @@ from benchmarks.minlplib.run_benchmark import (  # noqa: E402
     DEFAULT_INST_DIR,
     DEFAULT_TIME_LIMIT,
     REPO_ROOT,
+    RUNNER_EXIT_ERRORED,
     RUNNER_TARGET,
     commit_sha,
     preflight,
@@ -606,6 +608,43 @@ def failed_row(
     return row
 
 
+def _failed_run_row(
+    out_dir: Path, run: Run, args: argparse.Namespace, sha: str, returncode: int
+) -> dict[str, str]:
+    """The row to record for a run whose process exited nonzero.
+
+    The runner's OWN row where it wrote one, `failed_row` otherwise.
+
+    The runner exits nonzero on its error tally (#153), so a solve that threw --
+    which used to exit 0 and be recorded as a plain result -- now arrives here.
+    Substituting `failed_row` for the row the runner already wrote would LOSE
+    information: the runner looked the instance's published bounds up and put
+    `primal_bks`/`dual_bound`/`n_int_vars` on the row, which this driver never
+    reads, and its note says `solve-error` rather than `exit-3`. Both rows are
+    held out of every count identically, so keeping the richer one costs the
+    scoring nothing and tells the reader which of read, build or solve threw.
+
+    The runner's row is taken only when the exit status is the one the runner
+    uses to REPORT its error tally, the row is READABLE (`read_runner_row` checks
+    it is a single row for this instance at this commit) and its note is one no
+    completed search writes. A crash, a signal, or a nonzero exit next to a row
+    claiming a measurement all fall back to `failed_row` -- the driver must not
+    let a process failure enter the campaign as a result, and a row left behind
+    by a process that died is not evidence of anything.
+    """
+    if returncode != RUNNER_EXIT_ERRORED:
+        return failed_row(run, args, sha, returncode)
+    try:
+        runner = read_runner_row(out_dir / "runs" / f"{run.slug}.csv", run, sha)
+    except (RuntimeError, OSError):
+        return failed_row(run, args, sha, returncode)
+    if completed_search(runner["note"]):
+        # The process failed, but the row it left behind says a search ran and
+        # reported something. The two cannot both be true; record the failure.
+        return failed_row(run, args, sha, returncode, "row-claims-a-result")
+    return result_row(run, args, sha, runner)
+
+
 def _progress(index: int, total: int, run: Run, started: float, elapsed_each: list[float]) -> str:
     """The stderr line the orchestrator watches for hours."""
     done = len(elapsed_each)
@@ -750,13 +789,14 @@ def execute_runs(
             # roster -- and a resume would retry the same crash forever. The
             # row enters the resume set so the campaign moves on, and the
             # report counts it in its own bucket instead of averaging it in.
+            row = _failed_run_row(out_dir, run, args, sha, completed.returncode)
             print(
-                f"    -> FAILED (exit {completed.returncode}); recorded as a failed run, see "
-                f"{out_dir / 'runs' / f'{run.slug}.log'}",
+                f"    -> FAILED (exit {completed.returncode}); recorded as a failed run "
+                f"(note={row['note']}), see {out_dir / 'runs' / f'{run.slug}.log'}",
                 file=sys.stderr,
                 flush=True,
             )
-            append_result(results, failed_row(run, args, sha, completed.returncode))
+            append_result(results, row)
             elapsed_each.append(time.monotonic() - began)
             continue
         try:

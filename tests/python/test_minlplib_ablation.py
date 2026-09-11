@@ -19,6 +19,7 @@ import pytest
 from benchmarks.minlplib.ablation_report import (
     CONTROL_ARM,
     PROBE_ARM_NAME,
+    completed_search,
     render_report,
     sign_test_p,
     t_multiplier,
@@ -55,7 +56,7 @@ from benchmarks.minlplib.run_ablation import (
     stamp_conflict,
     usage_error,
 )
-from benchmarks.minlplib.run_benchmark import REPO_ROOT
+from benchmarks.minlplib.run_benchmark import REPO_ROOT, RUNNER_EXIT_ERRORED
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -99,9 +100,19 @@ class FakeCompleted:
 
 
 def fake_runner(
-    *, repairs: int = 0, returncode: int = 0, seen: list[str] | None = None
+    *,
+    repairs: int = 0,
+    returncode: int = 0,
+    seen: list[str] | None = None,
+    row: str | None = None,
+    write_row: bool = True,
 ) -> Callable[..., FakeCompleted]:
-    """Stand in for `subprocess.run(cbls_minlplib ...)` without solving anything."""
+    """Stand in for `subprocess.run(cbls_minlplib ...)` without solving anything.
+
+    `row` is a row template with `{name}` and `{sha}` placeholders, for the tests
+    that care what the runner left behind next to its exit status;
+    `write_row=False` is the process that died before writing one.
+    """
 
     def run(cmd: Sequence[str], **kwargs: object) -> FakeCompleted:
         name = cmd[cmd.index("--instance") + 1]
@@ -110,13 +121,28 @@ def fake_runner(
         if seen is not None:
             seen.append(out.stem)
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(
-            f"{RUNNER_HEADER}\n"
-            f"{name},1,1,1,5,5,60,true,feasible,{sha},0,0,{repairs},0,{DEFAULT_ARM_CELL}\n"
+        template = (
+            row
+            if row is not None
+            else f"{{name}},1,1,1,5,5,60,true,feasible,{{sha}},0,0,{repairs},0,{DEFAULT_ARM_CELL}"
         )
+        text = f"{RUNNER_HEADER}\n"
+        if write_row:
+            text += template.format(name=name, sha=sha) + "\n"
+        out.write_text(text)
         return FakeCompleted(returncode)
 
     return run
+
+
+#: What `minlplib.cpp`'s `write_unsolved_row` leaves behind when `cbls::solve`
+#: throws: `feasible=false`, every measured cell NaN -- but the published bounds
+#: and the discrete-variable count filled in, because the runner looked them up
+#: before it ever tried to solve.
+SOLVE_ERROR_ROW = (
+    "{name},NaN,-1161.34,-1161.34,NaN,NaN,0,false,solve-error,{sha},NaN,4,NaN,NaN,"
+    + DEFAULT_ARM_CELL
+)
 
 
 # --- the interleaving contract -------------------------------------------------
@@ -562,6 +588,9 @@ def _campaign_csv(path: Path, rows: Sequence[dict[str, object]]) -> Path:
             cells = dict.fromkeys(RESULT_COLUMNS, "0")
             cells["feasible"] = "true"
             cells["lns_repairs"] = "0"
+            # The scorer scores only the notes a COMPLETED search writes (#153);
+            # "0" is not one, so a benign default has to be a real note.
+            cells["note"] = "feasible"
             cells.update({k: str(v) for k, v in row.items()})
             writer.writerow([cells[column] for column in RESULT_COLUMNS])
     return path
@@ -820,6 +849,103 @@ def test_report_only_does_not_repair_the_file_a_campaign_is_appending_to(
 
     assert rc == 0
     assert results.read_text() == torn, "the live results file was modified"
+
+
+def _recorded(out_dir: Path) -> list[dict[str, str]]:
+    with (out_dir / RESULTS_NAME).open(newline="") as fh:
+        return list(csv.DictReader(fh))
+
+
+def test_a_runner_that_reports_an_error_is_recorded_from_its_own_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#153: a thrown solve now exits nonzero, so it arrives on the failed-run
+    path -- and must not be downgraded on the way in.
+
+    `failed_row` NaNs every runner column, including `primal_bks`, `dual_bound`
+    and `n_int_vars`. The runner knows those: it reads `bounds.csv` before it
+    builds anything, and this driver never does. Substituting the driver's own
+    row for the one the runner wrote would therefore turn a better record into a
+    worse one just because the exit status improved. The row is held out of
+    every count either way -- `solve-error` is not a note a completed search
+    writes -- so keeping the richer one costs the scoring nothing and tells the
+    reader which of read, build or solve threw.
+    """
+    out_dir = tmp_path / "scratch"
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        fake_runner(returncode=RUNNER_EXIT_ERRORED, row=SOLVE_ERROR_ROW),
+    )
+    execute_runs(
+        make_args(tmp_path), "abc1234", campaign_plan(["i1"], [7], [ARMS[0]]), out_dir, "c"
+    )
+
+    rows = _recorded(out_dir)
+    assert len(rows) == 1
+    assert rows[0]["note"] == "solve-error"
+    assert rows[0]["primal_bks"] == "-1161.34"
+    assert rows[0]["n_int_vars"] == "4"
+    # Still not a measurement: the scorer holds every non-completed note out.
+    assert not completed_search(rows[0]["note"])
+    # And the campaign carried on rather than raising -- the whole point of
+    # recording a failed run.
+    assert len(_recorded(out_dir)) == 1
+
+
+def test_a_crash_is_still_recorded_as_the_drivers_own_failed_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A signal is not the runner reporting an error tally.
+
+    Exit 139 is a segfault: whatever row is sitting next to it was written by a
+    process that then died, and a row a dead process left behind is not evidence
+    of anything. Only the runner's own error-tally status buys its row any trust.
+    """
+    out_dir = tmp_path / "scratch"
+    monkeypatch.setattr(subprocess, "run", fake_runner(returncode=139, row=SOLVE_ERROR_ROW))
+    execute_runs(
+        make_args(tmp_path), "abc1234", campaign_plan(["i1"], [7], [ARMS[0]]), out_dir, "c"
+    )
+
+    rows = _recorded(out_dir)
+    assert rows[0]["note"] == "runner-failed-exit-139"
+    assert rows[0]["primal_bks"] == "NaN"
+
+
+def test_an_error_exit_with_no_row_falls_back_to_the_drivers_failed_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The error status is not a promise that a readable row exists -- a full
+    disk reaches this -- so the fallback has to be the row that needs nothing."""
+    out_dir = tmp_path / "scratch"
+    monkeypatch.setattr(
+        subprocess, "run", fake_runner(returncode=RUNNER_EXIT_ERRORED, write_row=False)
+    )
+    execute_runs(
+        make_args(tmp_path), "abc1234", campaign_plan(["i1"], [7], [ARMS[0]]), out_dir, "c"
+    )
+
+    assert _recorded(out_dir)[0]["note"] == "runner-failed-exit-3"
+
+
+def test_an_error_exit_beside_a_row_claiming_a_result_is_recorded_as_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The process failed and the row says a search ran and reported something.
+
+    Both cannot be true, and the direction to fail in is obvious: a campaign may
+    lose a measurement, but it may not gain one from a process that reported
+    failure. Recorded as a failed run, with a kind that says which way the two
+    disagreed rather than just repeating the exit code.
+    """
+    out_dir = tmp_path / "scratch"
+    monkeypatch.setattr(subprocess, "run", fake_runner(returncode=RUNNER_EXIT_ERRORED))
+    execute_runs(
+        make_args(tmp_path), "abc1234", campaign_plan(["i1"], [7], [ARMS[0]]), out_dir, "c"
+    )
+
+    assert _recorded(out_dir)[0]["note"] == "runner-failed-row-claims-a-result"
 
 
 def test_a_failed_run_is_recorded_rather_than_ending_the_campaign(tmp_path: Path) -> None:

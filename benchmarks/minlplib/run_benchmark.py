@@ -74,6 +74,19 @@ REFERENCE_SOLVE = Path(__file__).resolve().parent / "reference_solve.py"
 #: The runner target and the executable `cmake --build` produces for it.
 RUNNER_TARGET = "cbls_minlplib"
 
+#: The runner's exit status when its error tally is nonzero -- at least one
+#: instance THREW while being read, built or solved (#153). Distinct from the
+#: codes already in use: 1 is "no roster to run" and an exception escaping the
+#: runner's `main`, 2 is a bad flag or an output file that would not open
+#: (`benchmarks/common/runner_args.h`).
+#:
+#: A coverage gap is NOT an error and does not reach this: an instance skipped as
+#: unsupported, or one whose `.nl` was never downloaded, is bucketed apart by the
+#: runner and leaves the exit status at 0. `kExitErrored` in
+#: `benchmarks/minlplib/minlplib.cpp` is the source of truth and a test pins this
+#: constant against it.
+RUNNER_EXIT_ERRORED = 3
+
 #: Seconds per instance. The runner's own documented default (issue #88), argued
 #: from the committed anytime trace in the benchmark README ("Why 60s").
 DEFAULT_TIME_LIMIT = 60.0
@@ -482,9 +495,17 @@ def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage:
         log = stage / f"{name}.log"
         log.write_text(completed.stdout + completed.stderr)
         if completed.returncode != 0 or not staged_complete(args, sha, name, stage):
+            why = (
+                " The runner threw on this instance and its staged row carries "
+                "read-error/build-error/solve-error: no search ran, so publishing the table "
+                "would put a row in it that measures nothing. Fix the instance or drop it from "
+                "the roster; re-running will hit the same throw."
+                if completed.returncode == RUNNER_EXIT_ERRORED
+                else ""
+            )
             raise RuntimeError(
                 f"{name} failed (exit {completed.returncode}); see {log}. Re-running resumes "
-                "from here."
+                f"from here.{why}"
             )
 
 

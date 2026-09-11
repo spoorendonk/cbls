@@ -406,6 +406,15 @@ std::vector<std::string> roster_from_bounds(const std::string& path) {
     return names;
 }
 
+// Exit status for a run that reached the end of its roster. 1 and 2 are already
+// taken -- 1 for "no roster to run" and for an exception escaping main, 2 for a
+// bad flag or an unwritable output file (benchmarks/common/runner_args.h) -- so
+// an error tally gets a code of its own and a consumer can tell the two apart.
+//
+// Mirrored in Python as `run_benchmark.RUNNER_EXIT_ERRORED`; a test pins that
+// constant against this literal, because the drivers branch on the value.
+constexpr int kExitErrored = 3;
+
 struct Tally {
     int parsed = 0;
     int closed = 0;
@@ -424,6 +433,19 @@ struct Tally {
     int near_miss = 0;      // infeasible, but residual within kNearMiss of feasible
     int nonfinite_obj = 0;  // infeasible with a non-finite objective at the closest approach
 };
+
+/// The process exit status for a run that reached the end of its roster.
+///
+/// `errored` is `Tally::errored`: a read, a build or a solve that THREW. It is
+/// deliberately the only argument. `skipped_unsupported` and `not_found` are
+/// COVERAGE GAPS -- an operator this adapter does not implement, or an instance
+/// nobody downloaded -- and the runner buckets them apart from errors exactly so
+/// that a gap is not reported as a failure. `failed_nonfinite` and
+/// `verify_failed` are measurements: a search ran to completion and the row says
+/// what it reported.
+int run_exit_status(int errored) {
+    return errored > 0 ? kExitErrored : 0;
+}
 
 // An infeasible run whose closest approach is this small is a numerical
 // near-miss (a tolerance/conditioning story), not a search failure to find the
@@ -1070,7 +1092,18 @@ int run_benchmark(int argc, char** argv) {
     }
 
     print_tally(args, t);
-    return 0;
+    const int status = run_exit_status(t.errored);
+    if (status != 0) {
+        // On stderr and not only in the tally: the exit status is what an
+        // automated consumer reads, and a driver that records the row still has
+        // to be able to say WHY the process failed.
+        std::fprintf(stderr,
+                     "%d instance(s) threw while being read, built or solved; exiting %d. "
+                     "Those rows carry read-error/build-error/solve-error and record no "
+                     "search -- they are not infeasibility results.\n",
+                     t.errored, status);
+    }
+    return status;
 }
 
 }  // namespace
