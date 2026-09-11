@@ -125,6 +125,14 @@ class Verification(NamedTuple):
     #: disclosed (issue #139).
     n_columns: int | None = None
     n_rows: int | None = None
+    #: The loosest row tolerance any row of this instance earned, and the row that
+    #: earned it. The row check is `1e-6 + 1e-9 * sum|a_ij x_j|`, which is
+    #: unbounded in the activity, so "the solution satisfies every row to
+    #: tolerance" is only as strong as the largest tolerance that was granted.
+    #: Published rather than argued about. Absent from a verdict written before
+    #: the verifier recorded it.
+    max_row_tolerance: float | None = None
+    loosest_row: str = ""
 
 
 #: The verdict of a row nobody checked. Not a NamedTuple default, because a row
@@ -144,6 +152,7 @@ def read_verification(results_dir: Path, engine: str, instance: str) -> Verifica
     tolerances = record.get("tolerances")
     columns = record.get("n_columns")
     rows = record.get("n_rows")
+    row_tolerance = record.get("max_row_tolerance")
     return Verification(
         verdict=str(record.get("verdict", UNVERIFIED)),
         reason=str(record.get("reason", "")),
@@ -160,6 +169,10 @@ def read_verification(results_dir: Path, engine: str, instance: str) -> Verifica
         # neither may enter the cross-check.
         n_columns=int(columns) if isinstance(columns, int) and columns > 0 else None,
         n_rows=int(rows) if isinstance(rows, int) and rows > 0 else None,
+        max_row_tolerance=(
+            float(row_tolerance) if isinstance(row_tolerance, (int, float)) else None
+        ),
+        loosest_row=str(record.get("loosest_row", "")),
     )
 
 
@@ -267,6 +280,11 @@ class Scored(NamedTuple):
     #: the row carries no verdict.
     checker_n_vars: int | None
     checker_n_cons: int | None
+    #: The loosest row tolerance this row's verdict granted, and the row that
+    #: earned it. The row tolerance grows with the activity, so a pass says less
+    #: on a model with large coefficients than on a small one.
+    verification_row_tolerance: float | None
+    verification_loosest_row: str
 
 
 def primal_gap(incumbent: float | None, reference: float) -> float:
@@ -386,6 +404,8 @@ def score_instance(
             verification_message="",
             checker_n_vars=None,
             checker_n_cons=None,
+            verification_row_tolerance=None,
+            verification_loosest_row="",
         )
 
     try:
@@ -488,6 +508,8 @@ def score_instance(
         verification_message=verification.message,
         checker_n_vars=verification.n_columns,
         checker_n_cons=verification.n_rows,
+        verification_row_tolerance=verification.max_row_tolerance,
+        verification_loosest_row=verification.loosest_row,
     )
 
 
@@ -1557,6 +1579,8 @@ def write_comparison(
                 "verification",
                 "verification_reason",
                 "verification_marginal",
+                "verification_row_tolerance",
+                "verification_loosest_row",
                 "failure_reason",
                 "provenance",
                 "config",
@@ -1592,6 +1616,10 @@ def write_comparison(
                     r.verification,
                     r.verification_reason,
                     int(r.verification_marginal),
+                    ""
+                    if r.verification_row_tolerance is None
+                    else repr(r.verification_row_tolerance),
+                    r.verification_loosest_row,
                     _failure_reason(r),
                     r.provenance,
                     r.config,

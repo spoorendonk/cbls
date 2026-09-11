@@ -63,7 +63,11 @@ the correctness sweep is for and keeps the anytime score as a co-equal section:
 7. **where the time went** — setup and solve time in separate columns.
 
 A compact form of 1, 2, 4 and 5 also leads the table's own header, because that
-is what a reader quoting the CSV will see.
+is what a reader quoting the CSV will see. The table additionally carries
+`verification_row_tolerance` / `verification_loosest_row` per row: the row check
+is `1e-6 + 1e-9 * sum|a_ij x_j|`, which is unbounded in the activity, so a pass
+says less on a model with large coefficients than on a small one, and the number
+is published rather than argued about.
 
 ### The model-shape cross-check
 
