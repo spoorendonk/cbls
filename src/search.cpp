@@ -340,6 +340,16 @@ private:
     //
     // PRECONDITION: the caller has established real_feasible().
     bool record_best();
+    // Latch the first feasible point's objective and the time it took to reach
+    // it (#149). Called from both of record_best's have_feasible_ transitions;
+    // a no-op after the first. Observational only -- nothing reads the latched
+    // values back, so the trajectory is unchanged by their being recorded.
+    void note_first_feasible(double obj);
+    // Seconds since solve() started. finish() reports the same quantity as
+    // SearchResult::time_seconds.
+    double elapsed() const {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - start_).count();
+    }
     // On stagnation: LNS diversification every lns_interval-th time, else perturb.
     // `allow_lns` is false only for #102's unproductive route once a feasible
     // solution exists. The kick itself is microseconds and st_e40 needs it to
@@ -404,6 +414,10 @@ private:
     // Instrumentation only: the value is recorded and never branched on, so the
     // trajectory is byte-identical to the run that discarded this return (#150).
     int lns_repairs_accepted_ = 0;
+    // #149's pair. NaN until the first feasible point; see
+    // SearchResult::first_feasible_objective for what each NaN means.
+    double first_feasible_obj_ = std::numeric_limits<double>::quiet_NaN();
+    double first_feasible_time_ = std::numeric_limits<double>::quiet_NaN();
     // Counts only the kicks ELIGIBLE for an LNS repair, which is what
     // `lns_interval` has always meant. Kept apart from `perturbations` because
     // #102's route can be refused its LNS half: letting a refused kick advance
@@ -474,11 +488,9 @@ void ViolationLSLoop::emit_progress(bool new_best) {
         return;
     }
     vm_.invalidate_cache();
-    double elapsed =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - start_).count();
     SolveProgress p;
     p.iteration = batches_;
-    p.time_seconds = elapsed;
+    p.time_seconds = elapsed();
     p.objective = best_feasible_obj_;
     p.total_violation = vm_.total_violation();
     p.feasible = real_feasible();
@@ -486,6 +498,18 @@ void ViolationLSLoop::emit_progress(bool new_best) {
     p.perturbations = perturbations_;
     callback_->on_progress(p);
     last_callback_ = std::chrono::steady_clock::now();
+}
+
+void ViolationLSLoop::note_first_feasible(double obj) {
+    // The time is the latch, not the objective: `obj` is allowed to be NaN here
+    // (the #100 witness path can hand us one), so testing it would re-arm the
+    // latch on every later feasible point and record the last one instead of
+    // the first.
+    if (!std::isnan(first_feasible_time_)) {
+        return;
+    }
+    first_feasible_time_ = elapsed();
+    first_feasible_obj_ = obj;
 }
 
 bool ViolationLSLoop::record_best() {
@@ -509,6 +533,7 @@ bool ViolationLSLoop::record_best() {
             return false;  // already have a witness, and possibly a better one
         }
         have_feasible_ = true;
+        note_first_feasible(obj);
         best_state_ = model_.copy_state();
         // Leaving the bound at +inf as well, though, left the search with
         // no objective signal at all (issue #116). `obj <= +inf` is vacuous
@@ -594,6 +619,7 @@ bool ViolationLSLoop::record_best() {
         return false;
     }
     have_feasible_ = true;
+    note_first_feasible(obj);
     best_feasible_obj_ = obj;
     best_state_ = model_.copy_state();
     if (has_obj_) {
@@ -858,8 +884,9 @@ SearchResult ViolationLSLoop::finish() {
     }
     full_evaluate(model_);
 
-    double elapsed =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - start_).count();
+    // Sampled here rather than at the assignment below, so the reported wall
+    // time does not depend on how many cheap fields the record grows.
+    const double run_seconds = elapsed();
 
     SearchResult result;
     result.objective =
@@ -870,12 +897,14 @@ SearchResult ViolationLSLoop::finish() {
     // full_evaluate above rather than the incrementally-maintained node values.
     result.best_violation = max_real_violation();
     result.iterations = fj_.iterations();  // total GLS iterations (not batch count)
-    result.time_seconds = elapsed;
+    result.time_seconds = run_seconds;
     result.termination = termination_;
     result.escape_probe_armed = fj_.escape_probe();
     result.perturbations = perturbations_;
     result.lns_repairs = lns_repairs_;
     result.lns_repairs_accepted = lns_repairs_accepted_;
+    result.first_feasible_objective = first_feasible_obj_;
+    result.time_to_first_feasible = first_feasible_time_;
     return result;
 }
 

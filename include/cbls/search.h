@@ -231,6 +231,39 @@ struct SearchResult {
     /// no-LNS one; it only says the budget bought nothing.
     /// Single-`solve()` only, as above.
     int lns_repairs_accepted = 0;
+
+    /// The objective at the FIRST feasible point this run recorded, and the
+    /// seconds it took to reach it (#149). Observational only: nothing in the
+    /// search reads either field, so a run that computes them is
+    /// byte-for-byte the run that did not.
+    ///
+    /// "First feasible" is the moment `have_feasible` first turns true --
+    /// before the inner-solver polish that follows in the same batch, and
+    /// before any bound tightening. That is deliberate: the question these two
+    /// fields exist to answer is where the search ARRIVES in the feasible
+    /// region, as against how far the descent afterwards carries it, and a
+    /// polished value is already the second of those.
+    ///
+    /// `time_to_first_feasible` is the authoritative "did this run ever record
+    /// a feasible point" cell: it is NaN if and only if none was recorded.
+    /// `first_feasible_objective` may be NaN or +/-inf on a run that DID reach
+    /// feasibility -- the first feasible point can be the non-finite-objective
+    /// witness of #100 -- so test the time, not the objective, and test
+    /// `std::isfinite(first_feasible_objective)` before using the value.
+    ///
+    /// NaN rather than `objective`'s `+inf` for "nothing to report", because
+    /// +inf is a value the #100 witness path genuinely produces here and the
+    /// two readings must not collide.
+    ///
+    /// Single-`solve()` only, with the same caveat as `escape_probe_armed`
+    /// above: `ParallelSearch`'s live aggregation paths compose the result
+    /// field by field, so both read NaN there -- which is the honest reading,
+    /// since "not recorded" is exactly what the aggregation leaves behind.
+    double first_feasible_objective = std::numeric_limits<double>::quiet_NaN();
+    /// Seconds from the start of `solve()` to the first feasible point. See
+    /// `first_feasible_objective` above; the two are recorded together and are
+    /// NaN together on a run that never reached feasibility.
+    double time_to_first_feasible = std::numeric_limits<double>::quiet_NaN();
 };
 
 struct SolveProgress {

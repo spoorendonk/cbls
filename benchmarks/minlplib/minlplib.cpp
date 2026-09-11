@@ -597,6 +597,43 @@ LnsCells lns_cells(const cbls::SearchResult& result) {
     return {std::to_string(result.lns_repairs), std::to_string(result.lns_repairs_accepted)};
 }
 
+/// The row's first-feasible pair (#149): the objective at the first feasible
+/// point the search recorded, and the seconds it took to get there.
+///
+/// A pair type for the same reason `LnsCells` is one -- the two cells are known
+/// together or not at all, and every row writer below goes through this type so
+/// that no writer can give one of them a number while leaving the other at NaN.
+///
+/// Both default to "NaN", which is what a row must carry wherever no search
+/// completed. A 0 in either would be a different claim: "reached feasibility
+/// instantly, at objective zero" is a measurement, and a row where nothing ran
+/// must not be able to enter the #149 correlation as one.
+///
+/// `seconds` is the cell that says whether a feasible point was recorded at
+/// all. `objective` can be NaN or inf on a row that DID reach feasibility --
+/// that is the non-finite-objective witness of #100, faithfully reported --
+/// so a reader must exclude non-finite objectives rather than assume a number.
+struct FirstFeasibleCells {
+    std::string objective = "NaN";
+    std::string seconds = "NaN";
+};
+
+/// The first-feasible pair of a completed solve, as cells.
+///
+/// `maximizing` un-negates the objective the same way the row's `objective`
+/// cell is un-negated: `solve()` minimises, so a maximize instance was built
+/// with a negated objective and the raw value is the wrong sign for the
+/// published bound it will be read beside. Applied unconditionally rather than
+/// under an `isfinite` guard, exactly as the final objective is, so a first
+/// feasible point whose objective blew up keeps the sign its magnitude implies.
+FirstFeasibleCells first_feasible_cells(const cbls::SearchResult& result, bool maximizing) {
+    double obj = result.first_feasible_objective;
+    if (maximizing) {
+        obj = -obj;
+    }
+    return {cell(obj), cell(result.time_to_first_feasible)};
+}
+
 /// A row for an instance whose bounds have not been looked up yet -- nothing is
 /// known about it, so every numeric cell is NaN. Such a row is still written:
 /// bounds.csv is the roster of record, so a silently absent row would make the
@@ -608,17 +645,20 @@ void write_preread_row(std::ostream& csv, const Args& args, const std::string& n
     // NaNs: the invariant that type carries is worth nothing if the writer for
     // the rows that are ALWAYS unmeasured is the one exempt from it.
     const LnsCells lns;
+    const FirstFeasibleCells ff;
     csv << name << ",NaN,NaN,NaN,NaN,NaN,0,false," << note << "," << args.commit_sha << ",NaN,NaN,"
-        << lns.attempted << "," << lns.accepted << "," << args.search_config << "\n";
+        << lns.attempted << "," << lns.accepted << "," << ff.objective << "," << ff.seconds << ","
+        << args.search_config << "\n";
 }
 
 /// A row for an instance that was built but produced no publishable objective.
 void write_unsolved_row(std::ostream& csv, const Args& args, const std::string& name,
                         const Bounds& b, double wall, const std::string& note, int n_discrete,
-                        const LnsCells& lns) {
+                        const LnsCells& lns, const FirstFeasibleCells& ff) {
     csv << name << ",NaN," << b.primal << "," << b.dual << ",NaN,NaN," << wall << ",false," << note
         << "," << args.commit_sha << ",NaN," << n_discrete << "," << lns.attempted << ","
-        << lns.accepted << "," << args.search_config << "\n";
+        << lns.accepted << "," << ff.objective << "," << ff.seconds << "," << args.search_config
+        << "\n";
 }
 
 /// Reads the instance's .nl. Returns false having written the row and bumped the
@@ -883,7 +923,8 @@ bool prepare_instance(std::ostream& csv, const Args& args, const std::string& na
         std::replace(note.begin(), note.end(), ',', ';');
         std::printf("%-22s  (skipped: %s)\n", name.c_str(), note.c_str());
         ++t.skipped_unsupported;
-        write_unsolved_row(csv, args, name, b, 0.0, note, prob.n_discrete_vars, LnsCells{});
+        write_unsolved_row(csv, args, name, b, 0.0, note, prob.n_discrete_vars, LnsCells{},
+                           FirstFeasibleCells{});
         return false;
     }
     ++t.closed;
@@ -937,8 +978,8 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
         std::printf(" ERROR solving: %s\n", e.what());
         ++t.errored;
         ++t.solve_errored;
-        write_unsolved_row(csv, args, name, b, 0.0, "solve-error", prob.n_discrete_vars,
-                           LnsCells{});
+        write_unsolved_row(csv, args, name, b, 0.0, "solve-error", prob.n_discrete_vars, LnsCells{},
+                           FirstFeasibleCells{});
         return;
     }
     auto t1 = std::chrono::steady_clock::now();
@@ -947,10 +988,14 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
     // solve() reports the *minimised* objective. For a maximize instance the
     // model objective was negated, so un-negate to recover the true value and
     // make gap-to-BKS comparable to the published (max-sense) bound.
+    const bool maximizing = built.model.is_maximizing();
     double obj = result.feasible ? result.objective : std::numeric_limits<double>::quiet_NaN();
-    if (result.feasible && built.model.is_maximizing()) {
+    if (result.feasible && maximizing) {
         obj = -obj;
     }
+    // Filled once, from the one `result`, and handed to whichever row writer
+    // below turns out to be the one that runs.
+    const FirstFeasibleCells ff = first_feasible_cells(result, maximizing);
 
     // A feasible-but-non-finite objective means the guard fired: count it as
     // failed(non-finite), not feasible.
@@ -962,11 +1007,11 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
             note += "; " + integrality_note;
         }
         std::printf("%12s %12.4g %10s %8.2fs  %s\n", "NONFIN", b.primal, "N/A", wall, note.c_str());
-        write_unsolved_row(csv, args, name, b, wall, note, prob.n_discrete_vars, lns_cells(result));
+        write_unsolved_row(csv, args, name, b, wall, note, prob.n_discrete_vars, lns_cells(result),
+                           ff);
         return;
     }
 
-    const bool maximizing = built.model.is_maximizing();
     double gap_bks = safe_gap(obj, b.primal, maximizing);
     double gap_dual = safe_gap(obj, b.dual, maximizing);
 
@@ -1003,7 +1048,8 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
         << cell(pub_gap_bks) << "," << cell(pub_gap_dual) << "," << wall << ","
         << (verified ? "true" : "false") << "," << note << "," << args.commit_sha << ","
         << cell(max_violation) << "," << prob.n_discrete_vars << "," << solved.attempted << ","
-        << solved.accepted << "," << args.search_config << "\n";
+        << solved.accepted << "," << ff.objective << "," << ff.seconds << "," << args.search_config
+        << "\n";
     csv.flush();
 }
 
@@ -1094,9 +1140,18 @@ int run_benchmark(int argc, char** argv) {
     // the run, not the arm -- and they are published because an ablation that
     // asks whether LNS is worth its budget has to be able to read both whether
     // LNS did anything at all (#143) and whether any of it was kept (#150).
+    //
+    // `first_feasible_objective` and `time_to_first_feasible` join them on the
+    // same footing (#149): they describe where the run ARRIVED in the feasible
+    // region, as against the final objective the descent afterwards reached, and
+    // publishing them is what makes the first-feasible/final correlation
+    // computable from an ordinary campaign instead of a bespoke instrumented
+    // run. Recording them changes no trajectory -- see
+    // `SearchResult::first_feasible_objective`.
     csv << "instance,objective,primal_bks,dual_bound,gap_to_bks%,gap_to_dual%,"
            "wall_seconds,feasible,note,commit_sha,max_violation,n_int_vars,lns_repairs,"
-           "lns_repairs_accepted,search_config\n";
+           "lns_repairs_accepted,first_feasible_objective,time_to_first_feasible,"
+           "search_config\n";
 
     std::printf("\n%-22s %12s %12s %10s %9s  %s\n", "Instance", "Objective", "BKS", "Gap%",
                 "Time(s)", "Note");
