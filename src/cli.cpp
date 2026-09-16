@@ -34,10 +34,7 @@ Options:
   --lns FRACTION        Enable LNS with destroy fraction, e.g. 0.3
   --lns-interval INT    LNS fires every N diversification kicks (default: 3)
   --intensify           Enable float intensification hook
-  --threads N           Number of threads (0 = auto-detect, default: 1)
-  --deterministic       Enable deterministic epoch-sync parallel mode
-  --epoch-iters INT     Iterations per epoch in deterministic mode (default: 5000)
-  --max-epochs INT      Number of epochs in deterministic mode (default: 10)
+  --threads N           Number of search threads (default: 0 = one per core)
   --format human|jsonl  Output format (default: human)
   --quiet               Suppress progress, print only final result
   --help                Show this help message
@@ -57,10 +54,13 @@ namespace {
 // a guard to land in. The CLI has neither: nothing pins its codes, and there is
 // no downstream guard for a NaN to be caught by, so it reports here instead.
 //
-// What is deliberately NOT rejected, because the CLI's budget is not only the
-// clock: `--time-limit 0` and `--time-limit inf` are working configurations
-// under --deterministic, where --epoch-iters/--max-epochs bind instead. A
-// runner-style `!(x > 0.0)` guard would break them. NaN is different -- it is
+// What is deliberately NOT rejected: `--time-limit 0` and `--time-limit inf`
+// still parse. Neither is a useful CLI configuration since epoch-sync went --
+// the CLI has no iteration budget of its own, so 0 leaves no budget at all
+// (solve() returns `no_budget` having done nothing, exit 1) and inf saturates
+// to make_budget's ~31-year ceiling -- but both are honest readings of the flag
+// and a runner-style `!(x > 0.0)` guard would be a CLI break. NaN is different
+// -- it is
 // never a request anyone can mean, and it silently turns --lns off and
 // --time-limit into a solve that never searched -- so the double overload
 // rejects it and nothing else.
@@ -141,10 +141,11 @@ struct CliOptions {
     SearchConfig config;  // also holds lns_interval, which --lns-interval writes
     std::string format = "human";
     bool quiet = false;
-    int n_threads = 1;
-    bool deterministic = false;
-    int64_t epoch_iters = 5000;
-    int max_epochs = 10;
+    // 0 = one worker per hardware thread. The portfolio shares incumbents and
+    // restarts stalled workers from them, so the default is to use the machine.
+    // Pass `--threads 1` for a single-threaded, exactly reproducible run --
+    // which is what the profiling recipes in docs/profiling.md need.
+    int n_threads = 0;
 };
 
 // Whether an option consumed the argument, and if so whether it was well formed.
@@ -160,10 +161,6 @@ bool take_toggle_option(const std::string& arg, CliOptions& opt) {
     }
     if (arg == "--intensify") {
         opt.use_intensify = true;
-        return true;
-    }
-    if (arg == "--deterministic") {
-        opt.deterministic = true;
         return true;
     }
     if (arg == "--quiet") {
@@ -182,14 +179,12 @@ struct ValueOption {
     std::variant<double*, int*, int64_t*, uint64_t*> target;
 };
 
-std::array<ValueOption, 7> numeric_options(CliOptions& opt) {
+std::array<ValueOption, 5> numeric_options(CliOptions& opt) {
     return {{{"--time-limit", &opt.time_limit},
              {"--seed", &opt.seed},
              {"--lns", &opt.lns_fraction},
              {"--lns-interval", &opt.config.lns_interval},
-             {"--threads", &opt.n_threads},
-             {"--epoch-iters", &opt.epoch_iters},
-             {"--max-epochs", &opt.max_epochs}}};
+             {"--threads", &opt.n_threads}}};
 }
 
 // One `--flag VALUE` option. Advances `i` past the value when it takes one.
@@ -257,7 +252,7 @@ ParseOutcome parse_args(int argc, char** argv, CliOptions& opt) {
     return ParseOutcome::kRun;
 }
 
-// Portfolio or epoch-sync mode. The model is re-read per worker rather than
+// The cooperative portfolio. The model is re-read per worker rather than
 // copied, which is why this takes the path and not the loaded Model.
 // Returns false having already reported the failure.
 bool solve_parallel(const CliOptions& opt, int effective_threads, SolveCallback* callback,
@@ -282,9 +277,6 @@ bool solve_parallel(const CliOptions& opt, int effective_threads, SolveCallback*
 
     ParallelConfig par_config;
     par_config.n_threads = effective_threads;
-    par_config.deterministic = opt.deterministic;
-    par_config.epoch_iterations = opt.epoch_iters;
-    par_config.max_epochs = opt.max_epochs;
 
     ParallelSearch ps(effective_threads);
     // solve() throws when every portfolio worker threw -- the factory could
@@ -358,10 +350,21 @@ int run_cli(int argc, char** argv) {
     }
 
     SearchResult result;
-    if (effective_threads > 1 || opt.deterministic) {
+    if (effective_threads > 1) {
         if (!solve_parallel(opt, effective_threads, callback, result)) {
             return 1;
         }
+        // Both formatters print the ASSIGNMENT by iterating this model's
+        // variables, not result.best_state. On the single-threaded path that
+        // works because solve() restores its winner into the model it was
+        // handed. The portfolio's workers search their own models, so without
+        // this the CLI printed a real objective next to this model's UNTOUCHED
+        // initial values -- in both output formats.
+        if (result.best_state.values.size() == model.num_vars()) {
+            model.restore_state(result.best_state);
+            full_evaluate(model);
+        }
+
     } else {
         result = solve_single(opt, model, callback);
     }

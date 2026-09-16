@@ -6,6 +6,7 @@
 #include "moves.h"
 #include "randomize.h"
 #include "rng.h"
+#include "solution_pool.h"
 #include "violation.h"
 
 #include <cstdint>
@@ -16,7 +17,7 @@ namespace cbls {
 struct SearchConfig {
     // Keep the assignment the caller handed in, whole: suppresses both the
     // List/Set randomisation and FeasibilityJump's closest-to-zero scalar start.
-    // Used by epoch restarts and by callers supplying their own start (including
+    // Used by portfolio restarts and by callers supplying their own start (including
     // a randomised one — see initialize_random). LNS repair gets the same effect
     // through a different knob: it calls fj_nl_initialize, which sets
     // GFJConfig::set_initial_x = false rather than going through SearchConfig.
@@ -135,10 +136,17 @@ enum class TerminationReason : std::uint8_t {
     /// Neither a wall-clock budget nor an iteration budget was set, so the loop
     /// returned immediately having done no work rather than spinning forever.
     NoBudget,
+    /// A peer worker ended the run: `SearchCoordination::stop` was set while this
+    /// search still had budget left. Only reachable from `ParallelSearch`, which
+    /// raises the flag when one worker has answered the question outright -- a
+    /// pure-feasibility model's first feasible solution. Distinct from
+    /// `TimeLimit` on purpose: a worker cancelled 0.2s into a 60s budget did not
+    /// run out of clock, and `time_seconds` must not be read as though it did.
+    Stopped,
 };
 
 /// Stable snake_case token for a TerminationReason ("time_limit",
-/// "iteration_limit", "feasible", "no_budget"). Machine-readable — it is the
+/// "iteration_limit", "feasible", "no_budget", "stopped"). Machine-readable — it is the
 /// value the CLI writes to the JSONL `termination` field — and used verbatim in
 /// the human output too, so there is exactly one spelling to keep in step with
 /// the enum. Returns a static string; never null.
@@ -175,12 +183,11 @@ struct SearchResult {
     /// run ended stuck" while `false` does *not* mean "never armed" — a run that
     /// armed and then found a new best reports `false`. Exposed so the regression
     /// tests for the two arming conditions can observe them without timing the
-    /// call. Single-`solve()` only: `ParallelSearch`'s live aggregation paths
-    /// compose the result field by field and drop this (and `best_violation`), so
-    /// it reads `false` there. The one exception is `solve_portfolio`'s
-    /// no-feasible-solution fallback, which copies a worker's whole `SearchResult`
-    /// and so carries either value -- currently unreachable, since `SolutionPool`
-    /// always inserts, but it is a struct copy and not a field-by-field compose.
+    /// call. Single-`solve()` only: `ParallelSearch` composes its result field
+    /// by field from the pool's best solution, which carries only the state and
+    /// the objective, and so drops this (and `best_violation`) -- it reads
+    /// `false` there with no exception, the no-solution fallback included, since
+    /// that returns a default `SearchResult`.
     bool escape_probe_armed = false;
 
     /// Diversification kicks taken during the run -- the counter
@@ -190,7 +197,7 @@ struct SearchResult {
     /// without reading its internals; a test that can only see the trajectory
     /// cannot tell a suppressed kick from a merely delayed one.
     /// Single-`solve()` only, with the same caveat as `escape_probe_armed`
-    /// above: `ParallelSearch`'s live aggregation paths compose the result field
+    /// above: `ParallelSearch`'s aggregation composes the result field
     /// by field and leave this at 0.
     int perturbations = 0;
 
@@ -265,7 +272,7 @@ struct SearchResult {
     /// two readings must not collide.
     ///
     /// Single-`solve()` only, with the same caveat as `escape_probe_armed`
-    /// above: `ParallelSearch`'s live aggregation paths compose the result
+    /// above: `ParallelSearch`'s aggregation composes the result
     /// field by field, so both read NaN there -- which is the honest reading,
     /// since "not recorded" is exactly what the aggregation leaves behind.
     double first_feasible_objective = std::numeric_limits<double>::quiet_NaN();
@@ -333,8 +340,16 @@ int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations 
 /// `config.max_iterations` alone and is fully deterministic for a given seed
 /// (what the tests rely on). With neither budget set the call returns immediately
 /// having done no work, rather than looping forever.
+///
+/// `coord` is `ParallelSearch`'s cross-worker channel: non-null only there. With
+/// it null -- every call site outside that class, the four benchmark runners
+/// included -- the search reads and writes nothing shared and its trajectory is
+/// bit-identical to the run without the parameter. `tests/test_parallel.cpp`
+/// pins that; it is what keeps the benchmarks and the MIPfeas same-algorithm
+/// comparison measuring the engine rather than the portfolio.
 SearchResult solve(Model& model, double time_limit = 10.0, uint64_t seed = 42, bool use_fj = true,
                    InnerSolverHook* hook = nullptr, LNS* lns = nullptr, int lns_interval = 3,
-                   SolveCallback* callback = nullptr, const SearchConfig& config = {});
+                   SolveCallback* callback = nullptr, const SearchConfig& config = {},
+                   SearchCoordination* coord = nullptr);
 
 }  // namespace cbls

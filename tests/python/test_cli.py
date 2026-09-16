@@ -29,8 +29,6 @@ NUMERIC_FLAGS = [
     "--lns",
     "--lns-interval",
     "--threads",
-    "--epoch-iters",
-    "--max-epochs",
 ]
 
 
@@ -49,7 +47,7 @@ def test_a_malformed_numeric_flag_is_reported_and_names_the_flag(flag: str) -> N
     assert 0 < result.returncode < 128, f"{flag}: returncode {result.returncode}"
     assert "terminate" not in result.stderr, f"{flag}: {result.stderr}"
     # Naming the flag is the point: `what(): stod` told the user nothing about
-    # which of seven flags they mistyped.
+    # which of the numeric flags they mistyped.
     assert flag in result.stderr, f"{flag}: {result.stderr}"
     # ...and says what was wrong with the *value*. Without this, a refactor that
     # dropped the parse and let the flag fall through to `unknown option
@@ -60,7 +58,7 @@ def test_a_malformed_numeric_flag_is_reported_and_names_the_flag(flag: str) -> N
 
 # Only the int-width flags carry a range check; the int64 and double flags accept
 # whatever stoll/stod do.
-INT_WIDTH_FLAGS = ["--lns-interval", "--threads", "--max-epochs"]
+INT_WIDTH_FLAGS = ["--lns-interval", "--threads"]
 
 
 @pytest.mark.parametrize("flag", INT_WIDTH_FLAGS)
@@ -91,10 +89,6 @@ def test_well_formed_numeric_flags_are_all_accepted() -> None:
         "0.3",
         "--lns-interval",
         "2",
-        "--epoch-iters",
-        "10",
-        "--max-epochs",
-        "1",
     )
 
     assert result.returncode == 1, result.stderr
@@ -125,7 +119,6 @@ def test_the_seed_the_cli_prints_can_be_parsed_back() -> None:
     ("flag", "value"),
     [
         ("--threads", "2147483648"),
-        ("--epoch-iters", "99999999999999999999999"),
         ("--seed", "18446744073709551616"),
         ("--time-limit", "1e400"),
     ],
@@ -1029,3 +1022,50 @@ def test_a_hardlink_to_the_published_table_is_still_the_published_table(tmp_path
 
     assert result.returncode == 2, result.stdout
     assert published.read_bytes() == before, "the published inode was rewritten through an alias"
+
+
+def _parse_human_solution(stdout: str) -> dict[str, float]:
+    """The `name = value` lines under `Solution:` in the human format."""
+    values: dict[str, float] = {}
+    in_block = False
+    for line in stdout.splitlines():
+        if line.startswith("Solution:"):
+            in_block = True
+            continue
+        if in_block:
+            if "=" not in line:
+                break
+            name, _, raw = line.partition("=")
+            values[name.strip()] = float(raw.strip())
+    return values
+
+
+@pytest.mark.parametrize("threads", ["1", "4"])
+def test_the_cli_prints_the_assignment_it_reports_an_objective_for(threads: str) -> None:
+    # Both formatters print the assignment by iterating the CLI's own Model, not
+    # SearchResult.best_state. On the single-threaded path that is right because
+    # solve() restores its winner into the model it was handed; the portfolio's
+    # workers search their OWN models, so the CLI has to restore the winning
+    # state itself. Without that it printed a real objective next to this
+    # model's untouched initial values -- x = y = 0 here, which does not even
+    # satisfy the constraint it just called feasible.
+    #
+    # Parametrised over both paths so the assertion is the same one in each: the
+    # printed numbers must be a solution of the printed problem.
+    result = _run_cbls(str(MODEL), "--threads", threads, "--time-limit", "0.3")
+    assert result.returncode == 0, result.stderr
+
+    values = _parse_human_solution(result.stdout)
+    assert set(values) == {"x", "y"}, result.stdout
+    # examples/simple.cbls: minimise x^2 + y^2 subject to x + y >= 5.
+    assert values["x"] + values["y"] >= 5.0 - 1e-6, result.stdout
+
+    objective = float(
+        next(line for line in result.stdout.splitlines() if line.startswith("Objective:"))
+        .removeprefix("Objective:")
+        .strip()
+    )
+    # The printed objective must be the objective OF the printed assignment.
+    # Two decimal places is all the human format gives, so the tolerance is the
+    # rounding, not the solver's.
+    assert objective == pytest.approx(values["x"] ** 2 + values["y"] ** 2, abs=0.2), result.stdout

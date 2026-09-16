@@ -40,6 +40,8 @@ const char* termination_reason_name(TerminationReason reason) {
             return "feasible";
         case TerminationReason::NoBudget:
             return "no_budget";
+        case TerminationReason::Stopped:
+            return "stopped";
     }
     // Unreachable for any value of the enum; keeps the function total so a
     // caller can print the result unconditionally.
@@ -299,7 +301,7 @@ class ViolationLSLoop {
 public:
     ViolationLSLoop(Model& model, ViolationManager& vm, RNG& rng, FeasibilityJump& fj,
                     const SearchConfig& config, const Budget& budget, InnerSolverHook* hook,
-                    LNS* lns, int lns_interval, SolveCallback* callback);
+                    LNS* lns, int lns_interval, SolveCallback* callback, SearchCoordination* coord);
 
     SearchResult run();
 
@@ -320,9 +322,19 @@ private:
     [[nodiscard]] double current_obj() const {
         return has_obj_ ? model_.node(model_.objective_id()).value : 0.0;
     }
-    [[nodiscard]] bool past_deadline() const {
+    // Whether a peer worker has answered the question. Relaxed is the right
+    // ordering: the flag guards no data -- the pool has its own mutex -- and
+    // the only cost of observing it a batch late is that batch.
+    [[nodiscard]] bool stop_requested() const {
+        return coord_ != nullptr && coord_->stop != nullptr &&
+               coord_->stop->load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] bool clock_expired() const {
         return has_deadline_ && std::chrono::steady_clock::now() >= deadline_;
     }
+    // Read by the loop condition and by every mid-batch "is there budget left"
+    // guard, so a raised stop flag halts a worker everywhere the clock would.
+    [[nodiscard]] bool past_deadline() const { return stop_requested() || clock_expired(); }
     [[nodiscard]] double remaining() const {
         if (!has_deadline_) {
             return 0.0;  // unbounded: sub-steps use their own iteration budgets
@@ -360,6 +372,25 @@ private:
     // mechanism for the models it helps, and removes the expensive half from the
     // regime where the measure that triggers it has gone blind.
     void diversify(bool allow_lns = true);
+    // Hand a new incumbent to the shared pool, if there is one. No-op for a
+    // single-threaded solve. Called from both of record_best's recording arms.
+    void share(double objective);
+    // Restart from another worker's incumbent instead of perturbing our own.
+    // Returns false -- leaving the assignment untouched -- when there is no
+    // pool, the pool is empty, the drawn solution does not fit this model, or
+    // the draw is the assignment we already hold.
+    bool adopt_from_pool();
+    // Whether `state` is the assignment this model currently holds.
+    [[nodiscard]] bool holds_assignment(const Model::State& state) const;
+    // Whether the NEXT diversification kick is the one that draws LNS -- the
+    // same test diversify() makes, asked before the fact. Adoption stands down
+    // on those kicks, and advances `lns_slot_` on the ones it does take, so the
+    // `lns_interval` cadence keeps running (see the call site in
+    // maybe_diversify and the counter bump in adopt_from_pool).
+    [[nodiscard]] bool lns_kick_due() const {
+        return lns_ != nullptr && lns_interval_ > 0 &&
+               (lns_slot_ % lns_interval_ == lns_interval_ - 1);
+    }
 
     // ---- one pass of the main loop, in the order architecture.md lists it ----
     // Whether a budget has run out. Records which one in termination_.
@@ -388,6 +419,10 @@ private:
     LNS* lns_;
     int lns_interval_;
     SolveCallback* callback_;
+    // Non-null only under ParallelSearch. Null here means the search touches
+    // nothing shared, which is what keeps a single-threaded solve's trajectory
+    // exactly what it was before this parameter existed.
+    SearchCoordination* coord_;
 
     const std::chrono::steady_clock::time_point start_;
     const std::chrono::steady_clock::time_point deadline_;
@@ -441,7 +476,7 @@ private:
 ViolationLSLoop::ViolationLSLoop(Model& model, ViolationManager& vm, RNG& rng, FeasibilityJump& fj,
                                  const SearchConfig& config, const Budget& budget,
                                  InnerSolverHook* hook, LNS* lns, int lns_interval,
-                                 SolveCallback* callback)
+                                 SolveCallback* callback, SearchCoordination* coord)
     : model_(model),
       vm_(vm),
       rng_(rng),
@@ -451,6 +486,7 @@ ViolationLSLoop::ViolationLSLoop(Model& model, ViolationManager& vm, RNG& rng, F
       lns_(lns),
       lns_interval_(lns_interval),
       callback_(callback),
+      coord_(coord),
       start_(budget.start),
       deadline_(budget.deadline),
       has_deadline_(budget.has_deadline),
@@ -608,6 +644,12 @@ bool ViolationLSLoop::record_best() {
         if (has_obj_ && !std::isfinite(model_.objective_bound())) {
             model_.set_objective_bound(kInfPenalty);  // the shared clamp; see violation.h
         }
+        // Shared as +inf, not as `obj`: `obj` is non-finite here and the pool
+        // sorts on the objective, where a NaN would make the comparator
+        // inconsistent and the sort undefined. +inf is what best_feasible_obj_
+        // still reads, and it puts the witness last among the feasible entries
+        // -- which is exactly its standing.
+        share(std::numeric_limits<double>::infinity());
         emit_progress(/*new_best=*/true);
         return true;
     }
@@ -629,7 +671,150 @@ bool ViolationLSLoop::record_best() {
         double eps = 1e-3 * (std::abs(obj) + 1.0);
         model_.set_objective_bound(obj - eps);
     }
+    share(obj);
     emit_progress(/*new_best=*/true);
+    return true;
+}
+
+// Requirement: submit when found, not at the end. The cost is one Model::State
+// copy and one uncontended-in-the-common-case mutex per NEW BEST -- i.e. per
+// improving batch, which is 1000 GLS iterations -- so it is nowhere near the
+// hot path. `best_state_` is already a fresh copy made by the caller; this
+// copies it once more into the pool rather than moving it, because the loop
+// still needs it as its own incumbent.
+void ViolationLSLoop::share(double objective) {
+    if (coord_ == nullptr || coord_->pool == nullptr) {
+        return;
+    }
+    Solution sol;
+    sol.state = best_state_;
+    sol.objective = objective;
+    sol.feasible = true;  // record_best's precondition
+    coord_->pool->submit(sol);
+}
+
+// Requirement: restart a stalled worker from the SHARED pool rather than only
+// from its own assignment. Returns false having changed nothing when there is
+// nothing to adopt, so the caller falls through to the ordinary kick.
+bool ViolationLSLoop::holds_assignment(const Model::State& state) const {
+    const auto& vars = model_.variables();
+    for (size_t i = 0; i < vars.size(); ++i) {
+        // Bit equality, not a tolerance: this asks "is this literally the state
+        // we are sitting on", which is what a restored copy of our own snapshot
+        // is. A near-miss is a different point and a legitimate restart.
+        if (vars[i].value != state.values[i] || vars[i].elements != state.elements[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ViolationLSLoop::adopt_from_pool() {
+    if (coord_ == nullptr || coord_->pool == nullptr) {
+        return false;
+    }
+    auto sol = coord_->pool->get_restart_point(rng_);
+    if (!sol.has_value()) {
+        return false;
+    }
+    // The pool is shared across workers whose models come from one factory, so
+    // the shapes agree by construction -- but the factory is caller-supplied
+    // and nothing makes it return the same model twice. A mismatched state
+    // would be restored element-wise into the wrong variables and silently
+    // searched from, so refuse it instead. Model::restore_state throws on a
+    // width mismatch and elements is indexed without one, so this is the
+    // difference between a refused restart and a worker lost to an exception.
+    if (sol->state.values.size() != model_.num_vars() ||
+        sol->state.elements.size() != model_.num_vars()) {
+        return false;
+    }
+
+    // A draw equal to the assignment we already hold is not a kick. It is the
+    // common case for the LEADING worker: it fills the better half of the pool
+    // with its own incumbents, so get_restart_point keeps handing it back its
+    // own current state -- and "restore where you already are" moves nothing,
+    // while zeroing stagnation_ and so denying the ordinary kick its turn.
+    // Refusing here makes the caller fall through to diversify().
+    if (holds_assignment(sol->state)) {
+        return false;
+    }
+
+    model_.restore_state(sol->state);
+    // Mandatory: restore_state writes the VARIABLES, leaving every DAG node at
+    // the previous assignment. Everything below -- the violation manager, FJ's
+    // violated set and scan set -- reads node values. Same sequence LNS uses
+    // either side of a repair (src/lns.cpp:107,118).
+    full_evaluate(model_);
+
+    // THIS model's verdict, not the submitter's. `sol->feasible` describes
+    // whatever model the submitting worker searched, and the factory is
+    // caller-supplied -- nothing makes two workers' models identical, which is
+    // the same reason the shape guard above exists. Trusting the flag would set
+    // have_feasible_ (and with it best_state_, which finish() returns) on a
+    // point that violates this model's constraints. The full_evaluate above is
+    // what makes the local check both correct and cheap.
+    const bool feasible_here = real_feasible();
+    const double obj = current_obj();
+
+    // The bound is a Const node, so Model::State does not carry it and we are
+    // still holding the one our own incumbent earned. Left alone it would put
+    // the artificial `obj <= bound` row in violation the instant we arrive on a
+    // point worse than our own best, and FJ would spend the restart climbing
+    // straight back to the basin we just left. So re-ground it on the adopted
+    // point, exactly as record_best does -- under both of that function's
+    // rules: a bound is derived only from a FEASIBLE point, and never from a
+    // non-finite objective. An infeasible point (the pool also holds
+    // closest-approach states, submitted at the end of a run that never reached
+    // feasibility) typically has a *better* objective than any feasible one, so
+    // deriving from it would install a bound nothing feasible can meet and
+    // leave the artificial row violated for the rest of the run. The loosest
+    // finite bound is the honest answer there.
+    if (has_obj_) {
+        if (feasible_here && std::isfinite(obj)) {
+            model_.set_objective_bound(obj - (1e-3 * (std::abs(obj) + 1.0)));
+        } else {
+            model_.set_objective_bound(kInfPenalty);  // the shared clamp; see violation.h
+        }
+    }
+    // Only when it IMPROVES. A worker ahead of the pool restarts from a
+    // diverse point without losing the incumbent it will return: finish()
+    // hands back best_state_, so overwriting it with a worse adopted point
+    // would throw away this worker's own best work.
+    if (feasible_here && std::isfinite(obj) &&
+        (!have_feasible_ || !std::isfinite(best_feasible_obj_) || obj < best_feasible_obj_)) {
+        have_feasible_ = true;
+        note_first_feasible(obj);
+        best_feasible_obj_ = obj;
+        best_state_ = sol->state;
+    }
+
+    vm_.invalidate_cache();
+    // reset_weights, not resync: the GLS weights we hold were shaped by the
+    // basin we are leaving, and this is the "state mutated outside GFJ" case
+    // the LNS call site uses reset_weights for. NOT fj_.begin() -- that zeroes
+    // iterations() (breaking the iteration budget and the reported count) and
+    // re-arms a full fresh wall clock past solve()'s own deadline.
+    fj_.reset_weights();
+    // The caller armed the Float escape probe just before calling us, on the
+    // diagnosis that some variable sits at a stationary point of every violated
+    // constraint. That diagnosis was about the assignment we have just left; it
+    // says nothing about the one we adopted, and the probe is not free. Disarm
+    // it and let the two documented arming routes re-earn it from the new
+    // point. (A kick that adoption declines keeps the armed probe, because
+    // there diversify() really is perturbing the stuck assignment.)
+    fj_.set_escape_probe(false);
+    sample_rho();
+    ++perturbations_;
+    // The slot counts kicks ELIGIBLE for an LNS repair, and this was one: the
+    // full-period route always advances it, whether the kick was served by
+    // adoption or by diversify(). Not advancing it starves the cadence rather
+    // than preserving it -- lns_slot_ would sit at 0 forever, lns_kick_due()
+    // would never come true, and the stand-down above would never fire. (This
+    // is not the case the counter's separation from `perturbations` guards
+    // against: that is about #102's route being REFUSED its LNS half, which is
+    // a different route and still does not advance the slot.)
+    ++lns_slot_;
+    stagnation_ = 0;
     return true;
 }
 
@@ -835,7 +1020,37 @@ void ViolationLSLoop::maybe_diversify(BatchKind kind, bool improved) {
         // the search re-converges to the same point. Disarmed again on the next
         // improvement, so a productive search never pays for it.
         fj_.set_escape_probe(true);
-        diversify();
+        // Under ParallelSearch, restarting from a PEER's incumbent is a
+        // strictly better use of a full-period kick than re-perturbing our own
+        // assignment: the pool holds points this worker has not seen, drawn
+        // from the better half so the workers stay spread rather than
+        // collapsing onto one basin. adopt_from_pool() performs the kick
+        // itself -- it disarms the probe it just armed, resamples rho, counts
+        // the perturbation and zeroes stagnation -- so diversify() is skipped
+        // when it succeeds. With no pool it returns false immediately and this
+        // is the same single-threaded code path it always was.
+        //
+        // Deliberately only this route, not the unproductive one below: that
+        // kick fires on an iteration count, can recur every batch, and is
+        // valuable precisely because it is cheap. An adoption is a state
+        // restore plus a full_evaluate plus an FJ rebuild, and putting it on
+        // the fast-recurring route would turn a stall accelerator into a
+        // thrash.
+        //
+        // `lns_kick_due()` FIRST, and it is load-bearing rather than a nicety.
+        // diversify() is the only caller of LNS::destroy_repair and the only
+        // writer of lns_slot_, and this route is the only one that may draw LNS
+        // once a feasible solution exists (the other passes
+        // allow_lns = !have_feasible_). So letting adoption take every kick
+        // would silently switch LNS off for the whole of every portfolio
+        // worker's life from its own first incumbent onward -- `cbls --lns 0.3`,
+        // now multi-threaded by default, would build an LNS per worker and
+        // never repair with it, with `lns_repairs` among the fields the parallel
+        // compose drops so nothing would say so. Adoption replaces the PERTURB
+        // half of the kick, not the destroy-repair half.
+        if (lns_kick_due() || !adopt_from_pool()) {
+            diversify();
+        }
     } else if (unproductive_kick && !past_deadline()) {
         // Kick early, but do NOT arm the escape probe and do NOT reset the
         // stagnation counter.
@@ -953,6 +1168,16 @@ SearchResult ViolationLSLoop::run() {
         maybe_diversify(kind, improved);
         maybe_emit_periodic_progress();
     }
+    // The while-condition is the only exit that does not assign termination_,
+    // so reaching here with the seeded TimeLimit means the loop condition ended
+    // the run -- and that condition has two causes now. The clock is asked
+    // first: a run whose budget genuinely expired is time-limited whether or
+    // not a peer happened to raise the flag in the same instant. Every other
+    // exit is a `break` that already wrote its own reason (Feasible above all:
+    // a worker that solved the model did not stop, it finished).
+    if (termination_ == TerminationReason::TimeLimit && !clock_expired() && stop_requested()) {
+        termination_ = TerminationReason::Stopped;
+    }
     return finish();
 }
 
@@ -965,7 +1190,7 @@ SearchResult ViolationLSLoop::run() {
 // continuous variables (objective descent) on each feasible solution.
 SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
                    InnerSolverHook* hook, LNS* lns, int lns_interval, SolveCallback* callback,
-                   const SearchConfig& config) {
+                   const SearchConfig& config, SearchCoordination* coord) {
     (void)use_fj;  // GFJ is always the engine now; the flag is vestigial.
     RNG rng(seed);
 
@@ -1014,7 +1239,8 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     FeasibilityJump fj(model, vm, rng, gfj);
     fj.begin(/*set_initial_x=*/!config.skip_init);
 
-    ViolationLSLoop loop(model, vm, rng, fj, config, budget, hook, lns, lns_interval, callback);
+    ViolationLSLoop loop(model, vm, rng, fj, config, budget, hook, lns, lns_interval, callback,
+                         coord);
     return loop.run();
 }
 

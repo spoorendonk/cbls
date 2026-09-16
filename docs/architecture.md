@@ -1521,45 +1521,64 @@ accepted improvements.
 
 ### Solution Pool
 
-A bounded, sorted collection of solutions for tracking best results across
-parallel searches.
+A bounded, sorted collection of solutions, shared by every worker of a
+`ParallelSearch` and guarded by one mutex. It is the only object the workers
+touch concurrently.
 
 **Sort order:** feasible solutions first; among same feasibility, ascending
-objective. **Capacity:** default 10, excess trimmed after each insert.
-**Restart selection:** `get_restart_point()` samples uniformly from the better
-half of the pool.
+objective. **Capacity:** `ParallelConfig::pool_capacity`, default 10, excess
+trimmed after each insert. **Restart selection:** `get_restart_point()` samples
+uniformly from the better half of the pool -- not the single best, which would
+collapse every worker onto one basin and reduce the portfolio to one search.
 
 ### Parallel Search
 
-`ParallelSearch::solve()` dispatches by `ParallelConfig::deterministic`:
-
-**Opportunistic / portfolio mode** (default): launch N threads (default
+`ParallelSearch` is a **cooperative portfolio**: N threads (default
 `hardware_concurrency()`), each building its own `Model` via a factory and
-calling `solve()` with a staggered seed (`seed + thread_index`). Only the
-`SolutionPool` is shared (mutex-protected); thread safety is by isolation. The
-best solution across threads is returned, prioritizing feasibility then
+running `solve()` on it. The search itself is still single-threaded per solve;
+what is parallel is the portfolio, and what is shared is solutions, never state.
+Thread safety is by isolation plus that one mutex.
+
+Three things make it cooperative rather than N independent runs, and all three
+are reached through one parameter -- `cbls::solve()`'s trailing
+`SearchCoordination*`, which is null at every call site outside this class
+(every benchmark runner included), leaving the single-threaded trajectory
+bit-identical to what it was before the parameter existed:
+
+1. **Submit when found.** `record_best()` shares each new incumbent into the
+   pool the moment it records one, not once at the end of the run. One
+   `Model::State` copy and one mutex acquisition per improving batch.
+2. **Restart from the pool.** On the full-stagnation route
+   (`stagnation >= perturbation_period`) a worker draws `get_restart_point()`
+   and restarts from it instead of perturbing its own assignment, and that
+   adoption *is* the diversification kick. The re-grounding is
+   `restore_state` -> `full_evaluate` -> re-derive the objective bound from the
+   adopted point -> `vm.invalidate_cache()` -> `fj.reset_weights()`; a state
+   whose shape does not match the local model is refused rather than restored
+   element-wise into the wrong variables. Deliberately *not* wired to #102's
+   unproductive-batch route, which fires on an iteration count and can recur
+   every batch -- an adoption is a full re-grounding and belongs on the slow
+   route.
+3. **No idle workers.** Each worker is a restart loop over the *shared*
+   deadline, not a single `solve()`: a run that returns with budget left (an
+   exhausted `SearchConfig::max_iterations`) is restarted on the time its
+   predecessor left, with `skip_init = true` so it keeps the assignment it
+   converged to. Seeds are `base_seed + thread_id + restart * n_threads`, so a
+   restart is never a replay of the run that just stalled. The one case where
+   finishing early is correct -- a pure-feasibility model, whose first feasible
+   solution *is* the answer -- raises `SearchCoordination::stop`, which every
+   other worker observes at its next batch boundary and reports as
+   `TerminationReason::Stopped`.
+
+The best solution across threads is returned, prioritizing feasibility then
 objective. Worker exceptions are caught (letting one escape a thread function
 is `std::terminate`), but not discarded: if *every* worker throws, `solve()`
 rethrows the lowest-indexed one rather than returning a default,
-infeasible-looking result.
-A partial failure is absorbed silently.
-
-**Deterministic epoch-sync mode** (`deterministic = true`): the per-thread
-models are built on the calling thread, so a failing model factory propagates
-straight out of `solve()` -- it always has; only the epoch worker threads are
-left unwrapped, so an exception raised inside one terminates the process.
-Threads run
-synchronized epochs of fixed GLS-iteration count (no wall-clock dependency).
-Each epoch sets `SearchConfig::max_iterations = epoch_iterations`; after the
-first epoch `skip_init = true` and FJ initialization is off. Per-epoch results
-feed an elite `SolutionPool`; threads restart from elite states next epoch.
-Thread seeds are `base_seed + epoch * n_threads + thread_id`. Repeats for
-`max_epochs`.
+infeasible-looking result. A partial failure is absorbed silently.
 
 `ParallelSearch::solve()` takes hook and LNS *factories* (these objects are
-stateful and per-model); each worker gets its own instance, built wherever that
-worker's model is built -- inside the worker in portfolio mode, on the calling
-thread before any epoch starts in deterministic mode.
+stateful and per-model); each worker gets its own instance, built on that
+worker's own thread, **once per worker and not once per restart**.
 
 What a *Python* factory can usefully return is narrower than it looks. Neither
 `InnerSolverHook` nor `LNS` is registered with a nanobind trampoline, so C++
@@ -1582,9 +1601,8 @@ which is what every Python-constructed object is. (`unique_ptr<T,
 nb::deleter<T>>` would work, and is what nanobind's own error message suggests;
 it costs a nanobind type in a core public header.) Sharing ownership instead
 lets nanobind's caster hold a reference to the Python object and drop it under
-the GIL -- at the end of the worker in portfolio mode, on the calling thread
-once every epoch is done in deterministic mode -- so one factory type serves C++
-and Python callers (#129).
+the GIL, at the end of the worker that built it -- so one factory type serves
+C++ and Python callers (#129).
 
 The cost of that choice is that nothing now stops a factory from returning the
 *same* object every call. Under the old raw-pointer signature that was an
@@ -1656,15 +1674,17 @@ by default; LNS (destroy + GFJ repair, lexicographic accept) every
 `lns_interval`-th kick.
 
 **Alternative:** population-based search (GA, scatter search) or systematic
-restart schedules (Luby). The solution pool supports multi-seed parallel search
-but is not yet used for warm restarts within a single thread.
+restart schedules (Luby). The solution pool is used for warm restarts *across*
+the workers of a `ParallelSearch` -- a stalled worker resumes from a peer's
+incumbent -- but a single-threaded `solve()` still has no pool and no warm
+restart of its own.
 
 ---
 
 ## Control Flow Diagram
 
 ```
-solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config)
+solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config, coord)
 │
 ├── [if objective] add_objective_soft_constraint(); set_objective_bound(+inf)
 ├── ViolationManager vm(model)
@@ -1688,7 +1708,8 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
     │
     ├── if max_real_violation() <= config.feasibility_tolerance:
     │     ├── record_best()                           # bank it BEFORE polishing
-    │     │     └── tighten objective bound to obj - eps; snapshot best state
+    │     │     └── tighten objective bound to obj - eps; snapshot best state;
+    │     │        [if coord->pool] share the snapshot with the other workers
     │     └── [if hook] hook->solve(model, vm)        # continuous polish; resync
     │           └── if still real_feasible(): record_best()
     │
@@ -1702,10 +1723,16 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
     │     below is unreachable when a batch costs seconds
     │
     ├── if stagnation >= perturbation_period:
-    │     arm the Float escape probe; diversify():
-    │       every lns_interval-th kick → lns->destroy_repair(); fj.reset_weights()
-    │       else                       → fj.perturb(perturbation_probability)
-    │       resample rho; ++perturbations; stagnation=0
+    │     arm the Float escape probe, then EITHER
+    │       [not an lns_interval-th kick, and coord->pool holds a usable state]
+    │       adopt_from_pool():
+    │         restore_state; full_evaluate; re-derive the objective bound;
+    │         fj.reset_weights; disarm the probe
+    │         resample rho; ++perturbations; stagnation=0
+    │       OR diversify():
+    │         every lns_interval-th kick → lns->destroy_repair(); fj.reset_weights()
+    │         else                       → fj.perturb(perturbation_probability)
+    │         resample rho; ++perturbations; stagnation=0
     │
     └── emit progress (~1s cadence, or on new best)
 
@@ -1726,7 +1753,7 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `seed` | 42 | `solve()` arg | RNG seed; drives List/Set init, sampling, kicks, `rho`, LNS — **not** the scalar starting point (#108) |
 | `use_fj` | true | `SearchConfig` | vestigial (GFJ always the engine) |
 | `max_iterations` | 0 | `SearchConfig` | GLS-iteration cap (0 = use time_limit) |
-| `skip_init` | false | `SearchConfig` | keep the current assignment whole — suppresses both List/Set randomisation and FJ's scalar start (epoch restarts, caller-supplied starts) |
+| `skip_init` | false | `SearchConfig` | keep the current assignment whole — suppresses both List/Set randomisation and FJ's scalar start (portfolio restarts, caller-supplied starts) |
 | `batch_iterations` | 1000 | `SearchConfig` | GLS iterations per FJ batch |
 | `perturbation_period` | 100 | `SearchConfig` | stagnant batches before a diversification kick |
 | `perturbation_probability` | 0.1 | `SearchConfig` | per-var scalar randomisation probability on perturb; also scales the List/Set moves per kick (a no-op kick moves one var anyway) |
@@ -1751,10 +1778,8 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `initial_step_size` | 0.1 | `inner_solver.h` | line-search starting step |
 | `max_line_search_steps` | 5 | `inner_solver.h` | max backtracking halvings |
 | `max_multi_var_constraints` | 5 | `inner_solver.h` | max constraints for multi-var Newton |
-| `pool_capacity` | 10 | `pool.h` | max solutions in pool |
-| `n_threads` | 1 (CLI) / hw_concurrency (lib) | CLI / `ParallelConfig` | parallel search threads |
-| `epoch_iterations` | 5000 | `ParallelConfig` | GLS iterations per epoch (deterministic) |
-| `max_epochs` | 10 | `ParallelConfig` | epochs (deterministic mode) |
+| `pool_capacity` | 10 | `ParallelConfig` | max solutions in the shared pool |
+| `n_threads` | 0 = hw_concurrency | CLI / `ParallelConfig` | portfolio workers |
 
 ---
 
@@ -1778,10 +1803,7 @@ cbls [OPTIONS] MODEL.cbls
 | `--lns FRACTION` | enable LNS with given destroy fraction (e.g. 0.3) |
 | `--lns-interval INT` | LNS fires every N diversification kicks (default: 3) |
 | `--intensify` | enable the Float intensification hook |
-| `--threads N` | number of threads (0 = auto-detect, default: 1) |
-| `--deterministic` | enable deterministic epoch-sync parallel mode |
-| `--epoch-iters INT` | GLS iterations per epoch in deterministic mode (default: 5000) |
-| `--max-epochs INT` | number of epochs in deterministic mode (default: 10) |
+| `--threads N` | number of search threads (default: 0 = one per core) |
 | `--format human\|jsonl` | output format (default: human) |
 | `--quiet` | suppress progress, print only the final result |
 | `--help` / `--version` | usage / `cbls::kVersion` |
@@ -1789,6 +1811,41 @@ cbls [OPTIONS] MODEL.cbls
 > **Removed flags** (SA-era): `--cooling-rate`, `--reheat-interval`,
 > `--hook-frequency`, `--fj-time-fraction`. These no longer exist; the
 > corresponding mechanisms were deleted in the ViolationLS port.
+>
+> **Removed flags** (epoch-sync): `--deterministic`, `--epoch-iters`,
+> `--max-epochs`. Epoch-sync mode went when `ParallelSearch` became a
+> cooperative portfolio; each now exits 1 as an unknown option. `--threads 1`
+> is the reproducible run.
+
+### What the parallel path does to the output
+
+`--threads` defaults to 0, so **this is the default reading of `cbls`'s output**,
+not a footnote about an opt-in mode. Five things differ from a `--threads 1` run,
+in both the human and the JSONL format:
+
+- **`iterations` is a sum over workers; `time_seconds` is a max.** The two are
+  not a rate. A 12-worker 10s run reports roughly 12 workers' iterations against
+  10 seconds.
+- **Progress records come from worker 0 only.** The trajectory shown is one
+  worker's, while the final `Objective:` is the best across all of them — so the
+  last progress row can be worse than the reported result. A worker that
+  restarts also restarts its progress counters, so `iteration` and `time` in the
+  JSONL progress stream are not monotonic across a run and `new_best` can be
+  re-emitted. Treat each record as belonging to a run, not to the portfolio.
+- **Seven `SearchResult` fields are dropped.** The aggregation composes its
+  result from the pool's best solution, which carries only the state and the
+  objective, so `best_violation`, `escape_probe_armed`, `perturbations`,
+  `lns_repairs`, `lns_repairs_accepted`, `first_feasible_objective` and
+  `time_to_first_feasible` read as their "not recorded" values. Nothing in the
+  CLI's own output reads them; a library caller that does should use
+  `cbls::solve()` directly, as all four benchmark runners do.
+- **The model is read once per worker.** `run_cli` loads it, and the factory
+  loads it again inside each worker, so a 32-thread default run parses the file
+  33 times and holds 33 `Model` copies. On a large instance that is the most
+  surprising part of the default; `--threads N` bounds it.
+- **The run is not reproducible.** `--seed` still seeds each worker (`seed + i`,
+  plus the restart index), but which solution a stalled worker adopts depends on
+  thread interleaving. `--threads 1` is the reproducible run.
 
 ### Implied variable bounds
 
@@ -1922,10 +1979,11 @@ Top-level `solve()` arguments carry defaults (`time_limit=10.0`, `seed=42`,
 
 ### Multi-threading
 
-The core `solve()` is single-threaded. `ParallelSearch` provides two modes (see
-[Parallel Search](#solution-pool--parallel-search)): opportunistic portfolio
-(independent seeds, shared mutex-protected pool) and deterministic epoch-sync.
-No OpenMP, no work-stealing, no parallel DAG evaluation.
+The core `solve()` is single-threaded. `ParallelSearch` is a cooperative
+portfolio over it (see
+[Parallel Search](#solution-pool--parallel-search)): staggered seeds, a shared
+mutex-protected pool read and written mid-search, and a shared stop flag. No
+OpenMP, no work-stealing, no parallel DAG evaluation.
 
 ### Determinism
 
@@ -1934,23 +1992,25 @@ randomness flows through a single `RNG` (`mt19937_64`). Unordered containers in
 `delta_evaluate` / AD are used only for membership/lookup — iteration order does
 not affect results because recomputation follows topological order.
 
-**Wall-clock caveat (opportunistic mode):** `steady_clock` determines when to
-stop. Different machine speeds yield different GLS-iteration counts and thus
-different solutions. Same seed + same hardware + same load = reproducible.
+That holds for a **single-threaded** run. With `time_limit = 0` and
+`SearchConfig::max_iterations` set, such a run reads no clock at all and is
+bit-reproducible on any machine; with a wall clock it is reproducible for the
+same seed on the same hardware under the same load, since `steady_clock`
+determines where it stops.
 
-**Deterministic mode** removes the caveat: epochs stop by GLS-iteration count
-(`epoch_iterations`), not wall-clock, so same seed + `n_threads` +
-`epoch_iterations` + `max_epochs` = identical result on any machine. The
-`SearchConfig::max_iterations` field is what enforces the per-epoch
-iteration-count stop.
+**A portfolio run is not reproducible, by construction.** Workers submit to and
+draw from a shared pool as they go, so which solution a stalled worker adopts
+depends on thread interleaving. There is no longer a deterministic
+multi-threaded mode: epoch-sync was removed because every property the
+cooperative portfolio exists for -- live sharing, pool restarts, a global stop
+-- is nondeterministic, and the epoch barrier that made the old mode
+reproducible was also what left workers idling at it. Pass `--threads 1` (or
+call `cbls::solve()` directly) when reproducibility is what is wanted.
 
 ### CLI flags
 
 ```
---threads N           number of threads (0 = auto-detect, default: 1)
---deterministic       enable deterministic epoch-sync mode
---epoch-iters INT     GLS iterations per epoch in deterministic mode (default: 5000)
---max-epochs INT      number of epochs in deterministic mode (default: 10)
+--threads N           number of search threads (default: 0 = one per core)
 ```
 
 ---

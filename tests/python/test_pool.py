@@ -139,27 +139,28 @@ def test_solve_parallel_accepts_a_python_lns_factory() -> None:
     assert "lns_calls=2 lns_destroyed=2 lns_threads=2" in out
 
 
-def test_solve_parallel_deterministic_builds_on_the_calling_thread() -> None:
-    """Deterministic mode's factory contract is documented, so it is asserted.
+def test_solve_parallel_builds_each_factory_once_per_worker_not_per_restart() -> None:
+    """A worker restarts inside its own thread; its factories must not re-run.
 
-    The docstring promises model_factory and hook_factory both run on the
-    calling thread before any worker starts -- the reason this mode never
-    deadlocked the way portfolio mode did. Without a test, a change moving
-    those calls into the workers would reintroduce #128 on this path with a
-    green suite, and a change that leaked the hooks would reintroduce #129's
-    lifetime question on the one path the portfolio scenarios never touch.
+    The portfolio no longer runs one `solve()` per worker -- a worker whose
+    solve returns with budget left is restarted on the remaining clock, so the
+    cores are never idle. The factory contract is the thing that quietly breaks
+    under that change: moving the factory calls inside the restart loop would
+    build a fresh Model, hook and LNS per restart, which is a deep copy of the
+    model and, from Python, a GIL acquisition on every one. The scenario forces
+    many restarts (a small max_iterations against a wall clock) and asserts the
+    counts are still one per worker.
+
+    Runs in a child like every other scenario here: the failure mode if the GIL
+    handling regresses is a deadlock, which no in-process deadline can report.
     """
-    out = _assert_scenario_ok("deterministic")
-    assert "factory_on_calling_thread=True" in out
-    # The same scenario pins the deterministic half of #129: hook_factory runs
-    # on this thread too, and every hook it built is released before
-    # solve_parallel returns -- a different release path from portfolio mode.
-    assert "hooks_on_calling_thread=True" in out
-    assert "deterministic_hooks_destroyed=2" in out
-    # lns_factory takes a third release path -- its own loop in src/pool.cpp --
-    # so it is asserted separately rather than folded into the hook counts.
-    assert "lns_on_calling_thread=True" in out
-    assert "deterministic_lns_destroyed=2" in out
+    out = _assert_scenario_ok("restarts")
+    assert "factory_calls=2" in out
+    assert "hook_builds=2" in out
+    assert "lns_builds=2" in out
+    # And the restarts actually happened -- without this the count assertions
+    # above pass on a portfolio that ran one solve per worker and stopped.
+    assert "restarted=True" in out
 
 
 def test_solve_parallel_calls_a_python_callback_from_a_worker_thread() -> None:
@@ -287,67 +288,50 @@ def _scenario_lns_factory() -> None:
     print(f"lns_calls={n_calls} lns_destroyed={n_destroyed} lns_threads={n_threads}")
 
 
-def _scenario_deterministic() -> None:
-    calling_thread = threading.get_ident()
-    threads: set[int] = set()
-    hook_threads: set[int] = set()
-    destroyed = 0
+def _scenario_restarts() -> None:
+    factory_calls = 0
+    hook_builds = 0
+    lns_builds = 0
+    lock = threading.Lock()
 
     def factory() -> "cbls.Model":
-        threads.add(threading.get_ident())
+        nonlocal factory_calls
+        with lock:
+            factory_calls += 1
         return _feasible_model()
 
-    # Deterministic mode is the OTHER ownership path for #129: src/pool.cpp
-    # builds these on the calling thread and holds them across every epoch,
-    # rather than building and releasing one inside each worker. The release is
-    # a different mechanism too -- it happens on a thread that handed its GIL
-    # away via the call guard, so nanobind's deleter re-takes it there with a
-    # PyGILState_Ensure nested inside a live gil_scoped_release, where portfolio
-    # mode's workers acquire it fresh. A fix that only reached the portfolio
-    # path would leave this one aborting.
-    #
-    # No lock here, deliberately: every call and every __del__ is supposed to
-    # land on this one thread, which is precisely what is being asserted.
-    class CountingHook(cbls.FloatIntensifyHook):  # type: ignore[misc]
-        def __del__(self) -> None:
-            nonlocal destroyed
-            destroyed += 1
-
     def hook_factory(model: "cbls.Model") -> "cbls.FloatIntensifyHook":
-        hook_threads.add(threading.get_ident())
-        return CountingHook()
-
-    # lns_factory is built and released by a *separate* loop from the hooks in
-    # this mode, so it is a third release path, not a repeat of the second. It
-    # gets its own counters for the same reason the two portfolio scenarios are
-    # split: a change that hoisted lns_objs into a static -- a plausible "stop
-    # rebuilding it per epoch" optimisation -- would leak every Python LNS with
-    # the rest of the suite green.
-    lns_threads: set[int] = set()
-    lns_destroyed = 0
-
-    class CountingLNS(cbls.LNS):  # type: ignore[misc]
-        def __del__(self) -> None:
-            nonlocal lns_destroyed
-            lns_destroyed += 1
+        nonlocal hook_builds
+        with lock:
+            hook_builds += 1
+        return cbls.FloatIntensifyHook()
 
     def lns_factory() -> "cbls.LNS":
-        lns_threads.add(threading.get_ident())
-        return CountingLNS(0.3)
+        nonlocal lns_builds
+        with lock:
+            lns_builds += 1
+        return cbls.LNS(0.3)
+
+    # A tight iteration cap against a real wall clock: each solve() returns
+    # almost at once having exhausted max_iterations, and the worker is restarted
+    # for the rest of the second. Without the restart loop the whole call returns
+    # in milliseconds having spent 2 * 400 iterations.
+    cap = 400
+    n_threads = 2
+    budget = 1.0
+    config = cbls.SearchConfig()
+    config.max_iterations = cap
 
     par = cbls.ParallelConfig()
-    par.deterministic = True
-    par.n_threads = 2
-    par.max_epochs = 1
-    par.epoch_iterations = 200
-    cbls.ParallelSearch(2).solve_parallel(
-        factory, 0.5, 42, cbls.SearchConfig(), hook_factory, lns_factory, None, par
+    par.n_threads = n_threads
+
+    result = cbls.ParallelSearch(n_threads).solve_parallel(
+        factory, budget, 42, config, hook_factory, lns_factory, None, par
     )
-    print(f"factory_on_calling_thread={threads == {calling_thread}}")
-    print(f"hooks_on_calling_thread={hook_threads == {calling_thread}}")
-    print(f"deterministic_hooks_destroyed={destroyed}")
-    print(f"lns_on_calling_thread={lns_threads == {calling_thread}}")
-    print(f"deterministic_lns_destroyed={lns_destroyed}")
+    print(f"factory_calls={factory_calls}")
+    print(f"hook_builds={hook_builds}")
+    print(f"lns_builds={lns_builds}")
+    print(f"restarted={result.iterations > 4 * n_threads * cap}")
 
 
 def _scenario_callback() -> None:
@@ -379,7 +363,7 @@ if __name__ == "__main__":
         "raising": _scenario_raising,
         "hook_factory": _scenario_hook_factory,
         "lns_factory": _scenario_lns_factory,
-        "deterministic": _scenario_deterministic,
+        "restarts": _scenario_restarts,
         "callback": _scenario_callback,
     }
     _scenarios[sys.argv[1]]()

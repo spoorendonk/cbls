@@ -3,64 +3,47 @@
 #include "inner_solver.h"
 #include "lns.h"
 #include "model.h"
-#include "rng.h"
 #include "search.h"
+#include "solution_pool.h"
 
+#include <cstdint>
 #include <functional>
-#include <limits>
 #include <memory>
-#include <mutex>
-#include <optional>
-#include <vector>
 
 namespace cbls {
 
-struct Solution {
-    Model::State state;
-    double objective = std::numeric_limits<double>::infinity();
-    bool feasible = false;
-};
-
-class SolutionPool {
-public:
-    explicit SolutionPool(int capacity = 10);
-
-    bool submit(const Solution& sol);
-    std::optional<Solution> best() const;
-    std::vector<Solution> top_k(int k) const;
-    std::optional<Solution> get_restart_point(RNG& rng) const;
-    size_t size() const;
-
-private:
-    int capacity_;
-    std::vector<Solution> solutions_;
-    mutable std::mutex mutex_;
-};
-
 struct ParallelConfig {
-    int n_threads = 0;                // 0 = hardware_concurrency()
-    bool deterministic = false;       // epoch-sync mode
-    int64_t epoch_iterations = 5000;  // iterations per epoch
-    int max_epochs = 10;              // number of epochs in deterministic mode
-    int elite_pool_size = 4;          // top solutions to share between epochs
+    int n_threads = 0;       // 0 = hardware_concurrency()
+    int pool_capacity = 10;  // solutions kept in the shared pool
 };
 
+/// A COOPERATIVE portfolio: N workers, each owning its own `Model` and searching
+/// it on its own thread, sharing incumbents through one mutex-guarded
+/// `SolutionPool`. The search itself is still single-threaded per solve; what is
+/// parallel is the portfolio, and what is shared is solutions, never state.
+///
+/// Three properties distinguish it from a set of independent runs:
+///
+///  - a worker SUBMITS every new incumbent the moment it records one, not once
+///    at the end;
+///  - a stalled worker RESTARTS from the pool (`get_restart_point`, i.e. the
+///    better half) instead of only perturbing its own assignment;
+///  - no worker idles while budget remains. A worker whose `solve()` returns
+///    early -- an exhausted iteration budget -- is restarted on the remaining
+///    clock, and the one case where finishing early is correct (a
+///    pure-feasibility model, whose first feasible solution is the answer)
+///    stops every OTHER worker too rather than leaving them to run the clock
+///    out on a settled question.
 class ParallelSearch {
 public:
     explicit ParallelSearch(int n_threads = 0);
 
-    // Both overloads THROW in portfolio mode if *every* worker threw -- a model
-    // factory that cannot build its model, say. Returning a default
-    // SearchResult there would report "searched, found nothing feasible" about
-    // a run that never searched. A partial failure is absorbed: the survivors'
-    // best is returned and each dead worker contributes a default SearchResult
-    // to the aggregate.
+    // Both overloads THROW if *every* worker threw -- a model factory that
+    // cannot build its model, say. Returning a default SearchResult there would
+    // report "searched, found nothing feasible" about a run that never
+    // searched. A partial failure is absorbed: the survivors' best is returned
+    // and each dead worker contributes a default SearchResult to the aggregate.
     //
-    // Deterministic mode builds every worker's model on the CALLING thread, so
-    // a factory failure there propagates straight out of solve() -- it always
-    // has, this is not new. Only its epoch worker threads are left unwrapped,
-    // so an exception raised inside one terminates the process. Guard a
-    // deterministic solve() the same way you guard a portfolio one.
     // Simple portfolio solve (backward-compatible)
     SearchResult solve(std::function<Model()> model_factory, double time_limit = 10.0,
                        uint64_t seed = 42);
@@ -88,6 +71,9 @@ public:
     // callee cannot see the model it will run against, and a large model is
     // deep-copied once per worker. Avoiding that would need a hand-written
     // binding wrapper, i.e. the glue this signature exists to avoid.
+    //
+    // Each factory is called ONCE per worker, not once per restart: a worker
+    // that restarts keeps its model, hook and LNS and carries on with them.
     SearchResult solve(std::function<Model()> model_factory, double time_limit, uint64_t seed,
                        const SearchConfig& config,
                        std::function<std::shared_ptr<InnerSolverHook>(Model&)> hook_factory,
@@ -103,13 +89,8 @@ private:
         std::function<Model()>& model_factory, double time_limit, uint64_t seed,
         const SearchConfig& config,
         std::function<std::shared_ptr<InnerSolverHook>(Model&)>& hook_factory,
-        std::function<std::shared_ptr<LNS>()>& lns_factory, SolveCallback* callback, int n_threads);
-
-    static SearchResult solve_deterministic(
-        std::function<Model()>& model_factory, uint64_t seed, const SearchConfig& config,
-        std::function<std::shared_ptr<InnerSolverHook>(Model&)>& hook_factory,
-        std::function<std::shared_ptr<LNS>()>& lns_factory, SolveCallback* callback,
-        const ParallelConfig& par_config, int n_threads);
+        std::function<std::shared_ptr<LNS>()>& lns_factory, SolveCallback* callback, int n_threads,
+        int pool_capacity);
 };
 
 }  // namespace cbls

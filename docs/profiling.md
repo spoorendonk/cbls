@@ -24,6 +24,7 @@ written from memory of what a tool usually does.
 | Where does the wall clock go? | `perf record` (needs a sysctl), else `gprof` | [CPU](#cpu) |
 | Exact instruction counts, clean call graph | `valgrind --tool=callgrind` (~50x slowdown, not installed) | [CPU](#callgrind) |
 | Is this undefined behaviour / a memory error? | `-DCBLS_SANITIZE=...` | [Sanitizers](#sanitizers) |
+| Is there a data race in `ParallelSearch`? | `-DCBLS_SANITIZE=thread` | [ThreadSanitizer](#threadsanitizer) |
 
 Two rules apply to every recipe here:
 
@@ -42,7 +43,7 @@ Two rules apply to every recipe here:
 | Flag | Default | Adds | For |
 |---|---|---|---|
 | `-DCBLS_PROFILE=ON` | OFF | `-g -fno-omit-frame-pointer` on top of the build type | `perf`, heap-dump symbolisation |
-| `-DCBLS_SANITIZE=<comma,list>` | empty (off) | `-fsanitize=<list> -g -fno-omit-frame-pointer`, and the same `-fsanitize` at link | ASan/UBSan runs |
+| `-DCBLS_SANITIZE=<comma,list>` | empty (off) | `-fsanitize=<list> -g -fno-omit-frame-pointer`, and the same `-fsanitize` at link | ASan/UBSan runs; `thread` for the portfolio |
 
 Both are declared before the first target in the root `CMakeLists.txt`, so the
 flags reach `cbls_lib`, the CLI, the benchmark runners *and* Catch2. Neither
@@ -57,7 +58,7 @@ cmake --build build-profile -j"$(nproc)"
 ```
 
 **State the build type in any profile you publish.** `CMakeLists.txt` defaults
-to Release, and the difference is not cosmetic: the same suite runs in ~40s
+to Release, and the difference is not cosmetic: the same suite runs in ~42s
 optimized and ~304s unoptimized, so a profile of a `-DCMAKE_BUILD_TYPE=Debug`
 binary measures a program nobody runs. `CBLS_PROFILE` deliberately does *not*
 change the build type — it only adds back the symbols and frame pointers that
@@ -276,8 +277,9 @@ Read the numbers knowing what they are:
 
 - **Single-threaded only.** glibc's `gmon` records the main thread. The MIPfeas
   runner is single-threaded already and has no `--threads` flag (it exits 2 on an
-  unknown argument); under `cbls_cli` keep its default `--threads 1` or the
-  profile is a fiction.
+  unknown argument); under `cbls_cli` you must **pass `--threads 1` explicitly**
+  or the profile is a fiction. Its default is 0 -- one worker per core -- and
+  nothing warns you that `gmon.out` then describes one of them.
 - `gmon.out` lands in the *current* directory and is overwritten per run.
 - Instrumentation inhibits inlining decisions and adds per-call overhead, so
   attribution is directional, not a wall-clock model.
@@ -290,7 +292,7 @@ usable only on a small instance or a heavily reduced budget. Pointing it at a
 prevent. Not installed: `sudo apt install valgrind`, then
 
 ```bash
-valgrind --tool=callgrind --callgrind-out-file=/tmp/cg.out ./build-profile/cbls_cli ...
+valgrind --tool=callgrind --callgrind-out-file=/tmp/cg.out ./build-profile/cbls_cli --threads 1 ...
 callgrind_annotate /tmp/cg.out | head -40
 ```
 
@@ -332,7 +334,7 @@ At `f511b8d`, `-DCBLS_SANITIZE=address,undefined,float-cast-overflow` puts the
 flag on every translation unit — 155 of 155, `grep -c fsanitize
 build-asan/compile_commands.json` against `grep -c '"file"'` on the same file — and links both `libasan.so.8` and
 `libubsan.so.1`. `ctest --test-dir build-asan -LE slow -j3` (`-j3` rather than the recipe's
-`-j4`, because the box was shared) was **302/302 green in 84.5s** (the fast set was 302 tests at that commit; it is 356 now — this is a record of that run, not a current count), with zero `runtime error` lines, zero AddressSanitizer reports and
+`-j4`, because the box was shared) was **302/302 green in 84.5s** (the fast set was 302 tests at that commit; it is 365 now — this is a record of that run, not a current count), with zero `runtime error` lines, zero AddressSanitizer reports and
 no leaks — LeakSanitizer is on by default and would have said otherwise. Check
 the flags reached the compiler before trusting a green run: a mis-spelled
 `CBLS_SANITIZE` value fails at compile time, but an option that silently did not
@@ -342,6 +344,48 @@ The 6 `[slow]` CHPED/UC-CHPED solves were **not** run under ASan — they are th
 suite's heaviest, and ASan multiplies their footprint. So the claim is "the fast
 set is clean", not "the suite is clean". The value of this build is on the next
 change anyway, not on this one.
+
+### ThreadSanitizer
+
+`ParallelSearch` is the only concurrency in the tree, and since it became a
+*cooperative* portfolio — workers reading and writing a shared `SolutionPool`
+mid-search and observing a shared stop flag — it is the only place a data race
+can live. `-DCBLS_SANITIZE=thread` is how you check it. TSan and ASan are
+mutually exclusive, so it needs its own build directory:
+
+```bash
+cmake -B build-tsan -DCMAKE_BUILD_TYPE=Release -DCBLS_SANITIZE=thread -DCBLS_BUILD_PYTHON=OFF
+cmake --build build-tsan -j$(nproc)
+TSAN_OPTIONS="halt_on_error=0 second_deadlock_stack=1" ./build-tsan/tests/cbls_tests "[parallel],[pool]"
+```
+
+`CBLS_BUILD_PYTHON=OFF` for the same reason ASan wants it off, and because
+CPython's own allocator produces TSan noise that is not this project's.
+
+**A green `[parallel]` run is necessary, not sufficient.** Those tests use two
+to four workers on models that solve in milliseconds, and a race needs
+contention to surface. What actually exercises the shared paths is a stress
+harness: `hardware_concurrency()` workers, a tight `max_iterations` against a
+wall clock so every worker restarts constantly, `perturbation_period` at 2 so
+every batch draws from the pool, hook and LNS factories in play, plus repeated
+rounds of a pure-feasibility model so the workers race to set and observe the
+stop flag. Write one as a scratch program against `libcbls.a` from the TSan
+build; it is not a committed target, because a race detector wants a harness
+tuned to whatever changed.
+
+**Verified state.** At the commit that introduced the cooperative portfolio
+(named in the follow-up commit that added this line), both were clean: `[parallel],[pool]` was 17/17 green with zero TSan
+reports, and the stress harness above — 12 workers, a 12s objective-model arm
+with hook + LNS + constant restarts and adoptions, then 25 rounds of the
+stop-flag race — reported nothing. This is a dated record of one run on one
+machine, not a standing guarantee.
+
+One thing that run caught and a Release run did not: an assertion that depended
+on how many batches a 2 s budget buys (`lns_calls > 0`, reached only after
+`lns_interval` diversification kicks at the default cadence) failed under TSan's
+slowdown. A test whose subject is a mechanism should pin the mechanism's own
+knobs rather than inherit defaults and hope the clock cooperates — so a TSan run
+is worth doing for the timing assumptions it flushes out, not only for races.
 
 ## Recording what a profile found
 

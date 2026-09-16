@@ -3,6 +3,7 @@ add_executable(cbls_tests
     test_expr.cpp
     test_moves.cpp
     test_search.cpp
+    test_parallel.cpp
     test_initialization.cpp
     test_violation_delta.cpp
     test_nonfinite_guard.cpp
@@ -40,15 +41,18 @@ include(Catch)
 # slow solves into one serial invocation would make the full suite far slower
 # than it is.
 #
-# Measured at Release: 6 of 361 discovered tests exceed ~10s and account for
+# Measured at Release: 6 of 369 discovered tests exceed ~10s and account for
 # ~103s of the suite's aggregate (summed per-test) time; with `-j$(nproc)` the
-# full run is ~40s of wall clock. The remaining 356 (355 plus
-# timing_structural_batch_deadline, the one hand-registered test that carries no
-# slow label) finish in ~8s with `-j`, which is what pre-commit runs via
-# `ctest -LE slow`. pre-push still runs everything.
+# full run is ~42s of wall clock. The remaining 365 (363 discovered, plus the
+# two hand-registered tests that carry no slow label --
+# timing_structural_batch_deadline and hang_guard_iteration_only_portfolio)
+# finish in ~11s with `-j`, which is what pre-commit runs via `ctest -LE slow`.
+# pre-push still runs everything.
 #
-# The roster is therefore 365 ctest tests: 361 discovered here plus the 4
-# hand-registered [timing] ones below. `ctest -N -L slow` reports 9, not 6 --
+# The roster is therefore 374 ctest tests: 369 discovered here plus the 5
+# hand-registered ones below. That is one more than the 373 TEST_CASEs in
+# tests/*.cpp, because hang_guard_iteration_only_portfolio is both discovered
+# and hand-registered -- see its note below. `ctest -N -L slow` reports 9, not 6 --
 # the three #125 throughput floors carry the slow LABEL without the Catch2
 # [slow] TAG. Re-derive with `ctest -N`, never by incrementing.
 #
@@ -82,6 +86,20 @@ add_test(NAME timing_structural_batch_deadline
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(timing_structural_batch_deadline
     PROPERTIES LABELS "timing" TIMEOUT 60 SKIP_RETURN_CODE 4)
+
+# A hang regression needs a TIMEOUT to report itself, so this one is
+# hand-registered too (catch_discover_tests registers at build time, so
+# set_tests_properties cannot reach the tests it creates). It is tagged
+# [hang-guard] rather than [timing] so it stays OUT of the hand-registration
+# collision the [timing] note below describes -- and, unlike [timing], it is
+# also discovered by the first catch_discover_tests call above, which is
+# deliberate: the property being pinned is cheap and belongs in the fast set.
+# The duplicate registration costs one extra sub-second run.
+add_test(NAME hang_guard_iteration_only_portfolio
+    COMMAND cbls_tests "an iteration-only portfolio returns instead of restarting forever"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(hang_guard_iteration_only_portfolio
+    PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 4)
 
 # Issue #125: one throughput floor per benchmarked problem class — a floor on
 # GLS iterations completed inside a fixed wall-clock budget, not a ceiling on

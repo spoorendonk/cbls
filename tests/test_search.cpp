@@ -514,7 +514,19 @@ TEST_CASE("ParallelSearch with hook and LNS factories", "[pool]") {
     ParallelSearch ps(2);
     ParallelConfig pc;
     pc.n_threads = 2;
-    auto result = ps.solve(factory, 2.0, 42, {}, hook_factory, lns_factory, nullptr, pc);
+    // A diversification cadence the run is guaranteed to reach, rather than the
+    // defaults: `lns_calls` below needs an LNS-due kick, which at the default
+    // lns_interval of 3 and perturbation_period of 100 is ~300 batches away and
+    // so depends on how many batches 2 seconds buys. That is machine-dependent
+    // and it is the difference between a green suite and a red one under a
+    // sanitizer, where everything is an order of magnitude slower. Small
+    // batches, a short stall window, and every kick LNS-due make the assertion
+    // about the mechanism instead of about the clock.
+    SearchConfig cfg;
+    cfg.batch_iterations = 100;
+    cfg.perturbation_period = 2;
+    cfg.lns_interval = 1;
+    auto result = ps.solve(factory, 2.0, 42, cfg, hook_factory, lns_factory, nullptr, pc);
     REQUIRE(result.feasible);
     REQUIRE(result.objective < 15.0);
     // Read after solve() returned, i.e. after join_all(): one object per worker,
@@ -527,6 +539,14 @@ TEST_CASE("ParallelSearch with hook and LNS factories", "[pool]") {
     // it built and dropped. Without this the suite passes on a solve() call
     // that hands nullptr to both slots.
     REQUIRE(hook_calls.load() > 0);
+    // And the LNS half specifically. This is not redundant with the hook: under
+    // the cooperative portfolio, `diversify()` is the only caller of
+    // destroy_repair and the only route that may draw LNS once a feasible
+    // solution exists, and letting pool adoption take every full-period kick
+    // switched LNS off for the whole of a worker's life with the rest of this
+    // test still green. maybe_diversify stands adoption down on the
+    // lns_interval-th kick precisely so this holds.
+    REQUIRE(lns_calls.load() > 0);
 }
 
 // A portfolio worker cannot let an exception escape its thread function, so
@@ -539,9 +559,11 @@ TEST_CASE("ParallelSearch propagates a factory that fails in every worker", "[po
     auto factory = []() -> Model { throw std::runtime_error("model factory failed"); };
 
     ParallelSearch ps(2);
-    // Match the message, not just the type: solve_portfolio's "no result and no
-    // error" guard on the same path is a std::runtime_error too, so a type-only
-    // assertion would still pass with the rethrow loop deleted.
+    // Match the message, not just the type: it is what pins that the WORKER's
+    // own exception is the one re-raised, rather than some other runtime_error
+    // manufactured on the way out. (solve_portfolio's empty-pool path no longer
+    // throws at all -- it returns a NoBudget SearchResult -- so deleting the
+    // rethrow loop now fails this as a missing throw instead.)
     REQUIRE_THROWS_MATCHES(ps.solve(factory, 0.5, 42), std::runtime_error,
                            Catch::Matchers::Message("model factory failed"));
 }
@@ -563,33 +585,6 @@ TEST_CASE("ParallelSearch absorbs a factory that fails in one worker", "[pool]")
     REQUIRE_NOTHROW(result = ps.solve(factory, 1.0, 42));
     REQUIRE(result.feasible);
     REQUIRE(result.objective < 5.0);
-}
-
-TEST_CASE("Deterministic mode produces identical results", "[pool][deterministic]") {
-    auto factory = simple_model_factory();
-
-    ParallelConfig pc;
-    pc.n_threads = 2;
-    pc.deterministic = true;
-    pc.epoch_iterations = 5000;
-    pc.max_epochs = 3;
-    pc.elite_pool_size = 2;
-
-    ParallelSearch ps1(2);
-    auto r1 = ps1.solve(factory, 999.0, 42, {}, nullptr, nullptr, nullptr, pc);
-
-    ParallelSearch ps2(2);
-    auto r2 = ps2.solve(factory, 999.0, 42, {}, nullptr, nullptr, nullptr, pc);
-
-    REQUIRE(r1.feasible);
-    REQUIRE(r2.feasible);
-    REQUIRE(r1.objective == r2.objective);
-    REQUIRE(r1.iterations == r2.iterations);
-    // Epoch-sync runs every epoch with no wall clock at all, by design, so the
-    // run is iteration-bounded and this can never come back TimeLimit — which is
-    // the property that keeps the mode deterministic in the first place.
-    REQUIRE(r1.termination == TerminationReason::IterationLimit);
-    REQUIRE(r1.termination == r2.termination);
 }
 
 TEST_CASE("max_iterations stops SA by iteration count", "[search]") {
@@ -1756,36 +1751,16 @@ TEST_CASE("a run that never reaches feasibility reports no first-feasible pair",
 
 TEST_CASE("ParallelSearch leaves the first-feasible pair unrecorded", "[pool][first-feasible]") {
     // The documented caveat on the field, pinned rather than left to prose:
-    // both aggregation paths compose their SearchResult field by field from the
-    // pool's best solution, and the pool carries only the state and the
-    // objective. So a parallel run reports NaN for both cells even though it IS
-    // feasible -- "not recorded", which is the honest reading, and exactly what
-    // a consumer must not mistake for "arrived at NaN".
+    // the aggregation composes its SearchResult field by field from the pool's
+    // best solution, and the pool carries only the state and the objective. So
+    // a parallel run reports NaN for both cells even though it IS feasible --
+    // "not recorded", which is the honest reading, and exactly what a consumer
+    // must not mistake for "arrived at NaN".
     //
-    // BOTH paths, because the header says "paths" in the plural and one test
-    // cannot carry a plural claim: a later change to the epoch-sync compose
-    // could start propagating a worker's value while the portfolio one still
-    // dropped it, and nothing would say so.
-    SECTION("portfolio") {
-        ParallelSearch ps(2);
-        const SearchResult r = ps.solve(simple_model_factory(), 1.0, 42);
-        CAPTURE(r.objective, r.first_feasible_objective, r.time_to_first_feasible);
-        REQUIRE(r.feasible);
-        REQUIRE(std::isnan(r.first_feasible_objective));
-        REQUIRE(std::isnan(r.time_to_first_feasible));
-    }
-    SECTION("deterministic (epoch-sync)") {
-        ParallelSearch ps(2);
-        ParallelConfig pc;
-        pc.n_threads = 2;
-        pc.deterministic = true;
-        pc.epoch_iterations = 200;
-        pc.max_epochs = 2;
-        const SearchResult r = ps.solve(simple_model_factory(), /*time_limit=*/0.0, /*seed=*/42,
-                                        SearchConfig{}, nullptr, nullptr, nullptr, pc);
-        CAPTURE(r.objective, r.first_feasible_objective, r.time_to_first_feasible);
-        REQUIRE(r.feasible);
-        REQUIRE(std::isnan(r.first_feasible_objective));
-        REQUIRE(std::isnan(r.time_to_first_feasible));
-    }
+    ParallelSearch ps(2);
+    const SearchResult r = ps.solve(simple_model_factory(), 1.0, 42);
+    CAPTURE(r.objective, r.first_feasible_objective, r.time_to_first_feasible);
+    REQUIRE(r.feasible);
+    REQUIRE(std::isnan(r.first_feasible_objective));
+    REQUIRE(std::isnan(r.time_to_first_feasible));
 }

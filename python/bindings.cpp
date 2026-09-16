@@ -24,27 +24,21 @@ constexpr const char* kParallelSolveDoc =
     "this callable at all: the workers have to acquire the GIL to invoke a\n"
     "Python callable, and a caller holding it across the join deadlocks them.\n"
     "\n"
-    "In portfolio mode -- the only mode `solve` has, and `solve_parallel`'s\n"
-    "default -- model_factory is invoked once per worker, each from that\n"
-    "worker's own thread, so several calls are in flight at once. In\n"
-    "deterministic mode (solve_parallel with par_config.deterministic) it runs\n"
-    "on the calling thread before any worker starts. A progress callback is\n"
-    "always called from worker 0. nanobind re-acquires the GIL around every\n"
+    "model_factory is invoked ONCE PER WORKER -- not once per restart -- each\n"
+    "from that worker's own thread, so several calls are in flight at once. A\n"
+    "progress callback is always called from worker 0. nanobind re-acquires\n"
+    "the GIL around every\n"
     "invocation, so the interpreter itself is safe; what that does not give\n"
     "you is atomicity across bytecodes, so a callable that mutates\n"
     "Python-side state must lock it.\n"
     "\n"
     "`solve_parallel` accepts a Python hook_factory and lns_factory. Both are\n"
-    "invoked once per worker, on the same thread as model_factory -- in\n"
-    "portfolio mode each worker's own thread, in deterministic mode the calling\n"
-    "thread. Not at the same POINT, though: deterministic mode builds every\n"
-    "model in one loop and the hooks and LNS objects in later ones. Both return\n"
-    "a shared_ptr, so\n"
+    "invoked once per worker, on that worker's own thread, immediately after\n"
+    "model_factory. Both return a shared_ptr, so\n"
     "the C++ side shares ownership with the interpreter instead of adopting a\n"
     "pointer Python still owns (issue #129). The last reference is dropped\n"
-    "before solve_parallel returns, under the GIL: in portfolio mode at the\n"
-    "end of the worker that built it, in deterministic mode on the calling\n"
-    "thread once every epoch is done.\n"
+    "before solve_parallel returns, under the GIL, at the end of the worker\n"
+    "that built it.\n"
     "\n"
     "Return a FRESH object from every call. Each worker searches its own model\n"
     "on its own thread and the search never locks the hook or the LNS, so one\n"
@@ -68,11 +62,9 @@ constexpr const char* kParallelSolveDoc =
     "model is deep-copied once per worker. Mutating it changes nothing the\n"
     "worker will search.\n"
     "\n"
-    "In portfolio mode an exception raised by the factory in every worker is\n"
-    "re-raised here with its original type and message, while one that fails\n"
-    "in only some workers is absorbed and the survivors' result is returned.\n"
-    "In deterministic mode a factory raising on the calling thread propagates\n"
-    "as usual, but an exception from inside a worker terminates the process.";
+    "An exception raised by the factory in every worker is re-raised here with\n"
+    "its original type and message, while one that fails in only some workers\n"
+    "is absorbed and the survivors' result is returned.";
 
 struct PySolveCallback : SolveCallback {
     NB_TRAMPOLINE(SolveCallback, 1);
@@ -152,7 +144,8 @@ NB_MODULE(_cbls_core, m) {
         .value("TimeLimit", TerminationReason::TimeLimit)
         .value("IterationLimit", TerminationReason::IterationLimit)
         .value("Feasible", TerminationReason::Feasible)
-        .value("NoBudget", TerminationReason::NoBudget);
+        .value("NoBudget", TerminationReason::NoBudget)
+        .value("Stopped", TerminationReason::Stopped);
 
     // SearchResult
     nb::class_<SearchResult>(m, "SearchResult")
@@ -374,10 +367,7 @@ NB_MODULE(_cbls_core, m) {
     nb::class_<ParallelConfig>(m, "ParallelConfig")
         .def(nb::init<>())
         .def_rw("n_threads", &ParallelConfig::n_threads)
-        .def_rw("deterministic", &ParallelConfig::deterministic)
-        .def_rw("epoch_iterations", &ParallelConfig::epoch_iterations)
-        .def_rw("max_epochs", &ParallelConfig::max_epochs)
-        .def_rw("elite_pool_size", &ParallelConfig::elite_pool_size);
+        .def_rw("pool_capacity", &ParallelConfig::pool_capacity);
 
     // SearchConfig — must be registered before ParallelSearch / solve, which
     // use SearchConfig{} as a default argument (nanobind casts defaults to
@@ -470,15 +460,26 @@ NB_MODULE(_cbls_core, m) {
     // Python implementation of either silently runs the base. Tracked as #132 --
     // this docstring is the note a caller of `solve` sees, since the fuller
     // explanation lives on solve_parallel.
-    m.def("solve", &cbls::solve, nb::arg("model"), nb::arg("time_limit") = 10.0,
-          nb::arg("seed") = 42, nb::arg("use_fj") = true, nb::arg("hook") = nullptr,
-          nb::arg("lns") = nullptr, nb::arg("lns_interval") = 3, nb::arg("callback") = nullptr,
-          nb::arg("config") = SearchConfig{},
-          "Single-threaded solve. NOTE: a Python subclass of InnerSolverHook or LNS is "
-          "constructed and destroyed correctly, but its overrides are never called -- "
-          "neither class has a nanobind trampoline, so C++ dispatches through the base "
-          "vtable. These arguments configure the built-in classes; they do not let you "
-          "implement one in Python.");
+    // Wrapped rather than bound directly: cbls::solve takes a trailing
+    // SearchCoordination*, which is ParallelSearch's private cross-worker
+    // channel and has no meaning to a Python caller. Dropping it here keeps the
+    // Python signature what it was.
+    m.def(
+        "solve",
+        [](Model& model, double time_limit, uint64_t seed, bool use_fj, InnerSolverHook* hook,
+           LNS* lns, int lns_interval, SolveCallback* callback, const SearchConfig& config) {
+            return cbls::solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback,
+                               config);
+        },
+        nb::arg("model"), nb::arg("time_limit") = 10.0, nb::arg("seed") = 42,
+        nb::arg("use_fj") = true, nb::arg("hook") = nullptr, nb::arg("lns") = nullptr,
+        nb::arg("lns_interval") = 3, nb::arg("callback") = nullptr,
+        nb::arg("config") = SearchConfig{},
+        "Single-threaded solve. NOTE: a Python subclass of InnerSolverHook or LNS is "
+        "constructed and destroyed correctly, but its overrides are never called -- "
+        "neither class has a nanobind trampoline, so C++ dispatches through the base "
+        "vtable. These arguments configure the built-in classes; they do not let you "
+        "implement one in Python.");
     // Randomises every variable. solve() does not call this (FJ owns the scalar
     // start); pair it with SearchConfig.skip_init = True for a random scalar start.
     m.def("initialize_random", &initialize_random, nb::arg("model"), nb::arg("rng"));

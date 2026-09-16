@@ -46,7 +46,7 @@ m.close();
 - **Large neighborhood search**: destroy-repair diversification
 - **Delta evaluation**: incremental DAG update via BFS dirty-marking
 - **Reverse-mode AD**: sparse automatic differentiation for gradient moves
-- **Multi-threaded** parallel search with solution pool (opportunistic and deterministic modes)
+- **Multi-threaded** cooperative portfolio: workers share incumbents through a solution pool and restart stalled searches from it
 - **Python bindings** via nanobind
 
 ## Build
@@ -54,7 +54,7 @@ m.close();
 ```bash
 cmake -B build
 cmake --build build
-ctest --test-dir build    # 365 C++ tests, ~40s (add -LE slow for the fast 356, ~9s)
+ctest --test-dir build    # 374 C++ tests, ~42s (add -LE slow for the fast 365, ~11s)
 ```
 
 The build type defaults to `Release`; pass `-DCMAKE_BUILD_TYPE=Debug` to override
@@ -72,7 +72,7 @@ With Python bindings:
 ```bash
 cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build
-.venv/bin/pytest          # 690 tests, 81 of them for the bindings
+.venv/bin/pytest          # 688 tests, 81 of them for the bindings
 ```
 
 Tests of the benchmark baselines skip themselves when `ortools` or `pyscipopt` is
