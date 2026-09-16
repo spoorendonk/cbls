@@ -373,8 +373,8 @@ stop flag. Write one as a scratch program against `libcbls.a` from the TSan
 build; it is not a committed target, because a race detector wants a harness
 tuned to whatever changed.
 
-**Verified state.** At the commit that introduced the cooperative portfolio
-(named in the follow-up commit that added this line), both were clean: `[parallel],[pool]` was 17/17 green with zero TSan
+**Verified state.** At `766ad46` (the commit that introduced the cooperative
+portfolio), both were clean: `[parallel],[pool]` was 17/17 green with zero TSan
 reports, and the stress harness above — 12 workers, a 12s objective-model arm
 with hook + LNS + constant restarts and adoptions, then 25 rounds of the
 stop-flag race — reported nothing. This is a dated record of one run on one
