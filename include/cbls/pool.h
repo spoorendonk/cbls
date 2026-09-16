@@ -34,6 +34,12 @@ struct ParallelConfig {
 ///    pure-feasibility model, whose first feasible solution is the answer)
 ///    stops every OTHER worker too rather than leaving them to run the clock
 ///    out on a settled question.
+///
+/// One exception to the last point, and it is not currently handled: a worker
+/// that THROWS is gone for the rest of the run, its core idle, and unless every
+/// worker threw the exception is not reported either. Restarting it would spin
+/// on a factory that throws deterministically, so the fix is not obvious; see
+/// issue #135.
 class ParallelSearch {
 public:
     explicit ParallelSearch(int n_threads = 0);

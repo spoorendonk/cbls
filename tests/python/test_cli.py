@@ -1040,7 +1040,7 @@ def _parse_human_solution(stdout: str) -> dict[str, float]:
     return values
 
 
-@pytest.mark.parametrize("threads", ["1", "4"])
+@pytest.mark.parametrize("threads", ["1", "4", "0"])
 def test_the_cli_prints_the_assignment_it_reports_an_objective_for(threads: str) -> None:
     # Both formatters print the assignment by iterating the CLI's own Model, not
     # SearchResult.best_state. On the single-threaded path that is right because

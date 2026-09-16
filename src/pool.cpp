@@ -14,9 +14,9 @@ namespace cbls {
 
 SolutionPool::SolutionPool(int capacity) : capacity_(std::max(1, capacity)) {}
 
-bool SolutionPool::submit(const Solution& sol) {
+bool SolutionPool::submit(Solution sol) {
     std::scoped_lock lock(mutex_);
-    solutions_.push_back(sol);
+    solutions_.push_back(std::move(sol));
     std::sort(solutions_.begin(), solutions_.end(), [](const Solution& a, const Solution& b) {
         if (a.feasible != b.feasible) {
             return a.feasible > b.feasible;
@@ -173,7 +173,6 @@ struct WorkerAccumulator {
             result.objective = r.objective;
             result.feasible = r.feasible;
             result.best_state = r.best_state;
-            result.best_violation = r.best_violation;
         }
         any_run = true;
     }
@@ -191,7 +190,6 @@ struct PortfolioContext {
     const SearchConfig& config;
     SolveCallback* callback;
     SearchCoordination& coord;
-    std::atomic<bool>& stop;
     // Seconds left on the SHARED deadline -- one clock for the whole portfolio,
     // so a worker that restarts gets the time its predecessor left rather than
     // a fresh full budget. Returns 0.0 when there is no wall clock at all, in
@@ -236,7 +234,7 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index) {
     // exists today -- and the core it was using would then sit out the rest of
     // the run. Restart it instead, on the time its predecessor left.
     for (int restart = 0;; ++restart) {
-        if (ctx.stop.load(std::memory_order_relaxed)) {
+        if (ctx.coord.stop->load(std::memory_order_relaxed)) {
             break;
         }
         // ONE read of the shared clock per restart, reused as this solve's
@@ -268,6 +266,20 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index) {
                                            cfg.lns_interval, cb, cfg, &ctx.coord);
         acc.absorb(r);
 
+        if (r.termination == TerminationReason::Feasible) {
+            // A pure-feasibility model: the first feasible solution IS the
+            // answer, so every other worker is now searching a settled
+            // question. Stop them rather than leaving them to run their budget
+            // out.
+            //
+            // Raised BEFORE the no-deadline break below, and the order is the
+            // whole point: an iteration-budgeted portfolio has no clock to run
+            // out, so its peers would otherwise grind their full iteration
+            // budgets on a question already answered -- which is exactly what
+            // pool.h promises does not happen, unqualified.
+            ctx.coord.stop->store(true, std::memory_order_relaxed);
+            break;
+        }
         if (!ctx.has_deadline) {
             // No SHARED wall clock, so there is no "time the predecessor left"
             // for a restart to run on: the worker's iteration budget IS the
@@ -279,13 +291,6 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index) {
             break;
         }
 
-        if (r.termination == TerminationReason::Feasible) {
-            // A pure-feasibility model: the first feasible solution IS the
-            // answer, so every other worker is now searching a settled
-            // question. Stop them rather than leaving them to run the clock out.
-            ctx.stop.store(true, std::memory_order_relaxed);
-            break;
-        }
         if (r.termination == TerminationReason::Stopped) {
             break;
         }
@@ -338,8 +343,8 @@ SearchResult ParallelSearch::solve_portfolio(
             std::chrono::duration<double>(deadline - std::chrono::steady_clock::now()).count());
     };
 
-    PortfolioContext ctx{model_factory, hook_factory, lns_factory,  config, callback, coord,
-                         stop,          remaining,    has_deadline, seed,   n_threads};
+    PortfolioContext ctx{model_factory, hook_factory, lns_factory,  config, callback,
+                         coord,         remaining,    has_deadline, seed,   n_threads};
 
     std::vector<SearchResult> results(n_threads);
     // One slot per worker, left null unless that worker threw. Sized up front so

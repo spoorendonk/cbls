@@ -3,12 +3,18 @@
 #include "cbls/dag_ops.h"
 #include "cbls/feasibility_jump.h"
 #include "cbls/randomize.h"
+// search.h only forward-declares SearchCoordination, deliberately -- see the
+// declaration there. This translation unit is one of the few that needs the
+// definition, because ViolationLSLoop reads both of its channels.
+#include "cbls/solution_pool.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace cbls {
@@ -676,12 +682,13 @@ bool ViolationLSLoop::record_best() {
     return true;
 }
 
-// Requirement: submit when found, not at the end. The cost is one Model::State
-// copy and one uncontended-in-the-common-case mutex per NEW BEST -- i.e. per
-// improving batch, which is 1000 GLS iterations -- so it is nowhere near the
-// hot path. `best_state_` is already a fresh copy made by the caller; this
-// copies it once more into the pool rather than moving it, because the loop
-// still needs it as its own incumbent.
+// Requirement: submit when found, not at the end. The cost is ONE Model::State
+// copy -- `best_state_` is the loop's own incumbent and must survive, so it is
+// copied here and then MOVED into the pool's vector -- plus one
+// uncontended-in-the-common-case mutex, per NEW BEST, i.e. per improving batch
+// of 1000 GLS iterations. Nowhere near the hot path. The move matters at
+// 32 workers on a large model: `submit` takes its argument by value precisely
+// so the second copy happens out here rather than inside the critical section.
 void ViolationLSLoop::share(double objective) {
     if (coord_ == nullptr || coord_->pool == nullptr) {
         return;
@@ -690,7 +697,7 @@ void ViolationLSLoop::share(double objective) {
     sol.state = best_state_;
     sol.objective = objective;
     sol.feasible = true;  // record_best's precondition
-    coord_->pool->submit(sol);
+    coord_->pool->submit(std::move(sol));
 }
 
 // Requirement: restart a stalled worker from the SHARED pool rather than only
@@ -729,12 +736,23 @@ bool ViolationLSLoop::adopt_from_pool() {
         return false;
     }
 
-    // A draw equal to the assignment we already hold is not a kick. It is the
-    // common case for the LEADING worker: it fills the better half of the pool
-    // with its own incumbents, so get_restart_point keeps handing it back its
-    // own current state -- and "restore where you already are" moves nothing,
-    // while zeroing stagnation_ and so denying the ordinary kick its turn.
-    // Refusing here makes the caller fall through to diversify().
+    // A draw equal to the assignment we already hold is not a kick: restoring
+    // where you already are moves nothing, while zeroing stagnation_ and so
+    // denying the ordinary kick its turn. Refusing here makes the caller fall
+    // through to diversify().
+    //
+    // Against the LIVE assignment, deliberately, not against best_state_: the
+    // question is whether this restore would move the search, and after
+    // perturbation_period non-improving batches the model generally sits
+    // somewhere FJ left it rather than on its own recorded incumbent. Comparing
+    // against best_state_ would refuse draws that are genuine moves.
+    //
+    // How often it fires is model-dependent and NOT the common case, though an
+    // earlier version of this comment claimed it was. Measured on a 20-variable
+    // integer model over 12 seeds, a worker whose pool receives only its own
+    // submissions declined the draw in 3 of 12 runs; on an easier asymmetric
+    // variant it declined every time. So this is a guard against a degenerate
+    // kick, not a routine path.
     if (holds_assignment(sol->state)) {
         return false;
     }
@@ -770,9 +788,32 @@ bool ViolationLSLoop::adopt_from_pool() {
     // leave the artificial row violated for the rest of the run. The loosest
     // finite bound is the honest answer there.
     if (has_obj_) {
+        // Never LOOSEN it. record_best is the only other writer and it rewrites
+        // the bound only on a STRICT improvement over best_feasible_obj_ (it
+        // returns early otherwise), so a bound loosened here can never tighten
+        // back until this worker beats its own all-time best -- and the draw
+        // that got us here is frequently one of our own earlier, worse
+        // incumbents. Loosening on every such kick would leave the worker
+        // searching with the objective row satisfied and no pressure at all.
+        //
+        // LNS is the precedent, and it is unambiguous: destroy_repair replaces
+        // the assignment wholesale and does not touch the bound. A row reading
+        // `obj <= best - eps` that is violated at the point we just arrived on
+        // is ViolationLS's normal steady state, not a problem to fix.
+        double target = std::numeric_limits<double>::infinity();
         if (feasible_here && std::isfinite(obj)) {
-            model_.set_objective_bound(obj - (1e-3 * (std::abs(obj) + 1.0)));
-        } else {
+            target = obj;
+        }
+        if (have_feasible_ && std::isfinite(best_feasible_obj_)) {
+            target = std::min(target, best_feasible_obj_);
+        }
+        if (std::isfinite(target)) {
+            model_.set_objective_bound(target - (1e-3 * (std::abs(target) + 1.0)));
+        } else if (!std::isfinite(model_.objective_bound())) {
+            // No usable objective anywhere yet -- an infeasible or non-finite
+            // adopted point with no incumbent of our own. Install the finite
+            // sentinel so the row is not vacuous, under record_best's own guard
+            // so it can never overwrite a real incumbent's bound.
             model_.set_objective_bound(kInfPenalty);  // the shared clamp; see violation.h
         }
     }
@@ -786,6 +827,19 @@ bool ViolationLSLoop::adopt_from_pool() {
         note_first_feasible(obj);
         best_feasible_obj_ = obj;
         best_state_ = sol->state;
+    }
+
+    if (!has_obj_ && feasible_here) {
+        // Pure feasibility: the point we just adopted IS the answer, and this
+        // worker can no longer reach apply_batch_outcome's Feasible exit --
+        // have_feasible_ is now true and current_obj() is a constant 0.0, so
+        // record_best's improvement test refuses every later batch. Say so
+        // here, and raise the flag for the same reason run_worker does: the
+        // question is settled for everyone.
+        termination_ = TerminationReason::Feasible;
+        if (coord_->stop != nullptr) {
+            coord_->stop->store(true, std::memory_order_relaxed);
+        }
     }
 
     vm_.invalidate_cache();
@@ -803,6 +857,15 @@ bool ViolationLSLoop::adopt_from_pool() {
     // point. (A kick that adoption declines keeps the armed probe, because
     // there diversify() really is perturbing the stuck assignment.)
     fj_.set_escape_probe(false);
+    // ...and re-ground the clock the TIME-based route arms on, or the disarm
+    // above lasts exactly one batch: last_improvement_ still describes the
+    // stall we just left, so maybe_arm_escape_probe re-arms on the next batch.
+    // That would also falsify the "at most 1/kEscapeArmFraction arms per run"
+    // bound that route's own comment rests on, since adoption is a disarm with
+    // no matching improvement.
+    if (has_deadline_) {
+        last_improvement_ = std::chrono::steady_clock::now();
+    }
     sample_rho();
     ++perturbations_;
     // The slot counts kicks ELIGIBLE for an LNS repair, and this was one: the
@@ -1020,15 +1083,17 @@ void ViolationLSLoop::maybe_diversify(BatchKind kind, bool improved) {
         // the search re-converges to the same point. Disarmed again on the next
         // improvement, so a productive search never pays for it.
         fj_.set_escape_probe(true);
-        // Under ParallelSearch, restarting from a PEER's incumbent is a
-        // strictly better use of a full-period kick than re-perturbing our own
+        // Under ParallelSearch, restarting from a PEER's incumbent is MEANT to
+        // be a better use of a full-period kick than re-perturbing our own
         // assignment: the pool holds points this worker has not seen, drawn
-        // from the better half so the workers stay spread rather than
-        // collapsing onto one basin. adopt_from_pool() performs the kick
-        // itself -- it disarms the probe it just armed, resamples rho, counts
-        // the perturbation and zeroes stagnation -- so diversify() is skipped
-        // when it succeeds. With no pool it returns false immediately and this
-        // is the same single-threaded code path it always was.
+        // from the better half rather than the best so the workers stay spread.
+        // Nothing here measures that, and it should not be read as settled --
+        // "cooperative vs non-cooperative sharing at a fixed worker count" is
+        // an open acceptance criterion on issue #135, and a null
+        // SearchCoordination* is exactly how to run the control arm. adopt_from_pool() performs the
+        // kick itself -- it disarms the probe it just armed, resamples rho, counts the perturbation
+        // and zeroes stagnation -- so diversify() is skipped when it succeeds. With no pool it
+        // returns false immediately and this is the same single-threaded code path it always was.
         //
         // Deliberately only this route, not the unproductive one below: that
         // kick fires on an iteration count, can recur every batch, and is
@@ -1175,7 +1240,7 @@ SearchResult ViolationLSLoop::run() {
     // not a peer happened to raise the flag in the same instant. Every other
     // exit is a `break` that already wrote its own reason (Feasible above all:
     // a worker that solved the model did not stop, it finished).
-    if (termination_ == TerminationReason::TimeLimit && !clock_expired() && stop_requested()) {
+    if (termination_ == TerminationReason::TimeLimit && stop_requested() && !clock_expired()) {
         termination_ = TerminationReason::Stopped;
     }
     return finish();

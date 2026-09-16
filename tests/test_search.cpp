@@ -539,13 +539,16 @@ TEST_CASE("ParallelSearch with hook and LNS factories", "[pool]") {
     // it built and dropped. Without this the suite passes on a solve() call
     // that hands nullptr to both slots.
     REQUIRE(hook_calls.load() > 0);
-    // And the LNS half specifically. This is not redundant with the hook: under
-    // the cooperative portfolio, `diversify()` is the only caller of
-    // destroy_repair and the only route that may draw LNS once a feasible
-    // solution exists, and letting pool adoption take every full-period kick
-    // switched LNS off for the whole of a worker's life with the rest of this
-    // test still green. maybe_diversify stands adoption down on the
-    // lns_interval-th kick precisely so this holds.
+    // And the LNS half specifically: `lns_built` above says an object was
+    // constructed, not that the search ever dispatched through it.
+    //
+    // This is a WIRING check, not the pin on the adoption stand-down. It does
+    // currently go red if `lns_kick_due() ||` is deleted from maybe_diversify
+    // (measured), but only because this configuration happens to reach no kick
+    // that would fall through to diversify() by another route -- a self-draw, an
+    // empty pool, or #102's pre-feasible route would each mask it. The
+    // structural pin is "an LNS-due kick stands adoption down entirely" in
+    // tests/test_parallel.cpp, which asserts bit-identity rather than a count.
     REQUIRE(lns_calls.load() > 0);
 }
 

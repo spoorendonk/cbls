@@ -6,13 +6,20 @@
 #include "moves.h"
 #include "randomize.h"
 #include "rng.h"
-#include "solution_pool.h"
 #include "violation.h"
 
 #include <cstdint>
 #include <limits>
 
 namespace cbls {
+
+/// Defined in `solution_pool.h`, which this header deliberately does NOT
+/// include: `solve()` only needs the pointer type, and the full definition
+/// would push `<atomic>`, `<mutex>`, `<optional>` and `SolutionPool` itself into
+/// every translation unit that includes `search.h`. A caller that actually
+/// builds one includes `cbls/pool.h` (or `cbls/solution_pool.h`), as
+/// `ParallelSearch` does.
+struct SearchCoordination;
 
 struct SearchConfig {
     // Keep the assignment the caller handed in, whole: suppresses both the

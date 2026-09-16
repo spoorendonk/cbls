@@ -360,7 +360,8 @@ int run_cli(int argc, char** argv) {
         // handed. The portfolio's workers search their own models, so without
         // this the CLI printed a real objective next to this model's UNTOUCHED
         // initial values -- in both output formats.
-        if (result.best_state.values.size() == model.num_vars()) {
+        if (result.best_state.values.size() == model.num_vars() &&
+            result.best_state.elements.size() == model.num_vars()) {
             model.restore_state(result.best_state);
             full_evaluate(model);
         }

@@ -26,13 +26,24 @@ class SolutionPool {
 public:
     explicit SolutionPool(int capacity = 10);
 
-    bool submit(const Solution& sol);
+    /// By value, then moved into the store: the caller's copy is made outside
+    /// the lock, so the critical section never copies a `Model::State`. That is
+    /// the one path where N workers actually contend.
+    bool submit(Solution sol);
     std::optional<Solution> best() const;
     std::vector<Solution> top_k(int k) const;
     /// Uniformly over the BETTER HALF of the pool -- not the single best. A
-    /// stalled worker restarts from whatever this returns, and drawing the best
-    /// every time would collapse every worker onto one basin, which is exactly
-    /// what makes a portfolio worth more than one thread.
+    /// stalled worker restarts from whatever this returns.
+    ///
+    /// This REDUCES the pull toward one basin; it does not prevent it, and the
+    /// difference matters. `submit` applies no diversity criterion and no
+    /// per-worker quota, so on an objective model the pool converges to the ten
+    /// globally best objectives ever submitted -- which is typically the tail of
+    /// one worker's monotone improving trajectory, i.e. ten refinements of a
+    /// single point. Drawing from the better half of that is close to drawing
+    /// the best. At the default worker count the capacity cannot even hold one
+    /// entry per worker. Whether this costs anything measurable is open; see
+    /// issue #135.
     std::optional<Solution> get_restart_point(RNG& rng) const;
     size_t size() const;
 

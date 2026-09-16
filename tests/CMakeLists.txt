@@ -41,16 +41,16 @@ include(Catch)
 # slow solves into one serial invocation would make the full suite far slower
 # than it is.
 #
-# Measured at Release: 6 of 369 discovered tests exceed ~10s and account for
+# Measured at Release: 6 of 375 discovered tests exceed ~10s and account for
 # ~103s of the suite's aggregate (summed per-test) time; with `-j$(nproc)` the
-# full run is ~42s of wall clock. The remaining 365 (363 discovered, plus the
+# full run is ~42s of wall clock. The remaining 371 (369 discovered, plus the
 # two hand-registered tests that carry no slow label --
 # timing_structural_batch_deadline and hang_guard_iteration_only_portfolio)
-# finish in ~11s with `-j`, which is what pre-commit runs via `ctest -LE slow`.
+# finish in ~12s with `-j`, which is what pre-commit runs via `ctest -LE slow`.
 # pre-push still runs everything.
 #
-# The roster is therefore 374 ctest tests: 369 discovered here plus the 5
-# hand-registered ones below. That is one more than the 373 TEST_CASEs in
+# The roster is therefore 380 ctest tests: 375 discovered here plus the 5
+# hand-registered ones below. That is one more than the 379 TEST_CASEs in
 # tests/*.cpp, because hang_guard_iteration_only_portfolio is both discovered
 # and hand-registered -- see its note below. `ctest -N -L slow` reports 9, not 6 --
 # the three #125 throughput floors carry the slow LABEL without the Catch2
@@ -90,8 +90,8 @@ set_tests_properties(timing_structural_batch_deadline
 # A hang regression needs a TIMEOUT to report itself, so this one is
 # hand-registered too (catch_discover_tests registers at build time, so
 # set_tests_properties cannot reach the tests it creates). It is tagged
-# [hang-guard] rather than [timing] so it stays OUT of the hand-registration
-# collision the [timing] note below describes -- and, unlike [timing], it is
+# [parallel] rather than [timing] so it stays OUT of the hand-registration
+# collision the [timing] note above describes -- and, unlike [timing], it is
 # also discovered by the first catch_discover_tests call above, which is
 # deliberate: the property being pinned is cheap and belongs in the fast set.
 # The duplicate registration costs one extra sub-second run.

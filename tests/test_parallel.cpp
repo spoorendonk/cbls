@@ -9,10 +9,13 @@
 
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_exception.hpp>
 #include <cbls/cbls.h>
 #include <chrono>
-#include <cmath>
-#include <limits>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <stdexcept>
 #include <vector>
 
 using namespace cbls;
@@ -378,6 +381,213 @@ TEST_CASE("a worker out of iterations is restarted, not left idle", "[parallel]"
     REQUIRE(r.iterations > int64_t{4} * kThreads * kCap);
     // And the budget was actually used rather than returned early.
     REQUIRE(elapsed > budget * 0.5);
+}
+
+TEST_CASE("an LNS-due kick stands adoption down entirely", "[parallel][coord]") {
+    // The structural version of `lns_calls > 0` in tests/test_search.cpp: with
+    // lns_interval = 1 every full-period kick is LNS-due, so `lns_kick_due()`
+    // short-circuits and adopt_from_pool() is NEVER CALLED -- not even to draw
+    // from the RNG. A run with a pool must therefore be bit-identical to one
+    // without, which is a far stronger statement than "some LNS ran".
+    //
+    // Delete `lns_kick_due() ||` from maybe_diversify and the pooled run adopts
+    // the gift instead: the assignment moves, the RNG advances, and every
+    // REQUIRE below parts company with the control.
+    SearchConfig config;
+    config.max_iterations = 20000;
+    config.batch_iterations = 100;
+    config.perturbation_period = 2;
+    config.lns_interval = 1;
+
+    LNS lns_a(0.3);
+    Model a = quadratic_model();
+    const SearchResult ra =
+        solve(a, /*time_limit=*/0.0, /*seed=*/13, true, nullptr, &lns_a, 1, nullptr, config,
+              /*coord=*/nullptr);
+
+    // A distinct, feasible, better-than-reachable point, so adoption WOULD
+    // succeed on the first kick if it were ever consulted. Capacity 1 keeps it
+    // there against the run's own submissions.
+    Model donor = quadratic_model();
+    Solution gift;
+    gift.state = donor.copy_state();
+    gift.state.values[0] = 0.5;
+    gift.state.values[1] = 0.5;
+    gift.objective = 0.5;
+    gift.feasible = true;
+    SolutionPool pool(1);
+    pool.submit(gift);
+    SearchCoordination coord;
+    coord.pool = &pool;
+
+    LNS lns_b(0.3);
+    Model b = quadratic_model();
+    const SearchResult rb = solve(b, /*time_limit=*/0.0, /*seed=*/13, true, nullptr, &lns_b, 1,
+                                  nullptr, config, &coord);
+
+    // The cadence was actually reached, or the rest of this proves nothing.
+    REQUIRE(ra.lns_repairs > 0);
+    REQUIRE(ra.lns_repairs == rb.lns_repairs);
+    REQUIRE(ra.iterations == rb.iterations);
+    REQUIRE(ra.objective == rb.objective);
+    REQUIRE(ra.best_state.values == rb.best_state.values);
+}
+
+TEST_CASE("adoption judges feasibility against its own model", "[parallel][coord]") {
+    // `Solution::feasible` describes whatever model the SUBMITTER searched, and
+    // nothing makes two workers' models identical. This gift is the right SHAPE
+    // -- so the size guard passes it through -- flagged feasible, with an
+    // objective better than anything reachable, and it flatly violates this
+    // model's `x + y >= 1`.
+    //
+    // Replace `real_feasible()` with `sol->feasible` in adopt_from_pool and the
+    // run adopts it as an incumbent, best_state_ becomes the violating point,
+    // and the independent verify below goes red on a result reporting
+    // feasible = true.
+    // The point has to be TEMPTING as well as infeasible, or the test is
+    // vacuous: adoption only takes a drawn point as its incumbent when the
+    // objective RECOMPUTED at that point improves on what the worker holds, and
+    // Solution::objective is used for nothing but the pool's sort order. So
+    // x = y = 0 -- objective 0, below the model's feasible optimum of 0.5, and
+    // flatly violating x + y >= 1.
+    Model donor = quadratic_model();
+    Solution liar;
+    liar.state = donor.copy_state();
+    liar.state.values[0] = 0.0;
+    liar.state.values[1] = 0.0;
+    liar.objective = -1e9;  // sorts first, so get_restart_point draws it
+    liar.feasible = true;   // ...and lies about it
+
+    SolutionPool pool(1);
+    pool.submit(liar);
+    SearchCoordination coord;
+    coord.pool = &pool;
+
+    SearchConfig config;
+    config.max_iterations = 20000;
+    config.batch_iterations = 100;
+    config.perturbation_period = 2;
+
+    Model m = quadratic_model();
+    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/21, true, nullptr, nullptr, 3,
+                                 nullptr, config, &coord);
+
+    REQUIRE(r.feasible);
+    // The lie never became the answer.
+    REQUIRE(r.objective > 0.0);
+    Model check = quadratic_model();
+    check.restore_state(r.best_state);
+    full_evaluate(check);
+    const VerifyResult v = verify_model(check);
+    INFO("verify errors: " << v.errors.size());
+    REQUIRE(v.ok);
+}
+
+TEST_CASE("a worker that throws after sharing still propagates", "[parallel]") {
+    // record_best() -- and with it share() -- runs BEFORE hook->solve(), so each
+    // worker puts an incumbent in the pool and only then dies. The pool is
+    // therefore NOT empty when the aggregation runs, and `pool.best()` alone can
+    // no longer tell "every worker died" from "a worker succeeded". Drop the
+    // all_failed test in src/pool.cpp back to a bare `if (!best)` and this
+    // returns a dead worker's mid-run snapshot as a result instead of throwing.
+    struct ThrowingHook : InnerSolverHook {
+        void solve(Model& /*model*/, ViolationManager& /*vm*/,
+                   const std::vector<int32_t>& /*last_changed_vars*/ = {}) override {
+            throw std::runtime_error("hook failed");
+        }
+    };
+    auto hook_factory = [](Model&) -> std::shared_ptr<InnerSolverHook> {
+        return std::make_shared<ThrowingHook>();
+    };
+    std::function<std::shared_ptr<LNS>()> no_lns;
+
+    ParallelSearch ps(2);
+    ParallelConfig pc;
+    pc.n_threads = 2;
+    REQUIRE_THROWS_MATCHES(ps.solve([]() { return quadratic_model(); }, 2.0, 42, SearchConfig{},
+                                    hook_factory, no_lns, nullptr, pc),
+                           std::runtime_error, Catch::Matchers::Message("hook failed"));
+}
+
+TEST_CASE("a stop flag raised mid-search ends the run where it stands", "[parallel][coord]") {
+    // The other stop-flag test pre-raises the flag, so the loop condition is
+    // false on its first evaluation and no batch ever runs. This covers the
+    // case the mechanism actually exists for: cancellation at a batch boundary,
+    // part-way through a search that is doing work.
+    //
+    // The flag is raised from inside the search's own progress callback rather
+    // than from a sleeping thread, so the test is deterministic and carries no
+    // wall-clock assertion (tests/CMakeLists.txt's #104 note asks for exactly
+    // that restraint).
+    struct StopOnProgress : SolveCallback {
+        std::atomic<bool>* flag;
+        int seen = 0;
+        explicit StopOnProgress(std::atomic<bool>* f) : flag(f) {}
+        void on_progress(const SolveProgress& /*p*/) override {
+            if (++seen >= 2) {
+                flag->store(true, std::memory_order_relaxed);
+            }
+        }
+    };
+
+    std::atomic<bool> stop{false};
+    SearchCoordination coord;
+    coord.stop = &stop;
+    StopOnProgress cb(&stop);
+
+    SearchConfig config;
+    config.max_iterations = 10000000;  // would run far past the cancellation
+    config.batch_iterations = 100;
+
+    Model m = quadratic_model();
+    const SearchResult r =
+        solve(m, /*time_limit=*/0.0, /*seed=*/5, true, nullptr, nullptr, 3, &cb, config, &coord);
+
+    REQUIRE(r.termination == TerminationReason::Stopped);
+    // The distinguishing assertion: the run was cancelled MID-FLIGHT, not before
+    // it started. Without it this passes on the pre-raised case too.
+    REQUIRE(r.iterations > 0);
+    REQUIRE(r.iterations < config.max_iterations);
+}
+
+TEST_CASE("a one-worker portfolio is still a correct portfolio", "[parallel]") {
+    // n_threads == 1 is reachable from C++ and from Python (the CLI routes it to
+    // the single-threaded path instead, so nothing else covers it). It is not
+    // equivalent to a bare solve(): the lone worker's pool holds only its own
+    // incumbents, so every adoption it makes is a self-restart. Whatever that
+    // does to search quality, the result must still be a valid assignment.
+    ParallelSearch ps(1);
+    const SearchResult r = ps.solve([]() { return quadratic_model(); }, 1.0, 42);
+    REQUIRE(r.feasible);
+
+    Model check = quadratic_model();
+    REQUIRE(r.best_state.values.size() == check.num_vars());
+    check.restore_state(r.best_state);
+    full_evaluate(check);
+    REQUIRE(verify_model(check).ok);
+}
+
+TEST_CASE("SolutionPool clamps a degenerate capacity", "[pool]") {
+    // ParallelConfig::pool_capacity reaches this constructor unvalidated, so the
+    // clamp is the guard. A capacity of 0 with no clamp makes submit() resize to
+    // 0 and best() return nullopt on a pool that was just handed a solution --
+    // which in solve_portfolio is the "every worker threw" branch.
+    SolutionPool pool(0);
+    for (int i = 0; i < 3; ++i) {
+        Solution s;
+        s.objective = static_cast<double>(i);
+        s.feasible = true;
+        pool.submit(s);
+    }
+    REQUIRE(pool.size() == 1);
+    auto best = pool.best();
+    if (!best.has_value()) {
+        FAIL("clamped pool dropped every solution");
+        return;
+    }
+    REQUIRE(best->objective == 0.0);
+    // And the read side's own clamp: a negative k is not a buffer underrun.
+    REQUIRE(pool.top_k(-1).empty());
 }
 
 TEST_CASE("an iteration-only portfolio returns instead of restarting forever", "[parallel]") {

@@ -213,18 +213,18 @@ Three conventions therefore rest on you rather than on a tool: branch only from 
 
 ### Fast vs. slow tests
 
-The C++ suite is **374 ctest tests** over **373 `TEST_CASE`s**: 369 registered
+The C++ suite is **380 ctest tests** over **379 `TEST_CASE`s**: 375 registered
 by `catch_discover_tests` plus **5 registered by hand** — the 4 `[timing]` cases
 and `hang_guard_iteration_only_portfolio`, which is hand-registered *as well as*
 discovered (it needs a `TIMEOUT` to report a hang, but is cheap enough to belong
-in the fast set), so one `TEST_CASE` accounts for two ctest tests. Of the 369,
+in the fast set), so one `TEST_CASE` accounts for two ctest tests. Of the 375,
 **6 carry the
 Catch2 `[slow]` tag** — the CHPED and UC-CHPED benchmark solves, ~103s of
 aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~42s
 wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 365 tests, ~11s with `-j`. This is what **pre-commit** runs.
+- `ctest -LE slow` — the other 371 tests, ~12s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
 - `ctest -L timing` — 4 tests: `timing_structural_batch_deadline` plus the three
   `timing_throughput_*` floors added for #125. Each is registered by an explicit
@@ -251,7 +251,7 @@ agree:
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
 4. the comment above the `ctest` call in `.githooks/pre-commit`,
-5. the `.venv/bin/pytest` line in `README.md` for the Python side (688 tests, 81
+5. the `.venv/bin/pytest` line in `README.md` for the Python side (689 tests, 81
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`),
 6. the `-LE slow` guidance and the ~42s/~304s figures in `docs/profiling.md`.
@@ -544,7 +544,7 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 
 8. **Violation & penalty** (`src/violation.cpp`) — `total_violation = Σ W[c]·max(0, viol_c)` with per-constraint GLS weights `W`. `weighted_violation_delta` is the no-commit counterfactual δ_G. `augmented_objective() = obj + total_violation()` is the penalty-method metric the inner solver descends.
 
-9. **Parallel search** (`src/pool.cpp`) — `SolutionPool` + `ParallelSearch`: a cooperative portfolio. Workers share incumbents through the mutex-guarded pool as they find them, restart from it on stagnation, are restarted rather than left idle while budget remains, and stop each other once one has solved a pure-feasibility model. All of it reaches the engine through `cbls::solve()`'s trailing `SearchCoordination*`, which is null everywhere else — including all four benchmark runners, whose trajectories are therefore unchanged. Nondeterministic by construction; `--threads 1` is the reproducible run.
+9. **Parallel search** (`src/pool.cpp`) — `SolutionPool` + `ParallelSearch`: a cooperative portfolio. Workers share incumbents through the mutex-guarded pool as they find them, restart from it on stagnation, are restarted rather than left idle while budget remains, and stop each other once one has solved a pure-feasibility model. All of it reaches the engine through `cbls::solve()`'s trailing `SearchCoordination*`, which is null everywhere else — including all four benchmark runners, whose trajectories are therefore unchanged. Nondeterministic by construction; `--threads 1` is the reproducible run (on the same hardware under the same load — it is still wall-clock bounded).
 
 10. **I/O** (`src/io.cpp`, `src/io/`) — JSONL `.cbls` model format in `src/io.cpp`; `src/io/` holds the MPS reader (`mps_reader.cpp` + `mps_to_model.cpp`, gzip via zlib, optional bzip2), the AMPL `.nl` reader (`nl_reader.cpp` + `nl_to_model.cpp`) and the MIPLIB `.solu` reader. CLI in `src/cli.cpp`.
 

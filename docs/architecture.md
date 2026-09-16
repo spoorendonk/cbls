@@ -1528,8 +1528,12 @@ touch concurrently.
 **Sort order:** feasible solutions first; among same feasibility, ascending
 objective. **Capacity:** `ParallelConfig::pool_capacity`, default 10, excess
 trimmed after each insert. **Restart selection:** `get_restart_point()` samples
-uniformly from the better half of the pool -- not the single best, which would
-collapse every worker onto one basin and reduce the portfolio to one search.
+uniformly from the better half of the pool rather than the single best. That
+reduces the pull toward one basin without preventing it: `submit` applies no
+diversity criterion and no per-worker quota, so on an objective model the pool
+tends to fill with one worker's successive refinements of a single point, and
+the better half of that is close to the best. Whether it costs anything
+measurable is open -- see issue #135.
 
 ### Parallel Search
 
@@ -1547,11 +1551,29 @@ bit-identical to what it was before the parameter existed:
 
 1. **Submit when found.** `record_best()` shares each new incumbent into the
    pool the moment it records one, not once at the end of the run. One
-   `Model::State` copy and one mutex acquisition per improving batch.
+   `Model::State` copy and one mutex acquisition per improving batch; `submit`
+   takes its argument by value and moves it into the store, so the copy happens
+   outside the critical section.
 2. **Restart from the pool.** On the full-stagnation route
    (`stagnation >= perturbation_period`) a worker draws `get_restart_point()`
    and restarts from it instead of perturbing its own assignment, and that
-   adoption *is* the diversification kick. The re-grounding is
+   adoption *is* the diversification kick. Three qualifications, each
+   load-bearing:
+   - every `lns_interval`-th kick stands adoption down entirely, so the LNS
+     destroy-repair cadence keeps running. Without that, `diversify()` -- the
+     only caller of `LNS::destroy_repair`, and the only route that may draw LNS
+     once a feasible solution exists -- would never run again in a portfolio
+     worker, and `cbls --lns 0.3` would build an LNS per worker and never repair
+     with it;
+   - adoption **disarms** the Float escape probe that `maybe_diversify` armed
+     immediately before, on the ground that the stationary-point diagnosis was
+     about the assignment just left. So of #117's two arming routes, portfolio
+     workers with a non-empty pool keep only the time-based one. #117's measured
+     roster was single-threaded and therefore describes a path the default CLI
+     no longer takes;
+   - adoption can be **refused** -- an empty pool, a state of the wrong shape, or
+     a draw equal to the assignment the worker already holds -- and the kick
+     then falls through to the ordinary `diversify()`. The re-grounding is
    `restore_state` -> `full_evaluate` -> re-derive the objective bound from the
    adopted point -> `vm.invalidate_cache()` -> `fj.reset_weights()`; a state
    whose shape does not match the local model is refused rather than restored
@@ -1815,7 +1837,9 @@ cbls [OPTIONS] MODEL.cbls
 > **Removed flags** (epoch-sync): `--deterministic`, `--epoch-iters`,
 > `--max-epochs`. Epoch-sync mode went when `ParallelSearch` became a
 > cooperative portfolio; each now exits 1 as an unknown option. `--threads 1`
-> is the reproducible run.
+> is the reproducible run -- on the same hardware under the same load, since it
+> is still wall-clock bounded. There is no longer any bit-reproducible
+> multi-threaded mode.
 
 ### What the parallel path does to the output
 
@@ -1845,7 +1869,11 @@ in both the human and the JSONL format:
   surprising part of the default; `--threads N` bounds it.
 - **The run is not reproducible.** `--seed` still seeds each worker (`seed + i`,
   plus the restart index), but which solution a stalled worker adopts depends on
-  thread interleaving. `--threads 1` is the reproducible run.
+  thread interleaving. `--threads 1` is the reproducible run, subject to the
+  wall-clock caveat in [Determinism](#determinism) -- same seed, same hardware,
+  same load. Note also that worker seeds are `seed + i`, so `--seed 42` and
+  `--seed 43` at 12 threads share 11 of their 12 base streams; bumping the seed
+  is a weaker way to get an independent sample than it looks.
 
 ### Implied variable bounds
 
