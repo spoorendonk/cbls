@@ -367,6 +367,7 @@ NB_MODULE(_cbls_core, m) {
     nb::class_<ParallelConfig>(m, "ParallelConfig")
         .def(nb::init<>())
         .def_rw("n_threads", &ParallelConfig::n_threads)
+        // 0 = auto (max(10, 2 * n_threads)); see include/cbls/pool.h.
         .def_rw("pool_capacity", &ParallelConfig::pool_capacity);
 
     // SearchConfig — must be registered before ParallelSearch / solve, which
@@ -411,6 +412,14 @@ NB_MODULE(_cbls_core, m) {
              nb::call_guard<nb::gil_scoped_release>(), kParallelSolveDoc);
 
     // Free functions
+    // Exposed so the "adjacent base seeds do not share worker streams" property
+    // can be checked directly rather than inferred from two search trajectories.
+    m.def("portfolio_worker_seed", &portfolio_worker_seed, nb::arg("base_seed"), nb::arg("worker"),
+          nb::arg("restart"),
+          "RNG seed for one portfolio worker's one run: a splitmix64 finalizer over "
+          "(base_seed, worker, restart). Mixed rather than added so that adjacent base "
+          "seeds give genuinely different portfolios.");
+
     m.def("full_evaluate", &full_evaluate);
     m.def("delta_evaluate", [](Model& model, const std::set<int32_t>& changed) {
         return delta_evaluate(model, changed);

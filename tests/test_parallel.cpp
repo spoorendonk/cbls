@@ -7,15 +7,21 @@
 // `cbls::solve()` with that pointer null. So the first thing to pin is that a
 // null pointer leaves the trajectory exactly what it was.
 
+#include <algorithm>
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_exception.hpp>
 #include <cbls/cbls.h>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <functional>
+#include <iterator>
+#include <limits>
 #include <memory>
+#include <set>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 using namespace cbls;
@@ -47,6 +53,30 @@ Model satisfaction_model() {
     auto neg1 = m.constant(-1.0);
     auto ten = m.constant(10.0);
     m.add_constraint(m.sum({ten, m.prod(neg1, x), m.prod(neg1, y)}));  // x + y >= 10
+    m.close();
+    return m;
+}
+
+// A 20-column integer model: reaching the target is easy, but the optimum is
+// the balanced assignment, so the search keeps finding new incumbents for a
+// long time -- which is what fills a shared pool.
+Model integer_model() {
+    Model m;
+    std::vector<int32_t> xs;
+    std::vector<int32_t> squares;
+    auto two = m.constant(2);
+    auto neg1 = m.constant(-1.0);
+    for (int i = 0; i < 20; ++i) {
+        xs.push_back(m.int_var(0, 10));
+        squares.push_back(m.pow_expr(xs.back(), two));
+    }
+    std::vector<int32_t> row;
+    row.push_back(m.constant(60.0));
+    for (int32_t x : xs) {
+        row.push_back(m.prod(neg1, x));
+    }
+    m.add_constraint(m.sum(row));
+    m.minimize(m.sum(squares));
     m.close();
     return m;
 }
@@ -224,6 +254,14 @@ TEST_CASE("a stalled search adopts a peer's solution from the pool", "[parallel]
     // between "the later kicks perturbed" and "the later kicks restored the
     // state we were already on and moved nothing". Measured: armed with the
     // guard, unarmed without it.
+    //
+    // The control is asserted too, and that is the point of asserting it: this
+    // proxy is parity-dependent -- it really says "the LAST full-period kick of
+    // this run was a self-draw" -- so an engine change that shifts the batch
+    // count by one could flip it. With both arms pinned, such a drift shows up
+    // as "the control changed as well", which points at the model or the
+    // budget, rather than as a bare red pointing at the guard.
+    REQUIRE(rc.escape_probe_armed);
     REQUIRE(r.escape_probe_armed);
 
     // Adoption re-grounds the DAG, the violation manager and FJ, so what comes
@@ -568,10 +606,11 @@ TEST_CASE("a one-worker portfolio is still a correct portfolio", "[parallel]") {
 }
 
 TEST_CASE("SolutionPool clamps a degenerate capacity", "[pool]") {
-    // ParallelConfig::pool_capacity reaches this constructor unvalidated, so the
-    // clamp is the guard. A capacity of 0 with no clamp makes submit() resize to
-    // 0 and best() return nullopt on a pool that was just handed a solution --
-    // which in solve_portfolio is the "every worker threw" branch.
+    // A direct caller reaches this constructor unvalidated, so the clamp is the
+    // guard. A capacity of 0 with no clamp makes submit() resize to 0 and best()
+    // return nullopt on a pool that was just handed a solution. (A portfolio no
+    // longer gets here with 0 -- effective_pool_capacity intercepts it first --
+    // but SolutionPool is public API and this is its own contract.)
     SolutionPool pool(0);
     for (int i = 0; i < 3; ++i) {
         Solution s;
@@ -616,6 +655,340 @@ TEST_CASE("an iteration-only portfolio returns instead of restarting forever", "
     // distinguishes "returned" from "restarted a few times and then returned".
     REQUIRE(r.iterations <= int64_t{2} * pc.n_threads * config.max_iterations);
     REQUIRE(r.termination == TerminationReason::IterationLimit);
+}
+
+// ---------------------------------------------------------------------------
+// Worker seeding (#135 A3)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("adjacent base seeds do not share worker streams", "[parallel][seed]") {
+    // The property the old `base + worker + restart * n_threads` scheme did NOT
+    // have. It was a correct bijection within one run -- which is all it
+    // claimed -- but at 12 workers `--seed 42` and `--seed 43` shared 11 of
+    // their 12 base streams, so bumping the seed to draw an independent sample
+    // barely changed the portfolio. Now the default worker count.
+    constexpr int kWorkers = 12;
+    std::set<uint64_t> a;
+    std::set<uint64_t> b;
+    for (int w = 0; w < kWorkers; ++w) {
+        a.insert(portfolio_worker_seed(42, w, 0));
+        b.insert(portfolio_worker_seed(43, w, 0));
+    }
+    REQUIRE(a.size() == kWorkers);  // no collisions within a run
+    REQUIRE(b.size() == kWorkers);
+    std::vector<uint64_t> shared;
+    std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(shared));
+    INFO("shared streams between seed 42 and 43: " << shared.size());
+    REQUIRE(shared.empty());
+}
+
+TEST_CASE("worker seeds are distinct across workers and restarts", "[parallel][seed]") {
+    // Within one run the scheme must still be injective over (worker, restart),
+    // which is what stops a restart replaying the run that just stalled. This
+    // is the property the old scheme had and the new one must not lose.
+    std::set<uint64_t> seen;
+    int count = 0;
+    for (int w = 0; w < 32; ++w) {
+        for (int r = 0; r < 32; ++r) {
+            seen.insert(portfolio_worker_seed(7, w, r));
+            ++count;
+        }
+    }
+    REQUIRE(static_cast<int>(seen.size()) == count);
+    // ...and it is a pure function, or a restart would not be reproducible at
+    // all for a fixed seed on a fixed schedule.
+    REQUIRE(portfolio_worker_seed(7, 3, 5) == portfolio_worker_seed(7, 3, 5));
+}
+
+// ---------------------------------------------------------------------------
+// A worker that throws is not abandoned (#135 A1)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Throws on its first `fail_times` invocations, then behaves. Models a
+// transient failure inside the search -- a bad_alloc under memory pressure --
+// as against a factory that cannot build its model at all.
+struct FlakyHook : InnerSolverHook {
+    explicit FlakyHook(int fail_times) : remaining_failures(fail_times) {}
+    void solve(Model& /*model*/, ViolationManager& /*vm*/,
+               const std::vector<int32_t>& /*last_changed_vars*/ = {}) override {
+        if (remaining_failures > 0) {
+            --remaining_failures;
+            throw std::runtime_error("transient hook failure");
+        }
+        ++successes;
+    }
+    int remaining_failures;
+    int successes = 0;
+};
+
+}  // namespace
+
+TEST_CASE("a worker whose search throws is restarted, not abandoned", "[parallel]") {
+    // Before this, one try/catch wrapped the whole worker: any throw parked the
+    // exception and the thread exited, leaving its core idle for the rest of the
+    // run while its peers continued -- and the exception was discarded unless
+    // EVERY worker had failed. Remove the retry (break instead of continue in
+    // run_worker's catch) and this goes red: no hook ever gets past its
+    // failures, so `successes` stays 0 and the run is not feasible.
+    std::atomic<int> total_successes{0};
+    auto hook_factory = [&total_successes](Model&) -> std::shared_ptr<InnerSolverHook> {
+        // One failure per worker, then fine.
+        struct Reporting : FlakyHook {
+            explicit Reporting(std::atomic<int>& sink) : FlakyHook(1), out(sink) {}
+            ~Reporting() override { out.fetch_add(successes); }
+            std::atomic<int>& out;
+        };
+        return std::make_shared<Reporting>(total_successes);
+    };
+    std::function<std::shared_ptr<LNS>()> no_lns;
+
+    ParallelSearch ps(2);
+    ParallelConfig pc;
+    pc.n_threads = 2;
+    SearchResult r;
+    REQUIRE_NOTHROW(r = ps.solve([]() { return quadratic_model(); }, 2.0, 42, SearchConfig{},
+                                 hook_factory, no_lns, nullptr, pc));
+    REQUIRE(r.feasible);
+    // The workers got past their failures and kept working, rather than dying
+    // on the first throw.
+    REQUIRE(total_successes.load() > 0);
+}
+
+// ---------------------------------------------------------------------------
+// The objective bound after adoption (#135 A2, B3)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Reads the model's objective bound every time the search polishes a feasible
+// point. The hook is the only extension point handed the Model itself, so it is
+// the one place a test can watch a value the SearchResult does not carry.
+struct BoundWatcher : InnerSolverHook {
+    void solve(Model& model, ViolationManager& /*vm*/,
+               const std::vector<int32_t>& /*last_changed_vars*/ = {}) override {
+        bounds.push_back(model.objective_bound());
+    }
+    std::vector<double> bounds;
+};
+
+}  // namespace
+
+TEST_CASE("adopting a worse point does not relax objective pressure", "[parallel][coord]") {
+    // record_best rewrites the bound ONLY on a strict improvement over
+    // best_feasible_obj_, so a bound loosened by an adoption can never tighten
+    // back: the worker searches with the artificial `obj <= bound` row satisfied
+    // and no objective signal until it beats its own all-time best. Adoption
+    // therefore derives the bound from the TIGHTER of the adopted point and its
+    // own incumbent. Delete the `std::min` against best_feasible_obj_ and the
+    // observed bound sequence stops being monotone, which is what this asserts.
+    //
+    // No planted gift: a pool seeded with a deliberately WORSE solution is the
+    // wrong setup, because `submit` sorts best-first and trims, so the plant is
+    // evicted by the worker's own first incumbent and never drawn. The loosening
+    // case arises on its own -- the worker fills the pool with its own improving
+    // trajectory, and `get_restart_point` draws from the better HALF, which is
+    // its best five, four of which are older and worse than its current best.
+    //
+    // The model keeps producing new incumbents for a long time, which is what
+    // fills a pool with distinct entries.
+    SolutionPool pool(10);
+    SearchCoordination coord;
+    coord.pool = &pool;
+
+    SearchConfig config;
+    config.max_iterations = 20000;
+    config.batch_iterations = 100;
+    config.perturbation_period = 2;
+
+    BoundWatcher watcher;
+    Model m = integer_model();
+    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/17, true, &watcher, nullptr, 3,
+                                 nullptr, config, &coord);
+
+    REQUIRE(r.feasible);
+    // The run reached the code path at all: many feasible points polished, and a
+    // full pool of its own incumbents to draw worse ones from.
+    REQUIRE(watcher.bounds.size() > 5);
+    REQUIRE(pool.size() > 1);
+    // Monotone non-increasing over every finite bound observed. A loosening
+    // adoption shows up here as a step back up.
+    double previous = std::numeric_limits<double>::infinity();
+    for (double b : watcher.bounds) {
+        if (!std::isfinite(b)) {
+            continue;  // the pre-incumbent sentinel; see record_best
+        }
+        INFO("bound went from " << previous << " to " << b);
+        REQUIRE(b <= previous + 1e-9);
+        previous = b;
+    }
+}
+
+TEST_CASE("drawing an infeasible pool entry is safe", "[parallel][coord]") {
+    // The pool holds infeasible entries: `solve_portfolio` submits each worker's
+    // closest approach at the end of a run that never reached feasibility, so a
+    // peer can draw one. This pins that doing so is safe -- the adoption
+    // re-grounds the DAG, leaves no NaN in the violation machinery, and the run
+    // still terminates with a diagnosable result.
+    //
+    // The model has NO feasible point (x, y in [0, 1] cannot sum to 5), which is
+    // what makes the plant reachable at all: `share()` is only called from
+    // `record_best`, so a run that never becomes feasible never submits, and the
+    // plant is never outranked. That matters -- an earlier version of this test
+    // used a solvable model and a capacity-1 pool, and the worker's first
+    // feasible submit evicted the plant before any draw, so the test exercised
+    // nothing. `submit` sorts feasible-first, so an infeasible entry sorts LAST
+    // and the better-half draw can only ever reach it when the pool is entirely
+    // infeasible.
+    //
+    // What this does NOT claim: that the `feasible_here` guard on the bound
+    // derivation changes an outcome. It does not have a distinct behavioural
+    // observable -- `max_real_violation` excludes the artificial objective row,
+    // so even an unmeetable bound leaves feasibility reporting unchanged. The
+    // guard is argued from record_best's invariant, not measured, and the
+    // sentinel arm that used to sit beside it was deleted for exactly that
+    // reason.
+    auto build = []() {
+        Model m;
+        auto x = m.float_var(0, 1);
+        auto y = m.float_var(0, 1);
+        auto neg1 = m.constant(-1.0);
+        auto two = m.constant(2);
+        m.add_constraint(m.sum({m.constant(5.0), m.prod(neg1, x), m.prod(neg1, y)}));
+        m.minimize(m.sum({m.pow_expr(x, two), m.pow_expr(y, two)}));
+        m.close();
+        return m;
+    };
+
+    Model donor = build();
+    Solution approach;
+    approach.state = donor.copy_state();
+    approach.state.values[0] = 1.0;
+    approach.state.values[1] = 1.0;  // the closest approach: violation 3
+    approach.objective = 2.0;
+    approach.feasible = false;  // honestly flagged, as solve_portfolio submits it
+
+    SolutionPool pool(10);
+    pool.submit(approach);
+    SearchCoordination coord;
+    coord.pool = &pool;
+
+    SearchConfig config;
+    config.max_iterations = 5000;
+    config.batch_iterations = 100;
+    config.perturbation_period = 2;
+
+    Model m = build();
+    SearchResult r;
+    REQUIRE_NOTHROW(r = solve(m, /*time_limit=*/0.0, /*seed=*/23, true, nullptr, nullptr, 3,
+                              nullptr, config, &coord));
+
+    REQUIRE_FALSE(r.feasible);
+    // The diagnosable part: a NaN anywhere in the bound or the re-grounding
+    // poisons the violation machinery, and this is where it would surface.
+    REQUIRE(std::isfinite(r.best_violation));
+    REQUIRE(r.best_violation > 0.0);
+    // ...and the state handed back is still a state of this model.
+    REQUIRE(r.best_state.values.size() == m.num_vars());
+    // The plant survived to be drawable, which is what makes the above non-vacuous.
+    REQUIRE(pool.size() == 1);
+}
+
+TEST_CASE("the portfolio pool capacity scales with the worker count", "[parallel]") {
+    // The auto rule behind ParallelConfig::pool_capacity = 0. A pool smaller
+    // than the worker count cannot represent the portfolio at all: `submit`
+    // sorts globally and applies no per-worker quota, so at 32 workers a
+    // capacity of 10 holds the ten best objectives and nothing else.
+    //
+    // Replace effective_pool_capacity's body with `return requested;` and every
+    // portfolio pool falls back to SolutionPool's own max(1, ...) clamp, i.e.
+    // capacity 1 -- which still produces feasible, verifiable results, so only a
+    // direct test of the rule catches it.
+    REQUIRE(effective_pool_capacity(0, 32) == 64);
+    REQUIRE(effective_pool_capacity(0, 12) == 24);
+    // Floored at 10, so a small portfolio is not handed a pool too small to hold
+    // a useful spread.
+    REQUIRE(effective_pool_capacity(0, 1) == 10);
+    REQUIRE(effective_pool_capacity(0, 4) == 10);
+    // An explicit request wins, however small.
+    REQUIRE(effective_pool_capacity(7, 32) == 7);
+    REQUIRE(effective_pool_capacity(1, 32) == 1);
+    // Negative is a caller error and folds into auto rather than silently
+    // becoming a one-solution pool.
+    REQUIRE(effective_pool_capacity(-1, 12) == 24);
+}
+
+// ---------------------------------------------------------------------------
+// TerminationReason::Stopped, end to end (#135 B)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("every TerminationReason has a distinct stable token", "[parallel][search]") {
+    // The tokens are the JSONL `termination` field, so they are a machine
+    // contract, and `Stopped` was added to the enum by the cooperative
+    // portfolio. A missing `case` is a -Wswitch warning rather than a test
+    // failure, and a token that silently duplicated another would not even be
+    // that.
+    const std::vector<TerminationReason> all = {
+        TerminationReason::TimeLimit, TerminationReason::IterationLimit,
+        TerminationReason::Feasible,  TerminationReason::NoBudget,
+        TerminationReason::Stopped,
+    };
+    std::set<std::string> tokens;
+    for (TerminationReason t : all) {
+        const char* name = termination_reason_name(t);
+        REQUIRE(name != nullptr);
+        REQUIRE(std::string(name) != "unknown");
+        tokens.insert(name);
+    }
+    REQUIRE(tokens.size() == all.size());
+    REQUIRE(std::string(termination_reason_name(TerminationReason::Stopped)) == "stopped");
+}
+
+// ---------------------------------------------------------------------------
+// ParallelConfig::pool_capacity actually reaches the pool (#135 B)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("pool_capacity reaches the pool the workers share", "[parallel]") {
+    // The field was plumbed from Python through ParallelConfig to the
+    // SolutionPool constructor and exercised by nothing: deleting the parameter
+    // from solve_portfolio left the whole suite green.
+    //
+    // One worker and an iteration-only budget make the run fully deterministic
+    // (no wall clock, and the no-deadline break means exactly one solve), so the
+    // only thing separating the two arms is how many solutions the pool keeps --
+    // which changes what get_restart_point can draw, and so the trajectory.
+    SearchConfig config;
+    config.max_iterations = 20000;
+    config.batch_iterations = 100;
+    config.perturbation_period = 2;
+
+    auto run = [&config](int capacity) {
+        ParallelConfig pc;
+        pc.n_threads = 1;
+        pc.pool_capacity = capacity;
+        ParallelSearch ps(1);
+        return ps.solve([]() { return integer_model(); }, /*time_limit=*/0.0, /*seed=*/31, config,
+                        nullptr, nullptr, nullptr, pc);
+    };
+
+    const SearchResult tight = run(1);
+    const SearchResult loose = run(10);
+
+    REQUIRE(tight.feasible);
+    REQUIRE(loose.feasible);
+    // Same seed, same budget, same model, one worker: if the capacity never
+    // reached the pool these two runs would be bit-identical.
+    //
+    // The assertion is on ITERATIONS, not on the objective or the state: both
+    // arms converge to this model's optimum, so those agree while the
+    // trajectories differ. The iteration count is where the difference shows --
+    // measured 20 029 against 20 038 -- and it is exact, because an
+    // iteration-only budget makes a one-worker portfolio fully deterministic
+    // (no wall clock, and the no-deadline break means exactly one solve).
+    INFO("capacity 1 -> " << tight.iterations << " iterations, capacity 10 -> "
+                          << loose.iterations);
+    REQUIRE(tight.iterations != loose.iterations);
 }
 
 TEST_CASE("the portfolio returns a verifiable assignment", "[parallel]") {

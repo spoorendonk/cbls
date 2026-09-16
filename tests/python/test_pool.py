@@ -368,3 +368,55 @@ if __name__ == "__main__":
     }
     _scenarios[sys.argv[1]]()
     print("OK")
+
+
+def test_termination_reason_exposes_stopped() -> None:
+    """`Stopped` is part of the enum a Python caller reads off a SearchResult.
+
+    It was added when ParallelSearch gained a shared stop flag, and a binding
+    that forgot it would leave Python unable to name the reason its own runs
+    report -- silently, since nanobind simply would not create the attribute.
+
+    Python cannot *produce* a Stopped result: SearchCoordination is not bound,
+    by design, so the flag is reachable only from C++. The enum value is what
+    Python needs, and it is what this pins.
+    """
+    assert hasattr(cbls.TerminationReason, "Stopped")
+    members = {
+        cbls.TerminationReason.TimeLimit,
+        cbls.TerminationReason.IterationLimit,
+        cbls.TerminationReason.Feasible,
+        cbls.TerminationReason.NoBudget,
+        cbls.TerminationReason.Stopped,
+    }
+    assert len(members) == 5, "a duplicated enum value would collapse this set"
+
+
+def test_parallel_config_pool_capacity_round_trips() -> None:
+    """The field is plumbed from here to the SolutionPool the workers share.
+
+    Nothing else in the Python suite touches it, and a binding that dropped the
+    property would fail at attribute-set time rather than anywhere visible.
+    0 means auto (max(10, 2 * n_threads)); see include/cbls/pool.h.
+    """
+    par = cbls.ParallelConfig()
+    assert par.pool_capacity == 0, "default is auto"
+    par.pool_capacity = 4
+    assert par.pool_capacity == 4
+
+
+def test_adjacent_base_seeds_do_not_share_worker_streams() -> None:
+    """Bumping --seed must actually give a different portfolio.
+
+    The old scheme was `base + worker + restart * n_threads`: correct within a
+    run, but at 12 workers seeds 42 and 43 shared 11 of their 12 base streams,
+    so the standard way to draw an independent sample barely changed anything.
+    Exposed to Python so the property is checked directly rather than inferred
+    from two search trajectories.
+    """
+    workers = 12
+    a = {cbls.portfolio_worker_seed(42, w, 0) for w in range(workers)}
+    b = {cbls.portfolio_worker_seed(43, w, 0) for w in range(workers)}
+    assert len(a) == workers, "no collisions within one run"
+    assert len(b) == workers
+    assert not (a & b), f"seeds 42 and 43 share {len(a & b)} of {workers} streams"

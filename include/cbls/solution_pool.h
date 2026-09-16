@@ -42,8 +42,17 @@ public:
     /// one worker's monotone improving trajectory, i.e. ten refinements of a
     /// single point. Drawing from the better half of that is close to drawing
     /// the best. At the default worker count the capacity cannot even hold one
-    /// entry per worker. Whether this costs anything measurable is open; see
-    /// issue #135.
+    /// entry per worker -- which `ParallelConfig::pool_capacity`'s auto mode now
+    /// fixes, by scaling the capacity with the worker count.
+    ///
+    /// Capacity was the only part fixed, deliberately. The structural answer is
+    /// a per-worker reserved slot, so each worker's own best is always drawable
+    /// whatever the global ranking; that needs a submitter identity on
+    /// `Solution` and a draw that knows which worker is asking, and it changes
+    /// search behaviour in a way only a quality measurement could justify.
+    /// Issue #135 scopes measurement out, so the slot is declined there rather
+    /// than guessed at here. Raising the capacity needs no such justification:
+    /// it only stops the capacity itself from being the binding constraint.
     std::optional<Solution> get_restart_point(RNG& rng) const;
     size_t size() const;
 

@@ -12,6 +12,7 @@ Nothing in-process can distinguish that from a clean non-zero exit.
 from __future__ import annotations
 
 import csv
+import json
 import math
 import os
 import subprocess
@@ -1069,3 +1070,28 @@ def test_the_cli_prints_the_assignment_it_reports_an_objective_for(threads: str)
     # Two decimal places is all the human format gives, so the tolerance is the
     # rounding, not the solver's.
     assert objective == pytest.approx(values["x"] ** 2 + values["y"] ** 2, abs=0.2), result.stdout
+
+
+@pytest.mark.parametrize("threads", ["1", "4", "0"])
+def test_the_jsonl_solution_object_is_a_solution_of_the_printed_problem(threads: str) -> None:
+    # The human format's half of this is pinned above. JSONL is the machine
+    # contract -- it is what a driver script reads -- and it goes through a
+    # different formatter (`JsonlFormatter::print_result`), which builds its
+    # `solution` object by iterating the CLI's own Model exactly as the human
+    # one does. So it fails in exactly the same way if the parallel path stops
+    # restoring the winning state, and nothing covered it.
+    result = _run_cbls(str(MODEL), "--threads", threads, "--format", "jsonl", "--time-limit", "0.3")
+    assert result.returncode == 0, result.stderr
+
+    records = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    finals = [r for r in records if "solution" in r]
+    assert len(finals) == 1, result.stdout
+    final = finals[0]
+
+    solution = final["solution"]
+    assert set(solution) == {"x", "y"}, result.stdout
+    # examples/simple.cbls: minimise x^2 + y^2 subject to x + y >= 5.
+    assert solution["x"] + solution["y"] >= 5.0 - 1e-6, result.stdout
+    # Full double precision here, unlike the human format's two decimals, so the
+    # objective must match the assignment to within the solver's own tolerance.
+    assert final["objective"] == pytest.approx(solution["x"] ** 2 + solution["y"] ** 2, rel=1e-6)

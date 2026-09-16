@@ -334,7 +334,7 @@ At `f511b8d`, `-DCBLS_SANITIZE=address,undefined,float-cast-overflow` puts the
 flag on every translation unit — 155 of 155, `grep -c fsanitize
 build-asan/compile_commands.json` against `grep -c '"file"'` on the same file — and links both `libasan.so.8` and
 `libubsan.so.1`. `ctest --test-dir build-asan -LE slow -j3` (`-j3` rather than the recipe's
-`-j4`, because the box was shared) was **302/302 green in 84.5s** (the fast set was 302 tests at that commit; it is 371 now — this is a record of that run, not a current count), with zero `runtime error` lines, zero AddressSanitizer reports and
+`-j4`, because the box was shared) was **302/302 green in 84.5s** (the fast set was 302 tests at that commit; it is 379 now — this is a record of that run, not a current count), with zero `runtime error` lines, zero AddressSanitizer reports and
 no leaks — LeakSanitizer is on by default and would have said otherwise. Check
 the flags reached the compiler before trusting a green run: a mis-spelled
 `CBLS_SANITIZE` value fails at compile time, but an option that silently did not
@@ -374,8 +374,9 @@ build; it is not a committed target, because a race detector wants a harness
 tuned to whatever changed.
 
 **Verified state.** At `766ad46` (the commit that introduced the cooperative
-portfolio), both were clean: `[parallel],[pool]` was 23/23 green with zero TSan
-reports, and the stress harness above — 12 workers, a 12s objective-model arm
+portfolio), both were clean: `[parallel],[pool]` was 17/17 green with zero TSan
+reports (17 tests carried those tags at that commit; it is 30 now -- this is a
+record of that run, not a current count), and the stress harness above — 12 workers, a 12s objective-model arm
 with hook + LNS + constant restarts and adoptions, then 25 rounds of the
 stop-flag race — reported nothing. This is a dated record of one run on one
 machine, not a standing guarantee.

@@ -59,9 +59,46 @@ size_t SolutionPool::size() const {
     return solutions_.size();
 }
 
+uint64_t portfolio_worker_seed(uint64_t base_seed, int worker, int restart) {
+    // splitmix64's finalizer, over a combination that separates the three
+    // inputs before mixing.
+    //
+    // For a FIXED base the combination is injective over every (worker, restart)
+    // range that occurs: a collision needs A*dworker + B*drestart == 0 (mod
+    // 2^64), and with these two odd multipliers the smallest such pair has
+    // |dworker| ~ 2^58 at drestart <= 32, and still ~2^41 at drestart <= 2^20.
+    //
+    // Across DIFFERENT bases it is only a sum, so a triple CAN in principle be
+    // matched by shifting the base -- portfolio_worker_seed(0, 1, 0) equals
+    // portfolio_worker_seed(A, 0, 0). That needs a base difference of A*dworker,
+    // which no adjacent --seed can reach, and it is not a property anything
+    // relies on. The finalizer then decorrelates neighbours, which is the
+    // property that was missing.
+    uint64_t x = base_seed;
+    x += 0x9E3779B97F4A7C15ULL * (static_cast<uint64_t>(worker) + 1);
+    x += 0xBF58476D1CE4E5B9ULL * (static_cast<uint64_t>(restart) + 1);
+    x ^= x >> 30U;
+    x *= 0xBF58476D1CE4E5B9ULL;
+    x ^= x >> 27U;
+    x *= 0x94D049BB133111EBULL;
+    x ^= x >> 31U;
+    return x;
+}
+
 // --- ParallelSearch ---
 
 ParallelSearch::ParallelSearch(int n_threads) : n_threads_(n_threads) {}
+
+int effective_pool_capacity(int requested, int n_threads) {
+    if (requested > 0) {
+        return requested;
+    }
+    // 0 or negative means auto. Negative is folded in here rather than clamped
+    // to 1: a negative capacity is a caller error, and silently giving them a
+    // one-solution pool -- which is what SolutionPool's own max(1, ...) clamp
+    // used to do -- is the least useful reading of it.
+    return std::max(10, 2 * n_threads);
+}
 
 int ParallelSearch::effective_threads(const ParallelConfig& pc) const {
     int n = pc.n_threads > 0 ? pc.n_threads : n_threads_;
@@ -80,7 +117,7 @@ SearchResult ParallelSearch::solve(std::function<Model()> model_factory, double 
     std::function<std::shared_ptr<LNS>()> no_lns;
     int n = effective_threads(pc);
     return solve_portfolio(model_factory, time_limit, seed, {}, no_hook, no_lns, nullptr, n,
-                           pc.pool_capacity);
+                           effective_pool_capacity(pc.pool_capacity, n));
 }
 
 // Full-featured solve
@@ -92,7 +129,7 @@ SearchResult ParallelSearch::solve(
     const ParallelConfig& par_config) {
     int n = effective_threads(par_config);
     return solve_portfolio(model_factory, time_limit, seed, config, hook_factory, lns_factory,
-                           callback, n, par_config.pool_capacity);
+                           callback, n, effective_pool_capacity(par_config.pool_capacity, n));
 }
 
 // Portfolio workers are homogeneous — same model, same budget, different seed —
@@ -201,12 +238,25 @@ struct PortfolioContext {
 };
 
 // One worker: its own model, its own hook and LNS, and a restart loop over the
-// shared deadline. Returns nullopt only when it was handed no budget at all and
-// so never ran; every other outcome is a result worth aggregating.
+// shared deadline. Returns nullopt when it produced no result at all -- it was
+// handed no budget, or every attempt threw; every other outcome is a result
+// worth aggregating.
 //
 // Throws nothing of its own -- the caller's catch is what keeps an exception off
 // a thread function -- but the factories it calls may.
-std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index) {
+
+// How many times in a row a worker's `solve()` may throw before the worker
+// gives up. Small on purpose: the case this exists for is a transient failure
+// (a bad_alloc under memory pressure that the next restart does not hit), and a
+// deterministic one must not spend the portfolio's whole budget re-raising.
+constexpr int kMaxWorkerRetries = 3;
+
+// `failure` is set to the last exception the SEARCH raised, whether or not the
+// worker went on to recover. The caller reports it only when the worker
+// produced nothing at all, so a worker that threw once and then succeeded is
+// not counted as failed.
+std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index,
+                                       std::exception_ptr& failure) {
     // Built ONCE per worker, not once per restart: a restart carries on with
     // the model it already holds, which is also what makes `skip_init` below
     // mean "keep the assignment this worker converged to".
@@ -229,6 +279,7 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index) {
     SolveCallback* cb = (index == 0) ? ctx.callback : nullptr;
 
     WorkerAccumulator acc;
+    int consecutive_failures = 0;
     // No idle threads while budget remains. A single solve() can return with
     // time left -- an exhausted SearchConfig::max_iterations is the case that
     // exists today -- and the core it was using would then sit out the rest of
@@ -255,15 +306,34 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index) {
             // the run away and starting from the closest-to-zero point again.
             cfg.skip_init = true;
         }
-        // Distinct per (worker, restart): `seed + index` alone would hand
-        // restart 1 of worker 0 the stream worker 0 just used, making the
-        // restart a replay of the run that stalled.
-        const uint64_t run_seed =
-            ctx.seed + static_cast<uint64_t>(index) +
-            (static_cast<uint64_t>(restart) * static_cast<uint64_t>(ctx.n_threads));
+        // Distinct per (worker, restart), and decorrelated ACROSS base seeds --
+        // see portfolio_worker_seed.
+        const uint64_t run_seed = portfolio_worker_seed(ctx.seed, index, restart);
 
-        const SearchResult r = cbls::solve(m, budget, run_seed, cfg.use_fj, hook.get(), lns.get(),
-                                           cfg.lns_interval, cb, cfg, &ctx.coord);
+        SearchResult r;
+        try {
+            r = cbls::solve(m, budget, run_seed, cfg.use_fj, hook.get(), lns.get(),
+                            cfg.lns_interval, cb, cfg, &ctx.coord);
+        } catch (...) {
+            // The model, hook and LNS are already built, so this throw came from
+            // the SEARCH -- a bad_alloc on a large model, a throwing custom
+            // hook -- not from a factory that would throw again identically.
+            // Leaving the worker dead would idle its core for the rest of the
+            // run while its peers continue, which is exactly the property this
+            // class claims not to have. So retry, bounded: a search that fails
+            // this many times consecutively is failing deterministically and
+            // retrying it only burns the shared budget.
+            //
+            // The factory is NOT retried, deliberately -- it is called once per
+            // worker, above this loop, and a factory that cannot build its model
+            // will not build it on the second ask either.
+            failure = std::current_exception();
+            if (++consecutive_failures >= kMaxWorkerRetries) {
+                break;
+            }
+            continue;
+        }
+        consecutive_failures = 0;
         acc.absorb(r);
 
         if (r.termination == TerminationReason::Feasible) {
@@ -356,9 +426,13 @@ SearchResult ParallelSearch::solve_portfolio(
         for (int i = 0; i < n_threads; ++i) {
             threads.emplace_back([&, i]() {
                 try {
-                    auto r = run_worker(ctx, i);
+                    std::exception_ptr worker_failure;
+                    auto r = run_worker(ctx, i, worker_failure);
                     if (!r.has_value()) {
-                        return;  // handed no budget at all; nothing to report
+                        // Either handed no budget at all (worker_failure null,
+                        // nothing to report) or every attempt threw.
+                        failures[i] = worker_failure;
+                        return;
                     }
                     results[i] = *r;
 

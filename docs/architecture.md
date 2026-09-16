@@ -1526,8 +1526,8 @@ A bounded, sorted collection of solutions, shared by every worker of a
 touch concurrently.
 
 **Sort order:** feasible solutions first; among same feasibility, ascending
-objective. **Capacity:** `ParallelConfig::pool_capacity`, default 10, excess
-trimmed after each insert. **Restart selection:** `get_restart_point()` samples
+objective. **Capacity:** `ParallelConfig::pool_capacity`, default 0 = auto =
+`max(10, 2 * n_threads)`, excess trimmed after each insert. **Restart selection:** `get_restart_point()` samples
 uniformly from the better half of the pool rather than the single best. That
 reduces the pull toward one basin without preventing it: `submit` applies no
 diversity criterion and no per-worker quota, so on an objective model the pool
@@ -1585,8 +1585,15 @@ bit-identical to what it was before the parameter existed:
    deadline, not a single `solve()`: a run that returns with budget left (an
    exhausted `SearchConfig::max_iterations`) is restarted on the time its
    predecessor left, with `skip_init = true` so it keeps the assignment it
-   converged to. Seeds are `base_seed + thread_id + restart * n_threads`, so a
-   restart is never a replay of the run that just stalled. The one case where
+   converged to. Seeds come from `portfolio_worker_seed(base, worker, restart)`
+   -- a splitmix64 finalizer over the triple, not a sum -- so a restart is never
+   a replay of the run that just stalled AND adjacent `--seed` values give
+   genuinely different portfolios. (The old additive scheme was injective within
+   a run, which is all it claimed, but at 12 workers `--seed 42` and `--seed 43`
+   shared 11 of their 12 base streams.) A worker whose `solve()` throws is
+   retried a bounded number of times rather than abandoned, since leaving it
+   dead would idle its core for the rest of the run; a factory that throws is
+   not retried, because it will not succeed on the second ask either. The one case where
    finishing early is correct -- a pure-feasibility model, whose first feasible
    solution *is* the answer -- raises `SearchCoordination::stop`, which every
    other worker observes at its next batch boundary and reports as
@@ -1800,7 +1807,7 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `initial_step_size` | 0.1 | `inner_solver.h` | line-search starting step |
 | `max_line_search_steps` | 5 | `inner_solver.h` | max backtracking halvings |
 | `max_multi_var_constraints` | 5 | `inner_solver.h` | max constraints for multi-var Newton |
-| `pool_capacity` | 10 | `ParallelConfig` | max solutions in the shared pool |
+| `pool_capacity` | 0 = max(10, 2·n_threads) | `ParallelConfig` | max solutions in the shared pool |
 | `n_threads` | 0 = hw_concurrency | CLI / `ParallelConfig` | portfolio workers |
 
 ---
@@ -1867,13 +1874,11 @@ in both the human and the JSONL format:
   loads it again inside each worker, so a 32-thread default run parses the file
   33 times and holds 33 `Model` copies. On a large instance that is the most
   surprising part of the default; `--threads N` bounds it.
-- **The run is not reproducible.** `--seed` still seeds each worker (`seed + i`,
-  plus the restart index), but which solution a stalled worker adopts depends on
-  thread interleaving. `--threads 1` is the reproducible run, subject to the
-  wall-clock caveat in [Determinism](#determinism) -- same seed, same hardware,
-  same load. Note also that worker seeds are `seed + i`, so `--seed 42` and
-  `--seed 43` at 12 threads share 11 of their 12 base streams; bumping the seed
-  is a weaker way to get an independent sample than it looks.
+- **The run is not reproducible.** `--seed` still seeds every worker (through
+  `portfolio_worker_seed`, which decorrelates adjacent base seeds), but which
+  solution a stalled worker adopts depends on thread interleaving. `--threads 1`
+  is the reproducible run, subject to the wall-clock caveat in
+  [Determinism](#determinism) -- same seed, same hardware, same load.
 
 ### Implied variable bounds
 
