@@ -442,7 +442,8 @@ Key areas for improvement:
 | File | Description |
 |------|-------------|
 | [`benchmarks/instances/uc-chped/data.py`](../../../benchmarks/instances/uc-chped/data.py) | Instance definitions (Python) |
-| [`benchmarks/instances/uc-chped/*.jsonl`](../../../benchmarks/instances/uc-chped/) | Serialized instances (JSONL) |
+| [`benchmarks/instances/uc-chped/gen_jsonl.py`](../../../benchmarks/instances/uc-chped/gen_jsonl.py) | Serializes `data.py` into the `*.jsonl` below — from the repo root, `.venv/bin/python benchmarks/instances/uc-chped/gen_jsonl.py` |
+| [`benchmarks/instances/uc-chped/*.jsonl`](../../../benchmarks/instances/uc-chped/) | Serialized instances (JSONL), derived from `data.py` |
 | [`benchmarks/instances/uc-chped/comparison.csv`](../../../benchmarks/instances/uc-chped/comparison.csv) | Results comparison table |
 | [`benchmarks/uc-chped/data.h`](../../../benchmarks/uc-chped/data.h) | C++ data structures and JSONL loader |
 | [`benchmarks/uc-chped/uc_model.h`](../../../benchmarks/uc-chped/uc_model.h) | CBLS model builder |

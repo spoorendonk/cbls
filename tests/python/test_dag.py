@@ -1,8 +1,11 @@
 """DAG entry points that are bound as free functions, from Python.
 
 `full_evaluate`, `delta_evaluate` and `compute_partial` are bound separately from
-the model-building surface `test_expr.py` covers, and each has a caster of its
-own to get wrong -- a set of variable ids in, a float out. The DAG semantics
+the model-building surface `test_expr.py` covers. `delta_evaluate` carries a
+caster of its own -- a Python set arriving as a `std::set<int32_t>` -- while the
+other two cross only built-in conversions, so what is at stake for them is that
+they are reachable and hand back the value they computed rather than a
+neighbouring one. The DAG semantics
 themselves (what Sum evaluates to, that delta agrees with full, the chain rule)
 belong to `tests/test_dag.cpp`, which asserts them on far more shapes than these
 do; what is left here is that the three entry points are reachable and hand back
@@ -48,7 +51,8 @@ def test_compute_partial_returns_the_derivative_it_was_asked_for() -> None:
     m = cbls.Model()
     x = m.float_var(0, 10)
     y = m.float_var(0, 10)
-    s = m.sum([x, m.prod(m.constant(3.0), y)])
+    scaled_y = m.prod(m.constant(3.0), y)
+    s = m.sum([x, scaled_y])
     m.minimize(s)
     m.close()
     m.var_mut(vid(x)).value = 3.0
@@ -56,6 +60,10 @@ def test_compute_partial_returns_the_derivative_it_was_asked_for() -> None:
     cbls.full_evaluate(m)
     assert cbls.compute_partial(m, s, vid(x)) == 1.0
     assert cbls.compute_partial(m, s, vid(y)) == 3.0
+    # An expr_id that is NOT the objective, whose partial differs from the
+    # objective's. Without it every expr_id here is the objective id, so a
+    # binding that dropped the argument entirely would be coincidentally right.
+    assert cbls.compute_partial(m, scaled_y, vid(x)) == 0.0
 
     m2 = cbls.Model()
     x2 = m2.float_var(0, 10)

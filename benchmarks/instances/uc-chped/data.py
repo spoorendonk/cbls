@@ -2,9 +2,13 @@
 
 The `ucp*.jsonl` files beside this module are DERIVED from it, by
 `gen_jsonl.py` in this directory -- a one-shot generator nothing imports, so
-grep will not connect the three. `benchmarks/uc-chped/data.h::load_jsonl` reads
-those files; regenerate them with `python gen_jsonl.py` from here after changing
-any instance below, or the committed data stops matching its source.
+grep will not connect the three. They are derived from `benchmarks/chped/data.py`
+as well, which this module loads BY PATH below for the 13- and 40-unit cost
+coefficients, so a change there goes stale here too. `benchmarks/uc-chped/data.h::load_jsonl` reads
+those files; regenerate them from the repo root with
+`.venv/bin/python benchmarks/instances/uc-chped/gen_jsonl.py` (the generator
+chdirs to its own directory, so the files land here whatever the cwd) after
+changing any instance below, or the committed data stops matching its source.
 
 Data from Pedroso, Kubo & Viana (2014), "Pricing and unit commitment in combined
 energy and reserve markets using valve-point effects", originally at

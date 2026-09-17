@@ -9,11 +9,15 @@ def vid(handle: int) -> int:
 
 class TestSolver:
     def test_solve_returns_a_populated_result_on_a_constrained_model(self) -> None:
-        """One solve, every SearchResult field the bindings expose.
+        """One solve, reading every SearchResult field but `termination`.
+
+        `termination` has its own cases in `TestTermination` below, which is
+        where the enum conversion is asserted.
 
         Whether the search is any good is `tests/test_search.cpp`'s question, on
-        51 cases; this asks whether `solve` is callable from Python and hands
-        back a result whose fields are populated rather than default-constructed.
+        far more shapes than this; here the question is whether `solve` is
+        callable from Python and hands back a result whose fields are populated
+        rather than default-constructed.
         A constrained model is used so `feasible` means something.
         """
         m = cbls.Model()
@@ -85,6 +89,12 @@ class TestViolation:
         # x - 5 <= 0, read at a satisfying point and at a violating one. Both in
         # one test because the two used to be separate models differing only in
         # the value assigned, which is one assertion's worth of information.
+        #
+        # invalidate_cache() below is NOT load-bearing: total_violation() diffs
+        # every constraint against its cache on each call and self-corrects
+        # (src/violation.cpp), so both reads are right without it -- verified by
+        # removing them. It stays because nothing else in the Python suite
+        # touches that binding, so this is its only reachability witness.
         m = cbls.Model()
         x = m.float_var(0, 10)
         m.add_constraint(m.sum([x, m.constant(-5.0)]))

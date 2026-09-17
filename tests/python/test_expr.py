@@ -49,7 +49,7 @@ def eval_expr(m: Any, expr: Any, values: dict[Any, float]) -> float:
 #: implementation, a domain the operation is defined on, and a point in it.
 UNARY_OPS = [
     ("sin_expr", cbls.sin, math.sin, (0.0, 10.0), math.pi / 2),
-    ("cos_expr", cbls.cos, math.cos, (0.0, 10.0), 0.0),
+    ("cos_expr", cbls.cos, math.cos, (0.0, 10.0), 1.0),  # not 0.0: exp(0) is 1.0 too
     ("tan_expr", cbls.tan, math.tan, (-1.0, 1.0), 0.5),
     ("exp_expr", cbls.exp, math.exp, (-10.0, 10.0), 1.0),
     ("log_expr", cbls.log, math.log, (0.01, 10.0), math.e),
@@ -128,6 +128,12 @@ def test_an_operator_between_an_expr_and_a_scalar(
 #: A comparison, an assignment that SATISFIES it, and the residual sign that
 #: satisfaction is reported as. A residual is `lhs - rhs` shaped: `<= 0` for the
 #: non-strict forms, `< 0` for the strict ones, and exactly 0 for equality.
+#:
+#: The last two rows sit ON the boundary, and they are what makes the strict and
+#: non-strict forms distinguishable at all: `Lt` is `Leq` plus 1e-9 (src/dag.cpp),
+#: so at any point away from equality both land on the same side of zero and a
+#: binding wiring `__le__` to `Lt` would pass every other row here. The other
+#: half of that pair is `test_a_strict_comparison_is_violated_at_equality`.
 COMPARISONS = [
     (lambda x, y: x <= y, 3.0, 5.0, "le"),
     (lambda x, y: x >= y, 7.0, 3.0, "le"),
@@ -135,10 +141,18 @@ COMPARISONS = [
     (lambda x, y: x > y, 8.0, 3.0, "lt"),
     (lambda x, y: x.eq(y), 5.0, 5.0, "eq"),
     (lambda x, y: x.neq(y), 3.0, 5.0, "eq"),
-    (lambda x, y: x <= 5.0, 3.0, 0.0, "le"),
-    (lambda x, y: x >= 2.0, 5.0, 0.0, "le"),
-    (lambda x, y: x < 5.0, 3.0, 0.0, "lt"),
-    (lambda x, y: x > 2.0, 5.0, 0.0, "lt"),
+    (lambda x, y: x <= y, 5.0, 5.0, "le"),
+    (lambda x, y: x >= y, 5.0, 5.0, "le"),
+]
+
+#: A comparison against a Python scalar, the value assigned to x, and how
+#: satisfaction reads. Separate from the table above because the right-hand side
+#: is the literal inside the lambda, so a second operand column would be a dummy.
+SCALAR_COMPARISONS = [
+    (lambda x: x <= 5.0, 3.0, "le"),
+    (lambda x: x >= 2.0, 5.0, "le"),
+    (lambda x: x < 5.0, 3.0, "lt"),
+    (lambda x: x > 2.0, 5.0, "lt"),
 ]
 
 
@@ -179,7 +193,39 @@ def test_a_handle_api_comparison_reports_a_satisfied_point_as_satisfied(
     y = m.float_var(0.0, 10.0)
     node = getattr(m, method)(x, y)
     residual = eval_handle(m, node, {vid(x): left, vid(y): right})
-    assert residual < 0.0 if satisfied_as == "lt" else residual <= 0.0
+    if satisfied_as == "lt":
+        assert residual < 0.0
+    else:
+        assert residual <= 0.0
+
+
+@pytest.mark.parametrize(("build", "point", "satisfied_as"), SCALAR_COMPARISONS)
+def test_a_comparison_against_a_scalar(
+    build: Callable[[Any], Any], point: float, satisfied_as: str
+) -> None:
+    m = cbls.Model()
+    x = m.Float(0.0, 10.0)
+    constraint = build(x)
+    m.add_constraint(constraint)
+    residual = eval_expr(m, constraint, {x: point})
+    if satisfied_as == "lt":
+        assert residual < 0.0
+    else:
+        assert residual <= 0.0
+
+
+@pytest.mark.parametrize("build", [lambda x, y: x < y, lambda x, y: x > y])
+def test_a_strict_comparison_is_violated_at_equality(
+    build: Callable[[Any, Any], Any],
+) -> None:
+    # The other half of the boundary rows in COMPARISONS. `x < y` and `x > y`
+    # must REJECT x == y, where `<=` and `>=` accept it -- this is the only
+    # point at which the two forms differ, so without it nothing in the file
+    # separates them.
+    m = cbls.Model()
+    x = m.Float(0.0, 10.0)
+    y = m.Float(0.0, 10.0)
+    assert eval_expr(m, build(x, y), {x: 5.0, y: 5.0}) > 0.0
 
 
 def test_handle_api_neq_is_violated_only_when_the_operands_are_equal() -> None:
@@ -202,7 +248,7 @@ def test_handle_api_neq_is_violated_only_when_the_operands_are_equal() -> None:
     assert m.node(node).value == 0.0
 
 
-def test_free_functions_over_expr_lists() -> None:
+def test_free_functions_taking_expr_lists_and_expr_triples() -> None:
     # min/max take a LIST of Expr, which is its own caster; if_then_else takes
     # three positional Expr. Each gets its own model because `eval_expr` closes
     # the one it is given.
@@ -227,6 +273,32 @@ def test_pow_with_a_constant_expr() -> None:
     m = cbls.Model()
     x = m.Float(0.0, 10.0)
     assert eval_expr(m, cbls.pow(x, m.Constant(2.0)), {x: 3.0}) == 9.0
+
+
+def test_minimize_and_maximize_accept_an_expr() -> None:
+    # `add_constraint`, `minimize` and `maximize` each carry BOTH an int32 and an
+    # Expr overload (python/bindings.cpp). `eval_handle` unwraps to `.handle`, so
+    # every other test here takes the int32 path -- which left the Expr overloads
+    # of minimize and maximize witnessed by nothing, and deleting one of them
+    # would have kept the suite green. Overload resolution is binding code that
+    # no C++ test can reach.
+    m = cbls.Model()
+    x = m.Float(0.0, 10.0)
+    y = m.Float(0.0, 10.0)
+    m.add_constraint(x >= 2.0)
+    m.minimize(x + y)
+    m.close()
+    m.var_mut(x.var_id()).value = 3.0
+    m.var_mut(y.var_id()).value = 4.0
+    assert cbls.full_evaluate(m) == pytest.approx(7.0, abs=1e-10)
+
+    m2 = cbls.Model()
+    a = m2.Float(0.0, 10.0)
+    m2.maximize(a + 1.0)
+    m2.close()
+    m2.var_mut(a.var_id()).value = 2.0
+    # maximize negates: the engine only ever minimizes.
+    assert cbls.full_evaluate(m2) == pytest.approx(-3.0, abs=1e-10)
 
 
 def test_is_var_distinguishes_a_variable_from_an_expression() -> None:
