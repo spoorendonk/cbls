@@ -1,5 +1,7 @@
 #include "cbls/expr.h"
 
+#include <stdexcept>
+
 namespace cbls {
 
 // Arithmetic operators
@@ -146,6 +148,9 @@ Expr pow(const Expr& base, const Expr& exp) {
 }
 
 Expr min(const std::vector<Expr>& args) {
+    if (args.empty()) {
+        throw std::invalid_argument("min requires at least one argument");
+    }
     std::vector<int32_t> handles;
     handles.reserve(args.size());
     for (const auto& a : args) {
@@ -155,6 +160,9 @@ Expr min(const std::vector<Expr>& args) {
 }
 
 Expr max(const std::vector<Expr>& args) {
+    if (args.empty()) {
+        throw std::invalid_argument("max requires at least one argument");
+    }
     std::vector<int32_t> handles;
     handles.reserve(args.size());
     for (const auto& a : args) {

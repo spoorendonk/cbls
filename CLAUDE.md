@@ -252,7 +252,7 @@ agree:
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
 4. the comment above the `ctest` call in `.githooks/pre-commit`,
-5. the `.venv/bin/pytest` line in `README.md` for the Python side (714 tests, 83
+5. the `.venv/bin/pytest` line in `README.md` for the Python side (716 tests, 85
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`),
 6. the `-LE slow` guidance and the ~42s/~304s figures in `docs/profiling.md`.
@@ -260,7 +260,7 @@ agree:
    named commit**, not a current count — it says so inline. Leave it alone
    apart from the parenthetical restating the current fast-set size.
 7. the binding count in **`## Build & Test`** below, in the paragraph explaining
-   why the gated build turns `CBLS_BUILD_PYTHON` on ("83 binding tests silently
+   why the gated build turns `CBLS_BUILD_PYTHON` on ("85 binding tests silently
    unrun"). It is in this file, but not in this section, so a search that stops
    at the enumeration above misses it.
 
@@ -457,7 +457,7 @@ ctest --test-dir build --output-on-failure -j$(nproc) && (CBLS_REQUIRE_BINDINGS=
 **The gated build turns the Python bindings on, and the gated test run requires
 them.** `CBLS_BUILD_PYTHON` defaults to `OFF` and `tests/python/conftest.py`
 skips every test that imports `_cbls_core` when the module is missing, so a build
-without the flag would leave 83 binding tests silently unrun.
+without the flag would leave 85 binding tests silently unrun.
 `CBLS_REQUIRE_BINDINGS=1` turns that skip into a hard error. Bindings cost ~2.4s
 of build and ~6s of pytest against a suite that already spends ~340s in `ctest` —
 always build them.

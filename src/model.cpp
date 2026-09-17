@@ -8,6 +8,7 @@
 #include <cmath>
 #include <limits>
 #include <numeric>
+#include <stdexcept>
 #include <utility>
 
 namespace cbls {
@@ -195,11 +196,19 @@ int32_t Model::pow_expr(int32_t base, int32_t exp) {
     return alloc_node(NodeOp::Pow, {wrap(base), wrap(exp)});
 }
 
+// Min and Max evaluate children[0] unchecked, so an empty one would read
+// another node's child slice (see child_val in dag.cpp).
 int32_t Model::min_expr(const std::vector<int32_t>& args) {
+    if (args.empty()) {
+        throw std::invalid_argument("min_expr requires at least one argument");
+    }
     return alloc_node_over_handles(NodeOp::Min, args);
 }
 
 int32_t Model::max_expr(const std::vector<int32_t>& args) {
+    if (args.empty()) {
+        throw std::invalid_argument("max_expr requires at least one argument");
+    }
     return alloc_node_over_handles(NodeOp::Max, args);
 }
 

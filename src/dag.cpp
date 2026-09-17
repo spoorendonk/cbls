@@ -19,8 +19,10 @@ namespace cbls {
 // as a plain index. Measured for #156 (idle box; cbls_minlplib, 20k iterations,
 // seed 7; serial, interleaved, median of 5; results identical), with the
 // checked read -> this: nvs05 9.08 s -> 7.70, chain50 3.93 -> 2.31, ex8_6_1
-// 3.95 -> 3.04, maxmin 2.99 -> 2.54. The asserts keep the check in a Debug or
-// sanitizer build.
+// 3.95 -> 3.04, maxmin 2.99 -> 2.54. The asserts keep the check in a Debug build
+// (-DCMAKE_BUILD_TYPE=Debug); a sanitizer build is Release unless configured
+// otherwise, and loses them. Child counts are not re-checked either: Min and Max
+// read children[0], so their builders refuse an empty argument list.
 static double child_val(const ChildRef& ref, const Model& model) {
     if (ref.is_var) {
         assert(static_cast<size_t>(ref.id) < model.num_vars());

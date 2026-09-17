@@ -18,9 +18,13 @@ which the binding copies out to a list -- so it is covered here too.
 import os
 import subprocess
 import sys
+from typing import TYPE_CHECKING, Any
 
 import _cbls_core as cbls
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 CHILD_TIMEOUT_SECONDS = 20.0
 
@@ -47,7 +51,9 @@ def _run_scenario(name: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-@pytest.mark.parametrize("handle", [5, 100_000, -100_000])
+# -2 is the first variable handle past a one-variable model: the boundary of the
+# variable-id check, which the far-out ids alone would not pin.
+@pytest.mark.parametrize("handle", [5, 100_000, -2, -100_000])
 def test_an_out_of_range_child_handle_raises_instead_of_corrupting_the_model(
     handle: int,
 ) -> None:
@@ -61,6 +67,14 @@ def test_an_out_of_range_child_handle_raises_instead_of_corrupting_the_model(
 
 def test_an_out_of_range_constraint_or_objective_handle_raises() -> None:
     proc = _run_scenario("bad_root")
+    assert proc.returncode == 0, (
+        f"child exited {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    )
+    assert proc.stdout.strip().endswith("OK"), proc.stdout
+
+
+def test_an_empty_min_or_max_raises_instead_of_reading_past_its_children() -> None:
+    proc = _run_scenario("empty_min_max")
     assert proc.returncode == 0, (
         f"child exited {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     )
@@ -86,7 +100,7 @@ def test_constraints_of_var_lists_ascending_constraint_indices() -> None:
 
 def _scenario_bad_child(handle: int) -> None:
     """Every way a child handle enters the model rejects an out-of-range one."""
-    builders = {
+    builders: dict[str, Callable[[Any, int], object]] = {
         "neg": lambda m, h: m.neg(h),
         "sum": lambda m, h: m.sum([m.constant(1.0), h]),
         "min_expr": lambda m, h: m.min_expr([h]),
@@ -135,11 +149,35 @@ def _scenario_bad_root() -> None:
     print("OK")
 
 
+def _scenario_empty_min_max() -> None:
+    """Min and Max read their first child unchecked, so neither may be empty."""
+    builders: dict[str, Callable[[Any], object]] = {
+        "min_expr": lambda m: m.min_expr([]),
+        "max_expr": lambda m: m.max_expr([]),
+        "cbls.min": lambda m: cbls.min([]),
+        "cbls.max": lambda m: cbls.max([]),
+    }
+    for name, build in builders.items():
+        m = cbls.Model()
+        x = m.float_var(0, 1)
+        try:
+            node = build(m)
+        except ValueError:
+            continue
+        # Accepted: evaluating it is the read past the slice this guards.
+        m.minimize(node if isinstance(node, int) else x)
+        m.close()
+        raise AssertionError(f"{name}([]) was accepted")
+    print("OK")
+
+
 if __name__ == "__main__":
     scenario = sys.argv[1]
     if scenario.startswith("bad_child:"):
         _scenario_bad_child(int(scenario.split(":", 1)[1]))
     elif scenario == "bad_root":
         _scenario_bad_root()
+    elif scenario == "empty_min_max":
+        _scenario_empty_min_max()
     else:
         raise SystemExit(f"unknown scenario {scenario}")
