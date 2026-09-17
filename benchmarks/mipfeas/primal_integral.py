@@ -46,7 +46,18 @@ import math
 import statistics
 import sys
 from pathlib import Path
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
+
+# Run as a script (`python benchmarks/mipfeas/primal_integral.py`, the documented
+# form), only this file's own directory is on sys.path; the repository root is
+# what makes `benchmarks.common` importable from any working directory.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from benchmarks.common.records import atomic_write, csv_text, read_json_object  # noqa: E402
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 #: Below this magnitude an objective counts as zero, so that 0 vs 1e-12 does not
 #: score as a 100% gap.
@@ -1379,17 +1390,10 @@ def read_run_record(results_dir: Path) -> tuple[dict[str, object] | None, int]:
     finished the directory; the count is reported so a reader can see the results
     did not all come off one machine.
     """
-    path = results_dir / RUN_RECORD_FILENAME
-    if not path.exists():
-        return None, 0
-    try:
-        parsed = json.loads(path.read_text())
-    except (ValueError, OSError):
-        # ValueError rather than JSONDecodeError: a file corrupted to binary raises
-        # UnicodeDecodeError out of read_text(), and the scorer must not abort on a
-        # record that is only ever supplementary to the numbers.
-        return None, 0
-    runs = parsed.get("runs") if isinstance(parsed, dict) else None
+    # Absent, truncated or corrupted all read as no record: the scorer must not
+    # abort on a record that is only ever supplementary to the numbers.
+    parsed = read_json_object(results_dir / RUN_RECORD_FILENAME)
+    runs = parsed.get("runs") if parsed is not None else None
     if not isinstance(runs, list) or not runs:
         return None, 0
     last = runs[-1]
@@ -1885,6 +1889,45 @@ def _failure_reason(row: Scored) -> str:
     return ""
 
 
+#: The columns of `comparison.csv`, after its `#` header block.
+COMPARISON_COLUMNS = (
+    "instance",
+    "engine",
+    "status",
+    "objective",
+    "reference_value",
+    "reference_kind",
+    "final_gap",
+    "below_reference",
+    "primal_integral",
+    "solve_seconds",
+    "setup_seconds",
+    "n_vars",
+    "n_cons",
+    "n_free_cons",
+    "shape_agreement",
+    "peak_rss_kib",
+    "n_clamped_bounds",
+    "n_unbounded_columns",
+    "n_bounds_tightened",
+    "trace_source",
+    "solver_status",
+    "verification",
+    "verification_reason",
+    "verification_marginal",
+    "verification_row_tolerance",
+    "verification_loosest_row",
+    "failure_reason",
+    "provenance",
+    "config",
+)
+
+
+def _blank[T](value: T | None, render: Callable[[T], object] = lambda v: v) -> object:
+    """A cell that is empty when nothing was recorded, rather than "None"."""
+    return "" if value is None else render(value)
+
+
 def write_comparison(
     path: Path, rows: list[Scored], summaries: list[Summary], budget: float, roster_path: Path
 ) -> None:
@@ -1974,88 +2017,52 @@ def write_comparison(
         )
     header.append("#")
 
-    # Temp-then-rename, like the C++ runners: `open(path, "w")` truncates before
-    # a single row is written, so a job killed mid-write leaves a header and
-    # nothing else where a table used to be, at exit 0. Everything below is
-    # already computed, so this covers only the kill, which is the case the rule
-    # is for.
-    tmp = path.with_name(f"{path.name}.tmp")
-    with open(tmp, "w", newline="") as fh:
-        fh.write("\n".join(header) + "\n")
-        writer = csv.writer(fh)
-        writer.writerow(
-            [
-                "instance",
-                "engine",
-                "status",
-                "objective",
-                "reference_value",
-                "reference_kind",
-                "final_gap",
-                "below_reference",
-                "primal_integral",
-                "solve_seconds",
-                "setup_seconds",
-                "n_vars",
-                "n_cons",
-                "n_free_cons",
-                "shape_agreement",
-                "peak_rss_kib",
-                "n_clamped_bounds",
-                "n_unbounded_columns",
-                "n_bounds_tightened",
-                "trace_source",
-                "solver_status",
-                "verification",
-                "verification_reason",
-                "verification_marginal",
-                "verification_row_tolerance",
-                "verification_loosest_row",
-                "failure_reason",
-                "provenance",
-                "config",
-            ]
-        )
-        # One lookup per instance rather than per row: the cross-check is a
-        # property of the pair, and both of an instance's rows carry its verdict.
-        shape_notes = shape_notes_by_instance(rows)
-        for r in rows:
-            writer.writerow(
+    # One lookup per instance rather than per row: the cross-check is a
+    # property of the pair, and both of an instance's rows carry its verdict.
+    shape_notes = shape_notes_by_instance(rows)
+    table = csv_text(
+        [
+            COMPARISON_COLUMNS,
+            *(
                 [
                     r.instance,
                     r.engine,
                     r.status,
-                    "" if r.objective is None else repr(r.objective),
+                    _blank(r.objective, repr),
                     repr(r.reference_value),
                     r.reference_kind,
                     f"{r.final_gap:.6g}",
                     int(r.below_reference),
                     f"{r.primal_integral:.6g}",
-                    "" if r.solve_seconds is None else f"{r.solve_seconds:.4f}",
-                    "" if r.setup_seconds is None else f"{r.setup_seconds:.4f}",
-                    "" if r.n_vars is None else r.n_vars,
-                    "" if r.n_cons is None else r.n_cons,
-                    "" if r.n_free_cons is None else r.n_free_cons,
+                    _blank(r.solve_seconds, "{:.4f}".format),
+                    _blank(r.setup_seconds, "{:.4f}".format),
+                    _blank(r.n_vars),
+                    _blank(r.n_cons),
+                    _blank(r.n_free_cons),
                     shape_notes[r.instance],
-                    "" if r.peak_rss_kib is None else r.peak_rss_kib,
-                    "" if r.n_clamped_bounds is None else r.n_clamped_bounds,
-                    "" if r.n_unbounded_columns is None else r.n_unbounded_columns,
-                    "" if r.n_bounds_tightened is None else r.n_bounds_tightened,
+                    _blank(r.peak_rss_kib),
+                    _blank(r.n_clamped_bounds),
+                    _blank(r.n_unbounded_columns),
+                    _blank(r.n_bounds_tightened),
                     r.trace_source,
                     r.solver_status,
                     r.verification,
                     r.verification_reason,
                     int(r.verification_marginal),
-                    ""
-                    if r.verification_row_tolerance is None
-                    else repr(r.verification_row_tolerance),
+                    _blank(r.verification_row_tolerance, repr),
                     r.verification_loosest_row,
                     _failure_reason(r),
                     r.provenance,
                     r.config,
                 ]
-            )
-    tmp.replace(path)
+                for r in rows
+            ),
+        ]
+    )
+    # Temp-then-rename, like the C++ runners: `open(path, "w")` truncates before
+    # a single row is written, so a job killed mid-write leaves a header and
+    # nothing else where a table used to be, at exit 0.
+    atomic_write(path, "\n".join(header) + "\n" + table)
 
 
 def main() -> int:
@@ -2112,8 +2119,8 @@ def main() -> int:
     # and is written AFTER the table, so a kill between the two would otherwise
     # leave a fresh table beside a torn or empty report -- the same failure, one
     # function later.
-    report_tmp = report_path.with_name(f"{report_path.name}.tmp")
-    report_tmp.write_text(
+    atomic_write(
+        report_path,
         render_report(
             rows,
             summaries,
@@ -2122,9 +2129,8 @@ def main() -> int:
             out_path,
             run_record=run_record,
             run_count=run_count,
-        )
+        ),
     )
-    report_tmp.replace(report_path)
 
     parity = compare_feasibility(rows)
     defects = collect_defects(rows, summaries)

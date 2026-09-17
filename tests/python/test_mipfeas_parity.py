@@ -652,8 +652,11 @@ def test_regenerating_the_report_reproduces_the_committed_numbers(tmp_path: Path
     # a correctness benchmark whose checker refused a published point must not
     # score at exit 0.
     assert completed.returncode == 1, completed.stderr
-    assert table.read_text() == (FIXTURE / "expected_comparison.csv").read_text()
-    assert report.read_text() == (FIXTURE / "expected_report.md").read_text()
+    # Bytes, not text: the table carries csv.writer's CRLF row endings after an LF
+    # header block, and read_text() folds both into "\n" -- so a text comparison
+    # would pass a regeneration that changed every line ending in the file.
+    assert table.read_bytes() == (FIXTURE / "expected_comparison.csv").read_bytes()
+    assert report.read_bytes() == (FIXTURE / "expected_report.md").read_bytes()
 
 
 def test_the_fixture_exercises_every_branch_the_report_has(tmp_path: Path) -> None:
