@@ -118,6 +118,53 @@ double full_evaluate(Model& model) {
     return 0.0;
 }
 
+namespace {
+
+// Recompute a marked dirty set in topological order, by whichever of the two
+// routes is cheaper for THIS set. Its own function because it is a separate job
+// from finding the set: the BFS above decides WHAT is stale, this decides how to
+// walk it in dependency order.
+//
+// Sorting d entries costs O(d log d), with two scattered `topo_pos_` loads per
+// comparison; scanning `topo_order()` and testing the flag costs O(|nodes|)
+// sequential byte tests. Sorting wins by orders of magnitude in the regime that
+// matters -- a few dozen dirty nodes against the 4.3M of the largest MIPfeas
+// instance, where the scan was ~2M flag tests to recompute a handful, and delta
+// evaluation was not sublinear in the model at all. It loses at the other end:
+// as d approaches |nodes| the sort does ~log2(d) scattered comparisons per
+// element where the scan does one sequential test, and a dense continuous model
+// -- MINLPLib's regime, not this roster's -- can sit there.
+//
+// The condition is the cost model itself rather than a tuned constant: sort
+// while d*log2(d) is under |nodes|, otherwise scan. Both routes produce the same
+// order and the same values.
+void evaluate_dirty_in_topo_order(Model& model, std::vector<int32_t>& dirty_list,
+                                  const std::vector<uint8_t>& dirty_flags, size_t num_nodes) {
+    const size_t dirty_count = dirty_list.size();
+    size_t log2_dirty = 0;
+    while ((size_t{1} << (log2_dirty + 1)) <= dirty_count) {
+        ++log2_dirty;
+    }
+    if (dirty_count * (log2_dirty + 1) < num_nodes) {
+        std::sort(dirty_list.begin(), dirty_list.end(), [&model](int32_t a, int32_t b) {
+            return model.topo_position(a) < model.topo_position(b);
+        });
+        for (int32_t nid : dirty_list) {
+            auto& nd = model.node_mut(nid);
+            nd.value = evaluate(nd, model);
+        }
+        return;
+    }
+    for (int32_t nid : model.topo_order()) {
+        if (dirty_flags[nid] != 0) {
+            auto& nd = model.node_mut(nid);
+            nd.value = evaluate(nd, model);
+        }
+    }
+}
+
+}  // namespace
+
 double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count) {
     if (count == 0) {
         if (model.objective_id() >= 0) {
@@ -161,21 +208,7 @@ double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count
         }
     }
 
-    // Recompute dirty nodes in topological order.
-    //
-    // Sorted, not filtered. Walking `topo_order()` and testing the flag visits
-    // EVERY node in the model on every call -- the dirty set is typically a few
-    // dozen, so on the largest MIPfeas instance (961k rows) that was ~2M flag
-    // tests to recompute a handful of them, and delta evaluation stopped being
-    // sublinear in the model exactly where it matters most. Sorting d entries
-    // costs O(d log d) against O(|nodes|), and d is bounded by the BFS above.
-    std::sort(dirty_list.begin(), dirty_list.end(), [&model](int32_t a, int32_t b) {
-        return model.topo_position(a) < model.topo_position(b);
-    });
-    for (int32_t nid : dirty_list) {
-        auto& nd = model.node_mut(nid);
-        nd.value = evaluate(nd, model);
-    }
+    evaluate_dirty_in_topo_order(model, dirty_list, dirty_flags, num_nodes);
 
     // Clean up dirty flags (only touch entries we set)
     for (int32_t nid : dirty_list) {

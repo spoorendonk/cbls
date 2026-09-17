@@ -405,7 +405,26 @@ When implementing from papers, pseudocode, or open-source references:
 - **Don't invent APIs — verify they exist.** Check that functions, flags, and methods actually exist before using them.
 - **Don't ignore type errors.** If mypy/clang-tidy flags something, fix the root cause — don't suppress. Both are hard blocks at push; silencing either — by disabling a clang-tidy check or by adding to `PY_GATE_EXCLUDE` — is the route explicitly closed (see **Git Hooks**).
 - **Don't use deprecated patterns.** Check current docs, not training data.
-- **Performance matters.** Most of our code is solvers — profile before micro-optimizing, but don't sacrifice perf for "clean code". `docs/profiling.md` is how: heap attribution, CPU profiling and the sanitizer build, with a dated tool-availability table naming the machine it was checked on. Numbers reached by subtracting two whole-program timings are not measurements.
+- **Performance matters.** Most of our code is solvers — don't sacrifice perf
+  for "clean code". `docs/profiling.md` is how to measure: heap attribution, CPU
+  profiling and the sanitizer build, with a dated tool-availability table naming
+  the machine it was checked on. Numbers reached by subtracting two whole-program
+  timings are not measurements.
+
+  **Profile before MICRO-optimizing; a complexity win does not need permission.**
+  The two are different claims. Replacing an O(n²) dedup with an O(1) stamp, or
+  an O(|nodes|) scan with an O(d log d) sort, rests on a cost argument that holds
+  independently of any machine — make it in a comment at the site, stating the
+  regime it wins in *and* the regime it loses in, and land it. Guessing that a
+  hand-unrolled loop or a reordered branch is faster is the thing that needs a
+  profile first, because nothing but the profile decides it.
+
+  Measurement is still required for three things, and a plausible argument is
+  never a substitute: any number that goes into a doc, a README or a published
+  table; any choice of a *parameter* (see the over-fitting rule under
+  **Benchmark priority**); and any claim that a change made something faster,
+  which means an A/B at one budget on one idle machine, not two runs at different
+  budgets compared to each other.
 
 ## Build & Test
 
@@ -518,6 +537,27 @@ drifts silently and is caught only when someone re-measures. Prefer stating
 results in a benchmark README with the engine commit named in the text — the
 shape `benchmarks/instances/setcover/README.md` uses — unless a test is actually
 going to read the table.
+
+**A comparison table is an OUTPUT; the reference values are the artifact.**
+Distinguish the two, because only one of them is worth freezing:
+
+- **Best-known and optimal values** are derived ONCE, from the paper or the
+  benchmark library that publishes them, and pinned — `mipfeas` keeps them in
+  `roster.csv` with `references.csv` recording the hash and byte count of the
+  MIPLIB `.solu` file they came from, so a library revision cannot silently
+  redefine the yardstick. This is the thing to protect, and to re-derive only
+  when the upstream source itself changes.
+- **An engine-vs-engine comparison** is re-derived from result records whenever
+  the question is asked. It is a function of a results directory, a roster and a
+  budget, all of which are inputs the run already keeps — so checking one in as
+  a record buys nothing but a file that goes stale the next time the engine
+  moves. Score it into the results directory, quote it with the engine commit
+  and the machine record beside it, and regenerate rather than defend it.
+
+`mipfeas` follows this; the older tables predate it. Don't add machinery to
+protect a comparison table from being overwritten — the protection worth having
+is on the reference values and on the per-instance result records the table is
+computed from.
 
 ## Architecture
 

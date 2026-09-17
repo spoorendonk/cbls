@@ -180,29 +180,46 @@ TEST_CASE("mps_to_model builds a closed CBLS model", "[mps][adapter]") {
     REQUIRE(built.objective_node_id >= 0);
 }
 
-TEST_CASE("the adapter spends nodes per coefficient at the documented three rates",
-          "[mps][adapter]") {
-    // `mps_to_model` reserves the node array from a count it derives HERE, by
-    // scanning the coefficients: a 1.0 costs no node (the variable is used
-    // directly), a -1.0 costs one Neg, anything else costs a Const and a Prod.
-    // Nothing downstream fails if that mix is mispredicted -- the vector simply
-    // grows, which is the multi-gigabyte copy the reservation exists to avoid --
-    // so the assumption is pinned here instead, where a new fast path in
-    // `build_lin_expr` makes it fail loudly rather than silently go stale.
+TEST_CASE("a coefficient costs 0, 1 or 2 nodes by its value", "[mps][adapter]") {
+    // The rule `mps_to_model` sizes its node reservation from, asserted against
+    // the adapter rather than restated: `build_lin_expr` uses a variable
+    // directly for a 1.0, wraps it in a Neg for a -1.0, and builds a Const and a
+    // Prod for anything else. Get this wrong and the reservation is wrong, which
+    // is the multi-gigabyte array copy it exists to avoid.
     //
-    // Read it as a canary on `build_lin_expr`, NOT as the reservation's
-    // regression test: revert `Model::reserve` and its caller and this stays
-    // green, because the reservation's only effect is on allocation behaviour
-    // and nothing in the suite can observe that. The reservation ships pinned by
-    // measurement (recorded in its commit) rather than by a test.
-    //
-    // kSmallBinary: 3 objective coefficients (3, 2, 4 -> two nodes each) and 3
-    // matrix coefficients of 1.0 (no nodes). One G row: a Sum over its terms,
-    // its RHS constant, the comparison. Plus the objective's own Sum.
+    // Measured as a DIFFERENCE between two models that are identical but for one
+    // coefficient, so the surrounding row and bound nodes cancel and what is
+    // left is that coefficient's own cost. A new fast path in `build_lin_expr`
+    // (a 2.0, say) fails this immediately.
+    auto build = [](double coefficient) {
+        cbls::Model m;
+        const int32_t x = m.int_var(0, 10);
+        const int32_t y = m.int_var(0, 10);
+        // c*x + y >= 1, so the row always has a second term to sum against.
+        // Built in branches, not with a conditional expression: every arm here
+        // ALLOCATES, so evaluating an arm that is then discarded would spend the
+        // very nodes this test counts.
+        int32_t term = x;
+        if (coefficient == -1.0) {
+            term = m.neg(x);
+        } else if (coefficient != 1.0) {
+            term = m.prod(m.constant(coefficient), x);
+        }
+        m.add_constraint(m.geq(m.sum({term, y}), m.constant(1.0)));
+        m.close();
+        return m.num_nodes();
+    };
+
+    const std::size_t unit = build(1.0);
+    REQUIRE(build(-1.0) == unit + 1);  // one Neg
+    REQUIRE(build(3.5) == unit + 2);   // a Const and a Prod
+    REQUIRE(build(-2.0) == unit + 2);  // a negative that is not -1 is no cheaper
+
+    // And the same three rates through the adapter itself, on a real MPS: three
+    // objective coefficients (3, 2, 4) at two nodes each, three matrix
+    // coefficients of 1.0 at none.
     auto path = write_file("rates.mps", kSmallBinary);
     cbls::MpsProblem prob = cbls::read_mps(path.string());
-    auto built = cbls::mps_to_model(prob);
-
     std::size_t term_nodes = 0;
     for (const auto& nz : prob.nonzeros) {
         if (nz.value == 1.0) {
@@ -210,10 +227,18 @@ TEST_CASE("the adapter spends nodes per coefficient at the documented three rate
         }
         term_nodes += (nz.value == -1.0) ? 1 : 2;
     }
-    REQUIRE(term_nodes == 6);  // three objective coefficients, two nodes each
+    REQUIRE(term_nodes == 6);
 
-    // The reservation adds 6 per row and 2 per column on top, and the model must
-    // fit inside that -- a model larger than its reservation is one that grew.
+    // The adapter's model must fit the reservation that count feeds, or the
+    // node array grew after all.
+    // Exact, not a bound. `<= reserved` would stay green through any change that
+    // spends FEWER nodes -- including a new fast path that silently invalidates
+    // the reservation formula in the other direction. The decomposition: 6 term
+    // nodes, the row's Sum, its RHS Const, the Geq, and the objective's Sum.
+    auto built = cbls::mps_to_model(prob);
+    REQUIRE(built.model.num_nodes() == term_nodes + 4);
+
+    // Which must fit the reservation that same count feeds.
     const std::size_t reserved = term_nodes + (6 * prob.rows.size()) + (2 * prob.vars.size()) + 16;
     REQUIRE(built.model.num_nodes() <= reserved);
 }

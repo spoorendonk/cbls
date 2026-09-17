@@ -1763,20 +1763,13 @@ TEST_CASE("ParallelSearch records the first-feasible pair on the portfolio clock
     // a restart's own 0.001s for a portfolio that had been running for most of
     // its budget. The pair is therefore shifted onto the shared clock, which
     // bounds it by the wall time of the call.
-    // What this pins, and what it does not. The pair must agree with the progress
-    // stream, which is independently on the portfolio clock -- the first row
-    // carrying a finite objective IS the moment the portfolio first held a
-    // feasible point. That catches the pair being timestamped against the wrong
-    // origin.
-    //
-    // It does NOT catch the shift being dropped altogether. That is only
-    // observable when the winning worker reaches feasibility in a LATE restart,
-    // and every model cheap enough for the fast set reaches its first feasible
-    // point inside the first one -- verified by deleting `started_at +` from
-    // src/pool.cpp, which leaves this green. Pinning the remaining case needs a
-    // model whose first feasible point is thousands of iterations away, which is
-    // a timing-sensitive test this set should not carry. Said plainly here
-    // rather than left to read as coverage.
+    // The pair must agree with the progress stream, which is independently on the
+    // portfolio clock: the first row carrying a finite objective IS the moment
+    // the portfolio first held a feasible point, so the two readings describe
+    // one instant and have to match. Deleting `started_at +` from
+    // src/pool.cpp fails this outright -- 0.00001s against 0.087s -- because on
+    // this model feasibility lands in a late restart whose own clock had just
+    // started.
     struct FirstFinite : SolveCallback {
         void on_progress(const SolveProgress& p) override {
             if (std::isfinite(p.objective) && std::isnan(seen)) {
@@ -1786,17 +1779,48 @@ TEST_CASE("ParallelSearch records the first-feasible pair on the portfolio clock
         double seen = std::numeric_limits<double>::quiet_NaN();
     };
 
+    // A model whose first FEASIBLE point is hundreds of moves away, searched one
+    // GLS iteration per restart. That combination is the point: the winning
+    // worker reaches feasibility in a LATE restart, whose own clock starts near
+    // zero long after the portfolio's did, so an unshifted reading is short by
+    // every restart before it. On a model feasible at its first point -- the
+    // quadratic the cases above use -- both readings are ~0 and pin nothing.
+    //
+    // It carries an objective as well as the row: a pure-feasibility model stops
+    // the portfolio at its first feasible point, and `objective` would stay +inf
+    // so the progress stream would never carry the finite row this compares to.
+    auto factory = []() {
+        Model m;
+        std::vector<int32_t> vars;
+        vars.reserve(400);
+        for (int i = 0; i < 400; ++i) {
+            vars.push_back(m.int_var(0, 10));
+        }
+        std::vector<int32_t> terms(vars.begin(), vars.end());
+        terms.push_back(m.constant(-3000.0));
+        // 400 columns capped at 10 must sum to exactly 3000 -- three quarters of
+        // the way up the box, so no single jump arrives and most columns have to
+        // move before anything is feasible.
+        m.add_constraint(m.abs_expr(m.sum(terms)));
+        m.minimize(m.sum(vars));
+        m.close();
+        return m;
+    };
+
     FirstFinite first;
     ParallelConfig par_config;
     par_config.n_threads = 2;
     SearchConfig cfg;
-    cfg.max_iterations = 40;  // exhausted, so workers restart
+    // One GLS iteration per restart. `max_iterations` is checked at batch
+    // boundaries, so the batch has to shrink with it or one "restart" is a whole
+    // 1000-iteration batch and the first one already arrives.
+    cfg.batch_iterations = 1;
+    cfg.max_iterations = 1;
 
     ParallelSearch ps(2);
     const auto t0 = std::chrono::steady_clock::now();
-    auto factory = simple_model_factory();
     const SearchResult r =
-        ps.solve(factory, /*time_limit=*/0.5, /*seed=*/42, cfg,
+        ps.solve(factory, /*time_limit=*/0.3, /*seed=*/42, cfg,
                  /*hook_factory=*/nullptr, /*lns_factory=*/nullptr, &first, par_config);
     const double wall =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();

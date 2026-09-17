@@ -388,14 +388,25 @@ python benchmarks/mipfeas/run_benchmark.py --roster smoke --budget 60 --jobs 2
 python benchmarks/mipfeas/run_benchmark.py --roster full --budget 600 \
     --jobs 4 --mem-limit-gb 6
 
-# 6. Score it
+# 6. Score it — into the results directory, beside what it scores
 python benchmarks/mipfeas/primal_integral.py \
     --results-dir results/mipfeas --roster benchmarks/instances/mipfeas/roster.csv \
-    --budget 600 --out benchmarks/instances/mipfeas/comparison.csv
+    --budget 600 --out results/mipfeas/comparison.csv
 ```
 
 Step 6 writes `comparison_report.md` beside the table; see **What the scorer
 reports** above. It exits non-zero when a solution was rejected.
+
+**The table is an output, not an artifact to protect.** It is regenerable from a
+results directory at any time and at any budget, so there is nothing in it to
+defend and no reason to copy it into this directory as a checked-in record. The
+numbers that *are* derived once and pinned live in `roster.csv` and
+`references.csv`: the per-instance optimum or best-known value, taken from
+MIPLIB's own `.solu` file, with `references.csv` recording the hash and byte
+count of the file they came from so a MIPLIB revision cannot silently redefine
+them. That is the only thing here with a provenance worth freezing; a comparison
+between engines is something to re-derive from result records whenever the
+question is asked.
 
 The driver is resumable: a job whose result file exists is skipped, so an
 interrupted run continues where it stopped.
@@ -423,8 +434,11 @@ stays the operator's, and is called out below rather than implied away:
   that cap is arithmetic to do before starting, not a guard that will stop you.
   A replication that runs out of memory is at least reported rather than silent:
   the row is written with `status: replicate_error`.
-* **The two arms are separate tables.** `threads` is a scorer config key, so a
-  results directory mixing thread counts is refused rather than averaged.
+* **The two arms are separate results directories.** `threads` is a scorer
+  config key, so a directory mixing thread counts is refused rather than
+  averaged — and the driver refuses to *resume* a directory recorded at another
+  thread count, which is the case the scorer cannot see (resume skips jobs that
+  already have a result, so the mixture never forms).
 
 The replication itself is charged to setup, not to the search: the runner copies
 the built model once per worker before the solve bracket opens and reports

@@ -1239,10 +1239,14 @@ def main() -> int:
         f"  python {Path(__file__).parent}/primal_integral.py "
         f"--results-dir {results_dir} --roster {roster_path} --budget {args.budget} "
         f"--out {results_dir}/{out_name}\n"
-        f"Then copy it to {args.inst_dir}/{out_name} if it is the run you mean to "
-        f"publish, along with {results_dir}/{RUN_RECORD_FILENAME} and the "
-        f"{out_name.removesuffix('.csv')}_report.md beside it -- the report quotes the "
-        f"machine record, and a published table without one is an anecdote."
+        f"The table is a scoring OUTPUT, not an artifact to protect: it is "
+        f"regenerable from {results_dir} at any time, and the numbers that are "
+        f"derived once and pinned are the reference values in "
+        f"{args.inst_dir}/roster.csv, taken from MIPLIB's own solution file. "
+        f"Keep {results_dir}/{RUN_RECORD_FILENAME} and the "
+        f"{out_name.removesuffix('.csv')}_report.md beside whatever you quote -- "
+        f"the report carries the machine record, and a result without one is an "
+        f"anecdote."
         + (
             ""
             if args.verify
