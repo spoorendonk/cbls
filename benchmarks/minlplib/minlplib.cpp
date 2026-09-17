@@ -442,7 +442,7 @@ struct Tally {
 // bad flag or an unwritable output file (benchmarks/common/runner_args.h) -- so
 // an error tally gets a code of its own and a consumer can tell the two apart.
 //
-// Mirrored in Python as `run_benchmark.RUNNER_EXIT_ERRORED`; a test pins that
+// Mirrored in Python as `runner.RUNNER_EXIT_ERRORED`; a test pins that
 // constant against this literal, because the drivers branch on the value.
 constexpr int kExitErrored = 3;
 

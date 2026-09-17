@@ -16,10 +16,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from benchmarks.common.provenance import REPO_ROOT
 from benchmarks.minlplib.ablation_report import (
     ARM_ONLY_FEASIBLE,
     BOTH_FEASIBLE,
-    COMPLETED_SEARCH_NOTES,
     CONTROL_ARM,
     CONTROL_ONLY_FEASIBLE,
     NEITHER_FEASIBLE,
@@ -41,7 +41,7 @@ from benchmarks.minlplib.ablation_report import (
     t_multiplier,
 )
 from benchmarks.minlplib.run_ablation import Arm, Run, failed_row
-from benchmarks.minlplib.run_benchmark import CLAIM_EXCLUDED, REPO_ROOT
+from benchmarks.minlplib.runner import CLAIM_EXCLUDED, COMPLETED_SEARCH_NOTES
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

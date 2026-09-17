@@ -16,10 +16,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from benchmarks.common.provenance import REPO_ROOT
+from benchmarks.common.records import repair_torn_tail
 from benchmarks.minlplib.ablation_report import (
     CONTROL_ARM,
     PROBE_ARM_NAME,
-    completed_search,
     render_report,
     sign_test_p,
     t_multiplier,
@@ -50,23 +51,17 @@ from benchmarks.minlplib.run_ablation import (
     probe_plan,
     read_runner_row,
     recorded_keys,
-    repair_torn_tail,
     runner_command,
     scratch_refusal,
     stamp_conflict,
     usage_error,
 )
-from benchmarks.minlplib.run_benchmark import REPO_ROOT, RUNNER_EXIT_ERRORED
+from benchmarks.minlplib.runner import RUNNER_COLUMNS, RUNNER_EXIT_ERRORED, completed_search
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-RUNNER_HEADER = (
-    "instance,objective,primal_bks,dual_bound,gap_to_bks%,gap_to_dual%,"
-    "wall_seconds,feasible,note,commit_sha,max_violation,n_int_vars,lns_repairs,"
-    "lns_repairs_accepted,first_feasible_objective,time_to_first_feasible,"
-    "search_config"
-)
+RUNNER_HEADER = ",".join(RUNNER_COLUMNS)
 DEFAULT_ARM_CELL = (
     "float_hook=on;lns=on;lns_interval=3;compound_moves=off;novelty_prob=0.5;"
     "unproductive_iters=300;perturbation_period=100;max_iterations=0;time_limit=on"

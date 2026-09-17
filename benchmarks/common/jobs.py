@@ -16,6 +16,7 @@ What they share is the mechanics, here:
 
 from __future__ import annotations
 
+import signal
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -48,15 +49,15 @@ def with_memory_limit(command: Sequence[str], limit_gb: float | None) -> list[st
 class Outcome:
     """How one process ended."""
 
-    #: None when the timeout killed it: no exit status was ever observed.
-    returncode: int | None
+    #: The exit status; negative for a signal, as `subprocess` reports it. A
+    #: process the timeout killed reports SIGKILL, which is what killed it.
+    returncode: int
     stdout: str
     stderr: str
     elapsed: float
-
-    @property
-    def timed_out(self) -> bool:
-        return self.returncode is None
+    #: Whether the timeout, rather than the process itself, ended it. Checked
+    #: before `returncode` by any caller that set a timeout.
+    timed_out: bool = False
 
 
 def run_process(
@@ -87,7 +88,7 @@ def run_process(
             start_new_session=own_session,
         )
     except subprocess.TimeoutExpired:
-        outcome = Outcome(None, "", "", time.monotonic() - started)
+        outcome = Outcome(-signal.SIGKILL, "", "", time.monotonic() - started, timed_out=True)
     else:
         outcome = Outcome(
             completed.returncode, completed.stdout, completed.stderr, time.monotonic() - started

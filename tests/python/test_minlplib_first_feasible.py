@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from benchmarks.minlplib import ablation_report
 from benchmarks.minlplib.first_feasible_report import (
     ARRIVAL_INVARIANT,
     DETERMINED,
@@ -30,7 +29,6 @@ from benchmarks.minlplib.first_feasible_report import (
     NOT_DETERMINED,
     R_DETERMINED,
     REFERENCE_INSTANCE,
-    RUNNER_FAILED_NOTE,
     TOO_FEW_SEEDS,
     InstanceResult,
     collect,
@@ -42,29 +40,12 @@ from benchmarks.minlplib.first_feasible_report import (
     usage_error,
     verdict,
 )
+from benchmarks.minlplib.runner import RUNNER_COLUMNS
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-RUNNER_HEADER = [
-    "instance",
-    "objective",
-    "primal_bks",
-    "dual_bound",
-    "gap_to_bks%",
-    "gap_to_dual%",
-    "wall_seconds",
-    "feasible",
-    "note",
-    "commit_sha",
-    "max_violation",
-    "n_int_vars",
-    "lns_repairs",
-    "lns_repairs_accepted",
-    "first_feasible_objective",
-    "time_to_first_feasible",
-    "search_config",
-]
+RUNNER_HEADER = list(RUNNER_COLUMNS)
 
 #: #134's table for `nvs01`: (first feasible objective, final objective) at
 #: seeds 1, 17, 42, 11, 7, 2, 13, 3. The issue reports Pearson r = 0.945.
@@ -357,11 +338,6 @@ def test_a_crashed_run_is_not_tallied_as_a_search_that_found_nothing(tmp_path: P
     assert skipped.runner_failed == 1
     assert skipped.infeasible == 0
     assert skipped.total() == 1
-
-
-def test_the_runner_failed_prefix_matches_the_scorer_s(tmp_path: Path) -> None:
-    """Spelled in two modules because one of them is run as a script."""
-    assert RUNNER_FAILED_NOTE == ablation_report.RUNNER_FAILED_NOTE
 
 
 def test_a_table_without_the_first_feasible_columns_is_refused_by_name(tmp_path: Path) -> None:

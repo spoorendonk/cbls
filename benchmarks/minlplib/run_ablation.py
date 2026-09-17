@@ -57,7 +57,6 @@ import contextlib
 import csv
 import fcntl
 import hashlib
-import io
 import json
 import math
 import os
@@ -76,23 +75,34 @@ from typing import TYPE_CHECKING
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from benchmarks.common.jobs import run_process  # noqa: E402
+from benchmarks.common.provenance import REPO_ROOT, commit_sha  # noqa: E402
+from benchmarks.common.records import (  # noqa: E402
+    append_csv_row,
+    atomic_write,
+    csv_header,
+    csv_text,
+    repair_torn_tail,
+    stamp_mismatch,
+)
+from benchmarks.minlplib import runner  # noqa: E402
 from benchmarks.minlplib.ablation_report import (  # noqa: E402
     CONTROL_ARM,
     PROBE_ARM_NAME,
-    RUNNER_FAILED_NOTE,
-    completed_search,
     render_report,
 )
 from benchmarks.minlplib.run_benchmark import (  # noqa: E402
     DEFAULT_BUILD_DIR,
     DEFAULT_INST_DIR,
     DEFAULT_TIME_LIMIT,
-    REPO_ROOT,
-    RUNNER_EXIT_ERRORED,
-    RUNNER_TARGET,
-    commit_sha,
     preflight,
     roster_from_bounds,
+)
+from benchmarks.minlplib.runner import (  # noqa: E402
+    RUNNER_COLUMNS,
+    RUNNER_EXIT_ERRORED,
+    RUNNER_FAILED_NOTE,
+    completed_search,
 )
 
 if TYPE_CHECKING:
@@ -209,6 +219,12 @@ GATE_MIN_READABLE_FRACTION = 0.9
 #: distinguish -- the average still decaying from the campaign that just died.
 MAX_LOAD_AVERAGE = 0.4
 
+#: The runner columns copied onto a result row: all of them but the two the
+#: provenance block below already carries, in the runner's own order.
+_RUNNER_COLUMNS: tuple[str, ...] = tuple(
+    column for column in RUNNER_COLUMNS if column not in ("instance", "commit_sha")
+)
+
 #: The columns of `results.csv`. `instance,arm,seed` is the resume key; the
 #: provenance columns after it are what let a row be read years later without
 #: this file; the rest are the runner's own row, verbatim.
@@ -219,25 +235,8 @@ RESULT_COLUMNS: tuple[str, ...] = (
     "seed",
     "time_limit",
     "commit_sha",
-    "objective",
-    "primal_bks",
-    "dual_bound",
-    "gap_to_bks%",
-    "gap_to_dual%",
-    "wall_seconds",
-    "feasible",
-    "note",
-    "max_violation",
-    "n_int_vars",
-    "lns_repairs",
-    "lns_repairs_accepted",
-    "first_feasible_objective",
-    "time_to_first_feasible",
-    "search_config",
+    *_RUNNER_COLUMNS,
 )
-
-#: The runner columns copied onto a result row, in `RESULT_COLUMNS` order.
-_RUNNER_COLUMNS: tuple[str, ...] = RESULT_COLUMNS[6:]
 
 
 @dataclass(frozen=True)
@@ -401,48 +400,16 @@ def stamp_conflict(out_dir: Path, stamp: str, *, resume: bool) -> str | None:
     differences, and only `wall_seconds` would hint at it.
     """
     path = out_dir / STAMP_NAME
-    if resume and path.exists() and path.read_text() != stamp:
-        return (
-            f"{path} was written by a different configuration:\n"
-            f"--- recorded ---\n{path.read_text()}--- now ---\n{stamp}"
-            "Use a fresh --out-dir, or pass --no-resume to start this one over (which moves "
-            "the recorded rows aside rather than adding to them); mixing two configurations "
-            "into one campaign measures the configurations, not the arms."
-        )
-    path.write_text(stamp)
-    return None
-
-
-def repair_torn_tail(path: Path) -> bool:
-    """Drop an unterminated final line from `results.csv`. True if one was dropped.
-
-    A campaign killed mid-append leaves a partial row. It is a row nobody can
-    read and, worse, one whose triple would be missing from the resume set while
-    its bytes stay in the file, so the run would be redone and the file would
-    then hold a half-row wedged between two whole ones.
-    """
-    if not path.exists():
-        return False
-    data = path.read_bytes()
-    if not data or data.endswith(b"\n"):
-        return False
-    cut = data.rfind(b"\n")
-    # Write-then-rename, not write_bytes: this is the one function whose job is
-    # protecting the campaign record against a kill, and `write_bytes`
-    # truncates to zero before writing, so a kill inside that window destroys
-    # up to thirteen hours of solving outright.
-    _atomic_write(path, data[: cut + 1] if cut >= 0 else b"")
-    return True
-
-
-def _atomic_write(path: Path, data: bytes) -> None:
-    """Replace `path`'s contents without ever leaving it truncated."""
-    tmp = path.with_name(path.name + ".repair.tmp")
-    with tmp.open("wb") as fh:
-        fh.write(data)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    recorded = stamp_mismatch(path, stamp, resume=resume)
+    if recorded is None:
+        return None
+    return (
+        f"{path} was written by a different configuration:\n"
+        f"--- recorded ---\n{recorded}--- now ---\n{stamp}"
+        "Use a fresh --out-dir, or pass --no-resume to start this one over (which moves "
+        "the recorded rows aside rather than adding to them); mixing two configurations "
+        "into one campaign measures the configurations, not the arms."
+    )
 
 
 def recorded_keys(path: Path) -> set[tuple[str, str, int]]:
@@ -485,8 +452,7 @@ def header_conflict(path: Path) -> str | None:
     """
     if not path.exists() or not path.read_bytes():
         return None
-    with path.open(newline="") as fh:
-        header = next(csv.reader(fh), [])
+    header = csv_header(path)
     if header == list(RESULT_COLUMNS):
         return None
     missing = [c for c in RESULT_COLUMNS if c not in header]
@@ -508,41 +474,27 @@ def open_results(path: Path) -> None:
 
 
 def append_result(path: Path, row: dict[str, str]) -> None:
-    """Append one completed run, durably, before the next one starts.
-
-    `fsync` and not just a flush: the campaign runs for hours and the thing it
-    is being protected from is the machine going away, which is exactly the case
-    a buffered write in the kernel's page cache does not survive.
-    """
-    with path.open("a", newline="") as fh:
-        csv.writer(fh).writerow([row[column] for column in RESULT_COLUMNS])
-        fh.flush()
-        os.fsync(fh.fileno())
+    """Append one completed run, durably, before the next one starts."""
+    append_csv_row(path, [row[column] for column in RESULT_COLUMNS])
 
 
 def runner_command(args: argparse.Namespace, sha: str, run: Run, out_dir: Path) -> list[str]:
     """The `cbls_minlplib` invocation for one run.
 
-    `--instance` is always present, which is itself a second lock on the
-    published table: the runner refuses to write `comparison.csv` from a subset
-    run whatever else is passed, so even the control arm -- whose flags are all
-    default -- cannot reach it.
+    Its `--instance` is a second lock on the published table: the runner refuses
+    to write `comparison.csv` from a subset run whatever else is passed, so even
+    the control arm -- whose flags are all default -- cannot reach it.
     """
-    return [
-        str(args.build_dir / RUNNER_TARGET),
-        str(args.inst_dir),
-        "--time-limit",
-        f"{args.time_limit:g}",
-        "--seed",
-        str(run.seed),
-        "--commit",
-        sha,
-        "--instance",
-        run.instance,
-        "--out",
-        str(out_dir / "runs" / f"{run.slug}.csv"),
-        *run.arm.flags,
-    ]
+    return runner.runner_command(
+        args.build_dir,
+        args.inst_dir,
+        time_limit=args.time_limit,
+        seed=run.seed,
+        sha=sha,
+        instance=run.instance,
+        out=out_dir / "runs" / f"{run.slug}.csv",
+        extra=run.arm.flags,
+    )
 
 
 def read_runner_row(path: Path, run: Run, sha: str) -> dict[str, str]:
@@ -747,11 +699,7 @@ def drop_partial_block(
         out.writerows(moved)
         fh.flush()
         os.fsync(fh.fileno())
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(fields)
-    writer.writerows(kept)
-    _atomic_write(results, buffer.getvalue().encode())
+    atomic_write(results, csv_text([fields, *kept]))
     print(
         f"resume: the interrupted block {last[0]} seed {last[1]} was {len(dropped)} of "
         f"{len(block_runs)} run(s) complete. Those {len(dropped)} row(s) were moved to "
@@ -800,8 +748,7 @@ def execute_runs(
         print(_progress(index, len(runs), run, started, elapsed_each), file=sys.stderr, flush=True)
         began = time.monotonic()
         cmd = runner_command(args, sha, run, out_dir)
-        completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        (out_dir / "runs" / f"{run.slug}.log").write_text(completed.stdout + completed.stderr)
+        completed = run_process(cmd, log=out_dir / "runs" / f"{run.slug}.log")
         if completed.returncode != 0:
             # Recorded as a failed run rather than raised. An instance that
             # crashes only under one arm, at hour nine, otherwise makes the
@@ -1177,10 +1124,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"out-dir {out_dir}", file=sys.stderr)
     with campaign_lock(out_dir):
         if args.build:
-            subprocess.run(
-                ["cmake", "--build", str(args.build_dir), "--target", RUNNER_TARGET, "-j", "4"],
-                check=True,
-            )
+            subprocess.run(runner.build_command(args.build_dir, 4), check=True)
         return execute(args, sha, roster, out_dir)
 
 

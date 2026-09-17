@@ -81,7 +81,12 @@ import statistics
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from benchmarks.minlplib.run_benchmark import CLAIM_EXCLUDED
+from benchmarks.common.records import csv_number
+from benchmarks.minlplib.runner import (
+    CLAIM_EXCLUDED,
+    RUNNER_FAILED_NOTE,
+    completed_search,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -89,48 +94,6 @@ if TYPE_CHECKING:
 
 #: The arm every other arm is measured against.
 CONTROL_ARM = "control"
-
-#: Prefix `run_ablation.failed_row` puts in a row's `note` when the runner
-#: process exited nonzero. Such a row records no measurement of anything, so it
-#: is held out of every count rather than read as an infeasible run.
-RUNNER_FAILED_NOTE = "runner-failed"
-
-#: Notes a COMPLETED search produces -- the ALLOWLIST that decides whether a row
-#: is a measurement. A row whose note starts with one of these ran a search and
-#: reported something, so it is scored; anything else is held out and disclosed.
-#:
-#: The polarity is deliberate (#153). This was a denylist of the six notes that
-#: mean "no search completed", and a denylist FAILS OPEN: a seventh outcome added
-#: to the runner later would be scored as a lost feasibility -- exactly the
-#: defect #151 was filed for, re-armed. An allowlist fails the other way: an
-#: unrecognised note is held out, counted, and named on the report's disclosure
-#: line, so it announces itself instead of moving a number. The cost of that
-#: polarity is that an allowlist which falls behind the runner DISCARDS real
-#: measurements, which is why
-#: `test_every_completed_search_note_the_runner_writes_is_allowlisted` sweeps
-#: `minlplib.cpp` for the literals a completed search can write.
-#:
-#: From `minlplib.cpp`, in full: `classify_against_bks` returns `better-than-bks`,
-#: `matches-bks`, `within-tolerance-of-bks` or `feasible` (which `run_instance`
-#: also writes directly when there is no published bound to classify against);
-#: `verify_assignment` writes `VERIFY-FAILED(...)`; `describe_infeasible` writes
-#: `infeasible(...)`; and the non-finite-objective guard writes `non-finite`.
-#: Each may carry an appended `; integrality-mismatch(...)`,
-#: `; stale-analysis-note` or ` | <curated note>`, which is why the match is on
-#: the START of the cell.
-#:
-#: NOT shared with `benchmarks/minlplib/note_policy.h`, which was checked: that
-#: header is the three-way merge policy for `analysis_notes.csv` (kNone/kMerge/
-#: kStale) and enumerates no note strings at all.
-COMPLETED_SEARCH_NOTES: tuple[str, ...] = (
-    "better-than-bks",
-    "matches-bks",
-    "within-tolerance-of-bks",
-    "feasible",
-    "non-finite",
-    "VERIFY-FAILED",
-    "infeasible",
-)
 
 #: Notes known to mean NO SEARCH COMPLETED. Nothing is classified by this tuple
 #: any more -- `completed_search` decides that from `COMPLETED_SEARCH_NOTES`
@@ -174,16 +137,6 @@ UNRECOGNISED_NOTE = "unrecognised-note"
 #: paragraph on the report's headline. Enough to identify the note, not enough to
 #: swallow the line.
 UNRECOGNISED_NOTE_CHARS = 60
-
-
-def completed_search(note: str) -> bool:
-    """Whether this row's note is one a COMPLETED search produces.
-
-    The scorer's one classification question. Everything else -- a crash the
-    driver recorded, a row the runner wrote before any search ran, and any note
-    neither list has heard of -- is held out of every count.
-    """
-    return any(note.startswith(prefix) for prefix in COMPLETED_SEARCH_NOTES)
 
 
 def no_search_label(note: str) -> str:
@@ -452,19 +405,6 @@ class RunRow:
         return not completed_search(self.note)
 
 
-def _number(text: str | None) -> float:
-    """A CSV cell as a float, with anything unparseable reading as NaN.
-
-    "NaN" is what the runner writes for a cell it has no value for, and an empty
-    cell means the same thing; neither may become a 0 that an aggregate would
-    then treat as a measurement.
-    """
-    try:
-        return float(text) if text is not None and text.strip() else math.nan
-    except ValueError:
-        return math.nan
-
-
 def load_rows(path: Path) -> list[RunRow]:
     """Every row of a campaign's `results.csv`."""
     with path.open(newline="") as fh:
@@ -474,11 +414,11 @@ def load_rows(path: Path) -> list[RunRow]:
                 arm=row["arm"],
                 seed=int(row["seed"]),
                 feasible=row["feasible"] == "true",
-                gap=_number(row.get("gap_to_bks%")),
-                primal_bks=_number(row.get("primal_bks")),
-                lns_repairs=_number(row.get("lns_repairs")),
-                lns_repairs_accepted=_number(row.get("lns_repairs_accepted")),
-                wall=_number(row.get("wall_seconds")),
+                gap=csv_number(row.get("gap_to_bks%")),
+                primal_bks=csv_number(row.get("primal_bks")),
+                lns_repairs=csv_number(row.get("lns_repairs")),
+                lns_repairs_accepted=csv_number(row.get("lns_repairs_accepted")),
+                wall=csv_number(row.get("wall_seconds")),
                 note=row.get("note") or "",
             )
             for row in csv.DictReader(fh)

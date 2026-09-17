@@ -17,16 +17,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from benchmarks.minlplib.ablation_report import COMPLETED_SEARCH_NOTES
+from benchmarks.common.provenance import REPO_ROOT
 from benchmarks.minlplib.run_benchmark import (
-    CLAIM_EXCLUDED,
-    REPO_ROOT,
-    RUNNER_EXIT_ERRORED,
-    RUNNER_TARGET,
-    STAGEABLE_NOTES,
     STAMP_NAME,
     assemble,
-    cmake_build_type,
     describe_plan,
     merge_command,
     preflight,
@@ -41,22 +35,24 @@ from benchmarks.minlplib.run_benchmark import (
     usage_error,
     verdict_of,
 )
+from benchmarks.minlplib.runner import (
+    CLAIM_EXCLUDED,
+    RUNNER_COLUMNS,
+    RUNNER_EXIT_ERRORED,
+    RUNNER_TARGET,
+    TRACE_COLUMNS,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-HEADER = (
-    "instance,objective,primal_bks,dual_bound,gap_to_bks%,gap_to_dual%,"
-    "wall_seconds,feasible,note,commit_sha,max_violation,n_int_vars,lns_repairs,"
-    "lns_repairs_accepted,first_feasible_objective,time_to_first_feasible,"
-    "search_config"
-)
+HEADER = ",".join(RUNNER_COLUMNS)
 DEFAULT_ARM = (
     "float_hook=on;lns=on;lns_interval=3;compound_moves=off;novelty_prob=0.5;"
     "unproductive_iters=300;perturbation_period=100;max_iterations=0;time_limit=on"
 )
 ROW = "nvs01,1,1,1,0,0,60,true,feasible,abc1234,0,3,7,2,9,0.25," + DEFAULT_ARM
-TRACE_HEADER = "instance,time_seconds,objective,new_best"
+TRACE_HEADER = ",".join(TRACE_COLUMNS)
 
 
 def make_args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
@@ -121,14 +117,6 @@ def test_roster_comes_from_bounds_csv_in_file_order(tmp_path: Path) -> None:
 def test_an_absent_bounds_csv_is_an_empty_roster_not_a_traceback(tmp_path: Path) -> None:
     """Preflight turns the empty roster into the refusal that names download.py."""
     assert roster_from_bounds(tmp_path / "nope" / "bounds.csv") == []
-
-
-def test_cmake_build_type_reads_the_cache(tmp_path: Path) -> None:
-    assert cmake_build_type(make_build_dir(tmp_path, "Release")) == "Release"
-
-
-def test_cmake_build_type_of_an_unconfigured_dir_is_none(tmp_path: Path) -> None:
-    assert cmake_build_type(tmp_path / "nope") is None
 
 
 def test_paths_default_to_the_published_tables_and_a_build_staging_dir(tmp_path: Path) -> None:
@@ -625,7 +613,7 @@ def test_assemble_leaves_no_partial_file_behind(tmp_path: Path) -> None:
     stage = _stage_two(tmp_path)
     out = tmp_path / "comparison.csv"
     assemble(stage, ["a", "b"], out, ".csv")
-    assert not (tmp_path / "comparison.csv.partial").exists()
+    assert [p.name for p in tmp_path.iterdir()] == ["comparison.csv", "stage"]
 
 
 def test_assemble_refuses_a_staging_file_with_a_different_header(tmp_path: Path) -> None:
@@ -932,7 +920,8 @@ def test_a_staged_row_from_a_thrown_instance_cannot_stand_in_for_a_solve(
     assert not staged_complete(make_args(tmp_path), "abc1234", "a", stage)
 
 
-def test_a_coverage_gap_staged_row_still_stands_in_for_a_solve(tmp_path: Path) -> None:
+@pytest.mark.parametrize("note", ["unsupported: NL_UNKNOWN_OPCODE 42", "not-found"])
+def test_a_coverage_gap_staged_row_still_stands_in_for_a_solve(tmp_path: Path, note: str) -> None:
     """`unsupported` and `not-found` exit 0 and are documented rows, not errors.
 
     The staging refusal must key on the notes that come with the nonzero exit,
@@ -941,7 +930,6 @@ def test_a_coverage_gap_staged_row_still_stands_in_for_a_solve(tmp_path: Path) -
     stage = tmp_path / "stage"
     stage.mkdir()
     (stage / "a.trace.csv").write_text(TRACE_HEADER + "\n")
-    note = "unsupported: NL_UNKNOWN_OPCODE 42"
     row = f"a,NaN,NaN,NaN,NaN,NaN,0,false,{note},abc1234,NaN,NaN,NaN,NaN,NaN,NaN,{DEFAULT_ARM}"
     (stage / "a.csv").write_text(f"{HEADER}\n{row}\n")
 
@@ -979,20 +967,6 @@ def test_a_staged_row_with_no_note_at_all_cannot_stand_in_for_a_solve(
     (stage / "a.csv").write_text(f"{HEADER}\n{row}\n")
 
     assert not staged_complete(make_args(tmp_path), "abc1234", "a", stage)
-
-
-def test_the_stageable_notes_are_the_scorer_s_completed_set_plus_the_two_gaps() -> None:
-    """Pins the driver's allowlist to the scorer's, which is swept against the runner.
-
-    `run_benchmark.py` is run as a script and has no package context to import
-    `ablation_report` through, so the seven completed-search prefixes are spelled
-    out in both files. That duplication is only safe while something fails when
-    the two drift, and this is that something: `ablation_report`'s own sweep test
-    keeps `COMPLETED_SEARCH_NOTES` honest against every note literal in
-    `minlplib.cpp`, and this carries that guarantee across to the driver.
-    """
-    scorer_plus_gaps = (*COMPLETED_SEARCH_NOTES, "unsupported", "not-found")
-    assert scorer_plus_gaps == STAGEABLE_NOTES
 
 
 def test_run_roster_says_what_to_do_when_the_runner_reports_its_error_tally(

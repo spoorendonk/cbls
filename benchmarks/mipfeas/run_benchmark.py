@@ -611,7 +611,7 @@ def _verify(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
     completed = run_process(
         command, timeout=VERIFY_TIMEOUT_SECONDS, mem_limit_gb=args.mem_limit_gb, own_session=True
     )
-    if completed.returncode is None:
+    if completed.timed_out:
         write_failure_verdict(
             job, results_dir, "verifier_timeout", f"exceeded {VERIFY_TIMEOUT_SECONDS}s", attempt
         )
@@ -654,7 +654,7 @@ def _run_solver(job: Job, args: argparse.Namespace, results_dir: Path) -> tuple[
         # -- permanently converting those instances to a Primal Integral of 2.
         own_session=True,
     )
-    if completed.returncode is None:
+    if completed.timed_out:
         write_failure_result(
             job,
             results_dir,

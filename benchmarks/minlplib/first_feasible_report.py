@@ -63,8 +63,12 @@ from typing import TYPE_CHECKING
 # ModuleNotFoundError over which directory they are standing in.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from benchmarks.common.records import csv_header, csv_number  # noqa: E402
 from benchmarks.minlplib.ablation_report import CONTROL_ARM  # noqa: E402
-from benchmarks.minlplib.run_benchmark import CLAIM_EXCLUDED  # noqa: E402
+from benchmarks.minlplib.runner import (  # noqa: E402
+    CLAIM_EXCLUDED,
+    RUNNER_FAILED_NOTE,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -95,13 +99,6 @@ MIN_ELIGIBLE_INSTANCES = 10
 #: lost a few seeds to infeasibility still contributes, and `--min-seeds` can
 #: raise it for a sensitivity check.
 MIN_SEEDS_PER_INSTANCE = 4
-
-#: How the campaign driver marks a row whose RUNNER died rather than whose search
-#: failed. Spelled here rather than imported, because this module is run as a
-#: script and has no package context to reach a sibling through -- and pinned
-#: equal to `ablation_report.RUNNER_FAILED_NOTE` by a test, since that is where
-#: the note vocabulary is defined and swept against the runner's source.
-RUNNER_FAILED_NOTE = "runner-failed"
 
 #: The columns every input table must carry for this report to mean anything.
 #: Checked in `usage_error`, by name, because a table missing them does not fail
@@ -244,19 +241,6 @@ class InstanceResult:
         return self.bucket == DETERMINED
 
 
-def _number(text: str | None) -> float:
-    """A CSV cell as a float, with anything unparseable reading as NaN.
-
-    Same rule as `ablation_report._number`: "NaN" is what the runner writes for
-    a cell it has no value for, an empty cell means the same, and neither may
-    become a 0 that an aggregate would treat as a measurement.
-    """
-    try:
-        return float(text) if text is not None and text.strip() else math.nan
-    except ValueError:
-        return math.nan
-
-
 def read_table(path: Path, seed: int | None, arm: str | None) -> tuple[list[Observation], Skipped]:
     """Observations from one results table, and a tally of the rows it dropped.
 
@@ -283,9 +267,9 @@ def read_table(path: Path, seed: int | None, arm: str | None) -> tuple[list[Obse
                 else:
                     infeasible += 1
                 continue
-            first = _number(row.get("first_feasible_objective"))
-            seconds = _number(row.get("time_to_first_feasible"))
-            final = _number(row.get("objective"))
+            first = csv_number(row.get("first_feasible_objective"))
+            seconds = csv_number(row.get("time_to_first_feasible"))
+            final = csv_number(row.get("objective"))
             if math.isnan(seconds):
                 # The authoritative "was a feasible point recorded" cell; see
                 # `SearchResult::first_feasible_objective`. A row that is
@@ -743,11 +727,6 @@ def _results_refusal(args: argparse.Namespace, path: Path, header: list[str]) ->
     return None
 
 
-def _header_of(path: Path) -> list[str]:
-    with path.open(newline="") as fh:
-        return next(csv.reader(fh), [])
-
-
 def usage_error(args: argparse.Namespace) -> str | None:
     """The reason to reject the argument combination outright, or None."""
     if not args.table and not args.results:
@@ -762,11 +741,11 @@ def usage_error(args: argparse.Namespace) -> str | None:
     if absent:
         return f"no such file: {', '.join(absent)}"
     for _, path in args.table:
-        refusal = _columns_refusal("--table", path, _header_of(path))
+        refusal = _columns_refusal("--table", path, csv_header(path))
         if refusal is not None:
             return refusal
     for path in args.results:
-        header = _header_of(path)
+        header = csv_header(path)
         refusal = _columns_refusal("--results", path, header) or _results_refusal(
             args, path, header
         )

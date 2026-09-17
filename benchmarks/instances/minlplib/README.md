@@ -636,7 +636,7 @@ else.
 
 **Protocol.** Engine commit: whatever `git rev-parse --short=7 HEAD` reports on
 a clean tree — the driver refuses a dirty one, and `--short=7` matches
-`run_benchmark.commit_sha()`, so the recorded verdict names the same string the
+`benchmarks.common.provenance.commit_sha()`, so the recorded verdict names the same string the
 rows' `commit_sha` column carries. Budget: **60s per instance**, the published one.
 Seeds: **1 2 3 7 11 13 17 42** — the eight #134 used, so the roster result and
 the `nvs01` result are the same measurement on different instances rather than

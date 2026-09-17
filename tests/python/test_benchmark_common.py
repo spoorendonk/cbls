@@ -54,7 +54,7 @@ def test_a_timeout_is_an_outcome_not_an_exception(tmp_path: Path) -> None:
     exception would be one a new caller could forget to catch."""
     outcome = run_process(["/bin/sleep", "10"], timeout=0.2, log=tmp_path / "job.log")
     assert outcome.timed_out
-    assert outcome.returncode is None
+    assert outcome.returncode == -9
     assert outcome.elapsed < 5.0
     assert (tmp_path / "job.log").read_text() == ""
 

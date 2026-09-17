@@ -61,78 +61,40 @@ from __future__ import annotations
 
 import argparse
 import csv
-import os
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+# Run as a script (`python3 benchmarks/minlplib/run_benchmark.py`, the documented
+# form), only this file's own directory lands on sys.path. The repository root is
+# what makes the shared modules importable from any working directory.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from benchmarks.common.jobs import run_process  # noqa: E402
+from benchmarks.common.provenance import (  # noqa: E402
+    REPO_ROOT,
+    build_dir_problems,
+    cmake_cache,
+    commit_sha,
+)
+from benchmarks.common.records import atomic_write, stamp_mismatch  # noqa: E402
+from benchmarks.minlplib import runner  # noqa: E402
+from benchmarks.minlplib.runner import (  # noqa: E402
+    CLAIM_EXCLUDED,
+    RUNNER_EXIT_ERRORED,
+    RUNNER_TARGET,
+    stageable_note,
+)
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_INST_DIR = REPO_ROOT / "benchmarks" / "instances" / "minlplib"
 DEFAULT_BUILD_DIR = REPO_ROOT / "build"
 REFERENCE_SOLVE = Path(__file__).resolve().parent / "reference_solve.py"
-
-#: The runner target and the executable `cmake --build` produces for it.
-RUNNER_TARGET = "cbls_minlplib"
-
-#: The runner's exit status when its error tally is nonzero -- at least one
-#: instance THREW while being read, built or solved (#153). Distinct from the
-#: codes already in use: 1 is "no roster to run" and an exception escaping the
-#: runner's `main`, 2 is a bad flag or an output file that would not open
-#: (`benchmarks/common/runner_args.h`).
-#:
-#: A coverage gap is NOT an error and does not reach this: an instance skipped as
-#: unsupported, or one whose `.nl` was never downloaded, is bucketed apart by the
-#: runner and leaves the exit status at 0. `kExitErrored` in
-#: `benchmarks/minlplib/minlplib.cpp` is the source of truth and a test pins this
-#: constant against it.
-RUNNER_EXIT_ERRORED = 3
-
-#: The notes a staged row may carry and still stand in for a fresh solve.
-#:
-#: An ALLOWLIST, matched on the START of the cell, and an allowlist for the same
-#: reason `ablation_report.COMPLETED_SEARCH_NOTES` is one: the first draft of this
-#: guard named the three notes a throw writes, which fails open the moment the
-#: runner grows a fourth. A note this list has not heard of is then a row nobody
-#: has decided about, and `publish` would assemble it into `comparison.csv` as a
-#: measurement. Refusing it costs one re-solve; accepting it publishes a number
-#: that measured nothing.
-#:
-#: Two groups, and the split is the exit-status split:
-#:
-#:   * the seven notes a COMPLETED search writes -- pinned equal to
-#:     `ablation_report.COMPLETED_SEARCH_NOTES` by a test rather than imported,
-#:     because this module is run as a script (`python3 run_benchmark.py`) and so
-#:     has no package context to import a sibling through;
-#:   * the two coverage gaps -- `unsupported` and `not-found` exit 0, are
-#:     bucketed apart by the runner, and are documented rows published like any
-#:     other.
-#:
-#: Everything else -- `read-error`, `build-error`, `solve-error`, and any note
-#: added later -- is refused. Those come WITH `RUNNER_EXIT_ERRORED`: the row is
-#: complete by every structural check, which is exactly why it has to be named
-#: here.
-STAGEABLE_NOTES: tuple[str, ...] = (
-    "better-than-bks",
-    "matches-bks",
-    "within-tolerance-of-bks",
-    "feasible",
-    "non-finite",
-    "VERIFY-FAILED",
-    "infeasible",
-    "unsupported",
-    "not-found",
-)
-
-
-def stageable_note(note: str) -> bool:
-    """Whether a staged row carrying this note may stand in for a fresh solve."""
-    return any(note.startswith(prefix) for prefix in STAGEABLE_NOTES)
-
 
 #: Seconds per instance. The runner's own documented default (issue #88), argued
 #: from the committed anytime trace in the benchmark README ("Why 60s").
@@ -146,13 +108,6 @@ DEFAULT_SEED = 1
 #: is wall-clock, so a concurrent solve is not comparable to the committed table
 #: or to the other rows of its own run.
 DEFAULT_BUILD_JOBS = 4
-
-#: Instances whose rows are published as documented failures and are excluded
-#: from every aggregate and every quality claim, per issue #87 ("Do not publish
-#: `elec` rows until #110 lands and #116's criterion can actually be checked").
-#: They stay *in* the roster: #123 asks for 50 instances, the roster of record is
-#: `bounds.csv`, and dropping the rows would make the table disagree with it.
-CLAIM_EXCLUDED = ("elec25", "elec50")
 
 #: Records which configuration a staging directory's rows belong to.
 STAMP_NAME = "stamp.txt"
@@ -192,47 +147,6 @@ def roster_from_bounds(bounds_csv: Path) -> list[str]:
         return [row["instance"] for row in csv.DictReader(fh)]
 
 
-def _git(*argv: str) -> str:
-    out = subprocess.run(["git", *argv], cwd=REPO_ROOT, capture_output=True, text=True, check=True)
-    return out.stdout.strip()
-
-
-def commit_sha() -> str:
-    """The commit a run is attributed to, marked `-dirty` when the tree is modified.
-
-    `git rev-parse --short=7` and not `git describe`, whose output format changes
-    the moment the repository gains its first tag — the `commit_sha` column would
-    silently change shape mid-history.
-
-    Dirtiness comes from `git status --porcelain --untracked-files=no`, which
-    covers modifications to tracked files. Untracked files are deliberately not
-    counted: a scratch file beside the source says nothing about the code that
-    ran. The corollary is that a *new*, never-added source file does not mark
-    the tree dirty, so this is a guard against edited code, not against every
-    difference from HEAD.
-    """
-    sha = _git("rev-parse", "--short=7", "HEAD")
-    return f"{sha}-dirty" if _git("status", "--porcelain", "--untracked-files=no") else sha
-
-
-def cmake_cache(build_dir: Path) -> dict[str, str]:
-    """The `NAME:TYPE=VALUE` entries of a build directory's cache, by name."""
-    cache = build_dir / "CMakeCache.txt"
-    if not cache.exists():
-        return {}
-    entries: dict[str, str] = {}
-    for line in cache.read_text().splitlines():
-        name, sep, value = line.partition("=")
-        if sep and ":" in name and not name.startswith(("#", "//")):
-            entries[name.split(":", 1)[0]] = value.strip()
-    return entries
-
-
-def cmake_build_type(build_dir: Path) -> str | None:
-    """`CMAKE_BUILD_TYPE` recorded in the build directory's cache, if any."""
-    return cmake_cache(build_dir).get("CMAKE_BUILD_TYPE")
-
-
 def _build_problems(args: argparse.Namespace, sha: str) -> list[str]:
     """Refusals about the binary this run would measure and the SHA it labels it with."""
     problems: list[str] = []
@@ -241,47 +155,13 @@ def _build_problems(args: argparse.Namespace, sha: str) -> list[str]:
             f"working tree is dirty ({sha}); commit or stash first — a row labelled with a "
             "plain SHA must have been produced by that commit's code"
         )
-    cache = cmake_cache(args.build_dir)
-    if not cache:
-        problems.append(
-            f"{args.build_dir}/CMakeCache.txt not found; configure first, e.g.\n"
-            f'    cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python"'
-        )
+    problems += build_dir_problems(args.build_dir)
+    if not cmake_cache(args.build_dir):
         return problems
-    if cache.get("CMAKE_BUILD_TYPE") != "Release":
+    binary = args.build_dir / RUNNER_TARGET
+    if not args.build and not binary.exists():
         problems.append(
-            f"{args.build_dir} is CMAKE_BUILD_TYPE={cache.get('CMAKE_BUILD_TYPE') or '(empty)'}, "
-            "not Release; these are wall-clock-budgeted solves and an unoptimised build "
-            "measures a different engine"
-        )
-    # Both are sticky cache entries, so a build dir configured once with either
-    # keeps it through every later flag-less `cmake -B build` while
-    # CMAKE_BUILD_TYPE still reads Release. A sanitizer binary runs several-fold
-    # slower and -fno-omit-frame-pointer costs throughput, so either would
-    # publish wall-clock-budgeted rows measured on an engine nobody runs. See
-    # docs/profiling.md.
-    if cache.get("CBLS_SANITIZE"):
-        problems.append(
-            f"{args.build_dir} is configured with CBLS_SANITIZE={cache['CBLS_SANITIZE']}; "
-            "these are wall-clock-budgeted solves and a sanitizer build measures a "
-            "different engine. Use a separate build directory for sanitizers."
-        )
-    if cache.get("CBLS_PROFILE", "OFF") not in ("OFF", "FALSE", "0", ""):
-        problems.append(
-            f"{args.build_dir} is configured with CBLS_PROFILE={cache['CBLS_PROFILE']}; "
-            "frame pointers cost throughput and docs/profiling.md says a build-profile "
-            "wall-clock is not a benchmark number. Use a separate build directory."
-        )
-    home = cache.get("CMAKE_HOME_DIRECTORY")
-    if home and Path(home).resolve() != REPO_ROOT:
-        problems.append(
-            f"{args.build_dir} was configured from {home}, but the commit SHA is read from "
-            f"{REPO_ROOT}; the rows would name one checkout and measure another"
-        )
-    runner = args.build_dir / RUNNER_TARGET
-    if not args.build and not runner.exists():
-        problems.append(
-            f"{runner} not found and --no-build was given; drop --no-build or build the "
+            f"{binary} not found and --no-build was given; drop --no-build or build the "
             f"{RUNNER_TARGET} target first"
         )
     return problems
@@ -402,15 +282,15 @@ def staging_stamp_conflict(stage: Path, args: argparse.Namespace, sha: str) -> s
     """
     stamp = staging_stamp(args, sha)
     path = stage / STAMP_NAME
-    if args.resume and path.exists() and path.read_text() != stamp:
-        return (
-            f"{path} was written by a different configuration:\n"
-            f"--- staged ---\n{path.read_text()}--- now ---\n{stamp}"
-            "Delete the staging directory, pass a fresh --staging-dir, or pass --no-resume; "
-            "reusing these rows would mix two configurations into one table."
-        )
-    path.write_text(stamp)
-    return None
+    recorded = stamp_mismatch(path, stamp, resume=args.resume)
+    if recorded is None:
+        return None
+    return (
+        f"{path} was written by a different configuration:\n"
+        f"--- staged ---\n{recorded}--- now ---\n{stamp}"
+        "Delete the staging directory, pass a fresh --staging-dir, or pass --no-resume; "
+        "reusing these rows would mix two configurations into one table."
+    )
 
 
 def staged_row_complete(path: Path, sha: str) -> bool:
@@ -482,36 +362,21 @@ def staged_complete(args: argparse.Namespace, sha: str, name: str, stage: Path) 
 
 
 def runner_command(args: argparse.Namespace, sha: str, name: str, stage: Path) -> list[str]:
-    """The `cbls_minlplib` invocation for one instance."""
-    cmd = [
-        str(args.build_dir / RUNNER_TARGET),
-        str(args.inst_dir),
-        "--time-limit",
-        f"{args.time_limit:g}",
-        "--seed",
-        str(args.seed),
-        "--commit",
-        sha,
-        "--instance",
-        name,
-        "--out",
-        str(stage / f"{name}.csv"),
-    ]
-    if args.trace:
-        cmd += ["--trace", str(stage / f"{name}.trace.csv")]
-    return cmd
+    """The `cbls_minlplib` invocation for one instance, staged under `stage`."""
+    return runner.runner_command(
+        args.build_dir,
+        args.inst_dir,
+        time_limit=args.time_limit,
+        seed=args.seed,
+        sha=sha,
+        instance=name,
+        out=stage / f"{name}.csv",
+        extra=["--trace", str(stage / f"{name}.trace.csv")] if args.trace else [],
+    )
 
 
 def build_command(args: argparse.Namespace) -> list[str]:
-    return [
-        "cmake",
-        "--build",
-        str(args.build_dir),
-        "--target",
-        RUNNER_TARGET,
-        "-j",
-        str(args.build_jobs),
-    ]
+    return runner.build_command(args.build_dir, args.build_jobs)
 
 
 def merge_command(inst_dir: Path) -> list[str]:
@@ -544,9 +409,7 @@ def assemble(stage: Path, roster: Sequence[str], out: Path, suffix: str) -> None
         body.extend(lines[1:])
     if header is None:
         raise RuntimeError("nothing to assemble")
-    tmp = out.with_name(out.name + ".partial")
-    tmp.write_text("\n".join([header, *body]) + "\n")
-    os.replace(tmp, out)
+    atomic_write(out, "\n".join([header, *body]) + "\n")
 
 
 def verdict_of(note: str) -> str:
@@ -596,9 +459,8 @@ def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage:
             continue
         cmd = runner_command(args, sha, name, stage)
         print(f"[{index}/{len(roster)}] {name}: {' '.join(cmd)}", flush=True)
-        completed = subprocess.run(cmd, capture_output=True, text=True)
         log = stage / f"{name}.log"
-        log.write_text(completed.stdout + completed.stderr)
+        completed = run_process(cmd, log=log)
         if completed.returncode != 0 or not staged_complete(args, sha, name, stage):
             what_next = (
                 "The runner threw on this instance and its staged row carries "
