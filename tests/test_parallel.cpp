@@ -792,6 +792,68 @@ TEST_CASE("a worker whose search throws is restarted, not abandoned", "[parallel
     REQUIRE(total_successes.load() > 0);
 }
 
+TEST_CASE("a completed attempt resets a worker's consecutive-failure count", "[parallel]") {
+    // run_worker gives up after kMaxWorkerRetries (3) CONSECUTIVE throws; a
+    // solve that returns normally resets the count. The sequence here is
+    // throw, throw, completed attempt(s), throw: with the reset that last throw
+    // is failure 1 of a fresh run and the worker restarts; without it
+    // (`consecutive_failures = 0;` deleted) it is failure 3 and the worker stops
+    // for good, so the hook is never called again. Red-checked: with that line
+    // deleted this fails on `calls > kLateThrowCall + 1` (54 > 54).
+    //
+    // No clock decides where the late throw lands. An attempt is capped at
+    // kCap batches (SearchConfig::max_iterations also bounds batches, and the
+    // loop checks it before each one) and the hook runs at most once per batch
+    // -- only on a feasible one -- so kCap + 1 uneventful hook calls after the
+    // second throw cannot all belong to one attempt: at least one attempt ended
+    // between them. The only other ways an attempt ends are this hook throwing
+    // (it does not, in that window) and the deadline, after which nothing runs.
+    constexpr int kCap = 50;
+    constexpr int kEarlyThrows = 2;
+    constexpr int kLateThrowCall = kEarlyThrows + kCap + 1;
+
+    struct Scripted : InnerSolverHook {
+        void solve(Model& /*model*/, ViolationManager& /*vm*/,
+                   const std::vector<int32_t>& /*last_changed_vars*/ = {}) override {
+            const int call = calls++;
+            if (call < kEarlyThrows || call == kLateThrowCall) {
+                late_thrown = late_thrown || call == kLateThrowCall;
+                throw std::runtime_error("scripted hook failure");
+            }
+        }
+        int calls = 0;
+        bool late_thrown = false;
+    };
+    // Built on the worker thread and read here only after solve() has joined it.
+    std::shared_ptr<Scripted> hook;
+    auto hook_factory = [&hook](Model&) -> std::shared_ptr<InnerSolverHook> {
+        hook = std::make_shared<Scripted>();
+        return hook;
+    };
+    std::function<std::shared_ptr<LNS>()> no_lns;
+
+    SearchConfig config;
+    config.max_iterations = kCap;
+    ParallelConfig pc;
+    pc.n_threads = 1;
+    ParallelSearch ps(1);
+    // A model with an objective, so no attempt ends Feasible and stops the run.
+    // The wall clock only has to outlast the scripted sequence -- kLateThrowCall
+    // + 2 hook calls, each on a batch of a two-variable model -- and the run uses
+    // all of it, so it is kept short.
+    SearchResult r;
+    REQUIRE_NOTHROW(r = ps.solve([]() { return quadratic_model(); }, 1.0, 42, config, hook_factory,
+                                 no_lns, nullptr, pc));
+    if (hook == nullptr) {
+        FAIL("the hook factory was never called");
+        return;
+    }
+    REQUIRE(hook->late_thrown);
+    // The worker restarted after the late throw instead of giving up.
+    REQUIRE(hook->calls > kLateThrowCall + 1);
+    REQUIRE(r.feasible);
+}
+
 // ---------------------------------------------------------------------------
 // The objective bound after adoption (#135 A2, B3)
 // ---------------------------------------------------------------------------
