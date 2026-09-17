@@ -1,5 +1,11 @@
 """UC-CHPED (Unit Commitment with Valve-Point Effects) instance data.
 
+The `ucp*.jsonl` files beside this module are DERIVED from it, by
+`gen_jsonl.py` in this directory -- a one-shot generator nothing imports, so
+grep will not connect the three. `benchmarks/uc-chped/data.h::load_jsonl` reads
+those files; regenerate them with `python gen_jsonl.py` from here after changing
+any instance below, or the committed data stops matching its source.
+
 Data from Pedroso, Kubo & Viana (2014), "Pricing and unit commitment in combined
 energy and reserve markets using valve-point effects", originally at
 http://www.dcc.fc.up.pt/~jpp/code/valve/ucp_data.py (GPL).
