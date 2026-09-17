@@ -5,6 +5,8 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cbls/cbls.h>
 #include <cmath>
+#include <memory>
+#include <vector>
 
 using namespace cbls;
 using Catch::Matchers::WithinAbs;
@@ -215,7 +217,7 @@ TEST_CASE("back-references list each parent once, including a repeated child", "
     m.minimize(f);
     m.close();
 
-    const auto& deps = m.var(vid(x)).dependent_ids;
+    const auto deps = m.dependents(vid(x));
     REQUIRE(std::count(deps.begin(), deps.end(), sq) == 1);
     REQUIRE(std::count(deps.begin(), deps.end(), lin) == 1);
     REQUIRE(deps.size() == 2);
@@ -227,6 +229,71 @@ TEST_CASE("back-references list each parent once, including a repeated child", "
     REQUIRE(m.node(f).value == 4.0 + 6.0);
     m.var_mut(vid(x)).value = 3.0;
     REQUIRE(delta_evaluate(m, {vid(x)}) == 9.0 + 9.0);
+}
+
+TEST_CASE("flat edge storage keeps child, parent, dependent and topological order", "[dag]") {
+    // #156 moved every node's children and back-references out of per-node
+    // vectors into flat arrays the model owns. That is a representation change
+    // and must be neutral to search trajectories, and those trajectories depend
+    // on ORDER: delta_evaluate's BFS enqueues in parents()/dependents() order,
+    // and the topological sort's order is what full_evaluate and the AD sweep
+    // walk. So the exact sequences are pinned here, on a DAG where a NODE is a
+    // repeated child (`prod(n, n)`) -- the case where the sort now reads
+    // deduplicated parent lists instead of counting both edges.
+    Model m;
+    auto x = m.float_var(0, 10);
+    auto y = m.float_var(0, 10);
+    auto c = m.constant(3.0);        // node 0
+    auto n = m.sum({x, y, x});       // node 1, names x twice
+    auto p1 = m.prod(n, n);          // node 2, names n twice
+    auto p2 = m.sum({n, c});         // node 3
+    auto p3 = m.prod(c, n);          // node 4
+    auto top = m.sum({p1, p2, p3});  // node 5
+
+    // Children are readable before close(), in the order given.
+    const auto kids = m.children(m.node(n));
+    REQUIRE(kids.size() == 3);
+    REQUIRE((kids[0].is_var && kids[0].id == vid(x)));
+    REQUIRE((kids[1].is_var && kids[1].id == vid(y)));
+    REQUIRE((kids[2].is_var && kids[2].id == vid(x)));
+    // Back-references are not built yet.
+    REQUIRE(m.parents(n).empty());
+    REQUIRE(m.dependents(vid(x)).empty());
+
+    m.minimize(top);
+    m.close();
+
+    const auto as_vector = [](ConstSpan<int32_t> s) {
+        return std::vector<int32_t>(s.begin(), s.end());
+    };
+    // Ascending parent id, each parent once however often it names the child.
+    REQUIRE(as_vector(m.parents(n)) == std::vector<int32_t>{p1, p2, p3});
+    REQUIRE(as_vector(m.parents(c)) == std::vector<int32_t>{p2, p3});
+    REQUIRE(m.parents(top).empty());
+    REQUIRE(as_vector(m.dependents(vid(x))) == std::vector<int32_t>{n});
+    REQUIRE(as_vector(m.dependents(vid(y))) == std::vector<int32_t>{n});
+    // Kahn's order: sources by id, then FIFO over the parent lists.
+    REQUIRE(m.topo_order() == std::vector<int32_t>{c, n, p1, p2, p3, top});
+
+    // A node made after the rebuild reads as parentless until the next one, and
+    // appending it moves no existing slice.
+    auto late = m.neg(top);
+    REQUIRE(m.parents(late).empty());
+    REQUIRE(m.parents(top).empty());
+    REQUIRE(as_vector(m.parents(n)) == std::vector<int32_t>{p1, p2, p3});
+
+    // A copy is a deep copy: its slices address its own arrays, so it evaluates
+    // correctly after the original is gone -- which is how a portfolio worker
+    // gets its model.
+    auto copy = std::make_unique<Model>(m);
+    m = Model();
+    copy->var_mut(vid(x)).value = 1.0;
+    copy->var_mut(vid(y)).value = 2.0;
+    full_evaluate(*copy);
+    // n = 4, p1 = 16, p2 = 7, p3 = 12
+    REQUIRE(copy->node(top).value == 16.0 + 7.0 + 12.0);
+    copy->var_mut(vid(y)).value = 0.0;  // n = 2, p1 = 4, p2 = 5, p3 = 6
+    REQUIRE(delta_evaluate(*copy, {vid(y)}) == 4.0 + 5.0 + 6.0);
 }
 
 TEST_CASE("Delta evaluation respects dependency order on a deep chain", "[dag]") {

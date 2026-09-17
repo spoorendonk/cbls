@@ -3,106 +3,50 @@
 #include "cbls/model.h"
 
 #include <algorithm>
-#include <queue>
 #include <vector>
 
 namespace cbls {
 
 namespace detail {
 
-namespace {
-
-// Rebuild the DAG's back-references: every node's parent_ids and every
-// variable's dependent_ids. These are what delta_evaluate walks to find the
-// nodes a changed variable dirties; they are pure derived state, so they are
-// cleared and recomputed wholesale rather than patched.
-void rebuild_back_references(Model& model) {
-    for (auto& nd : model.nodes_mut()) {
-        nd.parent_ids.clear();
-    }
-    for (auto& v : model.variables_mut()) {
-        v.dependent_ids.clear();
-    }
-
-    // Deduplicated by a last-writer stamp, not by searching the list being
-    // built. A duplicate can only ever come from ONE parent naming the same
-    // child twice (`prod(x, x)`), because a parent is visited once -- so
-    // "already appended by this parent" is the whole condition, and a stamp
-    // answers it in O(1) where the search was O(degree) per edge.
-    //
-    // That difference is not academic on a real matrix. The search made this
-    // O(sum of degree^2): square47's 95k columns appear in ~288 rows each, which
-    // is ~3.9 BILLION comparisons, and `compute_topo_order` runs twice per build
-    // (once at close(), once when the objective's soft constraint is added). It
-    // was 68% of that instance's 6.4s model build.
-    std::vector<int32_t> var_stamp(model.num_vars(), -1);
-    std::vector<int32_t> node_stamp(model.nodes().size(), -1);
-
-    for (auto& nd : model.nodes_mut()) {
-        for (const auto& child : nd.children) {
-            if (child.is_var) {
-                if (var_stamp[child.id] == nd.id) {
-                    continue;
-                }
-                var_stamp[child.id] = nd.id;
-                model.var_mut(child.id).dependent_ids.push_back(nd.id);
-            } else {
-                if (node_stamp[child.id] == nd.id) {
-                    continue;
-                }
-                node_stamp[child.id] = nd.id;
-                model.node_mut(child.id).parent_ids.push_back(nd.id);
-            }
-        }
-    }
-}
-
 // Kahn's algorithm over the node-to-node edges only (variable children are
 // sources and carry no in-degree). Children come out before their parents.
-std::vector<int32_t> kahn_sort(const std::vector<ExprNode>& nodes) {
-    size_t n = nodes.size();
-    std::vector<int> in_degree(n, 0);
-    // Use flat vector instead of unordered_map for child->parents
-    std::vector<std::vector<int32_t>> child_to_parents(n);
-
-    for (const auto& nd : nodes) {
-        for (const auto& child : nd.children) {
-            if (!child.is_var) {
-                in_degree[nd.id]++;
-                child_to_parents[child.id].push_back(nd.id);
-            }
-        }
-    }
-
-    std::queue<int32_t> queue;
-    for (const auto& nd : nodes) {
-        if (in_degree[nd.id] == 0) {
-            queue.push(nd.id);
+//
+// Walks the back-references `Model::rebuild_back_references` has just built,
+// rather than a child->parents adjacency of its own: that was one more vector per
+// node, allocated on each of the two sorts per build. Those lists hold each
+// parent once, where the old adjacency listed a parent naming the same child
+// twice (`prod(n, n)`) twice and counted both edges into its in-degree. The
+// order is unchanged: those two entries sat next to each other, a parent's
+// in-degree could only reach zero on the second, and nothing was queued between
+// them -- so a parent is queued at the same point either way.
+//
+// `sorted` is its own FIFO: entries are appended at the back and consumed from
+// `head`, the order a std::queue gave without the deque's block allocations.
+std::vector<int32_t> compute_topo_order(const Model& model) {
+    const auto n = static_cast<int32_t>(model.num_nodes());
+    std::vector<int32_t> in_degree(static_cast<size_t>(n), 0);
+    for (int32_t nid = 0; nid < n; ++nid) {
+        for (const int32_t parent_id : model.parents(nid)) {
+            ++in_degree[parent_id];
         }
     }
 
     std::vector<int32_t> sorted;
-    sorted.reserve(n);
-    while (!queue.empty()) {
-        int32_t nid = queue.front();
-        queue.pop();
-        sorted.push_back(nid);
-        for (int32_t parent_id : child_to_parents[nid]) {
-            in_degree[parent_id]--;
-            if (in_degree[parent_id] == 0) {
-                queue.push(parent_id);
+    sorted.reserve(static_cast<size_t>(n));
+    for (int32_t nid = 0; nid < n; ++nid) {
+        if (in_degree[nid] == 0) {
+            sorted.push_back(nid);
+        }
+    }
+    for (size_t head = 0; head < sorted.size(); ++head) {
+        for (const int32_t parent_id : model.parents(sorted[head])) {
+            if (--in_degree[parent_id] == 0) {
+                sorted.push_back(parent_id);
             }
         }
     }
-
     return sorted;
-}
-
-}  // namespace
-
-std::vector<int32_t> compute_topo_order(Model& model) {
-    rebuild_back_references(model);
-    return kahn_sort(model.nodes());
 }
 
 }  // namespace detail
@@ -187,8 +131,7 @@ double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count
 
     // Seed dirty set from changed variables' dependents
     for (size_t ci = 0; ci < count; ++ci) {
-        const auto& v = model.var(changed_var_ids[ci]);
-        for (int32_t dep_id : v.dependent_ids) {
+        for (const int32_t dep_id : model.dependents(changed_var_ids[ci])) {
             if (dirty_flags[dep_id] == 0) {
                 dirty_flags[dep_id] = 1;
                 dirty_list.push_back(dep_id);
@@ -199,8 +142,7 @@ double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count
     // BFS upward through parents
     for (size_t i = 0; i < dirty_list.size(); ++i) {
         int32_t nid = dirty_list[i];
-        const auto& nd = model.node(nid);
-        for (int32_t parent_id : nd.parent_ids) {
+        for (const int32_t parent_id : model.parents(nid)) {
             if (dirty_flags[parent_id] == 0) {
                 dirty_flags[parent_id] = 1;
                 dirty_list.push_back(parent_id);
@@ -250,9 +192,10 @@ double compute_partial(const Model& model, int32_t expr_id, int32_t var_id) {
         double adj = adjoint[nid];
 
         const auto& nd = model.node(nid);
-        for (int i = 0; i < static_cast<int>(nd.children.size()); ++i) {
+        const ConstSpan<ChildRef> children = model.children(nd);
+        for (int i = 0; i < static_cast<int>(children.size()); ++i) {
             double ld = local_derivative(nd, i, model);
-            const auto& child = nd.children[i];
+            const ChildRef& child = children[i];
             if (child.is_var) {
                 int32_t key = static_cast<int32_t>(num_nodes) + child.id;
                 if (adjoint[key] == 0.0) {
@@ -305,9 +248,10 @@ std::vector<double> compute_all_partials(const Model& model, int32_t expr_id) {
         double adj = adjoint[nid];
 
         const auto& nd = model.node(nid);
-        for (int i = 0; i < static_cast<int>(nd.children.size()); ++i) {
+        const ConstSpan<ChildRef> children = model.children(nd);
+        for (int i = 0; i < static_cast<int>(children.size()); ++i) {
             double ld = local_derivative(nd, i, model);
-            const auto& child = nd.children[i];
+            const ChildRef& child = children[i];
             if (child.is_var) {
                 int32_t key = static_cast<int32_t>(num_nodes) + child.id;
                 if (adjoint[key] == 0.0) {

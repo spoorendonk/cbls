@@ -3,6 +3,7 @@
 #include "dag.h"
 
 #include <functional>
+#include <initializer_list>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -169,25 +170,55 @@ public:
         }
         return nodes_[id];
     }
+    /// `node`'s children, in the order they were given when it was created.
+    /// Valid from creation, not only after `close()`: a node's children are
+    /// written once, when it is made, and never change.
+    [[nodiscard]] ConstSpan<ChildRef> children(const ExprNode& node) const noexcept {
+        return {child_refs_.data() + node.child_begin, node.child_count};
+    }
+    /// The distinct nodes that name node `id` as a child, in ascending id order,
+    /// each listed once however many times it names `id` (`prod(n, n)`).
+    /// Rebuilt by `close()` and `add_objective_soft_constraint()`; empty for a
+    /// node created since the last rebuild, and for every node before the first.
+    [[nodiscard]] ConstSpan<int32_t> parents(int32_t id) const {
+        if (id < 0 || id >= static_cast<int32_t>(nodes_.size())) {
+            throw std::out_of_range("node id out of range");
+        }
+        const uint32_t begin = parent_offsets_[id];
+        return {parent_ids_.data() + begin, parent_offsets_[id + 1] - begin};
+    }
+    /// The distinct nodes that name variable `var_id` as a child, with the same
+    /// order, dedup and rebuild contract as `parents`.
+    [[nodiscard]] ConstSpan<int32_t> dependents(int32_t var_id) const {
+        if (var_id < 0 || var_id >= static_cast<int32_t>(vars_.size())) {
+            throw std::out_of_range("var id out of range");
+        }
+        const uint32_t begin = dependent_offsets_[var_id];
+        return {dependent_ids_.data() + begin, dependent_offsets_[var_id + 1] - begin};
+    }
     [[nodiscard]] int32_t objective_id() const noexcept { return objective_id_; }
     [[nodiscard]] bool is_maximizing() const noexcept { return is_maximizing_; }
     [[nodiscard]] const std::vector<int32_t>& constraint_ids() const noexcept {
         return constraint_ids_;
     }
-    /// Size the variable and node arrays up front, when the caller already knows
-    /// how big the model will be.
+    /// Size the variable, node and child-reference arrays up front, when the
+    /// caller already knows how big the model will be. `n_child_refs` is the
+    /// total number of children over all nodes, i.e. the DAG's edge count.
     ///
-    /// This is not a micro-optimisation on a small model; it is what stops a
+    /// This is not a micro-optimisation on a large model; it is what stops a
     /// multi-gigabyte array being copied to grow it. A reader that appends a
-    /// node per matrix entry grows `nodes_` by doubling, and every doubling
-    /// moves every `ExprNode` built so far -- each of which owns two vectors, so
-    /// the move is not a memcpy. Building the largest MIPfeas instance allocated
-    /// 6.9 GB cumulatively against a 3.3 GB peak; the difference is that
-    /// copying. Over-reserving costs address space and nothing else, so an
-    /// estimate that is merely close is worth making.
-    void reserve(size_t n_vars, size_t n_nodes) {
+    /// node per matrix entry grows `nodes_` and `child_refs_` by doubling, and
+    /// every doubling copies everything built so far. Building the largest
+    /// MIPfeas instance allocated 6.9 GB cumulatively against a 3.3 GB peak when
+    /// nodes still owned their child vectors; the difference was that copying.
+    /// Over-reserving costs address space and nothing else, so an estimate that
+    /// is merely close is worth making.
+    void reserve(size_t n_vars, size_t n_nodes, size_t n_child_refs = 0) {
         vars_.reserve(n_vars);
+        dependent_offsets_.reserve(n_vars + 1);
         nodes_.reserve(n_nodes);
+        parent_offsets_.reserve(n_nodes + 1);
+        child_refs_.reserve(n_child_refs);
     }
 
     [[nodiscard]] const std::vector<int32_t>& topo_order() const noexcept { return topo_order_; }
@@ -232,6 +263,24 @@ public:
 private:
     std::vector<Variable> vars_;
     std::vector<ExprNode> nodes_;
+    // The DAG's edges, flat (#156). Per-node and per-variable vectors made model
+    // build a few small allocations per node -- 2.66M on atlanta-ip's 540k nodes
+    // -- and a portfolio replica a deep copy of all of them.
+    //
+    // `child_refs_` is append-only: a node's children are written when the node
+    // is made and addressed by its (child_begin, child_count), so they are
+    // readable before close(). The two back-reference arrays are CSR, rebuilt
+    // wholesale by `rebuild_back_references`: the parents of node `i` are
+    // `parent_ids_[parent_offsets_[i] .. parent_offsets_[i + 1])`, and likewise
+    // for variables. Each offsets array ALWAYS holds one entry more than its
+    // owner array -- creating a node or variable appends an empty range -- so the
+    // accessors need no "not built yet" branch and a node made after a rebuild
+    // reads as parentless, exactly as it did when it owned an empty vector.
+    std::vector<ChildRef> child_refs_;
+    std::vector<uint32_t> parent_offsets_ = std::vector<uint32_t>(1, 0);
+    std::vector<int32_t> parent_ids_;
+    std::vector<uint32_t> dependent_offsets_ = std::vector<uint32_t>(1, 0);
+    std::vector<int32_t> dependent_ids_;
     std::vector<int32_t> topo_order_;
     /// Inverse of `topo_order_`: node id -> its index there. Rebuilt with it,
     /// and only ever read through `topo_position`.
@@ -256,9 +305,12 @@ private:
     std::vector<double> probe_old_violation_;
 
     void build_var_constraints();
+    void rebuild_back_references();
     void rebuild_topo_positions();
     int32_t alloc_var(VarType type, double lb, double ub, const std::string& name);
-    int32_t alloc_node(NodeOp op, const std::vector<ChildRef>& children);
+    int32_t alloc_node(NodeOp op, std::initializer_list<ChildRef> children);
+    int32_t alloc_node_over_handles(NodeOp op, const std::vector<int32_t>& handles);
+    int32_t push_node(NodeOp op, size_t child_begin);
     static ChildRef wrap(int32_t handle);  // auto-detect var vs node
 };
 

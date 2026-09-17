@@ -402,7 +402,7 @@ json var_record(const Variable& var, const std::string& name) {
 // [func(0) .. func(n-1)] for Lambda, and the n x n matrix for PairLambda. The
 // size caps are what keeps a quadratic table from being written at all.
 void tabulate_lambda(const Model& model, const ExprNode& node, json& j) {
-    const auto& child_ref = node.children[0];
+    const auto& child_ref = model.children(node)[0];
     if (!child_ref.is_var) {
         throw std::runtime_error("Lambda node child must be a variable");
     }
@@ -420,7 +420,7 @@ void tabulate_lambda(const Model& model, const ExprNode& node, json& j) {
 }
 
 void tabulate_pair_lambda(const Model& model, const ExprNode& node, json& j) {
-    const auto& child_ref = node.children[0];
+    const auto& child_ref = model.children(node)[0];
     if (!child_ref.is_var) {
         throw std::runtime_error("PairLambda node child must be a variable");
     }
@@ -460,11 +460,11 @@ json node_record(const Model& model, const ExprNode& node, NameTable& var_names,
         // Only the tabulated child is written back; the tabulation subsumes any
         // index expression the node carried.
         j["children"] = json::array();
-        j["children"].push_back(child_name(node.children[0], var_names, node_names));
+        j["children"].push_back(child_name(model.children(node)[0], var_names, node_names));
         return j;
     }
     j["children"] = json::array();
-    for (const auto& ch : node.children) {
+    for (const ChildRef& ch : model.children(node)) {
         j["children"].push_back(child_name(ch, var_names, node_names));
     }
     return j;
@@ -475,7 +475,7 @@ json objective_record(const Model& model, NameTable& var_names, NameTable& node_
     if (model.is_maximizing()) {
         // Unwrap the auto-generated Neg node to get the original expression
         const auto& neg_node = model.node(model.objective_id());
-        j["maximize"] = child_name(neg_node.children[0], var_names, node_names);
+        j["maximize"] = child_name(model.children(neg_node)[0], var_names, node_names);
     } else {
         j["minimize"] = node_names[model.objective_id()];
     }

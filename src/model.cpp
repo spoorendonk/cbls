@@ -7,13 +7,14 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <utility>
 
 namespace cbls {
 
 // Forward declare from dag_ops.cpp
 namespace detail {
-std::vector<int32_t> compute_topo_order(Model& model);
+std::vector<int32_t> compute_topo_order(const Model& model);
 }
 
 namespace {
@@ -42,16 +43,47 @@ int32_t Model::alloc_var(VarType type, double lb, double ub, const std::string& 
     v.ub = ub;
     v.name = name;
     vars_.push_back(std::move(v));
+    // An empty dependents range, keeping the offsets one longer than vars_.
+    dependent_offsets_.push_back(dependent_offsets_.back());
     return vars_.back().id;
 }
 
-int32_t Model::alloc_node(NodeOp op, const std::vector<ChildRef>& children) {
+// Append a node whose children are `child_refs_[child_begin ..]`, already
+// written by the caller. The one place a node is made, so the two invariants the
+// flat storage rests on are kept in one place: the child slice fits the 32-bit
+// offsets ExprNode carries, and parent_offsets_ stays one longer than nodes_.
+int32_t Model::push_node(NodeOp op, size_t child_begin) {
+    if (child_refs_.size() > std::numeric_limits<uint32_t>::max()) {
+        child_refs_.resize(child_begin);  // leave the model as it was
+        throw std::length_error("model has more than 2^32 - 1 child references");
+    }
     ExprNode nd;
     nd.id = static_cast<int32_t>(nodes_.size());
     nd.op = op;
-    nd.children = children;
-    nodes_.push_back(std::move(nd));
-    return nodes_.back().id;
+    nd.child_begin = static_cast<uint32_t>(child_begin);
+    nd.child_count = static_cast<uint32_t>(child_refs_.size() - child_begin);
+    nodes_.push_back(nd);
+    parent_offsets_.push_back(parent_offsets_.back());
+    return nd.id;
+}
+
+int32_t Model::alloc_node(NodeOp op, std::initializer_list<ChildRef> children) {
+    const size_t begin = child_refs_.size();
+    child_refs_.insert(child_refs_.end(), children.begin(), children.end());
+    return push_node(op, begin);
+}
+
+// The variadic ops' builder: children written straight into the flat array from
+// the caller's handles, with no intermediate ChildRef vector.
+int32_t Model::alloc_node_over_handles(NodeOp op, const std::vector<int32_t>& handles) {
+    // No reserve(size + n) here: libstdc++ reserves exactly what is asked, so
+    // doing it per node would defeat geometric growth and copy the whole array
+    // on every call.
+    const size_t begin = child_refs_.size();
+    for (const int32_t h : handles) {
+        child_refs_.push_back(wrap(h));
+    }
+    return push_node(op, begin);
 }
 
 ChildRef Model::wrap(int32_t handle) {
@@ -106,13 +138,10 @@ int32_t Model::set_var(int n, int min_size, int max_size, const std::string& nam
 
 // Expression creation methods return non-negative handles (node IDs)
 int32_t Model::constant(double val) {
-    ExprNode nd;
-    nd.id = static_cast<int32_t>(nodes_.size());
-    nd.op = NodeOp::Const;
-    nd.const_value = val;
-    nd.value = val;
-    nodes_.push_back(std::move(nd));
-    return nodes_.back().id;
+    const int32_t nid = push_node(NodeOp::Const, child_refs_.size());
+    nodes_[nid].const_value = val;
+    nodes_[nid].value = val;
+    return nid;
 }
 
 int32_t Model::neg(int32_t x) {
@@ -123,12 +152,7 @@ int32_t Model::sum(const std::vector<int32_t>& args) {
     if (args.empty()) {
         return constant(0.0);
     }
-    std::vector<ChildRef> children;
-    children.reserve(args.size());
-    for (int32_t a : args) {
-        children.push_back(wrap(a));
-    }
-    return alloc_node(NodeOp::Sum, children);
+    return alloc_node_over_handles(NodeOp::Sum, args);
 }
 
 int32_t Model::prod(int32_t a, int32_t b) {
@@ -144,21 +168,11 @@ int32_t Model::pow_expr(int32_t base, int32_t exp) {
 }
 
 int32_t Model::min_expr(const std::vector<int32_t>& args) {
-    std::vector<ChildRef> children;
-    children.reserve(args.size());
-    for (int32_t a : args) {
-        children.push_back(wrap(a));
-    }
-    return alloc_node(NodeOp::Min, children);
+    return alloc_node_over_handles(NodeOp::Min, args);
 }
 
 int32_t Model::max_expr(const std::vector<int32_t>& args) {
-    std::vector<ChildRef> children;
-    children.reserve(args.size());
-    for (int32_t a : args) {
-        children.push_back(wrap(a));
-    }
-    return alloc_node(NodeOp::Max, children);
+    return alloc_node_over_handles(NodeOp::Max, args);
 }
 
 int32_t Model::abs_expr(int32_t x) {
@@ -359,7 +373,80 @@ void Model::rebuild_topo_positions() {
     }
 }
 
+// Rebuild the DAG's back-references: every node's parents and every variable's
+// dependents. These are what delta_evaluate walks to find the nodes a changed
+// variable dirties, and what the topological sort walks; they are pure derived
+// state, so they are recomputed wholesale rather than patched.
+//
+// Two passes over the edges into CSR -- count, then fill -- so the arrays are
+// sized exactly once and nothing is allocated per node. Both passes visit
+// parents in ascending id and each parent's children in order, which is the
+// order the per-node vectors this replaced were appended in, so every list is
+// the same sequence it was.
+//
+// Deduplicated by a last-writer stamp, not by searching the list being built.
+// A duplicate can only ever come from ONE parent naming the same child twice
+// (`prod(x, x)`), because a parent is visited once -- so "already recorded by
+// this parent" is the whole condition, and a stamp answers it in O(1) where the
+// search was O(degree) per edge. That difference is not academic on a real
+// matrix: the search made this O(sum of degree^2), which on square47 (95k
+// columns in ~288 rows each) was ~3.9 BILLION comparisons and 68% of its model
+// build. Each pass needs the stamps fresh, since both skip the same duplicates.
+void Model::rebuild_back_references() {
+    const size_t n_nodes = nodes_.size();
+    const size_t n_vars = vars_.size();
+    std::vector<int32_t> node_stamp(n_nodes, -1);
+    std::vector<int32_t> var_stamp(n_vars, -1);
+
+    // Pass 1: offsets[i + 1] = number of distinct parents of i.
+    parent_offsets_.assign(n_nodes + 1, 0);
+    dependent_offsets_.assign(n_vars + 1, 0);
+    for (const ExprNode& nd : nodes_) {
+        for (const ChildRef& child : children(nd)) {
+            if (child.is_var) {
+                if (var_stamp[child.id] != nd.id) {
+                    var_stamp[child.id] = nd.id;
+                    ++dependent_offsets_[child.id + 1];
+                }
+            } else if (node_stamp[child.id] != nd.id) {
+                node_stamp[child.id] = nd.id;
+                ++parent_offsets_[child.id + 1];
+            }
+        }
+    }
+    std::partial_sum(parent_offsets_.begin(), parent_offsets_.end(), parent_offsets_.begin());
+    std::partial_sum(dependent_offsets_.begin(), dependent_offsets_.end(),
+                     dependent_offsets_.begin());
+    parent_ids_.resize(parent_offsets_.back());
+    dependent_ids_.resize(dependent_offsets_.back());
+
+    // Pass 2: fill. offsets[i] serves as i's write cursor, so when the pass is
+    // done it has advanced to i's END -- which is offsets[i + 1]'s value -- and
+    // one shift right restores the starts.
+    std::fill(node_stamp.begin(), node_stamp.end(), -1);
+    std::fill(var_stamp.begin(), var_stamp.end(), -1);
+    for (const ExprNode& nd : nodes_) {
+        for (const ChildRef& child : children(nd)) {
+            if (child.is_var) {
+                if (var_stamp[child.id] != nd.id) {
+                    var_stamp[child.id] = nd.id;
+                    dependent_ids_[dependent_offsets_[child.id]++] = nd.id;
+                }
+            } else if (node_stamp[child.id] != nd.id) {
+                node_stamp[child.id] = nd.id;
+                parent_ids_[parent_offsets_[child.id]++] = nd.id;
+            }
+        }
+    }
+    std::copy_backward(parent_offsets_.begin(), parent_offsets_.end() - 1, parent_offsets_.end());
+    parent_offsets_.front() = 0;
+    std::copy_backward(dependent_offsets_.begin(), dependent_offsets_.end() - 1,
+                       dependent_offsets_.end());
+    dependent_offsets_.front() = 0;
+}
+
 void Model::close() {
+    rebuild_back_references();
     topo_order_ = detail::compute_topo_order(*this);
     rebuild_topo_positions();
     build_var_constraints();
@@ -383,6 +470,7 @@ void Model::add_objective_soft_constraint() {
     add_constraint(objective_constraint_node_);
 
     // Rebuild structure now that a node/constraint was appended after close().
+    rebuild_back_references();
     topo_order_ = detail::compute_topo_order(*this);
     rebuild_topo_positions();
     build_var_constraints();
@@ -426,7 +514,7 @@ void Model::build_var_constraints() {
         while (!stack.empty()) {
             int32_t nid = stack.back();
             stack.pop_back();
-            for (const auto& child : nodes_[nid].children) {
+            for (const ChildRef& child : children(nodes_[nid])) {
                 if (child.is_var) {
                     if (var_stamp[child.id] != ci) {
                         var_stamp[child.id] = ci;

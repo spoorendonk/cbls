@@ -374,26 +374,33 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
     // over-reserving is not free here -- the benchmark driver caps ADDRESS
     // SPACE (`--mem-limit-gb` is `ulimit -v`), which an untouched reservation
     // counts against just as much as a used one.
+    //
+    // The DAG's edges are counted in the same pass: a coefficient's slot in its
+    // row's Sum, plus the Neg's one child or the Prod's two.
     std::size_t term_nodes = 0;
-    for (const double c : mat.coefs) {
+    std::size_t term_child_refs = 0;
+    const auto count_term = [&term_nodes, &term_child_refs](double c) {
         if (c == 1.0) {
-            continue;  // the variable is used directly
+            term_child_refs += 1;  // the variable is used directly
+            return;
         }
         term_nodes += (c == -1.0) ? 1 : 2;
+        term_child_refs += (c == -1.0) ? 2 : 3;
+    };
+    for (const double c : mat.coefs) {
+        count_term(c);
     }
     for (const int k : mat.obj_nz) {
-        const double c = prob.nonzeros[static_cast<std::size_t>(k)].value;
-        if (c == 1.0) {
-            continue;
-        }
-        term_nodes += (c == -1.0) ? 1 : 2;
+        count_term(prob.nonzeros[static_cast<std::size_t>(k)].value);
     }
-    // Per row: the Sum, one or two comparisons, and their bound constants. Per
-    // column: the bound nodes a finite box contributes. Both are small constant
-    // factors on counts already known, so the total is close rather than lavish.
-    m.reserve(static_cast<std::size_t>(n_cols), term_nodes +
-                                                    (6 * static_cast<std::size_t>(n_rows)) +
-                                                    (2 * static_cast<std::size_t>(n_cols)) + 16);
+    // Per row: the Sum, one or two comparisons (two children each), and their
+    // bound constants. Per column: the bound nodes a finite box contributes. All
+    // are small constant factors on counts already known, so the total is close
+    // rather than lavish.
+    const auto rows = static_cast<std::size_t>(n_rows);
+    m.reserve(static_cast<std::size_t>(n_cols),
+              term_nodes + (6 * rows) + (2 * static_cast<std::size_t>(n_cols)) + 16,
+              term_child_refs + (4 * rows) + 16);
 
     // Implied bounds run before variable creation, so the derived box is what
     // the engine sees.

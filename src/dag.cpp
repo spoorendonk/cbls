@@ -56,27 +56,28 @@ static int list_size(const ChildRef& ref, const Model& model) {
 // inlinable, which rules out the dispatch-through-a-table alternative outright.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 double evaluate(const ExprNode& node, const Model& model) {
+    const ConstSpan<ChildRef> children = model.children(node);
     switch (node.op) {
         case NodeOp::Const:
             return node.const_value;
 
         case NodeOp::Neg:
-            return -child_val(node.children[0], model);
+            return -child_val(children[0], model);
 
         case NodeOp::Sum: {
             double s = 0.0;
-            for (const auto& c : node.children) {
+            for (const auto& c : children) {
                 s += child_val(c, model);
             }
             return s;
         }
 
         case NodeOp::Prod:
-            return child_val(node.children[0], model) * child_val(node.children[1], model);
+            return child_val(children[0], model) * child_val(children[1], model);
 
         case NodeOp::Div: {
-            double denom = child_val(node.children[1], model);
-            double num = child_val(node.children[0], model);
+            double denom = child_val(children[1], model);
+            double num = child_val(children[0], model);
             if (std::abs(denom) < 1e-15) {
                 return num >= 0 ? std::numeric_limits<double>::infinity()
                                 : -std::numeric_limits<double>::infinity();
@@ -85,8 +86,8 @@ double evaluate(const ExprNode& node, const Model& model) {
         }
 
         case NodeOp::Pow: {
-            double base = child_val(node.children[0], model);
-            double exp = child_val(node.children[1], model);
+            double base = child_val(children[0], model);
+            double exp = child_val(children[1], model);
             double result = std::pow(base, exp);
             if (std::isfinite(result)) {
                 return result;
@@ -95,38 +96,38 @@ double evaluate(const ExprNode& node, const Model& model) {
         }
 
         case NodeOp::Min: {
-            double m = child_val(node.children[0], model);
-            for (size_t i = 1; i < node.children.size(); ++i) {
-                m = std::min(m, child_val(node.children[i], model));
+            double m = child_val(children[0], model);
+            for (size_t i = 1; i < children.size(); ++i) {
+                m = std::min(m, child_val(children[i], model));
             }
             return m;
         }
 
         case NodeOp::Max: {
-            double m = child_val(node.children[0], model);
-            for (size_t i = 1; i < node.children.size(); ++i) {
-                m = std::max(m, child_val(node.children[i], model));
+            double m = child_val(children[0], model);
+            for (size_t i = 1; i < children.size(); ++i) {
+                m = std::max(m, child_val(children[i], model));
             }
             return m;
         }
 
         case NodeOp::Abs:
-            return std::abs(child_val(node.children[0], model));
+            return std::abs(child_val(children[0], model));
 
         case NodeOp::Sin:
-            return std::sin(child_val(node.children[0], model));
+            return std::sin(child_val(children[0], model));
 
         case NodeOp::Cos:
-            return std::cos(child_val(node.children[0], model));
+            return std::cos(child_val(children[0], model));
 
         case NodeOp::Tan:
-            return std::tan(child_val(node.children[0], model));
+            return std::tan(child_val(children[0], model));
 
         case NodeOp::Exp:
-            return std::exp(child_val(node.children[0], model));
+            return std::exp(child_val(children[0], model));
 
         case NodeOp::Log: {
-            double x = child_val(node.children[0], model);
+            double x = child_val(children[0], model);
             if (x <= 0) {
                 return -std::numeric_limits<double>::infinity();
             }
@@ -134,7 +135,7 @@ double evaluate(const ExprNode& node, const Model& model) {
         }
 
         case NodeOp::Sqrt: {
-            double x = child_val(node.children[0], model);
+            double x = child_val(children[0], model);
             if (x < 0) {
                 return 0.0;
             }
@@ -143,8 +144,8 @@ double evaluate(const ExprNode& node, const Model& model) {
 
         case NodeOp::SignPower: {
             // sign(x) * |x|^p  (AMPL OPSIGNPOWER / MINLPLib opsignpower).
-            double x = child_val(node.children[0], model);
-            double p = child_val(node.children[1], model);
+            double x = child_val(children[0], model);
+            double p = child_val(children[1], model);
             double mag = std::pow(std::abs(x), p);
             if (!std::isfinite(mag)) {
                 return x >= 0 ? std::numeric_limits<double>::infinity()
@@ -154,22 +155,21 @@ double evaluate(const ExprNode& node, const Model& model) {
         }
 
         case NodeOp::Tanh:
-            return std::tanh(child_val(node.children[0], model));
+            return std::tanh(child_val(children[0], model));
 
         case NodeOp::If: {
-            double cond = child_val(node.children[0], model);
-            return cond > 0 ? child_val(node.children[1], model)
-                            : child_val(node.children[2], model);
+            double cond = child_val(children[0], model);
+            return cond > 0 ? child_val(children[1], model) : child_val(children[2], model);
         }
 
         case NodeOp::At: {
             // children[0] = list var, children[1] = index expr
-            int idx = static_cast<int>(child_val(node.children[1], model));
-            return list_element(node.children[0], model, idx);
+            int idx = static_cast<int>(child_val(children[1], model));
+            return list_element(children[0], model, idx);
         }
 
         case NodeOp::Count: {
-            return static_cast<double>(list_size(node.children[0], model));
+            return static_cast<double>(list_size(children[0], model));
         }
 
         case NodeOp::Lambda: {
@@ -178,7 +178,7 @@ double evaluate(const ExprNode& node, const Model& model) {
                 return 0.0;
             }
             const auto& func = model.lambda_func(node.lambda_func_id);
-            const auto& ref = node.children[0];
+            const auto& ref = children[0];
             if (!ref.is_var) {
                 return 0.0;
             }
@@ -196,7 +196,7 @@ double evaluate(const ExprNode& node, const Model& model) {
                 return 0.0;
             }
             const auto& func = model.pair_lambda_func(node.lambda_func_id);
-            const auto& ref = node.children[0];
+            const auto& ref = children[0];
             if (!ref.is_var) {
                 return 0.0;
             }
@@ -210,45 +210,41 @@ double evaluate(const ExprNode& node, const Model& model) {
 
         case NodeOp::Leq:
             // child0 - child1 (≤ 0 when child0 ≤ child1)
-            return comparison_residual(
-                child_val(node.children[0], model), child_val(node.children[1], model),
-                child_is_const(node.children[0], model), child_is_const(node.children[1], model));
+            return comparison_residual(child_val(children[0], model), child_val(children[1], model),
+                                       child_is_const(children[0], model),
+                                       child_is_const(children[1], model));
 
         case NodeOp::Eq:
             // |child0 - child1| (= 0 when equal)
-            return std::abs(child_val(node.children[0], model) -
-                            child_val(node.children[1], model));
+            return std::abs(child_val(children[0], model) - child_val(children[1], model));
 
         case NodeOp::Geq:
             // b - a (≤ 0 when a ≥ b)
-            return comparison_residual(
-                child_val(node.children[1], model), child_val(node.children[0], model),
-                child_is_const(node.children[1], model), child_is_const(node.children[0], model));
+            return comparison_residual(child_val(children[1], model), child_val(children[0], model),
+                                       child_is_const(children[1], model),
+                                       child_is_const(children[0], model));
 
         case NodeOp::Neq:
             // 1 when equal (violated), 0 when not equal (satisfied)
-            return (std::abs(child_val(node.children[0], model) -
-                             child_val(node.children[1], model)) < 1e-9)
+            return (std::abs(child_val(children[0], model) - child_val(children[1], model)) < 1e-9)
                        ? 1.0
                        : 0.0;
 
         case NodeOp::Lt: {
             // a - b + ε (≤ 0 when a < b strictly)
             constexpr double kEps = 1e-9;
-            return comparison_residual(child_val(node.children[0], model),
-                                       child_val(node.children[1], model),
-                                       child_is_const(node.children[0], model),
-                                       child_is_const(node.children[1], model)) +
+            return comparison_residual(child_val(children[0], model), child_val(children[1], model),
+                                       child_is_const(children[0], model),
+                                       child_is_const(children[1], model)) +
                    kEps;
         }
 
         case NodeOp::Gt: {
             // b - a + ε (≤ 0 when a > b strictly)
             constexpr double kEps = 1e-9;
-            return comparison_residual(child_val(node.children[1], model),
-                                       child_val(node.children[0], model),
-                                       child_is_const(node.children[1], model),
-                                       child_is_const(node.children[0], model)) +
+            return comparison_residual(child_val(children[1], model), child_val(children[0], model),
+                                       child_is_const(children[1], model),
+                                       child_is_const(children[0], model)) +
                    kEps;
         }
     }
@@ -264,6 +260,7 @@ double evaluate(const ExprNode& node, const Model& model) {
 // edge, so it sits on the same hot path.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 double local_derivative(const ExprNode& node, int child_idx, const Model& model) {
+    const ConstSpan<ChildRef> children = model.children(node);
     switch (node.op) {
         case NodeOp::Const:
             return 0.0;
@@ -276,24 +273,24 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
 
         case NodeOp::Prod: {
             int other = 1 - child_idx;
-            return child_val(node.children[other], model);
+            return child_val(children[other], model);
         }
 
         case NodeOp::Div: {
             if (child_idx == 0) {
-                double denom = child_val(node.children[1], model);
+                double denom = child_val(children[1], model);
                 return std::abs(denom) > 1e-15 ? 1.0 / denom : 0.0;
             }
-            double denom = child_val(node.children[1], model);
+            double denom = child_val(children[1], model);
             if (std::abs(denom) < 1e-15) {
                 return 0.0;
             }
-            return -child_val(node.children[0], model) / (denom * denom);
+            return -child_val(children[0], model) / (denom * denom);
         }
 
         case NodeOp::Pow: {
-            double base = child_val(node.children[0], model);
-            double exp = child_val(node.children[1], model);
+            double base = child_val(children[0], model);
+            double exp = child_val(children[1], model);
             if (child_idx == 0) {
                 if (std::abs(base) < 1e-15 && exp < 1) {
                     return 0.0;
@@ -319,18 +316,16 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
 
         case NodeOp::Min: {
             double min_val = node.value;
-            return std::abs(child_val(node.children[child_idx], model) - min_val) < 1e-12 ? 1.0
-                                                                                          : 0.0;
+            return std::abs(child_val(children[child_idx], model) - min_val) < 1e-12 ? 1.0 : 0.0;
         }
 
         case NodeOp::Max: {
             double max_val = node.value;
-            return std::abs(child_val(node.children[child_idx], model) - max_val) < 1e-12 ? 1.0
-                                                                                          : 0.0;
+            return std::abs(child_val(children[child_idx], model) - max_val) < 1e-12 ? 1.0 : 0.0;
         }
 
         case NodeOp::Abs: {
-            double v = child_val(node.children[0], model);
+            double v = child_val(children[0], model);
             if (v > 0) {
                 return 1.0;
             }
@@ -341,21 +336,21 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
         }
 
         case NodeOp::Sin:
-            return std::cos(child_val(node.children[0], model));
+            return std::cos(child_val(children[0], model));
 
         case NodeOp::Cos:
-            return -std::sin(child_val(node.children[0], model));
+            return -std::sin(child_val(children[0], model));
 
         case NodeOp::Tan: {
-            double c = std::cos(child_val(node.children[0], model));
+            double c = std::cos(child_val(children[0], model));
             return 1.0 / (c * c);
         }
 
         case NodeOp::Exp:
-            return std::exp(child_val(node.children[0], model));
+            return std::exp(child_val(children[0], model));
 
         case NodeOp::Log: {
-            double x = child_val(node.children[0], model);
+            double x = child_val(children[0], model);
             if (std::abs(x) < 1e-15) {
                 return 0.0;
             }
@@ -363,7 +358,7 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
         }
 
         case NodeOp::Sqrt: {
-            double x = child_val(node.children[0], model);
+            double x = child_val(children[0], model);
             if (x < 1e-15) {
                 return 0.0;
             }
@@ -376,8 +371,8 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
             if (child_idx == 1) {
                 return 0.0;
             }
-            double x = child_val(node.children[0], model);
-            double p = child_val(node.children[1], model);
+            double x = child_val(children[0], model);
+            double p = child_val(children[1], model);
             double ax = std::abs(x);
             if (ax < 1e-15) {
                 // Slope at 0 is finite only for p == 1 (value |x|); 0 otherwise so
@@ -389,7 +384,7 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
         }
 
         case NodeOp::Tanh: {
-            double t = std::tanh(child_val(node.children[0], model));
+            double t = std::tanh(child_val(children[0], model));
             return 1.0 - (t * t);
         }
 
@@ -397,7 +392,7 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
             if (child_idx == 0) {
                 return 0.0;  // non-differentiable w.r.t. condition
             }
-            double cond = child_val(node.children[0], model);
+            double cond = child_val(children[0], model);
             if (child_idx == 1) {
                 return cond > 0 ? 1.0 : 0.0;
             }
@@ -414,7 +409,7 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
             return child_idx == 0 ? 1.0 : -1.0;
 
         case NodeOp::Eq: {
-            double diff = child_val(node.children[0], model) - child_val(node.children[1], model);
+            double diff = child_val(children[0], model) - child_val(children[1], model);
             // Both comparisons are false for diff == 0 and for NaN, so each keeps the
             // 0.0 initializer. std::copysign is NOT a substitute: it returns +/-1 for a
             // zero or NaN diff and would inject a spurious gradient on the AD path.

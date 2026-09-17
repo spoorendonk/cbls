@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -32,11 +33,38 @@ struct Variable {
     double lb = 0.0;
     double ub = 0.0;
     std::string name;
-    std::vector<int32_t> elements;       // List/Set current elements
-    int32_t universe_size = 0;           // Set: universe {0..n-1}
-    int32_t min_size = 0;                // Set: minimum cardinality
-    int32_t max_size = 0;                // Set/List: maximum cardinality
-    std::vector<int32_t> dependent_ids;  // ExprNode IDs that depend on this var
+    std::vector<int32_t> elements;  // List/Set current elements
+    int32_t universe_size = 0;      // Set: universe {0..n-1}
+    int32_t min_size = 0;           // Set: minimum cardinality
+    int32_t max_size = 0;           // Set/List: maximum cardinality
+    // The nodes that read this variable are `Model::dependents(id)`: a slice of
+    // one flat array the model owns, not a vector per variable (#156).
+};
+
+/// A read-only view of a contiguous run of `T` -- what `Model::children`,
+/// `Model::parents` and `Model::dependents` hand out, each a slice of one flat
+/// array the model owns. C++17 has no `std::span`, and the three accessors need
+/// nothing beyond iteration, a size and an index.
+///
+/// Invalidated by whatever reallocates the array it points into: appending a
+/// node for `children`, and the back-reference rebuild in `close()` /
+/// `add_objective_soft_constraint()` for the other two. No caller holds one
+/// across either.
+template <typename T>
+class ConstSpan {
+public:
+    constexpr ConstSpan() noexcept = default;
+    constexpr ConstSpan(const T* data, size_t size) noexcept : data_(data), size_(size) {}
+
+    [[nodiscard]] constexpr const T* begin() const noexcept { return data_; }
+    [[nodiscard]] constexpr const T* end() const noexcept { return data_ + size_; }
+    [[nodiscard]] constexpr size_t size() const noexcept { return size_; }
+    [[nodiscard]] constexpr bool empty() const noexcept { return size_ == 0; }
+    [[nodiscard]] constexpr const T& operator[](size_t i) const noexcept { return data_[i]; }
+
+private:
+    const T* data_ = nullptr;
+    size_t size_ = 0;
 };
 
 enum class NodeOp : uint8_t {
@@ -75,13 +103,21 @@ struct ChildRef {
     bool is_var = false;
 };
 
+/// One DAG node. It owns no heap block: its children are the slice
+/// `[child_begin, child_begin + child_count)` of the model's flat child array,
+/// read through `Model::children(node)`, and its parents are
+/// `Model::parents(id)` (#156).
+///
+/// Offsets rather than pointers, so that `Model`'s implicit copy -- which is how
+/// a portfolio replicates a model per worker -- stays a correct deep copy with
+/// nothing to rebase.
 struct ExprNode {
     int32_t id = -1;
     NodeOp op = NodeOp::Const;
     double value = 0.0;
     double const_value = 0.0;
-    std::vector<ChildRef> children;
-    std::vector<int32_t> parent_ids;
+    uint32_t child_begin = 0;
+    uint32_t child_count = 0;
     int32_t lambda_func_id = -1;  // index into Model::lambda_funcs_
 };
 

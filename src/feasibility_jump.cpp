@@ -487,15 +487,15 @@ namespace {
 // compile-time constant. Vacuously true for a leaf (a Const node has no
 // children); a variable child is never constant, since its value is search
 // state.
-bool children_all_const(const ExprNode& nd, const std::vector<uint8_t>& is_const) {
-    return std::all_of(nd.children.begin(), nd.children.end(),
+bool children_all_const(ConstSpan<ChildRef> children, const std::vector<uint8_t>& is_const) {
+    return std::all_of(children.begin(), children.end(),
                        [&](const ChildRef& ch) { return !ch.is_var && is_const[ch.id] != 0; });
 }
 
 // Is this node affine in the variables, given the same classification already
 // settled for every node below it? Only called for nodes that are NOT wholly
-// constant, so `nd.children` is populated for every op that indexes it.
-bool node_is_affine(const ExprNode& nd, const std::vector<uint8_t>& is_const,
+// constant, so `children` is populated for every op that indexes it.
+bool node_is_affine(NodeOp op, ConstSpan<ChildRef> children, const std::vector<uint8_t>& is_const,
                     const std::vector<uint8_t>& is_affine) {
     auto child_const = [&](const ChildRef& c) -> bool {
         return c.is_var ? false : static_cast<bool>(is_const[c.id]);
@@ -503,21 +503,21 @@ bool node_is_affine(const ExprNode& nd, const std::vector<uint8_t>& is_const,
     auto child_affine = [&](const ChildRef& c) -> bool {
         return c.is_var ? true : static_cast<bool>(is_affine[c.id]);
     };
-    switch (nd.op) {
+    switch (op) {
         case NodeOp::Const:
         case NodeOp::Neg:
         case NodeOp::Sum:
-            return std::all_of(nd.children.begin(), nd.children.end(), child_affine);
+            return std::all_of(children.begin(), children.end(), child_affine);
         case NodeOp::Prod:  // affine if at most one child non-constant
-            return (child_const(nd.children[0]) && child_affine(nd.children[1])) ||
-                   (child_const(nd.children[1]) && child_affine(nd.children[0]));
+            return (child_const(children[0]) && child_affine(children[1])) ||
+                   (child_const(children[1]) && child_affine(children[0]));
         case NodeOp::Div:  // affine / const
-            return child_affine(nd.children[0]) && child_const(nd.children[1]);
+            return child_affine(children[0]) && child_const(children[1]);
         case NodeOp::Leq:
         case NodeOp::Geq:
         case NodeOp::Lt:
         case NodeOp::Gt:  // residual lhs-rhs is affine if both sides affine
-            return child_affine(nd.children[0]) && child_affine(nd.children[1]);
+            return child_affine(children[0]) && child_affine(children[1]);
         default:  // Eq (abs), Neq (step), Pow, Min, Max, trig, etc.
             return false;
     }
@@ -534,11 +534,13 @@ void FeasibilityJump::compute_linear_constraints() {
     // topo_order has children before parents.
     for (int32_t nid : model_.topo_order()) {
         const ExprNode& nd = nodes[nid];
-        const bool all_const = children_all_const(nd, is_const);
+        const ConstSpan<ChildRef> children = model_.children(nd);
+        const bool all_const = children_all_const(children, is_const);
         is_const[nid] = static_cast<uint8_t>(all_const);
         // A constant subtree is affine, and short-circuiting there is what keeps
         // node_is_affine from indexing the children of a childless leaf.
-        is_affine[nid] = static_cast<uint8_t>(all_const || node_is_affine(nd, is_const, is_affine));
+        is_affine[nid] =
+            static_cast<uint8_t>(all_const || node_is_affine(nd.op, children, is_const, is_affine));
     }
 
     const auto& cids = model_.constraint_ids();
