@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = REPO_ROOT / "benchmarks" / "mipfeas" / "testdata"
 FIXTURE_BUDGET = 2.0
+SCORER = REPO_ROOT / "benchmarks" / "mipfeas" / "primal_integral.py"
 
 _PASSING: dict[str, object] = {
     "verdict": "pass",
@@ -56,6 +57,7 @@ _PASSING: dict[str, object] = {
     "n_columns": 10,
     "n_rows": 5,
 }
+_REJECTED: dict[str, object] = {"verdict": "fail", "reason": "row_violation", "marginal": False}
 
 
 def _write(
@@ -76,125 +78,12 @@ def _write(
         (engine_dir / f"{instance}.verify.json").write_text(json.dumps(verification))
 
 
-def _score(directory: Path, instances: list[tuple[str, float]]) -> list[Scored]:
+def _score(directory: Path, instances: list[str]) -> list[Scored]:
     return [
-        score_instance(name, engine, reference, "opt", directory, budget=60.0)
-        for name, reference in instances
+        score_instance(name, engine, 1.0, "opt", directory, budget=60.0)
+        for name in instances
         for engine in ENGINES
     ]
-
-
-# --- feasibility parity ------------------------------------------------------
-
-
-def test_parity_names_both_asymmetric_difference_sets(tmp_path: Path) -> None:
-    _write(tmp_path, "cbls", "mine", {"status": "feasible", "objective": 1.0}, [(1.0, 1.0)])
-    _write(tmp_path, "cpsat", "mine", {"status": "no_solution", "objective": None}, [])
-    _write(tmp_path, "cbls", "theirs", {"status": "no_solution", "objective": None}, [])
-    _write(tmp_path, "cpsat", "theirs", {"status": "feasible", "objective": 1.0}, [(1.0, 1.0)])
-    parity = compare_feasibility(_score(tmp_path, [("mine", 1.0), ("theirs", 1.0)]))
-    assert parity.only["cbls"] == ["mine"]
-    assert parity.only["cpsat"] == ["theirs"]
-    assert parity.agreement == 0
-    assert parity.considered == ["mine", "theirs"]
-
-
-def test_parity_counts_agreement_in_both_directions(tmp_path: Path) -> None:
-    _write(tmp_path, "cbls", "easy", {"status": "feasible", "objective": 1.0}, [(1.0, 1.0)])
-    _write(tmp_path, "cpsat", "easy", {"status": "feasible", "objective": 1.0}, [(1.0, 1.0)])
-    _write(tmp_path, "cbls", "hard", {"status": "no_solution", "objective": None}, [])
-    _write(tmp_path, "cpsat", "hard", {"status": "no_solution", "objective": None}, [])
-    parity = compare_feasibility(_score(tmp_path, [("easy", 1.0), ("hard", 1.0)]))
-    assert parity.both_feasible == ["easy"]
-    assert parity.neither_feasible == ["hard"]
-    assert parity.agreement == 2
-    assert parity.only == {"cbls": [], "cpsat": []}
-
-
-def test_parity_counts_feasibility_over_the_whole_roster(tmp_path: Path) -> None:
-    # The per-engine feasible count and the comparable set have different
-    # denominators, and the report states both rather than conflating them.
-    _write(tmp_path, "cbls", "solo", {"status": "feasible", "objective": 1.0}, [(1.0, 1.0)])
-    parity = compare_feasibility(_score(tmp_path, [("solo", 1.0)]))
-    assert parity.feasible == {"cbls": 1, "cpsat": 0}
-    assert parity.considered == []
-    assert parity.roster_size == 1
-
-
-def test_a_killed_job_cannot_answer_the_parity_question(tmp_path: Path) -> None:
-    # Scoring it as "did not reach feasibility" would charge a harness failure to
-    # the search -- the mistake `not_run` has always been kept out of the
-    # aggregates to avoid.
-    _write(tmp_path, "cbls", "dead", {"status": "killed", "message": "oom", "objective": None})
-    _write(tmp_path, "cpsat", "dead", {"status": "feasible", "objective": 1.0}, [(1.0, 1.0)])
-    rows = _score(tmp_path, [("dead", 1.0)])
-    parity = compare_feasibility(rows)
-    assert parity.considered == []
-    assert parity.excluded == [("dead", "cbls", "did not search (status killed)")]
-
-
-def test_a_withheld_row_is_excluded_from_parity_rather_than_counted_infeasible(
-    tmp_path: Path,
-) -> None:
-    _write(
-        tmp_path,
-        "cbls",
-        "bad",
-        {"status": "feasible", "objective": 1.0},
-        [(1.0, 1.0)],
-        verification={"verdict": "fail", "reason": "row_violation", "marginal": False},
-    )
-    _write(tmp_path, "cpsat", "bad", {"status": "feasible", "objective": 1.0}, [(1.0, 1.0)])
-    rows = _score(tmp_path, [("bad", 1.0)])
-    cbls_row = next(r for r in rows if r.engine == "cbls")
-    assert parity_verdict(cbls_row) == PARITY_EXCLUDED
-    assert compare_feasibility(rows).considered == []
-
-
-# --- job failure reasons -----------------------------------------------------
-
-
-def test_the_drivers_kill_message_reaches_the_report(tmp_path: Path) -> None:
-    _write(
-        tmp_path,
-        "cbls",
-        "dead",
-        {"status": "killed", "message": "exceeded 1500.0s wall clock", "objective": None},
-    )
-    failures = job_failures(_score(tmp_path, [("dead", 1.0)]))
-    killed = next(f for f in failures if f.engine == "cbls")
-    assert killed.kind == "killed"
-    assert killed.reason == "exceeded 1500.0s wall clock"
-
-
-def test_a_rejected_solutions_reason_reaches_the_report(tmp_path: Path) -> None:
-    _write(
-        tmp_path,
-        "cbls",
-        "bad",
-        {"status": "feasible", "objective": 1.0},
-        [(1.0, 1.0)],
-        verification={
-            "verdict": "fail",
-            "reason": "row_violation",
-            "message": "row 4.5 (4.5e+06x tol at R7)",
-            "marginal": False,
-        },
-    )
-    failures = job_failures(_score(tmp_path, [("bad", 1.0)]))
-    rejected = next(f for f in failures if f.kind == "verification fail")
-    assert "row_violation" in rejected.reason
-    assert "R7" in rejected.reason
-
-
-def test_a_missing_result_is_reported_as_a_reason_not_a_blank(tmp_path: Path) -> None:
-    (tmp_path / "cbls").mkdir()
-    failures = job_failures(_score(tmp_path, [("absent", 1.0)]))
-    assert [f.kind for f in failures] == ["not_run", "not_run"]
-    assert all(f.reason for f in failures)
-
-
-# --- model-shape cross-check -------------------------------------------------
 
 
 def _shaped(status: str, **extra: object) -> dict[str, object]:
@@ -206,118 +95,117 @@ def _shaped(status: str, **extra: object) -> dict[str, object]:
     return record
 
 
-def _verdict(columns: int, rows: int) -> dict[str, object]:
-    """A passing verdict that also records what SCIP read: the third opinion."""
-    return dict(_PASSING, n_columns=columns, n_rows=rows)
+def _job(directory: Path, engine: str, instance: str, state: str, **extra: object) -> None:
+    """One job in one of the states the report distinguishes; `absent` writes nothing."""
+    if state == "absent":
+        (directory / engine).mkdir(parents=True, exist_ok=True)
+        return
+    status = "feasible" if state == "rejected" else state
+    record = _shaped(status, **extra)
+    verification = _REJECTED if state == "rejected" else _PASSING
+    trace = [(1.0, 1.0)] if status == "feasible" else []
+    _write(directory, engine, instance, record, trace, verification)
 
 
-def test_free_rows_the_baseline_keeps_make_a_constraint_difference_benign(
-    tmp_path: Path,
+# --- feasibility parity ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("jobs", "expected"),
+    [
+        (
+            {"mine": ("feasible", "no_solution"), "theirs": ("no_solution", "feasible")},
+            {
+                "only": {"cbls": ["mine"], "cpsat": ["theirs"]},
+                "agreement": 0,
+                "considered": ["mine", "theirs"],
+            },
+        ),
+        (
+            {"easy": ("feasible", "feasible"), "hard": ("no_solution", "no_solution")},
+            {
+                "both_feasible": ["easy"],
+                "neither_feasible": ["hard"],
+                "agreement": 2,
+                "only": {"cbls": [], "cpsat": []},
+            },
+        ),
+        # The per-engine feasible count and the comparable set have different
+        # denominators, and the report states both rather than conflating them.
+        (
+            {"solo": ("feasible", "absent")},
+            {"feasible": {"cbls": 1, "cpsat": 0}, "considered": [], "roster_size": 1},
+        ),
+        # Scoring a killed job as "did not reach feasibility" would charge a harness
+        # failure to the search -- the mistake `not_run` has always been kept out of
+        # the aggregates to avoid.
+        (
+            {"dead": ("killed", "feasible")},
+            {"considered": [], "excluded": [("dead", "cbls", "did not search (status killed)")]},
+        ),
+        # A withheld row is excluded, not counted infeasible.
+        ({"bad": ("rejected", "feasible")}, {"considered": []}),
+    ],
+    ids=["asymmetric-difference-sets", "agreement-both-ways", "whole-roster", "killed", "withheld"],
+)
+def test_feasibility_parity(
+    tmp_path: Path, jobs: dict[str, tuple[str, str]], expected: dict[str, object]
 ) -> None:
-    # The one this benchmark actually has: OR-Tools' ModelBuilder holds an MPS `N`
-    # row after the objective as an unconstrained linear constraint; the CBLS
-    # adapter drops it, and so does SCIP. Same feasible set.
-    checked = _verdict(220, 51)
-    _write(
-        tmp_path, "cbls", "mad", _shaped("feasible", n_vars=220, n_cons=51), [(1.0, 1.0)], checked
-    )
-    _write(
-        tmp_path,
-        "cpsat",
-        "mad",
-        _shaped("feasible", n_vars=220, n_cons=52, n_free_cons=1),
-        [(1.0, 1.0)],
-        checked,
-    )
-    (disagreement,) = cross_check_shapes(_score(tmp_path, [("mad", 1.0)]))
-    assert disagreement.kind == "constraints"
-    assert disagreement.benign
-    assert "free row" in disagreement.explanation
+    for instance, states in jobs.items():
+        for engine, state in zip(ENGINES, states, strict=True):
+            _job(tmp_path, engine, instance, state)
+    rows = _score(tmp_path, list(jobs))
+    parity = compare_feasibility(rows)
+    for field, value in expected.items():
+        assert getattr(parity, field) == value, field
+    for row in rows:
+        if jobs.get(row.instance, ("", ""))[ENGINES.index(row.engine)] == "rejected":
+            assert parity_verdict(row) == PARITY_EXCLUDED
 
 
-def test_a_constraint_difference_the_free_rows_do_not_explain_is_flagged(tmp_path: Path) -> None:
-    checked = _verdict(48, 40)
-    _write(
-        tmp_path, "cbls", "odd", _shaped("feasible", n_vars=48, n_cons=40), [(1.0, 1.0)], checked
-    )
-    _write(
-        tmp_path,
-        "cpsat",
-        "odd",
-        _shaped("feasible", n_vars=48, n_cons=44, n_free_cons=1),
-        [(1.0, 1.0)],
-        checked,
-    )
-    (disagreement,) = cross_check_shapes(_score(tmp_path, [("odd", 1.0)]))
-    assert not disagreement.benign
+# --- job failure reasons -----------------------------------------------------
 
 
-def test_a_checker_that_read_a_third_count_outranks_the_free_row_excuse(
+@pytest.mark.parametrize(
+    ("state", "extra", "verification", "kinds", "reason"),
+    [
+        (
+            "killed",
+            {"message": "exceeded 1500.0s wall clock"},
+            None,
+            ["killed", "not_run"],
+            "exceeded 1500.0s wall clock",
+        ),
+        (
+            "feasible",
+            {},
+            {**_REJECTED, "message": "row 4.5 (4.5e+06x tol at R7)"},
+            ["verification fail", "not_run"],
+            "row_violation",
+        ),
+        # A reason, not a blank.
+        ("absent", {}, None, ["not_run", "not_run"], "no result file"),
+    ],
+    ids=["driver-kill-message", "rejected-solution-reason", "missing-result"],
+)
+def test_a_failed_job_reaches_the_report_with_its_reason(
     tmp_path: Path,
+    state: str,
+    extra: dict[str, object],
+    verification: dict[str, object] | None,
+    kinds: list[str],
+    reason: str,
 ) -> None:
-    # The free rows excuse the baseline, never the third reader. Without this the
-    # verdict on a checker that read a different program entirely is `benign` the
-    # moment the two engines happen to differ by exactly the free-row count.
-    checked = _verdict(220, 99)
-    _write(
-        tmp_path, "cbls", "mad", _shaped("feasible", n_vars=220, n_cons=51), [(1.0, 1.0)], checked
-    )
-    _write(
-        tmp_path,
-        "cpsat",
-        "mad",
-        _shaped("feasible", n_vars=220, n_cons=52, n_free_cons=1),
-        [(1.0, 1.0)],
-        checked,
-    )
-    (disagreement,) = cross_check_shapes(_score(tmp_path, [("mad", 1.0)]))
-    assert not disagreement.benign
-    assert "checker" in disagreement.explanation
-
-
-def test_extra_constraints_on_the_cbls_side_are_never_benign(tmp_path: Path) -> None:
-    # The rule is directional: only the baseline keeps free rows. CBLS holding
-    # MORE rows than CP-SAT is a reader defect in the other direction, and the
-    # free-row count can never excuse it.
-    checked = _verdict(48, 41)
-    _write(
-        tmp_path, "cbls", "odd", _shaped("feasible", n_vars=48, n_cons=41), [(1.0, 1.0)], checked
-    )
-    _write(
-        tmp_path,
-        "cpsat",
-        "odd",
-        _shaped("feasible", n_vars=48, n_cons=40, n_free_cons=1),
-        [(1.0, 1.0)],
-        checked,
-    )
-    (disagreement,) = cross_check_shapes(_score(tmp_path, [("odd", 1.0)]))
-    assert not disagreement.benign
-
-
-def test_two_verdicts_disagreeing_about_the_same_file_are_flagged(tmp_path: Path) -> None:
-    # The two verdicts are two SCIP readings of one file. Them differing from each
-    # other is a finding of its own, and one that would otherwise vanish: a single
-    # reading is all the rest of the cross-check consumes.
-    _write(
-        tmp_path,
-        "cbls",
-        "odd",
-        _shaped("feasible", n_vars=10, n_cons=5, n_free_cons=0),
-        [(1.0, 1.0)],
-        _verdict(10, 5),
-    )
-    _write(
-        tmp_path,
-        "cpsat",
-        "odd",
-        _shaped("feasible", n_vars=10, n_cons=5, n_free_cons=0),
-        [(1.0, 1.0)],
-        _verdict(10, 77),
-    )
-    (disagreement,) = cross_check_shapes(_score(tmp_path, [("odd", 1.0)]))
-    assert not disagreement.benign
-    assert "two different shapes" in disagreement.explanation
+    if state == "absent":
+        (tmp_path / "cbls").mkdir()
+    else:
+        record = _shaped(state, **extra)
+        _write(tmp_path, "cbls", "x", record, [(1.0, 1.0)], verification or _PASSING)
+    failures = job_failures(_score(tmp_path, ["x"]))
+    assert [(f.engine, f.kind) for f in failures] == list(zip(ENGINES, kinds, strict=True))
+    assert reason in failures[0].reason
+    if verification is not None:
+        assert "R7" in failures[0].reason
 
 
 def test_a_row_the_runner_could_not_dump_says_so_rather_than_reading_as_unchecked(
@@ -325,16 +213,10 @@ def test_a_row_the_runner_could_not_dump_says_so_rather_than_reading_as_unchecke
 ) -> None:
     # `withholds` is true for a solution_write_error too, so testing `withheld`
     # first would report a disk failure as "nobody checked the solution".
-    _write(
-        tmp_path,
-        "cbls",
-        "nodisk",
-        {"status": "solution_write_error", "objective": 1.0, "message": "no space left"},
-        [(1.0, 1.0)],
-        verification=None,
-    )
+    record = {"status": "solution_write_error", "objective": 1.0, "message": "no space left"}
+    _write(tmp_path, "cbls", "nodisk", record, [(1.0, 1.0)], verification=None)
     _write(tmp_path, "cpsat", "nodisk", _shaped("feasible"), [(1.0, 1.0)])
-    rows = _score(tmp_path, [("nodisk", 1.0)])
+    rows = _score(tmp_path, ["nodisk"])
     ((_, engine, why),) = compare_feasibility(rows).excluded
     assert engine == "cbls"
     assert "solution_write_error" in why
@@ -342,89 +224,165 @@ def test_a_row_the_runner_could_not_dump_says_so_rather_than_reading_as_unchecke
     assert [f.engine for f in job_failures(rows)] == ["cbls"]
 
 
-def test_a_variable_count_difference_is_never_benign(tmp_path: Path) -> None:
-    checked = _verdict(48, 10)
-    _write(
-        tmp_path, "cbls", "odd", _shaped("feasible", n_vars=48, n_cons=10), [(1.0, 1.0)], checked
-    )
-    _write(
-        tmp_path,
-        "cpsat",
-        "odd",
-        _shaped("feasible", n_vars=49, n_cons=10, n_free_cons=7),
-        [(1.0, 1.0)],
-        checked,
-    )
-    kinds = {(d.kind, d.benign) for d in cross_check_shapes(_score(tmp_path, [("odd", 1.0)]))}
-    assert ("variables", False) in kinds
+# --- model-shape cross-check -------------------------------------------------
 
 
-def test_the_checker_disagreeing_with_both_engines_is_flagged(tmp_path: Path) -> None:
-    # SCIP drops free rows too, so it agreeing with neither engine is not
-    # something the free-row rule can explain in either direction.
-    verdict = dict(_PASSING, n_columns=10, n_rows=99)
-    _write(
-        tmp_path, "cbls", "odd", _shaped("feasible", n_vars=10, n_cons=10), [(1.0, 1.0)], verdict
-    )
-    _write(
-        tmp_path,
-        "cpsat",
-        "odd",
-        _shaped("feasible", n_vars=10, n_cons=10, n_free_cons=0),
-        [(1.0, 1.0)],
-        verdict,
-    )
-    (disagreement,) = cross_check_shapes(_score(tmp_path, [("odd", 1.0)]))
-    assert not disagreement.benign
-    assert "checker" in disagreement.explanation
+def _shape(variables: int, constraints: int, free: int | None = None) -> dict[str, object]:
+    counts: dict[str, object] = {"n_vars": variables, "n_cons": constraints}
+    return counts if free is None else {**counts, "n_free_cons": free}
 
 
-def test_a_free_row_excuse_with_no_third_reading_is_flagged(tmp_path: Path) -> None:
-    """Absence of a checker is not agreement with one.
-
-    A verdict exists only for a row that reported a solution, so on every
-    instance where NEITHER engine found one there is no third reading -- and
-    `free_rows` is written only by the baseline, so without SCIP the excuse is
-    certified by the reader under test. Those are exactly the instances where a
-    translation defect best explains the double failure.
-    """
-    _write(tmp_path, "cbls", "dark", _shaped("no_solution", n_vars=10, n_cons=40), [])
-    _write(
-        tmp_path,
-        "cpsat",
-        "dark",
-        _shaped("no_solution", n_vars=10, n_cons=44, n_free_cons=4),
-        [],
-    )
-    (disagreement,) = cross_check_shapes(_score(tmp_path, [("dark", 1.0)]))
-    assert not disagreement.benign
-    assert "unchecked" in disagreement.explanation
-
-
-def test_an_instance_with_no_shape_from_one_engine_is_not_reported_as_agreeing(
+@pytest.mark.parametrize(
+    ("status", "cbls", "cpsat", "checked", "findings", "explanation"),
+    [
+        # The one this benchmark actually has: OR-Tools' ModelBuilder holds an MPS
+        # `N` row after the objective as an unconstrained linear constraint; the
+        # CBLS adapter drops it, and so does SCIP. Same feasible set.
+        (
+            "feasible",
+            _shape(220, 51),
+            _shape(220, 52, 1),
+            ((220, 51), (220, 51)),
+            [("constraints", True)],
+            "free row",
+        ),
+        (
+            "feasible",
+            _shape(48, 40),
+            _shape(48, 44, 1),
+            ((48, 40), (48, 40)),
+            [("constraints", False)],
+            "",
+        ),
+        # The free rows excuse the baseline, never the third reader. Without this a
+        # checker that read a different program entirely is `benign` the moment the
+        # two engines happen to differ by exactly the free-row count.
+        (
+            "feasible",
+            _shape(220, 51),
+            _shape(220, 52, 1),
+            ((220, 99), (220, 99)),
+            [("constraints", False)],
+            "checker",
+        ),
+        # The rule is directional: only the baseline keeps free rows. CBLS holding
+        # MORE rows than CP-SAT is a reader defect the free-row count can never excuse.
+        (
+            "feasible",
+            _shape(48, 41),
+            _shape(48, 40, 1),
+            ((48, 41), (48, 41)),
+            [("constraints", False)],
+            "",
+        ),
+        # The two verdicts are two SCIP readings of one file. Them differing from
+        # each other is a finding of its own, and one that would otherwise vanish:
+        # a single reading is all the rest of the cross-check consumes.
+        (
+            "feasible",
+            _shape(10, 5, 0),
+            _shape(10, 5, 0),
+            ((10, 5), (10, 77)),
+            [("constraints", False)],
+            "two different shapes",
+        ),
+        (
+            "feasible",
+            _shape(48, 10),
+            _shape(49, 10, 7),
+            ((48, 10), (48, 10)),
+            [("variables", False)],
+            "",
+        ),
+        # SCIP drops free rows too, so it agreeing with neither engine is not
+        # something the free-row rule can explain in either direction.
+        (
+            "feasible",
+            _shape(10, 10),
+            _shape(10, 10, 0),
+            ((10, 99), (10, 99)),
+            [("constraints", False)],
+            "checker",
+        ),
+        # Absence of a checker is not agreement with one. A verdict exists only for
+        # a row that reported a solution, so where NEITHER engine found one there is
+        # no third reading -- and `free_rows` is written only by the baseline, so
+        # without SCIP the excuse is certified by the reader under test. Those are
+        # exactly the instances where a translation defect best explains the double
+        # failure.
+        (
+            "no_solution",
+            _shape(10, 40),
+            _shape(10, 44, 4),
+            None,
+            [("constraints", False)],
+            "unchecked",
+        ),
+        ("feasible", _shape(10, 5, 0), _shape(10, 5, 0), ((10, 5), (10, 5)), [], ""),
+    ],
+    ids=[
+        "free-rows-benign",
+        "unexplained-constraint-difference",
+        "checker-third-count-outranks-free-rows",
+        "extra-cbls-constraints",
+        "two-verdicts-disagree",
+        "variable-count-difference",
+        "checker-disagrees-with-both",
+        "free-row-excuse-without-a-checker",
+        "agreeing-shapes",
+    ],
+)
+def test_the_model_shape_cross_check(
     tmp_path: Path,
+    status: str,
+    cbls: dict[str, object],
+    cpsat: dict[str, object],
+    checked: tuple[tuple[int, int], tuple[int, int]] | None,
+    findings: list[tuple[str, bool]],
+    explanation: str,
 ) -> None:
-    """A killed job carries no counts, so nothing about it was compared."""
-    _write(tmp_path, "cbls", "gone", _shaped("killed"), [])
-    _write(tmp_path, "cpsat", "gone", _shaped("feasible", n_vars=10, n_cons=5), [(1.0, 1.0)])
-    rows = _score(tmp_path, [("gone", 1.0)])
-    assert cross_checked_instances(rows) == set()
-    assert shape_notes_by_instance(rows)["gone"] == "not_compared"
+    for index, (engine, counts) in enumerate((("cbls", cbls), ("cpsat", cpsat))):
+        verdict = None
+        if checked is not None:
+            columns, rows = checked[index]
+            verdict = dict(_PASSING, n_columns=columns, n_rows=rows)
+        trace = [(1.0, 1.0)] if status == "feasible" else []
+        _write(tmp_path, engine, "x", _shaped(status, **counts), trace, verdict)
+
+    disagreements = cross_check_shapes(_score(tmp_path, ["x"]))
+
+    found = {(d.kind, d.benign) for d in disagreements}
+    assert set(findings) <= found, found
+    if not findings:
+        assert disagreements == []
+    elif findings[0][0] == "constraints":
+        assert len(disagreements) == 1
+        assert explanation in disagreements[0].explanation
 
 
-def test_an_instance_both_engines_shaped_is_reported_as_agreeing(tmp_path: Path) -> None:
-    for engine in ENGINES:
-        _write(
-            tmp_path,
-            engine,
-            "same",
-            _shaped("feasible", n_vars=10, n_cons=5, n_free_cons=0),
-            [(1.0, 1.0)],
-            _verdict(10, 5),
-        )
-    rows = _score(tmp_path, [("same", 1.0)])
-    assert cross_checked_instances(rows) == {"same"}
-    assert shape_notes_by_instance(rows)["same"] == "agree"
+@pytest.mark.parametrize(
+    ("cpsat_state", "compared", "note"),
+    [
+        # A killed job carries no counts, so nothing about it was compared.
+        ("killed", set(), "not_compared"),
+        ("feasible", {"x"}, "agree"),
+    ],
+    ids=["one-engine-unshaped", "both-shaped"],
+)
+def test_an_instance_is_reported_as_agreeing_only_when_both_shapes_were_read(
+    tmp_path: Path, cpsat_state: str, compared: set[str], note: str
+) -> None:
+    _job(tmp_path, "cbls", "x", "feasible", **_shape(10, 5, 0))
+    _job(
+        tmp_path,
+        "cpsat",
+        "x",
+        cpsat_state,
+        **(_shape(10, 5, 0) if cpsat_state == "feasible" else {}),
+    )
+    rows = _score(tmp_path, ["x"])
+    assert cross_checked_instances(rows) == compared
+    assert shape_notes_by_instance(rows)["x"] == note
 
 
 def test_every_fixture_file_is_tracked_by_git() -> None:
@@ -462,91 +420,76 @@ def test_a_roster_that_repeats_an_instance_is_refused(tmp_path: Path) -> None:
         read_roster(roster)
 
 
-def test_agreeing_shapes_produce_no_finding(tmp_path: Path) -> None:
-    for engine in ENGINES:
-        _write(
-            tmp_path,
-            engine,
-            "same",
-            _shaped("feasible", n_vars=10, n_cons=5, n_free_cons=0),
-            [(1.0, 1.0)],
-            _verdict(10, 5),
-        )
-    assert cross_check_shapes(_score(tmp_path, [("same", 1.0)])) == []
-
-
 # --- trace health ------------------------------------------------------------
 
 
-def test_a_profile_that_collapsed_to_one_point_is_counted_as_degraded(tmp_path: Path) -> None:
-    _write(
-        tmp_path,
-        "cpsat",
-        "flat",
-        _shaped("feasible", trace_source="final_only"),
-        [(1.0, 1.0)],
-    )
-    health = trace_health(_score(tmp_path, [("flat", 1.0)]), "cpsat")
-    assert health.degraded == 1
-    assert health.degraded_instances == ["flat"]
-    assert health.reported_feasible == 1
-
-
-def test_both_engines_genuine_trace_sources_count_as_healthy(tmp_path: Path) -> None:
-    _write(tmp_path, "cbls", "ok", _shaped("feasible", trace_source="callback"), [(1.0, 1.0)])
-    _write(tmp_path, "cpsat", "ok", _shaped("feasible", trace_source="log"), [(1.0, 1.0)])
-    rows = _score(tmp_path, [("ok", 1.0)])
-    assert [trace_health(rows, e).healthy for e in ENGINES] == [1, 1]
-
-
-def test_a_run_that_found_nothing_is_not_in_the_trace_denominator(tmp_path: Path) -> None:
-    # It has no incumbent profile to have; counting it would make every
-    # no-solution row read as a harness fault.
-    _write(tmp_path, "cbls", "empty", _shaped("no_solution", trace_source="final_only"), [])
-    health = trace_health(_score(tmp_path, [("empty", 1.0)]), "cbls")
-    assert health.reported_feasible == 0
-    assert health.degraded == 0
+@pytest.mark.parametrize(
+    ("status", "sources", "engine", "expected"),
+    [
+        (
+            "feasible",
+            ("callback", "final_only"),
+            "cpsat",
+            {"degraded": 1, "degraded_instances": ["x"], "reported_feasible": 1},
+        ),
+        ("feasible", ("callback", "log"), "cbls", {"healthy": 1}),
+        ("feasible", ("callback", "log"), "cpsat", {"healthy": 1}),
+        # A run that found nothing has no incumbent profile to have; counting it
+        # would make every no-solution row read as a harness fault.
+        (
+            "no_solution",
+            ("final_only", "final_only"),
+            "cbls",
+            {"reported_feasible": 0, "degraded": 0},
+        ),
+    ],
+    ids=["collapsed-to-one-point", "cbls-callback-healthy", "cpsat-log-healthy", "found-nothing"],
+)
+def test_trace_health(
+    tmp_path: Path,
+    status: str,
+    sources: tuple[str, str],
+    engine: str,
+    expected: dict[str, object],
+) -> None:
+    for name, source in zip(ENGINES, sources, strict=True):
+        trace = [(1.0, 1.0)] if status == "feasible" else []
+        _write(tmp_path, name, "x", _shaped(status, trace_source=source), trace)
+    health = trace_health(_score(tmp_path, ["x"]), engine)
+    for field, value in expected.items():
+        assert getattr(health, field) == value, field
 
 
 # --- timing decomposition ----------------------------------------------------
 
 
-def test_setup_and_solve_time_are_separate_columns(tmp_path: Path) -> None:
-    _write(
-        tmp_path,
-        "cbls",
-        "slow",
-        _shaped("feasible", read_seconds=1.5, build_seconds=2.5, wall_seconds=61.0),
-        [(1.0, 1.0)],
-    )
-    (row,) = [r for r in _score(tmp_path, [("slow", 1.0)]) if r.engine == "cbls"]
-    assert row.setup_seconds == pytest.approx(4.0)
-    assert row.solve_seconds == pytest.approx(61.0)
+def test_setup_and_solve_time_are_separate_and_reported_apart(tmp_path: Path) -> None:
+    # Setup is recorded in halves by a runner that threw between them, and whole
+    # by one that did not; an overrun is the solve running past the budget, which
+    # search initialisation not being bounded by the deadline makes possible.
+    halves = _shaped("feasible", read_seconds=1.5, build_seconds=2.5, wall_seconds=61.0)
+    _write(tmp_path, "cbls", "slow", halves, [(1.0, 1.0)])
+    _write(tmp_path, "cpsat", "slow", _shaped("feasible", setup_seconds=4.0, wall_seconds=75.0))
+    rows = _score(tmp_path, ["slow"])
 
-
-def test_an_overrun_and_a_long_setup_are_reported_apart(tmp_path: Path) -> None:
-    _write(
-        tmp_path,
-        "cbls",
-        "slow",
-        _shaped("feasible", setup_seconds=4.0, wall_seconds=75.0),
-        [(1.0, 1.0)],
-    )
-    summary = timing_summary(_score(tmp_path, [("slow", 1.0)]), "cbls", budget=60.0)
+    assert [(r.setup_seconds, r.solve_seconds) for r in rows] == [(4.0, 61.0), (4.0, 75.0)]
+    summary = timing_summary(rows, "cpsat", budget=60.0)
     assert summary.setup_max == pytest.approx(4.0)
     assert summary.overruns == 1
     assert summary.overrun_max == pytest.approx(15.0)
 
 
+def _report(rows: list[Scored], tmp_path: Path) -> str:
+    summaries = [summarize(rows, e) for e in ENGINES]
+    return render_report(rows, summaries, 60.0, tmp_path / "r.csv", tmp_path / "t.csv")
+
+
 def test_a_results_directory_that_measured_no_setup_states_no_magnitude(tmp_path: Path) -> None:
-    _write(tmp_path, "cbls", "old", _shaped("feasible", wall_seconds=60.0), [(1.0, 1.0)])
-    _write(tmp_path, "cpsat", "old", _shaped("feasible", wall_seconds=60.0), [(1.0, 1.0)])
-    rows = _score(tmp_path, [("old", 1.0)])
+    for engine in ENGINES:
+        _write(tmp_path, engine, "old", _shaped("feasible", wall_seconds=60.0), [(1.0, 1.0)])
+    rows = _score(tmp_path, ["old"])
     assert all(timing_summary(rows, e, 60.0).setup_measured == 0 for e in ENGINES)
-    report = render_report(
-        rows, [summarize(rows, e) for e in ENGINES], 60.0, tmp_path / "r.csv", tmp_path / "t.csv"
-    )
-    assert "No setup time was recorded" in report
+    assert "No setup time was recorded" in _report(rows, tmp_path)
 
 
 # --- headline and labelling --------------------------------------------------
@@ -555,7 +498,7 @@ def test_a_results_directory_that_measured_no_setup_states_no_magnitude(tmp_path
 def test_the_headline_block_leads_with_defects_then_parity(tmp_path: Path) -> None:
     _write(tmp_path, "cbls", "x", _shaped("feasible"), [(1.0, 1.0)])
     _write(tmp_path, "cpsat", "x", _shaped("no_solution"), [])
-    rows = _score(tmp_path, [("x", 1.0)])
+    rows = _score(tmp_path, ["x"])
     lines = headline_lines(rows, [summarize(rows, e) for e in ENGINES])
     assert lines[0].startswith("# DEFECTS")
     body = "\n".join(lines)
@@ -563,6 +506,8 @@ def test_the_headline_block_leads_with_defects_then_parity(tmp_path: Path) -> No
     assert "# MODEL SHAPE" in body
     assert "# TRACE HEALTH" in body
     assert "cbls only (1, i.e. not cpsat): x" in body
+    # The report states the shape rule, not only the verdicts it produced.
+    assert SHAPE_RULE in _report(rows, tmp_path)
 
 
 def test_the_anytime_aggregate_names_the_worker_pairing_it_measures() -> None:
@@ -573,43 +518,20 @@ def test_the_anytime_aggregate_names_the_worker_pairing_it_measures() -> None:
     assert "Primal Integral" in ANYTIME_LABEL
 
 
-def test_the_report_states_the_shape_rule_rather_than_only_the_verdicts(tmp_path: Path) -> None:
-    _write(tmp_path, "cbls", "x", _shaped("feasible"), [(1.0, 1.0)])
-    _write(tmp_path, "cpsat", "x", _shaped("feasible"), [(1.0, 1.0)])
-    rows = _score(tmp_path, [("x", 1.0)])
-    report = render_report(
-        rows, [summarize(rows, e) for e in ENGINES], 60.0, tmp_path / "r.csv", tmp_path / "t.csv"
-    )
-    assert SHAPE_RULE in report
-
-
-def test_defect_total_counts_every_counter(tmp_path: Path) -> None:
-    _write(
-        tmp_path,
-        "cbls",
-        "bad",
-        _shaped("feasible"),
-        [(1.0, 1.0)],
-        verification={"verdict": "fail", "reason": "row_violation", "marginal": False},
-    )
+def test_the_defect_total_counts_every_counter_and_a_clean_run_has_none(tmp_path: Path) -> None:
+    _write(tmp_path, "cbls", "bad", _shaped("feasible"), [(1.0, 1.0)], _REJECTED)
     _write(tmp_path, "cpsat", "bad", _shaped("feasible", trace_source="final_only"), [(1.0, 1.0)])
-    rows = _score(tmp_path, [("bad", 1.0)])
+    rows = _score(tmp_path, ["bad"])
     defects = collect_defects(rows, [summarize(rows, e) for e in ENGINES])
     assert defects.verification_failed["cbls"] == 1
     assert defects.trace_degraded == 1
     assert defects.total >= 2
 
-
-def test_a_clean_run_reports_no_defects(tmp_path: Path) -> None:
+    clean = tmp_path / "clean"
     for engine in ENGINES:
-        _write(
-            tmp_path,
-            engine,
-            "x",
-            _shaped("feasible", trace_source="callback", n_vars=10, n_cons=5, n_free_cons=0),
-            [(1.0, 1.0)],
-        )
-    rows = _score(tmp_path, [("x", 1.0)])
+        record = _shaped("feasible", trace_source="callback", **_shape(10, 5, 0))
+        _write(clean, engine, "x", record, [(1.0, 1.0)])
+    rows = _score(clean, ["x"])
     assert all(parity_verdict(r) == PARITY_FEASIBLE for r in rows)
     assert collect_defects(rows, [summarize(rows, e) for e in ENGINES]).total == 0
 
@@ -622,9 +544,9 @@ def test_regenerating_the_report_reproduces_the_committed_numbers(tmp_path: Path
 
     The criterion with teeth: every headline the report publishes -- the defect
     counters, both difference sets, the shape verdicts, the trace-health counts,
-    the timing split and the anytime aggregate -- is derived from
-    `testdata/results/` and compared byte for byte. A change to any of them has
-    to be made deliberately, by regenerating the two files with the command in
+    the timing split, the anytime aggregate and the machine record -- is derived
+    from `testdata/results/` and compared byte for byte. A change to any of them
+    has to be made deliberately, by regenerating the two files with the command in
     `benchmarks/mipfeas/testdata/README.md`.
     """
     table = tmp_path / "expected_comparison.csv"
@@ -632,17 +554,9 @@ def test_regenerating_the_report_reproduces_the_committed_numbers(tmp_path: Path
     completed = subprocess.run(
         [
             sys.executable,
-            str(REPO_ROOT / "benchmarks" / "mipfeas" / "primal_integral.py"),
-            "--results-dir",
-            str(FIXTURE / "results"),
-            "--roster",
-            str(FIXTURE / "roster.csv"),
-            "--budget",
-            str(FIXTURE_BUDGET),
-            "--out",
-            str(table),
-            "--report",
-            str(report),
+            str(SCORER),
+            *("--results-dir", str(FIXTURE / "results"), "--roster", str(FIXTURE / "roster.csv")),
+            *("--budget", str(FIXTURE_BUDGET), "--out", str(table), "--report", str(report)),
         ],
         capture_output=True,
         text=True,
@@ -659,11 +573,12 @@ def test_regenerating_the_report_reproduces_the_committed_numbers(tmp_path: Path
     assert report.read_bytes() == (FIXTURE / "expected_report.md").read_bytes()
 
 
-def test_the_fixture_exercises_every_branch_the_report_has(tmp_path: Path) -> None:
+def test_the_fixture_exercises_every_branch_the_report_has() -> None:
     """A fixture that lost its defects would still reproduce byte for byte.
 
     So this checks the fixture is still worth comparing against: each of the
-    findings the report exists to surface has to be present in it.
+    findings the report exists to surface has to be present in it -- including a
+    (constructed) run record, so that section 8 is pinned like every other.
     """
     report = (FIXTURE / "expected_report.md").read_text()
     for expected in (
@@ -676,6 +591,9 @@ def test_the_fixture_exercises_every_branch_the_report_has(tmp_path: Path) -> No
         "FLAGGED",
         "- cpsat degraded: degraded-trace",
         "3.204 (slow-start)",
+        "## 8. Machine and run record",
+        "| host | fixture-host |",
+        "**2 job(s) at a time**",
     ):
         assert expected in report, expected
 
@@ -717,107 +635,150 @@ _RECORD: dict[str, object] = {
 }
 
 
-def test_the_record_section_states_the_concurrency_the_run_used() -> None:
-    section = "\n".join(run_record_section(_RECORD, 1))
+@pytest.mark.parametrize(
+    ("record", "invocations", "said", "not_said"),
+    [
+        (
+            _RECORD,
+            1,
+            [
+                # The concurrency the run used ...
+                "**4 job(s) at a time**",
+                "large instances 1 at a time",
+                "CP-SAT 1 worker(s)",
+                "address-space cap 6.0 GB",
+                # ... the host, cores, memory and budget ...
+                "| host | bench-01 |",
+                "16 (8 available to the process)",
+                "32.0 GiB",
+                "600.0s per instance-engine pair",
+                # ... the engine commit and solver versions ...
+                "| engine commit | deadbee |",
+                "ortools 9.15.6755",
+                "PySCIPOpt 6.2.1",
+                # ... and the yardstick: an upstream revision of the solution file
+                # moves every gap in the table at once.
+                "`miplib2017-v36.solu`",
+                "9236602294c1a5ac",
+            ],
+            [],
+        ),
+        (_RECORD, 3, ["3 invocations"], []),
+        # Silence is the failure mode: a published table whose concurrency nobody
+        # recorded reads exactly like one whose concurrency was stated.
+        (
+            None,
+            0,
+            ["## 8. Machine and run record", "No machine record was written", "concurrency"],
+            [],
+        ),
+        # Off Linux there is no /proc/meminfo and no sched_getaffinity, and
+        # os.cpu_count() can be None. `| cores | None |` in a published table reads
+        # as a scorer bug rather than as a fact about the machine.
+        ({}, 1, ["| host | not recorded |", "| concurrency | not recorded |"], ["None"]),
+        # The driver appends a record on every invocation, so confirming a finished
+        # directory from a laptop would otherwise publish the laptop as the machine.
+        (
+            dict(_RECORD, outcome={"jobs_run": 0, "failures": 0, "rejected": 0}),
+            2,
+            ["This invocation ran no jobs"],
+            [],
+        ),
+        (
+            dict(_RECORD, outcome={"jobs_run": 26, "failures": 0, "rejected": 0}),
+            1,
+            [],
+            ["This invocation ran no jobs"],
+        ),
+        # The all-or-nothing guard once fired only when all three were absent, and
+        # a record carrying `jobs` alone published `large instances None at a time`.
+        (dict(_RECORD, concurrency={"jobs": 4}), 1, ["**4 job(s) at a time**"], ["None"]),
+        # `isinstance(kib, int)` discarded a float the run did measure ...
+        (dict(_RECORD, machine={"memory_total_kib": 16777216.0}), 1, ["16.0 GiB"], []),
+        # ... and `bool` is an `int` in Python, so `True` rendered as `0.0 GiB`.
+        (dict(_RECORD, machine={"memory_total_kib": True}), 1, ["not recorded"], []),
+        # --skip-preconditions is what makes a run unpublishable, and terminal
+        # scrollback does not reach whoever reads the table.
+        (
+            dict(_RECORD, run={"preconditions_checked": False}),
+            1,
+            ["NOT CHECKED", "not publishable"],
+            [],
+        ),
+        (
+            dict(_RECORD, run={"preconditions_checked": True}),
+            1,
+            [],
+            ["NOT CHECKED", "not recorded -- this record does not say either way"],
+        ),
+        # Three states, and `is False` alone fails open on the third: a record with
+        # no such key rendered exactly like a properly-checked run.
+        (
+            dict(_RECORD, run={"jobs_planned": 26}),
+            1,
+            ["not recorded -- this record does not say either way"],
+            ["NOT CHECKED"],
+        ),
+    ],
+    ids=[
+        "full-record",
+        "resumed-directory",
+        "no-record-is-an-anecdote",
+        "unmeasured-fields",
+        "resume-that-ran-nothing",
+        "invocation-that-ran-jobs",
+        "partial-concurrency",
+        "memory-round-tripped-as-float",
+        "boolean-memory",
+        "preconditions-skipped",
+        "preconditions-checked",
+        "preconditions-unrecorded",
+    ],
+)
+def test_the_record_section(
+    record: dict[str, object] | None, invocations: int, said: list[str], not_said: list[str]
+) -> None:
+    section = "\n".join(run_record_section(record, invocations))
+    for text in said:
+        assert text in section, text
+    for text in not_said:
+        assert text not in section, text
 
-    assert "**4 job(s) at a time**" in section
-    assert "large instances 1 at a time" in section
-    assert "CP-SAT 1 worker(s)" in section
-    assert "address-space cap 6.0 GB" in section
 
-
-def test_the_record_section_names_the_host_cores_memory_and_budget() -> None:
-    section = "\n".join(run_record_section(_RECORD, 1))
-
-    assert "| host | bench-01 |" in section
-    assert "16 (8 available to the process)" in section
-    assert "32.0 GiB" in section
-    assert "600.0s per instance-engine pair" in section
-
-
-def test_the_record_section_names_the_engine_commit_and_solver_versions() -> None:
-    section = "\n".join(run_record_section(_RECORD, 1))
-
-    assert "| engine commit | deadbee |" in section
-    assert "ortools 9.15.6755" in section
-    assert "PySCIPOpt 6.2.1" in section
-
-
-def test_the_record_section_names_the_yardstick_the_gaps_were_scored_against() -> None:
-    # An upstream revision of the solution file moves every gap in the table at
-    # once, so which one produced it is part of the result.
-    section = "\n".join(run_record_section(_RECORD, 1))
-
-    assert "`miplib2017-v36.solu`" in section
-    assert "9236602294c1a5ac" in section
-
-
-def test_a_resumed_results_directory_says_so_rather_than_claiming_one_machine() -> None:
-    section = "\n".join(run_record_section(_RECORD, 3))
-    assert "3 invocations" in section
-
-
-def test_results_with_no_machine_record_are_called_an_anecdote() -> None:
-    # Silence here is the failure mode: a published table whose concurrency nobody
-    # recorded reads exactly like one whose concurrency was stated.
-    section = "\n".join(run_record_section(None, 0))
-
-    assert "## 8. Machine and run record" in section
-    assert "No machine record was written" in section
-    assert "concurrency" in section
-
-
-def test_read_run_record_returns_the_last_invocation_and_the_count(tmp_path: Path) -> None:
-    (tmp_path / "run_record.json").write_text(
-        json.dumps({"runs": [{"status": "complete"}, {"status": "running"}]})
-    )
-
-    record, count = read_run_record(tmp_path)
-
-    assert count == 2
-    assert record == {"status": "running"}
-
-
-def test_read_run_record_treats_a_truncated_file_as_absent(tmp_path: Path) -> None:
-    # A driver killed mid-write must not make the scorer abort on the file.
-    (tmp_path / "run_record.json").write_text('{"runs": [')
-
-    assert read_run_record(tmp_path) == (None, 0)
-
-
-def test_read_run_record_of_a_directory_that_has_none(tmp_path: Path) -> None:
-    assert read_run_record(tmp_path) == (None, 0)
-
-
-def test_the_report_of_the_frozen_fixture_carries_its_machine_record() -> None:
-    # The fixture holds a (constructed) run record precisely so that section 8 is
-    # pinned byte for byte like every other section.
-    report = (FIXTURE / "expected_report.md").read_text()
-
-    assert "## 8. Machine and run record" in report
-    assert "| host | fixture-host |" in report
-    assert "**2 job(s) at a time**" in report
+@pytest.mark.parametrize(
+    ("contents", "expected"),
+    [
+        (
+            json.dumps({"runs": [{"status": "complete"}, {"status": "running"}]}),
+            ({"status": "running"}, 2),
+        ),
+        # A driver killed mid-write must not make the scorer abort on the file.
+        ('{"runs": [', (None, 0)),
+        (None, (None, 0)),
+    ],
+    ids=["last-invocation-and-count", "truncated", "absent"],
+)
+def test_read_run_record(
+    tmp_path: Path, contents: str | None, expected: tuple[dict[str, object] | None, int]
+) -> None:
+    if contents is not None:
+        (tmp_path / "run_record.json").write_text(contents)
+    assert read_run_record(tmp_path) == expected
 
 
 def test_the_scorer_warns_when_no_machine_record_is_beside_the_results(tmp_path: Path) -> None:
     results = tmp_path / "results"
-    _write(results, "cbls", "only-cbls", {"status": "no_solution", "objective": None})
-    _write(results, "cpsat", "only-cbls", {"status": "no_solution", "objective": None})
+    for engine in ENGINES:
+        _write(results, engine, "only-cbls", {"status": "no_solution", "objective": None})
     roster = tmp_path / "roster.csv"
     roster.write_text("instance,reference_value,reference_kind\nonly-cbls,1.0,opt\n")
 
     completed = subprocess.run(
         [
             sys.executable,
-            str(REPO_ROOT / "benchmarks" / "mipfeas" / "primal_integral.py"),
-            "--results-dir",
-            str(results),
-            "--roster",
-            str(roster),
-            "--budget",
-            "2",
-            "--out",
-            str(tmp_path / "out.csv"),
+            str(SCORER),
+            *("--results-dir", str(results), "--roster", str(roster)),
+            *("--budget", "2", "--out", str(tmp_path / "out.csv")),
         ],
         capture_output=True,
         text=True,
@@ -826,81 +787,3 @@ def test_the_scorer_warns_when_no_machine_record_is_beside_the_results(tmp_path:
 
     assert "no run_record.json" in completed.stderr
     assert "No machine record was written" in (tmp_path / "out_report.md").read_text()
-
-
-def test_a_field_the_driver_could_not_measure_says_so_rather_than_none() -> None:
-    # Off Linux there is no /proc/meminfo and no sched_getaffinity, and os.cpu_count()
-    # can be None. `| cores | None |` in a published table reads as a scorer bug
-    # rather than as a fact about the machine.
-    section = "\n".join(run_record_section({}, 1))
-
-    assert "None" not in section
-    assert "| host | not recorded |" in section
-    assert "| concurrency | not recorded |" in section
-
-
-def test_a_resume_that_ran_nothing_does_not_claim_to_be_the_machine_that_measured() -> None:
-    # The driver appends a record on every invocation, so confirming a finished
-    # directory from a laptop would otherwise publish the laptop as the machine.
-    record = dict(_RECORD, outcome={"jobs_run": 0, "failures": 0, "rejected": 0})
-    section = "\n".join(run_record_section(record, 2))
-
-    assert "This invocation ran no jobs" in section
-
-
-def test_an_invocation_that_ran_jobs_carries_no_such_caveat() -> None:
-    record = dict(_RECORD, outcome={"jobs_run": 26, "failures": 0, "rejected": 0})
-    assert "This invocation ran no jobs" not in "\n".join(run_record_section(record, 1))
-
-
-def test_a_partial_concurrency_block_does_not_print_none_into_the_table() -> None:
-    """The all-or-nothing guard only fired when all three were absent.
-
-    A record carrying `jobs` alone published `large instances None at a time`
-    into the field criterion 4 exists for.
-    """
-    record = dict(_RECORD, concurrency={"jobs": 4})
-    section = "\n".join(run_record_section(record, 1))
-    assert "None" not in section
-    assert "**4 job(s) at a time**" in section
-
-
-def test_a_memory_figure_that_round_tripped_through_json_is_still_reported() -> None:
-    """`isinstance(kib, int)` discarded a float the run did measure."""
-    record = dict(_RECORD, machine={"memory_total_kib": 16777216.0})
-    assert "16.0 GiB" in "\n".join(run_record_section(record, 1))
-
-
-def test_a_boolean_is_not_rendered_as_a_memory_figure() -> None:
-    """`bool` is an `int` in Python, and `True` rendered as `0.0 GiB`."""
-    record = dict(_RECORD, machine={"memory_total_kib": True})
-    assert "not recorded" in "\n".join(run_record_section(record, 1))
-
-
-def test_a_run_that_skipped_its_preconditions_says_so_in_the_report() -> None:
-    # The flag is what makes a run unpublishable, and terminal scrollback does not
-    # reach whoever reads the table.
-    record = dict(_RECORD, run={"preconditions_checked": False})
-    section = "\n".join(run_record_section(record, 1))
-
-    assert "NOT CHECKED" in section
-    assert "not publishable" in section
-
-
-def test_a_checked_run_carries_no_preconditions_row() -> None:
-    record = dict(_RECORD, run={"preconditions_checked": True})
-    section = "\n".join(run_record_section(record, 1))
-    assert "NOT CHECKED" not in section
-    assert "not recorded -- this record does not say either way" not in section
-
-
-def test_a_record_that_does_not_say_whether_preconditions_ran_is_not_read_as_yes() -> None:
-    """Three states, and `is False` alone fails open on the third.
-
-    A record with no such key -- one written by an older driver, or by anything
-    other than this driver -- rendered exactly like a properly-checked run.
-    """
-    record = dict(_RECORD, run={"jobs_planned": 26})
-    section = "\n".join(run_record_section(record, 1))
-    assert "not recorded -- this record does not say either way" in section
-    assert "NOT CHECKED" not in section
