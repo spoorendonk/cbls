@@ -507,6 +507,56 @@ Verdict assess_result(const cbls::MpsToModelResult& built, const cbls::SearchRes
     return v;
 }
 
+/// The portfolio arm of the solve: N workers over the replicas prepared above,
+/// and the reconciliation the single-threaded path gets for free.
+///
+/// Its own function because it is a different thing from the run around it --
+/// that one reads an instance, builds a model, judges the answer and writes the
+/// record, all of which is identical whatever the concurrency.
+cbls::SearchResult solve_portfolio(const Args& args, cbls::MpsToModelResult& built,
+                                   const cbls::SearchConfig& cfg,
+                                   std::vector<cbls::Model>& replicas,
+                                   cbls::SolveCallback* recorder) {
+    std::atomic<size_t> next_replica{0};
+    // Called once per worker, on that worker's thread, so the handout is
+    // atomic. The copy past the end is unreachable by ParallelSearch's own
+    // contract and is here so that a future change to it cannot turn into an
+    // out-of-bounds read.
+    auto model_factory = [&replicas, &next_replica, &built]() -> cbls::Model {
+        const size_t i = next_replica.fetch_add(1, std::memory_order_relaxed);
+        if (i < replicas.size()) {
+            return std::move(replicas[i]);
+        }
+        return built.model;
+    };
+    // One hook and one LNS per worker: the search locks neither, so a shared
+    // instance would be a data race (see include/cbls/pool.h).
+    auto hook_factory = [](cbls::Model&) -> std::shared_ptr<cbls::InnerSolverHook> {
+        return std::make_shared<cbls::FloatIntensifyHook>();
+    };
+    auto lns_factory = []() -> std::shared_ptr<cbls::LNS> {
+        return std::make_shared<cbls::LNS>(kLnsFraction);
+    };
+    cbls::ParallelConfig par_config;
+    par_config.n_threads = args.threads;
+    cbls::ParallelSearch ps(args.threads);
+    cbls::SearchResult result = ps.solve(model_factory, args.budget, args.seed, cfg, hook_factory,
+                                         lns_factory, recorder, par_config);
+    // The portfolio searched replicas, so the model this runner goes on to check
+    // the answer against still holds its initial assignment. Restore the
+    // returned point into it and re-evaluate, which is the state a
+    // single-threaded solve() leaves behind.
+    //
+    // No `set_objective_bound` here, unlike ViolationLSLoop::finish(): the
+    // artificial `obj <= bound` row is added by the SEARCH, so this model --
+    // which no search ever touched -- has none to release, and asking it to
+    // release one throws ("set_objective_bound requires
+    // add_objective_soft_constraint first").
+    built.model.restore_state(result.best_state);
+    cbls::full_evaluate(built.model);
+    return result;
+}
+
 int run_benchmark(int argc, char** argv) {
     Args args = parse_args(argc, argv);
     if (const int rc = validate_args(args); rc != 0) {
@@ -618,43 +668,7 @@ int run_benchmark(int argc, char** argv) {
     try {
         TraceRecorder recorder(trace);
         if (args.threads > 1) {
-            std::atomic<size_t> next_replica{0};
-            // Called once per worker, on that worker's thread, so the handout is
-            // atomic. The copy past the end is unreachable by ParallelSearch's
-            // own contract and is here so that a future change to it cannot turn
-            // into an out-of-bounds read.
-            auto model_factory = [&replicas, &next_replica, &built]() -> cbls::Model {
-                const size_t i = next_replica.fetch_add(1, std::memory_order_relaxed);
-                if (i < replicas.size()) {
-                    return std::move(replicas[i]);
-                }
-                return built.model;
-            };
-            // One hook and one LNS per worker: the search locks neither, so a
-            // shared instance would be a data race (see include/cbls/pool.h).
-            auto hook_factory = [](cbls::Model&) -> std::shared_ptr<cbls::InnerSolverHook> {
-                return std::make_shared<cbls::FloatIntensifyHook>();
-            };
-            auto lns_factory = []() -> std::shared_ptr<cbls::LNS> {
-                return std::make_shared<cbls::LNS>(kLnsFraction);
-            };
-            cbls::ParallelConfig par_config;
-            par_config.n_threads = args.threads;
-            cbls::ParallelSearch ps(args.threads);
-            result = ps.solve(model_factory, args.budget, args.seed, cfg, hook_factory, lns_factory,
-                              &recorder, par_config);
-            // The portfolio searched replicas, so the model this runner goes on
-            // to check the answer against still holds its initial assignment.
-            // Restore the returned point into it and re-evaluate, which is the
-            // state a single-threaded solve() leaves behind.
-            //
-            // No `set_objective_bound` here, unlike ViolationLSLoop::finish():
-            // the artificial `obj <= bound` row is added by the SEARCH, so this
-            // model -- which no search ever touched -- has none to release, and
-            // asking it to release one throws ("set_objective_bound requires
-            // add_objective_soft_constraint first").
-            built.model.restore_state(result.best_state);
-            cbls::full_evaluate(built.model);
+            result = solve_portfolio(args, built, cfg, replicas, &recorder);
         } else {
             cbls::FloatIntensifyHook hook;
             cbls::LNS lns(kLnsFraction);
