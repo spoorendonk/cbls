@@ -501,12 +501,22 @@ void Model::set_objective_bound(double bound) {
 // Build var_id -> constraint-index adjacency (the paper's G_v) by walking down
 // each constraint's subtree and recording every variable it reaches. Stamping
 // gives O(1) per-constraint reset and dedups vars/nodes within a constraint.
+//
+// Into CSR, by inversion: the walk writes the constraint -> variables incidence
+// flat, in constraint order, and a counting pass turns it round. Visiting the
+// constraints in ascending index is what gives each variable's list ascending
+// constraint indices -- the order the per-variable push_back this replaced
+// produced. The incidence array is transient and costs 4 bytes per entry, where
+// a second walk to count first would cost the whole DFS again.
 void Model::build_var_constraints() {
-    var_constraints_.assign(vars_.size(), {});
+    const auto n_cons = static_cast<int32_t>(constraint_ids_.size());
     std::vector<int32_t> node_stamp(nodes_.size(), -1);
     std::vector<int32_t> var_stamp(vars_.size(), -1);
     std::vector<int32_t> stack;
-    for (int32_t ci = 0; ci < static_cast<int32_t>(constraint_ids_.size()); ++ci) {
+    std::vector<int32_t> incident_vars;                                   // constraint order
+    std::vector<size_t> incident_begin(static_cast<size_t>(n_cons) + 1);  // per constraint
+    for (int32_t ci = 0; ci < n_cons; ++ci) {
+        incident_begin[ci] = incident_vars.size();
         stack.clear();
         int32_t root = constraint_ids_[ci];
         node_stamp[root] = ci;
@@ -518,7 +528,7 @@ void Model::build_var_constraints() {
                 if (child.is_var) {
                     if (var_stamp[child.id] != ci) {
                         var_stamp[child.id] = ci;
-                        var_constraints_[child.id].push_back(ci);
+                        incident_vars.push_back(child.id);
                     }
                 } else if (node_stamp[child.id] != ci) {
                     node_stamp[child.id] = ci;
@@ -527,6 +537,28 @@ void Model::build_var_constraints() {
             }
         }
     }
+    incident_begin[n_cons] = incident_vars.size();
+    if (incident_vars.size() > std::numeric_limits<uint32_t>::max()) {
+        throw std::length_error("model has more than 2^32 - 1 variable-constraint incidences");
+    }
+
+    var_constraint_offsets_.assign(vars_.size() + 1, 0);
+    for (const int32_t v : incident_vars) {
+        ++var_constraint_offsets_[v + 1];
+    }
+    std::partial_sum(var_constraint_offsets_.begin(), var_constraint_offsets_.end(),
+                     var_constraint_offsets_.begin());
+    var_constraint_ids_.resize(incident_vars.size());
+    // offsets[v] as v's write cursor, then shifted back -- as in
+    // rebuild_back_references.
+    for (int32_t ci = 0; ci < n_cons; ++ci) {
+        for (size_t k = incident_begin[ci]; k < incident_begin[ci + 1]; ++k) {
+            var_constraint_ids_[var_constraint_offsets_[incident_vars[k]]++] = ci;
+        }
+    }
+    std::copy_backward(var_constraint_offsets_.begin(), var_constraint_offsets_.end() - 1,
+                       var_constraint_offsets_.end());
+    var_constraint_offsets_.front() = 0;
 }
 
 std::vector<std::pair<int32_t, double>> Model::per_constraint_violation_delta(int32_t var_id,
@@ -537,7 +569,7 @@ std::vector<std::pair<int32_t, double>> Model::per_constraint_violation_delta(in
             "per_constraint_violation_delta: scalar variable required (Bool/Int/Float)");
     }
 
-    const auto& affected = constraints_of_var(var_id);
+    const ConstSpan<int32_t> affected = constraints_of_var(var_id);
     std::vector<std::pair<int32_t, double>> result;
     if (affected.empty()) {
         return result;
@@ -577,7 +609,7 @@ double Model::weighted_violation_delta(int32_t var_id, double j,
         throw std::invalid_argument(
             "weighted_violation_delta: scalar variable required (Bool/Int/Float)");
     }
-    const auto& affected = constraints_of_var(var_id);
+    const ConstSpan<int32_t> affected = constraints_of_var(var_id);
     if (affected.empty()) {
         return 0.0;
     }

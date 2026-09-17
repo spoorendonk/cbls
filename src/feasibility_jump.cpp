@@ -469,7 +469,7 @@ bool FeasibilityJump::active(int32_t constraint_idx) const {
 }
 
 bool FeasibilityJump::participates_in_active_violated(int32_t var_id) const {
-    const std::vector<int32_t>& cs = model_.constraints_of_var(var_id);
+    const ConstSpan<int32_t> cs = model_.constraints_of_var(var_id);
     return std::any_of(cs.begin(), cs.end(),
                        [this](int32_t c) { return violated_[c] != 0 && active(c); });
 }
@@ -602,7 +602,7 @@ void FeasibilityJump::rebuild_violated_and_scan_set() {
 
 void FeasibilityJump::update_var(int32_t var_id) {
     const auto& cids = model_.constraint_ids();
-    const auto& gv = model_.constraints_of_var(var_id);
+    const ConstSpan<int32_t> gv = model_.constraints_of_var(var_id);
     // Only the rows this variable takes part in can move, so the running
     // unweighted total is maintained over `gv` rather than recomputed over every
     // row. The "before" side has to be read here, ahead of delta_evaluate.

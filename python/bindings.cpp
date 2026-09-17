@@ -256,7 +256,15 @@ NB_MODULE(_cbls_core, m) {
         .def("node", &Model::node, nb::rv_policy::reference_internal)
         .def("objective_id", &Model::objective_id)
         .def("constraint_ids", &Model::constraint_ids)
-        .def("constraints_of_var", &Model::constraints_of_var, nb::arg("var_id"))
+        // A view into the model's flat G_v array; copied out to a list, so the
+        // Python side holds nothing that a later rebuild could invalidate.
+        .def(
+            "constraints_of_var",
+            [](const Model& m, int32_t var_id) {
+                const ConstSpan<int32_t> cs = m.constraints_of_var(var_id);
+                return std::vector<int32_t>(cs.begin(), cs.end());
+            },
+            nb::arg("var_id"))
         .def("per_constraint_violation_delta", &Model::per_constraint_violation_delta,
              nb::arg("var_id"), nb::arg("j"))
         .def("num_vars", &Model::num_vars)

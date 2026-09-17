@@ -117,12 +117,15 @@ public:
 
     // Accessors
     // Constraints (by index into constraint_ids()) that variable var_id can
-    // affect. This is the paper's G_v. Populated by close(); empty before.
-    [[nodiscard]] const std::vector<int32_t>& constraints_of_var(int32_t var_id) const {
-        if (var_id < 0 || var_id >= static_cast<int32_t>(var_constraints_.size())) {
+    // affect. This is the paper's G_v, in ascending constraint index. Built by
+    // close() and add_objective_soft_constraint() for the variables that existed
+    // then; any other id -- every id, before close() -- is out of range.
+    [[nodiscard]] ConstSpan<int32_t> constraints_of_var(int32_t var_id) const {
+        if (var_id < 0 || static_cast<size_t>(var_id) + 1 >= var_constraint_offsets_.size()) {
             throw std::out_of_range("var id out of range");
         }
-        return var_constraints_[var_id];
+        const uint32_t begin = var_constraint_offsets_[var_id];
+        return {var_constraint_ids_.data() + begin, var_constraint_offsets_[var_id + 1] - begin};
     }
 
     // Sparse per-constraint violation deltas if var_id <- j, WITHOUT committing.
@@ -286,7 +289,13 @@ private:
     /// and only ever read through `topo_position`.
     std::vector<int32_t> topo_pos_;
     std::vector<int32_t> constraint_ids_;
-    std::vector<std::vector<int32_t>> var_constraints_;  // var_id -> constraint indices (G_v)
+    // var_id -> constraint indices (G_v), CSR like the back-references above: a
+    // per-variable vector here was the largest allocation site left once those
+    // were flat. Empty until close(), and then sized for the variables of the
+    // last build only -- unlike parent_offsets_ it is NOT extended as variables
+    // are made, which is what keeps constraints_of_var's range check the same.
+    std::vector<uint32_t> var_constraint_offsets_;
+    std::vector<int32_t> var_constraint_ids_;
     int32_t objective_id_ = -1;
     bool is_maximizing_ = false;
     int32_t objective_bound_node_ = -1;       // Const node holding the objective RHS
