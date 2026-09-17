@@ -176,7 +176,7 @@ def test_solve_parallel_calls_a_python_callback_from_a_worker_thread() -> None:
     alone would leave the other scenarios green.
     """
     out = _assert_scenario_ok("callback")
-    assert "callback_calls_off_main_thread=1" in out
+    assert "callback_all_calls_off_main_thread=True" in out
 
 
 # The three tests below cover a Python `SolveCallback` whose `on_progress`
@@ -199,7 +199,17 @@ def test_solve_parallel_calls_a_python_callback_from_a_worker_thread() -> None:
 #     the GIL would run it with no thread state and crash the child rather than
 #     record a thread.
 #
-# Red-check: see the commit that added these tests.
+# Red-checked in a throwaway copy, rebuilding `_cbls_core` once per break:
+#   - nanobind's `~python_error` without its `gil_scoped_acquire`: all three
+#     children segfault. Skipping the acquire ONLY on a thread that already owns
+#     a (released) thread state -- i.e. only on the calling thread -- segfaults
+#     `..._kills_one_worker` alone, which is the isolation that shows it is the
+#     test reaching #159's calling-thread path;
+#   - run_worker's retry removed (break on the first throw): all three red, on
+#     `raises=`;
+#   - the all-failed `std::rethrow_exception` dropped: `..._every_worker` red;
+#   - each parked `exception_ptr` leaked in run_worker's catch: all three red,
+#     on `destroyed=`.
 
 
 def test_solve_parallel_surfaces_a_callback_that_raises_in_every_worker() -> None:
@@ -433,7 +443,10 @@ def _scenario_callback() -> None:
     assert idents, "the progress callback was never invoked"
     off_main = [i for i in idents if i != main_thread]
     assert len(off_main) == len(idents), f"callback ran on the calling thread: {idents}"
-    print(f"callback_calls_off_main_thread={len(off_main)}")
+    # A flag, not the count: how many rows arrive depends on which worker
+    # improves first (a peer reports only a new portfolio-wide best), and a
+    # count of 1 printed here failed under load when both workers reported.
+    print("callback_all_calls_off_main_thread=True")
 
 
 def _run_raising_callback(
