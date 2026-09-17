@@ -1,7 +1,8 @@
 """The files a run leaves behind: how they are written, read, and where their shapes live.
 
-Every writer here survives a kill at any instant -- an OOM kill, a reboot, a
-Ctrl-C at hour nine -- by leaving either the previous file or the new one. Every
+A kill at any instant -- an OOM kill, a reboot, a Ctrl-C at hour nine -- leaves a
+whole-file record either as it was or as it was meant to be, and an append-only
+record with at most a torn final line, which `repair_torn_tail` removes. Every
 reader treats a file such a kill could have left as what it is, rather than as a
 result.
 

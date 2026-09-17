@@ -184,7 +184,7 @@ def test_feasibility_parity(
             "row_violation",
         ),
         # A reason, not a blank.
-        ("absent", {}, None, ["not_run", "not_run"], "no result file"),
+        ("absent", {}, None, ["not_run", "not_run"], "no result file was written for this job"),
     ],
     ids=["driver-kill-message", "rejected-solution-reason", "missing-result"],
 )
@@ -203,9 +203,12 @@ def test_a_failed_job_reaches_the_report_with_its_reason(
         _write(tmp_path, "cbls", "x", record, [(1.0, 1.0)], verification or _PASSING)
     failures = job_failures(_score(tmp_path, ["x"]))
     assert [(f.engine, f.kind) for f in failures] == list(zip(ENGINES, kinds, strict=True))
-    assert reason in failures[0].reason
-    if verification is not None:
-        assert "R7" in failures[0].reason
+    assert all(f.reason for f in failures)
+    if verification is None:
+        # The driver's own words, not a paraphrase of them.
+        assert failures[0].reason == reason
+    else:
+        assert reason in failures[0].reason and "R7" in failures[0].reason
 
 
 def test_a_row_the_runner_could_not_dump_says_so_rather_than_reading_as_unchecked(
@@ -361,25 +364,22 @@ def test_the_model_shape_cross_check(
 
 
 @pytest.mark.parametrize(
-    ("cpsat_state", "compared", "note"),
+    ("states", "compared", "note"),
     [
-        # A killed job carries no counts, so nothing about it was compared.
-        ("killed", set(), "not_compared"),
-        ("feasible", {"x"}, "agree"),
+        # A killed job carries no counts, so nothing about it was compared -- on
+        # either side.
+        (("killed", "feasible"), set(), "not_compared"),
+        (("feasible", "killed"), set(), "not_compared"),
+        (("feasible", "feasible"), {"x"}, "agree"),
     ],
-    ids=["one-engine-unshaped", "both-shaped"],
+    ids=["cbls-unshaped", "cpsat-unshaped", "both-shaped"],
 )
 def test_an_instance_is_reported_as_agreeing_only_when_both_shapes_were_read(
-    tmp_path: Path, cpsat_state: str, compared: set[str], note: str
+    tmp_path: Path, states: tuple[str, str], compared: set[str], note: str
 ) -> None:
-    _job(tmp_path, "cbls", "x", "feasible", **_shape(10, 5, 0))
-    _job(
-        tmp_path,
-        "cpsat",
-        "x",
-        cpsat_state,
-        **(_shape(10, 5, 0) if cpsat_state == "feasible" else {}),
-    )
+    for engine, state in zip(ENGINES, states, strict=True):
+        counts = _shape(10, 5, 0) if state == "feasible" else {}
+        _job(tmp_path, engine, "x", state, **counts)
     rows = _score(tmp_path, ["x"])
     assert cross_checked_instances(rows) == compared
     assert shape_notes_by_instance(rows)["x"] == note
@@ -696,7 +696,7 @@ _RECORD: dict[str, object] = {
         # `isinstance(kib, int)` discarded a float the run did measure ...
         (dict(_RECORD, machine={"memory_total_kib": 16777216.0}), 1, ["16.0 GiB"], []),
         # ... and `bool` is an `int` in Python, so `True` rendered as `0.0 GiB`.
-        (dict(_RECORD, machine={"memory_total_kib": True}), 1, ["not recorded"], []),
+        (dict(_RECORD, machine={"memory_total_kib": True}), 1, ["not recorded"], ["0.0 GiB"]),
         # --skip-preconditions is what makes a run unpublishable, and terminal
         # scrollback does not reach whoever reads the table.
         (

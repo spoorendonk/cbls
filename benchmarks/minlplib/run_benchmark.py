@@ -318,7 +318,7 @@ def staged_unpublishable(path: Path) -> bool:
     the problem: it would otherwise stand in for a solve on the next resume.
 
     True for a row the runner wrote after throwing, and for any note
-    `STAGEABLE_NOTES` does not recognise, an absent `note` column included. An
+    `runner.STAGEABLE_NOTES` does not recognise, an absent `note` column included. An
     unreadable file is left to `staged_row_complete` and reported as incomplete,
     not as unpublishable.
     """
@@ -344,7 +344,7 @@ def staged_complete(args: argparse.Namespace, sha: str, name: str, stage: Path) 
     and only then fail to assemble the trace.
 
     A row the runner wrote after THROWING is refused (#153), as is any row whose
-    note `STAGEABLE_NOTES` does not recognise. It is complete by every structural
+    note `runner.STAGEABLE_NOTES` does not recognise. It is complete by every structural
     check -- which is exactly why it has to be named here: the runner exits
     nonzero on it and `run_roster` aborts, but `--resume` is the default, so
     without this the next invocation would skip the instance and `publish` would

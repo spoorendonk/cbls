@@ -33,8 +33,9 @@ RUNNER_EXIT_ERRORED = 3
 
 #: The columns of every result row the runner writes, in order: one row per
 #: instance in `--out`. `test_the_published_header_still_matches_what_the_runner_writes`
-#: pins each name against `minlplib.cpp`, and the committed `comparison.csv`
-#: header against this tuple.
+#: pins each name against `minlplib.cpp`, and
+#: `test_the_committed_table_uses_the_columns_the_driver_assembles` pins the
+#: committed `comparison.csv` header against this tuple.
 RUNNER_COLUMNS: tuple[str, ...] = (
     "instance",
     "objective",

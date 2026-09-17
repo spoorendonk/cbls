@@ -59,6 +59,7 @@ from benchmarks.common.provenance import (  # noqa: E402
     package_version,
 )
 from benchmarks.common.records import read_json_object, write_json  # noqa: E402
+from benchmarks.instances.mipfeas.download import PINNED_REFERENCE_FILES  # noqa: E402
 
 DEFAULT_INSTANCE_DIR = REPO_ROOT / "benchmarks" / "instances" / "mipfeas"
 DEFAULT_CBLS_BIN = REPO_ROOT / "build" / "cbls_mipfeas"
@@ -100,17 +101,6 @@ PREFLIGHT_TIMEOUT_SECONDS = 120.0
 #: `benchmarks/instances/mipfeas/download.py`.
 MANIFEST_FILENAME = "manifest.csv"
 REFERENCES_FILENAME = "references.csv"
-
-#: Files `references.csv` pins. Duplicated from the acquisition script rather than
-#: imported, for the same reason `write_failure_verdict` duplicates a shape: this
-#: driver is run as a script, from any directory, and `--inst-dir` may point at a
-#: roster directory that is not the one in this repository -- so it must not
-#: depend on the package being importable.
-PINNED_REFERENCE_FILES: tuple[str, ...] = (
-    "miplib2017-v36.solu",
-    "roster.csv",
-    "smoke.csv",
-)
 
 
 @dataclass(frozen=True)
@@ -497,9 +487,7 @@ def write_failure_verdict(
     Mirrors `write_failure_result`: a verifier killed by the timeout or the
     memory cap writes nothing itself, and a row with no verdict file at all is
     indistinguishable from one nobody tried to check. The shape is the subset of
-    `verify_solution.Verification` the scorer reads; it is written here rather
-    than imported because this driver is run as a script, from any directory,
-    and must not depend on the package being importable.
+    `verify_solution.Verification` the scorer reads.
     """
     write_json(
         job.verification_path(results_dir),
@@ -529,7 +517,7 @@ FAILURE_MARKERS = ("TIMEOUT", "FAILED", "DRIVER-ERROR", "VERIFY-FAILED", "VERIFY
 def run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
     """Run one job. Nothing escapes.
 
-    `pool.map` re-raises a worker's exception where the caller iterates it, which
+    `run_jobs` re-raises a worker's exception where the caller iterates it, which
     cancels every queued job and aborts main() — including the large-instance serial
     tail — with a traceback. On an unattended multi-hour run a single transient
     OSError (a fork under memory pressure, a full disk) must cost one job, not the

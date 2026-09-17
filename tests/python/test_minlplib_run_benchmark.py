@@ -270,8 +270,17 @@ def test_usage_error(
         (HEADER + "\n" + ROW + "\n", "def5678", False),
         # A job killed mid-write leaves a short line that still reads as a line.
         (HEADER + "\nnvs01,1,1", "abc1234", False),
+        # Torn inside the last cell: every column is present, only the newline is not.
+        (HEADER + "\n" + ROW[:-1], "abc1234", False),
     ],
-    ids=["header-only", "whole-row", "absent", "another-commit", "torn-final-line"],
+    ids=[
+        "header-only",
+        "whole-row",
+        "absent",
+        "another-commit",
+        "torn-final-line",
+        "torn-inside-the-last-cell",
+    ],
 )
 def test_staged_row_complete(tmp_path: Path, text: str | None, sha: str, complete: bool) -> None:
     path = tmp_path / "nvs01.csv"
@@ -300,6 +309,8 @@ def _stage(
         # the first run, but without this the next would skip the instance and
         # `publish` would assemble a row that measured nothing.
         ("solve-error", False),
+        ("read-error", False),
+        ("build-error", False),
         # The guard is an allowlist, so a note added later fails safe:
         # `convert-error` stands in for any future `++t.errored` site.
         ("convert-error", False),
@@ -310,7 +321,15 @@ def _stage(
         ("unsupported: NL_UNKNOWN_OPCODE 42", True),
         ("not-found", True),
     ],
-    ids=["thrown", "unrecognised", "empty", "unsupported", "not-found"],
+    ids=[
+        "thrown",
+        "read-error",
+        "build-error",
+        "unrecognised",
+        "empty",
+        "unsupported",
+        "not-found",
+    ],
 )
 def test_only_a_measurement_or_a_coverage_gap_stands_in_for_a_solve(
     tmp_path: Path, note: str, stands_in: bool
@@ -318,6 +337,13 @@ def test_only_a_measurement_or_a_coverage_gap_stands_in_for_a_solve(
     stage = _stage(tmp_path, note)
     assert staged_row_complete(stage / "a.csv", "abc1234")
     assert staged_complete(make_args(tmp_path), "abc1234", "a", stage) is stands_in
+
+
+def test_a_staging_dir_from_another_seed_is_refused(tmp_path: Path) -> None:
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    assert staging_stamp_conflict(stage, make_args(tmp_path, seed=7), "abc1234") is None
+    assert staging_stamp_conflict(stage, make_args(tmp_path), "abc1234") is not None
 
 
 def test_a_staged_csv_without_its_trace_is_not_complete_when_tracing(tmp_path: Path) -> None:

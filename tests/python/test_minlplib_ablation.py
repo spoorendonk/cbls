@@ -260,26 +260,27 @@ def test_a_busy_machine_is_refused_and_the_refusal_is_overridable(
 
 
 @pytest.mark.parametrize(
-    ("out_dir", "refused"),
+    ("out_dir", "said"),
     [
         # Refused, not warned: the campaign writes several files and the runner
         # writes more underneath, so the durable rule is that the whole tree is off
         # limits rather than that three filenames are.
-        ("benchmarks/instances", True),
-        ("benchmarks/instances/minlplib", True),
-        ("benchmarks/instances/minlplib/scratch", True),
+        ("benchmarks/instances", "published"),
+        ("benchmarks/instances/minlplib", "published"),
+        ("benchmarks/instances/minlplib/scratch", "published"),
         # ... and so is anything containing it.
-        ("", True),
-        ("benchmarks", True),
-        (None, False),
+        ("", "contains"),
+        ("benchmarks", "contains"),
+        (None, None),
     ],
     ids=["instances", "minlplib", "under-minlplib", "repo-root", "benchmarks", "scratch"],
 )
 def test_an_out_dir_that_could_reach_a_published_table_is_refused(
-    tmp_path: Path, out_dir: str | None, refused: bool
+    tmp_path: Path, out_dir: str | None, said: str | None
 ) -> None:
     path = tmp_path / "campaign" if out_dir is None else REPO_ROOT / out_dir
-    assert (scratch_refusal(path) is not None) is refused
+    refusal = scratch_refusal(path)
+    assert refusal is None if said is None else (refusal is not None and said in refusal)
 
 
 @pytest.mark.parametrize(
@@ -460,6 +461,13 @@ def test_the_stamp_refuses_a_resume_from_another_budget(tmp_path: Path) -> None:
     conflict = stamp_conflict(out_dir, other, resume=True)
     assert conflict is not None
     assert "different configuration" in conflict
+    # Each field is a way to mix two campaigns into one results.csv, not only the budget.
+    for variant in (
+        campaign_stamp("abc1234", 60.0, [1, 2, 7], list(ARMS)),
+        campaign_stamp("abc1234", 60.0, [1, 2, 3], list(ARMS), roster=["i1"]),
+        campaign_stamp("abc1234", 60.0, [1, 2, 3], list(ARMS), lns_arm="off"),
+    ):
+        assert stamp_conflict(out_dir, variant, resume=True) is not None
     # --no-resume is starting over, so the stamp is rewritten rather than checked.
     assert stamp_conflict(out_dir, other, resume=False) is None
 
@@ -636,6 +644,9 @@ def test_a_failed_run_is_recorded_rather_than_ending_the_campaign(
     assert [row["instance"] for row in rows] == ["i1", "i2"]
     assert rows[0]["note"] == note
     assert rows[0]["primal_bks"] == primal_bks
+    assert rows[0]["n_int_vars"] == ("4" if note == "solve-error" else "NaN")
+    # ... and the failure's log is kept beside it, since it is the one that gets read.
+    assert (out_dir / "runs" / "i1__control__seed7.log").exists()
     # Still not a measurement: the scorer holds every non-completed note out.
     assert not completed_search(rows[0]["note"])
 
@@ -663,24 +674,24 @@ def test_the_drivers_failed_row_carries_no_measurement(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("repairs", "run_arm", "total", "probed", "reason"),
+    ("repairs", "run_arm", "hits", "total", "probed", "reason"),
     [
-        (["0", "4"], True, 4, 2, "real arm"),
+        (["0", "4"], True, 1, 4, 2, "real arm"),
         # With no repair anywhere, `diversify()` takes the perturb branch at every
         # kick with or without LNS, so the arm is provably a no-op.
-        (["0"] * 20, False, 0, 20, "would measure nothing"),
+        (["0"] * 20, False, 0, 0, 20, "would measure nothing"),
         # `lns_repairs` is NaN on a row the runner wrote without solving -- for an
         # unsupported instance (exit 0) and for a solve that threw (exit 3). It
         # must not read as a repair, must not crash the gate -- and must not read
         # as a reading of ZERO repairs either, which is what an earlier cut did. A
         # skip assembled from rows where nothing ran is not "the counter reading
         # that justified skipping"; with no reading at all the arm runs.
-        (["NaN", ""], True, 0, 0, "produced an lns_repairs reading"),
-        (["NaN"] * 20, True, 0, 0, "produced an lns_repairs reading"),
+        (["NaN", ""], True, 0, 0, 0, "produced an lns_repairs reading"),
+        (["NaN"] * 20, True, 0, 0, 0, "produced an lns_repairs reading"),
         # A skip may stand on a reading with a few holes in it, and says so...
-        (["NaN"] + ["0"] * 19, False, 0, 19, "excluded from the denominator"),
+        (["NaN"] + ["0"] * 19, False, 0, 0, 19, "excluded from the denominator"),
         # ... but not on one below GATE_MIN_READABLE_FRACTION.
-        (["NaN"] * 3 + ["0"] * 17, True, 0, 17, "below the 90%"),
+        (["NaN"] * 3 + ["0"] * 17, True, 0, 0, 17, "below the 90%"),
     ],
     ids=[
         "an-instance-repaired",
@@ -692,7 +703,7 @@ def test_the_drivers_failed_row_carries_no_measurement(tmp_path: Path) -> None:
     ],
 )
 def test_the_lns_gate(
-    repairs: list[str], run_arm: bool, total: int, probed: int, reason: str
+    repairs: list[str], run_arm: bool, hits: int, total: int, probed: int, reason: str
 ) -> None:
     rows = [
         {"instance": f"i{k}", "arm": PROBE_ARM_NAME, "lns_repairs": cell}
@@ -700,12 +711,13 @@ def test_the_lns_gate(
     ]
     decision = decide_lns_gate(rows)
     assert decision.run_arm is run_arm
-    assert decision.total_repairs == total
+    assert (decision.instances_with_repairs, decision.total_repairs) == (hits, total)
     assert (decision.probed_runs, decision.unread_runs) == (probed, len(repairs) - probed)
     assert reason in decision.reason
     # A driver decision recorded in the output, not a human one in a shell.
     recorded = decision.as_dict()
     assert recorded["run_arm"] is run_arm
+    assert recorded["reason"] == decision.reason
     assert (recorded["min_repairs_per_instance"], recorded["min_instances"]) == (1, 1)
 
 

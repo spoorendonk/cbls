@@ -335,7 +335,12 @@ def _moving(worse: int, better: int, still: int) -> list[dict[str, object]]:
     ("rows", "expected", "said", "not_said"),
     [
         # Enough instances moving the same way IS a roster-level direction.
-        (_moving(5, 0, 0), {"moved_worse": 5}, ["WORSE than", "moved outside their own floor"], []),
+        (
+            _moving(5, 0, 0),
+            {"moved_worse": 5, "median_delta": 30.0},
+            ["WORSE than", "moved outside their own floor"],
+            [],
+        ),
         # Instances moving in BOTH directions in comparable numbers is not a result:
         # once both directions are present the sign test decides, so a bare
         # majority is reported as mixed rather than as an arm effect.
@@ -370,7 +375,7 @@ def _moving(worse: int, better: int, still: int) -> list[dict[str, object]]:
 def test_the_verdict_names_a_direction_only_when_the_roster_has_one(
     tmp_path: Path,
     rows: list[dict[str, object]],
-    expected: dict[str, int],
+    expected: dict[str, float],
     said: list[str],
     not_said: list[str],
 ) -> None:
@@ -378,7 +383,8 @@ def test_the_verdict_names_a_direction_only_when_the_roster_has_one(
     summary = summarize_arm("x", build_cells(loaded), scored_instances(loaded))
     for path, value in expected.items():
         owner, _, name = path.rpartition(".")
-        assert getattr(summary.floor if owner else summary, name) == value, path
+        actual = getattr(summary.floor if owner else summary, name)
+        assert actual == pytest.approx(value), path
     for text in said:
         assert text in summary.verdict, text
     for text in not_said:

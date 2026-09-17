@@ -10,8 +10,7 @@ What they share is the mechanics, here:
   and optionally logged. A timeout is an `Outcome`, not an exception, so no
   caller can forget to record it.
 * `run_jobs` -- a plan run `workers` at a time with a serial tail, in plan
-  order. A serial run is a plain loop: nothing is started ahead of the job in
-  hand, so an exception stops the run before the next job begins.
+  order.
 """
 
 from __future__ import annotations
@@ -113,16 +112,18 @@ def run_jobs[J, R](
     rather than four-up against a memory limit -- and starts only once every
     job before it has finished.
 
-    `run_one` should not raise on a job's own failure: in a pool, an exception
-    is re-raised where the caller iterates, which cancels every job still queued
-    and the whole tail -- on an unattended run, one transient OSError costing the
-    rest of the roster. A serial run (`workers` of 1, and the tail) is a plain
-    loop, so there an exception stops the run before the next job starts, which
-    is what a driver that must stop on its first failure wants.
+    Every job runs on a pool thread, one-worker runs and the tail included, never
+    on the caller's. That is what a Ctrl-C relies on: it lands in the caller, and
+    leaving the pool waits for the jobs in flight, so a solve that is running
+    finishes and writes its record. On the caller's own thread the interrupt
+    would land inside `subprocess.run`, which kills the child and leaves nothing.
+
+    `run_one` should not raise on a job's own failure: an exception is re-raised
+    where the caller iterates, which cancels every job still queued and the whole
+    tail -- on an unattended run, one transient OSError costing the rest of the
+    roster.
     """
-    if workers > 1:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            yield from pool.map(run_one, jobs)
-    else:
-        yield from map(run_one, jobs)
-    yield from map(run_one, serial_tail)
+    with ThreadPoolExecutor(max_workers=max(workers, 1)) as pool:
+        yield from pool.map(run_one, jobs)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        yield from pool.map(run_one, serial_tail)

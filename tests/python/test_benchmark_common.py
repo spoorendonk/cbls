@@ -80,20 +80,15 @@ def test_own_session_is_what_keeps_a_ctrl_c_off_the_child(own_session: bool) -> 
 # --- jobs: a plan ---------------------------------------------------------------
 
 
-def test_a_serial_run_stops_before_the_job_after_a_failure() -> None:
-    """A driver that must stop on its first failure raises from `run_one`; the
-    next job must not already be running when it does."""
-    started: list[int] = []
-
-    def run_one(job: int) -> int:
-        started.append(job)
-        if job == 2:
-            raise RuntimeError("job 2 failed")
-        return job
-
-    with pytest.raises(RuntimeError, match="job 2 failed"):
-        list(run_jobs([1, 2, 3], run_one, serial_tail=[4]))
-    assert started == [1, 2]
+@pytest.mark.parametrize("workers", [1, 3])
+def test_every_job_runs_off_the_callers_thread(workers: int) -> None:
+    """A Ctrl-C lands on the caller's thread. A job running there dies inside
+    `subprocess.run` with no record; a job on a pool thread is waited for."""
+    caller = threading.get_ident()
+    threads = list(
+        run_jobs([1, 2], lambda _: threading.get_ident(), workers=workers, serial_tail=[3])
+    )
+    assert caller not in threads
 
 
 def test_the_batch_runs_bounded_in_plan_order_and_the_tail_runs_alone() -> None:
@@ -101,6 +96,9 @@ def test_the_batch_runs_bounded_in_plan_order_and_the_tail_runs_alone() -> None:
     inflight: list[int] = []
     peak_batch = 0
     tail_overlap: list[int] = []
+    # The first three batch jobs meet at a barrier, so three-at-once is proven
+    # rather than hoped for from a sleep; a serial run breaks it within the timeout.
+    barrier = threading.Barrier(3, timeout=10)
 
     def run_one(job: int) -> int:
         nonlocal peak_batch
@@ -110,14 +108,17 @@ def test_the_batch_runs_bounded_in_plan_order_and_the_tail_runs_alone() -> None:
                 tail_overlap.append(job)
             if job < 100:
                 peak_batch = max(peak_batch, len(inflight))
-        time.sleep(0.02)
+        if job < 3:
+            barrier.wait()
+        else:
+            time.sleep(0.02)
         with lock:
             inflight.remove(job)
         return job
 
     results = list(run_jobs(range(8), run_one, workers=3, serial_tail=[100, 101]))
     assert results == [*range(8), 100, 101]
-    assert 1 < peak_batch <= 3
+    assert peak_batch == 3
     assert tail_overlap == [], "a large job ran beside another job"
 
 
@@ -222,10 +223,15 @@ def test_the_commit_is_marked_dirty_only_for_modified_tracked_files(
     _git(tmp_path, "init", "-q")
     (tmp_path / "engine.cpp").write_text("int main() {}\n")
     _git(tmp_path, "add", "engine.cpp")
-    _git(tmp_path, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c")
+    identity = ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+    _git(tmp_path, *identity, "-c", "core.hooksPath=/dev/null", "commit", "-qm", "c")
 
     clean = commit_sha(tmp_path)
     assert len(clean) == 7 and all(c in "0123456789abcdef" for c in clean)
+    # `git describe` would now print `v1`: the recorded shape must not change the
+    # day the repository gains its first tag.
+    _git(tmp_path, "tag", "v1")
+    assert commit_sha(tmp_path) == clean
     (tmp_path / "scratch.txt").write_text("untracked\n")
     assert commit_sha(tmp_path) == clean
     (tmp_path / "engine.cpp").write_text("int main() { return 1; }\n")

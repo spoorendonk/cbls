@@ -85,7 +85,7 @@ from benchmarks.common.records import (  # noqa: E402
     repair_torn_tail,
     stamp_mismatch,
 )
-from benchmarks.minlplib import runner  # noqa: E402
+from benchmarks.minlplib import runner as runner_contract  # noqa: E402
 from benchmarks.minlplib.ablation_report import (  # noqa: E402
     CONTROL_ARM,
     PROBE_ARM_NAME,
@@ -485,7 +485,7 @@ def runner_command(args: argparse.Namespace, sha: str, run: Run, out_dir: Path) 
     to write `comparison.csv` from a subset run whatever else is passed, so even
     the control arm -- whose flags are all default -- cannot reach it.
     """
-    return runner.runner_command(
+    return runner_contract.runner_command(
         args.build_dir,
         args.inst_dir,
         time_limit=args.time_limit,
@@ -711,7 +711,7 @@ def execute_runs(
 ) -> None:
     """Run every plan entry that is not already recorded, one solve at a time.
 
-    Serial by construction: a plain loop over `subprocess.run`, which blocks.
+    Serial by construction: a plain loop over `run_process`, which blocks.
     There is no concurrency switch to get wrong, and `campaign_lock` above stops
     a second driver from supplying one.
     """
@@ -1119,7 +1119,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"out-dir {out_dir}", file=sys.stderr)
     with campaign_lock(out_dir):
         if args.build:
-            subprocess.run(runner.build_command(args.build_dir, 4), check=True)
+            subprocess.run(runner_contract.build_command(args.build_dir, 4), check=True)
         return execute(args, sha, roster, out_dir)
 
 

@@ -15,11 +15,13 @@ import hashlib
 import json
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
+from benchmarks.instances.mipfeas.download import PINNED_REFERENCE_FILES
 from benchmarks.mipfeas import run_benchmark
 from benchmarks.mipfeas.primal_integral import NO_SOLUTION_GAP, score_instance, summarize
 from benchmarks.mipfeas.run_benchmark import (
@@ -311,6 +313,11 @@ def test_resuming_at_a_different_thread_count_is_refused(tmp_path: Path) -> None
     assert check(1) is None
     (tmp_path / "cbls" / "a.json").write_text(json.dumps({"instance": "a"}))
     assert check(4) is None
+    # The CP-SAT side keys on `workers`, not `threads`, and is checked separately.
+    (tmp_path / "cpsat").mkdir()
+    (tmp_path / "cpsat" / "a.json").write_text(json.dumps({"instance": "a", "workers": 1}))
+    args = _driver_args(cbls_threads=1, cpsat_workers=4)
+    assert run_benchmark.check_resume_configuration([Job("cpsat", "a")], tmp_path, args) == 2
 
 
 # --- resume: what still needs a solve, and what still needs a verdict (#138) -----
@@ -370,7 +377,14 @@ def _driver_verdict(attempts: int | None) -> dict[str, object]:
         ("feasible", True, _driver_verdict(MAX_VERIFY_ATTEMPTS), True, False, False),
         # A verdict the checker itself reached is final: re-running a check that
         # cannot succeed never converges either.
-        ("feasible", True, {"verdict": "error", "reason": "unsupported"}, True, False, False),
+        (
+            "feasible",
+            True,
+            {"verdict": "error", "reason": "unsupported_constraint"},
+            True,
+            False,
+            False,
+        ),
     ],
     ids=[
         "no-result",
@@ -543,6 +557,68 @@ def test_every_job_process_is_bounded_capped_and_in_its_own_session(
     assert command[:2] == ["/bin/sh", "-c"] and "ulimit -v 2097152" in command[2]
 
 
+@pytest.mark.parametrize(
+    ("returncode", "line", "message"),
+    [
+        (TIMED_OUT, "TIMEOUT", f"exceeded {600.0 + run_benchmark.TIMEOUT_SLACK_SECONDS}s"),
+        # An OOM kill or the address-space cap writes no result of its own.
+        (-9, "FAILED (exit -9)", "exit -9"),
+    ],
+    ids=["timeout", "died-without-a-result"],
+)
+def test_a_solve_the_driver_saw_die_leaves_a_killed_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, returncode: int, line: str, message: str
+) -> None:
+    # Without the record the job reads as never scheduled, and without its budget
+    # a resume at another budget skips it and the scorer's budget guard never fires.
+    monkeypatch.setattr(subprocess, "run", _FakeRun(returncode, None))
+    job = Job("cbls", "inst")
+    reported, solved = run_benchmark._run_solver(job, _driver_args(), tmp_path)
+    assert not solved and line in reported
+    record = json.loads(job.result_path(tmp_path).read_text())
+    assert (record["status"], record["budget_seconds"]) == ("killed", 600.0)
+    assert message in record["message"]
+
+
+def test_large_jobs_run_after_the_batch_and_their_failures_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The largest instances run alone at the end rather than four-up against one
+    # memory limit; `execute` is the only place that schedules them at all.
+    ran: list[str] = []
+    batch = threading.Barrier(2, timeout=10)  # both batch jobs in flight at once
+
+    def run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
+        if job.instance != "big":
+            batch.wait()
+        ran.append(job.instance)
+        return f"cbls/{job.instance}: FAILED (exit 1)" if job.instance == "big" else "ok"
+
+    monkeypatch.setattr(run_benchmark, "run_job", run_job)
+    normal = [Job("cbls", "a"), Job("cbls", "b")]
+    failures = run_benchmark.execute(normal, [Job("cbls", "big")], _driver_args(jobs=2), tmp_path)
+    assert sorted(ran[:2]) == ["a", "b"] and ran[2:] == ["big"]
+    assert failures == 1
+
+
+@pytest.mark.parametrize("finishes", [True, False], ids=["answers", "hangs"])
+def test_the_cpsat_preflight_is_bounded(monkeypatch: pytest.MonkeyPatch, finishes: bool) -> None:
+    # The check exists to fail at second zero; an OR-Tools release that ignores the
+    # solve deadline must not turn it into the run's first six hours.
+    seen: dict[str, object] = {}
+
+    def run(command: list[str], **kwargs: object) -> _FakeRun:
+        seen.update(kwargs)
+        return _FakeRun(0 if finishes else TIMED_OUT, None)(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    ok, output = run_benchmark.run_cpsat_preflight(1)
+
+    assert seen["timeout"] == run_benchmark.PREFLIGHT_TIMEOUT_SECONDS
+    assert ok is finishes
+    assert ("did not finish within" in output) is not finishes
+
+
 def test_a_verification_error_does_not_destroy_a_finished_solve(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -662,7 +738,7 @@ def _pinned_dir(tmp_path: Path, instances: dict[str, bytes]) -> Path:
         ],
     )
     reference_rows = []
-    for name in run_benchmark.PINNED_REFERENCE_FILES:
+    for name in PINNED_REFERENCE_FILES:
         (tmp_path / name).write_text(f"contents of {name}\n")
         data = (tmp_path / name).read_bytes()
         reference_rows.append([name, hashlib.sha256(data).hexdigest(), len(data)])
@@ -827,19 +903,10 @@ def test_the_run_record_identifies_the_yardstick_the_gaps_will_be_scored_against
     assert isinstance(references, dict)
     pinned = references["pinned"]
     assert isinstance(pinned, dict)
-    assert set(pinned) == set(run_benchmark.PINNED_REFERENCE_FILES)
+    assert set(pinned) == set(PINNED_REFERENCE_FILES)
     assert references["manifest_sha256"]
     assert references["roster_path"] == str(roster)
     assert references["roster_sha256"] == hashlib.sha256(roster.read_bytes()).hexdigest()
-
-
-def test_the_drivers_copy_of_the_pinned_reference_files_matches_acquisition() -> None:
-    # Deliberately duplicated so the driver needs no import of the roster package,
-    # but one of the three names carries a MIPLIB version -- so the copies are tied
-    # together here rather than drifting the day the yardstick is revised.
-    from benchmarks.instances.mipfeas import download
-
-    assert download.PINNED_REFERENCE_FILES == run_benchmark.PINNED_REFERENCE_FILES
 
 
 def test_a_resumed_run_adds_a_record_rather_than_overwriting_the_first(tmp_path: Path) -> None:
@@ -851,6 +918,13 @@ def test_a_resumed_run_adds_a_record_rather_than_overwriting_the_first(tmp_path:
 
     runs = json.loads((results / run_benchmark.RUN_RECORD_FILENAME).read_text())["runs"]
     assert [r["concurrency"]["jobs"] for r in runs] == [1, 8]
+    # Closing the second invocation must not take the first one's entry with it.
+    run_benchmark.close_run_record(results, {**_record(tmp_path, jobs=8), "status": "complete"})
+    runs = json.loads((results / run_benchmark.RUN_RECORD_FILENAME).read_text())["runs"]
+    assert [(r["concurrency"]["jobs"], r["status"]) for r in runs] == [
+        (1, "running"),
+        (8, "complete"),
+    ]
 
 
 def test_closing_the_record_replaces_the_entry_this_run_opened(tmp_path: Path) -> None:

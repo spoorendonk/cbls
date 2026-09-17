@@ -701,7 +701,10 @@ re-run and the ablation campaign resume on three different keys for reasons of
 measurement, and "one driver" there would change what gets re-run. The
 MINLPLib runner's contract (columns, exit status, note vocabulary) is declared
 once in `benchmarks/minlplib/runner.py`. The mechanics are pinned in
-`tests/python/test_benchmark_common.py`; don't re-test them per driver. Drivers
+`tests/python/test_benchmark_common.py`; don't re-test the mechanics per driver,
+but do pin each driver's use of them -- which jobs go in the tail, what a killed
+job records, which timeout a call carries -- since that wiring is what a
+refactor silently drops. Drivers
 run as scripts reach the package through a `sys.path` shim on the repository
 root, as `run_ablation.py` always did.
 

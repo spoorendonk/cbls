@@ -55,9 +55,7 @@ BENCHMARK_ZIP_URL = "https://miplib.zib.de/downloads/benchmark.zip"
 INSTANCE_URL_TEMPLATE = "https://miplib.zib.de/WebData/instances/{name}.mps.gz"
 
 #: Carries a MIPLIB version, so bumping it is a roster change rather than a rename.
-#: `benchmarks/mipfeas/run_benchmark.py` keeps its own copy of
-#: `PINNED_REFERENCE_FILES` (it must run without this package importable) and a test
-#: ties the two together -- bump both, or the driver checks a file that is gone.
+#: `benchmarks/mipfeas/run_benchmark.py` imports `PINNED_REFERENCE_FILES` from here.
 SOLU_FILENAME = "miplib2017-v36.solu"
 ROSTER_FILENAME = "roster.csv"
 MANIFEST_FILENAME = "manifest.csv"

@@ -392,9 +392,6 @@ def test_a_seed_appearing_twice_is_not_weighted_double(tmp_path: Path) -> None:
     assert result.pearson == pytest.approx(statistics.correlation(firsts, finals))
 
 
-# --- eligibility ---------------------------------------------------------------
-
-
 # --- the pre-registered verdict ------------------------------------------------
 
 
@@ -548,6 +545,8 @@ def test_an_input_mistake_is_refused_by_name(
     message = usage_error(parse_args(_refusal_argv(tmp_path, case)))
     if refusal is None:
         assert message is None
+    elif case == "no-inputs":
+        assert message == refusal[0]  # the whole sentence: it is all the user gets
     else:
         assert message is not None and all(text in message for text in refusal), message
 

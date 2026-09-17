@@ -532,13 +532,12 @@ def test_a_rejected_row_is_excluded_from_the_aggregates_not_scored_two(tmp_path:
 
 
 def _table(
-    tmp_path: Path, scored: Scored, summaries: bool = True
+    tmp_path: Path, scored: Scored, summaries: bool = True, budget: float = 60.0
 ) -> tuple[str, list[str], list[str]]:
     """Write `scored` as a comparison table: its text, its header and its one row."""
     out = tmp_path / "comparison.csv"
-    write_comparison(
-        out, [scored], [summarize([scored], "cbls")] if summaries else [], 60.0, tmp_path / "r.csv"
-    )
+    summary = [summarize([scored], "cbls")] if summaries else []
+    write_comparison(out, [scored], summary, budget, tmp_path / "r.csv")
     text = out.read_text()
     rows = [r for r in csv.reader(text.splitlines()) if r and not r[0].startswith("#")]
     return text, rows[0], rows[1]
@@ -676,10 +675,13 @@ def test_full_roster_table_at_any_budget_is_not_a_wiring_check(tmp_path: Path) -
     assert "scored at" in budget_line
 
 
-def test_partial_roster_table_is_still_banner_stamped(tmp_path: Path) -> None:
-    # Fewer than FULL_ROSTER_SIZE instances is a wiring check at any budget.
+@pytest.mark.parametrize("budget", [60.0, 600.0], ids=["short", "retired-publishable"])
+def test_partial_roster_table_is_still_banner_stamped(tmp_path: Path, budget: float) -> None:
+    # Fewer than FULL_ROSTER_SIZE instances is a wiring check at any budget --
+    # including the 600s one #126 retired as the only publishable budget.
     _write_result(tmp_path, "cbls", "inst", {"status": "feasible", "objective": 10.0})
-    text, _, _ = _table(tmp_path, _score(tmp_path, reference=10.0), summaries=False)
+    scored = _score(tmp_path, reference=10.0, budget=budget)
+    text, _, _ = _table(tmp_path, scored, summaries=False, budget=budget)
 
     assert "*** WIRING CHECK, NOT A PUBLISHABLE RESULT ***" in text
     # Pinned as a phrase, not a bare "233": that also appears in objectives, column
