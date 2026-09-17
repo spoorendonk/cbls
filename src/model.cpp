@@ -89,22 +89,41 @@ int32_t Model::alloc_node_over_handles(NodeOp op, const std::vector<int32_t>& ha
     // doing it per node would defeat geometric growth and copy the whole array
     // on every call.
     const size_t begin = child_refs_.size();
-    for (const int32_t h : handles) {
-        child_refs_.push_back(wrap(h));
+    try {
+        for (const int32_t h : handles) {
+            child_refs_.push_back(wrap(h));
+        }
+    } catch (...) {
+        child_refs_.resize(begin);  // a rejected node leaves no children behind
+        throw;
     }
     return push_node(op, begin);
 }
 
-ChildRef Model::wrap(int32_t handle) {
-    // Handle encoding: var handles = -(var_id + 1) (negative), node handles = node_id
-    // (non-negative)
+// Handle encoding: var handles = -(var_id + 1) (negative), node handles = node_id
+// (non-negative).
+//
+// Validated here, when the node naming the handle is made, because nothing later
+// can be: the back-reference rebuild counts every child into a CSR offsets array
+// indexed by its id, so an id past the end is a silent heap write, not an
+// exception (#156 -- the per-node vectors it replaced were reached through
+// throwing accessors). Python passes raw integers, so this is reachable from a
+// typo. It also rules out naming a node before it exists, which the topological
+// sort never supported.
+ChildRef Model::wrap(int32_t handle) const {
     ChildRef ref;
     if (handle < 0) {
         ref.id = -(handle + 1);
         ref.is_var = true;
+        if (static_cast<size_t>(ref.id) >= vars_.size()) {
+            throw std::out_of_range("variable handle out of range");
+        }
     } else {
         ref.id = handle;
         ref.is_var = false;
+        if (static_cast<size_t>(ref.id) >= nodes_.size()) {
+            throw std::out_of_range("node handle out of range");
+        }
     }
     return ref;
 }
@@ -316,6 +335,9 @@ void Model::add_constraint(int32_t expr_id) {
         throw std::invalid_argument(
             "add_constraint requires a node handle (non-negative), got var handle");
     }
+    if (static_cast<size_t>(expr_id) >= nodes_.size()) {
+        throw std::out_of_range("add_constraint: node handle out of range");
+    }
     constraint_ids_.push_back(expr_id);
 }
 
@@ -323,6 +345,9 @@ void Model::minimize(int32_t expr_id) {
     if (expr_id < 0) {
         throw std::invalid_argument(
             "minimize requires a node handle (non-negative), got var handle");
+    }
+    if (static_cast<size_t>(expr_id) >= nodes_.size()) {
+        throw std::out_of_range("minimize: node handle out of range");
     }
     objective_id_ = expr_id;
 }

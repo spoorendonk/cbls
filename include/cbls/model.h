@@ -322,7 +322,9 @@ private:
     int32_t alloc_node(NodeOp op, std::initializer_list<ChildRef> children);
     int32_t alloc_node_over_handles(NodeOp op, const std::vector<int32_t>& handles);
     int32_t push_node(NodeOp op, size_t child_begin);
-    static ChildRef wrap(int32_t handle);  // auto-detect var vs node
+    // Decode a var or node handle, throwing std::out_of_range if it names
+    // nothing this model has made yet.
+    [[nodiscard]] ChildRef wrap(int32_t handle) const;
 };
 
 }  // namespace cbls
