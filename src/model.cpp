@@ -348,8 +348,20 @@ std::pair<int, int> Model::var_sequence_for(int32_t var_id) const {
     return {-1, -1};
 }
 
+// The inverse permutation of `topo_order_`, rebuilt wherever that is. Its own
+// function because the two call sites must not drift: a stale `topo_pos_` would
+// evaluate a dirty set out of dependency order, which is silent wrong values
+// rather than a crash.
+void Model::rebuild_topo_positions() {
+    topo_pos_.assign(nodes_.size(), 0);
+    for (size_t i = 0; i < topo_order_.size(); ++i) {
+        topo_pos_[topo_order_[i]] = static_cast<int32_t>(i);
+    }
+}
+
 void Model::close() {
     topo_order_ = detail::compute_topo_order(*this);
+    rebuild_topo_positions();
     build_var_constraints();
     full_evaluate(*this);
     closed_ = true;
@@ -372,6 +384,7 @@ void Model::add_objective_soft_constraint() {
 
     // Rebuild structure now that a node/constraint was appended after close().
     topo_order_ = detail::compute_topo_order(*this);
+    rebuild_topo_positions();
     build_var_constraints();
     full_evaluate(*this);
 }

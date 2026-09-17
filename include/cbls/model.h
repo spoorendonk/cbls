@@ -175,6 +175,13 @@ public:
         return constraint_ids_;
     }
     [[nodiscard]] const std::vector<int32_t>& topo_order() const noexcept { return topo_order_; }
+    /// Where `id` sits in `topo_order()`, so a caller holding a handful of nodes
+    /// can put them in evaluation order without walking the whole order to find
+    /// them. `delta_evaluate` is the caller that matters: scanning `topo_order()`
+    /// and testing a flag made it O(all nodes) per call on a model whose dirty
+    /// set is typically a few dozen -- ~2M nodes walked per move on the largest
+    /// MIPfeas instance.
+    [[nodiscard]] int32_t topo_position(int32_t id) const noexcept { return topo_pos_[id]; }
     [[nodiscard]] const std::vector<Variable>& variables() const noexcept { return vars_; }
     std::vector<Variable>& variables_mut() noexcept { return vars_; }
     [[nodiscard]] const std::vector<ExprNode>& nodes() const noexcept { return nodes_; }
@@ -210,6 +217,9 @@ private:
     std::vector<Variable> vars_;
     std::vector<ExprNode> nodes_;
     std::vector<int32_t> topo_order_;
+    /// Inverse of `topo_order_`: node id -> its index there. Rebuilt with it,
+    /// and only ever read through `topo_position`.
+    std::vector<int32_t> topo_pos_;
     std::vector<int32_t> constraint_ids_;
     std::vector<std::vector<int32_t>> var_constraints_;  // var_id -> constraint indices (G_v)
     int32_t objective_id_ = -1;
@@ -230,6 +240,7 @@ private:
     std::vector<double> probe_old_violation_;
 
     void build_var_constraints();
+    void rebuild_topo_positions();
     int32_t alloc_var(VarType type, double lb, double ub, const std::string& name);
     int32_t alloc_node(NodeOp op, const std::vector<ChildRef>& children);
     static ChildRef wrap(int32_t handle);  // auto-detect var vs node

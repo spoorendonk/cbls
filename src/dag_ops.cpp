@@ -146,12 +146,20 @@ double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count
         }
     }
 
-    // Recompute dirty nodes in topological order
-    for (int32_t nid : model.topo_order()) {
-        if (dirty_flags[nid] != 0) {
-            auto& nd = model.node_mut(nid);
-            nd.value = evaluate(nd, model);
-        }
+    // Recompute dirty nodes in topological order.
+    //
+    // Sorted, not filtered. Walking `topo_order()` and testing the flag visits
+    // EVERY node in the model on every call -- the dirty set is typically a few
+    // dozen, so on the largest MIPfeas instance (961k rows) that was ~2M flag
+    // tests to recompute a handful of them, and delta evaluation stopped being
+    // sublinear in the model exactly where it matters most. Sorting d entries
+    // costs O(d log d) against O(|nodes|), and d is bounded by the BFS above.
+    std::sort(dirty_list.begin(), dirty_list.end(), [&model](int32_t a, int32_t b) {
+        return model.topo_position(a) < model.topo_position(b);
+    });
+    for (int32_t nid : dirty_list) {
+        auto& nd = model.node_mut(nid);
+        nd.value = evaluate(nd, model);
     }
 
     // Clean up dirty flags (only touch entries we set)

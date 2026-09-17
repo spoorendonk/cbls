@@ -196,6 +196,40 @@ TEST_CASE("Delta evaluation matches full", "[dag]") {
     REQUIRE(full_result == delta_result);
 }
 
+TEST_CASE("Delta evaluation respects dependency order on a deep chain", "[dag]") {
+    // delta_evaluate recomputes the dirty set in topological order. It used to
+    // get that order by walking the WHOLE topo order and testing a flag, which
+    // is O(all nodes) per call -- ~2M flag tests per move on the largest MIPfeas
+    // instance, for a dirty set of a few dozen. It now sorts the dirty list by
+    // topological position instead, so this pins the property the sort has to
+    // preserve: a node must never be recomputed before the node it reads.
+    //
+    // A deep chain is what makes a wrong order observable. The BFS that marks
+    // the dirty set enqueues parents in discovery order, which for a chain is
+    // already topological -- so the check that bites is a DIAMOND, where the two
+    // sides are discovered in one order and must be evaluated in another.
+    Model m;
+    auto x = m.float_var(0, 10);
+    auto a = m.prod(x, m.constant(2.0));   // 2x
+    auto b = m.sum({a, m.constant(1.0)});  // 2x + 1
+    auto c = m.prod(b, b);                 // (2x + 1)^2
+    auto d = m.sum({c, a});                // (2x + 1)^2 + 2x
+    auto e = m.prod(d, m.constant(3.0));   // 3 * that
+    m.minimize(e);
+    m.close();
+
+    m.var_mut(vid(x)).value = 1.0;
+    full_evaluate(m);
+    REQUIRE(m.node(e).value == 3.0 * (9.0 + 2.0));
+
+    m.var_mut(vid(x)).value = 4.0;
+    const double delta_result = delta_evaluate(m, {vid(x)});
+    // Every intermediate has to be recomputed before its reader, or the result
+    // mixes the new x with a stale square.
+    REQUIRE(delta_result == 3.0 * (81.0 + 8.0));
+    REQUIRE(full_evaluate(m) == delta_result);
+}
+
 TEST_CASE("Delta eval with no changes", "[dag]") {
     Model m;
     auto x = m.float_var(0, 10);
