@@ -37,20 +37,29 @@ import argparse
 import contextlib
 import csv
 import hashlib
-import importlib.metadata
-import json
-import os
 import platform
-import socket
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+# Run as a script (`python benchmarks/mipfeas/run_benchmark.py`, the documented
+# form), only this file's own directory is on sys.path. The repository root is
+# what makes `benchmarks.common` importable from any working directory.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from benchmarks.common.jobs import run_jobs, run_process  # noqa: E402
+from benchmarks.common.provenance import (  # noqa: E402
+    REPO_ROOT,
+    commit_sha,
+    machine_record,
+    package_version,
+)
+from benchmarks.common.records import read_json_object, write_json  # noqa: E402
+
 DEFAULT_INSTANCE_DIR = REPO_ROOT / "benchmarks" / "instances" / "mipfeas"
 DEFAULT_CBLS_BIN = REPO_ROOT / "build" / "cbls_mipfeas"
 CPSAT_SCRIPT = Path(__file__).resolve().parent / "cpsat_solve.py"
@@ -136,25 +145,6 @@ def resolve_roster(value: str, inst_dir: Path) -> Path:
     return named.get(value, Path(value))
 
 
-def commit_sha() -> str:
-    """The commit a run is attributed to, marked `-dirty` when the tree is modified.
-
-    A plain SHA from a modified checkout claims a reproducibility the result does
-    not have — the code that ran is not the code at that commit.
-    """
-    try:
-        out = subprocess.run(
-            ["git", "describe", "--always", "--dirty", "--abbrev=7"],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except (subprocess.CalledProcessError, OSError):
-        return "unknown"
-    return out.stdout.strip() or "unknown"
-
-
 def read_pins(path: Path, key_column: str) -> dict[str, tuple[str, int]]:
     """`{key: (sha256, bytes)}` from a pin table, empty when the file is absent."""
     if not path.exists():
@@ -238,63 +228,20 @@ def run_cpsat_preflight(workers: int) -> tuple[bool, str]:
     the share of CPU the baseline gets against CBLS's one thread, so preflighting a
     configuration the run does not use checks the wrong thing.
     """
-    try:
-        completed = subprocess.run(
-            [sys.executable, str(CPSAT_SCRIPT), "--preflight", "--workers", str(workers)],
-            capture_output=True,
-            text=True,
-            check=False,
-            # The check exists to fail at second zero. Without a bound, a release
-            # that ignores the solve deadline hangs the driver here instead --
-            # a fail-open gate on the gate.
-            timeout=PREFLIGHT_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired:
+    outcome = run_process(
+        [sys.executable, str(CPSAT_SCRIPT), "--preflight", "--workers", str(workers)],
+        # The check exists to fail at second zero. Without a bound, a release
+        # that ignores the solve deadline hangs the driver here instead -- a
+        # fail-open gate on the gate.
+        timeout=PREFLIGHT_TIMEOUT_SECONDS,
+    )
+    if outcome.timed_out:
         return False, (
             f"the CP-SAT preflight did not finish within {PREFLIGHT_TIMEOUT_SECONDS}s. It "
             "solves one tiny in-memory model under a 2s limit, so a release that runs this "
             "long is not honouring the deadline the whole baseline is budgeted by."
         )
-    return completed.returncode == 0, (completed.stdout + completed.stderr).strip()
-
-
-def package_version(name: str) -> str | None:
-    try:
-        return importlib.metadata.version(name)
-    except importlib.metadata.PackageNotFoundError:
-        return None
-
-
-def memory_total_kib() -> int | None:
-    """Total RAM, or None off Linux. The record says what it could not measure."""
-    try:
-        for line in Path("/proc/meminfo").read_text().splitlines():
-            if line.startswith("MemTotal:"):
-                return int(line.split()[1])
-    except (OSError, ValueError, IndexError):
-        return None
-    return None
-
-
-def machine_record() -> dict[str, object]:
-    """What produced a wall-clock-limited result, beyond the code that ran.
-
-    A budgeted comparison is a statement about a machine as much as about an
-    algorithm: the same roster on half the cores, or four-up instead of one-up, is
-    a different measurement. Cores are reported twice because they differ under
-    cgroup or taskset confinement, and that difference is exactly the sort of thing
-    that makes two runs of "the same" benchmark disagree.
-    """
-    return {
-        "host": socket.gethostname(),
-        "platform": platform.platform(),
-        "machine": platform.machine(),
-        "processor": platform.processor(),
-        "cpu_count": os.cpu_count(),
-        "cpu_affinity": len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
-        "memory_total_kib": memory_total_kib(),
-        "load_average": list(os.getloadavg()) if hasattr(os, "getloadavg") else None,
-    }
+    return outcome.returncode == 0, (outcome.stdout + outcome.stderr).strip()
 
 
 def reference_record(inst_dir: Path, roster_path: Path) -> dict[str, object]:
@@ -379,37 +326,22 @@ def build_run_record(
     }
 
 
+def _recorded_runs(path: Path) -> list[object]:
+    previous = (read_json_object(path) or {}).get("runs")
+    return list(previous) if isinstance(previous, list) else []
+
+
 def append_run_record(results_dir: Path, record: dict[str, object]) -> Path:
     """Add `record` to the results directory's run log, keeping earlier entries."""
     path = results_dir / RUN_RECORD_FILENAME
-    existing = _read_json(path) or {}
-    previous = existing.get("runs")
-    runs = list(previous) if isinstance(previous, list) else []
-    runs.append(record)
-    _write_run_records(path, runs)
+    write_json(path, {"runs": [*_recorded_runs(path), record]})
     return path
 
 
 def close_run_record(results_dir: Path, record: dict[str, object]) -> None:
     """Replace the entry `append_run_record` added with its finished form."""
     path = results_dir / RUN_RECORD_FILENAME
-    existing = _read_json(path) or {}
-    previous = existing.get("runs")
-    runs = list(previous) if isinstance(previous, list) else []
-    if runs:
-        runs[-1] = record
-    else:
-        runs = [record]
-    _write_run_records(path, runs)
-
-
-def _write_run_records(path: Path, runs: list[object]) -> None:
-    # Temp-then-rename, like every other file this benchmark writes: a driver
-    # killed mid-write must leave the previous record rather than a truncated one.
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps({"runs": runs}, indent=2, sort_keys=True) + "\n")
-    tmp.replace(path)
+    write_json(path, {"runs": [*_recorded_runs(path)[:-1], record]})
 
 
 def check_preconditions(
@@ -518,43 +450,20 @@ def build_command(job: Job, args: argparse.Namespace, results_dir: Path) -> list
     ]
 
 
-def with_memory_limit(command: list[str], limit_gb: float | None) -> list[str]:
-    """Wrap a command so the child caps its own address space before exec.
-
-    Not `preexec_fn`: this driver runs jobs from a thread pool, and preexec_fn in a
-    multithreaded parent can deadlock the child between fork and exec — the one
-    failure mode an unattended multi-hour run must not have. `ulimit` in the
-    intermediate shell does the same job with no fork-safety question. `"$0" "$@"`
-    passes the argv through without re-quoting it.
-    """
-    if not limit_gb:
-        return command
-    limit_kb = int(limit_gb * 1024 * 1024)
-    # `&&`, not `;`: if the limit cannot be set (a lower hard limit already in
-    # force), the job must fail loudly rather than run uncapped.
-    return ["/bin/sh", "-c", f'ulimit -v {limit_kb} && exec "$0" "$@"', *command]
-
-
 def write_failure_result(
     job: Job, results_dir: Path, status: str, message: str, budget: float
 ) -> None:
     """Record a job the driver killed, so it scores as a failure rather than as unrun."""
-    path = job.result_path(results_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "engine": job.engine,
-                "instance": job.instance,
-                "status": status,
-                "message": message,
-                "objective": None,
-                "budget_seconds": budget,
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n"
+    write_json(
+        job.result_path(results_dir),
+        {
+            "engine": job.engine,
+            "instance": job.instance,
+            "status": status,
+            "message": message,
+            "objective": None,
+            "budget_seconds": budget,
+        },
     )
 
 
@@ -592,28 +501,22 @@ def write_failure_verdict(
     than imported because this driver is run as a script, from any directory,
     and must not depend on the package being importable.
     """
-    path = job.verification_path(results_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "instance": job.instance,
-                "engine": job.engine,
-                "verdict": "error",
-                "reason": reason,
-                "message": message,
-                "marginal": False,
-                "failed_checks": [],
-                # How many times the driver has now tried and failed to check this
-                # row. Read back by `needs_verification` so a deterministic failure
-                # stops being retried; absent from the verifier's own verdicts,
-                # which are final on the first pass.
-                "attempts": attempts,
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n"
+    write_json(
+        job.verification_path(results_dir),
+        {
+            "instance": job.instance,
+            "engine": job.engine,
+            "verdict": "error",
+            "reason": reason,
+            "message": message,
+            "marginal": False,
+            "failed_checks": [],
+            # How many times the driver has now tried and failed to check this
+            # row. Read back by `needs_verification` so a deterministic failure
+            # stops being retried; absent from the verifier's own verdicts, which
+            # are final on the first pass.
+            "attempts": attempts,
+        },
     )
 
 
@@ -678,19 +581,16 @@ def _verify(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
     verdict, because the scorer must be able to tell "checked and rejected" from
     "never checked" from "the checker crashed".
     """
-    command = with_memory_limit(
-        [
-            sys.executable,
-            str(VERIFY_SCRIPT),
-            "--instance",
-            job.instance,
-            "--inst-dir",
-            str(args.inst_dir),
-            "--result-dir",
-            str(results_dir / job.engine),
-        ],
-        args.mem_limit_gb,
-    )
+    command = [
+        sys.executable,
+        str(VERIFY_SCRIPT),
+        "--instance",
+        job.instance,
+        "--inst-dir",
+        str(args.inst_dir),
+        "--result-dir",
+        str(results_dir / job.engine),
+    ]
     # The verdict this attempt is retrying, if any, and then out of the way. A
     # stale file left in place is indistinguishable from one this run wrote: the
     # verifier exits 1 both for "I checked it and it is wrong" and, as any Python
@@ -704,19 +604,14 @@ def _verify(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
     # The attempt count lives in the file this removes, so a driver killed during
     # the check restarts the budget. The cost is bounded re-work on the next
     # resume, never a wrong verdict, which is the right way round.
-    previous = _read_json(job.verification_path(results_dir)) or {}
+    previous = read_json_object(job.verification_path(results_dir)) or {}
     attempts = previous.get("attempts")
     attempt = (attempts if isinstance(attempts, int) else 0) + 1
     job.verification_path(results_dir).unlink(missing_ok=True)
-    try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=VERIFY_TIMEOUT_SECONDS,
-            start_new_session=True,
-        )
-    except subprocess.TimeoutExpired:
+    completed = run_process(
+        command, timeout=VERIFY_TIMEOUT_SECONDS, mem_limit_gb=args.mem_limit_gb, own_session=True
+    )
+    if completed.returncode is None:
         write_failure_verdict(
             job, results_dir, "verifier_timeout", f"exceeded {VERIFY_TIMEOUT_SECONDS}s", attempt
         )
@@ -750,21 +645,16 @@ def _verify(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
 
 
 def _run_solver(job: Job, args: argparse.Namespace, results_dir: Path) -> tuple[str, bool]:
-    command = with_memory_limit(build_command(job, args, results_dir), args.mem_limit_gb)
-
-    started = time.monotonic()
-    try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=args.budget + TIMEOUT_SLACK_SECONDS,
-            # Own process group: without it a Ctrl-C reaches every in-flight child,
-            # each of which then leaves a "killed" result that resume treats as done
-            # — permanently converting those instances to a Primal Integral of 2.
-            start_new_session=True,
-        )
-    except subprocess.TimeoutExpired:
+    completed = run_process(
+        build_command(job, args, results_dir),
+        timeout=args.budget + TIMEOUT_SLACK_SECONDS,
+        mem_limit_gb=args.mem_limit_gb,
+        # Own process group: without it a Ctrl-C reaches every in-flight child,
+        # each of which then leaves a "killed" result that resume treats as done
+        # -- permanently converting those instances to a Primal Integral of 2.
+        own_session=True,
+    )
+    if completed.returncode is None:
         write_failure_result(
             job,
             results_dir,
@@ -774,7 +664,6 @@ def _run_solver(job: Job, args: argparse.Namespace, results_dir: Path) -> tuple[
         )
         return f"{job.engine}/{job.instance}: TIMEOUT", False
 
-    elapsed = time.monotonic() - started
     if completed.returncode != 0:
         if not job.result_path(results_dir).exists():
             # Non-zero with no result of its own: killed by the OOM killer or the
@@ -794,7 +683,8 @@ def _run_solver(job: Job, args: argparse.Namespace, results_dir: Path) -> tuple[
             False,
         )
     return (
-        f"{job.engine}/{job.instance}: {completed.stdout.strip() or 'done'} [{elapsed:.1f}s]",
+        f"{job.engine}/{job.instance}: {completed.stdout.strip() or 'done'} "
+        f"[{completed.elapsed:.1f}s]",
         True,
     )
 
@@ -804,7 +694,7 @@ def count_rejected(jobs: list[Job], results_dir: Path) -> int:
     return sum(
         1
         for job in jobs
-        if (_read_json(job.verification_path(results_dir)) or {}).get("verdict") == "fail"
+        if (read_json_object(job.verification_path(results_dir)) or {}).get("verdict") == "fail"
     )
 
 
@@ -826,10 +716,10 @@ def count_unchecked(jobs: list[Job], results_dir: Path, verify: bool) -> int:
         return 0
     total = 0
     for job in jobs:
-        result = _read_json(job.result_path(results_dir))
+        result = read_json_object(job.result_path(results_dir))
         if result is None or result.get("status") != "feasible":
             continue
-        verdict = _read_json(job.verification_path(results_dir)) or {}
+        verdict = read_json_object(job.verification_path(results_dir)) or {}
         if verdict.get("verdict") not in ("pass", "fail"):
             total += 1
     return total
@@ -847,25 +737,9 @@ def plan_jobs(
     return normal, large
 
 
-def _read_json(path: Path) -> dict[str, object] | None:
-    """The object at `path`, or None when it is absent or unreadable.
-
-    A file truncated by an OOM kill or a reboot mid-write reads as absent: the
-    driver would otherwise make the damage permanent, and scoring would later
-    abort on the unparseable file.
-    """
-    if not path.exists():
-        return None
-    try:
-        parsed = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-
 def needs_solve(job: Job, results_dir: Path, verify: bool) -> bool:
     """Whether the search still has to run for `job`."""
-    result = _read_json(job.result_path(results_dir))
+    result = read_json_object(job.result_path(results_dir))
     if result is None:
         return True
     if verify and result.get("status") == "solution_write_error":
@@ -896,10 +770,10 @@ def needs_verification(job: Job, results_dir: Path, verify: bool) -> bool:
     """
     if not verify:
         return False
-    result = _read_json(job.result_path(results_dir))
+    result = read_json_object(job.result_path(results_dir))
     if result is None or result.get("status") != "feasible":
         return False
-    verdict = _read_json(job.verification_path(results_dir))
+    verdict = read_json_object(job.verification_path(results_dir))
     if verdict is None:
         return True
     # The driver's own error verdicts describe a checker that died, not a solution
@@ -944,7 +818,7 @@ def check_resume_configuration(
     wanted = {"cbls": args.cbls_threads, "cpsat": args.cpsat_workers}
     key = {"cbls": "threads", "cpsat": "workers"}
     for job in jobs:
-        result = _read_json(job.result_path(results_dir))
+        result = read_json_object(job.result_path(results_dir))
         if result is None:
             continue
         recorded = result.get(key[job.engine])
@@ -990,17 +864,36 @@ def drop_completed(
     )
 
 
-def execute(jobs: list[Job], args: argparse.Namespace, results_dir: Path, workers: int) -> int:
-    """Run `jobs`, printing one line each; returns how many did not succeed."""
-    if not jobs:
-        return 0
+def execute(
+    normal: list[Job], large: list[Job], args: argparse.Namespace, results_dir: Path
+) -> int:
+    """Run `normal` `args.jobs` at a time, then `large` one at a time.
+
+    Prints one line per job as it finishes; returns how many did not succeed.
+    """
     failures = 0
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        for line in pool.map(lambda job: run_job(job, args, results_dir), jobs):
-            if any(marker in line for marker in FAILURE_MARKERS):
-                failures += 1
-            print(line, flush=True)
+    for line in run_jobs(
+        normal,
+        lambda job: run_job(job, args, results_dir),
+        workers=args.jobs,
+        serial_tail=large,
+    ):
+        if any(marker in line for marker in FAILURE_MARKERS):
+            failures += 1
+        print(line, flush=True)
     return failures
+
+
+def engine_commit() -> str:
+    """The commit this run's rows are attributed to, or "unknown" off a checkout.
+
+    Recorded rather than refused: unlike the MINLPLib driver, this one publishes
+    nothing itself, and a run from an exported tree is still a run.
+    """
+    try:
+        return commit_sha()
+    except (subprocess.CalledProcessError, OSError):
+        return "unknown"
 
 
 def check_arguments(args: argparse.Namespace) -> int | None:
@@ -1128,7 +1021,7 @@ def main() -> int:
     args = parser.parse_args()
     if (refusal := check_arguments(args)) is not None:
         return refusal
-    args.commit = commit_sha()
+    args.commit = engine_commit()
     args.inst_dir = Path(args.inst_dir)
     args.cbls_bin = Path(args.cbls_bin)
 
@@ -1184,8 +1077,7 @@ def main() -> int:
     print(f"Machine record -> {record_path}")
 
     started = time.monotonic()
-    failures = execute(normal, args, results_dir, args.jobs)
-    failures += execute(large, args, results_dir, 1)
+    failures = execute(normal, large, args, results_dir)
     elapsed = time.monotonic() - started
     print(
         f"\nDone in {elapsed / 60:.1f} min -> {results_dir} "
