@@ -694,6 +694,13 @@ int run_benchmark(int argc, char** argv) {
         {"wall_seconds", wall},
         {"read_seconds", read_seconds},
         {"build_seconds", build_seconds},
+        // DAG size, which n_vars/n_cons do not imply: a matrix nonzero normally
+        // becomes two nodes, so this is what the evaluation cost actually scales
+        // with, and what a model-build reservation has to be sized to. Published
+        // with the nonzero count beside it because the ratio is not constant --
+        // square47 reads 125k nodes from a matrix an order of magnitude larger.
+        {"n_nodes", built.model.num_nodes()},
+        {"n_nonzeros", prob.nonzeros.size()},
         // Zero on the single-threaded path, which replicates nothing. Inside
         // `setup_seconds` because it is pre-search work the wall clock of a run
         // must still be scheduled for -- and it grows with --threads, which is

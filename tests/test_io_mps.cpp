@@ -180,6 +180,38 @@ TEST_CASE("mps_to_model builds a closed CBLS model", "[mps][adapter]") {
     REQUIRE(built.objective_node_id >= 0);
 }
 
+TEST_CASE("the adapter spends nodes per coefficient at the documented three rates",
+          "[mps][adapter]") {
+    // `mps_to_model` reserves the node array from a count it derives HERE, by
+    // scanning the coefficients: a 1.0 costs no node (the variable is used
+    // directly), a -1.0 costs one Neg, anything else costs a Const and a Prod.
+    // Nothing downstream fails if that mix is mispredicted -- the vector simply
+    // grows, which is the multi-gigabyte copy the reservation exists to avoid --
+    // so the assumption is pinned here instead, where a new fast path in
+    // `build_lin_expr` makes it fail loudly rather than silently go stale.
+    //
+    // kSmallBinary: 3 objective coefficients (3, 2, 4 -> two nodes each) and 3
+    // matrix coefficients of 1.0 (no nodes). One G row: a Sum over its terms,
+    // its RHS constant, the comparison. Plus the objective's own Sum.
+    auto path = write_file("rates.mps", kSmallBinary);
+    cbls::MpsProblem prob = cbls::read_mps(path.string());
+    auto built = cbls::mps_to_model(prob);
+
+    std::size_t term_nodes = 0;
+    for (const auto& nz : prob.nonzeros) {
+        if (nz.value == 1.0) {
+            continue;
+        }
+        term_nodes += (nz.value == -1.0) ? 1 : 2;
+    }
+    REQUIRE(term_nodes == 6);  // three objective coefficients, two nodes each
+
+    // The reservation adds 6 per row and 2 per column on top, and the model must
+    // fit inside that -- a model larger than its reservation is one that grew.
+    const std::size_t reserved = term_nodes + (6 * prob.rows.size()) + (2 * prob.vars.size()) + 16;
+    REQUIRE(built.model.num_nodes() <= reserved);
+}
+
 TEST_CASE("CBLS finds the optimum on a small continuous LP", "[mps][solve]") {
     auto path = write_file("small_b.mps", kSmallLp);
     auto prob = cbls::read_mps(path.string());

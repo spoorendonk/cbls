@@ -174,6 +174,22 @@ public:
     [[nodiscard]] const std::vector<int32_t>& constraint_ids() const noexcept {
         return constraint_ids_;
     }
+    /// Size the variable and node arrays up front, when the caller already knows
+    /// how big the model will be.
+    ///
+    /// This is not a micro-optimisation on a small model; it is what stops a
+    /// multi-gigabyte array being copied to grow it. A reader that appends a
+    /// node per matrix entry grows `nodes_` by doubling, and every doubling
+    /// moves every `ExprNode` built so far -- each of which owns two vectors, so
+    /// the move is not a memcpy. Building the largest MIPfeas instance allocated
+    /// 6.9 GB cumulatively against a 3.3 GB peak; the difference is that
+    /// copying. Over-reserving costs address space and nothing else, so an
+    /// estimate that is merely close is worth making.
+    void reserve(size_t n_vars, size_t n_nodes) {
+        vars_.reserve(n_vars);
+        nodes_.reserve(n_nodes);
+    }
+
     [[nodiscard]] const std::vector<int32_t>& topo_order() const noexcept { return topo_order_; }
     /// Where `id` sits in `topo_order()`, so a caller holding a handful of nodes
     /// can put them in evaluation order without walking the whole order to find

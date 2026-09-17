@@ -362,6 +362,39 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
 
     const RowMatrix mat = build_row_matrix(prob, n_rows);
 
+    // Sized from the matrix rather than grown into, so the node array is never
+    // copied to grow it -- see Model::reserve for why that copy is the thing
+    // worth avoiding rather than the allocation count.
+    //
+    // Counted, not guessed at. `build_lin_expr` spends nodes per coefficient at
+    // three different rates (a 1.0 costs none, a -1.0 one Neg, anything else a
+    // Const and a Prod), and the mix is a property of the instance: across the
+    // MIPfeas roster the ratio runs from 0.88 nodes per nonzero to 1.87. A flat
+    // "two per nonzero" would therefore over-reserve by up to 2.3x, and
+    // over-reserving is not free here -- the benchmark driver caps ADDRESS
+    // SPACE (`--mem-limit-gb` is `ulimit -v`), which an untouched reservation
+    // counts against just as much as a used one.
+    std::size_t term_nodes = 0;
+    for (const double c : mat.coefs) {
+        if (c == 1.0) {
+            continue;  // the variable is used directly
+        }
+        term_nodes += (c == -1.0) ? 1 : 2;
+    }
+    for (const int k : mat.obj_nz) {
+        const double c = prob.nonzeros[static_cast<std::size_t>(k)].value;
+        if (c == 1.0) {
+            continue;
+        }
+        term_nodes += (c == -1.0) ? 1 : 2;
+    }
+    // Per row: the Sum, one or two comparisons, and their bound constants. Per
+    // column: the bound nodes a finite box contributes. Both are small constant
+    // factors on counts already known, so the total is close rather than lavish.
+    m.reserve(static_cast<std::size_t>(n_cols), term_nodes +
+                                                    (6 * static_cast<std::size_t>(n_rows)) +
+                                                    (2 * static_cast<std::size_t>(n_cols)) + 16);
+
     // Implied bounds run before variable creation, so the derived box is what
     // the engine sees.
     const ColumnBoxes box = column_boxes(prob, mat, opts, result.bound_stats);
