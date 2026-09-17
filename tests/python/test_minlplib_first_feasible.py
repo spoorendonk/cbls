@@ -148,118 +148,197 @@ def test_the_scorer_reproduces_the_correlation_issue_134_published(tmp_path: Pat
     assert results[0].determined
 
 
-def test_a_perfectly_correlated_instance_scores_one(tmp_path: Path) -> None:
-    argv = seed_tables(
-        tmp_path,
-        {
-            seed: [runner_row("a", objective=float(seed), first_feasible=10.0 * seed)]
-            for seed in range(1, 6)
-        },
-    )
-    (result,) = score(argv)
-    assert result.pearson == pytest.approx(1.0)
-    assert result.spearman == pytest.approx(1.0)
+#: `expected` value meaning a NaN: no correlation was computed.
+NAN = "nan"
 
 
-def test_an_anticorrelated_instance_scores_minus_one_and_is_not_determined(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("pairs", "argv", "expected"),
+    [
+        (
+            [(10.0 * s, float(s)) for s in range(1, 6)],
+            [],
+            {"pearson": 1.0, "spearman": 1.0, "bucket": DETERMINED},
+        ),
+        # A strong correlation of the WRONG SIGN must not count as the effect.
+        # `abs(r)` would score this 1.0 and read it as "the first feasible point
+        # determines the final objective", when it says the opposite: the runs that
+        # arrive worst finish best. The threshold is on r, not on its magnitude.
+        (
+            [(10.0 * s, float(-s)) for s in range(1, 6)],
+            [],
+            {"pearson": -1.0, "eligible": True, "determined": False},
+        ),
+        (
+            [(10.0 * s, float(s)) for s in range(1, 4)],
+            ["--min-seeds", "4"],
+            {
+                "bucket": TOO_FEW_SEEDS,
+                "eligible": False,
+                "pearson": NAN,
+                "note": "below --min-seeds 4",
+            },
+        ),
+        # Arrival varied; the final objective did not. That is a refutation: r is
+        # formally undefined (`statistics.correlation` RAISES on zero variance), but
+        # the instance says the search reached the same answer however far out it
+        # started. Filed with the uninformative instances, a roster full of them
+        # would come back "inconclusive" when it had refuted the effect.
+        (
+            [(10.0 * s, 7.0) for s in range(1, 6)],
+            [],
+            {
+                "bucket": FINAL_INVARIANT,
+                "eligible": True,
+                "determined": False,
+                "pearson": NAN,
+                "note": "every seed finished at the same objective",
+            },
+        ),
+        # The genuinely uninformative case: neither end varied.
+        (
+            [(3.0, 7.0) for _ in range(1, 6)],
+            [],
+            {
+                "bucket": NO_SPREAD,
+                "eligible": False,
+                "note": "neither the first feasible objective nor the final one varied",
+            },
+        ),
+        # The mirror of FINAL_INVARIANT, and as direct a refutation: bucketing it with
+        # the uninformative would drop it from the denominator and bias the verdict
+        # toward GENERALISES -- the direction #149 is written to guard against.
+        (
+            [(3.0, float(s)) for s in range(1, 6)],
+            [],
+            {
+                "bucket": ARRIVAL_INVARIANT,
+                "eligible": True,
+                "determined": False,
+                "pearson": NAN,
+                "note": "arrived at the same objective and still finished apart",
+            },
+        ),
+    ],
+    ids=[
+        "perfectly-correlated",
+        "anticorrelated",
+        "too-few-seeds",
+        "final-invariant",
+        "nothing-moved",
+        "arrival-invariant",
+    ],
+)
+def test_an_instance_is_bucketed_by_what_its_seeds_can_say(
+    tmp_path: Path, pairs: list[tuple[float, float]], argv: list[str], expected: dict[str, object]
 ) -> None:
-    """A strong correlation of the WRONG SIGN must not count as the effect.
-
-    `abs(r)` would score this instance 1.0 and read it as "the first feasible
-    point determines the final objective", when what it says is the opposite:
-    the runs that arrive worst finish best. The threshold is on r, not on its
-    magnitude, and this pins that.
-    """
-    argv = seed_tables(
+    tables = seed_tables(
         tmp_path,
         {
-            seed: [runner_row("a", objective=float(-seed), first_feasible=10.0 * seed)]
-            for seed in range(1, 6)
+            seed: [runner_row("a", objective=final, first_feasible=first)]
+            for seed, (first, final) in enumerate(pairs, start=1)
         },
     )
-    (result,) = score(argv)
-    assert result.pearson == pytest.approx(-1.0)
-    assert result.eligible
-    assert not result.determined
+    (result,) = score([*tables, *argv])
+    for field, value in expected.items():
+        actual = getattr(result, field)
+        if field == "note":
+            assert str(value) in actual
+        elif value == NAN:
+            assert math.isnan(actual), field
+        elif isinstance(value, float):
+            assert actual == pytest.approx(value), field
+        else:
+            assert actual == value, field
 
 
 # --- which rows are usable -----------------------------------------------------
 
 
-def test_a_row_with_no_first_feasible_reading_is_dropped_not_read_as_zero(
+@pytest.mark.parametrize(
+    ("rows", "seed_column", "found", "dropped"),
+    [
+        # The NaN rule, where it bites: a pre-#149 table, or a row the runner wrote
+        # without solving, carries NaN in both first-feasible cells. Read as 0 it is
+        # the most favourable observation possible -- "arrived instantly at zero".
+        (
+            [runner_row("a", objective=5.0, first_feasible="NaN", seconds="NaN")],
+            False,
+            [],
+            {"no_first_feasible": 1},
+        ),
+        (
+            [
+                runner_row(
+                    "a",
+                    objective="NaN",
+                    first_feasible="NaN",
+                    seconds="NaN",
+                    feasible=False,
+                    note="infeasible(residual=1)",
+                )
+            ],
+            False,
+            [],
+            {"infeasible": 1},
+        ),
+        # #100's witness: feasible, recorded, with no objective to correlate.
+        # `time_to_first_feasible` is a number here, which is the whole reason the
+        # engine keeps the two cells apart -- so this is "non-finite", not "no reading".
+        (
+            [runner_row("a", objective=1.0, first_feasible="inf", seconds=0.5)],
+            False,
+            [],
+            {"non_finite": 1, "no_first_feasible": 0},
+        ),
+        # `elec25`/`elec50` are published as failures and excluded from every claim,
+        # counted apart so a reader can see they were dropped on purpose.
+        (
+            [
+                runner_row("elec25", objective=1.0, first_feasible=2.0),
+                runner_row("a", objective=1.0, first_feasible=2.0),
+            ],
+            False,
+            ["a"],
+            {"claim_excluded": 1},
+        ),
+        # #153: the driver records a crashed run with `feasible=false` too, and
+        # folding it into "the search found nothing" misstates campaign health.
+        (
+            [
+                runner_row(
+                    "a",
+                    objective="NaN",
+                    first_feasible="NaN",
+                    seconds="NaN",
+                    feasible=False,
+                    note="runner-failed-exit-3",
+                )
+            ],
+            True,
+            [],
+            {"runner_failed": 1, "infeasible": 0},
+        ),
+    ],
+    ids=["no-first-feasible-reading", "infeasible", "non-finite", "claim-excluded", "crashed"],
+)
+def test_a_row_that_cannot_be_an_observation_is_dropped_and_counted(
     tmp_path: Path,
+    rows: list[list[str]],
+    seed_column: bool,
+    found: list[str],
+    dropped: dict[str, int],
 ) -> None:
-    """The NaN rule, where it actually bites.
-
-    A pre-#149 table, or a row the runner wrote without solving, carries NaN in
-    both first-feasible cells. Read as 0 it would be the single most favourable
-    observation possible -- "arrived instantly at objective zero" -- and on this
-    fixture it drags a flat instance into a spurious r of 1.
-    """
-    rows = [
-        runner_row("a", objective=5.0, first_feasible="NaN", seconds="NaN"),
-    ]
-    path = write_table(tmp_path / "t.csv", rows)
-    found, skipped = read_table(path, seed=1, arm=None)
-    assert found == []
-    assert skipped.no_first_feasible == 1
-    assert skipped.total() == 1
-
-
-def test_an_infeasible_row_is_dropped_and_counted(tmp_path: Path) -> None:
-    path = write_table(
-        tmp_path / "t.csv",
-        [
-            runner_row(
-                "a",
-                objective="NaN",
-                first_feasible="NaN",
-                seconds="NaN",
-                feasible=False,
-                note="infeasible(residual=1)",
-            )
-        ],
-    )
-    found, skipped = read_table(path, seed=1, arm=None)
-    assert found == []
-    assert skipped.infeasible == 1
-
-
-def test_a_feasible_row_with_a_non_finite_first_objective_is_dropped(tmp_path: Path) -> None:
-    """#100's witness: feasible, recorded, but with no objective to correlate.
-
-    `time_to_first_feasible` is a number here, which is the whole reason the
-    engine keeps the two cells apart -- so this row must be bucketed as
-    "non-finite", not as "no first-feasible reading".
-    """
-    path = write_table(
-        tmp_path / "t.csv",
-        [runner_row("a", objective=1.0, first_feasible="inf", seconds=0.5)],
-    )
-    found, skipped = read_table(path, seed=1, arm=None)
-    assert found == []
-    assert skipped.non_finite == 1
-    assert skipped.no_first_feasible == 0
-
-
-def test_the_rows_published_as_documented_failures_are_excluded(tmp_path: Path) -> None:
-    """`elec25`/`elec50` are published as failures and excluded from every claim.
-
-    A correlation over the roster is a quality claim, so they stay out of it --
-    counted apart, so a reader can see they were dropped on purpose rather than
-    wonder where they went.
-    """
-    path = write_table(
-        tmp_path / "t.csv",
-        [
-            runner_row("elec25", objective=1.0, first_feasible=2.0),
-            runner_row("a", objective=1.0, first_feasible=2.0),
-        ],
-    )
-    found, skipped = read_table(path, seed=1, arm=None)
-    assert [o.instance for o in found] == ["a"]
-    assert skipped.claim_excluded == 1
+    path = tmp_path / "t.csv"
+    with path.open("w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["instance", *(["seed"] if seed_column else []), *RUNNER_HEADER[1:]])
+        writer.writerows([[row[0], *(["1"] if seed_column else []), *row[1:]] for row in rows])
+    observations, skipped = read_table(path, seed=1, arm=None)
+    assert [o.instance for o in observations] == found
+    for field, count in dropped.items():
+        assert getattr(skipped, field) == count, field
+    assert skipped.total() == len(rows) - len(found)
 
 
 def test_a_campaign_results_file_is_filtered_to_one_arm(tmp_path: Path) -> None:
@@ -313,153 +392,7 @@ def test_a_seed_appearing_twice_is_not_weighted_double(tmp_path: Path) -> None:
     assert result.pearson == pytest.approx(statistics.correlation(firsts, finals))
 
 
-def test_a_crashed_run_is_not_tallied_as_a_search_that_found_nothing(tmp_path: Path) -> None:
-    """#153 made the runner exit 3 on a throw; the driver records those rows too.
-
-    Both carry `feasible=false`, so folding them together makes the tally a
-    reader uses to judge campaign health say "the search found nothing" where
-    the truth is "the process died".
-    """
-    path = tmp_path / "results.csv"
-    with path.open("w", newline="") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(["instance", "seed", *RUNNER_HEADER[1:]])
-        crashed = runner_row(
-            "a",
-            objective="NaN",
-            first_feasible="NaN",
-            seconds="NaN",
-            feasible=False,
-            note="runner-failed-exit-3",
-        )
-        writer.writerow([crashed[0], "1", *crashed[1:]])
-    _, skipped = read_table(path, seed=1, arm=None)
-
-    assert skipped.runner_failed == 1
-    assert skipped.infeasible == 0
-    assert skipped.total() == 1
-
-
-def test_a_table_without_the_first_feasible_columns_is_refused_by_name(tmp_path: Path) -> None:
-    """A pre-#149 table does not fail -- it returns a clean INCONCLUSIVE.
-
-    Every row lands in the drop tally and the verdict comes back well-formed at
-    exit 0, which after a six-hour campaign cannot be told apart from a campaign
-    that genuinely measured nothing. So the missing column is named instead.
-    """
-    path = tmp_path / "old.csv"
-    with path.open("w", newline="") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(["instance", "objective", "feasible"])
-        writer.writerow(["a", "1.0", "true"])
-    refusal = usage_error(parse_args(["--table", f"1={path}"]))
-    if refusal is None:
-        pytest.fail("a table with no first-feasible columns was accepted")
-    assert "first_feasible_objective" in refusal
-    assert "time_to_first_feasible" in refusal
-
-
-def test_the_same_results_file_passed_twice_is_refused(tmp_path: Path) -> None:
-    """`--table` repeats are refused by seed; this is the same mistake, other flag."""
-    path = tmp_path / "results.csv"
-    with path.open("w", newline="") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(["instance", "seed", *RUNNER_HEADER[1:]])
-        row = runner_row("a", objective=1.0, first_feasible=10.0)
-        writer.writerow([row[0], "1", *row[1:]])
-    refusal = usage_error(parse_args(["--results", str(path), "--results", str(path)]))
-    if refusal is None:
-        pytest.fail("the same results file was accepted twice")
-    assert "counted twice" in refusal
-
-
 # --- eligibility ---------------------------------------------------------------
-
-
-def test_an_instance_with_too_few_seeds_gets_no_correlation(tmp_path: Path) -> None:
-    argv = seed_tables(
-        tmp_path,
-        {
-            seed: [runner_row("a", objective=float(seed), first_feasible=10.0 * seed)]
-            for seed in range(1, 4)
-        },
-    )
-    (result,) = score([*argv, "--min-seeds", "4"])
-    assert not result.eligible
-    assert result.bucket == TOO_FEW_SEEDS
-    assert math.isnan(result.pearson)
-    assert "below --min-seeds 4" in result.note
-
-
-def test_an_instance_whose_outcome_never_moves_is_evidence_against_the_effect(
-    tmp_path: Path,
-) -> None:
-    """Arrival varied; the final objective did not. That is a refutation.
-
-    Pearson r is formally undefined here -- zero variance in the final objective,
-    and `statistics.correlation` RAISES on it rather than returning NaN -- but the
-    instance is not silent: it says the search reached the same answer however far
-    out it started, which is exactly the opposite of #149's claim. Filing it with
-    the uninformative instances would let a roster full of them come back
-    "inconclusive" when it had actually refuted the effect, so it is eligible and
-    counts as not-determined.
-    """
-    argv = seed_tables(
-        tmp_path,
-        {
-            seed: [runner_row("a", objective=7.0, first_feasible=10.0 * seed)]
-            for seed in range(1, 6)
-        },
-    )
-    (result,) = score(argv)
-    assert result.bucket == FINAL_INVARIANT
-    assert result.eligible
-    assert not result.determined
-    assert math.isnan(result.pearson)
-    assert "every seed finished at the same objective" in result.note
-
-
-def test_an_instance_where_nothing_moved_at_all_is_ineligible(tmp_path: Path) -> None:
-    """The genuinely uninformative case: neither end varied.
-
-    Distinguished from the two invariant buckets on purpose. Here nothing can be
-    concluded; there, something can.
-    """
-    argv = seed_tables(
-        tmp_path,
-        {seed: [runner_row("a", objective=7.0, first_feasible=3.0)] for seed in range(1, 6)},
-    )
-    (result,) = score(argv)
-    assert result.bucket == NO_SPREAD
-    assert not result.eligible
-    assert "neither the first feasible objective nor the final one varied" in result.note
-
-
-def test_an_instance_that_always_arrives_at_the_same_point_but_finishes_apart(
-    tmp_path: Path,
-) -> None:
-    """The mirror of FINAL_INVARIANT, and a refutation just as directly.
-
-    Every seed arrived at the same objective and they still finished apart, so
-    the arrival explains none of the outcome's variance. Bucketing this with the
-    uninformative instances would drop it from the denominator and bias the
-    verdict toward GENERALISES -- the one direction #149 is written to guard
-    against, since a false positive there buys engine work on a premise that was
-    never there.
-    """
-    argv = seed_tables(
-        tmp_path,
-        {
-            seed: [runner_row("a", objective=float(seed), first_feasible=3.0)]
-            for seed in range(1, 6)
-        },
-    )
-    (result,) = score(argv)
-    assert result.bucket == ARRIVAL_INVARIANT
-    assert result.eligible
-    assert not result.determined
-    assert math.isnan(result.pearson)
-    assert "arrived at the same objective and still finished apart" in result.note
 
 
 # --- the pre-registered verdict ------------------------------------------------
@@ -479,99 +412,144 @@ def _final_invariant(count: int) -> list[InstanceResult]:
     ]
 
 
-def test_too_few_eligible_instances_is_inconclusive_not_a_refutation() -> None:
-    call = verdict(_results([0.99] * (MIN_ELIGIBLE_INSTANCES - 1)))
-    assert call.word == "INCONCLUSIVE"
-    assert "has not measured the effect" in call.detail
-
-
-def test_a_strong_majority_above_the_threshold_generalises() -> None:
-    call = verdict(_results([0.95] * MIN_ELIGIBLE_INSTANCES))
-    assert call.word == "GENERALISES"
-
-
-def test_a_high_median_without_a_majority_does_not_generalise() -> None:
-    """Both halves of the rule are load-bearing, so each is pinned alone.
-
-    Ten instances, five at 0.99 and five at 0.69: the median lands above the
-    threshold (it is the mean of the two middle values, 0.84) while only half
-    the instances reach it -- and "half" is not a strict majority.
-    """
-    call = verdict(_results([0.99] * 5 + [0.69] * 5))
-    assert call.word == "DOES NOT GENERALISE"
-    assert f"only 5 of 10 eligible instances reach r >= {R_DETERMINED}" in call.detail
-
-
-def test_a_majority_with_a_low_median_does_not_generalise() -> None:
-    call = verdict(_results([0.71] * 6 + [-0.9] * 6))
-    assert call.word == "DOES NOT GENERALISE"
-    assert "median r" in call.detail
-
-
-def test_ineligible_instances_do_not_count_toward_the_minimum() -> None:
-    """The floor is on the ELIGIBLE set, not on the rows the campaign wrote.
-
-    A roster of flat instances must read as "not measured", not as a verdict
-    assembled from instances that carry no correlation at all.
-    """
-    flat = [
-        InstanceResult(f"f{n}", 8, math.nan, math.nan, NO_SPREAD, "no spread") for n in range(40)
-    ]
-    call = verdict([*_results([0.99] * 3), *flat])
-    assert call.word == "INCONCLUSIVE"
-
-
-def test_a_roster_whose_outcomes_never_move_refutes_rather_than_abstains() -> None:
-    """Every eligible instance FINAL_INVARIANT: no r anywhere, and that is an answer.
-
-    The median is NaN here, so the rule's first half cannot be evaluated -- and it
-    must not fall through to "inconclusive", because the campaign did measure the
-    thing and found the outcome independent of the arrival.
-    """
-    call = verdict(_final_invariant(MIN_ELIGIBLE_INSTANCES))
-    assert call.word == "DOES NOT GENERALISE"
-    assert "no eligible instance has a defined r" in call.detail
-
-
-def test_final_invariant_instances_count_against_the_majority() -> None:
-    """Six instances at r = 0.99 and six flat ones is not a majority.
-
-    Without the FINAL_INVARIANT bucket in the denominator this would be 6 of 6
-    and would read as a clean generalisation.
-    """
-    call = verdict([*_results([0.99] * 6), *_final_invariant(6)])
-    assert call.word == "DOES NOT GENERALISE"
-    assert "only 6 of 12 eligible instances" in call.detail
+@pytest.mark.parametrize(
+    ("results", "word", "detail"),
+    [
+        (
+            _results([0.99] * (MIN_ELIGIBLE_INSTANCES - 1)),
+            "INCONCLUSIVE",
+            "has not measured the effect",
+        ),
+        (_results([0.95] * MIN_ELIGIBLE_INSTANCES), "GENERALISES", ""),
+        # Both halves of the rule are load-bearing, so each is pinned alone. Five at
+        # 0.99 and five at 0.69: the median (0.84) clears the threshold while only
+        # half the instances do -- and half is not a strict majority.
+        (
+            _results([0.99] * 5 + [0.69] * 5),
+            "DOES NOT GENERALISE",
+            f"only 5 of 10 eligible instances reach r >= {R_DETERMINED}",
+        ),
+        (_results([0.71] * 6 + [-0.9] * 6), "DOES NOT GENERALISE", "median r"),
+        # The floor is on the ELIGIBLE set, not on the rows the campaign wrote: a
+        # roster of flat instances reads as "not measured".
+        (
+            [
+                *_results([0.99] * 3),
+                *[InstanceResult(f"f{n}", 8, math.nan, math.nan, NO_SPREAD, "") for n in range(40)],
+            ],
+            "INCONCLUSIVE",
+            "",
+        ),
+        # Every eligible instance FINAL_INVARIANT: the median is NaN, and that must
+        # not fall through to "inconclusive" -- the campaign measured the thing and
+        # found the outcome independent of the arrival.
+        (
+            _final_invariant(MIN_ELIGIBLE_INSTANCES),
+            "DOES NOT GENERALISE",
+            "no eligible instance has a defined r",
+        ),
+        # Without FINAL_INVARIANT in the denominator, 6 at r = 0.99 beside 6 flat
+        # would be 6 of 6 and read as a clean generalisation.
+        (
+            [*_results([0.99] * 6), *_final_invariant(6)],
+            "DOES NOT GENERALISE",
+            "only 6 of 12 eligible instances",
+        ),
+    ],
+    ids=[
+        "too-few-eligible",
+        "strong-majority",
+        "high-median-without-majority",
+        "majority-with-low-median",
+        "ineligible-do-not-count",
+        "outcomes-never-move",
+        "final-invariant-counts-against",
+    ],
+)
+def test_the_pre_registered_verdict(results: list[InstanceResult], word: str, detail: str) -> None:
+    call = verdict(results)
+    assert call.word == word
+    assert detail in call.detail
 
 
 # --- the command line ----------------------------------------------------------
 
 
-def test_no_inputs_is_refused() -> None:
-    assert (
-        usage_error(parse_args([])) == "nothing to score: pass --table SEED=PATH or --results PATH"
+def _refusal_argv(tmp_path: Path, case: str) -> list[str]:
+    """The command line for one of the input mistakes the report refuses by name."""
+    empty = write_table(tmp_path / "a.csv", [])
+    results = tmp_path / "results.csv"
+    with results.open("w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["instance", "arm", "seed", *RUNNER_HEADER[1:]])
+        for arm in ("control", "no-lns"):
+            for seed in range(1, 6):
+                row = runner_row("a", objective=float(seed), first_feasible=10.0 * seed)
+                writer.writerow([row[0], arm, str(seed), *row[1:]])
+    old = tmp_path / "old.csv"
+    old.write_text("instance,objective,feasible\na,1.0,true\n")
+    seedless = write_table(
+        tmp_path / "comparison.csv", [runner_row("a", objective=1, first_feasible=2)]
     )
+    return {
+        "no-inputs": [],
+        "two-tables-one-seed": [
+            "--table",
+            f"1={empty}",
+            "--table",
+            f"1={write_table(tmp_path / 'b.csv', [])}",
+        ],
+        "missing-input": ["--table", f"1={tmp_path / 'nope.csv'}"],
+        "min-seeds-below-two": ["--table", f"1={empty}", "--min-seeds", "1"],
+        "results-twice": ["--results", str(results), "--results", str(results)],
+        "no-first-feasible-columns": ["--table", f"1={old}"],
+        "results-without-seed": ["--results", str(seedless)],
+        "arm-matches-no-row": ["--results", str(results), "--arm", "contorl"],
+        "registered-arm": ["--results", str(results)],
+    }[case]
 
 
-def test_two_tables_at_one_seed_are_refused(tmp_path: Path) -> None:
-    a = write_table(tmp_path / "a.csv", [])
-    b = write_table(tmp_path / "b.csv", [])
-    refusal = usage_error(parse_args(["--table", f"1={a}", "--table", f"1={b}"]))
-    assert refusal is not None
-    assert "repeats a seed" in refusal
-
-
-def test_a_missing_input_is_refused(tmp_path: Path) -> None:
-    refusal = usage_error(parse_args(["--table", f"1={tmp_path / 'nope.csv'}"]))
-    assert refusal is not None
-    assert "no such file" in refusal
-
-
-def test_a_min_seeds_below_two_is_refused(tmp_path: Path) -> None:
-    path = write_table(tmp_path / "a.csv", [])
-    refusal = usage_error(parse_args(["--table", f"1={path}", "--min-seeds", "1"]))
-    assert refusal is not None
-    assert "a correlation needs two points" in refusal
+@pytest.mark.parametrize(
+    ("case", "refusal"),
+    [
+        ("no-inputs", ("nothing to score: pass --table SEED=PATH or --results PATH",)),
+        ("two-tables-one-seed", ("repeats a seed",)),
+        ("missing-input", ("no such file",)),
+        ("min-seeds-below-two", ("a correlation needs two points",)),
+        # `--table` repeats are refused by seed; this is the same mistake, other flag.
+        ("results-twice", ("counted twice",)),
+        # A pre-#149 table does not fail -- every row lands in the drop tally and
+        # the verdict comes back a well-formed INCONCLUSIVE at exit 0, which after a
+        # six-hour campaign cannot be told apart from one that measured nothing.
+        ("no-first-feasible-columns", ("first_feasible_objective", "time_to_first_feasible")),
+        # `--results` on a per-run comparison.csv is the likeliest single mistake:
+        # the campaign produces eight seedless tables and the flag is one word from
+        # `--table`. Without this it dies on a raw `KeyError: 'seed'`.
+        ("results-without-seed", ("no `seed` column", "--table SEED=PATH")),
+        # A typo otherwise yields a complete, correctly formatted answer about nothing.
+        ("arm-matches-no-row", ("matches no row", "control, no-lns")),
+        ("registered-arm", None),
+    ],
+    ids=[
+        "no-inputs",
+        "two-tables-one-seed",
+        "missing-input",
+        "min-seeds-below-two",
+        "results-twice",
+        "no-first-feasible-columns",
+        "results-without-seed",
+        "arm-matches-no-row",
+        "registered-arm",
+    ],
+)
+def test_an_input_mistake_is_refused_by_name(
+    tmp_path: Path, case: str, refusal: tuple[str, ...] | None
+) -> None:
+    message = usage_error(parse_args(_refusal_argv(tmp_path, case)))
+    if refusal is None:
+        assert message is None
+    else:
+        assert message is not None and all(text in message for text in refusal), message
 
 
 def test_the_report_names_the_reference_instance_and_states_a_verdict(
@@ -646,52 +624,6 @@ def test_a_pearson_carried_by_one_outlying_seed_is_not_determined(tmp_path: Path
     assert result.spearman < R_DETERMINED
     assert result.bucket == NOT_DETERMINED
     assert result.eligible
-
-
-def test_a_results_file_without_a_seed_column_is_refused(tmp_path: Path) -> None:
-    """`--results` on a per-run `comparison.csv` is the likeliest single mistake.
-
-    The documented campaign produces eight seedless tables and `--results` is one
-    word from `--table`. Without this it dies on a raw `KeyError: 'seed'`, when
-    every other input mistake gets a clean refusal.
-    """
-    path = write_table(
-        tmp_path / "comparison.csv", [runner_row("a", objective=1, first_feasible=2)]
-    )
-    refusal = usage_error(parse_args(["--results", str(path)]))
-    assert refusal is not None
-    assert "no `seed` column" in refusal
-    assert "--table SEED=PATH" in refusal
-
-
-def _campaign_results(path: Path, arms: list[str]) -> Path:
-    with path.open("w", newline="") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(["instance", "arm", "seed", *RUNNER_HEADER[1:]])
-        for arm in arms:
-            for seed in range(1, 6):
-                row = runner_row("a", objective=float(seed), first_feasible=10.0 * seed)
-                writer.writerow([row[0], arm, str(seed), *row[1:]])
-    return path
-
-
-def test_an_arm_that_matches_no_row_is_refused(tmp_path: Path) -> None:
-    """Otherwise a typo yields a well-formed INCONCLUSIVE.
-
-    After six hours of solving, a verdict indistinguishable from a real one is
-    the worst available failure mode: the arm filter drops every row, and the
-    report prints a complete, correctly formatted answer about nothing.
-    """
-    path = _campaign_results(tmp_path / "results.csv", ["control", "no-lns"])
-    refusal = usage_error(parse_args(["--results", str(path), "--arm", "contorl"]))
-    assert refusal is not None
-    assert "matches no row" in refusal
-    assert "control, no-lns" in refusal
-
-
-def test_the_registered_arm_is_accepted(tmp_path: Path) -> None:
-    path = _campaign_results(tmp_path / "results.csv", ["control"])
-    assert usage_error(parse_args(["--results", str(path)])) is None
 
 
 def test_an_overridden_min_seeds_is_flagged_as_not_the_registered_rule(

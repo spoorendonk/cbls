@@ -28,7 +28,6 @@ from benchmarks.minlplib.ablation_report import (
     PROBE_ARM_NAME,
     Cell,
     build_cells,
-    classify,
     compare,
     control_spreads,
     format_points,
@@ -44,7 +43,7 @@ from benchmarks.minlplib.run_ablation import Arm, Run, failed_row
 from benchmarks.minlplib.runner import CLAIM_EXCLUDED, COMPLETED_SEARCH_NOTES
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
 #: A note `describe_infeasible` could have written, for a fixture row that says
@@ -162,52 +161,40 @@ def run_rows(
 # --- buckets: nothing is silently dropped and no NaN reaches an aggregate ------
 
 
-def test_a_both_feasible_delta_is_the_arm_mean_minus_the_control_mean() -> None:
+@pytest.mark.parametrize(
+    ("control", "treatment", "bucket", "delta", "feasibility_delta"),
+    [
+        (([10.0, 12.0, 14.0], 3, None), ([20.0, 22.0, 24.0], 3, None), BOTH_FEASIBLE, 10.0, 0),
+        # There is no control gap to subtract. The instance is a categorical win,
+        # reported as one -- not averaged in as a NaN and not dropped.
+        (([], 3, None), ([7.0, 8.0, 9.0], 3, None), ARM_ONLY_FEASIBLE, None, 3),
+        (([7.0, 8.0, 9.0], 3, None), ([], 3, None), CONTROL_ONLY_FEASIBLE, None, -3),
+        (([], 3, None), ([], 3, None), NEITHER_FEASIBLE, None, 0),
+        # Feasible on both sides but no finite gap -- no BKS, or a non-finite
+        # objective. It is not `both-feasible` and must not be averaged.
+        (([], 3, 3), ([], 3, 3), NO_COMPARABLE_GAP, None, 0),
+        # A partly feasible arm is compared on its feasible runs, and the loss is
+        # visible in the counts rather than hidden in the mean.
+        (([10.0, 10.0, 10.0], 3, None), ([4.0], 3, 1), BOTH_FEASIBLE, -6.0, -2),
+    ],
+    ids=["both-feasible", "arm-only", "control-only", "neither", "no-comparable-gap", "partly"],
+)
+def test_every_instance_lands_in_exactly_one_bucket(
+    control: tuple[list[float], int, int | None],
+    treatment: tuple[list[float], int, int | None],
+    bucket: str,
+    delta: float | None,
+    feasibility_delta: int,
+) -> None:
+    (control_gaps, control_runs, control_feasible) = control
+    (arm_gaps, arm_runs, arm_feasible) = treatment
     comparison = compare(
-        cell("a", CONTROL_ARM, [10.0, 12.0, 14.0]), cell("a", "x", [20.0, 22.0, 24.0])
+        cell("a", CONTROL_ARM, control_gaps, runs=control_runs, feasible=control_feasible),
+        cell("a", "x", arm_gaps, runs=arm_runs, feasible=arm_feasible),
     )
-    assert comparison.bucket == BOTH_FEASIBLE
-    assert comparison.delta == pytest.approx(10.0)  # 22 - 12; positive is worse
-
-
-def test_an_arm_feasible_where_the_control_is_not_has_no_delta_and_is_still_counted() -> None:
-    """There is no control gap to subtract. The instance is a categorical win,
-    reported as one -- not averaged in as a NaN and not dropped."""
-    comparison = compare(cell("a", CONTROL_ARM, [], runs=3), cell("a", "x", [7.0, 8.0, 9.0]))
-    assert comparison.bucket == ARM_ONLY_FEASIBLE
-    assert comparison.delta is None
-    assert comparison.feasibility_delta == 3
-
-
-def test_a_control_only_feasible_instance_is_bucketed_not_dropped() -> None:
-    comparison = compare(cell("a", CONTROL_ARM, [7.0, 8.0, 9.0]), cell("a", "x", [], runs=3))
-    assert comparison.bucket == CONTROL_ONLY_FEASIBLE
-    assert comparison.delta is None
-    assert comparison.feasibility_delta == -3
-
-
-def test_an_instance_neither_side_solved_is_its_own_bucket() -> None:
-    comparison = compare(cell("a", CONTROL_ARM, [], runs=3), cell("a", "x", [], runs=3))
-    assert comparison.bucket == NEITHER_FEASIBLE
-    assert comparison.delta is None
-
-
-def test_a_feasible_instance_with_no_published_bound_has_no_comparable_gap() -> None:
-    """Feasible on both sides but no finite gap -- no BKS, or a non-finite
-    objective. It is not `both-feasible` and must not be averaged."""
-    control = Cell("a", CONTROL_ARM, runs=3, feasible_runs=3, gaps=(), repairs=(0.0, 0.0, 0.0))
-    treatment = Cell("a", "x", runs=3, feasible_runs=3, gaps=(), repairs=(0.0, 0.0, 0.0))
-    assert classify(control, treatment) == NO_COMPARABLE_GAP
-    assert compare(control, treatment).delta is None
-
-
-def test_a_partly_feasible_arm_is_compared_on_its_feasible_runs_and_the_counts_show_it() -> None:
-    comparison = compare(
-        cell("a", CONTROL_ARM, [10.0, 10.0, 10.0]), cell("a", "x", [4.0], runs=3, feasible=1)
-    )
-    assert comparison.bucket == BOTH_FEASIBLE
-    assert comparison.delta == pytest.approx(-6.0)
-    assert comparison.feasibility_delta == -2  # the loss is visible, not hidden in the mean
+    assert comparison.bucket == bucket
+    assert comparison.delta == (None if delta is None else pytest.approx(delta))  # positive: worse
+    assert comparison.feasibility_delta == feasibility_delta
 
 
 def test_a_nan_gap_never_reaches_a_cell(tmp_path: Path) -> None:
@@ -329,20 +316,77 @@ def test_an_effect_inside_the_floor_is_reported_as_such_with_the_floor_quoted(
     assert summary.moved_better == 0
 
 
-def test_an_effect_outside_the_floor_names_its_direction(tmp_path: Path) -> None:
-    """Enough instances moving the same way IS a roster-level direction."""
-    names = ["a", "b", "c", "d", "e"]
-    rows = []
-    for i, name in enumerate(names):
-        base = 10.0 * (i + 1)
-        rows += run_rows(name, CONTROL_ARM, [base, base + 0.1, base + 0.2])
-        rows += run_rows(name, "x", [base + 30.0, base + 30.1, base + 30.2])
-    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
-    summary = summarize_arm("x", cells, names)
-    assert summary.median_delta == pytest.approx(30.0)
-    assert "WORSE than" in summary.verdict
-    assert "moved outside their own floor" in summary.verdict
-    assert summary.moved_worse == 5
+def _moving(worse: int, better: int, still: int) -> list[dict[str, object]]:
+    """Instances whose arm moved worse, better, or not at all, far outside the noise."""
+    rows: list[dict[str, object]] = []
+    for count, (control, arm) in (
+        (worse, (10.0, 40.0)),
+        (better, (40.0, 10.0)),
+        (still, (10.0, 10.0)),
+    ):
+        for _ in range(count):
+            name = f"i{len(rows) // 6}"
+            rows += run_rows(name, CONTROL_ARM, [control, control + 0.1, control + 0.2])
+            rows += run_rows(name, "x", [arm, arm + 0.1, arm + 0.2])
+    return rows
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected", "said", "not_said"),
+    [
+        # Enough instances moving the same way IS a roster-level direction.
+        (_moving(5, 0, 0), {"moved_worse": 5}, ["WORSE than", "moved outside their own floor"], []),
+        # Instances moving in BOTH directions in comparable numbers is not a result:
+        # once both directions are present the sign test decides, so a bare
+        # majority is reported as mixed rather than as an arm effect.
+        (
+            _moving(3, 2, 0),
+            {"moved_worse": 3, "moved_better": 2},
+            ["MIXED, no consistent direction"],
+            [],
+        ),
+        # A couple of instances clearing their own floors is a fact about those
+        # instances, not an arm effect. An earlier cut named a direction off a
+        # SINGLE mover, beside "sign test p = 1.000" and "median gap delta +0.00".
+        (_moving(2, 0, 3), {"moved_worse": 2}, ["ISOLATED MOVERS"], ["WORSE than"]),
+        # A control spread of exactly zero is three seeds landing on one value, not
+        # a measurement that there is no noise. Scored with a floor of 0.0, ANY
+        # nonzero delta clears it -- and the published roster has four instances at
+        # gap exactly 0 and around fourteen more within 1e-7.
+        (
+            [
+                *run_rows("flat", CONTROL_ARM, [0.0, 0.0, 0.0]),
+                *run_rows("flat", "x", [1e-9, 1e-9, 1e-9]),
+                *run_rows("real", CONTROL_ARM, [10.0, 10.1, 10.2]),
+                *run_rows("real", "x", [10.0, 10.1, 10.2]),
+            ],
+            {"moved_worse": 0, "floor.unmeasured": 1},
+            ["INSIDE THE NOISE"],
+            [],
+        ),
+    ],
+    ids=["direction", "split-decision", "isolated-movers", "control-never-varied"],
+)
+def test_the_verdict_names_a_direction_only_when_the_roster_has_one(
+    tmp_path: Path,
+    rows: list[dict[str, object]],
+    expected: dict[str, int],
+    said: list[str],
+    not_said: list[str],
+) -> None:
+    loaded = load_rows(write_results(tmp_path / "r.csv", rows))
+    summary = summarize_arm("x", build_cells(loaded), scored_instances(loaded))
+    for path, value in expected.items():
+        owner, _, name = path.rpartition(".")
+        assert getattr(summary.floor if owner else summary, name) == value, path
+    for text in said:
+        assert text in summary.verdict, text
+    for text in not_said:
+        assert text not in summary.verdict, text
+    if "floor.unmeasured" in expected:
+        assert "flat" not in summary.floor.per_instance
+    if len(said) == 1 and said[0] == "ISOLATED MOVERS":
+        assert summary.sign_p > 0.05
 
 
 def test_an_arm_that_only_wins_on_feasibility_is_reported_on_the_counts(
@@ -382,44 +426,45 @@ def test_an_instance_with_rows_on_one_side_only_is_counted_not_dropped(
     assert "incomplete for this arm" in report
 
 
-def test_the_report_states_the_repair_counts_when_the_lns_arm_runs(tmp_path: Path) -> None:
-    """#143 asks for the arm to be "run with its repair counts reported", not
-    only for the reading that justifies skipping it. The gate JSON covers the
-    skip half; this is the run half."""
+@pytest.mark.parametrize(
+    ("control", "arm", "unread", "said"),
+    [
+        # #143 asks for the arm to be "run with its repair counts reported", not
+        # only for the reading that justifies skipping it.
+        ((4, 1), (0, 0), None, "control 12 attempted, 3 accepted; arm 0 attempted, 0 accepted"),
+        # #150: the attempt count alone cannot tell "LNS is working" from "LNS is
+        # spending", and the two numbers must not be able to collapse onto each other.
+        ((9, 0), (9, 9), None, "control 27 attempted, 0 accepted; arm 27 attempted, 27 accepted"),
+        # The runner writes NaN where no solve completed. Summing it as 0 would
+        # make "nothing ran" read as "LNS ran and never repaired" -- or, in the
+        # accepted column, as "LNS repaired and kept nothing".
+        ((2, 0), (0, 0), "lns_repairs", "control 4 attempted, 0 accepted; "),
+        ((2, 2), (0, 0), "lns_repairs_accepted", "control 6 attempted, 4 accepted; "),
+    ],
+    ids=[
+        "run-half-of-the-gate",
+        "attempted-apart-from-accepted",
+        "unread-attempts",
+        "unread-accepts",
+    ],
+)
+def test_the_report_states_the_repair_counts_it_read(
+    tmp_path: Path,
+    control: tuple[int, int],
+    arm: tuple[int, int],
+    unread: str | None,
+    said: str,
+) -> None:
     rows = [
-        *run_rows("a", CONTROL_ARM, [10.0, 12.0, 14.0], repairs=4, repairs_accepted=1),
-        *run_rows("a", "no-lns", [11.0, 13.0, 15.0], repairs=0),
+        *run_rows(
+            "a", CONTROL_ARM, [10.0, 12.0, 14.0], repairs=control[0], repairs_accepted=control[1]
+        ),
+        *run_rows("a", "no-lns", [11.0, 13.0, 15.0], repairs=arm[0], repairs_accepted=arm[1]),
     ]
+    if unread is not None:
+        rows[0][unread] = "NaN"
     report = render_report(write_results(tmp_path / "r.csv", rows))
-    assert "LNS repairs over the roster: control 12 attempted, 3 accepted; " in report
-    assert "arm 0 attempted, 0 accepted" in report
-
-
-def test_the_report_separates_repairs_attempted_from_repairs_accepted(tmp_path: Path) -> None:
-    """#150: the attempt count alone cannot tell "LNS is working" from "LNS is
-    spending". An arm that repaired constantly and kept none of it has to be
-    readable as such, and the two numbers must not be able to collapse onto
-    each other."""
-    rows = [
-        *run_rows("a", CONTROL_ARM, [10.0, 12.0, 14.0], repairs=9, repairs_accepted=0),
-        *run_rows("a", "x", [11.0, 13.0, 15.0], repairs=9, repairs_accepted=9),
-    ]
-    report = render_report(write_results(tmp_path / "r.csv", rows))
-    assert "LNS repairs over the roster: control 27 attempted, 0 accepted; " in report
-    assert "arm 27 attempted, 27 accepted" in report
-
-
-def test_an_accepted_cell_with_no_reading_is_not_counted_as_zero(tmp_path: Path) -> None:
-    """The accepted column obeys the same NaN rule as the attempt column: the
-    runner writes NaN where no solve completed, and summing that as 0 would make
-    "nothing ran" read as "LNS repaired and kept nothing"."""
-    rows = [
-        *run_rows("a", CONTROL_ARM, [10.0, 12.0, 14.0], repairs=2, repairs_accepted=2),
-        *run_rows("a", "x", [11.0, 13.0, 15.0], repairs=0),
-    ]
-    rows[0]["lns_repairs_accepted"] = "NaN"
-    report = render_report(write_results(tmp_path / "r.csv", rows))
-    assert "control 6 attempted, 4 accepted; " in report  # the two readable rows, not three
+    assert f"LNS repairs over the roster: {said}" in report
 
 
 def test_a_side_with_no_reading_at_all_is_not_reported_as_zero(tmp_path: Path) -> None:
@@ -442,18 +487,6 @@ def test_a_side_with_no_reading_at_all_is_not_reported_as_zero(tmp_path: Path) -
     report = render_report(path)
     assert "control 12 attempted, no accepted reading; " in report
     assert "arm 0 attempted, no accepted reading" in report
-
-
-def test_a_row_with_no_reading_is_not_counted_as_zero_repairs(tmp_path: Path) -> None:
-    """The runner writes NaN where no solve completed. Summing it as 0 would
-    make "nothing ran" indistinguishable from "LNS ran and never repaired"."""
-    rows = [
-        *run_rows("a", CONTROL_ARM, [10.0, 12.0, 14.0], repairs=2),
-        *run_rows("a", "x", [11.0, 13.0, 15.0], repairs=0),
-    ]
-    rows[0]["lns_repairs"] = "NaN"
-    report = render_report(write_results(tmp_path / "r.csv", rows))
-    assert "control 4 attempted," in report  # the two readable rows, not three
 
 
 # --- what is held out ----------------------------------------------------------
@@ -517,76 +550,6 @@ def test_the_report_states_the_sign_convention_and_the_gate(tmp_path: Path) -> N
 
 def test_an_empty_results_file_reports_rather_than_raises(tmp_path: Path) -> None:
     assert "no rows" in render_report(write_results(tmp_path / "r.csv", []))
-
-
-def test_a_split_decision_is_reported_as_mixed_not_as_an_effect(tmp_path: Path) -> None:
-    """Instances moving in BOTH directions in comparable numbers is not a result.
-
-    Unanimity is what lets a small number of moved instances name a direction;
-    once both directions are present the sign test decides, so a bare majority
-    is reported as mixed rather than as an arm effect.
-    """
-    rows = []
-    for name in ("a", "b", "c"):  # worse
-        rows += run_rows(name, CONTROL_ARM, [10.0, 10.1, 10.2])
-        rows += run_rows(name, "x", [40.0, 40.1, 40.2])
-    for name in ("d", "e"):  # better
-        rows += run_rows(name, CONTROL_ARM, [40.0, 40.1, 40.2])
-        rows += run_rows(name, "x", [10.0, 10.1, 10.2])
-    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
-    summary = summarize_arm("x", cells, ["a", "b", "c", "d", "e"])
-
-    assert (summary.moved_worse, summary.moved_better) == (3, 2)
-    assert "MIXED, no consistent direction" in summary.verdict
-
-
-def test_one_or_two_movers_are_reported_as_isolated_not_as_a_direction(
-    tmp_path: Path,
-) -> None:
-    """A couple of instances clearing their own floors is a fact about those
-    instances, not an arm effect over the roster.
-
-    An earlier cut named a direction off a SINGLE mover, printing "the arm is
-    WORSE than the control" in the same sentence as "sign test p = 1.000" and
-    "median gap delta +0.00 points".
-    """
-    rows = []
-    for name in ("a", "b"):
-        rows += run_rows(name, CONTROL_ARM, [10.0, 10.1, 10.2])
-        rows += run_rows(name, "x", [40.0, 40.1, 40.2])
-    for name in ("c", "d", "e"):  # unmoved
-        rows += run_rows(name, CONTROL_ARM, [10.0, 10.1, 10.2])
-        rows += run_rows(name, "x", [10.0, 10.1, 10.2])
-    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
-    summary = summarize_arm("x", cells, ["a", "b", "c", "d", "e"])
-
-    assert summary.sign_p > 0.05
-    assert "ISOLATED MOVERS" in summary.verdict
-    assert "WORSE than" not in summary.verdict
-
-
-def test_an_instance_whose_control_never_varied_is_not_scored(tmp_path: Path) -> None:
-    """A control spread of exactly zero is three seeds landing on one value, not
-    a measurement that there is no noise.
-
-    Scored with a floor of 0.0, ANY nonzero delta clears it. The published
-    roster has four instances at gap exactly 0 and around fourteen more within
-    1e-7, so this turned a 1e-9 move into "outside the measured floor" -- and,
-    with the old unanimity rule, into a roster-wide verdict.
-    """
-    rows = [
-        *run_rows("flat", CONTROL_ARM, [0.0, 0.0, 0.0]),
-        *run_rows("flat", "x", [1e-9, 1e-9, 1e-9]),
-        *run_rows("real", CONTROL_ARM, [10.0, 10.1, 10.2]),
-        *run_rows("real", "x", [10.0, 10.1, 10.2]),
-    ]
-    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
-    summary = summarize_arm("x", cells, ["flat", "real"])
-
-    assert summary.floor.unmeasured == 1
-    assert "flat" not in summary.floor.per_instance
-    assert summary.moved_worse == 0
-    assert "INSIDE THE NOISE" in summary.verdict
 
 
 def test_a_crashed_run_is_not_a_lost_feasibility(tmp_path: Path) -> None:
@@ -662,62 +625,84 @@ def solve_error_rows(instance: str, arm: str, seeds: Sequence[int]) -> list[dict
     ]
 
 
-def test_a_cell_whose_every_run_crashed_is_in_no_feasibility_bucket(tmp_path: Path) -> None:
-    """`feasible_runs == 0` is true of a cell whose every row crashed, so a
-    bucket decided from it manufactures a verdict out of a process table.
-
-    The disclosure line already said these rows record no measurement; the
-    bucket said the arm lost feasibility here. Both cannot be true.
-    """
-    rows = [
-        *run_rows("crashy", CONTROL_ARM, [7.0, 7.1, 7.2]),
-        *crash_rows("crashy", "x", [1, 2, 3]),
-    ]
-    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
-    summary = summarize_arm("x", cells, ["crashy"])
-
-    assert summary.comparisons[0].bucket == "no-runs-recorded"
-    assert summary.counts["control-only-feasible"] == 0
-    assert summary.counts["no-runs-recorded"] == 1
-    assert summary.feasibility_delta == 0
-    assert summary.feasibility_delta_balanced == 0
-
-
-def test_crashes_on_the_control_side_cannot_produce_an_arm_win(tmp_path: Path) -> None:
-    """The mirror case is the worse one: three segfaults on the CONTROL hand the
-    arm `arm-only-feasible`, an arm win produced by a process table."""
-    rows = [
-        *crash_rows("crashy", CONTROL_ARM, [1, 2, 3]),
-        *run_rows("crashy", "x", [7.0, 7.1, 7.2]),
-    ]
-    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
-    summary = summarize_arm("x", cells, ["crashy"])
-
-    assert summary.comparisons[0].bucket == "no-runs-recorded"
-    assert summary.counts["arm-only-feasible"] == 0
-    assert summary.feasibility_delta == 0
-    assert summary.feasibility_delta_balanced == 0
-
-
-def test_a_cell_whose_every_run_is_a_solve_error_is_in_no_feasibility_bucket(
+@pytest.mark.parametrize(
+    ("control", "arm", "expected"),
+    [
+        # `feasible_runs == 0` is true of a cell whose every row crashed, so a bucket
+        # decided from it manufactures a verdict out of a process table.
+        (
+            lambda: run_rows("i", CONTROL_ARM, [7.0, 7.1, 7.2]),
+            lambda: crash_rows("i", "x", [1, 2, 3]),
+            {
+                "counts.control-only-feasible": 0,
+                "counts.no-runs-recorded": 1,
+                "feasibility_delta": 0,
+                "feasibility_delta_balanced": 0,
+            },
+        ),
+        # The mirror case is the worse one: three segfaults on the CONTROL hand the
+        # arm `arm-only-feasible`, an arm win produced by a process table.
+        (
+            lambda: crash_rows("i", CONTROL_ARM, [1, 2, 3]),
+            lambda: run_rows("i", "x", [7.0, 7.1, 7.2]),
+            {
+                "counts.arm-only-feasible": 0,
+                "feasibility_delta": 0,
+                "feasibility_delta_balanced": 0,
+            },
+        ),
+        # A `solve-error` row is a well-formed row no exclusion caught. Whether a
+        # solve throws can depend on the search configuration, i.e. on the ARM, so
+        # scoring it reads an exception as an arm losing feasibility.
+        (
+            lambda: run_rows("i", CONTROL_ARM, [7.0, 7.1, 7.2]),
+            lambda: solve_error_rows("i", "x", [1, 2, 3]),
+            {"counts.control-only-feasible": 0, "treatment.no_search_runs": 3, "treatment.runs": 0},
+        ),
+        # The denylist failed open: a seventh runner outcome carried
+        # `feasible=false`, matched no held-out prefix, and was counted as this arm
+        # losing feasibility -- #151 re-armed. Scoring is now decided by the notes a
+        # COMPLETED search writes, so the unfamiliar note falls out of every count.
+        (
+            lambda: run_rows("i", CONTROL_ARM, [7.0, 7.1, 7.2]),
+            lambda: unknown_note_rows("i", "x", [1, 2, 3], "budget-exhausted-before-init"),
+            {"treatment.runs": 0, "treatment.no_search_runs": 3, "feasibility_delta_balanced": 0},
+        ),
+        # `minlplib.cpp` writes `unsupported: <reason>` with commas replaced by `;`,
+        # so the cell is matched on its prefix rather than compared whole.
+        (
+            lambda: run_rows("i", CONTROL_ARM, [7.0, 7.1, 7.2]),
+            lambda: unknown_note_rows("i", "x", [1], "unsupported: NL_UNKNOWN_OPCODE 42; at row 3"),
+            {"treatment.no_search_notes": ("unsupported",)},
+        ),
+    ],
+    ids=[
+        "arm-crashed",
+        "control-crashed",
+        "arm-solve-error",
+        "unrecognised-note",
+        "long-unsupported",
+    ],
+)
+def test_a_cell_with_no_completed_run_is_in_no_feasibility_bucket(
     tmp_path: Path,
+    control: Callable[[], list[dict[str, object]]],
+    arm: Callable[[], list[dict[str, object]]],
+    expected: dict[str, object],
 ) -> None:
-    """A `solve-error` row is a well-formed row no exclusion caught.
+    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", [*control(), *arm()])))
+    summary = summarize_arm("x", cells, ["i"])
+    comparison = summary.comparisons[0]
 
-    Whether a solve throws can depend on the search configuration, i.e. on the
-    ARM, so scoring it reads an exception as an arm losing feasibility.
-    """
-    rows = [
-        *run_rows("throws", CONTROL_ARM, [7.0, 7.1, 7.2]),
-        *solve_error_rows("throws", "x", [1, 2, 3]),
-    ]
-    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
-    summary = summarize_arm("x", cells, ["throws"])
-
-    assert summary.comparisons[0].bucket == "no-runs-recorded"
-    assert summary.counts["control-only-feasible"] == 0
-    assert summary.comparisons[0].treatment.no_search_runs == 3
-    assert summary.comparisons[0].treatment.runs == 0
+    assert comparison.bucket == "no-runs-recorded"
+    for path, value in expected.items():
+        owner, _, name = path.partition(".")
+        if owner == "counts":
+            assert summary.counts[name] == value, path
+        elif owner == "treatment":
+            assert getattr(comparison.treatment, name) == value, path
+        else:
+            assert getattr(summary, owner) == value, path
 
 
 def test_a_solve_error_row_does_not_contaminate_the_balanced_feasibility_delta(
@@ -948,26 +933,6 @@ def test_a_row_where_a_search_did_complete_is_never_held_out(tmp_path: Path) -> 
     assert summary.feasibility_delta_balanced == -3
 
 
-def test_the_long_unsupported_note_is_still_held_out(tmp_path: Path) -> None:
-    """`minlplib.cpp` writes `unsupported: <reason>` with commas replaced by
-    `;`, so the cell is matched on its prefix rather than compared whole."""
-    rows = [
-        *run_rows("a", CONTROL_ARM, [7.0, 7.1, 7.2]),
-        {
-            "instance": "a",
-            "arm": "x",
-            "seed": 1,
-            "feasible": "false",
-            "note": "unsupported: NL_UNKNOWN_OPCODE 42; at row 3",
-        },
-    ]
-    cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
-    summary = summarize_arm("x", cells, ["a"])
-
-    assert summary.comparisons[0].bucket == "no-runs-recorded"
-    assert summary.comparisons[0].treatment.no_search_notes == ("unsupported",)
-
-
 def test_every_preread_note_the_runner_writes_is_held_out() -> None:
     """Since #153 the classification is an ALLOWLIST, so a preread note is held
     out whether or not this list knows it. What this guards now is the other
@@ -1020,31 +985,6 @@ def unknown_note_rows(
         }
         for seed in seeds
     ]
-
-
-def test_a_note_the_scorer_does_not_recognise_is_held_out_rather_than_scored(
-    tmp_path: Path,
-) -> None:
-    """The denylist failed open. A seventh runner outcome -- one added after the
-    list was written -- carried `feasible=false` like any infeasible run, matched
-    no held-out prefix, and was counted as this arm losing feasibility on the
-    instance: precisely the defect #151 was filed for, re-armed.
-
-    Scoring is now decided by the notes a COMPLETED search writes, so the
-    unfamiliar note falls out of every count instead of into a bucket.
-    """
-    rows = [
-        *run_rows("a", CONTROL_ARM, [7.0, 7.1, 7.2]),
-        *unknown_note_rows("a", "x", [1, 2, 3], "budget-exhausted-before-init"),
-    ]
-    summary = summarize_arm(
-        "x", build_cells(load_rows(write_results(tmp_path / "r.csv", rows))), ["a"]
-    )
-
-    assert summary.comparisons[0].bucket == "no-runs-recorded"
-    assert summary.comparisons[0].treatment.runs == 0
-    assert summary.comparisons[0].treatment.no_search_runs == 3
-    assert summary.feasibility_delta_balanced == 0
 
 
 def test_an_unrecognised_note_discloses_itself_rather_than_disappearing(
