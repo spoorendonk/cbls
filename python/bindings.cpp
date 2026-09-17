@@ -71,17 +71,23 @@ constexpr const char* kParallelSolveDoc =
     "\n"
     "An exception raised by the progress callback's on_progress ends the solve\n"
     "of the worker that made the call -- NOT the portfolio. That worker is\n"
-    "restarted, and gives up after three consecutive failed attempts while its\n"
-    "peers carry on. The exception is re-raised here -- the original object,\n"
-    "with its type, message and traceback -- only if every worker gave up that\n"
-    "way. Otherwise it is DISCARDED, with nothing reported, and the survivors'\n"
-    "result is returned. Which workers call the callback at all depends on\n"
-    "timing: a worker other than the first reports only a new portfolio-wide\n"
-    "best, so with more than one worker a callback that raises on every call\n"
-    "usually kills the first worker alone and the run returns normally. Raising\n"
-    "is therefore not a way to stop a run; catch inside on_progress if a\n"
-    "failure there must be seen. (The single-threaded `solve` differs: there a\n"
-    "raising callback ends the search and the exception propagates at once.)";
+    "restarted, and stops after three consecutive failed attempts (or when the\n"
+    "time limit runs out first) while its peers carry on. An exception is\n"
+    "re-raised here -- the original object, with its type, message and\n"
+    "traceback -- only if NO worker completed a single attempt, whatever each\n"
+    "one raised; the lowest-numbered worker's last exception is the one raised.\n"
+    "Otherwise it is DISCARDED, with nothing reported, and the best result\n"
+    "found is returned -- including when a worker stopped after completing an\n"
+    "attempt, which SearchConfig.max_iterations makes possible.\n"
+    "\n"
+    "Which workers call the callback at all depends on timing: a worker other\n"
+    "than the first reports only a new portfolio-wide best, so a callback that\n"
+    "raises on every call may kill the first worker alone and let the run\n"
+    "return normally -- after which the periodic no-improvement rows, which\n"
+    "only the first worker sends, stop. Raising is therefore not a way to stop\n"
+    "a run; catch inside on_progress if a failure there must be seen. (The\n"
+    "module-level, single-threaded cbls.solve differs: there a raising callback\n"
+    "ends the search and the exception propagates at once.)";
 
 // A Python on_progress that raises leaves this override as an nb::python_error,
 // which owns a strong reference to the Python exception object. ParallelSearch
@@ -92,9 +98,9 @@ constexpr const char* kParallelSolveDoc =
 // constructor acquire the GIL themselves (gil_scoped_acquire, i.e.
 // PyGILState_Ensure, which is legal on a thread that released the GIL and on a
 // thread Python has never seen). They have since nanobind v0.1.0 -- v0.0.1's
-// python_error held no PyObject* at all -- so the whole `nanobind>=1.8` range
-// pyproject.toml admits is covered (src/error.cpp at tags v0.1.0, v1.8.0 and
-// v2.13.0). Converting the exception at this boundary would therefore buy no
+// held nb::object members released WITHOUT the GIL -- so the whole
+// `nanobind>=1.8` range pyproject.toml admits is covered (src/error.cpp at tags
+// v0.1.0, v1.8.0 and v2.13.0). Converting the exception at this boundary would therefore buy no
 // safety and would cost the caller the original exception object (#159).
 struct PySolveCallback : SolveCallback {
     NB_TRAMPOLINE(SolveCallback, 1);
@@ -516,7 +522,9 @@ NB_MODULE(_cbls_core, m) {
         nb::arg("lns_interval") = 3, nb::arg("callback") = nullptr,
         nb::arg("config") = SearchConfig{},
         "Single-threaded solve. An exception raised by callback.on_progress ends the "
-        "search and propagates out of this call unchanged -- no result is returned. "
+        "search and propagates out of this call unchanged -- no result is returned, "
+        "and the model is left at the assignment the search had reached, with its "
+        "internal objective bound still tightened. "
         "(ParallelSearch.solve_parallel absorbs one instead unless every worker fails; "
         "see its docstring.) "
         "NOTE: a Python subclass of InnerSolverHook or LNS is "

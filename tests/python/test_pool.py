@@ -1,8 +1,9 @@
-"""Tests for ParallelSearch via Python bindings (#128, #129).
+"""Tests for ParallelSearch via Python bindings (#128, #129, #159).
 
 Every scenario here runs in a **child interpreter**, not in-process. That is
-deliberate: the bugs these tests cover are a GIL deadlock (#128) and a double
-free of a factory's return value (#129), and neither is reportable from inside
+deliberate: the bugs these tests cover are a GIL deadlock (#128), a double
+free of a factory's return value (#129) and a Python exception released without
+the GIL (#159), and none is reportable from inside
 the process that hits it -- a deadlocked interpreter cannot fail a test, and an
 aborting one takes the whole pytest run down with it. `pytest-timeout` cannot
 rescue it either -- its `thread` method runs `timeout_timer` on a
@@ -73,7 +74,9 @@ def _assert_scenario_ok(name: str) -> str:
             f"scenario {name!r} did not finish within {CHILD_TIMEOUT_SECONDS}s -- "
             "something is holding the GIL across ParallelSearch's worker join: "
             "either the call guard is gone (#128), or a factory's return value is "
-            "being released on a thread that cannot acquire it (#129)"
+            "being released on a thread that cannot acquire it (#129), or, for the "
+            "callback-raising scenarios, a parked exception's release blocking on "
+            "the GIL (#159)"
         ) from exc
     assert proc.returncode == 0, f"scenario {name!r} failed:\n{proc.stdout}\n{proc.stderr}"
     return proc.stdout
@@ -180,13 +183,10 @@ def test_solve_parallel_calls_a_python_callback_from_a_worker_thread() -> None:
 
 
 # The three tests below cover a Python `SolveCallback` whose `on_progress`
-# raises during a portfolio run (#159). The raise becomes an `nb::python_error`
-# holding the only strong reference to the Python exception object, and the
-# portfolio PARKS it in a `std::exception_ptr` -- then either rethrows it or
-# drops it, on a worker thread or on the calling thread, in both cases with the
-# GIL released. That is safe only because nanobind's `python_error` destructor
-# takes the GIL itself (python/bindings.cpp, above PySolveCallback, has the
-# version evidence). What these tests pin is the contract that rests on it:
+# raises during a portfolio run (#159). The portfolio parks the resulting
+# `nb::python_error` and later rethrows or drops it with the GIL released; why
+# that is safe is written above PySolveCallback in python/bindings.cpp. What
+# these tests pin:
 #
 #   * where the exception ends up -- re-raised as the original object, or
 #     discarded while the survivors' result is returned;
@@ -205,7 +205,8 @@ def test_solve_parallel_calls_a_python_callback_from_a_worker_thread() -> None:
 #     a (released) thread state -- i.e. only on the calling thread -- segfaults
 #     `..._kills_one_worker` alone, which is the isolation that shows it is the
 #     test reaching #159's calling-thread path;
-#   - run_worker's retry removed (break on the first throw): all three red, on
+#   - run_worker's retry removed (break on the first throw): all three red --
+#     `..._raises_once` on `destroyed_on_calling_thread=`, the others on
 #     `raises=`;
 #   - the all-failed `std::rethrow_exception` dropped: `..._every_worker` red;
 #   - each parked `exception_ptr` leaked in run_worker's catch: all three red,
@@ -256,9 +257,10 @@ def test_solve_parallel_absorbs_a_callback_that_kills_one_worker() -> None:
     Worker 0 is made the one that dies without knowing its thread: only the
     heartbeat worker delivers rows with `new_best=False` (a peer reports only a
     new portfolio-wide best), so the callback raises on the first such row and
-    on every later row from the same thread. Worker 0 converges on this model
-    at once, emits its ~1s heartbeat and raises, then raises again on the first
-    report of each of its two retries; the peer never raises.
+    on every later row from the same thread. Worker 0 raises on its first
+    non-improving row -- at once if the peer reached the best first, else at its
+    ~1s heartbeat -- then again on the first report of each of its two retries;
+    the peer never raises.
     """
     out = _assert_scenario_ok("callback_kills_one_worker")
     assert "reraised_original=False" in out
@@ -509,12 +511,14 @@ def _scenario_callback_raises_always() -> None:
 
 
 def _scenario_callback_raises_once() -> None:
-    _run_raising_callback(lambda i, _t, _nb, _r: i == 0, n_threads=2, budget=0.5)
+    # 1.0s, not 0.5s: the raising worker must still have budget for its retry, or
+    # it completes no attempt and its exception moves to the calling thread.
+    _run_raising_callback(lambda i, _t, _nb, _r: i == 0, n_threads=2, budget=1.0)
 
 
 def _scenario_callback_kills_one_worker() -> None:
-    # 2.5s: the heartbeat that identifies worker 0 fires ~1s after its last
-    # report, and the peer needs clock left over to be the run's survivor.
+    # 2.5s: the row that identifies worker 0 comes at the latest ~1s after its
+    # last report, and the peer needs clock left over to be the run's survivor.
     _run_raising_callback(
         lambda _i, t, new_best, raising: (not new_best) or t in raising,
         n_threads=2,
