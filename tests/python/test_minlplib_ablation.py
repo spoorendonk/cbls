@@ -3,7 +3,8 @@
 Every test here is offline. The campaign itself is ten hours of solving, so what
 is checkable without solving anything is exactly what the driver is: a run
 order, a set of refusals, and a resume rule. `execute_runs` is exercised against
-a fake runner, so even its loop costs no solve.
+a fake runner, so even its loop costs no solve. The durable-append and torn-tail
+mechanics it is built on are pinned in `test_benchmark_common.py`.
 """
 
 from __future__ import annotations
@@ -17,13 +18,11 @@ from typing import TYPE_CHECKING
 import pytest
 
 from benchmarks.common.provenance import REPO_ROOT
-from benchmarks.common.records import repair_torn_tail
 from benchmarks.minlplib.ablation_report import (
     CONTROL_ARM,
     PROBE_ARM_NAME,
     render_report,
     sign_test_p,
-    t_multiplier,
 )
 from benchmarks.minlplib.run_ablation import (
     ARMS,
@@ -190,52 +189,32 @@ def test_the_gate_probe_is_one_control_pass_at_one_seed() -> None:
 # --- serial enforcement --------------------------------------------------------
 
 
-def test_a_second_campaign_on_the_same_out_dir_is_refused(tmp_path: Path) -> None:
+def test_a_second_campaign_on_the_same_out_dir_is_refused_and_told_why(tmp_path: Path) -> None:
     """Timed comparisons must never share the machine, and the driver says so
-    itself rather than trusting the caller to remember."""
-    out_dir = tmp_path / "scratch"
-    with campaign_lock(out_dir):
-        assert (out_dir / LOCK_NAME).exists()
-        with pytest.raises(RuntimeError, match="another campaign holds"), campaign_lock(out_dir):
-            pass
+    itself rather than trusting the caller to remember.
 
-
-def test_the_refused_driver_can_still_name_the_holder(tmp_path: Path) -> None:
-    """A truncating open would wipe the pid line before flock had even failed,
-    so the refusal would destroy the one diagnostic it needs to quote."""
+    The refusal quotes the holder's pid, which a truncating open would wipe
+    before flock had even failed. And it must not advise deleting the lock:
+    flock is held on the inode, so deleting a LIVE lock file lets the next
+    driver lock a fresh inode and run beside the first -- two wall-clock-
+    budgeted campaigns on one machine, invited by the driver's own message.
+    """
     out_dir = tmp_path / "scratch"
     with campaign_lock(out_dir):
         holder = (out_dir / LOCK_NAME).read_text()
         assert holder.startswith("pid=")
-        with pytest.raises(RuntimeError, match=r"pid=\d+"), campaign_lock(out_dir):
+        with (
+            pytest.raises(RuntimeError, match="another campaign holds") as caught,
+            campaign_lock(out_dir),
+        ):
             pass
         assert (out_dir / LOCK_NAME).read_text() == holder, "the holder's pid was overwritten"
-
-
-def test_the_lock_refusal_does_not_advise_deleting_the_lock(tmp_path: Path) -> None:
-    """flock is held on the inode. Deleting a LIVE lock file lets the next
-    driver create a fresh inode and lock that -- two wall-clock-budgeted
-    campaigns on one machine, invited by the driver's own error message. A file
-    left by a crashed driver is already unlocked, so the advice is never needed
-    either."""
-    out_dir = tmp_path / "scratch"
-    with (
-        campaign_lock(out_dir),
-        pytest.raises(RuntimeError) as caught,
-        campaign_lock(out_dir),
-    ):
-        pass
     message = str(caught.value)
+    assert holder.strip() in message
     assert "Do NOT delete the lock file" in message
     assert "already unlocked" in message
-
-
-def test_the_lock_is_released_when_the_campaign_ends(tmp_path: Path) -> None:
-    out_dir = tmp_path / "scratch"
     with campaign_lock(out_dir):
-        pass
-    with campaign_lock(out_dir):
-        pass  # a clean second acquisition, so the first really let go
+        pass  # a clean acquisition once the campaign ended: the first really let go
 
 
 def test_execute_runs_never_has_two_solves_in_flight(
@@ -255,19 +234,19 @@ def test_execute_runs_never_has_two_solves_in_flight(
     monkeypatch.setattr(subprocess, "run", run)
     out_dir = tmp_path / "scratch"
     out_dir.mkdir()
-    execute_runs(
-        make_args(tmp_path),
-        "abc1234",
-        campaign_plan(["a", "b"], [1], list(ARMS)),
-        out_dir,
-        "campaign",
-    )
+    plan = campaign_plan(["a", "b"], [1], list(ARMS))
+    execute_runs(make_args(tmp_path), "abc1234", plan, out_dir, "campaign")
     assert not inflight
 
 
 def test_a_busy_machine_is_refused_and_the_refusal_is_overridable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The runner is single-threaded, so a running campaign holds the 1-minute
+    average at about 1.00 and oscillates either side of it. A threshold of 1.0
+    let a second campaign start about half the time it was tried, and the lock
+    is per out-dir so nothing else stands between them."""
+    assert MAX_LOAD_AVERAGE < 1.0
     monkeypatch.setattr("os.getloadavg", lambda: (MAX_LOAD_AVERAGE + 1.0, 0.0, 0.0))
     refusal = load_refusal(allow_busy=False)
     assert refusal is not None
@@ -277,56 +256,48 @@ def test_a_busy_machine_is_refused_and_the_refusal_is_overridable(
     assert load_refusal(allow_busy=False) is None
 
 
-# --- the published tables are out of reach -------------------------------------
+# --- refusals: the published tables, and a campaign that cannot measure --------
 
 
 @pytest.mark.parametrize(
-    "relative",
+    ("out_dir", "refused"),
     [
-        "benchmarks/instances",
-        "benchmarks/instances/minlplib",
-        "benchmarks/instances/minlplib/scratch",
+        # Refused, not warned: the campaign writes several files and the runner
+        # writes more underneath, so the durable rule is that the whole tree is off
+        # limits rather than that three filenames are.
+        ("benchmarks/instances", True),
+        ("benchmarks/instances/minlplib", True),
+        ("benchmarks/instances/minlplib/scratch", True),
+        # ... and so is anything containing it.
+        ("", True),
+        ("benchmarks", True),
+        (None, False),
     ],
+    ids=["instances", "minlplib", "under-minlplib", "repo-root", "benchmarks", "scratch"],
 )
-def test_an_out_dir_that_could_reach_a_published_table_is_refused(relative: str) -> None:
-    """Refused, not warned: the campaign writes several files and the runner
-    writes more underneath, so the durable rule is that the whole tree is off
-    limits rather than that three filenames are."""
-    refusal = scratch_refusal(REPO_ROOT / relative)
-    assert refusal is not None
-    assert "published" in refusal
+def test_an_out_dir_that_could_reach_a_published_table_is_refused(
+    tmp_path: Path, out_dir: str | None, refused: bool
+) -> None:
+    path = tmp_path / "campaign" if out_dir is None else REPO_ROOT / out_dir
+    assert (scratch_refusal(path) is not None) is refused
 
 
-@pytest.mark.parametrize("relative", ["", "benchmarks"])
-def test_an_out_dir_containing_the_published_tables_is_refused(relative: str) -> None:
-    refusal = scratch_refusal(REPO_ROOT / relative if relative else REPO_ROOT)
-    assert refusal is not None
-
-
-def test_a_scratch_out_dir_is_accepted(tmp_path: Path) -> None:
-    assert scratch_refusal(tmp_path / "campaign") is None
-
-
-def test_usage_error_carries_the_scratch_refusal(tmp_path: Path) -> None:
-    args = make_args(tmp_path, out_dir=REPO_ROOT / "benchmarks" / "instances" / "minlplib")
-    refusal = usage_error(args)
-    assert refusal is not None
-    assert "published" in refusal
-
-
-@pytest.mark.parametrize("seeds", [[1], [1, 2]])
-def test_fewer_than_three_seeds_is_refused(tmp_path: Path, seeds: list[int]) -> None:
-    """The floor is measured from the control's across-seed spread, so a
-    two-seed campaign cannot both estimate an effect and its noise."""
-    refusal = usage_error(make_args(tmp_path, seeds=seeds))
-    assert refusal is not None
-    assert "at least three seeds" in refusal
-
-
-def test_a_repeated_seed_is_refused(tmp_path: Path) -> None:
-    refusal = usage_error(make_args(tmp_path, seeds=[1, 1, 2]))
-    assert refusal is not None
-    assert "distinct" in refusal
+@pytest.mark.parametrize(
+    ("overrides", "refusal"),
+    [
+        # The floor is measured from the control's across-seed spread, so a
+        # two-seed campaign cannot both estimate an effect and its noise.
+        ({"seeds": [1]}, "at least three seeds"),
+        ({"seeds": [1, 2]}, "at least three seeds"),
+        ({"seeds": [1, 1, 2]}, "distinct"),
+        ({"out_dir": REPO_ROOT / "benchmarks" / "instances" / "minlplib"}, "published"),
+        ({}, None),
+    ],
+    ids=["one-seed", "two-seeds", "repeated-seed", "published-out-dir", "accepted"],
+)
+def test_usage_error(tmp_path: Path, overrides: dict[str, object], refusal: str | None) -> None:
+    message = usage_error(make_args(tmp_path, **overrides))
+    assert message is None if refusal is None else (message is not None and refusal in message)
 
 
 def test_the_runner_command_carries_the_arm_flags_the_seed_and_a_scratch_out(
@@ -438,25 +409,45 @@ def test_every_completed_run_is_on_disk_before_the_next_one_starts(
     assert len(recorded_keys(results)) == 2
 
 
-def test_a_torn_final_line_is_dropped_before_it_can_be_resumed(tmp_path: Path) -> None:
-    results = tmp_path / RESULTS_NAME
-    write_results(results, [("a", CONTROL_ARM, 1)])
-    with results.open("a") as fh:
-        fh.write("b,control,,")  # killed mid-append
-    assert repair_torn_tail(results) is True
-    assert recorded_keys(results) == {("a", CONTROL_ARM, 1)}
-    assert repair_torn_tail(results) is False
-
-
-def test_report_only_survives_the_torn_file_it_exists_to_read(tmp_path: Path) -> None:
-    """Killed mid-append is the normal state of a ten-hour campaign, and
-    --report-only is the only read-only way to look at what it produced."""
-    out_dir = tmp_path / "scratch"
-    results = out_dir / RESULTS_NAME
+def _torn(results: Path) -> str:
+    """A results.csv whose last append was killed half-way through the row."""
     write_results(results, [("a", CONTROL_ARM, 1)])
     with results.open("a") as fh:
         fh.write("b,control,,")
+    return results.read_text()
+
+
+def test_a_campaign_drops_a_torn_final_line_before_it_can_be_resumed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A torn row's key is missing from the resume set while its bytes stay in the
+    file, so without the repair the run is redone AND the half-row stays behind,
+    carried into the record as a row with no seed."""
+    out_dir = tmp_path / "scratch"
+    _torn(out_dir / RESULTS_NAME)
+    monkeypatch.setattr(subprocess, "run", fake_runner())
+
+    assert execute(make_args(tmp_path, lns_arm="off"), "abc1234", ["a"], out_dir) == 0
+
+    with (out_dir / RESULTS_NAME).open(newline="") as fh:
+        seeds = [row["seed"] for row in csv.DictReader(fh)]
+    assert seeds and all(seed.isdigit() for seed in seeds), seeds
+
+
+def test_report_only_scores_a_torn_file_without_repairing_the_live_one(tmp_path: Path) -> None:
+    """Killed mid-append is the normal state of a ten-hour campaign, and
+    --report-only is the only read-only way to look at what it produced.
+
+    The README invites watching a running campaign from a second terminal. The
+    row that looks torn from there is very often one the running driver has
+    already fsynced and already struck off its in-memory resume set, so
+    repairing the live file would delete that run from the record permanently.
+    """
+    out_dir = tmp_path / "scratch"
+    torn = _torn(out_dir / RESULTS_NAME)
+
     assert main(["--out-dir", str(out_dir), "--report-only"]) == 0
+    assert (out_dir / RESULTS_NAME).read_text() == torn, "the live results file was modified"
 
 
 def test_the_stamp_refuses_a_resume_from_another_budget(tmp_path: Path) -> None:
@@ -499,81 +490,25 @@ def test_a_results_file_written_under_another_schema_is_refused(tmp_path: Path) 
     assert "--report-only" in conflict  # the way to read it where it stands
 
 
-def test_a_runner_row_for_another_instance_is_refused(tmp_path: Path) -> None:
-    """A stale file from an earlier invocation would otherwise be recorded under
-    this run's arm and seed."""
+@pytest.mark.parametrize(
+    ("row", "match"),
+    [
+        # A stale file from an earlier invocation would otherwise be recorded under
+        # this run's arm and seed.
+        ("other,1,1,1,5,5,60,true,feasible,abc1234,0,0,0,0,x", "is for other"),
+        ("nvs01,1,1,1,5,5,60,true,feasible,old0000,0,0,0,0,x", "written at old0000"),
+        # A runner that wrote the header and died leaves no row.
+        (None, "expected exactly 1"),
+    ],
+    ids=["another-instance", "another-commit", "header-only"],
+)
+def test_a_runner_row_that_is_not_this_run_is_refused(
+    tmp_path: Path, row: str | None, match: str
+) -> None:
     path = tmp_path / "row.csv"
-    path.write_text(f"{RUNNER_HEADER}\nother,1,1,1,5,5,60,true,feasible,abc1234,0,0,0,0,x\n")
-    with pytest.raises(RuntimeError, match="is for other"):
+    path.write_text(RUNNER_HEADER + "\n" + ("" if row is None else row + "\n"))
+    with pytest.raises(RuntimeError, match=match):
         read_runner_row(path, Run("nvs01", ARMS[0], 1), "abc1234")
-
-
-def test_a_runner_row_from_another_commit_is_refused(tmp_path: Path) -> None:
-    path = tmp_path / "row.csv"
-    path.write_text(f"{RUNNER_HEADER}\nnvs01,1,1,1,5,5,60,true,feasible,old0000,0,0,0,0,x\n")
-    with pytest.raises(RuntimeError, match="written at old0000"):
-        read_runner_row(path, Run("nvs01", ARMS[0], 1), "abc1234")
-
-
-def test_a_header_only_runner_file_is_refused(tmp_path: Path) -> None:
-    path = tmp_path / "row.csv"
-    path.write_text(RUNNER_HEADER + "\n")
-    with pytest.raises(RuntimeError, match="expected exactly 1"):
-        read_runner_row(path, Run("nvs01", ARMS[0], 1), "abc1234")
-
-
-# --- the LNS gate --------------------------------------------------------------
-
-
-def probe_row(instance: str, repairs: str) -> dict[str, str]:
-    return {"instance": instance, "arm": PROBE_ARM_NAME, "lns_repairs": repairs}
-
-
-def test_the_gate_runs_the_arm_when_any_instance_repaired() -> None:
-    decision = decide_lns_gate([probe_row("a", "0"), probe_row("b", "4")])
-    assert decision.run_arm is True
-    assert decision.instances_with_repairs == 1
-    assert decision.total_repairs == 4
-    assert "real arm" in decision.reason
-
-
-def test_the_gate_skips_the_arm_when_nothing_repaired() -> None:
-    """With no repair anywhere, `diversify()` takes the perturb branch at every
-    kick with or without LNS, so the arm is provably a no-op."""
-    decision = decide_lns_gate([probe_row("a", "0"), probe_row("b", "0")])
-    assert decision.run_arm is False
-    assert decision.total_repairs == 0
-    assert "would measure nothing" in decision.reason
-
-
-def test_a_row_where_no_solve_ran_does_not_vote_in_the_gate() -> None:
-    """`lns_repairs` is NaN on a row the runner wrote without solving.
-
-    It must not read as a repair, it must not crash the gate -- and it must not
-    read as a reading of ZERO repairs either, which is what an earlier cut did.
-    A skip assembled from rows where nothing ran is not "the counter reading
-    that justified skipping"; with no reading at all the arm runs and the
-    campaign spends the time.
-    """
-    decision = decide_lns_gate([probe_row("a", "NaN"), probe_row("b", "")])
-    assert decision.run_arm is True
-    assert decision.total_repairs == 0
-    assert decision.probed_runs == 0
-    assert decision.unread_runs == 2
-
-
-def test_the_gate_decision_is_recorded_as_data() -> None:
-    """A driver decision in the output, not a human one in a shell."""
-    recorded = decide_lns_gate([probe_row("a", "2")]).as_dict()
-    assert recorded["run_arm"] is True
-    assert recorded["min_repairs_per_instance"] == 1
-    assert recorded["min_instances"] == 1
-    assert isinstance(recorded["reason"], str)
-
-
-def test_the_estimate_is_derived_from_the_budget() -> None:
-    assert estimate_hours(750, 60.0) == pytest.approx(12.5)
-    assert estimate_hours(50, 60.0) == pytest.approx(50 / 60)
 
 
 def _campaign_csv(path: Path, rows: Sequence[dict[str, object]]) -> Path:
@@ -591,6 +526,195 @@ def _campaign_csv(path: Path, rows: Sequence[dict[str, object]]) -> Path:
             cells.update({k: str(v) for k, v in row.items()})
             writer.writerow([cells[column] for column in RESULT_COLUMNS])
     return path
+
+
+@pytest.mark.parametrize(
+    ("arms", "recorded", "left"),
+    [
+        # The interleave is the protocol, and a plain resume breaks it. Every arm
+        # for one (instance, seed) runs back to back so the control and the arms
+        # meet the same machine; an interruption lands inside such a block with
+        # probability (k-1)/k -- 80% at five arms -- and a resume that just skips
+        # what is recorded finishes that block after the campaign was down, with
+        # nothing downstream able to see it. So the whole block is re-run, and the
+        # discarded rows are kept aside -- they are real solves.
+        (["control", "a", "b"], [("i1", "control", 7), ("i1", "a", 7)], []),
+        # A block that finished in one sitting is not redone -- that would burn
+        # hours re-measuring something already measured correctly.
+        (["control", "a"], [("i1", "control", 7), ("i1", "a", 7)], None),
+    ],
+    ids=["split-block-re-run-whole", "complete-block-left-alone"],
+)
+def test_resume_re_runs_only_the_block_the_interruption_split(
+    tmp_path: Path,
+    arms: list[str],
+    recorded: list[tuple[str, str, int]],
+    left: list[tuple[str, str, int]] | None,
+) -> None:
+    runs = campaign_plan(["i1", "i2"], [7], [Arm(name, (f"--{name}",)) for name in arms])
+    results = _campaign_csv(
+        tmp_path / RESULTS_NAME, [{"instance": i, "arm": a, "seed": s} for i, a, s in recorded]
+    )
+
+    done = drop_partial_block(results, runs, set(recorded))
+
+    aside = tmp_path / "results.split-block.csv"
+    if left is None:
+        assert done == set(recorded)
+        assert not aside.exists()
+    else:
+        assert done == set(left)
+        assert len(aside.read_text().strip().splitlines()) == 1 + len(recorded)
+        assert len(results.read_text().strip().splitlines()) == 1 + len(left)
+
+
+# --- a run whose process failed ------------------------------------------------
+
+
+def _recorded(out_dir: Path) -> list[dict[str, str]]:
+    with (out_dir / RESULTS_NAME).open(newline="") as fh:
+        return list(csv.DictReader(fh))
+
+
+@pytest.mark.parametrize(
+    ("runner", "note", "primal_bks"),
+    [
+        # #153: a thrown solve exits nonzero, so it arrives on the failed-run path
+        # -- and must not be downgraded on the way in. The runner knows the
+        # published bounds (it reads `bounds.csv` before it builds anything) and
+        # which of read, build or solve threw; the driver's own row would NaN all
+        # of that. Held out of every count either way.
+        (
+            fake_runner(returncode=RUNNER_EXIT_ERRORED, row=SOLVE_ERROR_ROW),
+            "solve-error",
+            "-1161.34",
+        ),
+        # Exit 139 is a segfault: a row a dead process left behind is not evidence
+        # of anything. Only the runner's own error-tally status buys its row trust.
+        (fake_runner(returncode=139, row=SOLVE_ERROR_ROW), "runner-failed-exit-139", "NaN"),
+        # The error status is not a promise that a readable row exists -- a full
+        # disk reaches this -- so the fallback is the row that needs nothing.
+        (
+            fake_runner(returncode=RUNNER_EXIT_ERRORED, write_row=False),
+            "runner-failed-exit-3",
+            "NaN",
+        ),
+        # The process failed and the row says a search ran: both cannot be true,
+        # and a campaign may lose a measurement but not gain one from a process
+        # that reported failure.
+        (
+            fake_runner(returncode=RUNNER_EXIT_ERRORED),
+            "runner-failed-row-claims-a-result",
+            "NaN",
+        ),
+        # Exit 0 with no readable row: raising instead would wedge the campaign,
+        # every resume re-dropping the block and dying at the same run.
+        (fake_runner(write_row=False), "runner-failed-unreadable-row", "NaN"),
+    ],
+    ids=[
+        "error-tally-row-kept",
+        "crash",
+        "error-without-row",
+        "error-claiming-a-result",
+        "unreadable",
+    ],
+)
+def test_a_failed_run_is_recorded_rather_than_ending_the_campaign(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner: Callable[..., FakeCompleted],
+    note: str,
+    primal_bks: str,
+) -> None:
+    out_dir = tmp_path / "scratch"
+    monkeypatch.setattr(subprocess, "run", runner)
+    plan = campaign_plan(["i1", "i2"], [7], [ARMS[0]])
+    execute_runs(make_args(tmp_path), "abc1234", plan, out_dir, "c")
+
+    rows = _recorded(out_dir)
+    # Recorded, and the campaign moved on: the next instance ran too.
+    assert [row["instance"] for row in rows] == ["i1", "i2"]
+    assert rows[0]["note"] == note
+    assert rows[0]["primal_bks"] == primal_bks
+    # Still not a measurement: the scorer holds every non-completed note out.
+    assert not completed_search(rows[0]["note"])
+
+
+def test_the_drivers_failed_row_carries_no_measurement(tmp_path: Path) -> None:
+    """An instance that crashes only under one arm, at hour nine, must not make
+    the campaign unfinishable -- and a resume must not retry the same crash
+    forever. The row carries no measurement, so nothing can read it as one."""
+    row = failed_row(Run("i1", ARMS[0], 7), make_args(tmp_path), "abc1234", 139)
+
+    assert row["note"] == "runner-failed-exit-139"
+    assert row["feasible"] == "false"
+    assert row["gap_to_bks%"] == "NaN"
+    assert row["lns_repairs"] == "NaN"
+    # Both cells, not just the first: a half-read row is the one shape the
+    # scorer cannot represent -- it would sum an accepted count against an
+    # attempted count that was never taken.
+    assert row["lns_repairs_accepted"] == "NaN"
+    # A NaN repair cell is "no reading", which is what keeps a crashed run out
+    # of the LNS gate's denominator.
+    assert decide_lns_gate([{**row, "arm": PROBE_ARM.name}]).unread_runs == 1
+
+
+# --- the LNS gate --------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("repairs", "run_arm", "total", "probed", "reason"),
+    [
+        (["0", "4"], True, 4, 2, "real arm"),
+        # With no repair anywhere, `diversify()` takes the perturb branch at every
+        # kick with or without LNS, so the arm is provably a no-op.
+        (["0"] * 20, False, 0, 20, "would measure nothing"),
+        # `lns_repairs` is NaN on a row the runner wrote without solving -- for an
+        # unsupported instance (exit 0) and for a solve that threw (exit 3). It
+        # must not read as a repair, must not crash the gate -- and must not read
+        # as a reading of ZERO repairs either, which is what an earlier cut did. A
+        # skip assembled from rows where nothing ran is not "the counter reading
+        # that justified skipping"; with no reading at all the arm runs.
+        (["NaN", ""], True, 0, 0, "produced an lns_repairs reading"),
+        (["NaN"] * 20, True, 0, 0, "produced an lns_repairs reading"),
+        # A skip may stand on a reading with a few holes in it, and says so...
+        (["NaN"] + ["0"] * 19, False, 0, 19, "excluded from the denominator"),
+        # ... but not on one below GATE_MIN_READABLE_FRACTION.
+        (["NaN"] * 3 + ["0"] * 17, True, 0, 17, "below the 90%"),
+    ],
+    ids=[
+        "an-instance-repaired",
+        "nothing-repaired",
+        "no-solve-ran",
+        "no-reading-at-all",
+        "reading-with-holes",
+        "reading-too-thin",
+    ],
+)
+def test_the_lns_gate(
+    repairs: list[str], run_arm: bool, total: int, probed: int, reason: str
+) -> None:
+    rows = [
+        {"instance": f"i{k}", "arm": PROBE_ARM_NAME, "lns_repairs": cell}
+        for k, cell in enumerate(repairs)
+    ]
+    decision = decide_lns_gate(rows)
+    assert decision.run_arm is run_arm
+    assert decision.total_repairs == total
+    assert (decision.probed_runs, decision.unread_runs) == (probed, len(repairs) - probed)
+    assert reason in decision.reason
+    # A driver decision recorded in the output, not a human one in a shell.
+    recorded = decision.as_dict()
+    assert recorded["run_arm"] is run_arm
+    assert (recorded["min_repairs_per_instance"], recorded["min_instances"]) == (1, 1)
+
+
+def test_the_estimate_is_derived_from_the_budget() -> None:
+    assert estimate_hours(750, 60.0) == pytest.approx(12.5)
+    assert estimate_hours(50, 60.0) == pytest.approx(50 / 60)
+
+
+# --- the report the campaign ends with -----------------------------------------
 
 
 def _flat_campaign(
@@ -713,250 +837,9 @@ def test_an_instance_with_one_control_run_is_not_scored(tmp_path: Path) -> None:
     assert "1 worse" not in report
 
 
-def test_the_floor_uses_a_student_multiplier_at_three_seeds() -> None:
-    """df = 2 at three seeds, so the two-sided 95% multiplier is 4.30, not 2.0.
-
-    An earlier cut used 2.0 flat and said in its docstring that it had "no
-    degrees of freedom for" a t-interval, which is wrong in both directions:
-    there are two, and the band it printed was about half its nominal width.
-    """
-    assert t_multiplier(2) == pytest.approx(4.303)
-    assert t_multiplier(1) == pytest.approx(12.71)
-    # Off the tabulated points the NEXT LOWER df's multiplier is used, which is
-    # the wider band: a floor that errs generous keeps a marginal move from
-    # being called a result. Never narrower than the normal value.
-    assert t_multiplier(50) >= 1.96
-    assert t_multiplier(7) == pytest.approx(2.365)
-
-
 def test_the_sign_test_needs_more_than_a_bare_majority() -> None:
     """Two instances one way and one the other is not a direction."""
     assert sign_test_p(0, 0) == pytest.approx(1.0)
     assert sign_test_p(2, 1) > 0.05
     assert sign_test_p(10, 0) < 0.01
     assert sign_test_p(5, 5) == pytest.approx(1.0)
-
-
-def test_a_row_with_no_reading_cannot_vote_to_skip_the_lns_arm() -> None:
-    """ "NaN" is what the runner writes when no solve ran -- for an unsupported
-    instance (exit 0) and for a solve that threw (exit 3 since #153).
-
-    Folding those to zero let rows where nothing happened vote for SKIP, which
-    is the opposite of what the runner's own comment on that cell says. A skip
-    assembled from runs that never solved would not be the "counter reading
-    that justified skipping" the acceptance criterion asks for.
-    """
-    unread = [{"instance": f"i{i}", "arm": PROBE_ARM.name, "lns_repairs": "NaN"} for i in range(20)]
-    decision = decide_lns_gate([dict.fromkeys(RESULT_COLUMNS, "0") | r for r in unread])
-
-    # Nothing was read, so nothing may be skipped on it: the arm runs.
-    assert decision.run_arm
-    assert decision.probed_runs == 0
-    assert decision.unread_runs == 20
-    assert "produced an lns_repairs reading" in decision.reason
-
-
-def test_a_genuine_zero_reading_still_skips_the_arm() -> None:
-    """The gate must still be able to fire: a real reading of zero repairs
-    across the roster means --no-lns is trajectory-identical to control."""
-    rows = [
-        dict.fromkeys(RESULT_COLUMNS, "0")
-        | {"instance": f"i{i}", "arm": PROBE_ARM.name, "lns_repairs": "0"}
-        for i in range(20)
-    ]
-    decision = decide_lns_gate(rows)
-
-    assert not decision.run_arm
-    assert decision.probed_runs == 20
-    assert decision.unread_runs == 0
-
-
-def test_the_load_threshold_is_below_one_busy_core() -> None:
-    """The runner is single-threaded, so a running campaign holds the 1-minute
-    average at about 1.00 and oscillates either side of it. A threshold of 1.0
-    let a second campaign start about half the time it was tried, and the lock
-    is per out-dir so nothing else stands between them."""
-    assert MAX_LOAD_AVERAGE < 1.0
-
-
-def test_resume_re_runs_the_block_the_interruption_split(tmp_path: Path) -> None:
-    """The interleave is the protocol, and a plain resume breaks it.
-
-    Every arm for one (instance, seed) runs back to back so the control and the
-    arms meet the same machine. An interruption lands inside such a block with
-    probability (k-1)/k -- 80% at five arms -- and a resume that just skips what
-    is recorded finishes that block after however long the campaign was down,
-    with nothing downstream able to see it.
-    """
-    arms = [Arm("control", ()), Arm("a", ("--x",)), Arm("b", ("--y",))]
-    runs = campaign_plan(["i1", "i2"], [7], arms)
-    results = tmp_path / RESULTS_NAME
-    # i1's block is 2 of 3 complete: the interruption split it.
-    recorded = [("i1", "control", 7), ("i1", "a", 7)]
-    _campaign_csv(
-        results,
-        [{"instance": i, "arm": a, "seed": s} for i, a, s in recorded],
-    )
-
-    done = drop_partial_block(results, runs, set(recorded))
-
-    # The whole block is re-run, not just its missing arm.
-    assert done == set()
-    # And the discarded rows are kept, not deleted -- they are real solves.
-    aside = tmp_path / "results.split-block.csv"
-    assert aside.exists()
-    assert len(aside.read_text().strip().splitlines()) == 3  # header + 2 rows
-    assert len(results.read_text().strip().splitlines()) == 1  # header only
-
-
-def test_resume_leaves_a_complete_block_alone(tmp_path: Path) -> None:
-    """A block that finished in one sitting is not redone -- that would burn
-    hours re-measuring something already measured correctly."""
-    arms = [Arm("control", ()), Arm("a", ("--x",))]
-    runs = campaign_plan(["i1", "i2"], [7], arms)
-    results = tmp_path / RESULTS_NAME
-    recorded = [("i1", "control", 7), ("i1", "a", 7)]
-    _campaign_csv(results, [{"instance": i, "arm": a, "seed": s} for i, a, s in recorded])
-
-    done = drop_partial_block(results, runs, set(recorded))
-
-    assert done == set(recorded)
-    assert not (tmp_path / "results.split-block.csv").exists()
-
-
-def test_report_only_does_not_repair_the_file_a_campaign_is_appending_to(
-    tmp_path: Path,
-) -> None:
-    """The README invites watching a running campaign from a second terminal.
-
-    The row that looks torn from there is very often one the running driver has
-    already fsynced and already struck off its in-memory resume set, so
-    repairing the live file would delete that run from the record permanently.
-    """
-    out_dir = tmp_path / "scratch"
-    out_dir.mkdir()
-    results = _campaign_csv(
-        out_dir / RESULTS_NAME,
-        [{"instance": "small0", "arm": "control", "seed": 1, "gap_to_bks%": 1.0}],
-    )
-    torn = results.read_text() + "small0,no-float-hook,,2,60,abc"  # no trailing newline
-    results.write_text(torn)
-
-    rc = main(["--out-dir", str(out_dir), "--report-only"])
-
-    assert rc == 0
-    assert results.read_text() == torn, "the live results file was modified"
-
-
-def _recorded(out_dir: Path) -> list[dict[str, str]]:
-    with (out_dir / RESULTS_NAME).open(newline="") as fh:
-        return list(csv.DictReader(fh))
-
-
-def test_a_runner_that_reports_an_error_is_recorded_from_its_own_row(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """#153: a thrown solve now exits nonzero, so it arrives on the failed-run
-    path -- and must not be downgraded on the way in.
-
-    `failed_row` NaNs every runner column, including `primal_bks`, `dual_bound`
-    and `n_int_vars`. The runner knows those: it reads `bounds.csv` before it
-    builds anything, and this driver never does. Substituting the driver's own
-    row for the one the runner wrote would therefore turn a better record into a
-    worse one just because the exit status improved. The row is held out of
-    every count either way -- `solve-error` is not a note a completed search
-    writes -- so keeping the richer one costs the scoring nothing and tells the
-    reader which of read, build or solve threw.
-    """
-    out_dir = tmp_path / "scratch"
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        fake_runner(returncode=RUNNER_EXIT_ERRORED, row=SOLVE_ERROR_ROW),
-    )
-    execute_runs(
-        make_args(tmp_path), "abc1234", campaign_plan(["i1"], [7], [ARMS[0]]), out_dir, "c"
-    )
-
-    rows = _recorded(out_dir)
-    assert len(rows) == 1
-    assert rows[0]["note"] == "solve-error"
-    assert rows[0]["primal_bks"] == "-1161.34"
-    assert rows[0]["n_int_vars"] == "4"
-    # Still not a measurement: the scorer holds every non-completed note out.
-    assert not completed_search(rows[0]["note"])
-
-
-def test_a_crash_is_still_recorded_as_the_drivers_own_failed_row(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A signal is not the runner reporting an error tally.
-
-    Exit 139 is a segfault: whatever row is sitting next to it was written by a
-    process that then died, and a row a dead process left behind is not evidence
-    of anything. Only the runner's own error-tally status buys its row any trust.
-    """
-    out_dir = tmp_path / "scratch"
-    monkeypatch.setattr(subprocess, "run", fake_runner(returncode=139, row=SOLVE_ERROR_ROW))
-    execute_runs(
-        make_args(tmp_path), "abc1234", campaign_plan(["i1"], [7], [ARMS[0]]), out_dir, "c"
-    )
-
-    rows = _recorded(out_dir)
-    assert rows[0]["note"] == "runner-failed-exit-139"
-    assert rows[0]["primal_bks"] == "NaN"
-
-
-def test_an_error_exit_with_no_row_falls_back_to_the_drivers_failed_row(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The error status is not a promise that a readable row exists -- a full
-    disk reaches this -- so the fallback has to be the row that needs nothing."""
-    out_dir = tmp_path / "scratch"
-    monkeypatch.setattr(
-        subprocess, "run", fake_runner(returncode=RUNNER_EXIT_ERRORED, write_row=False)
-    )
-    execute_runs(
-        make_args(tmp_path), "abc1234", campaign_plan(["i1"], [7], [ARMS[0]]), out_dir, "c"
-    )
-
-    assert _recorded(out_dir)[0]["note"] == "runner-failed-exit-3"
-
-
-def test_an_error_exit_beside_a_row_claiming_a_result_is_recorded_as_a_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The process failed and the row says a search ran and reported something.
-
-    Both cannot be true, and the direction to fail in is obvious: a campaign may
-    lose a measurement, but it may not gain one from a process that reported
-    failure. Recorded as a failed run, with a kind that says which way the two
-    disagreed rather than just repeating the exit code.
-    """
-    out_dir = tmp_path / "scratch"
-    monkeypatch.setattr(subprocess, "run", fake_runner(returncode=RUNNER_EXIT_ERRORED))
-    execute_runs(
-        make_args(tmp_path), "abc1234", campaign_plan(["i1"], [7], [ARMS[0]]), out_dir, "c"
-    )
-
-    assert _recorded(out_dir)[0]["note"] == "runner-failed-row-claims-a-result"
-
-
-def test_a_failed_run_is_recorded_rather_than_ending_the_campaign(tmp_path: Path) -> None:
-    """An instance that crashes only under one arm, at hour nine, must not make
-    the campaign unfinishable -- and a resume must not retry the same crash
-    forever. The row carries no measurement, so nothing can read it as one."""
-    args = make_args(tmp_path)
-    row = failed_row(Run("i1", ARMS[0], 7), args, "abc1234", 139)
-
-    assert row["note"] == "runner-failed-exit-139"
-    assert row["feasible"] == "false"
-    assert row["gap_to_bks%"] == "NaN"
-    assert row["lns_repairs"] == "NaN"
-    # Both cells, not just the first: a half-read row is the one shape the
-    # scorer cannot represent -- it would sum an accepted count against an
-    # attempted count that was never taken.
-    assert row["lns_repairs_accepted"] == "NaN"
-    # A NaN repair cell is "no reading", which is what keeps a crashed run out
-    # of the LNS gate's denominator.
-    assert decide_lns_gate([{**row, "arm": PROBE_ARM.name}]).unread_runs == 1
