@@ -451,7 +451,11 @@ void Model::rebuild_back_references() {
     std::partial_sum(parent_offsets_.begin(), parent_offsets_.end(), parent_offsets_.begin());
     std::partial_sum(dependent_offsets_.begin(), dependent_offsets_.end(),
                      dependent_offsets_.begin());
+    // reserve() first because it allocates exactly, where a growing resize()
+    // may double -- on a replica's rebuild that would be the whole array again.
+    parent_ids_.reserve(parent_offsets_.back());
     parent_ids_.resize(parent_offsets_.back());
+    dependent_ids_.reserve(dependent_offsets_.back());
     dependent_ids_.resize(dependent_offsets_.back());
 
     // Pass 2: fill. offsets[i] serves as i's write cursor, so when the pass is
@@ -495,6 +499,17 @@ void Model::add_objective_soft_constraint() {
     if (objective_constraint_idx_ >= 0) {
         return;  // idempotent
     }
+
+    // Exactly the room the row takes -- two nodes, two child refs, one
+    // constraint. A portfolio replica is a copy, and a copied vector's capacity
+    // is its size, so without this every worker's first solve() would double
+    // each of those arrays to append a handful of entries: address space that
+    // the benchmark driver's `ulimit -v` counts. On a model that already has the
+    // slack (the one mps_to_model built and reserved) these are no-ops.
+    nodes_.reserve(nodes_.size() + 2);
+    parent_offsets_.reserve(parent_offsets_.size() + 2);
+    child_refs_.reserve(child_refs_.size() + 2);
+    constraint_ids_.reserve(constraint_ids_.size() + 1);
 
     objective_bound_ = std::numeric_limits<double>::infinity();
     objective_bound_node_ = constant(objective_bound_);

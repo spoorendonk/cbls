@@ -176,6 +176,12 @@ public:
     /// `node`'s children, in the order they were given when it was created.
     /// Valid from creation, not only after `close()`: a node's children are
     /// written once, when it is made, and never change.
+    ///
+    /// `node` must be one of THIS model's nodes (from `node()`, `nodes()` or
+    /// `node_mut()`), unmodified in `child_begin`/`child_count`. Its offsets are
+    /// read against this model's array unchecked -- this is the evaluation hot
+    /// path -- so a node taken from a different Model reads whatever that range
+    /// holds in this one.
     [[nodiscard]] ConstSpan<ChildRef> children(const ExprNode& node) const noexcept {
         return {child_refs_.data() + node.child_begin, node.child_count};
     }

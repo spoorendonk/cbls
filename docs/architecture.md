@@ -224,9 +224,9 @@ uniformly correct for both senses.
 ### Finalization
 
 `close()` rebuilds the back-references, computes the topological order,
-performs an initial full evaluation,
 builds the `var_id -> constraint-index` adjacency (`build_var_constraints`, the
-paper's `G_v`), and sets the `closed_` flag. The model is immutable in structure
+paper's `G_v`), performs an initial full evaluation, and sets the `closed_`
+flag. The model is immutable in structure
 after close — *except* for the objective soft constraint, which `solve()`
 appends lazily (see below).
 
