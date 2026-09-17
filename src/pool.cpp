@@ -542,6 +542,12 @@ SearchResult ParallelSearch::solve_portfolio(
     std::vector<SearchResult> results(n_threads);
     // One slot per worker, left null unless that worker threw. Sized up front so
     // the lambdas below only ever write their own index.
+    //
+    // A slot may own a Python object -- a raising Python callback or factory
+    // arrives as nanobind's python_error -- and this vector dies on the calling
+    // thread, which reached here through a binding that released the GIL. That is
+    // safe only because python_error takes the GIL in its own destructor; see
+    // PySolveCallback in python/bindings.cpp before changing what gets parked.
     std::vector<std::exception_ptr> failures(n_threads);
     std::vector<std::thread> threads;
 

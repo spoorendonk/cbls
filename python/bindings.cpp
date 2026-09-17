@@ -67,8 +67,35 @@ constexpr const char* kParallelSolveDoc =
     "\n"
     "An exception raised by the factory in every worker is re-raised here with\n"
     "its original type and message, while one that fails in only some workers\n"
-    "is absorbed and the survivors' result is returned.";
+    "is absorbed and the survivors' result is returned.\n"
+    "\n"
+    "An exception raised by the progress callback's on_progress ends the solve\n"
+    "of the worker that made the call -- NOT the portfolio. That worker is\n"
+    "restarted, and gives up after three consecutive failed attempts while its\n"
+    "peers carry on. The exception is re-raised here -- the original object,\n"
+    "with its type, message and traceback -- only if every worker gave up that\n"
+    "way. Otherwise it is DISCARDED, with nothing reported, and the survivors'\n"
+    "result is returned. Which workers call the callback at all depends on\n"
+    "timing: a worker other than the first reports only a new portfolio-wide\n"
+    "best, so with more than one worker a callback that raises on every call\n"
+    "usually kills the first worker alone and the run returns normally. Raising\n"
+    "is therefore not a way to stop a run; catch inside on_progress if a\n"
+    "failure there must be seen. (The single-threaded `solve` differs: there a\n"
+    "raising callback ends the search and the exception propagates at once.)";
 
+// A Python on_progress that raises leaves this override as an nb::python_error,
+// which owns a strong reference to the Python exception object. ParallelSearch
+// parks such exceptions in std::exception_ptr slots (src/pool.cpp,
+// solve_portfolio and run_worker) and releases them wherever the last copy dies:
+// on a worker thread, or on the calling thread while the call guard below has
+// the GIL released. That is safe because python_error's destructor and copy
+// constructor acquire the GIL themselves (gil_scoped_acquire, i.e.
+// PyGILState_Ensure, which is legal on a thread that released the GIL and on a
+// thread Python has never seen). They have since nanobind v0.1.0 -- v0.0.1's
+// python_error held no PyObject* at all -- so the whole `nanobind>=1.8` range
+// pyproject.toml admits is covered (src/error.cpp at tags v0.1.0, v1.8.0 and
+// v2.13.0). Converting the exception at this boundary would therefore buy no
+// safety and would cost the caller the original exception object (#159).
 struct PySolveCallback : SolveCallback {
     NB_TRAMPOLINE(SolveCallback, 1);
     void on_progress(const SolveProgress& p) override { NB_OVERRIDE_PURE(on_progress, p); }
@@ -488,7 +515,11 @@ NB_MODULE(_cbls_core, m) {
         nb::arg("use_fj") = true, nb::arg("hook") = nullptr, nb::arg("lns") = nullptr,
         nb::arg("lns_interval") = 3, nb::arg("callback") = nullptr,
         nb::arg("config") = SearchConfig{},
-        "Single-threaded solve. NOTE: a Python subclass of InnerSolverHook or LNS is "
+        "Single-threaded solve. An exception raised by callback.on_progress ends the "
+        "search and propagates out of this call unchanged -- no result is returned. "
+        "(ParallelSearch.solve_parallel absorbs one instead unless every worker fails; "
+        "see its docstring.) "
+        "NOTE: a Python subclass of InnerSolverHook or LNS is "
         "constructed and destroyed correctly, but its overrides are never called -- "
         "neither class has a nanobind trampoline, so C++ dispatches through the base "
         "vtable. These arguments configure the built-in classes; they do not let you "

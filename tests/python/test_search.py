@@ -1,6 +1,7 @@
 """Tests for C++ search via Python bindings."""
 
 import _cbls_core as cbls
+import pytest
 
 
 def vid(handle: int) -> int:
@@ -34,6 +35,29 @@ class TestSolver:
         assert result.objective < 5.0
         assert result.iterations > 0
         assert result.time_seconds > 0
+
+    def test_solve_propagates_an_exception_raised_by_the_callback(self) -> None:
+        """A raising on_progress ends a single-threaded solve with the original exception.
+
+        The contract `solve`'s docstring states, and the one the portfolio does
+        NOT share (tests/python/test_pool.py covers that side). In-process on
+        purpose: no thread is involved, so nothing here can deadlock.
+        """
+        m = cbls.Model()
+        x = m.float_var(0, 10)
+        m.add_constraint(m.sum([m.constant(3.0), m.prod(m.constant(-1.0), x)]))  # x >= 3
+        m.minimize(m.sum([x]))
+        m.close()
+
+        class ProgressError(KeyError):
+            pass
+
+        class Raiser(cbls.SolveCallback):  # type: ignore[misc]
+            def on_progress(self, progress: "cbls.SolveProgress") -> None:
+                raise ProgressError("logging failed")
+
+        with pytest.raises(ProgressError, match="logging failed"):
+            cbls.solve(m, 5.0, 42, callback=Raiser())
 
 
 class TestTermination:

@@ -18,10 +18,12 @@ The child re-executes this file as a script (`__main__` block at the bottom),
 so the scenarios stay next to the assertions that consume them.
 """
 
+import gc
 import os
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 
 import _cbls_core as cbls
 
@@ -175,6 +177,83 @@ def test_solve_parallel_calls_a_python_callback_from_a_worker_thread() -> None:
     """
     out = _assert_scenario_ok("callback")
     assert "callback_calls_off_main_thread=1" in out
+
+
+# The three tests below cover a Python `SolveCallback` whose `on_progress`
+# raises during a portfolio run (#159). The raise becomes an `nb::python_error`
+# holding the only strong reference to the Python exception object, and the
+# portfolio PARKS it in a `std::exception_ptr` -- then either rethrows it or
+# drops it, on a worker thread or on the calling thread, in both cases with the
+# GIL released. That is safe only because nanobind's `python_error` destructor
+# takes the GIL itself (python/bindings.cpp, above PySolveCallback, has the
+# version evidence). What these tests pin is the contract that rests on it:
+#
+#   * where the exception ends up -- re-raised as the original object, or
+#     discarded while the survivors' result is returned;
+#   * that every exception raised is released EXACTLY once: the callback raises
+#     a fresh `CallbackError` each time and its `__del__` records the thread it
+#     died on, so a leaked `exception_ptr` shows as destroyed < raised, and a
+#     double release as a crashed child -- which is also why these run in one;
+#   * WHICH thread the last release happens on, because that is the path the
+#     issue is about: `__del__` is Python code, so a release that did not hold
+#     the GIL would run it with no thread state and crash the child rather than
+#     record a thread.
+#
+# Red-check: see the commit that added these tests.
+
+
+def test_solve_parallel_surfaces_a_callback_that_raises_in_every_worker() -> None:
+    """A callback that kills every worker re-raises the ORIGINAL exception.
+
+    One worker, so "every worker" is deterministic. With more than one it is
+    not: a peer invokes the callback only when it improves the portfolio-wide
+    best, so on an easy model a callback that raises on every call typically
+    kills worker 0 alone and the run returns normally -- which is the third test.
+
+    The worker's solve raises on its first report, is restarted, and gives up
+    after three consecutive failures: `raises=3` pins the documented retry bound.
+    The first two exceptions are released on the worker thread as each retry
+    replaces them; the third reaches the caller and dies there.
+    """
+    out = _assert_scenario_ok("callback_raises_always")
+    assert "reraised_original=True" in out
+    assert "raises=3 raising_threads=1" in out
+    assert "destroyed=3 destroyed_on_calling_thread=1" in out
+
+
+def test_solve_parallel_absorbs_a_callback_that_raises_once() -> None:
+    """A single raise costs one worker one attempt; the run completes normally.
+
+    The worker that raised restarts and finishes its run, so the exception is
+    parked for the rest of that run and released on the worker's own thread
+    when it returns -- never reaching the caller.
+    """
+    out = _assert_scenario_ok("callback_raises_once")
+    assert "reraised_original=False" in out
+    assert "raises=1 raising_threads=1" in out
+    assert "destroyed=1 destroyed_on_calling_thread=0" in out
+
+
+def test_solve_parallel_absorbs_a_callback_that_kills_one_worker() -> None:
+    """One worker dead from its callback, one alive: no exception, a real result.
+
+    This is the partial failure #159 is about. The dead worker's last exception
+    is parked in the portfolio's per-worker failure slot, never rethrown, and
+    released when that vector goes out of scope -- on the CALLING thread, whose
+    GIL the binding's call guard has released. `destroyed_on_calling_thread=1`
+    is what shows the scenario reached that path rather than a nearby one.
+
+    Worker 0 is made the one that dies without knowing its thread: only the
+    heartbeat worker delivers rows with `new_best=False` (a peer reports only a
+    new portfolio-wide best), so the callback raises on the first such row and
+    on every later row from the same thread. Worker 0 converges on this model
+    at once, emits its ~1s heartbeat and raises, then raises again on the first
+    report of each of its two retries; the peer never raises.
+    """
+    out = _assert_scenario_ok("callback_kills_one_worker")
+    assert "reraised_original=False" in out
+    assert "raises=3 raising_threads=1" in out
+    assert "destroyed=3 destroyed_on_calling_thread=1" in out
 
 
 # --- Scenarios, executed in the child interpreter ---
@@ -357,6 +436,79 @@ def _scenario_callback() -> None:
     print(f"callback_calls_off_main_thread={len(off_main)}")
 
 
+def _run_raising_callback(
+    should_raise: Callable[[int, int, bool, set[int]], bool], n_threads: int, budget: float
+) -> None:
+    """Drive a portfolio whose callback raises, and report what became of it.
+
+    `should_raise(call_index, thread, new_best, raising_threads)` decides each
+    row. Prints the outcome for the test to assert on.
+    """
+    calling_thread = threading.get_ident()
+    lock = threading.Lock()
+    raising: list[int] = []
+    # Appended from `__del__`, i.e. on whichever thread drops the last reference,
+    # under the GIL -- list.append is atomic there, so no lock is taken (one
+    # taken inside `__del__` could be re-entered by a release under that lock).
+    destroyed: list[int] = []
+    calls = 0
+
+    class CallbackError(ValueError):
+        def __del__(self) -> None:
+            destroyed.append(threading.get_ident())
+
+    class Raiser(cbls.SolveCallback):  # type: ignore[misc]
+        def on_progress(self, progress: "cbls.SolveProgress") -> None:
+            nonlocal calls
+            thread = threading.get_ident()
+            with lock:
+                decide = should_raise(calls, thread, progress.new_best, set(raising))
+                calls += 1
+                if decide:
+                    raising.append(thread)
+            if decide:
+                raise CallbackError("python progress callback failed")
+
+    par = cbls.ParallelConfig()
+    par.n_threads = n_threads
+    reraised_original = False
+    try:
+        result = cbls.ParallelSearch(n_threads).solve_parallel(
+            _feasible_model, budget, 42, cbls.SearchConfig(), None, None, Raiser(), par
+        )
+    except CallbackError as caught:
+        # Type AND message: a boundary that re-wrapped the exception (say as a
+        # RuntimeError carrying the formatted text) must not pass.
+        reraised_original = str(caught) == "python progress callback failed"
+    else:
+        assert result.feasible, "the surviving worker should still have solved x + y >= 3"
+    # `except ... as` unbinds `caught` on exit, so nothing here still holds one.
+    # The collection is belt and braces: none of these exceptions is in a cycle.
+    gc.collect()
+    on_calling = sum(1 for t in destroyed if t == calling_thread)
+    print(f"reraised_original={reraised_original}")
+    print(f"raises={len(raising)} raising_threads={len(set(raising))}")
+    print(f"destroyed={len(destroyed)} destroyed_on_calling_thread={on_calling}")
+
+
+def _scenario_callback_raises_always() -> None:
+    _run_raising_callback(lambda _i, _t, _nb, _r: True, n_threads=1, budget=5.0)
+
+
+def _scenario_callback_raises_once() -> None:
+    _run_raising_callback(lambda i, _t, _nb, _r: i == 0, n_threads=2, budget=0.5)
+
+
+def _scenario_callback_kills_one_worker() -> None:
+    # 2.5s: the heartbeat that identifies worker 0 fires ~1s after its last
+    # report, and the peer needs clock left over to be the run's survivor.
+    _run_raising_callback(
+        lambda _i, t, new_best, raising: (not new_best) or t in raising,
+        n_threads=2,
+        budget=2.5,
+    )
+
+
 if __name__ == "__main__":
     _scenarios = {
         "solve": _scenario_solve,
@@ -366,6 +518,9 @@ if __name__ == "__main__":
         "lns_factory": _scenario_lns_factory,
         "restarts": _scenario_restarts,
         "callback": _scenario_callback,
+        "callback_raises_always": _scenario_callback_raises_always,
+        "callback_raises_once": _scenario_callback_raises_once,
+        "callback_kills_one_worker": _scenario_callback_kills_one_worker,
     }
     _scenarios[sys.argv[1]]()
     print("OK")
