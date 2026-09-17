@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 #
 # The skip is announced rather than silent. It used to be silent, and because
 # CBLS_BUILD_PYTHON defaults to OFF, the documented build produced a run that
-# reported a green summary while never executing any of the 74 binding tests — a
+# reported a green summary while never executing any of the 83 binding tests — a
 # result indistinguishable from one where they all passed. Nothing in the gates
 # would have caught a binding regression. So: the terminal summary names what was
 # dropped, and CBLS_REQUIRE_BINDINGS=1 (set by the ```test fence in CLAUDE.md)
@@ -125,7 +125,7 @@ except ImportError:
 # `.venv/bin/pip install -e '.[dev]'` has neither -- and every test of the CP-SAT
 # baseline and of the independent solution verifier opens with
 # `pytest.importorskip`, so all of them vanish into a green summary. That is the
-# same failure shape as the 74 binding tests, and gets the same answer: the skip
+# same failure shape as the 83 binding tests, and gets the same answer: the skip
 # is named in the summary, and CBLS_REQUIRE_BENCHMARKS=1 (set by the ```test
 # fence in CLAUDE.md) turns it into a hard error.
 #
