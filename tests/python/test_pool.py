@@ -24,6 +24,7 @@ import os
 import subprocess
 import sys
 import threading
+import traceback
 from collections.abc import Callable
 
 import _cbls_core as cbls
@@ -466,9 +467,14 @@ def _run_raising_callback(
     # under the GIL -- list.append is atomic there, so no lock is taken (one
     # taken inside `__del__` could be re-entered by a release under that lock).
     destroyed: list[int] = []
+    raised_ids: list[int] = []
     calls = 0
 
     class CallbackError(ValueError):
+        def __init__(self, message: str) -> None:
+            super().__init__(message)
+            raised_ids.append(id(self))
+
         def __del__(self) -> None:
             destroyed.append(threading.get_ident())
 
@@ -492,13 +498,22 @@ def _run_raising_callback(
             _feasible_model, budget, 42, cbls.SearchConfig(), None, None, Raiser(), par
         )
     except CallbackError as caught:
-        # Type AND message: a boundary that re-wrapped the exception (say as a
-        # RuntimeError carrying the formatted text) must not pass.
-        reraised_original = str(caught) == "python progress callback failed"
+        # The very object last raised (with one worker, the last raise is the one
+        # re-raised), its message, and a traceback that still reaches into the
+        # callback: a boundary that re-wrapped or re-created the exception must
+        # not pass. Comparing `id`s is sound because `caught` is still alive.
+        reraised_original = (
+            id(caught) == raised_ids[-1]
+            and str(caught) == "python progress callback failed"
+            and any(f.name == "on_progress" for f in traceback.extract_tb(caught.__traceback__))
+        )
     else:
         assert result.feasible, "the surviving worker should still have solved x + y >= 3"
     # `except ... as` unbinds `caught` on exit, so nothing here still holds one.
-    # The collection is belt and braces: none of these exceptions is in a cycle.
+    # The collection is belt and braces: none of these exceptions is in a cycle
+    # -- which is why `raise CallbackError(...)` stays inline above. Binding it to
+    # a local first makes a frame <-> exception cycle and moves its release into
+    # gc on the calling thread.
     gc.collect()
     on_calling = sum(1 for t in destroyed if t == calling_thread)
     print(f"reraised_original={reraised_original}")

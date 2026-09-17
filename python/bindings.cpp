@@ -71,14 +71,17 @@ constexpr const char* kParallelSolveDoc =
     "\n"
     "An exception raised by the progress callback's on_progress ends the solve\n"
     "of the worker that made the call -- NOT the portfolio. That worker is\n"
-    "restarted, and stops after three consecutive failed attempts (or when the\n"
-    "time limit runs out first) while its peers carry on. An exception is\n"
-    "re-raised here -- the original object, with its type, message and\n"
-    "traceback -- only if NO worker completed a single attempt, whatever each\n"
-    "one raised; the lowest-numbered worker's last exception is the one raised.\n"
-    "Otherwise it is DISCARDED, with nothing reported, and the best result\n"
-    "found is returned -- including when a worker stopped after completing an\n"
-    "attempt, which SearchConfig.max_iterations makes possible.\n"
+    "restarted, and stops after three consecutive failed attempts, or earlier\n"
+    "when the time limit runs out or a peer settles a model that has no\n"
+    "objective. A worker that stops that way without ever completing an\n"
+    "attempt has FAILED. An exception is re-raised here -- the original\n"
+    "object, with its type, message and traceback; the lowest-numbered failed\n"
+    "worker's last one -- only if every worker failed, or if some worker failed\n"
+    "and no solution was found at all. Otherwise it is DISCARDED, with nothing\n"
+    "reported, and the best result found is returned. That includes a failed\n"
+    "worker's incumbents shared before it died, and a worker that raised after\n"
+    "completing an attempt (SearchConfig.max_iterations makes that possible),\n"
+    "which does not count as failed.\n"
     "\n"
     "Which workers call the callback at all depends on timing: a worker other\n"
     "than the first reports only a new portfolio-wide best, so a callback that\n"
@@ -100,8 +103,9 @@ constexpr const char* kParallelSolveDoc =
 // thread Python has never seen). They have since nanobind v0.1.0 -- v0.0.1's
 // held nb::object members released WITHOUT the GIL -- so the whole
 // `nanobind>=1.8` range pyproject.toml admits is covered (src/error.cpp at tags
-// v0.1.0, v1.8.0 and v2.13.0). Converting the exception at this boundary would therefore buy no
-// safety and would cost the caller the original exception object (#159).
+// v0.1.0, v1.8.0 and v2.13.0). Converting the exception at this boundary would
+// therefore buy no safety and would cost the caller the original exception
+// object (#159).
 struct PySolveCallback : SolveCallback {
     NB_TRAMPOLINE(SolveCallback, 1);
     void on_progress(const SolveProgress& p) override { NB_OVERRIDE_PURE(on_progress, p); }
@@ -523,8 +527,9 @@ NB_MODULE(_cbls_core, m) {
         nb::arg("config") = SearchConfig{},
         "Single-threaded solve. An exception raised by callback.on_progress ends the "
         "search and propagates out of this call unchanged -- no result is returned, "
-        "and the model is left at the assignment the search had reached, with its "
-        "internal objective bound still tightened. "
+        "and the model is left at the assignment the search had reached -- with its "
+        "internal objective bound still tightened if a feasible point had been found "
+        "(the next solve resets it). "
         "(ParallelSearch.solve_parallel absorbs one instead unless every worker fails; "
         "see its docstring.) "
         "NOTE: a Python subclass of InnerSolverHook or LNS is "
