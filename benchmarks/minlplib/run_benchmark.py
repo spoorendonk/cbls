@@ -80,7 +80,7 @@ from benchmarks.common.provenance import (  # noqa: E402
     cmake_cache,
     commit_sha,
 )
-from benchmarks.common.records import atomic_write, stamp_mismatch  # noqa: E402
+from benchmarks.common.records import atomic_write, stamp_refusal  # noqa: E402
 from benchmarks.minlplib import runner  # noqa: E402
 from benchmarks.minlplib.runner import (  # noqa: E402
     CLAIM_EXCLUDED,
@@ -155,8 +155,9 @@ def _build_problems(args: argparse.Namespace, sha: str) -> list[str]:
             f"working tree is dirty ({sha}); commit or stash first — a row labelled with a "
             "plain SHA must have been produced by that commit's code"
         )
-    problems += build_dir_problems(args.build_dir)
-    if not cmake_cache(args.build_dir):
+    cache = cmake_cache(args.build_dir)
+    problems += build_dir_problems(args.build_dir, cache)
+    if not cache:
         return problems
     binary = args.build_dir / RUNNER_TARGET
     if not args.build and not binary.exists():
@@ -280,16 +281,13 @@ def staging_stamp_conflict(stage: Path, args: argparse.Namespace, sha: str) -> s
     at another — or a five-second smoke run over the whole roster — publishes one
     table built from two configurations, and only `wall_seconds` would betray it.
     """
-    stamp = staging_stamp(args, sha)
-    path = stage / STAMP_NAME
-    recorded = stamp_mismatch(path, stamp, resume=args.resume)
-    if recorded is None:
-        return None
-    return (
-        f"{path} was written by a different configuration:\n"
-        f"--- staged ---\n{recorded}--- now ---\n{stamp}"
-        "Delete the staging directory, pass a fresh --staging-dir, or pass --no-resume; "
-        "reusing these rows would mix two configurations into one table."
+    return stamp_refusal(
+        stage / STAMP_NAME,
+        staging_stamp(args, sha),
+        resume=args.resume,
+        label="staged",
+        advice="Delete the staging directory, pass a fresh --staging-dir, or pass --no-resume; "
+        "reusing these rows would mix two configurations into one table.",
     )
 
 

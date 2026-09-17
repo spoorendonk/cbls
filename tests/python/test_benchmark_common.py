@@ -16,13 +16,13 @@ from typing import TYPE_CHECKING
 import pytest
 
 from benchmarks.common.jobs import run_jobs, run_process, with_memory_limit
-from benchmarks.common.provenance import build_dir_problems, commit_sha
+from benchmarks.common.provenance import build_dir_problems, cmake_cache, commit_sha
 from benchmarks.common.records import (
     atomic_write,
     csv_number,
     read_json_object,
     repair_torn_tail,
-    stamp_mismatch,
+    stamp_refusal,
     write_json,
 )
 
@@ -184,12 +184,19 @@ def test_a_torn_final_line_is_dropped_once(tmp_path: Path) -> None:
 
 def test_a_stamp_refuses_only_a_resume_into_another_configuration(tmp_path: Path) -> None:
     path = tmp_path / "stamp.txt"
-    assert stamp_mismatch(path, "commit=a\n", resume=True) is None  # fresh: stamped
-    assert stamp_mismatch(path, "commit=a\n", resume=True) is None  # matching
-    assert stamp_mismatch(path, "commit=b\n", resume=True) == "commit=a\n"
+
+    def refusal(stamp: str, resume: bool = True) -> str | None:
+        return stamp_refusal(path, stamp, resume=resume, label="kept", advice="Start over.")
+
+    assert refusal("commit=a\n") is None  # fresh: stamped
+    assert refusal("commit=a\n") is None  # matching
+    assert refusal("commit=b\n") == (
+        f"{path} was written by a different configuration:\n"
+        "--- kept ---\ncommit=a\n--- now ---\ncommit=b\nStart over."
+    )
     assert path.read_text() == "commit=a\n", "a refused stamp must not be overwritten"
     # Not resuming is starting over, so the stamp is rewritten rather than checked.
-    assert stamp_mismatch(path, "commit=b\n", resume=False) is None
+    assert refusal("commit=b\n", resume=False) is None
     assert path.read_text() == "commit=b\n"
 
 
@@ -264,7 +271,7 @@ def test_a_build_dir_is_refused_for_what_it_would_measure(
 ) -> None:
     home = (tmp_path / "checkout").resolve()
     build = _cache(tmp_path, RELEASE_HERE.format(home=home) + extra)
-    problems = build_dir_problems(build, home)
+    problems = build_dir_problems(build, cmake_cache(build), home)
     assert problems == [] if refusal is None else any(refusal in p for p in problems)
 
 
@@ -282,4 +289,5 @@ def test_a_build_dir_is_refused_for_what_it_is(
     tmp_path: Path, entries: str | None, refusal: str
 ) -> None:
     build = tmp_path / "build" if entries is None else _cache(tmp_path, entries)
-    assert any(refusal in p for p in build_dir_problems(build, tmp_path / "checkout"))
+    problems = build_dir_problems(build, cmake_cache(build), tmp_path / "checkout")
+    assert any(refusal in p for p in problems)

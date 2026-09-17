@@ -83,7 +83,7 @@ from benchmarks.common.records import (  # noqa: E402
     csv_header,
     csv_text,
     repair_torn_tail,
-    stamp_mismatch,
+    stamp_refusal,
 )
 from benchmarks.minlplib import runner as runner_contract  # noqa: E402
 from benchmarks.minlplib.ablation_report import (  # noqa: E402
@@ -399,16 +399,14 @@ def stamp_conflict(out_dir: Path, stamp: str, *, resume: bool) -> str | None:
     commit and resumed at another reports arm effects that are partly engine
     differences, and only `wall_seconds` would hint at it.
     """
-    path = out_dir / STAMP_NAME
-    recorded = stamp_mismatch(path, stamp, resume=resume)
-    if recorded is None:
-        return None
-    return (
-        f"{path} was written by a different configuration:\n"
-        f"--- recorded ---\n{recorded}--- now ---\n{stamp}"
-        "Use a fresh --out-dir, or pass --no-resume to start this one over (which moves "
+    return stamp_refusal(
+        out_dir / STAMP_NAME,
+        stamp,
+        resume=resume,
+        label="recorded",
+        advice="Use a fresh --out-dir, or pass --no-resume to start this one over (which moves "
         "the recorded rows aside rather than adding to them); mixing two configurations "
-        "into one campaign measures the configurations, not the arms."
+        "into one campaign measures the configurations, not the arms.",
     )
 
 

@@ -33,7 +33,6 @@ from benchmarks.mipfeas.run_benchmark import (
     count_unchecked,
     drop_completed,
     execute,
-    has_usable_result,
     needs_solve,
     needs_verification,
     plan_jobs,
@@ -412,7 +411,9 @@ def test_what_resume_still_has_to_run(
     job = _row(tmp_path, status, solution=solution, verdict=verdict)
     assert needs_solve(job, tmp_path, verify=verify) is solve
     assert needs_verification(job, tmp_path, verify=verify) is check
-    assert has_usable_result(job, tmp_path, verify) is not (solve or check)
+    # ... and resume drops exactly the jobs with nothing left to do.
+    remaining, _ = drop_completed([job], [], tmp_path, force=False, verify=verify)
+    assert remaining == ([job] if solve or check else [])
 
 
 def test_forcing_a_rerun_drops_the_stale_solution_and_verdict(tmp_path: Path) -> None:

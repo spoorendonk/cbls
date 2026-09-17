@@ -139,20 +139,24 @@ def repair_torn_tail(path: Path) -> bool:
     return True
 
 
-def stamp_mismatch(path: Path, stamp: str, *, resume: bool) -> str | None:
-    """The configuration a directory's records were written under, if it is not `stamp`.
+def stamp_refusal(path: Path, stamp: str, *, resume: bool, label: str, advice: str) -> str | None:
+    """The refusal to resume into a directory stamped with another configuration.
 
     Resume keys on a record being *there*, which says nothing about what produced
     it. So a directory carries a stamp -- commit, budget, seeds, whatever makes
     two runs comparable -- and resuming into one written under another is refused
-    by the caller, which is handed the recorded stamp to quote. Otherwise (a
-    fresh directory, a matching stamp, or `resume=False`, which is starting over)
-    the stamp is (re)written and None returned.
+    with both stamps quoted (the recorded one under `label`) and then `advice`;
+    the recorded stamp is left in place. Otherwise (a fresh directory, a matching
+    stamp, or `resume=False`, which is starting over) the stamp is (re)written and
+    None returned.
     """
     if resume and path.exists():
         recorded = path.read_text()
         if recorded != stamp:
-            return recorded
+            return (
+                f"{path} was written by a different configuration:\n"
+                f"--- {label} ---\n{recorded}--- now ---\n{stamp}{advice}"
+            )
     path.write_text(stamp)
     return None
 

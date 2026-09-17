@@ -61,14 +61,16 @@ def cmake_cache(build_dir: Path) -> dict[str, str]:
     return entries
 
 
-def build_dir_problems(build_dir: Path, repo_root: Path = REPO_ROOT) -> list[str]:
+def build_dir_problems(
+    build_dir: Path, cache: dict[str, str], repo_root: Path = REPO_ROOT
+) -> list[str]:
     """Refusals about a build directory whose binary would be measured and published.
 
-    Empty when the directory is a configured, optimised, uninstrumented build of
-    `repo_root`. Each refusal is a way to publish a wall-clock-budgeted number
-    measured on an engine nobody runs.
+    `cache` is `cmake_cache(build_dir)`, read once by the caller. Empty when the
+    directory is a configured, optimised, uninstrumented build of `repo_root`.
+    Each refusal is a way to publish a wall-clock-budgeted number measured on an
+    engine nobody runs.
     """
-    cache = cmake_cache(build_dir)
     if not cache:
         return [
             f"{build_dir}/CMakeCache.txt not found; configure first, e.g.\n"

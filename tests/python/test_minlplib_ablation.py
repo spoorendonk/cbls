@@ -487,6 +487,32 @@ def test_a_results_file_written_under_another_schema_is_refused(tmp_path: Path) 
     results = tmp_path / RESULTS_NAME
     assert header_conflict(results) is None  # absent: nothing to conflict with
 
+    # Spelled out, because it is derived: `header_conflict` compares the header
+    # in order, so a reordered derivation would make every existing campaign
+    # directory unresumable -- and nothing else says what `results.csv` looks like.
+    assert RESULT_COLUMNS == (
+        "instance",
+        "arm",
+        "arm_flags",
+        "seed",
+        "time_limit",
+        "commit_sha",
+        "objective",
+        "primal_bks",
+        "dual_bound",
+        "gap_to_bks%",
+        "gap_to_dual%",
+        "wall_seconds",
+        "feasible",
+        "note",
+        "max_violation",
+        "n_int_vars",
+        "lns_repairs",
+        "lns_repairs_accepted",
+        "first_feasible_objective",
+        "time_to_first_feasible",
+        "search_config",
+    )
     results.write_text(",".join(RESULT_COLUMNS) + "\n")
     assert header_conflict(results) is None  # this schema: appendable
 
