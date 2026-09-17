@@ -8,36 +8,26 @@ def vid(handle: int) -> int:
 
 
 class TestSolver:
-    def test_unconstrained(self) -> None:
-        m = cbls.Model()
-        x = m.float_var(-10, 10)
-        y = m.float_var(-10, 10)
-        two = m.constant(2)
-        m.minimize(m.sum([m.pow_expr(x, two), m.pow_expr(y, two)]))
-        m.close()
-        result = cbls.solve(m, 2.0, 42)
-        assert result.feasible
-        assert result.objective < 1.0
+    def test_solve_returns_a_populated_result_on_a_constrained_model(self) -> None:
+        """One solve, every SearchResult field the bindings expose.
 
-    def test_constrained(self) -> None:
+        Whether the search is any good is `tests/test_search.cpp`'s question, on
+        51 cases; this asks whether `solve` is callable from Python and hands
+        back a result whose fields are populated rather than default-constructed.
+        A constrained model is used so `feasible` means something.
+        """
         m = cbls.Model()
         x = m.float_var(0, 10)
         y = m.float_var(0, 10)
         neg1 = m.constant(-1.0)
         three = m.constant(3.0)
-        m.add_constraint(m.sum([three, m.prod(neg1, x), m.prod(neg1, y)]))
+        m.add_constraint(m.sum([three, m.prod(neg1, x), m.prod(neg1, y)]))  # x + y >= 3
         m.minimize(m.sum([x, y]))
         m.close()
+
         result = cbls.solve(m, 3.0, 42)
         assert result.feasible
         assert result.objective < 5.0
-
-    def test_returns_result(self) -> None:
-        m = cbls.Model()
-        x = m.float_var(0, 1)
-        m.minimize(m.sum([x]))
-        m.close()
-        result = cbls.solve(m, 0.5, 42)
         assert result.iterations > 0
         assert result.time_seconds > 0
 
@@ -91,28 +81,25 @@ class TestFjNlInitialize:
 
 
 class TestViolation:
-    def test_feasible(self) -> None:
+    def test_violation_manager_reports_both_verdicts_on_one_model(self) -> None:
+        # x - 5 <= 0, read at a satisfying point and at a violating one. Both in
+        # one test because the two used to be separate models differing only in
+        # the value assigned, which is one assertion's worth of information.
         m = cbls.Model()
         x = m.float_var(0, 10)
-        neg5 = m.constant(-5.0)
-        m.add_constraint(m.sum([x, neg5]))
+        m.add_constraint(m.sum([x, m.constant(-5.0)]))
         m.minimize(m.sum([x]))
         m.close()
+        vm = cbls.ViolationManager(m)
+
         m.var_mut(vid(x)).value = 3.0
         cbls.full_evaluate(m)
-        vm = cbls.ViolationManager(m)
+        vm.invalidate_cache()
         assert vm.total_violation() == 0.0
         assert vm.is_feasible()
 
-    def test_infeasible(self) -> None:
-        m = cbls.Model()
-        x = m.float_var(0, 10)
-        neg5 = m.constant(-5.0)
-        m.add_constraint(m.sum([x, neg5]))
-        m.minimize(m.sum([x]))
-        m.close()
         m.var_mut(vid(x)).value = 8.0
         cbls.full_evaluate(m)
-        vm = cbls.ViolationManager(m)
+        vm.invalidate_cache()
         assert vm.total_violation() == 3.0
         assert not vm.is_feasible()

@@ -1,4 +1,13 @@
-"""Tests for C++ DAG via Python bindings."""
+"""DAG entry points that are bound as free functions, from Python.
+
+`full_evaluate`, `delta_evaluate` and `compute_partial` are bound separately from
+the model-building surface `test_expr.py` covers, and each has a caster of its
+own to get wrong -- a set of variable ids in, a float out. The DAG semantics
+themselves (what Sum evaluates to, that delta agrees with full, the chain rule)
+belong to `tests/test_dag.cpp`, which asserts them on far more shapes than these
+do; what is left here is that the three entry points are reachable and hand back
+what they computed.
+"""
 
 import math
 
@@ -6,119 +15,53 @@ import _cbls_core as cbls
 
 
 def vid(handle: int) -> int:
-    """Get internal var ID from handle."""
+    """Variable id from a variable handle."""
     return -(handle + 1)
 
 
-class TestBasicEvaluation:
-    def test_sum(self) -> None:
-        m = cbls.Model()
-        x = m.float_var(0, 10)
-        y = m.float_var(0, 10)
-        s = m.sum([x, y])
-        m.minimize(s)
-        m.close()
-        m.var_mut(vid(x)).value = 3.0
-        m.var_mut(vid(y)).value = 4.0
-        cbls.full_evaluate(m)
-        assert m.node(s).value == 7.0
+def test_delta_evaluate_takes_a_set_of_var_ids_and_returns_the_objective() -> None:
+    # The set argument is the binding-specific part: C++ takes a pointer and a
+    # count, so this crosses a caster that a signature change could silently
+    # break (a set of one, arriving empty, would still "work" -- delta_evaluate
+    # returns the objective unchanged -- so the value is checked after a change
+    # that MUST move it).
+    m = cbls.Model()
+    x = m.float_var(0, 10)
+    y = m.float_var(0, 10)
+    z = m.float_var(0, 10)
+    f = m.sum([m.prod(x, y), z])
+    m.minimize(f)
+    m.close()
+    m.var_mut(vid(x)).value = 2.0
+    m.var_mut(vid(y)).value = 3.0
+    m.var_mut(vid(z)).value = 1.0
+    assert cbls.full_evaluate(m) == 7.0
 
-    def test_prod(self) -> None:
-        m = cbls.Model()
-        x = m.float_var(0, 10)
-        y = m.float_var(0, 10)
-        p = m.prod(x, y)
-        m.minimize(p)
-        m.close()
-        m.var_mut(vid(x)).value = 3.0
-        m.var_mut(vid(y)).value = 4.0
-        cbls.full_evaluate(m)
-        assert m.node(p).value == 12.0
-
-    def test_pow(self) -> None:
-        m = cbls.Model()
-        x = m.float_var(0, 10)
-        two = m.constant(2)
-        p = m.pow_expr(x, two)
-        m.minimize(p)
-        m.close()
-        m.var_mut(vid(x)).value = 3.0
-        cbls.full_evaluate(m)
-        assert m.node(p).value == 9.0
-
-    def test_sin(self) -> None:
-        m = cbls.Model()
-        x = m.float_var(-10, 10)
-        s = m.sin_expr(x)
-        m.minimize(s)
-        m.close()
-        m.var_mut(vid(x)).value = math.pi / 2
-        cbls.full_evaluate(m)
-        assert abs(m.node(s).value - 1.0) < 1e-10
-
-    def test_nested(self) -> None:
-        m = cbls.Model()
-        x = m.float_var(-10, 10)
-        y = m.float_var(-10, 10)
-        two = m.constant(2)
-        x_sq = m.pow_expr(x, two)
-        xy = m.prod(x, y)
-        two_xy = m.prod(two, xy)
-        sin_y = m.sin_expr(y)
-        f = m.sum([x_sq, two_xy, sin_y])
-        m.minimize(f)
-        m.close()
-        m.var_mut(vid(x)).value = 2.0
-        m.var_mut(vid(y)).value = 1.0
-        cbls.full_evaluate(m)
-        expected = 4.0 + 4.0 + math.sin(1.0)
-        assert abs(m.node(f).value - expected) < 1e-10
+    m.var_mut(vid(x)).value = 5.0
+    assert cbls.delta_evaluate(m, {vid(x)}) == 16.0
 
 
-class TestDeltaEvaluation:
-    def test_delta_matches_full(self) -> None:
-        m = cbls.Model()
-        x = m.float_var(0, 10)
-        y = m.float_var(0, 10)
-        z = m.float_var(0, 10)
-        xy = m.prod(x, y)
-        f = m.sum([xy, z])
-        m.minimize(f)
-        m.close()
-        m.var_mut(vid(x)).value = 2.0
-        m.var_mut(vid(y)).value = 3.0
-        m.var_mut(vid(z)).value = 1.0
-        cbls.full_evaluate(m)
-        assert m.node(f).value == 7.0
+def test_compute_partial_returns_the_derivative_it_was_asked_for() -> None:
+    # Two variables and a chain, so a binding that ignored its `var_id` argument
+    # or returned the wrong node's adjoint would be caught rather than
+    # coincidentally right.
+    m = cbls.Model()
+    x = m.float_var(0, 10)
+    y = m.float_var(0, 10)
+    s = m.sum([x, m.prod(m.constant(3.0), y)])
+    m.minimize(s)
+    m.close()
+    m.var_mut(vid(x)).value = 3.0
+    m.var_mut(vid(y)).value = 4.0
+    cbls.full_evaluate(m)
+    assert cbls.compute_partial(m, s, vid(x)) == 1.0
+    assert cbls.compute_partial(m, s, vid(y)) == 3.0
 
-        m.var_mut(vid(x)).value = 5.0
-        delta_result = cbls.delta_evaluate(m, {vid(x)})
-        assert delta_result == 16.0
-
-
-class TestAD:
-    def test_sum_partials(self) -> None:
-        m = cbls.Model()
-        x = m.float_var(0, 10)
-        y = m.float_var(0, 10)
-        s = m.sum([x, y])
-        m.minimize(s)
-        m.close()
-        m.var_mut(vid(x)).value = 3.0
-        m.var_mut(vid(y)).value = 4.0
-        cbls.full_evaluate(m)
-        assert cbls.compute_partial(m, s, vid(x)) == 1.0
-        assert cbls.compute_partial(m, s, vid(y)) == 1.0
-
-    def test_chain_rule(self) -> None:
-        m = cbls.Model()
-        x = m.float_var(0, 10)
-        two = m.constant(2)
-        x2 = m.pow_expr(x, two)
-        f = m.sin_expr(x2)
-        m.minimize(f)
-        m.close()
-        m.var_mut(vid(x)).value = 1.5
-        cbls.full_evaluate(m)
-        expected = 2.0 * 1.5 * math.cos(1.5**2)
-        assert abs(cbls.compute_partial(m, f, vid(x)) - expected) < 1e-10
+    m2 = cbls.Model()
+    x2 = m2.float_var(0, 10)
+    f = m2.sin_expr(m2.pow_expr(x2, m2.constant(2)))
+    m2.minimize(f)
+    m2.close()
+    m2.var_mut(vid(x2)).value = 1.5
+    cbls.full_evaluate(m2)
+    assert abs(cbls.compute_partial(m2, f, vid(x2)) - 2.0 * 1.5 * math.cos(1.5**2)) < 1e-10
