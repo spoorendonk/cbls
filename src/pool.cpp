@@ -3,10 +3,14 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <exception>
+#include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <thread>
+#include <utility>
 
 namespace cbls {
 
@@ -191,7 +195,11 @@ struct WorkerAccumulator {
     SearchResult result;
     bool any_run = false;
 
-    void absorb(const SearchResult& r) {
+    // `started_at` is when the restart being absorbed BEGAN, on the portfolio
+    // clock. Every time on a worker's SearchResult is relative to its own
+    // solve() start, so the pair below has to be shifted onto the shared clock
+    // or a restart that began at t=19.9s reports "feasible at 0.001s".
+    void absorb(const SearchResult& r, double started_at) {
         result.iterations += r.iterations;
         // Summed, not maxed, for the same reason iterations are: a worker's
         // restarts run BACK TO BACK on its own thread, so the wall time it held
@@ -204,15 +212,95 @@ struct WorkerAccumulator {
         // matters is the one that ended the worker, and the loop below breaks
         // on exactly the reasons worth reporting (Feasible, Stopped, NoBudget).
         result.termination = r.termination;
+        // Work done across the restarts, summed with the iterations above.
+        result.perturbations += r.perturbations;
+        result.lns_repairs += r.lns_repairs;
+        result.lns_repairs_accepted += r.lns_repairs_accepted;
+        // The earliest restart to reach feasibility, with the objective it
+        // reached -- both from that same restart.
+        const double reached = started_at + r.time_to_first_feasible;
+        if (!std::isnan(reached) && (std::isnan(result.time_to_first_feasible) ||
+                                     reached < result.time_to_first_feasible)) {
+            result.time_to_first_feasible = reached;
+            result.first_feasible_objective = r.first_feasible_objective;
+        }
         const bool better = !any_run || (r.feasible && !result.feasible) ||
                             (r.feasible == result.feasible && r.objective < result.objective);
         if (better) {
             result.objective = r.objective;
             result.feasible = r.feasible;
             result.best_state = r.best_state;
+            // Belongs to `best_state`, so it moves with it.
+            result.best_violation = r.best_violation;
+            result.escape_probe_armed = r.escape_probe_armed;
         }
         any_run = true;
     }
+};
+
+// The portfolio's progress stream.
+//
+// Every worker reports through this, not only worker 0. A consumer's subject is
+// the PORTFOLIO's incumbent, and worker 0's own trajectory is neither the best
+// of them nor, once it restarts, monotone in time -- so a benchmark harness
+// integrating the callback as a step function of wall time was integrating the
+// wrong function, and the CLI could print a last progress row worse than the
+// result it went on to report. Two things are corrected here and nowhere else:
+//
+//  - `time_seconds` is rewritten to the PORTFOLIO clock. A worker's solve()
+//    times from its own start, so a restarted worker's rows otherwise walk
+//    backwards through the stream.
+//  - `objective` is the GLOBAL incumbent. A row is forwarded when it improves
+//    on that -- from any worker -- or when it is worker 0's periodic
+//    no-new-best tick, which is what keeps the CLI's once-a-second liveness
+//    row. Either way it carries the portfolio's best rather than a stale peer
+//    value, so the stream stays monotone.
+//
+// Everything else on the row (iteration, violation, perturbations, feasible)
+// remains the REPORTING worker's own, and is read as such: no worker has a view
+// of any other's counters.
+//
+// Serialized on its own mutex, and the consumer is called under it: workers
+// report concurrently, and a callback writing to one stream or file is not
+// thread-safe on its own.
+class PortfolioProgress {
+public:
+    PortfolioProgress(SolveCallback* inner, std::function<double()> elapsed)
+        : inner_(inner), elapsed_(std::move(elapsed)) {}
+
+    void report(const SolveProgress& p, bool heartbeat) {
+        std::scoped_lock lock(mutex_);
+        const bool improved = p.objective < best_;
+        if (improved) {
+            best_ = p.objective;
+        } else if (!heartbeat) {
+            return;
+        }
+        SolveProgress q = p;
+        q.objective = best_;
+        q.new_best = improved;
+        q.time_seconds = elapsed_();
+        inner_->on_progress(q);
+    }
+
+private:
+    SolveCallback* inner_;
+    std::function<double()> elapsed_;
+    std::mutex mutex_;
+    double best_ = std::numeric_limits<double>::infinity();
+};
+
+// One worker's end of `PortfolioProgress`. `heartbeat` is set for exactly one
+// worker, whose non-improving ticks are what keep a liveness row flowing.
+class WorkerProgress : public SolveCallback {
+public:
+    WorkerProgress(PortfolioProgress& core, bool heartbeat) : core_(core), heartbeat_(heartbeat) {}
+
+    void on_progress(const SolveProgress& p) override { core_.report(p, heartbeat_); }
+
+private:
+    PortfolioProgress& core_;
+    bool heartbeat_;
 };
 
 // Everything one worker is and does, gathered so `solve_portfolio` below is
@@ -225,13 +313,21 @@ struct PortfolioContext {
     std::function<std::shared_ptr<InnerSolverHook>(Model&)>& hook_factory;
     std::function<std::shared_ptr<LNS>()>& lns_factory;
     const SearchConfig& config;
-    SolveCallback* callback;
+    // Worker 0's end of the portfolio stream, and every other worker's. Both
+    // null when the caller passed no callback. See `PortfolioProgress`.
+    SolveCallback* heartbeat_callback;
+    SolveCallback* peer_callback;
     SearchCoordination& coord;
     // Seconds left on the SHARED deadline -- one clock for the whole portfolio,
     // so a worker that restarts gets the time its predecessor left rather than
     // a fresh full budget. Returns 0.0 when there is no wall clock at all, in
     // which case `has_deadline` is false and the value is not a budget.
     std::function<double()> remaining;
+    /// Seconds since the portfolio started. One clock for every worker, so a
+    /// time reported by one of them means the same thing as a time reported by
+    /// another -- which a worker's own solve() clock does not, least of all
+    /// across restarts.
+    std::function<double()> elapsed;
     bool has_deadline;
     uint64_t seed;
     int n_threads;
@@ -275,8 +371,9 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index,
         lns = ctx.lns_factory();
     }
 
-    // Only thread 0 gets the callback, to avoid interleaved output.
-    SolveCallback* cb = (index == 0) ? ctx.callback : nullptr;
+    // Every worker reports, through the portfolio stream that serializes them
+    // and reconciles their clocks; worker 0 additionally carries the heartbeat.
+    SolveCallback* cb = (index == 0) ? ctx.heartbeat_callback : ctx.peer_callback;
 
     WorkerAccumulator acc;
     int consecutive_failures = 0;
@@ -311,6 +408,7 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index,
         const uint64_t run_seed = portfolio_worker_seed(ctx.seed, index, restart);
 
         SearchResult r;
+        const double started_at = ctx.elapsed();
         try {
             r = cbls::solve(m, budget, run_seed, cfg.use_fj, hook.get(), lns.get(),
                             cfg.lns_interval, cb, cfg, &ctx.coord);
@@ -334,7 +432,7 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index,
             continue;
         }
         consecutive_failures = 0;
-        acc.absorb(r);
+        acc.absorb(r, started_at);
 
         if (r.termination == TerminationReason::Feasible) {
             // A pure-feasibility model: the first feasible solution IS the
@@ -392,6 +490,7 @@ SearchResult ParallelSearch::solve_portfolio(
     SearchCoordination coord{&pool, &stop};
 
     const bool has_deadline = time_limit > 0.0;
+    const auto portfolio_start = std::chrono::steady_clock::now();
     // Saturated before the integer-tick cast, exactly as search.cpp's
     // make_budget does and for the same reason: callers pass a very large limit
     // to mean "effectively unbounded", and casting 1e12 seconds to nanoseconds
@@ -400,10 +499,14 @@ SearchResult ParallelSearch::solve_portfolio(
     // a NoBudget result with an empty state -- where make_budget's own
     // saturation would have run the search.
     constexpr double kMaxPortfolioSeconds = 1.0e9;  // ~31 years
-    const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+    const auto deadline =
+        portfolio_start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                               std::chrono::duration<double>(
                                   std::min(std::max(0.0, time_limit), kMaxPortfolioSeconds)));
+    auto elapsed = [portfolio_start]() -> double {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - portfolio_start)
+            .count();
+    };
     auto remaining = [deadline, has_deadline]() -> double {
         if (!has_deadline) {
             return 0.0;  // no wall clock: a worker's own iteration budget bounds it
@@ -413,8 +516,25 @@ SearchResult ParallelSearch::solve_portfolio(
             std::chrono::duration<double>(deadline - std::chrono::steady_clock::now()).count());
     };
 
-    PortfolioContext ctx{model_factory, hook_factory, lns_factory,  config, callback,
-                         coord,         remaining,    has_deadline, seed,   n_threads};
+    // The caller's callback reaches the workers only through this: one stream,
+    // one clock, one monotone objective. Null in, null out -- a portfolio with
+    // no callback pays for nothing.
+    PortfolioProgress progress(callback, elapsed);
+    WorkerProgress heartbeat(progress, /*heartbeat=*/true);
+    WorkerProgress peer(progress, /*heartbeat=*/false);
+
+    PortfolioContext ctx{model_factory,
+                         hook_factory,
+                         lns_factory,
+                         config,
+                         callback != nullptr ? &heartbeat : nullptr,
+                         callback != nullptr ? &peer : nullptr,
+                         coord,
+                         remaining,
+                         elapsed,
+                         has_deadline,
+                         seed,
+                         n_threads};
 
     std::vector<SearchResult> results(n_threads);
     // One slot per worker, left null unless that worker threw. Sized up front so
@@ -445,6 +565,7 @@ SearchResult ParallelSearch::solve_portfolio(
                     sol.state = r->best_state;
                     sol.objective = r->objective;
                     sol.feasible = r->feasible;
+                    sol.violation = r->best_violation;
                     pool.submit(sol);
                 } catch (...) {
                     // A thread function must not let an exception escape -- that
@@ -506,12 +627,33 @@ SearchResult ParallelSearch::solve_portfolio(
     result.objective = best->objective;
     result.feasible = best->feasible;
     result.best_state = best->state;
+    // Of the state being returned, not of whatever worker 0 ended on. Left at
+    // its +inf default this reported "the answer violates something by
+    // infinity" for EVERY portfolio run, which any caller that gates publication
+    // on the residual reads as a defective solution -- benchmarks/mipfeas does,
+    // and refused every parallel row it was handed.
+    result.best_violation = best->violation;
     // Sum iterations and take max time across threads
     int64_t total_iters = 0;
     double max_time = 0.0;
+    // The counters below describe work DONE, so they sum over the portfolio the
+    // way iterations do; a portfolio that reported zero perturbations and zero
+    // LNS repairs while its workers ran thousands is an ablation measured wrong.
     for (const auto& r : results) {
         total_iters += r.iterations;
         max_time = std::max(max_time, r.time_seconds);
+        result.perturbations += r.perturbations;
+        result.lns_repairs += r.lns_repairs;
+        result.lns_repairs_accepted += r.lns_repairs_accepted;
+        // The portfolio reached feasibility when its FIRST worker did, and the
+        // objective reported beside that time is the one that worker reached --
+        // the pair has to come from the same worker to mean anything.
+        if (!std::isnan(r.time_to_first_feasible) &&
+            (std::isnan(result.time_to_first_feasible) ||
+             r.time_to_first_feasible < result.time_to_first_feasible)) {
+            result.time_to_first_feasible = r.time_to_first_feasible;
+            result.first_feasible_objective = r.first_feasible_objective;
+        }
     }
     result.iterations = total_iters;
     result.time_seconds = max_time;

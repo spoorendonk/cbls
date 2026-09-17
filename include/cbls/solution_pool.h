@@ -16,6 +16,13 @@ struct Solution {
     Model::State state;
     double objective = std::numeric_limits<double>::infinity();
     bool feasible = false;
+    /// Largest violation over the REAL constraints at `state` -- the artificial
+    /// `obj <= bound` row excluded, exactly as `SearchResult::best_violation`
+    /// defines it. Carried with the state rather than recomputed by the reader:
+    /// a `ParallelSearch` assembles its result from the pool, on a thread that
+    /// owns no `Model` to evaluate it against, and a result whose violation did
+    /// not describe its own state reported +inf for every portfolio run.
+    double violation = std::numeric_limits<double>::infinity();
 };
 
 /// A bounded, sorted store of the best solutions seen, shared across the workers

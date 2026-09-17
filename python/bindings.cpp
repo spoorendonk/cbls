@@ -354,7 +354,8 @@ NB_MODULE(_cbls_core, m) {
         .def(nb::init<>())
         .def_rw("state", &Solution::state)
         .def_rw("objective", &Solution::objective)
-        .def_rw("feasible", &Solution::feasible);
+        .def_rw("feasible", &Solution::feasible)
+        .def_rw("violation", &Solution::violation);
 
     nb::class_<SolutionPool>(m, "SolutionPool")
         .def(nb::init<int>(), nb::arg("capacity") = 10)

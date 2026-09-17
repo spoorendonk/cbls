@@ -697,6 +697,10 @@ void ViolationLSLoop::share(double objective) {
     sol.state = best_state_;
     sol.objective = objective;
     sol.feasible = true;  // record_best's precondition
+    // The model still holds `best_state_` -- record_best copies the state out of
+    // it immediately above every call to this -- so the live residual is the
+    // residual of the state being shared.
+    sol.violation = max_real_violation();
     coord_->pool->submit(std::move(sol));
 }
 

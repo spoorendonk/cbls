@@ -1752,18 +1752,26 @@ TEST_CASE("a run that never reaches feasibility reports no first-feasible pair",
     REQUIRE(std::isnan(r.time_to_first_feasible));
 }
 
-TEST_CASE("ParallelSearch leaves the first-feasible pair unrecorded", "[pool][first-feasible]") {
-    // The documented caveat on the field, pinned rather than left to prose:
-    // the aggregation composes its SearchResult field by field from the pool's
-    // best solution, and the pool carries only the state and the objective. So
-    // a parallel run reports NaN for both cells even though it IS feasible --
-    // "not recorded", which is the honest reading, and exactly what a consumer
-    // must not mistake for "arrived at NaN".
-    //
+TEST_CASE("ParallelSearch records the first-feasible pair on the portfolio clock",
+          "[pool][first-feasible]") {
+    // This used to be NaN by omission -- the aggregation composed its result
+    // from the pool, which carries only the state and the objective, so a
+    // feasible parallel run reported "not recorded" for both cells. It is
+    // recorded now, and the clock is the interesting half: every time on a
+    // worker's own SearchResult is relative to that worker's solve() start, and
+    // a worker restarts, so an unshifted "earliest across workers" would report
+    // a restart's own 0.001s for a portfolio that had been running for most of
+    // its budget. The pair is therefore shifted onto the shared clock, which
+    // bounds it by the wall time of the call.
     ParallelSearch ps(2);
+    const auto t0 = std::chrono::steady_clock::now();
     const SearchResult r = ps.solve(simple_model_factory(), 1.0, 42);
-    CAPTURE(r.objective, r.first_feasible_objective, r.time_to_first_feasible);
+    const double wall =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+
+    CAPTURE(r.objective, r.first_feasible_objective, r.time_to_first_feasible, wall);
     REQUIRE(r.feasible);
-    REQUIRE(std::isnan(r.first_feasible_objective));
-    REQUIRE(std::isnan(r.time_to_first_feasible));
+    REQUIRE_FALSE(std::isnan(r.first_feasible_objective));
+    REQUIRE(r.time_to_first_feasible >= 0.0);
+    REQUIRE(r.time_to_first_feasible <= wall);
 }

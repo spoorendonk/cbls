@@ -341,6 +341,42 @@ TEST_CASE("a raised stop flag ends a search that still has budget", "[parallel][
 }
 
 // ---------------------------------------------------------------------------
+TEST_CASE("a portfolio result describes the state it returns", "[parallel]") {
+    // Everything on a SearchResult that is a statement ABOUT the returned point
+    // has to be assembled with it. `best_violation` was not: the portfolio built
+    // its result from the pool -- which carried the state, the objective and the
+    // feasibility flag and nothing else -- and left the residual at its +inf
+    // default. Any caller that gates publication on the residual then rejects
+    // every parallel row it is handed, which is what benchmarks/mipfeas did.
+    ParallelSearch ps(4);
+    const SearchResult r = ps.solve(quadratic_model, /*time_limit=*/0.5, /*seed=*/42);
+
+    REQUIRE(r.feasible);
+    REQUIRE(std::isfinite(r.best_violation));
+    REQUIRE(r.best_violation <= SearchConfig{}.feasibility_tolerance);
+}
+
+TEST_CASE("a portfolio result counts the work its workers did", "[parallel]") {
+    // The same defect one field over: counters left at zero describe a run that
+    // perturbed nothing and repaired nothing, and an ablation reading them would
+    // conclude the mechanisms are never used.
+    auto factory = [] { return integer_model(); };
+
+    ParallelSearch ps(4);
+    ParallelConfig par_config;
+    par_config.n_threads = 4;
+    SearchConfig cfg;
+    cfg.perturbation_period = 1;  // kick on every non-improving batch
+    cfg.batch_iterations = 50;
+    auto lns_factory = []() -> std::shared_ptr<LNS> { return std::make_shared<LNS>(0.3); };
+    const SearchResult r =
+        ps.solve(factory, /*time_limit=*/0.5, /*seed=*/42, cfg, /*hook_factory=*/nullptr,
+                 lns_factory, /*callback=*/nullptr, par_config);
+
+    REQUIRE(r.iterations > 0);
+    REQUIRE(r.perturbations > 0);
+}
+
 // ParallelSearch: no idle workers, and a global stop
 // ---------------------------------------------------------------------------
 
