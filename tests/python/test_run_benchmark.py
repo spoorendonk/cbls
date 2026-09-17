@@ -180,6 +180,7 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         "compound_moves": True,
         "propagate_bounds": True,
         "cpsat_workers": 1,
+        "cbls_threads": 1,
         "commit": "abc1234",
         "verify": True,
         "skip_preconditions": False,
@@ -216,6 +217,42 @@ def test_build_command_can_disable_compound_moves() -> None:
     )
     assert "--no-compound-moves" in command
     assert "--compound-moves" not in command
+
+
+def test_build_command_gives_cbls_its_thread_count() -> None:
+    # Always stated, 1 included: a benchmark row records the concurrency it ran
+    # at, and the runner's own default is not a record of anything.
+    command = build_command(Job("cbls", "inst"), _driver_args(), Path("/results"))
+    assert command[command.index("--threads") + 1] == "1"
+    command = build_command(Job("cbls", "inst"), _driver_args(cbls_threads=4), Path("/results"))
+    assert command[command.index("--threads") + 1] == "4"
+
+
+def _main_with(argv: list[str]) -> int:
+    saved = sys.argv
+    sys.argv = ["run_benchmark.py", *argv]
+    try:
+        return run_benchmark.main()
+    finally:
+        sys.argv = saved
+
+
+def test_the_driver_refuses_an_asymmetric_cpu_split(capsys: pytest.CaptureFixture[str]) -> None:
+    # CP-SAT at N workers runs N fj and N ls subsolvers, so an N-thread CBLS
+    # against a 1-worker baseline is an N-fold CPU advantage the table would read
+    # as an implementation gap. Refused before any instance is touched.
+    assert _main_with(["--cbls-threads", "4"]) == 2
+    assert "--cbls-threads 4 != --cpsat-workers 1" in capsys.readouterr().err
+
+
+def test_the_asymmetric_cpu_split_can_be_opted_into(capsys: pytest.CaptureFixture[str]) -> None:
+    # The refusal guards the published claim; it is not a law of the harness. An
+    # asymmetry that IS the measurement gets past it by saying so -- shown here by
+    # the run failing on the NEXT guard instead, which is the one after it.
+    assert _main_with(["--cbls-threads", "4", "--allow-asymmetric-cpu", "--budget", "0"]) == 2
+    err = capsys.readouterr().err
+    assert "--cbls-threads 4 != --cpsat-workers 1" not in err
+    assert "--budget must be > 0" in err
 
 
 def test_build_command_gives_cpsat_its_worker_count() -> None:
@@ -818,6 +855,8 @@ def test_the_run_record_states_the_concurrency_the_run_used(tmp_path: Path) -> N
         "jobs": 4,
         "large_instance_jobs": 1,
         "cpsat_workers": 1,
+        # Per-solve CPU, the other half of what the machine was asked for.
+        "cbls_threads": 1,
         "mem_limit_gb": 6.0,
     }
 

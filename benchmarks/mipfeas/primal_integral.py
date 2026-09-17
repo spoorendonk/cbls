@@ -98,6 +98,7 @@ FULL_ROSTER_SIZE = 233
 #: for it — and these are exactly the flags measured to move the aggregate.
 CONFIG_KEYS = (
     "seed",
+    "threads",
     "feasibility_tolerance",
     "compound_moves",
     "inf_clamp",

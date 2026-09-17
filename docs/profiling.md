@@ -276,9 +276,11 @@ charges the call overhead to the callee. Directional, not a wall-clock model.
 Read the numbers knowing what they are:
 
 - **Single-threaded only.** glibc's `gmon` records the main thread. The MIPfeas
-  runner is single-threaded already and has no `--threads` flag (it exits 2 on an
-  unknown argument); under `cbls_cli` you must **pass `--threads 1` explicitly**
-  or the profile is a fiction. Its default is 0 -- one worker per core -- and
+  runner takes `--threads` and defaults to 1, so a bare invocation profiles the
+  single-threaded engine path; pass nothing, or pass `--threads 1` explicitly.
+  Above 1 it runs the portfolio and `gmon.out` then describes one worker of it.
+  Under `cbls_cli` you must **pass `--threads 1` explicitly** or the profile is a
+  fiction. Its default is 0 -- one worker per core -- and
   nothing warns you that `gmon.out` then describes one of them.
 - `gmon.out` lands in the *current* directory and is overwritten per run.
 - Instrumentation inhibits inlining decisions and adds per-call overhead, so

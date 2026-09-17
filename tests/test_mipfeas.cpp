@@ -106,6 +106,66 @@ TEST_CASE("a trace filtered on a finite objective is monotone and ends at the re
     REQUIRE(trace.back().second == result.objective);
 }
 
+TEST_CASE("a portfolio trace is the portfolio's own step function", "[mipfeas][trace]") {
+    // What the runner integrates at --threads > 1. Two things make a portfolio
+    // trace different from a single worker's, and both are corrected in
+    // ParallelSearch rather than in the runner:
+    //
+    //  * TIME. Each worker's solve() times from its OWN start, and a worker that
+    //    restarts starts a second one -- so a raw worker stream walks backwards
+    //    through a profile read as a step function of wall time.
+    //  * OBJECTIVE. A trace carrying only one worker's incumbents ends above the
+    //    result the portfolio returns, and every Primal Integral scored from it
+    //    is understated by that gap.
+    //
+    // Reverting the wrapper in src/pool.cpp turns the time half red immediately:
+    // 353 of this test's assertions fail, every one of them a worker's clock
+    // restarting. The objective half is the invariant the Primal Integral rests
+    // on rather than a second demonstration -- on a model this small worker 0
+    // reaches the same optimum as the portfolio, so it passes either way here.
+    cbls::Model model;
+    build_binary_model(model);
+    ProgressCollector collector;
+    cbls::SearchConfig cfg;
+    // A budget small enough that workers exhaust it and restart, which is what
+    // resets a worker-local clock.
+    cfg.max_iterations = 50;
+
+    auto model_factory = []() {
+        cbls::Model m;
+        build_binary_model(m);
+        return m;
+    };
+    cbls::ParallelConfig par_config;
+    par_config.n_threads = 4;
+    cbls::ParallelSearch ps(4);
+    cbls::SearchResult result =
+        ps.solve(model_factory, /*time_limit=*/0.5, /*seed=*/5, cfg, /*hook_factory=*/nullptr,
+                 /*lns_factory=*/nullptr, &collector, par_config);
+
+    REQUIRE(result.feasible);
+    REQUIRE_FALSE(collector.events.empty());
+
+    // One clock for the whole portfolio: every row is non-decreasing in time,
+    // whichever worker reported it and however many times that worker restarted.
+    for (size_t i = 1; i < collector.events.size(); ++i) {
+        REQUIRE(collector.events[i].time_seconds >= collector.events[i - 1].time_seconds);
+    }
+
+    // Monotone in the objective too: the value on every row is the portfolio's
+    // incumbent, never a peer's stale one.
+    double last = std::numeric_limits<double>::infinity();
+    for (const auto& e : collector.events) {
+        REQUIRE(e.objective <= last);
+        last = e.objective;
+    }
+
+    // And the profile ends where the run ended. This is the half a worker-0-only
+    // stream cannot satisfy: the result is the best over all four workers.
+    REQUIRE(std::isfinite(last));
+    REQUIRE(last == result.objective);
+}
+
 TEST_CASE("an incumbent can be reported while the current point is infeasible",
           "[mipfeas][trace]") {
     // The reason the runner filters on isfinite(objective) rather than p.feasible:

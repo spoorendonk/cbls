@@ -544,7 +544,25 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 
 8. **Violation & penalty** (`src/violation.cpp`) — `total_violation = Σ W[c]·max(0, viol_c)` with per-constraint GLS weights `W`. `weighted_violation_delta` is the no-commit counterfactual δ_G. `augmented_objective() = obj + total_violation()` is the penalty-method metric the inner solver descends.
 
-9. **Parallel search** (`src/pool.cpp`) — `SolutionPool` + `ParallelSearch`: a cooperative portfolio. Workers share incumbents through the mutex-guarded pool as they find them, restart from it on stagnation, are restarted rather than left idle while budget remains, and stop each other once one has solved a pure-feasibility model. All of it reaches the engine through `cbls::solve()`'s trailing `SearchCoordination*`, which is null everywhere else — including all four benchmark runners, whose trajectories are therefore unchanged. Nondeterministic by construction; `--threads 1` is the reproducible run (on the same hardware under the same load — it is still wall-clock bounded).
+9. **Parallel search** (`src/pool.cpp`) — `SolutionPool` + `ParallelSearch`: a cooperative portfolio. Workers share incumbents through the mutex-guarded pool as they find them, restart from it on stagnation, are restarted rather than left idle while budget remains, and stop each other once one has solved a pure-feasibility model. All of it reaches the engine through `cbls::solve()`'s trailing `SearchCoordination*`, which is null everywhere else. Nondeterministic by construction; `--threads 1` is the reproducible run (on the same hardware under the same load — it is still wall-clock bounded).
+
+   Two callers drive it: `src/cli.cpp`, and `benchmarks/mipfeas/` at
+   `--threads > 1` (the other three runners are still single-threaded, so their
+   trajectories are unchanged). The runner replicates the built model once per
+   worker **before** the solve bracket opens and reports the cost as
+   `replicate_seconds` — so peak RSS grows with the thread count, which is what
+   bounds concurrency on this roster rather than the core count. Its driver
+   refuses `--cbls-threads != --cpsat-workers` without `--allow-asymmetric-cpu`:
+   CP-SAT at N workers runs N `fj` and N `ls` subsolvers, so an asymmetric split
+   is an N-fold CPU advantage that the table would report as an implementation
+   gap.
+
+   A `SolveCallback` handed to `ParallelSearch` sees the **portfolio's** stream,
+   not worker 0's: every worker reports through one mutex-guarded wrapper that
+   rewrites `time_seconds` onto the portfolio clock (a worker's own solve times
+   from its own start, and a restart starts a second one) and carries the global
+   incumbent in `objective`. Worker 0 additionally keeps the periodic
+   no-new-best tick, so the CLI's liveness row survives.
 
 10. **I/O** (`src/io.cpp`, `src/io/`) — JSONL `.cbls` model format in `src/io.cpp`; `src/io/` holds the MPS reader (`mps_reader.cpp` + `mps_to_model.cpp`, gzip via zlib, optional bzip2), the AMPL `.nl` reader (`nl_reader.cpp` + `nl_to_model.cpp`) and the MIPLIB `.solu` reader. CLI in `src/cli.cpp`.
 

@@ -400,6 +400,38 @@ reports** above. It exits non-zero when a solution was rejected.
 The driver is resumable: a job whose result file exists is skipped, so an
 interrupted run continues where it stopped.
 
+### Running the portfolio (`--cbls-threads`)
+
+At `--cbls-threads 1` CBLS takes the single-threaded engine path, which is what
+every published figure here was measured on. Above 1 it runs `ParallelSearch`,
+the cooperative portfolio: N workers, each on its own copy of the model, sharing
+incumbents through the solution pool and restarting from it when they stall.
+
+Three things follow, and all three are checked by the harness rather than left to
+the operator:
+
+* **The baseline gets the same number.** CP-SAT at `num_workers: N` runs N `fj`
+  and N `ls` subsolvers, so an N-thread CBLS against a 1-worker CP-SAT is an
+  N-fold CPU advantage that the table would report as an implementation gap. The
+  driver refuses `--cbls-threads != --cpsat-workers` unless
+  `--allow-asymmetric-cpu` says the asymmetry is the measurement.
+* **Memory is linear in the thread count.** Each worker owns a model, so the
+  `peak_rss_kib` figures below — measured single-threaded — are a per-worker
+  floor, not a total. `--jobs` x `--cbls-threads` is what the machine is actually
+  asked for.
+* **The two arms are separate tables.** `threads` is a scorer config key, so a
+  results directory mixing thread counts is refused rather than averaged.
+
+The replication itself is charged to setup, not to the search: the runner copies
+the built model once per worker before the solve bracket opens and reports
+`replicate_seconds` beside `read_seconds` and `build_seconds`.
+
+The anytime trace stays the portfolio's own. Every worker reports through one
+serialized stream whose `time_seconds` is on the portfolio clock and whose
+objective is the global incumbent, so the profile the Primal Integral integrates
+is monotone and ends at the objective the run returns — not at whatever worker 0
+happened to hold.
+
 Sizing `--jobs` is a memory question rather than a core-count one. Every result
 records its `peak_rss_kib` — of the **solve only**; verification runs afterwards
 in the same job slot (see above). From the wiring check, `neos-5114902-kasavu` (710k
@@ -501,7 +533,7 @@ inherited, so a published number cannot silently change when a default moves:
 
 | | CBLS | CP-SAT |
 |---|---|---|
-| Threads | 1 | 1 (`num_workers`) |
+| Threads | 1 (`--cbls-threads`, > 1 runs the cooperative portfolio) | 1 (`--cpsat-workers` -> `num_workers`) |
 | Algorithm | Feasibility Jump + ViolationLS + Novelty Jump | `fj` + `ls` workers only (`filter_subsolvers`) |
 | Presolve | implied variable bounds only (activity-based propagation) | default, i.e. on |
 | Feasibility tolerance | `1e-6`, stated explicitly | CP-SAT's own |

@@ -341,6 +341,10 @@ def build_run_record(
             "jobs": args.jobs,
             "large_instance_jobs": 1,
             "cpsat_workers": args.cpsat_workers,
+            # Per-solve CPU, which is what makes the two halves of the table
+            # comparable to each other. Kept beside `jobs` because the product of
+            # the two is what a run actually asks of the machine.
+            "cbls_threads": args.cbls_threads,
             "mem_limit_gb": args.mem_limit_gb,
         },
         "budget_seconds": args.budget,
@@ -488,6 +492,8 @@ def build_command(job: Job, args: argparse.Namespace, results_dir: Path) -> list
             "--inf-clamp",
             str(args.inf_clamp),
             "--compound-moves" if args.compound_moves else "--no-compound-moves",
+            "--threads",
+            str(args.cbls_threads),
             *([] if args.propagate_bounds else ["--no-propagate-bounds"]),
             *solution_flags,
             "--commit",
@@ -955,6 +961,47 @@ def execute(jobs: list[Job], args: argparse.Namespace, results_dir: Path, worker
     return failures
 
 
+def check_arguments(args: argparse.Namespace) -> int | None:
+    """Refuse a run whose flags cannot produce a readable measurement.
+
+    Separate from `main` because these are claims about the *table*, not about
+    the driver: each one below is a way for a run to finish at exit 0 and mean
+    nothing, which is a different failure from the environment checks in
+    `check_preconditions`.
+
+    Returns the exit code to fail with, or None to proceed.
+    """
+    if args.cbls_threads < 1 or args.cpsat_workers < 1:
+        print(
+            f"--cbls-threads and --cpsat-workers must be >= 1 "
+            f"(got {args.cbls_threads}, {args.cpsat_workers}).",
+            file=sys.stderr,
+        )
+        return 2
+    # Both engines get the same CPU per instance or the table is not a
+    # head-to-head. Checked before anything is built or run, because the cost of
+    # discovering it afterwards is the whole run.
+    if args.cbls_threads != args.cpsat_workers and not args.allow_asymmetric_cpu:
+        print(
+            f"--cbls-threads {args.cbls_threads} != --cpsat-workers "
+            f"{args.cpsat_workers}: the two engines would not get the same CPU per "
+            f"instance, and the anytime comparison would read that difference as an "
+            f"implementation gap. Match them, or pass --allow-asymmetric-cpu if the "
+            f"asymmetry is the measurement.",
+            file=sys.stderr,
+        )
+        return 2
+    if args.budget <= 0 or args.jobs < 1:
+        # A non-positive budget makes every runner return instantly with a
+        # "no_solution" result, which resume then treats as work completed.
+        print(
+            f"--budget must be > 0 and --jobs >= 1 (got {args.budget}, {args.jobs}).",
+            file=sys.stderr,
+        )
+        return 2
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--roster", default="smoke", help="'smoke', 'full', or a path to a CSV")
@@ -967,6 +1014,25 @@ def main() -> int:
     parser.add_argument("--inst-dir", default=str(DEFAULT_INSTANCE_DIR))
     parser.add_argument("--cbls-bin", default=str(DEFAULT_CBLS_BIN))
     parser.add_argument("--cpsat-workers", type=int, default=1)
+    parser.add_argument(
+        "--cbls-threads",
+        type=int,
+        default=1,
+        help="CBLS portfolio workers per solve. 1 is the single-threaded engine "
+        "path; >1 runs the cooperative ParallelSearch portfolio. Memory is linear "
+        "in this (each worker owns a copy of the model), so size it against "
+        "--mem-limit-gb and the peak_rss_kib of a single-threaded run, not against "
+        "the core count",
+    )
+    parser.add_argument(
+        "--allow-asymmetric-cpu",
+        action="store_true",
+        help="permit --cbls-threads != --cpsat-workers. Refused by default: "
+        "CP-SAT at N workers runs N fj and N ls subsolvers, so an N-thread CBLS "
+        "against a 1-worker baseline is an N-fold CPU advantage that the table "
+        "would report as an implementation gap -- the one claim this benchmark "
+        "exists to make honestly (epic #87)",
+    )
     parser.add_argument(
         "--inf-clamp",
         type=float,
@@ -1018,14 +1084,8 @@ def main() -> int:
         "stop publishing",
     )
     args = parser.parse_args()
-    if args.budget <= 0 or args.jobs < 1:
-        # A non-positive budget makes every runner return instantly with a
-        # "no_solution" result, which resume then treats as work completed.
-        print(
-            f"--budget must be > 0 and --jobs >= 1 (got {args.budget}, {args.jobs}).",
-            file=sys.stderr,
-        )
-        return 2
+    if (refusal := check_arguments(args)) is not None:
+        return refusal
     args.commit = commit_sha()
     args.inst_dir = Path(args.inst_dir)
     args.cbls_bin = Path(args.cbls_bin)

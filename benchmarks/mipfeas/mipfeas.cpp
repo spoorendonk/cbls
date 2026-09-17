@@ -20,6 +20,7 @@
 // missing instance must not be scored as "found nothing" (see issue #103, where
 // a runner emptied a published table by skipping every absent instance).
 
+#include <atomic>
 #include <benchmarks/common/runner_args.h>
 #include <cbls/cbls.h>
 #include <cbls/io_mps.h>
@@ -33,11 +34,21 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <sys/resource.h>
+#include <utility>
+#include <vector>
 
 namespace {
+
+// LNS settings, unchanged from the single-threaded path they were written for
+// and named so the portfolio's per-worker factories cannot drift from it: the
+// two paths must differ in concurrency and in nothing else, or a --threads A/B
+// measures two engines.
+constexpr double kLnsFraction = 0.3;
+constexpr int kLnsInterval = 3;
 
 struct Args {
     std::string instance;
@@ -75,6 +86,14 @@ struct Args {
     // Changes the derived box, so it is recorded per result like every other
     // setting that does.
     int max_propagation_passes = 10;
+    // Portfolio workers. 1 is the single-threaded engine path this benchmark has
+    // always measured; >1 runs `ParallelSearch`, the cooperative portfolio, on
+    // that many threads. The baseline's `num_workers` is the number to match:
+    // CP-SAT at N workers runs N fj and N ls subsolvers, so an N-thread CBLS
+    // against a 1-worker CP-SAT would be an N-fold CPU advantage reported as an
+    // implementation gap. Recorded per result, and a config key in the scorer,
+    // so a table cannot mix the two.
+    int threads = 1;
     // Where to write the solution vector of a feasible run, for independent
     // verification against the original instance file (#138). Empty means "do
     // not write one" -- the driver passes it, a bare invocation need not.
@@ -88,7 +107,8 @@ void print_usage() {
         "                    [--budget SECONDS] [--seed N] [--feas-tol T]\n"
         "                    [--inf-clamp B] [--no-propagate-bounds]\n"
         "                    [--max-propagation-passes N]\n"
-        "                    [--no-compound-moves] [--solution-dir DIR]\n"
+        "                    [--no-compound-moves] [--threads N]\n"
+        "                    [--solution-dir DIR]\n"
         "                    [--commit SHA]\n");
 }
 
@@ -99,6 +119,12 @@ void print_usage() {
 // exit 2, and a bad integer is reported and exits 2 directly.
 using cbls::bench::parse_double;
 using cbls::bench::parse_int64;
+
+/// Upper bound on `--threads`. Not a hardware limit: each portfolio worker owns
+/// its own copy of the model, so on this roster's largest instances the memory
+/// cost is linear in this number, and a typo'd 1000 would be an out-of-memory
+/// kill rather than an error message.
+constexpr int kMaxThreads = 256;
 
 /// Range-checked rather than cast: parse_int64 validates the syntax, but an
 /// out-of-range value would wrap to a small or negative pass count and silently
@@ -111,6 +137,20 @@ int parse_propagation_passes(const char* text) {
         std::exit(2);
     }
     return static_cast<int>(passes);
+}
+
+/// Range-checked for the same reason `--max-propagation-passes` is, with one
+/// addition: 0 is rejected rather than read as "one per core". The CLI spells 0
+/// that way, but a benchmark row must record the concurrency it actually ran at
+/// against a baseline given the same number, and a machine-dependent default
+/// would make two rows of one table incomparable.
+int parse_thread_count(const char* text) {
+    const int64_t threads = parse_int64("--threads", text);
+    if (threads < 1 || threads > kMaxThreads) {
+        std::fprintf(stderr, "--threads must be in [1, %d]\n", kMaxThreads);
+        std::exit(2);
+    }
+    return static_cast<int>(threads);
 }
 
 Args parse_args(int argc, char** argv) {
@@ -141,6 +181,8 @@ Args parse_args(int argc, char** argv) {
             a.compound_moves = true;
         } else if (s == "--no-compound-moves") {
             a.compound_moves = false;
+        } else if (c.value_flag("--threads", v)) {
+            a.threads = parse_thread_count(v);
         } else if (c.value_flag("--solution-dir", v)) {
             a.solution_dir = v;
         } else if (c.value_flag("--commit", v)) {
@@ -347,6 +389,7 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     j["inf_clamp"] = args.inf_clamp;
     j["propagate_bounds"] = args.propagate_bounds;
     j["max_propagation_passes"] = args.max_propagation_passes;
+    j["threads"] = args.threads;
     j["commit_sha"] = args.commit_sha;
 
     // Write-then-rename: a job killed mid-write must leave either the previous
@@ -544,19 +587,80 @@ int run_benchmark(int argc, char** argv) {
     }
     trace << "time_seconds,objective\n";
 
-    cbls::FloatIntensifyHook hook;
-    cbls::LNS lns(0.3);
     cbls::SearchConfig cfg;
     cfg.feasibility_tolerance = args.feas_tol;
     cfg.use_compound_moves = args.compound_moves;
+    cfg.lns_interval = kLnsInterval;
+
+    // One model per portfolio worker, replicated BEFORE the solve bracket opens
+    // rather than inside the factory. A deep copy of a million-nonzero model is
+    // setup work: charging it to the search would both shorten the budget the
+    // search actually gets and hide the cost from `setup_seconds`, which exists
+    // to report exactly this kind of pre-search time. Copied rather than re-read
+    // from the MPS, which would repeat the parse and the propagation per worker.
+    //
+    // This is what makes memory linear in `--threads`: `peak_rss_kib` is the
+    // number to size a run's concurrency against, not the single-threaded one.
+    std::vector<cbls::Model> replicas;
+    double replicate_seconds = 0.0;
+    if (args.threads > 1) {
+        const auto t_replicate = std::chrono::steady_clock::now();
+        replicas.reserve(static_cast<size_t>(args.threads));
+        for (int i = 0; i < args.threads; ++i) {
+            replicas.push_back(built.model);
+        }
+        replicate_seconds = seconds_since(t_replicate);
+    }
 
     const auto t0 = std::chrono::steady_clock::now();
     cbls::SearchResult result;
     long trace_points = 0;
     try {
         TraceRecorder recorder(trace);
-        result = cbls::solve(built.model, args.budget, args.seed, /*use_fj=*/true, &hook, &lns,
-                             /*lns_interval=*/3, &recorder, cfg);
+        if (args.threads > 1) {
+            std::atomic<size_t> next_replica{0};
+            // Called once per worker, on that worker's thread, so the handout is
+            // atomic. The copy past the end is unreachable by ParallelSearch's
+            // own contract and is here so that a future change to it cannot turn
+            // into an out-of-bounds read.
+            auto model_factory = [&replicas, &next_replica, &built]() -> cbls::Model {
+                const size_t i = next_replica.fetch_add(1, std::memory_order_relaxed);
+                if (i < replicas.size()) {
+                    return std::move(replicas[i]);
+                }
+                return built.model;
+            };
+            // One hook and one LNS per worker: the search locks neither, so a
+            // shared instance would be a data race (see include/cbls/pool.h).
+            auto hook_factory = [](cbls::Model&) -> std::shared_ptr<cbls::InnerSolverHook> {
+                return std::make_shared<cbls::FloatIntensifyHook>();
+            };
+            auto lns_factory = []() -> std::shared_ptr<cbls::LNS> {
+                return std::make_shared<cbls::LNS>(kLnsFraction);
+            };
+            cbls::ParallelConfig par_config;
+            par_config.n_threads = args.threads;
+            cbls::ParallelSearch ps(args.threads);
+            result = ps.solve(model_factory, args.budget, args.seed, cfg, hook_factory, lns_factory,
+                              &recorder, par_config);
+            // The portfolio searched replicas, so the model this runner goes on
+            // to check the answer against still holds its initial assignment.
+            // Restore the returned point into it and re-evaluate, which is the
+            // state a single-threaded solve() leaves behind.
+            //
+            // No `set_objective_bound` here, unlike ViolationLSLoop::finish():
+            // the artificial `obj <= bound` row is added by the SEARCH, so this
+            // model -- which no search ever touched -- has none to release, and
+            // asking it to release one throws ("set_objective_bound requires
+            // add_objective_soft_constraint first").
+            built.model.restore_state(result.best_state);
+            cbls::full_evaluate(built.model);
+        } else {
+            cbls::FloatIntensifyHook hook;
+            cbls::LNS lns(kLnsFraction);
+            result = cbls::solve(built.model, args.budget, args.seed, /*use_fj=*/true, &hook, &lns,
+                                 kLnsInterval, &recorder, cfg);
+        }
         trace_points = recorder.n_points();
     } catch (const std::exception& e) {
         write_result(args, {{"status", "solve_error"},
@@ -590,7 +694,12 @@ int run_benchmark(int argc, char** argv) {
         {"wall_seconds", wall},
         {"read_seconds", read_seconds},
         {"build_seconds", build_seconds},
-        {"setup_seconds", read_seconds + build_seconds},
+        // Zero on the single-threaded path, which replicates nothing. Inside
+        // `setup_seconds` because it is pre-search work the wall clock of a run
+        // must still be scheduled for -- and it grows with --threads, which is
+        // the point of reporting it separately.
+        {"replicate_seconds", replicate_seconds},
+        {"setup_seconds", read_seconds + build_seconds + replicate_seconds},
         // Mirrors cpsat_solve.py's key of the same name. `callback` is this
         // runner's analogue of CP-SAT's log: a genuine anytime profile. Anything
         // else means the scorer had to stand in a single end point, which is a
