@@ -923,6 +923,48 @@ def has_usable_result(job: Job, results_dir: Path, verify: bool = False) -> bool
     )
 
 
+def check_resume_configuration(
+    jobs: list[Job], results_dir: Path, args: argparse.Namespace
+) -> int | None:
+    """Refuse to resume onto results produced at a different per-solve CPU.
+
+    Resume keys on file existence alone, and a result's path carries the engine
+    and the instance but not the concurrency. So re-running a directory at
+    `--cbls-threads 4` after a 1-thread run skips every job it finds, and the
+    scorer then sees a UNIFORM `threads=1` table -- no mixture, nothing for
+    `check_uniform_configuration` to refuse, and an operator who believes they
+    measured 4 threads. The row is truthful; the person reading it is not.
+
+    Checked here rather than at scoring time because by then the run has been
+    paid for. `--force` is the documented way through, and it clears the old
+    results rather than resuming onto them.
+
+    Returns the exit code to fail with, or None to proceed.
+    """
+    wanted = {"cbls": args.cbls_threads, "cpsat": args.cpsat_workers}
+    key = {"cbls": "threads", "cpsat": "workers"}
+    for job in jobs:
+        result = _read_json(job.result_path(results_dir))
+        if result is None:
+            continue
+        recorded = result.get(key[job.engine])
+        if recorded is None:
+            continue  # predates the key; nothing to contradict
+        if recorded != wanted[job.engine]:
+            print(
+                f"{results_dir} already holds {job.engine} results at "
+                f"{key[job.engine]}={recorded}, but this run asks for "
+                f"{wanted[job.engine]} (first seen on {job.instance}). Resume skips "
+                f"jobs that have a result, so those rows would stay at "
+                f"{recorded} while the table claims this run's configuration. "
+                f"Score them where they are, re-run with --force, or choose a "
+                f"different --results-dir.",
+                file=sys.stderr,
+            )
+            return 2
+    return None
+
+
 def drop_completed(
     normal: list[Job], large: list[Job], results_dir: Path, force: bool, verify: bool = False
 ) -> tuple[list[Job], list[Job]]:
@@ -1117,6 +1159,14 @@ def main() -> int:
     sizes = read_sizes(args.inst_dir / MANIFEST_FILENAME)
     normal, large = plan_jobs(instances, engines, sizes, args.large_bytes)
     planned = normal + large
+
+    # Before the resume decides anything: a directory holding results at another
+    # per-solve CPU cannot be extended into this run's table.
+    if (
+        not args.force
+        and (refusal := check_resume_configuration(planned, results_dir, args)) is not None
+    ):
+        return refusal
 
     normal, large = drop_completed(normal, large, results_dir, force=args.force, verify=args.verify)
 

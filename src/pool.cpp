@@ -230,9 +230,12 @@ struct WorkerAccumulator {
             result.objective = r.objective;
             result.feasible = r.feasible;
             result.best_state = r.best_state;
-            // Belongs to `best_state`, so it moves with it.
+            // Belongs to `best_state`, so it moves with it. `escape_probe_armed`
+            // deliberately does NOT: it is a latch on one worker's END state,
+            // and the state being returned came from the pool, which carries no
+            // worker identity to attribute it to. The portfolio leaves it false
+            // and include/cbls/search.h says so.
             result.best_violation = r.best_violation;
-            result.escape_probe_armed = r.escape_probe_armed;
         }
         any_run = true;
     }

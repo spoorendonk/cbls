@@ -168,8 +168,9 @@ def test_solve_parallel_calls_a_python_callback_from_a_worker_thread() -> None:
 
     `SolveCallback` reaches C++ through a nanobind trampoline, which acquires the
     GIL from worker 0 -- so before the release it deadlocked for exactly the same
-    reason `model_factory` did. The docstring asserts the callback runs on worker
-    0; without this test a change that reverted the guard on `solve_parallel`
+    reason `model_factory` did. Every worker now reports, through the portfolio's
+    serializing wrapper, so what this pins is that no call lands on the CALLING
+    thread; without this test a change that reverted the guard on `solve_parallel`
     alone would leave the other scenarios green.
     """
     out = _assert_scenario_ok("callback")

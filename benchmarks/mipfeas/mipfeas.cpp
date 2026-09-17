@@ -552,8 +552,17 @@ cbls::SearchResult solve_portfolio(const Args& args, cbls::MpsToModelResult& bui
     // which no search ever touched -- has none to release, and asking it to
     // release one throws ("set_objective_bound requires
     // add_objective_soft_constraint first").
-    built.model.restore_state(result.best_state);
-    cbls::full_evaluate(built.model);
+    // Guarded because an empty `best_state` is a reachable portfolio result, not
+    // a defect: solve_portfolio returns a default SearchResult when a positive
+    // time limit expired during thread creation, so no worker ever ran. Model::
+    // restore_state throws on a size mismatch, and that throw would be caught by
+    // the runner's solve guard and written out as `solve_error` -- turning "did
+    // no work" into "the search failed", which is a different row and a
+    // different diagnosis from the one the single-threaded arm writes.
+    if (result.best_state.values.size() == built.model.num_vars()) {
+        built.model.restore_state(result.best_state);
+        cbls::full_evaluate(built.model);
+    }
     return result;
 }
 
@@ -628,6 +637,12 @@ int run_benchmark(int argc, char** argv) {
     }
     // Bound propagation runs inside mps_to_model, so it is inside this number.
     const double build_seconds = seconds_since(t_build);
+    // Sampled HERE rather than after the solve. solve() appends the artificial
+    // `obj <= bound` row -- two nodes -- to whichever model it is handed, which
+    // is `built.model` single-threaded but a replica under the portfolio. Read
+    // afterwards, one instance would publish two different DAG sizes depending
+    // only on --threads.
+    const std::size_t n_nodes_built = built.model.num_nodes();
 
     const std::string trace_path = args.out_dir + "/" + args.instance + ".trace.csv";
     std::ofstream trace(trace_path);
@@ -655,9 +670,25 @@ int run_benchmark(int argc, char** argv) {
     double replicate_seconds = 0.0;
     if (args.threads > 1) {
         const auto t_replicate = std::chrono::steady_clock::now();
-        replicas.reserve(static_cast<size_t>(args.threads));
-        for (int i = 0; i < args.threads; ++i) {
-            replicas.push_back(built.model);
+        // Caught and reported like every other failure this runner can hit.
+        // Memory here is linear in --threads by construction, so bad_alloc in
+        // this loop is the EXPECTED way an over-sized --threads fails under the
+        // driver's `ulimit -v` -- and a job that dies without writing a result
+        // leaves the driver's resume waiting on a file that never appears,
+        // i.e. indistinguishable from a job that was never run.
+        try {
+            replicas.reserve(static_cast<size_t>(args.threads));
+            for (int i = 0; i < args.threads; ++i) {
+                replicas.push_back(built.model);
+            }
+        } catch (const std::exception& e) {
+            write_result(args, {{"status", "replicate_error"},
+                                {"message", e.what()},
+                                {"read_seconds", read_seconds},
+                                {"build_seconds", build_seconds},
+                                {"replicate_seconds", seconds_since(t_replicate)}});
+            std::fprintf(stderr, "%s: replicate error: %s\n", args.instance.c_str(), e.what());
+            return 1;
         }
         replicate_seconds = seconds_since(t_replicate);
     }
@@ -708,12 +739,13 @@ int run_benchmark(int argc, char** argv) {
         {"wall_seconds", wall},
         {"read_seconds", read_seconds},
         {"build_seconds", build_seconds},
-        // DAG size, which n_vars/n_cons do not imply: a matrix nonzero normally
-        // becomes two nodes, so this is what the evaluation cost actually scales
-        // with, and what a model-build reservation has to be sized to. Published
+        // DAG size, which n_vars/n_cons do not imply: a matrix nonzero costs
+        // between 0 and 2 nodes depending on its coefficient (see
+        // src/io/mps_to_model.cpp), so this is what the evaluation cost actually
+        // scales with, and what a model-build reservation has to be sized to. Published
         // with the nonzero count beside it because the ratio is not constant --
         // square47 reads 125k nodes from a matrix an order of magnitude larger.
-        {"n_nodes", built.model.num_nodes()},
+        {"n_nodes", n_nodes_built},
         {"n_nonzeros", prob.nonzeros.size()},
         // Zero on the single-threaded path, which replicates nothing. Inside
         // `setup_seconds` because it is pre-search work the wall clock of a run

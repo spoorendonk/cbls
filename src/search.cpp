@@ -685,7 +685,8 @@ bool ViolationLSLoop::record_best() {
 // Requirement: submit when found, not at the end. The cost is ONE Model::State
 // copy -- `best_state_` is the loop's own incumbent and must survive, so it is
 // copied here and then MOVED into the pool's vector -- plus one
-// uncontended-in-the-common-case mutex, per NEW BEST, i.e. per improving batch
+// uncontended-in-the-common-case mutex, plus the O(#constraints) residual scan
+// the pooled solution's `violation` needs, per NEW BEST, i.e. per improving batch
 // of 1000 GLS iterations. Nowhere near the hot path. The move matters at
 // 32 workers on a large model: `submit` takes its argument by value precisely
 // so the second copy happens out here rather than inside the critical section.

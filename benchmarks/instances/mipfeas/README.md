@@ -407,18 +407,22 @@ every published figure here was measured on. Above 1 it runs `ParallelSearch`,
 the cooperative portfolio: N workers, each on its own copy of the model, sharing
 incumbents through the solution pool and restarting from it when they stall.
 
-Three things follow, and all three are checked by the harness rather than left to
-the operator:
+Three things follow. Two of them the harness checks; the third is sizing that
+stays the operator's, and is called out below rather than implied away:
 
 * **The baseline gets the same number.** CP-SAT at `num_workers: N` runs N `fj`
   and N `ls` subsolvers, so an N-thread CBLS against a 1-worker CP-SAT is an
   N-fold CPU advantage that the table would report as an implementation gap. The
   driver refuses `--cbls-threads != --cpsat-workers` unless
   `--allow-asymmetric-cpu` says the asymmetry is the measurement.
-* **Memory is linear in the thread count.** Each worker owns a model, so the
-  `peak_rss_kib` figures below — measured single-threaded — are a per-worker
-  floor, not a total. `--jobs` x `--cbls-threads` is what the machine is actually
-  asked for.
+* **Memory is linear in the thread count, and nothing checks it.** The runner
+  holds the built model *plus* one replica per worker, so N threads cost N+1
+  copies; the `peak_rss_kib` figures below — measured single-threaded — are a
+  per-worker floor, not a total. `--mem-limit-gb` is a per-JOB `ulimit -v` and
+  knows nothing about `--cbls-threads`, so `--jobs` x `--cbls-threads` against
+  that cap is arithmetic to do before starting, not a guard that will stop you.
+  A replication that runs out of memory is at least reported rather than silent:
+  the row is written with `status: replicate_error`.
 * **The two arms are separate tables.** `threads` is a scorer config key, so a
   results directory mixing thread counts is refused rather than averaged.
 

@@ -190,6 +190,12 @@ TEST_CASE("the adapter spends nodes per coefficient at the documented three rate
     // so the assumption is pinned here instead, where a new fast path in
     // `build_lin_expr` makes it fail loudly rather than silently go stale.
     //
+    // Read it as a canary on `build_lin_expr`, NOT as the reservation's
+    // regression test: revert `Model::reserve` and its caller and this stays
+    // green, because the reservation's only effect is on allocation behaviour
+    // and nothing in the suite can observe that. The reservation ships pinned by
+    // measurement (recorded in its commit) rather than by a test.
+    //
     // kSmallBinary: 3 objective coefficients (3, 2, 4 -> two nodes each) and 3
     // matrix coefficients of 1.0 (no nodes). One G row: a Sum over its terms,
     // its RHS constant, the comparison. Plus the objective's own Sum.

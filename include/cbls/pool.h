@@ -118,6 +118,17 @@ public:
     //
     // Each factory is called ONCE per worker, not once per restart: a worker
     // that restarts keeps its model, hook and LNS and carries on with them.
+    //
+    // `callback` sees the PORTFOLIO's stream, not worker 0's. Every worker
+    // reports through one mutex-guarded wrapper, and the consumer is invoked
+    // UNDER that mutex -- three consequences, all deliberate: a consumer
+    // writing to one stream or file needs no lock of its own; a consumer that
+    // BLOCKS throttles the whole portfolio rather than only its own worker
+    // (which is the price of an ordered stream, and why a callback here must
+    // not do slow work); and a consumer must never call back into this
+    // portfolio. The wrapper rewrites `time_seconds` onto the portfolio clock
+    // and `objective`/`new_best` onto the global incumbent, leaving every other
+    // field the reporting worker's own -- see SolveProgress in search.h.
     SearchResult solve(std::function<Model()> model_factory, double time_limit, uint64_t seed,
                        const SearchConfig& config,
                        std::function<std::shared_ptr<InnerSolverHook>(Model&)> hook_factory,

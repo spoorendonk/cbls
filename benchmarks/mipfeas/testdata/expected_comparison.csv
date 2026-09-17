@@ -24,9 +24,9 @@
 #          Tolerances: bound_absolute=1e-06;bound_relative=1e-09;integrality_absolute=1e-06;marginal_fraction=0.1;objective_absolute=1e-06;objective_relative=1e-06;row_absolute=1e-06;row_relative=1e-09
 #
 # NOT a MIPfeas leaderboard entry: the published MIPfeas runs give each
-# solver 24 threads, and both engines here get 1. These numbers are
-# comparable to each other and never to one from plato.asu.edu or the
-# GAMS blog.
+# solver 24 threads; this one gives CBLS (not recorded), CP-SAT 1 worker.
+# These numbers are comparable to each other and never to one from
+# plato.asu.edu or the GAMS blog.
 #
 # *** INCOMPLETE RUN — AGGREGATES COVER ONLY THE JOBS THAT RAN ***
 # cpsat: 1 of 13 not run

@@ -190,11 +190,14 @@ struct SearchResult {
     /// run ended stuck" while `false` does *not* mean "never armed" — a run that
     /// armed and then found a new best reports `false`. Exposed so the regression
     /// tests for the two arming conditions can observe them without timing the
-    /// call. Single-`solve()` only: `ParallelSearch` composes its result field
-    /// by field from the pool's best solution, which carries only the state and
-    /// the objective, and so drops this (and `best_violation`) -- it reads
-    /// `false` there with no exception, the no-solution fallback included, since
-    /// that returns a default `SearchResult`.
+    /// call. This is the ONE field `ParallelSearch` still drops: it composes
+    /// its result from the pool's best solution plus per-worker sums, and a
+    /// latch can be neither summed nor attributed to the worker whose state won
+    /// the pool. It reads `false` there with no exception, the no-solution
+    /// fallback included, since that returns a default `SearchResult`.
+    /// `best_violation` is no longer in this class -- a pooled `Solution`
+    /// carries the residual of the state it holds, and the aggregation reads
+    /// it.
     bool escape_probe_armed = false;
 
     /// Diversification kicks taken during the run -- the counter
@@ -203,9 +206,12 @@ struct SearchResult {
     /// Exposed so a regression test can bound how OFTEN the search diversifies
     /// without reading its internals; a test that can only see the trajectory
     /// cannot tell a suppressed kick from a merely delayed one.
-    /// Single-`solve()` only, with the same caveat as `escape_probe_armed`
-    /// above: `ParallelSearch`'s aggregation composes the result field
-    /// by field and leave this at 0.
+    /// `ParallelSearch` SUMS this over its workers, and within a worker over
+    /// its restarts, the way `iterations` is summed: the counter describes work
+    /// DONE. It is therefore not comparable to a single run's count at the same
+    /// wall time. It read 0 under a portfolio until the aggregation began
+    /// assembling it, which made an ablation read as "the mechanism never
+    /// fired" on a run that used it thousands of times.
     int perturbations = 0;
 
     /// LNS destroy-repair cycles run during the run. Separate from
@@ -220,7 +226,8 @@ struct SearchResult {
     /// subset whose `destroy_repair` returned true; read the two together,
     /// because a nonzero count here says only that LNS spent budget, not that
     /// it helped.
-    /// Single-`solve()` only, as above.
+    /// Summed over workers and restarts by `ParallelSearch`, as `perturbations`
+    /// above is.
     int lns_repairs = 0;
 
     /// The subset of `lns_repairs` whose repair was ACCEPTED -- the calls where
@@ -243,7 +250,8 @@ struct SearchResult {
     /// not a no-op either -- it draws from the RNG and rolls the state back --
     /// so `lns_repairs_accepted == 0` does not make an LNS arm equivalent to a
     /// no-LNS one; it only says the budget bought nothing.
-    /// Single-`solve()` only, as above.
+    /// Summed over workers and restarts by `ParallelSearch`, as `perturbations`
+    /// above is.
     int lns_repairs_accepted = 0;
 
     /// The objective at the FIRST feasible point this run recorded, and the
@@ -278,10 +286,13 @@ struct SearchResult {
     /// +inf is a value the #100 witness path genuinely produces here and the
     /// two readings must not collide.
     ///
-    /// Single-`solve()` only, with the same caveat as `escape_probe_armed`
-    /// above: `ParallelSearch`'s aggregation composes the result
-    /// field by field, so both read NaN there -- which is the honest reading,
-    /// since "not recorded" is exactly what the aggregation leaves behind.
+    /// `ParallelSearch` records both: the earliest worker AND restart to reach
+    /// feasibility, with the objective that same run reached -- the pair means
+    /// nothing split across two. The time is shifted onto the PORTFOLIO's
+    /// clock, because a worker's own `SearchResult` times from that worker's
+    /// `solve()` start and a worker restarts: unshifted, a late restart's own
+    /// 0.001s would be reported for a portfolio most of the way through its
+    /// budget. NaN still means no worker reached a feasible point.
     double first_feasible_objective = std::numeric_limits<double>::quiet_NaN();
     /// Seconds from the start of `solve()` to the first feasible point. See
     /// `first_feasible_objective` above; the two are recorded together and are
@@ -289,6 +300,17 @@ struct SearchResult {
     double time_to_first_feasible = std::numeric_limits<double>::quiet_NaN();
 };
 
+/// One progress row. Under `ParallelSearch` a row is a HYBRID by design and has
+/// to be read as one: `time_seconds` is on the PORTFOLIO's clock and `objective`
+/// / `new_best` describe the PORTFOLIO's incumbent -- so the stream is monotone
+/// in both and its last row matches the returned result, which is what a harness
+/// integrating it as a step function needs. `iteration`, `total_violation`,
+/// `feasible` and `perturbations` stay the REPORTING worker's own, and
+/// consecutive rows come from different workers, so those four are neither
+/// monotone nor a rate, and `total_violation` is not the residual of the point
+/// whose `objective` the row carries. Note `perturbations` here is one worker's
+/// count where `SearchResult::perturbations` is the portfolio's sum. See
+/// `PortfolioProgress` in src/pool.cpp.
 struct SolveProgress {
     int64_t iteration = 0;
     double time_seconds = 0.0;
@@ -349,11 +371,13 @@ int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations 
 /// having done no work, rather than looping forever.
 ///
 /// `coord` is `ParallelSearch`'s cross-worker channel: non-null only there. With
-/// it null -- every call site outside that class, the four benchmark runners
-/// included -- the search reads and writes nothing shared and its trajectory is
-/// bit-identical to the run without the parameter. `tests/test_parallel.cpp`
-/// pins that; it is what keeps the benchmarks and the MIPfeas same-algorithm
-/// comparison measuring the engine rather than the portfolio.
+/// it null -- every call site outside that class -- the search reads and writes
+/// nothing shared and its trajectory is bit-identical to the run without the
+/// parameter. `tests/test_parallel.cpp` pins that. Three of the four benchmark
+/// runners are single-threaded and always pass null; `benchmarks/mipfeas` does
+/// too at its default `--threads 1`, which is the arm every published MIPfeas
+/// figure was measured on and the one that keeps the same-algorithm comparison
+/// about the engine rather than about the portfolio.
 SearchResult solve(Model& model, double time_limit = 10.0, uint64_t seed = 42, bool use_fj = true,
                    InnerSolverHook* hook = nullptr, LNS* lns = nullptr, int lns_interval = 3,
                    SolveCallback* callback = nullptr, const SearchConfig& config = {},

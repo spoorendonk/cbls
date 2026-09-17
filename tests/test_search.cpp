@@ -1763,15 +1763,53 @@ TEST_CASE("ParallelSearch records the first-feasible pair on the portfolio clock
     // a restart's own 0.001s for a portfolio that had been running for most of
     // its budget. The pair is therefore shifted onto the shared clock, which
     // bounds it by the wall time of the call.
+    // What this pins, and what it does not. The pair must agree with the progress
+    // stream, which is independently on the portfolio clock -- the first row
+    // carrying a finite objective IS the moment the portfolio first held a
+    // feasible point. That catches the pair being timestamped against the wrong
+    // origin.
+    //
+    // It does NOT catch the shift being dropped altogether. That is only
+    // observable when the winning worker reaches feasibility in a LATE restart,
+    // and every model cheap enough for the fast set reaches its first feasible
+    // point inside the first one -- verified by deleting `started_at +` from
+    // src/pool.cpp, which leaves this green. Pinning the remaining case needs a
+    // model whose first feasible point is thousands of iterations away, which is
+    // a timing-sensitive test this set should not carry. Said plainly here
+    // rather than left to read as coverage.
+    struct FirstFinite : SolveCallback {
+        void on_progress(const SolveProgress& p) override {
+            if (std::isfinite(p.objective) && std::isnan(seen)) {
+                seen = p.time_seconds;
+            }
+        }
+        double seen = std::numeric_limits<double>::quiet_NaN();
+    };
+
+    FirstFinite first;
+    ParallelConfig par_config;
+    par_config.n_threads = 2;
+    SearchConfig cfg;
+    cfg.max_iterations = 40;  // exhausted, so workers restart
+
     ParallelSearch ps(2);
     const auto t0 = std::chrono::steady_clock::now();
-    const SearchResult r = ps.solve(simple_model_factory(), 1.0, 42);
+    auto factory = simple_model_factory();
+    const SearchResult r =
+        ps.solve(factory, /*time_limit=*/0.5, /*seed=*/42, cfg,
+                 /*hook_factory=*/nullptr, /*lns_factory=*/nullptr, &first, par_config);
     const double wall =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 
-    CAPTURE(r.objective, r.first_feasible_objective, r.time_to_first_feasible, wall);
+    CAPTURE(r.objective, r.first_feasible_objective, r.time_to_first_feasible, first.seen, wall);
     REQUIRE(r.feasible);
     REQUIRE_FALSE(std::isnan(r.first_feasible_objective));
     REQUIRE(r.time_to_first_feasible >= 0.0);
     REQUIRE(r.time_to_first_feasible <= wall);
+
+    // Both on the portfolio clock, so they describe the same instant. The
+    // tolerance covers the gap between a worker recording its own first feasible
+    // point and the wrapper timestamping the row it emits for it.
+    REQUIRE_FALSE(std::isnan(first.seen));
+    REQUIRE_THAT(r.time_to_first_feasible, Catch::Matchers::WithinAbs(first.seen, 0.005));
 }

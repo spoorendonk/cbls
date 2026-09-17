@@ -1799,6 +1799,40 @@ def read_roster(path: Path) -> list[tuple[str, float, str]]:
     return entries
 
 
+def _config_value(rows: list[Scored], engine: str, key: str) -> str | None:
+    """The value `key` took in `engine`'s rows, or None when no row records it."""
+    for row in rows:
+        if row.engine != engine or not row.config:
+            continue
+        for part in row.config.split(";"):
+            name, _, value = part.partition("=")
+            if name == key:
+                return value
+    return None
+
+
+def _cpu_line(rows: list[Scored]) -> str:
+    """Per-solve CPU, as the rows themselves record it.
+
+    Read back off the rows for the same reason `_tolerance_line` is: a table has
+    to state what its OWN run did. This used to be the literal "both engines
+    here get 1", which stopped being true the moment the runner learned
+    `--threads` -- and the sentence sits in the artifact that travels, next to
+    the claim that these numbers are not comparable to a published MIPfeas
+    entry. `check_uniform_configuration` has already refused a mixture, so one
+    value per engine is all there can be.
+    """
+
+    def phrase(value: str | None, engine: str, unit: str) -> str:
+        if value is None:
+            return f"{engine} (not recorded)"
+        return f"{engine} {value} {unit}" + ("" if value == "1" else "s")
+
+    threads = _config_value(rows, "cbls", "threads")
+    workers = _config_value(rows, "cpsat", "workers")
+    return f"{phrase(threads, 'CBLS', 'thread')}, {phrase(workers, 'CP-SAT', 'worker')}"
+
+
 def _tolerance_line(rows: list[Scored]) -> str:
     """The tolerance set the verdicts were reached under, as the verdicts record it.
 
@@ -1881,9 +1915,9 @@ def write_comparison(
         f"#          Tolerances: {_tolerance_line(rows)}",
         "#",
         "# NOT a MIPfeas leaderboard entry: the published MIPfeas runs give each",
-        "# solver 24 threads, and both engines here get 1. These numbers are",
-        "# comparable to each other and never to one from plato.asu.edu or the",
-        "# GAMS blog.",
+        f"# solver 24 threads; this one gives {_cpu_line(rows)}.",
+        "# These numbers are comparable to each other and never to one from",
+        "# plato.asu.edu or the GAMS blog.",
         "#",
     ]
     instances = len(rows) // max(len(summaries), 1)

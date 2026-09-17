@@ -1546,7 +1546,8 @@ Thread safety is by isolation plus that one mutex.
 Three things make it cooperative rather than N independent runs, and all three
 are reached through one parameter -- `cbls::solve()`'s trailing
 `SearchCoordination*`, which is null at every call site outside this class
-(every benchmark runner included), leaving the single-threaded trajectory
+(three of the four benchmark runners always, and `mipfeas` at its default
+`--threads 1`), leaving the single-threaded trajectory
 bit-identical to what it was before the parameter existed:
 
 1. **Submit when found.** `record_best()` shares each new incumbent into the
@@ -1857,19 +1858,25 @@ in both the human and the JSONL format:
 - **`iterations` is a sum over workers; `time_seconds` is a max.** The two are
   not a rate. A 12-worker 10s run reports roughly 12 workers' iterations against
   10 seconds.
-- **Progress records come from worker 0 only.** The trajectory shown is one
-  worker's, while the final `Objective:` is the best across all of them — so the
-  last progress row can be worse than the reported result. A worker that
-  restarts also restarts its progress counters, so `iteration` and `time` in the
-  JSONL progress stream are not monotonic across a run and `new_best` can be
-  re-emitted. Treat each record as belonging to a run, not to the portfolio.
-- **Seven `SearchResult` fields are dropped.** The aggregation composes its
-  result from the pool's best solution, which carries only the state and the
-  objective, so `best_violation`, `escape_probe_armed`, `perturbations`,
-  `lns_repairs`, `lns_repairs_accepted`, `first_feasible_objective` and
-  `time_to_first_feasible` read as their "not recorded" values. Nothing in the
-  CLI's own output reads them; a library caller that does should use
-  `cbls::solve()` directly, as all four benchmark runners do.
+- **Every progress record is a hybrid, and has to be read as one.** All workers
+  report, through one mutex-guarded wrapper (`PortfolioProgress`, `src/pool.cpp`).
+  It rewrites `time_seconds` onto the **portfolio** clock and `objective` onto
+  the **portfolio's** incumbent, with `new_best` set when that incumbent
+  improved — so the stream is monotone in both and its last row matches the
+  reported result, which is what a harness integrating it as a step function
+  needs. `iteration`, `total_violation`, `feasible` and `perturbations` stay the
+  *reporting* worker's own, and consecutive rows come from different workers, so
+  those four jump around and are not a rate. Worker 0 alone also carries the
+  periodic no-new-best tick, which is what keeps a liveness row flowing.
+- **One `SearchResult` field is still dropped.** `best_violation` now comes from
+  the pooled solution itself, which carries the residual of the state it holds;
+  `perturbations`, `lns_repairs` and `lns_repairs_accepted` are **sums** over the
+  workers, as `iterations` is, and so are not comparable to a single run's counts
+  at the same wall time; `first_feasible_objective` and `time_to_first_feasible`
+  are the pair from the earliest worker *and restart* to reach feasibility, with
+  the time shifted onto the portfolio clock. Only `escape_probe_armed` reads its
+  "not recorded" value: it is a latch on one worker's end state, and a pooled
+  solution carries no worker identity for it to belong to.
 - **The model is read once per worker.** `run_cli` loads it, and the factory
   loads it again inside each worker, so a 32-thread default run parses the file
   33 times and holds 33 `Model` copies. On a large instance that is the most

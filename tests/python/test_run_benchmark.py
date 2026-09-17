@@ -255,6 +255,38 @@ def test_the_asymmetric_cpu_split_can_be_opted_into(capsys: pytest.CaptureFixtur
     assert "--budget must be > 0" in err
 
 
+def test_resuming_at_a_different_thread_count_is_refused(tmp_path: Path) -> None:
+    # Resume keys on file existence alone and a result's path carries no
+    # concurrency, so re-running a 1-thread directory at 4 threads would skip
+    # every job and score a uniform threads=1 table -- nothing for the scorer's
+    # mixed-configuration guard to catch, and an operator who believes they
+    # measured 4. Caught before the run rather than after it is paid for.
+    (tmp_path / "cbls").mkdir()
+    (tmp_path / "cbls" / "a.json").write_text(json.dumps({"instance": "a", "threads": 1}))
+    jobs = [Job("cbls", "a")]
+
+    refusal = run_benchmark.check_resume_configuration(
+        jobs, tmp_path, _driver_args(cbls_threads=4, cpsat_workers=4)
+    )
+    assert refusal == 2
+
+    # The matching count resumes, and so does a result that predates the key:
+    # it records nothing this run can contradict.
+    assert (
+        run_benchmark.check_resume_configuration(
+            jobs, tmp_path, _driver_args(cbls_threads=1, cpsat_workers=1)
+        )
+        is None
+    )
+    (tmp_path / "cbls" / "a.json").write_text(json.dumps({"instance": "a"}))
+    assert (
+        run_benchmark.check_resume_configuration(
+            jobs, tmp_path, _driver_args(cbls_threads=4, cpsat_workers=4)
+        )
+        is None
+    )
+
+
 def test_build_command_gives_cpsat_its_worker_count() -> None:
     command = build_command(Job("cpsat", "inst"), _driver_args(), Path("/results"))
     assert command[command.index("--workers") + 1] == "1"
