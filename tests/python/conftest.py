@@ -34,6 +34,23 @@ _ignored_binding_tests: list[str] = []
 BINDING_MODULE = "_cbls_core"
 
 
+@pytest.fixture(autouse=True)
+def _no_inherited_git_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Strip every GIT_* variable before a test can spawn git.
+
+    A git hook exports GIT_DIR and GIT_INDEX_FILE (pre-commit does, for the commit
+    it is gating), and any git a test runs inherits them -- whatever its `cwd`.
+    During #160 a test's `git init` in a tmp dir re-initialised the repository
+    being committed to instead, setting `core.bare = true` in the shared
+    `.git/config` for every worktree, and its `git add` staged into the commit's
+    index. Stripping here, for every test, is what keeps the next test that runs
+    git from repeating it; a test that genuinely needs a GIT_* variable sets its
+    own with `monkeypatch.setenv`.
+    """
+    for name in [name for name in os.environ if name.startswith("GIT_")]:
+        monkeypatch.delenv(name)
+
+
 def imports_module(text: str, module: str) -> bool:
     """Whether this source really imports `module` -- by AST, not by substring.
 

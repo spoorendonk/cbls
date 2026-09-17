@@ -121,6 +121,7 @@ C++ tests use **Catch2** (not GoogleTest): files in `tests/`, registered in `tes
 - Test nanobind bindings from Python with pytest, not from C++ — the binding is an implementation detail. Include round-trip tests: create in Python → pass to C++ → get result back.
 - An `std::optional` guarded by `REQUIRE(o.has_value())` still trips `bugprone-unchecked-optional-access`, which is enabled: the check cannot see through Catch2's expression templates, and `.value()` reads the same way to it. Write `if (!o.has_value()) { FAIL("..."); return; }` instead — the `return` is what makes the flow analysis see the guard, even though `FAIL` throws. Do **not** reach for a `NOLINT` or add the check to `.clang-tidy`'s disabled list; both routes are closed (see **Git Hooks**).
 - A Python test that could **deadlock the interpreter** — anything handing a Python callable to C++ that spawns threads — must run its scenario in a **child process** under a wall-clock timeout. No in-process deadline can report it: `pytest-timeout`'s `thread` method runs its timer on a Python thread that needs the very GIL the test is starving, and its `signal` method only takes effect at the next bytecode in a main thread parked inside a C++ `join()`. `tests/python/test_pool.py` is the pattern — scenarios in a `__main__` block, `subprocess.run(..., timeout=...)` in the test.
+- A test that spawns `git` must not inherit a hook's `GIT_*` variables: pre-commit exports `GIT_DIR` and `GIT_INDEX_FILE`, and a `git init` in a tmp dir once re-initialised the real repository (`core.bare = true` for every worktree, #160). `tests/python/conftest.py` strips every `GIT_*` variable before each test; don't work around it.
 - Terse output is not configured anywhere — pass the flags. `ctest --progress` collapses the running list, `--tb=short -q` keeps pytest failures short, as the `## Build & Test` blocks below already do. `pyproject.toml` sets `testpaths`, ruff's rule set and `mypy strict`, but no `addopts`, `pretty` or `output-format`.
 
 ## CMake
@@ -698,15 +699,14 @@ where each benchmark's record schema is declared; `provenance.py` is the commit,
 the build-dir refusals and the machine record. What it deliberately does **not**
 hold is any benchmark's resume rule or record shape — `mipfeas`, the MINLPLib
 re-run and the ablation campaign resume on three different keys for reasons of
-measurement, and "one driver" there would change what gets re-run. The
-MINLPLib runner's contract (columns, exit status, note vocabulary) is declared
-once in `benchmarks/minlplib/runner.py`. The mechanics are pinned in
+measurement, and a single loop with per-benchmark hooks would only relocate
+them. The MINLPLib runner's contract (columns, exit status, note vocabulary) is
+declared once in `benchmarks/minlplib/runner.py`. The mechanics are pinned in
 `tests/python/test_benchmark_common.py`; don't re-test the mechanics per driver,
-but do pin each driver's use of them -- which jobs go in the tail, what a killed
-job records, which timeout a call carries -- since that wiring is what a
-refactor silently drops. Drivers
-run as scripts reach the package through a `sys.path` shim on the repository
-root, as `run_ablation.py` always did.
+but do pin each driver's use of them — which jobs go in the tail, what a killed
+job records, which timeout a call carries — since that wiring is what a
+refactor silently drops. Drivers run as scripts reach the package through a
+`sys.path` shim on the repository root, as `run_ablation.py` always did.
 
 ### Benchmark priority
 

@@ -209,17 +209,13 @@ def _git(repo: Path, *argv: str) -> None:
     subprocess.run(["git", *argv], cwd=repo, check=True, capture_output=True)
 
 
-def test_the_commit_is_marked_dirty_only_for_modified_tracked_files(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_the_commit_is_marked_dirty_only_for_modified_tracked_files(tmp_path: Path) -> None:
     """A plain SHA from a modified checkout claims a reproducibility the result
-    does not have; an untracked scratch file says nothing about the code."""
-    # A git hook runs this suite with GIT_DIR and GIT_INDEX_FILE exported, and
-    # every git command below would inherit them: `init` then REINITIALISES the
-    # repository being committed to (setting core.bare) and `add` stages into
-    # its index. Clear them before the first command, not after.
-    for name in [name for name in os.environ if name.startswith("GIT_")]:
-        monkeypatch.delenv(name)
+    does not have; an untracked scratch file says nothing about the code.
+
+    Runs `git init` and `git add`, which is safe only because conftest's autouse
+    fixture strips the GIT_* variables a hook exports.
+    """
     _git(tmp_path, "init", "-q")
     (tmp_path / "engine.cpp").write_text("int main() {}\n")
     _git(tmp_path, "add", "engine.cpp")
