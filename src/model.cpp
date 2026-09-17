@@ -44,6 +44,9 @@ int32_t Model::alloc_var(VarType type, double lb, double ub, const std::string& 
     v.name = name;
     vars_.push_back(std::move(v));
     // An empty dependents range, keeping the offsets one longer than vars_.
+    if (dependent_offsets_.empty()) {
+        dependent_offsets_.push_back(0);
+    }
     dependent_offsets_.push_back(dependent_offsets_.back());
     return vars_.back().id;
 }
@@ -63,6 +66,9 @@ int32_t Model::push_node(NodeOp op, size_t child_begin) {
     nd.child_begin = static_cast<uint32_t>(child_begin);
     nd.child_count = static_cast<uint32_t>(child_refs_.size() - child_begin);
     nodes_.push_back(nd);
+    if (parent_offsets_.empty()) {
+        parent_offsets_.push_back(0);
+    }
     parent_offsets_.push_back(parent_offsets_.back());
     return nd.id;
 }

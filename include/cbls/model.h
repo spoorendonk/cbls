@@ -235,7 +235,6 @@ public:
     [[nodiscard]] const std::vector<Variable>& variables() const noexcept { return vars_; }
     std::vector<Variable>& variables_mut() noexcept { return vars_; }
     [[nodiscard]] const std::vector<ExprNode>& nodes() const noexcept { return nodes_; }
-    std::vector<ExprNode>& nodes_mut() noexcept { return nodes_; }
     [[nodiscard]] size_t num_vars() const noexcept { return vars_.size(); }
     [[nodiscard]] size_t num_nodes() const noexcept { return nodes_.size(); }
     [[nodiscard]] bool is_closed() const noexcept { return closed_; }
@@ -275,14 +274,18 @@ private:
     // readable before close(). The two back-reference arrays are CSR, rebuilt
     // wholesale by `rebuild_back_references`: the parents of node `i` are
     // `parent_ids_[parent_offsets_[i] .. parent_offsets_[i + 1])`, and likewise
-    // for variables. Each offsets array ALWAYS holds one entry more than its
-    // owner array -- creating a node or variable appends an empty range -- so the
-    // accessors need no "not built yet" branch and a node made after a rebuild
+    // for variables. Once its owner array is non-empty, each offsets array holds
+    // exactly one entry more -- creating a node or variable appends an empty
+    // range -- so the accessors, which range-check the id against the owner
+    // first, need no "not built yet" branch, and a node made after a rebuild
     // reads as parentless, exactly as it did when it owned an empty vector.
+    //
+    // That is also why nothing outside Model may append to nodes_ or vars_: a
+    // node or variable that bypassed push_node/alloc_var would have no range.
     std::vector<ChildRef> child_refs_;
-    std::vector<uint32_t> parent_offsets_ = std::vector<uint32_t>(1, 0);
+    std::vector<uint32_t> parent_offsets_;
     std::vector<int32_t> parent_ids_;
-    std::vector<uint32_t> dependent_offsets_ = std::vector<uint32_t>(1, 0);
+    std::vector<uint32_t> dependent_offsets_;
     std::vector<int32_t> dependent_ids_;
     std::vector<int32_t> topo_order_;
     /// Inverse of `topo_order_`: node id -> its index there. Rebuilt with it,
