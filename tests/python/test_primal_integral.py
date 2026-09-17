@@ -25,6 +25,7 @@ from benchmarks.mipfeas.primal_integral import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 
@@ -38,82 +39,83 @@ _PASSING: dict[str, object] = {
 }
 
 
-def test_primal_gap_is_zero_at_the_reference() -> None:
-    assert primal_gap(100.0, 100.0) == 0.0
+@pytest.mark.parametrize(
+    ("incumbent", "reference", "gap"),
+    [
+        (100.0, 100.0, 0.0),
+        (None, 100.0, NO_SOLUTION_GAP),
+        (5.0, -3.0, SIGN_FLIP_GAP),
+        (-5.0, 3.0, SIGN_FLIP_GAP),
+        # Without the near-zero rule this would score 1.0 (a 100% relative gap) for
+        # what is numerically the same answer.
+        (1e-9, 0.0, 0.0),
+        # |200 - 100| / max(200, 100)
+        (200.0, 100.0, 0.5),
+        (5.0, 0.0, 1.0),
+    ],
+    ids=[
+        "at-the-reference",
+        "no-solution",
+        "sign-change",
+        "sign-change-other-way",
+        "both-near-zero",
+        "larger-magnitude",
+        "zero-reference",
+    ],
+)
+def test_primal_gap(incumbent: float | None, reference: float, gap: float) -> None:
+    assert primal_gap(incumbent, reference) == pytest.approx(gap)
 
 
-def test_primal_gap_without_a_solution_is_two() -> None:
-    assert primal_gap(None, 100.0) == NO_SOLUTION_GAP
+@pytest.mark.parametrize(
+    ("trace", "reference", "budget", "integral"),
+    [
+        ([(0.0, 10.0)], 10.0, 60.0, 0.0),
+        ([], 10.0, 60.0, NO_SOLUTION_GAP),
+        # No incumbent for the first 30s of 60, then the optimum: 2 * (30/60) = 1.0.
+        ([(30.0, 10.0)], 10.0, 60.0, 1.0),
+        # 2.0 for 10s with no solution, 0.5 for 30s at 200, 0.0 for 20s at 100.
+        ([(10.0, 200.0), (40.0, 100.0)], 100.0, 60.0, (2.0 * 10 + 0.5 * 30) / 60),
+        # A solution at t=0 that is never improved: constant gap over the budget.
+        ([(0.0, 200.0)], 100.0, 60.0, 0.5),
+        # A solution logged after the deadline cannot retroactively improve the score.
+        ([(90.0, 100.0)], 100.0, 60.0, NO_SOLUTION_GAP),
+        ([(5.0, -50.0)], 100.0, 60.0, (2.0 * 5 + SIGN_FLIP_GAP * 55) / 60),
+    ],
+    ids=[
+        "immediate-optimum",
+        "no-solution",
+        "two-until-the-first-solution",
+        "step-function",
+        "last-incumbent-held-to-the-budget",
+        "entries-past-the-budget-clamped",
+        "sign-flip",
+    ],
+)
+def test_primal_integral(
+    trace: list[tuple[float, float]], reference: float, budget: float, integral: float
+) -> None:
+    value = primal_integral(trace, reference=reference, budget=budget)
+    assert value == pytest.approx(integral)
+    assert 0.0 <= value <= 2.0
 
 
-def test_primal_gap_across_a_sign_change_is_one() -> None:
-    assert primal_gap(5.0, -3.0) == SIGN_FLIP_GAP
-    assert primal_gap(-5.0, 3.0) == SIGN_FLIP_GAP
-
-
-def test_primal_gap_is_zero_when_both_values_are_near_zero() -> None:
-    # Without the near-zero rule this would score 1.0 (a 100% relative gap) for
-    # what is numerically the same answer.
-    assert primal_gap(1e-9, 0.0) == 0.0
-
-
-def test_primal_gap_normalizes_by_the_larger_magnitude() -> None:
-    # |200 - 100| / max(200, 100)
-    assert primal_gap(200.0, 100.0) == pytest.approx(0.5)
-
-
-def test_primal_gap_of_a_zero_reference_against_a_nonzero_incumbent() -> None:
-    assert primal_gap(5.0, 0.0) == pytest.approx(1.0)
-
-
-def test_primal_integral_of_an_immediate_optimum_is_zero() -> None:
-    assert primal_integral([(0.0, 10.0)], reference=10.0, budget=60.0) == pytest.approx(0.0)
-
-
-def test_primal_integral_without_any_solution_is_two() -> None:
-    assert primal_integral([], reference=10.0, budget=60.0) == NO_SOLUTION_GAP
-
-
-def test_primal_integral_charges_two_until_the_first_solution() -> None:
-    # No incumbent for the first 30s of 60, then the optimum: 2 * (30/60) = 1.0.
-    assert primal_integral([(30.0, 10.0)], reference=10.0, budget=60.0) == pytest.approx(1.0)
-
-
-def test_primal_integral_integrates_a_step_function() -> None:
-    # 0-10s: no solution        -> 2.0 for 10s
-    # 10-40s: obj 200 (gap 0.5) -> 0.5 for 30s
-    # 40-60s: obj 100 (gap 0)   -> 0.0 for 20s
-    trace = [(10.0, 200.0), (40.0, 100.0)]
-    expected = (2.0 * 10 + 0.5 * 30 + 0.0 * 20) / 60
-    assert primal_integral(trace, reference=100.0, budget=60.0) == pytest.approx(expected)
-
-
-def test_primal_integral_holds_the_last_incumbent_to_the_budget() -> None:
-    # A solution at t=0 that is never improved: constant gap over the whole budget.
-    assert primal_integral([(0.0, 200.0)], reference=100.0, budget=60.0) == pytest.approx(0.5)
-
-
-def test_primal_integral_clamps_entries_past_the_budget() -> None:
-    # A solution logged after the deadline cannot retroactively improve the score.
-    assert primal_integral([(90.0, 100.0)], reference=100.0, budget=60.0) == NO_SOLUTION_GAP
-
-
-def test_primal_integral_sorts_an_out_of_order_trace() -> None:
-    ordered = primal_integral([(10.0, 200.0), (40.0, 100.0)], reference=100.0, budget=60.0)
-    shuffled = primal_integral([(40.0, 100.0), (10.0, 200.0)], reference=100.0, budget=60.0)
-    assert shuffled == pytest.approx(ordered)
-
-
-def test_primal_integral_holds_the_best_of_several_incumbents_at_one_timestamp() -> None:
-    # CP-SAT logs to 0.01s and reports bursts of improvements inside one tick.
-    # A plain tuple sort would apply the worst of the burst last and hold it.
-    burst = primal_integral([(10.0, 200.0), (10.0, 100.0)], reference=100.0, budget=20.0)
-    best_only = primal_integral([(10.0, 100.0)], reference=100.0, budget=20.0)
-    assert burst == pytest.approx(best_only)
-
-
-def test_primal_integral_stays_within_zero_and_two() -> None:
-    assert 0.0 <= primal_integral([(5.0, -50.0)], reference=100.0, budget=60.0) <= 2.0
+@pytest.mark.parametrize(
+    ("trace", "equivalent", "budget"),
+    [
+        ([(40.0, 100.0), (10.0, 200.0)], [(10.0, 200.0), (40.0, 100.0)], 60.0),
+        # CP-SAT logs to 0.01s and reports bursts of improvements inside one tick.
+        # A plain tuple sort would apply the worst of the burst last and hold it.
+        ([(10.0, 200.0), (10.0, 100.0)], [(10.0, 100.0)], 20.0),
+    ],
+    ids=["out-of-order-trace-sorted", "best-of-a-burst-held"],
+)
+def test_primal_integral_reads_a_trace_as_the_incumbent_it_describes(
+    trace: list[tuple[float, float]], equivalent: list[tuple[float, float]], budget: float
+) -> None:
+    assert primal_integral(trace, 100.0, budget) == pytest.approx(
+        primal_integral(equivalent, 100.0, budget)
+    )
 
 
 def test_primal_integral_rejects_a_nonpositive_budget() -> None:
@@ -121,12 +123,9 @@ def test_primal_integral_rejects_a_nonpositive_budget() -> None:
         primal_integral([(1.0, 1.0)], reference=1.0, budget=0.0)
 
 
-def test_shifted_geometric_mean_tolerates_zero() -> None:
+def test_shifted_geometric_mean() -> None:
     # An instance solved immediately (PI = 0) must not collapse the mean to zero.
     assert shifted_geometric_mean([0.0, 1.0]) > 0.0
-
-
-def test_shifted_geometric_mean_of_equal_values_is_that_value() -> None:
     assert shifted_geometric_mean([0.5, 0.5, 0.5]) == pytest.approx(0.5)
 
 
@@ -154,6 +153,21 @@ def _write_result(
         (engine_dir / f"{instance}.verify.json").write_text(json.dumps(verification))
 
 
+def _score(
+    directory: Path,
+    instance: str = "inst",
+    *,
+    engine: str = "cbls",
+    reference: float = 100.0,
+    kind: str = "opt",
+    budget: float = 60.0,
+    require: bool = True,
+) -> Scored:
+    return score_instance(
+        instance, engine, reference, kind, directory, budget, require_verification=require
+    )
+
+
 def test_score_instance_reads_a_result_and_its_trace(tmp_path: Path) -> None:
     _write_result(
         tmp_path,
@@ -162,7 +176,7 @@ def test_score_instance_reads_a_result_and_its_trace(tmp_path: Path) -> None:
         {"status": "feasible", "objective": 200.0, "wall_seconds": 60.0, "commit_sha": "abc1234"},
         trace=[(30.0, 200.0)],
     )
-    scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
+    scored = _score(tmp_path)
     assert scored.status == "feasible"
     assert scored.final_gap == pytest.approx(0.5)
     # 2.0 for the first 30s, then 0.5 for the rest.
@@ -171,7 +185,7 @@ def test_score_instance_reads_a_result_and_its_trace(tmp_path: Path) -> None:
 
 
 def test_score_instance_without_a_result_is_not_run(tmp_path: Path) -> None:
-    scored = score_instance("absent", "cbls", 100.0, "opt", tmp_path, budget=60.0)
+    scored = _score(tmp_path, "absent")
     assert scored.status == "not_run"
     assert math.isnan(scored.primal_integral)
 
@@ -183,7 +197,7 @@ def test_score_instance_falls_back_to_the_final_objective_without_a_trace(tmp_pa
         "inst",
         {"status": "feasible", "objective": 100.0, "ortools_version": "9.15"},
     )
-    scored = score_instance("inst", "cpsat", 100.0, "opt", tmp_path, budget=60.0)
+    scored = _score(tmp_path, engine="cpsat")
     # The solution is credited at the buzzer, so the gap is 2 for the whole budget.
     assert scored.primal_integral == pytest.approx(NO_SOLUTION_GAP)
     assert scored.provenance == "9.15"
@@ -192,123 +206,98 @@ def test_score_instance_falls_back_to_the_final_objective_without_a_trace(tmp_pa
 def test_score_instance_ignores_a_trace_when_the_run_found_nothing(tmp_path: Path) -> None:
     # A stale trace from an earlier run must not score an infeasible result.
     _write_result(
-        tmp_path,
-        "cbls",
-        "inst",
-        {"status": "no_solution", "objective": None},
-        trace=[(1.0, 100.0)],
+        tmp_path, "cbls", "inst", {"status": "no_solution", "objective": None}, trace=[(1.0, 100.0)]
     )
-    scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
-    assert scored.primal_integral == NO_SOLUTION_GAP
+    assert _score(tmp_path).primal_integral == NO_SOLUTION_GAP
 
 
-def test_score_instance_rejects_a_result_from_a_different_budget(tmp_path: Path) -> None:
+def _other_budget(directory: Path) -> None:
     # The driver resumes on file existence and defaults to one results directory
     # whatever the budget, so a 60s smoke run and a 600s run land on top of each
     # other. Holding a 60s incumbent over 600s would score better than the run
-    # earned, so this must fail rather than publish it.
-    _write_result(
-        tmp_path,
-        "cbls",
-        "inst",
-        {"status": "feasible", "objective": 100.0, "budget_seconds": 60.0},
-        trace=[(1.0, 100.0)],
-    )
-    with pytest.raises(ValueError, match="60.0s budget but is being scored at 600"):
-        score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=600.0)
+    # earned -- beside a result that was produced at the budget being scored.
+    for name, budget in (("inst", 60.0), ("long", 600.0)):
+        record = {"status": "feasible", "objective": 100.0, "budget_seconds": budget}
+        _write_result(directory, "cbls", name, record, trace=[(1.0, 100.0)])
 
 
-def test_score_instance_rejects_a_truncated_result_file(tmp_path: Path) -> None:
-    engine_dir = tmp_path / "cbls"
-    engine_dir.mkdir(parents=True)
-    (engine_dir / "inst.json").write_text('{"status": "feasi')
-    with pytest.raises(ValueError, match="not valid JSON"):
-        score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
+def _truncated(directory: Path) -> None:
+    (directory / "cbls").mkdir(parents=True)
+    (directory / "cbls" / "inst.json").write_text('{"status": "feasi')
 
 
-def test_score_instance_rejects_a_non_finite_trace(tmp_path: Path) -> None:
+def _non_finite_trace(directory: Path) -> None:
     # One NaN would otherwise turn the geometric mean, the arithmetic mean and the
     # median all into NaN, with no warning anywhere.
-    _write_result(
-        tmp_path,
-        "cbls",
-        "inst",
-        {"status": "feasible", "objective": 100.0},
-        trace=[(1.0, float("nan"))],
-    )
-    with pytest.raises(ValueError, match="non-finite"):
-        score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
+    record = {"status": "feasible", "objective": 100.0}
+    _write_result(directory, "cbls", "inst", record, trace=[(1.0, float("nan"))])
 
 
-def test_scoring_refuses_results_from_two_different_configurations(tmp_path: Path) -> None:
-    # The budget guard catches only the budget. Novelty Jump and the bound clamp are
-    # CLI flags measured to move the aggregate, and the driver resumes on file
-    # existence alone — so two invocations into one results directory would average
-    # two configurations into a single table and look entirely normal doing it.
-    for instance, compound in (("a", True), ("b", False)):
+@pytest.mark.parametrize(
+    ("setup", "match"),
+    [
+        (_other_budget, "60.0s budget but is being scored at 600"),
+        (_truncated, "not valid JSON"),
+        (_non_finite_trace, "non-finite"),
+    ],
+    ids=["another-budget", "truncated-result", "non-finite-trace"],
+)
+def test_score_instance_refuses_a_result_it_cannot_score_honestly(
+    tmp_path: Path, setup: Callable[[Path], None], match: str
+) -> None:
+    setup(tmp_path)
+    budget = 600.0 if setup is _other_budget else 60.0
+    if setup is _other_budget:
+        assert _score(tmp_path, "long", budget=budget).status == "feasible"
+    with pytest.raises(ValueError, match=match):
+        _score(tmp_path, budget=budget)
+
+
+@pytest.mark.parametrize(
+    ("records", "verdicts", "match"),
+    [
+        # The budget guard catches only the budget. Novelty Jump and the bound clamp
+        # are CLI flags measured to move the aggregate, and the driver resumes on
+        # file existence alone -- so two invocations into one results directory
+        # would average two configurations into a single table.
+        ({"compound_moves": True}, {"compound_moves": False}, "span 2 configurations"),
+        ({"compound_moves": True}, {"compound_moves": True}, None),
+        # The same hazard one layer down: verdicts reached under different
+        # thresholds are two different claims and the table states only one.
+        (
+            {"tolerances": {"row_absolute": 1e-6}},
+            {"tolerances": {"row_absolute": 1e-4}},
+            "2 tolerance sets",
+        ),
+    ],
+    ids=["two-configurations", "one-configuration", "two-tolerance-sets"],
+)
+def test_scoring_refuses_a_table_that_mixes_two_claims(
+    tmp_path: Path, records: dict[str, object], verdicts: dict[str, object], match: str | None
+) -> None:
+    for instance, extra in (("a", records), ("b", verdicts)):
+        tolerances = "tolerances" in extra
         _write_result(
             tmp_path,
             "cbls",
             instance,
-            {"status": "feasible", "objective": 100.0, "compound_moves": compound},
+            {"status": "feasible", "objective": 100.0, **({} if tolerances else extra)},
             trace=[(1.0, 100.0)],
+            verification={**_PASSING, **extra} if tolerances else _PASSING,
         )
-    rows = [
-        score_instance(name, "cbls", 100.0, "opt", tmp_path, budget=60.0) for name in ("a", "b")
-    ]
-    with pytest.raises(ValueError, match="span 2 configurations"):
-        check_uniform_configuration(rows)
-
-
-def test_scoring_accepts_results_from_one_configuration(tmp_path: Path) -> None:
-    for instance in ("a", "b"):
-        _write_result(
-            tmp_path,
-            "cbls",
-            instance,
-            {"status": "feasible", "objective": 100.0, "compound_moves": True},
-            trace=[(1.0, 100.0)],
-        )
-    rows = [
-        score_instance(name, "cbls", 100.0, "opt", tmp_path, budget=60.0) for name in ("a", "b")
-    ]
-    check_uniform_configuration(rows)  # must not raise
-
-
-def test_beating_a_proven_optimum_is_flagged(tmp_path: Path) -> None:
-    # primal_gap takes an absolute value, so an objective below a proven optimum
-    # scores as an ordinary positive gap. It is a bug signal — a violated
-    # constraint or a wrong objective — and must not publish silently.
-    _write_result(
-        tmp_path, "cbls", "inst", {"status": "feasible", "objective": 90.0}, trace=[(1.0, 90.0)]
-    )
-    scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
-    assert scored.below_reference
-    assert summarize([scored], "cbls").below_reference == 1
-
-
-def test_beating_a_best_known_value_is_not_flagged(tmp_path: Path) -> None:
-    # Only `opt` references are proofs. Beating a best-known value is a real result.
-    _write_result(
-        tmp_path, "cbls", "inst", {"status": "feasible", "objective": 90.0}, trace=[(1.0, 90.0)]
-    )
-    scored = score_instance("inst", "cbls", 100.0, "best", tmp_path, budget=60.0)
-    assert not scored.below_reference
+    rows = [_score(tmp_path, name) for name in ("a", "b")]
+    if match is None:
+        check_uniform_configuration(rows)  # must not raise
+    else:
+        with pytest.raises(ValueError, match=match):
+            check_uniform_configuration(rows)
 
 
 def test_summarize_excludes_not_run_instances_from_the_aggregates(tmp_path: Path) -> None:
     _write_result(
-        tmp_path,
-        "cbls",
-        "solved",
-        {"status": "feasible", "objective": 100.0},
-        trace=[(0.0, 100.0)],
+        tmp_path, "cbls", "solved", {"status": "feasible", "objective": 100.0}, trace=[(0.0, 100.0)]
     )
-    rows = [
-        score_instance("solved", "cbls", 100.0, "opt", tmp_path, budget=60.0),
-        score_instance("absent", "cbls", 100.0, "opt", tmp_path, budget=60.0),
-    ]
-    summary = summarize(rows, "cbls")
+    summary = summarize([_score(tmp_path, "solved"), _score(tmp_path, "absent")], "cbls")
     assert summary.scored == 1
     assert summary.not_run == 1
     assert summary.feasible == 1
@@ -316,39 +305,242 @@ def test_summarize_excludes_not_run_instances_from_the_aggregates(tmp_path: Path
     assert summary.arithmetic_mean == pytest.approx(0.0)
 
 
-def test_scored_carries_the_bound_propagation_columns(tmp_path: Path) -> None:
-    """The three propagation counts must survive the JSON round-trip into Scored.
-
-    They are what a reader uses to check both engines saw the same program, so a
-    silent None here would publish an unfalsifiable comparison.
-    """
-    _write_result(
-        tmp_path,
-        "cbls",
-        "inst",
-        {
-            "status": "feasible",
-            "objective": 10.0,
-            "n_unbounded_columns": 40,
-            "n_clamped_bounds": 7,
-            "n_bounds_tightened": 33,
-        },
-    )
-    scored = score_instance("inst", "cbls", 10.0, "opt", tmp_path, budget=60.0)
-
-    assert scored.n_unbounded_columns == 40
-    assert scored.n_clamped_bounds == 7
-    assert scored.n_bounds_tightened == 33
-
-
-def test_scored_tolerates_results_predating_bound_propagation(tmp_path: Path) -> None:
-    """A result written before #120 carries none of the new keys and must still score."""
-    _write_result(tmp_path, "cbls", "inst", {"status": "feasible", "objective": 10.0})
-    scored = score_instance("inst", "cbls", 10.0, "opt", tmp_path, budget=60.0)
-
-    assert scored.n_unbounded_columns is None
-    assert scored.n_bounds_tightened is None
+@pytest.mark.parametrize(
+    ("counts", "expected"),
+    [
+        # They are what a reader uses to check both engines saw the same program, so
+        # a silent None here would publish an unfalsifiable comparison.
+        (
+            {"n_unbounded_columns": 40, "n_clamped_bounds": 7, "n_bounds_tightened": 33},
+            (40, 7, 33),
+        ),
+        # A result written before #120 carries none of the keys and must still score.
+        ({}, (None, None, None)),
+    ],
+    ids=["carried", "predating-bound-propagation"],
+)
+def test_scored_carries_the_bound_propagation_columns(
+    tmp_path: Path, counts: dict[str, object], expected: tuple[int | None, ...]
+) -> None:
+    _write_result(tmp_path, "cbls", "inst", {"status": "feasible", "objective": 10.0, **counts})
+    scored = _score(tmp_path, reference=10.0)
     assert scored.status == "feasible"
+    assert (scored.n_unbounded_columns, scored.n_clamped_bounds, scored.n_bounds_tightened) == (
+        expected
+    )
+
+
+# ---------------------------------------------------------------------------
+# Verification (#138): a row nobody could check publishes nothing.
+
+
+def _rejected(reason: str = "row_violation") -> dict[str, object]:
+    return {"verdict": "fail", "reason": reason, "marginal": False, "tolerances": {}}
+
+
+#: `expected` value meaning "a NaN": the derived number was withheld.
+NAN = "nan"
+
+
+@pytest.mark.parametrize(
+    ("record", "verification", "kind", "require", "expected", "summary"),
+    [
+        (
+            {"status": "feasible", "objective": 110.0},
+            _rejected(),
+            "opt",
+            True,
+            {
+                "verification": "fail",
+                "verification_reason": "row_violation",
+                "withheld": True,
+                "objective": None,
+                # And no derived score either: not the gap, not the Primal Integral.
+                "final_gap": NAN,
+                "primal_integral": NAN,
+            },
+            {"verification_failed": 1},
+        ),
+        # `below_reference` is a defect flag, not a published number, and a solution
+        # the checker rejected is the likeliest place for one. Dropping it with the
+        # objective would blind the cheapest gate the benchmark has (232 of the 233
+        # references are proven optima) on exactly the rows that need it.
+        (
+            {"status": "feasible", "objective": 90.0},
+            _rejected(),
+            "opt",
+            True,
+            {"withheld": True, "objective": None, "below_reference": True},
+            {"below_reference": 1},
+        ),
+        # primal_gap takes an absolute value, so an objective below a proven optimum
+        # scores as an ordinary positive gap. It is a bug signal and must not
+        # publish silently ...
+        (
+            {"status": "feasible", "objective": 90.0},
+            _PASSING,
+            "opt",
+            True,
+            {"withheld": False, "below_reference": True},
+            {"below_reference": 1},
+        ),
+        # ... but only `opt` references are proofs. Beating a best-known value is a
+        # real result.
+        (
+            {"status": "feasible", "objective": 90.0},
+            _PASSING,
+            "best",
+            True,
+            {"below_reference": False},
+            {"below_reference": 0},
+        ),
+        # Acceptance criterion of #138: every row reported feasible carries an
+        # independent verdict. Only a default-on rule can guarantee that.
+        (
+            {"status": "feasible", "objective": 100.0},
+            None,
+            "opt",
+            True,
+            {"verification": "unverified", "withheld": True, "objective": None},
+            {"unverified": 1},
+        ),
+        # The escape hatch for a results directory filled before #138. It relaxes
+        # "nobody checked", never "checked and rejected" -- and the row is still
+        # counted: the counter once keyed on `withheld`, which this turns off, so
+        # the one mode that publishes unchecked numbers reported none of them.
+        (
+            {"status": "feasible", "objective": 100.0},
+            None,
+            "opt",
+            False,
+            {"withheld": False, "objective": 100.0, "primal_integral": 0.0},
+            {"unverified": 1},
+        ),
+        (
+            {"status": "feasible", "objective": 100.0},
+            _rejected(),
+            "opt",
+            False,
+            {"withheld": True, "objective": None},
+            {"verification_failed": 1},
+        ),
+        # `error` is "could not check", not "checked and fine", so it withholds like
+        # a failure -- and is counted apart from one, since it is a harness fault.
+        (
+            {"status": "feasible", "objective": 100.0},
+            {"verdict": "error", "reason": "missing_solution_file", "marginal": False},
+            "opt",
+            True,
+            {"withheld": True, "verification_reason": "missing_solution_file"},
+            {"verification_failed": 0, "unverified": 1},
+        ),
+        # "Just inside the tolerance" is a signal to look, never a reason to withhold.
+        (
+            {"status": "feasible", "objective": 100.0},
+            {"verdict": "pass", "reason": "", "marginal": True, "tolerances": {}},
+            "opt",
+            True,
+            {"withheld": False, "verification_marginal": True, "objective": 100.0},
+            {"verification_marginal": 1},
+        ),
+        # Nothing to verify about a run with no solution, and its objective is
+        # already absent -- so the requirement must not make it a second failure
+        # mode, nor read as a row nobody verified to a counter grouping on it.
+        (
+            {"status": "no_solution", "objective": None},
+            None,
+            "opt",
+            True,
+            {
+                "withheld": False,
+                "primal_integral": NO_SOLUTION_GAP,
+                "verification": "not_applicable",
+            },
+            {"unverified": 0},
+        ),
+        # The search found a point and only the dump failed. Scoring it 2.0 would
+        # publish a derived number for a row nothing could check -- and charge a
+        # disk error to the search.
+        (
+            {"status": "solution_write_error", "objective": None, "message": "disk full"},
+            None,
+            "opt",
+            True,
+            {"withheld": True, "primal_integral": NAN},
+            {"unverified": 1},
+        ),
+    ],
+    ids=[
+        "rejected",
+        "rejected-below-proven-optimum",
+        "below-proven-optimum",
+        "below-best-known",
+        "no-verdict",
+        "allow-unverified",
+        "allow-unverified-rejected",
+        "checker-error",
+        "marginal-pass",
+        "found-nothing",
+        "solution-write-error",
+    ],
+)
+def test_a_row_publishes_only_what_its_verdict_allows(
+    tmp_path: Path,
+    record: dict[str, object],
+    verification: dict[str, object] | None,
+    kind: str,
+    require: bool,
+    expected: dict[str, object],
+    summary: dict[str, int],
+) -> None:
+    objective = record["objective"]
+    trace = [(0.0, objective)] if isinstance(objective, float) else None
+    _write_result(tmp_path, "cbls", "inst", record, trace=trace, verification=verification)
+    scored = _score(tmp_path, kind=kind, require=require)
+
+    for field, value in expected.items():
+        actual = getattr(scored, field)
+        if value == NAN:
+            assert math.isnan(actual), field
+        elif isinstance(value, float):
+            assert actual == pytest.approx(value), field
+        else:
+            assert actual == value, field
+    counts = summarize([scored], "cbls")
+    for field, count in summary.items():
+        assert getattr(counts, field) == count, field
+
+
+def test_a_rejected_row_is_excluded_from_the_aggregates_not_scored_two(tmp_path: Path) -> None:
+    # Scoring it 2.0 would be publishing a derived number of its own -- and a
+    # wrong one: the run did find a point, it was rejected.
+    for instance, verification in (("good", _PASSING), ("bad", _rejected())):
+        record = {"status": "feasible", "objective": 100.0}
+        _write_result(
+            tmp_path, "cbls", instance, record, trace=[(0.0, 100.0)], verification=verification
+        )
+    summary = summarize([_score(tmp_path, name) for name in ("good", "bad")], "cbls")
+
+    assert summary.scored == 1
+    assert summary.feasible == 1
+    assert summary.verification_failed == 1
+    assert summary.arithmetic_mean == pytest.approx(0.0)
+
+
+# --- the table ----------------------------------------------------------------
+
+
+def _table(
+    tmp_path: Path, scored: Scored, summaries: bool = True
+) -> tuple[str, list[str], list[str]]:
+    """Write `scored` as a comparison table: its text, its header and its one row."""
+    out = tmp_path / "comparison.csv"
+    write_comparison(
+        out, [scored], [summarize([scored], "cbls")] if summaries else [], 60.0, tmp_path / "r.csv"
+    )
+    text = out.read_text()
+    rows = [r for r in csv.reader(text.splitlines()) if r and not r[0].startswith("#")]
+    return text, rows[0], rows[1]
 
 
 def test_a_write_that_dies_leaves_the_previous_table_intact(
@@ -361,7 +553,7 @@ def test_a_write_that_dies_leaves_the_previous_table_intact(
     C++ runners already write to a temp path and rename; this one did not.
     """
     _write_result(tmp_path, "cbls", "inst", {"status": "feasible", "objective": 10.0})
-    scored = score_instance("inst", "cbls", 10.0, "opt", tmp_path, budget=60.0)
+    scored = _score(tmp_path, reference=10.0)
     out = tmp_path / "comparison.csv"
     out.write_text("the published table\n")
 
@@ -375,29 +567,73 @@ def test_a_write_that_dies_leaves_the_previous_table_intact(
     assert out.read_text() == "the published table\n"
 
 
-def test_comparison_csv_header_and_rows_stay_aligned(tmp_path: Path) -> None:
-    """write_comparison builds its header and its rows as two parallel lists.
+@pytest.mark.parametrize(
+    ("record", "verification", "require", "cells", "said", "not_said"),
+    [
+        # write_comparison builds its header and its rows as two parallel lists.
+        # #120 inserted two entries into the middle of both, the most
+        # misalignment-prone edit that function admits. Tolerances are read back
+        # off the verdicts, not restated in the scorer: a table has to quote the
+        # thresholds its own rows were judged by. A fully verified table carries no
+        # --allow-unverified banner.
+        (
+            {"status": "feasible", "objective": 10.0, "n_unbounded_columns": 40},
+            _PASSING,
+            True,
+            {
+                "n_unbounded_columns": "40",
+                "n_bounds_tightened": "",
+                "verification": "pass",
+                "verification_reason": "",
+            },
+            "row_absolute=1e-06",
+            "--allow-unverified",
+        ),
+        (
+            {"status": "feasible", "objective": 10.0},
+            _rejected("integrality_violation"),
+            True,
+            {
+                "objective": "",
+                "primal_integral": "nan",
+                "verification_reason": "integrality_violation",
+            },
+            None,
+            None,
+        ),
+        # The "Verified:" note is unconditional, so --allow-unverified would
+        # otherwise produce a table asserting the one thing that is not true of it,
+        # with the evidence only in a per-row column.
+        (
+            {"status": "feasible", "objective": 10.0},
+            None,
+            False,
+            {},
+            "SCORED WITH --allow-unverified",
+            None,
+        ),
+    ],
+    ids=["aligned-verified-row", "withheld-row", "published-unverified-row"],
+)
+def test_the_table_says_what_its_rows_are(
+    tmp_path: Path,
+    record: dict[str, object],
+    verification: dict[str, object] | None,
+    require: bool,
+    cells: dict[str, str],
+    said: str | None,
+    not_said: str | None,
+) -> None:
+    _write_result(tmp_path, "cbls", "inst", record, trace=[(0.0, 10.0)], verification=verification)
+    text, header, row = _table(tmp_path, _score(tmp_path, reference=10.0, require=require))
 
-    #120 inserted two entries into the middle of both, the most misalignment-prone
-    edit that function admits, and nothing else checks the correspondence.
-    """
-    _write_result(
-        tmp_path,
-        "cbls",
-        "inst",
-        {"status": "feasible", "objective": 10.0, "n_unbounded_columns": 40},
-    )
-    scored = score_instance("inst", "cbls", 10.0, "opt", tmp_path, budget=60.0)
-    out = tmp_path / "comparison.csv"
-    write_comparison(out, [scored], [], 60.0, tmp_path / "roster.csv")
-
-    rows = [r for r in csv.reader(out.read_text().splitlines()) if r and not r[0].startswith("#")]
-    header, body = rows[0], rows[1:]
-    assert "n_unbounded_columns" in header
-    assert "n_bounds_tightened" in header
-    for row in body:
-        assert len(row) == len(header)
-    assert body[0][header.index("n_unbounded_columns")] == "40"
+    assert len(row) == len(header)
+    for column, value in cells.items():
+        assert row[header.index(column)] == value, column
+    assert said is None or said in text
+    assert not_said is None or not_said not in text
+    if not require:
+        assert "1 feasible row(s) are published with no independent" in text
 
 
 def _full_roster_rows(scored: Scored) -> list[Scored]:
@@ -419,8 +655,7 @@ def test_full_roster_table_at_any_budget_is_not_a_wiring_check(tmp_path: Path) -
     # A short budget is a legitimate scoring choice; only a short *roster* is a
     # wiring check.
     _write_result(tmp_path, "cbls", "inst", {"status": "feasible", "objective": 10.0})
-    scored = score_instance("inst", "cbls", 10.0, "opt", tmp_path, budget=60.0)
-    rows = _full_roster_rows(scored)
+    rows = _full_roster_rows(_score(tmp_path, reference=10.0))
     summaries = [summarize(rows, engine) for engine in ENGINES]
     out = tmp_path / "comparison.csv"
     write_comparison(out, rows, summaries, 60.0, tmp_path / "roster.csv")
@@ -440,344 +675,10 @@ def test_full_roster_table_at_any_budget_is_not_a_wiring_check(tmp_path: Path) -
 def test_partial_roster_table_is_still_banner_stamped(tmp_path: Path) -> None:
     # Fewer than FULL_ROSTER_SIZE instances is a wiring check at any budget.
     _write_result(tmp_path, "cbls", "inst", {"status": "feasible", "objective": 10.0})
-    scored = score_instance("inst", "cbls", 10.0, "opt", tmp_path, budget=600.0)
-    out = tmp_path / "comparison.csv"
-    write_comparison(out, [scored], [], 600.0, tmp_path / "roster.csv")
+    text, _, _ = _table(tmp_path, _score(tmp_path, reference=10.0), summaries=False)
 
-    text = out.read_text()
     assert "*** WIRING CHECK, NOT A PUBLISHABLE RESULT ***" in text
     # Pinned as a phrase, not a bare "233": that also appears in objectives, column
     # counts and peak RSS, so a substring search for the number proves nothing.
     assert f"is {FULL_ROSTER_SIZE} instances" in text
     assert "this table used 1" in text
-
-
-def test_a_results_directory_mixing_two_budgets_is_still_refused(tmp_path: Path) -> None:
-    # The guard that actually prevents a wrong number is per-result and
-    # budget-relative: a 60s result's last incumbent held over a 600s budget
-    # silently improves its Primal Integral.
-    _write_result(
-        tmp_path, "cbls", "long", {"status": "feasible", "objective": 10.0, "budget_seconds": 600.0}
-    )
-    _write_result(
-        tmp_path, "cbls", "short", {"status": "feasible", "objective": 10.0, "budget_seconds": 60.0}
-    )
-    with pytest.raises(ValueError, match="60.0s budget but is being scored at 600"):
-        for name in ("long", "short"):
-            score_instance(name, "cbls", 10.0, "opt", tmp_path, budget=600.0)
-
-
-# ---------------------------------------------------------------------------
-# Verification (#138): a row nobody could check publishes nothing.
-
-
-def _rejected(reason: str = "row_violation") -> dict[str, object]:
-    return {"verdict": "fail", "reason": reason, "marginal": False, "tolerances": {}}
-
-
-def test_a_rejected_solution_publishes_no_objective(tmp_path: Path) -> None:
-    _write_result(
-        tmp_path,
-        "cbls",
-        "inst",
-        {"status": "feasible", "objective": 110.0},
-        trace=[(1.0, 110.0)],
-        verification=_rejected(),
-    )
-    scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
-
-    assert scored.verification == "fail"
-    assert scored.verification_reason == "row_violation"
-    assert scored.withheld
-    assert scored.objective is None
-    # And no derived score either: not the gap and not the Primal Integral.
-    assert math.isnan(scored.final_gap)
-    assert math.isnan(scored.primal_integral)
-
-
-def test_withholding_does_not_disable_the_proven_optimum_defect_gate(tmp_path: Path) -> None:
-    # `below_reference` is a defect flag, not a published number, and a solution
-    # the checker rejected is the likeliest place for one. Dropping it with the
-    # objective would blind the cheapest gate the benchmark has (232 of the 233
-    # references are proven optima) on exactly the rows that need it.
-    _write_result(
-        tmp_path,
-        "cbls",
-        "inst",
-        {"status": "feasible", "objective": 90.0},
-        trace=[(1.0, 90.0)],
-        verification=_rejected(),
-    )
-    scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
-
-    assert scored.withheld
-    assert scored.objective is None
-    assert scored.below_reference
-    assert summarize([scored], "cbls").below_reference == 1
-
-
-def test_a_rejected_row_is_excluded_from_the_aggregates_not_scored_two(tmp_path: Path) -> None:
-    # Scoring it 2.0 would be publishing a derived number of its own -- and a
-    # wrong one: the run did find a point, it was rejected.
-    for instance, verification in (("good", _PASSING), ("bad", _rejected())):
-        _write_result(
-            tmp_path,
-            "cbls",
-            instance,
-            {"status": "feasible", "objective": 100.0},
-            trace=[(0.0, 100.0)],
-            verification=verification,
-        )
-    rows = [
-        score_instance(name, "cbls", 100.0, "opt", tmp_path, budget=60.0)
-        for name in ("good", "bad")
-    ]
-    summary = summarize(rows, "cbls")
-
-    assert summary.scored == 1
-    assert summary.feasible == 1
-    assert summary.verification_failed == 1
-    assert summary.arithmetic_mean == pytest.approx(0.0)
-
-
-def test_a_feasible_row_with_no_verdict_is_withheld_by_default(tmp_path: Path) -> None:
-    # Acceptance criterion of #138: every row reported feasible carries an
-    # independent verdict. Only a default-on rule can guarantee that.
-    _write_result(
-        tmp_path,
-        "cbls",
-        "inst",
-        {"status": "feasible", "objective": 100.0},
-        trace=[(0.0, 100.0)],
-        verification=None,
-    )
-    scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
-
-    assert scored.verification == "unverified"
-    assert scored.withheld
-    assert scored.objective is None
-    assert summarize([scored], "cbls").unverified == 1
-
-
-def test_allow_unverified_publishes_a_row_that_carries_no_verdict(tmp_path: Path) -> None:
-    # The escape hatch for a results directory filled before #138. It relaxes
-    # "nobody checked", never "checked and rejected".
-    _write_result(
-        tmp_path,
-        "cbls",
-        "inst",
-        {"status": "feasible", "objective": 100.0},
-        trace=[(0.0, 100.0)],
-        verification=None,
-    )
-    scored = score_instance(
-        "inst", "cbls", 100.0, "opt", tmp_path, budget=60.0, require_verification=False
-    )
-
-    assert not scored.withheld
-    assert scored.objective == pytest.approx(100.0)
-    assert scored.primal_integral == pytest.approx(0.0)
-
-
-def test_allow_unverified_does_not_publish_a_rejected_row(tmp_path: Path) -> None:
-    _write_result(
-        tmp_path,
-        "cbls",
-        "inst",
-        {"status": "feasible", "objective": 100.0},
-        trace=[(0.0, 100.0)],
-        verification=_rejected(),
-    )
-    scored = score_instance(
-        "inst", "cbls", 100.0, "opt", tmp_path, budget=60.0, require_verification=False
-    )
-    assert scored.withheld
-    assert scored.objective is None
-
-
-def test_a_verdict_the_checker_could_not_reach_also_withholds(tmp_path: Path) -> None:
-    # `error` is "could not check", not "checked and fine", so it withholds like a
-    # failure -- and is counted apart from one, since it is a harness fault.
-    _write_result(
-        tmp_path,
-        "cbls",
-        "inst",
-        {"status": "feasible", "objective": 100.0},
-        trace=[(0.0, 100.0)],
-        verification={"verdict": "error", "reason": "missing_solution_file", "marginal": False},
-    )
-    scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
-
-    assert scored.withheld
-    assert scored.verification_reason == "missing_solution_file"
-    summary = summarize([scored], "cbls")
-    assert summary.verification_failed == 0
-    assert summary.unverified == 1
-
-
-def test_a_marginal_pass_is_published_and_flagged(tmp_path: Path) -> None:
-    # "Just inside the tolerance" is a signal to look, never a reason to withhold.
-    _write_result(
-        tmp_path,
-        "cbls",
-        "inst",
-        {"status": "feasible", "objective": 100.0},
-        trace=[(0.0, 100.0)],
-        verification={"verdict": "pass", "reason": "", "marginal": True, "tolerances": {}},
-    )
-    scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
-
-    assert not scored.withheld
-    assert scored.verification_marginal
-    assert scored.objective == pytest.approx(100.0)
-    assert summarize([scored], "cbls").verification_marginal == 1
-
-
-def test_a_run_that_found_nothing_needs_no_verdict(tmp_path: Path) -> None:
-    # There is nothing to verify about a run with no solution, and its objective
-    # is already absent -- so the requirement must not turn it into a second
-    # failure mode.
-    _write_result(tmp_path, "cbls", "inst", {"status": "no_solution", "objective": None})
-    scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
-
-    assert not scored.withheld
-    assert scored.primal_integral == pytest.approx(NO_SOLUTION_GAP)
-
-
-def test_scoring_refuses_verdicts_from_two_tolerance_sets(tmp_path: Path) -> None:
-    # The same hazard as two configurations in one directory, one layer down:
-    # verdicts reached under different thresholds are two different claims and
-    # the table states only one.
-    for instance, tolerance in (("a", 1e-6), ("b", 1e-4)):
-        _write_result(
-            tmp_path,
-            "cbls",
-            instance,
-            {"status": "feasible", "objective": 100.0},
-            trace=[(1.0, 100.0)],
-            verification={
-                "verdict": "pass",
-                "reason": "",
-                "marginal": False,
-                "tolerances": {"row_absolute": tolerance},
-            },
-        )
-    rows = [
-        score_instance(name, "cbls", 100.0, "opt", tmp_path, budget=60.0) for name in ("a", "b")
-    ]
-    with pytest.raises(ValueError, match="2 tolerance sets"):
-        check_uniform_configuration(rows)
-
-
-def test_the_table_states_the_tolerances_its_verdicts_used(tmp_path: Path) -> None:
-    _write_result(tmp_path, "cbls", "inst", {"status": "feasible", "objective": 10.0})
-    scored = score_instance("inst", "cbls", 10.0, "opt", tmp_path, budget=60.0)
-    out = tmp_path / "comparison.csv"
-    write_comparison(out, [scored], [summarize([scored], "cbls")], 60.0, tmp_path / "roster.csv")
-
-    text = out.read_text()
-    # Read back off the verdicts, not restated in the scorer: a table has to quote
-    # the thresholds its own rows were judged by.
-    assert "row_absolute=1e-06" in text
-    rows = [r for r in csv.reader(text.splitlines()) if r and not r[0].startswith("#")]
-    header, body = rows[0], rows[1:]
-    assert body[0][header.index("verification")] == "pass"
-    assert body[0][header.index("verification_reason")] == ""
-
-
-def test_a_withheld_row_writes_no_objective_into_the_table(tmp_path: Path) -> None:
-    _write_result(
-        tmp_path,
-        "cbls",
-        "inst",
-        {"status": "feasible", "objective": 10.0},
-        trace=[(0.0, 10.0)],
-        verification=_rejected("integrality_violation"),
-    )
-    scored = score_instance("inst", "cbls", 10.0, "opt", tmp_path, budget=60.0)
-    out = tmp_path / "comparison.csv"
-    write_comparison(out, [scored], [summarize([scored], "cbls")], 60.0, tmp_path / "roster.csv")
-
-    rows = [r for r in csv.reader(out.read_text().splitlines()) if r and not r[0].startswith("#")]
-    header, body = rows[0], rows[1:]
-    assert body[0][header.index("objective")] == ""
-    assert body[0][header.index("primal_integral")] == "nan"
-    assert body[0][header.index("verification_reason")] == "integrality_violation"
-
-
-def test_a_solution_the_runner_could_not_write_is_withheld_not_scored_two(tmp_path: Path) -> None:
-    # The search found a point and only the dump failed. Scoring it 2.0 would
-    # publish a derived number for a row nothing could check -- and charge a disk
-    # error to the search.
-    _write_result(
-        tmp_path,
-        "cbls",
-        "inst",
-        {"status": "solution_write_error", "objective": None, "message": "disk full"},
-    )
-    scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
-
-    assert scored.withheld
-    assert math.isnan(scored.primal_integral)
-    assert summarize([scored], "cbls").unverified == 1
-
-
-def test_a_row_with_nothing_to_verify_says_so(tmp_path: Path) -> None:
-    # A run that found no solution has no point to check, so it must not read as a
-    # row nobody verified -- a defect counter grouping on the column would
-    # otherwise count every one of them.
-    _write_result(tmp_path, "cbls", "inst", {"status": "no_solution", "objective": None})
-    scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
-
-    assert scored.verification == "not_applicable"
-    assert summarize([scored], "cbls").unverified == 0
-
-
-def test_a_table_published_with_unverified_rows_says_so_in_its_header(tmp_path: Path) -> None:
-    # The "Verified:" note is unconditional, so --allow-unverified would otherwise
-    # produce a table asserting the one thing that is not true of it, with the
-    # evidence only in a per-row column.
-    _write_result(
-        tmp_path,
-        "cbls",
-        "inst",
-        {"status": "feasible", "objective": 10.0},
-        trace=[(0.0, 10.0)],
-        verification=None,
-    )
-    scored = score_instance(
-        "inst", "cbls", 10.0, "opt", tmp_path, budget=60.0, require_verification=False
-    )
-    out = tmp_path / "comparison.csv"
-    write_comparison(out, [scored], [summarize([scored], "cbls")], 60.0, tmp_path / "roster.csv")
-
-    text = out.read_text()
-    assert "SCORED WITH --allow-unverified" in text
-    assert "1 feasible row(s) are published with no independent" in text
-
-
-def test_a_fully_verified_table_carries_no_such_banner(tmp_path: Path) -> None:
-    _write_result(tmp_path, "cbls", "inst", {"status": "feasible", "objective": 10.0})
-    scored = score_instance("inst", "cbls", 10.0, "opt", tmp_path, budget=60.0)
-    out = tmp_path / "comparison.csv"
-    write_comparison(out, [scored], [summarize([scored], "cbls")], 60.0, tmp_path / "roster.csv")
-
-    assert "--allow-unverified" not in out.read_text()
-
-
-def test_unverified_rows_are_counted_even_when_they_are_published(tmp_path: Path) -> None:
-    # The counter used to key on `withheld`, which --allow-unverified turns off --
-    # so the one mode that publishes unchecked numbers reported none of them.
-    _write_result(
-        tmp_path,
-        "cbls",
-        "inst",
-        {"status": "feasible", "objective": 10.0},
-        trace=[(0.0, 10.0)],
-        verification=None,
-    )
-    scored = score_instance(
-        "inst", "cbls", 10.0, "opt", tmp_path, budget=60.0, require_verification=False
-    )
-    assert not scored.withheld
-    assert summarize([scored], "cbls").unverified == 1
