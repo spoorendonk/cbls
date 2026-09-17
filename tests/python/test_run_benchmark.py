@@ -513,6 +513,36 @@ def test_a_verification_outcome_leaves_the_verdict_that_describes_it(
         assert verdict[key] == value
 
 
+@pytest.mark.parametrize(
+    ("step", "timeout"),
+    [
+        ("_run_solver", 600.0 + run_benchmark.TIMEOUT_SLACK_SECONDS),
+        ("_verify", run_benchmark.VERIFY_TIMEOUT_SECONDS),
+    ],
+)
+def test_every_job_process_is_bounded_capped_and_in_its_own_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str, timeout: float
+) -> None:
+    # Unbounded, one hung job is the rest of an unattended run. Uncapped, one
+    # large model takes the machine from its neighbours. And without its own
+    # session a Ctrl-C at the driver reaches every in-flight child, each of which
+    # leaves a "killed" result that resume treats as done.
+    seen: dict[str, object] = {}
+
+    def run(command: list[str], **kwargs: object) -> _FakeRun:
+        seen.update(kwargs, command=command)
+        return _FakeRun(0, None)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    getattr(run_benchmark, step)(Job("cbls", "inst"), _driver_args(mem_limit_gb=2.0), tmp_path)
+
+    assert seen["timeout"] == timeout
+    assert seen["start_new_session"] is True
+    command = seen["command"]
+    assert isinstance(command, list)
+    assert command[:2] == ["/bin/sh", "-c"] and "ulimit -v 2097152" in command[2]
+
+
 def test_a_verification_error_does_not_destroy_a_finished_solve(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

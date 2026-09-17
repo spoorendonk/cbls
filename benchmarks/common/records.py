@@ -167,8 +167,3 @@ def csv_number(text: str | None) -> float:
         return float(text) if text is not None and text.strip() else math.nan
     except ValueError:
         return math.nan
-
-
-def number_or_nan_text(value: float, digits: int = 6) -> str:
-    """`value` to `digits` decimals, or "NaN" -- the runners' spelling of no value."""
-    return "NaN" if math.isnan(value) else f"{value:.{digits}f}"

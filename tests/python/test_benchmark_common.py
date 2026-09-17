@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from benchmarks.common.jobs import run_jobs, run_process, with_memory_limit
-from benchmarks.common.provenance import build_dir_problems, cmake_build_type, commit_sha
+from benchmarks.common.provenance import build_dir_problems, commit_sha
 from benchmarks.common.records import (
     atomic_write,
     csv_number,
@@ -242,11 +242,6 @@ def _cache(tmp_path: Path, entries: str) -> Path:
 
 
 RELEASE_HERE = "CMAKE_BUILD_TYPE:STRING=Release\nCMAKE_HOME_DIRECTORY:INTERNAL={home}\n"
-
-
-def test_cmake_build_type_reads_the_cache(tmp_path: Path) -> None:
-    assert cmake_build_type(_cache(tmp_path, "CMAKE_BUILD_TYPE:STRING=Release\n")) == "Release"
-    assert cmake_build_type(tmp_path / "nope") is None
 
 
 @pytest.mark.parametrize(

@@ -528,7 +528,12 @@ def result_row(
     run: Run, args: argparse.Namespace, sha: str, runner: dict[str, str]
 ) -> dict[str, str]:
     """One campaign row: what was asked for, then what came back."""
-    row = {
+    return {**_asked(run, args, sha), **{column: runner[column] for column in _RUNNER_COLUMNS}}
+
+
+def _asked(run: Run, args: argparse.Namespace, sha: str) -> dict[str, str]:
+    """The provenance columns of a campaign row: what this run asked the runner for."""
+    return {
         "instance": run.instance,
         "arm": run.arm.name,
         "arm_flags": " ".join(run.arm.flags),
@@ -536,8 +541,6 @@ def result_row(
         "time_limit": f"{args.time_limit:g}",
         "commit_sha": sha,
     }
-    row.update({column: runner[column] for column in _RUNNER_COLUMNS})
-    return row
 
 
 def failed_row(
@@ -546,19 +549,11 @@ def failed_row(
     """A row for a run whose process exited nonzero.
 
     Every measured cell is "NaN" and `feasible` is "false", so nothing here can
-    be read as a result: the report's `_number` maps "NaN" to NaN and a NaN
+    be read as a result: the report's `csv_number` maps "NaN" to NaN and a NaN
     never reaches a mean, and the gate's `_repairs_of` reads it as "no reading"
     rather than as zero repairs.
     """
-    row = {
-        "instance": run.instance,
-        "arm": run.arm.name,
-        "arm_flags": " ".join(run.arm.flags),
-        "seed": str(run.seed),
-        "time_limit": f"{args.time_limit:g}",
-        "commit_sha": sha,
-    }
-    row.update({column: "NaN" for column in _RUNNER_COLUMNS})
+    row = {**_asked(run, args, sha), **dict.fromkeys(_RUNNER_COLUMNS, "NaN")}
     row["feasible"] = "false"
     # The prefix is the contract with the report, which holds these rows out of
     # every count rather than reading `feasible=false` as a lost feasibility.

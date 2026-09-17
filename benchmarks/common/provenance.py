@@ -61,11 +61,6 @@ def cmake_cache(build_dir: Path) -> dict[str, str]:
     return entries
 
 
-def cmake_build_type(build_dir: Path) -> str | None:
-    """`CMAKE_BUILD_TYPE` recorded in the build directory's cache, if any."""
-    return cmake_cache(build_dir).get("CMAKE_BUILD_TYPE")
-
-
 def build_dir_problems(build_dir: Path, repo_root: Path = REPO_ROOT) -> list[str]:
     """Refusals about a build directory whose binary would be measured and published.
 

@@ -651,8 +651,9 @@ from disk rather than from a `data.h`, and no benchmark ships a custom
 `InnerSolverHook`. `benchmarks/chped/` is header-only — a model pattern consumed
 by `examples/chped.cpp` and `tests/test_chped.cpp`, with no runner of its own.
 
-`benchmarks/common/` is **not** a benchmark. It holds headers shared across
-runners: `runner_args.h` and `search_config_flags.h`.
+`benchmarks/common/` is **not** a benchmark. It holds what runners and drivers
+share: two C++ headers for the runners, `runner_args.h` and
+`search_config_flags.h`, and a Python package for the drivers (#160).
 
 `runner_args.h` holds three things. First the flag-value *reporting policy* (a
 bad double reports and returns NaN for a later positivity guard to turn into
@@ -688,6 +689,21 @@ each already carries, so a new runner target that omits that line will not
 compile `<benchmarks/common/...>`. `cbls_tests` carries the same line for
 `${CMAKE_SOURCE_DIR}`, which is what lets a Catch2 test include them without a
 runner `main()`.
+
+The Python package is the driver mechanics every benchmark shares: `jobs.py`
+runs one solver process (timeout, address-space cap, own session, log) and a
+plan (bounded workers, serial tail); `records.py` writes and reads the files a
+run leaves behind so that a kill leaves the old file or the new one, and lists
+where each benchmark's record schema is declared; `provenance.py` is the commit,
+the build-dir refusals and the machine record. What it deliberately does **not**
+hold is any benchmark's resume rule or record shape — `mipfeas`, the MINLPLib
+re-run and the ablation campaign resume on three different keys for reasons of
+measurement, and "one driver" there would change what gets re-run. The
+MINLPLib runner's contract (columns, exit status, note vocabulary) is declared
+once in `benchmarks/minlplib/runner.py`. The mechanics are pinned in
+`tests/python/test_benchmark_common.py`; don't re-test them per driver. Drivers
+run as scripts reach the package through a `sys.path` shim on the repository
+root, as `run_ablation.py` always did.
 
 ### Benchmark priority
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 from typing import TYPE_CHECKING
 
 import pytest
@@ -550,7 +551,10 @@ def test_a_write_that_dies_leaves_the_previous_table_intact(
 
     CLAUDE.md's rule for anything that writes a published table: a job killed
     mid-write must not replace it with a header and nothing else, at exit 0. The
-    C++ runners already write to a temp path and rename; this one did not.
+    C++ runners already write to a temp path and rename; this one did not. The
+    kill lands at the last instant -- the new table fully written beside the old
+    one -- because a write that goes straight to the published path has already
+    destroyed it by then, and an earlier kill cannot tell the two apart.
     """
     _write_result(tmp_path, "cbls", "inst", {"status": "feasible", "objective": 10.0})
     scored = _score(tmp_path, reference=10.0)
@@ -560,7 +564,7 @@ def test_a_write_that_dies_leaves_the_previous_table_intact(
     def die(*args: object, **kwargs: object) -> None:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(csv, "writer", die)
+    monkeypatch.setattr(os, "replace", die)
     with pytest.raises(KeyboardInterrupt):
         write_comparison(out, [scored], [], 60.0, tmp_path / "roster.csv")
 

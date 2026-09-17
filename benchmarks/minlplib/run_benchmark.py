@@ -306,15 +306,8 @@ def staged_row_complete(path: Path, sha: str) -> bool:
       reusing it publishes a table whose rows disagree about which engine
       produced them (issue #123 asks for one SHA in the column).
     """
-    if not path.exists():
-        return False
-    text = path.read_text()
-    if not text.endswith("\n"):
-        return False
-    rows = list(csv.reader(text.splitlines()))
-    if len(rows) < 2 or len(rows[1]) != len(rows[0]):
-        return False
-    return dict(zip(rows[0], rows[1], strict=True)).get("commit_sha") == sha
+    row = _staged_row(path)
+    return row is not None and path.read_text().endswith("\n") and row.get("commit_sha") == sha
 
 
 def staged_unpublishable(path: Path) -> bool:
@@ -329,12 +322,18 @@ def staged_unpublishable(path: Path) -> bool:
     unreadable file is left to `staged_row_complete` and reported as incomplete,
     not as unpublishable.
     """
+    row = _staged_row(path)
+    return row is not None and not stageable_note(row.get("note", ""))
+
+
+def _staged_row(path: Path) -> dict[str, str] | None:
+    """A staging CSV's first row by column, or None when it has no whole one."""
     if not path.exists():
-        return False
+        return None
     rows = list(csv.reader(path.read_text().splitlines()))
     if len(rows) < 2 or len(rows[1]) != len(rows[0]):
-        return False
-    return not stageable_note(dict(zip(rows[0], rows[1], strict=True)).get("note", ""))
+        return None
+    return dict(zip(rows[0], rows[1], strict=True))
 
 
 def staged_complete(args: argparse.Namespace, sha: str, name: str, stage: Path) -> bool:
