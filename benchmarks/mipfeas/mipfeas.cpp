@@ -714,6 +714,25 @@ int run_benchmark(int argc, char** argv) {
         // trace-health counts on `trace_source`; the raw count beside it is for
         // reading a single result by hand, where "one point" and "four thousand"
         // are the difference between a profile and a coincidence.
+        // What the search DID with its budget, as opposed to how much of it it
+        // got. A row that stops improving early reads identically to one that
+        // never stalled unless these are published: binkar10_1 takes its last
+        // improvement at 5.1s of 60s and ends 150x above the proven optimum,
+        // and without these counters there is no way to tell "never diversified"
+        // from "diversified 21 times and could not escape" -- which are opposite
+        // diagnoses with opposite fixes.
+        {"perturbations", result.perturbations},
+        {"lns_repairs", result.lns_repairs},
+        {"lns_repairs_accepted", result.lns_repairs_accepted},
+        // NaN when the run never reached feasibility, which JSON cannot carry --
+        // null says "not recorded" rather than inventing a zero that reads as
+        // "arrived instantly".
+        {"time_to_first_feasible", std::isfinite(result.time_to_first_feasible)
+                                       ? nlohmann::json(result.time_to_first_feasible)
+                                       : nlohmann::json(nullptr)},
+        {"first_feasible_objective", std::isfinite(result.first_feasible_objective)
+                                         ? nlohmann::json(result.first_feasible_objective)
+                                         : nlohmann::json(nullptr)},
         {"trace_points", trace_points},
         {"trace_source", trace_points > 0 ? "callback" : "final_only"},
         {"iterations", result.iterations},
