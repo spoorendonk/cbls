@@ -3,24 +3,41 @@
 #include "cbls/model.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <limits>
 
 namespace cbls {
 
+// A child's value, read WITHOUT the range check `Model::var`/`Model::node` do.
+//
+// Safe because every ChildRef is validated once, when the node naming it is made
+// (`Model::wrap` throws on an id past what exists), and a model never removes a
+// variable or node -- so the check here could only ever pass. It is not free,
+// though: evaluate() and local_derivative() read a child on nearly every DAG
+// edge they touch, and the throwing branch kept the reads from being as cheap
+// as a plain index. Measured for #156 (idle box; cbls_minlplib, 20k iterations,
+// seed 7; serial, interleaved, median of 5; results identical), with the
+// checked read -> this: nvs05 9.08 s -> 7.70, chain50 3.93 -> 2.31, ex8_6_1
+// 3.95 -> 3.04, maxmin 2.99 -> 2.54. The asserts keep the check in a Debug or
+// sanitizer build.
 static double child_val(const ChildRef& ref, const Model& model) {
     if (ref.is_var) {
-        return model.var(ref.id).value;
+        assert(static_cast<size_t>(ref.id) < model.num_vars());
+        return model.variables()[ref.id].value;
     }
-    return model.node(ref.id).value;
+    assert(static_cast<size_t>(ref.id) < model.num_nodes());
+    return model.nodes()[ref.id].value;
 }
 
 // Whether a comparison's child is a literal Const node — i.e. a bound the
 // modeller wrote, not a quantity the DAG computed. `comparison_residual` needs
 // this to tell an "absent bound" +inf sentinel from an arithmetic overflow; a
-// variable is never a sentinel, since its value is search state.
+// variable is never a sentinel, since its value is search state. Unchecked for
+// the reason child_val gives.
 static bool child_is_const(const ChildRef& ref, const Model& model) {
-    return !ref.is_var && model.node(ref.id).op == NodeOp::Const;
+    assert(ref.is_var || static_cast<size_t>(ref.id) < model.num_nodes());
+    return !ref.is_var && model.nodes()[ref.id].op == NodeOp::Const;
 }
 
 static double list_element(const ChildRef& ref, const Model& model, int idx) {
