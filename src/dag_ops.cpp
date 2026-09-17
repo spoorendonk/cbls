@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <queue>
+#include <vector>
 
 namespace cbls {
 
@@ -23,20 +24,34 @@ void rebuild_back_references(Model& model) {
         v.dependent_ids.clear();
     }
 
+    // Deduplicated by a last-writer stamp, not by searching the list being
+    // built. A duplicate can only ever come from ONE parent naming the same
+    // child twice (`prod(x, x)`), because a parent is visited once -- so
+    // "already appended by this parent" is the whole condition, and a stamp
+    // answers it in O(1) where the search was O(degree) per edge.
+    //
+    // That difference is not academic on a real matrix. The search made this
+    // O(sum of degree^2): square47's 95k columns appear in ~288 rows each, which
+    // is ~3.9 BILLION comparisons, and `compute_topo_order` runs twice per build
+    // (once at close(), once when the objective's soft constraint is added). It
+    // was 68% of that instance's 6.4s model build.
+    std::vector<int32_t> var_stamp(model.num_vars(), -1);
+    std::vector<int32_t> node_stamp(model.nodes().size(), -1);
+
     for (auto& nd : model.nodes_mut()) {
         for (const auto& child : nd.children) {
             if (child.is_var) {
-                auto& v = model.var_mut(child.id);
-                if (std::find(v.dependent_ids.begin(), v.dependent_ids.end(), nd.id) ==
-                    v.dependent_ids.end()) {
-                    v.dependent_ids.push_back(nd.id);
+                if (var_stamp[child.id] == nd.id) {
+                    continue;
                 }
+                var_stamp[child.id] = nd.id;
+                model.var_mut(child.id).dependent_ids.push_back(nd.id);
             } else {
-                auto& child_node = model.node_mut(child.id);
-                if (std::find(child_node.parent_ids.begin(), child_node.parent_ids.end(), nd.id) ==
-                    child_node.parent_ids.end()) {
-                    child_node.parent_ids.push_back(nd.id);
+                if (node_stamp[child.id] == nd.id) {
+                    continue;
                 }
+                node_stamp[child.id] = nd.id;
+                model.node_mut(child.id).parent_ids.push_back(nd.id);
             }
         }
     }

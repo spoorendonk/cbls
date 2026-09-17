@@ -1,5 +1,6 @@
 #include "test_helpers.h"
 
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cbls/cbls.h>
@@ -194,6 +195,38 @@ TEST_CASE("Delta evaluation matches full", "[dag]") {
 
     double full_result = full_evaluate(m);
     REQUIRE(full_result == delta_result);
+}
+
+TEST_CASE("back-references list each parent once, including a repeated child", "[dag]") {
+    // `rebuild_back_references` deduplicates by a last-writer stamp rather than
+    // by searching the list it is building, which is what took it from
+    // O(sum of degree^2) to O(edges) -- 68% of square47's model build, whose
+    // 95k columns appear in ~288 rows each.
+    //
+    // The stamp is only correct because a duplicate can come from ONE parent
+    // naming the same child twice, a parent being visited once. `prod(x, x)` is
+    // that case, so it is the case pinned: x must list the product once, and
+    // both of x's genuinely distinct parents must survive.
+    Model m;
+    auto x = m.float_var(0, 10);
+    auto sq = m.prod(x, x);  // names x twice
+    auto lin = m.prod(x, m.constant(3.0));
+    auto f = m.sum({sq, lin});
+    m.minimize(f);
+    m.close();
+
+    const auto& deps = m.var(vid(x)).dependent_ids;
+    REQUIRE(std::count(deps.begin(), deps.end(), sq) == 1);
+    REQUIRE(std::count(deps.begin(), deps.end(), lin) == 1);
+    REQUIRE(deps.size() == 2);
+
+    // And the dedup must not cost a dependency: a change to x still reaches f
+    // through both arms.
+    m.var_mut(vid(x)).value = 2.0;
+    full_evaluate(m);
+    REQUIRE(m.node(f).value == 4.0 + 6.0);
+    m.var_mut(vid(x)).value = 3.0;
+    REQUIRE(delta_evaluate(m, {vid(x)}) == 9.0 + 9.0);
 }
 
 TEST_CASE("Delta evaluation respects dependency order on a deep chain", "[dag]") {
