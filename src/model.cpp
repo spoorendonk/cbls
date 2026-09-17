@@ -42,12 +42,14 @@ int32_t Model::alloc_var(VarType type, double lb, double ub, const std::string& 
     v.lb = lb;
     v.ub = ub;
     v.name = name;
-    vars_.push_back(std::move(v));
-    // An empty dependents range, keeping the offsets one longer than vars_.
+    // The variable's empty dependents range goes in FIRST: if the push below
+    // throws, the offsets are merely one entry longer than needed (still an
+    // empty range) rather than one short.
     if (dependent_offsets_.empty()) {
         dependent_offsets_.push_back(0);
     }
     dependent_offsets_.push_back(dependent_offsets_.back());
+    vars_.push_back(std::move(v));
     return vars_.back().id;
 }
 
@@ -65,11 +67,12 @@ int32_t Model::push_node(NodeOp op, size_t child_begin) {
     nd.op = op;
     nd.child_begin = static_cast<uint32_t>(child_begin);
     nd.child_count = static_cast<uint32_t>(child_refs_.size() - child_begin);
-    nodes_.push_back(nd);
+    // Offsets before the node, for the reason alloc_var gives.
     if (parent_offsets_.empty()) {
         parent_offsets_.push_back(0);
     }
     parent_offsets_.push_back(parent_offsets_.back());
+    nodes_.push_back(nd);
     return nd.id;
 }
 
@@ -519,7 +522,15 @@ void Model::build_var_constraints() {
     std::vector<int32_t> node_stamp(nodes_.size(), -1);
     std::vector<int32_t> var_stamp(vars_.size(), -1);
     std::vector<int32_t> stack;
-    std::vector<int32_t> incident_vars;                                   // constraint order
+    // Constraint order. Sized from the last build's incidence count, which the
+    // rebuild after add_objective_soft_constraint() matches to within one row, and
+    // that build's CSR is released first so the two are never both alive. Its
+    // offsets go with it, so a throw below leaves constraints_of_var reporting
+    // out_of_range rather than reading freed ids.
+    std::vector<int32_t> incident_vars;
+    incident_vars.reserve(var_constraint_ids_.size());
+    std::vector<int32_t>().swap(var_constraint_ids_);
+    var_constraint_offsets_.clear();
     std::vector<size_t> incident_begin(static_cast<size_t>(n_cons) + 1);  // per constraint
     for (int32_t ci = 0; ci < n_cons; ++ci) {
         incident_begin[ci] = incident_vars.size();

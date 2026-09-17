@@ -22,13 +22,14 @@ namespace cbls {
 SolveCallback::~SolveCallback() = default;
 
 void initialize_random(Model& model, RNG& rng) {
-    for (auto& var : model.variables_mut()) {
-        randomize_var(var, rng);
+    for (int32_t v = 0; v < static_cast<int32_t>(model.num_vars()); ++v) {
+        randomize_var(model.var_mut(v), rng);
     }
 }
 
 void initialize_structured_random(Model& model, RNG& rng) {
-    for (auto& var : model.variables_mut()) {
+    for (int32_t v = 0; v < static_cast<int32_t>(model.num_vars()); ++v) {
+        Variable& var = model.var_mut(v);
         if (!is_structured(var.type)) {
             continue;
         }

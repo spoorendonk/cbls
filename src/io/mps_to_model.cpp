@@ -393,13 +393,14 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
     for (const int k : mat.obj_nz) {
         count_term(prob.nonzeros[static_cast<std::size_t>(k)].value);
     }
-    // Per row: the Sum, one or two comparisons (two children each), and their
-    // bound constants. Per column: the bound nodes a finite box contributes. All
-    // are small constant factors on counts already known, so the total is close
-    // rather than lavish.
+    // Per row: at most the Sum, two comparisons (two children each) and their
+    // two bound constants. Columns add no nodes -- `add_column` makes only the
+    // variable, its box is the variable's bounds -- so they reserve none. The
+    // slack covers the objective's offset constant and wrapping Sum, and the
+    // `obj <= bound` row solve() appends. All small constant factors on counts
+    // already known, so the total is close rather than lavish.
     const auto rows = static_cast<std::size_t>(n_rows);
-    m.reserve(static_cast<std::size_t>(n_cols),
-              term_nodes + (6 * rows) + (2 * static_cast<std::size_t>(n_cols)) + 16,
+    m.reserve(static_cast<std::size_t>(n_cols), term_nodes + (5 * rows) + 16,
               term_child_refs + (4 * rows) + 16);
 
     // Implied bounds run before variable creation, so the derived box is what

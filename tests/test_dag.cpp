@@ -6,6 +6,7 @@
 #include <cbls/cbls.h>
 #include <cmath>
 #include <memory>
+#include <stdexcept>
 #include <vector>
 
 using namespace cbls;
@@ -243,9 +244,9 @@ TEST_CASE("flat edge storage keeps child, parent, dependent and topological orde
     Model m;
     auto x = m.float_var(0, 10);
     auto y = m.float_var(0, 10);
-    auto c = m.constant(3.0);        // node 0
-    auto n = m.sum({x, y, x});       // node 1, names x twice
-    auto p1 = m.prod(n, n);          // node 2, names n twice
+    auto n = m.sum({x, y, x});       // node 0, names x twice
+    auto p1 = m.prod(n, n);          // node 1, names n twice
+    auto c = m.constant(3.0);        // node 2, a source made after a non-source
     auto p2 = m.sum({n, c});         // node 3
     auto p3 = m.prod(c, n);          // node 4
     auto top = m.sum({p1, p2, p3});  // node 5
@@ -272,8 +273,10 @@ TEST_CASE("flat edge storage keeps child, parent, dependent and topological orde
     REQUIRE(m.parents(top).empty());
     REQUIRE(as_vector(m.dependents(vid(x))) == std::vector<int32_t>{n});
     REQUIRE(as_vector(m.dependents(vid(y))) == std::vector<int32_t>{n});
-    // Kahn's order: sources by id, then FIFO over the parent lists.
-    REQUIRE(m.topo_order() == std::vector<int32_t>{c, n, p1, p2, p3, top});
+    // Kahn's order: sources by id, then FIFO over the parent lists -- NOT id
+    // order here (c, node 2, precedes p1, node 1), so an id-order or DFS sort
+    // fails. The order matters beyond validity: the AD sweep accumulates in it.
+    REQUIRE(m.topo_order() == std::vector<int32_t>{n, c, p1, p2, p3, top});
 
     // A node made after the rebuild reads as parentless until the next one, and
     // appending it moves no existing slice.
@@ -294,6 +297,26 @@ TEST_CASE("flat edge storage keeps child, parent, dependent and topological orde
     REQUIRE(copy->node(top).value == 16.0 + 7.0 + 12.0);
     copy->var_mut(vid(y)).value = 0.0;  // n = 2, p1 = 4, p2 = 5, p3 = 6
     REQUIRE(delta_evaluate(*copy, {vid(y)}) == 4.0 + 5.0 + 6.0);
+
+    // G_v (constraints_of_var) is CSR too, in ascending constraint index.
+    Model g;
+    auto gx = g.float_var(0, 1);
+    auto gy = g.float_var(0, 1);
+    auto gc = g.constant(1.0);
+    g.add_constraint(g.leq(g.sum({gx, gy}), gc));  // 0: x, y
+    g.add_constraint(g.leq(gy, gc));               // 1: y
+    g.add_constraint(g.leq(g.prod(gx, gx), gc));   // 2: x
+    g.close();
+    REQUIRE(as_vector(g.constraints_of_var(vid(gx))) == std::vector<int32_t>{0, 2});
+    REQUIRE(as_vector(g.constraints_of_var(vid(gy))) == std::vector<int32_t>{0, 1});
+    // The CSR bounds: one past the last id is out of range, and G_v is not
+    // extended for a variable made after the build.
+    REQUIRE_THROWS_AS(g.constraints_of_var(2), std::out_of_range);
+    REQUIRE_THROWS_AS(g.parents(static_cast<int32_t>(g.num_nodes())), std::out_of_range);
+    REQUIRE_THROWS_AS(g.dependents(2), std::out_of_range);
+    auto late_var = g.float_var(0, 1);
+    REQUIRE(g.dependents(vid(late_var)).empty());
+    REQUIRE_THROWS_AS(g.constraints_of_var(vid(late_var)), std::out_of_range);
 }
 
 TEST_CASE("Delta evaluation respects dependency order on a deep chain", "[dag]") {

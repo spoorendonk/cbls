@@ -81,7 +81,8 @@ enum class VarType : uint8_t { Bool, Int, Float, List, Set };
 
 Each `Variable` stores: `id`, `type`, `value` (scalar), `lb`/`ub` (bounds),
 `elements` (for List/Set), `universe_size`, `min_size`/`max_size` (Set
-cardinality), and `dependent_ids` (nodes that use this variable).
+cardinality). It owns no edge storage: the nodes that use it are
+`Model::dependents(id)`, a slice of one flat CSR array the model holds.
 
 Bool, Int and Float are *scalar* (jumpable by GFJ). List and Set are
 *structural* — GFJ leaves them untouched; they are moved only by the
@@ -112,9 +113,12 @@ Variables and expression nodes share a single `int32_t` handle space:
 
 ### Expression Nodes
 
-Each `ExprNode` has an `op` (operation), `children` (vector of `ChildRef`
-with `id` + `is_var` flag), `parent_ids`, `value` (cached evaluation result),
-and optionally `const_value` or `lambda_func_id`.
+Each `ExprNode` has an `op` (operation), a `(child_begin, child_count)` slice
+of the model's flat `ChildRef` array (`id` + `is_var` flag, read through
+`Model::children(node)`), `value` (cached evaluation result), and optionally
+`const_value` or `lambda_func_id`. Its back-references are
+`Model::parents(id)`, a CSR slice rebuilt with the topological order. No node
+or variable owns a heap block of its own (#156).
 
 **Supported operations:**
 
@@ -153,7 +157,7 @@ order. Used at initialization, after perturbation/LNS, and after the
 objective-bound soft constraint is appended.
 
 **Delta evaluation** (`delta_evaluate`): given a set of changed variable IDs,
-BFS-marks dirty nodes upward through `dependent_ids`/`parent_ids`, then
+BFS-marks dirty nodes upward through `Model::dependents`/`Model::parents`, then
 recomputes only dirty nodes in topological order. This is the hot path during
 GFJ — each jump changes one variable and touches a small subgraph, and each
 jump *candidate* is scored by a no-commit delta probe (see
@@ -219,7 +223,8 @@ uniformly correct for both senses.
 
 ### Finalization
 
-`close()` computes the topological order, performs an initial full evaluation,
+`close()` rebuilds the back-references, computes the topological order,
+performs an initial full evaluation,
 builds the `var_id -> constraint-index` adjacency (`build_var_constraints`, the
 paper's `G_v`), and sets the `closed_` flag. The model is immutable in structure
 after close — *except* for the objective soft constraint, which `solve()`

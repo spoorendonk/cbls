@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -42,14 +43,19 @@ struct Variable {
 };
 
 /// A read-only view of a contiguous run of `T` -- what `Model::children`,
-/// `Model::parents` and `Model::dependents` hand out, each a slice of one flat
-/// array the model owns. C++17 has no `std::span`, and the three accessors need
-/// nothing beyond iteration, a size and an index.
+/// `Model::parents`, `Model::dependents` and `Model::constraints_of_var` hand
+/// out, each a slice of one flat array the model owns. C++17 has no `std::span`,
+/// and the four accessors need nothing beyond iteration, a size and an index.
 ///
 /// Invalidated by whatever reallocates the array it points into: appending a
-/// node for `children`, and the back-reference rebuild in `close()` /
-/// `add_objective_soft_constraint()` for the other two. No caller holds one
+/// node for `children`, and the rebuild in `close()` /
+/// `add_objective_soft_constraint()` for the other three. No caller holds one
 /// across either.
+///
+/// `operator[]` asserts its bound. That is not decoration: an index past a
+/// node's children now lands on the NEXT node's children inside one heap block,
+/// which AddressSanitizer cannot see, where the per-node vector this replaced
+/// was a heap overflow it reported. The assert costs nothing under NDEBUG.
 template <typename T>
 class ConstSpan {
 public:
@@ -60,7 +66,10 @@ public:
     [[nodiscard]] constexpr const T* end() const noexcept { return data_ + size_; }
     [[nodiscard]] constexpr size_t size() const noexcept { return size_; }
     [[nodiscard]] constexpr bool empty() const noexcept { return size_ == 0; }
-    [[nodiscard]] constexpr const T& operator[](size_t i) const noexcept { return data_[i]; }
+    [[nodiscard]] constexpr const T& operator[](size_t i) const noexcept {
+        assert(i < size_);
+        return data_[i];
+    }
 
 private:
     const T* data_ = nullptr;

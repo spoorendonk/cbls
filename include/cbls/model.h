@@ -233,7 +233,6 @@ public:
     /// MIPfeas instance.
     [[nodiscard]] int32_t topo_position(int32_t id) const noexcept { return topo_pos_[id]; }
     [[nodiscard]] const std::vector<Variable>& variables() const noexcept { return vars_; }
-    std::vector<Variable>& variables_mut() noexcept { return vars_; }
     [[nodiscard]] const std::vector<ExprNode>& nodes() const noexcept { return nodes_; }
     [[nodiscard]] size_t num_vars() const noexcept { return vars_.size(); }
     [[nodiscard]] size_t num_nodes() const noexcept { return nodes_.size(); }
@@ -275,12 +274,12 @@ private:
     // wholesale by `rebuild_back_references`: the parents of node `i` are
     // `parent_ids_[parent_offsets_[i] .. parent_offsets_[i + 1])`, and likewise
     // for variables. Once its owner array is non-empty, each offsets array holds
-    // exactly one entry more -- creating a node or variable appends an empty
-    // range -- so the accessors, which range-check the id against the owner
-    // first, need no "not built yet" branch, and a node made after a rebuild
-    // reads as parentless, exactly as it did when it owned an empty vector.
+    // at least one entry more -- creating a node or variable appends an empty
+    // range before the element itself -- so the accessors, which range-check the id against the
+    // owner first, need no "not built yet" branch, and a node made after a rebuild reads as
+    // parentless, exactly as it did when it owned an empty vector.
     //
-    // That is also why nothing outside Model may append to nodes_ or vars_: a
+    // That is also why Model hands out no mutable nodes_ or vars_ vector: a
     // node or variable that bypassed push_node/alloc_var would have no range.
     std::vector<ChildRef> child_refs_;
     std::vector<uint32_t> parent_offsets_;
@@ -295,7 +294,7 @@ private:
     // var_id -> constraint indices (G_v), CSR like the back-references above: a
     // per-variable vector here was the largest allocation site left once those
     // were flat. Empty until close(), and then sized for the variables of the
-    // last build only -- unlike parent_offsets_ it is NOT extended as variables
+    // last build only -- unlike dependent_offsets_ it is NOT extended as variables
     // are made, which is what keeps constraints_of_var's range check the same.
     std::vector<uint32_t> var_constraint_offsets_;
     std::vector<int32_t> var_constraint_ids_;
