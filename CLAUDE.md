@@ -112,6 +112,16 @@ Install `pyright-lsp@claude-plugins-official`. Pyright reads `[tool.mypy]` and p
 
 - Use automatic conversions for standard types (`std::string` ↔ `str`, `std::vector` ↔ `list`).
 - Use `nb::ndarray` for NumPy interop — specify dtype and shape constraints.
+- **A `def_rw` on a vector the engine indexes unchecked is a segfault, and so is
+  a raw `int32_t` handle.** Python supplies both without a type system in the
+  way, and the hot paths index by constraint or variable id without bounds
+  tests. Three crashes of exactly this shape were found in one review pass
+  (#156): `ModelState.elements`, `ViolationManager.weights`, and child handles
+  into every builder. Validate where the caller hands the value over — a
+  `def_prop_rw` setter that checks the length, or a check at node creation —
+  rather than per read on a hot path, and pin it with a child-process test
+  (`tests/python/test_model_handles.py`), since the unguarded state crashes the
+  interpreter rather than failing a test.
 
 ## Testing
 
