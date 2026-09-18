@@ -359,7 +359,21 @@ NB_MODULE(_cbls_core, m) {
         .def("weighted_violation_delta", &ViolationManager::weighted_violation_delta,
              nb::arg("var_id"), nb::arg("j"))
         .def("invalidate_cache", &ViolationManager::invalidate_cache)
-        .def_rw("weights", &ViolationManager::weights);
+        // `weights` is indexed by constraint index with no bounds check on the
+        // hot path (weighted_violation_delta, total_violation), so a short list
+        // assigned from Python read past its end. The engine cannot desync it --
+        // solve() constructs the manager after add_objective_soft_constraint() --
+        // so the length rule is enforced here rather than per read.
+        .def_prop_rw(
+            "weights", [](ViolationManager& self) -> std::vector<double>& { return self.weights; },
+            [](ViolationManager& self, std::vector<double> w) {
+                if (w.size() != self.weights.size()) {
+                    throw std::invalid_argument("weights must have one entry per constraint (" +
+                                                std::to_string(self.weights.size()) + ")");
+                }
+                self.weights = std::move(w);
+            },
+            nb::rv_policy::reference_internal);
 
     // RNG
     nb::class_<RNG>(m, "RNG")

@@ -255,7 +255,7 @@ extract_block() {
 run_block() {
 	set +e
 	(
-		unset GIT_DIR GIT_WORK_TREE
+		unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 		eval "$1"
 	)
 	local rc=$?

@@ -81,6 +81,14 @@ def test_an_empty_min_or_max_raises_instead_of_reading_past_its_children() -> No
     assert proc.stdout.strip().endswith("OK"), proc.stdout
 
 
+def test_a_short_state_or_weight_vector_raises_instead_of_reading_past_it() -> None:
+    proc = _run_scenario("short_state_or_weights")
+    assert proc.returncode == 0, (
+        f"child exited {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    )
+    assert proc.stdout.strip().endswith("OK"), proc.stdout
+
+
 def test_constraints_of_var_lists_ascending_constraint_indices() -> None:
     m = cbls.Model()
     x = m.float_var(0, 1)
@@ -129,6 +137,37 @@ def _scenario_bad_child(handle: int) -> None:
     print("OK")
 
 
+def _scenario_short_state_or_weights() -> None:
+    """Two more vectors a caller sizes and the engine then indexes unchecked."""
+    m = cbls.Model()
+    x = m.float_var(0, 1)
+    one = m.constant(1.0)
+    m.add_constraint(m.leq(x, one))
+    m.minimize(m.sum([x]))
+    m.close()
+
+    state = m.copy_state()
+    state.elements = []  # values still has one entry per variable
+    try:
+        m.restore_state(state)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("restore_state accepted a short elements list")
+
+    vm = cbls.ViolationManager(m)
+    for bad in ([], [1.0, 1.0]):
+        try:
+            vm.weights = bad
+        except ValueError:
+            continue
+        raise AssertionError(f"weights accepted {len(bad)} entries for 1 constraint")
+    vm.weights = [2.0]  # the right length still works
+    assert list(vm.weights) == [2.0]
+    vm.weighted_violation_delta(vid(x), 0.9)
+    print("OK")
+
+
 def _scenario_bad_root() -> None:
     m = cbls.Model()
     x = m.float_var(0, 1)
@@ -157,16 +196,16 @@ def _scenario_empty_min_max() -> None:
         "cbls.min": lambda m: cbls.min([]),
         "cbls.max": lambda m: cbls.max([]),
     }
+    # The two Model builders guard the DAG read (children[0] of an empty slice);
+    # cbls.min/cbls.max guard an earlier one, args[0] on an empty vector, which
+    # never reaches the DAG at all.
     for name, build in builders.items():
         m = cbls.Model()
-        x = m.float_var(0, 1)
+        m.float_var(0, 1)
         try:
-            node = build(m)
+            build(m)
         except ValueError:
             continue
-        # Accepted: evaluating it is the read past the slice this guards.
-        m.minimize(node if isinstance(node, int) else x)
-        m.close()
         raise AssertionError(f"{name}([]) was accepted")
     print("OK")
 
@@ -179,5 +218,7 @@ if __name__ == "__main__":
         _scenario_bad_root()
     elif scenario == "empty_min_max":
         _scenario_empty_min_max()
+    elif scenario == "short_state_or_weights":
+        _scenario_short_state_or_weights()
     else:
         raise SystemExit(f"unknown scenario {scenario}")

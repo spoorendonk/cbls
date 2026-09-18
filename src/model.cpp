@@ -95,7 +95,11 @@ int32_t Model::alloc_node_over_handles(NodeOp op, const std::vector<int32_t>& ha
             child_refs_.push_back(wrap(h));
         }
     } catch (...) {
-        child_refs_.resize(begin);  // a rejected node leaves no children behind
+        // A rejected node leaves no children behind. Nothing can observe the
+        // difference -- every node addresses its own slice, so orphaned entries
+        // are inert -- but a caller that catches and retries would otherwise
+        // grow the array without bound.
+        child_refs_.resize(begin);
         throw;
     }
     return push_node(op, begin);
@@ -285,19 +289,21 @@ int32_t Model::gt(int32_t a, int32_t b) {
 }
 
 int32_t Model::lambda_sum(int32_t list_var_id, std::function<double(int)> func) {
+    const ChildRef child = wrap(list_var_id);  // reject a bad handle before registering
     lambda_funcs_.push_back(std::move(func));
     auto func_id = static_cast<int32_t>(lambda_funcs_.size() - 1);
 
-    int32_t nid = alloc_node(NodeOp::Lambda, {wrap(list_var_id)});
+    int32_t nid = alloc_node(NodeOp::Lambda, {child});
     nodes_[nid].lambda_func_id = func_id;
     return nid;
 }
 
 int32_t Model::pair_lambda_sum(int32_t list_var_id, std::function<double(int, int)> func) {
+    const ChildRef child = wrap(list_var_id);  // reject a bad handle before registering
     pair_lambda_funcs_.push_back(std::move(func));
     auto func_id = static_cast<int32_t>(pair_lambda_funcs_.size() - 1);
 
-    int32_t nid = alloc_node(NodeOp::PairLambda, {wrap(list_var_id)});
+    int32_t nid = alloc_node(NodeOp::PairLambda, {child});
     nodes_[nid].lambda_func_id = func_id;
     return nid;
 }
@@ -462,8 +468,12 @@ void Model::rebuild_back_references() {
                      dependent_offsets_.begin());
     // reserve() first because it allocates exactly, where a growing resize()
     // may double -- on a replica's rebuild that would be the whole array again.
+    // clear() first because pass 2 overwrites every entry, and reserve() on a
+    // non-empty vector copies the stale contents into the new block.
+    parent_ids_.clear();
     parent_ids_.reserve(parent_offsets_.back());
     parent_ids_.resize(parent_offsets_.back());
+    dependent_ids_.clear();
     dependent_ids_.reserve(dependent_offsets_.back());
     dependent_ids_.resize(dependent_offsets_.back());
 
@@ -731,7 +741,9 @@ Model::State Model::copy_state() const {
 }
 
 void Model::restore_state(const State& state) {
-    if (state.values.size() != vars_.size()) {
+    // Both vectors are written from Python (ModelState is default-constructible
+    // with two writable fields), and `elements` is indexed unchecked below.
+    if (state.values.size() != vars_.size() || state.elements.size() != vars_.size()) {
         throw std::invalid_argument("state size does not match model");
     }
     for (size_t i = 0; i < vars_.size(); ++i) {

@@ -43,7 +43,7 @@ Two rules apply to every recipe here:
 | Flag | Default | Adds | For |
 |---|---|---|---|
 | `-DCBLS_PROFILE=ON` | OFF | `-g -fno-omit-frame-pointer` on top of the build type | `perf`, heap-dump symbolisation |
-| `-DCBLS_SANITIZE=<comma,list>` | empty (off) | `-fsanitize=<list> -g -fno-omit-frame-pointer`, and the same `-fsanitize` at link | ASan/UBSan runs; `thread` for the portfolio |
+| `-DCBLS_SANITIZE=<comma,list>` | empty (off) | `-fsanitize=<list> -g -fno-omit-frame-pointer -UNDEBUG`, and the same `-fsanitize` at link | ASan/UBSan runs; `thread` for the portfolio |
 
 Both are declared before the first target in the root `CMakeLists.txt`, so the
 flags reach `cbls_lib`, the CLI, the benchmark runners *and* Catch2. Neither
@@ -309,6 +309,14 @@ cmake -B build-asan -DCBLS_SANITIZE=address,undefined,float-cast-overflow
 cmake --build build-asan -j4
 UBSAN_OPTIONS=print_stacktrace=1 ctest --test-dir build-asan -LE slow --output-on-failure -j4
 ```
+
+The sanitizer build adds **`-UNDEBUG`**, so `assert()` is live at whatever `-O`
+the build type picks. That is deliberate: since #156 the DAG's child edges are
+slices of one array, so an over-long child index lands on the next node's
+children *inside the same heap block*, which ASan cannot see — where the
+per-node vector it replaced was a heap overflow ASan reported. The asserts in
+`child_val` and `ConstSpan` are what is left, and Release (the default) would
+define them away.
 
 Spell out **`float-cast-overflow`**. GCC 15's `-fsanitize=undefined` does *not*
 include it — verified: `(long long)1e30` returns `LLONG_MIN` silently under

@@ -65,7 +65,13 @@ if(CBLS_SANITIZE)
     # arguments, the second of which GCC reads as an input filename and fails on
     # at link. Normalise to the comma form the compiler wants.
     string(REPLACE ";" "," CBLS_SANITIZE_FLAGS "${CBLS_SANITIZE}")
-    add_compile_options(-fsanitize=${CBLS_SANITIZE_FLAGS} -fno-omit-frame-pointer -g)
+    # -UNDEBUG keeps assert() live at whatever -O the caller picked. #156 replaced
+    # the per-node child vectors -- where an over-long index was a heap overflow
+    # ASan reported -- with slices of one block, where the same read lands on the
+    # next node's children and ASan sees nothing. The asserts in child_val and
+    # ConstSpan are then the only check, and Release (the default here) defines
+    # NDEBUG away.
+    add_compile_options(-fsanitize=${CBLS_SANITIZE_FLAGS} -fno-omit-frame-pointer -g -UNDEBUG)
     add_link_options(-fsanitize=${CBLS_SANITIZE_FLAGS})
     message(STATUS "sanitizers: -fsanitize=${CBLS_SANITIZE_FLAGS}")
 endif()
