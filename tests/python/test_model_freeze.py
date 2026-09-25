@@ -111,7 +111,8 @@ def test_node_value_range_checks_its_index() -> None:
     gets a test: unchecked, these would be heap reads rather than exceptions.
     """
     m, _x, row, _s = _closed_model()
-    assert m.node_value(row) == pytest.approx(0.0 + 0.0 - 10.0)
+    # x + y + lambda_sum(s) - 10, with s empty so its term is 0.0.
+    assert m.node_value(row) == pytest.approx(0.0 + 0.0 + 0.0 - 10.0)
     for bad in (-1, m.num_nodes(), m.num_nodes() + 1000, -(2**31)):
         with pytest.raises(IndexError):
             m.node_value(bad)

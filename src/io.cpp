@@ -474,7 +474,7 @@ void tabulate_pair_lambda(const Model& model, const ExprNode& node, json& j) {
     // matrix, so the functor rebuilt from it throws `table.at()` when re-saved
     // over the wider universe -- but such a file could not be loaded-and-used
     // correctly anyway, which is the bug being fixed. And a Set whose
-    // universe_size clears the cap below while its max_size did not now refuses
+    // universe_size exceeds the cap below while its max_size did not now refuses
     // to serialise instead of writing a matrix too narrow to read back.
     int n = (var.type == VarType::Set) ? var.universe_size : var.max_size;
     if (n > 1000) {

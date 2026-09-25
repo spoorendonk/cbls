@@ -243,6 +243,13 @@ def _scenario_bad_table() -> None:
         ("functor node handle", lambda: m.pair_lambda_sum(0, dist), ValueError),
         ("functor scalar var", lambda: m.pair_lambda_sum(b, dist), ValueError),
         ("functor stale handle", lambda: m.pair_lambda_sum(-100, dist), IndexError),
+        # lambda_sum is held to it too -- it was the last collection builder
+        # without the check, and an unguarded node or scalar handle there builds
+        # a Lambda whose child is not a variable, which evaluates to 0.0 for
+        # ever. Un-pinned, reverting the guard leaves a green suite.
+        ("lambda_sum node handle", lambda: m.lambda_sum(0, lambda e: 0.0), ValueError),
+        ("lambda_sum scalar var", lambda: m.lambda_sum(b, lambda e: 0.0), ValueError),
+        ("lambda_sum stale handle", lambda: m.lambda_sum(-100, lambda e: 0.0), IndexError),
     ]
     for name, call, expected in cases:
         nodes_before = m.num_nodes()

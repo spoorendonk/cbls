@@ -133,12 +133,15 @@ merged="$out/ab_selection.csv"
 # end so a caller cannot read a partial comparison as a clean one.
 failed_arms=""
 IFS=',' read -r -a arm_list <<<"$arms"
-# `--arms ""` leaves arm_list unset, and an unset array expansion aborts under
-# `set -u` on bash < 4.4 -- refuse it here with a message instead.
-if [ ${#arm_list[@]} -eq 0 ]; then
-	echo "no arms requested (--arms was empty)" >&2
-	exit 2
-fi
+# `--arms ""` never reaches here -- `${2:?...}` at parse time fires on null as
+# well as unset. What DOES get through is an empty FIELD, as in `--arms ","` or
+# a trailing comma, which would hand the runner an arm named "".
+for arm in ${arm_list[@]+"${arm_list[@]}"}; do
+	if [ -z "$arm" ]; then
+		echo "empty arm name in --arms '$arms'" >&2
+		exit 2
+	fi
+done
 for arm in "${arm_list[@]}"; do
 	echo
 	echo "=== arm: $arm ==="

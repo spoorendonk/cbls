@@ -452,7 +452,8 @@ Release when the caller sets none, so this fence, CI and a plain `cmake -B build
 all gate the same binaries from one place. An explicit `-DCMAKE_BUILD_TYPE=Debug`
 still overrides it. The suite is mostly real solver runs, so the type is not
 cosmetic: the full `ctest` is ~499s at the old empty default and ~25s at
-Release (re-measured 2026-09-26 at 443 tests, `-j12`).
+Release (re-measured 2026-09-26 at 441 tests, `-j12`; two sub-second tests
+added since).
 
 `CMakeLists.txt` also picks up `ccache` as a compiler launcher when the machine
 has it (`apt install ccache`), which matters because pre-push's ```clean fence is
@@ -802,11 +803,29 @@ What is left is `set_moves`/`list_moves` drawing uniformly at random, where the
 scalar path has FJ's jump table and best-of-N scan-set sampling to steer it.
 Note the contrast is between the two *paths*, not the individual generators —
 `int_rand` and `float_perturb` are themselves uniform. **Cost-aware
-structural move selection is the prerequisite** for any renewed structured-variable
-claim, and `setcover` is its ready-made A/B harness — same instances, both
-encodings, a published baseline. Fix the guidance, re-run setcover, and only then
-consider whether a new List/Set benchmark is worth building. Adding one first
-just reproduces the negative result in a new domain.
+structural move selection was the stated prerequisite** for any renewed
+structured-variable claim. #165 built it — registrable `MoveGenerator`s,
+granular neighbour lists, and `BestOfSample` / `ViolationGuided` selection
+policies — and `setcover` was its ready-made A/B harness.
+
+**It has now been measured, and it did not move the number.** At engine commit
+`7436443`, five seeds per arm at a 10s budget, `ViolationGuided` and the default
+`FirstImprovingSample` are indistinguishable on the `Set` encoding: seven of ten
+instances favour the default, three the guided arm, and every difference sits
+inside one standard deviation of a per-seed spread that is ±7-16% on the
+weighted instances. The table and the caveats are in
+`benchmarks/instances/setcover/README.md`.
+
+So the prerequisite is **implemented but not yet effective**, which is not the
+same thing, and the guidance is unchanged in substance: **still do not build a
+new List/Set benchmark**, because adding one now reproduces the negative result
+in a new domain exactly as before. What changed is which lever to pull next. At
+a fixed wall-clock budget the A/B measures policy quality *minus* representation
+cost, and the guided arm scores more candidates while every candidate still
+copies the whole element vector twice — so the **position-based move
+representation** (described in #165, deferred to #164) is the thing to land
+before re-running the A/B and asking the question again. A null result under
+that cost does not license a claim in either direction.
 
 ### Benchmark workflow
 

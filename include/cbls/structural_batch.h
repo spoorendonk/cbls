@@ -64,8 +64,11 @@ struct SearchConfig;
 /// measurement is -- those are cheap enough to disappear into the total.
 ///
 /// The remaining cost is therefore
-/// O(#constraints x (1 + #commits) + #structured vars x #candidates x
-/// (delta_evaluate + |G_v|)), still unbounded in the model size, so the bound
+/// O(#constraints x (1 + #commits) + #generators x #candidates x
+/// (delta_evaluate + |R_g|)), where R_g is the deduped union of the
+/// generator's scope's G_v -- equal to G_v for the one-variable built-ins, and
+/// the reason this is written per GENERATOR rather than per structured
+/// variable. Still unbounded in the model size, so the bound
 /// still matters -- but it now takes a model with large STRUCTURES, or a sweep
 /// that commits heavily, rather than merely many rows, to reach the same
 /// overrun. Restricting the baseline refresh to the moved rows would close the

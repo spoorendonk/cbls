@@ -738,8 +738,10 @@ capability. Sequence structure is used by LNS, whose destroy step can remove a
 whole registered sequence at once — see the LNS section.)
 
 A batch is structural with probability `structural_batch_probability`: `< 0`
-auto-selects `0.33` when the model has any List/Set variable and `0.0`
-otherwise; scalar-only models always get `0.0`. After a structural batch commits
+auto-selects `0.33` when the batch would build at least one move generator --
+a registered `move_generators` entry, or a List/Set variable with
+`default_structural_generators` on (#165) -- and `0.0` otherwise, so a model
+whose batch would propose nothing never spends an iteration on one. After a structural batch commits
 anything, the engine `resync()`s its scan set.
 
 ### Registering a move generator
@@ -831,10 +833,19 @@ violation grounds, the way FJ's jump table and best-of-N scan-set sampling
 choose a scalar's value.
 
 #165 added the machinery to change that — `BestOfSample` / `ViolationGuided`
-and neighbour lists above — but the default is unchanged and **the measurement
-below has not been re-run against the new policies**. Until it is, the result
-that follows is the result: read the numbers as describing the default
-configuration, which is what a user gets.
+and neighbour lists above — and it **has now been measured on the setcover
+roster, with a null result**: at a 10s budget, five seeds per arm, engine commit
+`7436443`, `ViolationGuided` is indistinguishable from the default, every
+difference falling inside one standard deviation of the per-seed spread. The
+table and the caveats are in `benchmarks/instances/setcover/README.md`.
+
+So the result that follows is still the result, and it still describes the
+default configuration — which remains what a user gets. The reading to avoid is
+"guidance was tried and does not work": at a fixed wall-clock budget the A/B
+measures policy quality *minus* representation cost, and the guided arm scores
+more candidates per pass while every candidate still copies the whole element
+vector twice. The position-based move representation is what would separate the
+two, and it is deferred to #164.
 
 That is invisible on a mixed model — where List/Set variables sit alongside
 scalars that GFJ drives — but it is the whole search on a model whose
@@ -1768,7 +1779,7 @@ struct SearchConfig {
     int perturbation_period = 100;          // batches without improvement before diversifying
     double perturbation_probability = 0.1;  // scalar randomisation prob + List/Set
                                             // kick size (never a no-op)
-    double structural_batch_probability = -1.0;  // <0 = auto (0.33 if List/Set vars, else 0)
+    double structural_batch_probability = -1.0;  // <0 = auto (0.33 if any generator, else 0)
     bool use_compound_moves = false;        // run Novelty Jump batches (else FJ only)
     double novelty_jump_probability = 0.5;  // P(a batch is Novelty Jump) when enabled
 };
@@ -2235,7 +2246,7 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `batch_iterations` | 1000 | `SearchConfig` | GLS iterations per FJ batch |
 | `perturbation_period` | 100 | `SearchConfig` | stagnant batches before a diversification kick |
 | `perturbation_probability` | 0.1 | `SearchConfig` | per-var scalar randomisation probability on perturb; also scales the List/Set moves per kick (a no-op kick moves one var anyway) |
-| `structural_batch_probability` | -1 (auto) | `SearchConfig` | P(structural batch); auto 0.33 w/ List/Set, else 0 |
+| `structural_batch_probability` | -1 (auto) | `SearchConfig` | P(structural batch); auto 0.33 when a generator would be built, else 0 |
 | `use_compound_moves` | false | `SearchConfig` | enable Novelty Jump batches |
 | `novelty_jump_probability` | 0.5 | `SearchConfig` | P(Novelty Jump batch) when enabled |
 | `lns_interval` | 3 | `SearchConfig` / arg | LNS fires every Nth diversification kick |

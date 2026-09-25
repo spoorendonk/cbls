@@ -54,7 +54,8 @@ include(Catch)
 # finish in ~12s with `-j`, which is what pre-commit runs via `ctest -LE slow`.
 # pre-push still runs everything.
 #
-# Re-measured 2026-09-26 at 443 tests: only ONE of the six still exceeds the
+# Re-measured 2026-09-26 at 441 tests (443 now, +2 sub-second): only ONE of
+# the six still exceeds the
 # ~10s tagging threshold (CHPED 40-unit, 17.2s alone / 17.7s under -j12); the
 # other five are 2.9-6.6s on either basis. The split still buys ~13s, but most
 # of it is that one test. Re-derive before assuming the other five still earn

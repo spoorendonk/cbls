@@ -142,8 +142,14 @@ double effective_structural_probability(const Model& model, const SearchConfig& 
     // line, burning ~33% of outer-loop iterations on a guaranteed no-op. That is
     // the mirror image of the silent no-op the registered-generator clause above
     // exists to prevent.
+    //
+    // Null entries are skipped by StructuralBatch's constructor, so they are
+    // counted out here too: the predicate is exactly "the batch will hold at
+    // least one generator", and a vector of nothing but nullptrs is the same
+    // guaranteed no-op as the two cases above.
     const bool has_structural =
-        !config.move_generators.empty() ||
+        std::any_of(config.move_generators.begin(), config.move_generators.end(),
+                    [](const std::shared_ptr<const MoveGenerator>& g) { return g != nullptr; }) ||
         (config.default_structural_generators &&
          std::any_of(model.variables().begin(), model.variables().end(),
                      [](const Variable& v) { return is_structured(v.type); }));

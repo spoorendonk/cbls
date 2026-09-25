@@ -20,6 +20,7 @@ so the model is one `Set` variable and nothing else.
 | Can a standard set-based problem be *expressed* with a `Set` variable? | **Yes** — one `Set` over the columns, one `lambda_sum` coverage row per row. No new DAG op was needed. |
 | Does the search produce genuine, verified solutions? | **Yes** — every run on the roster returns a real cover, re-checked against the instance file. |
 | Is the `Set` encoding *competitive*? | **No.** It never beats the plain Bool encoding of the same instance (it ties on two unicost instances), and on the weighted instances it costs 8.6-11.0x the optimum where Bool is within 9-20%. See [Result](#result). |
+| Does #165's cost-aware selection fix it? | **Not yet.** `ViolationGuided` measures indistinguishable from the default at a 10s budget — every difference inside one standard deviation of the per-seed spread. See [Cost-aware structural selection](#cost-aware-structural-selection-165--measured-and-it-does-not-help-yet). |
 
 So the honest scope of the structured-variable claim today is: **`Set`
 variables are validated for expressiveness only, and `List` variables are not
@@ -154,6 +155,49 @@ That contrast is the sharpest available evidence for what is missing: not the
 The one-instance headline: on `scp41`, `Set` reaches 4739 against a proven
 optimum of 429, while the ordinary Bool encoding of the same data reaches 469.
 
+## Cost-aware structural selection (#165) — measured, and it does not help yet
+
+CLAUDE.md has long named **cost-aware structural move selection** as the
+prerequisite for any renewed structured-variable claim, and #165 built it:
+registrable move generators, granular neighbour lists, and a
+`StructuralSelection` policy with a violation-guided arm. This roster is its
+A/B harness, so the policy was measured here first.
+
+**Result: no separation at a 10s budget.** Engine commit `7436443`, five seeds
+(42-46) per arm, `Set` encoding, one solve at a time on an idle machine, via
+`benchmarks/setcover/ab_selection.sh --time 10 --seeds 5`.
+
+| instance | `first_improving` (mean +- sd) | `violation_guided` (mean +- sd) |
+|---|---|---|
+| scp41 | 3069.2 +- 219.7 | 3111.6 +- 404.1 |
+| scp42 | 2924.2 +- 215.5 | 3026.4 +- 195.9 |
+| scp43 | 2964.0 +- 481.7 | 2839.4 +- 300.9 |
+| scp44 | 2721.4 +- 269.2 | 3014.8 +- 404.2 |
+| scp45 | 3038.6 +- 230.8 | 2758.4 +- 264.2 |
+| scpe1 | 6.8 +- 0.7 | 6.6 +- 0.5 |
+| scpe2..scpe5 | 6.2-6.6 | 6.2-6.6 (identical to within 0.2) |
+
+Seven of ten instances favour the default and three favour the guided arm, and
+**every difference sits inside one standard deviation of the per-seed spread**,
+which is +-7 to 16% on the weighted instances -- wider than any gap between the
+arms. On the unicost instances the two are indistinguishable. All 100 runs were
+feasible and verified.
+
+**What this does and does not say.** It does not say violation-guided selection
+is a dead end. At a fixed wall-clock budget the comparison is policy quality
+*minus* representation cost, and the arms do not pay the same cost: the sampling
+policies score up to `structural_sample_size` candidates per generator per pass
+against the default's 3-5, and every candidate still copies the whole element
+vector twice (once into the `Move`, once into the undo snapshot). The
+position-based move representation that would remove that copy is deferred to
+#164. So this measures "the guided policy does not pay for itself at 10s on this
+roster", not "guiding the choice of element is worthless".
+
+It also does not rescue the headline result below: the `Set` encoding's
+8.6-11.0x remains what it was, because the prerequisite being *implemented* is
+not the same as the prerequisite being *effective*. Re-run this A/B after the
+move representation lands before drawing any further conclusion.
+
 ## Why the Set encoding loses
 
 On a model whose only variable is a `Set`, most of the engine is inert:
@@ -218,6 +262,18 @@ ctest --test-dir build-rel -R setcover
 
 The runner verifies every solution against the instance file (not against the
 DAG) and exits non-zero if any run is infeasible or unverified.
+
+The selection A/B above is one command, and it refuses to run its arms
+concurrently:
+
+```bash
+./benchmarks/setcover/ab_selection.sh --time 10 --seeds 5
+# --arms first_improving,best_of_sample,violation_guided  for all three
+```
+
+It writes per-arm and merged per-seed CSVs plus a `run.txt` carrying the engine
+commit, the host and `uptime`, into a timestamped directory under `results/`
+(gitignored). Quote the commit it prints.
 
 The runner's `--csv` output is the per-seed raw form. **No summary table is
 committed.** One used to be, and it went stale silently when #118 changed the

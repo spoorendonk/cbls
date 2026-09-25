@@ -578,6 +578,7 @@ struct SharedRowModel {
     Model model;
     int32_t a = -1;
     int32_t b = -1;
+    int32_t c = -1;
 };
 
 // Two Sets over one universe with a row each AND a row they share, so their G_v
@@ -602,9 +603,18 @@ SharedRowModel shared_row_model() {
         Expr(&m, m.lambda_sum(a.handle, [](int e) { return 1.0 + static_cast<double>(e); }));
     Expr weight_b =
         Expr(&m, m.lambda_sum(b.handle, [](int e) { return 5.0 + static_cast<double>(e); }));
+    // A third variable with a row of its own that NEITHER a nor b can reach.
+    // Without it, the union of G_v(a) and G_v(b) is every row in the model, and
+    // "restricted equals full" holds because the two spans are the same set --
+    // true by construction rather than because of anything the restriction does.
+    // This row is what makes the restriction a restriction.
+    Expr c = m.Set(6, 0, 6, "c");
+    sr.c = vid(c.handle);
+    Expr size_c = Expr(&m, m.lambda_sum(c.handle, [](int) { return 1.0; }));
     m.add_constraint(size_a <= m.Constant(1.0));               // a only
     m.add_constraint(size_b <= m.Constant(4.0));               // b only
     m.add_constraint(weight_a + weight_b <= m.Constant(0.0));  // SHARED
+    m.add_constraint(size_c <= m.Constant(1.0));               // c only, unreachable from a/b
     m.close();
     return sr;
 }
@@ -626,6 +636,9 @@ TEST_CASE("G_v-restricted scoring over a two-variable scope matches the full res
 
     std::vector<int32_t> deduped;
     std::set_union(gv_a.begin(), gv_a.end(), gv_b.begin(), gv_b.end(), std::back_inserter(deduped));
+    // A PROPER subset: c's row is in the model and in neither G_v, so the
+    // restricted scan really does read fewer rows than the full one.
+    REQUIRE(deduped.size() < sr.model.constraint_ids().size());
     // What a missing `unique` would leave: the shared rows counted twice.
     std::vector<int32_t> duplicated = gv_a;
     duplicated.insert(duplicated.end(), gv_b.begin(), gv_b.end());
@@ -634,6 +647,9 @@ TEST_CASE("G_v-restricted scoring over a two-variable scope matches the full res
 
     set_elements(sr.model, sr.a, {0, 1, 2});
     set_elements(sr.model, sr.b, {4});
+    // Violated, and constant under a transfer: a row the full scan reads and the
+    // restricted scan skips.
+    set_elements(sr.model, sr.c, {0, 1, 2, 3});
     full_evaluate(sr.model);
     ViolationManager vm(sr.model);
     for (size_t i = 0; i < vm.weights.size(); ++i) {
@@ -700,6 +716,7 @@ TEST_CASE("the batch scores a two-variable generator through the union path",
     SharedRowModel sr = shared_row_model();
     set_elements(sr.model, sr.a, {0, 1, 2});
     set_elements(sr.model, sr.b, {});
+    set_elements(sr.model, sr.c, {0, 1, 2, 3});
     full_evaluate(sr.model);
     ViolationManager vm(sr.model);
     // Sized so that double-counting the shared row CHANGES THE DECISION, which
@@ -709,10 +726,15 @@ TEST_CASE("the batch scores a two-variable generator through the union path",
     //   shared row counted twice = -6 + 8 = +2 -> reject
     // So dropping the `unique` in StructuralBatch::affected_rows turns every
     // commit below into a rejection and `passes_with_commit` falls to 0.
-    REQUIRE(vm.weights.size() == 3);
-    vm.weights[0] = 6.0;  // size_a <= 1, the a-only row
-    vm.weights[1] = 1.0;  // size_b <= 4, the b-only row
-    vm.weights[2] = 1.0;  // the shared row
+    REQUIRE(vm.weights.size() == 4);
+    vm.weights[0] = 6.0;   // size_a <= 1, the a-only row
+    vm.weights[1] = 1.0;   // size_b <= 4, the b-only row
+    vm.weights[2] = 1.0;   // the shared row
+    vm.weights[3] = 50.0;  // c's row: violated, heavily weighted, and CONSTANT
+                           // under a transfer, so it contributes exactly 0 to
+                           // every delta. Were the scope's rows ever
+                           // mis-selected to include it, this arithmetic would
+                           // not survive.
 
     auto stats = std::make_shared<TransferStats>();
     SearchConfig config;

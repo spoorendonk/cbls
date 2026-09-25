@@ -63,7 +63,10 @@ struct SearchConfig {
     // relocate / or-opt / set add-remove-swap) and keep any that reduce weighted
     // violation. FJ only jumps scalar variables, so list/set-structured models
     // need this to improve their structural assignment. <0 picks an automatic
-    // default: 0.33 when the model has List/Set variables, 0.0 otherwise.
+    // default: 0.33 when the batch would build at least one generator -- an
+    // entry in `move_generators`, or a List/Set variable with
+    // `default_structural_generators` on -- and 0.0 otherwise. Keying it on
+    // List/Set presence alone would arm a batch that builds nothing.
     double structural_batch_probability = -1.0;
 
     // ---- structural batch: what proposes moves, and how one is chosen (#165) --
