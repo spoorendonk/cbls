@@ -203,7 +203,7 @@ TEST_CASE("G_v-restricted scoring is the same double as the full rescan",
     // Skewed weights, so a mis-selected row would change the sum rather than
     // cancel against a uniform one.
     for (size_t i = 0; i < vm.weights.size(); ++i) {
-        vm.weights[i] = 1.0 + 7.5 * static_cast<double>(i);
+        vm.weights[i] = 1.0 + (7.5 * static_cast<double>(i));
     }
 
     std::vector<double> baseline;

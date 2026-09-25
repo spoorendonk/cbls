@@ -185,87 +185,121 @@ static void list_moves(const Variable& var, RNG& rng, std::vector<Move>& moves,
     }
 }
 
-static void set_moves(const Variable& var, RNG& rng, std::vector<Move>& moves,
-                      const NeighbourList* neighbours) {
-    // Build not_in and in_set lists
-    std::vector<int32_t> in_set(var.elements.begin(), var.elements.end());
+// The current subset, its complement and the membership flag, which all three
+// Set moves read. Split out of set_moves so that function is three independent
+// move constructions rather than one block that also owns this bookkeeping.
+struct SetPartition {
+    std::vector<int32_t> in_set;
     std::vector<int32_t> not_in;
+    std::vector<bool> in_flag;  // indexed by element, over the universe
+};
+
+static SetPartition partition_set(const Variable& var) {
+    SetPartition p;
+    p.in_set.assign(var.elements.begin(), var.elements.end());
     // For set vars, elements stores the current set. Universe is {0..universe_size-1}
-    std::vector<bool> in_flag(var.universe_size, false);
+    p.in_flag.assign(static_cast<size_t>(var.universe_size), false);
     for (int32_t e : var.elements) {
         if (e >= 0 && e < var.universe_size) {
-            in_flag[e] = true;
+            p.in_flag[static_cast<size_t>(e)] = true;
         }
     }
     for (int32_t i = 0; i < var.universe_size; ++i) {
-        if (!in_flag[i]) {
-            not_in.push_back(i);
+        if (!p.in_flag[static_cast<size_t>(i)]) {
+            p.not_in.push_back(i);
         }
     }
+    return p;
+}
 
-    int cur_size = static_cast<int>(var.elements.size());
-
-    // The element a set_add / set_swap brings in. Uniform over the complement
-    // with no neighbour list -- the pre-#165 draw, verbatim. With a list, the
-    // nearest neighbour of a randomly chosen SELECTED element that is not
-    // already in the set, which is the granular form of "grow the subset where
-    // it already is" rather than anywhere in the universe. Falls back to the
-    // uniform draw when the list offers nothing usable.
-    auto pick_added = [&]() -> int32_t {
-        if (neighbours != nullptr && !neighbours->empty() && !in_set.empty()) {
-            const int32_t seed =
-                in_set[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(in_set.size())))];
-            for (int32_t f : neighbours->of(seed)) {
-                if (f >= 0 && f < var.universe_size && !in_flag[f]) {
-                    return f;
-                }
+// The element a set_add / set_swap brings in. Uniform over the complement with
+// no neighbour list -- the pre-#165 draw, verbatim. With a list, the nearest
+// neighbour of a randomly chosen SELECTED element that is not already in the
+// set, which is the granular form of "grow the subset where it already is"
+// rather than anywhere in the universe. Falls back to the uniform draw when the
+// list offers nothing usable.
+//
+// PRECONDITION: `part.not_in` is non-empty.
+static int32_t pick_added_element(const Variable& var, RNG& rng, const SetPartition& part,
+                                  const NeighbourList* neighbours) {
+    if (neighbours != nullptr && !neighbours->empty() && !part.in_set.empty()) {
+        const int32_t seed = part.in_set[static_cast<size_t>(
+            rng.integers(0, static_cast<int64_t>(part.in_set.size())))];
+        for (int32_t f : neighbours->of(seed)) {
+            if (f >= 0 && f < var.universe_size && !part.in_flag[static_cast<size_t>(f)]) {
+                return f;
             }
         }
-        return not_in[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(not_in.size())))];
-    };
-
-    // Add
-    if (!not_in.empty() && cur_size < var.max_size) {
-        Move m;
-        m.move_type = "set_add";
-        int32_t add_elem = pick_added();
-        auto new_elems = var.elements;
-        new_elems.push_back(add_elem);
-        m.changes.push_back({var.id, 0.0, new_elems});
-        moves.push_back(m);
     }
+    return part
+        .not_in[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(part.not_in.size())))];
+}
 
-    // Remove
-    if (!in_set.empty() && cur_size > var.min_size) {
-        Move m;
-        m.move_type = "set_remove";
-        int32_t rem_elem =
-            in_set[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(in_set.size())))];
-        auto new_elems = var.elements;
-        auto it = std::find(new_elems.begin(), new_elems.end(), rem_elem);
-        if (it != new_elems.end()) {
-            new_elems.erase(it);
-            m.changes.push_back({var.id, 0.0, new_elems});
-            moves.push_back(m);
-        }
-    }
+// PRECONDITION: `part.in_set` is non-empty.
+static int32_t pick_removed_element(RNG& rng, const SetPartition& part) {
+    return part
+        .in_set[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(part.in_set.size())))];
+}
 
-    // Swap
-    if (!in_set.empty() && !not_in.empty()) {
-        Move m;
-        m.move_type = "set_swap";
-        int32_t add_elem = pick_added();
-        int32_t rem_elem =
-            in_set[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(in_set.size())))];
-        auto new_elems = var.elements;
-        auto it = std::find(new_elems.begin(), new_elems.end(), rem_elem);
-        if (it != new_elems.end()) {
-            new_elems.erase(it);
-            new_elems.push_back(add_elem);
-            m.changes.push_back({var.id, 0.0, new_elems});
-            moves.push_back(m);
-        }
+static void set_add_move(const Variable& var, RNG& rng, const SetPartition& part,
+                         const NeighbourList* neighbours, std::vector<Move>& moves) {
+    if (part.not_in.empty() || static_cast<int>(var.elements.size()) >= var.max_size) {
+        return;
     }
+    Move m;
+    m.move_type = "set_add";
+    auto new_elems = var.elements;
+    new_elems.push_back(pick_added_element(var, rng, part, neighbours));
+    m.changes.push_back({var.id, 0.0, new_elems});
+    moves.push_back(m);
+}
+
+static void set_remove_move(const Variable& var, RNG& rng, const SetPartition& part,
+                            std::vector<Move>& moves) {
+    if (part.in_set.empty() || static_cast<int>(var.elements.size()) <= var.min_size) {
+        return;
+    }
+    Move m;
+    m.move_type = "set_remove";
+    const int32_t rem_elem = pick_removed_element(rng, part);
+    auto new_elems = var.elements;
+    auto it = std::find(new_elems.begin(), new_elems.end(), rem_elem);
+    if (it == new_elems.end()) {
+        return;
+    }
+    new_elems.erase(it);
+    m.changes.push_back({var.id, 0.0, new_elems});
+    moves.push_back(m);
+}
+
+static void set_swap_move(const Variable& var, RNG& rng, const SetPartition& part,
+                          const NeighbourList* neighbours, std::vector<Move>& moves) {
+    if (part.in_set.empty() || part.not_in.empty()) {
+        return;
+    }
+    Move m;
+    m.move_type = "set_swap";
+    // Draw order is add-then-remove, as it has always been: both draws come off
+    // the search's RNG, so swapping them would shift every later draw.
+    const int32_t add_elem = pick_added_element(var, rng, part, neighbours);
+    const int32_t rem_elem = pick_removed_element(rng, part);
+    auto new_elems = var.elements;
+    auto it = std::find(new_elems.begin(), new_elems.end(), rem_elem);
+    if (it == new_elems.end()) {
+        return;
+    }
+    new_elems.erase(it);
+    new_elems.push_back(add_elem);
+    m.changes.push_back({var.id, 0.0, new_elems});
+    moves.push_back(m);
+}
+
+static void set_moves(const Variable& var, RNG& rng, std::vector<Move>& moves,
+                      const NeighbourList* neighbours) {
+    const SetPartition part = partition_set(var);
+    set_add_move(var, rng, part, neighbours, moves);
+    set_remove_move(var, rng, part, moves);
+    set_swap_move(var, rng, part, neighbours, moves);
 }
 
 void generate_standard_moves(const Variable& var, RNG& rng, std::vector<Move>& out,

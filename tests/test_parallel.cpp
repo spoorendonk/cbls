@@ -1156,7 +1156,7 @@ public:
 
     ~CountingGenerator() override {
         if (registered_) {
-            const std::lock_guard<std::mutex> lock(registry_->mu);
+            const std::scoped_lock lock(registry_->mu);
             registry_->per_clone_commits.push_back(own_commits_);
         }
     }
@@ -1174,7 +1174,7 @@ public:
 
     void on_commit(const Move& /*move*/) override {
         ++own_commits_;
-        const std::lock_guard<std::mutex> lock(registry_->mu);
+        const std::scoped_lock lock(registry_->mu);
         ++registry_->total_commits;
     }
 
@@ -1183,7 +1183,7 @@ public:
     [[nodiscard]] std::unique_ptr<MoveGenerator> clone() const override {
         auto copy = std::make_unique<CountingGenerator>(var_id_, registry_);
         copy->registered_ = true;
-        const std::lock_guard<std::mutex> lock(registry_->mu);
+        const std::scoped_lock lock(registry_->mu);
         registry_->addresses.push_back(copy.get());
         return copy;
     }
@@ -1204,7 +1204,7 @@ Model set_cover_toy() {
             &m, m.lambda_sum(chosen.handle, [base](int e) { return (e % 4 == base) ? 1.0 : 0.0; }));
         m.add_constraint(covered >= m.Constant(1.0));
     }
-    m.minimize(m.lambda_sum(chosen.handle, [](int e) { return 1.0 + 0.1 * e; }));
+    m.minimize(m.lambda_sum(chosen.handle, [](int e) { return 1.0 + (0.1 * e); }));
     m.close();
     return m;
 }
@@ -1237,7 +1237,7 @@ TEST_CASE("each portfolio worker gets its own move generator", "[parallel][struc
                  /*lns_factory=*/nullptr, /*callback=*/nullptr, par_config);
     REQUIRE(r.iterations >= 0);
 
-    const std::lock_guard<std::mutex> lock(registry->mu);
+    const std::scoped_lock lock(registry->mu);
     // One clone per worker at least (a restarted worker builds another).
     REQUIRE(registry->addresses.size() >= static_cast<size_t>(kThreads));
     std::vector<const void*> sorted = registry->addresses;

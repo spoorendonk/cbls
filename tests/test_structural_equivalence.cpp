@@ -27,6 +27,7 @@
 
 #include "test_helpers.h"
 
+#include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cbls/search.h>
@@ -107,7 +108,7 @@ Model set_cover_model() {
     }
     for (int r = 0; r < 12; ++r) {
         for (int j = 0; j < 40; ++j) {
-            if (mix(static_cast<uint64_t>(r) * 131 + static_cast<uint64_t>(j)) % 5 == 0) {
+            if (mix((static_cast<uint64_t>(r) * 131) + static_cast<uint64_t>(j)) % 5 == 0) {
                 covers[static_cast<size_t>(r)].push_back(j);
             }
         }
@@ -148,7 +149,7 @@ Model list_tour_model() {
     for (int i = 0; i < 14; ++i) {
         xs[static_cast<size_t>(i)] = static_cast<double>(mix(7 * static_cast<uint64_t>(i)) % 100);
         ys[static_cast<size_t>(i)] =
-            static_cast<double>(mix(11 * static_cast<uint64_t>(i) + 3) % 100);
+            static_cast<double>(mix((11 * static_cast<uint64_t>(i)) + 3) % 100);
     }
     Model m;
     Expr tour = m.List(14, "tour");
@@ -157,7 +158,7 @@ Model list_tour_model() {
     m.minimize(m.pair_lambda_sum(tour.handle, [px, py](int a, int b) {
         const double dx = (*px)[static_cast<size_t>(a)] - (*px)[static_cast<size_t>(b)];
         const double dy = (*py)[static_cast<size_t>(a)] - (*py)[static_cast<size_t>(b)];
-        return std::sqrt(dx * dx + dy * dy);
+        return std::sqrt((dx * dx) + (dy * dy));
     }));
     m.add_constraint(node_expr(m, m.at(tour.handle, m.Constant(0.0).handle)) <= m.Constant(3.0));
     m.close();
@@ -179,7 +180,7 @@ Model mixed_model() {
     m.add_constraint(node_expr(m, m.at(route.handle, m.Constant(4.0).handle)) - b <=
                      m.Constant(2.0));
     Expr weight = node_expr(
-        m, m.lambda_sum(pick.handle, [](int e) { return 1.0 + 0.25 * static_cast<double>(e); }));
+        m, m.lambda_sum(pick.handle, [](int e) { return 1.0 + (0.25 * static_cast<double>(e)); }));
     m.add_constraint(weight <= m.Constant(9.0));
     m.add_constraint(weight + t >= m.Constant(4.0));
     m.minimize(weight + a + b + t + node_expr(m, m.pair_lambda_sum(route.handle, [](int x, int y) {
@@ -199,14 +200,14 @@ struct Scenario {
 };
 
 // Recorded at a805cb6. See the header comment: do not regenerate.
-const Scenario kScenarios[] = {
+const std::array<Scenario, 6> kScenarios = {{
     {"set_cover/seed42/auto", set_cover_model, 42, 4000, -1.0, 0x2afb90b15172f4d2ULL},
     {"set_cover/seed7/struct1", set_cover_model, 7, 4000, 1.0, 0x77c1525046818defULL},
     {"list_tour/seed42/auto", list_tour_model, 42, 4000, -1.0, 0xa25f848877a8ad48ULL},
     {"list_tour/seed7/struct1", list_tour_model, 7, 4000, 1.0, 0x24b5d55b1947f7c1ULL},
     {"mixed/seed42/auto", mixed_model, 42, 4000, -1.0, 0x20189d0215c20c7aULL},
     {"mixed/seed7/struct1", mixed_model, 7, 4000, 1.0, 0x7ff39ed3c0d80834ULL},
-};
+}};
 
 uint64_t run_scenario(const Scenario& sc) {
     Model m = sc.build();

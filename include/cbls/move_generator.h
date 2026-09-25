@@ -214,6 +214,6 @@ public:
 /// #164's partition-level inter-list moves are the first -- can start from the
 /// built-ins and add to them instead of re-deriving them.
 std::vector<std::shared_ptr<const MoveGenerator>> default_move_generators(
-    const Model& model, std::shared_ptr<const NeighbourList> neighbours = nullptr);
+    const Model& model, const std::shared_ptr<const NeighbourList>& neighbours = nullptr);
 
 }  // namespace cbls

@@ -168,6 +168,41 @@ int seed_count(FlagValues& v) {
     return static_cast<int>(seeds);
 }
 
+/// The structural-selection arm's two flags (#165), split out of parse_args so
+/// that function stays one dispatch rather than a dispatch plus two validators.
+/// Returns false when `arg` is not one of them.
+bool parse_selection_flag(const std::string& arg, FlagValues& v, Options& opt) {
+    if (arg == "--selection") {
+        const std::string name = v.next("first_improving|best_of_sample|violation_guided");
+        if (v.ok && !cbls::try_parse_structural_selection(name, opt.selection)) {
+            fprintf(stderr, "unknown selection '%s'\n", name.c_str());
+            v.ok = false;
+        }
+        return true;
+    }
+    if (arg == "--sample-size") {
+        const uint64_t k = v.integer("--sample-size", "count");
+        if (v.ok && (k == 0 || k > static_cast<uint64_t>(std::numeric_limits<int>::max()))) {
+            fprintf(stderr, "--sample-size must be a positive int\n");
+            v.ok = false;
+        }
+        opt.sample_size = static_cast<int>(k);
+        return true;
+    }
+    return false;
+}
+
+/// `--encoding`, likewise: a value flag with its own validation.
+void parse_encoding_flag(FlagValues& v, Options& opt) {
+    const std::string enc = v.next("set|bool|both");
+    opt.run_set = (enc == "set" || enc == "both");
+    opt.run_bool = (enc == "bool" || enc == "both");
+    if (v.ok && !opt.run_set && !opt.run_bool) {
+        fprintf(stderr, "unknown encoding '%s'\n", enc.c_str());
+        v.ok = false;
+    }
+}
+
 Options parse_args(int argc, char** argv, bool* ok) {
     Options opt;
     FlagValues v{argc, argv, 0, true};
@@ -185,29 +220,12 @@ Options parse_args(int argc, char** argv, bool* ok) {
             opt.first_seed = v.integer("--seed", "seed");
         } else if (arg == "--struct-prob") {
             opt.struct_prob = v.number("--struct-prob", "probability");
-        } else if (arg == "--selection") {
-            const std::string name = v.next("first_improving|best_of_sample|violation_guided");
-            if (v.ok && !cbls::try_parse_structural_selection(name, opt.selection)) {
-                fprintf(stderr, "unknown selection '%s'\n", name.c_str());
-                v.ok = false;
-            }
-        } else if (arg == "--sample-size") {
-            const uint64_t k = v.integer("--sample-size", "count");
-            if (v.ok && (k == 0 || k > static_cast<uint64_t>(std::numeric_limits<int>::max()))) {
-                fprintf(stderr, "--sample-size must be a positive int\n");
-                v.ok = false;
-            }
-            opt.sample_size = static_cast<int>(k);
+        } else if (parse_selection_flag(arg, v, opt)) {
+            // handled, including its own validation
         } else if (arg == "--csv") {
             opt.csv_path = v.next("path");
         } else if (arg == "--encoding") {
-            std::string enc = v.next("set|bool|both");
-            opt.run_set = (enc == "set" || enc == "both");
-            opt.run_bool = (enc == "bool" || enc == "both");
-            if (!opt.run_set && !opt.run_bool) {
-                fprintf(stderr, "unknown encoding '%s'\n", enc.c_str());
-                v.ok = false;
-            }
+            parse_encoding_flag(v, opt);
         } else if (arg == "--help" || arg == "-h") {
             opt.help = true;
             print_usage();

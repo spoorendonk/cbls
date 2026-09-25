@@ -187,7 +187,7 @@ private:
 }  // namespace
 
 std::vector<std::shared_ptr<const MoveGenerator>> default_move_generators(
-    const Model& model, std::shared_ptr<const NeighbourList> neighbours) {
+    const Model& model, const std::shared_ptr<const NeighbourList>& neighbours) {
     std::vector<std::shared_ptr<const MoveGenerator>> generators;
     for (const Variable& var : model.variables()) {
         if (!is_structured(var.type)) {
