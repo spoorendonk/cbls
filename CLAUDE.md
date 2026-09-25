@@ -452,7 +452,7 @@ Release when the caller sets none, so this fence, CI and a plain `cmake -B build
 all gate the same binaries from one place. An explicit `-DCMAKE_BUILD_TYPE=Debug`
 still overrides it. The suite is mostly real solver runs, so the type is not
 cosmetic: the full `ctest` is ~499s at the old empty default and ~25s at
-Release (re-measured 2026-09-26 at 441 tests, `-j12`).
+Release (re-measured 2026-09-26 at 443 tests, `-j12`).
 
 `CMakeLists.txt` also picks up `ccache` as a compiler launcher when the machine
 has it (`apt install ccache`), which matters because pre-push's ```clean fence is
