@@ -314,6 +314,51 @@ NB_MODULE(_cbls_core, m) {
         .value("NoBudget", TerminationReason::NoBudget)
         .value("Stopped", TerminationReason::Stopped);
 
+    // StructuralSelection — how the structural batch turns a generator's
+    // candidates into a commit (#165). FirstImprovingSample is the default and
+    // is bit-for-bit the pre-#165 rule; the other two are opt-in.
+    nb::enum_<StructuralSelection>(m, "StructuralSelection")
+        .value("FirstImprovingSample", StructuralSelection::FirstImprovingSample)
+        .value("BestOfSample", StructuralSelection::BestOfSample)
+        .value("ViolationGuided", StructuralSelection::ViolationGuided);
+
+    // NeighbourList — a granular neighbourhood (Toth & Vigo 2003) for the
+    // built-in structural generators.
+    //
+    // READ-ONLY from Python, deliberately. The engine indexes this list on the
+    // move-generation hot path without re-validating it, so a writable `offsets`
+    // or `ids` would be exactly the unguarded-index segfault class of #156. It
+    // is built once, validated once in the constructor, and then immutable.
+    // `MoveGenerator` itself is not bound at all: a Python-subclassable
+    // generator needs the trampoline/GIL machinery of #132 and would sit on the
+    // hot path, so it is deliberately a follow-up.
+    nb::class_<NeighbourList>(m, "NeighbourList")
+        .def(nb::init<>())
+        .def(nb::init<const std::vector<std::vector<int32_t>>&>(), nb::arg("rows"),
+             "rows[e] are element e's neighbours, nearest first. Raises ValueError on an "
+             "id outside [0, len(rows)).")
+        .def("universe", &NeighbourList::universe)
+        .def(
+            "neighbours_of",
+            [](const NeighbourList& nl, int32_t element) {
+                const ConstSpan<int32_t> span = nl.of(element);
+                return std::vector<int32_t>(span.begin(), span.end());
+            },
+            nb::arg("element"),
+            "Element's neighbours, nearest first. Empty for an out-of-range element.")
+        .def_prop_ro("offsets", [](const NeighbourList& nl) { return nl.offsets(); })
+        .def_prop_ro("ids", [](const NeighbourList& nl) { return nl.ids(); })
+        .def("__len__", [](const NeighbourList& nl) { return static_cast<size_t>(nl.universe()); });
+
+    m.def("nearest_neighbours", &nearest_neighbours, nb::arg("universe"), nb::arg("k"),
+          nb::arg("cost"),
+          "Each element's k nearest others under cost(a, b), nearest first, ties broken by "
+          "ascending id.\n"
+          "\n"
+          "O(universe^2) cost calls, and `cost` is a Python callable invoked from C++, so "
+          "this is a setup-time convenience for a universe of a few thousand. Build the rows "
+          "yourself and use NeighbourList(rows) for anything larger.");
+
     // SearchResult
     nb::class_<SearchResult>(m, "SearchResult")
         .def_ro("objective", &SearchResult::objective)
@@ -633,6 +678,25 @@ NB_MODULE(_cbls_core, m) {
         .def_rw("use_fj", &SearchConfig::use_fj)
         .def_rw("lns_interval", &SearchConfig::lns_interval)
         .def_rw("structural_batch_probability", &SearchConfig::structural_batch_probability)
+        .def_rw("structural_selection", &SearchConfig::structural_selection)
+        .def_rw("structural_sample_size", &SearchConfig::structural_sample_size)
+        // Copies in and out rather than sharing the C++ shared_ptr: a
+        // NeighbourList is immutable once built, so a copy is the same list, and
+        // handing Python a live handle to the object every worker reads is the
+        // aliasing this type's read-only binding exists to avoid. `None` clears
+        // it, which is the default and the pre-#165 uniform draw.
+        .def_prop_rw(
+            "structural_neighbours",
+            [](const SearchConfig& c) -> std::optional<NeighbourList> {
+                if (c.structural_neighbours == nullptr) {
+                    return std::nullopt;
+                }
+                return *c.structural_neighbours;
+            },
+            [](SearchConfig& c, std::optional<NeighbourList> value) {
+                c.structural_neighbours =
+                    value.has_value() ? std::make_shared<const NeighbourList>(*value) : nullptr;
+            })
         .def_rw("feasibility_tolerance", &SearchConfig::feasibility_tolerance);
 
     // ParallelSearch
