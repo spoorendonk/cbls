@@ -355,7 +355,7 @@ NB_MODULE(_cbls_core, m) {
         .def("lambda_sum", &Model::lambda_sum)
         .def(
             "lambda_table_sum",
-            [](Model& model, int32_t list_var, Table1D table) {
+            [](Model& model, int32_t list_var, const Table1D& table) {
                 const int32_t n = table_universe(model, list_var, "lambda_table_sum");
                 return model.lambda_sum(
                     list_var, table_lookup(copy_vector(table, n, "lambda_table_sum table"), n,
@@ -378,8 +378,8 @@ NB_MODULE(_cbls_core, m) {
             nb::arg("head") = nb::none(), nb::arg("tail") = nb::none(), kPairLambdaSumDoc)
         .def(
             "pair_table_sum",
-            [](Model& model, int32_t list_var, Table2D dist, bool cyclic,
-               std::optional<Table1D> head, std::optional<Table1D> tail) {
+            [](Model& model, int32_t list_var, const Table2D& dist, bool cyclic,
+               const std::optional<Table1D>& head, const std::optional<Table1D>& tail) {
                 const int32_t n = table_universe(model, list_var, "pair_table_sum");
                 auto endpoint = [n](const std::optional<Table1D>& t,
                                     const char* what) -> std::function<double(int)> {

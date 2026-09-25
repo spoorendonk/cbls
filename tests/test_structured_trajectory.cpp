@@ -19,6 +19,7 @@
 
 #include "test_helpers.h"
 
+#include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cstdio>
@@ -33,10 +34,10 @@ namespace {
 // string rather than four REQUIREs so a failure prints the entire signature it
 // got, which is what a re-record would need.
 std::string signature(const SearchResult& r, int32_t structured_var) {
-    char buf[128];
-    std::snprintf(buf, sizeof(buf), "iters=%lld feasible=%d obj=%.17g elements=",
+    std::array<char, 128> buf{};
+    std::snprintf(buf.data(), buf.size(), "iters=%lld feasible=%d obj=%.17g elements=",
                   static_cast<long long>(r.iterations), r.feasible ? 1 : 0, r.objective);
-    std::string out(buf);
+    std::string out(buf.data());
     const auto& elements = r.best_state.elements.at(static_cast<size_t>(structured_var));
     for (size_t i = 0; i < elements.size(); ++i) {
         out += (i == 0 ? "" : ",") + std::to_string(elements[i]);

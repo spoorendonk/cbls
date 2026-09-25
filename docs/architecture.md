@@ -220,8 +220,18 @@ m.close();
 **Expression creation**: arithmetic (`sum`, `prod`, `div_expr`, `pow_expr`,
 `neg`, `abs`), trigonometric (`sin_`, `cos_`, `tan_`), other (`exp_`, `log_`,
 `sqrt_`), conditional (`if_then_else`), collection (`at`, `count`,
-`lambda_sum`), and comparisons (`leq`, `eq_expr`, `geq`, `neq`, `lt`, `gt`).
-Each returns a non-negative node handle.
+`lambda_sum`, `pair_lambda_sum`), and comparisons (`leq`, `eq_expr`, `geq`,
+`neq`, `lt`, `gt`). Each returns a non-negative node handle.
+
+`pair_lambda_sum` sums a function over a List's consecutive pairs and takes a
+`PairMode`: `Open` (the chain alone) or `Cyclic` (plus the closing pair), with
+optional `head`/`tail` terms charging the first and last element against a
+fixed endpoint — a tour cost and a depot-anchored route cost respectively. The
+closing rule and the two endpoint function ids live in a side table
+(`ModelStructure::pair_lambda_specs`) keyed by the node's `lambda_func_id`,
+rather than in extra `NodeOp` enumerators: every variant evaluates through the
+same loop, so a wider dispatch table would buy nothing. The header defines
+`n = 0, 1, 2` explicitly.
 
 **Objective.** `minimize(e)` sets the objective node directly; `maximize(e)`
 sets it to `neg(e)` and flips `is_maximizing_`. Internally the objective is

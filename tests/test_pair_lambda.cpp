@@ -10,6 +10,7 @@
 #include "test_helpers.h"
 
 #include <algorithm>
+#include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cbls/cbls.h>
@@ -176,12 +177,12 @@ TEST_CASE("a .cbls round-trip preserves the closing rule and the endpoint terms"
         bool endpoints;
         double expected;
     };
-    const Variant variants[] = {
+    const std::array<Variant, 4> variants = {{
         {"open", PairMode::Open, false, 54.0},
         {"cyclic", PairMode::Cyclic, false, 66.0},
         {"open+endpoints", PairMode::Open, true, 54.0 + 102.0 + 1001.0},
         {"cyclic+endpoints", PairMode::Cyclic, true, 66.0 + 102.0 + 1001.0},
-    };
+    }};
 
     for (const Variant& v : variants) {
         INFO("variant " << v.name);
@@ -229,6 +230,35 @@ TEST_CASE("an unknown PairLambda mode is refused rather than read as open", "[io
     corrupted.replace(at, std::string("\"cyclic\"").size(), "\"spiral\"");
     std::istringstream in(corrupted);
     REQUIRE_THROWS_AS(load_model(in), std::invalid_argument);
+}
+
+TEST_CASE("a frozen model shares the closing rule with its replicas", "[pair_lambda][share]") {
+    // The side table is structure, not search state, so it belongs in
+    // ModelStructure -- which a frozen model SHARES with every portfolio
+    // replica rather than deep-copying (#157). A spec that had landed on the
+    // per-worker side would leave each replica reading a default-constructed
+    // entry, i.e. an open chain, while the master looked right.
+    Model master;
+    auto lv = master.list_var(4, "seq");
+    const int32_t node = master.pair_lambda_sum(lv, d, head_cost, tail_cost, PairMode::Cyclic);
+    master.minimize(node);
+    master.close();
+    master.var_mut(vid(lv)).elements = {2, 0, 3, 1};
+    full_evaluate(master);
+    master.freeze();
+    REQUIRE(master.is_frozen());
+
+    Model replica(master);
+    REQUIRE(replica.is_frozen());
+    replica.var_mut(vid(lv)).elements = {2, 0, 3, 1};
+    full_evaluate(replica);
+    REQUIRE(replica.node_value(node) == master.node_value(node));
+    REQUIRE(replica.node_value(node) == 54.0 + 12.0 + 102.0 + 1001.0);
+
+    // A replica's own assignment does not disturb the master's.
+    replica.var_mut(vid(lv)).elements = {0, 1, 2, 3};
+    full_evaluate(replica);
+    REQUIRE(master.node_value(node) == 54.0 + 12.0 + 102.0 + 1001.0);
 }
 
 TEST_CASE("a cyclic pair_lambda_sum finds the optimal TSP tour", "[search][pair_lambda]") {
