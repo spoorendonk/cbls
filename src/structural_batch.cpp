@@ -54,7 +54,9 @@ StructuralBatch::StructuralBatch(const Model& model, const SearchConfig& config,
             throw std::invalid_argument("MoveGenerator::clone() returned null");
         }
         for (int32_t var_id : gen->scope()) {
-            model.constraints_of_var(var_id);  // throws on an unknown variable
+            // Cast to void: the span is deliberately discarded -- this call is here
+            // for its throw, and `constraints_of_var` is [[nodiscard]].
+            static_cast<void>(model.constraints_of_var(var_id));
         }
     }
 }
