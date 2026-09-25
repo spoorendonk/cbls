@@ -1032,3 +1032,44 @@ def test_a_resume_with_nothing_left_to_run_still_exits_non_zero(tmp_path: Path) 
     assert "0 jobs to run" in completed.stdout, completed.stdout
     assert completed.returncode == 1, completed.stdout + completed.stderr
     assert "UNCHECKED" in completed.stderr
+
+
+def test_a_non_default_cbls_bin_is_not_attributed_to_the_checkouts_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An A/B built with --cbls-bin must not stamp both arms with HEAD.
+
+    The checkout's commit describes `build/cbls_mipfeas` and nothing else, so a
+    run whose binary came from elsewhere was labelled with the working tree's
+    commit -- which made the CONTROL arm of a two-arm comparison claim to be the
+    treatment. That is the one moment the recorded commit is load-bearing, so it
+    is pinned here rather than left to the next person to notice.
+    """
+    monkeypatch.setattr(run_benchmark, "commit_sha", lambda: "deadbee")
+
+    # The default path is attributed to the checkout, as before.
+    assert run_benchmark.engine_commit(run_benchmark.DEFAULT_CBLS_BIN) == "deadbee"
+
+    # Any other binary is attributed to its own bytes.
+    other = tmp_path / "cbls_mipfeas_control"
+    other.write_bytes(b"a different build")
+    stamp = run_benchmark.engine_commit(other)
+    assert stamp.startswith("bin:")
+    assert stamp != "deadbee"
+    assert stamp == f"bin:{hashlib.sha256(b'a different build').hexdigest()[:12]}"
+
+    # Two different binaries are told apart, which is the whole point.
+    third = tmp_path / "cbls_mipfeas_treatment"
+    third.write_bytes(b"yet another build")
+    assert run_benchmark.engine_commit(third) != stamp
+
+    # An operator who knows the commit may say so, for either path.
+    assert run_benchmark.engine_commit(other, "abc1234") == "abc1234"
+    assert run_benchmark.engine_commit(run_benchmark.DEFAULT_CBLS_BIN, "abc1234") == "abc1234"
+
+    # A binary that is not there is "unknown", NOT a traceback. The stamp must
+    # not be the first thing to touch the file: `main` refuses a cbls run with a
+    # missing binary at exit 2 with a message naming the target to build, and a
+    # `--engines cpsat` run needs no cbls binary at all. Reading it here first
+    # turned both into a FileNotFoundError out of a provenance read.
+    assert run_benchmark.engine_commit(tmp_path / "absent") == "unknown"

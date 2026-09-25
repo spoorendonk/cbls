@@ -872,12 +872,44 @@ def execute(
     return failures
 
 
-def engine_commit() -> str:
-    """The commit this run's rows are attributed to, or "unknown" off a checkout.
+def binary_digest(path: Path) -> str:
+    """A short content hash of the runner binary actually invoked."""
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return digest[:12]
 
-    Recorded rather than refused: unlike the MINLPLib driver, this one publishes
-    nothing itself, and a run from an exported tree is still a run.
+
+def engine_commit(cbls_bin: Path, override: str | None = None) -> str:
+    """What this run's rows are attributed to.
+
+    The checkout's HEAD is evidence about `build/cbls_mipfeas` and about nothing
+    else. An A/B comparison built with `--cbls-bin` pointing at a binary compiled
+    from another commit is precisely the case where stamping HEAD is a lie, and
+    it is the case where the stamp matters most: both arms of such a run came out
+    labelled with the working tree's commit, so the control arm claimed to be the
+    treatment. That defeats CLAUDE.md's "record the engine commit" rule at the
+    one moment it is load-bearing.
+
+    So HEAD is claimed only for the binary HEAD describes. For any other
+    `--cbls-bin` the attribution is the binary's own content hash, which cannot
+    be mistaken for a commit and still identifies the arm; `--engine-commit`
+    overrides it for an operator who knows which commit built it.
+
+    "unknown" rather than a refusal when git cannot answer: unlike the MINLPLib
+    driver, this one publishes nothing itself, and a run from an exported tree is
+    still a run.
     """
+    if override:
+        return override
+    if cbls_bin.resolve() != DEFAULT_CBLS_BIN.resolve():
+        if not cbls_bin.is_file():
+            # Same "unknown" as an unanswerable git below, and for the same
+            # reason: this stamp must not be the thing that first touches the
+            # binary. `main` refuses a cbls run with a missing one at exit 2 with
+            # a message naming the target to build, and a --engines cpsat run
+            # needs no cbls binary at all -- neither should get a traceback out
+            # of a provenance read.
+            return "unknown"
+        return f"bin:{binary_digest(cbls_bin)}"
     try:
         return commit_sha()
     except (subprocess.CalledProcessError, OSError):
@@ -936,6 +968,15 @@ def main() -> int:
     parser.add_argument("--results-dir", default=str(REPO_ROOT / "results" / "mipfeas"))
     parser.add_argument("--inst-dir", default=str(DEFAULT_INSTANCE_DIR))
     parser.add_argument("--cbls-bin", default=str(DEFAULT_CBLS_BIN))
+    parser.add_argument(
+        "--engine-commit",
+        default=None,
+        help="the commit to attribute these rows to. Only needed with a "
+        "--cbls-bin other than the default: the checkout's HEAD describes "
+        "build/cbls_mipfeas and not some other binary, so a non-default one is "
+        "otherwise attributed to its own content hash rather than to a commit it "
+        "may not have been built from",
+    )
     parser.add_argument("--cpsat-workers", type=int, default=1)
     parser.add_argument(
         "--cbls-threads",
@@ -1009,9 +1050,9 @@ def main() -> int:
     args = parser.parse_args()
     if (refusal := check_arguments(args)) is not None:
         return refusal
-    args.commit = engine_commit()
     args.inst_dir = Path(args.inst_dir)
     args.cbls_bin = Path(args.cbls_bin)
+    args.commit = engine_commit(args.cbls_bin, args.engine_commit)
 
     roster_path = resolve_roster(args.roster, args.inst_dir)
     if not roster_path.exists():

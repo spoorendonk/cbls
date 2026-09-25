@@ -114,6 +114,29 @@ struct SearchConfig {
     //      feasible integer combinations and loses its BKS on half the seeds
     //      without them. See `SearchResult::lns_repairs`.
     //
+    //      Those hops are no longer a walk: since #158 each kick departs from
+    //      `kick_origin()` rather than from where the last one landed, so the
+    //      52 combinations are explored in a star around the incumbent instead
+    //      of a chain. That was expected to cost st_e40 its BKS and it does
+    //      not. Whole 50-instance roster, 10s, FOUR PAIRED SEEDS, scored by
+    //      ablation_report.py against each instance's own floor derived from
+    //      the control's across-seed spread: st_e40 is 0.00 gap and 4/4
+    //      feasible on BOTH arms, and not one of the 32 scored instances moved
+    //      outside its floor (typical +/-9.89 gap-to-BKS points, median delta
+    //      +0.00). 50 on the roster, 48 comparable (elec25/elec50 are
+    //      documented failures on every arm), 32 of those scorable -- a floor
+    //      needs a measurable control spread, which 16 do not have. See
+    //      docs/architecture.md for why no floor is imputed onto them.
+    //
+    //      Read the history here as a lesson about method, which is more use
+    //      than the number. An earlier pass reported "st_e40 BKS 8/8 -> 6/8,
+    //      nvs02 12.1% -> 20.2%" and those figures were an artefact: the three
+    //      instances were SELECTED as the largest movers in a two-seed run and
+    //      then re-measured on their own, which is winner's curse. At four
+    //      paired seeds with a measured floor, nvs02 is +3.77 against a floor
+    //      of 34.25 and nvs14 +8.33 against 41.28 -- both inside the noise.
+    //      Don't re-derive a per-instance cost here without a floor.
+    //
     int64_t unproductive_iterations = 300;
 };
 
@@ -250,6 +273,24 @@ struct SearchResult {
     /// not a no-op either -- it draws from the RNG and rolls the state back --
     /// so `lns_repairs_accepted == 0` does not make an LNS arm equivalent to a
     /// no-LNS one; it only says the budget bought nothing.
+    ///
+    /// The bar rose at #158: `diversify()` restores `kick_origin()` before
+    /// calling `destroy_repair`, so the key the repair is scored against is that
+    /// point's rather than a drifted one's. At `--threads 1` that origin IS the
+    /// incumbent, which makes the sentence above about beating "the incumbent"
+    /// literal; under a portfolio it may instead be the state `adopt_from_pool`
+    /// installed, which is a worse point by construction.
+    ///
+    /// What a rejection costs inverted at the same time -- in the ASSIGNMENT,
+    /// not in the cost: the paragraph above still holds, a rejection always drew
+    /// from the RNG and always spent the repair budget. Before #158 the snapshot
+    /// was the drifted point the kick started from, so a rollback left the
+    /// assignment exactly where it was. Now the snapshot is the origin, so a
+    /// rollback MOVES the assignment, from wherever it had drifted to the
+    /// origin, and perturbs nothing. So the kick is not a diversification
+    /// either: the search re-descends from a point it has already converged on,
+    /// with the GLS weights reset.
+    ///
     /// Summed over workers and restarts by `ParallelSearch`, as `perturbations`
     /// above is.
     int lns_repairs_accepted = 0;

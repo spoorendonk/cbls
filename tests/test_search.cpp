@@ -1,5 +1,6 @@
 #include "test_helpers.h"
 
+#include <algorithm>
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_exception.hpp>
@@ -10,6 +11,8 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 using namespace cbls;
 
@@ -1836,4 +1839,241 @@ TEST_CASE("ParallelSearch records the first-feasible pair on the portfolio clock
     // point and the wrapper timestamping the row it emits for it.
     REQUIRE_FALSE(std::isnan(first.seen));
     REQUIRE_THAT(r.time_to_first_feasible, Catch::Matchers::WithinAbs(first.seen, 0.005));
+}
+
+// ---------------------------------------------------------------------------
+// #158: a diversification kick starts from the incumbent
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Records the REAL violation (every constraint but the artificial
+/// `obj <= bound` row) of the assignment each LNS kick is handed, and changes
+/// nothing. Reading it from inside `destroy_repair` is the only way to see the
+/// state `diversify()` kicks from: every other observation point in a run --
+/// the callback, the result -- reports `best_state`, which is the incumbent by
+/// construction and so cannot tell the two apart.
+class EntryViolationLNS : public LNS {
+public:
+    std::vector<double> entry_violations;
+    bool destroy_repair(Model& model, ViolationManager& /*vm*/, RNG& /*rng*/,
+                        double /*repair_time_limit*/) override {
+        const int32_t obj_ci =
+            model.has_objective_constraint() ? model.objective_constraint_idx() : -1;
+        const auto& cids = model.constraint_ids();
+        double worst = 0.0;
+        for (size_t i = 0; i < cids.size(); ++i) {
+            if (static_cast<int32_t>(i) == obj_ci) {
+                continue;
+            }
+            worst = std::max(worst, model.node(cids[i]).value);
+        }
+        entry_violations.push_back(worst);
+        return false;  // no improvement, so the caller restores nothing
+    }
+};
+
+}  // namespace
+
+TEST_CASE("a kick after the first feasible solution starts from the incumbent",
+          "[search][lns][diversify]") {
+    // 50 columns capped at 10 summing to exactly 250, minimising 100x that same
+    // sum: feasibility is reachable, and the objective is PINNED at 25 000
+    // there, so the bound installed on the first feasible point can never be
+    // met again. The search therefore does what a stalled MIP row does -- it
+    // trades the real row against the artificial objective row and stops
+    // improving -- which is the regime #158 measured.
+    Model m;
+    std::vector<int32_t> vars;
+    vars.reserve(50);
+    for (int i = 0; i < 50; ++i) {
+        vars.push_back(m.int_var(0, 10));
+    }
+    std::vector<int32_t> args(vars.begin(), vars.end());
+    args.push_back(m.constant(-250.0));
+    m.add_constraint(m.abs_expr(m.sum(args)));
+    // Weight the objective a hundred times the row's own coefficients, so that
+    // lowering a column pays more on the `obj <= bound` row than it costs on
+    // the sum row. That is what makes the search LEAVE the feasible point it
+    // just recorded -- the positive equilibrium between the real rows and the
+    // artificial objective row that every stalled MIP row in #158 sits in. With
+    // unit weights the trade never pays, the search never moves, and the test
+    // is green on the unfixed engine.
+    auto hundred = m.constant(100.0);
+    std::vector<int32_t> scaled;
+    scaled.reserve(vars.size());
+    for (int32_t x : vars) {
+        scaled.push_back(m.prod(hundred, x));
+    }
+    m.minimize(m.sum(scaled));
+    m.close();
+
+    // Start ON a feasible point (every column at 5) and keep it, so the first
+    // batch records an incumbent and EVERY kick in the run is a post-feasible
+    // one. Left to initialise itself the search spends its first kicks below
+    // the first feasible point, where there is no incumbent to return to and
+    // the kick is meant to fire from where the search stands -- which would make
+    // the assertion below wrong rather than merely weaker.
+    //
+    // Addressed by variable index, not by the expression handles in `vars`: the
+    // columns are the first 50 variables created, in this order.
+    for (int32_t v = 0; v < 50; ++v) {
+        m.var_mut(v).value = 5.0;
+    }
+    full_evaluate(m);
+
+    SearchConfig config;
+    config.skip_init = true;
+    // A batch shorter than unproductive_iterations (default 300) keeps #102's
+    // route out of this: its streak is re-zeroed at every batch entry and needs
+    // that many iterations INSIDE one batch, so only the full-period route can
+    // kick here -- and that is the route an LNS repair hangs off once a feasible
+    // solution exists.
+    config.batch_iterations = 200;
+    config.perturbation_period = 3;
+    config.max_iterations = 20000;
+
+    EntryViolationLNS lns;
+    const SearchResult result = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr,
+                                      &lns, /*lns_interval=*/1, nullptr, config);
+
+    REQUIRE(result.feasible);
+    // Not vacuous: kicks after the first feasible point really happened, and
+    // every one of them drew the repair (lns_interval = 1).
+    REQUIRE(lns.entry_violations.size() > 1);
+
+    // The assertion. A kick is handed the incumbent, which is real-feasible
+    // here, so every entry reads zero. Before #158 the kick was handed whatever
+    // the search had drifted to since the last one -- and it drifts by
+    // construction on this model, because the only way to move toward the
+    // objective bound is to break the sum row.
+    for (size_t i = 0; i < lns.entry_violations.size(); ++i) {
+        INFO("LNS kick " << i << " entered at real violation " << lns.entry_violations[i]);
+        REQUIRE(lns.entry_violations[i] <= config.feasibility_tolerance);
+    }
+}
+
+namespace {
+
+/// Records the ASSIGNMENT each LNS kick is handed, and changes nothing. The
+/// state a kick departs from is not observable anywhere else: the callback and
+/// the result both report `best_state`, which is the incumbent by construction.
+class EntryStateLNS : public LNS {
+public:
+    std::vector<std::vector<double>> entry_values;
+    bool destroy_repair(Model& model, ViolationManager& /*vm*/, RNG& /*rng*/,
+                        double /*repair_time_limit*/) override {
+        std::vector<double> values(model.num_vars());
+        for (size_t i = 0; i < values.size(); ++i) {
+            values[i] = model.var(static_cast<int32_t>(i)).value;
+        }
+        entry_values.push_back(std::move(values));
+        return false;  // no improvement, so the caller restores nothing
+    }
+};
+
+}  // namespace
+
+TEST_CASE("a kick after adoption departs from the adopted point, not our incumbent",
+          "[search][lns][diversify][pool]") {
+    // The portfolio half of #158. `adopt_from_pool` deliberately leaves
+    // `best_state` alone when the drawn point is not an improvement -- the pool
+    // draws from the better HALF so workers stay spread -- so a kick that
+    // restored `best_state` unconditionally would discard the draw within a few
+    // batches and the pool would have bought nothing. The kick must depart from
+    // the adopted point instead, until this worker finds something better.
+    //
+    // Single-threaded and iteration-budgeted, so it is deterministic: the pool
+    // is built by hand and handed in through SearchCoordination, exactly as
+    // "a stalled search adopts a peer's solution from the pool" does.
+    constexpr int kCols = 50;
+    Model m;
+    std::vector<int32_t> vars;
+    vars.reserve(kCols);
+    for (int i = 0; i < kCols; ++i) {
+        vars.push_back(m.int_var(0, 10));
+    }
+    std::vector<int32_t> args(vars.begin(), vars.end());
+    args.push_back(m.constant(-250.0));
+    m.add_constraint(m.abs_expr(m.sum(args)));
+    auto hundred = m.constant(100.0);
+    std::vector<int32_t> scaled;
+    scaled.reserve(vars.size());
+    for (int32_t x : vars) {
+        scaled.push_back(m.prod(hundred, x));
+    }
+    m.minimize(m.sum(scaled));
+    m.close();
+
+    // Start on a feasible point, so the first batch banks an incumbent at the
+    // model's only feasible objective, 25 000.
+    for (int32_t v = 0; v < kCols; ++v) {
+        m.var_mut(v).value = 5.0;
+    }
+    full_evaluate(m);
+
+    // The gift: a DIFFERENT feasible point of this model -- the first half of
+    // the columns at 10 and the rest at 0, which also sums to 250. Feasible with
+    // a finite objective, so it passes adopt_from_pool's write guard, and worth
+    // exactly what our own incumbent is worth (every feasible point of this
+    // model scores 25 000), so `obj < best_feasible_obj_` is false and it does
+    // NOT become best_state_. That is the case the mechanism exists for: a draw
+    // that keeps this worker spread without improving on it.
+    //
+    // The objective it is SUBMITTED with is 0, which is not the objective it
+    // has. Nothing re-derives a pooled solution's number, and this is what keeps
+    // it in a capacity-one pool: SolutionPool sorts feasible-first then by
+    // objective, so the worker's own submissions at 25 000 never displace it and
+    // the draw is deterministic. adopt_from_pool re-measures the point against
+    // THIS model, and that is the value the improvement test uses.
+    Solution gift;
+    gift.state = m.copy_state();
+    for (int32_t v = 0; v < kCols; ++v) {
+        gift.state.values[static_cast<size_t>(v)] = v < kCols / 2 ? 10.0 : 0.0;
+    }
+    gift.objective = 0.0;
+    gift.feasible = true;
+    SolutionPool pool(1);
+    pool.submit(gift);
+    SearchCoordination coord;
+    coord.pool = &pool;
+
+    SearchConfig config;
+    config.skip_init = true;
+    config.batch_iterations = 200;   // < unproductive_iterations, so only the
+    config.perturbation_period = 3;  // full-period route kicks
+    config.max_iterations = 20000;
+
+    // lns_interval 2 alternates the two halves of the full-period kick: slot 0
+    // is not LNS-due so the kick adopts (and advances the slot), slot 1 is due
+    // so the next kick skips adoption and draws the repair -- which is the
+    // observation point, taken while the search is standing on the adopted
+    // point.
+    EntryStateLNS lns;
+    const SearchResult result = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr,
+                                      &lns, /*lns_interval=*/2, nullptr, config, &coord);
+
+    REQUIRE(result.feasible);
+    // Not vacuous: adoption happened and a later kick drew the repair.
+    REQUIRE_FALSE(lns.entry_values.empty());
+
+    // Every repair was handed the adopted point. Restoring `best_state` instead
+    // would hand it the all-fives incumbent; restoring nothing would hand it
+    // wherever FJ had drifted to. Neither is the gift.
+    std::vector<double> adopted(static_cast<size_t>(kCols), 0.0);
+    for (int32_t v = 0; v < kCols / 2; ++v) {
+        adopted[static_cast<size_t>(v)] = 10.0;
+    }
+    for (size_t i = 0; i < lns.entry_values.size(); ++i) {
+        // Report the DISTANCE rather than one column: the drifted point can
+        // agree with the gift on any single column by chance, which made an
+        // earlier form of this message read as though the arms matched.
+        size_t differing = 0;
+        for (size_t v = 0; v < adopted.size(); ++v) {
+            differing += lns.entry_values[i][v] != adopted[v] ? 1 : 0;
+        }
+        INFO("LNS kick " << i << " entered " << differing << " of " << adopted.size()
+                         << " columns away from the adopted point");
+        REQUIRE(lns.entry_values[i] == adopted);
+    }
 }

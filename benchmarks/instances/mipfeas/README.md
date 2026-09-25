@@ -257,6 +257,17 @@ its machine record rather than leaving it in a results directory nobody publishe
 `--skip-preconditions` turns off the byte check and the preflight. It is for
 harness debugging, and a run made with it is not publishable.
 
+### The recorded commit describes the DEFAULT binary only
+
+`engine_commit` claims the checkout's HEAD for `build/cbls_mipfeas` and for
+nothing else. Point `--cbls-bin` somewhere else — as an A/B between two builds
+must — and the rows are attributed to that binary's own content hash (`bin:<12
+hex>`) instead, because HEAD is not evidence about a binary it did not build.
+This was a real defect until #158: both arms of such a comparison came out
+stamped with the working tree's commit, so the control arm claimed to be the
+treatment, at exactly the moment the recorded commit is load-bearing. Pass
+`--engine-commit <sha>` when you do know which commit built it.
+
 ## Verification: every reported solution is checked against the instance file
 
 This is the correctness benchmark, so a reported solution is not taken on trust.

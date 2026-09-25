@@ -163,8 +163,19 @@ TEST_CASE("a stalled search adopts a peer's solution from the pool", "[parallel]
     // whether or not adoption works the moment the search gets fast enough to
     // reach the gift on its own -- exactly how it went vacuous the first time
     // it was written.
-    constexpr int kVars = 20;
-    constexpr double kTarget = 60.0;
+    //
+    // It caught that a second time, and the size below is the repair. At 20
+    // columns the control arm returned exactly the gift's 180 once a
+    // diversification kick started from the incumbent rather than from wherever
+    // the previous kick left the search (#158): the single-threaded run simply
+    // finds this model's optimum now, so there was no gift left to be out of
+    // reach. 80 columns puts it back out of reach -- the control converges to
+    // 734 against the balanced optimum's 720 -- at the same budget. Raise the
+    // column count, not the budget, if it ever goes vacuous again: the control's
+    // 734 is where the search CONVERGES here, not where the budget stops it, so
+    // a longer run does not widen the margin.
+    constexpr int kVars = 80;
+    constexpr double kTarget = 240.0;
     auto build = []() {
         Model m;
         std::vector<int32_t> xs;
@@ -187,14 +198,14 @@ TEST_CASE("a stalled search adopts a peer's solution from the pool", "[parallel]
         return m;
     };
 
-    // The balanced assignment: every column at 3 -- sum 60, objective 20*9 = 180,
+    // The balanced assignment: every column at 3 -- sum 240, objective 80*9 = 720,
     // which is this model's optimum.
     Model donor = build();
     Model::State balanced = donor.copy_state();
     for (int i = 0; i < kVars; ++i) {
         balanced.values[i] = 3.0;
     }
-    constexpr double kGiftObjective = 180.0;
+    constexpr double kGiftObjective = 720.0;
 
     SearchConfig config;
     config.max_iterations = 20000;
@@ -245,15 +256,24 @@ TEST_CASE("a stalled search adopts a peer's solution from the pool", "[parallel]
     INFO("pooled objective " << r.objective);
     REQUIRE(r.objective <= kGiftObjective + 1e-6);
 
-    // A self-draw must NOT count as a kick. Once this run has adopted the gift
-    // it is sitting on it, and the capacity-1 pool holds nothing else, so every
-    // later full-period kick draws the assignment the worker already holds.
-    // Those kicks fall through to diversify(), which leaves the Float escape
-    // probe that maybe_diversify just armed in place -- whereas an adoption
-    // disarms it. So the latch sampled at exit is exactly the difference
-    // between "the later kicks perturbed" and "the later kicks restored the
-    // state we were already on and moved nothing". Measured: armed with the
-    // guard, unarmed without it.
+    // A self-draw must NOT count as a kick. The capacity-1 pool holds nothing
+    // but the gift, so a later full-period kick can only draw that -- and when
+    // it does, holds_assignment stands the draw down and the kick falls through
+    // to diversify(), which leaves the Float escape probe that maybe_diversify
+    // just armed in place, whereas an adoption disarms it. So the latch sampled
+    // at exit distinguishes "the last full-period kick was a stood-down
+    // self-draw" from "it was an adoption".
+    //
+    // Since #158 the worker is NOT reliably sitting on the gift when that test
+    // runs: diversify() restores kick_origin() -- here the gift, which IS
+    // best_state_ because it improved on the control's 734 -- and then perturb()
+    // is guaranteed to move at least one variable (#109/#111). So whether the
+    // draw is a self-draw now depends on FJ having come back to the gift, which
+    // is the same parity dependence the paragraph below already describes rather
+    // than a new one. Re-measured on this branch at kVars = 80: both assertions
+    // hold. The pre-#158 note said "armed with the guard, unarmed without it",
+    // measured at kVars = 20 on a trajectory this change replaced; it is
+    // restated here rather than carried over.
     //
     // The control is asserted too, and that is the point of asserting it: this
     // proxy is parity-dependent -- it really says "the LAST full-period kick of

@@ -284,6 +284,12 @@ constexpr double kEscapeArmFraction = 0.25;
 // instance the mechanism exists for: st_e40 reaches its BKS on 4/4 seeds at
 // 5 and on 2/4 at 10 or 20, since after the first feasible solution it needs
 // the accelerated kick to move between its 52 feasible integer combinations.
+// #158 was expected to cost some of that back and, measured properly, does
+// not: at 10s over four PAIRED seeds st_e40 is 0.00 gap and 4/4 feasible both
+// before and after kicks began departing from kick_origin(). An earlier pass
+// here claimed 8/8 -> 6/8; that came from re-measuring the largest movers of a
+// two-seed run, which selects for noise. See diversify() and
+// SearchConfig::unproductive_iterations.
 // nvs01 is feasible on 4/4 at all three (main solves it on none) with
 // objective quality too noisy to separate them. So the smallest of the three
 // is chosen, which is also the one closest to the unwitnessed behaviour on
@@ -369,7 +375,8 @@ private:
     [[nodiscard]] double elapsed() const {
         return std::chrono::duration<double>(std::chrono::steady_clock::now() - start_).count();
     }
-    // On stagnation: LNS diversification every lns_interval-th time, else perturb.
+    // On stagnation: restore kick_origin() (#158), then LNS diversification
+    // every lns_interval-th time, else perturb.
     // `allow_lns` is false only for #102's unproductive route once a feasible
     // solution exists. The kick itself is microseconds and st_e40 needs it to
     // hop between its 52 feasible integer combinations; what cost ex8_6_1 its
@@ -387,6 +394,8 @@ private:
     // pool, the pool is empty, the drawn solution does not fit this model, or
     // the draw is the assignment we already hold.
     bool adopt_from_pool();
+    // See the definition: the objective-bound rule an adoption applies.
+    void reground_objective_bound_after_adoption(bool feasible_here, double obj);
     // Whether `state` is the assignment this model currently holds.
     [[nodiscard]] bool holds_assignment(const Model::State& state) const;
     // Whether the NEXT diversification kick is the one that draws LNS -- the
@@ -397,6 +406,42 @@ private:
     [[nodiscard]] bool lns_kick_due() const {
         return lns_ != nullptr && lns_interval_ > 0 &&
                (lns_slot_ % lns_interval_ == lns_interval_ - 1);
+    }
+
+    // The point a diversification kick departs from, or null when there is none
+    // and the kick fires from wherever the search stands (#158).
+    //
+    // Normally our own incumbent. It is `adopted_origin_` instead while the
+    // search is standing on a state adopt_from_pool installed that did not
+    // become our incumbent -- a peer's point drawn from the better half rather
+    // than the best, which is how the portfolio keeps its workers spread. The
+    // next new incumbent clears it, because at that moment our own best IS where
+    // the search got to.
+    //
+    // Both "is there an origin at all" tests live on the WRITE side rather than
+    // here, and deliberately: `adopted_origin_` is only ever set from a draw
+    // that this model found feasible with a finite objective, so the two rules
+    // below cannot be short-circuited past by an adoption. Guarding on the read
+    // instead would not even express the rule -- the witness test keys off
+    // `best_feasible_obj_`, which says nothing about the adopted point.
+    //
+    // Null before the first feasible point: best_state_ is still the initial
+    // assignment there, which is not a point to return to, so that regime keeps
+    // the trajectory it always had. Also null while the only feasible point on
+    // record is #100's non-finite-objective witness -- a feasibility witness
+    // with no objective to descend, where the bound is the loosest one there is
+    // and the useful thing is for the search to wander off and find a
+    // finite-objective point rather than be pulled back to the degenerate
+    // configuration every kick. Same rule adopt_from_pool applies to the bound:
+    // never derive from a non-finite objective.
+    [[nodiscard]] const Model::State* kick_origin() const {
+        if (has_adopted_origin_) {
+            return &adopted_origin_;
+        }
+        if (!have_feasible_ || (has_obj_ && !std::isfinite(best_feasible_obj_))) {
+            return nullptr;
+        }
+        return &best_state_;
     }
 
     // ---- one pass of the main loop, in the order architecture.md lists it ----
@@ -450,6 +495,12 @@ private:
     // how much) instead of the untouched initial assignment.
     double best_violation_ = std::numeric_limits<double>::infinity();
     Model::State closest_state_;
+    // The state adoption installed, held only while it is NOT best_state_; see
+    // kick_origin(). Portfolio-only: adopt_from_pool is the sole writer and it
+    // returns false immediately without a pool, so a single-threaded run never
+    // sets the flag and never pays for the copy.
+    Model::State adopted_origin_;
+    bool has_adopted_origin_ = false;
     int perturbations_ = 0;
     int lns_repairs_ = 0;
     // The subset of lns_repairs_ that destroy_repair reported as accepted.
@@ -578,6 +629,12 @@ bool ViolationLSLoop::record_best() {
         have_feasible_ = true;
         note_first_feasible(obj);
         best_state_ = model_.copy_state();
+        // Both have_feasible_ transitions release the adopted origin, not just
+        // the finite one below: this is still "the search got somewhere of its
+        // own", and leaving it set would keep kicking from a peer's point while
+        // best_state_ holds a witness this run found itself (#158).
+        has_adopted_origin_ = false;
+        adopted_origin_ = Model::State{};
         // Leaving the bound at +inf as well, though, left the search with
         // no objective signal at all (issue #116). `obj <= +inf` is vacuous
         // by construction — comparison_residual reads a *written* +inf as
@@ -671,6 +728,11 @@ bool ViolationLSLoop::record_best() {
     note_first_feasible(obj);
     best_feasible_obj_ = obj;
     best_state_ = model_.copy_state();
+    // Wherever the search was told to explore from, it has now got somewhere
+    // better, so the incumbent is the kick origin again (#158) and the adopted
+    // one is released.
+    has_adopted_origin_ = false;
+    adopted_origin_ = Model::State{};
     if (has_obj_) {
         // The bound step doubles as the Newton step size toward the objective
         // (the float jump chases obj <= bound), so it must be non-trivial for
@@ -720,6 +782,45 @@ bool ViolationLSLoop::holds_assignment(const Model::State& state) const {
         }
     }
     return true;
+}
+
+// The objective-bound half of an adoption, lifted out of adopt_from_pool: it is
+// a self-contained responsibility with its own rule, and leaving it inline put
+// that function over the cognitive-complexity threshold once the kick-origin
+// bookkeeping joined it. `feasible_here` and `obj` are this model's verdict on
+// the adopted point, not the submitter's.
+void ViolationLSLoop::reground_objective_bound_after_adoption(bool feasible_here, double obj) {
+    if (!has_obj_) {
+        return;
+    }
+    // Never LOOSEN it. record_best is the only other writer and it rewrites
+    // the bound only on a STRICT improvement over best_feasible_obj_ (it
+    // returns early otherwise), so a bound loosened here can never tighten
+    // back until this worker beats its own all-time best -- and the draw
+    // that got us here is frequently one of our own earlier, worse
+    // incumbents. Loosening on every such kick would leave the worker
+    // searching with the objective row satisfied and no pressure at all.
+    //
+    // LNS is the precedent, and it is unambiguous: destroy_repair replaces
+    // the assignment wholesale and does not touch the bound. A row reading
+    // `obj <= best - eps` that is violated at the point we just arrived on
+    // is ViolationLS's normal steady state, not a problem to fix.
+    double target = std::numeric_limits<double>::infinity();
+    if (feasible_here && std::isfinite(obj)) {
+        target = obj;
+    }
+    if (have_feasible_ && std::isfinite(best_feasible_obj_)) {
+        target = std::min(target, best_feasible_obj_);
+    }
+    if (std::isfinite(target)) {
+        model_.set_objective_bound(target - (1e-3 * (std::abs(target) + 1.0)));
+    } else if (!std::isfinite(model_.objective_bound())) {
+        // No usable objective anywhere yet -- an infeasible or non-finite
+        // adopted point with no incumbent of our own. Install the finite
+        // sentinel so the row is not vacuous, under record_best's own guard
+        // so it can never overwrite a real incumbent's bound.
+        model_.set_objective_bound(kInfPenalty);  // the shared clamp; see violation.h
+    }
 }
 
 bool ViolationLSLoop::adopt_from_pool() {
@@ -793,36 +894,8 @@ bool ViolationLSLoop::adopt_from_pool() {
     // deriving from it would install a bound nothing feasible can meet and
     // leave the artificial row violated for the rest of the run. The loosest
     // finite bound is the honest answer there.
-    if (has_obj_) {
-        // Never LOOSEN it. record_best is the only other writer and it rewrites
-        // the bound only on a STRICT improvement over best_feasible_obj_ (it
-        // returns early otherwise), so a bound loosened here can never tighten
-        // back until this worker beats its own all-time best -- and the draw
-        // that got us here is frequently one of our own earlier, worse
-        // incumbents. Loosening on every such kick would leave the worker
-        // searching with the objective row satisfied and no pressure at all.
-        //
-        // LNS is the precedent, and it is unambiguous: destroy_repair replaces
-        // the assignment wholesale and does not touch the bound. A row reading
-        // `obj <= best - eps` that is violated at the point we just arrived on
-        // is ViolationLS's normal steady state, not a problem to fix.
-        double target = std::numeric_limits<double>::infinity();
-        if (feasible_here && std::isfinite(obj)) {
-            target = obj;
-        }
-        if (have_feasible_ && std::isfinite(best_feasible_obj_)) {
-            target = std::min(target, best_feasible_obj_);
-        }
-        if (std::isfinite(target)) {
-            model_.set_objective_bound(target - (1e-3 * (std::abs(target) + 1.0)));
-        } else if (!std::isfinite(model_.objective_bound())) {
-            // No usable objective anywhere yet -- an infeasible or non-finite
-            // adopted point with no incumbent of our own. Install the finite
-            // sentinel so the row is not vacuous, under record_best's own guard
-            // so it can never overwrite a real incumbent's bound.
-            model_.set_objective_bound(kInfPenalty);  // the shared clamp; see violation.h
-        }
-    }
+    reground_objective_bound_after_adoption(feasible_here, obj);
+
     // Only when it IMPROVES. A worker ahead of the pool restarts from a
     // diverse point without losing the incumbent it will return: finish()
     // hands back best_state_, so overwriting it with a worse adopted point
@@ -832,7 +905,40 @@ bool ViolationLSLoop::adopt_from_pool() {
         have_feasible_ = true;
         note_first_feasible(obj);
         best_feasible_obj_ = obj;
-        best_state_ = sol->state;
+        // Moved: `sol` is a by-value optional from get_restart_point and its
+        // state was last read by the restore above, so this saves a whole
+        // Model::State copy -- one vector<double> plus one vector<vector<int32_t>>
+        // per variable -- on a model the size of atlanta-ip.
+        best_state_ = std::move(sol->state);
+        // It IS the incumbent now, so kick_origin() finds it there.
+        has_adopted_origin_ = false;
+        adopted_origin_ = Model::State{};
+    } else if (feasible_here && std::isfinite(obj)) {
+        // Not an improvement, so best_state_ is still ours -- but the search now
+        // stands on the adopted point, and that is what a later kick must depart
+        // from. Without this the next kick restores our own incumbent and the
+        // draw is discarded within a few batches, which is the whole of what the
+        // pool bought (#158, #135).
+        //
+        // Under the SAME two rules the improvement branch above applies, and
+        // they are load-bearing rather than symmetry: the pool also holds
+        // closest-approach states submitted with feasible = false at the end of
+        // a run that never got there (see run_worker), and #100's witness is
+        // shared with a non-finite objective. Either would anchor ~98% of this
+        // worker's remaining kicks -- only the full-period route adopts, and
+        // that route is 2% of kicks -- to a point that is infeasible or has no
+        // objective, while the incumbent finish() returns would never be kicked
+        // from again. That is the inverse of replacing the starting point with a
+        // known-GOOD state.
+        adopted_origin_ = std::move(sol->state);  // moved, as above
+        has_adopted_origin_ = true;
+    } else {
+        // An infeasible or non-finite-objective draw is a legitimate diverse
+        // restart -- adopt_from_pool has already installed it as the live
+        // assignment -- but it is not a point to keep returning to. Release any
+        // older origin so kick_origin() falls back to the incumbent.
+        has_adopted_origin_ = false;
+        adopted_origin_ = Model::State{};
     }
 
     if (!has_obj_ && feasible_here) {
@@ -860,8 +966,17 @@ bool ViolationLSLoop::adopt_from_pool() {
     // constraint. That diagnosis was about the assignment we have just left; it
     // says nothing about the one we adopted, and the probe is not free. Disarm
     // it and let the two documented arming routes re-earn it from the new
-    // point. (A kick that adoption declines keeps the armed probe, because
-    // there diversify() really is perturbing the stuck assignment.)
+    // point. (A kick that adoption declines keeps the armed probe. Before the
+    // first feasible point that is diversify() perturbing the stuck assignment
+    // itself, as it always did; after it, diversify() restores kick_origin()
+    // first (#158), so the probe is armed on a diagnosis about the assignment
+    // being left and applied from the point the search departs from. Harmless
+    // rather than justified by the two being one basin -- the drift measurement
+    // at diversify() says they are NOT: a post-kick assignment holds a
+    // real-feasible point only 5.3% of the time. It is harmless because the flag
+    // only ENABLES the probe: compute_var_jump re-tests `!gradient_usable` at the
+    // live point, so the probe re-earns itself at the restored one.
+    // test_parallel's self-draw case pins it staying armed there.)
     fj_.set_escape_probe(false);
     // ...and re-ground the clock the TIME-based route arms on, or the disarm
     // above lasts exactly one batch: last_improvement_ still describes the
@@ -888,8 +1003,105 @@ bool ViolationLSLoop::adopt_from_pool() {
 }
 
 void ViolationLSLoop::diversify(bool allow_lns) {
+    // KICK FROM THE INCUMBENT, not from wherever the last kick left the search
+    // (#158).
+    //
+    // A diversification kick exists to leave the basin the search has settled
+    // into, and both halves of it are written as though the assignment it acts
+    // on were that settled point: perturb() randomises a fraction of it and
+    // expects the rest to be worth keeping, and LNS::destroy_repair scores its
+    // repair against the key of the state it was handed. That assumption holds
+    // for the FIRST kick after an improvement and for nothing after it, because
+    // nothing in a single-threaded run ever restores best_state_. Once a kick
+    // fails to recover, the next one starts from the failure, and the kicks
+    // compose into a random walk AWAY from the best solution found -- which is
+    // drift, not diversification.
+    //
+    // Measured on the mipfeas smoke instances at 60s, 7 instances x 2 seeds
+    // (#158): 13 487 kicks, of which 98% come from the unproductive-batch route
+    // and land a median of 2 batches apart; over the batches following a kick
+    // the assignment holds a real-feasible point only 5.3% of the time; and over
+    // 1 216 windows of >= 5 batches the MEDIAN of (closest approach back to the
+    // pre-kick point) / (kick distance) is 1.00 -- on at least half the windows
+    // the assignment never got any nearer than the kick itself left it. So on
+    // the typical kick the search left the feasible region and did not come
+    // back: on binkar10_1 it reaches a real violation <= 1 at 26% of kicks and
+    // lands feasible on 3 of 567 post-kick batches.
+    //
+    // THIS IS A DELIBERATE DIVERGENCE FROM THE REFERENCE, not a bug fix, and
+    // CLAUDE.md's Reference Correctness rule governs it -- so read the paper
+    // first. Davies et al., Algorithm 6 (docs/) has exactly one restore:
+    //
+    //     5   if a new best solution S is available in the shared pool then
+    //     6       X <- S
+    //    11   if No new solutions found or imported for 100 iterations then
+    //    12       Perturb X, randomising each variable's value with probability 0.1
+    //
+    // Line 12 perturbs X IN PLACE. Line 6 is pool-sourced and conditioned on a
+    // new BEST arriving, which is what adopt_from_pool implements. There is no
+    // step that restores an incumbent before a kick, so kicks composing into a
+    // walk is the reference's actual behaviour and not an oversight in this
+    // port. What this makes the outer loop is elitist ILS with a
+    // strict-improvement acceptance criterion -- and since perturb() ends in
+    // reset_weights(), neither the assignment nor the GLS landscape carries
+    // across a kick.
+    //
+    // The case for diverging is that the port ALREADY diverges in the direction
+    // that makes the walk pathological. Algorithm 6 kicks once per 100 stagnant
+    // batches; #102's unproductive route kicks at a median of 2, which is ~50x
+    // the reference rate, and 98% of kicks come through it. A walk sampled 50x
+    // more often is a much longer walk, and the measurement above is what it
+    // does. `adopt_from_pool()` is the same replace-the-starting-point move in
+    // the one place the paper sanctions it, and it needs a pool; this is that
+    // move where there is none. Gated on have_feasible_ because before the
+    // first feasible point best_state_ is still the initial assignment, which
+    // is not a point to return to; that regime keeps the trajectory it had.
+    //
+    // What it costs is recorded rather than argued: see docs/architecture.md's
+    // Diversification section for the MINLPLib arm, where the instances that
+    // use post-feasible kicks to move between feasible integer combinations
+    // pay for the elitism. If that cost ever outweighs the gain, the more
+    // faithful thing to attack is the kick RATE, not this restore.
+    //
+    // WHICH point, in a portfolio, is `kick_origin()`: our own incumbent
+    // normally, and the state adoption installed when the search is standing on
+    // a peer's point instead. Restoring best_state_ unconditionally would undo
+    // adopt_from_pool on the very next kick -- the pool draws from the better
+    // HALF so that workers stay spread, and a non-improving draw deliberately
+    // does not become best_state_, so an adopted point would survive about five
+    // batches and the portfolio would degenerate to N elitist searches. See
+    // kick_origin().
+    //
+    // The restore is cheap enough for #102's fast-recurring route, which is what
+    // maybe_diversify's "not the unproductive one" note is about: what it prices
+    // there is an ADOPTION -- a pool draw under a mutex, a restore, a
+    // full_evaluate and an FJ rebuild. This is the restore alone. The
+    // full_evaluate below belongs to the LNS branch and not to this one, and the
+    // FJ rebuild was already being paid: perturb() ends with reset_weights().
+    //
+    // restore_state writes the VARIABLES and leaves every DAG node on the
+    // previous assignment, so whoever reads node values next needs a
+    // full_evaluate first. Only one of the two branches is such a reader:
+    // LNS::destroy_repair keys the state it is about to destroy off node values.
+    // perturb() reads none -- it draws from the DOMAINS, and apply_move only
+    // writes -- and it ends with a full_evaluate of its own, so a sweep here too
+    // would be a second whole-DAG walk per kick on the route that takes 98% of
+    // them, computing values nothing reads. Skipping it changes no trajectory:
+    // full_evaluate draws no random numbers and writes no variable.
+    const Model::State* origin = kick_origin();
+    if (origin != nullptr) {
+        model_.restore_state(*origin);
+    }
     if (allow_lns && lns_ != nullptr && lns_interval_ > 0 &&
         (lns_slot_ % lns_interval_ == lns_interval_ - 1)) {
+        if (origin != nullptr) {
+            full_evaluate(model_);  // see above: destroy_repair reads node values
+            // violation.h's rule: the cached total is stale after a
+            // full_evaluate. Immaterial to the built-in LNS, which keys off node
+            // values directly, but destroy_repair is a documented extension
+            // point and must not be handed a model and a cache that disagree.
+            vm_.invalidate_cache();
+        }
         // Bound the repair by whatever budget is left, so an LNS kick near
         // the deadline cannot run its own independent 2s.
         // Floored at a tiny positive value while a deadline exists:
@@ -898,6 +1110,22 @@ void ViolationLSLoop::diversify(bool allow_lns) {
         // limit" downstream in fj_nl_initialize — the opposite of intent.
         const double repair_limit =
             has_deadline_ ? std::max(1e-9, std::min(2.0, remaining())) : 0.0;
+        // What the built-in LNS now scores against: the restore above means
+        // `old_key` is the kick origin's key, so a repair is kept only if it
+        // beats the point the kick departed from rather than a drifted one it
+        // was handed. That is the rule SearchResult::lns_repairs_accepted has
+        // always been documented as recording, and it is a strictly higher bar.
+        //
+        // What a REJECTION does is worth stating precisely, because it inverted
+        // with this change. Before, destroy_repair snapshotted the drifted point
+        // the kick started from, so a rejection put the search back exactly
+        // where it already was: a genuine no-op. Now the restore above has
+        // already happened, so the snapshot IS the origin, and a rejection moves
+        // the search from wherever it had drifted back to the origin and
+        // perturbs nothing. Not a no-op -- but not a diversification either: FJ
+        // re-descends from a point it has already converged on. Whether such a
+        // kick should fall through to a perturb is a trajectory change and so a
+        // separate measurement, not a tidy-up.
         const bool accepted = lns_->destroy_repair(model_, vm_, rng_, repair_limit);
         ++lns_repairs_;
         lns_repairs_accepted_ += accepted ? 1 : 0;
@@ -1103,10 +1331,16 @@ void ViolationLSLoop::maybe_diversify(BatchKind kind, bool improved) {
         //
         // Deliberately only this route, not the unproductive one below: that
         // kick fires on an iteration count, can recur every batch, and is
-        // valuable precisely because it is cheap. An adoption is a state
-        // restore plus a full_evaluate plus an FJ rebuild, and putting it on
-        // the fast-recurring route would turn a stall accelerator into a
-        // thrash.
+        // valuable precisely because it is cheap. An adoption is a pool draw
+        // under a mutex plus a state restore plus a full_evaluate plus an FJ
+        // rebuild, and putting it on the fast-recurring route would turn a stall
+        // accelerator into a thrash.
+        //
+        // #158 put a restore on that route, which is NOT the same move and the
+        // difference is the whole of this paragraph: it takes no lock, draws
+        // nothing, needs no full_evaluate on the perturb branch, and the FJ
+        // rebuild was already being paid by perturb()'s own reset_weights. What
+        // is left is one per-variable copy. See diversify().
         //
         // `lns_kick_due()` FIRST, and it is load-bearing rather than a nicety.
         // diversify() is the only caller of LNS::destroy_repair and the only

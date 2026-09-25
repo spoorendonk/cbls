@@ -53,10 +53,11 @@ DAG:
    (Newton steps on violated constraints, backtracking line search on the
    objective, multi-variable minimum-norm Newton), triggered **on each new
    feasible solution**.
-5. **Diversifies** on stagnation: a random perturbation of the scalars plus a run
-   of random structural moves per List/Set variable, which always moves at least
-   one variable, or — every `lns_interval`-th diversification kick — large
-   neighborhood search (destroy + GFJ repair).
+5. **Diversifies** on stagnation, from the point the search is exploring around
+   rather than from wherever the last kick left it (#158): a random perturbation
+   of the scalars plus a run of random structural moves per List/Set variable,
+   which always moves at least one variable, or — every `lns_interval`-th
+   diversification kick — large neighborhood search (destroy + GFJ repair).
 6. **Tracks** the best real-feasible solution found (objective bound tightened
    alongside it), with a solution pool for parallel multi-seed search.
 
@@ -793,9 +794,11 @@ randomises each jumpable variable only with probability `perturbation_probabilit
 `round(p * |elements|)` local structural moves (#111); it runs only after
 `perturbation_period` (default **100**) stagnant batches -- or sooner, on the
 unproductive-batch route in step 8 of the outer loop (#102) -- and when all of
-that happens to move nothing it forces exactly one variable (#109). A kick is
-therefore a sparse, occasional nudge, not a re-draw of the assignment, and it is
-not a substitute for a randomised starting point.
+that happens to move nothing it forces exactly one variable (#109). The *nudge*
+is therefore sparse, and it is not a substitute for a randomised starting point --
+though since #158 the kick as a whole rewrites the assignment before nudging it,
+restoring `kick_origin()` first, so read "sparse" as describing the perturbation
+and not the kick.
 
 `solve()` used to call `initialize_random` (which randomises scalars too) and
 then overwrite every scalar a dozen lines later in `begin()`. The draws were dead
@@ -921,7 +924,9 @@ While time and `max_iterations` remain, each pass:
    `stagnation >= perturbation_period` (armed at the same site as the kick in
    step 8), or — with a wall clock — a quarter of the budget elapsed since the
    last new best (#117).
-8. **Diversify**, by either of two routes:
+8. **Diversify**, by either of two routes. Both restore `kick_origin()` first
+   once there is one — the incumbent, or the state `adopt_from_pool` installed
+   (#158, see [Diversification](#diversification)).
    - **`stagnation >= perturbation_period`** — the ordinary one. Diversify
      (below) and reset the stagnation counter.
    - **an unproductive Feasibility-Jump batch** (#102) — the batch reported that
@@ -1280,10 +1285,200 @@ destroy-repair (then resets FJ weights, since LNS mutates state outside the
 engine). Otherwise it calls `fj.perturb(perturbation_probability)`. Either way
 it resamples `rho`.
 
-The repair's own verdict is recorded, not discarded: `destroy_repair` returns
-whether it kept its repaired state, which bumps `lns_repairs_accepted` alongside
-the `lns_repairs` attempt counter. Nothing branches on it — the two counters are
-instrumentation, so an LNS run's trajectory is unchanged by their presence.
+**The kick starts from the point the search is exploring around** once there is
+one (#158) — `kick_origin()`: this worker's own incumbent, or the state
+`adopt_from_pool` installed while the search is standing on a peer's point.
+Before the first feasible solution, and while the only one on record is #100's
+non-finite-objective witness, there is no origin and the kick fires in place, as
+it always did.
+
+**This is a deliberate divergence from the reference, not a bug fix.** Davies et
+al., Algorithm 6 (the PDF in `docs/`) has exactly one restore, and it is not this
+one:
+
+```
+ 5   if a new best solution S is available in the shared pool then
+ 6       X ← S
+11   if No new solutions found or imported for 100 iterations then
+12       Perturb X, randomising each variable's value with probability 0.1
+```
+
+Line 12 perturbs `X` **in place**; line 6 is pool-sourced and conditioned on a
+new *best* arriving, which is what `adopt_from_pool` already implements. So kicks
+composing into a walk away from the incumbent is the reference's own behaviour,
+and restoring an origin first makes the outer loop elitist ILS with a
+strict-improvement acceptance criterion instead. Since `perturb()` ends in
+`reset_weights()`, neither the assignment nor the GLS landscape carries across a
+kick. CLAUDE.md's *Reference Correctness* rule governs a change like this, so the
+case for it has to be made and its cost stated.
+
+**The case.** This port already diverges in the direction that makes the walk
+pathological: Algorithm 6 kicks once per 100 stagnant batches, while #102's
+unproductive route kicks at a median of **2** and supplies **98%** of all kicks —
+about 50x the reference rate. A walk sampled 50x more often is a much longer
+walk. Measured on the mipfeas smoke instances at 60s, 7 instances x 2 seeds,
+13,487 kicks: the batches following a kick hold a real-feasible assignment only
+**5.3%** of the time; and over 1,216 windows of >= 5 batches the **median** of
+(closest approach back to the pre-kick point) / (kick distance) is **1.00** — on
+at least half of them the assignment never got any nearer than the kick itself
+left it. So on the typical kick the search leaves the feasible region and does
+not come back. On binkar10_1 it lands feasible on 3 of 567 post-kick batches.
+
+Both of #158's own hypotheses are refuted by that: the kick is not too small (it
+moves the ~10% of columns it is configured to), and the search does not
+re-converge. **Nor is the LNS cadence the cause** — over the same 14 runs the
+engine ran 86 LNS repairs, and replaying the traces with `lns_slot_` advanced on
+*every* kick gives 90. What keeps LNS from running post-feasibility is that only
+the full-period route may draw a repair there, and that route is 2% of kicks.
+
+**The restore is not gated on there being no pool**, so a portfolio worker kicks
+from a restored point too — and *which* point is then the question
+`kick_origin()` answers. `adopt_from_pool` draws from the better half rather than
+the best, deliberately, so that workers stay spread, and it leaves `best_state`
+alone when the draw is not an improvement. Restoring `best_state` there would
+discard the draw within a few batches — the unproductive route re-arms five
+batches after adoption zeroes `stagnation` — and the portfolio would degenerate
+into N elitist searches each snapped back to its own incumbent. So adoption
+records the state it installed, under the same two rules the improvement branch
+applies (feasible in *this* model, finite objective — the pool also holds
+closest-approach states submitted with `feasible = false`, and #100 witnesses
+shared with a non-finite objective, and either would anchor ~98% of a worker's
+remaining kicks to a point worth nothing). `tests/test_search.cpp`'s "a kick
+after adoption departs from the adopted point, not our incumbent" pins it: it
+goes red without the restore *and* with a `best_state`-only one.
+
+One consequence worth stating because it inverted. `LNS::destroy_repair`
+snapshots the state it is handed, so before #158 a rejected repair rolled back to
+the drifted point the kick started from — a true no-op. Now the snapshot is the
+origin, so a rejection *moves* the search back to the origin and perturbs
+nothing: not free, and not a diversification either, since FJ re-descends from a
+point it has already converged on.
+
+#### What admits it, and what it costs (#158)
+
+The two arms below are **before = `97d9d4d`** (the merge base on `main`) and
+**after = `f722697`**, each built from that tree. Serial, one job at a time, on an
+otherwise idle 12-core box with `uptime` checked before each arm; load stayed
+1.00-1.09 throughout. No parameter was changed — CLAUDE.md's over-fitting rule
+forbids selecting one on these rosters, and nothing here does. The two arms named
+in the *smoke* and *portfolio* paragraphs at the end are different and earlier
+builds, and each says so where it appears; only the held-out and MINLPLib arms
+describe the shipped code.
+
+One caveat on the artefacts rather than the numbers: the mipfeas driver stamped
+both arms of a `--cbls-bin` comparison with the *checkout's* commit, so the
+`provenance` cells inside those results directories do not distinguish the arms.
+The SHAs named above are the record. That defect is fixed here — a non-default
+`--cbls-bin` is now attributed to its own content hash — and pinned by
+`tests/python/test_run_benchmark.py`.
+
+**The admitting arm is a HELD-OUT MIPfeas subset, not the smoke roster.** 16
+instances drawn by a fixed seed from `roster.csv` excluding every `smoke.csv`
+row, 60s, `--threads 1`, seeds 42/7/99, every feasible row verified against the
+instance file by SCIP:
+
+| seed | sgm | mean | median | feasible |
+|---|---|---|---|---|
+| 42 | 0.9251 → 0.9115 | 1.2458 → 1.2360 | 0.9959 → 0.9795 | 10/16 → 10/16 |
+| 7  | 0.8693 → 0.8619 | 1.1760 → 1.1696 | 0.9737 → 0.9525 | 10/16 → 10/16 |
+| 99 | 0.9089 → 0.8983 | 1.2441 → 1.2409 | 1.0056 → 1.0044 | 9/16 → 9/16 |
+
+Better on 3/3 seeds on all three statistics, no feasible row lost,
+`verification_failed = 0` and `below_reference = 0` on both arms. Paired over the
+48 rows: **21 better, 8 worse, 19 tied**. At instance level, four are better on
+all three seeds (`neos-2657525-crna`, `neos-1445765`, `reblock115`,
+`comp21-2idx`) against one worse on all three (`drayage-25-23`, whose seed-99
+`+0.10211` is the largest single move in the table).
+
+**State that at its real strength and no higher**: four decisively better against
+one worse is not significant under a sign test, and the aggregate move is ~1.2%
+on the sgm. The honest summary is that the mechanism argument above is the reason
+to make this change, and the held-out arm is *consistent with no harm and weakly
+positive*. It is not a demonstration that the engine got better by 1.2%.
+
+The **11-instance smoke roster** numbers this change was discovered on (sgm
+0.3526 → 0.3460, 17/7/9 over 33 rows; arms `d02270f` → `0aa0f4a`, i.e. an earlier
+form of the change) are kept only as the discovery measurement. They cannot admit anything: that roster is 11 instances and
+`benchmarks/instances/mipfeas/README.md` calls it a wiring check, not a result.
+Three seeds there cannot separate a 1.9% move in any case — #158's own follow-up
+records a **300x** spread across three seeds on `binkar10_1` alone, and that
+applies to the aggregate as much as to the per-instance objectives.
+
+**MINLPLib (priority 2) is inside the noise.** Whole 50-instance roster, 10s,
+four paired seeds, scored by `benchmarks/minlplib/ablation_report.py` against a
+per-instance floor derived from the *control's own* across-seed spread: **not one
+of the 32 scored instances moved outside its floor** (typical ±9.89 points),
+median per-instance delta **+0.00**, and 48/48 instances both-feasible on both
+arms with a feasible-run delta of **+0**.
+
+The three denominators are different sets and reconcile as follows, because an
+unexplained 50/48/32 is exactly the kind of number this branch has already been
+corrected for. The roster is **50**; `elec25` and `elec50` are excluded as
+documented failures that hit every arm alike, leaving **48** comparable, and all
+48 were both-feasible on both arms. Of those 48, only **32** could be *scored*: a
+floor is the control's own across-seed spread, so an instance whose control
+returned an identical gap on every seed, or fewer than two comparable runs, has
+no measurable spread and the report refuses to impute one (this roster's gaps
+span six orders of magnitude, so a borrowed floor would be one a large-gap
+instance clears automatically). The 16 unscored instances are listed in the
+report with a `-` floor. "Points" are gap-to-BKS points — a percentage where the
+published reference is nonzero and an absolute residual where it is zero. `st_e40` — the instance
+`SearchConfig::unproductive_iterations` cites for needing post-feasible kicks,
+and the one this change was most expected to hurt — is 0.00 gap and 4/4 feasible
+on **both** arms. `nvs02` is +3.77 against a floor of 34.25 and `nvs14` +8.33
+against 41.28; `ex8_6_1` +3.17 (floor 20.70), `shiporig` +38.98 (205.96),
+`spring` +2.33 (10.93), `eq6_1` +0.82 (8.27).
+
+An earlier pass reported a real st_e40 and nvs02 cost. That was **winner's
+curse**: the three instances were selected as the largest movers of a two-seed
+run and then re-measured on their own. The lesson is worth more than the number —
+a per-instance claim on this roster needs a measured floor, not a re-run of
+whichever rows moved most.
+
+**What it does cost, measurably: LNS acceptance.** Over that same roster the two
+arms attempt the same number of repairs and keep very different fractions —
+control **1332 attempted / 363 accepted (27.3%)**, arm **1350 / 101 (7.5%)**.
+That is the accept bar rising exactly as designed: `destroy_repair` now scores
+against the kick origin rather than a drifted point, so most repairs no longer
+clear it. Read with the rollback note above — a rejected repair is not free — this
+is the clearest price the change pays, and it is a real one.
+
+**The portfolio regime, measured on the shipped code.** This matters more than
+the single-threaded arm for the `adopted_origin_` half of the change, because
+that machinery is portfolio-only: `adopt_from_pool` is its sole writer and
+returns immediately without a pool. Smoke roster, 60s, `--cbls-threads 4`,
+`97d9d4d` → `f722697` (comment-only to this branch's tip), two paired seeds,
+serial on an idle box:
+
+| seed | sgm | mean | median | feasible |
+|---|---|---|---|---|
+| 42 | 0.2924 → 0.2783 | 0.8924 → 0.8200 | 0.9303 → 0.5958 | 8/11 → 8/11 |
+| 7 | 0.2864 → 0.2595 | 0.8371 → 0.8200 | 0.8103 → 0.6799 | 8/11 → 8/11 |
+
+Better on both seeds on all three statistics, feasible count unchanged, and
+`verification_failed = 0`. The sgm move is ~4.8% and ~9.4%, against ~1.2% on the
+single-threaded held-out arm — consistent with the mechanism being real, since
+this is the regime it acts in, though two seeds on an 11-instance roster is a
+no-regression check and not an effect size.
+
+An earlier `--cbls-threads 4` arm (one seed, sgm 0.2908 → 0.2800) is **not**
+quoted as evidence: its treatment binary predated `kick_origin()`, when the kick
+restored `best_state` unconditionally, so it measured the form `kick_origin()`
+replaced. Recorded here because the trap is easy to re-enter — an arm named by
+roster and budget but not by commit says nothing about which code it ran.
+
+**What the change does NOT do, recorded so it is not re-derived.** #158's second
+hypothesis was that LNS is starved because `lns_slot_` advances only on
+full-period kicks. It is not the cause: over the 14 diagnostic runs the engine
+ran 86 LNS repairs, and replaying the traces with the slot advanced on *every*
+kick gives 90. What keeps LNS from running post-feasibility is that only the
+full-period route may draw a repair there, and that route is 2% of kicks.
+
+A pre-registered clause of the decision rule was to re-run, at MINLPLib's
+published 60s budget, every row that crossed its noise floor downward at 10s.
+**No row crossed, so that clause had nothing to run** and is recorded as empty
+rather than quietly dropped. It is not evidence about the 60s budget, and a 60s
+arm was deliberately not invented to fill it.
 
 `perturb(p)` randomises each jumpable variable independently with probability
 `p`, and then — **only if that moved nothing** — forces one uniformly chosen
@@ -1711,8 +1906,10 @@ by default; LNS (destroy + GFJ repair, lexicographic accept) every
 **Alternative:** population-based search (GA, scatter search) or systematic
 restart schedules (Luby). The solution pool is used for warm restarts *across*
 the workers of a `ParallelSearch` -- a stalled worker resumes from a peer's
-incumbent -- but a single-threaded `solve()` still has no pool and no warm
-restart of its own.
+incumbent. A single-threaded `solve()` has no pool, but since #158 it is not
+without a warm restart: every diversification kick restores its own incumbent
+first, which is the single-threaded form of the same idea (see
+[Diversification](#diversification)).
 
 ---
 
@@ -1765,7 +1962,10 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
     │         fj.reset_weights; disarm the probe
     │         resample rho; ++perturbations; stagnation=0
     │       OR diversify():
-    │         every lns_interval-th kick → lns->destroy_repair(); fj.reset_weights()
+    │         [if there is one] restore kick_origin()   # incumbent, or the
+    │                                                   # adopted state (#158)
+    │         every lns_interval-th kick → full_evaluate; lns->destroy_repair();
+    │                                      fj.reset_weights()
     │         else                       → fj.perturb(perturbation_probability)
     │         resample rho; ++perturbations; stagnation=0
     │

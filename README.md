@@ -54,7 +54,7 @@ m.close();
 ```bash
 cmake -B build
 cmake --build build
-ctest --test-dir build    # 396 C++ tests, ~42s (add -LE slow for the fast 387, ~12s)
+ctest --test-dir build    # 398 C++ tests, ~42s (add -LE slow for the fast 389, ~12s)
 ```
 
 The build type defaults to `Release`; pass `-DCMAKE_BUILD_TYPE=Debug` to override
@@ -72,7 +72,7 @@ With Python bindings:
 ```bash
 cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build
-.venv/bin/pytest          # 717 tests, 86 of them for the bindings
+.venv/bin/pytest          # 718 tests, 86 of them for the bindings
 ```
 
 Tests of the benchmark baselines skip themselves when `ortools` or `pyscipopt` is
@@ -92,7 +92,7 @@ pip install .
 ## What works
 
 - Small-to-medium nonlinear mixed-integer problems
-- Problems where escaping local optima matters (nonconvex, discontinuous) — GLS reweighting reshapes the landscape on stagnation, and diversification kicks or LNS restart the search from a perturbed assignment
+- Problems where escaping local optima matters (nonconvex, discontinuous) — GLS reweighting reshapes the landscape on stagnation, and diversification kicks or LNS restart the search from a perturbed copy of the point it is exploring around — its own incumbent, or a peer's state under the multi-threaded portfolio, and the live assignment itself until the first feasible solution
 - Problems where exact solvers time out (CBLS finds feasible solutions on instances where SCIP cannot within time limits)
 
 ## Known limitations
