@@ -183,10 +183,7 @@ const json& require_table(const json& j, const char* op_name, int line_num) {
 
 // The PairLambda closing rule, as the format spells it.
 PairMode parse_pair_mode(const json& j, int line_num) {
-    if (!j.contains("mode")) {
-        return PairMode::Open;
-    }
-    const auto mode = j["mode"].get<std::string>();
+    const auto mode = j.value("mode", std::string("open"));
     if (mode == "open") {
         return PairMode::Open;
     }
@@ -198,12 +195,14 @@ PairMode parse_pair_mode(const json& j, int line_num) {
 }
 
 // One tabulated fixed-endpoint term, or an empty callable when the record
-// carries none -- which is what `pair_lambda_sum` reads as "no term".
+// carries none -- which is what `pair_lambda_sum` reads as "no term", and what
+// every file written before these variants existed means. A present-but-empty
+// table can only come from a zero-length universe, where no element is read.
 std::function<double(int)> endpoint_func(const json& j, const char* field) {
-    if (!j.contains(field)) {
+    auto table = j.value(field, std::vector<double>{});
+    if (table.empty()) {
         return nullptr;
     }
-    auto table = j[field].get<std::vector<double>>();
     return [table](int e) -> double { return table.at(e); };
 }
 
@@ -476,8 +475,17 @@ void tabulate_pair_lambda(const Model& model, const ExprNode& node, json& j) {
     }
     // The closing rule and the endpoint terms are the rest of the node: a
     // matrix alone round-trips a cyclic tour as an open chain, silently.
+    //
+    // Each key is written only when it says something. The format carries no
+    // version field, so an open chain with no endpoints -- everything this
+    // format could express before these variants existed -- must serialise to
+    // the bytes it always did; `tests/test_io.cpp`'s idempotency case compares
+    // save(load(save)) as text. The reader defaults each absent key to exactly
+    // that node.
     const PairLambdaSpec& spec = model.pair_lambda_spec(node.lambda_func_id);
-    j["mode"] = spec.mode == PairMode::Cyclic ? "cyclic" : "open";
+    if (spec.mode == PairMode::Cyclic) {
+        j["mode"] = "cyclic";
+    }
     auto tabulate_endpoint = [&model, &j, n](const char* field, int32_t func_id) {
         if (func_id < 0) {
             return;

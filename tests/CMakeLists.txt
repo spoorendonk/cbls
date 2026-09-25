@@ -1,6 +1,7 @@
 add_executable(cbls_tests
     test_dag.cpp
     test_structured_trajectory.cpp
+    test_pair_lambda.cpp
     test_expr.cpp
     test_moves.cpp
     test_search.cpp
