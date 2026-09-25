@@ -195,10 +195,10 @@ TEST_CASE("round-trip SignPower and Tanh ops", "[io]") {
     full_evaluate(m1);
     m2.var_mut(0).value = 1.5;
     full_evaluate(m2);
-    REQUIRE_THAT(m2.node(m2.objective_id()).value,
-                 WithinAbs(m1.node(m1.objective_id()).value, 1e-12));
+    REQUIRE_THAT(m2.node_value(m2.objective_id()),
+                 WithinAbs(m1.node_value(m1.objective_id()), 1e-12));
     double expected = std::copysign(std::pow(1.5, 3.0), 1.5) + std::tanh(1.5);
-    REQUIRE_THAT(m1.node(m1.objective_id()).value, WithinAbs(expected, 1e-12));
+    REQUIRE_THAT(m1.node_value(m1.objective_id()), WithinAbs(expected, 1e-12));
 }
 
 TEST_CASE("load_model from file", "[io]") {
@@ -253,7 +253,7 @@ TEST_CASE("round-trip model with lambda_sum", "[io]") {
     v2.elements = {0, 1, 2, 3, 4};
     full_evaluate(m2);
     // 0 + 1 + 4 + 9 + 16 = 30
-    REQUIRE(m2.node(m2.objective_id()).value == 30.0);
+    REQUIRE(m2.node_value(m2.objective_id()) == 30.0);
 }
 
 TEST_CASE("idempotent lambda_sum round-trip", "[io]") {

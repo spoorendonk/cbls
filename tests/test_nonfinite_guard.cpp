@@ -82,7 +82,7 @@ TEST_CASE("NaN constraint value is treated as infeasible, not feasible", "[nonfi
 
     m.var_mut(vid(x)).value = 1.0e6;  // exp(1e6) = +inf; inf - inf = NaN
     full_evaluate(m);
-    REQUIRE(std::isnan(m.node(c).value));
+    REQUIRE(std::isnan(m.node_value(c)));
 
     ViolationManager vm(m);
     vm.invalidate_cache();
@@ -133,7 +133,7 @@ TEST_CASE("a row with an infinite bound is vacuous, not maximally violated",
 
     m.var_mut(vid(x)).value = 1.0e6;  // exp(1e6) = +inf
     full_evaluate(m);
-    REQUIRE(std::isinf(m.node(ex).value));
+    REQUIRE(std::isinf(m.node_value(ex)));
 
     ViolationManager vm(m);
     vm.invalidate_cache();
@@ -153,7 +153,7 @@ TEST_CASE("a row with an infinite bound is vacuous, not maximally violated",
     full_evaluate(m2);
     m2.add_objective_soft_constraint();  // bound starts at +inf
     m2.set_objective_bound(std::numeric_limits<double>::infinity());
-    REQUIRE(m2.node(m2.constraint_ids()[m2.objective_constraint_idx()]).value == 0.0);
+    REQUIRE(m2.node_value(m2.constraint_ids()[m2.objective_constraint_idx()]) == 0.0);
 }
 
 TEST_CASE("an overflowed infinity is not mistaken for an absent bound",
@@ -179,7 +179,7 @@ TEST_CASE("an overflowed infinity is not mistaken for an absent bound",
     m.var_mut(vid(x)).value = 1000.0;  // exp(1000) = +inf
     m.var_mut(vid(y)).value = 720.0;   // exp(720)  = +inf
     full_evaluate(m);
-    REQUIRE(std::isnan(m.node(c).value));
+    REQUIRE(std::isnan(m.node_value(c)));
 
     ViolationManager vm(m);
     vm.invalidate_cache();
@@ -211,8 +211,8 @@ TEST_CASE("a clamped row does not absorb the real rows in a jump score",
     m.var_mut(vid(x)).value = 3.0;
     m.var_mut(vid(y)).value = 1.0e6;  // exp(1e6) = +inf: row A is +inf for any x
     full_evaluate(m);
-    REQUIRE(std::isinf(m.node(row_a).value));
-    REQUIRE(m.node(row_b).value == 3.0);
+    REQUIRE(std::isinf(m.node_value(row_a)));
+    REQUIRE(m.node_value(row_b) == 3.0);
 
     ViolationManager vm(m);
     // Both rows are in x's adjacency, so the clamped one is inside the sum.
@@ -327,7 +327,7 @@ TEST_CASE("a +inf-objective feasible point does not block a later improvement",
     m.var_mut(vid(x)).value = 1.0;
     m.var_mut(vid(y)).value = 1.0;
     full_evaluate(m);
-    REQUIRE_FALSE(std::isfinite(m.node(m.objective_id()).value));
+    REQUIRE_FALSE(std::isfinite(m.node_value(m.objective_id())));
 
     SearchConfig cfg;
     // Start on the diagonal: skip_init keeps the assignment set above instead of
@@ -391,9 +391,9 @@ public:
         }
         captured = true;
         bound = model_.objective_bound();
-        objective = model_.node(model_.objective_id()).value;
+        objective = model_.node_value(model_.objective_id());
         objective_row =
-            model_.node(model_.constraint_ids()[model_.objective_constraint_idx()]).value;
+            model_.node_value(model_.constraint_ids()[model_.objective_constraint_idx()]);
     }
 
     bool captured = false;
@@ -583,7 +583,7 @@ TEST_CASE("a structural repair is accepted while the sentinel bound is installed
     full_evaluate(m);
     // Precondition: the start is feasible and its objective is not a number,
     // which is exactly the state record_best installs the sentinel for.
-    REQUIRE_FALSE(std::isfinite(m.node(m.objective_id()).value));
+    REQUIRE_FALSE(std::isfinite(m.node_value(m.objective_id())));
 
     SearchConfig cfg;
     cfg.skip_init = true;                    // keep the identity start and w = 1000

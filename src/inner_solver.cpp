@@ -43,7 +43,7 @@ void newton_candidates(Model& model, ViolationManager& vm, const Variable& var, 
     int n_check = std::min(static_cast<int>(violated.size()), 3);
     for (int ci = 0; ci < n_check; ++ci) {
         int32_t cid = model.constraint_ids()[violated[ci]];
-        double g = model.node(cid).value;
+        double g = model.node_value(cid);
         double dg = compute_partial(model, cid, var.id);
         // Negated form of the original `> 1e-12` guard, not `<= 1e-12`: a NaN
         // partial must skip the candidate, and every comparison against NaN is
@@ -109,7 +109,7 @@ bool descend_float_var(Model& model, ViolationManager& vm, const Variable& var, 
 // least two variables to be doing anything the per-variable sweep above did not.
 // Returns true if the step was kept.
 bool multi_var_newton_step(Model& model, ViolationManager& vm, int32_t cid) {
-    double g = model.node(cid).value;
+    double g = model.node_value(cid);
     if (std::abs(g) < 1e-15) {
         return false;
     }

@@ -84,7 +84,7 @@ inline VerifyResult verify_setcover(const SetCoverModel& scm, const SetCoverInst
                               " repeated and " + std::to_string(check.invalid_columns) +
                               " out-of-range entries"});
     }
-    const double dag_objective = scm.model.node(scm.model.objective_id()).value;
+    const double dag_objective = scm.model.node_value(scm.model.objective_id());
     if (std::abs(dag_objective - check.cost) > tol * (1.0 + std::abs(check.cost))) {
         result.add_error({VerifyError::Kind::ObjectiveMismatch, "cost", check.cost, dag_objective,
                           "objective node disagrees with the cost recomputed from the instance"});

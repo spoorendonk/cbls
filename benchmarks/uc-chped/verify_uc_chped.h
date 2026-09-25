@@ -223,7 +223,7 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst, 
     verify_detail::check_initial_conditions(result, a, inst);
 
     const double total_cost = verify_detail::recompute_cost(a, inst);
-    const double dag_obj = ucm.model.node(ucm.model.objective_id()).value;
+    const double dag_obj = ucm.model.node_value(ucm.model.objective_id());
     if (std::abs(dag_obj - total_cost) > std::max(tol * std::abs(total_cost), 1.0)) {
         result.add_error(
             {VerifyError::Kind::ObjectiveMismatch, "objective", total_cost, dag_obj,

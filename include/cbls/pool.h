@@ -92,6 +92,70 @@ public:
     SearchResult solve(std::function<Model()> model_factory, double time_limit = 10.0,
                        uint64_t seed = 42);
 
+    // Portfolio over ONE master model, whose immutable structure every worker
+    // SHARES (#157). The convenient overload, and the one to reach for when the
+    // caller has nothing else to arrange.
+    //
+    // What decides whether the DAG is shared is the model, NOT which overload:
+    // this one is implemented as exactly a factory returning a copy of a frozen
+    // master. So a `std::function<Model()>` that returns a copy of a FROZEN model
+    // shares the structure too -- `benchmarks/mipfeas/` does that deliberately, to
+    // keep the per-worker copies in its own setup phase rather than in the search's
+    // deadline. A factory returning a copy of an OPEN model, or building a fresh
+    // one per call, deep-copies the DAG per worker; that is what cost ~0.75-0.86
+    // GiB per worker on the largest MIPfeas instance, against ~0.34-0.39 GiB
+    // shared (`docs/architecture.md` carries the table and its commit).
+    // `freeze()` is the operative call.
+    //
+    // `master` is `freeze()`d here, BEFORE any thread exists: `Model::freeze`
+    // explains why the freeze point is after the objective row rather than at
+    // `close()`, and doing it on the calling thread is what keeps N workers from
+    // re-sorting one shared DAG. So the master comes back frozen, carrying the
+    // artificial `obj <= bound` row and refusing further structural changes,
+    // while its ASSIGNMENT is left exactly as it was -- no worker searches the
+    // master itself. (Its node-value array grows by that row's two entries, and
+    // an open or unevaluated master is evaluated by the `close()`/objective-row
+    // steps `freeze()` folds in.)
+    //
+    // ONE master, ONE solve at a time. `freeze()` writes the structure, so handing
+    // the same master to two concurrent `solve` calls races. Reusing it for a
+    // second solve after the first returns is fine -- `freeze()` is then a no-op
+    // -- but the replicas start from whatever assignment the master holds then.
+    //
+    // And do not write the master AT ALL while a solve is running, structurally or
+    // not. Workers copy it on their own threads at arbitrary points after the solve
+    // starts, so a `SolveCallback` or `hook_factory` that captured the master and
+    // set `var_mut().value`, wrote a node value or called `set_objective_bound`
+    // races with whichever worker is mid-copy. A structural write throws; these do
+    // not, and nothing detects them.
+    //
+    // Each worker gets a copy: the structure by reference, its own variables,
+    // node values and objective bound. A replica therefore starts from the
+    // master's assignment rather than from a re-evaluated one -- bit-for-bit the
+    // state the master was in, which is what makes replication a memcpy with no
+    // `full_evaluate`. That is NOT the same as saying a one-worker portfolio
+    // reproduces a single `solve()`: a worker seeds with
+    // `portfolio_worker_seed(seed, 0, 0)` rather than `seed`, runs with a non-null
+    // `SearchCoordination`, and may restart with `skip_init`. The portfolio is a
+    // different run at any thread count.
+    //
+    // One thing sharing changes: a `lambda_sum`/`pair_lambda_sum` callable is now
+    // invoked by several workers at once, so a callable carrying mutable state of
+    // its own is a data race. That is a NEW hazard for state captured by value --
+    // each replica used to hold its own copy of the `std::function` -- and an old
+    // one for state captured by reference.
+    //
+    // Same callback contract as the factory overloads. The throwing contract
+    // differs in one way: `freeze()` runs on the CALLING thread, so this overload
+    // can throw before any worker exists (a bad_alloc on the objective row, or a
+    // topological sort that rejects an unclosed cyclic model), where a factory
+    // overload only ever reports the aggregated worker failure.
+    SearchResult solve(Model& master, double time_limit = 10.0, uint64_t seed = 42);
+    SearchResult solve(Model& master, double time_limit, uint64_t seed, const SearchConfig& config,
+                       std::function<std::shared_ptr<InnerSolverHook>(Model&)> hook_factory,
+                       std::function<std::shared_ptr<LNS>()> lns_factory, SolveCallback* callback,
+                       const ParallelConfig& par_config);
+
     // Full-featured solve with hooks, LNS, config, and parallel config.
     //
     // Both factories hand back a SHARED pointer rather than a raw owning one.
@@ -111,10 +175,13 @@ public:
     // signature used to catch loudly as a double free.
     //
     // One more asymmetry for a Python hook_factory: the Model& reaches it as a
-    // COPY (nanobind demotes an lvalue reference to rv_policy::copy), so the
-    // callee cannot see the model it will run against, and a large model is
-    // deep-copied once per worker. Avoiding that would need a hand-written
-    // binding wrapper, i.e. the glue this signature exists to avoid.
+    // COPY (nanobind demotes an lvalue reference to rv_policy::copy), so the callee
+    // cannot see the model it will run against. What that costs depends on the
+    // model: a FROZEN one shares its structure, so the copy is the variables and
+    // the node values; an open one is deep-copied whole, once per worker (#157).
+    // Avoiding the copy at all would need a hand-written binding wrapper, i.e. the
+    // glue this signature exists to avoid. A C++ hook_factory is handed the
+    // worker's own `Model&` and copies nothing.
     //
     // Each factory is called ONCE per worker, not once per restart: a worker
     // that restarts keeps its model, hook and LNS and carries on with them.

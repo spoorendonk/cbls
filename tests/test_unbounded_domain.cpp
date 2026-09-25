@@ -63,7 +63,7 @@ bool all_values_finite(const Model& m) {
 bool all_constraints_finite(const Model& m) {
     const std::vector<int32_t>& cids = m.constraint_ids();
     return std::all_of(cids.begin(), cids.end(),
-                       [&](int32_t cid) { return std::isfinite(m.node(cid).value); });
+                       [&](int32_t cid) { return std::isfinite(m.node_value(cid)); });
 }
 
 // Two unbounded floats on the unit circle: the repro from the issue. `|x^2 +

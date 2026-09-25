@@ -106,7 +106,7 @@ TEST_CASE("Set encoding expresses row coverage over the Set variable", "[setcove
     REQUIRE(set_var.max_size == 3);
     REQUIRE(m.constraint_ids().size() == 3);
 
-    auto coverage_residual = [&](int row) { return m.node(m.constraint_ids()[row]).value; };
+    auto coverage_residual = [&](int row) { return m.node_value(m.constraint_ids()[row]); };
 
     // Only column 1 chosen: row 0 covered, rows 1 and 2 not. `geq` residuals are
     // <= 0 exactly when the row holds.
@@ -115,7 +115,7 @@ TEST_CASE("Set encoding expresses row coverage over the Set variable", "[setcove
     REQUIRE(coverage_residual(0) <= 0.0);
     REQUIRE(coverage_residual(1) > 0.0);
     REQUIRE(coverage_residual(2) > 0.0);
-    REQUIRE(m.node(m.objective_id()).value == 1.0);
+    REQUIRE(m.node_value(m.objective_id()) == 1.0);
     REQUIRE(scm.selected_columns() == std::vector<int>{1});
 
     // The universal column covers every row on its own, for 5.
@@ -124,7 +124,7 @@ TEST_CASE("Set encoding expresses row coverage over the Set variable", "[setcove
     for (int row = 0; row < 3; ++row) {
         REQUIRE(coverage_residual(row) <= 0.0);
     }
-    REQUIRE(m.node(m.objective_id()).value == 5.0);
+    REQUIRE(m.node_value(m.objective_id()) == 5.0);
 }
 
 TEST_CASE("Bool encoding expresses the same instance", "[setcover]") {
@@ -141,9 +141,9 @@ TEST_CASE("Bool encoding expresses the same instance", "[setcover]") {
     m.var_mut(handle_to_var_id(scm.x[0])).value = 1.0;
     full_evaluate(m);
     for (int row = 0; row < 3; ++row) {
-        REQUIRE(m.node(m.constraint_ids()[row]).value <= 0.0);
+        REQUIRE(m.node_value(m.constraint_ids()[row]) <= 0.0);
     }
-    REQUIRE(m.node(m.objective_id()).value == 5.0);
+    REQUIRE(m.node_value(m.objective_id()) == 5.0);
     REQUIRE(scm.selected_columns() == std::vector<int>{0});
 }
 
@@ -164,7 +164,7 @@ TEST_CASE("delta evaluation of a Set move matches full evaluation", "[setcover]"
         std::vector<double> values;
         values.reserve(m.num_nodes());
         for (size_t n = 0; n < m.num_nodes(); ++n) {
-            values.push_back(m.node(static_cast<int32_t>(n)).value);
+            values.push_back(m.node_value(static_cast<int32_t>(n)));
         }
         return values;
     };

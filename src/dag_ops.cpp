@@ -53,11 +53,10 @@ std::vector<int32_t> compute_topo_order(const Model& model) {
 
 double full_evaluate(Model& model) {
     for (int32_t nid : model.topo_order()) {
-        auto& nd = model.node_mut(nid);
-        nd.value = evaluate(nd, model);
+        model.set_node_value_unchecked(nid, evaluate(model.nodes()[nid], model));
     }
     if (model.objective_id() >= 0) {
-        return model.node(model.objective_id()).value;
+        return model.node_values()[model.objective_id()];
     }
     return 0.0;
 }
@@ -94,15 +93,13 @@ void evaluate_dirty_in_topo_order(Model& model, std::vector<int32_t>& dirty_list
             return model.topo_position(a) < model.topo_position(b);
         });
         for (int32_t nid : dirty_list) {
-            auto& nd = model.node_mut(nid);
-            nd.value = evaluate(nd, model);
+            model.set_node_value_unchecked(nid, evaluate(model.nodes()[nid], model));
         }
         return;
     }
     for (int32_t nid : model.topo_order()) {
         if (dirty_flags[nid] != 0) {
-            auto& nd = model.node_mut(nid);
-            nd.value = evaluate(nd, model);
+            model.set_node_value_unchecked(nid, evaluate(model.nodes()[nid], model));
         }
     }
 }
@@ -112,7 +109,7 @@ void evaluate_dirty_in_topo_order(Model& model, std::vector<int32_t>& dirty_list
 double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count) {
     if (count == 0) {
         if (model.objective_id() >= 0) {
-            return model.node(model.objective_id()).value;
+            return model.node_values()[model.objective_id()];
         }
         return 0.0;
     }
@@ -158,7 +155,7 @@ double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count
     }
 
     if (model.objective_id() >= 0) {
-        return model.node(model.objective_id()).value;
+        return model.node_values()[model.objective_id()];
     }
     return 0.0;
 }

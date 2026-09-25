@@ -224,18 +224,18 @@ Three conventions therefore rest on you rather than on a tool: branch only from 
 
 ### Fast vs. slow tests
 
-The C++ suite is **398 ctest tests** over **397 `TEST_CASE`s**: 393 registered
+The C++ suite is **412 ctest tests** over **411 `TEST_CASE`s**: 407 registered
 by `catch_discover_tests` plus **5 registered by hand** — the 4 `[timing]` cases
 and `hang_guard_iteration_only_portfolio`, which is hand-registered *as well as*
 discovered (it needs a `TIMEOUT` to report a hang, but is cheap enough to belong
-in the fast set), so one `TEST_CASE` accounts for two ctest tests. Of the 393,
+in the fast set), so one `TEST_CASE` accounts for two ctest tests. Of the 407,
 **6 carry the
 Catch2 `[slow]` tag** — the CHPED and UC-CHPED benchmark solves, ~103s of
 aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~42s
 wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 389 tests, ~12s with `-j`. This is what **pre-commit** runs.
+- `ctest -LE slow` — the other 403 tests, ~12s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
 - `ctest -L timing` — 4 tests: `timing_structural_batch_deadline` plus the three
   `timing_throughput_*` floors added for #125. Each is registered by an explicit
@@ -262,7 +262,7 @@ agree:
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
 4. the comment above the `ctest` call in `.githooks/pre-commit`,
-5. the `.venv/bin/pytest` line in `README.md` for the Python side (718 tests, 86
+5. the `.venv/bin/pytest` line in `README.md` for the Python side (736 tests, 104
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`),
 6. the `-LE slow` guidance and the ~42s/~304s figures in `docs/profiling.md`.
@@ -270,7 +270,7 @@ agree:
    named commit**, not a current count — it says so inline. Leave it alone
    apart from the parenthetical restating the current fast-set size.
 7. the binding count in **`## Build & Test`** below, in the paragraph explaining
-   why the gated build turns `CBLS_BUILD_PYTHON` on ("86 binding tests silently
+   why the gated build turns `CBLS_BUILD_PYTHON` on ("104 binding tests silently
    unrun"). It is in this file, but not in this section, so a search that stops
    at the enumeration above misses it.
 
@@ -467,7 +467,7 @@ ctest --test-dir build --output-on-failure -j$(nproc) && (CBLS_REQUIRE_BINDINGS=
 **The gated build turns the Python bindings on, and the gated test run requires
 them.** `CBLS_BUILD_PYTHON` defaults to `OFF` and `tests/python/conftest.py`
 skips every test that imports `_cbls_core` when the module is missing, so a build
-without the flag would leave 86 binding tests silently unrun.
+without the flag would leave 104 binding tests silently unrun.
 `CBLS_REQUIRE_BINDINGS=1` turns that skip into a hard error. Bindings cost ~2.4s
 of build and ~6s of pytest against a suite that already spends ~340s in `ctest` —
 always build them.
@@ -597,12 +597,32 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 
 9. **Parallel search** (`src/pool.cpp`) — `SolutionPool` + `ParallelSearch`: a cooperative portfolio. Workers share incumbents through the mutex-guarded pool as they find them, restart from it on stagnation, are restarted rather than left idle while budget remains, and stop each other once one has solved a pure-feasibility model. All of it reaches the engine through `cbls::solve()`'s trailing `SearchCoordination*`, which is null everywhere else. Nondeterministic by construction; `--threads 1` is the reproducible run (on the same hardware under the same load — it is still wall-clock bounded).
 
-   Two callers drive it: `src/cli.cpp`, and `benchmarks/mipfeas/` at
-   `--threads > 1` (the other three runners are still single-threaded, so their
-   trajectories are unchanged). The runner replicates the built model once per
-   worker **before** the solve bracket opens and reports the cost as
-   `replicate_seconds` — so peak RSS grows with the thread count, which is what
-   bounds concurrency on this roster rather than the core count. Its driver
+   **Workers share the model's immutable structure** (#157). `ParallelSearch::solve`
+   has two entry shapes and only one of them shares: the `Model&` **master**
+   overload freezes the model on the calling thread and hands each worker a copy,
+   which takes the DAG by reference and duplicates only what a search writes;
+   the `std::function<Model()>` **factory** overloads share nothing and are kept
+   for `tests/test_search.cpp` and the Python contract. Use the master overload.
+   Measured on `neos-5114902-kasavu` (710k columns, 4.30M nodes), before at
+   `0dc826b` and after at `06eb3e5`: peak RSS at 8 workers fell from 6.04 to
+   3.15 GiB, the marginal worker from ~0.75-0.86 to ~0.34-0.39 GiB, at identical
+   single-threaded throughput (257 iterations in 30s either way). The per-worker
+   constant is not zero and will not become zero — the variables, the node values,
+   three `Model::State` snapshots and FJ's tables are all genuinely per worker —
+   and it is a floor rather than a bound, since its largest term scales with the
+   column count. Size a run against "1-worker + N x a measured per-worker
+   constant". `docs/architecture.md` carries the table with its commit.
+
+   Two callers drive it: `src/cli.cpp`, which loads the model once and passes it
+   as the master, and `benchmarks/mipfeas/` at `--threads > 1` (the other three
+   runners are still single-threaded, so their trajectories are unchanged). The
+   runner freezes the model and replicates it once per worker **before** the solve
+   bracket opens, and reports the cost as `replicate_seconds`. That has to stay
+   outside the bracket for two reasons: inside it the copies come out of the
+   search's own deadline, and a `bad_alloc` there is parked by `ParallelSearch`,
+   which would publish a row claiming N threads when three workers ran. It still
+   grows with `--threads`, but with the per-worker mutable side rather than a whole
+   DAG — 0.60s at eight workers against ~1.6s before. Its driver
    refuses `--cbls-threads != --cpsat-workers` without `--allow-asymmetric-cpu`:
    CP-SAT at N workers runs N `fj` and N `ls` subsolvers, so an asymmetric split
    is an N-fold CPU advantage that the table would report as an implementation

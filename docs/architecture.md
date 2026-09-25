@@ -116,10 +116,16 @@ Variables and expression nodes share a single `int32_t` handle space:
 
 Each `ExprNode` has an `op` (operation), a `(child_begin, child_count)` slice
 of the model's flat `ChildRef` array (`id` + `is_var` flag, read through
-`Model::children(node)`), `value` (cached evaluation result), and optionally
-`const_value` or `lambda_func_id`. Its back-references are
-`Model::parents(id)`, a CSR slice rebuilt with the topological order. No node
-or variable owns a heap block of its own (#156).
+`Model::children(node)`), and optionally `const_value` or `lambda_func_id`. Its
+back-references are `Model::parents(id)`, a CSR slice rebuilt with the
+topological order. No node or variable owns a heap block of its own (#156).
+
+A node carries **no cached value**: the evaluation result lives in the model's
+own `node_values()` array, read through `Model::node_value(id)` (#157). That is
+what lets the whole node array sit in the immutable structure portfolio replicas
+share — a `value` field there would be one worker's search state in storage every
+worker reads. `ExprNode` is 32 bytes as a result, and the per-worker cost of a
+node is the 8-byte value.
 
 **Supported operations:**
 
@@ -231,6 +237,56 @@ flag. The model is immutable in structure
 after close — *except* for the objective soft constraint, which `solve()`
 appends lazily (see below).
 
+### Structure vs. state: `ModelStructure` and `freeze()` (#157)
+
+A `Model` is two things with different lifetimes, and they are separate types:
+
+- **`ModelStructure`** — the nodes, the flat edges, both CSR back-reference
+  arrays, the topological order and its inverse, the constraint list, `G_v`, the
+  lambda tables and the variable sequences. Nothing a search writes.
+- **the rest of `Model`** — the variables, `node_values()`, the objective bound,
+  the delta probe's scratch, plus the structural scalars (`objective_id_`,
+  `is_maximizing_`, the three objective-row node ids, `closed_`), which stay in
+  `Model` because twenty bytes per worker is not worth an indirection.
+
+`Model` holds the structure through `shared_ptr<const ModelStructure>` for
+reading and `shared_ptr<ModelStructure>` for writing. `freeze()` drops the
+writable one, after which every structural method throws — variable and
+expression creation, `add_constraint`, `minimize`/`maximize`,
+`add_var_sequence`, `reserve`, `close` — and a write to the shared side no longer
+compiles. **`add_objective_soft_constraint` is the one intentional exception**: on
+a frozen model it returns rather than throwing, because `solve()` calls it on
+every model it is handed and `freeze()` has already run it. Its idempotent early
+return therefore comes before the frozen check, and
+`tests/test_model_share.cpp` pins that order.
+
+**Copying a frozen model shares its structure**; copying an open one deep-copies
+it, exactly as before. That is the whole mechanism behind the portfolio's memory
+behaviour: see [Parallel Search](#parallel-search).
+
+**The freeze point is after the objective row, not at `close()`.** `solve()`
+calls `add_objective_soft_constraint()` on whatever model it is handed, and that
+call appends two nodes and a constraint and rebuilds the back-references, the
+topological order, `topo_pos` and `G_v` — so a structure frozen at `close()`
+would have N workers re-sorting one shared DAG. `freeze()` folds both steps in.
+
+Deliberately **not** copy-on-write: a silent detach would put a worker back on
+its own full copy with every test still green and the memory saving gone, which
+is a failure that reports nothing.
+
+One consequence of sharing: `lambda_sum`/`pair_lambda_sum` callables are shared
+too, so several workers invoke the same callable object at once. One carrying
+mutable state of its own is a data race. That is a **new** hazard for state
+captured by value — each replica used to deep-copy the `std::function` — and an
+old one for state captured by reference.
+
+The guarantee is one-sided, and worth stating plainly: a write to the shared side
+from **outside** `Model` does not compile, because every public accessor is
+`s()`-backed and const. Inside `Model`, `mut()` hands out a mutable reference and
+refuses at *runtime*. That is unavoidable — the builders need a write path — and
+`mut()` is private, so the boundary holds for callers; a future `Model` member
+function is on its honour.
+
 ### Objective as a Soft Constraint
 
 When the model has an objective, `solve()` calls `add_objective_soft_constraint()`
@@ -243,8 +299,15 @@ once (idempotent). This:
 - rebuilds the topo order and `G_v` (a node/constraint was appended after
   `close()`).
 
-`set_objective_bound(bound)` updates the constant node and recomputes the
-constraint residual in place. The search tightens the bound to `obj - eps` on
+`set_objective_bound(bound)` records the bound in the model and recomputes the
+constraint residual in place. It does **not** write the constant node's
+`const_value`: the bound is per-worker mutable state, each worker tightening its
+own on its own incumbents, so it lives beside the node values and `evaluate()`'s
+`Const` arm reads it back for the one node `objective_bound_node()` names
+(#157). That branch is leaf-only — a `Const` is never in a `delta_evaluate`
+dirty cone — and it is needed rather than tidy: `full_evaluate` runs after every
+`restore_state`, so without it a restart would reset the worker's bound to
+`+inf`. The search tightens the bound to `obj - eps` on
 each new best feasible solution; the GFJ engine then treats meeting that bound
 as just another constraint to satisfy. The bound is released back to `+inf`
 before `solve()` returns so post-solve verifiers don't see it violated.
@@ -1738,10 +1801,70 @@ measurable is open -- see issue #135.
 ### Parallel Search
 
 `ParallelSearch` is a **cooperative portfolio**: N threads (default
-`hardware_concurrency()`), each building its own `Model` via a factory and
-running `solve()` on it. The search itself is still single-threaded per solve;
-what is parallel is the portfolio, and what is shared is solutions, never state.
-Thread safety is by isolation plus that one mutex.
+`hardware_concurrency()`), each with its own `Model` and running `solve()` on it.
+The search itself is still single-threaded per solve; what is parallel is the
+portfolio, and what is shared is solutions and the model's immutable structure,
+never search state. Thread safety is by isolation plus one mutex, plus the
+const-handle split described below.
+
+#### Two ways in, and only one of them shares (#157)
+
+- **`solve(Model& master, ...)`** — the overload to reach for. It `freeze()`s the
+  master on the calling thread, before any worker exists, and hands each worker a
+  copy. A copy of a frozen model shares the structure by reference and duplicates
+  only what a search writes: the variables, the node values, the objective bound.
+  The master itself is never searched, so it comes back frozen and carrying the
+  `obj <= bound` row with its own assignment untouched — which is why `src/cli.cpp`
+  and `benchmarks/mipfeas/` restore the winner into it before reporting.
+- **`solve(std::function<Model()>, ...)`** — the factory overloads. These share
+  whatever the returned model shares: the master overload above is implemented as
+  exactly a factory returning a copy of a frozen master, so a factory that returns
+  a copy of a **frozen** model shares the structure too. `benchmarks/mipfeas/` does
+  that on purpose, to keep the per-worker copies in its own setup phase instead of
+  inside the search's deadline. A factory that returns a copy of an **open** model,
+  or builds a fresh one per call, deep-copies the DAG per worker. `freeze()` is the
+  operative call, not the choice of overload. A Python caller reaches the shared
+  structure the same way: freeze a master and return it from every call, and
+  nanobind's by-value cast copies it into the sharing copy constructor.
+
+**Measured** on `neos-5114902-kasavu` (710k columns, 961k rows, 4.92M nonzeros,
+4.30M DAG nodes): `cbls_mipfeas --instance neos-5114902-kasavu --budget 30
+--seed 42`, Release, idle 12-core box, the two arms run serially and interleaved
+per thread count, `peak_rss_kib` and `iterations` from the runner's own record.
+**Before at `0dc826b`, after at `06eb3e5`.**
+
+| workers | RSS before | RSS after | iterations before | iterations after |
+|---|---|---|---|---|
+| 1 | 0.78 GiB | 0.78 GiB | 257 | 257 |
+| 4 | 3.35 GiB | 1.93 GiB | 507 | 513 |
+| 8 | 6.04 GiB | 3.15 GiB | 419 | 437 |
+
+The marginal cost of a worker falls from **~0.75-0.86 GiB** to **~0.34-0.39 GiB**.
+The iteration column is the throughput answer for the *large*-model regime, where
+splitting `ExprNode` from its values could plausibly have cost locality (138 MB of
+nodes plus 34 MB of values, far past any L3): at one thread it is identical, 257
+against 257, and the portfolio arms are within noise of each other on a
+nondeterministic run.
+
+The **small**-model regime was measured separately, because the two regimes stress
+different things and neither covers the other: `cbls_minlplib --no-time-limit
+--max-iterations 20000 --seed 7` on four instances, idle box, serial, interleaved,
+median of 5, same two commits. chain50 2.306 -> 2.241s, ex8_6_1 3.045 -> 3.024,
+maxmin 2.671 -> 2.733, nvs05 7.687 -> 7.424; total 15.710 -> 15.423s (0.982x),
+objectives identical in all ten runs. That is fixed work against wall clock, where
+the kasavu column above is fixed wall clock against work — together they say the
+representation change cost nothing at either end.
+
+What remains per worker is genuinely per-worker: the variables whole (104 B x 710k
+= 74 MB), the node values (8 B x 4.3M = 34 MB), at least three `Model::State`
+snapshots (~23 MB each — a `vector<vector<int32_t>>` sized `num_vars` is 17 MB of
+empty headers alone), FJ's per-variable and per-constraint tables,
+`ViolationManager`'s two per-constraint vectors, and `dag_ops.cpp`'s
+`thread_local` adjoint scratch once the Newton paths run. The shared pool's
+`max(10, 2N)` `Solution`s grow with N too. So the criterion to hold this to is
+"1-worker + N x a measured per-worker constant", not "1-worker + a small
+constant" — and treat that constant as a **floor**: its largest term scales with
+the column count, and this roster's `supportcase19` has 2x kasavu's.
 
 Three things make it cooperative rather than N independent runs, and all three
 are reached through one parameter -- `cbls::solve()`'s trailing
@@ -2082,10 +2205,11 @@ in both the human and the JSONL format:
   the time shifted onto the portfolio clock. Only `escape_probe_armed` reads its
   "not recorded" value: it is a latch on one worker's end state, and a pooled
   solution carries no worker identity for it to belong to.
-- **The model is read once per worker.** `run_cli` loads it, and the factory
-  loads it again inside each worker, so a 32-thread default run parses the file
-  33 times and holds 33 `Model` copies. On a large instance that is the most
-  surprising part of the default; `--threads N` bounds it.
+- **The model is read once, whatever `--threads` says.** `run_cli` loads it and
+  hands it to `ParallelSearch::solve(Model&, ...)`, which freezes it and gives
+  each worker a replica sharing one immutable structure (#157). It used to re-read
+  the file per worker, so a 32-thread default run parsed it 33 times and held 33
+  full `Model` copies.
 - **The run is not reproducible.** `--seed` still seeds every worker (through
   `portfolio_worker_seed`, which decorrelates adjacent base seeds), but which
   solution a stalled worker adopts depends on thread interleaving. `--threads 1`

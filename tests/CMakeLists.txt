@@ -22,6 +22,7 @@ add_executable(cbls_tests
     test_bench_flags.cpp
     test_minlplib.cpp
     test_setcover.cpp
+    test_model_share.cpp
     test_throughput.cpp
 )
 target_link_libraries(cbls_tests PRIVATE cbls_lib Catch2::Catch2WithMain)
@@ -41,16 +42,16 @@ include(Catch)
 # slow solves into one serial invocation would make the full suite far slower
 # than it is.
 #
-# Measured at Release: 6 of 393 discovered tests exceed ~10s and account for
+# Measured at Release: 6 of 407 discovered tests exceed ~10s and account for
 # ~103s of the suite's aggregate (summed per-test) time; with `-j$(nproc)` the
-# full run is ~42s of wall clock. The remaining 389 (387 discovered, plus the
+# full run is ~42s of wall clock. The remaining 403 (401 discovered, plus the
 # two hand-registered tests that carry no slow label --
 # timing_structural_batch_deadline and hang_guard_iteration_only_portfolio)
 # finish in ~12s with `-j`, which is what pre-commit runs via `ctest -LE slow`.
 # pre-push still runs everything.
 #
-# The roster is therefore 398 ctest tests: 393 discovered here plus the 5
-# hand-registered ones below. That is one more than the 397 TEST_CASEs in
+# The roster is therefore 412 ctest tests: 407 discovered here plus the 5
+# hand-registered ones below. That is one more than the 411 TEST_CASEs in
 # tests/*.cpp, because hang_guard_iteration_only_portfolio is both discovered
 # and hand-registered -- see its note below. `ctest -N -L slow` reports 9, not 6 --
 # the three #125 throughput floors carry the slow LABEL without the Catch2

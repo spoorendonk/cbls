@@ -36,7 +36,7 @@ def eval_handle(m: Any, handle: int, values: dict[int, float]) -> float:
     for var_id, value in values.items():
         m.var_mut(var_id).value = value
     cbls.full_evaluate(m)
-    node_value: float = m.node(handle).value
+    node_value: float = m.node_value(handle)
     return node_value
 
 
@@ -241,11 +241,11 @@ def test_handle_api_neq_is_violated_only_when_the_operands_are_equal() -> None:
     m.var_mut(vid(x)).value = 3.0
     m.var_mut(vid(y)).value = 3.0
     cbls.full_evaluate(m)
-    assert m.node(node).value == 1.0
+    assert m.node_value(node) == 1.0
 
     m.var_mut(vid(y)).value = 5.0
     cbls.full_evaluate(m)
-    assert m.node(node).value == 0.0
+    assert m.node_value(node) == 0.0
 
 
 def test_free_functions_taking_expr_lists_and_expr_triples() -> None:

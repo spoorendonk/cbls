@@ -252,14 +252,18 @@ ParseOutcome parse_args(int argc, char** argv, CliOptions& opt) {
     return ParseOutcome::kRun;
 }
 
-// The cooperative portfolio. The model is re-read per worker rather than
-// copied, which is why this takes the path and not the loaded Model.
+// The cooperative portfolio. The model is read ONCE, in run_cli, and handed to
+// every worker as a replica sharing one immutable structure (#157) -- which is
+// why this takes the loaded Model and not the path. Re-reading the file per
+// worker was the old arrangement, and it paid for a full parse and a full DAG per
+// worker to arrive at N identical structures.
+//
+// The model comes back frozen, carrying the artificial `obj <= bound` row. Its
+// own assignment is untouched, which is why run_cli restores the winner into it
+// before printing.
 // Returns false having already reported the failure.
-bool solve_parallel(const CliOptions& opt, int effective_threads, SolveCallback* callback,
-                    SearchResult& result) {
-    // Capture model_path for the factory (model is loaded once, factory re-loads)
-    auto model_factory = [&opt]() { return load_model(opt.model_path); };
-
+bool solve_parallel(const CliOptions& opt, Model& model, int effective_threads,
+                    SolveCallback* callback, SearchResult& result) {
     std::function<std::shared_ptr<InnerSolverHook>(Model&)> hook_factory;
     if (opt.use_intensify) {
         hook_factory = [](Model&) -> std::shared_ptr<InnerSolverHook> {
@@ -279,12 +283,12 @@ bool solve_parallel(const CliOptions& opt, int effective_threads, SolveCallback*
     par_config.n_threads = effective_threads;
 
     ParallelSearch ps(effective_threads);
-    // solve() throws when every portfolio worker threw -- the factory could
-    // not re-read the model file, say. Report that the way the load failure
-    // in run_cli is reported; letting it escape main is std::terminate.
+    // solve() throws when every portfolio worker threw -- a bad_alloc
+    // replicating the model, say. Report that the way the load failure in
+    // run_cli is reported; letting it escape main is std::terminate.
     try {
-        result = ps.solve(model_factory, opt.time_limit, opt.seed, opt.config, hook_factory,
-                          lns_factory, callback, par_config);
+        result = ps.solve(model, opt.time_limit, opt.seed, opt.config, hook_factory, lns_factory,
+                          callback, par_config);
     } catch (const std::exception& e) {
         std::cerr << "Error: parallel search failed: " << e.what() << "\n";
         return false;
@@ -351,7 +355,7 @@ int run_cli(int argc, char** argv) {
 
     SearchResult result;
     if (effective_threads > 1) {
-        if (!solve_parallel(opt, effective_threads, callback, result)) {
+        if (!solve_parallel(opt, model, effective_threads, callback, result)) {
             return 1;
         }
         // Both formatters print the ASSIGNMENT by iterating this model's

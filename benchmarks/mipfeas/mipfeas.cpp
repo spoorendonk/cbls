@@ -120,10 +120,12 @@ void print_usage() {
 using cbls::bench::parse_double;
 using cbls::bench::parse_int64;
 
-/// Upper bound on `--threads`. Not a hardware limit: each portfolio worker owns
-/// its own copy of the model, so on this roster's largest instances the memory
-/// cost is linear in this number, and a typo'd 1000 would be an out-of-memory
-/// kill rather than an error message.
+/// Upper bound on `--threads`. Not a hardware limit: a portfolio worker shares
+/// this model's DAG but owns its own variables, node values and search tables
+/// (#157), so memory still grows with this number -- 0.34-0.39 GiB per worker on
+/// `neos-5114902-kasavu` at `06eb3e5`, against 0.75-0.86 GiB when the DAG was
+/// copied too, and more on an instance with more columns. A typo'd 1000 would be
+/// an out-of-memory kill rather than an error message.
 constexpr int kMaxThreads = 256;
 
 /// Range-checked rather than cast: parse_int64 validates the syntax, but an
@@ -484,7 +486,7 @@ Verdict assess_result(const cbls::MpsToModelResult& built, const cbls::SearchRes
         }
     }
     const double model_obj = built.objective_node_id >= 0
-                                 ? built.model.node(built.objective_node_id).value
+                                 ? built.model.node_value(built.objective_node_id)
                                  : result.objective;
     // Only meaningful for a finite objective: a feasible point on which the
     // objective is +inf/NaN (issue #100) makes this |inf - inf| = NaN, and
@@ -507,8 +509,8 @@ Verdict assess_result(const cbls::MpsToModelResult& built, const cbls::SearchRes
     return v;
 }
 
-/// The portfolio arm of the solve: N workers over the replicas prepared above,
-/// and the reconciliation the single-threaded path gets for free.
+/// The portfolio arm of the solve: N workers over one shared structure, and the
+/// reconciliation the single-threaded path gets for free.
 ///
 /// Its own function because it is a different thing from the run around it --
 /// that one reads an instance, builds a model, judges the answer and writes the
@@ -518,10 +520,12 @@ cbls::SearchResult solve_portfolio(const Args& args, cbls::MpsToModelResult& bui
                                    std::vector<cbls::Model>& replicas,
                                    cbls::SolveCallback* recorder) {
     std::atomic<size_t> next_replica{0};
-    // Called once per worker, on that worker's thread, so the handout is
-    // atomic. The copy past the end is unreachable by ParallelSearch's own
+    // Called once per worker, on that worker's thread, so the handout is atomic.
+    // The replicas were built BEFORE the solve bracket opened (see run_benchmark)
+    // and each already shares the master's immutable structure, so all this hands
+    // over is a move. The copy past the end is unreachable by ParallelSearch's own
     // contract and is here so that a future change to it cannot turn into an
-    // out-of-bounds read.
+    // out-of-bounds read; it shares the structure too, the master being frozen.
     auto model_factory = [&replicas, &next_replica, &built]() -> cbls::Model {
         const size_t i = next_replica.fetch_add(1, std::memory_order_relaxed);
         if (i < replicas.size()) {
@@ -540,18 +544,22 @@ cbls::SearchResult solve_portfolio(const Args& args, cbls::MpsToModelResult& bui
     cbls::ParallelConfig par_config;
     par_config.n_threads = args.threads;
     cbls::ParallelSearch ps(args.threads);
+    // The FACTORY overload, deliberately, not the master one: the replicas are
+    // pre-built so that their cost lands in `setup_seconds` rather than in the
+    // search's own deadline (see run_benchmark). Each already shares the frozen
+    // master's immutable structure, so "one DAG for the portfolio" holds either
+    // way -- what the factory route buys here is WHEN the copies happen, not
+    // whether they share (#157).
     cbls::SearchResult result = ps.solve(model_factory, args.budget, args.seed, cfg, hook_factory,
                                          lns_factory, recorder, par_config);
-    // The portfolio searched replicas, so the model this runner goes on to check
-    // the answer against still holds its initial assignment. Restore the
-    // returned point into it and re-evaluate, which is the state a
-    // single-threaded solve() leaves behind.
+    // The workers searched replicas, so this model -- the master -- still holds
+    // its initial assignment. Restore the returned point into it and re-evaluate,
+    // which is the state a single-threaded solve() leaves behind.
     //
-    // No `set_objective_bound` here, unlike ViolationLSLoop::finish(): the
-    // artificial `obj <= bound` row is added by the SEARCH, so this model --
-    // which no search ever touched -- has none to release, and asking it to
-    // release one throws ("set_objective_bound requires
-    // add_objective_soft_constraint first").
+    // No `set_objective_bound` here, unlike ViolationLSLoop::finish(): the master
+    // is not the model any search ran on, so its bound was never tightened off
+    // +inf and there is nothing to release. `full_evaluate` below reads that +inf
+    // back from the master's own per-model bound, not from the shared Const node.
     // Guarded because an empty `best_state` is a reachable portfolio result, not
     // a defect: solve_portfolio returns a default SearchResult when a positive
     // time limit expired during thread creation, so no worker ever ran. Model::
@@ -637,11 +645,11 @@ int run_benchmark(int argc, char** argv) {
     }
     // Bound propagation runs inside mps_to_model, so it is inside this number.
     const double build_seconds = seconds_since(t_build);
-    // Sampled HERE rather than after the solve. solve() appends the artificial
-    // `obj <= bound` row -- two nodes -- to whichever model it is handed, which
-    // is `built.model` single-threaded but a replica under the portfolio. Read
-    // afterwards, one instance would publish two different DAG sizes depending
-    // only on --threads.
+    // Sampled HERE rather than after the solve. The artificial `obj <= bound` row
+    // -- two nodes -- lands on `built.model` either way now: appended by solve()
+    // single-threaded, and by the freeze() below under the portfolio (#157). Read
+    // afterwards, every instance would publish a DAG two nodes larger than the one
+    // the reader built.
     const std::size_t n_nodes_built = built.model.num_nodes();
 
     const std::string trace_path = args.out_dir + "/" + args.instance + ".trace.csv";
@@ -657,26 +665,40 @@ int run_benchmark(int argc, char** argv) {
     cfg.use_compound_moves = args.compound_moves;
     cfg.lns_interval = kLnsInterval;
 
-    // One model per portfolio worker, replicated BEFORE the solve bracket opens
-    // rather than inside the factory. A deep copy of a million-nonzero model is
-    // setup work: charging it to the search would both shorten the budget the
-    // search actually gets and hide the cost from `setup_seconds`, which exists
-    // to report exactly this kind of pre-search time. Copied rather than re-read
-    // from the MPS, which would repeat the parse and the propagation per worker.
+    // One model per portfolio worker, replicated BEFORE the solve bracket opens.
+    // Since #157 a replica shares the master's immutable structure and copies only
+    // what a search writes, but WHEN it is copied still matters, for the two
+    // reasons this phase has always had:
     //
-    // This is what makes memory linear in `--threads`: `peak_rss_kib` is the
-    // number to size a run's concurrency against, not the single-threaded one.
+    //  - charging the copies to the search would shorten the budget the search
+    //    actually gets and hide the cost from `setup_seconds`, which exists to
+    //    report exactly this kind of pre-search time. Rows measured with the
+    //    copies inside the bracket are not comparable to rows measured outside it;
+    //  - memory is the EXPECTED way an over-sized `--threads` fails under the
+    //    driver's `ulimit -v`, and it has to fail here. Inside the bracket the
+    //    allocation happens on a worker thread, where `ParallelSearch` parks the
+    //    `bad_alloc` and returns the survivors' result -- publishing a row that
+    //    claims N threads at exit 0 when three workers ran. `threads` is a scorer
+    //    config key, so that is a silently wrong published measurement. Allocating
+    //    all N here makes it a reported `replicate_error` row instead.
+    //
+    // This costs nothing at the peak: here we hold one structure plus N mutable
+    // sides, and the solve holds the same plus each worker's FJ tables,
+    // ViolationManager vectors and three `Model::State` snapshots. The solve phase
+    // sets `peak_rss_kib`, so the whole of #157's saving survives.
     std::vector<cbls::Model> replicas;
     double replicate_seconds = 0.0;
     if (args.threads > 1) {
         const auto t_replicate = std::chrono::steady_clock::now();
-        // Caught and reported like every other failure this runner can hit.
-        // Memory here is linear in --threads by construction, so bad_alloc in
-        // this loop is the EXPECTED way an over-sized --threads fails under the
-        // driver's `ulimit -v` -- and a job that dies without writing a result
-        // leaves the driver's resume waiting on a file that never appears,
-        // i.e. indistinguishable from a job that was never run.
+        // Caught and reported like every other failure this runner can hit: a
+        // job that dies without writing a result leaves the driver's resume
+        // waiting on a file that never appears, i.e. indistinguishable from a
+        // job that was never run.
         try {
+            // Frozen first, on this thread: it is the one
+            // `add_objective_soft_constraint` rebuild, and the copies below share
+            // the result rather than each re-sorting a DAG of their own.
+            built.model.freeze();
             replicas.reserve(static_cast<size_t>(args.threads));
             for (int i = 0; i < args.threads; ++i) {
                 replicas.push_back(built.model);
@@ -749,8 +771,10 @@ int run_benchmark(int argc, char** argv) {
         {"n_nonzeros", prob.nonzeros.size()},
         // Zero on the single-threaded path, which replicates nothing. Inside
         // `setup_seconds` because it is pre-search work the wall clock of a run
-        // must still be scheduled for -- and it grows with --threads, which is
-        // the point of reporting it separately.
+        // must still be scheduled for -- and it grows with --threads, which is the
+        // point of reporting it separately. Since #157 what grows is the
+        // per-worker mutable side rather than a whole DAG, so it grows far more
+        // slowly than it used to.
         {"replicate_seconds", replicate_seconds},
         {"setup_seconds", read_seconds + build_seconds + replicate_seconds},
         // Mirrors cpsat_solve.py's key of the same name. `callback` is this

@@ -29,7 +29,7 @@ static double child_val(const ChildRef& ref, const Model& model) {
         return model.variables()[ref.id].value;
     }
     assert(static_cast<size_t>(ref.id) < model.num_nodes());
-    return model.nodes()[ref.id].value;
+    return model.node_values()[ref.id];
 }
 
 // Whether a comparison's child is a literal Const node — i.e. a bound the
@@ -78,6 +78,22 @@ double evaluate(const ExprNode& node, const Model& model) {
     const ConstSpan<ChildRef> children = model.children(node);
     switch (node.op) {
         case NodeOp::Const:
+            // One Const is not a literal: the objective row's RHS. Each
+            // portfolio worker tightens its own bound on its own incumbents, so
+            // that value is per-model state and lives in the model, not in the
+            // shared node's `const_value` -- which keeps the +inf the row was
+            // created with (#157).
+            //
+            // Cheap and safe to test here. A Const is a leaf, so it is never in a
+            // `delta_evaluate` dirty cone and this arm runs only from
+            // `full_evaluate`; and `objective_bound_node()` is -1 until the row
+            // exists, so the comparison is inert on a model that has none. The
+            // branch is also NEEDED rather than merely tidy: `full_evaluate` runs
+            // after every `restore_state`, and without it a restart would reset
+            // the worker's bound to +inf.
+            if (node.id == model.objective_bound_node()) {
+                return model.objective_bound();
+            }
             return node.const_value;
 
         case NodeOp::Neg:
@@ -334,12 +350,12 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
         }
 
         case NodeOp::Min: {
-            double min_val = node.value;
+            double min_val = model.node_values()[node.id];
             return std::abs(child_val(children[child_idx], model) - min_val) < 1e-12 ? 1.0 : 0.0;
         }
 
         case NodeOp::Max: {
-            double max_val = node.value;
+            double max_val = model.node_values()[node.id];
             return std::abs(child_val(children[child_idx], model) - max_val) < 1e-12 ? 1.0 : 0.0;
         }
 

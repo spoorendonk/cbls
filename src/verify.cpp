@@ -51,7 +51,7 @@ void check_variables(const Model& model, double tol, VerifyResult& result) {
 // 2. Constraint feasibility: each constraint node value <= tol.
 void check_constraints(const Model& model, double tol, VerifyResult& result) {
     for (int32_t cid : model.constraint_ids()) {
-        double val = model.node(cid).value;
+        double val = model.node_value(cid);
         if (val > tol) {
             std::string name = "constraint[" + std::to_string(cid) + "]";
             result.add_error(
@@ -64,9 +64,10 @@ void check_constraints(const Model& model, double tol, VerifyResult& result) {
 void check_dag_consistency(const Model& model, double tol, VerifyResult& result) {
     for (const auto& node : model.nodes()) {
         double recomputed = evaluate(node, model);
-        if (std::abs(recomputed - node.value) > tol) {
+        const double stored = model.node_values()[node.id];
+        if (std::abs(recomputed - stored) > tol) {
             std::string name = "node[" + std::to_string(node.id) + "]";
-            result.add_error({VerifyError::Kind::DagConsistency, name, recomputed, node.value,
+            result.add_error({VerifyError::Kind::DagConsistency, name, recomputed, stored,
                               "DAG node value inconsistent with recomputation"});
         }
     }

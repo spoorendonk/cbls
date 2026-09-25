@@ -317,7 +317,7 @@ bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
         if (budget <= 0) {
             break;
         }
-        double residual = model.node(cids[c]).value;
+        double residual = model.node_value(cids[c]);
         if (residual <= kTol) {
             continue;  // satisfied: no root to chase
         }
@@ -576,7 +576,7 @@ void FeasibilityJump::refresh_unweighted_violation() {
         if (ci == objective_ci_ || !active(ci)) {
             continue;  // objective row: see unweighted_violation_. Masked: not being solved.
         }
-        total += progress_residual(model_.node(cids[c]).value);
+        total += progress_residual(model_.node_value(cids[c]));
     }
     unweighted_violation_ = total;
 }
@@ -585,7 +585,7 @@ void FeasibilityJump::rebuild_violated_and_scan_set() {
     const auto& cids = model_.constraint_ids();
     const size_t nc = cids.size();
     for (size_t c = 0; c < nc; ++c) {
-        violated_[c] = static_cast<uint8_t>(is_violated(model_.node(cids[c]).value));
+        violated_[c] = static_cast<uint8_t>(is_violated(model_.node_value(cids[c])));
     }
     refresh_unweighted_violation();
     std::fill(in_queue_.begin(), in_queue_.end(), 0);
@@ -609,7 +609,7 @@ void FeasibilityJump::update_var(int32_t var_id) {
     double violation_delta = 0.0;
     for (int32_t c : gv) {
         if (c != objective_ci_ && active(c)) {
-            violation_delta -= progress_residual(model_.node(cids[c]).value);
+            violation_delta -= progress_residual(model_.node_value(cids[c]));
         }
     }
 
@@ -619,7 +619,7 @@ void FeasibilityJump::update_var(int32_t var_id) {
     jumps_.invalidate(var_id);
 
     for (int32_t c : gv) {
-        const double after = model_.node(cids[c]).value;
+        const double after = model_.node_value(cids[c]);
         if (c != objective_ci_ && active(c)) {
             violation_delta += progress_residual(after);
         }
@@ -1343,7 +1343,7 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         // Refresh violated_ for v's constraints; promote any now-broken
         // constraint to full novelty weight and add its vars to the scan set.
         for (int32_t c : model_.constraints_of_var(v)) {
-            violated_[c] = static_cast<uint8_t>(is_violated(model_.node(cids[c]).value));
+            violated_[c] = static_cast<uint8_t>(is_violated(model_.node_value(cids[c])));
             if (violated_[c] != 0 && novelty_weights_[c] != vm_.weights[c]) {
                 novelty_weights_[c] = vm_.weights[c];
                 for (int32_t vp : vars_of_constraint_[c]) {
@@ -1365,7 +1365,7 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         model_.var_mut(v).value = old_value;
         delta_evaluate(model_, &v, 1);
         for (int32_t c : model_.constraints_of_var(v)) {
-            violated_[c] = static_cast<uint8_t>(is_violated(model_.node(cids[c]).value));
+            violated_[c] = static_cast<uint8_t>(is_violated(model_.node_value(cids[c])));
         }
         budget -= 1;
     }

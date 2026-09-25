@@ -117,17 +117,22 @@ struct ChildRef {
 /// read through `Model::children(node)`, and its parents are
 /// `Model::parents(id)` (#156).
 ///
-/// Offsets rather than pointers, so that `Model`'s implicit copy -- which is how
-/// a portfolio replicates a model per worker -- stays a correct deep copy with
-/// nothing to rebase.
+/// Offsets rather than pointers, so that copying a `Model` -- which is how a
+/// portfolio replicates a model per worker -- needs nothing rebased, whether it
+/// deep-copies the structure or shares it (#157).
+///
+/// It carries NO evaluation result: a node's current value lives in the model's
+/// per-model `node_values()` array, read through `Model::node_value(id)`. That
+/// is what lets the whole node array sit in the immutable `ModelStructure` that
+/// portfolio replicas share, where a `value` field would be one worker's search
+/// state in storage every worker reads (#157).
 struct ExprNode {
     int32_t id = -1;
     NodeOp op = NodeOp::Const;
-    double value = 0.0;
     double const_value = 0.0;
     uint32_t child_begin = 0;
     uint32_t child_count = 0;
-    int32_t lambda_func_id = -1;  // index into Model::lambda_funcs_
+    int32_t lambda_func_id = -1;  // index into ModelStructure::lambda_funcs
 };
 
 /// Residual of `a <= b`, i.e. `a - b`, with the IEEE `inf - inf` indeterminacy

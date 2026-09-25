@@ -247,7 +247,7 @@ TEST_CASE("batch API drives objective minimization (Algorithm 6 mechanism)", "[f
     for (int b = 0; b < 3000; ++b) {
         bool feasible = fj.batch(200);
         if (feasible) {
-            double obj = m.node(m.objective_id()).value;
+            double obj = m.node_value(m.objective_id());
             if (obj < best - 1e-9) {
                 best = obj;
                 have = true;
@@ -822,7 +822,7 @@ double recompute_real_violation(const Model& m, const ViolationManager& vm) {
         // is_violated's threshold, not a bare `> 0.0`: a residual in (0, kTol]
         // is a SATISFIED row, and counting it here would re-introduce exactly
         // the disagreement #102's ex8_6_1 finding was about.
-        const double r = m.node(cids[c]).value;
+        const double r = m.node_value(cids[c]);
         if (r > 1e-9 && r < std::numeric_limits<double>::infinity()) {
             total += r;
         }
@@ -914,7 +914,7 @@ TEST_CASE("a huge objective row cannot absorb the real rows' progress", "[fj][un
 
     // The row really is the shape the finding is about.
     const double obj_residual =
-        m.node(m.constraint_ids()[static_cast<size_t>(m.objective_constraint_idx())]).value;
+        m.node_value(m.constraint_ids()[static_cast<size_t>(m.objective_constraint_idx())]);
     CAPTURE(obj_residual);
     REQUIRE(obj_residual > 1e29);
     // ...and the real rows it must not absorb are fourteen orders below it.
@@ -1012,7 +1012,7 @@ TEST_CASE("a residual below is_violated's tolerance is not progress to be made",
         if (static_cast<int32_t>(c) == obj_ci) {
             continue;
         }
-        const double r = m.node(cids[c]).value;
+        const double r = m.node_value(cids[c]);
         CAPTURE(c, r);
         REQUIRE(r > 0.0);    // a bare `> 0.0` test counts it...
         REQUIRE(r <= 1e-9);  // ...but the engine calls it satisfied.

@@ -493,7 +493,7 @@ Residual worst_residual(const cbls::NlProblem& prob, const cbls::NlToModelResult
         if (static_cast<int32_t>(i) == obj_ci) {
             continue;  // artificial objective bound, not a real constraint
         }
-        double v = model.node(cids[i]).value;
+        double v = model.node_value(cids[i]);
         if (std::isnan(v)) {
             v = std::numeric_limits<double>::infinity();
         }
@@ -752,7 +752,7 @@ bool verify_assignment(const cbls::NlProblem& prob, const cbls::NlToModelResult&
     // The published objective must also be the one the model reports at the
     // returned assignment, not just the search's running best.
     double model_obj =
-        built.objective_node_id >= 0 ? built.model.node(built.objective_node_id).value : obj;
+        built.objective_node_id >= 0 ? built.model.node_value(built.objective_node_id) : obj;
     if (built.model.is_maximizing()) {
         model_obj = -model_obj;  // same un-negation applied to `obj` by the caller
     }
@@ -840,7 +840,7 @@ std::string describe_infeasible(const cbls::NlProblem& prob, const cbls::NlToMod
     // swamp the real ones and the search loses the feasibility signal entirely.
     // Call it out by name.
     if (built.objective_node_id >= 0 &&
-        !std::isfinite(built.model.node(built.objective_node_id).value)) {
+        !std::isfinite(built.model.node_value(built.objective_node_id))) {
         ++t.nonfinite_obj;
         row_label += "; obj non-finite here";
     }

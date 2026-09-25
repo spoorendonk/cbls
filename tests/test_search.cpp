@@ -1866,7 +1866,7 @@ public:
             if (static_cast<int32_t>(i) == obj_ci) {
                 continue;
             }
-            worst = std::max(worst, model.node(cids[i]).value);
+            worst = std::max(worst, model.node_value(cids[i]));
         }
         entry_violations.push_back(worst);
         return false;  // no improvement, so the caller restores nothing

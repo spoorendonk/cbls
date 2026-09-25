@@ -18,7 +18,7 @@ TEST_CASE("Tan evaluation", "[dag]") {
     m.close();
     m.var_mut(vid(x)).value = 0.5;
     full_evaluate(m);
-    REQUIRE_THAT(m.node(t).value, WithinAbs(std::tan(0.5), 1e-10));
+    REQUIRE_THAT(m.node_value(t), WithinAbs(std::tan(0.5), 1e-10));
 }
 
 TEST_CASE("Exp evaluation", "[dag]") {
@@ -29,7 +29,7 @@ TEST_CASE("Exp evaluation", "[dag]") {
     m.close();
     m.var_mut(vid(x)).value = 1.0;
     full_evaluate(m);
-    REQUIRE_THAT(m.node(e).value, WithinAbs(std::exp(1.0), 1e-10));
+    REQUIRE_THAT(m.node_value(e), WithinAbs(std::exp(1.0), 1e-10));
 }
 
 TEST_CASE("Log evaluation", "[dag]") {
@@ -40,7 +40,7 @@ TEST_CASE("Log evaluation", "[dag]") {
     m.close();
     m.var_mut(vid(x)).value = std::exp(1.0);
     full_evaluate(m);
-    REQUIRE_THAT(m.node(l).value, WithinAbs(1.0, 1e-10));
+    REQUIRE_THAT(m.node_value(l), WithinAbs(1.0, 1e-10));
 }
 
 TEST_CASE("Sqrt evaluation", "[dag]") {
@@ -51,7 +51,7 @@ TEST_CASE("Sqrt evaluation", "[dag]") {
     m.close();
     m.var_mut(vid(x)).value = 9.0;
     full_evaluate(m);
-    REQUIRE_THAT(m.node(s).value, WithinAbs(3.0, 1e-10));
+    REQUIRE_THAT(m.node_value(s), WithinAbs(3.0, 1e-10));
 }
 
 TEST_CASE("Geq evaluation", "[dag]") {
@@ -66,12 +66,12 @@ TEST_CASE("Geq evaluation", "[dag]") {
     m.var_mut(vid(x)).value = 5.0;
     m.var_mut(vid(y)).value = 3.0;
     full_evaluate(m);
-    REQUIRE(m.node(g).value <= 0.0);  // satisfied
+    REQUIRE(m.node_value(g) <= 0.0);  // satisfied
 
     m.var_mut(vid(x)).value = 2.0;
     m.var_mut(vid(y)).value = 7.0;
     full_evaluate(m);
-    REQUIRE(m.node(g).value > 0.0);  // violated
+    REQUIRE(m.node_value(g) > 0.0);  // violated
 }
 
 TEST_CASE("Neq evaluation", "[dag]") {
@@ -85,12 +85,12 @@ TEST_CASE("Neq evaluation", "[dag]") {
     m.var_mut(vid(x)).value = 3.0;
     m.var_mut(vid(y)).value = 3.0;
     full_evaluate(m);
-    REQUIRE(m.node(n).value == 1.0);  // violated (equal)
+    REQUIRE(m.node_value(n) == 1.0);  // violated (equal)
 
     m.var_mut(vid(x)).value = 3.0;
     m.var_mut(vid(y)).value = 5.0;
     full_evaluate(m);
-    REQUIRE(m.node(n).value == 0.0);  // satisfied (not equal)
+    REQUIRE(m.node_value(n) == 0.0);  // satisfied (not equal)
 }
 
 TEST_CASE("Lt evaluation", "[dag]") {
@@ -104,12 +104,12 @@ TEST_CASE("Lt evaluation", "[dag]") {
     m.var_mut(vid(x)).value = 2.0;
     m.var_mut(vid(y)).value = 5.0;
     full_evaluate(m);
-    REQUIRE(m.node(l).value < 0.0);  // satisfied (2 < 5)
+    REQUIRE(m.node_value(l) < 0.0);  // satisfied (2 < 5)
 
     m.var_mut(vid(x)).value = 5.0;
     m.var_mut(vid(y)).value = 5.0;
     full_evaluate(m);
-    REQUIRE(m.node(l).value > 0.0);  // violated (not strictly less)
+    REQUIRE(m.node_value(l) > 0.0);  // violated (not strictly less)
 }
 
 TEST_CASE("Gt evaluation", "[dag]") {
@@ -123,12 +123,12 @@ TEST_CASE("Gt evaluation", "[dag]") {
     m.var_mut(vid(x)).value = 7.0;
     m.var_mut(vid(y)).value = 3.0;
     full_evaluate(m);
-    REQUIRE(m.node(g).value < 0.0);  // satisfied (7 > 3)
+    REQUIRE(m.node_value(g) < 0.0);  // satisfied (7 > 3)
 
     m.var_mut(vid(x)).value = 3.0;
     m.var_mut(vid(y)).value = 3.0;
     full_evaluate(m);
-    REQUIRE(m.node(g).value > 0.0);  // violated (not strictly greater)
+    REQUIRE(m.node_value(g) > 0.0);  // violated (not strictly greater)
 }
 
 // AD tests for new ops
@@ -263,7 +263,7 @@ TEST_CASE("Expr: scalar comparison", "[expr]") {
         m.close();
         x.var_mut().value = 3.0;
         full_evaluate(m);
-        REQUIRE(m.node(c.handle).value <= 0.0);
+        REQUIRE(m.node_value(c.handle) <= 0.0);
     }
 
     SECTION("Expr >= scalar") {
@@ -273,7 +273,7 @@ TEST_CASE("Expr: scalar comparison", "[expr]") {
         m.close();
         x.var_mut().value = 5.0;
         full_evaluate(m);
-        REQUIRE(m.node(c.handle).value <= 0.0);
+        REQUIRE(m.node_value(c.handle) <= 0.0);
     }
 
     SECTION("Expr < scalar") {
@@ -283,7 +283,7 @@ TEST_CASE("Expr: scalar comparison", "[expr]") {
         m.close();
         x.var_mut().value = 3.0;
         full_evaluate(m);
-        REQUIRE(m.node(c.handle).value < 0.0);
+        REQUIRE(m.node_value(c.handle) < 0.0);
     }
 
     SECTION("Expr > scalar") {
@@ -293,7 +293,7 @@ TEST_CASE("Expr: scalar comparison", "[expr]") {
         m.close();
         x.var_mut().value = 5.0;
         full_evaluate(m);
-        REQUIRE(m.node(c.handle).value < 0.0);
+        REQUIRE(m.node_value(c.handle) < 0.0);
     }
 }
 
@@ -309,7 +309,7 @@ TEST_CASE("Expr: basic arithmetic", "[expr]") {
     x.var_mut().value = 3.0;
     y.var_mut().value = 4.0;
     full_evaluate(m);
-    REQUIRE(m.node(f.handle).value == 7.0);
+    REQUIRE(m.node_value(f.handle) == 7.0);
 }
 
 TEST_CASE("Expr: subtraction", "[expr]") {
@@ -322,7 +322,7 @@ TEST_CASE("Expr: subtraction", "[expr]") {
     x.var_mut().value = 7.0;
     y.var_mut().value = 3.0;
     full_evaluate(m);
-    REQUIRE_THAT(m.node(f.handle).value, WithinAbs(4.0, 1e-10));
+    REQUIRE_THAT(m.node_value(f.handle), WithinAbs(4.0, 1e-10));
 }
 
 TEST_CASE("Expr: multiplication", "[expr]") {
@@ -335,7 +335,7 @@ TEST_CASE("Expr: multiplication", "[expr]") {
     x.var_mut().value = 3.0;
     y.var_mut().value = 4.0;
     full_evaluate(m);
-    REQUIRE(m.node(f.handle).value == 12.0);
+    REQUIRE(m.node_value(f.handle) == 12.0);
 }
 
 TEST_CASE("Expr: division", "[expr]") {
@@ -348,7 +348,7 @@ TEST_CASE("Expr: division", "[expr]") {
     x.var_mut().value = 6.0;
     y.var_mut().value = 3.0;
     full_evaluate(m);
-    REQUIRE(m.node(f.handle).value == 2.0);
+    REQUIRE(m.node_value(f.handle) == 2.0);
 }
 
 TEST_CASE("Expr: unary negation", "[expr]") {
@@ -359,7 +359,7 @@ TEST_CASE("Expr: unary negation", "[expr]") {
     m.close();
     x.var_mut().value = 5.0;
     full_evaluate(m);
-    REQUIRE(m.node(f.handle).value == -5.0);
+    REQUIRE(m.node_value(f.handle) == -5.0);
 }
 
 TEST_CASE("Expr: scalar mixed ops", "[expr]") {
@@ -372,7 +372,7 @@ TEST_CASE("Expr: scalar mixed ops", "[expr]") {
         m.close();
         x.var_mut().value = 3.0;
         full_evaluate(m);
-        REQUIRE(m.node(f.handle).value == 5.0);
+        REQUIRE(m.node_value(f.handle) == 5.0);
     }
 
     SECTION("Expr + scalar") {
@@ -381,7 +381,7 @@ TEST_CASE("Expr: scalar mixed ops", "[expr]") {
         m.close();
         x.var_mut().value = 2.0;
         full_evaluate(m);
-        REQUIRE(m.node(f.handle).value == 5.0);
+        REQUIRE(m.node_value(f.handle) == 5.0);
     }
 
     SECTION("scalar * Expr") {
@@ -390,7 +390,7 @@ TEST_CASE("Expr: scalar mixed ops", "[expr]") {
         m.close();
         x.var_mut().value = 4.0;
         full_evaluate(m);
-        REQUIRE(m.node(f.handle).value == 8.0);
+        REQUIRE(m.node_value(f.handle) == 8.0);
     }
 
     SECTION("Expr * scalar") {
@@ -399,7 +399,7 @@ TEST_CASE("Expr: scalar mixed ops", "[expr]") {
         m.close();
         x.var_mut().value = 4.0;
         full_evaluate(m);
-        REQUIRE(m.node(f.handle).value == 12.0);
+        REQUIRE(m.node_value(f.handle) == 12.0);
     }
 
     SECTION("scalar - Expr") {
@@ -408,7 +408,7 @@ TEST_CASE("Expr: scalar mixed ops", "[expr]") {
         m.close();
         x.var_mut().value = 3.0;
         full_evaluate(m);
-        REQUIRE_THAT(m.node(f.handle).value, WithinAbs(7.0, 1e-10));
+        REQUIRE_THAT(m.node_value(f.handle), WithinAbs(7.0, 1e-10));
     }
 
     SECTION("Expr - scalar") {
@@ -417,7 +417,7 @@ TEST_CASE("Expr: scalar mixed ops", "[expr]") {
         m.close();
         x.var_mut().value = 5.0;
         full_evaluate(m);
-        REQUIRE_THAT(m.node(f.handle).value, WithinAbs(4.0, 1e-10));
+        REQUIRE_THAT(m.node_value(f.handle), WithinAbs(4.0, 1e-10));
     }
 
     SECTION("scalar / Expr") {
@@ -426,7 +426,7 @@ TEST_CASE("Expr: scalar mixed ops", "[expr]") {
         m.close();
         x.var_mut().value = 4.0;
         full_evaluate(m);
-        REQUIRE(m.node(f.handle).value == 3.0);
+        REQUIRE(m.node_value(f.handle) == 3.0);
     }
 
     SECTION("Expr / scalar") {
@@ -435,7 +435,7 @@ TEST_CASE("Expr: scalar mixed ops", "[expr]") {
         m.close();
         x.var_mut().value = 8.0;
         full_evaluate(m);
-        REQUIRE(m.node(f.handle).value == 4.0);
+        REQUIRE(m.node_value(f.handle) == 4.0);
     }
 }
 
@@ -453,7 +453,7 @@ TEST_CASE("Expr: comparison operators", "[expr]") {
         x.var_mut().value = 3.0;
         y.var_mut().value = 5.0;
         full_evaluate(m);
-        REQUIRE(m.node(c.handle).value <= 0.0);  // satisfied
+        REQUIRE(m.node_value(c.handle) <= 0.0);  // satisfied
     }
 
     SECTION(">=") {
@@ -464,7 +464,7 @@ TEST_CASE("Expr: comparison operators", "[expr]") {
         x.var_mut().value = 7.0;
         y.var_mut().value = 3.0;
         full_evaluate(m);
-        REQUIRE(m.node(c.handle).value <= 0.0);  // satisfied
+        REQUIRE(m.node_value(c.handle) <= 0.0);  // satisfied
     }
 
     SECTION("<") {
@@ -475,7 +475,7 @@ TEST_CASE("Expr: comparison operators", "[expr]") {
         x.var_mut().value = 2.0;
         y.var_mut().value = 5.0;
         full_evaluate(m);
-        REQUIRE(m.node(c.handle).value < 0.0);  // satisfied
+        REQUIRE(m.node_value(c.handle) < 0.0);  // satisfied
     }
 
     SECTION(">") {
@@ -486,7 +486,7 @@ TEST_CASE("Expr: comparison operators", "[expr]") {
         x.var_mut().value = 8.0;
         y.var_mut().value = 3.0;
         full_evaluate(m);
-        REQUIRE(m.node(c.handle).value < 0.0);  // satisfied
+        REQUIRE(m.node_value(c.handle) < 0.0);  // satisfied
     }
 
     SECTION("eq") {
@@ -497,7 +497,7 @@ TEST_CASE("Expr: comparison operators", "[expr]") {
         x.var_mut().value = 5.0;
         y.var_mut().value = 5.0;
         full_evaluate(m);
-        REQUIRE(m.node(c.handle).value == 0.0);  // satisfied
+        REQUIRE(m.node_value(c.handle) == 0.0);  // satisfied
     }
 
     SECTION("neq") {
@@ -508,7 +508,7 @@ TEST_CASE("Expr: comparison operators", "[expr]") {
         x.var_mut().value = 3.0;
         y.var_mut().value = 5.0;
         full_evaluate(m);
-        REQUIRE(m.node(c.handle).value == 0.0);  // satisfied
+        REQUIRE(m.node_value(c.handle) == 0.0);  // satisfied
     }
 }
 
@@ -522,7 +522,7 @@ TEST_CASE("Expr: math functions", "[expr]") {
         m.close();
         x.var_mut().value = M_PI / 2;
         full_evaluate(m);
-        REQUIRE_THAT(m.node(f.handle).value, WithinAbs(1.0, 1e-10));
+        REQUIRE_THAT(m.node_value(f.handle), WithinAbs(1.0, 1e-10));
     }
 
     SECTION("cos") {
@@ -531,7 +531,7 @@ TEST_CASE("Expr: math functions", "[expr]") {
         m.close();
         x.var_mut().value = 0.0;
         full_evaluate(m);
-        REQUIRE_THAT(m.node(f.handle).value, WithinAbs(1.0, 1e-10));
+        REQUIRE_THAT(m.node_value(f.handle), WithinAbs(1.0, 1e-10));
     }
 
     SECTION("tan") {
@@ -540,7 +540,7 @@ TEST_CASE("Expr: math functions", "[expr]") {
         m.close();
         x.var_mut().value = 0.5;
         full_evaluate(m);
-        REQUIRE_THAT(m.node(f.handle).value, WithinAbs(std::tan(0.5), 1e-10));
+        REQUIRE_THAT(m.node_value(f.handle), WithinAbs(std::tan(0.5), 1e-10));
     }
 
     SECTION("exp") {
@@ -549,7 +549,7 @@ TEST_CASE("Expr: math functions", "[expr]") {
         m.close();
         x.var_mut().value = 1.0;
         full_evaluate(m);
-        REQUIRE_THAT(m.node(f.handle).value, WithinAbs(std::exp(1.0), 1e-10));
+        REQUIRE_THAT(m.node_value(f.handle), WithinAbs(std::exp(1.0), 1e-10));
     }
 
     SECTION("log") {
@@ -558,7 +558,7 @@ TEST_CASE("Expr: math functions", "[expr]") {
         m.close();
         x.var_mut().value = std::exp(1.0);
         full_evaluate(m);
-        REQUIRE_THAT(m.node(f.handle).value, WithinAbs(1.0, 1e-10));
+        REQUIRE_THAT(m.node_value(f.handle), WithinAbs(1.0, 1e-10));
     }
 
     SECTION("sqrt") {
@@ -567,7 +567,7 @@ TEST_CASE("Expr: math functions", "[expr]") {
         m.close();
         x.var_mut().value = 9.0;
         full_evaluate(m);
-        REQUIRE_THAT(m.node(f.handle).value, WithinAbs(3.0, 1e-10));
+        REQUIRE_THAT(m.node_value(f.handle), WithinAbs(3.0, 1e-10));
     }
 
     SECTION("abs") {
@@ -577,7 +577,7 @@ TEST_CASE("Expr: math functions", "[expr]") {
         m.close();
         y.var_mut().value = -5.0;
         full_evaluate(m);
-        REQUIRE(m.node(f.handle).value == 5.0);
+        REQUIRE(m.node_value(f.handle) == 5.0);
     }
 
     SECTION("pow") {
@@ -587,7 +587,7 @@ TEST_CASE("Expr: math functions", "[expr]") {
         m.close();
         x.var_mut().value = 3.0;
         full_evaluate(m);
-        REQUIRE(m.node(f.handle).value == 9.0);
+        REQUIRE(m.node_value(f.handle) == 9.0);
     }
 }
 
@@ -603,7 +603,7 @@ TEST_CASE("Expr: nested expression x*x + 2*x*y + sin(y)", "[expr]") {
     y.var_mut().value = 1.0;
     full_evaluate(m);
     double expected = 4.0 + 4.0 + std::sin(1.0);
-    REQUIRE_THAT(m.node(f.handle).value, WithinAbs(expected, 1e-10));
+    REQUIRE_THAT(m.node_value(f.handle), WithinAbs(expected, 1e-10));
 }
 
 TEST_CASE("Expr: same result as int32_t API", "[expr]") {
@@ -633,7 +633,7 @@ TEST_CASE("Expr: same result as int32_t API", "[expr]") {
     y2.var_mut().value = 1.0;
     full_evaluate(m2);
 
-    REQUIRE_THAT(m2.node(f2.handle).value, WithinAbs(m1.node(f1).value, 1e-10));
+    REQUIRE_THAT(m2.node_value(f2.handle), WithinAbs(m1.node_value(f1), 1e-10));
 }
 
 TEST_CASE("Expr: add_constraint and minimize with Expr", "[expr]") {

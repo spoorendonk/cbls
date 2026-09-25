@@ -40,14 +40,14 @@ double ViolationManager::constraint_violation(int i) const {
         throw std::out_of_range("constraint index out of range");
     }
     int32_t cid = model_.constraint_ids()[i];
-    return clamped_node_violation(model_.node(cid).value);
+    return clamped_node_violation(model_.node_value(cid));
 }
 
 void ViolationManager::recompute_cache() const {
     const auto& cids = model_.constraint_ids();
     cached_total_ = 0.0;
     for (size_t i = 0; i < cids.size(); ++i) {
-        cached_violations_[i] = clamped_node_violation(model_.node(cids[i]).value);
+        cached_violations_[i] = clamped_node_violation(model_.node_value(cids[i]));
         cached_total_ += cached_violations_[i] * weights[i];
     }
     cache_valid_ = true;
@@ -69,7 +69,7 @@ double ViolationManager::total_violation() const {
     // Incremental update: check which constraints changed
     const auto& cids = model_.constraint_ids();
     for (size_t i = 0; i < cids.size(); ++i) {
-        double new_viol = clamped_node_violation(model_.node(cids[i]).value);
+        double new_viol = clamped_node_violation(model_.node_value(cids[i]));
         if (new_viol != cached_violations_[i]) {
             cached_total_ += (new_viol - cached_violations_[i]) * weights[i];
             cached_violations_[i] = new_viol;
@@ -81,7 +81,7 @@ double ViolationManager::total_violation() const {
 double ViolationManager::augmented_objective() const {
     double obj = 0.0;
     if (model_.objective_id() >= 0) {
-        obj = model_.node(model_.objective_id()).value;
+        obj = model_.node_value(model_.objective_id());
         if (!std::isfinite(obj)) {
             obj = kInfPenalty;  // non-convex blowup: keep the metric ordered
         }
@@ -114,7 +114,7 @@ double ViolationManager::weighted_delta_from(const std::vector<double>& snapshot
     // the node values are when it is next called either way.
     double delta = 0.0;
     for (size_t i = 0; i < cids.size(); ++i) {
-        const double now = clamped_node_violation(model_.node(cids[i]).value);
+        const double now = clamped_node_violation(model_.node_value(cids[i]));
         if (now != snapshot[i]) {
             delta += weights[i] * (now - snapshot[i]);
         }
@@ -128,14 +128,14 @@ bool ViolationManager::is_feasible(double tol) const {
     // want. Writing the predicate the other way round, as `> tol`, would let
     // NaN through silently.
     return std::all_of(cids.begin(), cids.end(),
-                       [&](int32_t cid) { return model_.node(cid).value <= tol; });
+                       [&](int32_t cid) { return model_.node_value(cid) <= tol; });
 }
 
 std::vector<int> ViolationManager::violated_constraints(double tol) const {
     std::vector<int> result;
     const auto& cids = model_.constraint_ids();
     for (size_t i = 0; i < cids.size(); ++i) {
-        if (!(model_.node(cids[i]).value <= tol)) {
+        if (!(model_.node_value(cids[i]) <= tol)) {
             result.push_back(static_cast<int>(i));
         }
     }

@@ -332,7 +332,7 @@ TEST_CASE("nl_to_model: feasible point has zero violation and correct objective"
     ViolationManager vm(r.model);
     vm.invalidate_cache();
     REQUIRE_THAT(vm.total_violation(), WithinAbs(0.0, 1e-9));
-    REQUIRE_THAT(r.model.node(r.objective_node_id).value, WithinAbs(6.0, 1e-9));
+    REQUIRE_THAT(r.model.node_value(r.objective_node_id), WithinAbs(6.0, 1e-9));
 
     // Infeasible point: x0=0, x1=0 -> x0+x1=0 < 3, violation = 3.
     r.model.var_mut(0).value = 0.0;
@@ -357,7 +357,7 @@ TEST_CASE("nl_to_model handles maximize sense", "[minlplib]") {
 
     r.model.var_mut(0).value = 5.0;
     full_evaluate(r.model);
-    REQUIRE_THAT(r.model.node(r.objective_node_id).value, WithinAbs(-5.0, 1e-9));
+    REQUIRE_THAT(r.model.node_value(r.objective_node_id), WithinAbs(-5.0, 1e-9));
 }
 
 TEST_CASE("nl_to_model reports unsupported operator without throwing", "[minlplib]") {
@@ -385,7 +385,7 @@ TEST_CASE("nl_to_model maps OP1POW (base^const) to pow", "[minlplib]") {
     REQUIRE(r.supported);
     r.model.var_mut(0).value = 2.0;
     full_evaluate(r.model);
-    REQUIRE_THAT(r.model.node(r.objective_node_id).value, WithinAbs(8.0, 1e-9));
+    REQUIRE_THAT(r.model.node_value(r.objective_node_id), WithinAbs(8.0, 1e-9));
 }
 
 // ---------------------------------------------------------------------------
@@ -463,7 +463,7 @@ TEST_CASE("MINLPLib ex4_1_8 solves within a loose gap of its published bound",
 
         // The reported objective must be the one the returned assignment
         // evaluates to; solve() restores best_state before returning.
-        const double model_objective = built.model.node(built.objective_node_id).value;
+        const double model_objective = built.model.node_value(built.objective_node_id);
         REQUIRE(std::abs(model_objective - result.objective) <=
                 1e-6 * (std::abs(result.objective) + 1.0));
 
@@ -537,7 +537,7 @@ TEST_CASE("MINLPLib st_e40 reaches feasibility on a small iteration budget", "[m
         REQUIRE(std::isfinite(result.objective));
 
         // The returned assignment must evaluate to the reported objective.
-        const double model_objective = built.model.node(built.objective_node_id).value;
+        const double model_objective = built.model.node_value(built.objective_node_id);
         REQUIRE(std::abs(model_objective - result.objective) <=
                 1e-6 * (std::abs(result.objective) + 1.0));
 

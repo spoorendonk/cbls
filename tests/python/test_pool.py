@@ -106,6 +106,22 @@ def test_solve_parallel_accepts_a_python_model_factory() -> None:
     assert "OK" in out
 
 
+def test_a_factory_returning_one_frozen_master_gives_each_worker_a_replica() -> None:
+    """The Python route to #157's shared structure works end to end.
+
+    What this pins is that `m.freeze()` plus `lambda: m` is a usable factory: the
+    workers run, and the master comes back frozen and unsearched. Sharing itself is
+    NOT observable from Python -- it is pinned by address in
+    tests/test_model_share.cpp -- so do not read a green run here as evidence of it.
+
+    In a child process for the same reason every scenario here is -- the factory
+    runs on the worker threads, so a GIL mistake hangs the interpreter rather than
+    failing a test.
+    """
+    out = _assert_scenario_ok("frozen_master")
+    assert "OK" in out
+
+
 def test_solve_surfaces_a_raising_python_factory() -> None:
     """A factory that fails in every worker propagates the original Python exception.
 
@@ -291,6 +307,27 @@ def _scenario_solve_parallel() -> None:
     result = cbls.ParallelSearch(2).solve_parallel(_feasible_model, 0.5, 42)
     assert result.feasible, "portfolio found no feasible solution for x + y >= 3"
     assert result.objective < 5.0, result.objective
+
+
+def _scenario_frozen_master() -> None:
+    """One frozen master, N replicas, one DAG (#157).
+
+    The Python route to a shared structure: nanobind copies whatever the factory
+    returns, and copying a FROZEN model shares its structure instead of
+    duplicating it. So returning the same master from every call -- normally the
+    data race the factory contract warns about -- is correct here, because what
+    each worker receives is its own copy of the mutable side.
+    """
+    master = _feasible_model()
+    master.freeze()
+    assert master.is_frozen()
+    x_value_before = master.var(0).value
+
+    result = cbls.ParallelSearch(2).solve_parallel(lambda: master, 0.5, 42)
+    assert result.feasible, "portfolio found no feasible solution for x + y >= 3"
+    assert result.objective < 5.0, result.objective
+    # The workers searched replicas, so the master's own assignment is untouched.
+    assert master.var(0).value == x_value_before, master.var(0).value
 
 
 def _scenario_raising() -> None:
@@ -545,6 +582,7 @@ if __name__ == "__main__":
     _scenarios = {
         "solve": _scenario_solve,
         "solve_parallel": _scenario_solve_parallel,
+        "frozen_master": _scenario_frozen_master,
         "raising": _scenario_raising,
         "hook_factory": _scenario_hook_factory,
         "lns_factory": _scenario_lns_factory,

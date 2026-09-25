@@ -292,7 +292,7 @@ TEST_CASE("model at known optimum has zero violation and matching objective", "[
     REQUIRE_THAT(vm.total_violation(), WithinAbs(0.0, 1e-9));
 
     REQUIRE(built.objective_node_id >= 0);
-    REQUIRE_THAT(built.model.node(built.objective_node_id).value, WithinAbs(3.0, 1e-9));
+    REQUIRE_THAT(built.model.node_value(built.objective_node_id), WithinAbs(3.0, 1e-9));
 }
 
 TEST_CASE("read_mps applies MPS integer-default ub=1 for unbounded integers", "[mps][reader]") {

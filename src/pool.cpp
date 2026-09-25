@@ -136,6 +136,35 @@ SearchResult ParallelSearch::solve(
                            callback, n, effective_pool_capacity(par_config.pool_capacity, n));
 }
 
+// --- Master-model overloads: one structure, N workers ---
+//
+// `freeze()` runs here, on the calling thread and before any worker exists, so
+// the one structural rebuild `add_objective_soft_constraint` performs happens
+// once rather than N times on a DAG N workers are already reading.
+//
+// The factory then simply copies the frozen master. That copy shares the
+// structure and duplicates only what a search writes (see Model's copy
+// constructor), and it is safe to run on several worker threads at once:
+// nothing here writes to `master`, and copying a shared_ptr is atomic.
+// Both delegate to the matching factory overload rather than repeating its
+// argument list: a `std::function<Model()>` prvalue cannot bind to `Model&`, so
+// the delegation is unambiguous, and one place then decides the default
+// SearchConfig, the thread count and the pool capacity.
+SearchResult ParallelSearch::solve(Model& master, double time_limit, uint64_t seed) {
+    master.freeze();
+    return solve(std::function<Model()>([&master]() { return master; }), time_limit, seed);
+}
+
+SearchResult ParallelSearch::solve(
+    Model& master, double time_limit, uint64_t seed, const SearchConfig& config,
+    std::function<std::shared_ptr<InnerSolverHook>(Model&)> hook_factory,
+    std::function<std::shared_ptr<LNS>()> lns_factory, SolveCallback* callback,
+    const ParallelConfig& par_config) {
+    master.freeze();
+    return solve(std::function<Model()>([&master]() { return master; }), time_limit, seed, config,
+                 std::move(hook_factory), std::move(lns_factory), callback, par_config);
+}
+
 // Portfolio workers are homogeneous — same model, same budget, different seed —
 // so their termination reasons almost always agree, and this only has to break
 // ties. Precedence: a worker that actually finished the job (Feasible) outranks

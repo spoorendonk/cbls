@@ -333,7 +333,7 @@ private:
         return max_real_violation() <= config_.feasibility_tolerance;
     }
     [[nodiscard]] double current_obj() const {
-        return has_obj_ ? model_.node(model_.objective_id()).value : 0.0;
+        return has_obj_ ? model_.node_value(model_.objective_id()) : 0.0;
     }
     // Whether a peer worker has answered the question. Relaxed is the right
     // ordering: the flag guards no data -- the pool has its own mutex -- and
@@ -568,7 +568,7 @@ double ViolationLSLoop::max_real_violation() const {
         if (static_cast<int32_t>(i) == obj_ci_) {
             continue;
         }
-        double v = model_.node(cids_[i]).value;
+        double v = model_.node_value(cids_[i]);
         if (std::isnan(v)) {
             return std::numeric_limits<double>::infinity();
         }

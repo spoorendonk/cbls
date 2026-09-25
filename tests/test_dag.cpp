@@ -22,7 +22,7 @@ TEST_CASE("Sum evaluation", "[dag]") {
     m.var_mut(vid(x)).value = 3.0;
     m.var_mut(vid(y)).value = 4.0;
     full_evaluate(m);
-    REQUIRE(m.node(s).value == 7.0);
+    REQUIRE(m.node_value(s) == 7.0);
 }
 
 TEST_CASE("Prod evaluation", "[dag]") {
@@ -35,7 +35,7 @@ TEST_CASE("Prod evaluation", "[dag]") {
     m.var_mut(vid(x)).value = 3.0;
     m.var_mut(vid(y)).value = 4.0;
     full_evaluate(m);
-    REQUIRE(m.node(p).value == 12.0);
+    REQUIRE(m.node_value(p) == 12.0);
 }
 
 TEST_CASE("Div evaluation", "[dag]") {
@@ -48,7 +48,7 @@ TEST_CASE("Div evaluation", "[dag]") {
     m.var_mut(vid(x)).value = 6.0;
     m.var_mut(vid(y)).value = 3.0;
     full_evaluate(m);
-    REQUIRE(m.node(d).value == 2.0);
+    REQUIRE(m.node_value(d) == 2.0);
 }
 
 TEST_CASE("Pow evaluation", "[dag]") {
@@ -60,7 +60,7 @@ TEST_CASE("Pow evaluation", "[dag]") {
     m.close();
     m.var_mut(vid(x)).value = 3.0;
     full_evaluate(m);
-    REQUIRE(m.node(p).value == 9.0);
+    REQUIRE(m.node_value(p) == 9.0);
 }
 
 TEST_CASE("Sin evaluation", "[dag]") {
@@ -71,7 +71,7 @@ TEST_CASE("Sin evaluation", "[dag]") {
     m.close();
     m.var_mut(vid(x)).value = M_PI / 2;
     full_evaluate(m);
-    REQUIRE_THAT(m.node(s).value, WithinAbs(1.0, 1e-10));
+    REQUIRE_THAT(m.node_value(s), WithinAbs(1.0, 1e-10));
 }
 
 TEST_CASE("Cos evaluation", "[dag]") {
@@ -82,7 +82,7 @@ TEST_CASE("Cos evaluation", "[dag]") {
     m.close();
     m.var_mut(vid(x)).value = 0.0;
     full_evaluate(m);
-    REQUIRE_THAT(m.node(c).value, WithinAbs(1.0, 1e-10));
+    REQUIRE_THAT(m.node_value(c), WithinAbs(1.0, 1e-10));
 }
 
 TEST_CASE("Abs evaluation", "[dag]") {
@@ -93,7 +93,7 @@ TEST_CASE("Abs evaluation", "[dag]") {
     m.close();
     m.var_mut(vid(x)).value = -5.0;
     full_evaluate(m);
-    REQUIRE(m.node(a).value == 5.0);
+    REQUIRE(m.node_value(a) == 5.0);
 }
 
 TEST_CASE("Min/Max evaluation", "[dag]") {
@@ -108,8 +108,8 @@ TEST_CASE("Min/Max evaluation", "[dag]") {
     m.var_mut(vid(x)).value = 3.0;
     m.var_mut(vid(y)).value = 7.0;
     full_evaluate(m);
-    REQUIRE(m.node(mn).value == 3.0);
-    REQUIRE(m.node(mx).value == 7.0);
+    REQUIRE(m.node_value(mn) == 3.0);
+    REQUIRE(m.node_value(mx) == 7.0);
 }
 
 TEST_CASE("Neg evaluation", "[dag]") {
@@ -120,7 +120,7 @@ TEST_CASE("Neg evaluation", "[dag]") {
     m.close();
     m.var_mut(vid(x)).value = 5.0;
     full_evaluate(m);
-    REQUIRE(m.node(n).value == -5.0);
+    REQUIRE(m.node_value(n) == -5.0);
 }
 
 TEST_CASE("If-then-else evaluation", "[dag]") {
@@ -136,11 +136,11 @@ TEST_CASE("If-then-else evaluation", "[dag]") {
     m.var_mut(vid(y)).value = 5.0;
     m.var_mut(vid(z)).value = 9.0;
     full_evaluate(m);
-    REQUIRE(m.node(ite).value == 5.0);
+    REQUIRE(m.node_value(ite) == 5.0);
 
     m.var_mut(vid(x)).value = -1.0;
     full_evaluate(m);
-    REQUIRE(m.node(ite).value == 9.0);
+    REQUIRE(m.node_value(ite) == 9.0);
 }
 
 TEST_CASE("Constants evaluation", "[dag]") {
@@ -152,7 +152,7 @@ TEST_CASE("Constants evaluation", "[dag]") {
     m.close();
     m.var_mut(vid(x)).value = 3.0;
     full_evaluate(m);
-    REQUIRE(m.node(expr).value == 8.0);
+    REQUIRE(m.node_value(expr) == 8.0);
 }
 
 TEST_CASE("Nested expression: x^2 + 2*x*y + sin(y)", "[dag]") {
@@ -172,7 +172,7 @@ TEST_CASE("Nested expression: x^2 + 2*x*y + sin(y)", "[dag]") {
     m.var_mut(vid(y)).value = 1.0;
     full_evaluate(m);
     double expected = 4.0 + 4.0 + std::sin(1.0);
-    REQUIRE_THAT(m.node(f).value, WithinAbs(expected, 1e-10));
+    REQUIRE_THAT(m.node_value(f), WithinAbs(expected, 1e-10));
 }
 
 // Delta evaluation tests
@@ -190,7 +190,7 @@ TEST_CASE("Delta evaluation matches full", "[dag]") {
     m.var_mut(vid(y)).value = 3.0;
     m.var_mut(vid(z)).value = 1.0;
     full_evaluate(m);
-    REQUIRE(m.node(f).value == 7.0);
+    REQUIRE(m.node_value(f) == 7.0);
 
     m.var_mut(vid(x)).value = 5.0;
     double delta_result = delta_evaluate(m, {vid(x)});
@@ -227,7 +227,7 @@ TEST_CASE("back-references list each parent once, including a repeated child", "
     // through both arms.
     m.var_mut(vid(x)).value = 2.0;
     full_evaluate(m);
-    REQUIRE(m.node(f).value == 4.0 + 6.0);
+    REQUIRE(m.node_value(f) == 4.0 + 6.0);
     m.var_mut(vid(x)).value = 3.0;
     REQUIRE(delta_evaluate(m, {vid(x)}) == 9.0 + 9.0);
 }
@@ -294,7 +294,7 @@ TEST_CASE("flat edge storage keeps child, parent, dependent and topological orde
     copy->var_mut(vid(y)).value = 2.0;
     full_evaluate(*copy);
     // n = 4, p1 = 16, p2 = 7, p3 = 12
-    REQUIRE(copy->node(top).value == 16.0 + 7.0 + 12.0);
+    REQUIRE(copy->node_value(top) == 16.0 + 7.0 + 12.0);
     copy->var_mut(vid(y)).value = 0.0;  // n = 2, p1 = 4, p2 = 5, p3 = 6
     REQUIRE(delta_evaluate(*copy, {vid(y)}) == 4.0 + 5.0 + 6.0);
 
@@ -343,7 +343,7 @@ TEST_CASE("Delta evaluation respects dependency order on a deep chain", "[dag]")
 
     m.var_mut(vid(x)).value = 1.0;
     full_evaluate(m);
-    REQUIRE(m.node(e).value == 3.0 * (9.0 + 2.0));
+    REQUIRE(m.node_value(e) == 3.0 * (9.0 + 2.0));
 
     m.var_mut(vid(x)).value = 4.0;
     const double delta_result = delta_evaluate(m, {vid(x)});
@@ -380,7 +380,7 @@ TEST_CASE("Delta eval multiple vars", "[dag]") {
     m.var_mut(vid(x)).value = 3.0;
     m.var_mut(vid(y)).value = 4.0;
     full_evaluate(m);
-    REQUIRE(m.node(f).value == 25.0);
+    REQUIRE(m.node_value(f) == 25.0);
 
     m.var_mut(vid(x)).value = 1.0;
     m.var_mut(vid(y)).value = 2.0;
@@ -400,7 +400,7 @@ TEST_CASE("ListVar at()", "[dag]") {
     auto& v = m.var_mut(vid(lv));
     v.elements = {10, 20, 30, 40, 50};
     full_evaluate(m);
-    REQUIRE(m.node(a).value == 30.0);
+    REQUIRE(m.node_value(a) == 30.0);
 }
 
 TEST_CASE("ListVar lambda_sum", "[dag]") {
@@ -413,7 +413,7 @@ TEST_CASE("ListVar lambda_sum", "[dag]") {
     auto& v = m.var_mut(vid(lv));
     v.elements = {1, 2, 3, 4};
     full_evaluate(m);
-    REQUIRE(m.node(ls).value == 30.0);  // 1+4+9+16
+    REQUIRE(m.node_value(ls) == 30.0);  // 1+4+9+16
 }
 
 TEST_CASE("ListVar delta eval", "[dag]") {
@@ -426,7 +426,7 @@ TEST_CASE("ListVar delta eval", "[dag]") {
     auto& v = m.var_mut(vid(lv));
     v.elements = {0, 1, 2};
     full_evaluate(m);
-    REQUIRE(m.node(ls).value == 3.0);
+    REQUIRE(m.node_value(ls) == 3.0);
 
     v.elements = {2, 1, 0};
     double result = delta_evaluate(m, {vid(lv)});
@@ -444,7 +444,7 @@ TEST_CASE("SetVar count", "[dag]") {
     auto& v = m.var_mut(vid(sv));
     v.elements = {1, 3, 5, 7};
     full_evaluate(m);
-    REQUIRE(m.node(c).value == 4.0);
+    REQUIRE(m.node_value(c) == 4.0);
 }
 
 // AD tests
@@ -572,10 +572,10 @@ static double fd_partial(Model& m, int32_t expr_id, int32_t var_id, double h) {
     double x0 = m.var(var_id).value;
     m.var_mut(var_id).value = x0 + h;
     full_evaluate(m);
-    double fp = m.node(expr_id).value;
+    double fp = m.node_value(expr_id);
     m.var_mut(var_id).value = x0 - h;
     full_evaluate(m);
-    double fm = m.node(expr_id).value;
+    double fm = m.node_value(expr_id);
     m.var_mut(var_id).value = x0;
     full_evaluate(m);
     return (fp - fm) / (2.0 * h);
@@ -591,15 +591,15 @@ TEST_CASE("SignPower evaluation", "[dag]") {
 
     m.var_mut(vid(x)).value = 2.0;
     full_evaluate(m);
-    REQUIRE_THAT(m.node(sp).value, WithinAbs(8.0, 1e-10));  // sign(2)*|2|^3 = 8
+    REQUIRE_THAT(m.node_value(sp), WithinAbs(8.0, 1e-10));  // sign(2)*|2|^3 = 8
 
     m.var_mut(vid(x)).value = -2.0;
     full_evaluate(m);
-    REQUIRE_THAT(m.node(sp).value, WithinAbs(-8.0, 1e-10));  // sign(-2)*|2|^3 = -8
+    REQUIRE_THAT(m.node_value(sp), WithinAbs(-8.0, 1e-10));  // sign(-2)*|2|^3 = -8
 
     m.var_mut(vid(x)).value = 0.0;
     full_evaluate(m);
-    REQUIRE_THAT(m.node(sp).value, WithinAbs(0.0, 1e-10));
+    REQUIRE_THAT(m.node_value(sp), WithinAbs(0.0, 1e-10));
 }
 
 TEST_CASE("SignPower AD matches finite difference", "[dag]") {
@@ -630,7 +630,7 @@ TEST_CASE("Tanh evaluation", "[dag]") {
     for (double xv : {0.0, 1.0, -1.5, 3.0}) {
         m.var_mut(vid(x)).value = xv;
         full_evaluate(m);
-        REQUIRE_THAT(m.node(t).value, WithinAbs(std::tanh(xv), 1e-10));
+        REQUIRE_THAT(m.node_value(t), WithinAbs(std::tanh(xv), 1e-10));
     }
 }
 

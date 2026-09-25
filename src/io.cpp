@@ -448,6 +448,12 @@ json node_record(const Model& model, const ExprNode& node, NameTable& var_names,
     j["op"] = op_to_string(node.op);
 
     if (node.op == NodeOp::Const) {
+        // The DAG's literal, which is what a model file records -- deliberately
+        // not `model.node_value(node.id)`. The two differ for exactly one node:
+        // the objective row's RHS, whose current value is the search's bound and
+        // whose literal is the +inf it was created with (#157). A reader re-adds
+        // that row itself, through `solve()`, so writing the bound would be
+        // writing search state into a model.
         j["value"] = node.const_value;
         return j;
     }

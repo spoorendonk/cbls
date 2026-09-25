@@ -48,6 +48,15 @@ constexpr const char* kParallelSolveDoc =
     "shared instance that carries state is a data race. The old raw-pointer\n"
     "signature caught that as a double free; a shared_ptr accepts it silently.\n"
     "\n"
+    "A FROZEN Model is the one sanctioned exception, and the way to avoid\n"
+    "duplicating a large DAG per worker (#157). model_factory is declared to\n"
+    "return a Model by value, so nanobind COPIES whatever object it hands back --\n"
+    "and copying a frozen model shares its immutable structure while giving the\n"
+    "worker its own variables, node values and objective bound. So\n"
+    "`m.freeze()` once and `lambda: m` is correct here, where returning a shared\n"
+    "MUTABLE model would not be: `freeze()` is what makes the shared half\n"
+    "unwritable, and every structural call on it raises instead.\n"
+    "\n"
     "What a Python factory can usefully return is NARROW. Neither\n"
     "InnerSolverHook nor LNS has a nanobind trampoline, so C++ dispatches\n"
     "through the base vtable: a Python subclass is constructed and released\n"
@@ -61,9 +70,11 @@ constexpr const char* kParallelSolveDoc =
     "itself is abstract and exposes no constructor.\n"
     "\n"
     "The Model handed to hook_factory is a COPY of the worker's model, not a\n"
-    "handle on it: nanobind casts an lvalue reference by copying, so a large\n"
-    "model is deep-copied once per worker. Mutating it changes nothing the\n"
-    "worker will search.\n"
+    "handle on it: nanobind casts an lvalue reference by copying. Mutating it\n"
+    "changes nothing the worker will search. What that copy costs depends on\n"
+    "the model: a FROZEN one shares its structure, so the copy is the\n"
+    "variables and the node values; an open one is deep-copied whole, once per\n"
+    "worker (#157).\n"
     "\n"
     "An exception raised by the factory in every worker is re-raised here with\n"
     "its original type and message, while one that fails in only some workers\n"
@@ -175,10 +186,11 @@ NB_MODULE(_cbls_core, m) {
         .def_rw("elements", &Variable::elements);
 
     // ExprNode (read-only access)
-    nb::class_<ExprNode>(m, "ExprNode")
-        .def_ro("id", &ExprNode::id)
-        .def_ro("op", &ExprNode::op)
-        .def_ro("value", &ExprNode::value);
+    //
+    // No `value`: a node's current value is per-model state that lives in the
+    // model, not in the node (#157). Read it with `Model.node_value(id)`, which
+    // is range-checked; the unchecked writer is deliberately not exposed.
+    nb::class_<ExprNode>(m, "ExprNode").def_ro("id", &ExprNode::id).def_ro("op", &ExprNode::op);
 
     // TerminationReason — which budget ended the run.
     nb::enum_<TerminationReason>(m, "TerminationReason")
@@ -250,10 +262,20 @@ NB_MODULE(_cbls_core, m) {
              nb::arg("min_block_on") = 1, nb::arg("min_block_off") = 1)
         .def("var_sequence_for", &Model::var_sequence_for)
         .def("close", &Model::close)
+        // Freezing makes the structure immutable and shareable. It is what lets a
+        // model_factory hand the SAME model to every worker without duplicating
+        // the DAG: nanobind copies the returned object, and copying a frozen model
+        // shares its structure (#157). A structural call on a frozen model raises
+        // RuntimeError rather than corrupting a peer: the refusal is a
+        // std::logic_error, which nanobind has no mapping for and so translates to
+        // RuntimeError -- see tests/python/test_model_freeze.py.
+        .def("freeze", &Model::freeze)
+        .def("is_frozen", &Model::is_frozen)
         // Accessors
         .def("var", &Model::var, nb::rv_policy::reference_internal)
         .def("var_mut", &Model::var_mut, nb::rv_policy::reference_internal)
         .def("node", &Model::node, nb::rv_policy::reference_internal)
+        .def("node_value", &Model::node_value, nb::arg("id"))
         .def("objective_id", &Model::objective_id)
         .def("constraint_ids", &Model::constraint_ids)
         // A view into the model's flat G_v array; copied out to a list, so the

@@ -28,7 +28,7 @@ static std::pair<double, double> state_key(const Model& model) {
         if (static_cast<int32_t>(i) == obj_ci) {
             continue;
         }
-        const double v = model.node(cids[i]).value;
+        const double v = model.node_value(cids[i]);
         // NaN must be handled before max(): std::max(0.0, NaN) is 0.0, which
         // would score a NaN-poisoned repair as perfectly feasible and accept it
         // over a genuinely better incumbent. Same guard as
@@ -39,7 +39,7 @@ static std::pair<double, double> state_key(const Model& model) {
         }
         real_violation += std::max(0.0, v);
     }
-    double obj = model.objective_id() >= 0 ? model.node(model.objective_id()).value : 0.0;
+    double obj = model.objective_id() >= 0 ? model.node_value(model.objective_id()) : 0.0;
     return {real_violation, obj};
 }
 

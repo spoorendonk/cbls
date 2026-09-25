@@ -426,8 +426,10 @@ interrupted run continues where it stopped.
 
 At `--cbls-threads 1` CBLS takes the single-threaded engine path, which is what
 every published figure here was measured on. Above 1 it runs `ParallelSearch`,
-the cooperative portfolio: N workers, each on its own copy of the model, sharing
-incumbents through the solution pool and restarting from it when they stall.
+the cooperative portfolio: N workers, each on its own replica of the model —
+sharing the model's immutable DAG by reference since #157 and duplicating only
+what a search writes — sharing incumbents through the solution pool and
+restarting from it when they stall.
 
 Three things follow. Two of them the harness checks; the third is sizing that
 stays the operator's, and is called out below rather than implied away:
@@ -437,23 +439,36 @@ stays the operator's, and is called out below rather than implied away:
   N-fold CPU advantage that the table would report as an implementation gap. The
   driver refuses `--cbls-threads != --cpsat-workers` unless
   `--allow-asymmetric-cpu` says the asymmetry is the measurement.
-* **Memory is linear in the thread count, and nothing checks it.** The runner
-  holds the built model *plus* one replica per worker, so N threads cost N+1
-  copies; the `peak_rss_kib` figures below — measured single-threaded — are a
-  per-worker floor, not a total. `--mem-limit-gb` is a per-JOB `ulimit -v` and
-  knows nothing about `--cbls-threads`, so `--jobs` x `--cbls-threads` against
-  that cap is arithmetic to do before starting, not a guard that will stop you.
+* **Memory still grows with the thread count, and nothing checks it.** Since
+  #157 a worker's replica shares the built model's immutable DAG by reference, so
+  N threads cost one structure plus N copies of what a search writes, not N whole
+  models. The `peak_rss_kib` figures below — measured single-threaded — are the
+  1-worker term, not a total: size a run as **1-worker + N x a per-worker
+  constant**, and treat that constant as a floor rather than a bound, because its
+  largest term is the variable array at 104 B per column. On
+  `neos-5114902-kasavu` (710k columns, 4.30M DAG nodes) it measures **0.34-0.39
+  GiB** at `06eb3e5`, against 0.75-0.86 GiB at `0dc826b` when the DAG was copied
+  too; `supportcase19` has 2x the columns and will therefore want more. `--mem-limit-gb` is a per-JOB
+  `ulimit -v` and knows nothing about `--cbls-threads`, so `--jobs` x
+  `--cbls-threads` against that cap is arithmetic to do before starting, not a
+  guard that will stop you.
   A replication that runs out of memory is at least reported rather than silent:
-  the row is written with `status: replicate_error`.
+  all N replicas are built before the solve bracket opens, and the row is written
+  with `status: replicate_error`. That is why they are built there and not on the
+  worker threads, where `ParallelSearch` would park the `bad_alloc` and publish a
+  row claiming N threads at exit 0 with only three workers having run.
 * **The two arms are separate results directories.** `threads` is a scorer
   config key, so a directory mixing thread counts is refused rather than
   averaged — and the driver refuses to *resume* a directory recorded at another
   thread count, which is the case the scorer cannot see (resume skips jobs that
   already have a result, so the mixture never forms).
 
-The replication itself is charged to setup, not to the search: the runner copies
-the built model once per worker before the solve bracket opens and reports
-`replicate_seconds` beside `read_seconds` and `build_seconds`.
+The replication itself is charged to setup, not to the search: the runner freezes
+the built model and copies it once per worker before the solve bracket opens, and
+reports `replicate_seconds` beside `read_seconds` and `build_seconds`. Since #157
+each copy shares the frozen master's immutable DAG, so the figure grows with
+`--cbls-threads` far more slowly than it used to — but it still grows, and it is
+still outside `wall_seconds`.
 
 The anytime trace stays the portfolio's own. Every worker reports through one
 serialized stream whose `time_seconds` is on the portfolio clock and whose
@@ -466,6 +481,13 @@ records its `peak_rss_kib` — of the **solve only**; verification runs afterwar
 in the same job slot (see above). From the wiring check, `neos-5114902-kasavu` (710k
 columns, 961k rows, 4.9M nonzeros) peaked at **1.2 GB under CBLS and 3.2 GB
 under CP-SAT**, and CP-SAT carries a ~100 MB floor on even the smallest models.
+
+The CBLS half of that pair is a **dated record, not a current figure**: it predates
+#156, which replaced the per-node child vectors and the per-variable G_v with flat
+arrays and CSR. The same instance measures **0.78 GiB single-threaded at
+`06eb3e5`** (#157's branch). The gap is that shrink, not a regression — and it is
+also why the #157 issue body's 1.16 GB / 4.99 GB baseline no longer reproduces.
+Re-derive rather than trusting either number if it is going to be multiplied.
 
 It is not the roster's largest model, though: `square47` carries 27.4M nonzeros
 (5.6x kasavu) and `supportcase19` 1.43M columns (2x). `square47` also spends

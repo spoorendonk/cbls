@@ -287,7 +287,7 @@ TEST_CASE("MIPfeas pk1 solves to a feasible point never better than its optimum"
         // solve() restores best_state and re-evaluates before returning, so the
         // objective it reports must be the one the model holds. Without this the
         // reference guard below only constrains a number, not the solution.
-        const double model_objective = built.model.node(built.objective_node_id).value;
+        const double model_objective = built.model.node_value(built.objective_node_id);
         REQUIRE(std::abs(model_objective - result.objective) <=
                 1e-6 * (std::abs(result.objective) + 1.0));
 

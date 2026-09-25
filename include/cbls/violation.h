@@ -85,7 +85,7 @@ private:
     void recompute_cache() const;
 
     Model& model_;
-    mutable std::vector<double> cached_violations_;  // max(0, node.value) per constraint
+    mutable std::vector<double> cached_violations_;  // max(0, node_value(cid)) per constraint
     mutable double cached_total_ = 0.0;
     mutable bool cache_valid_ = false;
     mutable int incremental_updates_ = 0;  // counter to trigger periodic full recompute
