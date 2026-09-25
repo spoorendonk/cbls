@@ -19,20 +19,26 @@ def vid(handle: int) -> int:
     return -(handle + 1)
 
 
-def _closed_model() -> tuple[cbls.Model, int, int]:
+def _closed_model() -> tuple[cbls.Model, int, int, int]:
     m = cbls.Model()
     x = m.int_var(0, 20, "x")
     y = m.int_var(0, 20, "y")
-    total = m.sum([x, y])
+    # A structured variable too, so the lambda_sum case below can hand
+    # lambda_sum a handle it ACCEPTS and still be refused for being frozen.
+    # With an int handle the freeze check is never reached: lambda_sum now
+    # rejects a non-List/Set handle outright, which is the same rule its
+    # table-backed and pair siblings follow.
+    s = m.set_var(4, 0, 4, "s")
+    total = m.sum([x, y, m.lambda_sum(s, lambda e: float(e))])
     row = m.leq(total, m.constant(10.0))
     m.add_constraint(row)
     m.minimize(total)
     m.close()
-    return m, x, row
+    return m, x, row, s
 
 
 def test_freeze_folds_in_the_objective_row_and_is_idempotent() -> None:
-    m, _x, _row = _closed_model()
+    m, _x, _row, _s = _closed_model()
     assert not m.is_frozen()
     nodes_before = m.num_nodes()
 
@@ -49,32 +55,32 @@ def test_freeze_folds_in_the_objective_row_and_is_idempotent() -> None:
 @pytest.mark.parametrize(
     "call",
     [
-        pytest.param(lambda m, x, row: m.bool_var(), id="bool_var"),
-        pytest.param(lambda m, x, row: m.int_var(0, 1), id="int_var"),
-        pytest.param(lambda m, x, row: m.float_var(0.0, 1.0), id="float_var"),
-        pytest.param(lambda m, x, row: m.list_var(3), id="list_var"),
-        pytest.param(lambda m, x, row: m.set_var(3), id="set_var"),
-        pytest.param(lambda m, x, row: m.constant(1.0), id="constant"),
-        pytest.param(lambda m, x, row: m.neg(row), id="neg"),
-        pytest.param(lambda m, x, row: m.sum([row, row]), id="sum"),
-        pytest.param(lambda m, x, row: m.add_constraint(row), id="add_constraint"),
-        pytest.param(lambda m, x, row: m.minimize(row), id="minimize"),
-        pytest.param(lambda m, x, row: m.maximize(row), id="maximize"),
-        pytest.param(lambda m, x, row: m.add_var_sequence([x]), id="add_var_sequence"),
-        pytest.param(lambda m, x, row: m.close(), id="close"),
+        pytest.param(lambda m, x, row, s: m.bool_var(), id="bool_var"),
+        pytest.param(lambda m, x, row, s: m.int_var(0, 1), id="int_var"),
+        pytest.param(lambda m, x, row, s: m.float_var(0.0, 1.0), id="float_var"),
+        pytest.param(lambda m, x, row, s: m.list_var(3), id="list_var"),
+        pytest.param(lambda m, x, row, s: m.set_var(3), id="set_var"),
+        pytest.param(lambda m, x, row, s: m.constant(1.0), id="constant"),
+        pytest.param(lambda m, x, row, s: m.neg(row), id="neg"),
+        pytest.param(lambda m, x, row, s: m.sum([row, row]), id="sum"),
+        pytest.param(lambda m, x, row, s: m.add_constraint(row), id="add_constraint"),
+        pytest.param(lambda m, x, row, s: m.minimize(row), id="minimize"),
+        pytest.param(lambda m, x, row, s: m.maximize(row), id="maximize"),
+        pytest.param(lambda m, x, row, s: m.add_var_sequence([x]), id="add_var_sequence"),
+        pytest.param(lambda m, x, row, s: m.close(), id="close"),
         # The sharpest one to refuse from Python: `lambda_sum` grows a table every
         # worker reads, and the callable would be invoked concurrently.
-        pytest.param(lambda m, x, row: m.lambda_sum(x, lambda e: float(e)), id="lambda_sum"),
+        pytest.param(lambda m, x, row, s: m.lambda_sum(s, lambda e: float(e)), id="lambda_sum"),
     ],
 )
 def test_frozen_model_refuses_structural_change(call: object) -> None:
-    m, x, row = _closed_model()
+    m, x, row, s = _closed_model()
     m.freeze()
     nodes = m.num_nodes()
     variables = m.num_vars()
 
     with pytest.raises(RuntimeError, match="frozen"):
-        call(m, x, row)  # type: ignore[operator]
+        call(m, x, row, s)  # type: ignore[operator]
 
     # The refusal left nothing behind.
     assert m.num_nodes() == nodes
@@ -82,7 +88,7 @@ def test_frozen_model_refuses_structural_change(call: object) -> None:
 
 
 def test_a_frozen_model_still_does_everything_a_search_does() -> None:
-    m, x, row = _closed_model()
+    m, x, row, s = _closed_model()
     m.freeze()
     xid = vid(x)
 
@@ -104,7 +110,7 @@ def test_node_value_range_checks_its_index() -> None:
     index reachable from Python. CLAUDE.md's nanobind rule is that such a guard
     gets a test: unchecked, these would be heap reads rather than exceptions.
     """
-    m, _x, row = _closed_model()
+    m, _x, row, _s = _closed_model()
     assert m.node_value(row) == pytest.approx(0.0 + 0.0 - 10.0)
     for bad in (-1, m.num_nodes(), m.num_nodes() + 1000, -(2**31)):
         with pytest.raises(IndexError):

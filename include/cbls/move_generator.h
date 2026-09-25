@@ -173,10 +173,19 @@ struct MoveContext {
 ///    whatever it is given.
 ///  - `generate` APPENDS; it must not clear or reorder what is already in `out`.
 ///  - `generate` must not change the model's assignment (see `MoveContext`).
-///  - `clone()` must return an independent object. Every portfolio worker gets
-///    its own clone, so any cache, cursor or counter a generator holds is
-///    per-worker state; a clone that shared it would be a data race across
-///    worker threads (#157).
+///  - `clone()` must return an independent object, AND must itself be safe to
+///    call concurrently on one prototype. Every portfolio worker builds its own
+///    `StructuralBatch` on its own thread, so N threads call `clone()` on the
+///    single registered instance at once: a `clone()` that writes shared state
+///    -- bumps a counter, fills a lazily built cache -- needs its own lock.
+///    (`tests/test_parallel.cpp`'s `CountingGenerator` takes a mutex for exactly
+///    this reason; `tests/test_structural_batch.cpp`'s `TransferGenerator` does
+///    not, because it is only ever driven single-threaded. Copy the former.)
+///    Any cache, cursor or counter the CLONE holds is then per-worker state; a
+///    clone that shared it would be a data race across worker threads (#157).
+///    A clone does not outlive its worker's `solve()`: a restarted worker
+///    (`src/pool.cpp`) builds a fresh batch and so a fresh clone, so `clone()`
+///    runs workers x restarts times and no generator state survives a restart.
 ///  - `scope()` must name every variable the generator's moves can change, and
 ///    must stay constant for the generator's lifetime. The batch uses it to
 ///    restrict candidate scoring to the union of those variables' G_v, and
@@ -232,6 +241,15 @@ public:
     /// position map) must be recomputed in `generate` from `ctx.model`; only
     /// state that is the generator's own -- a cursor, a counter, a tabu tenure
     /// it alone writes -- can be carried across calls.
+    ///
+    /// AND UNDER `FirstImprovingSample` A NOTIFIED COMMIT CAN STILL BE UNDONE.
+    /// Every candidate from one `generate` carries an ABSOLUTE element vector
+    /// built against the pre-commit assignment, so committing candidate k and
+    /// then candidate k+1 leaves k's change gone -- after `on_commit(k)` was
+    /// already delivered. Arithmetically that is the same as having rejected k,
+    /// which is why it is harmless for the built-ins, but a generator whose
+    /// bookkeeping must track the assignment should emit one candidate per call
+    /// or run under a policy that commits at most one.
     virtual void on_commit(const Move& move);
 
     /// A per-worker copy. See the cloning contract above.

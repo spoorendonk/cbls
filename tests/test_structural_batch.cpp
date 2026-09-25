@@ -21,6 +21,7 @@
 #include <cbls/violation.h>
 #include <chrono>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -553,4 +554,184 @@ TEST_CASE("a generator whose scope names an unknown variable is refused at regis
     config.move_generators.push_back(std::make_shared<const SilentGenerator>(99, calls));
     REQUIRE_THROWS_AS(StructuralBatch(ts.model, config, /*enabled=*/true), std::out_of_range);
     REQUIRE(*calls == 0);
+}
+
+// ---------------------------------------------------------------------------
+// The MULTI-VARIABLE scope path of StructuralBatch::affected_rows.
+//
+// The equivalence case above scores against `constraints_of_var(v)` -- one
+// variable's G_v, which the model already stores as an ascending contiguous run,
+// so `affected_rows` returns it untouched. A generator with two variables in
+// scope takes the other branch: concatenate both G_v, sort, unique. That
+// arithmetic is the only new arithmetic the G_v restriction introduced and it is
+// load-bearing twice over --
+//
+//   * a row reachable from BOTH variables appears twice in the concatenation,
+//     and summing it twice is a WRONG delta, not a slow one;
+//   * ascending order is what makes the restricted sum the same `double` as the
+//     full scan, since floating-point addition is not associative.
+//
+// so both halves are checked here, each against a control that fails if the
+// corresponding step were dropped.
+// ---------------------------------------------------------------------------
+struct SharedRowModel {
+    Model model;
+    int32_t a = -1;
+    int32_t b = -1;
+};
+
+// Two Sets over one universe with a row each AND a row they share, so their G_v
+// genuinely overlap. `two_set_model` deliberately does not overlap, which is why
+// it cannot exercise this path.
+SharedRowModel shared_row_model() {
+    SharedRowModel sr;
+    Model& m = sr.model;
+    Expr a = m.Set(6, 0, 6, "a");
+    Expr b = m.Set(6, 0, 6, "b");
+    sr.a = vid(a.handle);
+    sr.b = vid(b.handle);
+    Expr size_a = Expr(&m, m.lambda_sum(a.handle, [](int) { return 1.0; }));
+    Expr size_b = Expr(&m, m.lambda_sum(b.handle, [](int) { return 1.0; }));
+    // Deliberately ASYMMETRIC: an element costs 1+e in `a` and 5+e in `b`, so a
+    // transfer moves the SHARED row by +4 while relieving the `a`-only row by 1.
+    // With the same function on both sides a transfer would leave the shared sum
+    // untouched, every delta would be exactly 0, and the case would prove
+    // nothing. The magnitudes are chosen in the test's weights so that counting
+    // the shared row twice FLIPS the accept into a reject -- see there.
+    Expr weight_a =
+        Expr(&m, m.lambda_sum(a.handle, [](int e) { return 1.0 + static_cast<double>(e); }));
+    Expr weight_b =
+        Expr(&m, m.lambda_sum(b.handle, [](int e) { return 5.0 + static_cast<double>(e); }));
+    m.add_constraint(size_a <= m.Constant(1.0));               // a only
+    m.add_constraint(size_b <= m.Constant(4.0));               // b only
+    m.add_constraint(weight_a + weight_b <= m.Constant(0.0));  // SHARED
+    m.close();
+    return sr;
+}
+
+TEST_CASE("G_v-restricted scoring over a two-variable scope matches the full rescan",
+          "[structural][moves][violation]") {
+    SharedRowModel sr = shared_row_model();
+
+    // The premise: the two G_v overlap, so the union must dedup. Without this
+    // the rest of the case would pass on a concatenation that never repeats.
+    std::vector<int32_t> gv_a(sr.model.constraints_of_var(sr.a).begin(),
+                              sr.model.constraints_of_var(sr.a).end());
+    std::vector<int32_t> gv_b(sr.model.constraints_of_var(sr.b).begin(),
+                              sr.model.constraints_of_var(sr.b).end());
+    std::vector<int32_t> shared;
+    std::set_intersection(gv_a.begin(), gv_a.end(), gv_b.begin(), gv_b.end(),
+                          std::back_inserter(shared));
+    REQUIRE_FALSE(shared.empty());
+
+    std::vector<int32_t> deduped;
+    std::set_union(gv_a.begin(), gv_a.end(), gv_b.begin(), gv_b.end(), std::back_inserter(deduped));
+    // What a missing `unique` would leave: the shared rows counted twice.
+    std::vector<int32_t> duplicated = gv_a;
+    duplicated.insert(duplicated.end(), gv_b.begin(), gv_b.end());
+    std::sort(duplicated.begin(), duplicated.end());
+    REQUIRE(duplicated.size() > deduped.size());
+
+    set_elements(sr.model, sr.a, {0, 1, 2});
+    set_elements(sr.model, sr.b, {4});
+    full_evaluate(sr.model);
+    ViolationManager vm(sr.model);
+    for (size_t i = 0; i < vm.weights.size(); ++i) {
+        vm.weights[i] = 1.0 + (7.5 * static_cast<double>(i));
+    }
+    std::vector<double> baseline;
+    vm.snapshot_violations(baseline);
+
+    auto stats = std::make_shared<TransferStats>();
+    TransferGenerator gen(sr.a, sr.b, stats);
+    RNG rng(11);
+
+    int scored = 0;
+    int differed = 0;
+    int nonzero = 0;
+    for (int trial = 0; trial < 200; ++trial) {
+        std::vector<Move> moves;
+        MoveContext ctx{sr.model, vm, rng, StructuralSelection::FirstImprovingSample, &baseline};
+        // The two MoveContext fields a cost-aware generator is meant to build
+        // on. Both are documented contracts ("never null", "indexed as
+        // ViolationManager::weights is") that nothing else asserts.
+        REQUIRE(ctx.violations != nullptr);
+        REQUIRE(ctx.violations->size() == vm.weights.size());
+        REQUIRE(ctx.selection == StructuralSelection::FirstImprovingSample);
+        gen.generate(ctx, moves);
+        for (const Move& move : moves) {
+            SavedValues saved = save_move_values(sr.model, move);
+            std::vector<int32_t> touched = apply_move(sr.model, move);
+            delta_evaluate(sr.model, touched);
+
+            const double full = vm.weighted_delta_from(baseline);
+            const double restricted =
+                vm.weighted_delta_from(baseline, {deduped.data(), deduped.size()});
+            INFO("full " << full << " restricted " << restricted);
+            REQUIRE(full == restricted);
+            REQUIRE((full < -1e-12) == (restricted < -1e-12));
+
+            // The control: had the union kept its duplicates, the shared rows
+            // would be counted twice and the answer would differ whenever they
+            // actually moved. This is what says the assertion above has teeth.
+            const double doubled =
+                vm.weighted_delta_from(baseline, {duplicated.data(), duplicated.size()});
+            differed += (doubled != full) ? 1 : 0;
+            nonzero += (full != 0.0) ? 1 : 0;
+            ++scored;
+
+            undo_move(sr.model, move, saved);
+            delta_evaluate(sr.model, touched);
+        }
+    }
+    REQUIRE(scored > 50);
+    // Vacuity guards: some candidate must actually have changed something, and
+    // the de-duplication must actually have mattered on some of them.
+    REQUIRE(nonzero > 0);
+    REQUIRE(differed > 0);
+}
+
+TEST_CASE("the batch scores a two-variable generator through the union path",
+          "[structural][moves]") {
+    // The same path, reached through StructuralBatch rather than by hand, so
+    // `affected_rows`' own union is the one under test. Every move the batch
+    // keeps must be a true improvement under a FULL rescan: a union that
+    // double-counted a shared row could accept a move that does not improve.
+    SharedRowModel sr = shared_row_model();
+    set_elements(sr.model, sr.a, {0, 1, 2});
+    set_elements(sr.model, sr.b, {});
+    full_evaluate(sr.model);
+    ViolationManager vm(sr.model);
+    // Sized so that double-counting the shared row CHANGES THE DECISION, which
+    // is what gives this case teeth. A transfer relieves the a-only row by 1 at
+    // weight 6 and worsens the shared row by 4 at weight 1:
+    //   correct (deduped) delta = -6 + 4 = -2  -> accept
+    //   shared row counted twice = -6 + 8 = +2 -> reject
+    // So dropping the `unique` in StructuralBatch::affected_rows turns every
+    // commit below into a rejection and `passes_with_commit` falls to 0.
+    REQUIRE(vm.weights.size() == 3);
+    vm.weights[0] = 6.0;  // size_a <= 1, the a-only row
+    vm.weights[1] = 1.0;  // size_b <= 4, the b-only row
+    vm.weights[2] = 1.0;  // the shared row
+
+    auto stats = std::make_shared<TransferStats>();
+    SearchConfig config;
+    config.default_structural_generators = false;
+    config.move_generators.push_back(std::make_shared<const TransferGenerator>(sr.a, sr.b, stats));
+    StructuralBatch batch(sr.model, config, /*enabled=*/true);
+
+    RNG rng(3);
+    int passes_with_commit = 0;
+    for (int pass = 0; pass < 40; ++pass) {
+        std::vector<double> before;
+        vm.snapshot_violations(before);
+        const double before_total = vm.total_violation();
+        if (batch.run(sr.model, vm, rng, false, kNoDeadline)) {
+            ++passes_with_commit;
+            // Full rescan, not the restricted one the batch used.
+            REQUIRE(vm.total_violation() < before_total);
+        }
+    }
+    REQUIRE(stats->generated > 0);
+    REQUIRE(passes_with_commit > 0);
 }

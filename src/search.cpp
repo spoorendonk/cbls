@@ -134,10 +134,19 @@ double effective_structural_probability(const Model& model, const SearchConfig& 
     // List/Set presence turns such a registration into a silent no-op with no
     // error and no warning. Inert by default: `move_generators` is empty unless
     // a caller filled it, so no unconfigured model changes trajectory.
+    //
+    // The built-ins are what a List/Set variable implies, so they only count
+    // when they are actually going to be built: with
+    // `default_structural_generators = false` and nothing registered, the batch
+    // would construct zero generators and `run()` would return on its first
+    // line, burning ~33% of outer-loop iterations on a guaranteed no-op. That is
+    // the mirror image of the silent no-op the registered-generator clause above
+    // exists to prevent.
     const bool has_structural =
         !config.move_generators.empty() ||
-        std::any_of(model.variables().begin(), model.variables().end(),
-                    [](const Variable& v) { return is_structured(v.type); });
+        (config.default_structural_generators &&
+         std::any_of(model.variables().begin(), model.variables().end(),
+                     [](const Variable& v) { return is_structured(v.type); }));
     if (!has_structural) {
         return 0.0;
     }

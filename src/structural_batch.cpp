@@ -138,8 +138,10 @@ static void assert_move_within_scope(const MoveGenerator& gen,
                "a MoveGenerator's move changed a variable outside its scope()");
     }
 #else
-    (void)gen;
-    (void)touched;
+    // Cast to void, as in the scope-validation loop above: these are unused
+    // only in this branch.
+    static_cast<void>(gen);
+    static_cast<void>(touched);
 #endif
 }
 

@@ -1226,9 +1226,12 @@ TEST_CASE("structural batch respects the wall-clock deadline", "[search][structu
     // It is NOT the regression test for #105's bound any more, and pretending
     // otherwise would be worse than saying so. The old comment claimed "+0.003s
     // with the bound, +1.134s without", and that 1.134s was the full rescan of
-    // the 40 000 filler rows. With the G_v restriction those rows are not read,
-    // and this model's unbounded sweep was re-measured at **0.024s** -- i.e. the
-    // test passed with the deadline check deleted. The discriminating test is
+    // the 40 000 filler rows ONCE PER CANDIDATE. The G_v restriction removed
+    // that term -- not every read of those rows, since the baseline snapshot
+    // still walks them once per pass and once per commit (see
+    // include/cbls/structural_batch.h) -- and this model's unbounded sweep was
+    // re-measured at **0.024s**, i.e. the test passed with the deadline check
+    // deleted. The discriminating test is
     // now `a deadline that passes mid-sweep stops the sweep between generators`
     // in tests/test_structural_batch.cpp, which asserts a COUNT of generators
     // visited and fails deterministically when the check is removed.

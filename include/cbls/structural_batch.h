@@ -51,12 +51,30 @@ struct SearchConfig;
 /// benchmarks.
 ///
 /// THAT 1.19-1.25s IS A PRE-#165 NUMBER and does not describe this code. It was
-/// the O(#constraints) full rescan per candidate, which the G_v restriction
-/// below removed: the same model's unbounded sweep re-measures at 0.024s,
-/// because its 40 000 filler rows are no longer read. The bound still matters --
-/// the remaining cost is O(#structured vars x #candidates x (delta_evaluate +
-/// |G_v|)), which is still unbounded in the model size -- but it now takes a
-/// model with large STRUCTURES rather than many rows to reach the same overrun.
+/// the O(#constraints) full rescan PER CANDIDATE, which the G_v restriction
+/// below removed: the same model's unbounded sweep re-measures at 0.024s.
+///
+/// Be precise about what that removed, because the obvious reading is wrong.
+/// The filler rows are NOT "no longer read" -- an earlier draft of this comment
+/// said so and it was false. `ViolationManager::snapshot_violations` calls
+/// `total_violation()`, which walks EVERY constraint (src/violation.cpp), and
+/// the batch snapshots once on entry and again after every committed move. So
+/// the per-candidate O(#constraints) term is gone; a per-pass and a per-COMMIT
+/// one remain, and on a low-acceptance sweep -- which is what the 0.024s
+/// measurement is -- those are cheap enough to disappear into the total.
+///
+/// The remaining cost is therefore
+/// O(#constraints x (1 + #commits) + #structured vars x #candidates x
+/// (delta_evaluate + |G_v|)), still unbounded in the model size, so the bound
+/// still matters -- but it now takes a model with large STRUCTURES, or a sweep
+/// that commits heavily, rather than merely many rows, to reach the same
+/// overrun. Restricting the baseline refresh to the moved rows would close the
+/// commit term and is exact by the same argument the restricted delta rests on;
+/// it is not done here because `snapshot_violations` reaches `total_violation()`,
+/// whose 1000-call drift-resync counter would then advance on a different
+/// schedule -- which moves the trajectory digests that
+/// tests/test_structural_equivalence.cpp exists to hold still. Re-record those
+/// deliberately or not at all.
 /// `a deadline that passes mid-sweep stops the sweep between generators`
 /// (tests/test_structural_batch.cpp) is what pins the bound, by counting the
 /// generators a sweep visited rather than by timing it.

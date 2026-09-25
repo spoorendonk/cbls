@@ -2179,7 +2179,7 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
     ├── run batch:
     │     FJ:         fj.batch(batch_iterations)      # GLS: best-of-N jump + weight bump
     │     NOVELTY:    fj.apply_novelty_jump()         # compound moves; resync
-    │     STRUCTURAL: structural_.run()              # move generators; resync
+    │     STRUCTURAL: structural_.run()               # move generators; resync
     │
     ├── if max_real_violation() <= config.feasibility_tolerance:
     │     ├── record_best()                           # bank it BEFORE polishing

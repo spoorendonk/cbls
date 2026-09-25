@@ -224,18 +224,18 @@ Three conventions therefore rest on you rather than on a tool: branch only from 
 
 ### Fast vs. slow tests
 
-The C++ suite is **441 ctest tests** over **440 `TEST_CASE`s**: 436 registered
+The C++ suite is **443 ctest tests** over **442 `TEST_CASE`s**: 438 registered
 by `catch_discover_tests` plus **5 registered by hand** — the 4 `[timing]` cases
 and `hang_guard_iteration_only_portfolio`, which is hand-registered *as well as*
 discovered (it needs a `TIMEOUT` to report a hang, but is cheap enough to belong
-in the fast set), so one `TEST_CASE` accounts for two ctest tests. Of the 436,
+in the fast set), so one `TEST_CASE` accounts for two ctest tests. Of the 438,
 **6 carry the
 Catch2 `[slow]` tag** — the CHPED and UC-CHPED benchmark solves, ~45s of
 aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~25s
 wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 432 tests, ~12s with `-j`. This is what **pre-commit** runs.
+- `ctest -LE slow` — the other 434 tests, ~12s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
 - `ctest -L timing` — 4 tests: `timing_structural_batch_deadline` plus the three
   `timing_throughput_*` floors added for #125. Each is registered by an explicit

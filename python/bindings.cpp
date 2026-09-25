@@ -235,7 +235,12 @@ constexpr const char* kPairTableSumDoc =
     "for a List, universe_size for a Set -- and head/tail are length-n arrays.\n"
     "All are COPIED into the engine at node creation, so the search makes no\n"
     "Python call at all and resizing or freeing the caller's array afterwards\n"
-    "is harmless. A wrong shape raises here rather than being read past.";
+    "is harmless. A wrong shape raises here rather than being read past.\n"
+    "\n"
+    "Copied once per MODEL, not once per process. ParallelSearch's Python entry\n"
+    "points take a model factory, so a portfolio builds one Model -- and one\n"
+    "copy of this matrix -- per worker: an (n, n) float64 table costs\n"
+    "8 * n * n bytes per thread.";
 
 NB_MODULE(_cbls_core, m) {
     m.doc() = "CBLS: Constraint-Based Local Search engine (C++ core)";
@@ -404,7 +409,18 @@ NB_MODULE(_cbls_core, m) {
         .def("neq", &Model::neq)
         .def("lt", &Model::lt)
         .def("gt", &Model::gt)
-        .def("lambda_sum", &Model::lambda_sum)
+        .def(
+            "lambda_sum",
+            [](Model& model, int32_t list_var, std::function<double(int)> func) {
+                // Held to the same handle rule as lambda_table_sum and the pair
+                // forms: `wrap()` alone accepts a node handle or a scalar
+                // variable and builds a node that evaluates to 0.0 for ever,
+                // which from Python -- where the handle is a bare int -- reads
+                // as the model silently ignoring the term.
+                (void)table_universe(model, list_var, "lambda_sum");
+                return model.lambda_sum(list_var, std::move(func));
+            },
+            nb::arg("list_var"), nb::arg("func"))
         .def(
             "lambda_table_sum",
             [](Model& model, int32_t list_var, const Table1D& table) {
