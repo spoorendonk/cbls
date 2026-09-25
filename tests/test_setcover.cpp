@@ -287,3 +287,36 @@ TEST_CASE("Bool encoding returns a verified cover on scpe1", "[setcover]") {
     REQUIRE(verify_setcover(scm, inst).ok);
     REQUIRE(check.cost >= kScpe1Optimum);
 }
+
+// The structural-selection arm reaches the engine (#165).
+//
+// `cbls_setcover --selection` sets one `SearchConfig` field, and a flag whose
+// field the engine ignores must not ship (the rule benchmarks/common's
+// search_config_flags.h states). The probe is behavioural rather than a read-back
+// of the config: same instance, same seed, same iteration budget, three policies,
+// and the solutions must not all coincide. Neuter the apply step in
+// StructuralBatch and all three collapse onto one trajectory, which is exactly
+// what this fails on.
+TEST_CASE("the structural selection policy changes the Set search", "[setcover][structural]") {
+    SetCoverInstance inst = load_setcover(kScpe1Path);
+    std::vector<std::vector<int>> selections;
+    for (StructuralSelection selection :
+         {StructuralSelection::FirstImprovingSample, StructuralSelection::BestOfSample,
+          StructuralSelection::ViolationGuided}) {
+        SetCoverModel scm = build_set_model(inst);
+        SearchConfig config;
+        config.max_iterations = 20000;
+        config.structural_batch_probability = 1.0;
+        config.structural_selection = selection;
+        config.structural_sample_size = 4;
+        SearchResult result = solve(scm.model, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true,
+                                    nullptr, nullptr, 3, nullptr, config);
+        INFO("selection " << structural_selection_name(selection));
+        REQUIRE(result.feasible);
+        REQUIRE(check_cover(inst, scm.selected_columns()).covered);
+        selections.push_back(scm.selected_columns());
+    }
+    REQUIRE(selections.size() == 3);
+    const bool all_equal = selections[0] == selections[1] && selections[1] == selections[2];
+    REQUIRE_FALSE(all_equal);
+}

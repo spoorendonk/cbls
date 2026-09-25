@@ -8,6 +8,11 @@
 //   cbls_setcover --encoding set --time 30
 //   cbls_setcover --instance benchmarks/instances/setcover/scpe1.txt --seeds 5
 //   cbls_setcover --csv results.csv
+//   cbls_setcover --encoding set --selection violation_guided --sample-size 8
+//
+// ab_selection.sh in this directory is the A/B harness for the last of those:
+// the `Set` encoding under two structural-selection policies, several seeds per
+// arm, run serially.
 
 #include "data.h"
 #include "setcover_model.h"
@@ -51,6 +56,13 @@ struct Options {
     int seeds = 1;
     uint64_t first_seed = 42;
     double struct_prob = -1.0;  // <0 = engine auto (0.33 on a Set model)
+    // Structural-selection arm (#165). The default is the engine's own, which
+    // is the pre-#165 rule, so an unflagged run is the configuration the README
+    // reports.
+    cbls::StructuralSelection selection = cbls::StructuralSelection::FirstImprovingSample;
+    // 0 = leave SearchConfig's own default alone. Inert under the default
+    // selection, which scores exactly one sample.
+    int sample_size = 0;
     bool run_set = true;
     bool run_bool = true;
     std::string csv_path;
@@ -59,6 +71,11 @@ struct Options {
 struct Run {
     std::string instance;
     cbls::setcover::Encoding encoding;
+    // The selection policy read back off the SearchConfig the solve actually
+    // ran with, not off the parsed flag: a row has to record what the engine
+    // was given, or a flag that parsed and was never applied would publish
+    // under the arm it did not run.
+    const char* selection = "";
     uint64_t seed;
     double objective;
     bool feasible;
@@ -72,7 +89,8 @@ void print_usage() {
     printf(
         "usage: cbls_setcover [--dir D] [--instance F] [--time S] [--seeds N]\n"
         "                     [--seed S0] [--encoding set|bool|both] [--struct-prob P]\n"
-        "                     [--csv OUT]\n");
+        "                     [--selection first_improving|best_of_sample|violation_guided]\n"
+        "                     [--sample-size K] [--csv OUT]\n");
 }
 
 // Flag values are read through this rather than through
@@ -167,6 +185,19 @@ Options parse_args(int argc, char** argv, bool* ok) {
             opt.first_seed = v.integer("--seed", "seed");
         } else if (arg == "--struct-prob") {
             opt.struct_prob = v.number("--struct-prob", "probability");
+        } else if (arg == "--selection") {
+            const std::string name = v.next("first_improving|best_of_sample|violation_guided");
+            if (v.ok && !cbls::try_parse_structural_selection(name, opt.selection)) {
+                fprintf(stderr, "unknown selection '%s'\n", name.c_str());
+                v.ok = false;
+            }
+        } else if (arg == "--sample-size") {
+            const uint64_t k = v.integer("--sample-size", "count");
+            if (v.ok && (k == 0 || k > static_cast<uint64_t>(std::numeric_limits<int>::max()))) {
+                fprintf(stderr, "--sample-size must be a positive int\n");
+                v.ok = false;
+            }
+            opt.sample_size = static_cast<int>(k);
         } else if (arg == "--csv") {
             opt.csv_path = v.next("path");
         } else if (arg == "--encoding") {
@@ -199,6 +230,10 @@ Run solve_one(const cbls::setcover::SetCoverInstance& inst, cbls::setcover::Enco
 
     cbls::SearchConfig config;
     config.structural_batch_probability = opt.struct_prob;
+    config.structural_selection = opt.selection;
+    if (opt.sample_size > 0) {
+        config.structural_sample_size = opt.sample_size;
+    }
     cbls::SearchResult result =
         cbls::solve(scm.model, opt.time_limit, seed, /*use_fj=*/true, /*hook=*/nullptr,
                     /*lns=*/nullptr, /*lns_interval=*/0, /*callback=*/nullptr, config);
@@ -210,6 +245,7 @@ Run solve_one(const cbls::setcover::SetCoverInstance& inst, cbls::setcover::Enco
     Run run;
     run.instance = inst.name;
     run.encoding = encoding;
+    run.selection = cbls::structural_selection_name(config.structural_selection);
     run.seed = seed;
     // Report the recomputed cost, not the DAG objective: the two agreeing is
     // itself one of the verification checks.
@@ -242,15 +278,16 @@ void write_csv(const std::string& path, const std::vector<Run>& runs) {
         return;
     }
     fprintf(out,
-            "instance,encoding,seed,objective,optimum,gap_percent,feasible,verified,"
+            "instance,encoding,selection,seed,objective,optimum,gap_percent,feasible,verified,"
             "columns,seconds,iterations\n");
     for (const Run& r : runs) {
         auto it = published_optima().find(r.instance);
         double optimum = (it == published_optima().end()) ? -1.0 : it->second;
-        fprintf(out, "%s,%s,%llu,%.1f,%.1f,%.2f,%d,%d,%d,%.2f,%lld\n", r.instance.c_str(),
-                cbls::setcover::encoding_name(r.encoding), static_cast<unsigned long long>(r.seed),
-                r.objective, optimum, gap_percent(r.instance, r.objective), r.feasible ? 1 : 0,
-                r.verified ? 1 : 0, r.columns, r.seconds, static_cast<long long>(r.iterations));
+        fprintf(out, "%s,%s,%s,%llu,%.1f,%.1f,%.2f,%d,%d,%d,%.2f,%lld\n", r.instance.c_str(),
+                cbls::setcover::encoding_name(r.encoding), r.selection,
+                static_cast<unsigned long long>(r.seed), r.objective, optimum,
+                gap_percent(r.instance, r.objective), r.feasible ? 1 : 0, r.verified ? 1 : 0,
+                r.columns, r.seconds, static_cast<long long>(r.iterations));
     }
     std::fclose(out);
     printf("\nwrote %s\n", path.c_str());
