@@ -226,19 +226,34 @@ double evaluate(const ExprNode& node, const Model& model) {
         }
 
         case NodeOp::PairLambda: {
-            // Sum over consecutive pairs using pair lambda function
+            // Sum over consecutive pairs, with the closing rule and the two
+            // optional fixed-endpoint terms that `PairLambdaSpec` records.
+            // Contract for n = 0, 1, 2 is on Model::pair_lambda_sum.
             if (node.lambda_func_id < 0) {
                 return 0.0;
             }
             const auto& func = model.pair_lambda_func(node.lambda_func_id);
+            const auto& spec = model.pair_lambda_spec(node.lambda_func_id);
             const auto& ref = children[0];
             if (!ref.is_var) {
                 return 0.0;
             }
             const auto& v = model.var(ref.id);
+            const auto& el = v.elements;
             double s = 0.0;
-            for (size_t k = 0; k + 1 < v.elements.size(); ++k) {
-                s += func(v.elements[k], v.elements[k + 1]);
+            for (size_t k = 0; k + 1 < el.size(); ++k) {
+                s += func(el[k], el[k + 1]);
+            }
+            if (spec.mode == PairMode::Cyclic && el.size() >= 2) {
+                s += func(el.back(), el.front());
+            }
+            if (!el.empty()) {
+                if (spec.head_id >= 0) {
+                    s += model.lambda_func(spec.head_id)(el.front());
+                }
+                if (spec.tail_id >= 0) {
+                    s += model.lambda_func(spec.tail_id)(el.back());
+                }
             }
             return s;
         }

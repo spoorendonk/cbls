@@ -1,8 +1,10 @@
 #include "cbls/io.h"
 
 #include <fstream>
+#include <functional>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 
 namespace cbls {
@@ -179,6 +181,32 @@ const json& require_table(const json& j, const char* op_name, int line_num) {
     return j["table"];
 }
 
+// The PairLambda closing rule, as the format spells it.
+PairMode parse_pair_mode(const json& j, int line_num) {
+    if (!j.contains("mode")) {
+        return PairMode::Open;
+    }
+    const auto mode = j["mode"].get<std::string>();
+    if (mode == "open") {
+        return PairMode::Open;
+    }
+    if (mode == "cyclic") {
+        return PairMode::Cyclic;
+    }
+    throw std::invalid_argument("line " + std::to_string(line_num) + ": unknown PairLambda mode '" +
+                                mode + "'");
+}
+
+// One tabulated fixed-endpoint term, or an empty callable when the record
+// carries none -- which is what `pair_lambda_sum` reads as "no term".
+std::function<double(int)> endpoint_func(const json& j, const char* field) {
+    if (!j.contains(field)) {
+        return nullptr;
+    }
+    auto table = j[field].get<std::vector<double>>();
+    return [table](int e) -> double { return table.at(e); };
+}
+
 // Rebuild one non-Const node from its op and its already-resolved children.
 // Kept apart from the record-level plumbing above it precisely because it is a
 // wide table: one line per NodeOp, no shared state between the lines.
@@ -230,8 +258,15 @@ int32_t build_node(Model& m, NodeOp op, const json& j, const std::vector<int32_t
         case NodeOp::PairLambda: {
             auto table =
                 require_table(j, "PairLambda", line_num).get<std::vector<std::vector<double>>>();
-            return m.pair_lambda_sum(children.at(0),
-                                     [table](int a, int b) -> double { return table.at(a).at(b); });
+            // "mode" and the endpoint tables are absent from files written
+            // before the cyclic/endpoint forms existed; absent means the open
+            // chain with no endpoint terms, which is what those files meant.
+            const PairMode mode = parse_pair_mode(j, line_num);
+            auto head = endpoint_func(j, "head");
+            auto tail = endpoint_func(j, "tail");
+            return m.pair_lambda_sum(
+                children.at(0), [table](int a, int b) -> double { return table.at(a).at(b); },
+                std::move(head), std::move(tail), mode);
         }
         case NodeOp::Leq:
             return m.leq(children.at(0), children.at(1));
@@ -439,6 +474,23 @@ void tabulate_pair_lambda(const Model& model, const ExprNode& node, json& j) {
         }
         j["table"].push_back(row);
     }
+    // The closing rule and the endpoint terms are the rest of the node: a
+    // matrix alone round-trips a cyclic tour as an open chain, silently.
+    const PairLambdaSpec& spec = model.pair_lambda_spec(node.lambda_func_id);
+    j["mode"] = spec.mode == PairMode::Cyclic ? "cyclic" : "open";
+    auto tabulate_endpoint = [&model, &j, n](const char* field, int32_t func_id) {
+        if (func_id < 0) {
+            return;
+        }
+        const auto& endpoint_fn = model.lambda_func(func_id);
+        auto values = json::array();
+        for (int i = 0; i < n; ++i) {
+            values.push_back(endpoint_fn(i));
+        }
+        j[field] = values;
+    };
+    tabulate_endpoint("head", spec.head_id);
+    tabulate_endpoint("tail", spec.tail_id);
 }
 
 json node_record(const Model& model, const ExprNode& node, NameTable& var_names,

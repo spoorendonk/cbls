@@ -135,6 +135,32 @@ struct ExprNode {
     int32_t lambda_func_id = -1;  // index into ModelStructure::lambda_funcs
 };
 
+/// How a `PairLambda` node closes its chain of consecutive pairs.
+enum class PairMode : uint8_t {
+    Open,   //< e_0-e_1, ..., e_{n-2}-e_{n-1}. The original behaviour.
+    Cyclic  //< the Open pairs plus e_{n-1}-e_0, for n >= 2.
+};
+
+/// Everything a `PairLambda` node needs beyond its pair function: the closing
+/// rule and the two optional fixed-endpoint terms.
+///
+/// It is a SIDE TABLE in `ModelStructure`, parallel to `pair_lambda_funcs` and
+/// keyed by the same `ExprNode::lambda_func_id`, rather than three more
+/// `NodeOp` enumerators. `src/dag.cpp`'s two dispatch tables are 28 cases wide
+/// and already carry a cognitive-complexity suppression each; one variant per
+/// closing rule crossed with head/tail presence would be six more cases in both
+/// of them for no gain, since every variant evaluates through the same loop.
+///
+/// `head_id` and `tail_id` index `ModelStructure::lambda_funcs` -- the same
+/// table `lambda_sum` fills -- or are -1 for "no term". They are therefore
+/// shared across portfolio workers on exactly the terms the `lambda_funcs`
+/// comment states.
+struct PairLambdaSpec {
+    PairMode mode = PairMode::Open;
+    int32_t head_id = -1;  // index into ModelStructure::lambda_funcs, or -1
+    int32_t tail_id = -1;  // index into ModelStructure::lambda_funcs, or -1
+};
+
 /// Residual of `a <= b`, i.e. `a - b`, with the IEEE `inf - inf` indeterminacy
 /// resolved by the comparison the residual stands for — but *only* where the
 /// infinity is a written bound rather than an arithmetic overflow.

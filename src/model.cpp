@@ -379,10 +379,33 @@ int32_t Model::lambda_sum(int32_t list_var_id, std::function<double(int)> func) 
     return nid;
 }
 
-int32_t Model::pair_lambda_sum(int32_t list_var_id, std::function<double(int, int)> func) {
+int32_t Model::pair_lambda_sum(int32_t list_var_id, std::function<double(int, int)> func,
+                               PairMode mode) {
+    return pair_lambda_sum(list_var_id, std::move(func), nullptr, nullptr, mode);
+}
+
+int32_t Model::pair_lambda_sum(int32_t list_var_id, std::function<double(int, int)> func,
+                               std::function<double(int)> head, std::function<double(int)> tail,
+                               PairMode mode) {
     ModelStructure& st = mut();
     const ChildRef child = wrap(list_var_id);  // reject a bad handle before registering
+
+    // An empty callable means "no endpoint term", which is what -1 records.
+    // Registering an empty std::function instead would cost a
+    // std::bad_function_call on the evaluation path.
+    PairLambdaSpec spec;
+    spec.mode = mode;
+    if (head) {
+        st.lambda_funcs.push_back(std::move(head));
+        spec.head_id = static_cast<int32_t>(st.lambda_funcs.size() - 1);
+    }
+    if (tail) {
+        st.lambda_funcs.push_back(std::move(tail));
+        spec.tail_id = static_cast<int32_t>(st.lambda_funcs.size() - 1);
+    }
+
     st.pair_lambda_funcs.push_back(std::move(func));
+    st.pair_lambda_specs.push_back(spec);
     auto func_id = static_cast<int32_t>(st.pair_lambda_funcs.size() - 1);
 
     int32_t nid = alloc_node(NodeOp::PairLambda, {child});

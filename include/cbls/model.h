@@ -92,6 +92,11 @@ struct ModelStructure {
     // by reference. `Model::freeze` says so where a caller will read it.
     std::vector<std::function<double(int)>> lambda_funcs;
     std::vector<std::function<double(int, int)>> pair_lambda_funcs;
+    // Parallel to `pair_lambda_funcs` and the same length: entry i is the
+    // closing rule and the fixed-endpoint terms of the node whose
+    // `lambda_func_id` is i. See `PairLambdaSpec` in dag.h for why this is a
+    // side table rather than more `NodeOp` enumerators.
+    std::vector<PairLambdaSpec> pair_lambda_specs;
     std::vector<VarSequence> var_sequences;
     std::vector<std::pair<int, int>> var_to_seq;  // var_id -> (seq_idx, pos), resized lazily
 };
@@ -165,7 +170,43 @@ public:
     int32_t lt(int32_t a, int32_t b);
     int32_t gt(int32_t a, int32_t b);
     int32_t lambda_sum(int32_t list_var_id, std::function<double(int)> func);
-    int32_t pair_lambda_sum(int32_t list_var_id, std::function<double(int, int)> func);
+
+    /// Sum `func` over the consecutive pairs of a List (or Set) variable's
+    /// elements, optionally closing the chain and optionally charging the first
+    /// and last element against a fixed endpoint.
+    ///
+    /// With `e` the variable's `elements` and `n == e.size()`:
+    ///
+    ///     head(e_0) + sum_{k < n-1} func(e_k, e_{k+1}) + tail(e_{n-1})
+    ///                + [mode == Cyclic && n >= 2] func(e_{n-1}, e_0)
+    ///
+    /// The short cases are DEFINED, not edge cases -- a List whose length
+    /// varies makes them routine:
+    ///
+    ///  - `n == 0`: 0.0 for every variant, head and tail included. An unused
+    ///    route costs nothing.
+    ///  - `n == 1`: `head(e_0) + tail(e_0)`. There is no pair, and `Cyclic`
+    ///    adds nothing: a single element is not a pair with itself.
+    ///  - `n == 2`: `head(e_0) + func(e_0, e_1) + tail(e_1)`, and `Cyclic` adds
+    ///    `func(e_1, e_0)` -- the two-city tour traverses its one edge twice,
+    ///    which is the convention a distance matrix that need not be symmetric
+    ///    requires.
+    ///
+    /// `Cyclic` is the tour cost of a TSP over one List. `head`/`tail` are the
+    /// depot legs of a CVRP route, where a cyclic sum over the customers alone
+    /// would wrongly add `func(e_{n-1}, e_0)`; the two are independent, so a
+    /// cyclic sum with endpoint terms is expressible even though no use case
+    /// here asks for it.
+    ///
+    /// `func`, `head` and `tail` are invoked by EVERY portfolio worker
+    /// concurrently once the model is frozen -- see `freeze()`.
+    int32_t pair_lambda_sum(int32_t list_var_id, std::function<double(int, int)> func,
+                            PairMode mode = PairMode::Open);
+    /// The fixed-endpoint form. Either callable may be empty, meaning "no term";
+    /// passing both empty is the plain `mode` overload.
+    int32_t pair_lambda_sum(int32_t list_var_id, std::function<double(int, int)> func,
+                            std::function<double(int)> head, std::function<double(int)> tail,
+                            PairMode mode = PairMode::Open);
 
     void add_constraint(int32_t expr_id);
     void minimize(int32_t expr_id);
@@ -443,6 +484,15 @@ public:
             throw std::out_of_range("pair lambda func index out of range");
         }
         return s().pair_lambda_funcs[idx];
+    }
+
+    /// The closing rule and endpoint terms of the pair lambda `idx`. Same index
+    /// space as `pair_lambda_func`, and the two tables are kept the same length.
+    [[nodiscard]] const PairLambdaSpec& pair_lambda_spec(int32_t idx) const {
+        if (idx < 0 || idx >= static_cast<int32_t>(s().pair_lambda_specs.size())) {
+            throw std::out_of_range("pair lambda spec index out of range");
+        }
+        return s().pair_lambda_specs[idx];
     }
 
     // State snapshot/restore
