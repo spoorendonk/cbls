@@ -511,7 +511,7 @@ private:
     // which is how max_real_violation and LNS::state_key are safe (the comment
     // in search.cpp calls that "safe by exclusion"). Note a running MINIMUM over
     // a trajectory cannot be written as a single per-constraint difference the
-    // way structural_pass's pairwise accept test could; excluding the row is
+    // way the structural batch's pairwise accept test could; excluding the row is
     // what makes the running form sound.
     //
     // FINITE positive residuals only. A real row can evaluate to +inf or NaN on

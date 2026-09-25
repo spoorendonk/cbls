@@ -279,7 +279,7 @@ TEST_CASE("randomize_var keeps an unbounded model's assignment finite", "[unboun
 TEST_CASE("standard moves stay finite on an unbounded domain", "[unbounded][moves]") {
     // `generate_standard_moves` is a public entry point (and a Python binding)
     // that read the raw bounds too. It is NOT on solve()'s default path —
-    // structural_pass calls it only for List/Set — but `normal(0, (ub-lb)*0.1)`
+    // the structural batch calls it only for List/Set — but `normal(0, (ub-lb)*0.1)`
     // is NaN when the width is infinite, and int_rand's cast hit INT64_MIN.
     Model m;
     int32_t x = m.float_var(-kInf, kInf, "x");

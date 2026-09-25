@@ -611,7 +611,7 @@ TEST_CASE("a kick on one large List is bounded by the deadline, not by the List"
     // silence — a kick would then inherit a grown stride and run 64 moves inside
     // the first large variable (~35 ms rather than ~0.55 ms on the 41k Set of
     // #115). That exact stride-persistence bug already shipped once in
-    // structural_pass, where it went inert on 160 of 170 pharma-glsp instances
+    // the structural sweep, where it went inert on 160 of 170 pharma-glsp instances
     // (the benchmark is gone in #28; the bug it exposed is not).
     // Unbounded, this is 10000 — what the pass ran before, whatever the budget.
     REQUIRE(fj.structural_kick_moves() == 1);

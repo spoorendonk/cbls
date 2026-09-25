@@ -372,7 +372,7 @@ Tracks per-constraint violation and the GLS weight vector.
   restores node state, so it is not reentrant on a shared Model — each search
   thread owns its own Model.) The GFJ jump *score* is `-deltaG` (positive =
   improving). Scalar variables only.
-- `snapshot_violations(out)` / `weighted_delta_from(snapshot)` — the structural
+- `snapshot_violations(out)` / `weighted_delta_from(snapshot[, rows])` — the structural
   counterpart of the above, for moves on List/Set variables that the scalar-only
   probe cannot score. Snapshot the accepted assignment's per-constraint
   violations once, apply a candidate move, then read the weighted change against
@@ -652,14 +652,23 @@ feasibility; the caller must `resync()` afterward.
 
 ## Structural Batch
 
-**File:** `src/search.cpp` (`structural_pass`)
+**Files:** `src/structural_batch.cpp` (`StructuralBatch`),
+`include/cbls/move_generator.h` (`MoveGenerator`, `NeighbourList`,
+`StructuralSelection`), `src/moves.cpp` (the built-in typed moves)
 
 FJ jumps only scalar variables, so List/Set-structured models cannot improve
 their structural assignment through FJ alone. The structural batch is the
-List/Set peer of an FJ/NJ batch: it sweeps every List/Set variable, generates
-the candidate structural moves for it, and greedily keeps any move that reduces
-total weighted violation (negative weighted `deltaG` under the current GLS
-weights `W`).
+List/Set peer of an FJ/NJ batch: it sweeps the registered **move generators**,
+has each propose candidate moves for the variables in its scope, and greedily
+keeps any move that reduces total weighted violation (negative weighted `deltaG`
+under the current GLS weights `W`).
+
+By default the generators are the built-in ones — exactly one per List/Set
+variable, in variable-id order, each proposing exactly the typed moves the
+hard-coded sweep proposed before #165 — so an unconfigured run takes the
+trajectory it always took, bit for bit at one thread on a given seed. That is
+pinned by `tests/test_structural_equivalence.cpp`, whose digests were recorded
+against the engine at `a805cb6`.
 
 That `deltaG` is accumulated per constraint, via
 `ViolationManager::snapshot_violations` / `weighted_delta_from`, and not by
@@ -705,6 +714,15 @@ It is this second half, not the clamped-row half, that moved the `Set` numbers
 below: setcover's objective is finite throughout, so no row is ever clamped
 there.
 
+Since #165 the delta is also **restricted to the rows the move can have
+changed** — the union of the moved generator's scope's G_v
+(`Model::constraints_of_var`), ascending — rather than rescanning every
+constraint. That is the same `double` and not merely the same answer: a row
+outside the union has the node value it had when the snapshot was taken, so
+`now == snapshot[i]` holds bitwise and *both* versions skip it, and ascending
+order keeps the surviving terms in one summation sequence. The full rescan
+remains the fallback for a generator that declares no scope.
+
 Moves come from `generate_standard_moves` (`src/moves.cpp`):
 
 | Type  | Moves |
@@ -724,13 +742,97 @@ auto-selects `0.33` when the model has any List/Set variable and `0.0`
 otherwise; scalar-only models always get `0.0`. After a structural batch commits
 anything, the engine `resync()`s its scan set.
 
+### Registering a move generator
+
+`SearchConfig::move_generators` takes `shared_ptr<const MoveGenerator>`s. A
+generator names the variables it moves (`scope()`), appends candidates
+(`generate`), is told when one of its moves was committed (`on_commit`) and
+hands out a per-worker copy (`clone`). The built-ins are peers registered the
+same way, and `default_move_generators(model, neighbours)` returns them so a
+caller assembling its own set can start from them. `default_structural_generators
+= false` drops them.
+
+Three contracts the batch relies on, all stated on the class:
+
+- **`generate` must return in bounded time.** The deadline is checked *between*
+  generators, never inside one (#105), so an unbounded `generate` is an
+  unbounded overrun of `solve()`'s budget. One generator per variable is what
+  keeps that check where the pre-#165 sweep had it — between variables.
+- **`clone()` must return an independent object.** Every portfolio worker builds
+  its own `StructuralBatch` and therefore its own clones, so a cache or a cursor
+  a generator holds is per-worker state. A clone that shared it would be a data
+  race across worker threads (#157); `tests/test_parallel.cpp` pins that the
+  registered instance is never the one the search runs.
+- **`scope()` must name every variable the moves can change.** It is what the
+  G_v restriction and `ViolationGuided`'s skip are computed from; a move
+  touching a variable outside the scope is scored *wrongly*, not merely
+  inefficiently.
+
+Not routed through the generator set: the diversification kick's structural half
+(`FeasibilityJump::perturb_structural`). It draws from the same RNG as the rest
+of the search, so changing what it draws shifts every later draw on every model
+with a structured variable — and it wants an arbitrary legal move rather than a
+good one, which is the opposite of what a cost-aware generator gives it. #164
+owns that change.
+
+### Selection policies and neighbour lists
+
+`SearchConfig::structural_selection` chooses what the batch does with a
+generator's candidates:
+
+| Policy | Rule |
+|---|---|
+| `FirstImprovingSample` (**default**) | one `generate` call, each candidate applied in turn and kept if it strictly improves — the pre-#165 rule, bit for bit |
+| `BestOfSample` | draw up to `structural_sample_size` candidates, score them all, commit the best improving one |
+| `ViolationGuided` | `BestOfSample`, restricted to generators whose scope can still change a **violated** row |
+
+`ViolationGuided`'s restriction is **exact rather than heuristic**: if no row in
+the scope's G_v is violated at the accepted assignment, every one of those rows
+contributes 0 to the weighted violation, so a move over that scope can only
+leave the total alone or raise it. Skipping cannot skip an improving move.
+
+It is, however, the **variable-level** form of what #165 describes. The issue
+asks for the *element* to be chosen from those appearing in violated
+constraints; that is not recoverable from the DAG, which tracks incidence per
+variable, and a `Set` read through a single `Lambda` node puts every element of
+the universe in every row that node feeds. Element-level guidance therefore
+needs either a generator-supplied element scorer or the custom-invariant work of
+#166. What is available today is the variable-level choice plus whatever
+granularity a neighbour list supplies.
+
+`NeighbourList` is that granularity — Toth & Vigo's granular neighbourhood
+(INFORMS J. Computing 15(4), 2003; used throughout modern routing heuristics
+such as Vidal's HGS-CVRP). For each element of a universe it names the `k`
+others a move involving it may reach, nearest first under a cost the model
+author supplies. Handed to the built-ins through
+`SearchConfig::structural_neighbours`, it makes a List move's second position
+the position of one of `elements[i]`'s neighbours, and a Set add/swap bring in
+the nearest neighbour of a currently-selected element that is not already in.
+Both fall back to the uniform draw when the list offers nothing usable, so a
+partial list restricts where the search *looks* and never what it can *reach*.
+It is validated once at construction and indexed unchecked thereafter; `of()` is
+nonetheless total on an out-of-range element, which is what keeps the type safe
+to expose to Python (#156).
+
+`structural_sample_size` defaults to 8. That is a **neutral placeholder, not a
+measured choice**, and nothing in this repo is derived from it: the two policies
+it feeds are opt-in and off by default. `benchmarks/setcover/ab_selection.sh`
+is the harness for measuring it, and the policies, on the set-covering roster.
+
 ### Structure-only models: what the structural batch is and is not
 
-The structural batch is a **first-improvement hill climber over a 3-5 move
-random sample**, not a guided search. Per pass and per variable, `set_moves`
-proposes exactly one random add, one random remove and one random swap; nothing
-chooses *which* element on violation grounds, the way FJ's jump table and
-best-of-N scan-set sampling choose a scalar's value.
+In its **default configuration** the structural batch is a
+**first-improvement hill climber over a 3-5 move random sample**, not a guided
+search. Per pass and per variable, `set_moves` proposes exactly one random add,
+one random remove and one random swap; nothing chooses *which* element on
+violation grounds, the way FJ's jump table and best-of-N scan-set sampling
+choose a scalar's value.
+
+#165 added the machinery to change that — `BestOfSample` / `ViolationGuided`
+and neighbour lists above — but the default is unchanged and **the measurement
+below has not been re-run against the new policies**. Until it is, the result
+that follows is the result: read the numbers as describing the default
+configuration, which is what a user gets.
 
 That is invisible on a mixed model — where List/Set variables sit alongside
 scalars that GFJ drives — but it is the whole search on a model whose
@@ -979,9 +1081,9 @@ While time and `max_iterations` remain, each pass:
    novelty batches mutate state outside FJ's bookkeeping, so they set a `resync`
    flag.
 2. **Run the batch.** `fj.batch(batch_iterations)`, `fj.apply_novelty_jump()`,
-   or `structural_pass(...)`. Every batch kind is bounded by the wall-clock
+   or `StructuralBatch::run(...)`. Every batch kind is bounded by the wall-clock
    deadline from *inside*, not just at the loop top: FJ strides a check through
-   its GLS loop, and the structural sweep checks between variables (see
+   its GLS loop, and the structural sweep checks between generators (see
    [Deadline bound](#deadline-bound)), so a batch entered just before the
    deadline cannot run to completion past it. LNS repair is bounded separately,
    by `remaining()` at its call site.
@@ -1049,7 +1151,7 @@ before the deadline could overrun it. Five can, and each is bounded separately:
 | 1 | Feasibility Jump batch | handed the same absolute deadline, checked inside the GLS loop on a stride bounded two ways: at most 64 iterations, and at most 1/64 of the *remaining* budget in predicted time (#113) | `gfj.time_limit = budget_seconds` |
 | 2 | `InnerSolverHook` | not *started* when the budget is spent — a hook is arbitrary user code, so its running time is unknowable | `if (hook && !past_deadline())` |
 | 3 | LNS repair | handed `min(2.0, remaining())`, not its own independent 2s | `diversify()` |
-| 4 | STRUCTURAL sweep | checked between variables (#105) | `structural_pass` |
+| 4 | STRUCTURAL sweep | checked between generators, one per structured variable by default (#105) | `StructuralBatch::run` |
 | 5 | diversification kick, structural half | checked between structural *moves*, on a stride bounded the same two ways as row 1: at most 64 moves, and at most 1/64 of the *remaining* budget in predicted time (#115) | `perturb_structural` |
 
 Bound 3 has two halves, and only the lower one is about the deadline. The
@@ -1211,7 +1313,7 @@ rather than quadratic in one variable — the shape #115 is about. Closing it me
 bounding failed *attempts* as well as moves.
 
 No clock read influences control flow when `time_limit <= 0` — `past_deadline()`,
-`remaining()`, `structural_pass`, `perturb_structural` and FeasibilityJump's two
+`remaining()`, `StructuralBatch::run`, `perturb_structural` and FeasibilityJump's two
 strided checks all short-circuit on their `has_deadline` flag — so with no
 `SolveCallback` attached
 the loop reads no clock at all, and iteration-budgeted runs stay bit-identical
@@ -1318,7 +1420,7 @@ first check lands after a single move. Accepting 65 would let the re-arm be
 deleted in silence, and a kick would then inherit a grown stride and spend 64
 moves inside the first large variable (~35 ms rather than ~0.55 ms on #115's 41k
 Set). That is not hypothetical: the same stride-persistence bug already shipped
-once in `structural_pass`, where the stride outgrew the model's structured
+once in the structural sweep, where the stride outgrew the model's structured
 variable count and the check went inert on 160 of 170 pharma-glsp instances
 (the benchmark is gone in #28; the bug it exposed is not).
 
@@ -2075,7 +2177,7 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
     ├── run batch:
     │     FJ:         fj.batch(batch_iterations)      # GLS: best-of-N jump + weight bump
     │     NOVELTY:    fj.apply_novelty_jump()         # compound moves; resync
-    │     STRUCTURAL: structural_pass()               # list/set moves; resync
+    │     STRUCTURAL: structural_.run()              # move generators; resync
     │
     ├── if max_real_violation() <= config.feasibility_tolerance:
     │     ├── record_best()                           # bank it BEFORE polishing
