@@ -1,5 +1,7 @@
 #include "cbls/randomize.h"
 
+#include "cbls/model.h"
+
 #include <algorithm>
 #include <cmath>
 #include <utility>
@@ -88,10 +90,29 @@ void randomize_structured_var(Variable& var, RNG& rng, ListOrder order) {
             // once the list has been moved: Regenerate discards that order,
             // Perturb keeps the same elements in a new arrangement. LNS needs
             // the latter — see ListOrder.
+            //
+            // Perturb is length-preserving whatever the List is, which is what
+            // makes LNS destroy safe on a partition member: it rearranges the
+            // elements that list already holds and can neither gain nor lose one.
             if (order == ListOrder::Perturb) {
                 rng.shuffle(var.elements);
-            } else {
+            } else if (var.list_init == ListInit::Identity) {
+                // universe == min == max here (list_var enforces it), so this is
+                // the pre-#164 draw on the pre-#164 variable, verbatim: one
+                // `rng.permutation(max_size)` and nothing else. Keeping it a
+                // distinct arm rather than a special case of the Random one below
+                // is what makes every permutation trajectory bit-identical.
                 var.elements = rng.permutation(var.max_size);
+            } else if (var.list_init == ListInit::Empty) {
+                var.elements.clear();  // no draw
+            } else {
+                // Random: a uniformly random admissible length, then that many
+                // distinct elements of the universe in a uniformly random order.
+                // `choice` shuffles the whole universe and truncates, so the
+                // ORDER is random too -- which a List needs and a Set does not
+                // care about.
+                const int size = static_cast<int>(rng.integers(var.min_size, var.max_size + 1));
+                var.elements = rng.choice(var.universe_size, size);
             }
             break;
         case VarType::Set: {
@@ -101,6 +122,62 @@ void randomize_structured_var(Variable& var, RNG& rng, ListOrder order) {
         }
         default:  // Bool, Int, Float carry no elements
             break;
+    }
+}
+
+// Lay `part` out as a uniformly random assignment that satisfies its cover:
+// every list within its own [min_len, max_len], every element in at most one
+// list, and -- for `Cover::Exact`, which `add_list_partition` has already
+// checked is achievable -- every element in exactly one.
+//
+// Two passes over one shuffled universe. The first hands each list its minimum
+// length, which is what makes the result feasible at all; the second offers each
+// remaining element to a uniformly chosen list that still has room. Under
+// `Exact` the second pass places every element, because the validated
+// `sum(max_len) >= universe` guarantees some list always has room. Under
+// `AtMostOnce` an element whose draw finds no room is simply left unassigned,
+// which is exactly what that cover permits.
+//
+// The lists are otherwise left in the order the draw produced: an inter-list
+// move reorders them anyway, and imposing one here would only look tidier.
+void randomize_list_partition(Model& model, const ListPartition& part, RNG& rng) {
+    for (int32_t vid : part.list_ids) {
+        model.var_mut(vid).elements.clear();
+    }
+    if (part.list_ids.empty() || part.universe_size <= 0) {
+        return;
+    }
+    std::vector<int32_t> pool = rng.permutation(part.universe_size);
+    size_t next = 0;
+    for (int32_t vid : part.list_ids) {
+        Variable& v = model.var_mut(vid);
+        const auto want = static_cast<size_t>(v.min_size);
+        v.elements.reserve(want);
+        for (size_t k = 0; k < want && next < pool.size(); ++k, ++next) {
+            v.elements.push_back(pool[next]);
+        }
+    }
+    // Candidates are compacted in place as they fill up, so the draw below is
+    // uniform over the lists that can still take an element rather than over all
+    // of them -- otherwise a partition of one large and many tiny lists would
+    // spend most of its draws on lists with no room.
+    std::vector<int32_t> open_lists;
+    open_lists.reserve(part.list_ids.size());
+    for (int32_t vid : part.list_ids) {
+        const Variable& v = model.var(vid);
+        if (static_cast<int32_t>(v.elements.size()) < v.max_size) {
+            open_lists.push_back(vid);
+        }
+    }
+    for (; next < pool.size() && !open_lists.empty(); ++next) {
+        const auto pick =
+            static_cast<size_t>(rng.integers(0, static_cast<int64_t>(open_lists.size())));
+        Variable& v = model.var_mut(open_lists[pick]);
+        v.elements.push_back(pool[next]);
+        if (static_cast<int32_t>(v.elements.size()) >= v.max_size) {
+            open_lists[pick] = open_lists.back();
+            open_lists.pop_back();
+        }
     }
 }
 

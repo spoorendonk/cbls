@@ -29,12 +29,45 @@ void initialize_random(Model& model, RNG& rng) {
 }
 
 void initialize_structured_random(Model& model, RNG& rng) {
+    // A model with no partition takes the loop it always took, draw for draw:
+    // the partition pass below allocates nothing and draws nothing for it, and
+    // the early return keeps even the `partition_of_list` lookup off the path.
+    if (model.list_partitions().empty()) {
+        for (int32_t v = 0; v < static_cast<int32_t>(model.num_vars()); ++v) {
+            Variable& var = model.var_mut(v);
+            if (!is_structured(var.type)) {
+                continue;
+            }
+            randomize_var(var, rng);
+        }
+        return;
+    }
+    // With partitions, each is laid out as a WHOLE -- "every element in exactly
+    // one list" is not a property of any single list -- at the position of its
+    // lowest-numbered member, so the sweep stays in variable order and a
+    // partition is filled exactly once.
     for (int32_t v = 0; v < static_cast<int32_t>(model.num_vars()); ++v) {
         Variable& var = model.var_mut(v);
         if (!is_structured(var.type)) {
             continue;
         }
-        randomize_var(var, rng);
+        const int part = model.partition_of_list(v);
+        if (part < 0) {
+            randomize_var(var, rng);
+            continue;
+        }
+        const ListPartition& partition = model.list_partitions()[static_cast<size_t>(part)];
+        if (partition.list_ids.empty()) {
+            continue;  // unreachable: add_list_partition rejects an empty group
+        }
+        // Fill it at its lowest-numbered member -- the one this sweep reaches
+        // first -- so a partition is laid out exactly once. `list_ids` keeps the
+        // caller's order rather than an ascending one, so this is a min_element
+        // rather than a front() test.
+        if (*std::min_element(partition.list_ids.begin(), partition.list_ids.end()) != v) {
+            continue;
+        }
+        randomize_list_partition(model, partition, rng);
     }
 }
 

@@ -149,6 +149,45 @@ namespace {
 
 using NameMap = std::unordered_map<std::string, int32_t>;
 
+// How a List record spells `ListInit`. Absent means Empty, which is
+// `list_var`'s own default for the variable-length form.
+ListInit parse_list_init(const json& j) {
+    const auto init = j.value("init", std::string("empty"));
+    if (init == "identity") {
+        return ListInit::Identity;
+    }
+    if (init == "empty") {
+        return ListInit::Empty;
+    }
+    if (init == "random") {
+        return ListInit::Random;
+    }
+    throw std::invalid_argument("unknown List init '" + init + "'");
+}
+
+const char* list_init_name(ListInit init) {
+    switch (init) {
+        case ListInit::Identity:
+            return "identity";
+        case ListInit::Empty:
+            return "empty";
+        case ListInit::Random:
+            return "random";
+    }
+    return "empty";
+}
+
+Cover parse_cover(const json& j) {
+    const auto cover = j.value("cover", std::string("exact"));
+    if (cover == "exact") {
+        return Cover::Exact;
+    }
+    if (cover == "at_most_once") {
+        return Cover::AtMostOnce;
+    }
+    throw std::invalid_argument("unknown partition cover '" + cover + "'");
+}
+
 // One `{"var": ...}` record, whose name the caller has already read. Returns the
 // new variable's handle.
 int32_t load_var_record(Model& m, const json& j, const std::string& name) {
@@ -160,8 +199,19 @@ int32_t load_var_record(Model& m, const json& j, const std::string& name) {
             return m.int_var(j.value("lb", 0), j.value("ub", 1), name);
         case VarType::Float:
             return m.float_var(j.value("lb", 0.0), j.value("ub", 1.0), name);
-        case VarType::List:
-            return m.list_var(j.at("n").get<int>(), name);
+        case VarType::List: {
+            const int n = j.at("n").get<int>();
+            // A permutation List carries `n` and nothing else -- which is what
+            // every file written before #164 holds, and what the writer still
+            // emits for one, byte for byte. The three optional keys appear
+            // together or not at all.
+            if (!j.contains("min_len") && !j.contains("max_len") && !j.contains("init")) {
+                return m.list_var(n, name);
+            }
+            const int min_len = j.value("min_len", 0);
+            const int max_len = j.value("max_len", n);
+            return m.list_var(n, min_len, max_len, parse_list_init(j), name);
+        }
         case VarType::Set: {
             int n = j.at("n").get<int>();
             int min_sz = j.value("min_size", 0);
@@ -335,6 +385,15 @@ void load_record(Model& m, const json& j, NameMap& name_to_handle, int line_num)
         std::string name = j["node"].get<std::string>();
         int32_t node_id = load_node_record(m, j, name_to_handle, line_num);
         name_to_handle[name] = node_id;
+    } else if (j.contains("partition")) {
+        // `{"partition": [<list names>], "cover": ...}` (#164). A structural
+        // declaration rather than a node, so it resolves names like a constraint
+        // does and adds nothing to the DAG.
+        std::vector<int32_t> lists;
+        for (const auto& list_name : j["partition"]) {
+            lists.push_back(resolve(list_name.get<std::string>(), name_to_handle, line_num));
+        }
+        m.add_list_partition(lists, parse_cover(j));
     } else if (j.contains("constraint")) {
         m.add_constraint(resolve(j["constraint"].get<std::string>(), name_to_handle, line_num));
     } else if (j.contains("minimize")) {
@@ -425,7 +484,17 @@ json var_record(const Variable& var, const std::string& name) {
             j["ub"] = var.ub;
             break;
         case VarType::List:
-            j["n"] = var.max_size;
+            j["n"] = var.universe_size;
+            // A permutation writes `n` alone -- the bytes it has always written,
+            // which is what keeps `save(load(save)) == save` on every file that
+            // predates #164. The three keys are emitted only when the List is
+            // something that form cannot express.
+            if (var.min_size != var.universe_size || var.max_size != var.universe_size ||
+                var.list_init != ListInit::Identity) {
+                j["min_len"] = var.min_size;
+                j["max_len"] = var.max_size;
+                j["init"] = list_init_name(var.list_init);
+            }
             break;
         case VarType::Set:
             j["n"] = var.universe_size;
@@ -446,7 +515,11 @@ void tabulate_lambda(const Model& model, const ExprNode& node, json& j) {
         throw std::runtime_error("Lambda node child must be a variable");
     }
     const auto& var = model.var(child_ref.id);
-    int n = (var.type == VarType::Set) ? var.universe_size : var.max_size;
+    // `universe_size` for BOTH structured types (#164): a List's elements range
+    // over its universe too, and `max_size` is only its length bound -- the same
+    // distinction the Set branch below has always made, and which a List had no
+    // way to express before variable-length Lists existed.
+    int n = var.universe_size;
     if (n > 10000) {
         throw std::runtime_error("Lambda universe too large to tabulate (" + std::to_string(n) +
                                  " > 10000)");
@@ -476,7 +549,7 @@ void tabulate_pair_lambda(const Model& model, const ExprNode& node, json& j) {
     // correctly anyway, which is the bug being fixed. And a Set whose
     // universe_size exceeds the cap below while its max_size did not now refuses
     // to serialise instead of writing a matrix too narrow to read back.
-    int n = (var.type == VarType::Set) ? var.universe_size : var.max_size;
+    int n = var.universe_size;
     if (n > 1000) {
         throw std::runtime_error("PairLambda universe too large to tabulate (" + std::to_string(n) +
                                  " > 1000)");
@@ -577,6 +650,20 @@ void save_model(const Model& model, std::ostream& out) {
 
     for (const auto& var : model.variables()) {
         out << var_record(var, var_names[var.id]).dump() << '\n';
+    }
+
+    // Partitions follow the variables and precede the nodes: they name variables
+    // only, and `add_list_partition` requires every member to exist. A model with
+    // none writes nothing here, so files that predate #164 round-trip unchanged.
+    for (const ListPartition& part : model.list_partitions()) {
+        json j;
+        auto names = json::array();
+        for (int32_t vid : part.list_ids) {
+            names.push_back(var_names[vid]);
+        }
+        j["partition"] = names;
+        j["cover"] = (part.cover == Cover::Exact) ? "exact" : "at_most_once";
+        out << j.dump() << '\n';
     }
 
     // Nodes in topological order, so a reader sees every child before its parent.

@@ -229,12 +229,43 @@ int32_t Model::float_var(double lb, double ub, const std::string& name) {
 }
 
 int32_t Model::list_var(int n, const std::string& name) {
+    return list_var(n, n, n, ListInit::Identity, name);
+}
+
+int32_t Model::list_var(int universe, int min_len, int max_len, ListInit init,
+                        const std::string& name) {
+    if (universe < 0) {
+        throw std::invalid_argument("list_var: negative universe");
+    }
+    if (min_len < 0 || min_len > max_len || max_len > universe) {
+        throw std::invalid_argument("list_var: require 0 <= min_len <= max_len <= universe");
+    }
+    if (init == ListInit::Identity && (min_len != universe || max_len != universe)) {
+        // Identity means "every element, in order", which is only a legal
+        // assignment when the length is pinned at the universe. Rejecting it
+        // here is what lets `randomize_structured_var` read Identity as exactly
+        // the pre-#164 permutation draw.
+        throw std::invalid_argument(
+            "list_var: ListInit::Identity requires min_len == max_len == universe");
+    }
     int32_t vid = alloc_var(VarType::List, 0.0, 0.0, name);
     auto& v = vars_[vid];
-    v.max_size = n;
-    v.elements.resize(n);
-    for (int i = 0; i < n; ++i) {
-        v.elements[i] = i;
+    v.universe_size = universe;
+    v.min_size = min_len;
+    v.max_size = max_len;
+    v.list_init = init;
+    if (init == ListInit::Identity) {
+        v.elements.resize(universe);
+        for (int i = 0; i < universe; ++i) {
+            v.elements[i] = i;
+        }
+    } else {
+        // Empty and Random both start empty; `initialize_structured_random`
+        // fills a Random list (and any Exact-partition member) before the search
+        // reads it. A model that never calls it -- a bare `full_evaluate` on a
+        // freshly built model -- therefore sees an empty list, which is a legal
+        // assignment whenever min_len is 0 and the honest answer otherwise.
+        v.elements.clear();
     }
     return -(vid + 1);
 }
@@ -435,6 +466,10 @@ Expr Model::List(int n, const std::string& name) {
     return {this, list_var(n, name)};
 }
 
+Expr Model::List(int universe, int min_len, int max_len, ListInit init, const std::string& name) {
+    return {this, list_var(universe, min_len, max_len, init, name)};
+}
+
 Expr Model::Set(int n, int min_size, int max_size, const std::string& name) {
     return {this, set_var(n, min_size, max_size, name)};
 }
@@ -519,6 +554,80 @@ void Model::add_var_sequence(const std::vector<int32_t>& var_ids, int min_block_
     }
 
     st.var_sequences.push_back(std::move(seq));
+}
+
+// A partition is a structural declaration, so it lives in ModelStructure -- but
+// it also flips `Variable::partitioned`, which lives in the per-model variable
+// array. Both are written here, once, so a member can never be in the structure
+// without the flag that stops `list_moves` proposing a move which would break
+// the invariant.
+int32_t Model::add_list_partition(const std::vector<int32_t>& lists, Cover cover) {
+    require_open("add_list_partition");
+    if (lists.empty()) {
+        throw std::invalid_argument("add_list_partition: no lists");
+    }
+    ListPartition part;
+    part.cover = cover;
+    part.list_ids.reserve(lists.size());
+    int64_t min_total = 0;
+    int64_t max_total = 0;
+    for (int32_t handle : lists) {
+        // Var handles, as every other public entry point takes them.
+        const int32_t vid = (handle < 0) ? handle_to_var_id(handle) : handle;
+        if (vid < 0 || vid >= static_cast<int32_t>(vars_.size())) {
+            throw std::invalid_argument("add_list_partition: variable handle out of range");
+        }
+        const Variable& v = vars_[static_cast<size_t>(vid)];
+        if (v.type != VarType::List) {
+            throw std::invalid_argument("add_list_partition: '" + v.name +
+                                        "' is not a List variable");
+        }
+        if (v.partitioned ||
+            std::find(part.list_ids.begin(), part.list_ids.end(), vid) != part.list_ids.end()) {
+            throw std::invalid_argument("add_list_partition: '" + v.name +
+                                        "' is already in a partition");
+        }
+        if (part.list_ids.empty()) {
+            part.universe_size = v.universe_size;
+        } else if (v.universe_size != part.universe_size) {
+            throw std::invalid_argument(
+                "add_list_partition: every list must share one universe size");
+        }
+        if (v.list_init == ListInit::Identity && lists.size() > 1) {
+            throw std::invalid_argument(
+                "add_list_partition: ListInit::Identity puts every element in every list");
+        }
+        min_total += v.min_size;
+        max_total += v.max_size;
+        part.list_ids.push_back(vid);
+    }
+    if (min_total > part.universe_size) {
+        throw std::invalid_argument("add_list_partition: the minimum lengths exceed the universe");
+    }
+    if (cover == Cover::Exact && max_total < part.universe_size) {
+        throw std::invalid_argument(
+            "add_list_partition: the maximum lengths cannot cover the universe");
+    }
+
+    ModelStructure& st = mut();
+    const auto index = static_cast<int32_t>(st.list_partitions.size());
+    for (int32_t vid : part.list_ids) {
+        if (vid >= static_cast<int32_t>(st.var_to_partition.size())) {
+            st.var_to_partition.resize(static_cast<size_t>(vid) + 1, -1);
+        }
+        st.var_to_partition[static_cast<size_t>(vid)] = index;
+        vars_[static_cast<size_t>(vid)].partitioned = true;
+    }
+    st.list_partitions.push_back(std::move(part));
+    return index;
+}
+
+int Model::partition_of_list(int32_t var_id) const {
+    const ModelStructure& st = s();
+    if (var_id >= 0 && var_id < static_cast<int32_t>(st.var_to_partition.size())) {
+        return st.var_to_partition[static_cast<size_t>(var_id)];
+    }
+    return -1;
 }
 
 std::pair<int, int> Model::var_sequence_for(int32_t var_id) const {

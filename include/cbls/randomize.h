@@ -41,6 +41,9 @@
 
 namespace cbls {
 
+class Model;
+struct ListPartition;
+
 /// Magnitude that stands in for an infinite Bool/Float bound when sampling.
 ///
 /// Matches `NlToModelOptions::inf_clamp` (and `MpsToModelOptions::inf_clamp`),
@@ -159,5 +162,14 @@ void randomize_structured_var(Variable& var, RNG& rng, ListOrder order = ListOrd
 /// Randomise one variable in place, whatever its type: `value` for a scalar,
 /// `elements` for a List/Set. The single switch the three call sites share.
 void randomize_var(Variable& var, RNG& rng, ListOrder order = ListOrder::Regenerate);
+
+/// Lay a `ListPartition` out as a uniformly random assignment satisfying its
+/// cover (#164). Partition-wide rather than per-variable, because "every element
+/// in exactly one list" is not a property any single list has.
+///
+/// `initialize_structured_random` calls this for every partition INSTEAD of
+/// `randomize_var` on its members, so an `Exact` partition starts complete --
+/// which it must, since no `Exact` move can repair an incomplete one.
+void randomize_list_partition(Model& model, const ListPartition& part, RNG& rng);
 
 }  // namespace cbls

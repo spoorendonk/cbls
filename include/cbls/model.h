@@ -22,6 +22,42 @@ struct VarSequence {
     int min_block_off = 1;         // minimum consecutive vars to set to 0
 };
 
+/// How completely a `ListPartition` covers its shared universe (#164).
+enum class Cover : uint8_t {
+    /// Every element of the universe is in EXACTLY one of the partition's lists.
+    Exact,
+    /// Every element is in AT MOST one of them; the rest are unassigned.
+    AtMostOnce,
+};
+
+/// A group of List variables over one shared universe whose membership is
+/// maintained BY THE MOVES rather than by a penalty row (#164).
+///
+/// This is the standard choice in routing local search: "each customer served
+/// exactly once" as a soft row is a poor landscape for a jump-based search --
+/// every repair has to pass through a doubly-served or unserved state -- while
+/// every inter-list relocate, swap and 2-opt* preserves the invariant for free.
+/// So the engine never proposes a move that would break it: `list_moves` stops
+/// emitting `list_insert`/`list_remove` for a member (`Variable::partitioned`),
+/// and `generate_partition_moves` proposes the inter-list moves that keep it.
+///
+/// THERE IS NO `unassigned(partition)` VIEW, deliberately. #164 specified one --
+/// the elements currently in no list, readable as a Set -- so that a
+/// prize-collecting model could price a skipped element. It is not needed: the
+/// same quantity is an identity over terms the DAG already has,
+///
+///     skip penalty = sum_e p(e) - sum_{lists L} lambda_sum(L, p)
+///
+/// where the first term is a constant. A shadow Set variable would instead have
+/// to be excluded from randomisation, from the structural sweep, from the
+/// diversification kick, from LNS destroy and from `set_moves` -- five new
+/// exclusion sites for a quantity that is already expressible.
+struct ListPartition {
+    std::vector<int32_t> list_ids;  ///< member variable IDs, in the order given
+    Cover cover = Cover::Exact;
+    int32_t universe_size = 0;  ///< the universe every member shares
+};
+
 /// Convert variable handle (negative, from int_var/float_var/etc.)
 /// to var ID (non-negative, for model.var()/model.var_mut()).
 inline int32_t handle_to_var_id(int32_t handle) {
@@ -99,6 +135,8 @@ struct ModelStructure {
     std::vector<PairLambdaSpec> pair_lambda_specs;
     std::vector<VarSequence> var_sequences;
     std::vector<std::pair<int, int>> var_to_seq;  // var_id -> (seq_idx, pos), resized lazily
+    std::vector<ListPartition> list_partitions;
+    std::vector<int32_t> var_to_partition;  // var_id -> partition index (-1), resized lazily
 };
 
 class Model {
@@ -137,7 +175,18 @@ public:
     int32_t bool_var(const std::string& name = "");
     int32_t int_var(int lb, int ub, const std::string& name = "");
     int32_t float_var(double lb, double ub, const std::string& name = "");
+    /// A fixed-length permutation of `{0..n-1}`: `universe == min_len == max_len`
+    /// and `elements == [0..n-1]`. The only List there was before #164, and
+    /// exactly `list_var(n, n, n, ListInit::Identity, name)`.
     int32_t list_var(int n, const std::string& name = "");
+    /// An ordered sequence of DISTINCT elements drawn from `{0..universe-1}`,
+    /// whose length stays within `[min_len, max_len]` (#164).
+    ///
+    /// Throws `std::invalid_argument` unless
+    /// `0 <= min_len <= max_len <= universe`, and, for `ListInit::Identity`,
+    /// unless `min_len == max_len == universe`.
+    int32_t list_var(int universe, int min_len, int max_len, ListInit init = ListInit::Empty,
+                     const std::string& name = "");
     int32_t set_var(int n, int min_size = 0, int max_size = -1, const std::string& name = "");
 
     // Expression creation — returns node ID
@@ -222,6 +271,8 @@ public:
     Expr Int(int lb, int ub, const std::string& name = "");
     Expr Float(double lb, double ub, const std::string& name = "");
     Expr List(int n, const std::string& name = "");
+    Expr List(int universe, int min_len, int max_len, ListInit init = ListInit::Empty,
+              const std::string& name = "");
     Expr Set(int n, int min_size = 0, int max_size = -1, const std::string& name = "");
     Expr Constant(double val);
 
@@ -238,6 +289,31 @@ public:
     }
     // Returns (seq_index, position) or (-1, -1) if not in any sequence
     [[nodiscard]] std::pair<int, int> var_sequence_for(int32_t var_id) const;
+
+    /// Declare that `lists` (List variable handles) partition their shared
+    /// universe, and return the new partition's index (#164).
+    ///
+    /// Maintained structurally, not by a constraint row -- see `ListPartition`
+    /// for why, and for why there is no `unassigned()` view. Throws
+    /// `std::invalid_argument` unless every handle names a distinct List
+    /// variable, all of them share one `universe_size`, none is already in a
+    /// partition, `sum(min_len) <= universe`, and, for `Cover::Exact`,
+    /// `sum(max_len) >= universe`.
+    ///
+    /// `ListInit::Identity` is rejected in a partition of more than one list: it
+    /// would put every element in every member. Under `Cover::Exact` the members'
+    /// `ListInit` is ignored anyway, because the invariant has to hold at the
+    /// FIRST assignment -- no move can repair a partition that starts incomplete,
+    /// since `Exact` admits no insert or remove that is not half of an inter-list
+    /// move. `initialize_structured_random` therefore always lays an `Exact`
+    /// partition out as a random complete one.
+    int32_t add_list_partition(const std::vector<int32_t>& lists, Cover cover = Cover::Exact);
+    [[nodiscard]] const std::vector<ListPartition>& list_partitions() const noexcept {
+        return s().list_partitions;
+    }
+    /// The index into `list_partitions()` of the partition `var_id` belongs to,
+    /// or -1. Same lookup-table shape as `var_sequence_for`.
+    [[nodiscard]] int partition_of_list(int32_t var_id) const;
 
     void close();
 

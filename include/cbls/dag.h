@@ -27,6 +27,27 @@ constexpr bool is_structured(VarType type) {
     return type == VarType::List || type == VarType::Set;
 }
 
+/// How `initialize_structured_random` fills a List that is not a member of a
+/// `Cover::Exact` partition (#164).
+///
+/// It decides the STARTING assignment only; the move set can reach every other
+/// assignment from any of them. A List under an `Exact` partition ignores it,
+/// because that invariant is maintained by the moves rather than by a penalty
+/// row and so has to hold at the first assignment already -- see
+/// `Model::add_list_partition`.
+enum class ListInit : uint8_t {
+    /// `elements == [0, 1, ..., universe-1]`, and therefore a permutation.
+    /// Requires `min_size == max_size == universe_size`, which is exactly what
+    /// `list_var(n)` builds -- and is what keeps that call's randomisation on
+    /// `rng.permutation(max_size)`, the pre-#164 draw verbatim.
+    Identity,
+    /// `elements == []`. Draws no random numbers.
+    Empty,
+    /// A uniformly random subset of a uniformly random admissible size, in a
+    /// uniformly random order.
+    Random,
+};
+
 struct Variable {
     int32_t id = -1;
     VarType type = VarType::Float;
@@ -35,9 +56,24 @@ struct Variable {
     double ub = 0.0;
     std::string name;
     std::vector<int32_t> elements;  // List/Set current elements
-    int32_t universe_size = 0;      // Set: universe {0..n-1}
-    int32_t min_size = 0;           // Set: minimum cardinality
-    int32_t max_size = 0;           // Set/List: maximum cardinality
+    // The three size fields mean the same thing for both structured types
+    // (#164): `elements` is drawn from the universe {0..universe_size-1} and its
+    // size stays within [min_size, max_size]. A List additionally keeps its
+    // elements DISTINCT and ORDERED, where a Set's stored order carries no
+    // meaning. `list_var(n)` is the special case universe == min == max == n,
+    // i.e. a permutation, which is all a List could be before #164.
+    int32_t universe_size = 0;  // List/Set: universe {0..n-1}
+    int32_t min_size = 0;       // List/Set: minimum length/cardinality
+    int32_t max_size = 0;       // List/Set: maximum length/cardinality
+    /// List only: how `initialize_structured_random` fills it.
+    ListInit list_init = ListInit::Identity;
+    /// List only: set by `Model::add_list_partition`, and the reason
+    /// `list_moves` emits no `list_insert`/`list_remove` for this variable. Its
+    /// membership is shared with the partition's other lists, so an intra-list
+    /// insert would duplicate an element a sibling holds, and an intra-list
+    /// remove would drop an element out of an `Exact` cover. The partition's own
+    /// generator owns both halves instead (`generate_partition_moves`).
+    bool partitioned = false;
     // The nodes that read this variable are `Model::dependents(id)`: a slice of
     // one flat array the model owns, not a vector per variable (#156).
 };

@@ -147,8 +147,9 @@ using Table1D = nb::ndarray<const double, nb::ndim<1>, nb::c_contig, nb::device:
 using Table2D = nb::ndarray<const double, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
 
 // The universe a table must cover, and the check that the handle names a
-// structured variable at all. A List's elements are a permutation of
-// [0, max_size); a Set's are a subset of [0, universe_size).
+// structured variable at all. Both structured types draw their elements from
+// [0, universe_size) (#164) -- for a permutation List that is the same number
+// `max_size` gave, which is why this used to read the latter.
 int32_t table_universe(const Model& model, int32_t list_var_id, const char* what) {
     if (list_var_id >= 0) {
         throw std::invalid_argument(std::string(what) +
@@ -158,7 +159,7 @@ int32_t table_universe(const Model& model, int32_t list_var_id, const char* what
     if (!is_structured(var.type)) {
         throw std::invalid_argument(std::string(what) + ": expected a List or Set variable handle");
     }
-    return var.type == VarType::Set ? var.universe_size : var.max_size;
+    return var.universe_size;
 }
 
 std::vector<double> copy_vector(const Table1D& a, int32_t n, const char* what) {
@@ -231,8 +232,8 @@ constexpr const char* kPairLambdaSumDoc =
 constexpr const char* kPairTableSumDoc =
     "pair_lambda_sum with the function given as a distance matrix.\n"
     "\n"
-    "dist is an (n, n) float64 array over the variable's universe -- max_size\n"
-    "for a List, universe_size for a Set -- and head/tail are length-n arrays.\n"
+    "dist is an (n, n) float64 array over the variable's universe_size, and\n"
+    "head/tail are length-n arrays.\n"
     "All are COPIED into the engine at node creation, so the search makes no\n"
     "Python call at all and resizing or freeing the caller's array afterwards\n"
     "is harmless. A wrong shape raises here rather than being read past.\n"
@@ -302,7 +303,34 @@ NB_MODULE(_cbls_core, m) {
         .def_ro("lb", &Variable::lb)
         .def_ro("ub", &Variable::ub)
         .def_ro("name", &Variable::name)
-        .def_rw("elements", &Variable::elements);
+        .def_rw("elements", &Variable::elements)
+        .def_ro("universe_size", &Variable::universe_size)
+        .def_ro("min_size", &Variable::min_size)
+        .def_ro("max_size", &Variable::max_size)
+        .def_ro("list_init", &Variable::list_init)
+        .def_ro("partitioned", &Variable::partitioned);
+
+    // ListInit — how initialisation fills a List (#164). Identity is the
+    // permutation `list_var(n)` builds and is the only one a fixed-length List
+    // may carry.
+    nb::enum_<ListInit>(m, "ListInit")
+        .value("Identity", ListInit::Identity)
+        .value("Empty", ListInit::Empty)
+        .value("Random", ListInit::Random);
+
+    // Cover — how completely a ListPartition covers its universe (#164).
+    nb::enum_<Cover>(m, "Cover")
+        .value("Exact", Cover::Exact)
+        .value("AtMostOnce", Cover::AtMostOnce);
+
+    // ListPartition — read-only. Built by Model.add_list_partition, which is
+    // where every invariant is checked; handing Python a writable `list_ids`
+    // would let it name a variable that is not a List, or one already in another
+    // partition, with the engine indexing on it unchecked afterwards (#156).
+    nb::class_<ListPartition>(m, "ListPartition")
+        .def_ro("list_ids", &ListPartition::list_ids)
+        .def_ro("cover", &ListPartition::cover)
+        .def_ro("universe_size", &ListPartition::universe_size);
 
     // ExprNode (read-only access)
     //
@@ -379,9 +407,41 @@ NB_MODULE(_cbls_core, m) {
         .def("bool_var", &Model::bool_var, nb::arg("name") = "")
         .def("int_var", &Model::int_var, nb::arg("lb"), nb::arg("ub"), nb::arg("name") = "")
         .def("float_var", &Model::float_var, nb::arg("lb"), nb::arg("ub"), nb::arg("name") = "")
-        .def("list_var", &Model::list_var, nb::arg("n"), nb::arg("name") = "")
+        // Two overloads, tried in order: the permutation form first, so
+        // `list_var(n)` and `list_var(n, "name")` keep resolving to it exactly as
+        // they did before #164.
+        .def("list_var", nb::overload_cast<int, const std::string&>(&Model::list_var), nb::arg("n"),
+             nb::arg("name") = "",
+             "A fixed-length permutation of {0..n-1}: universe == min_len == max_len.")
+        .def("list_var",
+             nb::overload_cast<int, int, int, ListInit, const std::string&>(&Model::list_var),
+             nb::arg("universe"), nb::arg("min_len"), nb::arg("max_len"),
+             nb::arg("init") = ListInit::Empty, nb::arg("name") = "",
+             "An ordered sequence of distinct elements of {0..universe-1} whose\n"
+             "length stays within [min_len, max_len].")
         .def("set_var", &Model::set_var, nb::arg("n"), nb::arg("min_size") = 0,
              nb::arg("max_size") = -1, nb::arg("name") = "")
+        .def("add_list_partition", &Model::add_list_partition, nb::arg("lists"),
+             nb::arg("cover") = Cover::Exact,
+             "Declare that `lists` partition their shared universe, maintained by\n"
+             "the moves rather than by a constraint row. Returns the partition index.\n"
+             "`cover` accepts a Cover value or the strings 'exact' / 'at_most_once'.")
+        .def(
+            "add_list_partition",
+            [](Model& model, const std::vector<int32_t>& lists, std::string_view cover) {
+                if (cover == "exact") {
+                    return model.add_list_partition(lists, Cover::Exact);
+                }
+                if (cover == "at_most_once") {
+                    return model.add_list_partition(lists, Cover::AtMostOnce);
+                }
+                throw std::invalid_argument("cover must be 'exact' or 'at_most_once'");
+            },
+            nb::arg("lists"), nb::arg("cover"))
+        .def("partition_of_list", &Model::partition_of_list, nb::arg("var_id"),
+             "Index into list_partitions() of the partition this variable id belongs\n"
+             "to, or -1. Takes a var ID, not a handle.")
+        .def_prop_ro("list_partitions", [](const Model& model) { return model.list_partitions(); })
         // Expression creation
         .def("constant", &Model::constant)
         .def("neg", &Model::neg)
@@ -526,7 +586,11 @@ NB_MODULE(_cbls_core, m) {
         .def("Bool", &Model::Bool, nb::arg("name") = "")
         .def("Int", &Model::Int, nb::arg("lb"), nb::arg("ub"), nb::arg("name") = "")
         .def("Float", &Model::Float, nb::arg("lb"), nb::arg("ub"), nb::arg("name") = "")
-        .def("List", &Model::List, nb::arg("n"), nb::arg("name") = "")
+        .def("List", nb::overload_cast<int, const std::string&>(&Model::List), nb::arg("n"),
+             nb::arg("name") = "")
+        .def("List", nb::overload_cast<int, int, int, ListInit, const std::string&>(&Model::List),
+             nb::arg("universe"), nb::arg("min_len"), nb::arg("max_len"),
+             nb::arg("init") = ListInit::Empty, nb::arg("name") = "")
         .def("Set", &Model::Set, nb::arg("n"), nb::arg("min_size") = 0, nb::arg("max_size") = -1,
              nb::arg("name") = "")
         .def("Constant", &Model::Constant);

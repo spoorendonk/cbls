@@ -215,23 +215,47 @@ bool structure_moved(const Variable& var, const std::vector<int32_t>& before) {
 // position reinserts the element where it was — are dropped before the draw, so
 // a kick cannot silently lose a move to one.
 //
-// DELIBERATELY NOT ROUTED THROUGH SearchConfig::move_generators (#165). The
-// diversification kick draws from the same RNG as the rest of the search, so
-// changing what it draws -- a registered generator proposing a different number
-// of candidates, or none -- shifts every later draw and changes the trajectory
-// of every model that has a structured variable, kick or no kick. The kick is
-// also a RANDOMISER rather than an optimiser: it wants an arbitrary legal move,
-// which is exactly what generate_standard_moves gives it, where a cost-aware
-// generator would give it the opposite. Issue #164 wires the kick to the
-// generator set when it adds partition-level moves, and owns the trajectory
-// change that comes with it.
+// STILL NOT ROUTED THROUGH SearchConfig::move_generators (#165, unchanged by
+// #164). The diversification kick draws from the same RNG as the rest of the
+// search, so changing what it draws -- a registered generator proposing a
+// different number of candidates, or none -- shifts every later draw and changes
+// the trajectory of every model that has a structured variable, kick or no kick.
+// The kick is also a RANDOMISER rather than an optimiser: it wants an arbitrary
+// legal move, which is exactly what generate_standard_moves gives it, where a
+// cost-aware generator would give it the opposite.
+//
+// What #164 adds instead is a second SOURCE of moves, not a second source of
+// policy: a List in a partition also offers the partition's inter-list moves,
+// anchored on this variable. That is what makes the kick able to move an
+// ALL-EMPTY partition -- `structural_kick_size` asks for one move on a
+// zero-length list, the five intra-list moves need two elements to reorder and
+// `list_insert` is suppressed for a partition member, so before #164 the kick
+// found nothing and silently did nothing, which is the exact defect #109/#111
+// closed for the scalar case. `generate_partition_moves` appends at most one
+// candidate and draws nothing on a model with no partition, so the draw sequence
+// of every pre-#164 model is untouched.
 bool apply_random_structural_move(Model& model, int32_t var_id, RNG& rng) {
     std::vector<Move> moves = generate_standard_moves(model.var(var_id), rng);
+    const int partition = model.partition_of_list(var_id);
+    if (partition >= 0) {
+        generate_partition_moves(model, partition, /*anchor=*/var_id, rng, moves,
+                                 /*neighbours=*/nullptr);
+    }
+    // Keep only the candidates that actually move THIS variable: the caller
+    // decides whether the kick did anything by comparing this variable's
+    // elements before and after, so a candidate that moved only a sibling list
+    // would be reported as a no-op kick and trigger the never-a-no-op fallback
+    // on top of a move that had in fact been made. On a non-partition variable
+    // every candidate is a single change to it, so this is the pre-#164
+    // predicate verbatim.
     const std::vector<int32_t>& current = model.var(var_id).elements;
     moves.erase(std::remove_if(moves.begin(), moves.end(),
-                               [&current](const Move& m) {
-                                   return m.changes.size() != 1 ||
-                                          m.changes.front().new_elements == current;
+                               [var_id, &current](const Move& m) {
+                                   return std::none_of(m.changes.begin(), m.changes.end(),
+                                                       [var_id, &current](const Move::Change& c) {
+                                                           return c.var_id == var_id &&
+                                                                  c.new_elements != current;
+                                                       });
                                }),
                 moves.end());
     if (moves.empty()) {

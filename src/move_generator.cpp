@@ -1,6 +1,7 @@
 #include "cbls/move_generator.h"
 
 #include "cbls/model.h"
+#include "cbls/moves.h"
 
 #include <algorithm>
 #include <cmath>
@@ -194,6 +195,58 @@ private:
     std::shared_ptr<const NeighbourList> neighbours_;
 };
 
+/// One `ListPartition`'s inter-list moves (#164): relocate, swap, 2-opt*, and
+/// the insert/remove pair under `Cover::AtMostOnce`.
+///
+/// It holds NO derived state -- no element-to-list index, no unassigned pool.
+/// `generate_partition_moves` recomputes whatever it needs from the model on
+/// every call, which is what `MoveGenerator::on_commit`'s contract requires: the
+/// assignment moves under a peer generator's commit, every Feasibility Jump
+/// batch, the diversification kick, an LNS destroy-repair and a restart from the
+/// solution pool, and none of those notifies anybody. `Variable.elements` is
+/// also writable from Python at any moment (#156), so a cached membership pool
+/// would be a stale index into a universe that has since changed -- the crash
+/// class, not merely a stale heuristic. Recomputing costs
+/// O(sum |lists| + universe) on the one branch that needs it.
+///
+/// Scope is every member list, so the batch restricts candidate scoring to the
+/// union of their G_v and `ViolationGuided` can skip a partition all of whose
+/// rows are satisfied.
+class ListPartitionGenerator final : public MoveGenerator {
+public:
+    ListPartitionGenerator(int partition, std::vector<int32_t> list_ids,
+                           std::shared_ptr<const NeighbourList> neighbours)
+        : partition_(partition),
+          list_ids_(std::move(list_ids)),
+          neighbours_(std::move(neighbours)) {}
+
+    [[nodiscard]] std::string_view name() const override { return "builtin_list_partition"; }
+
+    [[nodiscard]] ConstSpan<int32_t> scope() const override {
+        return {list_ids_.data(), list_ids_.size()};
+    }
+
+    void generate(MoveContext& ctx, std::vector<Move>& out) override {
+        // anchor = -1: both lists are drawn. The kick is the only caller that
+        // names one.
+        generate_partition_moves(ctx.model, partition_, /*anchor=*/-1, ctx.rng, out,
+                                 neighbours_.get());
+    }
+
+    [[nodiscard]] std::unique_ptr<MoveGenerator> clone() const override {
+        // Const reads only, so calling this concurrently on the one registered
+        // prototype -- which every portfolio worker does -- needs no lock. The
+        // neighbour list stays shared for the reason the per-variable generator
+        // shares it.
+        return std::make_unique<ListPartitionGenerator>(partition_, list_ids_, neighbours_);
+    }
+
+private:
+    int partition_;
+    std::vector<int32_t> list_ids_;
+    std::shared_ptr<const NeighbourList> neighbours_;
+};
+
 }  // namespace
 
 std::vector<std::shared_ptr<const MoveGenerator>> default_move_generators(
@@ -205,6 +258,16 @@ std::vector<std::shared_ptr<const MoveGenerator>> default_move_generators(
         }
         generators.push_back(
             std::make_shared<const StandardStructuralGenerator>(var.id, var.type, neighbours));
+    }
+    // Partition generators come AFTER every per-variable one, and only exist for
+    // a model that declared a partition -- so a model without one gets exactly
+    // the generator list, in exactly the order, it got before #164, and its
+    // trajectory is unmoved. The per-variable generators still run for a member
+    // list: they carry the five length-preserving intra-list moves, which a
+    // partition neither replaces nor forbids.
+    for (size_t i = 0; i < model.list_partitions().size(); ++i) {
+        generators.push_back(std::make_shared<const ListPartitionGenerator>(
+            static_cast<int>(i), model.list_partitions()[i].list_ids, neighbours));
     }
     return generators;
 }

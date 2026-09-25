@@ -52,6 +52,36 @@ std::vector<Move> generate_standard_moves(const Variable& var, RNG& rng);
 void generate_standard_moves(const Variable& var, RNG& rng, std::vector<Move>& out,
                              const NeighbourList* neighbours);
 
+/// Append AT MOST ONE candidate inter-list move over `partition` (#164):
+/// relocate, swap or 2-opt* between two of its lists, and -- under
+/// `Cover::AtMostOnce` -- an insert from the unassigned elements or a removal.
+/// The kind is drawn uniformly from the ones the partition admits, so this list
+/// is also the mix; a kind whose guards reject the draw appends nothing.
+///
+/// EXACTLY ONE CANDIDATE PER CALL IS A CORRECTNESS REQUIREMENT, not a budget.
+/// Every candidate from one `MoveGenerator::generate` carries an ABSOLUTE
+/// element vector built against the same pre-commit assignment, and
+/// `StructuralSelection::FirstImprovingSample` may commit several of them in
+/// turn -- so a second candidate built before the first was committed would
+/// reinstate the list the first one moved an element out of, leaving that
+/// element in two lists with nothing to notice. `move_generator.h` names the two
+/// ways out; this is the first of them (emit one candidate per call), chosen
+/// because it holds under EVERY selection policy rather than only under the two
+/// that commit at most one. The sampling policies call `generate` repeatedly, so
+/// they still get a sample of the size they asked for.
+///
+/// `anchor` is a member list id that every candidate must change, or -1 to draw
+/// both lists. The diversification kick names one, because it asks "move THIS
+/// variable" and decides whether the kick did anything by looking at that
+/// variable alone.
+///
+/// `neighbours` makes the TARGET granular rather than uniform, exactly as it
+/// does for the intra-list moves: an element is relocated next to, or swapped
+/// against, one of its nearest neighbours in the other list. Null is the default
+/// everywhere.
+void generate_partition_moves(const Model& model, int partition, int32_t anchor, RNG& rng,
+                              std::vector<Move>& out, const NeighbourList* neighbours);
+
 // Move application
 std::vector<int32_t> apply_move(Model& model, const Move& move);
 SavedValues save_move_values(const Model& model, const Move& move);
