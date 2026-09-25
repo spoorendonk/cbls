@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>
 
 namespace cbls {
 
@@ -196,14 +197,18 @@ PairMode parse_pair_mode(const json& j, int line_num) {
 
 // One tabulated fixed-endpoint term, or an empty callable when the record
 // carries none -- which is what `pair_lambda_sum` reads as "no term", and what
-// every file written before these variants existed means. A present-but-empty
-// table can only come from a zero-length universe, where no element is read.
+// every file written before these variants existed means.
+//
+// A present-but-empty table reads as absent too. The writer never emits one --
+// a zero-length universe has no element for the term to charge, and emitting
+// `[]` there is what would break save(load(save)) == save -- so this only
+// covers a hand-written file.
 std::function<double(int)> endpoint_func(const json& j, const char* field) {
     auto table = j.value(field, std::vector<double>{});
     if (table.empty()) {
         return nullptr;
     }
-    return [table](int e) -> double { return table.at(e); };
+    return [table = std::move(table)](int e) -> double { return table.at(e); };
 }
 
 // Rebuild one non-Const node from its op and its already-resolved children.
@@ -459,7 +464,11 @@ void tabulate_pair_lambda(const Model& model, const ExprNode& node, json& j) {
         throw std::runtime_error("PairLambda node child must be a variable");
     }
     const auto& var = model.var(child_ref.id);
-    int n = var.max_size;
+    // Same universe rule as tabulate_lambda above: a Set's elements range over
+    // universe_size, and max_size is only its cardinality bound. Sizing the
+    // matrix by max_size tabulated the wrong domain, and reloading then threw
+    // `table.at()` on any element past it.
+    int n = (var.type == VarType::Set) ? var.universe_size : var.max_size;
     if (n > 1000) {
         throw std::runtime_error("PairLambda universe too large to tabulate (" + std::to_string(n) +
                                  " > 1000)");
@@ -486,8 +495,11 @@ void tabulate_pair_lambda(const Model& model, const ExprNode& node, json& j) {
     if (spec.mode == PairMode::Cyclic) {
         j["mode"] = "cyclic";
     }
+    // n == 0 writes nothing: an empty table is what the reader reads as "no
+    // term", so emitting one would break save(load(save)) == save. Lossless --
+    // a zero-length universe has no element for an endpoint term to charge.
     auto tabulate_endpoint = [&model, &j, n](const char* field, int32_t func_id) {
-        if (func_id < 0) {
+        if (func_id < 0 || n == 0) {
             return;
         }
         const auto& endpoint_fn = model.lambda_func(func_id);

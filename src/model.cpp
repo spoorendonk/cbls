@@ -404,6 +404,11 @@ int32_t Model::pair_lambda_sum(int32_t list_var_id, std::function<double(int, in
         spec.tail_id = static_cast<int32_t>(st.lambda_funcs.size() - 1);
     }
 
+    // The two tables are addressed by one id, so they must stay the same
+    // length. Reserving first is what makes the second push unable to throw
+    // after the first has happened: a bad_alloc between them would leave every
+    // LATER pair node indexing a spec table one short.
+    st.pair_lambda_specs.reserve(st.pair_lambda_funcs.size() + 1);
     st.pair_lambda_funcs.push_back(std::move(func));
     st.pair_lambda_specs.push_back(spec);
     auto func_id = static_cast<int32_t>(st.pair_lambda_funcs.size() - 1);

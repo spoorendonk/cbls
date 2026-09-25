@@ -12,6 +12,13 @@ requires-python = ">=3.12"
 dev = [
     "pytest>=7.0",
     "pytest-timeout>=2.1",
+    # tests/python/test_pair_lambda.py builds the nb::ndarray tables that
+    # pair_table_sum/lambda_table_sum take, and imports numpy at module scope.
+    # It arrived transitively through the [benchmarks] extra's ortools until
+    # now, so a documented `.[dev]`-only bootstrap would abort COLLECTION on
+    # the import -- pytest exits 2 having run nothing -- rather than skip one
+    # file. mypy --strict over every tracked .py needs it for the same reason.
+    "numpy>=1.24",
     # Without these, the documented `pip install -e '.[dev]'` bootstrap yields
     # a pre-push whose Python gate cannot run at all. (That gate now reports a
     # missing tool as a finding rather than skipping in silence; the older

@@ -119,6 +119,12 @@ constexpr const char* kParallelSolveDoc =
 // v0.1.0, v1.8.0 and v2.13.0). Converting the exception at this boundary would
 // therefore buy no safety and would cost the caller the original exception
 // object (#159).
+
+struct PySolveCallback : SolveCallback {
+    NB_TRAMPOLINE(SolveCallback, 1);
+    void on_progress(const SolveProgress& p) override { NB_OVERRIDE_PURE(on_progress, p); }
+};
+
 // ---------------------------------------------------------------------------
 // Table-backed lambda_sum / pair_lambda_sum (#163).
 //
@@ -131,6 +137,8 @@ constexpr const char* kParallelSolveDoc =
 // The copy is deliberate. Holding a reference to the caller's array would let
 // Python resize or free it under a running search, and `nb::ndarray` conversion
 // may hand back a temporary anyway.
+
+namespace {
 
 // A float64, C-contiguous, CPU array of the given rank. Anything else nanobind
 // either converts (via the array library's own routines) or rejects with a
@@ -178,10 +186,10 @@ std::vector<double> copy_matrix(const Table2D& a, int32_t n, const char* what) {
 // check -- and an unchecked `tbl[e]` on that path is a heap read past the
 // vector, i.e. a segfault rather than an exception. One predictable compare
 // against an indirect call through std::function is not what this path costs.
-std::function<double(int)> table_lookup(std::vector<double> tbl, int32_t n, const char* what) {
-    return [tbl = std::move(tbl), n, what](int e) -> double {
+std::function<double(int)> table_lookup(std::vector<double> tbl, int32_t n, std::string what) {
+    return [tbl = std::move(tbl), n, what = std::move(what)](int e) -> double {
         if (e < 0 || e >= n) {
-            throw std::out_of_range(std::string(what) + ": element " + std::to_string(e) +
+            throw std::out_of_range(what + ": element " + std::to_string(e) +
                                     " outside the tabulated universe [0, " + std::to_string(n) +
                                     ")");
         }
@@ -190,17 +198,18 @@ std::function<double(int)> table_lookup(std::vector<double> tbl, int32_t n, cons
 }
 
 std::function<double(int, int)> matrix_lookup(std::vector<double> tbl, int32_t n,
-                                              const char* what) {
-    return [tbl = std::move(tbl), n, what](int a, int b) -> double {
+                                              std::string what) {
+    return [tbl = std::move(tbl), n, what = std::move(what)](int a, int b) -> double {
         if (a < 0 || a >= n || b < 0 || b >= n) {
-            throw std::out_of_range(std::string(what) + ": element pair (" + std::to_string(a) +
-                                    ", " + std::to_string(b) +
-                                    ") outside the tabulated universe [0, " + std::to_string(n) +
-                                    ")");
+            throw std::out_of_range(what + ": element pair (" + std::to_string(a) + ", " +
+                                    std::to_string(b) + ") outside the tabulated universe [0, " +
+                                    std::to_string(n) + ")");
         }
         return tbl[(static_cast<size_t>(a) * static_cast<size_t>(n)) + static_cast<size_t>(b)];
     };
 }
+
+}  // namespace
 
 constexpr const char* kPairLambdaSumDoc =
     "Sum `func(e_k, e_{k+1})` over the consecutive pairs of a List or Set\n"
@@ -213,6 +222,9 @@ constexpr const char* kPairLambdaSumDoc =
     "\n"
     "n == 0 is 0.0 for every variant; n == 1 is `head(e_0) + tail(e_0)`.\n"
     "\n"
+    "A Set's elements have no modelled order, so a pair sum over one reads\n"
+    "whatever order they are currently stored in.\n"
+    "\n"
     "Every call re-acquires the GIL, so a Python func is a serialisation point\n"
     "for a portfolio. Use pair_table_sum where the function is a matrix.";
 
@@ -224,11 +236,6 @@ constexpr const char* kPairTableSumDoc =
     "All are COPIED into the engine at node creation, so the search makes no\n"
     "Python call at all and resizing or freeing the caller's array afterwards\n"
     "is harmless. A wrong shape raises here rather than being read past.";
-
-struct PySolveCallback : SolveCallback {
-    NB_TRAMPOLINE(SolveCallback, 1);
-    void on_progress(const SolveProgress& p) override { NB_OVERRIDE_PURE(on_progress, p); }
-};
 
 NB_MODULE(_cbls_core, m) {
     m.doc() = "CBLS: Constraint-Based Local Search engine (C++ core)";
@@ -370,6 +377,12 @@ NB_MODULE(_cbls_core, m) {
             [](Model& model, int32_t list_var, std::function<double(int, int)> func, bool cyclic,
                std::optional<std::function<double(int)>> head,
                std::optional<std::function<double(int)>> tail) {
+                // Held to the same handle rule as pair_table_sum. `wrap()`
+                // alone accepts a node handle or a scalar variable and builds
+                // a node that then evaluates to 0.0 for ever, which from
+                // Python -- where the handle is a bare int -- reads as the
+                // model silently ignoring the term.
+                (void)table_universe(model, list_var, "pair_lambda_sum");
                 return model.pair_lambda_sum(
                     list_var, std::move(func), head ? std::move(*head) : nullptr,
                     tail ? std::move(*tail) : nullptr, cyclic ? PairMode::Cyclic : PairMode::Open);

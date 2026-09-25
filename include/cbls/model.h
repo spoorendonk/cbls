@@ -198,6 +198,11 @@ public:
     /// cyclic sum with endpoint terms is expressible even though no use case
     /// here asks for it.
     ///
+    /// A `Set` variable is accepted, but its `elements` carry no modelled
+    /// order: the sum then reads whatever order they happen to be stored in,
+    /// which the search moves arbitrarily. Consecutive pairs are a meaningful
+    /// cost on a `List`.
+    ///
     /// `func`, `head` and `tail` are invoked by EVERY portfolio worker
     /// concurrently once the model is frozen -- see `freeze()`.
     int32_t pair_lambda_sum(int32_t list_var_id, std::function<double(int, int)> func,

@@ -177,7 +177,6 @@ def _count_python_calls_during_solve(use_table: bool) -> tuple[int, float]:
         result = cbls.solve(m, 0.0, 42, config=config)
     finally:
         sys.setprofile(None)
-    assert node >= 0
     return calls, float(result.objective)
 
 
@@ -239,6 +238,11 @@ def _scenario_bad_table() -> None:
         ("stale handle", lambda: m.pair_table_sum(-100, DIST), IndexError),
         ("short lambda table", lambda: m.lambda_table_sum(lv, np.zeros(3)), ValueError),
         ("2-D lambda table", lambda: m.lambda_table_sum(lv, np.zeros((4, 4))), TypeError),
+        # The functor overload is held to the same handle rule: without it a
+        # node handle or a scalar builds a node that evaluates to 0.0 for ever.
+        ("functor node handle", lambda: m.pair_lambda_sum(0, dist), ValueError),
+        ("functor scalar var", lambda: m.pair_lambda_sum(b, dist), ValueError),
+        ("functor stale handle", lambda: m.pair_lambda_sum(-100, dist), IndexError),
     ]
     for name, call, expected in cases:
         nodes_before = m.num_nodes()
@@ -251,9 +255,10 @@ def _scenario_bad_table() -> None:
         # A refused node leaves no trace, so the model is still usable.
         assert m.num_nodes() == nodes_before, name
 
-    # The right shapes still work, on both variable types.
+    # The right shapes and handles still work, on both variable types.
     m.pair_table_sum(lv, DIST, cyclic=True, head=HEAD, tail=TAIL)
     m.lambda_table_sum(sv, np.zeros(5))
+    m.pair_lambda_sum(lv, dist, cyclic=True)
     print("OK")
 
 

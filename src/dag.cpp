@@ -233,11 +233,11 @@ double evaluate(const ExprNode& node, const Model& model) {
                 return 0.0;
             }
             const auto& func = model.pair_lambda_func(node.lambda_func_id);
-            const auto& spec = model.pair_lambda_spec(node.lambda_func_id);
             const auto& ref = children[0];
             if (!ref.is_var) {
                 return 0.0;
             }
+            const auto& spec = model.pair_lambda_spec(node.lambda_func_id);
             const auto& v = model.var(ref.id);
             const auto& el = v.elements;
             double s = 0.0;

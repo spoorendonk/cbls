@@ -137,8 +137,8 @@ struct ExprNode {
 
 /// How a `PairLambda` node closes its chain of consecutive pairs.
 enum class PairMode : uint8_t {
-    Open,   //< e_0-e_1, ..., e_{n-2}-e_{n-1}. The original behaviour.
-    Cyclic  //< the Open pairs plus e_{n-1}-e_0, for n >= 2.
+    Open,   ///< e_0-e_1, ..., e_{n-2}-e_{n-1}. The original behaviour.
+    Cyclic  ///< the Open pairs plus e_{n-1}-e_0, for n >= 2.
 };
 
 /// Everything a `PairLambda` node needs beyond its pair function: the closing

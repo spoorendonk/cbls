@@ -171,25 +171,32 @@ TEST_CASE("a .cbls round-trip preserves the closing rule and the endpoint terms"
           "[io][pair_lambda]") {
     const std::vector<int32_t> elements = {2, 0, 3, 1};
 
+    // head-only and tail-only are their own rows: the writer emits the two keys
+    // through independent calls and the reader reads them through independent
+    // calls, so a dropped or swapped one survives the both-endpoints row.
     struct Variant {
         const char* name;
         PairMode mode;
-        bool endpoints;
+        bool head;
+        bool tail;
         double expected;
     };
-    const std::array<Variant, 4> variants = {{
-        {"open", PairMode::Open, false, 54.0},
-        {"cyclic", PairMode::Cyclic, false, 66.0},
-        {"open+endpoints", PairMode::Open, true, 54.0 + 102.0 + 1001.0},
-        {"cyclic+endpoints", PairMode::Cyclic, true, 66.0 + 102.0 + 1001.0},
+    const std::array<Variant, 6> variants = {{
+        {"open", PairMode::Open, false, false, 54.0},
+        {"cyclic", PairMode::Cyclic, false, false, 66.0},
+        {"open+head", PairMode::Open, true, false, 54.0 + 102.0},
+        {"open+tail", PairMode::Open, false, true, 54.0 + 1001.0},
+        {"open+endpoints", PairMode::Open, true, true, 54.0 + 102.0 + 1001.0},
+        {"cyclic+endpoints", PairMode::Cyclic, true, true, 66.0 + 102.0 + 1001.0},
     }};
 
     for (const Variant& v : variants) {
         INFO("variant " << v.name);
         Model m;
         auto lv = m.list_var(4, "seq");
-        int32_t node = v.endpoints ? m.pair_lambda_sum(lv, d, head_cost, tail_cost, v.mode)
-                                   : m.pair_lambda_sum(lv, d, v.mode);
+        int32_t node = (v.head || v.tail) ? m.pair_lambda_sum(lv, d, v.head ? head_cost : nullptr,
+                                                              v.tail ? tail_cost : nullptr, v.mode)
+                                          : m.pair_lambda_sum(lv, d, v.mode);
         m.minimize(node);
         m.close();
 
@@ -199,10 +206,9 @@ TEST_CASE("a .cbls round-trip preserves the closing rule and the endpoint terms"
 
         // An open chain with no endpoints is everything the format could say
         // before these variants existed, so it must still say exactly that.
-        const bool extra_keys = saved.find("\"mode\"") != std::string::npos ||
-                                saved.find("\"head\"") != std::string::npos ||
-                                saved.find("\"tail\"") != std::string::npos;
-        REQUIRE(extra_keys == (v.mode == PairMode::Cyclic || v.endpoints));
+        REQUIRE((saved.find("\"mode\"") != std::string::npos) == (v.mode == PairMode::Cyclic));
+        REQUIRE((saved.find("\"head\"") != std::string::npos) == v.head);
+        REQUIRE((saved.find("\"tail\"") != std::string::npos) == v.tail);
 
         std::istringstream in(saved);
         Model reloaded = load_model(in);
@@ -215,6 +221,27 @@ TEST_CASE("a .cbls round-trip preserves the closing rule and the endpoint terms"
         save_model(reloaded, out2);
         REQUIRE(out2.str() == saved);
     }
+}
+
+TEST_CASE("a .cbls round-trip of a Set child covers the whole universe", "[io][pair_lambda]") {
+    // A Set's max_size is its cardinality bound, its universe_size the element
+    // range. Tabulating by max_size wrote a matrix too narrow to index, and the
+    // reload then threw on any element past it.
+    Model m;
+    auto sv = m.set_var(6, 2, 3, "chosen");
+    int32_t node = m.pair_lambda_sum(sv, d, head_cost, tail_cost, PairMode::Cyclic);
+    m.minimize(node);
+    m.close();
+
+    std::ostringstream out;
+    save_model(m, out);
+    std::istringstream in(out.str());
+    Model reloaded = load_model(in);
+    // Elements 4 and 5 are inside the universe but outside max_size == 3.
+    reloaded.var_mut(0).elements = {5, 4};
+    full_evaluate(reloaded);
+    // d(5,4) + d(4,5) + head(5) + tail(4)
+    REQUIRE(reloaded.node_value(reloaded.objective_id()) == 54.0 + 45.0 + 105.0 + 1004.0);
 }
 
 TEST_CASE("an unknown PairLambda mode is refused rather than read as open", "[io][pair_lambda]") {

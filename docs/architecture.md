@@ -136,7 +136,7 @@ node is the 8-byte value.
 | Trigonometric| Sin, Cos, Tan                                        |
 | Exponential  | Exp, Log, Sqrt                                       |
 | Conditional  | If                                                   |
-| Collection   | At (indexing), Count, Lambda (functional aggregation¹) |
+| Collection   | At (indexing), Count, Lambda, PairLambda (functional aggregation¹) |
 | Comparison   | Leq, Eq, Geq, Neq, Lt, Gt                           |
 
 Comparison nodes evaluate to a **violation measure** (0 when satisfied,
@@ -183,7 +183,7 @@ partial in one reverse pass:
    node adjoints
 
 `local_derivative` computes per-operation partial derivatives (chain rule
-components). Discrete operations (At, Count, Lambda) return 0.
+components). Discrete operations (At, Count, Lambda, PairLambda) return 0.
 
 AD is used to generate Newton-toward-root jump candidates for Float variables
 (in `compute_var_jump`) and by the inner solver.
@@ -192,7 +192,13 @@ AD is used to generate Newton-toward-root jump candidates for Float variables
 cannot be serialized directly. `save_model` tabulates the function over its
 input domain and writes the resulting table. `load_model` reconstructs an
 equivalent Lambda via table lookup, so round-tripping through JSONL is lossless
-for finite-domain Lambda nodes.
+for finite-domain Lambda nodes. A PairLambda is tabulated the same way, as an
+`n x n` matrix, plus the keys that carry its variant: `"mode": "cyclic"` for the
+closing pair and `"head"`/`"tail"` for the fixed-endpoint tables. Each is
+written only when it says something, so an open chain with no endpoints — every
+PairLambda the format could express before those variants existed — still
+serialises to exactly the bytes it did; the reader defaults each absent key to
+that node.
 
 ---
 
@@ -2304,7 +2310,9 @@ describing a variable, expression node, constraint, or objective:
 
 **API:** `load_model(path|istream)` parses JSONL and returns a closed model;
 `save_model(model, path|ostream)` serializes a closed model. Lambda nodes are
-tabulated over their input domain on save and reconstructed on load (see the
+tabulated over their input domain on save and reconstructed on load, and a
+PairLambda additionally carries its `mode` and its `head`/`tail` tables when
+they are not the default (see the
 [Lambda serialization note](#expression-dag)). The objective soft constraint is
 *not* part of the serialized model — `solve()` appends it at runtime.
 
