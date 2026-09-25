@@ -1,5 +1,6 @@
 #include <cbls/cbls.h>
 #include <nanobind/nanobind.h>
+#include <nanobind/ndarray.h>
 #include <nanobind/stl/function.h>
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/pair.h>
@@ -118,6 +119,112 @@ constexpr const char* kParallelSolveDoc =
 // v0.1.0, v1.8.0 and v2.13.0). Converting the exception at this boundary would
 // therefore buy no safety and would cost the caller the original exception
 // object (#159).
+// ---------------------------------------------------------------------------
+// Table-backed lambda_sum / pair_lambda_sum (#163).
+//
+// A Python functor handed to lambda_sum is called once per element per node
+// evaluation, each call re-acquiring the GIL -- which serialises every
+// portfolio worker on the interpreter. For a distance matrix, which is the
+// common case, the table is copied into C++ once at node creation and the
+// search then never calls back into Python at all.
+//
+// The copy is deliberate. Holding a reference to the caller's array would let
+// Python resize or free it under a running search, and `nb::ndarray` conversion
+// may hand back a temporary anyway.
+
+// A float64, C-contiguous, CPU array of the given rank. Anything else nanobind
+// either converts (via the array library's own routines) or rejects with a
+// TypeError -- neither of which can reach the engine as a wrong-typed read.
+using Table1D = nb::ndarray<const double, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
+using Table2D = nb::ndarray<const double, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
+
+// The universe a table must cover, and the check that the handle names a
+// structured variable at all. A List's elements are a permutation of
+// [0, max_size); a Set's are a subset of [0, universe_size).
+int32_t table_universe(const Model& model, int32_t list_var_id, const char* what) {
+    if (list_var_id >= 0) {
+        throw std::invalid_argument(std::string(what) +
+                                    ": expected a variable handle (negative), got a node handle");
+    }
+    const Variable& var = model.var(handle_to_var_id(list_var_id));  // throws on a bogus id
+    if (!is_structured(var.type)) {
+        throw std::invalid_argument(std::string(what) + ": expected a List or Set variable handle");
+    }
+    return var.type == VarType::Set ? var.universe_size : var.max_size;
+}
+
+std::vector<double> copy_vector(const Table1D& a, int32_t n, const char* what) {
+    if (a.shape(0) != static_cast<size_t>(n)) {
+        throw std::invalid_argument(std::string(what) + ": expected length " + std::to_string(n) +
+                                    ", got " + std::to_string(a.shape(0)));
+    }
+    return {a.data(), a.data() + n};
+}
+
+std::vector<double> copy_matrix(const Table2D& a, int32_t n, const char* what) {
+    if (a.shape(0) != static_cast<size_t>(n) || a.shape(1) != static_cast<size_t>(n)) {
+        throw std::invalid_argument(std::string(what) + ": expected shape (" + std::to_string(n) +
+                                    ", " + std::to_string(n) + "), got (" +
+                                    std::to_string(a.shape(0)) + ", " + std::to_string(a.shape(1)) +
+                                    ")");
+    }
+    return {a.data(), a.data() + (static_cast<size_t>(n) * static_cast<size_t>(n))};
+}
+
+// The element index is range-checked even though the table was sized against
+// the variable's universe at creation. `Variable.elements` is writable from
+// Python and `Model.restore_state` copies element vectors in wholesale, so an
+// out-of-universe element can reach here without passing any creation-time
+// check -- and an unchecked `tbl[e]` on that path is a heap read past the
+// vector, i.e. a segfault rather than an exception. One predictable compare
+// against an indirect call through std::function is not what this path costs.
+std::function<double(int)> table_lookup(std::vector<double> tbl, int32_t n, const char* what) {
+    return [tbl = std::move(tbl), n, what](int e) -> double {
+        if (e < 0 || e >= n) {
+            throw std::out_of_range(std::string(what) + ": element " + std::to_string(e) +
+                                    " outside the tabulated universe [0, " + std::to_string(n) +
+                                    ")");
+        }
+        return tbl[static_cast<size_t>(e)];
+    };
+}
+
+std::function<double(int, int)> matrix_lookup(std::vector<double> tbl, int32_t n,
+                                              const char* what) {
+    return [tbl = std::move(tbl), n, what](int a, int b) -> double {
+        if (a < 0 || a >= n || b < 0 || b >= n) {
+            throw std::out_of_range(std::string(what) + ": element pair (" + std::to_string(a) +
+                                    ", " + std::to_string(b) +
+                                    ") outside the tabulated universe [0, " + std::to_string(n) +
+                                    ")");
+        }
+        return tbl[(static_cast<size_t>(a) * static_cast<size_t>(n)) + static_cast<size_t>(b)];
+    };
+}
+
+constexpr const char* kPairLambdaSumDoc =
+    "Sum `func(e_k, e_{k+1})` over the consecutive pairs of a List or Set\n"
+    "variable's elements.\n"
+    "\n"
+    "cyclic=True adds the closing pair `func(e_{n-1}, e_0)` when n >= 2, which\n"
+    "is a tour cost. head and tail, if given, add `head(e_0)` and\n"
+    "`tail(e_{n-1})` -- the depot legs of a route, which a cyclic sum over the\n"
+    "customers alone would get wrong.\n"
+    "\n"
+    "n == 0 is 0.0 for every variant; n == 1 is `head(e_0) + tail(e_0)`.\n"
+    "\n"
+    "Every call re-acquires the GIL, so a Python func is a serialisation point\n"
+    "for a portfolio. Use pair_table_sum where the function is a matrix.";
+
+constexpr const char* kPairTableSumDoc =
+    "pair_lambda_sum with the function given as a distance matrix.\n"
+    "\n"
+    "dist is an (n, n) float64 array over the variable's universe -- max_size\n"
+    "for a List, universe_size for a Set -- and head/tail are length-n arrays.\n"
+    "All are COPIED into the engine at node creation, so the search makes no\n"
+    "Python call at all and resizing or freeing the caller's array afterwards\n"
+    "is harmless. A wrong shape raises here rather than being read past.";
+
 struct PySolveCallback : SolveCallback {
     NB_TRAMPOLINE(SolveCallback, 1);
     void on_progress(const SolveProgress& p) override { NB_OVERRIDE_PURE(on_progress, p); }
@@ -246,6 +353,53 @@ NB_MODULE(_cbls_core, m) {
         .def("lt", &Model::lt)
         .def("gt", &Model::gt)
         .def("lambda_sum", &Model::lambda_sum)
+        .def(
+            "lambda_table_sum",
+            [](Model& model, int32_t list_var, Table1D table) {
+                const int32_t n = table_universe(model, list_var, "lambda_table_sum");
+                return model.lambda_sum(
+                    list_var, table_lookup(copy_vector(table, n, "lambda_table_sum table"), n,
+                                           "lambda_table_sum"));
+            },
+            nb::arg("list_var"), nb::arg("table"),
+            "lambda_sum with the function given as a length-n float64 array over the\n"
+            "variable's universe. Copied into the engine at node creation, so the\n"
+            "search makes no Python call.")
+        .def(
+            "pair_lambda_sum",
+            [](Model& model, int32_t list_var, std::function<double(int, int)> func, bool cyclic,
+               std::optional<std::function<double(int)>> head,
+               std::optional<std::function<double(int)>> tail) {
+                return model.pair_lambda_sum(
+                    list_var, std::move(func), head ? std::move(*head) : nullptr,
+                    tail ? std::move(*tail) : nullptr, cyclic ? PairMode::Cyclic : PairMode::Open);
+            },
+            nb::arg("list_var"), nb::arg("func"), nb::arg("cyclic") = false,
+            nb::arg("head") = nb::none(), nb::arg("tail") = nb::none(), kPairLambdaSumDoc)
+        .def(
+            "pair_table_sum",
+            [](Model& model, int32_t list_var, Table2D dist, bool cyclic,
+               std::optional<Table1D> head, std::optional<Table1D> tail) {
+                const int32_t n = table_universe(model, list_var, "pair_table_sum");
+                auto endpoint = [n](const std::optional<Table1D>& t,
+                                    const char* what) -> std::function<double(int)> {
+                    if (!t) {
+                        return nullptr;
+                    }
+                    return table_lookup(copy_vector(*t, n, what), n, what);
+                };
+                // Both endpoints are validated BEFORE the node is made, so a
+                // bad `tail` cannot leave a half-registered node behind.
+                auto head_func = endpoint(head, "pair_table_sum head");
+                auto tail_func = endpoint(tail, "pair_table_sum tail");
+                return model.pair_lambda_sum(
+                    list_var,
+                    matrix_lookup(copy_matrix(dist, n, "pair_table_sum dist"), n, "pair_table_sum"),
+                    std::move(head_func), std::move(tail_func),
+                    cyclic ? PairMode::Cyclic : PairMode::Open);
+            },
+            nb::arg("list_var"), nb::arg("dist"), nb::arg("cyclic") = false,
+            nb::arg("head") = nb::none(), nb::arg("tail") = nb::none(), kPairTableSumDoc)
         // Constraint and objective, both overload sets. nb::overload_cast picks
         // the member by parameter list; a static_cast to the member-pointer type
         // does the same job but reads to readability-redundant-casting as a cast
