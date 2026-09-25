@@ -166,6 +166,8 @@ add_library(cbls_lib
     src/expr.cpp
     src/violation.cpp
     src/moves.cpp
+    src/move_generator.cpp
+    src/structural_batch.cpp
     src/randomize.cpp
     src/bound_propagation.cpp
     src/feasibility_jump.cpp

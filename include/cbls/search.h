@@ -3,6 +3,7 @@
 #include "inner_solver.h"
 #include "lns.h"
 #include "model.h"
+#include "move_generator.h"
 #include "moves.h"
 #include "randomize.h"
 #include "rng.h"
@@ -10,6 +11,8 @@
 
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <vector>
 
 namespace cbls {
 
@@ -62,6 +65,42 @@ struct SearchConfig {
     // need this to improve their structural assignment. <0 picks an automatic
     // default: 0.33 when the model has List/Set variables, 0.0 otherwise.
     double structural_batch_probability = -1.0;
+
+    // ---- structural batch: what proposes moves, and how one is chosen (#165) --
+    //
+    // Extra move generators, on top of the built-in per-variable List/Set ones.
+    // A domain move (an inter-route exchange, a block move, an ejection chain),
+    // a move over several variables, a restricted one: all of them plug in here
+    // rather than being special-cased inside the engine.
+    //
+    // CLONED PER WORKER. Every portfolio worker builds its own StructuralBatch,
+    // which clones each generator, so a generator holding a cache or a cursor
+    // holds per-worker state. The instances registered here are never mutated by
+    // the search -- which is what the `const` in the pointer type says -- so
+    // several searches may share one registration safely.
+    std::vector<std::shared_ptr<const MoveGenerator>> move_generators;
+    // Whether the built-in List/Set generators are registered too. On by
+    // default: a custom generator is a peer of the built-ins, not a replacement
+    // for them. Turn it off to run a model purely on custom moves.
+    bool default_structural_generators = true;
+    // How the batch turns a generator's candidates into a commit. The default
+    // is bit-for-bit the pre-#165 rule; see StructuralSelection.
+    StructuralSelection structural_selection = StructuralSelection::FirstImprovingSample;
+    // Candidates scored per generator under BestOfSample / ViolationGuided.
+    // Inert under the default policy, which takes exactly one generate() call.
+    //
+    // 8 is a NEUTRAL PLACEHOLDER, not a measured choice, and no result in this
+    // repo is derived from it: the two policies it feeds are opt-in and off by
+    // default. A caller that cares should sweep it on its own instances, which
+    // is what benchmarks/setcover/ab_selection.sh does.
+    int structural_sample_size = 8;
+    // Optional granular neighbourhood handed to the BUILT-IN generators, making
+    // a move's target one of the moved element's nearest neighbours instead of a
+    // uniform draw (Toth & Vigo 2003). Null -- the default -- keeps the uniform
+    // draw and therefore the pre-#165 trajectory. Shared, not cloned: it is
+    // immutable, and copying a k-nearest list per worker is the cost sharing the
+    // model's structure exists to avoid (#157).
+    std::shared_ptr<const NeighbourList> structural_neighbours;
     // Novelty Jump is implemented, wired, and unit-tested, but OFF by default:
     // its per-batch cost is not yet bounded tightly enough for the large
     // continuous benchmarks (it burns the time budget there). Enable + tune

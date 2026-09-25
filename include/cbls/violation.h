@@ -76,6 +76,28 @@ public:
     void snapshot_violations(std::vector<double>& out) const;
     double weighted_delta_from(const std::vector<double>& snapshot) const;
 
+    /// The same quantity restricted to `rows`, which must be constraint indices
+    /// in STRICTLY ASCENDING order.
+    ///
+    /// Exact, not an approximation, whenever `rows` covers every constraint the
+    /// caller's change can have touched -- the union of the moved variables' G_v
+    /// (`Model::constraints_of_var`). A row outside that union has the same node
+    /// value it had when the snapshot was taken, so `now == snapshot[i]` holds
+    /// bitwise and the full-scan version skips it. Bit-identical rather than
+    /// merely equal, on two counts: the same terms are summed, and ascending
+    /// order makes them sum in the same sequence, which is what floating-point
+    /// addition is sensitive to. `tests/test_structural_batch.cpp` pins the
+    /// equality against the full scan on real structural moves.
+    ///
+    /// O(|rows|) where the full scan is O(#constraints). That is the whole
+    /// reason it exists: the structural batch scores every candidate move this
+    /// way, and a move on one List of a 40 000-row model can change only the
+    /// handful of rows that read it.
+    ///
+    /// Throws, like the full scan, if the snapshot is not one entry per
+    /// constraint. An out-of-range entry in `rows` throws `std::out_of_range`.
+    double weighted_delta_from(const std::vector<double>& snapshot, ConstSpan<int32_t> rows) const;
+
     // Invalidate cached total (call after weights change or full_evaluate)
     void invalidate_cache() { cache_valid_ = false; }
 

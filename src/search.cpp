@@ -3,6 +3,7 @@
 #include "cbls/dag_ops.h"
 #include "cbls/feasibility_jump.h"
 #include "cbls/randomize.h"
+#include "cbls/structural_batch.h"
 // search.h only forward-declares SearchCoordination, deliberately -- see the
 // declaration there. This translation unit is one of the few that needs the
 // definition, because ViolationLSLoop reads both of its channels.
@@ -82,101 +83,11 @@ int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations,
     return fj.iterations();
 }
 
-// A STRUCTURAL batch (paper Algorithm 6 has FJ/NJ; this is the list/set peer):
-// sweep the List/Set variables, try the candidate structural moves (swap /
-// 2-opt / relocate / or-opt / set add-remove-swap) for each, and greedily keep
-// any that reduce total weighted violation (i.e. negative weighted delta_G under
-// the current GLS weights W, since total_violation() is W-weighted).
-// FeasibilityJump only jumps scalar variables, so list-structured models cannot
-// improve their list/set assignment without this. Returns true if any move was
-// committed (the caller must then resync the FJ scan-set/jump-table).
-//
-// The sweep is deadline-bounded *between variables*, never mid-variable: each
-// variable's move set is evaluated whole, so the reference move set is never
-// truncated for speed, and the overrun is capped at one variable's work.
-//
-// The bound is needed because the sweep's cost is unbounded in the model size:
-// O(#structured vars x #moves x (delta_evaluate + O(#constraints))), since the
-// weighted delta rescans every constraint once per move.
-// On a 1500-List x 100-element model with 40k constraints a 0.5s budget ran
-// 1.19-1.25s unbounded versus 0.502s bounded. `solve(model, time_limit)` is a
-// library contract, and that is a violation for any user model of this shape
-// (issue #105). Real benchmark models were nowhere near it -- pharma-glsp's
-// largest class swept 10 List variables in ~0.5ms (that benchmark has since
-// been retired, #28; the measurement is what motivated this bound) -- so this
-// bound is about honouring the contract on large models, not the benchmarks.
-//
-// The check is unconditional per variable rather than strided. An earlier
-// self-tuning stride was deleted: because the stride persisted across passes
-// while its counter reset per pass, once it exceeded the model's structured
-// variable count it could never fire again, so it did nothing at all on 160 of
-// the 170 real pharma-glsp instances (2-6 List variables each; the benchmark
-// is gone in #28, the bug it exposed is not). A per-variable
-// clock read costs ~1.4us only on an HPET clocksource like the machine this was
-// measured on; via the vDSO on a TSC clocksource it is ~20-25ns. Amortising a
-// 60x-inflated constant did not justify the complexity.
-static bool structural_pass(Model& model, ViolationManager& vm, RNG& rng, bool has_deadline,
-                            std::chrono::steady_clock::time_point deadline) {
-    bool changed = false;
-    // Per-constraint violations of the last ACCEPTED assignment. A move is judged
-    // by ViolationManager::weighted_delta_from against this, not by differencing
-    // two whole-sum total_violation() values. That subtraction had TWO defects,
-    // and only the first one needs a clamped row.
-    //
-    // 1. Clamped-row blindness (#118). A row clamped to kInfPenalty swallows the
-    //    real rows: 1e30 is fourteen orders of magnitude above an O(1) row, so
-    //    both sums round to the same double and `after < before - 1e-12` reads
-    //    `before < before`. That is #100's defect in this pass, and #116's
-    //    sentinel objective bound put a permanently clamped row into every model
-    //    whose feasible region contains a non-finite objective — so the pass
-    //    rejected every structural move for as long as the sentinel was
-    //    installed, however much it improved the real rows.
-    //
-    // 2. Phantom improvements, on ANY model, clamped row or not, and predating
-    //    #116. Both readings came from total_violation()'s incremental
-    //    accumulator (cached_total_ += (new - old) * W), whose 1000-call
-    //    recompute bounds the accumulated rounding error without removing it, and
-    //    `before` was threaded across candidate moves — so two readings taken at
-    //    different points in that drift cycle differ in the last ulp even when no
-    //    constraint changed at all. `- 1e-12` cannot filter that: x - 1e-12 == x
-    //    for every double x > 2^14 (16384 itself is the last value it still
-    //    moves), and GLS weights put setcover's weighted total at ~4.4e6, where
-    //    one ulp is 9.3e-10. Measured on scp41/Set with no row clamped anywhere:
-    //    99 of 39627 candidates were accepted with a true weighted delta of
-    //    exactly 0, each of them setting `changed` and forcing a needless
-    //    fj.resync().
-    //
-    // Differencing per constraint fixes both: the clamped row cancels exactly,
-    // and an unchanged row contributes an exact 0 instead of a drifted total.
-    //
-    // Both calls self-correct to the current node values (they read the
-    // constraint nodes directly), so no explicit invalidate is needed across the
-    // apply/undo dance; the baseline is re-snapshotted only when a move is kept.
-    std::vector<double> baseline;
-    vm.snapshot_violations(baseline);
-    for (const auto& var : model.variables()) {
-        if (!is_structured(var.type)) {
-            continue;
-        }
-        if (has_deadline && std::chrono::steady_clock::now() >= deadline) {
-            break;
-        }
-        auto moves = generate_standard_moves(var, rng);
-        for (const auto& move : moves) {
-            auto saved = save_move_values(model, move);
-            auto touched = apply_move(model, move);
-            delta_evaluate(model, touched);
-            if (vm.weighted_delta_from(baseline) < -1e-12) {
-                changed = true;  // improving: keep
-                vm.snapshot_violations(baseline);
-            } else {
-                undo_move(model, move, saved);
-                delta_evaluate(model, touched);
-            }
-        }
-    }
-    return changed;
-}
+// The STRUCTURAL batch moved to StructuralBatch (include/cbls/structural_batch.h,
+// src/structural_batch.cpp) in #165, where it became a sweep over registered
+// MoveGenerators rather than a hard-coded generate_standard_moves loop. The
+// deadline argument, the sweep order and the accept rule are unchanged; the
+// header carries the notes that used to live here.
 
 namespace {
 
@@ -486,6 +397,10 @@ private:
     const std::vector<int32_t>& cids_;
     const double structural_probability_;
     const int unproductive_arm_stagnation_;
+    // Owns this search's OWN clone of every registered move generator, so a
+    // portfolio worker shares no mutable generator state with its peers (#157,
+    // #165). Built empty on a model with no structured variable.
+    StructuralBatch structural_;
 
     double best_feasible_obj_ = std::numeric_limits<double>::infinity();
     Model::State best_state_;
@@ -555,6 +470,7 @@ ViolationLSLoop::ViolationLSLoop(Model& model, ViolationManager& vm, RNG& rng, F
       structural_probability_(effective_structural_probability(model, config)),
       unproductive_arm_stagnation_(
           std::max(1, config.perturbation_period / kUnproductiveArmDivisor)),
+      structural_(model, config, structural_probability_ > 0.0),
       best_state_(model.copy_state()),
       closest_state_(best_state_),
       last_callback_(budget.start),
@@ -694,7 +610,7 @@ bool ViolationLSLoop::record_best() {
         // that compares two assignments by violation must difference PER
         // CONSTRAINT, because a row clamped to 1e30 swallows every O(1) real
         // row when whole sums are subtracted instead. FJ's jump scoring
-        // already did (#100); structural_pass did not, and was blind for the
+        // already did (#100); the structural batch did not, and was blind for the
         // whole window until #118 gave it the same treatment. LNS::state_key
         // and max_real_violation are safe by exclusion — neither looks at the
         // objective row at all.
@@ -1180,7 +1096,7 @@ BatchKind ViolationLSLoop::pick_batch_kind() {
 bool ViolationLSLoop::run_batch(BatchKind kind) {
     switch (kind) {
         case BatchKind::Structural:
-            return structural_pass(model_, vm_, rng_, has_deadline_, deadline_);
+            return structural_.run(model_, vm_, rng_, has_deadline_, deadline_);
         case BatchKind::NoveltyJump:
             fj_.apply_novelty_jump();
             return true;

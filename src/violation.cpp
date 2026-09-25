@@ -122,6 +122,30 @@ double ViolationManager::weighted_delta_from(const std::vector<double>& snapshot
     return delta;
 }
 
+double ViolationManager::weighted_delta_from(const std::vector<double>& snapshot,
+                                             ConstSpan<int32_t> rows) const {
+    const auto& cids = model_.constraint_ids();
+    if (snapshot.size() != cids.size()) {
+        throw std::invalid_argument("weighted_delta_from: snapshot size != constraint count");
+    }
+    // Deliberately the same body as the full scan above, term for term and
+    // guard for guard, including the `now != snapshot[i]` skip: the point of
+    // this overload is that it produces the SAME double, and a divergence here
+    // would show up as a trajectory change rather than as a wrong answer.
+    double delta = 0.0;
+    for (int32_t ci : rows) {
+        if (ci < 0 || static_cast<size_t>(ci) >= cids.size()) {
+            throw std::out_of_range("weighted_delta_from: constraint index out of range");
+        }
+        const auto i = static_cast<size_t>(ci);
+        const double now = clamped_node_violation(model_.node_value(cids[i]));
+        if (now != snapshot[i]) {
+            delta += weights[i] * (now - snapshot[i]);
+        }
+    }
+    return delta;
+}
+
 bool ViolationManager::is_feasible(double tol) const {
     const std::vector<int32_t>& cids = model_.constraint_ids();
     // A NaN node value is not <= tol, so all_of rejects it -- which is what we

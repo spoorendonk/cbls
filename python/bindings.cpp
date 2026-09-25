@@ -679,7 +679,11 @@ NB_MODULE(_cbls_core, m) {
     });
     m.def("compute_partial", &compute_partial);
     m.def("compute_all_partials", &compute_all_partials);
-    m.def("generate_standard_moves", &generate_standard_moves);
+    // The vector-returning overload, explicitly: #165 added an appending one
+    // that also takes a NeighbourList, and an unqualified address-of is then
+    // ambiguous. Python keeps the simple form.
+    m.def("generate_standard_moves",
+          static_cast<std::vector<Move> (*)(const Variable&, RNG&)>(&generate_standard_moves));
     m.def("apply_move", &apply_move);
     m.def("save_move_values", &save_move_values);
     m.def("undo_move", &undo_move);

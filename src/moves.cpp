@@ -1,5 +1,6 @@
 #include "cbls/moves.h"
 
+#include "cbls/move_generator.h"
 #include "cbls/randomize.h"
 
 #include <algorithm>
@@ -61,18 +62,52 @@ static std::vector<Move> float_moves(const Variable& var, RNG& rng, double sigma
     return {m};
 }
 
-static std::vector<Move> list_moves(const Variable& var, RNG& rng) {
-    std::vector<Move> moves;
-    int n = static_cast<int>(var.elements.size());
-    if (n < 2) {
-        return moves;
+// The second position of the move pair. Uniform over `{0..n-1} \ {i}` with no
+// neighbour list -- which is the pre-#165 draw, verbatim, and the reason the
+// uniform branch is written out here rather than reached through the granular
+// one. With a list, `elements[i]`'s nearest neighbours are the candidates, and
+// the uniform draw is the fallback when the list names nobody usable.
+static int pick_second_position(const Variable& var, RNG& rng, int n,
+                                const NeighbourList* neighbours, int i) {
+    if (neighbours != nullptr && !neighbours->empty()) {
+        const int32_t here = var.elements[static_cast<size_t>(i)];
+        const ConstSpan<int32_t> nb = neighbours->of(here);
+        if (!nb.empty()) {
+            // elements -> position. Rebuilt per call: a List's elements are a
+            // permutation that every accepted move rewrites, so a cached index
+            // would have to be invalidated by the search rather than by this
+            // function. O(n) against the O(n) each candidate move already costs.
+            std::vector<int32_t> pos(static_cast<size_t>(n), -1);
+            for (int p = 0; p < n; ++p) {
+                const int32_t e = var.elements[static_cast<size_t>(p)];
+                if (e >= 0 && e < n) {
+                    pos[static_cast<size_t>(e)] = p;
+                }
+            }
+            const int32_t f =
+                nb[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(nb.size())))];
+            const int32_t j = (f >= 0 && f < n) ? pos[static_cast<size_t>(f)] : -1;
+            if (j >= 0 && j != i) {
+                return j;
+            }
+        }
     }
-
-    int i = static_cast<int>(rng.integers(0, n));
     int j = static_cast<int>(rng.integers(0, n - 1));
     if (j >= i) {
         j++;  // ensure i != j
     }
+    return j;
+}
+
+static void list_moves(const Variable& var, RNG& rng, std::vector<Move>& moves,
+                       const NeighbourList* neighbours) {
+    int n = static_cast<int>(var.elements.size());
+    if (n < 2) {
+        return;
+    }
+
+    int i = static_cast<int>(rng.integers(0, n));
+    int j = pick_second_position(var, rng, n, neighbours, i);
 
     // Swap
     {
@@ -148,13 +183,10 @@ static std::vector<Move> list_moves(const Variable& var, RNG& rng) {
         m.changes.push_back({var.id, 0.0, new_elems});
         moves.push_back(m);
     }
-
-    return moves;
 }
 
-static std::vector<Move> set_moves(const Variable& var, RNG& rng) {
-    std::vector<Move> moves;
-
+static void set_moves(const Variable& var, RNG& rng, std::vector<Move>& moves,
+                      const NeighbourList* neighbours) {
     // Build not_in and in_set lists
     std::vector<int32_t> in_set(var.elements.begin(), var.elements.end());
     std::vector<int32_t> not_in;
@@ -173,12 +205,30 @@ static std::vector<Move> set_moves(const Variable& var, RNG& rng) {
 
     int cur_size = static_cast<int>(var.elements.size());
 
+    // The element a set_add / set_swap brings in. Uniform over the complement
+    // with no neighbour list -- the pre-#165 draw, verbatim. With a list, the
+    // nearest neighbour of a randomly chosen SELECTED element that is not
+    // already in the set, which is the granular form of "grow the subset where
+    // it already is" rather than anywhere in the universe. Falls back to the
+    // uniform draw when the list offers nothing usable.
+    auto pick_added = [&]() -> int32_t {
+        if (neighbours != nullptr && !neighbours->empty() && !in_set.empty()) {
+            const int32_t seed =
+                in_set[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(in_set.size())))];
+            for (int32_t f : neighbours->of(seed)) {
+                if (f >= 0 && f < var.universe_size && !in_flag[f]) {
+                    return f;
+                }
+            }
+        }
+        return not_in[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(not_in.size())))];
+    };
+
     // Add
     if (!not_in.empty() && cur_size < var.max_size) {
         Move m;
         m.move_type = "set_add";
-        int32_t add_elem =
-            not_in[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(not_in.size())))];
+        int32_t add_elem = pick_added();
         auto new_elems = var.elements;
         new_elems.push_back(add_elem);
         m.changes.push_back({var.id, 0.0, new_elems});
@@ -204,8 +254,7 @@ static std::vector<Move> set_moves(const Variable& var, RNG& rng) {
     if (!in_set.empty() && !not_in.empty()) {
         Move m;
         m.move_type = "set_swap";
-        int32_t add_elem =
-            not_in[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(not_in.size())))];
+        int32_t add_elem = pick_added();
         int32_t rem_elem =
             in_set[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(in_set.size())))];
         auto new_elems = var.elements;
@@ -217,24 +266,39 @@ static std::vector<Move> set_moves(const Variable& var, RNG& rng) {
             moves.push_back(m);
         }
     }
+}
 
-    return moves;
+void generate_standard_moves(const Variable& var, RNG& rng, std::vector<Move>& out,
+                             const NeighbourList* neighbours) {
+    switch (var.type) {
+        case VarType::Bool: {
+            std::vector<Move> m = bool_moves(var);
+            out.insert(out.end(), m.begin(), m.end());
+            return;
+        }
+        case VarType::Int: {
+            std::vector<Move> m = int_moves(var, rng);
+            out.insert(out.end(), m.begin(), m.end());
+            return;
+        }
+        case VarType::Float: {
+            std::vector<Move> m = float_moves(var, rng);
+            out.insert(out.end(), m.begin(), m.end());
+            return;
+        }
+        case VarType::List:
+            list_moves(var, rng, out, neighbours);
+            return;
+        case VarType::Set:
+            set_moves(var, rng, out, neighbours);
+            return;
+    }
 }
 
 std::vector<Move> generate_standard_moves(const Variable& var, RNG& rng) {
-    switch (var.type) {
-        case VarType::Bool:
-            return bool_moves(var);
-        case VarType::Int:
-            return int_moves(var, rng);
-        case VarType::Float:
-            return float_moves(var, rng);
-        case VarType::List:
-            return list_moves(var, rng);
-        case VarType::Set:
-            return set_moves(var, rng);
-    }
-    return {};
+    std::vector<Move> moves;
+    generate_standard_moves(var, rng, moves, nullptr);
+    return moves;
 }
 
 std::vector<int32_t> apply_move(Model& model, const Move& move) {
