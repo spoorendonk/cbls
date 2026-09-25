@@ -172,7 +172,7 @@ static void list_insert_move(const Variable& var, RNG& rng, const NeighbourList*
         }
         chosen = absent[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(absent.size())))];
     }
-    const auto pos = static_cast<int64_t>(rng.integers(0, n + 1));
+    const int64_t pos = rng.integers(0, n + 1);
     Move m;
     m.move_type = "list_insert";
     auto new_elems = var.elements;

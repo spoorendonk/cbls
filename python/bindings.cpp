@@ -428,7 +428,7 @@ NB_MODULE(_cbls_core, m) {
              "`cover` accepts a Cover value or the strings 'exact' / 'at_most_once'.")
         .def(
             "add_list_partition",
-            [](Model& model, const std::vector<int32_t>& lists, std::string_view cover) {
+            [](Model& model, const std::vector<int32_t>& lists, const std::string& cover) {
                 if (cover == "exact") {
                     return model.add_list_partition(lists, Cover::Exact);
                 }
