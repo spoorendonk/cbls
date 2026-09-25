@@ -3,10 +3,8 @@
 #include "cbls/model.h"
 
 #include <algorithm>
-#include <cstring>
-#include <numeric>
+#include <cmath>
 #include <stdexcept>
-#include <string>
 #include <utility>
 
 namespace cbls {
@@ -92,10 +90,22 @@ NeighbourList nearest_neighbours(int universe, int k, const std::function<double
         std::partial_sort(
             scored.begin(), scored.begin() + static_cast<std::ptrdiff_t>(want), scored.end(),
             [](const std::pair<double, int32_t>& a, const std::pair<double, int32_t>& b) {
-                if (a.first != b.first) {
-                    // A NaN cost sorts last rather than making the
-                    // comparator non-strict (which is UB in sort).
-                    return a.first < b.first || std::isnan(b.first);
+                // NaN sorts last, and TWO NaNs must TIE -- broken by id, like any
+                // other tie. Deciding on the values first does NOT achieve that:
+                // `a.first != b.first` is true for NaN against NaN (and for a NaN
+                // against itself), so `a < b || isnan(b)` makes comp(x, y) and
+                // comp(y, x) both true. That is not a strict weak ordering, and
+                // partial_sort with one is undefined behaviour -- libstdc++'s
+                // insertion sort can then run off the front of the range. A
+                // single NaN never exposed it; two do, and a cost callback
+                // returning NaN for every unreachable pair produces many.
+                const bool a_nan = std::isnan(a.first);
+                const bool b_nan = std::isnan(b.first);
+                if (a_nan != b_nan) {
+                    return b_nan;
+                }
+                if (!a_nan && a.first != b.first) {
+                    return a.first < b.first;
                 }
                 return a.second < b.second;
             });

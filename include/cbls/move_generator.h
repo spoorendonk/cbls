@@ -55,7 +55,11 @@ public:
     [[nodiscard]] bool empty() const noexcept { return ids_.empty(); }
     /// `e`'s neighbours, nearest first. Empty for an out-of-range `e`.
     [[nodiscard]] ConstSpan<int32_t> of(int32_t e) const noexcept {
-        if (e < 0 || e + 1 >= static_cast<int32_t>(offsets_.size())) {
+        // Widened before the +1: `e + 1` on an int32_t is signed overflow at
+        // INT32_MAX, which is undefined behaviour in the one function written to
+        // be total on every input -- and `neighbours_of(2147483647)` is one
+        // Python call away.
+        if (e < 0 || static_cast<size_t>(e) + 1 >= offsets_.size()) {
             return {};
         }
         const int32_t begin = offsets_[static_cast<size_t>(e)];
@@ -94,8 +98,12 @@ NeighbourList nearest_neighbours(int universe, int k, const std::function<double
 enum class StructuralSelection : std::uint8_t {
     /// Today's rule: take every improving candidate from one sample, in order.
     FirstImprovingSample,
-    /// Draw up to `SearchConfig::structural_sample_size` candidates from the
-    /// generator, score them all, commit the best improving one.
+    /// Call the generator until it has offered at least
+    /// `SearchConfig::structural_sample_size` candidates, score them all, and
+    /// commit the best improving one. One call always happens, and a call that
+    /// appends several may overshoot the target by up to that call's yield -- so
+    /// the built-in List generator yields 5 even at a sample size of 1. The
+    /// sample size is a floor on the effort, not a ceiling on the count.
     BestOfSample,
     /// `BestOfSample`, restricted to generators whose scope can still change a
     /// VIOLATED row.
@@ -154,9 +162,15 @@ struct MoveContext {
 ///
 /// CONTRACTS, all of which the batch relies on:
 ///
-///  - `generate` must RETURN IN BOUNDED TIME. The structural batch checks its
-///    wall-clock deadline BETWEEN generators, never inside one (#105), so an
-///    unbounded `generate` is an unbounded overrun of `solve()`'s budget.
+///  - `generate` must RETURN IN BOUNDED TIME **and append a bounded number of
+///    candidates**. The structural batch checks its wall-clock deadline BETWEEN
+///    generators, never inside one (#105); between two checks it applies,
+///    `delta_evaluate`s, scores and rolls back EVERY candidate on offer. So a
+///    `generate` that returns instantly and appends 100 000 candidates overruns
+///    `solve()`'s budget exactly as thoroughly as one that never returns. The
+///    built-ins append at most 5. Only the sampling policies cap the count
+///    (`SearchConfig::structural_sample_size`); `FirstImprovingSample` takes
+///    whatever it is given.
 ///  - `generate` APPENDS; it must not clear or reorder what is already in `out`.
 ///  - `generate` must not change the model's assignment (see `MoveContext`).
 ///  - `clone()` must return an independent object. Every portfolio worker gets
@@ -189,9 +203,35 @@ public:
     /// Append candidate moves. Called once per batch under
     /// `FirstImprovingSample`, and repeatedly under the sampling policies until
     /// the sample is full or a call adds nothing.
+    ///
+    /// EVERY CANDIDATE FROM ONE CALL IS BUILT AGAINST THE SAME ASSIGNMENT, and
+    /// each carries absolute `new_elements` vectors. Under
+    /// `FirstImprovingSample` the batch may commit SEVERAL of them in turn, so
+    /// candidate k+1 is applied on top of an assignment that candidate k
+    /// changed. For the built-ins that is harmless and is what the pre-#165
+    /// sweep did: each candidate replaces one variable's elements wholesale, and
+    /// the accept test is against a re-snapshotted baseline either way.
+    ///
+    /// It is NOT harmless for a generator that maintains a structural invariant
+    /// ACROSS variables by construction rather than by a constraint row -- a
+    /// partition of elements over several Lists, say. Commit "move e from L1 to
+    /// L2", then apply a stale candidate whose L1 vector still contains e, and e
+    /// is in both lists with nothing to notice. Such a generator must either
+    /// emit at most ONE candidate per call, or be run under `BestOfSample` /
+    /// `ViolationGuided`, which commit at most one candidate per call.
     virtual void generate(MoveContext& ctx, std::vector<Move>& out) = 0;
 
-    /// One of this generator's moves was committed. The default does nothing.
+    /// One of THIS generator's moves was committed. The default does nothing.
+    ///
+    /// It is a private notification for the generator's own bookkeeping, NOT a
+    /// broadcast that the assignment changed. The assignment also moves under a
+    /// peer generator's commit in the same sweep, every Feasibility Jump batch,
+    /// a Novelty Jump, the diversification kick, an LNS destroy-repair and a
+    /// restart from the solution pool -- none of which notifies anybody. So
+    /// anything DERIVED from the assignment (an element-to-list index, a
+    /// position map) must be recomputed in `generate` from `ctx.model`; only
+    /// state that is the generator's own -- a cursor, a counter, a tabu tenure
+    /// it alone writes -- can be carried across calls.
     virtual void on_commit(const Move& move);
 
     /// A per-worker copy. See the cloning contract above.

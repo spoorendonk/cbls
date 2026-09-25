@@ -186,7 +186,12 @@ bool parse_selection_flag(const std::string& arg, FlagValues& v, Options& opt) {
             fprintf(stderr, "--sample-size must be a positive int\n");
             v.ok = false;
         }
-        opt.sample_size = static_cast<int>(k);
+        // Validate, THEN narrow -- seed_count's shape. Narrowing an out-of-range
+        // uint64_t first is implementation-defined, and the value would be read
+        // by anything that ran before the caller acted on `v.ok`.
+        if (v.ok) {
+            opt.sample_size = static_cast<int>(k);
+        }
         return true;
     }
     return false;

@@ -33,6 +33,14 @@ struct SearchConfig;
 /// DEADLINE. The sweep is bounded BETWEEN generators, never inside one: each
 /// generator's candidates are evaluated whole, so the reference move set is
 /// never truncated for speed and the overrun is capped at one generator's work.
+///
+/// "One generator's work" is a cap the CALLER sizes, not a constant. Between
+/// two checks the batch applies, `delta_evaluate`s, scores and rolls back every
+/// candidate on offer -- 3-5 for a built-in, up to
+/// `SearchConfig::structural_sample_size` plus one call's yield under the
+/// sampling policies, and whatever a registered generator chooses under
+/// `FirstImprovingSample`, which caps nothing. See the `generate` contract on
+/// `MoveGenerator`, which is where that obligation is stated.
 /// The bound is needed because the sweep's cost is unbounded in the model size,
 /// and `solve(model, time_limit)` is a library contract: on a
 /// 1500-List x 100-element model with 40k constraints a 0.5s budget ran
@@ -41,6 +49,17 @@ struct SearchConfig;
 /// ~0.5ms (retired in #28; the measurement is what motivated the bound) -- so
 /// this is about honouring the contract on large models, not about the
 /// benchmarks.
+///
+/// THAT 1.19-1.25s IS A PRE-#165 NUMBER and does not describe this code. It was
+/// the O(#constraints) full rescan per candidate, which the G_v restriction
+/// below removed: the same model's unbounded sweep re-measures at 0.024s,
+/// because its 40 000 filler rows are no longer read. The bound still matters --
+/// the remaining cost is O(#structured vars x #candidates x (delta_evaluate +
+/// |G_v|)), which is still unbounded in the model size -- but it now takes a
+/// model with large STRUCTURES rather than many rows to reach the same overrun.
+/// `a deadline that passes mid-sweep stops the sweep between generators`
+/// (tests/test_structural_batch.cpp) is what pins the bound, by counting the
+/// generators a sweep visited rather than by timing it.
 ///
 /// The check is unconditional per generator rather than strided. An earlier
 /// self-tuning stride was deleted: because the stride persisted across passes

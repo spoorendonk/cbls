@@ -1144,7 +1144,13 @@ namespace {
 /// which is why cloning rather than sharing is the contract.
 struct CloneRegistry {
     std::mutex mu;
-    std::vector<const void*> addresses;
+    /// Identity TOKENS, not generator addresses. A clone dies when its worker
+    /// restarts, and the allocator hands the very same address straight back to
+    /// the next clone on that thread -- so comparing raw `this` pointers reports
+    /// a duplicate for a perfectly correct restart, and whether it does depends
+    /// on whether the budget produced one. The registry keeps each token alive,
+    /// which is what makes its address unique for the whole run.
+    std::vector<std::shared_ptr<const int>> identities;
     std::vector<int> per_clone_commits;
     int total_commits = 0;
 };
@@ -1152,7 +1158,9 @@ struct CloneRegistry {
 class CountingGenerator final : public MoveGenerator {
 public:
     CountingGenerator(int32_t var_id, std::shared_ptr<CloneRegistry> registry)
-        : var_id_(var_id), registry_(std::move(registry)) {}
+        : var_id_(var_id),
+          registry_(std::move(registry)),
+          identity_(std::make_shared<const int>(0)) {}
 
     ~CountingGenerator() override {
         if (registered_) {
@@ -1184,13 +1192,14 @@ public:
         auto copy = std::make_unique<CountingGenerator>(var_id_, registry_);
         copy->registered_ = true;
         const std::scoped_lock lock(registry_->mu);
-        registry_->addresses.push_back(copy.get());
+        registry_->identities.push_back(copy->identity_);
         return copy;
     }
 
 private:
     int32_t var_id_;
     std::shared_ptr<CloneRegistry> registry_;
+    std::shared_ptr<const int> identity_;
     int own_commits_ = 0;
     bool registered_ = false;  // only a clone publishes its count on destruction
 };
@@ -1239,8 +1248,12 @@ TEST_CASE("each portfolio worker gets its own move generator", "[parallel][struc
 
     const std::scoped_lock lock(registry->mu);
     // One clone per worker at least (a restarted worker builds another).
-    REQUIRE(registry->addresses.size() >= static_cast<size_t>(kThreads));
-    std::vector<const void*> sorted = registry->addresses;
+    REQUIRE(registry->identities.size() >= static_cast<size_t>(kThreads));
+    std::vector<const void*> sorted;
+    sorted.reserve(registry->identities.size());
+    for (const std::shared_ptr<const int>& token : registry->identities) {
+        sorted.push_back(token.get());
+    }
     std::sort(sorted.begin(), sorted.end());
     REQUIRE(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end());
     // The instance the caller registered was never run, so its own state is

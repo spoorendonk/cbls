@@ -23,6 +23,17 @@
 # comparison is re-derived from the result records whenever the question is
 # asked.
 #
+# READ THE RESULT WITH THIS CAVEAT. At a fixed wall-clock budget the comparison
+# is policy quality MINUS representation cost, and the two arms do not pay the
+# same representation cost. `best_of_sample` / `violation_guided` score up to
+# `--sample-size` candidates per variable per pass where `first_improving`
+# scores the generator's 3-5, and every candidate still copies the whole element
+# vector twice (once into the Move, once into the undo snapshot) -- the
+# position-based move representation #165 describes is deferred to #164. So a
+# null or negative result does not separate "the policy does not help" from "the
+# policy helps less than its per-candidate cost". Say which you measured, and
+# re-run after #164 lands.
+#
 # Quote the result with the engine commit the script prints.
 set -euo pipefail
 
@@ -98,10 +109,11 @@ fi
 mkdir -p "$out"
 
 commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+# `git diff --quiet` exits 1 for a dirty tree and 128+ outside a repository, so
+# only 1 means dirty. Untracked files are not considered -- the question this
+# answers is whether the binary matches the named commit.
 dirty=""
-if ! git diff --quiet HEAD -- 2>/dev/null; then
-	dirty=" (working tree dirty)"
-fi
+git diff --quiet HEAD -- 2>/dev/null || [ $? -ne 1 ] || dirty=" (working tree dirty)"
 
 {
 	echo "engine commit: ${commit}${dirty}"
@@ -128,8 +140,18 @@ for arm in "${arm_list[@]}"; do
 	# One process at a time, `set` encoding only: the Bool encoding has no
 	# structural batch at all (build_bool_model creates no List or Set), so it
 	# would be the same run in both arms.
-	if ! "$bin" --dir "$dir" --encoding set --selection "$arm" \
-		--time "$time_limit" --seeds "$seeds" --seed "$first_seed" --csv "$csv"; then
+	status=0
+	"$bin" --dir "$dir" --encoding set --selection "$arm" \
+		--time "$time_limit" --seeds "$seeds" --seed "$first_seed" --csv "$csv" || status=$?
+	# The runner exits 2 on a bad flag value and 1 on infeasible/unverified runs.
+	# Reporting a mistyped --arms as "infeasible" would send the reader looking
+	# at the search instead of at the command line, so the two are kept apart.
+	if [ "$status" -eq 2 ]; then
+		echo "arm '$arm' was rejected by the runner (bad --selection value?)" >&2
+		failed_arms="$failed_arms $arm"
+		continue
+	fi
+	if [ "$status" -ne 0 ]; then
 		echo "arm '$arm' reported infeasible or unverified runs" >&2
 		failed_arms="$failed_arms $arm"
 	fi
@@ -145,7 +167,7 @@ for arm in "${arm_list[@]}"; do
 done
 
 echo
-echo "=== per-instance gap% by arm: mean / best / feasible-and-verified runs ==="
+echo "=== per arm: mean gap% / best objective / feasible-and-verified runs ==="
 # Only verified-feasible rows are aggregated. An infeasible run has an
 # objective that is not a cover's cost, so averaging it in would report a
 # number for a solution that does not exist -- which is how a short budget

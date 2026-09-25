@@ -24,6 +24,25 @@
 // Every scenario is iteration-budgeted with `time_limit = 0`, so nothing here
 // reads a clock and the run is fully deterministic (see the `time_limit <= 0`
 // contract on `solve`).
+//
+// WHAT ELSE A MISMATCH CAN MEAN. The digests pin a trajectory, but a trajectory
+// is a function of the toolchain as well as of the code. `RNG` is built on
+// `std::uniform_real_distribution` / `std::normal_distribution` / `std::shuffle`,
+// none of which is specified to produce the same sequence across standard
+// library implementations, and `normal` reaches into libm. These were recorded
+// with the repository's own build -- **GCC/libstdc++ on x86-64 at Release**,
+// which is what `CMakeLists.txt` defaults to and what every gate builds. So on
+// a different compiler or standard library, or in a `build/` that was first
+// configured `Debug` or with `CBLS_SANITIZE` (CLAUDE.md warns that a build
+// directory keeps whatever type it was first given, and that pre-commit gates
+// on it), a mismatch is the TOOLCHAIN and not the engine. Check
+// `CMAKE_BUILD_TYPE` in `build/CMakeCache.txt` before believing one.
+//
+// If the toolchain really has moved and the table has to be re-recorded, record
+// it the way it was recorded the first time: build `a805cb6` in a scratch
+// checkout on the NEW toolchain, run this file there, and copy the digests it
+// prints. Never re-derive them from the current build -- that turns the guard
+// into a tautology, which is the one failure mode it cannot survive.
 
 #include "test_helpers.h"
 

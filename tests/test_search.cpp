@@ -1182,9 +1182,12 @@ TEST_CASE("solve disarms the escape probe on a new best", "[search][escape]") {
 TEST_CASE("structural batch respects the wall-clock deadline", "[search][structural][timing]") {
     constexpr int kLists = 1500;
     constexpr int kStops = 100;
-    // The sweep rescans every constraint once per move (weighted_delta_from),
-    // so these inert filler constraints are what make one sweep expensive — at
-    // almost no model-build cost.
+    // Inert filler rows over a lone Float. Until #165 these were what made a
+    // sweep expensive -- the delta rescanned EVERY constraint once per candidate
+    // move, so 40 000 rows that no List can touch cost 1.134s of unbounded sweep
+    // at almost no model-build price. #165 restricts the scan to the moved
+    // variable's G_v, so they are never read now; they are kept as the control
+    // that says so.
     constexpr int kFiller = 40000;
 
     Model m;
@@ -1214,10 +1217,24 @@ TEST_CASE("structural batch respects the wall-clock deadline", "[search][structu
     solve(m, kBudget, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3, nullptr, config);
     auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - before).count();
 
-    // Measured on this model: +0.003s overrun with the bound, +1.134s without
-    // (one full unbounded sweep). The threshold sits between the two with room
-    // on both sides, so it stays green on a loaded machine but still catches a
-    // regression that removes the bound.
+    // WHAT THIS ASSERTS, AND WHAT IT NO LONGER ASSERTS.
+    //
+    // It is the end-to-end contract check: `solve(model, time_limit)` returns
+    // near its budget on a model whose structural sweep is the whole search.
+    // That is worth keeping and it is what the threshold is sized for.
+    //
+    // It is NOT the regression test for #105's bound any more, and pretending
+    // otherwise would be worse than saying so. The old comment claimed "+0.003s
+    // with the bound, +1.134s without", and that 1.134s was the full rescan of
+    // the 40 000 filler rows. With the G_v restriction those rows are not read,
+    // and this model's unbounded sweep was re-measured at **0.024s** -- i.e. the
+    // test passed with the deadline check deleted. The discriminating test is
+    // now `a deadline that passes mid-sweep stops the sweep between generators`
+    // in tests/test_structural_batch.cpp, which asserts a COUNT of generators
+    // visited and fails deterministically when the check is removed.
+    //
+    // Measured here after the change: 0.105s bounded, 0.125s unbounded, against
+    // a 0.10s budget.
     REQUIRE(elapsed < kBudget + 0.5);
 }
 

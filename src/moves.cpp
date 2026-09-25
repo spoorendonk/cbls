@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 
 namespace cbls {
 
@@ -307,17 +308,20 @@ void generate_standard_moves(const Variable& var, RNG& rng, std::vector<Move>& o
     switch (var.type) {
         case VarType::Bool: {
             std::vector<Move> m = bool_moves(var);
-            out.insert(out.end(), m.begin(), m.end());
+            out.insert(out.end(), std::make_move_iterator(m.begin()),
+                       std::make_move_iterator(m.end()));
             return;
         }
         case VarType::Int: {
             std::vector<Move> m = int_moves(var, rng);
-            out.insert(out.end(), m.begin(), m.end());
+            out.insert(out.end(), std::make_move_iterator(m.begin()),
+                       std::make_move_iterator(m.end()));
             return;
         }
         case VarType::Float: {
             std::vector<Move> m = float_moves(var, rng);
-            out.insert(out.end(), m.begin(), m.end());
+            out.insert(out.end(), std::make_move_iterator(m.begin()),
+                       std::make_move_iterator(m.end()));
             return;
         }
         case VarType::List:

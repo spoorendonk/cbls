@@ -6,8 +6,9 @@
 #include "cbls/violation.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
-#include <utility>
+#include <stdexcept>
 
 namespace cbls {
 
@@ -35,6 +36,25 @@ StructuralBatch::StructuralBatch(const Model& model, const SearchConfig& config,
     for (const std::shared_ptr<const MoveGenerator>& gen : config.move_generators) {
         if (gen != nullptr) {
             generators_.push_back(gen->clone());
+        }
+    }
+    // Both contract violations a generator can commit before it has proposed
+    // anything, checked once here rather than left to surface mid-search:
+    //
+    //  - a `clone()` that returns null would be dereferenced on every sweep;
+    //  - a `scope()` naming a variable this model does not have would throw
+    //    std::out_of_range out of `constraints_of_var` on the first sweep, i.e.
+    //    out of `solve()` some way into a run, where the caller can no longer
+    //    tell which generator did it.
+    //
+    // O(#generators x |scope|) once per search, and the span read is the same
+    // one the sweep will read.
+    for (const std::unique_ptr<MoveGenerator>& gen : generators_) {
+        if (gen == nullptr) {
+            throw std::invalid_argument("MoveGenerator::clone() returned null");
+        }
+        for (int32_t var_id : gen->scope()) {
+            model.constraints_of_var(var_id);  // throws on an unknown variable
         }
     }
 }
@@ -99,12 +119,35 @@ void StructuralBatch::draw_candidates(MoveContext& ctx, MoveGenerator& gen) {
     }
 }
 
+// A move that changes a variable outside its generator's `scope()` is scored
+// against the wrong rows -- WRONGLY, not merely inefficiently: the rows it
+// actually moved are absent from the restricted sum, so the batch can commit a
+// move that raises the weighted violation and never notice. Unlike the #156
+// hazards this one does not crash, which makes it harder to find rather than
+// easier, so the contract is checked where the move is handed over. Debug and
+// sanitizer builds only: `touched` is already materialised, but the check is
+// O(|touched| x |scope|) on the hot path and it is 1x1 for every built-in.
+static void assert_move_within_scope(const MoveGenerator& gen,
+                                     const std::vector<int32_t>& touched) {
+#ifndef NDEBUG
+    const ConstSpan<int32_t> scope = gen.scope();
+    for (int32_t var_id : touched) {
+        assert(std::find(scope.begin(), scope.end(), var_id) != scope.end() &&
+               "a MoveGenerator's move changed a variable outside its scope()");
+    }
+#else
+    (void)gen;
+    (void)touched;
+#endif
+}
+
 bool StructuralBatch::take_first_improving(Model& model, ViolationManager& vm, MoveGenerator& gen,
                                            ConstSpan<int32_t> rows, bool full_scan) {
     bool changed = false;
     for (const Move& move : candidates_) {
         SavedValues saved = save_move_values(model, move);
         std::vector<int32_t> touched = apply_move(model, move);
+        assert_move_within_scope(gen, touched);
         delta_evaluate(model, touched);
         const double delta =
             full_scan ? vm.weighted_delta_from(baseline_) : vm.weighted_delta_from(baseline_, rows);
@@ -128,6 +171,7 @@ bool StructuralBatch::take_best(Model& model, ViolationManager& vm, MoveGenerato
         const Move& move = candidates_[i];
         SavedValues saved = save_move_values(model, move);
         std::vector<int32_t> touched = apply_move(model, move);
+        assert_move_within_scope(gen, touched);
         delta_evaluate(model, touched);
         const double delta =
             full_scan ? vm.weighted_delta_from(baseline_) : vm.weighted_delta_from(baseline_, rows);

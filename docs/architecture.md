@@ -783,7 +783,7 @@ generator's candidates:
 | Policy | Rule |
 |---|---|
 | `FirstImprovingSample` (**default**) | one `generate` call, each candidate applied in turn and kept if it strictly improves — the pre-#165 rule, bit for bit |
-| `BestOfSample` | draw up to `structural_sample_size` candidates, score them all, commit the best improving one |
+| `BestOfSample` | call the generator until it has offered at least `structural_sample_size` candidates (one call always happens, and a call that appends several may overshoot), score them all, commit the best improving one |
 | `ViolationGuided` | `BestOfSample`, restricted to generators whose scope can still change a **violated** row |
 
 `ViolationGuided`'s restriction is **exact rather than heuristic**: if no row in
@@ -817,7 +817,9 @@ to expose to Python (#156).
 `structural_sample_size` defaults to 8. That is a **neutral placeholder, not a
 measured choice**, and nothing in this repo is derived from it: the two policies
 it feeds are opt-in and off by default. `benchmarks/setcover/ab_selection.sh`
-is the harness for measuring it, and the policies, on the set-covering roster.
+A/Bs the **policies** on the set-covering roster at that default; it takes no
+`--sample-size`, so sweeping the size itself means driving `cbls_setcover
+--sample-size` directly.
 
 ### Structure-only models: what the structural batch is and is not
 
@@ -1151,7 +1153,7 @@ before the deadline could overrun it. Five can, and each is bounded separately:
 | 1 | Feasibility Jump batch | handed the same absolute deadline, checked inside the GLS loop on a stride bounded two ways: at most 64 iterations, and at most 1/64 of the *remaining* budget in predicted time (#113) | `gfj.time_limit = budget_seconds` |
 | 2 | `InnerSolverHook` | not *started* when the budget is spent — a hook is arbitrary user code, so its running time is unknowable | `if (hook && !past_deadline())` |
 | 3 | LNS repair | handed `min(2.0, remaining())`, not its own independent 2s | `diversify()` |
-| 4 | STRUCTURAL sweep | checked between generators, one per structured variable by default (#105) | `StructuralBatch::run` |
+| 4 | STRUCTURAL sweep | checked between generators, one per structured variable by default; the overrun is one generator's candidates, which the built-ins cap at 5 and a registered generator does not (#105, #165) | `StructuralBatch::run` |
 | 5 | diversification kick, structural half | checked between structural *moves*, on a stride bounded the same two ways as row 1: at most 64 moves, and at most 1/64 of the *remaining* budget in predicted time (#115) | `perturb_structural` |
 
 Bound 3 has two halves, and only the lower one is about the deadline. The

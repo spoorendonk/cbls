@@ -11,6 +11,7 @@
 #include "test_helpers.h"
 
 #include <algorithm>
+#include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cbls/dag_ops.h>
@@ -19,7 +20,10 @@
 #include <cbls/structural_batch.h>
 #include <cbls/violation.h>
 #include <chrono>
+#include <cmath>
+#include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string_view>
 #include <vector>
 
@@ -101,6 +105,33 @@ public:
     void generate(MoveContext& /*ctx*/, std::vector<Move>& /*out*/) override { ++*calls_; }
     [[nodiscard]] std::unique_ptr<MoveGenerator> clone() const override {
         return std::make_unique<SilentGenerator>(var_id_, calls_);
+    }
+
+private:
+    int32_t var_id_;
+    std::shared_ptr<int> calls_;
+};
+
+// Burns a fixed slice of wall clock per `generate` call and proposes nothing,
+// so a sweep over many of them takes a predictable time and the only thing that
+// can cut it short is the deadline check between generators.
+class SlowGenerator final : public MoveGenerator {
+public:
+    SlowGenerator(int32_t var_id, std::shared_ptr<int> calls)
+        : var_id_(var_id), calls_(std::move(calls)) {}
+    [[nodiscard]] std::string_view name() const override { return "slow"; }
+    [[nodiscard]] ConstSpan<int32_t> scope() const override { return {&var_id_, 1}; }
+    void generate(MoveContext& /*ctx*/, std::vector<Move>& /*out*/) override {
+        ++*calls_;
+        // A spin rather than a sleep: the batch's bound is about CPU work
+        // overrunning a deadline, and a sleeping thread would be descheduled
+        // where the real sweep is not.
+        const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds(200);
+        while (std::chrono::steady_clock::now() < until) {
+        }
+    }
+    [[nodiscard]] std::unique_ptr<MoveGenerator> clone() const override {
+        return std::make_unique<SlowGenerator>(var_id_, calls_);
     }
 
 private:
@@ -428,4 +459,98 @@ TEST_CASE("structural selection names round-trip", "[structural]") {
     }
     StructuralSelection unused = StructuralSelection::FirstImprovingSample;
     REQUIRE_FALSE(try_parse_structural_selection("nope", unused));
+}
+
+TEST_CASE("a deadline that passes mid-sweep stops the sweep between generators",
+          "[structural][moves]") {
+    // The discriminating test for #105's bound, and the reason it asserts a
+    // COUNT rather than a duration. Its wall-clock predecessor
+    // (`structural batch respects the wall-clock deadline`, tests/test_search.cpp)
+    // stopped discriminating when #165 restricted the candidate scan to G_v: the
+    // 40 000 filler rows that made an unbounded sweep cost 1.134s are no longer
+    // read, and that model's unbounded sweep re-measured at 0.024s against a
+    // 0.10s budget -- it passed with the check deleted. This one does not: with
+    // the check removed every one of the 200 generators runs, every time.
+    //
+    // Robust in the right direction under load. Each generate burns 200us of
+    // CPU, so a loaded machine gets through FEWER generators before the 10ms
+    // deadline, never more, and `visited < kGenerators` holds harder.
+    constexpr int kGenerators = 200;
+    TwoSetModel ts = two_set_model();
+    set_elements(ts.model, ts.a, {0});
+    set_elements(ts.model, ts.b, {1, 2, 3});
+    full_evaluate(ts.model);
+    ViolationManager vm(ts.model);
+
+    auto calls = std::make_shared<int>(0);
+    SearchConfig config;
+    config.default_structural_generators = false;
+    for (int i = 0; i < kGenerators; ++i) {
+        config.move_generators.push_back(std::make_shared<const SlowGenerator>(ts.a, calls));
+    }
+    StructuralBatch batch(ts.model, config, /*enabled=*/true);
+    REQUIRE(batch.generator_count() == kGenerators);
+
+    RNG rng(42);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(10);
+    batch.run(ts.model, vm, rng, /*has_deadline=*/true, deadline);
+
+    INFO("generators visited: " << *calls << " of " << kGenerators);
+    REQUIRE(*calls > 0);            // the sweep did start
+    REQUIRE(*calls < kGenerators);  // and the deadline cut it short
+}
+
+TEST_CASE("a NaN cost does not break the neighbour-list sort", "[structural][neighbours]") {
+    // Two or more NaN costs is the case that makes a naive comparator
+    // non-strict, which is undefined behaviour inside partial_sort rather than
+    // merely a wrong order. A cost callback returning NaN for every unreachable
+    // pair produces exactly that.
+    const auto all_nan = [](int, int) { return std::numeric_limits<double>::quiet_NaN(); };
+    NeighbourList nl = nearest_neighbours(8, 3, all_nan);
+    REQUIRE(nl.universe() == 8);
+    // Every cost ties, so the id tiebreak alone decides: element 4's nearest are
+    // the three lowest OTHER ids.
+    const ConstSpan<int32_t> of_four = nl.of(4);
+    REQUIRE(of_four.size() == 3);
+    REQUIRE(of_four[0] == 0);
+    REQUIRE(of_four[1] == 1);
+    REQUIRE(of_four[2] == 2);
+
+    // A single NaN among finite costs sorts last.
+    const auto one_nan = [](int a, int b) {
+        if (a == 0 && b == 1) {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+        return std::abs(static_cast<double>(a - b));
+    };
+    NeighbourList mixed = nearest_neighbours(4, 3, one_nan);
+    const ConstSpan<int32_t> of_zero = mixed.of(0);
+    REQUIRE(of_zero.size() == 3);
+    REQUIRE(of_zero[2] == 1);  // the NaN pair is last
+}
+
+TEST_CASE("NeighbourList::of is total at the integer boundary", "[structural][neighbours]") {
+    // `e + 1` on an int32_t overflows at INT32_MAX, which is undefined behaviour
+    // in the one accessor written to be total on every input -- and this type is
+    // reachable from Python, where the index is whatever the caller passed.
+    NeighbourList nl =
+        nearest_neighbours(4, 2, [](int a, int b) { return std::abs(static_cast<double>(a - b)); });
+    REQUIRE(nl.of(std::numeric_limits<int32_t>::max()).empty());
+    REQUIRE(nl.of(std::numeric_limits<int32_t>::min()).empty());
+    REQUIRE(NeighbourList().of(0).empty());
+    REQUIRE(NeighbourList().of(std::numeric_limits<int32_t>::max()).empty());
+}
+
+TEST_CASE("a generator whose scope names an unknown variable is refused at registration",
+          "[structural][moves]") {
+    // Reported where the generator is handed over rather than as a
+    // std::out_of_range thrown out of solve() some way into a run, where the
+    // caller can no longer tell which generator did it.
+    TwoSetModel ts = two_set_model();
+    auto calls = std::make_shared<int>(0);
+    SearchConfig config;
+    config.default_structural_generators = false;
+    config.move_generators.push_back(std::make_shared<const SilentGenerator>(99, calls));
+    REQUIRE_THROWS_AS(StructuralBatch(ts.model, config, /*enabled=*/true), std::out_of_range);
+    REQUIRE(*calls == 0);
 }

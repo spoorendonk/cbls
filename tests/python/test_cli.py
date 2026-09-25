@@ -156,6 +156,7 @@ SETCOVER_BAD_FLAGS = [
     ("--time", "60s"),
     ("--time", "nan"),
     ("--struct-prob", "abc"),
+    ("--sample-size", "abc"),
 ]
 
 
@@ -170,6 +171,26 @@ def test_setcover_refuses_a_malformed_numeric_flag(flag: str, value: str) -> Non
 
     assert 0 < result.returncode < 128, f"{flag} {value}: returncode {result.returncode}"
     assert f"{flag}: '{value}'" in result.stderr, result.stderr
+
+
+def test_setcover_refuses_an_unknown_selection() -> None:
+    """`--selection` is a word, not a number, so it has its own reject path.
+
+    Same failure shape as the numeric flags above, and the same reason it is
+    pinned: a benchmark arm that silently fell back to the default policy would
+    publish rows naming an arm nobody ran.
+    """
+    if not SETCOVER_BINARY.exists():
+        pytest.skip("cbls_setcover not built")
+    result = subprocess.run(
+        [str(SETCOVER_BINARY), "--selection", "bogus"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert 0 < result.returncode < 128, result.stderr
+    assert "unknown selection 'bogus'" in result.stderr, result.stderr
 
 
 # The uc-chped runner writes a published results table, so its guards are the

@@ -14,10 +14,15 @@ inline constexpr const char* kVersion = "0.1.0";
 #include "io_mps.h"
 #include "lns.h"
 #include "model.h"
+#include "move_generator.h"
 #include "moves.h"
 #include "pool.h"
 #include "randomize.h"
 #include "rng.h"
 #include "search.h"
+// structural_batch.h is deliberately NOT here: StructuralBatch is the engine's
+// own sweep, constructed by solve(). A caller registers generators through
+// SearchConfig and never builds one. The tests that drive it directly include it
+// directly.
 #include "verify.h"
 #include "violation.h"

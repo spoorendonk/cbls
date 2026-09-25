@@ -123,10 +123,19 @@ Budget make_budget(double time_limit) {
 }
 
 // Effective structural-batch probability: explicit config overrides; <0 means
-// auto (0.33 with list/set vars, 0 otherwise). Zeroed on scalar-only models,
-// which skip the structural batch entirely.
+// auto (0.33 when the batch has anything to do, 0 otherwise). Zeroed on a model
+// with neither a List/Set variable nor a registered move generator, which skips
+// the structural batch -- and its per-variable generator scan -- entirely.
 double effective_structural_probability(const Model& model, const SearchConfig& config) {
+    // A REGISTERED generator counts as structure in its own right (#165). Its
+    // moves may touch scalar variables only -- an ejection chain over assignment
+    // Bools, a block move over Int start times -- and the structural batch is
+    // the only thing that would ever propose them, so keying this purely on
+    // List/Set presence turns such a registration into a silent no-op with no
+    // error and no warning. Inert by default: `move_generators` is empty unless
+    // a caller filled it, so no unconfigured model changes trajectory.
     const bool has_structural =
+        !config.move_generators.empty() ||
         std::any_of(model.variables().begin(), model.variables().end(),
                     [](const Variable& v) { return is_structured(v.type); });
     if (!has_structural) {
