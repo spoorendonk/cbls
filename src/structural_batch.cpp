@@ -2,6 +2,7 @@
 
 #include "cbls/dag_ops.h"
 #include "cbls/model.h"
+#include "cbls/moves.h"
 #include "cbls/search.h"
 #include "cbls/violation.h"
 
@@ -145,12 +146,99 @@ static void assert_move_within_scope(const MoveGenerator& gen,
 #endif
 }
 
+// ---------------------------------------------------------------------------
+// The sample baseline (#164)
+// ---------------------------------------------------------------------------
+//
+// A structured `Move::Change` carries POSITIONAL EDITS rather than the absolute
+// element vector it used to carry, which is what removes four O(n) copies and
+// two allocations from every candidate scored. Positions are relative, so
+// something has to guarantee that an edit lands on the assignment it was built
+// against -- and under `FirstImprovingSample` that guarantee is not free, because
+// the batch may commit SEVERAL candidates from one sample in turn.
+//
+// With absolute vectors, applying candidate k+1 after committing candidate k
+// silently wiped k's change: the vector k+1 carried was built before k ran. That
+// is the behaviour `MoveGenerator::generate` documents, and it is the behaviour
+// every trajectory in tests/test_structural_equivalence.cpp was recorded under.
+// Replaying k+1's EDIT on top of k's committed state would be a different move
+// -- and for an `Erase` past the shortened end, not a move at all.
+//
+// So the batch keeps the sample's starting elements and puts them back before
+// each candidate. That is one copy per VARIABLE per sample where the old code
+// paid one per candidate, and `assign` into a vector that already has the
+// capacity, so the steady state allocates nothing.
+void StructuralBatch::snapshot_sample_base(const Model& model) {
+    base_vars_.clear();
+    for (const Move& move : candidates_) {
+        for (const Move::Change& change : move.changes) {
+            if (std::find(base_vars_.begin(), base_vars_.end(), change.var_id) ==
+                base_vars_.end()) {
+                base_vars_.push_back(change.var_id);
+            }
+        }
+    }
+    // Grown, never shrunk: the buffers are reused across samples and across
+    // sweeps, which is what keeps every `assign` below allocation-free once the
+    // search is warm.
+    if (base_elements_.size() < base_vars_.size()) {
+        base_values_.resize(base_vars_.size());
+        base_elements_.resize(base_vars_.size());
+        accepted_values_.resize(base_vars_.size());
+        accepted_elements_.resize(base_vars_.size());
+    }
+    for (size_t i = 0; i < base_vars_.size(); ++i) {
+        const Variable& var = model.var(base_vars_[i]);
+        base_values_[i] = var.value;
+        base_elements_[i].assign(var.elements.begin(), var.elements.end());
+    }
+    record_accepted(model);
+    base_dirty_ = false;
+}
+
+void StructuralBatch::restore_sample_base(Model& model) const {
+    for (size_t i = 0; i < base_vars_.size(); ++i) {
+        Variable& var = model.var_mut(base_vars_[i]);
+        var.value = base_values_[i];
+        var.elements.assign(base_elements_[i].begin(), base_elements_[i].end());
+    }
+}
+
+void StructuralBatch::record_accepted(const Model& model) {
+    for (size_t i = 0; i < base_vars_.size(); ++i) {
+        const Variable& var = model.var(base_vars_[i]);
+        accepted_values_[i] = var.value;
+        accepted_elements_[i].assign(var.elements.begin(), var.elements.end());
+    }
+}
+
+void StructuralBatch::restore_accepted(Model& model) const {
+    for (size_t i = 0; i < base_vars_.size(); ++i) {
+        Variable& var = model.var_mut(base_vars_[i]);
+        var.value = accepted_values_[i];
+        var.elements.assign(accepted_elements_[i].begin(), accepted_elements_[i].end());
+    }
+}
+
+const std::vector<int32_t>& StructuralBatch::apply_from_base(Model& model, const Move& move) {
+    if (base_dirty_) {
+        restore_sample_base(model);
+    }
+    base_dirty_ = true;
+    static_cast<void>(apply_move(model, move));
+    // Every sampled variable, not just this move's own: the restore above moved
+    // the others back, and a node reading one of them is dirty too. It is a
+    // superset by construction -- `base_vars_` is drawn from the candidates'
+    // changes, which the scope assertion already holds to `gen.scope()`.
+    return base_vars_;
+}
+
 bool StructuralBatch::take_first_improving(Model& model, ViolationManager& vm, MoveGenerator& gen,
                                            ConstSpan<int32_t> rows, bool full_scan) {
     bool changed = false;
+    snapshot_sample_base(model);
     for (const Move& move : candidates_) {
-        SavedValues saved = save_move_values(model, move);
-        std::vector<int32_t> touched = apply_move(model, move);
+        const std::vector<int32_t>& touched = apply_from_base(model, move);
         assert_move_within_scope(gen, touched);
         delta_evaluate(model, touched);
         const double delta =
@@ -159,10 +247,18 @@ bool StructuralBatch::take_first_improving(Model& model, ViolationManager& vm, M
             changed = true;  // improving: keep
             vm.snapshot_violations(baseline_);
             gen.on_commit(move);
-        } else {
-            undo_move(model, move, saved);
-            delta_evaluate(model, touched);
+            record_accepted(model);
         }
+        // A REJECTED candidate is not rolled back here, deliberately. The next
+        // candidate restores the baseline before applying its own edit, and the
+        // delta it is then judged by is measured against `baseline_` from the
+        // node values `delta_evaluate` derives from the variables -- so nothing
+        // in between reads the rejected state. Only the sweep's final state has
+        // to be right, which the restore below sees to.
+    }
+    if (!base_vars_.empty()) {
+        restore_accepted(model);
+        delta_evaluate(model, base_vars_);
     }
     return changed;
 }
@@ -171,26 +267,28 @@ bool StructuralBatch::take_best(Model& model, ViolationManager& vm, MoveGenerato
                                 ConstSpan<int32_t> rows, bool full_scan) {
     std::ptrdiff_t best = -1;
     double best_delta = kImprovementThreshold;
+    snapshot_sample_base(model);
     for (size_t i = 0; i < candidates_.size(); ++i) {
         const Move& move = candidates_[i];
-        SavedValues saved = save_move_values(model, move);
-        std::vector<int32_t> touched = apply_move(model, move);
+        const std::vector<int32_t>& touched = apply_from_base(model, move);
         assert_move_within_scope(gen, touched);
         delta_evaluate(model, touched);
         const double delta =
             full_scan ? vm.weighted_delta_from(baseline_) : vm.weighted_delta_from(baseline_, rows);
-        undo_move(model, move, saved);
-        delta_evaluate(model, touched);
         if (delta < best_delta) {
             best_delta = delta;
             best = static_cast<std::ptrdiff_t>(i);
         }
     }
     if (best < 0) {
+        if (!base_vars_.empty()) {
+            restore_sample_base(model);
+            delta_evaluate(model, base_vars_);
+        }
         return false;
     }
     const Move& move = candidates_[static_cast<size_t>(best)];
-    std::vector<int32_t> touched = apply_move(model, move);
+    const std::vector<int32_t>& touched = apply_from_base(model, move);
     delta_evaluate(model, touched);
     vm.snapshot_violations(baseline_);
     gen.on_commit(move);

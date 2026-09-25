@@ -187,16 +187,22 @@ feasible and verified.
 is a dead end. At a fixed wall-clock budget the comparison is policy quality
 *minus* representation cost, and the arms do not pay the same cost: the sampling
 policies score up to `structural_sample_size` candidates per generator per pass
-against the default's 3-5, and every candidate still copies the whole element
-vector twice (once into the `Move`, once into the undo snapshot). The
-position-based move representation that would remove that copy is deferred to
-#164. So this measures "the guided policy does not pay for itself at 10s on this
-roster", not "guiding the choice of element is worthless".
+against the default's 3-5.
+
+**The table above predates #164**, which landed the position-based move
+representation: a structured candidate carries positional edits rather than the
+whole element vector, so scoring one no longer costs two heap allocations and
+two O(|elements|) copies, nor two more to apply and roll back. The confounding
+term is much smaller than it was — on the one path where it was measured
+directly, a diversification kick over a 20 000-element `List` went from ~2.3 s to
+0.022 s. So this table still measures "the guided policy did not pay for itself
+at 10s on this roster **at the representation it was measured under**", and the
+A/B is worth re-running before it is read as "guiding the choice of element is
+worthless".
 
 It also does not rescue the headline result below: the `Set` encoding's
 8.6-11.0x remains what it was, because the prerequisite being *implemented* is
-not the same as the prerequisite being *effective*. Re-run this A/B after the
-move representation lands before drawing any further conclusion.
+not the same as the prerequisite being *effective*.
 
 ## Why the Set encoding loses
 

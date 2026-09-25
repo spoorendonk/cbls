@@ -71,12 +71,15 @@ public:
         }
         Move move;
         move.move_type = "transfer";
+        // Deliberately the GENERAL form: a whole replacement vector, which is
+        // what an out-of-tree generator that knows nothing about
+        // `ElementEdit` would build (#164).
         std::vector<int32_t> shrunk = from.elements;
         shrunk.erase(shrunk.begin() + static_cast<std::ptrdiff_t>(pos));
         std::vector<int32_t> grown = to.elements;
         grown.push_back(element);
-        move.changes.push_back({scope_[0], 0.0, shrunk});
-        move.changes.push_back({scope_[1], 0.0, grown});
+        move.changes.push_back(replace_change(scope_[0], std::move(shrunk)));
+        move.changes.push_back(replace_change(scope_[1], std::move(grown)));
         out.push_back(std::move(move));
     }
 
@@ -436,8 +439,8 @@ TEST_CASE("a neighbour list restricts where a built-in move looks", "[structural
         REQUIRE_FALSE(moves.empty());
         // A swap of positions i and j leaves every other position alone, so the
         // two positions the pair used are exactly the two that differ.
-        const std::vector<int32_t>& swapped = moves[0].changes.front().new_elements;
         const std::vector<int32_t>& before = m.var(rid).elements;
+        const std::vector<int32_t> swapped = elements_after(moves[0].changes.front(), before);
         std::vector<int32_t> differing;
         for (size_t p = 0; p < before.size(); ++p) {
             if (before[p] != swapped[p]) {

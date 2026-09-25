@@ -698,12 +698,53 @@ NB_MODULE(_cbls_core, m) {
         .def("random", &RNG::random)
         .def("seed", &RNG::seed);
 
+    // ElementEdit — a structured change as POSITIONS rather than as the whole
+    // element vector (#164). Read-only: an edit is applied to a variable's
+    // elements unchecked-by-any-type-system from here, and a hand-built one with
+    // a nonsense position would be the #156 hazard again. Build a change with
+    // the `Move` the generators hand out, or with `replacement`, which is
+    // length-checked nowhere but also indexes nothing.
+    nb::enum_<EditKind>(m, "EditKind")
+        .value("None_", EditKind::None)
+        .value("Replace", EditKind::Replace)
+        .value("Swap", EditKind::Swap)
+        .value("Reverse", EditKind::Reverse)
+        .value("MoveSegment", EditKind::MoveSegment)
+        .value("Insert", EditKind::Insert)
+        .value("Erase", EditKind::Erase)
+        .value("Assign", EditKind::Assign);
+
+    nb::class_<ElementEdit>(m, "ElementEdit")
+        .def_ro("kind", &ElementEdit::kind)
+        .def_ro("from_pos", &ElementEdit::from)
+        .def_ro("to_pos", &ElementEdit::to)
+        .def_ro("length", &ElementEdit::length)
+        .def_ro("element", &ElementEdit::element);
+
     // Move::Change
     nb::class_<Move::Change>(m, "MoveChange")
         .def(nb::init<>())
         .def_rw("var_id", &Move::Change::var_id)
         .def_rw("new_value", &Move::Change::new_value)
-        .def_rw("new_elements", &Move::Change::new_elements);
+        .def_prop_ro("edits",
+                     [](const Move::Change& change) {
+                         return std::vector<ElementEdit>(change.edits.begin(), change.edits.end());
+                     })
+        .def_ro("replacement", &Move::Change::replacement)
+        .def(
+            "elements_after",
+            [](const Move::Change& change, const std::vector<int32_t>& elements) {
+                return elements_after(change, elements);
+            },
+            nb::arg("elements"),
+            "The elements this change produces from `elements` -- the absolute\n"
+            "vector a change carried before #164. The engine edits in place.")
+        .def(
+            "is_noop",
+            [](const Move::Change& change, const std::vector<int32_t>& elements) {
+                return change_is_noop(change, elements);
+            },
+            nb::arg("elements"));
 
     // Move
     nb::class_<Move>(m, "Move")

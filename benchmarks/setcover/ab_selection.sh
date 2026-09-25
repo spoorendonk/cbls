@@ -25,14 +25,17 @@
 #
 # READ THE RESULT WITH THIS CAVEAT. At a fixed wall-clock budget the comparison
 # is policy quality MINUS representation cost, and the two arms do not pay the
-# same representation cost. `best_of_sample` / `violation_guided` score up to
+# same representation cost: `best_of_sample` / `violation_guided` score up to
 # `--sample-size` candidates per variable per pass where `first_improving`
-# scores the generator's 3-5, and every candidate still copies the whole element
-# vector twice (once into the Move, once into the undo snapshot) -- the
-# position-based move representation #165 describes is deferred to #164. So a
-# null or negative result does not separate "the policy does not help" from "the
-# policy helps less than its per-candidate cost". Say which you measured, and
-# re-run after #164 lands.
+# scores the generator's 3-5.
+#
+# The RECORDED null result predates #164, which made a candidate much cheaper --
+# a structured change is now a positional edit rather than a whole element
+# vector, so scoring one costs no allocation and no O(|elements|) copy where it
+# used to cost two of each. That does not make the two arms equal, but it shrinks
+# the term that confounded them, so the A/B is worth re-running before the null
+# is read as "the policy does not help" rather than "the policy helps less than
+# its per-candidate cost". Say which you measured.
 #
 # Quote the result with the engine commit the script prints.
 set -euo pipefail

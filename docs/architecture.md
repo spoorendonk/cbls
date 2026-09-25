@@ -843,9 +843,13 @@ So the result that follows is still the result, and it still describes the
 default configuration — which remains what a user gets. The reading to avoid is
 "guidance was tried and does not work": at a fixed wall-clock budget the A/B
 measures policy quality *minus* representation cost, and the guided arm scores
-more candidates per pass while every candidate still copies the whole element
-vector twice. The position-based move representation is what would separate the
-two, and it is deferred to #164.
+more candidates per pass. **That A/B predates #164**, which landed the
+position-based move representation — a structured candidate is now a positional
+`ElementEdit` rather than a whole element vector, so scoring one costs no
+allocation and no O(|elements|) copy where it used to cost two of each, plus two
+more to apply and roll back. The confounding term is much smaller than it was,
+so the A/B is worth re-running before the null is read as a verdict on the
+policy.
 
 That is invisible on a mixed model — where List/Set variables sit alongside
 scalars that GFJ drives — but it is the whole search on a model whose

@@ -37,6 +37,39 @@ class TestMoves:
         cbls.undo_move(m, move, saved)
         assert m.var(vid(x)).value == 5.0
 
+    def test_a_structured_change_carries_positional_edits(self) -> None:
+        """A structured candidate is an edit, not the whole element vector (#164).
+
+        `elements_after` is what a caller uses to see the absolute vector the
+        change used to carry; the engine applies the edit in place instead.
+        """
+        m = cbls.Model()
+        lv = m.list_var(5, "perm")
+        m.minimize(m.count(lv))
+        m.close()
+        m.var_mut(vid(lv)).elements = [0, 1, 2, 3, 4]
+        cbls.full_evaluate(m)
+
+        rng = cbls.RNG(42)
+        moves = cbls.generate_standard_moves(m.var(vid(lv)), rng)
+        by_type = {mv.move_type: mv for mv in moves}
+        assert "list_swap" in by_type
+
+        change = by_type["list_swap"].changes[0]
+        assert change.var_id == vid(lv)
+        assert change.edits[0].kind == cbls.EditKind.Swap
+        assert change.edits[1].kind == cbls.EditKind.None_
+        assert change.replacement == []
+
+        before = list(m.var(vid(lv)).elements)
+        after = change.elements_after(before)
+        assert sorted(after) == before
+        assert after != before
+        assert not change.is_noop(before)
+
+        cbls.apply_move(m, by_type["list_swap"])
+        assert list(m.var(vid(lv)).elements) == after
+
 
 class TestCopyRestore:
     def test_copy_restore_state(self) -> None:

@@ -3,6 +3,8 @@
 #include "model.h"
 #include "rng.h"
 
+#include <array>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -10,18 +12,131 @@ namespace cbls {
 
 class NeighbourList;
 
+/// What one `ElementEdit` does to a structured variable's `elements` (#164).
+///
+/// POSITIONS RATHER THAN A WHOLE VECTOR. Every structured candidate used to
+/// carry the complete element vector it wanted, which cost one heap allocation
+/// and one O(n) copy to build, a second pair to snapshot for the undo, and two
+/// more copies to apply and roll back -- four copies and two allocations per
+/// candidate SCORED, on the batch's hot path, for a move that touches two
+/// positions. All but the swap and the tail exchange are `std::rotate`,
+/// `std::reverse` or a single insert/erase on the vector that is already there.
+///
+/// This is an allocation-count argument, not a micro-optimisation: it holds on
+/// any machine and for any n, and it is what makes a larger candidate sample
+/// affordable (see `StructuralSelection`). `Replace` keeps the old form for the
+/// two things positions cannot express -- an inter-list tail exchange, and a
+/// move from a generator the engine knows nothing about.
+enum class EditKind : uint8_t {
+    None,         ///< absent. A scalar change carries `new_value` and no edit.
+    Replace,      ///< `elements = replacement`. The pre-#164 form.
+    Swap,         ///< exchange positions `from` and `to`.
+    Reverse,      ///< reverse the inclusive range [`from`, `to`].
+    MoveSegment,  ///< erase `length` elements at `from`, reinsert at `to` of the
+                  ///< SHORTENED vector. A `std::rotate`.
+    Insert,       ///< insert `element` at `from`.
+    Erase,        ///< erase position `from`.
+    Assign,       ///< `elements[from] = element`.
+};
+
+/// One in-place rewrite of a structured variable's `elements`.
+///
+/// Which fields a kind reads:
+///
+///     Swap         from, to
+///     Reverse      from, to
+///     MoveSegment  from, to, length
+///     Insert       from, element
+///     Erase        from
+///     Assign       from, element
+///     Replace      the change's `replacement` vector
+///
+/// IT IS RELATIVE TO THE ASSIGNMENT THE MOVE WAS BUILT AGAINST. Applying an
+/// edit to a different assignment is not merely a different move; the positions
+/// name different elements and `Erase`/`Assign` can be out of range. The
+/// structural batch is what makes that safe for the several-candidates-per-sample
+/// rule -- see `MoveGenerator::generate`.
+struct ElementEdit {
+    EditKind kind = EditKind::None;
+    int32_t from = 0;
+    int32_t to = 0;
+    int32_t length = 1;
+    int32_t element = -1;
+};
+
 struct Move {
+    /// One variable's part of a move: a scalar value, or up to two positional
+    /// edits to its `elements`.
+    ///
+    /// Two rather than one because `set_swap` is genuinely two edits on one
+    /// variable -- erase the dropped element where it sits, append the new one
+    /// -- and that ORDER is what produces the element vector it has always
+    /// produced. A trailing `EditKind::None` means "only one edit".
     struct Change {
         int32_t var_id = -1;
         double new_value = 0.0;
-        std::vector<int32_t> new_elements;
+        std::array<ElementEdit, 2> edits{};
+        std::vector<int32_t> replacement;  // EditKind::Replace only
     };
     std::vector<Change> changes;
     std::string move_type;
     double delta_F = 0.0;
 };
 
-// Saved state for undo
+/// A scalar variable's change.
+Move::Change scalar_change(int32_t var_id, double new_value);
+/// A structured variable's change, as one or two positional edits.
+Move::Change edit_change(int32_t var_id, const ElementEdit& first,
+                         const ElementEdit& second = ElementEdit{});
+/// A structured variable's change, as a whole replacement vector. The general
+/// form, for what positions cannot express.
+Move::Change replace_change(int32_t var_id, std::vector<int32_t> replacement);
+
+inline ElementEdit swap_edit(int32_t a, int32_t b) {
+    return {EditKind::Swap, a, b, 1, -1};
+}
+inline ElementEdit reverse_edit(int32_t lo, int32_t hi) {
+    return {EditKind::Reverse, lo, hi, 1, -1};
+}
+inline ElementEdit segment_edit(int32_t from, int32_t length, int32_t to) {
+    return {EditKind::MoveSegment, from, to, length, -1};
+}
+inline ElementEdit insert_edit(int32_t pos, int32_t element) {
+    return {EditKind::Insert, pos, 0, 1, element};
+}
+inline ElementEdit erase_edit(int32_t pos) {
+    return {EditKind::Erase, pos, 0, 1, -1};
+}
+inline ElementEdit assign_edit(int32_t pos, int32_t element) {
+    return {EditKind::Assign, pos, 0, 1, element};
+}
+
+/// Apply `change`'s edits to `elements` in place. Out-of-range positions are
+/// ignored rather than indexed: `Variable.elements` is writable from Python, so
+/// an edit built against a longer vector can be replayed against a shorter one
+/// without any check in the way (#156).
+void apply_element_edits(const Move::Change& change, std::vector<int32_t>& elements);
+
+/// `elements` with `change` applied -- the absolute vector the change used to
+/// carry. For tests, for Python, and for anything that wants the result without
+/// touching the model. The engine edits in place instead.
+std::vector<int32_t> elements_after(const Move::Change& change,
+                                    const std::vector<int32_t>& elements);
+
+/// Does `change` leave `elements` exactly as it is? Decided per kind rather
+/// than by materialising the result, which is the whole point of the
+/// representation. Exact: a List's elements are distinct, so a reversal of a
+/// non-empty range or a segment moved to a different position always changes
+/// the order.
+[[nodiscard]] bool change_is_noop(const Move::Change& change, const std::vector<int32_t>& elements);
+
+/// The whole pre-move state of the variables a `Move` touches.
+///
+/// Deliberately absolute rather than an inverse edit list: `undo_move` is no
+/// longer on the hot path -- the structural batch rolls a candidate back by
+/// replaying it from the sample baseline instead (`StructuralBatch`) -- so the
+/// simplest thing that cannot be subtly wrong is the right one here. It remains
+/// the public and Python-facing way to try a move and take it back.
 struct SavedValues {
     std::vector<double> values;
     std::vector<std::vector<int32_t>> elements;

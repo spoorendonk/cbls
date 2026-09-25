@@ -697,20 +697,27 @@ TEST_CASE("a deadline that expires mid-kick stops it within a stride",
     // before the stride is ever retuned, so the countdown reload is dead code in
     // them. Here the budget outlives many moves, so the pass ramps, reloads the
     // countdown repeatedly, and is then cut off partway through one variable.
-    constexpr int64_t kUnboundedMoves = 10000;  // k = round(0.5 * 20000)
+    constexpr int64_t kUnboundedMoves = 100000;  // k = round(0.5 * 200000)
     Model m;
-    add_list_vars(m, /*num_lists=*/1, /*n=*/20000);
+    add_list_vars(m, /*num_lists=*/1, /*n=*/200000);
     m.close();
     ViolationManager vm(m);
     RNG rng(42);
     GFJConfig cfg;
     cfg.two_phase = false;
-    // Two margins, both wide. A move on this List measures ~230 us (#115 reports
-    // 1021 ms for 3000 moves on a 30000-element List), so the whole kick is
-    // ~2.3 s against this 0.2 s budget -- 11x headroom before the kick could
-    // finish and defeat the "stopped early" half. In the other direction the
-    // budget affords ~870 moves, so the machine would have to stall for the
-    // entire 0.2 s before the second move to defeat the "got going" half.
+    // Two margins, both wide. RE-MEASURED AT #164, WHICH IS WHY THE LIST IS TEN
+    // TIMES LONGER THAN IT WAS. A candidate move used to carry the whole element
+    // vector, so generating five of them cost five O(n) copies and the kick on a
+    // 20 000-element List ran ~2.3 s; positional edits made the same kick 0.022 s
+    // -- about a hundredfold -- and the old size no longer outran a 0.2 s budget
+    // at all, so this test failed on its own premise rather than on the
+    // mechanism it is about. Measured here with the wall clock removed, one
+    // thread, Release: n = 20 000 / 10 000 moves / 0.022 s; 50 000 / 25 000 /
+    // 0.126 s; 100 000 / 50 000 / 0.489 s; 200 000 / 100 000 / 1.95 s. The last
+    // is ~10x this 0.2 s budget, which restores the headroom the 20 000-element
+    // List used to have. In the other direction the budget affords ~10 000
+    // moves, so the machine would have to stall for the entire 0.2 s before the
+    // second move to defeat the "got going" half.
     cfg.time_limit = 0.2;
     FeasibilityJump fj(m, vm, rng, cfg);
     fj.begin(/*set_initial_x=*/true);

@@ -162,6 +162,12 @@ struct MoveContext {
 ///
 /// CONTRACTS, all of which the batch relies on:
 ///
+///  - a structured change is a POSITIONAL EDIT on the variable's `elements`
+///    (`ElementEdit`), or a whole `replacement` vector for what positions cannot
+///    express. Either is applied to the assignment the sample was drawn against,
+///    which the batch restores before each candidate -- so an edit's positions
+///    always name the elements the generator saw. A generator that does not want
+///    to think about positions builds `replace_change` and pays the copy.
 ///  - `generate` must RETURN IN BOUNDED TIME **and append a bounded number of
 ///    candidates**. The structural batch checks its wall-clock deadline BETWEEN
 ///    generators, never inside one (#105); between two checks it applies,
@@ -214,12 +220,15 @@ public:
     /// the sample is full or a call adds nothing.
     ///
     /// EVERY CANDIDATE FROM ONE CALL IS BUILT AGAINST THE SAME ASSIGNMENT, and
-    /// each carries absolute `new_elements` vectors. Under
-    /// `FirstImprovingSample` the batch may commit SEVERAL of them in turn, so
-    /// candidate k+1 is applied on top of an assignment that candidate k
-    /// changed. For the built-ins that is harmless and is what the pre-#165
-    /// sweep did: each candidate replaces one variable's elements wholesale, and
-    /// the accept test is against a re-snapshotted baseline either way.
+    /// each is applied to THAT assignment: a structured change carries
+    /// positional `ElementEdit`s (#164), and the batch restores the sample's
+    /// starting assignment before applying each candidate so an edit always
+    /// lands where it was built. Under `FirstImprovingSample` the batch may
+    /// commit SEVERAL of them in turn, so committing candidate k and then
+    /// candidate k+1 leaves k's change gone -- k+1 was built before k ran and is
+    /// applied from the same baseline. For the built-ins that is harmless and is
+    /// exactly what the pre-#165 sweep did with whole element vectors; the
+    /// accept test is against a re-snapshotted baseline either way.
     ///
     /// It is NOT harmless for a generator that maintains a structural invariant
     /// ACROSS variables by construction rather than by a constraint row -- a
@@ -243,13 +252,13 @@ public:
     /// it alone writes -- can be carried across calls.
     ///
     /// AND UNDER `FirstImprovingSample` A NOTIFIED COMMIT CAN STILL BE UNDONE.
-    /// Every candidate from one `generate` carries an ABSOLUTE element vector
-    /// built against the pre-commit assignment, so committing candidate k and
-    /// then candidate k+1 leaves k's change gone -- after `on_commit(k)` was
-    /// already delivered. Arithmetically that is the same as having rejected k,
-    /// which is why it is harmless for the built-ins, but a generator whose
-    /// bookkeeping must track the assignment should emit one candidate per call
-    /// or run under a policy that commits at most one.
+    /// Every candidate from one `generate` is applied to the assignment the
+    /// sample was drawn against, so committing candidate k and then candidate
+    /// k+1 leaves k's change gone -- after `on_commit(k)` was already delivered.
+    /// Arithmetically that is the same as having rejected k, which is why it is
+    /// harmless for the built-ins, but a generator whose bookkeeping must track
+    /// the assignment should emit one candidate per call or run under a policy
+    /// that commits at most one.
     virtual void on_commit(const Move& move);
 
     /// A per-worker copy. See the cloning contract above.

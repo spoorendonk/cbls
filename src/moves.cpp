@@ -11,10 +11,163 @@
 
 namespace cbls {
 
+// ---------------------------------------------------------------------------
+// The positional edit representation (#164)
+// ---------------------------------------------------------------------------
+
+Move::Change scalar_change(int32_t var_id, double new_value) {
+    Move::Change change;
+    change.var_id = var_id;
+    change.new_value = new_value;
+    return change;
+}
+
+Move::Change edit_change(int32_t var_id, const ElementEdit& first, const ElementEdit& second) {
+    Move::Change change;
+    change.var_id = var_id;
+    change.edits[0] = first;
+    change.edits[1] = second;
+    return change;
+}
+
+Move::Change replace_change(int32_t var_id, std::vector<int32_t> replacement) {
+    Move::Change change;
+    change.var_id = var_id;
+    change.edits[0].kind = EditKind::Replace;
+    change.replacement = std::move(replacement);
+    return change;
+}
+
+namespace {
+
+/// True when `[lo, hi]` is a valid inclusive range of `elements`.
+bool in_range(const std::vector<int32_t>& elements, int32_t lo, int32_t hi) {
+    return lo >= 0 && hi >= lo && static_cast<size_t>(hi) < elements.size();
+}
+
+using Iter = std::vector<int32_t>::iterator;
+
+Iter at(std::vector<int32_t>& elements, int32_t pos) {
+    return elements.begin() + static_cast<std::ptrdiff_t>(pos);
+}
+
+/// Erase `length` elements at `from` and reinsert them, in order, at position
+/// `to` of the shortened vector -- which is one `std::rotate` and therefore
+/// allocation-free. `to == from` is the identity.
+void apply_move_segment(const ElementEdit& edit, std::vector<int32_t>& elements) {
+    const auto n = static_cast<int32_t>(elements.size());
+    if (edit.length <= 0 || edit.from < 0 || edit.to < 0 || edit.from + edit.length > n ||
+        edit.to + edit.length > n) {
+        return;
+    }
+    if (edit.to < edit.from) {
+        std::rotate(at(elements, edit.to), at(elements, edit.from),
+                    at(elements, edit.from + edit.length));
+    } else if (edit.to > edit.from) {
+        // Position `to` of the shortened vector is position `to + length` of
+        // this one, since the erased run sits before it.
+        std::rotate(at(elements, edit.from), at(elements, edit.from + edit.length),
+                    at(elements, edit.to + edit.length));
+    }
+}
+
+void apply_one_edit(const ElementEdit& edit, const std::vector<int32_t>& replacement,
+                    std::vector<int32_t>& elements) {
+    const auto n = static_cast<int32_t>(elements.size());
+    switch (edit.kind) {
+        case EditKind::None:
+            return;
+        case EditKind::Replace:
+            elements = replacement;
+            return;
+        case EditKind::Swap:
+            if (in_range(elements, 0, edit.from) && in_range(elements, 0, edit.to)) {
+                std::swap(elements[static_cast<size_t>(edit.from)],
+                          elements[static_cast<size_t>(edit.to)]);
+            }
+            return;
+        case EditKind::Reverse:
+            if (in_range(elements, edit.from, edit.to)) {
+                std::reverse(at(elements, edit.from), at(elements, edit.to + 1));
+            }
+            return;
+        case EditKind::MoveSegment:
+            apply_move_segment(edit, elements);
+            return;
+        case EditKind::Insert:
+            if (edit.from >= 0 && edit.from <= n) {
+                elements.insert(at(elements, edit.from), edit.element);
+            }
+            return;
+        case EditKind::Erase:
+            if (in_range(elements, 0, edit.from)) {
+                elements.erase(at(elements, edit.from));
+            }
+            return;
+        case EditKind::Assign:
+            if (in_range(elements, 0, edit.from)) {
+                elements[static_cast<size_t>(edit.from)] = edit.element;
+            }
+            return;
+    }
+}
+
+/// Whether ONE edit is inert on `elements`. See `change_is_noop`.
+bool edit_is_noop(const ElementEdit& edit, const std::vector<int32_t>& replacement,
+                  const std::vector<int32_t>& elements) {
+    switch (edit.kind) {
+        case EditKind::None:
+            return true;
+        case EditKind::Replace:
+            return replacement == elements;
+        case EditKind::Swap:
+            return edit.from == edit.to ||
+                   (in_range(elements, 0, edit.from) && in_range(elements, 0, edit.to) &&
+                    elements[static_cast<size_t>(edit.from)] ==
+                        elements[static_cast<size_t>(edit.to)]);
+        case EditKind::Reverse:
+            return edit.from >= edit.to;
+        case EditKind::MoveSegment:
+            return edit.from == edit.to || edit.length <= 0;
+        case EditKind::Insert:
+        case EditKind::Erase:
+            return false;  // the length changes
+        case EditKind::Assign:
+            return in_range(elements, 0, edit.from) &&
+                   elements[static_cast<size_t>(edit.from)] == edit.element;
+    }
+    return true;
+}
+
+}  // namespace
+
+void apply_element_edits(const Move::Change& change, std::vector<int32_t>& elements) {
+    for (const ElementEdit& edit : change.edits) {
+        apply_one_edit(edit, change.replacement, elements);
+    }
+}
+
+std::vector<int32_t> elements_after(const Move::Change& change,
+                                    const std::vector<int32_t>& elements) {
+    std::vector<int32_t> result = elements;
+    apply_element_edits(change, result);
+    return result;
+}
+
+bool change_is_noop(const Move::Change& change, const std::vector<int32_t>& elements) {
+    // A pair of edits is inert only if both halves are -- `set_swap`'s erase and
+    // append are never both inert, since the element it brings in is by
+    // construction one the set does not hold.
+    return std::all_of(change.edits.begin(), change.edits.end(),
+                       [&change, &elements](const ElementEdit& edit) {
+                           return edit_is_noop(edit, change.replacement, elements);
+                       });
+}
+
 static std::vector<Move> bool_moves(const Variable& var) {
     Move m;
     m.move_type = "flip";
-    m.changes.push_back({var.id, 1.0 - var.value, {}});
+    m.changes.push_back(scalar_change(var.id, 1.0 - var.value));
     return {m};
 }
 
@@ -23,13 +176,13 @@ static std::vector<Move> int_moves(const Variable& var, RNG& rng) {
     if (var.value > var.lb) {
         Move m;
         m.move_type = "int_dec";
-        m.changes.push_back({var.id, var.value - 1.0, {}});
+        m.changes.push_back(scalar_change(var.id, var.value - 1.0));
         moves.push_back(m);
     }
     if (var.value < var.ub) {
         Move m;
         m.move_type = "int_inc";
-        m.changes.push_back({var.id, var.value + 1.0, {}});
+        m.changes.push_back(scalar_change(var.id, var.value + 1.0));
         moves.push_back(m);
     }
     // Through the shared window, so an infinite bound cannot cast to INT64_MIN
@@ -44,7 +197,7 @@ static std::vector<Move> int_moves(const Variable& var, RNG& rng) {
         m.move_type = "int_rand";
         auto new_val = static_cast<double>(
             rng.integers(static_cast<int64_t>(w.lo), static_cast<int64_t>(w.hi) + 1));
-        m.changes.push_back({var.id, new_val, {}});
+        m.changes.push_back(scalar_change(var.id, new_val));
         moves.push_back(m);
     }
     return moves;
@@ -61,7 +214,7 @@ static std::vector<Move> float_moves(const Variable& var, RNG& rng, double sigma
     new_val = std::clamp(new_val, var.lb, var.ub);
     Move m;
     m.move_type = "float_perturb";
-    m.changes.push_back({var.id, new_val, {}});
+    m.changes.push_back(scalar_change(var.id, new_val));
     return {m};
 }
 
@@ -175,9 +328,7 @@ static void list_insert_move(const Variable& var, RNG& rng, const NeighbourList*
     const int64_t pos = rng.integers(0, n + 1);
     Move m;
     m.move_type = "list_insert";
-    auto new_elems = var.elements;
-    new_elems.insert(new_elems.begin() + static_cast<std::ptrdiff_t>(pos), chosen);
-    m.changes.push_back({var.id, 0.0, new_elems});
+    m.changes.push_back(edit_change(var.id, insert_edit(static_cast<int32_t>(pos), chosen)));
     moves.push_back(m);
 }
 
@@ -188,12 +339,10 @@ static void list_remove_move(const Variable& var, RNG& rng, std::vector<Move>& m
     if (var.partitioned || n <= var.min_size || n <= 0) {
         return;
     }
-    const auto pos = static_cast<std::ptrdiff_t>(rng.integers(0, n));
+    const auto pos = static_cast<int32_t>(rng.integers(0, n));
     Move m;
     m.move_type = "list_remove";
-    auto new_elems = var.elements;
-    new_elems.erase(new_elems.begin() + pos);
-    m.changes.push_back({var.id, 0.0, new_elems});
+    m.changes.push_back(edit_change(var.id, erase_edit(pos)));
     moves.push_back(m);
 }
 
@@ -216,9 +365,7 @@ static void list_reorder_moves(const Variable& var, RNG& rng, std::vector<Move>&
     {
         Move m;
         m.move_type = "list_swap";
-        auto new_elems = var.elements;
-        std::swap(new_elems[i], new_elems[j]);
-        m.changes.push_back({var.id, 0.0, new_elems});
+        m.changes.push_back(edit_change(var.id, swap_edit(i, j)));
         moves.push_back(m);
     }
 
@@ -226,24 +373,21 @@ static void list_reorder_moves(const Variable& var, RNG& rng, std::vector<Move>&
     {
         Move m;
         m.move_type = "list_2opt";
-        int lo = std::min(i, j);
-        int hi = std::max(i, j);
-        auto new_elems = var.elements;
-        std::reverse(new_elems.begin() + lo, new_elems.begin() + hi + 1);
-        m.changes.push_back({var.id, 0.0, new_elems});
+        m.changes.push_back(edit_change(var.id, reverse_edit(std::min(i, j), std::max(i, j))));
         moves.push_back(m);
     }
 
-    // Relocate: remove element at position i, insert at position j
+    // Relocate: remove element at position i, insert at position j.
+    //
+    // The three relocating moves are one `segment_edit` each, and the insert
+    // positions below are the ones the whole-vector construction computed -- the
+    // segment is erased first, so a target to the RIGHT of it shifts left by the
+    // segment length, and the clamp is against the shortened vector.
     {
         Move m;
         m.move_type = "list_relocate";
-        auto new_elems = var.elements;
-        int32_t elem = new_elems[i];
-        new_elems.erase(new_elems.begin() + i);
-        int insert_pos = (j > i) ? j - 1 : j;
-        new_elems.insert(new_elems.begin() + insert_pos, elem);
-        m.changes.push_back({var.id, 0.0, new_elems});
+        const int insert_pos = (j > i) ? j - 1 : j;
+        m.changes.push_back(edit_change(var.id, segment_edit(i, 1, insert_pos)));
         moves.push_back(m);
     }
 
@@ -251,18 +395,12 @@ static void list_reorder_moves(const Variable& var, RNG& rng, std::vector<Move>&
     if (n >= 3 && i < n - 1) {
         Move m;
         m.move_type = "list_or_opt_2";
-        auto new_elems = var.elements;
-        int32_t e0 = new_elems[i];
-        int32_t e1 = new_elems[i + 1];
-        new_elems.erase(new_elems.begin() + i, new_elems.begin() + i + 2);
         int insert_pos = j;
         if (j > i) {
             insert_pos = std::max(0, j - 2);
         }
-        insert_pos = std::min(insert_pos, static_cast<int>(new_elems.size()));
-        new_elems.insert(new_elems.begin() + insert_pos, e1);
-        new_elems.insert(new_elems.begin() + insert_pos, e0);
-        m.changes.push_back({var.id, 0.0, new_elems});
+        insert_pos = std::min(insert_pos, n - 2);
+        m.changes.push_back(edit_change(var.id, segment_edit(i, 2, insert_pos)));
         moves.push_back(m);
     }
 
@@ -270,20 +408,12 @@ static void list_reorder_moves(const Variable& var, RNG& rng, std::vector<Move>&
     if (n >= 4 && i < n - 2) {
         Move m;
         m.move_type = "list_or_opt_3";
-        auto new_elems = var.elements;
-        int32_t e0 = new_elems[i];
-        int32_t e1 = new_elems[i + 1];
-        int32_t e2 = new_elems[i + 2];
-        new_elems.erase(new_elems.begin() + i, new_elems.begin() + i + 3);
         int insert_pos = j;
         if (j > i) {
             insert_pos = std::max(0, j - 3);
         }
-        insert_pos = std::min(insert_pos, static_cast<int>(new_elems.size()));
-        new_elems.insert(new_elems.begin() + insert_pos, e2);
-        new_elems.insert(new_elems.begin() + insert_pos, e1);
-        new_elems.insert(new_elems.begin() + insert_pos, e0);
-        m.changes.push_back({var.id, 0.0, new_elems});
+        insert_pos = std::min(insert_pos, n - 3);
+        m.changes.push_back(edit_change(var.id, segment_edit(i, 3, insert_pos)));
         moves.push_back(m);
     }
 }
@@ -366,9 +496,9 @@ static void set_add_move(const Variable& var, RNG& rng, const SetPartition& part
     }
     Move m;
     m.move_type = "set_add";
-    auto new_elems = var.elements;
-    new_elems.push_back(pick_added_element(var, rng, part, neighbours));
-    m.changes.push_back({var.id, 0.0, new_elems});
+    m.changes.push_back(
+        edit_change(var.id, insert_edit(static_cast<int32_t>(var.elements.size()),
+                                        pick_added_element(var, rng, part, neighbours))));
     moves.push_back(m);
 }
 
@@ -380,13 +510,12 @@ static void set_remove_move(const Variable& var, RNG& rng, const SetPartition& p
     Move m;
     m.move_type = "set_remove";
     const int32_t rem_elem = pick_removed_element(rng, part);
-    auto new_elems = var.elements;
-    auto it = std::find(new_elems.begin(), new_elems.end(), rem_elem);
-    if (it == new_elems.end()) {
+    const auto it = std::find(var.elements.begin(), var.elements.end(), rem_elem);
+    if (it == var.elements.end()) {
         return;
     }
-    new_elems.erase(it);
-    m.changes.push_back({var.id, 0.0, new_elems});
+    m.changes.push_back(
+        edit_change(var.id, erase_edit(static_cast<int32_t>(it - var.elements.begin()))));
     moves.push_back(m);
 }
 
@@ -401,14 +530,18 @@ static void set_swap_move(const Variable& var, RNG& rng, const SetPartition& par
     // the search's RNG, so swapping them would shift every later draw.
     const int32_t add_elem = pick_added_element(var, rng, part, neighbours);
     const int32_t rem_elem = pick_removed_element(rng, part);
-    auto new_elems = var.elements;
-    auto it = std::find(new_elems.begin(), new_elems.end(), rem_elem);
-    if (it == new_elems.end()) {
+    const auto it = std::find(var.elements.begin(), var.elements.end(), rem_elem);
+    if (it == var.elements.end()) {
         return;
     }
-    new_elems.erase(it);
-    new_elems.push_back(add_elem);
-    m.changes.push_back({var.id, 0.0, new_elems});
+    // Two edits, in this order: the removal happens where the element sits, and
+    // the addition lands at the end of the SHORTENED vector. That is the element
+    // order the whole-vector construction produced, and a Set read pairwise
+    // (`pair_lambda_sum`) can tell the difference.
+    const auto pos = static_cast<int32_t>(it - var.elements.begin());
+    m.changes.push_back(
+        edit_change(var.id, erase_edit(pos),
+                    insert_edit(static_cast<int32_t>(var.elements.size()) - 1, add_elem)));
     moves.push_back(m);
 }
 
@@ -492,7 +625,7 @@ int32_t partition_insert_pos(const std::vector<int32_t>& dest, int32_t e, RNG& r
 /// diversification kick would count it as a move it had made.
 void push_if_changed(const Model& model, Move&& move, std::vector<Move>& out) {
     for (const Move::Change& change : move.changes) {
-        if (model.var(change.var_id).elements != change.new_elements) {
+        if (!change_is_noop(change, model.var(change.var_id).elements)) {
             out.push_back(std::move(move));
             return;
         }
@@ -508,17 +641,13 @@ void partition_relocate(const Model& model, int32_t a, int32_t b, RNG& rng,
         static_cast<int32_t>(vb.elements.size()) >= vb.max_size) {
         return;
     }
-    const auto i = static_cast<size_t>(rng.integers(0, static_cast<int64_t>(va.elements.size())));
-    const int32_t e = va.elements[i];
+    const auto i = static_cast<int32_t>(rng.integers(0, static_cast<int64_t>(va.elements.size())));
+    const int32_t e = va.elements[static_cast<size_t>(i)];
     const int32_t pos = partition_insert_pos(vb.elements, e, rng, neighbours);
     Move m;
     m.move_type = "partition_relocate";
-    std::vector<int32_t> new_a = va.elements;
-    new_a.erase(new_a.begin() + static_cast<std::ptrdiff_t>(i));
-    std::vector<int32_t> new_b = vb.elements;
-    new_b.insert(new_b.begin() + pos, e);
-    m.changes.push_back({a, 0.0, std::move(new_a)});
-    m.changes.push_back({b, 0.0, std::move(new_b)});
+    m.changes.push_back(edit_change(a, erase_edit(i)));
+    m.changes.push_back(edit_change(b, insert_edit(pos, e)));
     push_if_changed(model, std::move(m), out);
 }
 
@@ -545,11 +674,10 @@ void partition_swap(const Model& model, int32_t a, int32_t b, RNG& rng,
             : static_cast<size_t>(rng.integers(0, static_cast<int64_t>(vb.elements.size())));
     Move m;
     m.move_type = "partition_swap";
-    std::vector<int32_t> new_a = va.elements;
-    std::vector<int32_t> new_b = vb.elements;
-    std::swap(new_a[i], new_b[j]);
-    m.changes.push_back({a, 0.0, std::move(new_a)});
-    m.changes.push_back({b, 0.0, std::move(new_b)});
+    // One position assigned on each side: an exchange ACROSS two variables is
+    // two independent writes, where the intra-list swap is one.
+    m.changes.push_back(edit_change(a, assign_edit(static_cast<int32_t>(i), vb.elements[j])));
+    m.changes.push_back(edit_change(b, assign_edit(static_cast<int32_t>(j), va.elements[i])));
     push_if_changed(model, std::move(m), out);
 }
 
@@ -579,8 +707,8 @@ void partition_two_opt_star(const Model& model, int32_t a, int32_t b, RNG& rng,
                                vb.elements.begin() + static_cast<std::ptrdiff_t>(q));
     new_b.insert(new_b.end(), va.elements.begin() + static_cast<std::ptrdiff_t>(p),
                  va.elements.end());
-    m.changes.push_back({a, 0.0, std::move(new_a)});
-    m.changes.push_back({b, 0.0, std::move(new_b)});
+    m.changes.push_back(replace_change(a, std::move(new_a)));
+    m.changes.push_back(replace_change(b, std::move(new_b)));
     push_if_changed(model, std::move(m), out);
 }
 
@@ -627,9 +755,7 @@ void partition_insert(const Model& model, const ListPartition& part, int32_t a, 
     const int32_t pos = partition_insert_pos(va.elements, e, rng, neighbours);
     Move m;
     m.move_type = "partition_insert";
-    std::vector<int32_t> new_a = va.elements;
-    new_a.insert(new_a.begin() + pos, e);
-    m.changes.push_back({a, 0.0, std::move(new_a)});
+    m.changes.push_back(edit_change(a, insert_edit(pos, e)));
     push_if_changed(model, std::move(m), out);
 }
 
@@ -639,13 +765,10 @@ void partition_remove(const Model& model, int32_t a, RNG& rng, std::vector<Move>
     if (va.elements.empty() || static_cast<int32_t>(va.elements.size()) <= va.min_size) {
         return;
     }
-    const auto i =
-        static_cast<std::ptrdiff_t>(rng.integers(0, static_cast<int64_t>(va.elements.size())));
+    const auto i = static_cast<int32_t>(rng.integers(0, static_cast<int64_t>(va.elements.size())));
     Move m;
     m.move_type = "partition_remove";
-    std::vector<int32_t> new_a = va.elements;
-    new_a.erase(new_a.begin() + i);
-    m.changes.push_back({a, 0.0, std::move(new_a)});
+    m.changes.push_back(edit_change(a, erase_edit(i)));
     push_if_changed(model, std::move(m), out);
 }
 
@@ -741,7 +864,13 @@ std::vector<int32_t> apply_move(Model& model, const Move& move) {
     for (const auto& change : move.changes) {
         auto& var = model.var_mut(change.var_id);
         if (is_structured(var.type)) {
-            var.elements = change.new_elements;
+            // In place, on the vector that is already there -- no allocation
+            // unless the edit lengthens it past its capacity. The edit is
+            // relative to the assignment the move was built against, so the
+            // caller is responsible for applying it to THAT assignment; see
+            // `ElementEdit` and, for the several-candidates-per-sample case,
+            // `StructuralBatch`.
+            apply_element_edits(change, var.elements);
         } else {
             var.value = change.new_value;
         }

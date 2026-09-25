@@ -130,6 +130,28 @@ private:
     /// Fill `candidates_` from `gen`, up to the sample the policy asks for.
     void draw_candidates(MoveContext& ctx, MoveGenerator& gen);
 
+    /// Record the value and the elements of every variable `candidates_` names,
+    /// as they stand BEFORE any candidate is applied. One copy per variable per
+    /// sample -- not per candidate. Scalars are included even though no built-in
+    /// generator emits one: nothing in the `MoveGenerator` contract forbids it,
+    /// and a variable missing from this list would be missing from the `touched`
+    /// set `delta_evaluate` is given.
+    void snapshot_sample_base(const Model& model);
+    /// Put those variables back. `assign` rather than a fresh vector, so the
+    /// capacity is reused and no candidate allocates.
+    void restore_sample_base(Model& model) const;
+    /// Copy the current assignment of the sampled variables into
+    /// `accepted_*` -- the state the sweep falls back to when its last
+    /// candidate was rejected.
+    void record_accepted(const Model& model);
+    /// Put the sampled variables at `accepted_*`.
+    void restore_accepted(Model& model) const;
+    /// Apply `move` to the sample baseline, as an absolute element vector would
+    /// have. Returns every variable whose value may have moved -- the union of
+    /// the move's own and the ones the restore touched, which `delta_evaluate`
+    /// needs in full.
+    const std::vector<int32_t>& apply_from_base(Model& model, const Move& move);
+
     std::vector<std::unique_ptr<MoveGenerator>> generators_;
     StructuralSelection selection_;
     int sample_size_;
@@ -139,6 +161,18 @@ private:
     std::vector<double> baseline_;
     std::vector<Move> candidates_;
     std::vector<int32_t> rows_;  // scratch for a multi-variable scope's G_v union
+    /// The sample baseline: one entry per structured variable the current
+    /// `candidates_` name, holding its elements before any candidate was
+    /// applied. See `snapshot_sample_base`.
+    std::vector<int32_t> base_vars_;
+    std::vector<double> base_values_;
+    std::vector<std::vector<int32_t>> base_elements_;
+    /// The assignment after the last ACCEPTED candidate of this sample, parallel
+    /// to `base_vars_`, and what the sweep leaves behind when the last candidate
+    /// it tried was rejected.
+    std::vector<double> accepted_values_;
+    std::vector<std::vector<int32_t>> accepted_elements_;
+    bool base_dirty_ = false;
 };
 
 }  // namespace cbls

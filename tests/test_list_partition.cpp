@@ -578,7 +578,7 @@ TEST_CASE("granular guidance survives a universe wider than the list", "[list][p
         generate_standard_moves(var, rng, out, &neighbours);
         REQUIRE_FALSE(out.empty());
         REQUIRE(out[0].move_type == "list_swap");
-        const std::vector<int32_t>& after = out[0].changes.front().new_elements;
+        const std::vector<int32_t> after = elements_after(out[0].changes.front(), var.elements);
         REQUIRE(after.size() == var.elements.size());
         REQUIRE(after[9] != var.elements[9]);
     }

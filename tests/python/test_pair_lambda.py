@@ -185,8 +185,15 @@ def test_the_table_form_makes_no_python_calls_during_solve() -> None:
     table_calls, table_objective = _count_python_calls_during_solve(use_table=True)
 
     # The functor arm is the control: if it did not call back into Python
-    # either, the counter is measuring nothing.
-    assert functor_calls > 1000, functor_calls
+    # either, the counter is measuring nothing. The floor is deliberately far
+    # below what the arm actually does (981 at the time of writing), because the
+    # absolute count is not the subject: it tracks how often the engine
+    # RE-EVALUATES the PairLambda node, which #164 lowered by rolling a rejected
+    # structural candidate back once per sample instead of once per candidate.
+    # The trajectory is unchanged -- the objectives below still have to agree --
+    # so a threshold that tracked the recomputation count would fail on a change
+    # that did not move the search at all, as a 1000 floor did.
+    assert functor_calls > 100, functor_calls
     assert table_calls == 0, table_calls
     # Same cost function, so the same trajectory and the same answer.
     assert table_objective == functor_objective

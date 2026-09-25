@@ -254,7 +254,7 @@ bool apply_random_structural_move(Model& model, int32_t var_id, RNG& rng) {
                                    return std::none_of(m.changes.begin(), m.changes.end(),
                                                        [var_id, &current](const Move::Change& c) {
                                                            return c.var_id == var_id &&
-                                                                  c.new_elements != current;
+                                                                  !change_is_noop(c, current);
                                                        });
                                }),
                 moves.end());
