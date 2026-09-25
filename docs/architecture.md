@@ -223,6 +223,15 @@ m.close();
 **Variable creation**: `bool_var`, `int_var`, `float_var`, `list_var`,
 `set_var`. Each returns a negative handle.
 
+`list_var(n)` is a fixed-length permutation of `{0..n-1}`.
+`list_var(universe, min_len, max_len, init)` is the general form (#164): an
+ordered sequence of *distinct* elements drawn from `{0..universe-1}` whose length
+moves within `[min_len, max_len]`, which is the ordered-subset structure a route
+or a schedule-with-rejection actually has. `add_list_partition(lists, cover)`
+declares that a group of Lists over one universe covers it exactly, or at most
+once, and that invariant is maintained **by the moves** rather than by a penalty
+row — see [Structural Batch](#structural-batch).
+
 **Expression creation**: arithmetic (`sum`, `prod`, `div_expr`, `pow_expr`,
 `neg`, `abs`), trigonometric (`sin_`, `cos_`, `tan_`), other (`exp_`, `log_`,
 `sqrt_`), conditional (`if_then_else`), collection (`at`, `count`,
@@ -727,8 +736,30 @@ Moves come from `generate_standard_moves` (`src/moves.cpp`):
 
 | Type  | Moves |
 |-------|-------|
-| List  | `list_swap`, `list_2opt`, `list_relocate`, `list_or_opt_2`, `list_or_opt_3` |
+| List  | `list_swap`, `list_2opt`, `list_relocate`, `list_or_opt_2`, `list_or_opt_3`, `list_insert`, `list_remove` |
 | Set   | `set_add`, `set_remove`, `set_swap` |
+
+`list_insert` and `list_remove` are the two that change the length, so they are
+inert on a permutation (which sits at `min_len == max_len`) and on a member of a
+partition, whose membership is shared with its sibling lists. The partition's own
+moves — `partition_relocate`, `partition_swap`, `partition_2opt_star`, and under
+`Cover::AtMostOnce` `partition_insert` / `partition_remove` — come from
+`generate_partition_moves` and are registered by `default_move_generators` as one
+generator per partition. Each of them preserves the cover by construction, which
+is why the cover needs no constraint row; `generate_partition_moves` appends **at
+most one candidate per call**, because several candidates from one call are all
+built against the same assignment and `FirstImprovingSample` may commit more than
+one of them.
+
+A structured `Move::Change` carries **positional `ElementEdit`s** rather than the
+whole element vector it wants (#164) — a swap of two positions, a reversal, a
+`std::rotate` for a relocated segment, an insert, an erase, an assignment — or a
+`replacement` vector for what positions cannot express. Scoring a candidate
+therefore costs the edit rather than two heap allocations and four O(n) copies.
+Positions are relative, so the structural batch keeps the sample's starting
+assignment and restores it before each candidate: that is one copy per variable
+per sample, and it is what reproduces the pre-#164 rule that committing candidate
+k and then candidate k+1 leaves k's change gone.
 
 (The scalar move generators `flip`, `int_dec`/`int_inc`/`int_rand` and
 `float_perturb` also live here and are used by LNS randomization paths.
