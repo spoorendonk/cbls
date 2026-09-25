@@ -214,6 +214,17 @@ bool structure_moved(const Variable& var, const std::vector<int32_t>& before) {
 // Candidates that leave the elements as they are — a relocate to the adjacent
 // position reinserts the element where it was — are dropped before the draw, so
 // a kick cannot silently lose a move to one.
+//
+// DELIBERATELY NOT ROUTED THROUGH SearchConfig::move_generators (#165). The
+// diversification kick draws from the same RNG as the rest of the search, so
+// changing what it draws -- a registered generator proposing a different number
+// of candidates, or none -- shifts every later draw and changes the trajectory
+// of every model that has a structured variable, kick or no kick. The kick is
+// also a RANDOMISER rather than an optimiser: it wants an arbitrary legal move,
+// which is exactly what generate_standard_moves gives it, where a cost-aware
+// generator would give it the opposite. Issue #164 wires the kick to the
+// generator set when it adds partition-level moves, and owns the trajectory
+// change that comes with it.
 bool apply_random_structural_move(Model& model, int32_t var_id, RNG& rng) {
     std::vector<Move> moves = generate_standard_moves(model.var(var_id), rng);
     const std::vector<int32_t>& current = model.var(var_id).elements;

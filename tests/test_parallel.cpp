@@ -19,9 +19,11 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace cbls;
@@ -1124,4 +1126,132 @@ TEST_CASE("the portfolio returns a verifiable assignment", "[parallel]") {
     const VerifyResult v = verify_model(check);
     INFO("verify errors: " << v.errors.size());
     REQUIRE(v.ok);
+}
+
+// ---------------------------------------------------------------------------
+// Move generators are per worker (#165)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Records, through a mutex-guarded registry, every clone this prototype
+/// produced and how many commits each of those clones saw.
+///
+/// The counter that matters is `own_commits_`, which is per INSTANCE: if the
+/// portfolio handed every worker the same generator object, the prototype's own
+/// counter would move and the per-clone counts would not add up. A generator is
+/// free to hold exactly this kind of state -- a cache, a cursor, a counter --
+/// which is why cloning rather than sharing is the contract.
+struct CloneRegistry {
+    std::mutex mu;
+    std::vector<const void*> addresses;
+    std::vector<int> per_clone_commits;
+    int total_commits = 0;
+};
+
+class CountingGenerator final : public MoveGenerator {
+public:
+    CountingGenerator(int32_t var_id, std::shared_ptr<CloneRegistry> registry)
+        : var_id_(var_id), registry_(std::move(registry)) {}
+
+    ~CountingGenerator() override {
+        if (registered_) {
+            const std::lock_guard<std::mutex> lock(registry_->mu);
+            registry_->per_clone_commits.push_back(own_commits_);
+        }
+    }
+    CountingGenerator(const CountingGenerator&) = delete;
+    CountingGenerator& operator=(const CountingGenerator&) = delete;
+    CountingGenerator(CountingGenerator&&) = delete;
+    CountingGenerator& operator=(CountingGenerator&&) = delete;
+
+    [[nodiscard]] std::string_view name() const override { return "counting"; }
+    [[nodiscard]] ConstSpan<int32_t> scope() const override { return {&var_id_, 1}; }
+
+    void generate(MoveContext& ctx, std::vector<Move>& out) override {
+        generate_standard_moves(ctx.model.var(var_id_), ctx.rng, out, nullptr);
+    }
+
+    void on_commit(const Move& /*move*/) override {
+        ++own_commits_;
+        const std::lock_guard<std::mutex> lock(registry_->mu);
+        ++registry_->total_commits;
+    }
+
+    [[nodiscard]] int own_commits() const { return own_commits_; }
+
+    [[nodiscard]] std::unique_ptr<MoveGenerator> clone() const override {
+        auto copy = std::make_unique<CountingGenerator>(var_id_, registry_);
+        copy->registered_ = true;
+        const std::lock_guard<std::mutex> lock(registry_->mu);
+        registry_->addresses.push_back(copy.get());
+        return copy;
+    }
+
+private:
+    int32_t var_id_;
+    std::shared_ptr<CloneRegistry> registry_;
+    int own_commits_ = 0;
+    bool registered_ = false;  // only a clone publishes its count on destruction
+};
+
+Model set_cover_toy() {
+    Model m;
+    Expr chosen = m.Set(12, 1, 6, "chosen");
+    for (int r = 0; r < 4; ++r) {
+        const int base = r;
+        Expr covered(
+            &m, m.lambda_sum(chosen.handle, [base](int e) { return (e % 4 == base) ? 1.0 : 0.0; }));
+        m.add_constraint(covered >= m.Constant(1.0));
+    }
+    m.minimize(m.lambda_sum(chosen.handle, [](int e) { return 1.0 + 0.1 * e; }));
+    m.close();
+    return m;
+}
+
+}  // namespace
+
+TEST_CASE("each portfolio worker gets its own move generator", "[parallel][structural]") {
+    // A generator registered on SearchConfig is SHARED by every worker's config
+    // copy -- `SearchConfig cfg = ctx.config` copies a vector of shared_ptr, not
+    // the generators. What keeps that from being a data race is that each
+    // worker's StructuralBatch clones what it was given, so the registered
+    // instance is never touched by the search.
+    auto registry = std::make_shared<CloneRegistry>();
+    Model master = set_cover_toy();
+    const int32_t set_var = 0;
+    auto prototype = std::make_shared<CountingGenerator>(set_var, registry);
+
+    SearchConfig cfg;
+    cfg.default_structural_generators = false;  // only ours, so the counts are ours
+    cfg.structural_batch_probability = 1.0;
+    cfg.batch_iterations = 50;
+    cfg.move_generators.push_back(prototype);
+
+    constexpr int kThreads = 4;
+    ParallelSearch ps(kThreads);
+    ParallelConfig par_config;
+    par_config.n_threads = kThreads;
+    const SearchResult r =
+        ps.solve(master, /*time_limit=*/0.5, /*seed=*/42, cfg, /*hook_factory=*/nullptr,
+                 /*lns_factory=*/nullptr, /*callback=*/nullptr, par_config);
+    REQUIRE(r.iterations >= 0);
+
+    const std::lock_guard<std::mutex> lock(registry->mu);
+    // One clone per worker at least (a restarted worker builds another).
+    REQUIRE(registry->addresses.size() >= static_cast<size_t>(kThreads));
+    std::vector<const void*> sorted = registry->addresses;
+    std::sort(sorted.begin(), sorted.end());
+    REQUIRE(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end());
+    // The instance the caller registered was never run, so its own state is
+    // untouched -- the property that makes sharing the registration safe.
+    REQUIRE(prototype->own_commits() == 0);
+    // Every commit was attributed to exactly one clone: none lost, none double
+    // counted, which is what a shared mutable generator would break.
+    REQUIRE(registry->total_commits > 0);
+    int summed = 0;
+    for (int c : registry->per_clone_commits) {
+        summed += c;
+    }
+    REQUIRE(summed == registry->total_commits);
 }
