@@ -135,8 +135,9 @@ double random_different_in_domain(const Variable& var, RNG& rng) {
 // was (#111). They get their own pass, built out of the same typed move
 // generators the STRUCTURAL batch uses (moves.cpp) rather than fresh mutation
 // code — so the kick explores exactly the neighbourhood the search knows how to
-// evaluate, and every move it applies is legal by construction: a List stays a
-// permutation of its elements, a Set stays inside min_size/max_size.
+// evaluate, and every move it applies is legal by construction: a List keeps its
+// elements distinct and its length inside [min_size, max_size], a member of a
+// ListPartition keeps its cover, and a Set stays inside min_size/max_size.
 
 // How many random structural moves a kick applies to one variable.
 //

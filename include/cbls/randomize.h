@@ -134,13 +134,21 @@ double random_in_domain(const Variable& var, RNG& rng);
 
 /// How a List's new order relates to its current one.
 ///
-/// Both draw a uniformly random permutation and consume identical RNG draws, so
-/// this is not a distributional choice — it decides whether the incumbent order
-/// survives, and the two call sites genuinely want different answers.
+/// On a PERMUTATION List — `list_var(n)`, and every List there was before #164 —
+/// both draw a uniformly random permutation and consume identical RNG draws, so
+/// this is not a distributional choice there: it decides whether the incumbent
+/// order survives, and the two call sites genuinely want different answers.
+///
+/// On a variable-length List (#164) they differ in what they can produce as well:
+/// `Regenerate` follows the variable's `ListInit`, which may empty it or redraw
+/// its membership and its length, while `Perturb` is length- and
+/// membership-preserving whatever the List is. That is what keeps LNS's destroy
+/// step safe on a member of a `ListPartition` — it rearranges the elements that
+/// list already holds and can neither gain nor lose one, so the cover survives.
 enum class ListOrder : std::uint8_t {
-    /// Discard the current order and lay out a fresh permutation of the whole
-    /// universe. What the initialisers want: there is no incumbent to respect,
-    /// and the result is well-formed even if `elements` was not.
+    /// Discard the current contents and lay the List out from scratch, following
+    /// its `ListInit`. What the initialisers want: there is no incumbent to
+    /// respect, and the result is well-formed even if `elements` was not.
     Regenerate,
     /// Shuffle the current `elements` in place, preserving exactly which
     /// elements are present. What LNS destroy/repair wants: it perturbs an
@@ -150,11 +158,16 @@ enum class ListOrder : std::uint8_t {
     Perturb,
 };
 
-/// Redraw a structured (List/Set) variable's `elements`: a uniformly random
-/// permutation for a List, a uniformly random subset of an admissible size for a
-/// Set. The structured counterpart of `random_in_domain`, and the hook for
-/// anything that wants to randomise structure without going through
-/// `randomize_var`'s type dispatch.
+/// Redraw a structured (List/Set) variable's `elements`: for a List whatever its
+/// `ListInit` asks for — a uniformly random permutation, nothing, or a uniformly
+/// random subset of an admissible length in a uniformly random order — and for a
+/// Set a uniformly random subset of an admissible size. The structured
+/// counterpart of `random_in_domain`, and the hook for anything that wants to
+/// randomise structure without going through `randomize_var`'s type dispatch.
+///
+/// It is PER VARIABLE, so it cannot lay out a `ListPartition`: "every element in
+/// exactly one list" is not a property any single list has. Use
+/// `randomize_list_partition` for that; `initialize_structured_random` does.
 ///
 /// No-op on a scalar variable.
 void randomize_structured_var(Variable& var, RNG& rng, ListOrder order = ListOrder::Regenerate);

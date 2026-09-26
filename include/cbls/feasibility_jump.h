@@ -296,7 +296,9 @@ private:
     // The List/Set half of a diversification kick: perturb() cannot reach them
     // through jumpable(), so each structural variable gets a run of
     // clamp(round(p * |elements|), 1, |elements|) random typed structural moves
-    // instead (#111). Returns true if any variable's elements NET changed —
+    // instead (#111) — plus, for a member of a ListPartition, that partition's
+    // inter-list moves anchored on it, which is what lets a kick move an
+    // all-empty partition (#164). Returns true if any variable's elements NET changed —
     // by set equality for a Set, whose elements are unordered. Draws no random
     // numbers at all on a model without List/Set variables. Deadline-bounded
     // between MOVES, not between variables (#115); see kick_past_deadline().
