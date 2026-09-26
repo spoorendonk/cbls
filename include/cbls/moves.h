@@ -15,11 +15,14 @@ class NeighbourList;
 /// What one `ElementEdit` does to a structured variable's `elements` (#164).
 ///
 /// POSITIONS RATHER THAN A WHOLE VECTOR. Every structured candidate used to
-/// carry the complete element vector it wanted, which cost one heap allocation
-/// and one O(n) copy to build, a second pair to snapshot for the undo, and two
-/// more copies to apply and roll back -- four copies and two allocations per
-/// candidate SCORED, on the batch's hot path, for a move that touches two
-/// positions. All but the swap and the tail exchange are `std::rotate`,
+/// carry the complete element vector it wanted, which cost AT LEAST two heap
+/// allocations (the generator's vector, and the copy of it into the candidate
+/// list) and three O(n) copies (into the undo snapshot, into the variable, and
+/// back out again) per candidate SCORED, on the batch's hot path, for a move
+/// that touches two positions. "At least", because whether the generator's own
+/// `push_back` counts depends on how it builds the vector -- so the ledger is
+/// written as a floor here, in docs/architecture.md and in CLAUDE.md, and those
+/// three must agree. All but the swap and the tail exchange are `std::rotate`,
 /// `std::reverse` or a single insert/erase on the vector that is already there.
 ///
 /// This is an allocation-count argument, not a micro-optimisation: it holds on
@@ -126,13 +129,24 @@ std::vector<int32_t> elements_after(const Move::Change& change,
 /// Does `change` leave `elements` exactly as it is? Decided per kind rather than
 /// by materialising the result, which is the whole point of the representation.
 ///
-/// EXACT -- `change_is_noop(c, e) == (elements_after(c, e) == e)` for every `c`
-/// and every `e`, which `tests/test_moves.cpp` pins over both the fitting and
-/// the non-fitting cases. Two things make it so: a List's elements are distinct,
-/// so a reversal of a non-empty range or a segment moved to a different position
-/// always reorders it; and an edit whose positions do not fit `elements` reads
-/// as inert here because applying it IS inert (`apply_one_edit` ignores an
-/// out-of-range position rather than indexing it -- #156).
+/// EXACT FOR A SINGLE EDIT OVER DISTINCT ELEMENTS, which is every change the
+/// engine builds: `change_is_noop(c, e) == (elements_after(c, e) == e)` there,
+/// pinned over both the fitting and the non-fitting cases in
+/// `tests/test_moves.cpp`. Two things make it so: a List's elements are
+/// distinct, so a reversal of a non-empty range or a segment moved to a
+/// different position always reorders it; and an edit whose positions do not fit
+/// `elements` reads as inert here because applying it IS inert (`apply_one_edit`
+/// ignores an out-of-range position rather than indexing it -- #156).
+///
+/// OUTSIDE THAT IT IS CONSERVATIVE, never wrong in the dangerous direction: it
+/// may report "changed" for something that materialises unchanged, never the
+/// reverse. Two shapes do it, and both matter only because
+/// `Variable::elements` is writable from Python. (1) Edits are judged
+/// INDEPENDENTLY against the original vector, so a pair that cancels --
+/// `erase(1)` then `insert(1, 11)` on `{10, 11, 12}` -- reads as changed. (2)
+/// On repeated elements, `Reverse` and `MoveSegment` decide from positions
+/// alone, so a segment moved within a run of equal values reads as changed.
+/// The cost of either is a candidate scored that need not have been.
 [[nodiscard]] bool change_is_noop(const Move::Change& change, const std::vector<int32_t>& elements);
 
 /// The whole pre-move state of the variables a `Move` touches.

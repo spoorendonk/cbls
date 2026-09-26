@@ -707,11 +707,19 @@ TEST_CASE("a deadline that expires mid-kick stops it within a stride",
     cfg.two_phase = false;
     // Two margins, both wide. RE-MEASURED AT #164, WHICH IS WHY THE LIST IS TEN
     // TIMES LONGER THAN IT WAS. A candidate move used to carry the whole element
-    // vector, so generating five of them cost five O(n) copies and the kick on a
-    // 20 000-element List ran ~2.3 s; positional edits made the same kick 0.022 s
-    // -- about a hundredfold -- and the old size no longer outran a 0.2 s budget
-    // at all, so this test failed on its own premise rather than on the
-    // mechanism it is about. Measured here with the wall clock removed, one
+    // vector, so generating five of them cost five O(n) copies. Positional edits
+    // made the kick on a 20 000-element List 0.022 s, and the old size then no
+    // longer outran a 0.2 s budget at all, so this test failed on its own
+    // premise rather than on the mechanism it is about.
+    //
+    // STATE THE BOUND THE EVIDENCE CARRIES. What is measured is: the old kick at
+    // n = 20 000 did NOT finish inside 0.2 s (this test's old form asserted the
+    // deadline cut it short), and the new one takes 0.022 s. That is a speedup
+    // of AT LEAST ~9x. An earlier draft said "~2.3 s, about a hundredfold": the
+    // 2.3 s was never measured on this path, it was #115's 1021 ms for 3000
+    // moves on a 30 000-element List scaled to ~230 us/move x 10 000 moves. An
+    // extrapolation from a different instance size is not a measurement, and a
+    // ratio built on one is not a result. Measured here with the wall clock removed, one
     // thread, Release: n = 20 000 / 10 000 moves / 0.022 s; 50 000 / 25 000 /
     // 0.126 s; 100 000 / 50 000 / 0.489 s; 200 000 / 100 000 / 1.95 s. The last
     // is ~10x this 0.2 s budget, which restores the headroom the 20 000-element

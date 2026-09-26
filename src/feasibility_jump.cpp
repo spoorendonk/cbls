@@ -1168,7 +1168,7 @@ bool FeasibilityJump::perturb_structural(double probability) {
     // — rather than an O(|elements|) copy. Still superlinear in a single
     // structure's size, which is why the deadline is checked between moves rather
     // than between variables — see kick_past_deadline() for the bound that buys
-    // and what it costs. The hundredfold drop that change brought is what forced
+    // and what it costs. The at-least-ninefold drop it brought is what forced
     // tests/test_perturb.cpp's mid-kick deadline case onto a ten-times-longer
     // List to keep outrunning its budget.
     arm_structural_kick();

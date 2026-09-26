@@ -191,6 +191,14 @@ void StructuralBatch::snapshot_sample_base(const Model& model) {
         accepted_values_.resize(base_vars_.size());
         accepted_elements_.resize(base_vars_.size());
     }
+    // The guard tests one of the four but resizes all four, and the three others
+    // are indexed unchecked below and in restore_*. They stay equal because this
+    // is the only place any of them is resized -- assert it, so a later resize
+    // elsewhere fails here under the sanitizer build rather than writing out of
+    // bounds. Free under NDEBUG.
+    assert(base_values_.size() == base_vars_.size());
+    assert(accepted_values_.size() == base_vars_.size());
+    assert(accepted_elements_.size() == base_vars_.size());
     for (size_t i = 0; i < base_vars_.size(); ++i) {
         const Variable& var = model.var(base_vars_[i]);
         base_values_[i] = var.value;
@@ -279,16 +287,24 @@ bool StructuralBatch::take_first_improving(Model& model, ViolationManager& vm, M
         // in between reads the rejected state. Only the sweep's final state has
         // to be right, which the restore below sees to.
     }
-    if (!dirty_vars_.empty()) {
-        // The last candidate was not rolled back, so put the sweep at the
-        // assignment it is keeping: the sample baseline plus the last ACCEPTED
-        // candidate, which is what the absolute form's final `undo_move` left
-        // behind. Cheap when nothing was accepted, since `accepted_*` is then
-        // the baseline itself.
-        restore_accepted(model);
-        delta_evaluate(model, base_vars_);
-        dirty_vars_.clear();
-    }
+    // Put the sweep at the assignment it is keeping: the sample baseline plus
+    // the last ACCEPTED candidate, which is what the absolute form's final
+    // `undo_move` left behind. Cheap when nothing was accepted, since
+    // `accepted_*` is then the baseline itself.
+    //
+    // UNCONDITIONAL, not keyed on `dirty_vars_` being non-empty. A final
+    // candidate carrying NO changes leaves `dirty_vars_` empty -- `apply_from_base`
+    // restores the baseline and returns early -- while `baseline_` and
+    // `accepted_*` still describe base + the last accepted candidate. Skipping
+    // the restore there hands the next generator in this same sweep a model at
+    // the baseline and a violation snapshot for a different assignment, after
+    // `changed` was already set. No built-in can emit an empty `Move`, so this
+    // needs a registered generator; `take_best` has the same-shaped guard and is
+    // correct with it, because take_best wants the baseline and that is exactly
+    // what an empty last candidate leaves.
+    restore_accepted(model);
+    delta_evaluate(model, base_vars_);
+    dirty_vars_.clear();
     return changed;
 }
 

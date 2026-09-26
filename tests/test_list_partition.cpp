@@ -186,6 +186,10 @@ TEST_CASE("a permutation List draws exactly one rng.permutation on init", "[list
     initialize_structured_random(m, a);
     const std::vector<int32_t> expected = b.permutation(7);
     REQUIRE(m.var(handle_to_var_id(h)).elements == expected);
+    // "exactly one" is half the claim, and the half that matters for a shared
+    // RNG: a second draw here would shift every later draw in the search. The
+    // elements check alone would pass with one.
+    REQUIRE(a.integers(0, 1000) == b.integers(0, 1000));
 }
 
 TEST_CASE("list_var rejects an impossible length window", "[list][partition]") {
@@ -487,6 +491,27 @@ TEST_CASE("the partition generator is registered next to the per-variable ones",
     PartitionModel plain = build(/*universe=*/6, /*routes=*/2, /*min_len=*/0, /*max_len=*/6,
                                  ListInit::Empty, /*with_partition=*/false, Cover::Exact);
     REQUIRE(default_move_generators(plain.model, nullptr).size() == 2);
+}
+
+TEST_CASE("the diversification kick fills an empty unpartitioned List", "[list][partition]") {
+    // The partition case below goes through the kick's partition branch. An
+    // unpartitioned variable-length List at n = 0 takes a different route --
+    // list_insert_move via list_complement -- which no other test reaches,
+    // because the property tests all start from a complete cover or from
+    // min_len >= 1.
+    Model m;
+    const int32_t h = m.list_var(8, 0, 8, ListInit::Empty, "free");
+    m.minimize(m.lambda_sum(h, element_weight));
+    m.close();
+    full_evaluate(m);
+    REQUIRE(m.var(handle_to_var_id(h)).elements.empty());
+
+    ViolationManager vm(m);
+    RNG rng(17);
+    FeasibilityJump fj(m, vm, rng, GFJConfig{});
+    fj.begin(/*set_initial_x=*/false);
+    fj.perturb(0.1);
+    REQUIRE_FALSE(m.var(handle_to_var_id(h)).elements.empty());
 }
 
 TEST_CASE("the diversification kick moves an all-empty partition", "[list][partition]") {

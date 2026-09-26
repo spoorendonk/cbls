@@ -878,6 +878,17 @@ enum class PartitionMoveKind : std::uint8_t { Relocate, Swap, TwoOptStar, Insert
 /// vector because this runs once per candidate PROPOSED, and the argument for
 /// the whole positional representation is that a candidate must not cost a heap
 /// allocation.
+///
+/// Honesty about the residual: four of the five names this path assigns to
+/// `Move::move_type` ("partition_relocate", "partition_2opt_star",
+/// "partition_insert", "partition_remove") exceed libstdc++'s 15-character
+/// small-string buffer, so each DOES cost one malloc. Every pre-existing move
+/// name fits, which is why it never showed before. It is one allocation per
+/// candidate proposed, against an O(universe) membership scan on the same path,
+/// and the partition generator proposes at most one candidate per `generate` --
+/// so the array-versus-vector point stands on its own and this is not worth
+/// trading the readable identifiers for. Making `move_type` a `string_view`
+/// is the real answer if it ever shows up in a profile.
 size_t applicable_kinds(const ListPartition& part, std::array<PartitionMoveKind, 5>& out) {
     size_t n = 0;
     if (part.list_ids.size() >= 2) {
@@ -896,9 +907,13 @@ size_t applicable_kinds(const ListPartition& part, std::array<PartitionMoveKind,
 }
 
 /// A member of `part` other than `a`, uniformly, by the shift-past trick the
-/// intra-list move pair already uses. PRECONDITION: at least two members. `a`
-/// may be an anchor from outside the id list, in which case the shift is inert
-/// and the draw is uniform over all of them.
+/// intra-list move pair already uses. PRECONDITION: at least two members, and
+/// `a` a member. A non-member `a` makes the shift inert and the draw uniform
+/// over all of them, which is DEFINED but not supported: the resulting move
+/// would take an element out of a list the partition does not own and put it in
+/// one it does, double-serving it. `generate_partition_moves` refuses a
+/// non-member anchor before reaching here rather than leaving that to the
+/// caller.
 int32_t pick_other_list(const ListPartition& part, int32_t a, RNG& rng) {
     const auto count = static_cast<int64_t>(part.list_ids.size());
     const auto it = std::find(part.list_ids.begin(), part.list_ids.end(), a);
@@ -936,6 +951,15 @@ void generate_partition_moves(const Model& model, int partition, int32_t anchor,
     const int32_t a = (anchor >= 0) ? anchor
                                     : part.list_ids[static_cast<size_t>(rng.integers(
                                           0, static_cast<int64_t>(part.list_ids.size())))];
+    // A caller-supplied anchor must belong to this partition. Both live callers
+    // honour it -- the kick derives the partition from the same variable, and
+    // ListPartitionGenerator passes -1 -- but this is a public entry point in
+    // moves.h, and every move below preserves the cover only over a PAIR of
+    // member lists. One find over the member count, which is the route count.
+    if (anchor >= 0 &&
+        std::find(part.list_ids.begin(), part.list_ids.end(), a) == part.list_ids.end()) {
+        return;
+    }
 
     switch (kind) {
         case PartitionMoveKind::Relocate:

@@ -722,6 +722,14 @@ NB_MODULE(_cbls_core, m) {
         .def_ro("element", &ElementEdit::element);
 
     // Move::Change
+    // A structured change is READ-ONLY from Python, by design (#164). `main`
+    // bound `new_elements` as `def_rw`, which let Python hand the engine an
+    // arbitrary element vector -- the #156 class, since the hot paths index by
+    // element id without bounds tests. The positional form is exposed for
+    // reading and built by the engine; a scalar change is still constructible,
+    // because `var_id` and `new_value` index nothing. Nothing in the tree
+    // constructs a structured change from Python, and the way to propose one is
+    // a C++ `MoveGenerator`, not a hand-built edit.
     nb::class_<Move::Change>(m, "MoveChange")
         .def(nb::init<>())
         .def_rw("var_id", &Move::Change::var_id)

@@ -59,7 +59,7 @@ cmake --build build-profile -j"$(nproc)"
 
 **State the build type in any profile you publish.** `CMakeLists.txt` defaults
 to Release, and the difference is not cosmetic: the same suite runs in ~25s
-optimized and ~499s unoptimized, so a profile of a `-DCMAKE_BUILD_TYPE=Debug`
+optimized and ~490s unoptimized, so a profile of a `-DCMAKE_BUILD_TYPE=Debug`
 binary measures a program nobody runs. `CBLS_PROFILE` deliberately does *not*
 change the build type — it only adds back the symbols and frame pointers that
 Release drops.
@@ -344,11 +344,21 @@ At `f511b8d`, `-DCBLS_SANITIZE=address,undefined,float-cast-overflow` puts the
 flag on every translation unit — 155 of 155, `grep -c fsanitize
 build-asan/compile_commands.json` against `grep -c '"file"'` on the same file — and links both `libasan.so.8` and
 `libubsan.so.1`. `ctest --test-dir build-asan -LE slow -j3` (`-j3` rather than the recipe's
-`-j4`, because the box was shared) was **302/302 green in 84.5s** (the fast set was 302 tests at that commit; it is 434 now — this is a record of that run, not a current count), with zero `runtime error` lines, zero AddressSanitizer reports and
+`-j4`, because the box was shared) was **302/302 green in 84.5s** (the fast set was 302 tests at that commit; it is 466 now — this is a record of that run, not a current count), with zero `runtime error` lines, zero AddressSanitizer reports and
 no leaks — LeakSanitizer is on by default and would have said otherwise. Check
 the flags reached the compiler before trusting a green run: a mis-spelled
 `CBLS_SANITIZE` value fails at compile time, but an option that silently did not
 apply looks exactly like a clean suite.
+
+Two portfolio tests flake under ASan **when the fast set is run with `-j`**, and
+they are not a regression — verified at `09ec193` on an ASan build of main, where
+`ParallelSearch records the first-feasible pair on the portfolio clock` and `a
+portfolio result counts the work its workers did` both fail under `-LE slow -j8`
+and both **pass when run alone** (0.39s and 0.59s). There is no AddressSanitizer
+or UndefinedBehaviorSanitizer report in either: they are scalar-only models on
+short wall-clock budgets (0.3s, 0.5s) that the sanitizer build's slowdown pushes
+over once the cores are contended. Run them singly, or with a smaller `-j`,
+before reading either as a finding.
 
 The 6 `[slow]` CHPED/UC-CHPED solves were **not** run under ASan — they are the
 suite's heaviest, and ASan multiplies their footprint. So the claim is "the fast
