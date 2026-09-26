@@ -64,56 +64,65 @@ int32_t ModelExtension::check_node_handle(int32_t handle, const char* what) cons
     return handle;
 }
 
+// The nodes `nid` names as children, over the graph this extension will produce:
+// the base model's children, the children this extension recorded, and the terms
+// it has already appended. Variable handles are dropped -- a variable is a leaf
+// and can never be on a cycle.
+//
+// Split out of `reaches` because it is the other half of the question: what the
+// edges ARE, against how they are searched. `out` is the caller's reusable buffer.
+void ModelExtension::successor_nodes(int32_t nid, std::vector<int32_t>& out) const {
+    out.clear();
+    if (nid >= base_num_nodes_) {
+        for (const int32_t handle :
+             new_nodes_[static_cast<size_t>(nid - base_num_nodes_)].children) {
+            if (handle >= 0) {
+                out.push_back(handle);
+            }
+        }
+        return;
+    }
+    for (const ChildRef& child : base_->children(base_->node(nid))) {
+        if (!child.is_var) {
+            out.push_back(child.id);
+        }
+    }
+    for (const std::pair<int32_t, int32_t>& append : appends_) {
+        if (append.first == nid && append.second >= 0) {
+            out.push_back(append.second);
+        }
+    }
+}
+
 // Walks DOWN rather than up, because down is what exists before `extend` runs:
 // `parents` would answer in O(ancestors of the target) but does not yet carry the
-// extension's own edges. The cost is the cone of `from` over the combined graph --
-// the base model's children, the children this extension has recorded, and the
-// terms it has already appended.
+// extension's own edges.
 //
-// In the regime this exists for, a fresh `coef * new_var` term, that cone is two
-// new nodes and no base node at all, so the `appends_` scan below never runs. It
-// loses on a term that names an existing NODE, where the cone is that node's whole
-// subtree and each base node in it costs one pass over `appends_` -- quadratic in
-// the number of appends if every one of them is such a term. That shape is the
-// exotic one (it is also the shape that needs the check), and the alternative is a
-// second index over `appends_` to keep in step with it.
+// The cost is the cone of `from`. In the regime this exists for -- a fresh
+// `coef * new_var` term -- that cone is two new nodes and no base node at all, so
+// the `appends_` scan in `successor_nodes` never runs. It loses on a term that
+// names an existing NODE, where the cone is that node's whole subtree and each
+// base node in it costs one pass over `appends_`: quadratic in the number of
+// appends if every one of them is such a term. That shape is the exotic one (it is
+// also the shape that needs the check), and the alternative is a second index over
+// `appends_` to keep in step with it.
 bool ModelExtension::reaches(int32_t from, int32_t target) const {
-    std::vector<int32_t> stack;
-    std::unordered_set<int32_t> seen;
-    // Returns true the moment the target is the node being stepped on to.
-    auto visit = [&](int32_t node) {
-        if (node == target) {
-            return true;
-        }
-        if (seen.insert(node).second) {
-            stack.push_back(node);
-        }
-        return false;
-    };
-    if (visit(from)) {
+    if (from == target) {
         return true;
     }
+    std::vector<int32_t> stack{from};
+    std::unordered_set<int32_t> seen{from};
+    std::vector<int32_t> successors;
     while (!stack.empty()) {
         const int32_t nid = stack.back();
         stack.pop_back();
-        if (nid >= base_num_nodes_) {
-            // A variable handle is a leaf, so only node handles are stepped on to.
-            for (const int32_t h :
-                 new_nodes_[static_cast<size_t>(nid - base_num_nodes_)].children) {
-                if (h >= 0 && visit(h)) {
-                    return true;
-                }
-            }
-            continue;
-        }
-        for (const ChildRef& child : base_->children(base_->node(nid))) {
-            if (!child.is_var && visit(child.id)) {
+        successor_nodes(nid, successors);
+        for (const int32_t succ : successors) {
+            if (succ == target) {
                 return true;
             }
-        }
-        for (const std::pair<int32_t, int32_t>& append : appends_) {
-            if (append.first == nid && append.second >= 0 && visit(append.second)) {
-                return true;
+            if (seen.insert(succ).second) {
+                stack.push_back(succ);
             }
         }
     }

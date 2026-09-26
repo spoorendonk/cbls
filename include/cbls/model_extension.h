@@ -217,6 +217,9 @@ private:
     /// Does `from` reach `target` through child edges, over the graph this
     /// extension will produce? Node handles only. See `append_to_sum`.
     [[nodiscard]] bool reaches(int32_t from, int32_t target) const;
+    /// The nodes `nid` names as children over that same graph, into the caller's
+    /// reusable buffer.
+    void successor_nodes(int32_t nid, std::vector<int32_t>& out) const;
     int32_t push(NodeOp op, std::vector<int32_t> children, double const_value = 0.0);
     int32_t add_var(VarType type, double lb, double ub, const std::string& name);
 
