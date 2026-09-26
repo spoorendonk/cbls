@@ -29,14 +29,21 @@
 # `--sample-size` candidates per variable per pass where `first_improving`
 # scores the generator's 3-5.
 #
-# The RECORDED null result predates #164, which made a candidate much cheaper --
-# a structured change is now a positional edit rather than a whole element
-# vector, so scoring one no longer allocates at all and costs one O(|elements|)
-# copy where it used to cost three plus two allocations. That does not make the
-# two arms equal, and no search-throughput A/B has been run at the new cost --
-# but it shrinks the term that confounded them, so re-run this before the null is
-# read as "the policy does not help" rather than "the policy helps less than its
-# per-candidate cost". Say which you measured.
+# That term is much smaller since #164, which made a structured change a
+# positional edit rather than a whole element vector: scoring one now costs an
+# allocation-free `assign` per variable its predecessor changed, where it used to
+# cost at least two heap allocations and three O(|elements|) copies. (Not "no
+# allocation at all" -- an EditKind::Replace allocates by construction.) It does
+# not make the two arms equal, but it is no longer the dominant confounder.
+#
+# THE RECORDED RESULT IS FROM AFTER THAT CHANGE, and it is "not established":
+# 20 seeds per arm, paired, the weighted instances give -2.6% for
+# violation_guided with a 95% CI of [-5.6%, +0.3%]. A FIVE-seed run of the same
+# comparison read -4.5%, and quadrupling the seeds shrank it. Per-seed spread is
+# +-8-11% of the objective, wider than the effect. So: do not report a five-seed
+# run of this script as a result, in either direction, and quote the interval
+# rather than the point estimate. If you want to move the needle, raise --time
+# before raising --seeds -- it attacks the noise at its source.
 #
 # Quote the result with the engine commit the script prints.
 set -euo pipefail

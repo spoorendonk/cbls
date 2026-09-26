@@ -879,23 +879,26 @@ one random remove and one random swap; nothing chooses *which* element on
 violation grounds, the way FJ's jump table and best-of-N scan-set sampling
 choose a scalar's value.
 
-#165 added the machinery to change that — `BestOfSample` / `ViolationGuided`
-and neighbour lists above — and it **has now been measured on the setcover
-roster, with a null result**: at a 10s budget, five seeds per arm, engine commit
-`7436443`, `ViolationGuided` is indistinguishable from the default, every
-difference falling inside one standard deviation of the per-seed spread. The
-table and the caveats are in `benchmarks/instances/setcover/README.md`.
+#165 added the machinery to change that — `BestOfSample` / `ViolationGuided` and
+neighbour lists above — and it **has now been measured on the setcover roster,
+under #164's positional move representation, and is still not established**: at a
+10s budget, **20 seeds per arm**, engine commit `8dc906b`, paired per seed,
+`ViolationGuided` is −76.2 against the default on the weighted instances (a base
+of ~2900, so −2.6%) with a 95% CI of **[−161.4, +9.0]** — 1.75 SE from zero,
+crossing it. Unicost is −0.18 on ~6.7. The table and caveats are in
+`benchmarks/instances/setcover/README.md`.
 
 So the result that follows is still the result, and it still describes the
-default configuration — which remains what a user gets. The reading to avoid is
-"guidance was tried and does not work": at a fixed wall-clock budget the A/B
-measures policy quality *minus* representation cost, and the guided arm scores
-more candidates per pass. **That A/B predates #164**, which landed the
-position-based move representation — a structured candidate is now a positional
-`ElementEdit` rather than a whole element vector, so scoring one no longer
-allocates at all and costs one O(|elements|) copy where it used to cost three
-plus two allocations. The confounding term is much smaller than it was, so the
-A/B is worth re-running before the null is read as a verdict on the policy.
+default configuration — which remains what a user gets. Two readings to avoid.
+"Guidance was tried and does not work": the interval crosses zero in both
+directions, and 9 of 10 instances are non-worse for the guided arm. And
+"guidance works, the earlier null was just the representation cost": a five-seed
+run of this same comparison read −4.5%, and quadrupling the seeds shrank it to
+−2.6% with the interval still spanning zero. Per-seed spread is ±8-11% of the
+objective, wider than the effect. The confounder #164 removed was real — scoring
+a candidate now costs an allocation-free `assign` per variable its predecessor
+changed rather than at least two allocations and three O(|elements|) copies — and
+removing it did not produce a separation.
 
 That is invisible on a mixed model — where List/Set variables sit alongside
 scalars that GFJ drives — but it is the whole search on a model whose

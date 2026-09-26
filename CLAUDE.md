@@ -807,32 +807,35 @@ structured-variable claim. #165 built it — registrable `MoveGenerator`s,
 granular neighbour lists, and `BestOfSample` / `ViolationGuided` selection
 policies — and `setcover` was its ready-made A/B harness.
 
-**It has now been measured, and it did not move the number.** At engine commit
-`7436443`, five seeds per arm at a 10s budget, `ViolationGuided` and the default
-`FirstImprovingSample` are indistinguishable on the `Set` encoding: seven of ten
-instances favour the default, three the guided arm, and every difference sits
-inside one standard deviation of a per-seed spread that is ±7-16% on the
-weighted instances. The table and the caveats are in
-`benchmarks/instances/setcover/README.md`.
+**It has now been measured twice, and it is still not established.** The
+confounder is gone: #164 landed the position-based move representation, so a
+structured candidate carries positional `ElementEdit`s and scoring one costs an
+allocation-free `assign` per variable its predecessor changed, where it used to
+cost at least two heap allocations and three O(|elements|) copies. (Not "no
+allocation at all": an `EditKind::Replace` allocates by construction, and the
+per-call membership scans still do.)
 
-So the prerequisite is **implemented but not yet effective**, which is not the
-same thing, and the guidance is unchanged in substance: **still do not build a
-new List/Set benchmark**, because adding one now reproduces the negative result
-in a new domain exactly as before.
+Measured under that representation, at engine commit `8dc906b`, **20 seeds per
+arm** at a 10s budget, paired per seed: on the weighted instances
+`ViolationGuided` is **−76.2** against `FirstImprovingSample` on a base of ~2900
+(−2.6%), 95% CI **[−161.4, +9.0]** — 1.75 SE from zero, crossing it, 60/100
+paired wins. Unicost is −0.18 on ~6.7 (2.07 SE, 34/100 with 45 ties). Table and
+caveats in `benchmarks/instances/setcover/README.md`.
 
-What has changed since that A/B is the second lever it named. At a fixed
-wall-clock budget the comparison measures policy quality *minus* representation
-cost, and the guided arm scores more candidates while every candidate then
-copied the whole element vector twice. **#164 landed the position-based move
-representation**: a structured `Move::Change` now carries positional
-`ElementEdit`s, so scoring a candidate costs one allocation-free `assign` per
-variable its predecessor changed, where it used to cost at least two heap
-allocations and three O(|elements|) copies. Not "no allocation at all": an
-`EditKind::Replace` allocates by construction, and the per-call membership scans
-still do. **The setcover A/B has NOT been re-run under it** — the tables in
-`benchmarks/instances/setcover/README.md` and in `docs/architecture.md` still
-describe the old cost, and both say so. Re-running it is the next step, and
-until it has been run no null result licenses a claim in either direction.
+**The methodological point is worth more than the number.** A five-seed run of
+the same comparison put the weighted difference at −131.9 (−4.5%); quadrupling
+the data moved it to −76.2 with the interval still spanning zero. Regression
+toward the mean, on a roster where per-seed spread (±8-11%) exceeds the effect
+being looked for. So: do not read a five-seed structural A/B on this roster as a
+result in either direction, and do not pick the one-sided framing because it
+clears 0.05 when the two-sided one does not.
+
+So the prerequisite is **implemented, measured, and not demonstrably better**,
+and the guidance is unchanged in substance: **still do not build a new List/Set
+benchmark.** What would settle it, in order: a longer per-run budget (attacks the
+noise at source), then more seeds (~740 paired runs for a 3-SE reading), then a
+harder roster. None of that is worth doing without a reason to care about
+`Set`-encoded set covering specifically.
 
 Note also that #164 generalised `List` itself — a variable-length ordered subset
 of a universe, with an optional partition across several Lists whose cover the

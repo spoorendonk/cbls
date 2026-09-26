@@ -20,7 +20,7 @@ so the model is one `Set` variable and nothing else.
 | Can a standard set-based problem be *expressed* with a `Set` variable? | **Yes** — one `Set` over the columns, one `lambda_sum` coverage row per row. No new DAG op was needed. |
 | Does the search produce genuine, verified solutions? | **Yes** — every run on the roster returns a real cover, re-checked against the instance file. |
 | Is the `Set` encoding *competitive*? | **No.** It never beats the plain Bool encoding of the same instance (it ties on two unicost instances), and on the weighted instances it costs 8.6-11.0x the optimum where Bool is within 9-20%. See [Result](#result). |
-| Does #165's cost-aware selection fix it? | **Not yet.** `ViolationGuided` measures indistinguishable from the default at a 10s budget — every difference inside one standard deviation of the per-seed spread. See [Cost-aware structural selection](#cost-aware-structural-selection-165--measured-and-it-does-not-help-yet). |
+| Does #165's cost-aware selection fix it? | **Not demonstrably.** At 20 seeds per arm and a 10s budget, `ViolationGuided` beats the default by 2.6% on the weighted instances with a 95% CI of [−5.6%, +0.3%] — it crosses zero, and the estimate shrank as seeds were added. See [Cost-aware structural selection](#cost-aware-structural-selection-165--measured-twice-still-not-established). |
 
 So the honest scope of the structured-variable claim today is: **`Set`
 variables are validated for expressiveness only, and `List` variables are not
@@ -155,57 +155,78 @@ That contrast is the sharpest available evidence for what is missing: not the
 The one-instance headline: on `scp41`, `Set` reaches 4739 against a proven
 optimum of 429, while the ordinary Bool encoding of the same data reaches 469.
 
-## Cost-aware structural selection (#165) — measured, and it does not help yet
+## Cost-aware structural selection (#165) — measured twice, still not established
 
 CLAUDE.md has long named **cost-aware structural move selection** as the
 prerequisite for any renewed structured-variable claim, and #165 built it:
 registrable move generators, granular neighbour lists, and a
-`StructuralSelection` policy with a violation-guided arm. This roster is its
-A/B harness, so the policy was measured here first.
+`StructuralSelection` policy with a violation-guided arm. This roster is its A/B
+harness.
 
-**Result: no separation at a 10s budget.** Engine commit `7436443`, five seeds
-(42-46) per arm, `Set` encoding, one solve at a time on an idle machine, via
-`benchmarks/setcover/ab_selection.sh --time 10 --seeds 5`.
+**Result: not established.** Engine commit `8dc906b`, 20 seeds (42-61) per arm,
+`Set` encoding, one solve at a time on an idle machine, via
+`benchmarks/setcover/ab_selection.sh --time 10 --seeds 20`. 400 runs, every one
+feasible and verified. This run is *after* #164's position-based move
+representation, so the per-candidate element-vector copy that confounded the
+first attempt is gone.
 
-| instance | `first_improving` (mean +- sd) | `violation_guided` (mean +- sd) |
-|---|---|---|
-| scp41 | 3069.2 +- 219.7 | 3111.6 +- 404.1 |
-| scp42 | 2924.2 +- 215.5 | 3026.4 +- 195.9 |
-| scp43 | 2964.0 +- 481.7 | 2839.4 +- 300.9 |
-| scp44 | 2721.4 +- 269.2 | 3014.8 +- 404.2 |
-| scp45 | 3038.6 +- 230.8 | 2758.4 +- 264.2 |
-| scpe1 | 6.8 +- 0.7 | 6.6 +- 0.5 |
-| scpe2..scpe5 | 6.2-6.6 | 6.2-6.6 (identical to within 0.2) |
+Paired per seed, objective difference `violation_guided − first_improving`:
 
-Seven of ten instances favour the default and three favour the guided arm, and
-**every difference sits inside one standard deviation of the per-seed spread**,
-which is +-7 to 16% on the weighted instances -- wider than any gap between the
-arms. On the unicost instances the two are indistinguishable. All 100 runs were
-feasible and verified.
+| family | n (paired) | mean diff | 95% CI | distance from 0 | VG better |
+|---|---|---|---|---|---|
+| weighted, scp41-45 | 100 | **−76.2** on a base of ~2900 (−2.6%) | **[−161.4, +9.0]** | 1.75 SE | 60/100 |
+| unicost, scpe1-5 | 100 | **−0.18** on a base of ~6.7 | [−0.4, −0.0] | 2.07 SE | 34/100 (45 ties) |
 
-**What this does and does not say.** It does not say violation-guided selection
-is a dead end. At a fixed wall-clock budget the comparison is policy quality
-*minus* representation cost, and the arms do not pay the same cost: the sampling
-policies score up to `structural_sample_size` candidates per generator per pass
-against the default's 3-5.
+Per-instance means (± sd over 20 seeds):
 
-**The table above predates #164**, which landed the position-based move
-representation: a structured candidate carries positional edits rather than the
-whole element vector, so scoring one no longer allocates at all and costs one
-O(|elements|) copy where it used to cost three plus two allocations. The
-confounding term is much smaller than it was. The one place the effect was
-measured directly is the diversification kick, which does not go through the
-structural batch: over a 20 000-element `List` it now runs in 0.022 s against a
-budget the pre-#164 code did not finish inside 0.2 s, i.e. at least tenfold. **No
-search-throughput A/B has been run**, which is exactly why this table has to be
-re-measured rather than reasoned about. So it still measures "the guided policy did not pay for itself
-at 10s on this roster **at the representation it was measured under**", and the
-A/B is worth re-running before it is read as "guiding the choice of element is
-worthless".
+| instance | `first_improving` | `violation_guided` | rel. |
+|---|---|---|---|
+| scp41 | 2989.1 ± 229.8 | 2902.6 ± 386.1 | −2.9% |
+| scp42 | 2815.4 ± 270.5 | 2825.1 ± 312.7 | +0.3% |
+| scp43 | 2956.4 ± 316.6 | 2806.8 ± 290.9 | −5.1% |
+| scp44 | 2941.4 ± 331.4 | 2821.0 ± 311.8 | −4.1% |
+| scp45 | 2919.5 ± 289.5 | 2885.4 ± 314.7 | −1.2% |
+| scpe1-5 | 6.4-6.9 | 6.3-6.8 | −6% to 0% |
 
-It also does not rescue the headline result below: the `Set` encoding's
-8.6-11.0x remains what it was, because the prerequisite being *implemented* is
-not the same as the prerequisite being *effective*.
+**Read this as "not established", not as "it works".** On the weighted instances
+the confidence interval crosses zero. A one-sided reading would clear 0.05 and a
+two-sided one would not — precisely the regime where choosing the favourable
+framing is how a null becomes a claim, so the interval is quoted instead. The
+direction is consistently non-worse (9 of 10 instances), which is weak positive
+evidence and nothing more; no individual instance separates.
+
+**The decisive detail is that the estimate SHRANK with more data.** An earlier
+five-seed run of the same comparison, at the same budget and on the same
+representation, put the weighted difference at −131.9 (−4.5%). Four times the
+data moved it to −76.2 (−2.6%), interval still spanning zero. That is regression
+toward the mean, and it is why the five-seed reading is not recorded here as a
+result. Per-seed spread is ±8-11% of the objective — larger than the effect being
+looked for — and run-to-run variation within the *same* arm is comparable:
+scp44's `first_improving` mean was 2703 over seeds 42-46 and 2941 over 42-61.
+
+**What would settle it**, in preference order: a longer per-run budget, which
+attacks the noise at its source instead of averaging it down; then more seeds
+(sd 434.7 implies ~740 paired runs for a 3-SE reading of a −76 effect); then a
+harder roster, since 10s is already past the knee here. None of that is worth
+doing before there is a reason to care about `Set`-encoded set covering
+specifically. The honest summary is that cost-aware selection is **implemented,
+measured, and not demonstrably better** on the one roster that can test it.
+
+It does not rescue the headline result below either: the `Set` encoding's
+8.6-11.0x remains what it was, because a prerequisite being *implemented* is not
+the same as its being *effective*.
+
+**On the representation, separately.** #164 made a structured candidate carry
+positional edits rather than the whole element vector, so scoring one costs an
+allocation-free `assign` per variable its predecessor changed where it used to
+cost at least two heap allocations and three O(|elements|) copies. (Not "no
+allocation at all" — an `EditKind::Replace` allocates by construction, and the
+per-call membership scans still do.) The one place the effect was measured
+directly is the diversification kick, which does **not** go through the
+structural batch: over a 20 000-element `List` it now runs in 0.022 s where the
+pre-#164 code did not finish inside 0.2 s, i.e. at least ~9x. **No
+search-throughput A/B has been run**, and the table above is the only evidence
+about the batch.
 
 ## Why the Set encoding loses
 
