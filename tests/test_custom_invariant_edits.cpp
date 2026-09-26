@@ -27,6 +27,7 @@
 #include "cbls/violation.h"
 
 #include <algorithm>
+#include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -35,6 +36,7 @@
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -754,7 +756,7 @@ TEST_CASE("no positional information is never mistaken for no changes", "[custom
 
 TEST_CASE("the structural batch records edits only for an invariant that opts in",
           "[custom][edits]") {
-    // The journal costs ~6% per candidate on a re-reading invariant, so it is
+    // The journal costs ~5-7% per candidate on a re-reading invariant, so it is
     // opt-in. Not opting in must still be CORRECT -- `available()` false -- and
     // opting in must actually switch it on.
     const bool wants = GENERATE(false, true);
@@ -781,6 +783,96 @@ TEST_CASE("the structural batch records edits only for an invariant that opts in
     } else {
         REQUIRE(seen->delta_calls_available == 0);
     }
+}
+
+namespace {
+
+// A registered generator emitting the move shapes no built-in does, in turn:
+// the SAME variable changed by two separate Changes, a two-variable move, a
+// whole-vector Replace, and an empty Move. `describe_transition` has to get
+// each of them right as both the current and the PREVIOUS candidate.
+class ShapesGenerator final : public MoveGenerator {
+public:
+    ShapesGenerator(int32_t list, int32_t set) : scope_{list, set} {}
+    [[nodiscard]] std::string_view name() const override { return "shapes"; }
+    [[nodiscard]] ConstSpan<int32_t> scope() const override { return {scope_.data(), 2}; }
+
+    void generate(MoveContext& ctx, std::vector<Move>& out) override {
+        const std::vector<int32_t>& l = ctx.model.var(scope_[0]).elements;
+        const std::vector<int32_t>& s = ctx.model.var(scope_[1]).elements;
+        const auto n = static_cast<int64_t>(l.size());
+        if (n < 4) {
+            return;
+        }
+        auto pos = [&ctx, n]() { return static_cast<int32_t>(ctx.rng.integers(0, n)); };
+        Move move;
+        move.move_type = "shape";
+        switch (next_++ % 4) {
+            case 0:  // one variable, two Changes
+                move.changes.push_back(edit_change(scope_[0], swap_edit(pos(), pos())));
+                move.changes.push_back(edit_change(scope_[0], reverse_edit(1, 3)));
+                break;
+            case 1:  // two variables
+                move.changes.push_back(edit_change(
+                    scope_[0], segment_edit(pos() % static_cast<int32_t>(n - 2), 2, 0)));
+                if (s.size() > 1) {
+                    move.changes.push_back(edit_change(scope_[1], swap_edit(0, 1)));
+                }
+                break;
+            case 2: {  // a Replace
+                std::vector<int32_t> reversed = l;
+                std::reverse(reversed.begin(), reversed.end());
+                move.changes.push_back(replace_change(scope_[0], std::move(reversed)));
+                break;
+            }
+            default:  // nothing at all
+                break;
+        }
+        out.push_back(std::move(move));
+    }
+
+    [[nodiscard]] std::unique_ptr<MoveGenerator> clone() const override {
+        return std::make_unique<ShapesGenerator>(*this);
+    }
+
+private:
+    std::array<int32_t, 2> scope_;
+    int next_ = 0;
+};
+
+}  // namespace
+
+TEST_CASE("the structural batch describes every move shape exactly", "[custom][edits]") {
+    // Repeated-variable, two-variable, Replace and empty candidates, through the
+    // batch, under every selection policy -- including `take_best`'s no-winner
+    // restore. A doubled or stale description shows up as a mirror mismatch or
+    // a wrong value; a Replace must push the invariant into a re-read.
+    const auto selection =
+        GENERATE(StructuralSelection::FirstImprovingSample, StructuralSelection::BestOfSample,
+                 StructuralSelection::ViolationGuided);
+    auto rm = build_route_model(/*use_edits=*/true, 40, 0, 40);
+    RNG init(11);
+    set_route(*rm, random_route(init, 40, 20), random_route(init, 12, 5));
+
+    SearchConfig config;
+    config.structural_selection = selection;
+    config.structural_sample_size = 3;
+    config.default_structural_generators = false;
+    config.move_generators.push_back(std::make_shared<const ShapesGenerator>(
+        handle_to_var_id(rm->list), handle_to_var_id(rm->set)));
+    StructuralBatch batch(rm->model, config, /*enabled=*/true);
+    ViolationManager vm(rm->model);
+    RNG rng(5);
+    rm->stats->clear();
+    int idle = 0;
+    for (int sweep = 0; sweep < 200; ++sweep) {
+        idle += batch.run(rm->model, vm, rng, false, kNoDeadline) ? 0 : 1;
+        REQUIRE(rm->stats->mirror_mismatches == 0);
+        REQUIRE(rm->model.node_value(rm->route) == expected_route(*rm));
+    }
+    REQUIRE(rm->stats->incremental > 100);
+    REQUIRE(rm->stats->rereads > 10);
+    REQUIRE(idle > 0);  // the no-winner restore ran
 }
 
 TEST_CASE("the fallback paths re-read and land on the incremental value", "[custom][edits]") {

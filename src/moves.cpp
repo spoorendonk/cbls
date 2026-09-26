@@ -176,8 +176,8 @@ namespace {
 /// Whether `apply_one_edit` would act on `edit` at all, i.e. whether its range
 /// guard passes. The SAME guards, kind by kind -- they have to agree, or the
 /// journal records an edit that never happened (or misses one that did), and
-/// its inverse is then wrong. Pinned by the recorded-apply cases in
-/// tests/test_custom_invariant.cpp, which replay the record against the
+/// its inverse is then wrong. Pinned by the recorded-apply case in
+/// tests/test_custom_invariant_edits.cpp, which replays the record against the
 /// unrecorded apply over in- and out-of-range edits.
 bool edit_takes_effect(const ElementEdit& edit, const std::vector<int32_t>& elements) {
     const auto n = static_cast<int32_t>(elements.size());

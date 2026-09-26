@@ -64,8 +64,9 @@ private:
 /// under NDEBUG, exactly as `ConstSpan::operator[]` is.
 class InvariantInputs {
 public:
-    /// Outside a `delta()` -- `evaluate` and `partial`. `edits(i)` reports no
-    /// positional information for every input: there is no "since" to describe.
+    /// Outside a `delta()` -- `evaluate` and `partial` -- and for a `delta()`
+    /// whose positional information is withheld (a stale probe). `edits(i)`
+    /// reports none for every input.
     InvariantInputs(const Model& model, ConstSpan<ChildRef> children) noexcept
         : model_(&model), children_(children) {}
 
@@ -133,6 +134,12 @@ public:
     ///    generator's, or the inter-list tail exchange);
     ///  - after an exception left a probe open (see the class note).
     ///
+    /// One case it does NOT detect: a `delta()` that threw on a `Commit` pass
+    /// leaves the invariant's committed state behind the engine's, and neither
+    /// `changed` nor these edits bridge the gap. That is the same obligation as
+    /// for any exception out of the walk -- `full_evaluate` before the next
+    /// `delta_evaluate`, which is the documented recovery.
+    ///
     /// An input NOT listed in `changed` did not move, and reports an empty,
     /// available list.
     ///
@@ -142,8 +149,8 @@ public:
     /// starts from the committed state again. Lifetime: as for `changed`, valid
     /// for this call only.
     ///
-    /// Cost: a binary search of `changed` and a scan of the journal's records,
-    /// one per variable the move touched.
+    /// Cost: a binary search of `changed` and a scan of the journal's records
+    /// (see `EditJournal::lookup`).
     [[nodiscard]] InputEdits edits(int32_t i) const;
 
 private:
@@ -311,9 +318,9 @@ public:
     /// the structural batch records positional edits only while some custom
     /// node in the model returns true here, so a model whose invariants all
     /// re-read pays nothing for the journal. Measured on a 200-element List
-    /// route invariant that re-reads, ~5% per structural candidate (661 against
-    /// 629 ns, allocation-free either way; docs/architecture.md has the run) --
-    /// which is why this is not simply always on.
+    /// route invariant that re-reads, ~5-7% per structural candidate
+    /// (allocation-free either way; docs/architecture.md has the runs and their
+    /// load) -- which is why this is not simply always on.
     ///
     /// An invariant that returns false still gets a correct answer from
     /// `edits(i)` -- `available()` false whenever nothing was recorded -- so

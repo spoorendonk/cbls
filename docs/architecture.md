@@ -255,7 +255,9 @@ unavailable in `evaluate`/`partial`, for a scalar or node input, for any call
 whose caller recorded nothing (the diversification kick, LNS, the inner solver,
 Novelty Jump, a restore, a direct `var_mut`), for a variable that saw a `Replace`
 (the inter-list tail exchange, or a registered generator's), and after an
-exception left a probe open. An input *not* in `changed` reports an available,
+exception left a probe open. (A `delta()` that throws on a `Commit` pass is not
+detected: its invariant is behind, and `full_evaluate` is the recovery, as for any
+exception out of the walk.) An input *not* in `changed` reports an available,
 empty list, so a scalar move does not push a List invariant into a re-read.
 
 *Accumulation.* Edits describe the change since the last committed state. On the
@@ -273,18 +275,27 @@ valid for the one `delta()` call.
 *Opt in, because it is measurable.* The batch records only while some invariant
 in the model returns true from `wants_positional_edits()`, checked once per
 sweep. Not opting in is still correct — `available()` is false — and costs
-nothing. Opting in costs ~5% per structural candidate and no allocation.
-*Dated record of one A/B*, at `6771047` (base) against this change, Release,
-one binary per side, 200,000 batch sweeps after a 50-sweep warm-up, 7 alternating
-repeats, medians, on a 12-core machine at load average 2.4-3.1 from other jobs:
+nothing. Opting in costs ~5-7% per structural candidate and no allocation.
+*Dated record of two A/B runs*, at `6771047` (base) against this change (the
+second run at the review-fix commit), Release, one binary per side, 200,000 batch
+sweeps after a 50-sweep warm-up, alternating repeats, medians. **Not an idle
+machine**: a 12-core box shared with other agents' jobs, load average 2.4-3.1 for
+the first run (7 repeats) and 2.5-2.7 for the second (9 repeats), one core busy
+with an unrelated process throughout. The harness is a scratch program, not
+committed: a `StructuralBatch` driven directly over each model below, with a
+counting `operator new`.
 
 | Model (200-element List / 300-universe Set) | base ns/candidate | #172 ns/candidate | allocations/candidate |
 |---|---|---|---|
-| `pair_lambda_sum` route, no custom node | 1012.4 | 1012.7 | 1.999 / 1.999 |
-| `lambda_sum` over a Set, no custom node | 695.2 | 684.0 | 5.665 / 5.665 |
-| re-reading custom route, not opted in | 628.7 | 625.2 | 1.999 / 1.999 |
-| the same invariant, opted in | — | 660.8 | 1.999 |
+| `pair_lambda_sum` route, no custom node | 1012.4 / 1024.8 | 1012.7 / 1020.3 | 1.999 / 1.999 |
+| `lambda_sum` over a Set, no custom node | 695.2 / 698.4 | 684.0 / 685.7 | 5.665 / 5.665 |
+| re-reading custom route, not opted in | 628.7 / 624.2 | 625.2 / 632.2 | 1.999 / 1.999 |
+| the same invariant, opted in | — | 660.8 / 666.0 | 1.999 |
 
+Every not-opted-in row moves by at most ~1.5% between the two sides, in both
+directions across the two runs, which is the noise of this machine, not a
+measured effect either way. The allocation column is load-independent and is the
+criterion's actual evidence: identical on both sides, and zero added by opting in.
 Final elements and every node value hashed identically on both sides for every
 row, and `cbls::solve()` at seed 12345, `max_iterations = 4000`, no time limit,
 produced identical digests (every `SearchResult` scalar plus `best_state`) for

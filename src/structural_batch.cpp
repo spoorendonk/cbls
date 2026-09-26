@@ -308,14 +308,23 @@ bool StructuralBatch::wants_journal(const Model& model) {
 // then `redo`, each exact because both were recorded from edits that actually
 // took effect. A variable either side knows only as a `Replace` reads Unknown.
 //
-// O(|vars| x records), and both are the handful of variables one candidate
-// touches.
+// O(|vars| x records): the handful of variables one candidate touches, except
+// on the sample's final restore, where `vars` is every variable the sample named
+// -- quadratic in that, once per sample, and only while journaling.
 void StructuralBatch::describe_transition(const Model& model, const EditJournal& undo,
                                           const EditJournal& redo,
                                           const std::vector<int32_t>& vars) {
     journal_.clear();
     for (const int32_t var_id : vars) {
         if (!is_structured(model.var(var_id).type)) {
+            continue;
+        }
+        // `vars` can name a variable twice -- `dirty_vars_` keeps one entry per
+        // CHANGE, and a registered generator may emit two changes on one
+        // variable -- and re-opening the newest record would append the whole
+        // transition a second time: a Known, wrong list. Describe each once.
+        ConstSpan<PositionalEdit> described;
+        if (journal_.lookup(var_id, described) != EditJournal::Status::Absent) {
             continue;
         }
         journal_.begin(var_id);

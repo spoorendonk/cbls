@@ -656,8 +656,8 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
   deliberately left unbracketed. `in.edits(i)` (#172) says *where* a List/Set
   input moved, as positional edits since the last committed state, so a delta
   over a List can be O(edits) — but only the structural batch supplies them, only
-  for an invariant that opts in (`wants_positional_edits()`), and every other
-  path reports `available() == false`: re-read then. This is engine capability,
+  for an invariant that opts in (`wants_positional_edits()`), and on every other
+  path a moved List/Set input reports `available() == false`: re-read then. This is engine capability,
   not evidence about List performance.
 
 ### Build targets

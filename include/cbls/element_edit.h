@@ -176,8 +176,9 @@ public:
     void append_forward(const EditJournal& applied, int32_t var_id);
 
     /// Look up `var_id`. Fills `edits` only for `Status::Known`. Linear in the
-    /// number of RECORDS, which is the number of variables one move touched --
-    /// one or two for every built-in.
+    /// number of RECORDS: the variables one candidate touched (one or two for
+    /// every built-in), or every variable a sample named on the structural
+    /// batch's final restore.
     [[nodiscard]] Status lookup(int32_t var_id, ConstSpan<PositionalEdit>& edits) const noexcept;
 
     [[nodiscard]] bool empty() const noexcept { return records_.empty(); }
