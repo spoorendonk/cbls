@@ -104,8 +104,11 @@ struct ExtensionResult {
 /// silently producing something the engine cannot initialise.
 class ModelExtension {
 public:
-    /// `base` must be closed and not frozen, and must still be at these counts
-    /// when `extend` is called.
+    /// `base` must be closed, and must still be at these counts when `extend` is
+    /// called. Only closedness is checked here: a FROZEN model is accepted and
+    /// refused by `extend`, which is where the refusal belongs, and
+    /// `tests/test_model_share.cpp` pins that shape -- it builds an extension
+    /// against a frozen model in order to watch `extend` turn it down.
     explicit ModelExtension(const Model& base);
 
     // ---- New variables (scalars only; see the class comment) ----
@@ -162,6 +165,16 @@ public:
     /// by this extension is rejected, because its children are not written yet
     /// and `sum()` already takes the full list. Appending the same term twice
     /// adds it twice, exactly as `sum({t, t})` would.
+    ///
+    /// A term that already READS the target -- `sum_node` itself, or anything
+    /// that reaches it through children, including through another append this
+    /// extension has recorded -- is refused with `std::invalid_argument`. This is
+    /// the one operation in the engine that can make the DAG cyclic (`close()`
+    /// cannot: a node can only name children that already exist), and a cyclic
+    /// graph has no topological order at all -- Kahn's returns a SHORT one,
+    /// leaving every node in or above the cycle at `topo_pos == 0` and out of
+    /// `topo_order`, so `full_evaluate` never evaluates it again. Refused here,
+    /// at record time, because `extend` has no rollback.
     void append_to_sum(int32_t sum_node, int32_t term);
 
     [[nodiscard]] bool empty() const noexcept {
@@ -197,7 +210,13 @@ private:
     // no gate in this tree reports (see #171).
     void validate_handle(int32_t handle) const;
     [[nodiscard]] int32_t check_handle(int32_t handle) const;
-    int32_t check_node_handle(int32_t handle, const char* what) const;
+    /// The same pair for a handle that must be a NODE: the void one for a call
+    /// site that only wants the check.
+    void validate_node_handle(int32_t handle, const char* what) const;
+    [[nodiscard]] int32_t check_node_handle(int32_t handle, const char* what) const;
+    /// Does `from` reach `target` through child edges, over the graph this
+    /// extension will produce? Node handles only. See `append_to_sum`.
+    [[nodiscard]] bool reaches(int32_t from, int32_t target) const;
     int32_t push(NodeOp op, std::vector<int32_t> children, double const_value = 0.0);
     int32_t add_var(VarType type, double lb, double ub, const std::string& name);
 

@@ -836,3 +836,161 @@ TEST_CASE("a resynced FJ still reaches a column the extension added", "[extend]"
     }
     REQUIRE(feasible);
 }
+
+TEST_CASE("append_to_sum refuses a term that would close a cycle", "[extend]") {
+    // The FIRST operation in this engine that can make the DAG cyclic. `close()`
+    // is safe by construction -- a node can only name children that already exist
+    // -- but appending a term to an existing Sum adds an edge in the other
+    // direction, so a term that already reads the target closes a loop.
+    //
+    // Nothing downstream survives that. `plan_topo_insert` refuses the splice, and
+    // `detail::compute_topo_order` is Kahn's over `parents`, which on a cyclic
+    // graph returns a SHORT order: measured before this check, a 5-node model came
+    // back with a 2-node order, every missing node left at `topo_pos == 0`, so
+    // `full_evaluate` never recomputed it again and `evaluate_dirty_in_topo_order`
+    // put it before its own inputs -- at exit code 0 with no diagnostic.
+    //
+    // Refused at RECORD time, which is what keeps the model untouched: `extend`
+    // has no rollback (see Model::extend).
+    Model m;
+    const int32_t x = m.float_var(0.0, 10.0);
+    const int32_t s = m.sum({x});
+    const int32_t t = m.prod(s, m.constant(2.0));  // t reads s
+    m.add_constraint(m.leq(s, m.constant(100.0)));
+    m.close();
+    const size_t nodes_before = m.num_nodes();
+
+    SECTION("a term that reads the target") {
+        ModelExtension ext(m);
+        REQUIRE_THROWS_AS(ext.append_to_sum(s, t), std::invalid_argument);
+        // The refusal is at record time, so neither the extension nor the model
+        // kept anything: replaying it is a no-op.
+        const ExtensionResult res = m.extend(ext);
+        REQUIRE(res.num_new_nodes == 0);
+        REQUIRE(m.num_nodes() == nodes_before);
+        REQUIRE(m.topo_order().size() == m.num_nodes());
+    }
+    SECTION("the target itself") {
+        ModelExtension ext(m);
+        REQUIRE_THROWS_AS(ext.append_to_sum(s, s), std::invalid_argument);
+    }
+    SECTION("a term that reaches the target through a node this extension adds") {
+        ModelExtension ext(m);
+        const int32_t n = ext.neg(t);  // n -> t -> s
+        REQUIRE_THROWS_AS(ext.append_to_sum(s, n), std::invalid_argument);
+    }
+    SECTION("a legal append to the same Sum still goes through") {
+        ModelExtension ext(m);
+        const int32_t y = ext.float_var(0.0, 10.0);
+        ext.set_initial(y, 2.0);
+        ext.append_to_sum(s, ext.prod(ext.constant(3.0), y));
+        const ExtensionResult res = m.extend(ext);
+        REQUIRE_FALSE(res.topo_order_rebuilt);
+        require_valid_topo_order(m);
+    }
+}
+
+TEST_CASE("append_to_sum sees the cycle two appends close together", "[extend]") {
+    // Neither append reads the other's target in the BASE model; the loop exists
+    // only once both edges are recorded, which is why the check runs against the
+    // extension's own pending appends and not just against the closed model.
+    Model m;
+    const int32_t x = m.float_var(0.0, 10.0);
+    const int32_t s1 = m.sum({x});
+    const int32_t s2 = m.sum({x});
+    m.add_constraint(m.leq(s1, m.constant(100.0)));
+    m.add_constraint(m.leq(s2, m.constant(100.0)));
+    m.close();
+
+    ModelExtension ext(m);
+    ext.append_to_sum(s1, ext.prod(s2, ext.constant(1.0)));  // s1 -> .. -> s2, fine
+    const int32_t back = ext.prod(s1, ext.constant(1.0));
+    REQUIRE_THROWS_AS(ext.append_to_sum(s2, back), std::invalid_argument);
+}
+
+TEST_CASE("FJ::on_extended refuses to run before the ViolationManager grew", "[extend]") {
+    // `refresh_unweighted_violation` loops over the GROWN constraint count and
+    // asks `active(ci)`, which is an unchecked `vm_.weights[ci] > 0.0`. Called in
+    // the wrong order that is an out-of-bounds read per new row, and
+    // `unweighted_violation_` comes out of whatever was past the end -- with
+    // `!active(ci)` able to mask real rows on the way. The order was documented on
+    // the declaration and enforced nowhere.
+    Model m;
+    const int32_t a = m.bool_var();
+    const int32_t lhs = m.sum({m.prod(m.constant(1.0), a)});
+    m.add_constraint(m.geq(lhs, m.constant(2.0)));
+    m.close();
+
+    ViolationManager vm(m);
+    RNG rng(13);
+    FeasibilityJump fj(m, vm, rng);
+    fj.begin(true);
+    REQUIRE_FALSE(fj.batch(20));
+
+    ModelExtension ext(m);
+    const int32_t c = ext.bool_var();
+    ext.append_to_sum(lhs, ext.prod(ext.constant(1.0), c));
+    ext.add_constraint(ext.leq(ext.prod(ext.constant(1.0), c), ext.constant(1.0)));
+    const ExtensionResult res = m.extend(ext);
+
+    REQUIRE_THROWS_AS(fj.on_extended(res), std::invalid_argument);
+    // In the documented order both go through, and the second call is the one that
+    // was refused a moment ago.
+    vm.on_extended(res);
+    fj.on_extended(res);
+    REQUIRE(vm.weights.size() == 2);
+}
+
+TEST_CASE("on_extended refuses a result whose row indices name nothing", "[extend]") {
+    // `ExtensionResult` is a plain struct with public members and a default
+    // constructor, and the case above already treats a hand-built one as a
+    // reachable input. The COUNT fields were validated; the index vectors were
+    // used raw -- `is_linear_[ci]`, `violated_[ci]`, `cids[ci]` and
+    // `vars_of_constraint_[ci]` are all unchecked, so a stray index is a heap
+    // write, not an exception.
+    Model m;
+    const int32_t x = m.bool_var();
+    m.add_constraint(m.leq(m.prod(m.constant(1.0), x), m.constant(0.0)));
+    m.close();
+    ViolationManager vm(m);
+    RNG rng(7);
+    FeasibilityJump fj(m, vm, rng);
+
+    // Describes this model's counts exactly -- one variable, one constraint, no
+    // additions -- so every count check passes.
+    ExtensionResult base;
+    base.first_new_var = 1;
+    base.first_new_constraint = 1;
+
+    SECTION("a touched constraint out of range") {
+        ExtensionResult bogus = base;
+        bogus.touched_constraints = {999};
+        REQUIRE_THROWS_AS(fj.on_extended(bogus), std::out_of_range);
+    }
+    SECTION("a touched constraint naming a NEW row") {
+        // touched_constraints is documented as existing rows only; a new row is
+        // already covered by the id range and would be classified twice.
+        ExtensionResult bogus = base;
+        bogus.touched_constraints = {1};
+        REQUIRE_THROWS_AS(fj.on_extended(bogus), std::out_of_range);
+    }
+    SECTION("touched constraints out of order") {
+        ExtensionResult bogus = base;
+        bogus.touched_constraints = {0, 0};
+        REQUIRE_THROWS_AS(fj.on_extended(bogus), std::invalid_argument);
+    }
+    SECTION("an incidence naming a row that does not exist") {
+        ExtensionResult bogus = base;
+        bogus.new_incidences = {{999, 0}};
+        REQUIRE_THROWS_AS(fj.on_extended(bogus), std::out_of_range);
+    }
+    SECTION("an incidence naming a variable that does not exist") {
+        ExtensionResult bogus = base;
+        bogus.new_incidences = {{0, 999}};
+        REQUIRE_THROWS_AS(fj.on_extended(bogus), std::out_of_range);
+    }
+    SECTION("a result that does describe the model is accepted") {
+        REQUIRE_NOTHROW(vm.on_extended(base));
+        REQUIRE_NOTHROW(fj.on_extended(base));
+    }
+}

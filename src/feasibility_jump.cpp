@@ -679,6 +679,45 @@ void FeasibilityJump::on_extended(const ExtensionResult& ext) {
             "FeasibilityJump::on_extended: the extension does not describe this model's current "
             "variable and constraint counts");
     }
+    if (vm_.weights.size() != nc) {
+        throw std::invalid_argument(
+            "FeasibilityJump::on_extended: the ViolationManager has not grown with the model yet. "
+            "active() reads its weight vector by constraint index and unchecked, so running first "
+            "would read past the end for every new row -- and mask real rows on the way. Call "
+            "ViolationManager::on_extended(result) first (#167)");
+    }
+    // The count fields above bound the id RANGES; these two vectors carry raw
+    // indices, and every use of them is an unchecked subscript --
+    // `is_linear_[ci]`, `violated_[ci]`, `cids[ci]`, `vars_of_constraint_[ci]`.
+    // `ExtensionResult` is a plain struct with public members, and the case above
+    // already treats a hand-built one as a reachable input, so half-guarding it
+    // would be the inconsistency. O(|touched| + |incidences|), against a body that
+    // walks those same rows' subtrees.
+    int32_t previous = -1;
+    for (const int32_t ci : ext.touched_constraints) {
+        if (ci < 0 || ci >= ext.first_new_constraint) {
+            throw std::out_of_range(
+                "FeasibilityJump::on_extended: touched_constraints names a row that is not an "
+                "existing constraint of this model");
+        }
+        if (ci <= previous) {
+            throw std::invalid_argument(
+                "FeasibilityJump::on_extended: touched_constraints must be ascending and distinct");
+        }
+        previous = ci;
+    }
+    for (const std::pair<int32_t, int32_t>& inc : ext.new_incidences) {
+        if (inc.first < 0 || static_cast<size_t>(inc.first) >= nc) {
+            throw std::out_of_range(
+                "FeasibilityJump::on_extended: new_incidences names a constraint this model does "
+                "not have");
+        }
+        if (inc.second < 0 || static_cast<size_t>(inc.second) >= nv) {
+            throw std::out_of_range(
+                "FeasibilityJump::on_extended: new_incidences names a variable this model does not "
+                "have");
+        }
+    }
     jumps_.grow(nv);
     in_queue_.resize(nv, 0);
     violated_.resize(nc, 0);

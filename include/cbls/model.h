@@ -134,9 +134,12 @@ struct ModelStructure {
     std::vector<int32_t> constraint_ids;
     // var_id -> constraint indices (G_v), CSR like the back-references above: a
     // per-variable vector here was the largest allocation site left once those
-    // were flat. Empty until close(), and then sized for the variables of the
-    // last build only -- unlike dependent_offsets it is NOT extended as variables
-    // are made, which is what keeps constraints_of_var's range check the same.
+    // were flat. Empty until close(), and then sized for the variables that
+    // existed at the last build or `Model::extend` (#167) -- unlike
+    // dependent_offsets it is NOT extended as variables are made by the ordinary
+    // builders, which is what keeps constraints_of_var's range check meaningful
+    // before close(). `extend_var_constraints` grows it deliberately, so a
+    // variable that arrived with an extension IS in range.
     std::vector<uint32_t> var_constraint_offsets;
     std::vector<int32_t> var_constraint_ids;
     // Shared, and therefore invoked by every worker CONCURRENTLY once a model is
@@ -494,6 +497,31 @@ public:
     /// ordinary builders), and `std::invalid_argument` if `ext` was built against
     /// a different state of this model.
     ///
+    /// **There is no rollback: a throw from inside `extend` leaves the model
+    /// UNUSABLE**, not merely unchanged. Once the new variables and nodes have
+    /// been appended, the node array, `vars_`, `node_values_` and the offset
+    /// arrays describe them while the CSR indices, the topological order and G_v
+    /// still do not -- and `closed_` is still true, so nothing else notices. The
+    /// throws that can land there are `std::length_error` past 2^32 CSR entries
+    /// or child references, a `std::bad_alloc` from any of the arrays or the
+    /// working sets (remote on a small model, not remote while growing a 4.3M-node
+    /// one), and the cyclic-order backstop. Restoring the arrays the splices
+    /// rewrite in place would mean copying them, which is the O(model) cost this
+    /// exists to avoid, so the invariant is documented rather than defended: on
+    /// an exception from `extend`, discard the model. Everything `extend` can
+    /// refuse on the caller's behalf is refused BEFORE it touches anything --
+    /// the checks above, and `ModelExtension`'s own, including the cycle check in
+    /// `append_to_sum`.
+    ///
+    /// Two callers have to grow with it, in this order, as soon as it returns:
+    /// `ViolationManager::on_extended` and then `FeasibilityJump::on_extended`.
+    /// Until the first of those runs, the manager's weights and violation cache
+    /// are one entry per OLD row while every read indexes them by the new row
+    /// count -- so `ViolationManager` throws rather than reading past the end,
+    /// and `FeasibilityJump::on_extended` refuses to run before it. Stored
+    /// assignments (`Model::State`, pool solutions, LNS's saved state) need
+    /// `pad_state` for the same reason.
+    ///
     /// Node values of the affected cone are brought up to date before it
     /// returns, so the model is as consistent as it is after `close()`. The one
     /// exception is a model that has custom nodes (#166): the cone walk cannot
@@ -536,7 +564,8 @@ public:
     // Constraints (by index into constraint_ids()) that variable var_id can
     // affect. This is the paper's G_v, in ascending constraint index. Built by
     // close() and add_objective_soft_constraint() for the variables that existed
-    // then; any other id -- every id, before close() -- is out of range.
+    // then, and grown by `extend` for the variables it adds (#167); any other id
+    // -- every id, before close() -- is out of range.
     [[nodiscard]] ConstSpan<int32_t> constraints_of_var(int32_t var_id) const {
         const ModelStructure& st = s();
         if (var_id < 0 || static_cast<size_t>(var_id) + 1 >= st.var_constraint_offsets.size()) {
@@ -623,10 +652,19 @@ public:
     [[nodiscard]] ConstSpan<ChildRef> children(const ExprNode& node) const noexcept {
         return {s().child_refs.data() + node.child_begin, node.child_count};
     }
+    /// Entries in the flat child array that no node addresses any more, left
+    /// behind by `extend` relocating a grown node's slice (#167). 0 on every
+    /// model that never extends, and reset to 0 by the compaction `extend`
+    /// triggers once they pass half the array. Diagnostic: it is what makes that
+    /// compaction observable to a test.
+    [[nodiscard]] size_t child_ref_holes() const noexcept { return s().child_ref_holes; }
     /// The distinct nodes that name node `id` as a child, in ascending id order,
     /// each listed once however many times it names `id` (`prod(n, n)`).
-    /// Rebuilt by `close()` and `add_objective_soft_constraint()`; empty for a
-    /// node created since the last rebuild, and for every node before the first.
+    /// Rebuilt by `close()` and `add_objective_soft_constraint()`, and SPLICED by
+    /// `extend`, which leaves a node it created with the parents it has and adds
+    /// an appended term's new parent to the list it already had (#167). Empty for
+    /// a node created by the ordinary builders since the last rebuild, and for
+    /// every node before the first.
     [[nodiscard]] ConstSpan<int32_t> parents(int32_t id) const {
         const ModelStructure& st = s();
         if (id < 0 || id >= static_cast<int32_t>(st.nodes.size())) {

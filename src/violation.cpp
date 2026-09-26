@@ -37,6 +37,16 @@ ViolationManager::ViolationManager(Model& model) : model_(model) {
     cached_violations_.resize(model.constraint_ids().size(), 0.0);
 }
 
+void ViolationManager::require_row_count() const {
+    const size_t nc = model_.constraint_ids().size();
+    if (weights.size() != nc || cached_violations_.size() != nc) {
+        throw std::logic_error(
+            "ViolationManager: the weight vector is not one entry per constraint of this model. "
+            "Model::extend grows the model without touching it, so call "
+            "ViolationManager::on_extended(result) before reading violations again (#167)");
+    }
+}
+
 double ViolationManager::constraint_violation(int i) const {
     if (i < 0 || i >= static_cast<int>(model_.constraint_ids().size())) {
         throw std::out_of_range("constraint index out of range");
@@ -46,6 +56,7 @@ double ViolationManager::constraint_violation(int i) const {
 }
 
 void ViolationManager::recompute_cache() const {
+    require_row_count();
     const auto& cids = model_.constraint_ids();
     cached_total_ = 0.0;
     for (size_t i = 0; i < cids.size(); ++i) {
@@ -57,6 +68,7 @@ void ViolationManager::recompute_cache() const {
 }
 
 double ViolationManager::total_violation() const {
+    require_row_count();
     if (!cache_valid_) {
         recompute_cache();
         return cached_total_;
@@ -100,6 +112,7 @@ void ViolationManager::snapshot_violations(std::vector<double>& out) const {
 }
 
 double ViolationManager::weighted_delta_from(const std::vector<double>& snapshot) const {
+    require_row_count();
     const auto& cids = model_.constraint_ids();
     if (snapshot.size() != cids.size()) {
         throw std::invalid_argument("weighted_delta_from: snapshot size != constraint count");
@@ -126,6 +139,7 @@ double ViolationManager::weighted_delta_from(const std::vector<double>& snapshot
 
 double ViolationManager::weighted_delta_from(const std::vector<double>& snapshot,
                                              ConstSpan<int32_t> rows) const {
+    require_row_count();
     const auto& cids = model_.constraint_ids();
     if (snapshot.size() != cids.size()) {
         throw std::invalid_argument("weighted_delta_from: snapshot size != constraint count");
@@ -169,6 +183,7 @@ std::vector<int> ViolationManager::violated_constraints(double tol) const {
 }
 
 void ViolationManager::bump_weights(double factor) {
+    require_row_count();
     for (int i : violated_constraints()) {
         weights[i] += factor;
     }
@@ -177,6 +192,14 @@ void ViolationManager::bump_weights(double factor) {
 
 void ViolationManager::on_extended(const ExtensionResult& ext, double new_weight) {
     const size_t nc = model_.constraint_ids().size();
+    // A NaN weight poisons every total the new row enters and cannot be recovered
+    // from by the GLS dynamics (bump and decay both keep it NaN); a negative one
+    // pays the search for violating the row. Zero is allowed: `active()` is
+    // `weight > 0`, so it means the row starts masked.
+    if (!std::isfinite(new_weight) || new_weight < 0.0) {
+        throw std::invalid_argument(
+            "ViolationManager::on_extended: new_weight must be finite and >= 0");
+    }
     if (static_cast<size_t>(ext.end_constraint()) != nc || ext.first_new_constraint < 0 ||
         static_cast<size_t>(ext.first_new_constraint) != weights.size()) {
         throw std::invalid_argument(
@@ -194,6 +217,7 @@ void ViolationManager::on_extended(const ExtensionResult& ext, double new_weight
 }
 
 double ViolationManager::weighted_violation_delta(int32_t var_id, double j) const {
+    require_row_count();  // the probe indexes `weights` by the moved variable's G_v rows
     // Delegate to the allocation-free Model probe (hot path: one call per jump
     // candidate). weights is the per-constraint GLS weight vector.
     return model_.weighted_violation_delta(var_id, j, weights);

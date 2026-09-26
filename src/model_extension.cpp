@@ -51,12 +51,73 @@ int32_t ModelExtension::check_handle(int32_t handle) const {
     return handle;
 }
 
-int32_t ModelExtension::check_node_handle(int32_t handle, const char* what) const {
+void ModelExtension::validate_node_handle(int32_t handle, const char* what) const {
     if (handle < 0) {
         throw std::invalid_argument(std::string(what) +
                                     " requires a node handle (non-negative), got a var handle");
     }
-    return check_handle(handle);
+    validate_handle(handle);
+}
+
+int32_t ModelExtension::check_node_handle(int32_t handle, const char* what) const {
+    validate_node_handle(handle, what);
+    return handle;
+}
+
+// Walks DOWN rather than up, because down is what exists before `extend` runs:
+// `parents` would answer in O(ancestors of the target) but does not yet carry the
+// extension's own edges. The cost is the cone of `from` over the combined graph --
+// the base model's children, the children this extension has recorded, and the
+// terms it has already appended.
+//
+// In the regime this exists for, a fresh `coef * new_var` term, that cone is two
+// new nodes and no base node at all, so the `appends_` scan below never runs. It
+// loses on a term that names an existing NODE, where the cone is that node's whole
+// subtree and each base node in it costs one pass over `appends_` -- quadratic in
+// the number of appends if every one of them is such a term. That shape is the
+// exotic one (it is also the shape that needs the check), and the alternative is a
+// second index over `appends_` to keep in step with it.
+bool ModelExtension::reaches(int32_t from, int32_t target) const {
+    std::vector<int32_t> stack;
+    std::unordered_set<int32_t> seen;
+    // Returns true the moment the target is the node being stepped on to.
+    auto visit = [&](int32_t node) {
+        if (node == target) {
+            return true;
+        }
+        if (seen.insert(node).second) {
+            stack.push_back(node);
+        }
+        return false;
+    };
+    if (visit(from)) {
+        return true;
+    }
+    while (!stack.empty()) {
+        const int32_t nid = stack.back();
+        stack.pop_back();
+        if (nid >= base_num_nodes_) {
+            // A variable handle is a leaf, so only node handles are stepped on to.
+            for (const int32_t h :
+                 new_nodes_[static_cast<size_t>(nid - base_num_nodes_)].children) {
+                if (h >= 0 && visit(h)) {
+                    return true;
+                }
+            }
+            continue;
+        }
+        for (const ChildRef& child : base_->children(base_->node(nid))) {
+            if (!child.is_var && visit(child.id)) {
+                return true;
+            }
+        }
+        for (const std::pair<int32_t, int32_t>& append : appends_) {
+            if (append.first == nid && append.second >= 0 && visit(append.second)) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 int32_t ModelExtension::add_var(VarType type, double lb, double ub, const std::string& name) {
@@ -212,7 +273,7 @@ void ModelExtension::add_constraint(int32_t expr) {
 }
 
 void ModelExtension::append_to_sum(int32_t sum_node, int32_t term) {
-    check_node_handle(sum_node, "ModelExtension::append_to_sum");
+    validate_node_handle(sum_node, "ModelExtension::append_to_sum");
     if (sum_node >= base_num_nodes_) {
         throw std::invalid_argument(
             "ModelExtension::append_to_sum: the target must be a node of the base model. A node "
@@ -224,7 +285,18 @@ void ModelExtension::append_to_sum(int32_t sum_node, int32_t term) {
             "ModelExtension::append_to_sum: the target node is not a Sum. Only a Sum's arity can "
             "grow without changing what the node means");
     }
-    appends_.emplace_back(sum_node, check_handle(term));
+    const int32_t term_handle = check_handle(term);
+    // The one edge in this engine that points from an OLD node to something that
+    // can name it back, so the one place a cycle can be introduced. A variable is a
+    // leaf and can never close one.
+    if (term_handle >= 0 && reaches(term_handle, sum_node)) {
+        throw std::invalid_argument(
+            "ModelExtension::append_to_sum: the term already reads the target (or is the target), "
+            "so appending it would make the DAG cyclic. A cyclic graph has no topological order: "
+            "Kahn's returns a short one, and every node left out of it keeps topo_pos 0 and is "
+            "never evaluated in dependency order again");
+    }
+    appends_.emplace_back(sum_node, term_handle);
 }
 
 // ===========================================================================
@@ -712,6 +784,18 @@ ExtensionResult Model::extend(const ModelExtension& ext) {
         insert_topo_block(st, res, insert_pos);
     } else {
         st.topo_order = detail::compute_topo_order(*this);
+        // Kahn's returns a SHORT order on a cyclic graph, and nothing downstream
+        // notices: the missing nodes keep topo_pos 0, `full_evaluate` (which walks
+        // this array) never evaluates them again, and
+        // `evaluate_dirty_in_topo_order` sorts them ahead of their own inputs.
+        // `ModelExtension::append_to_sum` refuses the only edge that can make the
+        // graph cyclic, so this is a backstop against a future way of producing
+        // one -- one size compare against a re-sort that is already O(model).
+        if (st.topo_order.size() != st.nodes.size()) {
+            throw std::logic_error(
+                "Model::extend: the re-sorted topological order does not cover every node, which "
+                "means the DAG has a cycle. The model is NOT usable after this throw");
+        }
         rebuild_topo_positions();
         res.topo_order_rebuilt = true;
     }

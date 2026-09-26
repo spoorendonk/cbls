@@ -115,7 +115,16 @@ public:
     ///
     /// Throws `std::invalid_argument` if `ext` does not describe THIS model's
     /// constraint count, which is what stops a mismatched result silently sizing
-    /// the weights to something the model does not have.
+    /// the weights to something the model does not have, or if `new_weight` is
+    /// not finite and non-negative. Zero IS allowed and means the new rows start
+    /// MASKED, since `FeasibilityJump::active` is `weight > 0` -- which is how
+    /// `run()`'s linear-submodel phase masks the nonlinear rows.
+    ///
+    /// **Until this is called, the manager is out of step with the model and
+    /// every read below throws** (`std::logic_error`): `Model::extend` grows the
+    /// constraint list without touching the weights or the violation cache, and
+    /// every loop here indexes both by constraint index -- `bump_weights` writes
+    /// to them. Call it as soon as `extend` returns.
     void on_extended(const ExtensionResult& ext, double new_weight = 1.0);
 
     // Invalidate cached total (call after weights change or full_evaluate)
@@ -124,6 +133,16 @@ public:
     std::vector<double> weights;
 
 private:
+    /// Throw unless the weight vector and the violation cache are one entry per
+    /// constraint of the model as it is NOW.
+    ///
+    /// The window this closes is the one between `Model::extend` returning and
+    /// `on_extended` (#167), where every read below would be a heap overread and
+    /// `bump_weights` a heap write. `weights` is public -- Python can set it
+    /// (#156) -- so it also catches a caller that shortened it. One size compare
+    /// against bodies that are already O(#constraints), or that already compare a
+    /// snapshot's size.
+    void require_row_count() const;
     void recompute_cache() const;
 
     Model& model_;

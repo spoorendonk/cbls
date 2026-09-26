@@ -265,10 +265,17 @@ public:
     /// against rows that have since changed.
     ///
     /// Call it AFTER `ViolationManager::on_extended`: `active()` reads the weight
-    /// vector, and this reads `active()`.
+    /// vector by constraint index and unchecked, and this reads `active()` over
+    /// the GROWN row count. That order is now enforced rather than merely
+    /// documented -- the wrong one throws instead of reading past the end of the
+    /// weights.
     ///
     /// Throws `std::invalid_argument` if `ext` does not describe this model's
-    /// current variable and constraint counts.
+    /// current variable and constraint counts, or if the weight vector has not
+    /// grown yet; `std::out_of_range` if `touched_constraints` or
+    /// `new_incidences` names a row or a variable this model does not have.
+    /// `ExtensionResult` is a plain struct, so those raw indices are validated
+    /// rather than trusted: every use of them is an unchecked subscript.
     void on_extended(const ExtensionResult& ext);
 
     // Novelty Jump (paper Algorithms 4-5): a bounded-backtracking compound-move
