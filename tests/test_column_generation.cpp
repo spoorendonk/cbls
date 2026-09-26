@@ -412,37 +412,49 @@ TEST_CASE("Periodic pricing fires every pricing_period batches", "[column]") {
 }
 
 TEST_CASE("Stagnation pricing fires immediately before every kick", "[column]") {
-    Model m = infeasible_pair();
-    auto log = std::make_shared<std::vector<RecordingGenerator::Call>>();
-    OrderTracer tracer;
-    SearchConfig cfg = iteration_budget(60'000);
-    cfg.batch_iterations = 100;
-    cfg.perturbation_period = 10;
-    cfg.column_generator = std::make_shared<RecordingGenerator>(log);
-    cfg.tracer = &tracer;  // pricing_period = 0, price_on_stagnation defaults on
-    const SearchResult r = solve(m, 0.0, 3, true, nullptr, nullptr, 3, nullptr, cfg);
+    // Both kick routes. With short batches and a short perturbation_period every
+    // kick is the full-period one; with 1000-iteration batches and the default
+    // period of 100, a 60-batch run never reaches it, so every kick is #102's
+    // unproductive-batch route.
+    struct Route {
+        const char* name;
+        int64_t batch_iterations;
+        int perturbation_period;
+    };
+    for (const Route route : {Route{"full period", 100, 10}, Route{"unproductive", 1000, 100}}) {
+        CAPTURE(route.name);
+        Model m = infeasible_pair();
+        auto log = std::make_shared<std::vector<RecordingGenerator::Call>>();
+        OrderTracer tracer;
+        SearchConfig cfg = iteration_budget(60'000);
+        cfg.batch_iterations = route.batch_iterations;
+        cfg.perturbation_period = route.perturbation_period;
+        cfg.column_generator = std::make_shared<RecordingGenerator>(log);
+        cfg.tracer = &tracer;  // pricing_period = 0, price_on_stagnation defaults on
+        const SearchResult r = solve(m, 0.0, 3, true, nullptr, nullptr, 3, nullptr, cfg);
 
-    REQUIRE(r.perturbations > 5);
-    REQUIRE(static_cast<int>(log->size()) == r.perturbations);
-    int kicks = 0;
-    for (size_t k = 0; k < tracer.events.size(); ++k) {
-        const OrderTracer::Event& e = tracer.events[k];
-        if (e.kind == OrderTracer::Kind::Kick) {
-            ++kicks;
-            // The event right before every kick is its pricing call.
-            REQUIRE(k > 0);
-            REQUIRE(tracer.events[k - 1].kind == OrderTracer::Kind::Pricing);
-            REQUIRE(tracer.events[k - 1].why == PricingEvent::Stagnation);
+        REQUIRE(r.perturbations > 5);
+        REQUIRE(static_cast<int>(log->size()) == r.perturbations);
+        int kicks = 0;
+        for (size_t k = 0; k < tracer.events.size(); ++k) {
+            const OrderTracer::Event& e = tracer.events[k];
+            if (e.kind == OrderTracer::Kind::Kick) {
+                ++kicks;
+                // The event right before every kick is its pricing call.
+                REQUIRE(k > 0);
+                REQUIRE(tracer.events[k - 1].kind == OrderTracer::Kind::Pricing);
+                REQUIRE(tracer.events[k - 1].why == PricingEvent::Stagnation);
+            }
+            if (e.kind == OrderTracer::Kind::Pricing) {
+                // ...and every pricing call is followed by a kick.
+                REQUIRE(k + 1 < tracer.events.size());
+                REQUIRE(tracer.events[k + 1].kind == OrderTracer::Kind::Kick);
+            }
         }
-        if (e.kind == OrderTracer::Kind::Pricing) {
-            // ...and every pricing call is followed by a kick.
-            REQUIRE(k + 1 < tracer.events.size());
-            REQUIRE(tracer.events[k + 1].kind == OrderTracer::Kind::Kick);
+        REQUIRE(kicks == r.perturbations);
+        for (const auto& c : *log) {
+            REQUIRE(c.why == PricingEvent::Stagnation);
         }
-    }
-    REQUIRE(kicks == r.perturbations);
-    for (const auto& c : *log) {
-        REQUIRE(c.why == PricingEvent::Stagnation);
     }
 }
 
@@ -574,54 +586,68 @@ TEST_CASE("a knapsack pricer beats the trivial pattern set on u120_00", "[column
 // Budget.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("no pricing call starts past the deadline, and the budget holds", "[column]") {
-    // A pricer that spends whatever time it is told is left -- the worst
-    // behaviour the contract allows -- on a model that never finishes, priced
-    // after every batch. The batch in flight at the deadline ends there, so
-    // without the guard its pricing call would start past it.
+namespace {
+// A pricer that records every call and then spends up to `slice` seconds of
+// what it is told is left -- never more than the contract allows.
+class Spender : public ColumnGenerator {
+public:
+    Spender(std::shared_ptr<std::vector<RecordingGenerator::Call>> log, double slice)
+        : log_(std::move(log)), slice_(slice) {}
+    void price(const PricingContext& ctx, PricingEvent why, ModelExtension& /*ext*/) override {
+        log_->push_back(
+            {why, ctx.batches, ctx.remaining_seconds, std::chrono::steady_clock::now()});
+        const double spend = std::min(ctx.remaining_seconds, slice_);
+        if (spend > 0.0) {
+            std::this_thread::sleep_for(std::chrono::duration<double>(spend));
+        }
+    }
+    [[nodiscard]] std::unique_ptr<ColumnGenerator> clone() const override {
+        return std::make_unique<Spender>(*this);
+    }
+
+private:
+    std::shared_ptr<std::vector<RecordingGenerator::Call>> log_;
+    double slice_;
+};
+
+// A timed run of the never-feasible pair, priced after every batch.
+SearchResult timed_pricing_run(double limit, double slice,
+                               std::shared_ptr<std::vector<RecordingGenerator::Call>> log) {
     Model m = infeasible_pair();
-    auto log = std::make_shared<std::vector<RecordingGenerator::Call>>();
-    class Spender : public ColumnGenerator {
-    public:
-        explicit Spender(std::shared_ptr<std::vector<RecordingGenerator::Call>> log)
-            : log_(std::move(log)) {}
-        void price(const PricingContext& ctx, PricingEvent why, ModelExtension& /*ext*/) override {
-            const auto now = std::chrono::steady_clock::now();
-            log_->push_back({why, ctx.batches, ctx.remaining_seconds, now});
-            // Sleep a slice of what is left, so several calls happen and the last
-            // lands near the deadline.
-            const double slice = std::min(ctx.remaining_seconds, 0.02);
-            std::this_thread::sleep_for(std::chrono::duration<double>(slice));
-        }
-        [[nodiscard]] std::unique_ptr<ColumnGenerator> clone() const override {
-            return std::make_unique<Spender>(*this);
-        }
-
-    private:
-        std::shared_ptr<std::vector<RecordingGenerator::Call>> log_;
-    };
     SearchConfig cfg;
-    cfg.column_generator = std::make_shared<Spender>(log);
+    cfg.column_generator = std::make_shared<Spender>(std::move(log), slice);
     cfg.pricing_period = 1;
-    constexpr double kLimit = 0.4;
-    const auto started = std::chrono::steady_clock::now();
-    const SearchResult r = solve(m, kLimit, 11, true, nullptr, nullptr, 3, nullptr, cfg);
-    const auto deadline = started + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                                        std::chrono::duration<double>(kLimit));
+    return solve(m, limit, 11, true, nullptr, nullptr, 3, nullptr, cfg);
+}
+}  // namespace
 
+TEST_CASE("no pricing call starts past the deadline", "[column]") {
+    // A pricer that takes no time, so the deadline lands inside a BATCH, which
+    // FJ ends at the deadline -- exactly the moment an unguarded pricing call
+    // would start late, with nothing left to spend. (A pricer that sleeps hides
+    // a missing guard: the deadline then lands in its sleep, and the loop's own
+    // check ends the run before another batch.)
+    auto log = std::make_shared<std::vector<RecordingGenerator::Call>>();
+    const SearchResult r = timed_pricing_run(0.3, 0.0, log);
     REQUIRE(r.termination == TerminationReason::TimeLimit);
     REQUIRE(log->size() > 2);
     for (const auto& c : *log) {
-        // The engine's own reading, which is the claim. The test's clock started
-        // slightly before solve()'s, so its deadline gets a sliver of slack.
-        REQUIRE(c.remaining > 0.0);
-        REQUIRE(c.at < deadline + std::chrono::milliseconds(10));
+        REQUIRE(c.remaining > 0.0);  // the engine's own reading at the call
     }
     REQUIRE(r.counters.pricing_calls == static_cast<int64_t>(log->size()));
+}
+
+TEST_CASE("a run with a slow pricer still honours its wall clock", "[column]") {
+    // The #104 shape: the budget is asserted AND the clock is shown to be what
+    // ended the run. The pricer spends up to 20ms of whatever it is told is
+    // left, which is the worst the contract allows at that slice.
+    auto log = std::make_shared<std::vector<RecordingGenerator::Call>>();
+    constexpr double kLimit = 0.4;
+    const SearchResult r = timed_pricing_run(kLimit, 0.02, log);
+    REQUIRE(r.termination == TerminationReason::TimeLimit);
+    REQUIRE(log->size() > 2);
     REQUIRE(r.counters.pricing_seconds > 0.0);
-    // The run honours its wall clock: the pricer's sleeps are bounded by what it
-    // was told was left, so the overrun is one sleep slice plus one batch.
-    REQUIRE(r.time_seconds < kLimit + 0.25);
+    REQUIRE(r.time_seconds < kLimit + 0.1);
 }
 
 // ---------------------------------------------------------------------------
@@ -869,6 +895,62 @@ TEST_CASE("a pinned Bool stays put for a fresh FJ and a random draw", "[column]"
     REQUIRE(m.var(bid).value == 0.0);
 }
 
+TEST_CASE("a retired column is invisible to FJ, kicks included", "[column]") {
+    // The same model with and without a column that is retired before the search
+    // starts. Retirement claims the column costs the search nothing -- no scan
+    // slot, no kick draw -- so the two runs must be bit-identical: same assignment,
+    // same RNG position. A column that were merely pinned would still be sampled
+    // from the scan set and drawn for by every kick, and the runs would part.
+    auto base = [](Model& m) {
+        const int32_t x = m.int_var(0, 5);
+        const int32_t y = m.int_var(0, 5);
+        const int32_t z = m.int_var(0, 5);
+        std::vector<int32_t> rows;
+        rows.push_back(m.sum({m.prod(m.constant(1.0), x), m.prod(m.constant(1.0), y)}));
+        rows.push_back(m.sum({m.prod(m.constant(1.0), x), m.prod(m.constant(-1.0), z)}));
+        rows.push_back(m.sum({m.prod(m.constant(2.0), y), m.prod(m.constant(1.0), z)}));
+        m.add_constraint(m.geq(rows[0], m.constant(7.0)));
+        m.add_constraint(m.leq(rows[1], m.constant(-2.0)));
+        m.add_constraint(m.leq(rows[2], m.constant(9.0)));  // jointly infeasible
+        m.close();
+        return rows;
+    };
+    Model plain;
+    (void)base(plain);
+    Model grown;
+    const std::vector<int32_t> rows = base(grown);
+    ModelExtension ext(grown);
+    const int32_t c = ext.int_var(0, 4);
+    for (const int32_t row : rows) {
+        ext.append_to_sum(row, ext.prod(ext.constant(3.0), c));
+    }
+    (void)grown.extend(ext);
+    const int32_t cid = -(c + 1);
+    grown.var_mut(cid).ub = grown.var(cid).lb;  // pinned at 0, where it sits
+
+    RNG rng_a(21);
+    RNG rng_b(21);
+    ViolationManager vm_a(plain);
+    ViolationManager vm_b(grown);
+    FeasibilityJump fj_a(plain, vm_a, rng_a);
+    FeasibilityJump fj_b(grown, vm_b, rng_b);
+    fj_b.retire({cid});
+    fj_a.begin(true);
+    fj_b.begin(true);
+    for (int round = 0; round < 8; ++round) {
+        (void)fj_a.batch(200);
+        (void)fj_b.batch(200);
+        fj_a.perturb(0.5);
+        fj_b.perturb(0.5);
+    }
+    for (int32_t v = 0; v < 3; ++v) {
+        REQUIRE(plain.var(v).value == grown.var(v).value);
+    }
+    REQUIRE(grown.var(cid).value == 0.0);
+    REQUIRE(fj_a.iterations() == fj_b.iterations());
+    REQUIRE(rng_a.random() == rng_b.random());
+}
+
 // ---------------------------------------------------------------------------
 // The incumbent stays honest.
 // ---------------------------------------------------------------------------
@@ -976,6 +1058,74 @@ private:
     std::shared_ptr<CloneRegistry> reg_;
 };
 }  // namespace
+
+TEST_CASE("portfolio workers adopt nothing even when their models agree in width",
+          "[column][parallel]") {
+    // Every worker adds the SAME three columns on its first call and nothing
+    // after, so their models end up the same width and a pooled state would
+    // pass adopt_from_pool's shape guard. Only the rule that a growing
+    // portfolio shares no pool keeps them from adopting.
+    const CuttingStock cs = u120_00();
+    CuttingModel cm = build_trivial(cs);
+    class FixedColumns : public ColumnGenerator {
+    public:
+        explicit FixedColumns(const CuttingModel& cm)
+            : rows_(cm.row_sums), obj_(cm.objective_sum) {}
+        void price(const PricingContext& /*ctx*/, PricingEvent /*why*/,
+                   ModelExtension& ext) override {
+            if (done_) {
+                return;
+            }
+            for (size_t i = 0; i + 1 < 6; i += 2) {  // pair sizes 0+1, 2+3, 4+5
+                const int32_t x = ext.int_var(0, 5);
+                ext.append_to_sum(rows_[i], ext.prod(ext.constant(1.0), x));
+                ext.append_to_sum(rows_[i + 1], ext.prod(ext.constant(1.0), x));
+                ext.append_to_sum(obj_, x);
+            }
+            done_ = true;
+        }
+        [[nodiscard]] std::unique_ptr<ColumnGenerator> clone() const override {
+            return std::make_unique<FixedColumns>(*this);
+        }
+
+    private:
+        std::vector<int32_t> rows_;
+        int32_t obj_;
+        bool done_ = false;
+    };
+    SearchConfig cfg;
+    cfg.column_generator = std::make_shared<FixedColumns>(cm);
+    cfg.pricing_period = 1;
+    cfg.perturbation_period = 3;  // frequent full-period kicks: the route that adopts
+    ParallelSearch ps(3);
+    ParallelConfig pc;
+    pc.n_threads = 3;
+    std::atomic<int> adopts{0};
+    std::atomic<int> kicks{0};
+    class KickCounter : public Tracer {
+    public:
+        KickCounter(std::atomic<int>& adopts, std::atomic<int>& kicks)
+            : adopts_(adopts), kicks_(kicks) {}
+        void kick(KickKind kind) override {
+            kicks_.fetch_add(1, std::memory_order_relaxed);
+            if (kind == KickKind::Adopt) {
+                adopts_.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+
+    private:
+        std::atomic<int>& adopts_;
+        std::atomic<int>& kicks_;
+    };
+    pc.tracer_factory = [&adopts, &kicks](int /*worker*/) -> std::unique_ptr<Tracer> {
+        return std::make_unique<KickCounter>(adopts, kicks);
+    };
+    const SearchResult r = ps.solve(cm.model, 0.5, 5, cfg, nullptr, nullptr, nullptr, pc);
+    REQUIRE(r.feasible);
+    REQUIRE(cm.model.num_vars() == cs.sizes.size() + 3);
+    REQUIRE(kicks.load() > 10);
+    REQUIRE(adopts.load() == 0);
+}
 
 TEST_CASE("each portfolio worker grows its own model with its own generator",
           "[column][parallel]") {
