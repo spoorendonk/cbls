@@ -819,13 +819,25 @@ weighted instances. The table and the caveats are in
 So the prerequisite is **implemented but not yet effective**, which is not the
 same thing, and the guidance is unchanged in substance: **still do not build a
 new List/Set benchmark**, because adding one now reproduces the negative result
-in a new domain exactly as before. What changed is which lever to pull next. At
-a fixed wall-clock budget the A/B measures policy quality *minus* representation
-cost, and the guided arm scores more candidates while every candidate still
-copies the whole element vector twice — so the **position-based move
-representation** (described in #165, deferred to #164) is the thing to land
-before re-running the A/B and asking the question again. A null result under
-that cost does not license a claim in either direction.
+in a new domain exactly as before.
+
+What has changed since that A/B is the second lever it named. At a fixed
+wall-clock budget the comparison measures policy quality *minus* representation
+cost, and the guided arm scores more candidates while every candidate then
+copied the whole element vector twice. **#164 landed the position-based move
+representation**: a structured `Move::Change` now carries positional
+`ElementEdit`s, so scoring a candidate costs no allocation and no
+O(|elements|) copy where it used to cost two of each, plus two more to apply and
+roll back. **The setcover A/B has NOT been re-run under it** — the tables in
+`benchmarks/instances/setcover/README.md` and in `docs/architecture.md` still
+describe the old cost, and both say so. Re-running it is the next step, and
+until it has been run no null result licenses a claim in either direction.
+
+Note also that #164 generalised `List` itself — a variable-length ordered subset
+of a universe, with an optional partition across several Lists whose cover the
+moves maintain. That is **new capability, not new evidence**: no benchmark uses
+a `List` variable, the paragraph above still stands unchanged, and nothing in the
+tree may claim otherwise.
 
 ### Benchmark workflow
 
