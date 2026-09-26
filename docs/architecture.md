@@ -678,7 +678,18 @@ call order is internal to `solve()`. The binding adds four things of its own:
   missed it and the search returned `feasible=True` on a model it had left
   infeasible. The engine's own in-search growth point (#168's column generator)
   applies its extensions itself, between batches; a callback has no such hook, so
-  the binding keeps a registry of the models a bound `solve` is running on.
+  the binding keeps a registry of the models a bound `solve` (or
+  `ParallelSearch.solve_master`) is running on. Every OTHER structural write
+  Python can reach consults it too and raises `RuntimeError` mid-solve:
+  `ModelExtension(model)` and every `ModelExtension` builder (they read the node
+  array and the structure token), the `Model` builders, `close`, `freeze`, and the
+  `Expr` operators and free functions, which build through their model. The race
+  was real without a callback in sight: the first solve of a model with an
+  objective adds the objective row after releasing the GIL, and a second thread
+  building an extension over the same model read the arrays it was writing. The
+  one extension a running solve accepts from Python is the one it lends
+  `ColumnGenerator.price` (#168). Value writes (`Variable.value`,
+  `restore_state`) are not structural and stay the documented data race.
 
 **Staleness is detected by a structure token, not by counts.**
 `Model::structure_version()` is drawn from one process-wide atomic counter at
@@ -702,7 +713,12 @@ another extension has grown the model, that was a SIGSEGV.
 **Python holds nothing `extend` can invalidate.** `Model.var()`/`var_mut()`
 return a `(model, id)` handle bound as `cbls.Variable`, which resolves through the
 model on every attribute access and keeps the model alive; `node()` returns a copy
-of the node, whose two exposed fields never change. They used to be
+of the node, whose two exposed fields never change. An `Expr` holds a raw
+`Model*` too, and nothing tied the model to it: `cbls.Model().Float(0, 1)` left
+the `Expr` reading (and its operators building into) freed heap, reused by the
+next `Model` of the same size. Every `Expr` the binding returns now keeps its
+model's Python object alive -- the model itself, not the operand, so a
+`s = s + x` loop does not chain every intermediate to the next. `Model.var()` and friends used to be
 `reference_internal` into the arrays `extend` (and any builder before `close()`)
 reallocates, and writing `.value` through one held across that was a heap
 use-after-free. `cbls.solve` registers the model as solving **before** it releases
@@ -2397,8 +2413,39 @@ heuristic over GLS weights, not a master LP, and nothing here claims more. The
 test pins only the direction: strictly better than the no-pricer run at five
 seeds, under the cap.
 
-**Python.** Not bound yet: a Python-subclassable `ColumnGenerator` needs the
-trampoline machinery #132 built, and is left to a follow-up.
+**Python.** `cbls.ColumnGenerator` is subclassed in Python -- override `price(ctx,
+why, ext)` and `clone()` -- and registered on `SearchConfig.column_generator`,
+next to the other pricing fields; `SearchCounters` carries the pricing counters.
+#132's trampoline machinery was never built (it closed not-planned), so the
+binding is an adapter: a C++ `ColumnGenerator` holding the Python object, which
+acquires the GIL itself in `price`, `clone` and its destructor -- all three run on
+the search thread while the caller has the GIL released. `clone()` returning
+`self` is refused (`ValueError`): one object pricing in two portfolio workers is
+shared state, and the prototype must never be priced with. A Python exception in
+either method propagates out of `cbls.solve` as that exception.
+
+*What `price` lends.* The engine's `PricingContext` and `ModelExtension` are on
+its stack for one call, so Python never gets a reference to either: it gets
+Python-owned views (`cbls.PricingContext`, `cbls.ColumnSignatureSet`, and an
+ordinary `cbls.ModelExtension`) that read through one lease the adapter clears
+on the way out, thrown or not. A view kept past the call raises `RuntimeError`
+instead of reading a dead frame -- which without the lease was not even a crash:
+the next call's extension sits at the same stack address, so a kept view wrote
+silently into it. Every context accessor COPIES: `weights` is a fresh list per
+access, not a zero-copy view, because the live vector is reallocated by every
+applied extension and O(rows) is noise next to a Python pricer. The model itself
+is not exposed -- under `solve_master` it is a worker's private copy no Python
+object owns -- so its assignment, node values, constraint ids and violations are
+read through the context.
+
+*Portfolio.* `ParallelSearch.solve_master(model, ...)` binds the `Model& master`
+overload, which Python lacked; it is the only portfolio entry point that accepts a
+generator (`solve_parallel`, the factory form, raises `ValueError`). Each worker
+clones on its own thread under the GIL. The model is registered as solving for
+the call, like `cbls.solve`'s. `tests/python/test_column_generation.py` pins the
+knapsack pricer's win on u120_00 at the same budget and seeds as the C++ test,
+the event schedule, exception propagation, and -- in child interpreters -- the
+expired views, the mid-solve refusals, the `Expr` lifetime and the portfolio.
 
 ### SearchConfig
 

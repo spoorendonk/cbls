@@ -199,11 +199,13 @@ constexpr const char* kModelNodeDoc =
 // variables to existing Sum rows changes neither count: the search carried on
 // with stale FeasibilityJump tables and returned feasible=True on a model it had
 // left infeasible. The engine's only in-search growth point is #168's
-// ColumnGenerator, which Python cannot reach, so the binding refuses the call
-// outright. A multiset, because nothing stops two
+// ColumnGenerator, whose extension the ENGINE applies, so the binding refuses the
+// call outright; every other structural write consults this too (see
+// refuse_if_solving). A multiset, because nothing stops two
 // solves on one model from two threads (a data race of its own, but not this
-// check's to refuse). Only the bound single-model `solve` registers:
-// ParallelSearch is bound in factory form only, whose workers solve copies.
+// check's to refuse). The two single-model entry points register: `solve` and
+// `ParallelSearch.solve_master`. The factory forms do not: their workers solve
+// copies the caller never holds.
 class SolvingModels {
 public:
     static SolvingModels& instance() {
@@ -2096,7 +2098,12 @@ NB_MODULE(_cbls_core, m) {
         "Python thread raise a cbls.StopToken mid-solve -- and it makes touching "
         "`model` from another thread while this runs a DATA RACE: the search writes "
         "variables and node values throughout and nothing locks them. Read the model "
-        "only after this returns. A raw Python function passed to lambda_sum or "
+        "only after this returns. STRUCTURAL writes to `model` -- its builders, "
+        "close, freeze, extend, Expr operators over it, and constructing or building "
+        "a ModelExtension over it -- raise RuntimeError while this runs, from any "
+        "thread, a SolveCallback and a ColumnGenerator included; the one extension "
+        "accepted is the one handed to ColumnGenerator.price. A raw Python function passed to "
+        "lambda_sum or "
         "pair_lambda_sum also re-acquires the GIL on every evaluation now; use the "
         "*_table_sum forms where the function is a table.\n"
         "\n"

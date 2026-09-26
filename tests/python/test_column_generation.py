@@ -475,12 +475,14 @@ def _scenario_retained_views_raise_after_the_call() -> None:
     cm = build_trivial(cs)
     kept: dict[str, Any] = {}
     stale_uses_in_later_call: list[str] = []
+    calls: list[int] = []
 
     class Keeper(cbls.ColumnGenerator):  # type: ignore[misc]
         def clone(self) -> "Keeper":
             return Keeper()
 
         def price(self, ctx: Any, why: Any, ext: Any) -> None:
+            calls.append(1)
             if not kept:
                 kept.update(ctx=ctx, ext=ext, sigs=ctx.signatures)
                 return
@@ -494,7 +496,10 @@ def _scenario_retained_views_raise_after_the_call() -> None:
     cfg.pricing_period = 1
     cfg.price_on_stagnation = False
     _solve(cm.m, 1, cfg)
-    assert stale_uses_in_later_call, "the pricer was called only once"
+    assert len(calls) >= 2, "the pricer was called only once"
+    # Without the lease the stale view is not merely stale: the next call's
+    # engine extension sits at the same stack address, and the write lands in it.
+    assert stale_uses_in_later_call, "a view kept from an earlier call was used without raising"
     assert "used after the ColumnGenerator.price call" in stale_uses_in_later_call[0]
 
     ctx, ext, sigs = kept["ctx"], kept["ext"], kept["sigs"]
