@@ -835,6 +835,10 @@ void Model::add_objective_soft_constraint() {
         return;
     }
     require_open("add_objective_soft_constraint");
+    // Before anything is appended: solve() and freeze() reach this ahead of
+    // ViolationManager's own check, and a rebuild over a half-grown model is
+    // exactly what extend_interrupted() exists to prevent (#167).
+    require_intact("add_objective_soft_constraint");
     ModelStructure& st = mut();
 
     // Exactly the room the row takes -- two nodes, two child refs, two node

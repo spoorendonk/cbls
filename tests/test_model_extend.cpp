@@ -1458,13 +1458,15 @@ TEST_CASE("the second of two same-base extensions closing a cycle is refused who
     ModelExtension e4(m);
     e4.append_to_sum(s2, x);
     (void)m.extend(e4);
-    REQUIRE_THROWS_AS(e3.append_to_sum(s2, s1), std::invalid_argument);
+    // y closes no cycle, so only the structure token can refuse this: e4 added
+    // no node and no variable, and a count check would wave it through.
+    REQUIRE_THROWS_AS(e3.append_to_sum(s2, y), std::invalid_argument);
 }
 
 TEST_CASE("a structural write after close retires outstanding extensions", "[extend]") {
-    // `close(); add_constraint(...)` is legal (see Model::freeze), and changes
-    // neither count. An extension recorded before it describes a structure that
-    // no longer exists.
+    // `close(); add_constraint(...)` over a node built before close() changes the
+    // structure after close (see Model::freeze), and changes neither count. An extension recorded
+    // before it describes a structure that no longer exists.
     Model m;
     const int32_t x = m.float_var(0.0, 1.0);
     const int32_t s = m.sum({x});

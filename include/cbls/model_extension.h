@@ -181,6 +181,11 @@ public:
     /// leaving every node in or above the cycle at `topo_pos == 0` and out of
     /// `topo_order`, so `full_evaluate` never evaluates it again. Refused here,
     /// at record time, because `extend` has no rollback.
+    ///
+    /// Also refused, with `std::invalid_argument`, once the base has changed
+    /// since this extension was constructed (`Model::structure_version`): the
+    /// cycle walk reads the base's current children, so it must be the graph
+    /// `extend` will splice into.
     void append_to_sum(int32_t sum_node, int32_t term);
 
     [[nodiscard]] bool empty() const noexcept {

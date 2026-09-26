@@ -641,8 +641,11 @@ this into the search loop:
   stale, which `full_evaluate` recovers. A throw from anything earlier does not,
   so `extend` sets `Model::extend_interrupted()` for the window between its
   first write and its last splice, and `require_intact` refuses such a model in
-  `extend`, `ModelExtension`'s constructor and `ViolationManager`'s (so every
-  `solve`), and in the Python `full_evaluate`/`delta_evaluate`. The C++
+  `extend`, `ModelExtension`'s constructor, `add_objective_soft_constraint` (so a
+  first `solve` or `freeze` refuses before rebuilding anything) and
+  `ViolationManager`'s (so every `solve`), and in the Python
+  `full_evaluate`/`delta_evaluate`. Objects built before the failed call are not
+  re-checked; discard them with the model. The C++
   `full_evaluate`/`delta_evaluate` do not check it (one branch per evaluation on
   the hot path for a state that takes an out-of-memory to reach). With every
   caller refusal now taken before the window opens, what can still land in it is
@@ -683,7 +686,7 @@ existing handles, `add_constraint` over an existing node -- was accepted a secon
 time and appended its terms twice, and two such extensions recorded against one
 base could each pass the cycle check and close a cycle together, reaching the
 re-sort backstop only after the growth had begun. A successful `extend` retires
-the token, so **an extension is single-use**: replaying it is refused, and so is
+the token, so **a non-empty extension is single-use**: replaying it is refused, and so is
 every other extension recorded against the same base. A copy of a model carries
 its token (it is the same structure) but is still refused by address.
 `append_to_sum` checks it at record time because its cycle walk reads the base's

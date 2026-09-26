@@ -694,9 +694,15 @@ def _scenario_interrupted_extend_is_refused() -> None:
         "delta_evaluate": lambda: cbls.delta_evaluate(b.m, {vid(b.x)}),
         "ViolationManager": lambda: cbls.ViolationManager(b.m),
         "solve": lambda: cbls.solve(b.m, time_limit=1.0, seed=1, config=config),
+        "freeze": lambda: b.m.freeze(),
     }
+    # The base has an objective and has never been solved, so solve and freeze
+    # would first append the objective row -- a rebuild over the half-grown
+    # arrays -- unless the refusal comes before it.
+    n_nodes = b.m.num_nodes()
     for what, call in refusals.items():
         _expect_raises(RuntimeError, call, what)
+    assert b.m.num_nodes() == n_nodes, "a refusal ran after mutating the corrupt model"
     print("OK")
 
 

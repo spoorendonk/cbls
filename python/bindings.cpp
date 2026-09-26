@@ -153,8 +153,10 @@ constexpr const char* kModelExtendDoc =
     "There is no rollback: an exception from the growth itself (as opposed to\n"
     "the refusals above, which fire before anything changes) leaves the model\n"
     "corrupt. That takes running out of memory part-way through; the model then\n"
-    "raises RuntimeError from extend, solve, ViolationManager, full_evaluate,\n"
-    "delta_evaluate and ModelExtension rather than being searched. Discard it.";
+    "raises RuntimeError from extend, solve, freeze, ViolationManager,\n"
+    "full_evaluate, delta_evaluate and ModelExtension rather than being searched.\n"
+    "Objects built before the failed call (a ViolationManager, say) are not\n"
+    "re-checked: discard them with the model.";
 
 constexpr const char* kModelVarDoc =
     "A handle to variable `id` of this model. It holds the model and the id, not\n"
@@ -942,7 +944,9 @@ NB_MODULE(_cbls_core, m) {
              "\n"
              "Handles are absolute: the ones returned here are the ids the entities\n"
              "will have after extend, and existing handles may be used freely. Raises\n"
-             "RuntimeError if the model is not closed. Keeps the model alive.")
+             "RuntimeError if the model is not closed, or if a failed extend left it\n"
+             "corrupt (Model.extend_interrupted()). An extension is single-use; see\n"
+             "Model.extend. Keeps the model alive.")
         .def("bool_var", &ModelExtension::bool_var, nb::arg("name") = "")
         .def("int_var", &ModelExtension::int_var, nb::arg("lb"), nb::arg("ub"),
              nb::arg("name") = "")
@@ -982,8 +986,9 @@ NB_MODULE(_cbls_core, m) {
         .def("append_to_sum", &ModelExtension::append_to_sum, nb::arg("sum_node"), nb::arg("term"),
              "Append `term` to an EXISTING Sum node of the base model: a new column\n"
              "entering an old row. Raises ValueError if the target is not a Sum of the\n"
-             "base model, or if `term` already reads the target (the append would make\n"
-             "the DAG cyclic).")
+             "base model, if `term` already reads the target (the append would make\n"
+             "the DAG cyclic), or if the model has changed since this extension was\n"
+             "started (another extend was applied, or a structural write after close).")
         .def("empty", &ModelExtension::empty)
         .def("num_new_vars", &ModelExtension::num_new_vars)
         .def("num_new_nodes", &ModelExtension::num_new_nodes);

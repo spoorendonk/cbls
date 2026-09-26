@@ -514,8 +514,10 @@ public:
     /// would mean copying them, which is the O(model) cost this exists to avoid,
     /// so instead the window is MARKED: `extend_interrupted()` is set from the
     /// first write until the last splice, and `require_intact` refuses the model
-    /// in `extend`, `ModelExtension`, `ViolationManager` (so every `solve`) and
-    /// the Python evaluators. On an exception from `extend`, discard the model.
+    /// in `extend`, `ModelExtension`, `add_objective_soft_constraint` (so a first
+    /// `solve` or `freeze`), `ViolationManager` (so every `solve`) and the Python
+    /// evaluators. Objects built before the failed call are not re-checked. On an
+    /// exception from `extend`, discard the model and everything built on it.
     /// Everything `extend` can refuse on the caller's behalf is refused BEFORE
     /// it touches anything -- the checks above, and `ModelExtension`'s own,
     /// including the cycle check in `append_to_sum`.
@@ -758,9 +760,10 @@ public:
     /// True once `extend` has thrown from the middle of its growth, after the
     /// first array was written and before the last index was spliced (#167).
     /// The model is then internally inconsistent and there is no rollback; see
-    /// `extend`. `extend`, `ViolationManager`'s constructor (so every `solve`)
-    /// and `ModelExtension`'s constructor refuse such a model through
-    /// `require_intact`. Copied with the model, since a copy is just as broken.
+    /// `extend`. `extend`, `add_objective_soft_constraint`, `ViolationManager`'s
+    /// constructor (so every `solve`) and `ModelExtension`'s constructor refuse
+    /// such a model through `require_intact`. Copied with the model, since a copy is just as
+    /// broken.
     [[nodiscard]] bool extend_interrupted() const noexcept { return extend_interrupted_; }
     /// Throws `std::logic_error` naming `where` if `extend_interrupted()`.
     void require_intact(const char* where) const;
@@ -899,7 +902,8 @@ private:
         // Every structural write after close() retires the structure's token, so
         // an extension recorded against the old structure is refused (#167). Not
         // taken while the model is being built -- no extension can exist then --
-        // so the builders pay one predictable branch and no atomic.
+        // so building pays one predictable branch and no atomic. After close()
+        // it is one relaxed fetch_add per write, i.e. per entity `extend` adds.
         if (closed_) {
             structure_version_ = next_structure_version();
         }
