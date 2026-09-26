@@ -1480,6 +1480,167 @@ TEST_CASE("columns keep aging and retiring once the column cap is reached", "[co
     REQUIRE(feasible_at(cm.model, r.best_state));
 }
 
+namespace {
+
+// Adds ONE column on its first call and records the batch of every call: an Int
+// x in [0, 1] under its own row 10x <= 0, so x = 1 is never the closest approach
+// and FJ puts a kicked x back at 0 within the batch. With
+// max_generated_columns = 1 the pool is then full, and every later pricing
+// event is an AgeOnly step on this one column.
+class OneColumn : public ColumnGenerator {
+public:
+    explicit OneColumn(std::shared_ptr<std::vector<int64_t>> calls) : calls_(std::move(calls)) {}
+    void price(const PricingContext& ctx, PricingEvent /*why*/, ModelExtension& ext) override {
+        calls_->push_back(ctx.batches);
+        const int32_t x = ext.int_var(0, 1);
+        ext.add_constraint(ext.leq(ext.prod(ext.constant(10.0), x), ext.constant(0.0)));
+    }
+    [[nodiscard]] std::unique_ptr<ColumnGenerator> clone() const override {
+        return std::make_unique<OneColumn>(*this);
+    }
+
+private:
+    std::shared_ptr<std::vector<int64_t>> calls_;
+};
+
+// Watches the one generated column of `infeasible_pair()` + `OneColumn` (var
+// id 2) from the tracer: the batch whose pricing step retired it, and the
+// batches that kicked. A retirement pins ub to lb inside the step after a
+// batch's batch_end, so it is first visible at the NEXT batch_end. Optionally
+// raises `stop` at the end of batch `stop_at`, the instant before that batch's
+// pricing step, as the budget test above does.
+class RetireWatch : public Tracer {
+public:
+    RetireWatch(const Model& model, StopToken* stop, int64_t stop_at)
+        : model_(model), stop_(stop), stop_at_(stop_at) {}
+    void batch_end(BatchKind /*kind*/, int64_t iterations, bool /*improved*/) override {
+        ++batches;
+        iterations_at.push_back(iterations);
+        if (retired_after < 0 && model_.num_vars() > kColumn &&
+            model_.var(kColumn).ub == model_.var(kColumn).lb) {
+            retired_after = batches - 1;
+        }
+        if (stop_ != nullptr && batches == stop_at_) {
+            stop_->request();
+        }
+    }
+    void kick(KickKind /*kind*/) override { kicked.push_back(batches); }
+
+    static constexpr int32_t kColumn = 2;
+    int64_t batches = 0;
+    int64_t retired_after = -1;  // the batch whose pricing step retired the column
+    std::vector<int64_t> kicked;
+    std::vector<int64_t> iterations_at;  // cumulative GLS iterations after each batch
+
+private:
+    const Model& model_;
+    StopToken* stop_;
+    int64_t stop_at_;
+};
+
+}  // namespace
+
+TEST_CASE("an AgeOnly step counts as the batch's one pricing step", "[column]") {
+    // At a full pool a due event ages the columns without calling the generator
+    // (AgeOnly). It must still use up the batch's one pricing step: a batch with
+    // a Periodic event AND a pre-kick Stagnation event ages ONCE, as it would have
+    // priced once. Every batch here has both -- pricing_period = 1, and
+    // perturbation_period = 1 kicks every non-improving batch of a model that
+    // never improves -- so ageing twice per batch would retire the column at
+    // half the age.
+    constexpr int kRetireAge = 6;
+    Model m = infeasible_pair();
+    auto calls = std::make_shared<std::vector<int64_t>>();
+    RetireWatch watch(m, nullptr, 0);
+    SearchConfig cfg = iteration_budget(3'000);
+    cfg.batch_iterations = 100;
+    cfg.perturbation_period = 1;
+    cfg.column_generator = std::make_shared<OneColumn>(calls);
+    cfg.pricing_period = 1;
+    cfg.price_on_stagnation = true;
+    cfg.max_generated_columns = 1;
+    cfg.column_retire_age = kRetireAge;
+    cfg.tracer = &watch;
+    const SearchResult r = solve(m, 0.0, 1, true, nullptr, nullptr, 3, nullptr, cfg);
+
+    REQUIRE(r.counters.batches > int64_t{2} * kRetireAge);
+    // Priced once, at batch 1; the pool is full from then on.
+    REQUIRE(*calls == std::vector<int64_t>{1});
+    REQUIRE(r.counters.pricing_calls == 1);
+    // Both events were on offer every batch the column aged through.
+    for (int64_t b = 1; b <= 1 + kRetireAge; ++b) {
+        CAPTURE(b);
+        REQUIRE(std::count(watch.kicked.begin(), watch.kicked.end(), b) == 1);
+    }
+    // Added at batch 1 and not aged by that call; aged once per batch from
+    // batch 2, so retired by batch 1 + kRetireAge's step -- not before.
+    REQUIRE(r.counters.columns_retired == 1);
+    REQUIRE(watch.retired_after == 1 + kRetireAge);
+}
+
+TEST_CASE("an AgeOnly step starts no more once the budget is gone than a call does", "[column]") {
+    // The AgeOnly form of "no pricing call starts once the budget is gone,
+    // exactly", for both of pricing_step()'s budget tests. The column is added at
+    // batch 1 and would retire in batch kRetiringBatch's step. Ending the run at
+    // the end of that batch -- by a stop raised from the tracer (past_deadline),
+    // or by an iteration budget that batch spends exactly (iterations_spent) --
+    // must leave it unretired. A run stopped one batch later does retire it,
+    // which pins the schedule, so the unretired runs are not vacuous; it also
+    // supplies the exact iteration count, since the trajectory is seeded.
+    constexpr int kRetireAge = 4;
+    constexpr int64_t kRetiringBatch = 1 + kRetireAge;
+    struct Run {
+        Model model = infeasible_pair();
+        std::shared_ptr<std::vector<int64_t>> calls = std::make_shared<std::vector<int64_t>>();
+        StopToken stop;
+        std::unique_ptr<RetireWatch> watch;
+        SearchResult result;
+    };
+    auto run = [](int64_t stop_at, int64_t max_iterations) {
+        auto out = std::make_unique<Run>();
+        out->watch = std::make_unique<RetireWatch>(out->model, &out->stop, stop_at);
+        SearchConfig cfg = iteration_budget(max_iterations);
+        cfg.batch_iterations = 100;
+        cfg.column_generator = std::make_shared<OneColumn>(out->calls);
+        cfg.pricing_period = 1;
+        cfg.price_on_stagnation = false;
+        cfg.max_generated_columns = 1;
+        cfg.column_retire_age = kRetireAge;
+        cfg.stop = out->stop;
+        cfg.tracer = out->watch.get();
+        out->result = solve(out->model, 0.0, 1, true, nullptr, nullptr, 3, nullptr, cfg);
+        return out;
+    };
+
+    // Control: one batch past the retiring one, the column is retired on time.
+    const auto control = run(kRetiringBatch + 1, 1'000'000);
+    REQUIRE(control->result.termination == TerminationReason::Cancelled);
+    REQUIRE(control->result.counters.batches == kRetiringBatch + 1);
+    REQUIRE(*control->calls == std::vector<int64_t>{1});
+    REQUIRE(control->result.counters.columns_retired == 1);
+    REQUIRE(control->watch->retired_after == kRetiringBatch);
+
+    SECTION("the stop raised at the end of the retiring batch") {
+        const auto r = run(kRetiringBatch, 1'000'000);
+        REQUIRE(r->result.termination == TerminationReason::Cancelled);
+        REQUIRE(r->result.counters.batches == kRetiringBatch);
+        REQUIRE(*r->calls == std::vector<int64_t>{1});
+        REQUIRE(r->result.counters.columns_retired == 0);
+        REQUIRE(r->model.var(RetireWatch::kColumn).ub == 1.0);
+    }
+    SECTION("an iteration budget the retiring batch spends exactly") {
+        const std::vector<int64_t>& at = control->watch->iterations_at;
+        const int64_t budget = at[static_cast<size_t>(kRetiringBatch - 1)];
+        REQUIRE(at[static_cast<size_t>(kRetiringBatch - 2)] < budget);  // not spent earlier
+        const auto r = run(0, budget);
+        REQUIRE(r->result.termination == TerminationReason::IterationLimit);
+        REQUIRE(r->result.counters.batches == kRetiringBatch);
+        REQUIRE(*r->calls == std::vector<int64_t>{1});
+        REQUIRE(r->result.counters.columns_retired == 0);
+        REQUIRE(r->model.var(RetireWatch::kColumn).ub == 1.0);
+    }
+}
+
 TEST_CASE("an extension that touches no row skips revalidation", "[column]") {
     // On a feasible run, a column that enters no row -- not even the objective's,
     // which is a row too -- changes nothing any stored point is judged by, even at
