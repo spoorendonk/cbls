@@ -27,21 +27,23 @@ constexpr bool is_structured(VarType type) {
     return type == VarType::List || type == VarType::Set;
 }
 
-/// How `initialize_structured_random` fills a List that is not a member of a
-/// `Cover::Exact` partition (#164).
+/// How `initialize_structured_random` fills a List (#164).
 ///
 /// It decides the STARTING assignment only; the move set can reach every other
-/// assignment from any of them. A List under an `Exact` partition ignores it,
-/// because that invariant is maintained by the moves rather than by a penalty
-/// row and so has to hold at the first assignment already -- see
-/// `Model::add_list_partition`.
+/// assignment from any of them. A member of a partition is filled as part of
+/// that partition (`randomize_list_partition`), which reads `ListInit` only
+/// under `Cover::AtMostOnce` -- an `Exact` cover is maintained by the moves
+/// rather than by a penalty row, so it has to hold at the first assignment and
+/// the members are always laid out complete. See `Model::add_list_partition`.
 enum class ListInit : uint8_t {
     /// `elements == [0, 1, ..., universe-1]`, and therefore a permutation.
     /// Requires `min_size == max_size == universe_size`, which is exactly what
     /// `list_var(n)` builds -- and is what keeps that call's randomisation on
     /// `rng.permutation(max_size)`, the pre-#164 draw verbatim.
     Identity,
-    /// `elements == []`. Draws no random numbers.
+    /// `elements == []`. Draws no random numbers. Requires `min_size == 0`,
+    /// since otherwise it is a starting assignment outside the List's own
+    /// length window.
     Empty,
     /// A uniformly random subset of a uniformly random admissible size, in a
     /// uniformly random order.

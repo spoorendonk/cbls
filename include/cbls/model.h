@@ -301,12 +301,15 @@ public:
     /// `sum(max_len) >= universe`.
     ///
     /// `ListInit::Identity` is rejected in a partition of more than one list: it
-    /// would put every element in every member. Under `Cover::Exact` the members'
-    /// `ListInit` is ignored anyway, because the invariant has to hold at the
-    /// FIRST assignment -- no move can repair a partition that starts incomplete,
-    /// since `Exact` admits no insert or remove that is not half of an inter-list
-    /// move. `initialize_structured_random` therefore always lays an `Exact`
-    /// partition out as a random complete one.
+    /// would put every element in every member.
+    ///
+    /// Under `Cover::Exact` the members' `ListInit` is ignored, because the
+    /// invariant has to hold at the FIRST assignment -- no move can repair a
+    /// partition that starts incomplete, since `Exact` admits no insert or
+    /// remove that is not half of an inter-list move. Initialisation therefore
+    /// always lays an `Exact` partition out as a random COMPLETE one. Under
+    /// `Cover::AtMostOnce` there is no such obligation and each member's
+    /// `ListInit` decides how much beyond its minimum it is given.
     int32_t add_list_partition(const std::vector<int32_t>& lists, Cover cover = Cover::Exact);
     [[nodiscard]] const std::vector<ListPartition>& list_partitions() const noexcept {
         return s().list_partitions;

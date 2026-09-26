@@ -80,6 +80,7 @@ def test_list_expr_form_accepts_a_length_window() -> None:
         (5, 0, 6, cbls.ListInit.Empty),
         (5, -1, 2, cbls.ListInit.Empty),
         (5, 0, 5, cbls.ListInit.Identity),
+        (5, 1, 3, cbls.ListInit.Empty),
     ],
 )
 def test_list_var_rejects_an_impossible_window(

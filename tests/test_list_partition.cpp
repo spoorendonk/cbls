@@ -198,6 +198,11 @@ TEST_CASE("list_var rejects an impossible length window", "[list][partition]") {
     // universe; anything else would be a list that starts outside its own bounds.
     REQUIRE_THROWS_AS(m.list_var(5, 0, 5, ListInit::Identity), std::invalid_argument);
     REQUIRE_NOTHROW(m.list_var(5, 5, 5, ListInit::Identity));
+    // And Empty is only legal where zero is a legal length: otherwise the List
+    // starts below its own min_len, and every later re-randomisation puts it
+    // back there, with no constraint row and no move guard reporting it.
+    REQUIRE_THROWS_AS(m.list_var(5, 1, 3, ListInit::Empty), std::invalid_argument);
+    REQUIRE_NOTHROW(m.list_var(5, 1, 3, ListInit::Random));
 }
 
 TEST_CASE("add_list_partition validates its group", "[list][partition]") {
@@ -225,8 +230,8 @@ TEST_CASE("add_list_partition validates its group", "[list][partition]") {
     }
     SECTION("minimum lengths that overflow the universe are refused") {
         Model m;
-        const int32_t a = m.list_var(4, 3, 4);
-        const int32_t b = m.list_var(4, 3, 4);
+        const int32_t a = m.list_var(4, 3, 4, ListInit::Random);
+        const int32_t b = m.list_var(4, 3, 4, ListInit::Random);
         REQUIRE_THROWS_AS(m.add_list_partition({a, b}, Cover::AtMostOnce), std::invalid_argument);
     }
     SECTION("an Exact cover the maximum lengths cannot reach is refused") {
@@ -300,6 +305,29 @@ TEST_CASE("an Exact partition is initialised complete", "[list][partition]") {
     RNG rng(11);
     initialize_structured_random(pm.model, rng);
     require_cover(pm.model, pm.model.list_partitions()[0]);
+}
+
+TEST_CASE("an AtMostOnce partition honours each member's ListInit", "[list][partition]") {
+    // Under `Exact` the cover has to hold at the first assignment, so the
+    // per-list `ListInit` is ignored and everything is placed. Under
+    // `AtMostOnce` there is no such obligation, and the init is what a
+    // prize-collecting model uses to say where it wants to start: all `Empty`
+    // means everything unassigned and the skip penalty at its worst, which the
+    // search can improve from.
+    Model m;
+    std::vector<int32_t> handles;
+    handles.reserve(3);
+    for (int r = 0; r < 3; ++r) {
+        handles.push_back(m.list_var(9, 0, 9, ListInit::Empty, "r" + std::to_string(r)));
+    }
+    m.add_list_partition(handles, Cover::AtMostOnce);
+    m.close();
+    RNG rng(5);
+    initialize_structured_random(m, rng);
+    require_cover(m, m.list_partitions()[0]);
+    for (int32_t h : handles) {
+        REQUIRE(m.var(handle_to_var_id(h)).elements.empty());
+    }
 }
 
 TEST_CASE("an AtMostOnce partition respects every minimum length", "[list][partition]") {

@@ -132,11 +132,26 @@ void randomize_structured_var(Variable& var, RNG& rng, ListOrder order) {
 //
 // Two passes over one shuffled universe. The first hands each list its minimum
 // length, which is what makes the result feasible at all; the second offers each
-// remaining element to a uniformly chosen list that still has room. Under
-// `Exact` the second pass places every element, because the validated
-// `sum(max_len) >= universe` guarantees some list always has room. Under
-// `AtMostOnce` an element whose draw finds no room is simply left unassigned,
-// which is exactly what that cover permits.
+// remaining element to a uniformly chosen list that is still under its TARGET.
+//
+// The target is where `ListInit` re-enters, and where the two covers differ:
+//
+//  - `Exact` ignores it and targets every list's `max_len`, so the second pass
+//    places every element. It has to: the cover must hold at the first
+//    assignment, because no `Exact` move can repair an incomplete one, and the
+//    validated `sum(max_len) >= universe` is what guarantees some list always
+//    has room.
+//  - `AtMostOnce` targets what each member's `ListInit` asks for -- `Empty`
+//    stops at the minimum (which `list_var` requires to be 0), `Random` draws a
+//    uniform admissible length. So a prize-collecting model whose routes are
+//    declared `Empty` starts with everything unassigned and its skip penalty at
+//    its worst, which is a starting point the search can improve, rather than
+//    fully assigned, which under a capacity bound it may not be able to leave.
+//
+// NOT uniform over the feasible assignments in general: once a list reaches its
+// target the remaining elements are forced into the ones still open, which skews
+// the size distribution. It is uniform when no target binds. This is a starting
+// point rather than a sample, so that is enough.
 //
 // The lists are otherwise left in the order the draw produced: an inter-list
 // move reorders them anyway, and imposing one here would only look tidier.
@@ -162,11 +177,20 @@ void randomize_list_partition(Model& model, const ListPartition& part, RNG& rng)
     // of them -- otherwise a partition of one large and many tiny lists would
     // spend most of its draws on lists with no room.
     std::vector<int32_t> open_lists;
+    std::vector<int32_t> targets;
     open_lists.reserve(part.list_ids.size());
+    targets.reserve(part.list_ids.size());
     for (int32_t vid : part.list_ids) {
         const Variable& v = model.var(vid);
-        if (static_cast<int32_t>(v.elements.size()) < v.max_size) {
+        int32_t target = v.max_size;
+        if (part.cover == Cover::AtMostOnce) {
+            target = (v.list_init == ListInit::Empty)
+                         ? v.min_size
+                         : static_cast<int32_t>(rng.integers(v.min_size, v.max_size + 1));
+        }
+        if (static_cast<int32_t>(v.elements.size()) < target) {
             open_lists.push_back(vid);
+            targets.push_back(target);
         }
     }
     for (; next < pool.size() && !open_lists.empty(); ++next) {
@@ -174,9 +198,11 @@ void randomize_list_partition(Model& model, const ListPartition& part, RNG& rng)
             static_cast<size_t>(rng.integers(0, static_cast<int64_t>(open_lists.size())));
         Variable& v = model.var_mut(open_lists[pick]);
         v.elements.push_back(pool[next]);
-        if (static_cast<int32_t>(v.elements.size()) >= v.max_size) {
+        if (static_cast<int32_t>(v.elements.size()) >= targets[pick]) {
             open_lists[pick] = open_lists.back();
             open_lists.pop_back();
+            targets[pick] = targets.back();
+            targets.pop_back();
         }
     }
 }

@@ -240,6 +240,15 @@ int32_t Model::list_var(int universe, int min_len, int max_len, ListInit init,
     if (min_len < 0 || min_len > max_len || max_len > universe) {
         throw std::invalid_argument("list_var: require 0 <= min_len <= max_len <= universe");
     }
+    if (init == ListInit::Empty && min_len > 0) {
+        // Empty is only a legal assignment when zero is a legal length. Allowing
+        // it otherwise gives a List that starts -- and that every later
+        // `randomize_var(Regenerate)` returns to -- below its own min_len, which
+        // no constraint row prices and no move guard reports: `list_remove`
+        // refuses to shrink it further and `list_insert` grows it one element
+        // per candidate. `ListInit::Random` is the one that respects a minimum.
+        throw std::invalid_argument("list_var: ListInit::Empty requires min_len == 0");
+    }
     if (init == ListInit::Identity && (min_len != universe || max_len != universe)) {
         // Identity means "every element, in order", which is only a legal
         // assignment when the length is pinned at the universe. Rejecting it
