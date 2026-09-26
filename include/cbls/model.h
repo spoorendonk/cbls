@@ -511,7 +511,18 @@ public:
     /// an exception from `extend`, discard the model. Everything `extend` can
     /// refuse on the caller's behalf is refused BEFORE it touches anything --
     /// the checks above, and `ModelExtension`'s own, including the cycle check in
-    /// `append_to_sum`.
+    /// `append_to_sum`. Nor is a poison flag the missing half: `closed_` staying
+    /// true is not what makes the state unusable, nothing in the engine gates on
+    /// such a flag, and clearing `closed_` would MISreport the one throw that
+    /// leaves the structure whole --
+    ///
+    /// which is the exception worth naming separately: the closing evaluation runs
+    /// caller code. A `CustomInvariant::evaluate` on the `full_evaluate` branch, a
+    /// `lambda_sum`/`pair_lambda_sum` callable inside the cone -- neither is
+    /// `noexcept`, and a model with custom nodes takes that branch by design. A
+    /// throw from there lands with every structural array complete and consistent
+    /// and only node values stale, so `full_evaluate` recovers it. A throw from
+    /// anything earlier does not.
     ///
     /// Two callers have to grow with it, in this order, as soon as it returns:
     /// `ViolationManager::on_extended` and then `FeasibilityJump::on_extended`.
@@ -529,7 +540,7 @@ public:
     /// variable move, so such a model takes a `full_evaluate` -- which is that
     /// interface's documented reset point -- and pays O(model) for the
     /// evaluation. `has_custom_nodes()` is the test.
-    ExtensionResult extend(const ModelExtension& ext);
+    [[nodiscard]] ExtensionResult extend(const ModelExtension& ext);
 
     // ViolationLS objective-as-soft-constraint (paper §5, P2 #67). Folds the
     // objective into the constraint set as `objective_expr <= bound`, with the

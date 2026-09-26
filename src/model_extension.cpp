@@ -100,12 +100,15 @@ void ModelExtension::successor_nodes(int32_t nid, std::vector<int32_t>& out) con
 //
 // The cost is the cone of `from`. In the regime this exists for -- a fresh
 // `coef * new_var` term -- that cone is two new nodes and no base node at all, so
-// the `appends_` scan in `successor_nodes` never runs. It loses on a term that
-// names an existing NODE, where the cone is that node's whole subtree and each
-// base node in it costs one pass over `appends_`: quadratic in the number of
-// appends if every one of them is such a term. That shape is the exotic one (it is
-// also the shape that needs the check), and the alternative is a second index over
-// `appends_` to keep in step with it.
+// the `appends_` scan in `successor_nodes` never runs and what the call actually
+// costs is its three allocations (the set and the two vectors), at RECORDING time
+// and against an `extend` that then pays an O(#constraints) ancestor pass. It loses
+// on a term that names an existing NODE, where the cone is that node's whole
+// subtree and each base node in it costs one pass over `appends_`: quadratic in the
+// number of appends if every one of them is such a term. That shape is the exotic
+// one -- and also the only shape that needs the check. If a caller ever lands in
+// it, the fix is an `appends_`-by-target map written in `append_to_sum` (O(1)
+// amortised, append-only, so nothing to keep in step) rather than anything here.
 bool ModelExtension::reaches(int32_t from, int32_t target) const {
     if (from == target) {
         return true;
@@ -792,7 +795,6 @@ ExtensionResult Model::extend(const ModelExtension& ext) {
     if (plan_topo_insert(*this, st, res, grown, insert_pos)) {
         insert_topo_block(st, res, insert_pos);
     } else {
-        st.topo_order = detail::compute_topo_order(*this);
         // Kahn's returns a SHORT order on a cyclic graph, and nothing downstream
         // notices: the missing nodes keep topo_pos 0, `full_evaluate` (which walks
         // this array) never evaluates them again, and
@@ -800,11 +802,15 @@ ExtensionResult Model::extend(const ModelExtension& ext) {
         // `ModelExtension::append_to_sum` refuses the only edge that can make the
         // graph cyclic, so this is a backstop against a future way of producing
         // one -- one size compare against a re-sort that is already O(model).
-        if (st.topo_order.size() != st.nodes.size()) {
+        // Checked in a local first, so the throw does not also destroy the one
+        // structural array that was still valid.
+        std::vector<int32_t> order = detail::compute_topo_order(*this);
+        if (order.size() != st.nodes.size()) {
             throw std::logic_error(
                 "Model::extend: the re-sorted topological order does not cover every node, which "
                 "means the DAG has a cycle. The model is NOT usable after this throw");
         }
+        st.topo_order = std::move(order);
         rebuild_topo_positions();
         res.topo_order_rebuilt = true;
     }

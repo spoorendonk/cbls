@@ -42,8 +42,9 @@ void ViolationManager::require_row_count() const {
     if (weights.size() != nc || cached_violations_.size() != nc) {
         throw std::logic_error(
             "ViolationManager: the weight vector is not one entry per constraint of this model. "
-            "Model::extend grows the model without touching it, so call "
-            "ViolationManager::on_extended(result) before reading violations again (#167)");
+            "Either a row was added after this manager was built -- Model::extend is the case that "
+            "motivated this check, and ViolationManager::on_extended(result) is the answer to it "
+            "(#167) -- or a C++ caller resized the public weights vector");
     }
 }
 
@@ -218,8 +219,12 @@ void ViolationManager::on_extended(const ExtensionResult& ext, double new_weight
 
 double ViolationManager::weighted_violation_delta(int32_t var_id, double j) const {
     require_row_count();  // the probe indexes `weights` by the moved variable's G_v rows
-    // Delegate to the allocation-free Model probe (hot path: one call per jump
-    // candidate). weights is the per-constraint GLS weight vector.
+    // Delegate to the allocation-free Model probe. NOT the engine's hot path,
+    // despite what this wrapper looks like: FJ calls
+    // `Model::weighted_violation_delta(v, j, vm_.weights)` directly once per jump
+    // candidate and bypasses it, leaving python/bindings.cpp and the tests as the
+    // only callers. Which is also why the size check above is free here, and why
+    // the unguarded reads of `weights` are the direct ones.
     return model_.weighted_violation_delta(var_id, j, weights);
 }
 

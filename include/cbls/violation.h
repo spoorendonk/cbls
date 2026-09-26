@@ -138,10 +138,14 @@ private:
     ///
     /// The window this closes is the one between `Model::extend` returning and
     /// `on_extended` (#167), where every read below would be a heap overread and
-    /// `bump_weights` a heap write. `weights` is public -- Python can set it
-    /// (#156) -- so it also catches a caller that shortened it. One size compare
-    /// against bodies that are already O(#constraints), or that already compare a
-    /// snapshot's size.
+    /// `bump_weights` a heap write. `weights` is a public member, so it also
+    /// catches a C++ caller that shortened it; Python cannot -- that setter is a
+    /// `def_prop_rw` which rejects a length change (#156), though it checks against
+    /// the manager's own size rather than the model's. One size compare against
+    /// bodies that are already O(#constraints) or that already compare a snapshot's
+    /// size. `weighted_violation_delta` is the exception, and it is free for a
+    /// different reason: FJ calls `Model::weighted_violation_delta` directly, so
+    /// that overload is reached only from Python and the tests.
     void require_row_count() const;
     void recompute_cache() const;
 

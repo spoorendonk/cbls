@@ -667,6 +667,88 @@ void FeasibilityJump::recompute_linearity(const std::vector<int32_t>& rows) {
     }
 }
 
+namespace {
+
+// The count fields on an `ExtensionResult` bound the id RANGES; its two index
+// vectors carry raw indices, and every use of them is an unchecked subscript --
+// `is_linear_[ci]`, `violated_[ci]`, `cids[ci]`, `vars_of_constraint_[ci]`.
+// `ExtensionResult` is a plain struct with public members and `on_extended`
+// already treats a hand-built one as a reachable input, so half-guarding it would
+// be the inconsistency.
+//
+// The ORDER is load-bearing on one of the two, and only one:
+// `touched_constraints` out of order merely redoes work, but
+// `merge_new_incidences` groups the CONSECUTIVE run of equal rows and hands each
+// group to `std::set_union` as a sorted range. An unsorted `new_incidences` breaks
+// that precondition and leaves `vars_of_constraint_[ci]` non-ascending or
+// duplicated -- which is contractual (FJ's scan order over it feeds the
+// trajectory), so the failure is a silently different search rather than a bad
+// read. Both are checked, because the producer sorts anyway and the check is free.
+//
+// Split out of `on_extended` rather than inlined, for the reason
+// CLAUDE.md's Complexity section gives: "is this result well formed" is a
+// different question from "grow the tables", and the body was one increment from
+// the cognitive-complexity block. O(|touched| + |incidences|), against a body that
+// walks those same rows' subtrees.
+void validate_extension_indices(const ExtensionResult& ext, size_t nc, size_t nv) {
+    int32_t previous = -1;
+    for (const int32_t ci : ext.touched_constraints) {
+        if (ci < 0 || ci >= ext.first_new_constraint) {
+            throw std::out_of_range(
+                "FeasibilityJump::on_extended: touched_constraints names a row that is not an "
+                "existing constraint of this model");
+        }
+        if (ci <= previous) {
+            throw std::invalid_argument(
+                "FeasibilityJump::on_extended: touched_constraints must be ascending and distinct");
+        }
+        previous = ci;
+    }
+    std::pair<int32_t, int32_t> previous_inc{-1, -1};
+    for (const std::pair<int32_t, int32_t>& inc : ext.new_incidences) {
+        if (inc.first < 0 || static_cast<size_t>(inc.first) >= nc) {
+            throw std::out_of_range(
+                "FeasibilityJump::on_extended: new_incidences names a constraint this model does "
+                "not have");
+        }
+        if (inc.second < 0 || static_cast<size_t>(inc.second) >= nv) {
+            throw std::out_of_range(
+                "FeasibilityJump::on_extended: new_incidences names a variable this model does not "
+                "have");
+        }
+        if (inc <= previous_inc) {
+            throw std::invalid_argument(
+                "FeasibilityJump::on_extended: new_incidences must be ascending by (constraint, "
+                "variable) and distinct -- merge_new_incidences groups consecutive rows and "
+                "set_unions each group into a list it keeps ascending in variable id");
+        }
+        previous_inc = inc;
+    }
+}
+
+}  // namespace
+
+// Every per-row and per-variable table here is sized once, at construction, and
+// grown only by `on_extended`. So a size that disagrees with the model means
+// `Model::extend` ran and nobody told this object -- after which `violated_[ci]`,
+// `is_linear_[ci]`, `vars_of_constraint_[ci]`, `in_queue_[v]` and `active(ci)` are
+// all indexed by the GROWN counts, unchecked. The symmetric mistake, this object
+// grown before the ViolationManager, is refused in `on_extended`.
+//
+// Checked at the entry points a driver calls once per batch or kick, never per row:
+// five size compares against a body that then runs thousands of iterations.
+void FeasibilityJump::require_tables_in_step() const {
+    const size_t nc = model_.constraint_ids().size();
+    const size_t nv = model_.num_vars();
+    if (violated_.size() != nc || is_linear_.size() != nc || vars_of_constraint_.size() != nc ||
+        in_queue_.size() != nv || vm_.weights.size() != nc) {
+        throw std::logic_error(
+            "FeasibilityJump: the model has grown since this object last matched it. Model::extend "
+            "must be followed by ViolationManager::on_extended and then "
+            "FeasibilityJump::on_extended(result) before the search runs again (#167)");
+    }
+}
+
 void FeasibilityJump::on_extended(const ExtensionResult& ext) {
     const size_t nc = model_.constraint_ids().size();
     const size_t nv = model_.num_vars();
@@ -686,38 +768,7 @@ void FeasibilityJump::on_extended(const ExtensionResult& ext) {
             "would read past the end for every new row -- and mask real rows on the way. Call "
             "ViolationManager::on_extended(result) first (#167)");
     }
-    // The count fields above bound the id RANGES; these two vectors carry raw
-    // indices, and every use of them is an unchecked subscript --
-    // `is_linear_[ci]`, `violated_[ci]`, `cids[ci]`, `vars_of_constraint_[ci]`.
-    // `ExtensionResult` is a plain struct with public members, and the case above
-    // already treats a hand-built one as a reachable input, so half-guarding it
-    // would be the inconsistency. O(|touched| + |incidences|), against a body that
-    // walks those same rows' subtrees.
-    int32_t previous = -1;
-    for (const int32_t ci : ext.touched_constraints) {
-        if (ci < 0 || ci >= ext.first_new_constraint) {
-            throw std::out_of_range(
-                "FeasibilityJump::on_extended: touched_constraints names a row that is not an "
-                "existing constraint of this model");
-        }
-        if (ci <= previous) {
-            throw std::invalid_argument(
-                "FeasibilityJump::on_extended: touched_constraints must be ascending and distinct");
-        }
-        previous = ci;
-    }
-    for (const std::pair<int32_t, int32_t>& inc : ext.new_incidences) {
-        if (inc.first < 0 || static_cast<size_t>(inc.first) >= nc) {
-            throw std::out_of_range(
-                "FeasibilityJump::on_extended: new_incidences names a constraint this model does "
-                "not have");
-        }
-        if (inc.second < 0 || static_cast<size_t>(inc.second) >= nv) {
-            throw std::out_of_range(
-                "FeasibilityJump::on_extended: new_incidences names a variable this model does not "
-                "have");
-        }
-    }
+    validate_extension_indices(ext, nc, nv);
     jumps_.grow(nv);
     in_queue_.resize(nv, 0);
     violated_.resize(nc, 0);
@@ -773,10 +824,12 @@ void FeasibilityJump::on_extended(const ExtensionResult& ext) {
     // `batch_stuck_` on entry and `gls_loop` zeroes `unproductive_streak_` before
     // it takes the batch's reference minimum, so re-grounding them here would be a
     // no-op that reads as a policy; `escape_probe_` is the CALLER's arming (see
-    // set_escape_probe) and clearing it would silently override a decision
-    // solve() made on its own stagnation count. What does have to be re-grounded
-    // is `unweighted_violation_`, above, because the accumulator is a number and
-    // not a flag.
+    // set_escape_probe) and clearing it would silently override a decision solve()
+    // made on its own stagnation count. The `refresh_unweighted_violation()` above
+    // is in the same position and kept anyway, for a narrower reason: it is what
+    // makes the public `unweighted_violation()` accessor read the grown model
+    // BETWEEN the extension and the next batch, which is where a caller measuring
+    // the extension's effect looks.
 }
 
 // `vars_of_constraint_` is the transpose of G_v restricted to jumpable variables,
@@ -1213,6 +1266,7 @@ GFJStatus FeasibilityJump::gls(int sample_size) {
 // ---- Batch API (drives ViolationLS Algorithm 6 from an outer loop) ----
 
 void FeasibilityJump::begin(bool set_initial_x) {
+    require_tables_in_step();
     iterations_ = 0;
     // A fresh run starts with the escape probe disarmed, alongside the iteration
     // count and the deadline. solve() constructs a FeasibilityJump per call so
@@ -1233,17 +1287,20 @@ void FeasibilityJump::begin(bool set_initial_x) {
 }
 
 bool FeasibilityJump::batch(int64_t batch_iterations) {
+    require_tables_in_step();
     batch_stuck_ = false;
     return gls_loop(config_.sample_size_general, batch_iterations) == GFJStatus::Feasible;
 }
 
 void FeasibilityJump::reset_weights() {
+    require_tables_in_step();
     std::fill(vm_.weights.begin(), vm_.weights.end(), 1.0);
     vm_.invalidate_cache();
     rebuild_violated_and_scan_set();
 }
 
 void FeasibilityJump::resync() {
+    require_tables_in_step();
     rebuild_violated_and_scan_set();
 }
 
@@ -1444,6 +1501,7 @@ bool FeasibilityJump::force_structural_move() {
 }
 
 void FeasibilityJump::perturb(double probability) {
+    require_tables_in_step();
     // Randomise each jumpable variable independently, then make sure the kick
     // actually moved something. Independent draws alone leave the assignment
     // untouched with probability (1-p)^n, which at the default p = 0.1 is 81% on
@@ -1634,6 +1692,7 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
 }
 
 bool FeasibilityJump::apply_novelty_jump() {
+    require_tables_in_step();
     const size_t nv = model_.num_vars();
     nj_in_queue_.assign(nv, 0);
     on_stack_.assign(nv, 0);
@@ -1663,6 +1722,7 @@ bool FeasibilityJump::apply_novelty_jump() {
 }
 
 GFJStatus FeasibilityJump::run() {
+    require_tables_in_step();
     iterations_ = 0;
     arm_deadline();
 

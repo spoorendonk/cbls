@@ -964,16 +964,18 @@ TEST_CASE("on_extended refuses a result whose row indices name nothing", "[exten
     // write, not an exception.
     Model m;
     const int32_t x = m.bool_var();
-    m.add_constraint(m.leq(m.prod(m.constant(1.0), x), m.constant(0.0)));
+    const int32_t y = m.bool_var();
+    m.add_constraint(
+        m.leq(m.sum({m.prod(m.constant(1.0), x), m.prod(m.constant(1.0), y)}), m.constant(0.0)));
     m.close();
     ViolationManager vm(m);
     RNG rng(7);
     FeasibilityJump fj(m, vm, rng);
 
-    // Describes this model's counts exactly -- one variable, one constraint, no
+    // Describes this model's counts exactly -- two variables, one constraint, no
     // additions -- so every count check passes.
     ExtensionResult base;
-    base.first_new_var = 1;
+    base.first_new_var = 2;
     base.first_new_constraint = 1;
 
     SECTION("a touched constraint out of range") {
@@ -983,10 +985,30 @@ TEST_CASE("on_extended refuses a result whose row indices name nothing", "[exten
     }
     SECTION("a touched constraint naming a NEW row") {
         // touched_constraints is documented as existing rows only; a new row is
-        // already covered by the id range and would be classified twice.
-        ExtensionResult bogus = base;
-        bogus.touched_constraints = {1};
-        REQUIRE_THROWS_AS(fj.on_extended(bogus), std::out_of_range);
+        // already covered by the id range and would be classified twice. Told apart
+        // from the case above only on a model where that row EXISTS, so this one
+        // really does grow -- otherwise `>= first_new_constraint` and `>= nc`
+        // coincide and the section proves nothing the previous one did not.
+        Model grown;
+        const int32_t a = grown.bool_var();
+        grown.add_constraint(grown.leq(grown.prod(grown.constant(1.0), a), grown.constant(0.0)));
+        grown.close();
+        ViolationManager grown_vm(grown);
+        RNG grown_rng(9);
+        FeasibilityJump grown_fj(grown, grown_vm, grown_rng);
+
+        ModelExtension ext(grown);
+        ext.add_constraint(ext.geq(ext.prod(ext.constant(1.0), a), ext.constant(1.0)));
+        const ExtensionResult res = grown.extend(ext);
+        grown_vm.on_extended(res);
+        REQUIRE(grown.constraint_ids().size() == 2);
+        REQUIRE(res.first_new_constraint == 1);
+
+        ExtensionResult bogus = res;
+        bogus.touched_constraints = {1};  // row 1 exists, but it is the NEW row
+        REQUIRE_THROWS_AS(grown_fj.on_extended(bogus), std::out_of_range);
+        // And the untouched result still applies, so the refusal cost nothing.
+        grown_fj.on_extended(res);
     }
     SECTION("touched constraints out of order") {
         ExtensionResult bogus = base;
@@ -1002,6 +1024,21 @@ TEST_CASE("on_extended refuses a result whose row indices name nothing", "[exten
         ExtensionResult bogus = base;
         bogus.new_incidences = {{0, 999}};
         REQUIRE_THROWS_AS(fj.on_extended(bogus), std::out_of_range);
+    }
+    SECTION("incidences out of order") {
+        // The ordering rule that is load-bearing: `merge_new_incidences` groups the
+        // CONSECUTIVE run of equal rows and hands each group to `std::set_union` as
+        // a sorted range, so a descending pair leaves `vars_of_constraint_[0]`
+        // descending -- contractual for FJ's scan order, and a silently different
+        // search rather than a bad read.
+        ExtensionResult bogus = base;
+        bogus.new_incidences = {{0, 1}, {0, 0}};
+        REQUIRE_THROWS_AS(fj.on_extended(bogus), std::invalid_argument);
+    }
+    SECTION("a repeated incidence") {
+        ExtensionResult bogus = base;
+        bogus.new_incidences = {{0, 0}, {0, 0}};
+        REQUIRE_THROWS_AS(fj.on_extended(bogus), std::invalid_argument);
     }
     SECTION("a result that does describe the model is accepted") {
         REQUIRE_NOTHROW(vm.on_extended(base));
@@ -1152,4 +1189,42 @@ TEST_CASE("a ViolationManager out of step with a grown model refuses to read", "
         REQUIRE(vm.total_violation() == 1.0);  // the new row is violated at c = 0
         REQUIRE_NOTHROW(vm.bump_weights());
     }
+}
+
+TEST_CASE("an FJ out of step with a grown model refuses to run", "[extend]") {
+    // The other half of the ordering mistake, and the one #168's in-loop hook is at
+    // least as likely to make: extend, tell the ViolationManager, forget FJ. Then
+    // `violated_`, `is_linear_` and `vars_of_constraint_` are one entry per OLD row
+    // while every sweep indexes them by the new count, and `in_queue_` is one per
+    // old variable while `enqueue` indexes it by the new ones -- all unchecked. The
+    // entry points a driver calls once per batch check it instead.
+    Model m;
+    const int32_t a = m.bool_var();
+    const int32_t lhs = m.sum({m.prod(m.constant(1.0), a)});
+    m.add_constraint(m.geq(lhs, m.constant(2.0)));
+    m.close();
+
+    ViolationManager vm(m);
+    RNG rng(17);
+    FeasibilityJump fj(m, vm, rng);
+    fj.begin(true);
+    REQUIRE_FALSE(fj.batch(20));
+
+    ModelExtension ext(m);
+    const int32_t c = ext.bool_var();
+    ext.append_to_sum(lhs, ext.prod(ext.constant(1.0), c));
+    ext.add_constraint(ext.leq(ext.prod(ext.constant(1.0), c), ext.constant(1.0)));
+    const ExtensionResult res = m.extend(ext);
+    vm.on_extended(res);  // the manager is told; FJ is not
+
+    REQUIRE_THROWS_AS(fj.batch(20), std::logic_error);
+    REQUIRE_THROWS_AS(fj.resync(), std::logic_error);
+    REQUIRE_THROWS_AS(fj.reset_weights(), std::logic_error);
+    REQUIRE_THROWS_AS(fj.begin(false), std::logic_error);
+    REQUIRE_THROWS_AS(fj.perturb(0.5), std::logic_error);
+    REQUIRE_THROWS_AS(fj.apply_novelty_jump(), std::logic_error);
+    REQUIRE_THROWS_AS(fj.run(), std::logic_error);
+
+    fj.on_extended(res);
+    REQUIRE_NOTHROW(fj.batch(20));
 }

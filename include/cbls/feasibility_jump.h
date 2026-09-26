@@ -271,11 +271,21 @@ public:
     /// weights.
     ///
     /// Throws `std::invalid_argument` if `ext` does not describe this model's
-    /// current variable and constraint counts, or if the weight vector has not
-    /// grown yet; `std::out_of_range` if `touched_constraints` or
-    /// `new_incidences` names a row or a variable this model does not have.
-    /// `ExtensionResult` is a plain struct, so those raw indices are validated
-    /// rather than trusted: every use of them is an unchecked subscript.
+    /// current variable and constraint counts, if the weight vector has not grown
+    /// yet, or if `touched_constraints`/`new_incidences` is not ascending and
+    /// distinct; `std::out_of_range` if either names a row or a variable this
+    /// model does not have. `ExtensionResult` is a plain struct, so those raw
+    /// indices are validated rather than trusted: every use of them is an
+    /// unchecked subscript, and `merge_new_incidences` additionally relies on
+    /// `new_incidences` being SORTED -- it groups consecutive rows and
+    /// `set_union`s each group into a list whose ascending order is contractual.
+    ///
+    /// **Forgetting this call is refused too, from the other end**: every entry
+    /// point a search driver calls (`begin`, `batch`, `run`, `resync`,
+    /// `reset_weights`, `perturb`, `apply_novelty_jump`) throws
+    /// `std::logic_error` while these tables are one entry per row of a model
+    /// that has since grown. That is one size compare per batch, against tables
+    /// the batch then indexes per row without one.
     void on_extended(const ExtensionResult& ext);
 
     // Novelty Jump (paper Algorithms 4-5): a bounded-backtracking compound-move
@@ -379,6 +389,10 @@ private:
     void compute_linear_constraints();
     // The same classification as compute_linear_constraints, restricted to the
     // rows an extension touched and memoised over their subtrees (#167).
+    /// Throw unless every per-row and per-variable table here, and the
+    /// ViolationManager's weights, are sized for the model as it is NOW. See the
+    /// definition for why it is checked per batch rather than per row.
+    void require_tables_in_step() const;
     void recompute_linearity(const std::vector<int32_t>& rows);
     // Fold an extension's added G_v incidences into vars_of_constraint_ (#167).
     void merge_new_incidences(const ExtensionResult& ext);
