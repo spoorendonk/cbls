@@ -49,6 +49,7 @@ void SearchCounters::merge(const SearchCounters& other) {
     columns_retired += other.columns_retired;
     extensions_refused += other.extensions_refused;
     incumbents_revalidated += other.incumbents_revalidated;
+    revalidation_evaluations += other.revalidation_evaluations;
 
     // Positionally when the two describe the SAME generator set, by name
     // otherwise.

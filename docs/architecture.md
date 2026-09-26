@@ -2220,7 +2220,8 @@ A `ColumnGenerator` registered on `SearchConfig::column_generator` is the
 local-search analogue of column generation: at chosen safe points the loop hands
 it the live GLS weights, it stages new columns (and optionally rows) into a
 `ModelExtension`, and the loop applies them through `Model::extend` (#167) and
-carries on with every existing row's weight intact. The weights are not LP duals
+carries on with every existing row's weight intact (pinned end to end, bitwise,
+by `existing rows keep their GLS weights across an in-search extension`). The weights are not LP duals
 and certify nothing; they are a measure of how hard the current columns find
 each row, which is enough to price with. The documented reduced-cost analogue: a
 column of cost `c_p` and coefficients `a_ip` changes the weighted violation by
@@ -2264,16 +2265,24 @@ slowdown and passes in the Release build. A dated record of one run.
 **What applying an extension does**, in order: `Model::extend`,
 `ViolationManager::on_extended`, `FeasibilityJump::on_extended` (#167's enforced
 order); `pad_state` on every state the loop may restore -- the incumbent, the
-closest approach, an adopted kick origin; then the incumbent is **re-evaluated**.
-That last step is not optional. An extension is an arbitrary DAG recording, so
-nothing short of evaluating the padded incumbent says whether it is still the
-point it was: a new row can cut it off, a column entering at a non-neutral start
-value moves its rows and its objective. Two `full_evaluate`s, one state copy and
-one FJ resync per applied extension, O(model), paid only on a batch that priced;
-the resync discards `on_extended`'s localised patching, so the new columns are
-re-queued by hand (`FeasibilityJump::requeue`). On a run with no incumbent the
-same check re-derives the closest approach's violation, but only when a row
-changed -- left stale-low it would refuse closer points of the grown model. The
+closest approach, an adopted kick origin; then, if the extension **reached a
+row**, the incumbent is **re-evaluated**. That last step is not optional when it
+applies. An extension is an arbitrary DAG recording, so nothing short of
+evaluating the padded incumbent says whether it is still the point it was: a new
+row can cut it off, a column entering at a non-neutral start value moves its rows
+and its objective. Two `full_evaluate`s, one state copy and one FJ resync per
+applied extension, O(model), paid only on a batch that priced; the resync
+discards `on_extended`'s localised patching, so the new columns are re-queued by
+hand (`FeasibilityJump::requeue`). On a run with no incumbent the same check
+re-derives the closest approach's violation -- left stale-low it would refuse
+closer points of the grown model. "Reached a row" means added one or grew a Sum
+under one (`ExtensionResult::touched_constraints`); an extension that did
+neither skips the check on both kinds of run, because everything a stored point
+is judged by is a row -- the objective included, which sits under the objective
+row `solve()` adds before the search starts, so an append into it is a touched
+row -- and an extension reaches an existing node only through `append_to_sum`.
+Such an extension cannot change anything evaluated, whatever its columns start
+at (pinned red by `an extension that touches no row skips revalidation`). The
 incumbent's objective is compared within `record_best`'s own relative tolerance,
 so round-off between the incremental and the fresh evaluation is not counted. The
 outcomes:
@@ -2282,7 +2291,8 @@ feasible with a different objective (the incumbent's objective is re-derived, th
 bound tightened if it is now lower, never loosened); or no longer feasible, in
 which case it is demoted to the closest approach, the objective bound is released
 and the run looks for a feasible point of the model it now has. Counted in
-`SearchCounters::incumbents_revalidated`. Without it the run returned the cut-off
+`SearchCounters::incumbents_revalidated`; every check, changed or not, in
+`revalidation_evaluations`. Without it the run returned the cut-off
 incumbent as `feasible = true` (pinned red by `a row that cuts off the incumbent
 demotes it`).
 
@@ -2298,7 +2308,14 @@ demotes it`).
   that bounds per-batch cost growth.
 - *Retirement* (`column_retire_age`, default 0 = off). `ColumnPool` ages a
   generated column once per pricing call -- starting with the call AFTER the one
-  that added it, since aging runs before the generator is asked -- while it sits at its lower bound in the
+  that added it, since aging runs before the generator is asked -- and, once the
+  cap is reached and the generator is no longer called, once per pricing event
+  that would have called it: same schedule, same deadline and iteration-budget
+  guards, but no generator call, no `pricing_calls` count and no
+  `Tracer::pricing` event. A full pool is when retiring saves the most scan cost;
+  aged only inside a call, the last columns added were never aged at all (pinned
+  red by `columns keep aging and retiring once the column cap is reached`). It
+  ages a column while it sits at its lower bound in the
   current assignment **and** in every state the search may return to (the
   incumbent, or the closest approach on an infeasible run, and an adopted
   origin), and resets the age on any other value. At the age limit it is retired:
@@ -2352,7 +2369,7 @@ nothing.
 **Reporting.** `SearchCounters::pricing_calls`, `pricing_seconds` (the call plus
 the extension, filled only with a wall clock, like `inner_solver_seconds`),
 `columns_added`, `rows_added`, `columns_retired`, `extensions_refused`,
-`incumbents_revalidated`, all summed by `merge`; and `Tracer::pricing(why,
+`incumbents_revalidated`, `revalidation_evaluations`, all summed by `merge`; and `Tracer::pricing(why,
 columns, rows, seconds)`, at most once per batch.
 
 **Measured**, on Falkenauer `u120_00` (OR-Library `binpack1.txt`, 120 items in 58

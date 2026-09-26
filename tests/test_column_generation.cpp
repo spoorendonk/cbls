@@ -22,9 +22,11 @@
 #include <array>
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <memory>
@@ -647,7 +649,7 @@ SearchResult timed_pricing_run(double limit, double slice,
 
 // SMOKE TEST, not the regression test for the guard: an unguarded late call is
 // by construction the last one and `remaining()` clamps at 0, so removing
-// `past_deadline()` from `pricing_possible()` leaves this green. The
+// `past_deadline()` from `pricing_step()` leaves this green. The
 // deterministic case below ("... once the budget is gone, exactly") is the one
 // that pins the guard; this one checks the timed path end to end.
 TEST_CASE("no pricing call starts past the deadline (timed smoke test)", "[column]") {
@@ -1424,4 +1426,202 @@ TEST_CASE("each portfolio worker grows its own model with its own generator",
     // The workers really did differ, or the check above would prove nothing.
     REQUIRE(*std::min_element(worker_best.begin(), worker_best.end()) <
             *std::max_element(worker_best.begin(), worker_best.end()));
+}
+
+// ---------------------------------------------------------------------------
+// Round 2: retirement at a full pool, revalidation that has nothing to check,
+// and the GLS weights across an in-search extension.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("columns keep aging and retiring once the column cap is reached", "[column]") {
+    // One objective-only column per call against a cap of four, each costing 1:
+    // the search wants every one of them at 0, where they enter. Aged only inside
+    // a pricing call, the fourth column was never aged at all -- the cap stops the
+    // calls -- and the third only once, so at most two could ever retire. The
+    // bookkeeping must keep running on the pricing schedule after the cap.
+    const CuttingStock cs = u120_00();
+    CuttingModel cm = build_trivial(cs);
+    const size_t base_vars = cm.model.num_vars();
+    class CostlyColumn : public ColumnGenerator {
+    public:
+        explicit CostlyColumn(int32_t obj) : obj_(obj) {}
+        void price(const PricingContext& /*ctx*/, PricingEvent /*why*/,
+                   ModelExtension& ext) override {
+            ext.append_to_sum(obj_, ext.int_var(0, 1));
+        }
+        [[nodiscard]] std::unique_ptr<ColumnGenerator> clone() const override {
+            return std::make_unique<CostlyColumn>(*this);
+        }
+
+    private:
+        int32_t obj_;
+    };
+    SearchConfig cfg = iteration_budget(30'000);
+    cfg.column_generator = std::make_shared<CostlyColumn>(cm.objective_sum);
+    cfg.pricing_period = 1;
+    cfg.max_generated_columns = 4;
+    cfg.column_retire_age = 2;
+    const SearchResult r = solve(cm.model, 0.0, 1, true, nullptr, nullptr, 3, nullptr, cfg);
+    REQUIRE(r.counters.batches > 20);
+    REQUIRE(r.counters.columns_added == 4);
+    REQUIRE(r.counters.pricing_calls == 4);  // aging past the cap calls no generator
+    REQUIRE(r.counters.columns_retired == 4);
+    for (size_t v = base_vars; v < cm.model.num_vars(); ++v) {
+        const Variable& var = cm.model.var(static_cast<int32_t>(v));
+        REQUIRE(var.ub == var.lb);
+        REQUIRE(r.best_state.values[v] == var.lb);
+    }
+    REQUIRE(r.feasible);
+    REQUIRE(feasible_at(cm.model, r.best_state));
+}
+
+TEST_CASE("an extension that touches no row skips revalidation", "[column]") {
+    // On a feasible run, a column that enters no row -- not even the objective's,
+    // which is a row too -- changes nothing any stored point is judged by, even at
+    // a non-neutral starting value. Re-evaluating the incumbent then is two
+    // full_evaluates, a state copy and an FJ resync bought for nothing.
+    const CuttingStock cs = u120_00();
+    CuttingModel cm = build_trivial(cs);
+    class Stray : public ColumnGenerator {
+    public:
+        explicit Stray(int32_t obj, bool into_objective)
+            : obj_(obj), into_objective_(into_objective) {}
+        void price(const PricingContext& ctx, PricingEvent /*why*/, ModelExtension& ext) override {
+            if (done_ || ctx.incumbent == nullptr) {
+                return;
+            }
+            const int32_t x = ext.int_var(0, 1);
+            ext.set_initial(x, 1.0);
+            if (into_objective_) {
+                // Same column, but in the objective row: this one must be checked.
+                ext.append_to_sum(obj_, ext.prod(ext.constant(0.0), x));
+            }
+            done_ = true;
+        }
+        [[nodiscard]] std::unique_ptr<ColumnGenerator> clone() const override {
+            return std::make_unique<Stray>(*this);
+        }
+
+    private:
+        int32_t obj_;
+        bool into_objective_;
+        bool done_ = false;
+    };
+    const bool into_objective = GENERATE(false, true);
+    SearchConfig cfg = iteration_budget(3'000);
+    cfg.column_generator = std::make_shared<Stray>(cm.objective_sum, into_objective);
+    cfg.pricing_period = 1;
+    const SearchResult r = solve(cm.model, 0.0, 1, true, nullptr, nullptr, 3, nullptr, cfg);
+    REQUIRE(r.counters.columns_added == 1);
+    REQUIRE(r.counters.rows_added == 0);
+    REQUIRE(r.counters.incumbents_revalidated == 0);  // nothing changed either way
+    REQUIRE(r.counters.revalidation_evaluations == (into_objective ? 1 : 0));
+    REQUIRE(r.feasible);
+    REQUIRE(feasible_at(cm.model, r.best_state));
+}
+
+namespace {
+
+// What the in-search weight probe saw: the weights the generator was handed,
+// copied, and the manager they came from, re-read after the extension.
+struct WeightProbe {
+    std::vector<double> before;
+    const ViolationManager* vm = nullptr;
+    bool staged = false;
+    bool checked = false;
+    bool prefix_identical = false;
+    size_t size_after = 0;
+    double new_row_weight = 0.0;
+};
+
+// Stages one column into the existing rows' Sum and one new row over it, once,
+// the first time some weight has been bumped well away from 1.
+class WeightCopyingGenerator : public ColumnGenerator {
+public:
+    WeightCopyingGenerator(std::shared_ptr<WeightProbe> probe, int32_t lhs)
+        : probe_(std::move(probe)), lhs_(lhs) {}
+    void price(const PricingContext& ctx, PricingEvent /*why*/, ModelExtension& ext) override {
+        if (probe_->staged) {
+            return;
+        }
+        const bool moved =
+            std::any_of(ctx.weights.begin(), ctx.weights.end(), [](double w) { return w > 2.0; });
+        if (!moved) {
+            return;
+        }
+        probe_->before.assign(ctx.weights.begin(), ctx.weights.end());
+        probe_->vm = &ctx.violations;
+        const int32_t x = ext.int_var(0, 1);
+        ext.append_to_sum(lhs_, ext.prod(ext.constant(1.0), x));
+        ext.add_constraint(ext.leq(x, ext.constant(0.0)));
+        probe_->staged = true;
+    }
+    [[nodiscard]] std::unique_ptr<ColumnGenerator> clone() const override {
+        return std::make_unique<WeightCopyingGenerator>(*this);
+    }
+
+private:
+    std::shared_ptr<WeightProbe> probe_;
+    int32_t lhs_;
+};
+
+// Fires after apply_extension, inside the same price() call: compares the
+// manager's weights with the copy the generator took.
+class WeightCheckingTracer : public Tracer {
+public:
+    explicit WeightCheckingTracer(std::shared_ptr<WeightProbe> probe) : probe_(std::move(probe)) {}
+    void pricing(PricingEvent /*why*/, int64_t /*columns*/, int64_t rows,
+                 double /*seconds*/) override {
+        if (!probe_->staged || probe_->checked || rows == 0) {
+            return;
+        }
+        probe_->checked = true;
+        const std::vector<double>& w = probe_->vm->weights;
+        probe_->size_after = w.size();
+        const size_t n = probe_->before.size();
+        probe_->prefix_identical =
+            w.size() >= n && std::memcmp(w.data(), probe_->before.data(), n * sizeof(double)) == 0;
+        if (w.size() > n) {
+            probe_->new_row_weight = w[n];
+        }
+    }
+
+private:
+    std::shared_ptr<WeightProbe> probe_;
+};
+
+}  // namespace
+
+TEST_CASE("existing rows keep their GLS weights across an in-search extension", "[column]") {
+    // #167's third criterion end to end: the extension applied by the search
+    // itself, mid-run, on a model whose weights the GLS dynamics have pushed well
+    // away from 1 (it is infeasible, so they only grow). Compared bitwise: an
+    // extension that re-initialised the existing rows' weights, or rescaled them,
+    // fails this.
+    Model m;
+    const int32_t a = m.bool_var();
+    const int32_t b = m.bool_var();
+    const int32_t lhs = m.sum({m.prod(m.constant(1.0), a), m.prod(m.constant(1.0), b)});
+    m.add_constraint(m.leq(lhs, m.constant(0.0)));
+    m.add_constraint(m.geq(lhs, m.constant(2.0)));
+    m.close();
+
+    auto probe = std::make_shared<WeightProbe>();
+    WeightCheckingTracer tracer(probe);
+    SearchConfig cfg = iteration_budget(20'000);
+    cfg.batch_iterations = 100;
+    cfg.column_generator = std::make_shared<WeightCopyingGenerator>(probe, lhs);
+    cfg.pricing_period = 1;
+    cfg.tracer = &tracer;
+    const SearchResult r = solve(m, 0.0, 1, true, nullptr, nullptr, 3, nullptr, cfg);
+
+    REQUIRE(probe->staged);
+    REQUIRE(probe->checked);
+    REQUIRE(r.counters.columns_added == 1);
+    REQUIRE(r.counters.rows_added == 1);
+    REQUIRE(probe->size_after == probe->before.size() + 1);
+    REQUIRE(
+        std::any_of(probe->before.begin(), probe->before.end(), [](double w) { return w > 2.0; }));
+    REQUIRE(probe->prefix_identical);
+    REQUIRE(probe->new_row_weight == 1.0);  // a new row starts where construction would
 }

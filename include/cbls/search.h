@@ -275,11 +275,14 @@ struct SearchConfig {
     int64_t max_generated_columns = 10000;
     // Retire a generated column after it has sat at its lower bound -- in the
     // current assignment AND in the incumbent -- for this many consecutive
-    // pricing calls. 0 = never retire, the default: retirement is permanent (see
+    // pricing events. 0 = never retire, the default: retirement is permanent (see
     // `ColumnPool`), and no measurement in the tree says which age is worth
-    // losing a column over. Retiring buys scan cost, not memory. Aging runs only
-    // inside a pricing call, so once `max_generated_columns` is reached no column
-    // is aged or retired again.
+    // losing a column over. Retiring buys scan cost, not memory. Columns are aged
+    // at the start of every pricing call and, once `max_generated_columns` is
+    // reached and the generator is no longer called, at every pricing event that
+    // would have called it -- same schedule, same budget guards, no generator
+    // call and no `pricing_calls` count -- so a full pool, where retiring saves
+    // the most scan cost, keeps retiring.
     int column_retire_age = 0;
 };
 

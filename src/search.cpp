@@ -452,16 +452,23 @@ private:
     // apply_batch_outcome, whose weight reset on a new best would otherwise hand
     // the pricer a flat weight vector.
     [[nodiscard]] std::optional<PricingEvent> pricing_due_after_batch(bool improved) const;
-    // Whether a pricing call may start at all: a generator, room under the cap,
-    // budget left, and none yet this batch.
-    [[nodiscard]] bool pricing_possible() const;
+    // What a due pricing event does. `Price` calls the generator (which also ages
+    // the columns); `AgeOnly` is the same event at a full column pool, where the
+    // generator may not be called but the columns are still aged and retired on
+    // the same schedule -- a full pool is exactly when retiring saves the most
+    // scan cost. `None`: no generator, one already this batch, the budget is
+    // gone, or (at a full pool) retirement is off.
+    enum class PricingStep : std::uint8_t { None, Price, AgeOnly };
+    [[nodiscard]] PricingStep pricing_step() const;
+    // Take the step `pricing_step()` chose for event `why`.
+    void take_pricing_step(PricingStep step, PricingEvent why);
     // Price at the safe point after a batch. Pays a pending resync first, since
     // the pricer reads node values and FJ must match the model it is grown with.
     void maybe_price_after_batch(bool improved, bool& resync);
     // Price immediately before a diversification kick (PricingEvent::Stagnation).
     void maybe_price_before_kick();
     // One pricing call: build the context, call the generator, apply what it
-    // staged, age the columns. Precondition: pricing_possible().
+    // staged, age the columns. Precondition: pricing_step() == Price.
     void price(PricingEvent why);
     // Apply a staged extension and grow every piece of search state with it.
     void apply_extension(const ModelExtension& ext, int64_t& columns, int64_t& rows);
@@ -576,7 +583,8 @@ private:
     std::unique_ptr<ColumnGenerator> generator_;
     ColumnPool columns_;
     ColumnSignatureSet signatures_;
-    // At most one pricing call per batch; reset at the top of each pass.
+    // At most one pricing step (a call, or aging alone at a full pool) per
+    // batch; reset at the top of each pass.
     bool priced_this_batch_ = false;
     // Which budget ends the run. Assigned at every loop exit so it always
     // describes the exit actually taken; the `while` condition below is the only
@@ -1536,14 +1544,38 @@ std::optional<PricingEvent> ViolationLSLoop::pricing_due_after_batch(bool improv
     return std::nullopt;
 }
 
-bool ViolationLSLoop::pricing_possible() const {
+ViolationLSLoop::PricingStep ViolationLSLoop::pricing_step() const {
+    if (generator_ == nullptr || priced_this_batch_) {
+        return PricingStep::None;
+    }
+    // At a full pool with retirement off there is nothing left to do, ever:
+    // decided before the budget tests so such a run reads no clock here. (Nor
+    // does any other: past_deadline() is clockless without a deadline.)
+    const bool full = columns_.remaining() <= 0;
+    if (full && config_.column_retire_age <= 0) {
+        return PricingStep::None;
+    }
     // The iteration budget is asked too: budget_exhausted() is only consulted at
     // the top of the loop, so without it the batch that spent the budget would
     // still price, and pay an extension no batch ever searches.
     const bool iterations_spent =
         config_.max_iterations > 0 && fj_.iterations() >= config_.max_iterations;
-    return generator_ != nullptr && !priced_this_batch_ && columns_.remaining() > 0 &&
-           !past_deadline() && !iterations_spent;
+    if (past_deadline() || iterations_spent) {
+        return PricingStep::None;
+    }
+    return full ? PricingStep::AgeOnly : PricingStep::Price;
+}
+
+void ViolationLSLoop::take_pricing_step(PricingStep step, PricingEvent why) {
+    if (step == PricingStep::Price) {
+        price(why);
+    } else if (step == PricingStep::AgeOnly) {
+        // price()'s own first step, without the generator: the columns age on
+        // the schedule they always did, but no context is built, no call is
+        // counted and the host sees no pricing event, since none took place.
+        priced_this_batch_ = true;
+        retire_aged_columns();
+    }
 }
 
 void ViolationLSLoop::maybe_price_after_batch(bool improved, bool& resync) {
@@ -1551,7 +1583,11 @@ void ViolationLSLoop::maybe_price_after_batch(bool improved, bool& resync) {
         return;  // the whole cost of the feature on a run that does not use it
     }
     const std::optional<PricingEvent> why = pricing_due_after_batch(improved);
-    if (!why.has_value() || !pricing_possible()) {
+    if (!why.has_value()) {
+        return;
+    }
+    const PricingStep step = pricing_step();
+    if (step == PricingStep::None) {
         return;
     }
     if (resync) {
@@ -1559,19 +1595,21 @@ void ViolationLSLoop::maybe_price_after_batch(bool improved, bool& resync) {
         // assignment outside FJ. The pricer reads node values -- which are
         // already current -- but FeasibilityJump::on_extended patches FJ's
         // tables for the touched rows only, and it must be patching tables that
-        // describe this assignment. Paying the resync now instead of in
-        // apply_batch_outcome is the same resync, earlier.
+        // describe this assignment; FeasibilityJump::retire rebuilds the
+        // violated and scan sets from them too, so aging alone needs it as
+        // much. Paying the resync now instead of in apply_batch_outcome is the
+        // same resync, earlier.
         fj_.resync();
         resync = false;
     }
-    price(*why);
+    take_pricing_step(step, *why);
 }
 
 void ViolationLSLoop::maybe_price_before_kick() {
-    if (generator_ == nullptr || !config_.price_on_stagnation || !pricing_possible()) {
+    if (generator_ == nullptr || !config_.price_on_stagnation) {
         return;
     }
-    price(PricingEvent::Stagnation);
+    take_pricing_step(pricing_step(), PricingEvent::Stagnation);
 }
 
 void ViolationLSLoop::price(PricingEvent why) {
@@ -1667,8 +1705,19 @@ void ViolationLSLoop::apply_extension(const ModelExtension& ext, int64_t& column
 // WHICH state: the incumbent on a run that has one. On a run that has none, the
 // closest approach, whose recorded violation `note_closest_approach` compares
 // every later batch against -- left stale-low, it would refuse genuinely closer
-// points of the grown model -- but only when a row changed, since a pure column
-// addition at a neutral start cannot move it and the check would be wasted.
+// points of the grown model.
+//
+// WHEN: only when the extension reached a row -- added one, or grew a Sum under
+// one (`touched_constraints`) -- on either kind of run. Everything a stored
+// point is judged by is a row: real_feasible() and max_real_violation() read
+// the constraint rows, and current_obj() reads the objective node, which on a
+// run with an objective sits under the objective row solve() added before the
+// search started (Model::add_objective_soft_constraint) -- so an append into
+// the objective shows up as a touched row too. An extension reaches an existing
+// node only through append_to_sum, and ExtensionResult reports every row above
+// a grown Sum; its new columns and nodes feed no row otherwise. So with no row
+// reached, nothing evaluated can differ, whatever value the new columns start
+// at, and the check below would be O(model) spent confirming it.
 //
 // Cost, per APPLIED extension that needs it: two full_evaluates, one state copy,
 // and one FJ resync (the re-evaluation rewrote every node value -- to the same
@@ -1693,9 +1742,10 @@ void ViolationLSLoop::apply_extension(const ModelExtension& ext, int64_t& column
 //    the model AS IT WAS, which is still true.
 void ViolationLSLoop::revalidate_after_extension(const ExtensionResult& res) {
     const bool rows_changed = res.num_new_constraints > 0 || !res.touched_constraints.empty();
-    if (!have_feasible_ && !rows_changed) {
+    if (!rows_changed) {
         return;
     }
+    ++counters_.revalidation_evaluations;
     const Model::State here = model_.copy_state();
     model_.restore_state(have_feasible_ ? best_state_ : closest_state_);
     full_evaluate(model_);

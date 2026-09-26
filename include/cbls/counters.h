@@ -175,6 +175,12 @@ struct SearchCounters {
     /// so the engine had to re-derive the incumbent's standing. See
     /// `docs/architecture.md`, "Column generation".
     int64_t incumbents_revalidated = 0;
+    /// Times an applied extension made the engine re-evaluate a stored point --
+    /// the incumbent, or on a run without one the closest approach -- at O(model)
+    /// cost. Zero for an extension that reached no row (added no row and grew no
+    /// Sum under one), since nothing such a point is judged by can have changed.
+    /// `incumbents_revalidated` counts the subset of these that found a change.
+    int64_t revalidation_evaluations = 0;
 
     /// Add `other` into this, as `ParallelSearch` sums `perturbations`: every
     /// scalar adds, and `by_generator` merges by NAME (an entry whose name is
