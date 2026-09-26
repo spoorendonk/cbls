@@ -426,6 +426,8 @@ private:
     // Whether a budget has run out. Records which one in termination_.
     bool budget_exhausted();
     BatchKind pick_batch_kind();
+    // Bucket one batch into `counters_`. See the definition.
+    void count_batch(BatchKind kind);
     // Run the batch. Returns true if it committed changes outside FJ's scan-set
     // and jump-table, i.e. if the loop owes an fj_.resync().
     bool run_batch(BatchKind kind);
@@ -502,6 +504,12 @@ private:
     int lns_slot_ = 0;
     int stagnation_ = 0;
     int64_t batches_ = 0;
+    // Where the run spent its work (#169). Observational only: no field here is
+    // ever read back by the loop, so a run that fills it takes the trajectory it
+    // would have taken without it. `batches_` above stays a separate counter
+    // because `budget_exhausted()` branches on it -- this one must not be
+    // reachable from control flow at all.
+    SearchCounters counters_;
     std::chrono::steady_clock::time_point last_callback_;
     std::chrono::steady_clock::time_point last_improvement_;
     // Which budget ends the run. Assigned at every loop exit so it always
@@ -1150,6 +1158,24 @@ bool ViolationLSLoop::budget_exhausted() {
     return false;
 }
 
+// Bucket a batch by kind. Exactly one arm runs per batch, which is what makes
+// fj + novelty + structural == batches an identity rather than an approximation
+// (tests/test_counters.cpp pins it).
+void ViolationLSLoop::count_batch(BatchKind kind) {
+    ++counters_.batches;
+    switch (kind) {
+        case BatchKind::FeasibilityJump:
+            ++counters_.fj_batches;
+            break;
+        case BatchKind::NoveltyJump:
+            ++counters_.novelty_batches;
+            break;
+        case BatchKind::Structural:
+            ++counters_.structural_batches;
+            break;
+    }
+}
+
 BatchKind ViolationLSLoop::pick_batch_kind() {
     if (rng_.random() < structural_probability_) {
         return BatchKind::Structural;
@@ -1201,7 +1227,22 @@ bool ViolationLSLoop::polish_and_record(double batch_violation, bool& resync) {
     // arbitrary work, and even FloatIntensifyHook sweeps every Float
     // max_sweeps times. Don't start one we have no budget for.
     if (hook_ != nullptr && !past_deadline()) {
+        ++counters_.inner_solver_calls;
+        // Gated on has_deadline_ for exactly the reason last_improvement_ is: an
+        // iteration-budgeted run must read NO clock at all, not merely no clock
+        // that reaches control flow, or it stops being bit-reproducible on any
+        // machine (docs/architecture.md's determinism claim, and #169's own
+        // "no additional clock read" criterion). The consequence is stated on
+        // SearchCounters::inner_solver_seconds: the call COUNT is always right,
+        // the seconds read 0.0 on a run with no wall clock.
+        const auto hook_started = has_deadline_ ? std::chrono::steady_clock::now()
+                                                : std::chrono::steady_clock::time_point{};
         hook_->solve(model_, vm_, {});  // continuous-objective polish (mutates floats)
+        if (has_deadline_) {
+            counters_.inner_solver_seconds +=
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - hook_started)
+                    .count();
+        }
         resync = true;
         if (real_feasible()) {  // keep the polish only if it stayed feasible
             improved = record_best() || improved;
@@ -1408,6 +1449,16 @@ SearchResult ViolationLSLoop::finish() {
     result.lns_repairs_accepted = lns_repairs_accepted_;
     result.first_feasible_objective = first_feasible_obj_;
     result.time_to_first_feasible = first_feasible_time_;
+    result.counters = counters_;
+    // The structural sweep keeps its own per-generator tallies, since it is the
+    // only thing that knows which generator scored which candidate. Copied out
+    // here rather than accumulated per batch: the batch outlives no solve, and
+    // one copy of a handful of entries at exit is cheaper than a merge per batch.
+    result.counters.by_generator = structural_.generator_counters();
+    for (const GeneratorCounters& g : result.counters.by_generator) {
+        result.counters.structural_moves_tried += g.moves_tried;
+        result.counters.structural_moves_accepted += g.moves_accepted;
+    }
     return result;
 }
 
@@ -1445,6 +1496,7 @@ SearchResult ViolationLSLoop::run() {
 
         bool resync = run_batch(kind);
         ++batches_;
+        count_batch(kind);
 
         const double batch_violation = max_real_violation();
         note_closest_approach(batch_violation);

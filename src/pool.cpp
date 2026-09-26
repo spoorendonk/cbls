@@ -237,7 +237,10 @@ struct WorkerAccumulator {
     // clock. Every time on a worker's SearchResult is relative to its own
     // solve() start, so the pair below has to be shifted onto the shared clock
     // or a restart that began at t=19.9s reports "feasible at 0.001s".
-    void absorb(const SearchResult& r, double started_at) {
+    // `restarted` is whether the run being absorbed is a RESTART rather than
+    // this worker's first solve -- the one counter the accumulator has to derive
+    // rather than read, since a SearchResult cannot know it was one.
+    void absorb(const SearchResult& r, double started_at, bool restarted) {
         result.iterations += r.iterations;
         // Summed, not maxed, for the same reason iterations are: a worker's
         // restarts run BACK TO BACK on its own thread, so the wall time it held
@@ -254,6 +257,14 @@ struct WorkerAccumulator {
         result.perturbations += r.perturbations;
         result.lns_repairs += r.lns_repairs;
         result.lns_repairs_accepted += r.lns_repairs_accepted;
+        // Same rule, one struct over. Both aggregation sites go through
+        // SearchCounters::merge -- this one across a worker's restarts, and
+        // solve_portfolio's loop across the workers -- so the two cannot drift
+        // apart the way a hand-written sum per site would.
+        result.counters.merge(r.counters);
+        if (restarted) {
+            ++result.counters.portfolio_restarts;
+        }
         // The earliest restart to reach feasibility, with the objective it
         // reached -- both from that same restart.
         const double reached = started_at + r.time_to_first_feasible;
@@ -513,7 +524,7 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index,
             continue;
         }
         consecutive_failures = 0;
-        acc.absorb(r, started_at);
+        acc.absorb(r, started_at, /*restarted=*/restart > 0);
 
         if (r.termination == TerminationReason::Feasible) {
             // A pure-feasibility model: the first feasible solution IS the
@@ -738,6 +749,7 @@ SearchResult ParallelSearch::solve_portfolio(
         result.perturbations += r.perturbations;
         result.lns_repairs += r.lns_repairs;
         result.lns_repairs_accepted += r.lns_repairs_accepted;
+        result.counters.merge(r.counters);
         // The portfolio reached feasibility when its FIRST worker did, and the
         // objective reported beside that time is the one that worker reached --
         // the pair has to come from the same worker to mean anything.

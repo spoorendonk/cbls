@@ -9,7 +9,10 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <stdexcept>
+#include <string>
+#include <utility>
 
 namespace cbls {
 
@@ -59,6 +62,16 @@ StructuralBatch::StructuralBatch(const Model& model, const SearchConfig& config,
             // for its throw, and `constraints_of_var` is [[nodiscard]].
             static_cast<void>(model.constraints_of_var(var_id));
         }
+    }
+    // Built here rather than lazily, so `generator_counters()` is always
+    // parallel to `generators_` and a generator that never proposed anything
+    // still has a row reading zero -- which is the answer a caller asking "did
+    // this generator do anything" wants, rather than a missing entry.
+    counters_.reserve(generators_.size());
+    for (const std::unique_ptr<MoveGenerator>& gen : generators_) {
+        GeneratorCounters entry;
+        entry.name = std::string(gen->name());
+        counters_.push_back(std::move(entry));
     }
 }
 
@@ -265,9 +278,11 @@ const std::vector<int32_t>& StructuralBatch::apply_from_base(Model& model, const
 }
 
 bool StructuralBatch::take_first_improving(Model& model, ViolationManager& vm, MoveGenerator& gen,
-                                           ConstSpan<int32_t> rows, bool full_scan) {
+                                           ConstSpan<int32_t> rows, bool full_scan,
+                                           GeneratorCounters& counters) {
     bool changed = false;
     snapshot_sample_base(model);
+    counters.moves_tried += static_cast<int64_t>(candidates_.size());
     for (const Move& move : candidates_) {
         const std::vector<int32_t>& touched = apply_from_base(model, move);
         assert_move_within_scope(gen, touched);
@@ -276,6 +291,7 @@ bool StructuralBatch::take_first_improving(Model& model, ViolationManager& vm, M
             full_scan ? vm.weighted_delta_from(baseline_) : vm.weighted_delta_from(baseline_, rows);
         if (delta < kImprovementThreshold) {
             changed = true;  // improving: keep
+            ++counters.moves_accepted;
             vm.snapshot_violations(baseline_);
             gen.on_commit(move);
             record_accepted(model);
@@ -309,10 +325,16 @@ bool StructuralBatch::take_first_improving(Model& model, ViolationManager& vm, M
 }
 
 bool StructuralBatch::take_best(Model& model, ViolationManager& vm, MoveGenerator& gen,
-                                ConstSpan<int32_t> rows, bool full_scan) {
+                                ConstSpan<int32_t> rows, bool full_scan,
+                                GeneratorCounters& counters) {
     std::ptrdiff_t best = -1;
     double best_delta = kImprovementThreshold;
     snapshot_sample_base(model);
+    // Every candidate is applied and scored below, whether or not it wins, so
+    // the try count is the sample size -- exactly as under FirstImprovingSample.
+    // At most ONE of them is then committed, which is the policy difference the
+    // accepted count makes visible.
+    counters.moves_tried += static_cast<int64_t>(candidates_.size());
     for (size_t i = 0; i < candidates_.size(); ++i) {
         const Move& move = candidates_[i];
         const std::vector<int32_t>& touched = apply_from_base(model, move);
@@ -338,6 +360,7 @@ bool StructuralBatch::take_best(Model& model, ViolationManager& vm, MoveGenerato
     delta_evaluate(model, touched);
     vm.snapshot_violations(baseline_);
     gen.on_commit(move);
+    ++counters.moves_accepted;
     return true;
 }
 
@@ -389,22 +412,24 @@ bool StructuralBatch::run(Model& model, ViolationManager& vm, RNG& rng, bool has
     bool changed = false;
     vm.snapshot_violations(baseline_);
     MoveContext ctx{model, vm, rng, selection_, &baseline_};
-    for (const std::unique_ptr<MoveGenerator>& gen : generators_) {
+    for (size_t i = 0; i < generators_.size(); ++i) {
+        MoveGenerator& gen = *generators_[i];
         if (has_deadline && std::chrono::steady_clock::now() >= deadline) {
             break;
         }
-        if (selection_ == StructuralSelection::ViolationGuided && !scope_can_improve(model, *gen)) {
+        if (selection_ == StructuralSelection::ViolationGuided && !scope_can_improve(model, gen)) {
             continue;
         }
-        draw_candidates(ctx, *gen);
+        draw_candidates(ctx, gen);
         if (candidates_.empty()) {
             continue;
         }
-        const ConstSpan<int32_t> rows = affected_rows(model, *gen);
+        const ConstSpan<int32_t> rows = affected_rows(model, gen);
         const bool full_scan = rows.empty();
+        GeneratorCounters& counters = counters_[i];
         changed = (selection_ == StructuralSelection::FirstImprovingSample
-                       ? take_first_improving(model, vm, *gen, rows, full_scan)
-                       : take_best(model, vm, *gen, rows, full_scan)) ||
+                       ? take_first_improving(model, vm, gen, rows, full_scan, counters)
+                       : take_best(model, vm, gen, rows, full_scan, counters)) ||
                   changed;
     }
     return changed;

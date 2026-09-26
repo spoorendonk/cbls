@@ -1395,6 +1395,22 @@ point, before the inner-solver polish in that same batch (#149). Observational
 only — nothing reads them back — so the split between arrival and descent can be
 measured without a bespoke instrumented build.
 
+`SearchResult::counters` (a `SearchCounters`, `include/cbls/counters.h`) answers
+the question the fields above cannot: not how much work a run did but **on what**
+(#169). Batches bucketed by `BatchKind` — and
+`fj_batches + novelty_batches + structural_batches == batches` exactly, since
+`pick_batch_kind` returns one of three and every batch is counted once — the
+structural sweep's candidates tried and committed, per generator by
+`MoveGenerator::name()`, the inner solver's call count, and a portfolio's restart
+count. LNS stays on `lns_repairs` / `lns_repairs_accepted` rather than being
+duplicated here.
+
+Observational only, and one field pays for that explicitly:
+`inner_solver_seconds` is gated on the run having a wall-clock budget and reads
+**0.0** without one, because a clockless run is documented above to read no clock
+at all and that guarantee is worth more than a timing on the one regime where the
+timing is not what anybody is measuring. The call count is always filled.
+
 ### Wall-clock budget
 
 `solve(model, time_limit)` is a promise to return within `time_limit`. The
@@ -1576,7 +1592,12 @@ and deterministic. (`solve()` still timestamps entry and exit to fill
 `time_seconds`, a callback's ~1s progress cadence reads the clock once per
 batch, and `SearchResult::time_to_first_feasible` costs ONE read, at the first
 feasible point and latched thereafter (#149); none of the three reaches the
-search trajectory.)
+search trajectory. Two more are OPT-IN and cost nothing unless the caller asks
+for them: `SearchCounters::inner_solver_seconds` is gated on `has_deadline_`
+exactly as `last_improvement_` is, so it reads 0.0 on a clockless run rather
+than reading a clock (#169), and a `SearchConfig::tracer`, if one is attached,
+costs one read per new best and two per inner-solver call. Neither reaches the
+trajectory either, and with no tracer attached neither happens at all.)
 
 #### Why this is tested the way it is
 
@@ -2576,7 +2597,13 @@ in both the human and the JSONL format:
   the pooled solution itself, which carries the residual of the state it holds;
   `perturbations`, `lns_repairs` and `lns_repairs_accepted` are **sums** over the
   workers, as `iterations` is, and so are not comparable to a single run's counts
-  at the same wall time; `first_feasible_objective` and `time_to_first_feasible`
+  at the same wall time; `counters` is summed the same way, through
+  `SearchCounters::merge` at **both** aggregation sites (across a worker's
+  restarts in `WorkerAccumulator::absorb`, and across the workers in
+  `solve_portfolio`) so the two cannot drift apart, with the per-generator rows
+  merged by NAME rather than by position — a worker that threw before building
+  its batch contributes an empty vector, and an index-wise merge would attribute
+  the survivors' rows to the wrong generator; `first_feasible_objective` and `time_to_first_feasible`
   are the pair from the earliest worker *and restart* to reach feasibility, with
   the time shifted onto the portfolio clock. Only `escape_probe_armed` reads its
   "not recorded" value: it is a latch on one worker's end state, and a pooled

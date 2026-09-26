@@ -1,5 +1,6 @@
 #pragma once
 
+#include "counters.h"
 #include "move_generator.h"
 
 #include <chrono>
@@ -115,11 +116,24 @@ public:
     /// object.
     [[nodiscard]] const MoveGenerator& generator(size_t i) const { return *generators_.at(i); }
 
+    /// Candidates applied-and-scored, and committed, per generator since this
+    /// batch was built (#169). Parallel to `generators_`, so entry `i` belongs to
+    /// `generator(i)`; the names are copied at construction because a clone's
+    /// `name()` is a `string_view` that dies with it.
+    ///
+    /// Counted where the candidate is scored, not where it is generated: the two
+    /// differ under the sampling policies, which draw until the sample is full
+    /// and score what they drew. Observational only -- nothing here is read back
+    /// by the sweep.
+    [[nodiscard]] const std::vector<GeneratorCounters>& generator_counters() const noexcept {
+        return counters_;
+    }
+
 private:
     bool take_first_improving(Model& model, ViolationManager& vm, MoveGenerator& gen,
-                              ConstSpan<int32_t> rows, bool full_scan);
+                              ConstSpan<int32_t> rows, bool full_scan, GeneratorCounters& counters);
     bool take_best(Model& model, ViolationManager& vm, MoveGenerator& gen, ConstSpan<int32_t> rows,
-                   bool full_scan);
+                   bool full_scan, GeneratorCounters& counters);
     /// The constraint rows a move from `gen` can change: the union of its
     /// scope's G_v, ascending and deduplicated. Empty scope returns an empty
     /// span, which the caller reads as "score with the full scan".
@@ -154,6 +168,8 @@ private:
     const std::vector<int32_t>& apply_from_base(Model& model, const Move& move);
 
     std::vector<std::unique_ptr<MoveGenerator>> generators_;
+    /// One entry per generator, same order. See `generator_counters()`.
+    std::vector<GeneratorCounters> counters_;
     StructuralSelection selection_;
     int sample_size_;
     /// Per-constraint violations of the last ACCEPTED assignment. See the note

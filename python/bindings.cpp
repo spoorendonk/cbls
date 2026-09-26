@@ -422,13 +422,47 @@ NB_MODULE(_cbls_core, m) {
           "this is a setup-time convenience for a universe of a few thousand. Build the rows "
           "yourself and use NeighbourList(rows) for anything larger.");
 
+    // BatchKind -- which kind of batch the outer loop ran. Bound so a Python
+    // reader of SearchCounters can name the buckets it is reading.
+    nb::enum_<BatchKind>(m, "BatchKind")
+        .value("FeasibilityJump", BatchKind::FeasibilityJump)
+        .value("NoveltyJump", BatchKind::NoveltyJump)
+        .value("Structural", BatchKind::Structural);
+
+    // SearchCounters and its per-generator rows (#169). Read-only throughout:
+    // these are a report about a finished run, and a writable field would be a
+    // way to falsify it rather than a feature. Registered before SearchResult,
+    // which exposes one.
+    nb::class_<GeneratorCounters>(m, "GeneratorCounters")
+        .def_ro("name", &GeneratorCounters::name)
+        .def_ro("moves_tried", &GeneratorCounters::moves_tried)
+        .def_ro("moves_accepted", &GeneratorCounters::moves_accepted);
+
+    nb::class_<SearchCounters>(m, "SearchCounters")
+        .def_ro("batches", &SearchCounters::batches)
+        .def_ro("fj_batches", &SearchCounters::fj_batches)
+        .def_ro("novelty_batches", &SearchCounters::novelty_batches)
+        .def_ro("structural_batches", &SearchCounters::structural_batches)
+        .def_ro("structural_moves_tried", &SearchCounters::structural_moves_tried)
+        .def_ro("structural_moves_accepted", &SearchCounters::structural_moves_accepted)
+        .def_ro("by_generator", &SearchCounters::by_generator)
+        .def_ro("inner_solver_calls", &SearchCounters::inner_solver_calls)
+        // 0.0 on a run with no wall-clock budget, by design -- see
+        // include/cbls/counters.h. The call count above is always filled.
+        .def_ro("inner_solver_seconds", &SearchCounters::inner_solver_seconds)
+        .def_ro("portfolio_restarts", &SearchCounters::portfolio_restarts);
+
     // SearchResult
     nb::class_<SearchResult>(m, "SearchResult")
         .def_ro("objective", &SearchResult::objective)
         .def_ro("feasible", &SearchResult::feasible)
         .def_ro("iterations", &SearchResult::iterations)
         .def_ro("time_seconds", &SearchResult::time_seconds)
-        .def_ro("termination", &SearchResult::termination);
+        .def_ro("termination", &SearchResult::termination)
+        // By reference to the result that owns it: a SearchCounters is a plain
+        // aggregate with a vector in it, and copying it per attribute read would
+        // be a surprise on a field a caller reads several times.
+        .def_ro("counters", &SearchResult::counters, nb::rv_policy::reference_internal);
 
     // Model
     nb::class_<Model>(m, "Model")
