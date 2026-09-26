@@ -258,9 +258,6 @@ void StructuralBatch::snapshot_sample_base(const Model& model) {
         base_values_[i] = var.value;
         base_elements_[i].assign(var.elements.begin(), var.elements.end());
     }
-    // Decided per sample rather than once per batch: `Model::extend` can add a
-    // custom node to a model mid-search. One predictable branch per sample.
-    journaling_ = model.has_custom_nodes();
     applied_.clear();
     previous_.clear();
     record_accepted(model);
@@ -290,6 +287,20 @@ void StructuralBatch::record_accepted(const Model& model) {
         // Copy-assignment into a warm journal reuses its capacity.
         accepted_ = applied_;
     }
+}
+
+// Whether any custom node reads positional edits (#172). Decided per SWEEP
+// rather than once per batch, because `Model::extend` can add a custom node to
+// a model mid-search; O(#custom nodes) virtual calls, and one predictable
+// branch when the model has none -- which is every model without a custom
+// node, whose path is then the pre-#172 one exactly.
+bool StructuralBatch::wants_journal(const Model& model) {
+    for (int32_t id = 0; id < model.num_custom_invariants(); ++id) {
+        if (model.custom_invariant(id).wants_positional_edits()) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // What `delta_evaluate` is to be told about a move from "baseline + `undo`" to
@@ -504,6 +515,7 @@ bool StructuralBatch::run(Model& model, ViolationManager& vm, RNG& rng, bool has
         return false;
     }
     bool changed = false;
+    journaling_ = wants_journal(model);
     vm.snapshot_violations(baseline_);
     MoveContext ctx{model, vm, rng, selection_, &baseline_};
     for (size_t i = 0; i < generators_.size(); ++i) {

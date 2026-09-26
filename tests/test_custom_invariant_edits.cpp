@@ -147,6 +147,8 @@ public:
         saved_.clear();
     }
 
+    [[nodiscard]] bool wants_positional_edits() const override { return use_edits_; }
+
     [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
         return std::make_unique<RouteCost>(*this);
     }
@@ -636,21 +638,26 @@ struct EditsSeen {
     size_t count = 0;
     bool threw = false;
     bool scalar_available = true;
+    int delta_calls_available = 0;  // across delta() calls only
 };
 
 class EditsProbe : public CustomInvariant {
 public:
-    EditsProbe(std::shared_ptr<EditsSeen> seen, int32_t watch)
-        : seen_(std::move(seen)), watch_(watch) {}
+    EditsProbe(std::shared_ptr<EditsSeen> seen, int32_t watch, bool wants = true)
+        : seen_(std::move(seen)), watch_(watch), wants_(wants) {}
 
     double evaluate(const InvariantInputs& in) override {
         record(in);
         return sum(in);
     }
-    double delta(const InvariantInputs& in, ConstSpan<int32_t> /*changed*/) override {
+    double delta(const InvariantInputs& in, ConstSpan<int32_t> changed) override {
         record(in);
+        if (seen_->available && std::binary_search(changed.begin(), changed.end(), watch_)) {
+            ++seen_->delta_calls_available;
+        }
         return sum(in);
     }
+    [[nodiscard]] bool wants_positional_edits() const override { return wants_; }
     [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
         return std::make_unique<EditsProbe>(*this);
     }
@@ -683,6 +690,7 @@ private:
 
     std::shared_ptr<EditsSeen> seen_;
     int32_t watch_;
+    bool wants_;
 };
 
 }  // namespace
@@ -741,6 +749,37 @@ TEST_CASE("no positional information is never mistaken for no changes", "[custom
         apply_move_recorded(m, Move{{replace_change(lid, rev)}, "replace", 0.0}, j);
         delta_evaluate(m, &lid, 1, DeltaMode::Commit, &j);
         REQUIRE_FALSE(seen->available);
+    }
+}
+
+TEST_CASE("the structural batch records edits only for an invariant that opts in",
+          "[custom][edits]") {
+    // The journal costs ~6% per candidate on a re-reading invariant, so it is
+    // opt-in. Not opting in must still be CORRECT -- `available()` false -- and
+    // opting in must actually switch it on.
+    const bool wants = GENERATE(false, true);
+    auto seen = std::make_shared<EditsSeen>();
+    Model m;
+    const int32_t k = m.int_var(0, 9, "k");
+    const int32_t l = m.list_var(30, "L");
+    const int32_t node = m.custom({k, l}, std::make_unique<EditsProbe>(seen, 1, wants), "probe");
+    m.add_constraint(m.leq(node, m.constant(0.0)));
+    m.minimize(node);
+    m.close();
+
+    SearchConfig config;
+    StructuralBatch batch(m, config, /*enabled=*/true);
+    ViolationManager vm(m);
+    RNG rng(3);
+    const int calls_before = seen->calls;
+    for (int sweep = 0; sweep < 20; ++sweep) {
+        (void)batch.run(m, vm, rng, false, kNoDeadline);
+    }
+    REQUIRE(seen->calls > calls_before);
+    if (wants) {
+        REQUIRE(seen->delta_calls_available > 0);
+    } else {
+        REQUIRE(seen->delta_calls_available == 0);
     }
 }
 

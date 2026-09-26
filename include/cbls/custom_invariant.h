@@ -126,7 +126,9 @@ public:
     ///  - for an input that is not a List/Set variable;
     ///  - whenever the caller of `delta_evaluate` recorded nothing -- the
     ///    diversification kick, LNS, the inner solver, a restore, anything that
-    ///    is not the structural batch, and any direct `var_mut` edit;
+    ///    is not the structural batch, and any direct `var_mut` edit -- and in
+    ///    the structural batch too unless some invariant in the model opts in
+    ///    through `CustomInvariant::wants_positional_edits`;
     ///  - for a variable that saw a whole-vector `Replace` (a registered
     ///    generator's, or the inter-list tail exchange);
     ///  - after an exception left a probe open (see the class note).
@@ -234,9 +236,11 @@ private:
 /// All three are CORRECT -- each leg really is a new committed assignment, and the
 /// `changed` set each passes is a complete superset of what it moved -- but they
 /// cost two deltas and two commits per candidate rather than one delta and one
-/// rollback, and an invariant caching a List's prefix sums will rebuild that cache
-/// on both legs. Budget a candidate on any of the three at twice a bracketed
-/// scalar one.
+/// rollback, and an invariant caching a List's prefix sums updates that cache on
+/// both legs. Budget a candidate on any of the three at twice a bracketed scalar
+/// one. On the structural batch each leg carries positional edits for an
+/// invariant that opts in (#172), so each leg is O(edits) there; on the other
+/// two, and for an invariant that does not opt in, each leg is a re-read.
 ///
 /// **Order of state.** `evaluate` is the reset point: it must return the node's
 /// value for the inputs as they are, from scratch, and leave the object's
@@ -302,6 +306,20 @@ public:
         (void)changed;
         return evaluate(in);
     }
+
+    /// Whether this invariant reads `InvariantInputs::edits` (#172). OPT IN:
+    /// the structural batch records positional edits only while some custom
+    /// node in the model returns true here, so a model whose invariants all
+    /// re-read pays nothing for the journal. Measured on a 200-element List
+    /// route invariant that re-reads, ~5% per structural candidate (661 against
+    /// 629 ns, allocation-free either way; docs/architecture.md has the run) --
+    /// which is why this is not simply always on.
+    ///
+    /// An invariant that returns false still gets a correct answer from
+    /// `edits(i)` -- `available()` false whenever nothing was recorded -- so
+    /// forgetting to opt in costs speed, never correctness. Queried once per
+    /// structural sweep; the answer should not change over the object's life.
+    [[nodiscard]] virtual bool wants_positional_edits() const { return false; }
 
     /// The assignment the last `delta()` was measured at is the new committed
     /// one.

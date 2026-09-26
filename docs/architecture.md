@@ -225,25 +225,79 @@ structured, in any mix — and reach the invariant through `InvariantInputs`,
 a view over the node's children (`value(i)`, `elements(i)`,
 `is_structured_input(i)`).
 
-**What `changed` does not carry, and what that costs.** It names the inputs that
-moved, never *where* inside one. For a structured input it says "this List
-changed" and nothing more, so an **O(1) delta over a List is not expressible
-through this interface as it stands** — which means #166's two routing motivations
-(an incremental route cost replacing `pair_lambda_sum`'s O(n) re-sum, time-window
-slack propagated from the first changed position) are follow-on work, not
-something this lands. An invariant over a List today either re-reads `elements(i)`
-or keeps its own copy and diffs it: O(n) either way. The engine *has* the
-information — the structural batch builds positional `ElementEdit`s and drops them
-before `delta_evaluate` — so carrying it through is an additive change, not a
-redesign. Scalar inputs have no such gap: `changed` is exactly the inputs that
-moved, and an O(1) delta over them is what the reference fixture does.
+**Where inside a structured input: positional edits (#172).** `changed` names
+the inputs that moved, never *where* inside one. `in.edits(i)` is the where: for
+a List/Set variable input, the ordered `PositionalEdit`s (Swap, Reverse,
+MoveSegment, Insert, Erase, Assign — each with the element an Erase or Assign
+displaced) that took it from the elements the invariant last **committed** to to
+the ones `elements(i)` returns now. With them a delta over a List is O(edits)
+rather than O(|elements|) — an incremental route cost, a slack propagated from the
+first changed position. `tests/test_custom_invariant_edits.cpp` carries an
+open-route-cost invariant written that way and measures it against a re-reading
+one on the same structural-batch move sequence: ~5.2k against ~156k distance
+evaluations, with |L| between 200 and 300.
 
-The interface is five calls plus a clone:
+*How the edits get there.* The structural batch already built positional
+`ElementEdit`s (#164) and dropped them at `delta_evaluate`. It now records each
+candidate's edits as they took effect (an edit the range guard ignores is not
+recorded, so the record replays and inverts exactly) into an `EditJournal`, and
+describes each transition to `delta_evaluate` as *the previous candidate's edits
+inverted, then this one's* — because the batch restores the sample baseline
+before every candidate, so that is exactly what the variable went through. The
+two restores that close a sample (to the last accepted candidate, or to the
+baseline) are described the same way. `delta_evaluate` takes the journal as an
+optional last argument; every other caller passes none.
+
+*The fallback is unmistakable.* `edits(i)` returns an `InputEdits`, and when
+there is no positional information `available()` is false and `list()` **throws**
+rather than returning an empty span that would read as "no changes". It is
+unavailable in `evaluate`/`partial`, for a scalar or node input, for any call
+whose caller recorded nothing (the diversification kick, LNS, the inner solver,
+Novelty Jump, a restore, a direct `var_mut`), for a variable that saw a `Replace`
+(the inter-list tail exchange, or a registered generator's), and after an
+exception left a probe open. An input *not* in `changed` reports an available,
+empty list, so a scalar move does not push a List invariant into a re-read.
+
+*Accumulation.* Edits describe the change since the last committed state. On the
+batch every leg is a `Commit`, so "since the previous evaluation" is the same
+thing; a `Probe` needs no edits on its `Rollback` (the node is not re-deltaed, and
+the assignment is back at the committed one); and a stale probe withholds them,
+because the invariant's committed state is then no longer the caller's "since".
+
+*Lifetime and keying.* Keyed per input, so an invariant over two Lists gets each
+its own list, and a move touching both describes both. The journal is the
+caller's and is only read during the pass, so every custom node in one pass reads
+the same records and no per-node buffer is needed; like `changed`, a list is
+valid for the one `delta()` call.
+
+*Opt in, because it is measurable.* The batch records only while some invariant
+in the model returns true from `wants_positional_edits()`, checked once per
+sweep. Not opting in is still correct — `available()` is false — and costs
+nothing. Opting in costs ~5% per structural candidate and no allocation.
+*Dated record of one A/B*, at `6771047` (base) against this change, Release,
+one binary per side, 200,000 batch sweeps after a 50-sweep warm-up, 7 alternating
+repeats, medians, on a 12-core machine at load average 2.4-3.1 from other jobs:
+
+| Model (200-element List / 300-universe Set) | base ns/candidate | #172 ns/candidate | allocations/candidate |
+|---|---|---|---|
+| `pair_lambda_sum` route, no custom node | 1012.4 | 1012.7 | 1.999 / 1.999 |
+| `lambda_sum` over a Set, no custom node | 695.2 | 684.0 | 5.665 / 5.665 |
+| re-reading custom route, not opted in | 628.7 | 625.2 | 1.999 / 1.999 |
+| the same invariant, opted in | — | 660.8 | 1.999 |
+
+Final elements and every node value hashed identically on both sides for every
+row, and `cbls::solve()` at seed 12345, `max_iterations = 4000`, no time limit,
+produced identical digests (every `SearchResult` scalar plus `best_state`) for
+all four models. Scalar inputs never had the gap: `changed` is exactly the inputs
+that moved, and an O(1) delta over them is what the #166 reference fixture does.
+
+The interface is six calls plus a clone:
 
 | Call | When | Contract |
 |---|---|---|
 | `evaluate(in)` | `full_evaluate` — `close()`, after `restore_state`, every restart | From scratch. Redefines the committed state. |
 | `delta(in, changed)` | `delta_evaluate`, per dirtied pass | Incremental. `changed` is the input indices the engine recomputed since the last committed state — a *superset* of those that actually differ. Defaults to `evaluate(in)`. |
+| `wants_positional_edits()` | once per structural sweep | Opt in to `in.edits(i)` being recorded by the structural batch. Default false; false is still correct. |
 | `commit()` | after a `delta` whose assignment is kept | The staged state becomes committed. |
 | `rollback()` | after a `delta` the caller has undone | Discard the staged state; the engine restores the node's cached *value* itself. |
 | `partial(in, i)` | reverse-mode AD | `d(value)/d(input i)`, or NaN **or ±inf** for unknown — both fold to 0, so one infinite edge cannot NaN a sibling's partial. |
@@ -270,8 +324,9 @@ structural batch (`src/structural_batch.cpp`), the inner solver
 bracketed probe is. All three are correct — each leg really is a new committed
 assignment, and the `changed` set each passes is a complete superset of what it
 moved — but **twice the cost** of the bracketed path, and an invariant caching a
-List's prefix sums rebuilds it on both legs. Bracketing them is a separate
-change.
+List's prefix sums updates it on both legs (O(edits) per leg on the structural
+batch for an invariant that opts in to positional edits, a re-read otherwise).
+Bracketing them is a separate change.
 
 **A model with no custom node is untouched.** `Model::has_custom_nodes()` is
 tested once per `delta_evaluate`/`full_evaluate` call, not per node, and the

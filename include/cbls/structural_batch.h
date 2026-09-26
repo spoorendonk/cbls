@@ -198,8 +198,9 @@ private:
 
     /// Positional edits for a `CustomInvariant` (#172). The batch already
     /// builds positional edits; these keep what it used to discard, and only
-    /// when the model HAS a custom node (`journaling_`) -- a model without one
-    /// takes the pre-#172 path, records nothing and passes a null journal.
+    /// while some custom node opts in (`journaling_`, see
+    /// `CustomInvariant::wants_positional_edits`) -- any other model takes the
+    /// pre-#172 path, records nothing and passes a null journal.
     ///
     /// `applied_` is what the current candidate did, `previous_` what the one
     /// before it did (the restore undoes exactly that), `accepted_` what the
@@ -207,6 +208,7 @@ private:
     /// `journal_` is what the next `delta_evaluate` is told: per variable, the
     /// inverse of what is being undone followed by what is being applied. All
     /// four are reused, so the steady state allocates nothing.
+    [[nodiscard]] static bool wants_journal(const Model& model);
     void describe_transition(const Model& model, const EditJournal& undo, const EditJournal& redo,
                              const std::vector<int32_t>& vars);
     [[nodiscard]] const EditJournal* journal() const noexcept {

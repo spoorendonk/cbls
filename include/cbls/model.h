@@ -770,6 +770,10 @@ public:
     /// is what keeps its trajectories bit-identical and its hot path free of a
     /// per-node test for an op almost no model has.
     [[nodiscard]] bool has_custom_nodes() const noexcept { return !custom_invariants_.empty(); }
+    /// How many custom slots there are: the index space of `custom_invariant`.
+    [[nodiscard]] int32_t num_custom_invariants() const noexcept {
+        return static_cast<int32_t>(custom_invariants_.size());
+    }
 
     /// The invariant instance of custom slot `id` -- an `ExprNode::lambda_func_id`
     /// on a `NodeOp::Custom` node.

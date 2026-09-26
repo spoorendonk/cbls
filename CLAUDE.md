@@ -652,10 +652,13 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
   `lambda_funcs`, which every replica invokes concurrently and which therefore
   cannot carry state. A model holding one cannot be written to `.cbls`, and it
   is **not** exposed to Python (that waits on #132). `docs/architecture.md`
-  carries the contract table, names the **three** apply-then-revert sites
-  deliberately left unbracketed, and states the one thing the interface cannot do
-  yet: `changed` says which input moved, never where inside a List, so an O(1)
-  delta over a List is follow-on work.
+  carries the contract table and names the **three** apply-then-revert sites
+  deliberately left unbracketed. `in.edits(i)` (#172) says *where* a List/Set
+  input moved, as positional edits since the last committed state, so a delta
+  over a List can be O(edits) — but only the structural batch supplies them, only
+  for an invariant that opts in (`wants_positional_edits()`), and every other
+  path reports `available() == false`: re-read then. This is engine capability,
+  not evidence about List performance.
 
 ### Build targets
 
