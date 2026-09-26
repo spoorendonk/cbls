@@ -521,10 +521,18 @@ TEST_CASE("a variable-length List and its partition round-trip through .cbls",
     REQUIRE(out.str() == out2.str());
 }
 
-TEST_CASE("a partitioned model searches without breaking its cover", "[list][partition]") {
+TEST_CASE("a partitioned model searches its way to a feasible cover", "[list][partition]") {
     // End to end through solve(): initialisation, the structural batch's
     // registered generators, the diversification kick and LNS destroy-repair all
     // touch these lists, and the cover has to survive every one of them.
+    //
+    // FEASIBILITY HERE IS THE PARTITION GENERATOR'S OWN WORK, which is what
+    // makes this more than a "did not crash" probe. The model has no scalar
+    // variable, so Feasibility Jump has nothing to jump, and every intra-list
+    // move is length-preserving -- so `count(route) <= 5` cannot be satisfied
+    // except by moving elements BETWEEN routes. `randomize_list_partition`
+    // routinely deals one route more than five of the twelve elements, so the
+    // run starts infeasible and only the inter-list moves can fix it.
     Model m;
     std::vector<int32_t> handles;
     handles.reserve(3);
@@ -541,10 +549,13 @@ TEST_CASE("a partitioned model searches without breaking its cover", "[list][par
     m.minimize(m.sum(terms));
     m.close();
 
-    const SearchResult r = solve_deterministic(m, /*max_iterations=*/4000);
-    REQUIRE(r.iterations > 0);
+    const SearchResult r = solve_deterministic(m, /*max_iterations=*/20000);
+    REQUIRE(r.feasible);
     m.restore_state(r.best_state);
     require_cover(m, m.list_partitions()[0]);
+    for (int32_t h : handles) {
+        REQUIRE(m.var(handle_to_var_id(h)).elements.size() <= 5);
+    }
 }
 
 TEST_CASE("granular guidance survives a universe wider than the list", "[list][partition]") {

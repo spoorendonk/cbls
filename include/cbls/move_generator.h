@@ -230,13 +230,23 @@ public:
     /// exactly what the pre-#165 sweep did with whole element vectors; the
     /// accept test is against a re-snapshotted baseline either way.
     ///
-    /// It is NOT harmless for a generator that maintains a structural invariant
-    /// ACROSS variables by construction rather than by a constraint row -- a
-    /// partition of elements over several Lists, say. Commit "move e from L1 to
-    /// L2", then apply a stale candidate whose L1 vector still contains e, and e
-    /// is in both lists with nothing to notice. Such a generator must either
-    /// emit at most ONE candidate per call, or be run under `BestOfSample` /
-    /// `ViolationGuided`, which commit at most one candidate per call.
+    /// It used NOT to be harmless for a generator that maintains a structural
+    /// invariant ACROSS variables by construction rather than by a constraint
+    /// row -- a partition of elements over several Lists, say. Commit "move e
+    /// from L1 to L2", then apply a stale candidate that names L1 and L3 but not
+    /// L2, and L1 gets e back while L2 keeps it, with nothing to notice.
+    ///
+    /// #164's per-sample baseline closes that: the batch restores EVERY variable
+    /// any candidate of the sample names, not just the ones the candidate being
+    /// applied names, so the assignment is always the sample's own plus exactly
+    /// one candidate -- and every candidate was built against that assignment.
+    /// The built-in `ListPartition` generator nonetheless emits at most ONE
+    /// candidate per call, deliberately: a cover maintained by construction is
+    /// expensive to get wrong, and one candidate is safe under any batch that
+    /// applies moves at all rather than under this one's particular discipline.
+    /// A generator that wants a larger sample can rely on the baseline, or run
+    /// under `BestOfSample` / `ViolationGuided`, which commit at most one
+    /// candidate per call.
     virtual void generate(MoveContext& ctx, std::vector<Move>& out) = 0;
 
     /// One of THIS generator's moves was committed. The default does nothing.
