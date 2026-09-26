@@ -4,6 +4,7 @@
 #include "dag.h"
 
 #include <cassert>
+#include <cstdint>
 #include <functional>
 #include <initializer_list>
 #include <memory>
@@ -739,6 +740,27 @@ public:
     [[nodiscard]] size_t num_nodes() const noexcept { return s().nodes.size(); }
     [[nodiscard]] bool is_closed() const noexcept { return closed_; }
 
+    /// An opaque token for the structure's current state, which is what a
+    /// `ModelExtension` captures and `extend` compares (#167). Drawn from one
+    /// process-wide counter at `close()` and on every structural write after it
+    /// -- so two tokens are equal only when one structure is a copy of the other
+    /// with nothing grown since. A variable or node COUNT cannot say that: an
+    /// extension that only appends terms or adds rows over existing nodes leaves
+    /// both unchanged, and replaying it duplicated those terms and rows silently.
+    /// Meaningless before `close()`, which is fine: an extension needs a closed
+    /// base.
+    [[nodiscard]] uint64_t structure_version() const noexcept { return structure_version_; }
+
+    /// True once `extend` has thrown from the middle of its growth, after the
+    /// first array was written and before the last index was spliced (#167).
+    /// The model is then internally inconsistent and there is no rollback; see
+    /// `extend`. `extend`, `ViolationManager`'s constructor (so every `solve`)
+    /// and `ModelExtension`'s constructor refuse such a model through
+    /// `require_intact`. Copied with the model, since a copy is just as broken.
+    [[nodiscard]] bool extend_interrupted() const noexcept { return extend_interrupted_; }
+    /// Throws `std::logic_error` naming `where` if `extend_interrupted()`.
+    void require_intact(const char* where) const;
+
     // Lambda function access
     [[nodiscard]] const std::function<double(int)>& lambda_func(int32_t idx) const {
         if (idx < 0 || idx >= static_cast<int32_t>(s().lambda_funcs.size())) {
@@ -870,8 +892,19 @@ private:
         if (open_structure_ == nullptr) {
             throw std::logic_error("model is frozen: its structure is shared and cannot change");
         }
+        // Every structural write after close() retires the structure's token, so
+        // an extension recorded against the old structure is refused (#167). Not
+        // taken while the model is being built -- no extension can exist then --
+        // so the builders pay one predictable branch and no atomic.
+        if (closed_) {
+            structure_version_ = next_structure_version();
+        }
         return *open_structure_;
     }
+    /// The process-wide source of `structure_version()` tokens. Atomic because
+    /// models are built and grown on several threads at once (a factory-form
+    /// portfolio builds one per worker).
+    static uint64_t next_structure_version() noexcept;
 
     std::vector<Variable> vars_;
     /// Node id -> its current value. Was `ExprNode::value`; moved out so that the
@@ -892,6 +925,8 @@ private:
     int32_t objective_constraint_idx_ = -1;   // its index in constraint_ids()
     double objective_bound_ = 0.0;
     bool closed_ = false;
+    uint64_t structure_version_ = 0;   // see structure_version()
+    bool extend_interrupted_ = false;  // see extend_interrupted()
     // Scratch for weighted_violation_delta's pre-probe violations. A member so
     // the hot scoring path allocates only until it reaches the widest variable's
     // constraint count. Not reentrant — same single-thread-per-Model contract as

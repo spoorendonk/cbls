@@ -36,7 +36,9 @@ Model::Model(const Model& other)
       objective_constraint_node_(other.objective_constraint_node_),
       objective_constraint_idx_(other.objective_constraint_idx_),
       objective_bound_(other.objective_bound_),
-      closed_(other.closed_) {
+      closed_(other.closed_),
+      structure_version_(other.structure_version_),
+      extend_interrupted_(other.extend_interrupted_) {
     // probe_old_violation_ is deliberately left empty: it is resized and
     // overwritten before it is read on every call, so it carries no state.
     //
@@ -818,6 +820,7 @@ void Model::close() {
     build_var_constraints();
     full_evaluate(*this);
     closed_ = true;
+    structure_version_ = next_structure_version();
 }
 
 void Model::add_objective_soft_constraint() {

@@ -3,6 +3,7 @@
 #include "cbls/dag_ops.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -25,14 +26,22 @@ std::vector<int32_t> compute_topo_order(const Model& model);
 
 ModelExtension::ModelExtension(const Model& base)
     : base_(&base),
+      base_version_(base.structure_version()),
       base_num_vars_(static_cast<int32_t>(base.num_vars())),
       base_num_nodes_(static_cast<int32_t>(base.num_nodes())) {
+    base.require_intact("ModelExtension");
     if (!base.is_closed()) {
         throw std::logic_error(
             "ModelExtension: the base model is not closed. An open model grows through the "
             "ordinary Model builders; extend() exists for a model whose derived indices are "
             "already built");
     }
+}
+
+bool ModelExtension::base_unchanged() const noexcept {
+    return base_->structure_version() == base_version_ &&
+           static_cast<int32_t>(base_->num_vars()) == base_num_vars_ &&
+           static_cast<int32_t>(base_->num_nodes()) == base_num_nodes_;
 }
 
 void ModelExtension::validate_handle(int32_t handle) const {
@@ -291,11 +300,17 @@ void ModelExtension::append_to_sum(int32_t sum_node, int32_t term) {
     // `base_num_nodes_` that is not ours, and that index runs off `new_nodes_` -- a
     // SIGSEGV reached from Python. `extend` would refuse this recording anyway, so
     // refusing it here loses nothing.
-    if (static_cast<int32_t>(base_->num_nodes()) != base_num_nodes_ ||
-        static_cast<int32_t>(base_->num_vars()) != base_num_vars_) {
+    //
+    // The same holds when the model changed WITHOUT changing either count -- an
+    // append-only extension applied in between -- because the cycle walk would
+    // then be answering over a graph that is no longer the one `extend` splices
+    // into, so two extensions recorded against one base could close a cycle
+    // between them. Hence the structure token, not just the counts.
+    if (!base_unchanged()) {
         throw std::invalid_argument(
-            "ModelExtension::append_to_sum: the model has grown since this extension was "
-            "started, so its handles no longer name what they did. Start a new extension");
+            "ModelExtension::append_to_sum: the model has changed since this extension was "
+            "started (another extension was applied, or it was grown some other way), so its "
+            "handles and its cycle check no longer describe it. Start a new extension");
     }
     validate_node_handle(sum_node, "ModelExtension::append_to_sum");
     if (sum_node >= base_num_nodes_) {
@@ -743,7 +758,25 @@ void Model::append_extension_entities(const ModelExtension& ext, ExtensionResult
     res.num_new_nodes = static_cast<int32_t>(ext.new_nodes_.size());
 }
 
+uint64_t Model::next_structure_version() noexcept {
+    // Starts at 1 so that no closed model shares the token 0 an unclosed one
+    // carries. Relaxed: the token is compared, never used to order other memory.
+    static std::atomic<uint64_t> next{1};
+    return next.fetch_add(1, std::memory_order_relaxed);
+}
+
+void Model::require_intact(const char* where) const {
+    if (extend_interrupted_) {
+        throw std::logic_error(
+            std::string(where) +
+            ": this model is corrupt. A Model::extend threw part-way through its growth (out of "
+            "memory, or past a 2^32-entry index), after writing some arrays and before splicing "
+            "the rest, and there is no rollback. Discard the model and rebuild it");
+    }
+}
+
 ExtensionResult Model::extend(const ModelExtension& ext) {
+    require_intact("Model::extend");
     // Refused from inside the evaluation walk, and asked rather than guarded.
     // #166's `EvaluationGuard` cannot be armed here: this function PERFORMS a
     // `full_evaluate` on the custom-node path, so arming it would refuse
@@ -777,12 +810,20 @@ ExtensionResult Model::extend(const ModelExtension& ext) {
             "Model::extend: the model is not closed. Build it with the ordinary Model builders "
             "and call close(); extend() exists for a model whose derived indices already exist");
     }
-    if (ext.base_ != this || ext.base_num_vars_ != static_cast<int32_t>(vars_.size()) ||
-        ext.base_num_nodes_ != static_cast<int32_t>(s().nodes.size())) {
+    // The structure token, not only the counts: an extension that appends terms
+    // or adds rows over existing nodes changes neither count, and replaying one
+    // (`extend(e); extend(e)`) used to duplicate every term and row it carried.
+    // The same check is what makes an extension single-use -- a successful
+    // `extend` retires the token it was recorded against -- and what refuses the
+    // second of two extensions recorded against one base, whose cycle checks each
+    // saw a graph without the other's edges.
+    if (ext.base_ != this || !ext.base_unchanged()) {
         throw std::invalid_argument(
             "Model::extend: the extension was built against a different model, or against this "
-            "model before it grew. Its handles are absolute ids, so replaying it now would name "
-            "the wrong entities");
+            "model before it last changed -- including by applying this same extension, or "
+            "another one recorded against the same base. Its handles and its cycle check "
+            "describe that earlier structure, so replaying it now would be wrong. An extension "
+            "can be applied once; record a new one against the current model");
     }
 
     ExtensionResult res;
@@ -800,6 +841,12 @@ ExtensionResult Model::extend(const ModelExtension& ext) {
     // because it runs once and a doubling there is address space for nothing. The
     // price is one full copy of each array on the first extend after a build that
     // sized them exactly; `Model::extend`'s comment carries the measurement.
+    // From the first write below until every index is spliced the model is
+    // inconsistent, and there is no rollback (see the header). A throw in that
+    // window -- bad_alloc, or length_error past 2^32 CSR entries -- leaves this
+    // set, and every later extend, solve and ModelExtension refuses the model
+    // instead of running on it.
+    extend_interrupted_ = true;
     append_extension_entities(ext, res);
     ModelStructure& st = mut();
 
@@ -849,6 +896,10 @@ ExtensionResult Model::extend(const ModelExtension& ext) {
     }
 
     extend_var_constraints(*this, st, res, grown);
+    // Every structural array is complete and consistent from here on. What is
+    // left runs caller code (a CustomInvariant, a lambda_sum callable) and can
+    // throw, but leaves only node values stale, which full_evaluate recovers.
+    extend_interrupted_ = false;
 
     if (has_custom_nodes()) {
         // A CustomInvariant's delta() is defined against a variable move, which

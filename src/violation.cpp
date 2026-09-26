@@ -33,6 +33,9 @@ double clamped_node_violation(double node_value) {
 }  // namespace
 
 ViolationManager::ViolationManager(Model& model) : model_(model) {
+    // Every solve builds one, so this is where a model a failed Model::extend
+    // left half-grown is refused rather than searched (#167).
+    model.require_intact("ViolationManager");
     weights.resize(model.constraint_ids().size(), 1.0);
     cached_violations_.resize(model.constraint_ids().size(), 0.0);
 }

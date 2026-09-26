@@ -223,7 +223,13 @@ private:
     int32_t push(NodeOp op, std::vector<int32_t> children, double const_value = 0.0);
     int32_t add_var(VarType type, double lb, double ub, const std::string& name);
 
+    /// Is the base still exactly the structure this extension was recorded
+    /// against? The token catches what the counts cannot (see
+    /// `Model::structure_version`); the counts are kept as a second, free check.
+    [[nodiscard]] bool base_unchanged() const noexcept;
+
     const Model* base_;
+    uint64_t base_version_ = 0;
     int32_t base_num_vars_ = 0;
     int32_t base_num_nodes_ = 0;
     std::vector<NewVar> new_vars_;

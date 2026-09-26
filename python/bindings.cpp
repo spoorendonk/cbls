@@ -136,29 +136,36 @@ constexpr const char* kModelExtendDoc =
     "being evaluated in), or while cbls.solve is running on this model (from a\n"
     "SolveCallback, or from another thread): extend is a between-solves\n"
     "operation. ValueError if the extension was built against a different model,\n"
-    "or against this one before it last gained variables or nodes. An extension\n"
-    "that adds neither is NOT detected as stale: applying it twice appends its\n"
-    "terms twice. The first solve() of a model with an objective adds the\n"
-    "objective row, so an extension recorded before that solve is stale.\n"
+    "or against this one before it last changed in any way -- which includes\n"
+    "applying this same extension, and applying another one recorded against the\n"
+    "same base. An extension is therefore single-use: record a new one against\n"
+    "the current model for each extend. The first solve() of a model with an\n"
+    "objective adds the objective row, so an extension recorded before that\n"
+    "solve is stale.\n"
     "\n"
     "Afterwards, in this order: ViolationManager.on_extended(result) on every\n"
     "manager of this model, once per extend and before the next one (its\n"
     "weight-indexed reads raise until then, and a manager that missed an extend\n"
     "must be rebuilt), and pad_state(state, result) on every ModelState captured\n"
-    "before the call, which restore_state otherwise rejects. A Variable or\n"
-    "ExprNode fetched with var()/var_mut()/node() before the call refers to\n"
-    "storage the call may reallocate -- using it afterwards can crash the\n"
-    "interpreter. Fetch it again.\n"
+    "before the call, which restore_state otherwise rejects. Variable handles\n"
+    "from var()/var_mut() stay valid and read the model's current state.\n"
     "\n"
     "There is no rollback: an exception from the growth itself (as opposed to\n"
     "the refusals above, which fire before anything changes) leaves the model\n"
-    "unusable. The one reachable from Python is the RuntimeError for a cycle\n"
-    "closed by two extensions that were each recorded against the same base.";
+    "corrupt. That takes running out of memory part-way through; the model then\n"
+    "raises RuntimeError from extend, solve, ViolationManager, full_evaluate,\n"
+    "delta_evaluate and ModelExtension rather than being searched. Discard it.";
 
-constexpr const char* kModelRefDoc =
-    "The returned object refers into the model's own arrays. Any variable or\n"
-    "node builder before close(), and Model.extend after it, may reallocate them,\n"
-    "after which using the object can crash the interpreter. Fetch it again.";
+constexpr const char* kModelVarDoc =
+    "A handle to variable `id` of this model. It holds the model and the id, not\n"
+    "a pointer into the model's storage, so it stays valid across builders and\n"
+    "Model.extend and always reads the variable's current state. Keeps the model\n"
+    "alive. var() and var_mut() return the same kind of handle.";
+
+constexpr const char* kModelNodeDoc =
+    "A COPY of node `id`'s id and op -- neither ever changes once the node\n"
+    "exists, so the copy cannot go stale. Its current value is\n"
+    "Model.node_value(id).";
 
 // The models a bound `cbls.solve` is currently running on (#167). `solve`
 // releases the GIL and calls a SolveCallback on the search thread, so Python can
@@ -207,6 +214,36 @@ ExtensionResult extend_unless_solving(Model& self, const ModelExtension& ext) {
             "tables cannot grow with it");
     }
     return self.extend(ext);
+}
+
+// What `Model.var()` / `Model.var_mut()` return: a (model, id) pair resolved
+// through the model on EVERY attribute access, never a pointer into `vars_`.
+//
+// They used to return `reference_internal` into that vector, and anything that
+// appends a variable -- a builder before close(), `Model.extend` after it --
+// can reallocate it. Writing `.value` through one held across such a call was a
+// write into freed heap (#167's review), which is the segfault class CLAUDE.md
+// says to close at the hand-over rather than document. Resolving per access
+// costs one bounds-checked index per attribute read, on a path that crosses the
+// Python boundary anyway.
+//
+// OWNERSHIP: returned by value, with keep_alive<0, 1> tying the model's
+// lifetime to the handle's, so `model` cannot dangle. The Python class keeps the
+// name `Variable` and every attribute the direct binding had, so callers do not
+// change -- with one visible difference, and it is the fix: a handle now always
+// reads the model's CURRENT variable rather than whatever the storage it pointed
+// at happens to hold.
+struct VariableRef {
+    Model* model;
+    int32_t id;
+    [[nodiscard]] Variable& get() const { return model->var_mut(id); }
+};
+
+// Checked once here so that `m.var(999)` still raises at the call, as it did.
+// A variable is never removed, so an id valid now stays valid.
+VariableRef variable_ref(Model& model, int32_t id) {
+    static_cast<void>(model.var(id));
+    return VariableRef{&model, id};
 }
 
 class SolvingScope {
@@ -417,19 +454,28 @@ NB_MODULE(_cbls_core, m) {
         .value("Gt", NodeOp::Gt);
 
     // Variable (read-only access)
-    nb::class_<Variable>(m, "Variable")
-        .def_ro("id", &Variable::id)
-        .def_ro("type", &Variable::type)
-        .def_rw("value", &Variable::value)
-        .def_ro("lb", &Variable::lb)
-        .def_ro("ub", &Variable::ub)
-        .def_ro("name", &Variable::name)
-        .def_rw("elements", &Variable::elements)
-        .def_ro("universe_size", &Variable::universe_size)
-        .def_ro("min_size", &Variable::min_size)
-        .def_ro("max_size", &Variable::max_size)
-        .def_ro("list_init", &Variable::list_init)
-        .def_ro("partitioned", &Variable::partitioned);
+    //
+    // Bound over `VariableRef`, not `Variable`: see the note there. Same
+    // attributes, same writability, each resolved through the model per access.
+    nb::class_<VariableRef>(m, "Variable")
+        .def_prop_ro("id", [](const VariableRef& v) { return v.get().id; })
+        .def_prop_ro("type", [](const VariableRef& v) { return v.get().type; })
+        .def_prop_rw(
+            "value", [](const VariableRef& v) { return v.get().value; },
+            [](const VariableRef& v, double value) { v.get().value = value; })
+        .def_prop_ro("lb", [](const VariableRef& v) { return v.get().lb; })
+        .def_prop_ro("ub", [](const VariableRef& v) { return v.get().ub; })
+        .def_prop_ro("name", [](const VariableRef& v) { return v.get().name; })
+        .def_prop_rw(
+            "elements", [](const VariableRef& v) { return v.get().elements; },
+            [](const VariableRef& v, std::vector<int32_t> elements) {
+                v.get().elements = std::move(elements);
+            })
+        .def_prop_ro("universe_size", [](const VariableRef& v) { return v.get().universe_size; })
+        .def_prop_ro("min_size", [](const VariableRef& v) { return v.get().min_size; })
+        .def_prop_ro("max_size", [](const VariableRef& v) { return v.get().max_size; })
+        .def_prop_ro("list_init", [](const VariableRef& v) { return v.get().list_init; })
+        .def_prop_ro("partitioned", [](const VariableRef& v) { return v.get().partitioned; });
 
     // ListInit — how initialisation fills a List (#164). Identity is the
     // permutation `list_var(n)` builds and is the only one a fixed-length List
@@ -729,11 +775,10 @@ NB_MODULE(_cbls_core, m) {
         .def("var_sequence_for", &Model::var_sequence_for)
         .def("close", &Model::close)
         // Growth of a closed model (#167). Returns an ExtensionResult BY VALUE:
-        // Python owns the copy and it holds no pointer into the model. What it
-        // does NOT protect is anything taken from the model before the call --
-        // `extend` appends to the variable and node arrays, so a Variable or
-        // ExprNode obtained from var()/var_mut()/node() earlier refers to storage
-        // that may have been reallocated. Re-fetch after extending.
+        // Python owns the copy and it holds no pointer into the model. Nothing
+        // else Python can hold does either: var()/var_mut() return a (model, id)
+        // handle and node() a copy, precisely because `extend` reallocates the
+        // arrays they used to point into.
         .def("extend", &extend_unless_solving, nb::arg("ext"), kModelExtendDoc)
         // Freezing makes the structure immutable and shareable. It is what lets a
         // model_factory hand the SAME model to every worker without duplicating
@@ -745,12 +790,14 @@ NB_MODULE(_cbls_core, m) {
         .def("freeze", &Model::freeze)
         .def("is_frozen", &Model::is_frozen)
         // Accessors
-        // By reference into the model's arrays, which a builder before close()
-        // and Model.extend after it can reallocate (#167). Said in the docstring,
-        // which is where a caller holding one across an extend would look.
-        .def("var", &Model::var, nb::rv_policy::reference_internal, kModelRefDoc)
-        .def("var_mut", &Model::var_mut, nb::rv_policy::reference_internal, kModelRefDoc)
-        .def("node", &Model::node, nb::rv_policy::reference_internal, kModelRefDoc)
+        // NOT by reference into the model's arrays, which a builder before
+        // close() and Model.extend after it reallocate (#167's review found a
+        // held var_mut() writing into freed heap). var()/var_mut() return a
+        // VariableRef -- see there -- and node() returns a copy of an ExprNode,
+        // whose two exposed fields are immutable once the node exists.
+        .def("var", &variable_ref, nb::keep_alive<0, 1>(), kModelVarDoc)
+        .def("var_mut", &variable_ref, nb::keep_alive<0, 1>(), kModelVarDoc)
+        .def("node", &Model::node, nb::rv_policy::copy, kModelNodeDoc)
         .def("node_value", &Model::node_value, nb::arg("id"))
         .def("objective_id", &Model::objective_id)
         .def("constraint_ids", &Model::constraint_ids)
@@ -1211,8 +1258,15 @@ NB_MODULE(_cbls_core, m) {
           "(base_seed, worker, restart). Mixed rather than added so that adjacent base "
           "seeds give genuinely different portfolios.");
 
-    m.def("full_evaluate", &full_evaluate);
+    // Both refuse a model a failed Model.extend left half-grown (#167), which the
+    // engine's own evaluators do not check: evaluating one reads index arrays
+    // that are shorter than the node array.
+    m.def("full_evaluate", [](Model& model) {
+        model.require_intact("full_evaluate");
+        return full_evaluate(model);
+    });
     m.def("delta_evaluate", [](Model& model, const std::set<int32_t>& changed) {
+        model.require_intact("delta_evaluate");
         return delta_evaluate(model, changed);
     });
     m.def("compute_partial", &compute_partial);
@@ -1221,7 +1275,7 @@ NB_MODULE(_cbls_core, m) {
     // that also takes a NeighbourList, and an unqualified address-of is then
     // ambiguous. Python keeps the simple form.
     m.def("generate_standard_moves",
-          static_cast<std::vector<Move> (*)(const Variable&, RNG&)>(&generate_standard_moves));
+          [](const VariableRef& var, RNG& rng) { return generate_standard_moves(var.get(), rng); });
     m.def("apply_move", &apply_move);
     m.def("save_move_values", &save_move_values);
     m.def("undo_move", &undo_move);
@@ -1272,7 +1326,14 @@ NB_MODULE(_cbls_core, m) {
         "solve",
         [](Model& model, double time_limit, uint64_t seed, bool use_fj, InnerSolverHook* hook,
            LNS* lns, int lns_interval, SolveCallback* callback, const SearchConfig& config) {
+            // Registered WHILE THE GIL IS HELD, and only then released. Released
+            // first (as a call_guard did), there was a window in which this solve
+            // was already running on the model but not yet registered, and a
+            // Model.extend from another thread could pass the check inside it.
+            // `extend_unless_solving` runs holding the GIL, so with registration
+            // under it too the check and the registration cannot interleave.
             const SolvingScope solving(model);  // refuses Model.extend until this returns
+            const nb::gil_scoped_release release;
             return cbls::solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback,
                                config);
         },
@@ -1280,11 +1341,12 @@ NB_MODULE(_cbls_core, m) {
         nb::arg("use_fj") = true, nb::arg("hook") = nullptr, nb::arg("lns") = nullptr,
         nb::arg("lns_interval") = 3, nb::arg("callback") = nullptr,
         nb::arg("config") = SearchConfig{},
-        // THE GIL IS RELEASED FOR THE WHOLE CALL (#128's fix, extended to this
-        // entry point by #169). Without it `config.stop` is unusable: a Python
-        // thread that wants to call StopToken.request() mid-solve cannot run at
-        // all while this one holds the interpreter, so the only reachable stop
-        // would be one raised before the call.
+        // THE GIL IS RELEASED FOR THE WHOLE SEARCH (#128's fix, extended to this
+        // entry point by #169) -- by the gil_scoped_release in the body, just
+        // after the SolvingScope registers, not by a call_guard (see there). Without it
+        // `config.stop` is unusable: a Python thread that wants to call StopToken.request()
+        // mid-solve cannot run at all while this one holds the interpreter, so the only reachable
+        // stop would be one raised before the call.
         //
         // Everything this call can reach back into Python re-acquires the GIL
         // for itself: a SolveCallback subclass through nanobind's trampoline,
@@ -1308,7 +1370,6 @@ NB_MODULE(_cbls_core, m) {
         //    GIL the caller already held. tests/python/test_pair_lambda.py already
         //    says to use the *_table_sum forms for anything hot; this makes that
         //    advice cost more to ignore.
-        nb::call_guard<nb::gil_scoped_release>(),
         "Single-threaded solve.\n"
         "\n"
         "The GIL is RELEASED for the whole C++ call (#169). That is what lets another "
