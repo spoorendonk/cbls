@@ -21,6 +21,22 @@ enum class BatchKind : std::uint8_t { FeasibilityJump, NoveltyJump, Structural }
 /// "novelty_jump", "structural"). Returns a static string; never null.
 const char* batch_kind_name(BatchKind kind);
 
+/// Why a `ColumnGenerator` is being asked for columns (#168). Here rather than
+/// in `column_generator.h` for the reason `BatchKind` is: `Tracer::pricing`
+/// reports it, and `tracer.h` should not have to include the generator API.
+///
+///  - `Periodic`: every `SearchConfig::pricing_period` batches.
+///  - `Stagnation`: immediately BEFORE a diversification kick, on either kick
+///    route -- while the GLS weights still describe the basin the search is
+///    stuck in, since the kick resets them.
+///  - `NewBest`: on a batch that recorded a new best, BEFORE the GLS weights are
+///    reset for it.
+enum class PricingEvent : std::uint8_t { Periodic, Stagnation, NewBest };
+
+/// Stable snake_case token for a `PricingEvent` ("periodic", "stagnation",
+/// "new_best"). Returns a static string; never null.
+const char* pricing_event_name(PricingEvent event);
+
 /// One registered move generator's share of the structural work.
 ///
 /// Per generator rather than per variable because #165 made the generator the
@@ -135,6 +151,30 @@ struct SearchCounters {
     /// solve is not one: a worker whose first attempt threw and whose second
     /// succeeded has run one solve, not one solve and a restart.
     int64_t portfolio_restarts = 0;
+
+    /// Column generation (#168). All zero on a run with no
+    /// `SearchConfig::column_generator`.
+    ///
+    /// `pricing_calls` counts `ColumnGenerator::price` calls; `pricing_seconds`
+    /// is their time PLUS the extension that applied what they staged, and
+    /// follows `inner_solver_seconds`' rule exactly -- filled only on a run with a
+    /// wall-clock budget, so an iteration-budgeted run stays clockless.
+    int64_t pricing_calls = 0;
+    double pricing_seconds = 0.0;
+    /// Variables and constraint rows added to the model by APPLIED extensions.
+    int64_t columns_added = 0;
+    int64_t rows_added = 0;
+    /// Columns retired by aging (see `ColumnPool`). Retired columns are still in
+    /// the model and still in `columns_added`.
+    int64_t columns_retired = 0;
+    /// Extensions refused whole because they would have taken the column count
+    /// past `SearchConfig::max_generated_columns`.
+    int64_t extensions_refused = 0;
+    /// Times an extension changed the value of the recorded incumbent -- a new
+    /// row it violates, or a column entering at a non-neutral starting value --
+    /// so the engine had to re-derive the incumbent's standing. See
+    /// `docs/architecture.md`, "Column generation".
+    int64_t incumbents_revalidated = 0;
 
     /// Add `other` into this, as `ParallelSearch` sums `perturbations`: every
     /// scalar adds, and `by_generator` merges by NAME (an entry whose name is

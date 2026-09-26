@@ -418,6 +418,21 @@ public:
     void freeze();
     [[nodiscard]] bool is_frozen() const noexcept { return open_structure_ == nullptr; }
 
+    /// A copy with a PRIVATE, writable structure, even of a frozen model (#168).
+    ///
+    /// The explicit form of the detach `freeze()` refuses to do silently: the
+    /// shared structure is deep-copied, so the copy can `extend` without touching
+    /// what any peer reads, and it costs exactly what a copy of an open model
+    /// costs -- the whole DAG. `ParallelSearch` uses it for column generation,
+    /// where each worker grows its own model and sharing is therefore off by
+    /// construction. Everything else about the copy is the ordinary copy
+    /// constructor's: closedness, the objective row, the assignment, the node
+    /// values and a clone of every custom invariant.
+    ///
+    /// Safe to call on a frozen model from several threads at once, for the reason
+    /// the copy constructor is: it only reads the shared structure.
+    [[nodiscard]] Model private_copy() const;
+
     /// Grow a CLOSED model: new variables, new nodes, new constraints, and terms
     /// appended to existing `Sum` rows (#167). `include/cbls/model_extension.h`
     /// carries `ModelExtension` and `ExtensionResult`.

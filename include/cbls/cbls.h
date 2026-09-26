@@ -4,6 +4,7 @@ namespace cbls {
 inline constexpr const char* kVersion = "0.1.0";
 }
 
+#include "column_generator.h"
 #include "counters.h"
 #include "dag.h"
 #include "dag_ops.h"

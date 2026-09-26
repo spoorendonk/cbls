@@ -187,6 +187,7 @@ add_library(cbls_lib
     src/io/nl_to_model.cpp
     src/formatter.cpp
     src/verify.cpp
+    src/column_generator.cpp
 )
 target_include_directories(cbls_lib PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

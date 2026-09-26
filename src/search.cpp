@@ -1,7 +1,9 @@
 #include "cbls/search.h"
 
+#include "cbls/column_generator.h"
 #include "cbls/dag_ops.h"
 #include "cbls/feasibility_jump.h"
+#include "cbls/model_extension.h"
 #include "cbls/randomize.h"
 #include "cbls/structural_batch.h"
 #include "cbls/tracer.h"
@@ -16,6 +18,9 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <optional>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -441,6 +446,30 @@ private:
     void maybe_arm_escape_probe();
     void maybe_diversify(BatchKind kind, bool improved);
     void maybe_emit_periodic_progress();
+    // ---- column generation (#168), all no-ops without a generator ----------
+    // The event a pricing call after THIS batch would carry, or none: NewBest
+    // (when the batch improved), then Periodic. Asked before
+    // apply_batch_outcome, whose weight reset on a new best would otherwise hand
+    // the pricer a flat weight vector.
+    [[nodiscard]] std::optional<PricingEvent> pricing_due_after_batch(bool improved) const;
+    // Whether a pricing call may start at all: a generator, room under the cap,
+    // budget left, and none yet this batch.
+    [[nodiscard]] bool pricing_possible() const;
+    // Price at the safe point after a batch. Pays a pending resync first, since
+    // the pricer reads node values and FJ must match the model it is grown with.
+    void maybe_price_after_batch(bool improved, bool& resync);
+    // Price immediately before a diversification kick (PricingEvent::Stagnation).
+    void maybe_price_before_kick();
+    // One pricing call: build the context, call the generator, apply what it
+    // staged, age the columns. Precondition: pricing_possible().
+    void price(PricingEvent why);
+    // Apply a staged extension and grow every piece of search state with it.
+    void apply_extension(const ModelExtension& ext, int64_t& columns, int64_t& rows);
+    // Re-derive the incumbent's standing after an extension changed the model it
+    // was recorded on. See the definition.
+    void revalidate_incumbent();
+    // Retire the columns ColumnPool says have aged out.
+    void retire_aged_columns();
     // ---- the host's event stream (#169), no-ops without a tracer ------------
     // One null test per event, and every one of them is at batch, kick or
     // inner-solver granularity -- never per GLS iteration. See `Tracer`.
@@ -540,6 +569,14 @@ private:
     SearchCounters counters_;
     std::chrono::steady_clock::time_point last_callback_;
     std::chrono::steady_clock::time_point last_improvement_;
+    // Column generation (#168). `generator_` is this search's OWN clone of
+    // SearchConfig::column_generator, or null -- and null is the whole of the
+    // "off" state: every pricing site tests it first and does nothing else.
+    std::unique_ptr<ColumnGenerator> generator_;
+    ColumnPool columns_;
+    ColumnSignatureSet signatures_;
+    // At most one pricing call per batch; reset at the top of each pass.
+    bool priced_this_batch_ = false;
     // Which budget ends the run. Assigned at every loop exit so it always
     // describes the exit actually taken; the `while` condition below is the only
     // exit that is not a `break`, so it seeds the value and each `break`
@@ -578,7 +615,14 @@ ViolationLSLoop::ViolationLSLoop(Model& model, ViolationManager& vm, RNG& rng, F
       best_state_(model.copy_state()),
       closest_state_(best_state_),
       last_callback_(budget.start),
-      last_improvement_(budget.start) {
+      last_improvement_(budget.start),
+      columns_(config.max_generated_columns, config.column_retire_age) {
+    if (config.column_generator != nullptr) {
+        generator_ = config.column_generator->clone();
+        if (generator_ == nullptr) {
+            throw std::invalid_argument("ColumnGenerator::clone() returned null");
+        }
+    }
     sample_rho();
 }
 
@@ -1389,6 +1433,7 @@ void ViolationLSLoop::maybe_diversify(BatchKind kind, bool improved) {
         // the search re-converges to the same point. Disarmed again on the next
         // improvement, so a productive search never pays for it.
         fj_.set_escape_probe(true);
+        maybe_price_before_kick();
         // Under ParallelSearch, restarting from a PEER's incumbent is MEANT to
         // be a better use of a full-period kick than re-perturbing our own
         // assignment: the pool holds points this worker has not seen, drawn
@@ -1454,6 +1499,7 @@ void ViolationLSLoop::maybe_diversify(BatchKind kind, bool improved) {
         // budgeted run (no wall clock) the only one it has. Carrying the
         // count across keeps "100 non-improving batches" meaning what it
         // says while still buying the early kick.
+        maybe_price_before_kick();
         const int carried = stagnation_;
         diversify(/*allow_lns=*/!have_feasible_);
         stagnation_ = carried;
@@ -1467,6 +1513,228 @@ void ViolationLSLoop::maybe_emit_periodic_progress() {
             1.0) {
         emit_progress(/*new_best=*/false);
     }
+}
+
+// ---- column generation (#168) ----------------------------------------------
+
+std::optional<PricingEvent> ViolationLSLoop::pricing_due_after_batch(bool improved) const {
+    // A pure-feasibility model that just improved is solved: apply_batch_outcome
+    // ends the run, so pricing for it would be work nobody reads.
+    if (improved && config_.price_on_new_best && has_obj_) {
+        return PricingEvent::NewBest;
+    }
+    if (config_.pricing_period > 0 && batches_ % config_.pricing_period == 0) {
+        return PricingEvent::Periodic;
+    }
+    return std::nullopt;
+}
+
+bool ViolationLSLoop::pricing_possible() const {
+    return generator_ != nullptr && !priced_this_batch_ && columns_.remaining() > 0 &&
+           !past_deadline();
+}
+
+void ViolationLSLoop::maybe_price_after_batch(bool improved, bool& resync) {
+    if (generator_ == nullptr) {
+        return;  // the whole cost of the feature on a run that does not use it
+    }
+    const std::optional<PricingEvent> why = pricing_due_after_batch(improved);
+    if (!why.has_value() || !pricing_possible()) {
+        return;
+    }
+    if (resync) {
+        // A structural or novelty batch, or the inner solver, moved the
+        // assignment outside FJ. The pricer reads node values -- which are
+        // already current -- but FeasibilityJump::on_extended patches FJ's
+        // tables for the touched rows only, and it must be patching tables that
+        // describe this assignment. Paying the resync now instead of in
+        // apply_batch_outcome is the same resync, earlier.
+        fj_.resync();
+        resync = false;
+    }
+    price(*why);
+}
+
+void ViolationLSLoop::maybe_price_before_kick() {
+    if (generator_ == nullptr || !config_.price_on_stagnation || !pricing_possible()) {
+        return;
+    }
+    price(PricingEvent::Stagnation);
+}
+
+void ViolationLSLoop::price(PricingEvent why) {
+    priced_this_batch_ = true;
+    // Timed on the hook's rule and for the hook's reason: an iteration-budgeted
+    // run reads no clock, a tracer widens the gate. See polish_and_record.
+    const bool time_it = has_deadline_ || tracer_ != nullptr;
+    const auto started =
+        time_it ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+
+    ModelExtension ext(model_);
+    {
+        PricingContext ctx{
+            model_,
+            ConstSpan<double>(vm_.weights.data(), vm_.weights.size()),
+            obj_ci_,
+            model_.objective_bound(),
+            have_feasible_ ? &best_state_ : nullptr,
+            have_feasible_ ? best_feasible_obj_ : std::numeric_limits<double>::infinity(),
+            batches_,
+            elapsed(),
+            has_deadline_ ? remaining() : std::numeric_limits<double>::infinity(),
+            columns_.remaining(),
+            signatures_};
+        ++counters_.pricing_calls;
+        generator_->price(ctx, why, ext);
+    }
+
+    int64_t columns = 0;
+    int64_t rows = 0;
+    if (!ext.empty()) {
+        if (static_cast<int64_t>(ext.num_new_vars()) > columns_.remaining()) {
+            // Whole or nothing: a partial extension would need a way to cut a
+            // recording at a column boundary, and a generator told the room it
+            // had (ctx.columns_remaining) has no excuse to need one.
+            ++counters_.extensions_refused;
+        } else {
+            apply_extension(ext, columns, rows);
+        }
+    }
+    retire_aged_columns();
+
+    if (time_it) {
+        const double seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+        if (has_deadline_) {
+            counters_.pricing_seconds += seconds;
+        }
+        if (tracer_ != nullptr) {
+            tracer_->pricing(why, columns, rows, seconds);
+        }
+    }
+}
+
+void ViolationLSLoop::apply_extension(const ModelExtension& ext, int64_t& columns, int64_t& rows) {
+    // #167's order, which both on_extended calls now enforce: the model, then the
+    // violation manager, then FJ. Existing rows keep their GLS weights; new rows
+    // start at 1, the value a whole-model construction would have given them.
+    const ExtensionResult res = model_.extend(ext);
+    vm_.on_extended(res);
+    fj_.on_extended(res);
+
+    // Every state this loop may restore later was captured on the smaller model
+    // and must grow with it, or restore_state refuses it (and a pool or LNS
+    // snapshot would index past its end). Each new column takes its declared
+    // starting value -- which is also the value it holds in the current
+    // assignment, so the padded states agree with the model about it.
+    pad_state(best_state_, res);
+    pad_state(closest_state_, res);
+    if (has_adopted_origin_) {
+        pad_state(adopted_origin_, res);
+    }
+    columns_.on_added(res);
+    columns = res.num_new_vars;
+    rows = res.num_new_constraints;
+    counters_.columns_added += columns;
+    counters_.rows_added += rows;
+
+    revalidate_incumbent();
+}
+
+// The incumbent was recorded on the model BEFORE this extension. Padded, it is
+// restorable again, but that does not make it the same point: a new row may
+// cut it off, and a new column entering at a starting value that is not neutral
+// in its rows (anything but a zero contribution) moves its rows and its
+// objective. Nothing short of evaluating it can tell, because an extension is an
+// arbitrary DAG recording -- so evaluate it. That is two full_evaluates and one
+// state copy per APPLIED extension, O(model), on the same order as what extend
+// already costs once it appends to a row (an O(#constraints) walk) and paid only
+// on a batch that priced, never per iteration.
+//
+// Three outcomes:
+//  - unchanged (the column-generation norm: new columns start at zero and add
+//    nothing): nothing to do;
+//  - still feasible, different objective: the incumbent's objective is
+//    re-derived, and the bound tightened if that is now lower -- never loosened,
+//    for adopt_from_pool's reason;
+//  - no longer feasible: it stops being an incumbent. It becomes the closest
+//    approach, the objective bound is released, and the search goes back to
+//    looking for a feasible point of the model it now has. SearchResult then
+//    reports what the grown model can actually vouch for, rather than an
+//    assignment that violates one of its rows.
+void ViolationLSLoop::revalidate_incumbent() {
+    if (!have_feasible_) {
+        return;
+    }
+    const Model::State here = model_.copy_state();
+    model_.restore_state(best_state_);
+    full_evaluate(model_);
+    const bool feasible = real_feasible();
+    const double violation = max_real_violation();
+    const double obj = current_obj();
+    model_.restore_state(here);
+    full_evaluate(model_);
+    vm_.invalidate_cache();
+    // The re-evaluation rewrote every node value -- to the same assignment, but
+    // not necessarily to the same last bit an incremental walk had reached --
+    // so FJ's violated set and cached jumps are re-grounded against them.
+    fj_.resync();
+
+    const bool same_obj =
+        (obj == best_feasible_obj_) || (!std::isfinite(obj) && !std::isfinite(best_feasible_obj_));
+    if (feasible && same_obj) {
+        return;
+    }
+    ++counters_.incumbents_revalidated;
+    if (feasible) {
+        best_feasible_obj_ = std::isfinite(obj) ? obj : std::numeric_limits<double>::infinity();
+        if (has_obj_ && std::isfinite(obj)) {
+            const double bound = obj - (1e-3 * (std::abs(obj) + 1.0));
+            if (bound < model_.objective_bound()) {
+                model_.set_objective_bound(bound);
+                vm_.invalidate_cache();
+                fj_.resync();
+            }
+        }
+        return;
+    }
+    have_feasible_ = false;
+    best_feasible_obj_ = std::numeric_limits<double>::infinity();
+    best_violation_ = violation;
+    closest_state_ = std::move(best_state_);
+    best_state_ = closest_state_;
+    has_adopted_origin_ = false;
+    adopted_origin_ = Model::State{};
+    if (has_obj_) {
+        model_.set_objective_bound(std::numeric_limits<double>::infinity());
+        vm_.invalidate_cache();
+        fj_.resync();
+    }
+}
+
+void ViolationLSLoop::retire_aged_columns() {
+    std::vector<const Model::State*> keep;
+    if (have_feasible_) {
+        keep.push_back(&best_state_);
+    } else {
+        // What finish() returns on an infeasible run: a retired column pinned at
+        // a value this state does not hold would hand back an assignment outside
+        // its own variable's domain.
+        keep.push_back(&closest_state_);
+    }
+    if (has_adopted_origin_) {
+        keep.push_back(&adopted_origin_);
+    }
+    const std::vector<int32_t> due = columns_.age(model_, keep);
+    if (due.empty()) {
+        return;
+    }
+    for (const int32_t v : due) {
+        Variable& var = model_.var_mut(v);
+        var.ub = var.lb;  // value == lb: ColumnPool only retires a column sitting there
+    }
+    fj_.retire(due);
+    counters_.columns_retired += static_cast<int64_t>(due.size());
 }
 
 SearchResult ViolationLSLoop::finish() {
@@ -1550,6 +1818,7 @@ SearchResult ViolationLSLoop::run() {
         bool resync = run_batch(kind);
         ++batches_;
         count_batch(kind);
+        priced_this_batch_ = false;
 
         const double batch_violation = max_real_violation();
         note_closest_approach(batch_violation);
@@ -1558,6 +1827,10 @@ SearchResult ViolationLSLoop::run() {
         // pure-feasibility solve is a batch like any other and has to be
         // reported as one.
         trace_batch_end(kind, improved);
+        // After batch_end, so a pricing event lands between the batch that
+        // raised it and the next one in the host's stream; before
+        // apply_batch_outcome, whose reset on a new best flattens the weights.
+        maybe_price_after_batch(improved, resync);
         if (!apply_batch_outcome(improved, resync)) {
             break;
         }

@@ -232,6 +232,24 @@ public:
     // can throw before any worker exists (a bad_alloc on the objective row, or a
     // topological sort that rejects an unclosed cyclic model), where a factory
     // overload only ever reports the aggregated worker failure.
+    //
+    // COLUMN GENERATION (#168) -- a `SearchConfig::column_generator` -- runs
+    // through the second of these two overloads and ONLY through it; the factory
+    // overloads throw `std::invalid_argument` on it. What changes:
+    //
+    //  - each worker searches a PRIVATE deep copy of the frozen master
+    //    (`Model::private_copy`), because it is going to grow it, and
+    //    `Model::extend` refuses a shared structure. The #157 sharing is off for
+    //    the run, and each worker pays the whole DAG;
+    //  - workers share NO incumbents and adopt none: after its first extension a
+    //    worker's model is no longer its peers', and a pooled state would index
+    //    the wrong columns. The shared stop flag stays;
+    //  - each worker runs ONE solve: no restart on an early return and no retry
+    //    after a throw (a throw inside `extend` leaves the model unusable);
+    //  - the answer is the best worker's, and that worker's grown model is MOVED
+    //    into `master` -- so `master` comes back OPEN, closed and grown, and
+    //    `result.best_state` indexes it. If no worker produced a result the
+    //    master is left frozen and untouched.
     SearchResult solve(Model& master, double time_limit = 10.0, uint64_t seed = 42);
     SearchResult solve(Model& master, double time_limit, uint64_t seed, const SearchConfig& config,
                        std::function<std::shared_ptr<InnerSolverHook>(Model&)> hook_factory,
@@ -294,7 +312,7 @@ private:
         const SearchConfig& config,
         std::function<std::shared_ptr<InnerSolverHook>(Model&)>& hook_factory,
         std::function<std::shared_ptr<LNS>()>& lns_factory, SolveCallback* callback, int n_threads,
-        const ParallelConfig& par_config);
+        const ParallelConfig& par_config, Model* grow_master);
 };
 
 }  // namespace cbls

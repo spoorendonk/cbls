@@ -288,6 +288,20 @@ public:
     /// the batch then indexes per row without one.
     void on_extended(const ExtensionResult& ext);
 
+    /// Take variables out of the search for good -- column generation's
+    /// retirement (#168). Each must already be PINNED (`ub == lb == value`),
+    /// which is what keeps every other mover (LNS's destroy step, a fresh
+    /// `FeasibilityJump` inside an LNS repair, the kick) from moving it too; this
+    /// removes it from the scan tables, so a retired column costs no scan work.
+    ///
+    /// Permanent for this object: `jumpable` reports false from here on, which
+    /// also keeps it out of kicks. Keeps the GLS weights; rebuilds the violated
+    /// set and the scan set (one O(model) sweep, like `resync`). Structured or
+    /// already-retired ids are skipped. Throws `std::out_of_range` on an id naming
+    /// nothing and `std::invalid_argument` on an unpinned variable, before
+    /// changing anything.
+    void retire(const std::vector<int32_t>& vars);
+
     // Novelty Jump (paper Algorithms 4-5): a bounded-backtracking compound-move
     // search that escapes local optima single-variable FJ cannot (chained-
     // invariant fixes). Commits the improving compound move(s) it finds (left
@@ -425,6 +439,10 @@ private:
     std::vector<int32_t> examined_;   // scratch: distinct vars sampled in one apply_jump
     std::vector<uint8_t> is_linear_;  // per constraint
     std::vector<std::vector<int32_t>> vars_of_constraint_;  // constraint idx -> jumpable vars (G_c)
+    // Per var: retired by column generation (#168). EMPTY until the first
+    // retire(), and sized to the model then; a variable past its end is not
+    // retired. See jumpable().
+    std::vector<uint8_t> retired_;
     // Arm/disarm the deadline and reset the stride tuner (both entry points).
     void arm_deadline();
 

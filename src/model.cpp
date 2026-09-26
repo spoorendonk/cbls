@@ -97,6 +97,16 @@ void Model::freeze() {
     open_structure_.reset();
 }
 
+Model Model::private_copy() const {
+    Model copy(*this);
+    if (copy.open_structure_ == nullptr) {
+        auto structure = std::make_shared<ModelStructure>(*copy.structure_);
+        copy.open_structure_ = structure;
+        copy.structure_ = std::move(structure);
+    }
+    return copy;
+}
+
 void Model::require_open(const char* method) const {
     if (is_frozen()) {
         throw std::logic_error(std::string(method) +
