@@ -204,8 +204,11 @@ public:
 class ColumnPool {
 public:
     /// `cap` is the most VARIABLES pricing may add over the solve (<= 0 means no
-    /// room at all). `retire_age` is how many consecutive pricing calls a column
+    /// room at all). `retire_age` is how many consecutive `age()` calls a column
     /// must sit at its lower bound before it is retired; 0 disables retirement.
+    /// The engine calls `age()` once per pricing event -- at every pricing call
+    /// and, once the cap is reached, at every event that would have called the
+    /// generator (see `SearchConfig::column_retire_age`).
     ColumnPool(int64_t cap, int retire_age);
 
     /// Room left under the cap.

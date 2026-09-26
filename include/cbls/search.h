@@ -280,9 +280,10 @@ struct SearchConfig {
     // losing a column over. Retiring buys scan cost, not memory. Columns are aged
     // at the start of every pricing call and, once `max_generated_columns` is
     // reached and the generator is no longer called, at every pricing event that
-    // would have called it -- same schedule, same budget guards, no generator
-    // call and no `pricing_calls` count -- so a full pool, where retiring saves
-    // the most scan cost, keeps retiring.
+    // would have called it -- same schedule, same budget guards, but no
+    // generator call, no `pricing_calls` count, no `pricing_seconds` and no
+    // `Tracer::pricing` event -- so a full pool, where retiring saves the most
+    // scan cost, keeps retiring until every column is retired.
     int column_retire_age = 0;
 };
 

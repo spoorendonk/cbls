@@ -1548,11 +1548,12 @@ ViolationLSLoop::PricingStep ViolationLSLoop::pricing_step() const {
     if (generator_ == nullptr || priced_this_batch_) {
         return PricingStep::None;
     }
-    // At a full pool with retirement off there is nothing left to do, ever:
+    // At a full pool with retirement off, or with every column already retired
+    // (max_generated_columns = 0 included), there is nothing left to do, ever:
     // decided before the budget tests so such a run reads no clock here. (Nor
     // does any other: past_deadline() is clockless without a deadline.)
     const bool full = columns_.remaining() <= 0;
-    if (full && config_.column_retire_age <= 0) {
+    if (full && (config_.column_retire_age <= 0 || columns_.live() == 0)) {
         return PricingStep::None;
     }
     // The iteration budget is asked too: budget_exhausted() is only consulted at
@@ -1590,15 +1591,16 @@ void ViolationLSLoop::maybe_price_after_batch(bool improved, bool& resync) {
     if (step == PricingStep::None) {
         return;
     }
-    if (resync) {
+    if (resync && step == PricingStep::Price) {
         // A structural or novelty batch, or the inner solver, moved the
         // assignment outside FJ. The pricer reads node values -- which are
         // already current -- but FeasibilityJump::on_extended patches FJ's
         // tables for the touched rows only, and it must be patching tables that
-        // describe this assignment; FeasibilityJump::retire rebuilds the
-        // violated and scan sets from them too, so aging alone needs it as
-        // much. Paying the resync now instead of in apply_batch_outcome is the
-        // same resync, earlier.
+        // describe this assignment. Paying the resync now instead of in
+        // apply_batch_outcome is the same resync, earlier. Aging alone does not
+        // need it -- ColumnPool::age reads variable values, and
+        // FeasibilityJump::retire ends in the same rebuild a resync is -- so an
+        // AgeOnly step leaves it pending rather than pay it twice.
         fj_.resync();
         resync = false;
     }

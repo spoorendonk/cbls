@@ -1461,10 +1461,15 @@ TEST_CASE("columns keep aging and retiring once the column cap is reached", "[co
     cfg.pricing_period = 1;
     cfg.max_generated_columns = 4;
     cfg.column_retire_age = 2;
+    OrderTracer tracer;
+    cfg.tracer = &tracer;
     const SearchResult r = solve(cm.model, 0.0, 1, true, nullptr, nullptr, 3, nullptr, cfg);
     REQUIRE(r.counters.batches > 20);
     REQUIRE(r.counters.columns_added == 4);
-    REQUIRE(r.counters.pricing_calls == 4);  // aging past the cap calls no generator
+    // Aging past the cap calls no generator, and the host hears of no call.
+    REQUIRE(r.counters.pricing_calls == 4);
+    REQUIRE(std::count_if(tracer.events.begin(), tracer.events.end(),
+                          [](const auto& e) { return e.kind == OrderTracer::Kind::Pricing; }) == 4);
     REQUIRE(r.counters.columns_retired == 4);
     for (size_t v = base_vars; v < cm.model.num_vars(); ++v) {
         const Variable& var = cm.model.var(static_cast<int32_t>(v));
@@ -1595,15 +1600,20 @@ private:
 TEST_CASE("existing rows keep their GLS weights across an in-search extension", "[column]") {
     // #167's third criterion end to end: the extension applied by the search
     // itself, mid-run, on a model whose weights the GLS dynamics have pushed well
-    // away from 1 (it is infeasible, so they only grow). Compared bitwise: an
-    // extension that re-initialised the existing rows' weights, or rescaled them,
-    // fails this.
+    // away from 1 (it is infeasible, so some row is always violated and bumped;
+    // kicks reset them, hence the generator waits for one above 2). Compared
+    // bitwise: an extension that re-initialised the existing rows' weights, or
+    // rescaled them, fails this -- the rows it touched and the one it did not.
     Model m;
     const int32_t a = m.bool_var();
     const int32_t b = m.bool_var();
     const int32_t lhs = m.sum({m.prod(m.constant(1.0), a), m.prod(m.constant(1.0), b)});
     m.add_constraint(m.leq(lhs, m.constant(0.0)));
     m.add_constraint(m.geq(lhs, m.constant(2.0)));
+    // A row the extension does not reach, also always violated, so its weight
+    // moves too: a reset confined to untouched rows must fail as well.
+    const int32_t c = m.bool_var();
+    m.add_constraint(m.geq(m.sum({m.prod(m.constant(1.0), c)}), m.constant(2.0)));
     m.close();
 
     auto probe = std::make_shared<WeightProbe>();
