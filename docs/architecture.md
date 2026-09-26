@@ -739,12 +739,16 @@ Moves come from `generate_standard_moves` (`src/moves.cpp`):
 
 | Type  | Moves |
 |-------|-------|
-| List  | `list_swap`, `list_2opt`, `list_relocate`, `list_or_opt_2`, `list_or_opt_3`, `list_insert`, `list_remove` |
+| List  | `list_swap`, `list_2opt`, `list_relocate`, `list_or_opt_2`, `list_or_opt_3`, `list_insert`, `list_exchange`, `list_remove` |
 | Set   | `set_add`, `set_remove`, `set_swap` |
 
-`list_insert` and `list_remove` are the two that change the length, so they are
-inert on a permutation (which sits at `min_len == max_len`) and on a member of a
-partition, whose membership is shared with its sibling lists. The partition's own
+`list_insert` and `list_remove` change the length and `list_exchange` changes the
+membership at a fixed length, so all three are inert on a permutation (whose
+length is pinned at its universe) and on a member of a partition, whose
+membership is shared with its sibling lists. `list_exchange` is what makes
+`min_len == max_len < universe` — a fixed-count selection model — searchable at
+all: without it the membership drawn at initialisation would be the membership
+for the whole run. The partition's own
 moves — `partition_relocate`, `partition_swap`, `partition_2opt_star`, and under
 `Cover::AtMostOnce` `partition_insert` / `partition_remove` — come from
 `generate_partition_moves` and are registered by `default_move_generators` as one

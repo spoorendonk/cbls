@@ -299,6 +299,31 @@ static std::vector<bool> list_membership(const Variable& var) {
     return present;
 }
 
+/// The elements of `var`'s universe it does not hold: the membership flag over
+/// the universe, and the complement as a list to draw from.
+///
+/// Built ONCE per `generate_standard_moves` call and shared by the two moves
+/// that need it, rather than once each. It is O(universe) with two allocations,
+/// which is the shape `SetPartition` already has on the Set path -- but it is
+/// also the cost this representation exists to keep off a candidate, so it is
+/// built only when one of those moves can actually apply. On a permutation List
+/// neither can, so nothing here runs at all.
+struct ListComplement {
+    std::vector<bool> present;  // indexed by element, over the universe
+    std::vector<int32_t> absent;
+};
+
+static ListComplement list_complement(const Variable& var) {
+    ListComplement c;
+    c.present = list_membership(var);
+    for (int32_t e = 0; e < var.universe_size; ++e) {
+        if (!c.present[static_cast<size_t>(e)]) {
+            c.absent.push_back(e);
+        }
+    }
+    return c;
+}
+
 // One element of the universe that `var` does not hold, or -1 if it holds them
 // all.
 //
@@ -308,27 +333,22 @@ static std::vector<bool> list_membership(const Variable& var) {
 // list is empty or the list names nobody absent, so a partial neighbour list
 // restricts where the search looks and never what it can reach.
 static int32_t pick_absent_element(const Variable& var, RNG& rng, const NeighbourList* neighbours,
-                                   const std::vector<bool>& present) {
+                                   const ListComplement& comp) {
     const auto n = static_cast<int32_t>(var.elements.size());
     if (neighbours != nullptr && !neighbours->empty() && n > 0) {
         const int32_t seed = var.elements[static_cast<size_t>(rng.integers(0, n))];
         for (int32_t f : neighbours->of(seed)) {
-            if (f >= 0 && static_cast<size_t>(f) < present.size() &&
-                !present[static_cast<size_t>(f)]) {
+            if (f >= 0 && static_cast<size_t>(f) < comp.present.size() &&
+                !comp.present[static_cast<size_t>(f)]) {
                 return f;
             }
         }
     }
-    std::vector<int32_t> absent;
-    for (int32_t e = 0; e < var.universe_size; ++e) {
-        if (!present[static_cast<size_t>(e)]) {
-            absent.push_back(e);
-        }
-    }
-    if (absent.empty()) {
+    if (comp.absent.empty()) {
         return -1;
     }
-    return absent[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(absent.size())))];
+    return comp
+        .absent[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(comp.absent.size())))];
 }
 
 // Insert one absent element at a random position (#164).
@@ -337,12 +357,12 @@ static int32_t pick_absent_element(const Variable& var, RNG& rng, const Neighbou
 // bit-identical: on `list_var(n)` the length is pinned at max_size, so this
 // returns having consumed no random numbers at all.
 static void list_insert_move(const Variable& var, RNG& rng, const NeighbourList* neighbours,
-                             std::vector<Move>& moves) {
+                             const ListComplement& comp, std::vector<Move>& moves) {
     const auto n = static_cast<int32_t>(var.elements.size());
-    if (var.partitioned || n >= var.max_size || var.universe_size <= 0) {
+    if (n >= var.max_size) {
         return;
     }
-    const int32_t chosen = pick_absent_element(var, rng, neighbours, list_membership(var));
+    const int32_t chosen = pick_absent_element(var, rng, neighbours, comp);
     if (chosen < 0) {
         return;
     }
@@ -369,12 +389,12 @@ static void list_insert_move(const Variable& var, RNG& rng, const NeighbourList*
 // sibling lists, and `partition_swap` is the length-preserving exchange that
 // keeps the cover.
 static void list_exchange_move(const Variable& var, RNG& rng, const NeighbourList* neighbours,
-                               std::vector<Move>& moves) {
+                               const ListComplement& comp, std::vector<Move>& moves) {
     const auto n = static_cast<int32_t>(var.elements.size());
-    if (var.partitioned || n <= 0 || var.universe_size <= n) {
+    if (n <= 0 || var.universe_size <= n) {
         return;
     }
-    const int32_t chosen = pick_absent_element(var, rng, neighbours, list_membership(var));
+    const int32_t chosen = pick_absent_element(var, rng, neighbours, comp);
     if (chosen < 0) {
         return;
     }
@@ -473,7 +493,7 @@ static void list_reorder_moves(const Variable& var, RNG& rng, std::vector<Move>&
 
 // A List's typed moves: the five length-preserving reorderings first, then the
 // three that can only apply to a List that is not a permutation (#164) -- insert,
-// remove, and the fixed-length membership exchange.
+// the fixed-length membership exchange, and remove.
 //
 // ORDER MATTERS AND THE TAIL MUST STAY LAST. All three tail moves test their
 // guards before touching the RNG, so on a permutation List -- where the length is
@@ -484,9 +504,19 @@ static void list_reorder_moves(const Variable& var, RNG& rng, std::vector<Move>&
 static void list_moves(const Variable& var, RNG& rng, std::vector<Move>& moves,
                        const NeighbourList* neighbours) {
     list_reorder_moves(var, rng, moves, neighbours);
-    list_insert_move(var, rng, neighbours, moves);
+    const auto n = static_cast<int32_t>(var.elements.size());
+    // The membership scan is built ONCE and only where one of the two moves that
+    // read it can apply. A permutation List can apply neither -- its length is
+    // pinned at max_size and its universe is its length -- so it neither scans
+    // nor draws, which is what keeps its trajectory the pre-#164 one. A partition
+    // member applies neither either: its membership belongs to the partition.
+    if (!var.partitioned &&
+        ((n < var.max_size && var.universe_size > 0) || (n > 0 && var.universe_size > n))) {
+        const ListComplement comp = list_complement(var);
+        list_insert_move(var, rng, neighbours, comp, moves);
+        list_exchange_move(var, rng, neighbours, comp, moves);
+    }
     list_remove_move(var, rng, moves);
-    list_exchange_move(var, rng, neighbours, moves);
 }
 
 // The current subset, its complement and the membership flag, which all three
