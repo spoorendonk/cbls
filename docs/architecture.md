@@ -2287,7 +2287,8 @@ is a row -- the objective included, which sits under the objective row `solve()`
 adds before the search starts, so an append into it is a touched row -- and an
 extension reaches an existing node only through `append_to_sum`. Such an
 extension cannot change anything evaluated, whatever its columns start at
-(pinned red by `an extension that touches no row skips revalidation`). The
+(pinned by `an extension that touches no row skips revalidation`, which goes
+red if the early return is removed; its counter is new with it). The
 incumbent's objective is compared within `record_best`'s own relative tolerance,
 so round-off between the incremental and the fresh evaluation is not counted.
 The outcomes: unchanged (the column-generation norm -- a column enters at 0 and

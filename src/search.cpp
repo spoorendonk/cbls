@@ -1600,7 +1600,9 @@ void ViolationLSLoop::maybe_price_after_batch(bool improved, bool& resync) {
         // apply_batch_outcome is the same resync, earlier. Aging alone does not
         // need it -- ColumnPool::age reads variable values, and
         // FeasibilityJump::retire ends in the same rebuild a resync is -- so an
-        // AgeOnly step leaves it pending rather than pay it twice.
+        // AgeOnly step leaves it pending. When a column does retire,
+        // apply_batch_outcome then pays a second, redundant rebuild: O(model)
+        // once per retiring event, which is rare enough not to track.
         fj_.resync();
         resync = false;
     }

@@ -179,7 +179,8 @@ struct SearchCounters {
     /// the incumbent, or on a run without one the closest approach -- at O(model)
     /// cost. Zero for an extension that reached no row (added no row and grew no
     /// Sum under one), since nothing such a point is judged by can have changed.
-    /// `incumbents_revalidated` counts the subset of these that found a change.
+    /// `incumbents_revalidated` counts the subset that found the INCUMBENT
+    /// changed; a closest-approach re-evaluation is never counted there.
     int64_t revalidation_evaluations = 0;
 
     /// Add `other` into this, as `ParallelSearch` sums `perturbations`: every

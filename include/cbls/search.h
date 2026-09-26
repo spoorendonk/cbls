@@ -283,7 +283,8 @@ struct SearchConfig {
     // would have called it -- same schedule, same budget guards, but no
     // generator call, no `pricing_calls` count, no `pricing_seconds` and no
     // `Tracer::pricing` event -- so a full pool, where retiring saves the most
-    // scan cost, keeps retiring until every column is retired.
+    // scan cost, keeps aging until every column is retired
+    // (a column held off its lower bound in the incumbent never retires).
     int column_retire_age = 0;
 };
 
