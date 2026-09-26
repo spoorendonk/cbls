@@ -115,7 +115,8 @@ constexpr const char* kSolveMasterDoc =
     "\n"
     "The C++ `Model& master` entry point, which the factory forms cannot reach.\n"
     "`model` is FROZEN on this thread first and each worker searches a copy that\n"
-    "shares its immutable structure (#157), so the model comes back frozen: build\n"
+    "shares its immutable structure (#157), so -- without a column_generator -- the\n"
+    "model comes back frozen: build\n"
     "any further structure before calling this. hook_factory, lns_factory,\n"
     "callback and par_config behave as in solve_parallel (see there, including\n"
     "the GIL release and the exception contract).\n"
@@ -141,7 +142,7 @@ constexpr const char* kSolveMasterDoc =
 // PyGILState_Ensure, which is legal on a thread that released the GIL and on a
 // thread Python has never seen). They have since nanobind v0.1.0 -- v0.0.1's
 // held nb::object members released WITHOUT the GIL -- so the whole
-// `nanobind>=1.8` range pyproject.toml admits is covered (src/error.cpp at tags
+// `nanobind>=2.0` range pyproject.toml admits is covered (src/error.cpp at tags
 // v0.1.0, v1.8.0 and v2.13.0). Converting the exception at this boundary would
 // therefore buy no safety and would cost the caller the original exception
 // object (#159).
@@ -775,9 +776,20 @@ void require_vm_in_step(const Model& model, const ViolationManager& vm, const ch
 
 }  // namespace
 
+constexpr const char* kLambdaSumDoc =
+    "Sum `func(e)` over the elements of a List or Set variable.\n"
+    "\n"
+    "A callable that reaches an Expr (or the Model) pins the model for the\n"
+    "process lifetime: the model holds the callable where the cycle collector\n"
+    "cannot see it. Capture handles (`x.handle`) or plain data instead.\n";
+
 constexpr const char* kPairLambdaSumDoc =
     "Sum `func(e_k, e_{k+1})` over the consecutive pairs of a List or Set\n"
     "variable's elements.\n"
+    "\n"
+    "A callable that reaches an Expr (or the Model) pins the model for the\n"
+    "process lifetime: the model holds the callable where the cycle collector\n"
+    "cannot see it. Capture handles (`x.handle`) or plain data instead.\n"
     "\n"
     "cyclic=True adds the closing pair `func(e_{n-1}, e_0)` when n >= 2, which\n"
     "is a tour cost. head and tail, if given, add `head(e_0)` and\n"
@@ -1128,7 +1140,7 @@ NB_MODULE(_cbls_core, m) {
                 (void)table_universe(model, list_var, "lambda_sum");
                 return model.lambda_sum(list_var, std::move(func));
             },
-            nb::arg("list_var"), nb::arg("func"))
+            nb::arg("list_var"), nb::arg("func"), kLambdaSumDoc)
         .def(
             "lambda_table_sum",
             [](Model& model, int32_t list_var, const Table1D& table) {

@@ -726,7 +726,11 @@ the `Expr` reading (and its operators building into) freed heap, reused by the
 next `Model` of the same size. Every `Expr` the binding returns now keeps its
 model's Python object alive -- the model itself, not the operand, so a
 `s = s + x` loop does not chain every intermediate to the next. `ViolationManager`
-had the same hole and now keeps its model alive too. `Model.var()` and friends
+had the same hole and now keeps its model alive too. The cost: a `lambda_sum` /
+`pair_lambda_sum` callable that reaches an `Expr` (or the model) makes a cycle
+the collector cannot see -- the model holds the callable in a C++
+`std::function` -- so it pins the model for the process lifetime. Capture handles
+or plain data in such callables. `Model.var()` and friends
 used to be `reference_internal` into the arrays `extend` (and any builder before `close()`)
 reallocates, and writing `.value` through one held across that was a heap
 use-after-free. `cbls.solve` registers the model as solving **before** it releases
