@@ -70,6 +70,13 @@ static std::string op_to_string(NodeOp op) {
             return "Lt";
         case NodeOp::Gt:
             return "Gt";
+        case NodeOp::Custom:
+            // Never written to a file -- `save_model` refuses a model holding
+            // one before it opens the stream. Named here so a diagnostic that
+            // prints an op does not say "Unknown", and because this switch is
+            // `default:`-free so that a new NodeOp is a compile error rather
+            // than a silent "Unknown" (the build carries no -Wswitch).
+            return "Custom";
     }
     return "Unknown";
 }
@@ -336,6 +343,11 @@ int32_t build_node(Model& m, NodeOp op, const json& j, const std::vector<int32_t
             return m.gt(children.at(0), children.at(1));
         case NodeOp::Const:
             break;  // handled by the caller, which needs no children
+        case NodeOp::Custom:
+            // Unreachable: `string_to_op` has no "Custom" entry, so a file
+            // naming one is rejected as an unknown op with the line number
+            // attached. Listed because this switch is `default:`-free.
+            break;
     }
     return -1;
 }
@@ -654,9 +666,31 @@ json objective_record(const Model& model, NameTable& var_names, NameTable& node_
     return j;
 }
 
+// A `.cbls` file is a model the format can rebuild, and it cannot rebuild user
+// code: a `CustomInvariant` is a C++ object, not a table of numbers the way a
+// `Lambda` is (#166).
+//
+// Checked BEFORE a single line is written. `std::ofstream` truncates on open, so
+// throwing partway through would replace an existing file with a prefix of a
+// model -- the same failure the benchmark runners guard against for published
+// tables, and for the same reason: it looks like a file.
+void refuse_custom_nodes(const Model& model) {
+    for (const auto& node : model.nodes()) {
+        if (node.op != NodeOp::Custom) {
+            continue;
+        }
+        const std::string& name = model.custom_name(node.lambda_func_id);
+        throw std::runtime_error("cannot serialise model: node n" + std::to_string(node.id) +
+                                 " (custom invariant '" +
+                                 (name.empty() ? std::string("<unnamed>") : name) +
+                                 "') holds user code, which the .cbls format cannot express");
+    }
+}
+
 }  // namespace
 
 void save_model(const Model& model, std::ostream& out) {
+    refuse_custom_nodes(model);
     NameTable var_names;
     NameTable node_names;
     build_name_tables(model, var_names, node_names);
@@ -700,6 +734,10 @@ void save_model(const Model& model, std::ostream& out) {
 }
 
 void save_model(const Model& model, const std::string& path) {
+    // Before the stream is opened, for the reason refuse_custom_nodes gives:
+    // opening truncates, so a refusal after that point destroys whatever file
+    // was there.
+    refuse_custom_nodes(model);
     std::ofstream file(path);
     if (!file.is_open()) {
         throw std::invalid_argument("cannot open file for writing: " + path);

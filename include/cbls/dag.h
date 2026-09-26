@@ -142,7 +142,12 @@ enum class NodeOp : uint8_t {
     Geq,
     Neq,
     Lt,
-    Gt
+    Gt,
+    /// User code in the DAG: the node's value is whatever its `CustomInvariant`
+    /// says it is (#166). Appended LAST on purpose -- the two dispatch tables in
+    /// `src/dag.cpp` are `default:`-free so that the compiler names any op
+    /// nobody handled, and appending keeps every existing enumerator's value.
+    Custom
 };
 
 struct ChildRef {
@@ -170,7 +175,17 @@ struct ExprNode {
     double const_value = 0.0;
     uint32_t child_begin = 0;
     uint32_t child_count = 0;
-    int32_t lambda_func_id = -1;  // index into ModelStructure::lambda_funcs
+    /// Which table entry this node's user code lives in, by op:
+    ///
+    ///  - `Lambda`, and a `PairLambda`'s head/tail: `ModelStructure::lambda_funcs`
+    ///  - `PairLambda`: `pair_lambda_funcs` and the parallel `pair_lambda_specs`
+    ///  - `Custom`: `Model::custom_invariant(id)`, which is PER-MODEL rather
+    ///    than shared (#166) -- the index is structure, the instance is not.
+    ///
+    /// One field for all three rather than one per op, because no node is more
+    /// than one of them and `ExprNode` is the array a 4.3M-node model is built
+    /// out of. -1 for every other op.
+    int32_t lambda_func_id = -1;
 };
 
 /// How a `PairLambda` node closes its chain of consecutive pairs.
@@ -184,7 +199,7 @@ enum class PairMode : uint8_t {
 ///
 /// It is a SIDE TABLE in `ModelStructure`, parallel to `pair_lambda_funcs` and
 /// keyed by the same `ExprNode::lambda_func_id`, rather than three more
-/// `NodeOp` enumerators. `src/dag.cpp`'s two dispatch tables are 28 cases wide
+/// `NodeOp` enumerators. `src/dag.cpp`'s two dispatch tables are 29 cases wide
 /// and already carry a cognitive-complexity suppression each; one variant per
 /// closing rule crossed with head/tail presence would be six more cases in both
 /// of them for no gain, since every variant evaluates through the same loop.

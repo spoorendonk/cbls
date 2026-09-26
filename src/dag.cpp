@@ -1,5 +1,6 @@
 #include "cbls/dag.h"
 
+#include "cbls/custom_invariant.h"
 #include "cbls/model.h"
 
 #include <algorithm>
@@ -53,6 +54,16 @@ static double list_element(const ChildRef& ref, const Model& model, int idx) {
     return 0.0;
 }
 
+// The invariant behind a Custom node (#166). Unchecked, for the reason
+// child_val gives: `lambda_func_id` is written by `Model::custom` when the node
+// is made and the slot is appended in the same call, so the check could only
+// ever pass. Kept out of the two dispatch tables so their Custom cases stay one
+// line each.
+static CustomInvariant& custom_of(const ExprNode& node, const Model& model) {
+    assert(node.lambda_func_id >= 0);
+    return model.custom_invariant(node.lambda_func_id);
+}
+
 static int list_size(const ChildRef& ref, const Model& model) {
     if (ref.is_var) {
         return static_cast<int>(model.var(ref.id).elements.size());
@@ -60,7 +71,7 @@ static int list_size(const ChildRef& ref, const Model& model) {
     return 0;
 }
 
-// A flat dispatch table over NodeOp's 28 cases, suppressed deliberately rather
+// A flat dispatch table over NodeOp's 29 cases, suppressed deliberately rather
 // than split. What the score measures here is not compounded logic: it is the
 // eighteen small guards the individual cases carry -- a loop over a variadic
 // node's children, a divide-by-zero test, an overflow test -- each charged
@@ -297,12 +308,17 @@ double evaluate(const ExprNode& node, const Model& model) {
                                        child_is_const(children[0], model)) +
                    kEps;
         }
+
+        case NodeOp::Custom:
+            // From scratch, which is what this entry point means: the
+            // incremental path is delta_evaluate's, and it never reaches here.
+            return custom_of(node, model).evaluate(InvariantInputs(model, children));
     }
     return 0.0;
 }
 
 // The AD peer of evaluate() above, and suppressed for the same reason and by the
-// same argument: one flat `default:`-free dispatch table over the same 28 NodeOp
+// same argument: one flat `default:`-free dispatch table over the same 29 NodeOp
 // cases, where the score is the sum of each case's own guards against a
 // non-finite or non-differentiable point rather than any nesting between them.
 // It scores higher than evaluate() only because a derivative needs more such
@@ -486,6 +502,16 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
         case NodeOp::Gt:
             // d/d(child0) of (child1 - child0 + kEps) = -1, d/d(child1) = 1
             return child_idx == 0 ? -1.0 : 1.0;
+
+        case NodeOp::Custom: {
+            // NaN is the invariant's "unknown", which reads as 0.0 here -- the
+            // same answer the structural ops above give, and the one that leaves
+            // a Float input on FJ's non-gradient candidates.
+            const double p =
+                custom_of(node, model)
+                    .partial(InvariantInputs(model, children), static_cast<int32_t>(child_idx));
+            return std::isnan(p) ? 0.0 : p;
+        }
     }
     return 0.0;
 }

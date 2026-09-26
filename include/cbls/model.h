@@ -1,5 +1,6 @@
 #pragma once
 
+#include "custom_invariant.h"
 #include "dag.h"
 
 #include <cassert>
@@ -262,6 +263,27 @@ public:
                             std::function<double(int)> head, std::function<double(int)> tail,
                             PairMode mode = PairMode::Open);
 
+    /// A node whose value is computed by user code (#166).
+    ///
+    /// `inputs` are ordinary handles -- variables or nodes, in any mix -- and
+    /// become the node's children in the order given, which is the order
+    /// `InvariantInputs` indexes them in. The result is an ordinary node: usable
+    /// inside an expression, as the objective, or as a constraint body.
+    ///
+    /// `inv` must not be null. It is owned by THIS model and cloned into every
+    /// copy of it, so each portfolio worker gets its own -- see `freeze()`,
+    /// whose warning about a callable carrying mutable state applies to
+    /// `lambda_sum` precisely because it does NOT apply here.
+    ///
+    /// `name` is carried for the `.cbls` writer's refusal message; a model
+    /// holding a custom node cannot be serialised, because the format has no way
+    /// to express user code.
+    ///
+    /// Throws `std::invalid_argument` on a null invariant, `std::out_of_range`
+    /// on a handle naming nothing, and `std::logic_error` once frozen.
+    int32_t custom(const std::vector<int32_t>& inputs, std::unique_ptr<CustomInvariant> inv,
+                   const std::string& name = "");
+
     void add_constraint(int32_t expr_id);
     void minimize(int32_t expr_id);
     void maximize(int32_t expr_id);
@@ -275,6 +297,9 @@ public:
               const std::string& name = "");
     Expr Set(int n, int min_size = 0, int max_size = -1, const std::string& name = "");
     Expr Constant(double val);
+    /// The `Expr` form of `custom()`, with the same contract.
+    Expr Custom(const std::vector<Expr>& inputs, std::unique_ptr<CustomInvariant> inv,
+                const std::string& name = "");
 
     // Overloaded constraint/objective accepting Expr
     void add_constraint(const Expr& e);
@@ -579,6 +604,67 @@ public:
         return s().pair_lambda_specs[idx];
     }
 
+    /// Whether this model has any custom node at all (#166).
+    ///
+    /// Checked ONCE per `delta_evaluate`/`full_evaluate` call, not per node:
+    /// a model without one takes the pre-#166 evaluation loop verbatim, which
+    /// is what keeps its trajectories bit-identical and its hot path free of a
+    /// per-node test for an op almost no model has.
+    [[nodiscard]] bool has_custom_nodes() const noexcept { return !custom_invariants_.empty(); }
+
+    /// The invariant instance of custom slot `id` -- an `ExprNode::lambda_func_id`
+    /// on a `NodeOp::Custom` node.
+    ///
+    /// Returns a MUTABLE reference from a const `Model` on purpose. The
+    /// invariant is per-model search state that `evaluate()` and
+    /// `local_derivative()` have to be able to update, and both take
+    /// `const Model&` because they must not touch the model itself. The
+    /// `unique_ptr` does not propagate constness, so this is the language's own
+    /// distinction between "the handle is const" and "the pointee is", not a
+    /// cast around one.
+    [[nodiscard]] CustomInvariant& custom_invariant(int32_t id) const {
+        if (id < 0 || id >= static_cast<int32_t>(custom_invariants_.size())) {
+            throw std::out_of_range("custom invariant id out of range");
+        }
+        return *custom_invariants_[id].invariant;
+    }
+    /// The name `custom()` was given for slot `id`, or "" if none. Same index
+    /// space and the same range check as `custom_invariant`.
+    [[nodiscard]] const std::string& custom_name(int32_t id) const {
+        if (id < 0 || id >= static_cast<int32_t>(custom_invariants_.size())) {
+            throw std::out_of_range("custom invariant id out of range");
+        }
+        return custom_invariants_[id].name;
+    }
+
+    // The probe bracket of `CustomInvariant`, driven by `delta_evaluate` and
+    // `full_evaluate` and by nothing else. Unchecked: every id comes from a node
+    // this model made, so the check could only ever pass -- the same argument
+    // `set_node_value_unchecked` makes.
+    void custom_begin_probe(int32_t id, double saved_value) noexcept {
+        CustomInvariantSlot& slot = custom_invariants_[id];
+        assert(!slot.probe_pending);  // one bracket at a time; see CustomInvariant
+        slot.probe_saved_value = saved_value;
+        slot.probe_pending = true;
+    }
+    [[nodiscard]] bool custom_probe_pending(int32_t id) const noexcept {
+        return custom_invariants_[id].probe_pending;
+    }
+    /// Close the pending probe on `id` and hand back the node value it was
+    /// opened at, for the caller to write into the value array.
+    double custom_end_probe(int32_t id) noexcept {
+        CustomInvariantSlot& slot = custom_invariants_[id];
+        slot.probe_pending = false;
+        return slot.probe_saved_value;
+    }
+    /// Drop every pending probe. `full_evaluate` calls this because it is about
+    /// to tell every invariant `evaluate()`, which is their reset point.
+    void clear_custom_probes() noexcept {
+        for (CustomInvariantSlot& slot : custom_invariants_) {
+            slot.probe_pending = false;
+        }
+    }
+
     // State snapshot/restore
     struct State {
         std::vector<double> values;
@@ -634,6 +720,12 @@ private:
     // constraint count. Not reentrant — same single-thread-per-Model contract as
     // the probe's transient node mutation.
     std::vector<double> probe_old_violation_;
+    /// One entry per custom node, indexed by its `ExprNode::lambda_func_id`
+    /// (#166). PER-MODEL, not structure: the instance is mutable state a search
+    /// writes, so a portfolio replica gets its own `clone()` of each -- which is
+    /// exactly the guarantee `lambda_funcs` cannot make. The copy constructor
+    /// clones them one by one; see the note there.
+    std::vector<CustomInvariantSlot> custom_invariants_;
 
     /// Throws if the model is frozen. `mut()` is the backstop for anything that
     /// writes the structure; this is for the public mutators that would otherwise
