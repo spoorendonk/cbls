@@ -317,10 +317,12 @@ public:
     /// Whether this invariant reads `InvariantInputs::edits` (#172). OPT IN:
     /// the structural batch records positional edits only while some custom
     /// node in the model returns true here, so a model whose invariants all
-    /// re-read pays nothing for the journal. Measured on a 200-element List
-    /// route invariant that re-reads, ~5-7% per structural candidate
-    /// (allocation-free either way; docs/architecture.md has the runs and their
-    /// load) -- which is why this is not simply always on.
+    /// re-read records no journal. Measured idle on a 200-element List route
+    /// invariant that re-reads: opting in costs ~6% per structural candidate,
+    /// and a custom node that does not opt in pays at most ~1.2% for the
+    /// plumbing (an upper bound -- code placement alone moves these rows by
+    /// more). Allocation-free either way; docs/architecture.md has the runs and
+    /// their load. The opt-in cost is why this is not simply always on.
     ///
     /// An invariant that returns false still gets a correct answer from
     /// `edits(i)` -- `available()` false whenever nothing was recorded -- so
