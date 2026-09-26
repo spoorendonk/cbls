@@ -10,15 +10,20 @@
 
 #include "cbls/custom_invariant.h"
 #include "cbls/dag_ops.h"
+#include "cbls/expr.h"
 #include "cbls/feasibility_jump.h"
 #include "cbls/model.h"
 #include "cbls/model_extension.h"
+#include "cbls/search.h"
 #include "cbls/violation.h"
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_exception.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <cmath>
+#include <functional>
 #include <map>
 #include <random>
 #include <set>
@@ -1465,20 +1470,22 @@ TEST_CASE("the second of two same-base extensions closing a cycle is refused who
 }
 
 TEST_CASE("a structural write after close retires outstanding extensions", "[extend]") {
-    // `close(); add_constraint(...)` over a node built before close() changes the
-    // structure after close (see Model::freeze), and changes neither count. An extension recorded
-    // before it describes a structure that no longer exists.
+    // The objective row -- the first solve on an objective model appends it --
+    // is a structural write after close. The ordinary builders used to be one
+    // too, over nodes built before close() and changing neither count, until
+    // #173 made them refuse a closed model. An extension recorded before such a
+    // write describes a structure that no longer exists.
     Model m;
     const int32_t x = m.float_var(0.0, 1.0);
     const int32_t s = m.sum({x});
-    const int32_t cut = m.leq(s, m.constant(0.5));
     m.add_constraint(m.leq(s, m.constant(1.0)));
+    m.minimize(s);
     m.close();
 
     ModelExtension ext(m);
     ext.append_to_sum(s, x);
     const uint64_t token = m.structure_version();
-    m.add_constraint(cut);
+    m.add_objective_soft_constraint();
     REQUIRE(m.structure_version() != token);
     REQUIRE_THROWS_AS(m.extend(ext), std::invalid_argument);
 
@@ -1490,4 +1497,230 @@ TEST_CASE("a structural write after close retires outstanding extensions", "[ext
     REQUIRE(copy.structure_version() == m.structure_version());
     REQUIRE_THROWS_AS(copy.extend(fresh), std::invalid_argument);
     REQUIRE(m.extend(fresh).touched_constraints.size() == 2);
+}
+
+// ---------------------------------------------------------------------------
+// The ordinary builders on a CLOSED model (#173). Before the refusal, a node or
+// row they appended after close() was never placed in the topological order, so
+// no evaluation computed it and solve() reported feasible over a violated row.
+// ModelExtension + Model::extend is the one public way to grow a closed model.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Everything a refused builder could have touched, so each refusal can be
+// checked to leave the model exactly as it found it -- the structure token
+// included, which is what proves the check is taken before `mut()`.
+struct Footprint {
+    size_t vars = 0;
+    size_t nodes = 0;
+    size_t constraints = 0;
+    int32_t objective = -1;
+    bool maximizing = false;
+    size_t sequences = 0;
+    size_t partitions = 0;
+    uint64_t token = 0;
+
+    explicit Footprint(const Model& m)
+        : vars(m.num_vars()),
+          nodes(m.num_nodes()),
+          constraints(m.constraint_ids().size()),
+          objective(m.objective_id()),
+          maximizing(m.is_maximizing()),
+          sequences(m.var_sequences().size()),
+          partitions(m.list_partitions().size()),
+          token(m.structure_version()) {}
+
+    bool operator==(const Footprint& o) const {
+        return vars == o.vars && nodes == o.nodes && constraints == o.constraints &&
+               objective == o.objective && maximizing == o.maximizing && sequences == o.sequences &&
+               partitions == o.partitions && token == o.token;
+    }
+};
+
+struct ClosedFixture {
+    Model m;
+    int32_t x = 0;    // Int [0, 10]
+    int32_t y = 0;    // Int [0, 10]
+    int32_t l1 = 0;   // List, universe 4, unpartitioned
+    int32_t l2 = 0;   // List, universe 4, unpartitioned
+    int32_t row = 0;  // x + y, a node built before close()
+    int32_t cut = 0;  // x >= 5, a node built before close() but never added
+
+    ClosedFixture() {
+        x = m.int_var(0, 10, "x");
+        y = m.int_var(0, 10, "y");
+        l1 = m.list_var(4, 0, 4, ListInit::Empty, "l1");
+        l2 = m.list_var(4, 0, 4, ListInit::Empty, "l2");
+        row = m.sum({x, y});
+        cut = m.geq(x, m.constant(5.0));
+        m.add_constraint(m.leq(row, m.constant(20.0)));
+        m.add_constraint(m.leq(m.lambda_sum(l1, [](int e) { return e; }), m.constant(100.0)));
+        m.add_constraint(m.leq(m.lambda_sum(l2, [](int e) { return e; }), m.constant(100.0)));
+        m.close();
+    }
+};
+
+void require_refused(ClosedFixture& f, const std::function<void()>& build) {
+    const Footprint before(f.m);
+    REQUIRE_THROWS_MATCHES(
+        build(), std::logic_error,
+        Catch::Matchers::MessageMatches(Catch::Matchers::ContainsSubstring("ModelExtension") &&
+                                        Catch::Matchers::ContainsSubstring("Model::extend")));
+    REQUIRE(Footprint(f.m) == before);
+}
+
+}  // namespace
+
+TEST_CASE("add_constraint after close is refused rather than silently unevaluated",
+          "[extend][closed]") {
+    // The issue's repro: the row x >= 5 arrived after close(), was never
+    // evaluated, and solve() returned feasible at x == 0.
+    Model m;
+    const int32_t x = m.int_var(0, 10, "x");
+    m.add_constraint(m.leq(x, m.constant(20.0)));
+    const int32_t five = m.constant(5.0);  // built before close, so only the row is new
+    m.close();
+
+    const size_t rows = m.constraint_ids().size();
+    REQUIRE_THROWS_AS(m.add_constraint(m.geq(x, five)), std::logic_error);
+    REQUIRE_THROWS_AS(m.constant(5.0), std::logic_error);
+    REQUIRE(m.constraint_ids().size() == rows);
+
+    // The sanctioned route grows the model AND gets the row evaluated.
+    ModelExtension ext(m);
+    ext.add_constraint(ext.geq(x, ext.constant(5.0)));
+    const ExtensionResult grown = m.extend(ext);
+    REQUIRE(grown.num_new_constraints == 1);
+    const SearchResult r = solve(m, 0.2, 1);
+    REQUIRE(r.feasible);
+    m.restore_state(r.best_state);
+    REQUIRE(m.var(handle_to_var_id(x)).value >= 5.0);
+}
+
+TEST_CASE("every variable builder refuses a closed model", "[extend][closed]") {
+    ClosedFixture f;
+    require_refused(f, [&] { (void)f.m.bool_var(); });
+    require_refused(f, [&] { (void)f.m.int_var(0, 1); });
+    require_refused(f, [&] { (void)f.m.float_var(0.0, 1.0); });
+    require_refused(f, [&] { (void)f.m.list_var(3); });
+    require_refused(f, [&] { (void)f.m.list_var(3, 0, 3); });
+    require_refused(f, [&] { (void)f.m.set_var(3); });
+    require_refused(f, [&] { (void)f.m.Bool(); });
+    require_refused(f, [&] { (void)f.m.Int(0, 1); });
+    require_refused(f, [&] { (void)f.m.Float(0.0, 1.0); });
+    require_refused(f, [&] { (void)f.m.List(3); });
+    require_refused(f, [&] { (void)f.m.List(3, 0, 3); });
+    require_refused(f, [&] { (void)f.m.Set(3); });
+}
+
+TEST_CASE("every expression builder refuses a closed model", "[extend][closed]") {
+    ClosedFixture f;
+    Model& m = f.m;
+    const int32_t x = f.x;
+    const int32_t y = f.y;
+    require_refused(f, [&] { (void)m.constant(1.0); });
+    require_refused(f, [&] { (void)m.Constant(1.0); });
+    require_refused(f, [&] { (void)m.neg(x); });
+    require_refused(f, [&] { (void)m.sum({x, y}); });
+    require_refused(f, [&] { (void)m.prod(x, y); });
+    require_refused(f, [&] { (void)m.div_expr(x, y); });
+    require_refused(f, [&] { (void)m.pow_expr(x, y); });
+    require_refused(f, [&] { (void)m.min_expr({x, y}); });
+    require_refused(f, [&] { (void)m.max_expr({x, y}); });
+    require_refused(f, [&] { (void)m.abs_expr(x); });
+    require_refused(f, [&] { (void)m.sin_expr(x); });
+    require_refused(f, [&] { (void)m.cos_expr(x); });
+    require_refused(f, [&] { (void)m.tan_expr(x); });
+    require_refused(f, [&] { (void)m.exp_expr(x); });
+    require_refused(f, [&] { (void)m.log_expr(x); });
+    require_refused(f, [&] { (void)m.sqrt_expr(x); });
+    require_refused(f, [&] { (void)m.signpower_expr(x, y); });
+    require_refused(f, [&] { (void)m.tanh_expr(x); });
+    require_refused(f, [&] { (void)m.if_then_else(f.cut, x, y); });
+    require_refused(f, [&] { (void)m.at(f.l1, x); });
+    require_refused(f, [&] { (void)m.count(f.l1); });
+    require_refused(f, [&] { (void)m.leq(x, y); });
+    require_refused(f, [&] { (void)m.eq_expr(x, y); });
+    require_refused(f, [&] { (void)m.geq(x, y); });
+    require_refused(f, [&] { (void)m.neq(x, y); });
+    require_refused(f, [&] { (void)m.lt(x, y); });
+    require_refused(f, [&] { (void)m.gt(x, y); });
+    require_refused(f, [&] { (void)m.lambda_sum(f.l1, [](int e) { return e; }); });
+    require_refused(f, [&] {
+        (void)m.pair_lambda_sum(f.l1, [](int a, int b) { return a + b; }, PairMode::Cyclic);
+    });
+    require_refused(f, [&] {
+        (void)m.pair_lambda_sum(
+            f.l1, [](int a, int b) { return a + b; }, [](int e) { return e; },
+            [](int e) { return e; });
+    });
+    require_refused(f, [&] { (void)m.custom({x, y}, std::make_unique<CountingSum>(), "c"); });
+    require_refused(f,
+                    [&] { (void)m.Custom({Expr{&m, x}}, std::make_unique<CountingSum>(), "c"); });
+    // The operator overloads reach the same builders.
+    require_refused(f, [&] { (void)(Expr{&m, x} + Expr{&m, y}); });
+    require_refused(f, [&] { (void)(Expr{&m, x} <= 3.0); });
+}
+
+TEST_CASE("constraints, objectives and declarations refuse a closed model", "[extend][closed]") {
+    ClosedFixture f;
+    Model& m = f.m;
+    require_refused(f, [&] { m.add_constraint(f.cut); });
+    require_refused(f, [&] { m.add_constraint(Expr{&m, f.cut}); });
+    require_refused(f, [&] { m.minimize(f.row); });
+    require_refused(f, [&] { m.minimize(Expr{&m, f.row}); });
+    require_refused(f, [&] { m.maximize(f.row); });
+    require_refused(f, [&] { m.maximize(Expr{&m, f.row}); });
+    require_refused(f, [&] { m.add_var_sequence({f.x, f.y}); });
+    require_refused(f, [&] { (void)m.add_list_partition({f.l1, f.l2}, Cover::AtMostOnce); });
+}
+
+TEST_CASE("a closed model still takes per-variable and search writes", "[extend][closed]") {
+    // The refusal is for STRUCTURE. What a search, FeasibilityJump::retire or a
+    // column-generation pricer writes -- a variable's value or bounds, the
+    // objective bound, a state restore -- is per-model state and stays open.
+    ClosedFixture f;
+    Model& m = f.m;
+    const Footprint before(m);
+    Variable& vx = m.var_mut(handle_to_var_id(f.x));
+    vx.value = 7.0;
+    vx.ub = 8.0;
+    delta_evaluate(m, {handle_to_var_id(f.x)});
+    REQUIRE_THAT(m.node_value(f.row), Catch::Matchers::WithinAbs(7.0, 1e-12));
+    const Model::State state = m.copy_state();
+    m.restore_state(state);
+    full_evaluate(m);
+    REQUIRE(Footprint(m) == before);
+}
+
+TEST_CASE("the internal objective row still grows a closed model", "[extend][closed]") {
+    // add_objective_soft_constraint is the one internal post-close growth path
+    // (the first solve on an objective model). It must not trip the refusal the
+    // public builders now take, and must produce the same row it always did:
+    // a Const holding the bound, then Leq(objective, bound), appended last.
+    Model m;
+    const int32_t x = m.int_var(0, 10, "x");
+    const int32_t y = m.int_var(0, 10, "y");
+    const int32_t obj = m.sum({x, y});
+    m.add_constraint(m.geq(obj, m.constant(3.0)));
+    m.minimize(obj);
+    m.close();
+    const size_t nodes = m.num_nodes();
+    const size_t rows = m.constraint_ids().size();
+
+    REQUIRE_NOTHROW(m.add_objective_soft_constraint());
+    REQUIRE(m.num_nodes() == nodes + 2);
+    REQUIRE(m.constraint_ids().size() == rows + 1);
+    REQUIRE(m.objective_bound_node() == static_cast<int32_t>(nodes));
+    REQUIRE(m.node(static_cast<int32_t>(nodes)).op == NodeOp::Const);
+    const ExprNode& row = m.node(static_cast<int32_t>(nodes + 1));
+    REQUIRE(row.op == NodeOp::Leq);
+    REQUIRE(m.constraint_ids().back() == row.id);
+    REQUIRE(m.objective_constraint_idx() == static_cast<int32_t>(rows));
+    REQUIRE(m.topo_position(row.id) >= 0);
+
+    const SearchResult r = solve(m, 0.2, 1);
+    REQUIRE(r.feasible);
+    REQUIRE_THAT(r.objective, Catch::Matchers::WithinAbs(3.0, 1e-9));
 }

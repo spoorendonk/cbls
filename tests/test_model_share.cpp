@@ -89,9 +89,12 @@ TEST_CASE("an open model is still deep-copied, structure and all", "[share]") {
     REQUIRE(&copy.node(0) != &master.node(0));
 
     // And the copy can still be extended without touching the original, which is
-    // the reason an open model keeps deep-copying.
+    // the reason an open model keeps deep-copying. Through `extend`: the model is
+    // closed, and the ordinary builders refuse a closed model (#173).
     const size_t before = master.num_nodes();
-    copy.add_constraint(copy.leq(copy.constant(1.0), copy.constant(2.0)));
+    ModelExtension ext(copy);
+    ext.add_constraint(ext.leq(ext.constant(1.0), ext.constant(2.0)));
+    (void)copy.extend(ext);
     REQUIRE(master.num_nodes() == before);
     REQUIRE(copy.num_nodes() == before + 3);  // two constants and the row
 }

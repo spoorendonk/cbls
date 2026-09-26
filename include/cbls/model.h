@@ -193,6 +193,11 @@ public:
     Model& operator=(Model&&) noexcept = default;
     ~Model() = default;
 
+    // The builders below are for an OPEN model. On a closed one each throws
+    // `std::logic_error` naming `ModelExtension` + `extend`, which is the way to
+    // grow it (#173): before that refusal they appended nodes and rows that no
+    // evaluation ever reached. A frozen model is refused too, as before.
+
     // Variable creation — returns var ID
     int32_t bool_var(const std::string& name = "");
     int32_t int_var(int lb, int ub, const std::string& name = "");
@@ -395,12 +400,9 @@ public:
     /// backstop against a future caller reaching it another way. Do not "fix" the
     /// order; `tests/test_model_share.cpp` pins it.
     ///
-    /// It also does NOT re-derive a structure that was extended after `close()`.
-    /// `close(); add_constraint(...); freeze();` on an objective-free model freezes
-    /// the back-references, topological order, `topo_pos` and G_v as `close()` left
-    /// them, and then shares them -- that is `close()`'s pre-existing contract,
-    /// not something `freeze()` repairs. Close last, or add the objective, which
-    /// makes the objective-row rebuild cover it.
+    /// It does not need to re-derive anything a builder added after `close()`,
+    /// because the builders refuse a closed model (#173); `extend` splices what it
+    /// adds, so the structure it freezes is always complete.
     ///
     /// What a frozen model can still do is everything a search does: assign
     /// variables, evaluate, snapshot and restore state, tighten and release the
@@ -698,8 +700,8 @@ public:
     /// Rebuilt by `close()` and `add_objective_soft_constraint()`, and SPLICED by
     /// `extend`, which leaves a node it created with the parents it has and adds
     /// an appended term's new parent to the list it already had (#167). Empty for
-    /// a node created by the ordinary builders since the last rebuild, and for
-    /// every node before the first.
+    /// every node before `close()`; the ordinary builders cannot add one after it
+    /// (#173).
     [[nodiscard]] ConstSpan<int32_t> parents(int32_t id) const {
         const ModelStructure& st = s();
         if (id < 0 || id >= static_cast<int32_t>(st.nodes.size())) {
@@ -969,6 +971,17 @@ private:
     /// change something observable -- an objective id, say -- before reaching it,
     /// and it names the method in the message where `mut()` cannot.
     void require_open(const char* method) const;
+    /// Throws if the model is frozen (as `require_open`) or CLOSED (#173). Every
+    /// public builder takes it -- variable and expression creation,
+    /// `add_constraint`, `minimize`/`maximize`, `add_var_sequence`,
+    /// `add_list_partition` -- because a node or row they appended to a closed
+    /// model was never placed in the topological order: no evaluation computed
+    /// it and `solve()` reported feasible over it. Growth after `close()` goes
+    /// through `extend`, and the internal growth paths (`extend`'s helpers,
+    /// `add_objective_soft_constraint`) use the private allocators below, which
+    /// do not take it. `reserve`, `close` and the per-model writes (`var_mut`,
+    /// `set_objective_bound`, `restore_state`) are not builders and stay open.
+    void require_buildable(const char* method) const;
 
     void build_var_constraints();
     /// The one step of `extend` that writes `Model`'s own per-model arrays --
@@ -978,6 +991,8 @@ private:
     void rebuild_back_references();
     void rebuild_topo_positions();
     int32_t alloc_var(VarType type, double lb, double ub, const std::string& name);
+    /// `constant`'s body without its closed-model refusal, for the objective row.
+    int32_t push_constant(double val);
     int32_t alloc_node(NodeOp op, std::initializer_list<ChildRef> children);
     int32_t alloc_node_over_handles(NodeOp op, const std::vector<int32_t>& handles);
     int32_t push_node(NodeOp op, size_t child_begin);

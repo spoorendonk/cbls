@@ -114,6 +114,24 @@ void Model::require_open(const char* method) const {
     }
 }
 
+// Option (a) of #173, refuse, rather than (b), route the builder through the
+// extension path. Routing would make every public builder on a closed model an
+// `extend` of one entity -- a structure-token bump, a CSR splice and a cone
+// evaluation per call -- and would still leave the caller owing
+// `ViolationManager::on_extended` and `FeasibilityJump::on_extended`, which a
+// plain `add_constraint` gives them no reason to know about. A refusal that names
+// the extension path hands them both the batching and that obligation, in the one
+// place `extend` documents it.
+void Model::require_buildable(const char* method) const {
+    require_open(method);  // a frozen model keeps its own, more specific message
+    if (closed_) {
+        throw std::logic_error(std::string("Model::") + method +
+                               ": model is closed, and a node or row added now would never be "
+                               "evaluated; grow a closed model with ModelExtension + "
+                               "Model::extend");
+    }
+}
+
 Model& Model::operator=(const Model& other) {
     if (this != &other) {
         Model copy(other);
@@ -250,16 +268,19 @@ ChildRef Model::wrap(int32_t handle) const {
 
 // Variable creation methods return negative handles: -(var_id + 1)
 int32_t Model::bool_var(const std::string& name) {
+    require_buildable("bool_var");
     int32_t vid = alloc_var(VarType::Bool, 0.0, 1.0, name);
     return -(vid + 1);  // encode as var handle
 }
 
 int32_t Model::int_var(int lb, int ub, const std::string& name) {
+    require_buildable("int_var");
     int32_t vid = alloc_var(VarType::Int, static_cast<double>(lb), static_cast<double>(ub), name);
     return -(vid + 1);
 }
 
 int32_t Model::float_var(double lb, double ub, const std::string& name) {
+    require_buildable("float_var");
     int32_t vid = alloc_var(VarType::Float, lb, ub, name);
     return -(vid + 1);
 }
@@ -270,6 +291,7 @@ int32_t Model::list_var(int n, const std::string& name) {
 
 int32_t Model::list_var(int universe, int min_len, int max_len, ListInit init,
                         const std::string& name) {
+    require_buildable("list_var");
     if (universe < 0) {
         throw std::invalid_argument("list_var: negative universe");
     }
@@ -316,6 +338,7 @@ int32_t Model::list_var(int universe, int min_len, int max_len, ListInit init,
 }
 
 int32_t Model::set_var(int n, int min_size, int max_size, const std::string& name) {
+    require_buildable("set_var");
     int32_t vid = alloc_var(VarType::Set, 0.0, 0.0, name);
     auto& v = vars_[vid];
     v.universe_size = n;
@@ -326,6 +349,11 @@ int32_t Model::set_var(int n, int min_size, int max_size, const std::string& nam
 
 // Expression creation methods return non-negative handles (node IDs)
 int32_t Model::constant(double val) {
+    require_buildable("constant");
+    return push_constant(val);
+}
+
+int32_t Model::push_constant(double val) {
     ModelStructure& st = mut();
     const int32_t nid = push_node(NodeOp::Const, st.child_refs.size());
     st.nodes[nid].const_value = val;
@@ -334,10 +362,12 @@ int32_t Model::constant(double val) {
 }
 
 int32_t Model::neg(int32_t x) {
+    require_buildable("neg");
     return alloc_node(NodeOp::Neg, {wrap(x)});
 }
 
 int32_t Model::sum(const std::vector<int32_t>& args) {
+    require_buildable("sum");
     if (args.empty()) {
         return constant(0.0);
     }
@@ -345,20 +375,24 @@ int32_t Model::sum(const std::vector<int32_t>& args) {
 }
 
 int32_t Model::prod(int32_t a, int32_t b) {
+    require_buildable("prod");
     return alloc_node(NodeOp::Prod, {wrap(a), wrap(b)});
 }
 
 int32_t Model::div_expr(int32_t a, int32_t b) {
+    require_buildable("div_expr");
     return alloc_node(NodeOp::Div, {wrap(a), wrap(b)});
 }
 
 int32_t Model::pow_expr(int32_t base, int32_t exp) {
+    require_buildable("pow_expr");
     return alloc_node(NodeOp::Pow, {wrap(base), wrap(exp)});
 }
 
 // Min and Max evaluate children[0] unchecked, so an empty one would read
 // another node's child slice (see child_val in dag.cpp).
 int32_t Model::min_expr(const std::vector<int32_t>& args) {
+    require_buildable("min_expr");
     if (args.empty()) {
         throw std::invalid_argument("min_expr requires at least one argument");
     }
@@ -366,6 +400,7 @@ int32_t Model::min_expr(const std::vector<int32_t>& args) {
 }
 
 int32_t Model::max_expr(const std::vector<int32_t>& args) {
+    require_buildable("max_expr");
     if (args.empty()) {
         throw std::invalid_argument("max_expr requires at least one argument");
     }
@@ -373,78 +408,97 @@ int32_t Model::max_expr(const std::vector<int32_t>& args) {
 }
 
 int32_t Model::abs_expr(int32_t x) {
+    require_buildable("abs_expr");
     return alloc_node(NodeOp::Abs, {wrap(x)});
 }
 
 int32_t Model::sin_expr(int32_t x) {
+    require_buildable("sin_expr");
     return alloc_node(NodeOp::Sin, {wrap(x)});
 }
 
 int32_t Model::cos_expr(int32_t x) {
+    require_buildable("cos_expr");
     return alloc_node(NodeOp::Cos, {wrap(x)});
 }
 
 int32_t Model::tan_expr(int32_t x) {
+    require_buildable("tan_expr");
     return alloc_node(NodeOp::Tan, {wrap(x)});
 }
 
 int32_t Model::exp_expr(int32_t x) {
+    require_buildable("exp_expr");
     return alloc_node(NodeOp::Exp, {wrap(x)});
 }
 
 int32_t Model::log_expr(int32_t x) {
+    require_buildable("log_expr");
     return alloc_node(NodeOp::Log, {wrap(x)});
 }
 
 int32_t Model::sqrt_expr(int32_t x) {
+    require_buildable("sqrt_expr");
     return alloc_node(NodeOp::Sqrt, {wrap(x)});
 }
 
 int32_t Model::signpower_expr(int32_t base, int32_t exp) {
+    require_buildable("signpower_expr");
     return alloc_node(NodeOp::SignPower, {wrap(base), wrap(exp)});
 }
 
 int32_t Model::tanh_expr(int32_t x) {
+    require_buildable("tanh_expr");
     return alloc_node(NodeOp::Tanh, {wrap(x)});
 }
 
 int32_t Model::if_then_else(int32_t cond, int32_t then_, int32_t else_) {
+    require_buildable("if_then_else");
     return alloc_node(NodeOp::If, {wrap(cond), wrap(then_), wrap(else_)});
 }
 
 int32_t Model::at(int32_t list_var_id, int32_t index_expr) {
+    require_buildable("at");
     return alloc_node(NodeOp::At, {wrap(list_var_id), wrap(index_expr)});
 }
 
 int32_t Model::count(int32_t var_id) {
+    require_buildable("count");
     return alloc_node(NodeOp::Count, {wrap(var_id)});
 }
 
 int32_t Model::leq(int32_t a, int32_t b) {
+    require_buildable("leq");
     return alloc_node(NodeOp::Leq, {wrap(a), wrap(b)});
 }
 
 int32_t Model::eq_expr(int32_t a, int32_t b) {
+    require_buildable("eq_expr");
     return alloc_node(NodeOp::Eq, {wrap(a), wrap(b)});
 }
 
 int32_t Model::geq(int32_t a, int32_t b) {
+    require_buildable("geq");
     return alloc_node(NodeOp::Geq, {wrap(a), wrap(b)});
 }
 
 int32_t Model::neq(int32_t a, int32_t b) {
+    require_buildable("neq");
     return alloc_node(NodeOp::Neq, {wrap(a), wrap(b)});
 }
 
 int32_t Model::lt(int32_t a, int32_t b) {
+    require_buildable("lt");
     return alloc_node(NodeOp::Lt, {wrap(a), wrap(b)});
 }
 
 int32_t Model::gt(int32_t a, int32_t b) {
+    require_buildable("gt");
     return alloc_node(NodeOp::Gt, {wrap(a), wrap(b)});
 }
 
 int32_t Model::lambda_sum(int32_t list_var_id, std::function<double(int)> func) {
+    require_buildable("lambda_sum");
     ModelStructure& st = mut();
     const ChildRef child = wrap(list_var_id);  // reject a bad handle before registering
     st.lambda_funcs.push_back(std::move(func));
@@ -463,6 +517,7 @@ int32_t Model::pair_lambda_sum(int32_t list_var_id, std::function<double(int, in
 int32_t Model::pair_lambda_sum(int32_t list_var_id, std::function<double(int, int)> func,
                                std::function<double(int)> head, std::function<double(int)> tail,
                                PairMode mode) {
+    require_buildable("pair_lambda_sum");
     ModelStructure& st = mut();
     const ChildRef child = wrap(list_var_id);  // reject a bad handle before registering
 
@@ -496,6 +551,7 @@ int32_t Model::pair_lambda_sum(int32_t list_var_id, std::function<double(int, in
 
 int32_t Model::custom(const std::vector<int32_t>& inputs, std::unique_ptr<CustomInvariant> inv,
                       const std::string& name) {
+    require_buildable("custom");
     ModelStructure& st = mut();  // rejects a frozen model before anything is registered
     if (inv == nullptr) {
         throw std::invalid_argument("custom: invariant must not be null");
@@ -573,7 +629,7 @@ void Model::maximize(const Expr& e) {
 }
 
 void Model::add_constraint(int32_t expr_id) {
-    require_open("add_constraint");
+    require_buildable("add_constraint");
     ModelStructure& st = mut();
     if (expr_id < 0) {
         throw std::invalid_argument(
@@ -586,7 +642,7 @@ void Model::add_constraint(int32_t expr_id) {
 }
 
 void Model::minimize(int32_t expr_id) {
-    require_open("minimize");
+    require_buildable("minimize");
     const ModelStructure& st = s();
     if (expr_id < 0) {
         throw std::invalid_argument(
@@ -599,7 +655,7 @@ void Model::minimize(int32_t expr_id) {
 }
 
 void Model::maximize(int32_t expr_id) {
-    require_open("maximize");
+    require_buildable("maximize");
     // Maximize by negating
     objective_id_ = neg(expr_id);
     is_maximizing_ = true;
@@ -607,7 +663,7 @@ void Model::maximize(int32_t expr_id) {
 
 void Model::add_var_sequence(const std::vector<int32_t>& var_ids, int min_block_on,
                              int min_block_off) {
-    require_open("add_var_sequence");
+    require_buildable("add_var_sequence");
     ModelStructure& st = mut();
     int seq_idx = static_cast<int>(st.var_sequences.size());
     VarSequence seq;
@@ -644,7 +700,7 @@ void Model::add_var_sequence(const std::vector<int32_t>& var_ids, int min_block_
 // without the flag that stops `list_moves` proposing a move which would break
 // the invariant.
 int32_t Model::add_list_partition(const std::vector<int32_t>& lists, Cover cover) {
-    require_open("add_list_partition");
+    require_buildable("add_list_partition");
     if (lists.empty()) {
         throw std::invalid_argument("add_list_partition: no lists");
     }
@@ -870,11 +926,16 @@ void Model::add_objective_soft_constraint() {
     node_values_.reserve(node_values_.size() + 2);
 
     objective_bound_ = std::numeric_limits<double>::infinity();
-    objective_bound_node_ = constant(objective_bound_);
+    // Built through the private allocators, not `constant`/`leq`/`add_constraint`:
+    // those refuse a closed model (#173), and this is the one internal growth path
+    // that runs on one -- the rebuild below is what makes it safe to. Same nodes,
+    // same ids, same order as the public builders produced before that refusal.
+    objective_bound_node_ = push_constant(objective_bound_);
     // obj - bound <= 0; inert while bound is +inf, tightened during search.
-    objective_constraint_node_ = leq(objective_id_, objective_bound_node_);
+    objective_constraint_node_ =
+        alloc_node(NodeOp::Leq, {wrap(objective_id_), wrap(objective_bound_node_)});
     objective_constraint_idx_ = static_cast<int32_t>(st.constraint_ids.size());
-    add_constraint(objective_constraint_node_);
+    st.constraint_ids.push_back(objective_constraint_node_);
 
     // Rebuild structure now that a node/constraint was appended after close().
     rebuild_back_references();
