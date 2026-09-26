@@ -888,7 +888,7 @@ ExtensionResult Model::extend(const ModelExtension& ext) {
         if (order.size() != st.nodes.size()) {
             throw std::logic_error(
                 "Model::extend: the re-sorted topological order does not cover every node, which "
-                "means the DAG has a cycle. The model is NOT usable after this throw");
+                "means the DAG has a cycle. The model is corrupt and is refused from here on");
         }
         st.topo_order = std::move(order);
         rebuild_topo_positions();

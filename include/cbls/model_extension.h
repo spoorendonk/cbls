@@ -78,7 +78,12 @@ struct ExtensionResult {
 /// lazily separated cut is a new row over existing variables.
 ///
 /// Because the handles are absolute, an extension is tied to the model it was
-/// built against: `extend` throws if that model has grown in the meantime.
+/// built against, and to that model's structure as it was: `extend` throws if
+/// the structure has changed in the meantime in ANY way -- compared by
+/// `Model::structure_version()`, not by counts, since an extension that only
+/// appends existing handles or adds rows over existing nodes changes neither
+/// count. That makes an extension single-use: applying it retires the token it
+/// was recorded against.
 ///
 /// WHAT IT DELIBERATELY DOES NOT OFFER, and why:
 ///
@@ -104,8 +109,9 @@ struct ExtensionResult {
 /// silently producing something the engine cannot initialise.
 class ModelExtension {
 public:
-    /// `base` must be closed, and must still be at these counts when `extend` is
-    /// called. Only closedness is checked here: a FROZEN model is accepted and
+    /// `base` must be closed and intact (see `Model::extend_interrupted`), and
+    /// its structure must be unchanged when `extend` is called. Only closedness
+    /// and intactness are checked here: a FROZEN model is accepted and
     /// refused by `extend`, which is where the refusal belongs, and
     /// `tests/test_model_share.cpp` pins that shape -- it builds an extension
     /// against a frozen model in order to watch `extend` turn it down.

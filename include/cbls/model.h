@@ -496,34 +496,38 @@ public:
     ///
     /// Also throws `std::logic_error` on a model that is not closed (use the
     /// ordinary builders), and `std::invalid_argument` if `ext` was built against
-    /// a different state of this model.
+    /// a different model or a different state of this one -- compared by
+    /// `structure_version()`, so that includes this same extension applied
+    /// already, and any other recorded against the same base. An extension is
+    /// single-use.
     ///
     /// **There is no rollback: a throw from inside `extend` leaves the model
-    /// UNUSABLE**, not merely unchanged. Once the new variables and nodes have
+    /// CORRUPT**, not merely unchanged. Once the new variables and nodes have
     /// been appended, the node array, `vars_`, `node_values_` and the offset
     /// arrays describe them while the CSR indices, the topological order and G_v
-    /// still do not -- and `closed_` is still true, so nothing else notices. The
-    /// throws that can land there are `std::length_error` past 2^32 CSR entries
-    /// or child references, a `std::bad_alloc` from any of the arrays or the
-    /// working sets (remote on a small model, not remote while growing a 4.3M-node
-    /// one), and the cyclic-order backstop. Restoring the arrays the splices
-    /// rewrite in place would mean copying them, which is the O(model) cost this
-    /// exists to avoid, so the invariant is documented rather than defended: on
-    /// an exception from `extend`, discard the model. Everything `extend` can
-    /// refuse on the caller's behalf is refused BEFORE it touches anything --
-    /// the checks above, and `ModelExtension`'s own, including the cycle check in
-    /// `append_to_sum`. Nor is a poison flag the missing half: `closed_` staying
-    /// true is not what makes the state unusable, nothing in the engine gates on
-    /// such a flag, and clearing `closed_` would MISreport the one throw that
-    /// leaves the structure whole --
+    /// still do not. The throws that can land there are `std::length_error` past
+    /// 2^32 CSR entries or child references, a `std::bad_alloc` from any of the
+    /// arrays or the working sets (remote on a small model, not remote while
+    /// growing a 4.3M-node one), and the cyclic-order backstop -- which a stale
+    /// extension can no longer reach, since the structure token refuses it before
+    /// anything is written. Restoring the arrays the splices rewrite in place
+    /// would mean copying them, which is the O(model) cost this exists to avoid,
+    /// so instead the window is MARKED: `extend_interrupted()` is set from the
+    /// first write until the last splice, and `require_intact` refuses the model
+    /// in `extend`, `ModelExtension`, `ViolationManager` (so every `solve`) and
+    /// the Python evaluators. On an exception from `extend`, discard the model.
+    /// Everything `extend` can refuse on the caller's behalf is refused BEFORE
+    /// it touches anything -- the checks above, and `ModelExtension`'s own,
+    /// including the cycle check in `append_to_sum`.
     ///
-    /// which is the exception worth naming separately: the closing evaluation runs
-    /// caller code. A `CustomInvariant::evaluate` on the `full_evaluate` branch, a
+    /// One throw is benign and worth naming separately: the closing evaluation
+    /// runs caller code, and `extend_interrupted()` is already clear by then. A
+    /// `CustomInvariant::evaluate` on the `full_evaluate` branch, a
     /// `lambda_sum`/`pair_lambda_sum` callable inside the cone -- neither is
     /// `noexcept`, and a model with custom nodes takes that branch by design. A
-    /// throw from there lands with every structural array complete and consistent
-    /// and only node values stale, so `full_evaluate` recovers it. A throw from
-    /// anything earlier does not.
+    /// throw from there lands with every structural array complete and
+    /// consistent and only node values stale, so `full_evaluate` recovers it. A
+    /// throw from anything earlier does not.
     ///
     /// Two callers have to grow with it, in this order, as soon as it returns:
     /// `ViolationManager::on_extended` and then `FeasibilityJump::on_extended`.

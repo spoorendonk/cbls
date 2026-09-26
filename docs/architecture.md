@@ -622,7 +622,9 @@ this into the search loop:
   check walks **down** from the term over the graph the extension will produce
   (base children, recorded children, and appends already recorded), so it also
   catches two appends that only close a loop together. `extend` additionally
-  refuses a re-sorted order that does not cover every node, as defence in depth.
+  refuses a re-sorted order that does not cover every node, as defence in depth
+  -- unreachable now that a stale extension is refused (below), since the walk
+  and the splice then always see the same graph.
 - **The call order is enforced, not merely documented.** `extend` grows the model
   without touching `ViolationManager`'s weights or FJ's tables, so between it and
   the two `on_extended` calls every ordinary read of either indexes past the end
@@ -637,7 +639,14 @@ this into the search loop:
   evaluation (`CustomInvariant::evaluate` or a `lambda_sum` callable, neither
   `noexcept`) leaves every structural array consistent with only node values
   stale, which `full_evaluate` recovers. A throw from anything earlier does not,
-  and the model is not usable afterwards.
+  so `extend` sets `Model::extend_interrupted()` for the window between its
+  first write and its last splice, and `require_intact` refuses such a model in
+  `extend`, `ModelExtension`'s constructor and `ViolationManager`'s (so every
+  `solve`), and in the Python `full_evaluate`/`delta_evaluate`. The C++
+  `full_evaluate`/`delta_evaluate` do not check it (one branch per evaluation on
+  the hot path for a state that takes an out-of-memory to reach). With every
+  caller refusal now taken before the window opens, what can still land in it is
+  `bad_alloc` or a `length_error` past 2^32 index entries.
 
 **From Python** the same surface is bound one-for-one: `cbls.ModelExtension(model)`
 with the handle-based builders (no `Expr` form -- an `Expr`'s operators build
@@ -662,28 +671,37 @@ call order is internal to `solve()`. The binding adds four things of its own:
   infeasible. The engine has no in-search growth point until #168, so the binding
   keeps a registry of the models a bound `solve` is running on.
 
-`ModelExtension::append_to_sum` also refuses to record once the model has grown
-since the extension was started: its cycle walk reads the model's current
-children, and indexed its own node table with an id another extension had
-created -- a SIGSEGV from Python, and from C++ too.
+**Staleness is detected by a structure token, not by counts.**
+`Model::structure_version()` is drawn from one process-wide atomic counter at
+`close()` and again on every structural write after it (`mut()` retires it while
+the model is closed, so the builders pay one branch and no atomic while a model
+is being built). `ModelExtension` captures it; `extend` and `append_to_sum`
+compare it, alongside the variable and node counts and the base's address. Counts
+alone were the first version, and missed exactly the shape column generation
+produces most: an extension that adds no variable and no node -- appends of
+existing handles, `add_constraint` over an existing node -- was accepted a second
+time and appended its terms twice, and two such extensions recorded against one
+base could each pass the cycle check and close a cycle together, reaching the
+re-sort backstop only after the growth had begun. A successful `extend` retires
+the token, so **an extension is single-use**: replaying it is refused, and so is
+every other extension recorded against the same base. A copy of a model carries
+its token (it is the same structure) but is still refused by address.
+`append_to_sum` checks it at record time because its cycle walk reads the base's
+current children and indexes its own node table past the base count -- once
+another extension has grown the model, that was a SIGSEGV.
 
-Staleness is still detected by **counts**: an extension that adds no variables
-and no nodes (appends of existing handles, or `add_constraint` on an existing
-node) is accepted a second time and appends its terms twice, and two such
-extensions recorded against the same base can close a cycle neither saw -- which
-`extend`'s backstop turns into a `RuntimeError` on a model that is then unusable.
-A generation counter on `Model`, captured by the extension and compared in
-`extend`, would close both; it is not in this slice.
-
-One hazard it does **not** close, and which predates this: `Model.var()`,
-`var_mut()` and `node()` return references into the model's arrays, and `extend`
-appends to those arrays -- so an object fetched before the call may point at
-reallocated storage, and writing through it can abort the interpreter. Fetch
-again after extending; the three accessors' docstrings say so. The ordinary
-builders on an open model have always had the same property -- what `extend`
-changes is that a closed model's arrays can now grow too. `tests/python/test_model_extend.py`
-pins every refusal in a child interpreter and checks an extended model against
-the same model built whole.
+**Python holds nothing `extend` can invalidate.** `Model.var()`/`var_mut()`
+return a `(model, id)` handle bound as `cbls.Variable`, which resolves through the
+model on every attribute access and keeps the model alive; `node()` returns a copy
+of the node, whose two exposed fields never change. They used to be
+`reference_internal` into the arrays `extend` (and any builder before `close()`)
+reallocates, and writing `.value` through one held across that was a heap
+use-after-free. `cbls.solve` registers the model as solving **before** it releases
+the GIL, in the body rather than through a `call_guard`, so a `Model.extend` from
+another thread -- which runs holding the GIL -- cannot pass its check in the gap.
+`tests/python/test_model_extend.py` pins every refusal in a child interpreter,
+including an out-of-memory `extend` under a capped address space, and checks an
+extended model against the same model built whole.
 
 ### State Save/Restore
 
