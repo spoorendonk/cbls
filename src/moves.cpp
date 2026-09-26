@@ -602,19 +602,32 @@ void generate_standard_moves(const Variable& var, RNG& rng, std::vector<Move>& o
 
 namespace {
 
+/// The position in `dest` of the nearest neighbour of `e` that `dest` holds, or
+/// -1 when there is no neighbour list or it names nobody `dest` holds. Draws no
+/// random numbers: the two callers below decide for themselves what a miss means.
+int32_t neighbour_position(const std::vector<int32_t>& dest, int32_t e,
+                           const NeighbourList* neighbours) {
+    if (neighbours == nullptr || neighbours->empty()) {
+        return -1;
+    }
+    for (int32_t f : neighbours->of(e)) {
+        const auto it = std::find(dest.begin(), dest.end(), f);
+        if (it != dest.end()) {
+            return static_cast<int32_t>(it - dest.begin());
+        }
+    }
+    return -1;
+}
+
 /// Insert position for `e` in `dest`: just after a nearest neighbour of `e` that
 /// `dest` already holds, else uniform over the `|dest| + 1` gaps. The uniform
 /// draw is the only one taken when no neighbour list was supplied, which is the
 /// default everywhere.
 int32_t partition_insert_pos(const std::vector<int32_t>& dest, int32_t e, RNG& rng,
                              const NeighbourList* neighbours) {
-    if (neighbours != nullptr && !neighbours->empty()) {
-        for (int32_t f : neighbours->of(e)) {
-            const auto it = std::find(dest.begin(), dest.end(), f);
-            if (it != dest.end()) {
-                return static_cast<int32_t>(it - dest.begin()) + 1;
-            }
-        }
+    const int32_t near = neighbour_position(dest, e, neighbours);
+    if (near >= 0) {
+        return near + 1;
     }
     return static_cast<int32_t>(rng.integers(0, static_cast<int64_t>(dest.size()) + 1));
 }
@@ -661,16 +674,15 @@ void partition_swap(const Model& model, int32_t a, int32_t b, RNG& rng,
         return;
     }
     const auto i = static_cast<size_t>(rng.integers(0, static_cast<int64_t>(va.elements.size())));
-    // Granular where a neighbour list says so: exchange against an element of
-    // `b` that lies near `a[i]`, since swapping it against one on the far side of
-    // the map can only be improving by accident. `partition_insert_pos` returns
-    // the gap AFTER the neighbour, so step back onto the neighbour itself, and
-    // fall back to the uniform draw when it returned the last gap (no neighbour
-    // of `a[i]` is in `b`, or there is no list at all).
-    const int32_t gap = partition_insert_pos(vb.elements, va.elements[i], rng, neighbours);
+    // Granular where a neighbour list says so: exchange against the element of
+    // `b` nearest `a[i]`, since swapping it against one on the far side of the
+    // map can only be improving by accident. A miss -- no list, or no neighbour
+    // of `a[i]` in `b` -- falls back to the uniform draw, so a partial list
+    // restricts where the search looks and never what it can reach.
+    const int32_t near = neighbour_position(vb.elements, va.elements[i], neighbours);
     const auto j =
-        (gap >= 1 && static_cast<size_t>(gap) <= vb.elements.size())
-            ? static_cast<size_t>(gap - 1)
+        (near >= 0)
+            ? static_cast<size_t>(near)
             : static_cast<size_t>(rng.integers(0, static_cast<int64_t>(vb.elements.size())));
     Move m;
     m.move_type = "partition_swap";
