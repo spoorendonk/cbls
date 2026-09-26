@@ -1,4 +1,5 @@
 #include <cbls/cbls.h>
+#include <cbls/model_extension.h>
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/function.h>
@@ -125,6 +126,25 @@ struct PySolveCallback : SolveCallback {
     void on_progress(const SolveProgress& p) override { NB_OVERRIDE_PURE(on_progress, p); }
 };
 
+constexpr const char* kModelExtendDoc =
+    "Apply a ModelExtension to this closed model and return an ExtensionResult.\n"
+    "\n"
+    "Raises RuntimeError on a model that is frozen or not closed, or when called\n"
+    "from inside an evaluation (a lambda_sum callable extending the model it is\n"
+    "being evaluated in); ValueError if the extension was built against a\n"
+    "different model or against this one before it last grew.\n"
+    "\n"
+    "Afterwards, in this order: ViolationManager.on_extended(result) on every\n"
+    "manager of this model (its reads raise until then), and pad_state(state,\n"
+    "result) on every ModelState captured before the call, which restore_state\n"
+    "otherwise rejects. A Variable or ExprNode fetched with var()/var_mut()/node()\n"
+    "before the call may refer to reallocated storage: fetch it again.\n"
+    "\n"
+    "There is no rollback: an exception from the growth itself (as opposed to\n"
+    "the refusals above, which fire before anything changes) leaves the model\n"
+    "unusable. A callable raising during the closing evaluation is the benign\n"
+    "exception -- the structure is complete and full_evaluate recovers it.";
+
 // ---------------------------------------------------------------------------
 // Table-backed lambda_sum / pair_lambda_sum (#163).
 //
@@ -215,6 +235,22 @@ std::function<double(int, int)> matrix_lookup(std::vector<double> tbl, int32_t n
 // so this cannot hand the engine a dangling view (the #156 hazard class).
 StopRef stop_ref_or_none(StopToken* token) {
     return token != nullptr ? StopRef(*token) : StopRef();
+}
+
+// Refuse a ViolationManager that is out of step with the model BEFORE an entry
+// point that moves the assignment runs. The engine refuses it too -- the
+// FeasibilityJump these build checks the weight count -- but LNS destroys (moves
+// a random share of the variables) before it builds one, so the engine's refusal
+// arrives after the assignment has changed. The reachable case is a Model.extend
+// with no ViolationManager.on_extended after it (#167). The weights setter keeps
+// `weights` the size of the manager's own cache, so this one compare is the
+// whole of what the engine's check would find.
+void require_vm_in_step(const Model& model, const ViolationManager& vm, const char* what) {
+    if (vm.weights.size() != model.constraint_ids().size()) {
+        throw std::logic_error(std::string(what) +
+                               ": the ViolationManager does not have one weight per constraint of "
+                               "this model. After Model.extend, call vm.on_extended(result) first");
+    }
 }
 
 }  // namespace
@@ -614,6 +650,13 @@ NB_MODULE(_cbls_core, m) {
              nb::arg("min_block_on") = 1, nb::arg("min_block_off") = 1)
         .def("var_sequence_for", &Model::var_sequence_for)
         .def("close", &Model::close)
+        // Growth of a closed model (#167). Returns an ExtensionResult BY VALUE:
+        // Python owns the copy and it holds no pointer into the model. What it
+        // does NOT protect is anything taken from the model before the call --
+        // `extend` appends to the variable and node arrays, so a Variable or
+        // ExprNode obtained from var()/var_mut()/node() earlier refers to storage
+        // that may have been reallocated. Re-fetch after extending.
+        .def("extend", &Model::extend, nb::arg("ext"), kModelExtendDoc)
         // Freezing makes the structure immutable and shareable. It is what lets a
         // model_factory hand the SAME model to every worker without duplicating
         // the DAG: nanobind copies the returned object, and copying a frozen model
@@ -723,6 +766,103 @@ NB_MODULE(_cbls_core, m) {
         .def_rw("values", &Model::State::values)
         .def_rw("elements", &Model::State::elements);
 
+    // ---------------------------------------------------------------------------
+    // Growing a closed model (#167).
+    //
+    // ExtensionResult has NO Python constructor and every field is read-only. The
+    // engine indexes its search state by the ids it carries (on_extended,
+    // pad_state), and a hand-built one with `touched_constraints = [999]` was a
+    // SIGSEGV on the C++ side before that path gained its own checks. From Python
+    // the only ExtensionResult that exists is one Model.extend returned, and the
+    // two consumers bound here re-check it against the model/state they are given.
+    nb::class_<ExtensionResult>(m, "ExtensionResult")
+        .def_ro("first_new_var", &ExtensionResult::first_new_var)
+        .def_ro("num_new_vars", &ExtensionResult::num_new_vars)
+        .def_ro("first_new_node", &ExtensionResult::first_new_node)
+        .def_ro("num_new_nodes", &ExtensionResult::num_new_nodes)
+        .def_ro("first_new_constraint", &ExtensionResult::first_new_constraint)
+        .def_ro("num_new_constraints", &ExtensionResult::num_new_constraints)
+        .def_ro("new_var_initial", &ExtensionResult::new_var_initial)
+        .def_ro("touched_constraints", &ExtensionResult::touched_constraints)
+        .def_ro("new_incidences", &ExtensionResult::new_incidences)
+        .def_ro("topo_order_rebuilt", &ExtensionResult::topo_order_rebuilt)
+        .def("end_var", &ExtensionResult::end_var)
+        .def("end_node", &ExtensionResult::end_node)
+        .def("end_constraint", &ExtensionResult::end_constraint);
+
+    // Every handle the builder takes is validated by ModelExtension itself at
+    // record time, against the base model plus what has been recorded so far:
+    // an out-of-range id raises IndexError (std::out_of_range), a variable handle
+    // where a node is required and a cyclic append raise ValueError
+    // (std::invalid_argument). Nothing here reaches the model until
+    // Model.extend, which re-checks that the recording still matches it.
+    //
+    // OWNERSHIP: the extension keeps a raw `const Model*` to its base, so the
+    // constructor carries keep_alive<1, 2> -- the Python ModelExtension holds a
+    // reference to the Python Model, and dropping every other reference to the
+    // model cannot leave the extension pointing at a freed one. The pointer is
+    // only read (node ops and children, for the Sum check and the cycle walk);
+    // nothing is ever written through it.
+    nb::class_<ModelExtension>(m, "ModelExtension")
+        .def(nb::init<const Model&>(), nb::arg("model"), nb::keep_alive<1, 2>(),
+             "Record additions to a CLOSED model: new scalar variables, expression\n"
+             "nodes over new or existing handles, new constraints, and terms appended\n"
+             "to existing Sum rows. Nothing touches the model until Model.extend.\n"
+             "\n"
+             "Handles are absolute: the ones returned here are the ids the entities\n"
+             "will have after extend, and existing handles may be used freely. Raises\n"
+             "RuntimeError if the model is not closed. Keeps the model alive.")
+        .def("bool_var", &ModelExtension::bool_var, nb::arg("name") = "")
+        .def("int_var", &ModelExtension::int_var, nb::arg("lb"), nb::arg("ub"),
+             nb::arg("name") = "")
+        .def("float_var", &ModelExtension::float_var, nb::arg("lb"), nb::arg("ub"),
+             nb::arg("name") = "")
+        .def("set_initial", &ModelExtension::set_initial, nb::arg("var"), nb::arg("value"),
+             "Starting value of a variable THIS extension created, and the value\n"
+             "pad_state writes for it. Defaults to the lower bound. Raises ValueError\n"
+             "for any other handle or for a value outside the bounds.")
+        .def("constant", &ModelExtension::constant)
+        .def("neg", &ModelExtension::neg)
+        .def("sum", &ModelExtension::sum)
+        .def("prod", &ModelExtension::prod)
+        .def("div_expr", &ModelExtension::div_expr)
+        .def("pow_expr", &ModelExtension::pow_expr)
+        .def("min_expr", &ModelExtension::min_expr)
+        .def("max_expr", &ModelExtension::max_expr)
+        .def("abs_expr", &ModelExtension::abs_expr)
+        .def("sin_expr", &ModelExtension::sin_expr)
+        .def("cos_expr", &ModelExtension::cos_expr)
+        .def("tan_expr", &ModelExtension::tan_expr)
+        .def("exp_expr", &ModelExtension::exp_expr)
+        .def("log_expr", &ModelExtension::log_expr)
+        .def("sqrt_expr", &ModelExtension::sqrt_expr)
+        .def("signpower_expr", &ModelExtension::signpower_expr)
+        .def("tanh_expr", &ModelExtension::tanh_expr)
+        .def("if_then_else", &ModelExtension::if_then_else)
+        .def("at", &ModelExtension::at)
+        .def("count", &ModelExtension::count)
+        .def("leq", &ModelExtension::leq)
+        .def("eq_expr", &ModelExtension::eq_expr)
+        .def("geq", &ModelExtension::geq)
+        .def("neq", &ModelExtension::neq)
+        .def("lt", &ModelExtension::lt)
+        .def("gt", &ModelExtension::gt)
+        .def("add_constraint", &ModelExtension::add_constraint, nb::arg("expr"))
+        .def("append_to_sum", &ModelExtension::append_to_sum, nb::arg("sum_node"), nb::arg("term"),
+             "Append `term` to an EXISTING Sum node of the base model: a new column\n"
+             "entering an old row. Raises ValueError if the target is not a Sum of the\n"
+             "base model, or if `term` already reads the target (the append would make\n"
+             "the DAG cyclic).")
+        .def("empty", &ModelExtension::empty)
+        .def("num_new_vars", &ModelExtension::num_new_vars)
+        .def("num_new_nodes", &ModelExtension::num_new_nodes);
+
+    // In place, on a state the caller owns: nothing is retained.
+    m.def("pad_state", &pad_state, nb::arg("state"), nb::arg("ext"),
+          "Grow a ModelState captured BEFORE `ext` was applied so that restore_state\n"
+          "accepts it again, giving each new variable its declared initial value.\n"
+          "Raises ValueError unless the state is exactly the pre-extension size.");
+
     // ViolationManager
     nb::class_<ViolationManager>(m, "ViolationManager")
         .def(nb::init<Model&>())
@@ -737,6 +877,15 @@ NB_MODULE(_cbls_core, m) {
         .def("weighted_violation_delta", &ViolationManager::weighted_violation_delta,
              nb::arg("var_id"), nb::arg("j"))
         .def("invalidate_cache", &ViolationManager::invalidate_cache)
+        // Validated in C++: `ext` must describe exactly this manager's model's
+        // constraint growth, and new_weight must be finite and >= 0 (ValueError).
+        // Until it runs after a Model.extend, every read on the manager raises
+        // RuntimeError rather than indexing the short weight vector.
+        .def("on_extended", &ViolationManager::on_extended, nb::arg("ext"),
+             nb::arg("new_weight") = 1.0,
+             "Grow with a model Model.extend just grew. Existing rows keep their GLS\n"
+             "weights; new rows start at new_weight (0 = masked). Call it as soon as\n"
+             "extend returns: until then every read on this manager raises.")
         // `weights` is indexed by constraint index with no bounds check on the
         // hot path (weighted_violation_delta, total_violation), so a short list
         // assigned from Python read past its end. The engine cannot desync it --
@@ -834,10 +983,22 @@ NB_MODULE(_cbls_core, m) {
     // LNS
     nb::class_<LNS>(m, "LNS")
         .def(nb::init<double>(), nb::arg("destroy_fraction") = 0.3)
-        .def("destroy_repair", &LNS::destroy_repair, nb::arg("model"), nb::arg("vm"),
-             nb::arg("rng"), nb::arg("repair_time_limit") = 2.0)
-        .def("destroy_repair_cycle", &LNS::destroy_repair_cycle, nb::arg("model"), nb::arg("vm"),
-             nb::arg("rng"), nb::arg("n_rounds") = 10, nb::arg("repair_time_limit") = 2.0);
+        .def(
+            "destroy_repair",
+            [](LNS& self, Model& model, ViolationManager& vm, RNG& rng, double repair_time_limit) {
+                require_vm_in_step(model, vm, "LNS.destroy_repair");
+                return self.destroy_repair(model, vm, rng, repair_time_limit);
+            },
+            nb::arg("model"), nb::arg("vm"), nb::arg("rng"), nb::arg("repair_time_limit") = 2.0)
+        .def(
+            "destroy_repair_cycle",
+            [](LNS& self, Model& model, ViolationManager& vm, RNG& rng, int n_rounds,
+               double repair_time_limit) {
+                require_vm_in_step(model, vm, "LNS.destroy_repair_cycle");
+                return self.destroy_repair_cycle(model, vm, rng, n_rounds, repair_time_limit);
+            },
+            nb::arg("model"), nb::arg("vm"), nb::arg("rng"), nb::arg("n_rounds") = 10,
+            nb::arg("repair_time_limit") = 2.0);
 
     // SolutionPool
     nb::class_<Solution>(m, "Solution")
@@ -1089,6 +1250,12 @@ NB_MODULE(_cbls_core, m) {
     // What solve() calls: List/Set only, scalars untouched (#108).
     m.def("initialize_structured_random", &initialize_structured_random, nb::arg("model"),
           nb::arg("rng"));
-    m.def("fj_nl_initialize", &fj_nl_initialize, nb::arg("model"), nb::arg("vm"),
-          nb::arg("max_iterations") = 10000, nb::arg("rng") = nullptr, nb::arg("time_limit") = 2.0);
+    m.def(
+        "fj_nl_initialize",
+        [](Model& model, ViolationManager& vm, int max_iterations, RNG* rng, double time_limit) {
+            require_vm_in_step(model, vm, "fj_nl_initialize");
+            return fj_nl_initialize(model, vm, max_iterations, rng, time_limit);
+        },
+        nb::arg("model"), nb::arg("vm"), nb::arg("max_iterations") = 10000,
+        nb::arg("rng") = nullptr, nb::arg("time_limit") = 2.0);
 }
