@@ -292,9 +292,12 @@ counting `operator new`.
 | re-reading custom route, not opted in | 628.7 / 624.2 | 625.2 / 632.2 | 1.999 / 1.999 |
 | the same invariant, opted in | — | 660.8 / 666.0 | 1.999 |
 
-Every not-opted-in row moves by at most ~1.5% between the two sides, in both
-directions across the two runs, which is the noise of this machine, not a
-measured effect either way. The allocation column is load-independent and is the
+Every not-opted-in row moves by under 2% between the two sides -- the
+`pair_lambda_sum` and custom-route rows in both directions across the two runs,
+the Set `lambda_sum` row faster on the branch in both (-1.6%, -1.8%). On a
+machine at load 2.4-3.1 that is not a measured effect either way; the claim that
+not opting in costs nothing rests on the code (one predictable `bool` branch per
+step), not on this timing. The allocation column is load-independent and is the
 criterion's actual evidence: identical on both sides, and zero added by opting in.
 Final elements and every node value hashed identically on both sides for every
 row, and `cbls::solve()` at seed 12345, `max_iterations = 4000`, no time limit,

@@ -986,6 +986,38 @@ TEST_CASE("a probe left open by an exception withholds the edits", "[custom][edi
     REQUIRE(seen->count == 1);
 }
 
+namespace {
+
+/// Whether a recorded edit was a legal, effective edit on the vector it was
+/// replayed against -- written out independently of `edit_takes_effect` so the
+/// test catches a guard that is too permissive, not only one that is too
+/// strict: an out-of-range edit replays and inverts as a no-op, so replay
+/// equality alone cannot see it.
+bool recorded_edit_in_range(const PositionalEdit& e, const std::vector<int32_t>& v) {
+    const auto n = static_cast<int32_t>(v.size());
+    auto idx = [n](int32_t i) { return i >= 0 && i < n; };
+    switch (e.kind) {
+        case EditKind::Swap:
+            return idx(e.from) && idx(e.to);
+        case EditKind::Reverse:
+            return idx(e.from) && idx(e.to) && e.from <= e.to;
+        case EditKind::MoveSegment:
+            return e.length > 0 && e.from >= 0 && e.to >= 0 && e.from + e.length <= n &&
+                   e.to + e.length <= n;
+        case EditKind::Insert:
+            return e.from >= 0 && e.from <= n;
+        case EditKind::Erase:
+        case EditKind::Assign:
+            return idx(e.from);
+        case EditKind::None:
+        case EditKind::Replace:
+            return false;  // never produced by an edit-carrying change
+    }
+    return false;
+}
+
+}  // namespace
+
 TEST_CASE("a recorded apply matches the plain one, replays, and inverts exactly",
           "[custom][edits][moves]") {
     // The journal is only as good as its agreement with `apply_element_edits`'s
@@ -1032,6 +1064,7 @@ TEST_CASE("a recorded apply matches the plain one, replays, and inverts exactly"
         ignored += 2 - static_cast<int>(edits.size());
         std::vector<int32_t> replay = base;
         for (const PositionalEdit& e : edits) {
+            REQUIRE(recorded_edit_in_range(e, replay));
             apply_positional_edit(e, replay);
         }
         REQUIRE(replay == plain);
