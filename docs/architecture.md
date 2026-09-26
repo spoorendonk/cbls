@@ -683,13 +683,20 @@ call order is internal to `solve()`. The binding adds four things of its own:
   Python can reach consults it too and raises `RuntimeError` mid-solve:
   `ModelExtension(model)` and every `ModelExtension` builder (they read the node
   array and the structure token), the `Model` builders, `close`, `freeze`, and the
-  `Expr` operators and free functions, which build through their model. The race
+  `Expr` operators and free functions, which build through their model, and a
+  second `cbls.solve`/`solve_master` of the same model (nested from a callback or
+  from another thread), which writes the objective row, applies pricing extends
+  and -- `solve_master` -- freezes the model and moves a grown one into it. The race
   was real without a callback in sight: the first solve of a model with an
   objective adds the objective row after releasing the GIL, and a second thread
   building an extension over the same model read the arrays it was writing. The
   one extension a running solve accepts from Python is the one it lends
   `ColumnGenerator.price` (#168). Value writes (`Variable.value`,
-  `restore_state`) are not structural and stay the documented data race.
+  `restore_state`) are not structural and stay the documented data race -- with
+  one sharpening: under a column generator the engine's own extends reallocate
+  the variable and node arrays mid-solve (and `solve_master` move-assigns the
+  model at the end), so ANY access from another thread may touch freed memory,
+  not merely read a torn value.
 
 **Staleness is detected by a structure token, not by counts.**
 `Model::structure_version()` is drawn from one process-wide atomic counter at
@@ -718,8 +725,9 @@ of the node, whose two exposed fields never change. An `Expr` holds a raw
 the `Expr` reading (and its operators building into) freed heap, reused by the
 next `Model` of the same size. Every `Expr` the binding returns now keeps its
 model's Python object alive -- the model itself, not the operand, so a
-`s = s + x` loop does not chain every intermediate to the next. `Model.var()` and friends used to be
-`reference_internal` into the arrays `extend` (and any builder before `close()`)
+`s = s + x` loop does not chain every intermediate to the next. `ViolationManager`
+had the same hole and now keeps its model alive too. `Model.var()` and friends
+used to be `reference_internal` into the arrays `extend` (and any builder before `close()`)
 reallocates, and writing `.value` through one held across that was a heap
 use-after-free. `cbls.solve` registers the model as solving **before** it releases
 the GIL, in the body rather than through a `call_guard`, so a `Model.extend` from
@@ -2418,11 +2426,15 @@ why, ext)` and `clone()` -- and registered on `SearchConfig.column_generator`,
 next to the other pricing fields; `SearchCounters` carries the pricing counters.
 #132's trampoline machinery was never built (it closed not-planned), so the
 binding is an adapter: a C++ `ColumnGenerator` holding the Python object, which
-acquires the GIL itself in `price`, `clone` and its destructor -- all three run on
-the search thread while the caller has the GIL released. `clone()` returning
+acquires the GIL itself in `price`, `clone` and its destructor -- the first two run
+on the search thread while the caller has the GIL released, and a clone's
+destructor does too. `clone()` returning
 `self` is refused (`ValueError`): one object pricing in two portfolio workers is
 shared state, and the prototype must never be priced with. A Python exception in
-either method propagates out of `cbls.solve` as that exception.
+either method propagates out of `cbls.solve` as that exception; under
+`solve_master` it ends only the worker that raised, and is re-raised only if no
+worker produced a result -- otherwise it is discarded and the best surviving
+worker's model adopted (the portfolio's usual contract).
 
 *What `price` lends.* The engine's `PricingContext` and `ModelExtension` are on
 its stack for one call, so Python never gets a reference to either: it gets
@@ -2433,16 +2445,22 @@ instead of reading a dead frame -- which without the lease was not even a crash:
 the next call's extension sits at the same stack address, so a kept view wrote
 silently into it. Every context accessor COPIES: `weights` is a fresh list per
 access, not a zero-copy view, because the live vector is reallocated by every
-applied extension and O(rows) is noise next to a Python pricer. The model itself
-is not exposed -- under `solve_master` it is a worker's private copy no Python
-object owns -- so its assignment, node values, constraint ids and violations are
-read through the context.
+applied extension and O(rows) is noise next to a Python pricer. The context does
+not expose the model -- under `solve_master` it is a worker's private copy -- so
+its assignment, node values, constraint ids and violations are read through the
+context. (A `solve_master` `hook_factory` is handed a COPY of its worker's model,
+as under `solve_parallel` -- nanobind copies an lvalue `Model&` argument -- so
+nothing it keeps reaches a running worker.)
 
 *Portfolio.* `ParallelSearch.solve_master(model, ...)` binds the `Model& master`
 overload, which Python lacked; it is the only portfolio entry point that accepts a
 generator (`solve_parallel`, the factory form, raises `ValueError`). Each worker
 clones on its own thread under the GIL. The model is registered as solving for
-the call, like `cbls.solve`'s. `tests/python/test_column_generation.py` pins the
+the call, like `cbls.solve`'s. A `SearchConfig` holding a generator carries
+`tp_traverse`/`tp_clear`, because the C++ reference it holds on the generator is
+invisible to the cycle collector: a config at module level (whose generator's
+methods reach the module's globals, and so the config) was otherwise never
+collected, and nanobind reported leaked instances at exit. `tests/python/test_column_generation.py` pins the
 knapsack pricer's win on u120_00 at the same budget and seeds as the C++ test,
 the event schedule, exception propagation, and -- in child interpreters -- the
 expired views, the mid-solve refusals, the `Expr` lifetime and the portfolio.

@@ -521,11 +521,18 @@ def _scenario_extend_during_solve() -> None:
 
     The extension is recorded BEFORE the solve: building one during it is itself
     refused now (test_model_extension_is_refused_during_a_solve in
-    test_column_generation.py), so this scenario isolates the extend check.
+    test_column_generation.py), so this scenario isolates the extend check. It is
+    recorded after a priming solve, which adds the objective row: recorded before
+    that, the structure token would refuse it (ValueError) whatever the registry
+    did, and the scenario would no longer show that the registry is what stops a
+    VALID append-only extend mid-search.
     """
     for shape in ("append_only", "new_var_and_row"):
         b = _base()
         attempts: list[str] = []
+        config = cbls.SearchConfig()
+        config.max_iterations = 2_000
+        cbls.solve(b.m, time_limit=5.0, seed=1, config=config)
         ext = cbls.ModelExtension(b.m)
         if shape == "append_only":
             ext.append_to_sum(b.row, ext.prod(ext.constant(3.0), b.y))
@@ -545,17 +552,15 @@ def _scenario_extend_during_solve() -> None:
                     raise
 
         n_vars, n_nodes = b.m.num_vars(), b.m.num_nodes()
-        config = cbls.SearchConfig()
-        config.max_iterations = 2_000
         _expect_raises(
             RuntimeError,
             partial(cbls.solve, b.m, time_limit=5.0, seed=1, callback=Grow(), config=config),
             f"extend from on_progress ({shape})",
         )
         assert attempts and "cbls.solve is running" in attempts[0], attempts
-        # solve adds its objective row; nothing else grew.
+        # Nothing grew: the priming solve already added the objective row.
         assert b.m.num_vars() == n_vars, shape
-        assert b.m.num_nodes() == n_nodes + 2, shape
+        assert b.m.num_nodes() == n_nodes, shape
         # The refusal is scoped to the solve: afterwards the same extension applies.
         ext = cbls.ModelExtension(b.m)
         ext.append_to_sum(b.row, ext.prod(ext.constant(3.0), b.y))

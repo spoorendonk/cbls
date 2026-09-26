@@ -1,3 +1,4 @@
+#include <array>
 #include <cbls/cbls.h>
 #include <cbls/model_extension.h>
 #include <memory>
@@ -124,7 +125,7 @@ constexpr const char* kSolveMasterDoc =
     "With one, each worker searches a PRIVATE deep copy that it grows, prices\n"
     "with its own clone() of the generator, shares no incumbents with its peers\n"
     "and runs one solve without restarting; the best worker's grown model is\n"
-    "moved into `model`, which comes back open, closed and grown. Its clone() is\n"
+    "moved into `model`, which comes back unfrozen (still closed) and grown. Its clone() is\n"
     "called from every worker thread in turn, each holding the GIL.\n"
     "\n"
     "While this runs, structural writes to `model` from Python -- builders,\n"
@@ -201,11 +202,13 @@ constexpr const char* kModelNodeDoc =
 // left infeasible. The engine's only in-search growth point is #168's
 // ColumnGenerator, whose extension the ENGINE applies, so the binding refuses the
 // call outright; every other structural write consults this too (see
-// refuse_if_solving). A multiset, because nothing stops two
-// solves on one model from two threads (a data race of its own, but not this
-// check's to refuse). The two single-model entry points register: `solve` and
-// `ParallelSearch.solve_master`. The factory forms do not: their workers solve
-// copies the caller never holds.
+// refuse_if_solving) -- a SECOND solve of a registered model included, which
+// adds the objective row, applies pricing extends, and (solve_master) freezes the
+// model and moves a grown one into it, all under the running search. The two
+// single-model entry points register: `solve` and `ParallelSearch.solve_master`.
+// The factory forms do not: their workers solve frozen copies. A multiset only so
+// that remove() pairs with add() whatever happens; a duplicate add is refused by
+// the callers' refuse_if_solving first.
 class SolvingModels {
 public:
     static SolvingModels& instance() {
@@ -548,11 +551,13 @@ public:
     PyColumnGenerator(PyColumnGenerator&&) = delete;
     PyColumnGenerator& operator=(PyColumnGenerator&&) = delete;
     // The last reference to a clone drops on the search thread, without the GIL.
-    // After interpreter finalisation there is no interpreter to decref into, so
-    // the reference is leaked instead (only a SearchConfig outliving the
-    // interpreter, e.g. a C++ static, can get there).
+    // With no interpreter to decref into the reference is leaked instead -- but
+    // only then: Py_IsInitialized() is already 0 while Py_FinalizeEx clears module
+    // globals, and a config held in a global dies there WITH the GIL held.
+    // Leaking in that case pinned the subclass, its methods' __globals__ and so
+    // the whole __main__ namespace.
     ~PyColumnGenerator() override {
-        if (Py_IsInitialized() == 0) {
+        if (Py_IsInitialized() == 0 && PyGILState_Check() == 0) {
             static_cast<void>(impl_.release());
             return;
         }
@@ -607,6 +612,56 @@ void set_column_generator(SearchConfig& c, const nb::object& impl) {
             "SearchConfig.column_generator must be a cbls.ColumnGenerator or None");
     }
     c.column_generator = std::make_shared<const PyColumnGenerator>(impl);
+}
+
+// Cyclic GC support for SearchConfig. The config holds its generator through a
+// C++ shared_ptr the cycle collector cannot see, so `cfg -> generator -> its
+// class -> module globals -> cfg` -- any config held at module level -- was never
+// collected, and nanobind reported leaked instances at exit. Visited only while
+// this config is the adapter's SOLE owner: a Python copy of the config shares the
+// same adapter (and so the same one Python reference), and two configs each
+// reporting that reference would make the collector count it twice and free a
+// generator that is still referenced. Shared, it is not reported -- a leak of the
+// old kind, never a premature free.
+int search_config_traverse(PyObject* self, visitproc visit, void* arg) {
+    Py_VISIT(Py_TYPE(self));
+    if (!nb::inst_ready(self)) {
+        return 0;
+    }
+    const SearchConfig* cfg = nb::inst_ptr<SearchConfig>(self);
+    if (cfg->column_generator.use_count() != 1) {
+        return 0;
+    }
+    const auto* g = dynamic_cast<const PyColumnGenerator*>(cfg->column_generator.get());
+    if (g != nullptr) {
+        Py_VISIT(g->impl().ptr());
+    }
+    return 0;
+}
+
+int search_config_clear(PyObject* self) {
+    if (nb::inst_ready(self)) {
+        nb::inst_ptr<SearchConfig>(self)->column_generator = nullptr;
+    }
+    return 0;
+}
+
+std::array<PyType_Slot, 3> search_config_slots = {
+    {{Py_tp_traverse, reinterpret_cast<void*>(&search_config_traverse)},
+     {Py_tp_clear, reinterpret_cast<void*>(&search_config_clear)},
+     {0, nullptr}}};
+
+SearchResult solve_master_bound(
+    ParallelSearch& self, Model& master, double time_limit, uint64_t seed,
+    const SearchConfig& config,
+    std::function<std::shared_ptr<InnerSolverHook>(Model&)> hook_factory,
+    std::function<std::shared_ptr<LNS>()> lns_factory, SolveCallback* callback,
+    const ParallelConfig& par_config) {
+    refuse_if_solving(master, "ParallelSearch.solve_master");
+    const SolvingScope solving(master);
+    const nb::gil_scoped_release release;
+    return self.solve(master, time_limit, seed, config, std::move(hook_factory),
+                      std::move(lns_factory), callback, par_config);
 }
 
 // ---------------------------------------------------------------------------
@@ -970,7 +1025,8 @@ NB_MODULE(_cbls_core, m) {
         .def_ro("rows_added", &SearchCounters::rows_added)
         .def_ro("columns_retired", &SearchCounters::columns_retired)
         .def_ro("extensions_refused", &SearchCounters::extensions_refused)
-        .def_ro("incumbents_revalidated", &SearchCounters::incumbents_revalidated);
+        .def_ro("incumbents_revalidated", &SearchCounters::incumbents_revalidated)
+        .def_ro("revalidation_evaluations", &SearchCounters::revalidation_evaluations);
 
     // SearchResult
     nb::class_<SearchResult>(m, "SearchResult")
@@ -1499,7 +1555,10 @@ NB_MODULE(_cbls_core, m) {
 
     // ViolationManager
     nb::class_<ViolationManager>(m, "ViolationManager")
-        .def(nb::init<Model&>())
+        // keep_alive<1, 2>: the manager holds a Model& and reads its arrays on
+        // every call, so it must not outlive the Python Model -- the Expr.model
+        // hazard, on a sibling class.
+        .def(nb::init<Model&>(), nb::keep_alive<1, 2>())
         .def("constraint_violation", &ViolationManager::constraint_violation)
         .def("total_violation", &ViolationManager::total_violation)
         .def("augmented_objective", &ViolationManager::augmented_objective)
@@ -1718,8 +1777,8 @@ NB_MODULE(_cbls_core, m) {
         "engine applies (and a view kept past the call would read freed memory),\n"
         "and O(rows) per access is negligible next to a Python pricer. Read it once\n"
         "per call. The model itself is not exposed: under ParallelSearch.solve_master\n"
-        "it is a worker's private copy that no Python object owns. Its current\n"
-        "assignment, node values, constraints and violations are read here.")
+        "it is a worker's private copy. Its current assignment, node values,\n"
+        "constraints and violations are read here.")
         .def_prop_ro(
             "weights",
             [](const PricingContextView& v) {
@@ -1802,7 +1861,7 @@ NB_MODULE(_cbls_core, m) {
                 return v.get("PricingContext.constraint_violation")
                     .violations.constraint_violation(i);
             },
-            nb::arg("i"), "The cached violation of constraint index `i`.");
+            nb::arg("i"), "The violation of constraint index `i`, from its current node value.");
 
     nb::class_<ColumnGeneratorBase>(
         m, "ColumnGenerator",
@@ -1827,7 +1886,10 @@ NB_MODULE(_cbls_core, m) {
         "thread under solve_master); the search waits while they run.\n"
         "\n"
         "An exception raised by price or clone propagates out of cbls.solve as that\n"
-        "exception, with nothing the call staged applied. Only Python code is\n"
+        "exception, with nothing the call staged applied. Under\n"
+        "ParallelSearch.solve_master it ends only the worker that raised (no retry):\n"
+        "it is re-raised only if no worker produced a result, and is otherwise\n"
+        "DISCARDED and the best surviving worker's model adopted. Only Python code is\n"
         "accepted here: the engine's C++ generators are not bound.")
         .def(nb::init<>())
         .def("price",
@@ -1841,7 +1903,7 @@ NB_MODULE(_cbls_core, m) {
     // SearchConfig — must be registered before ParallelSearch / solve, which
     // use SearchConfig{} as a default argument (nanobind casts defaults to
     // Python eagerly at .def() time; an unregistered type throws std::bad_cast).
-    nb::class_<SearchConfig>(m, "SearchConfig")
+    nb::class_<SearchConfig>(m, "SearchConfig", nb::type_slots(search_config_slots.data()))
         .def(nb::init<>())
         .def_rw("skip_init", &SearchConfig::skip_init)
         .def_rw("max_iterations", &SearchConfig::max_iterations)
@@ -1944,7 +2006,7 @@ NB_MODULE(_cbls_core, m) {
              // factories. A None default reaches the std::function caster as an
              // empty function, which src/pool.cpp skips.
              nb::call_guard<nb::gil_scoped_release>(), kParallelSolveDoc)
-        // The `Model& master` overload (#157, #168). Bound as a lambda rather than a
+        // The `Model& master` overload (#157, #168). Bound through a wrapper rather than a
         // member pointer for the same reason `solve` is: the master is registered
         // in SolvingModels WHILE THE GIL IS HELD and only then released, so no
         // other Python thread can slip a structural write in between.
@@ -1955,10 +2017,9 @@ NB_MODULE(_cbls_core, m) {
                std::function<std::shared_ptr<InnerSolverHook>(Model&)> hook_factory,
                std::function<std::shared_ptr<LNS>()> lns_factory, SolveCallback* callback,
                const ParallelConfig& par_config) {
-                const SolvingScope solving(master);
-                const nb::gil_scoped_release release;
-                return self.solve(master, time_limit, seed, config, std::move(hook_factory),
-                                  std::move(lns_factory), callback, par_config);
+                return solve_master_bound(self, master, time_limit, seed, config,
+                                          std::move(hook_factory), std::move(lns_factory), callback,
+                                          par_config);
             },
             nb::arg("model"), nb::arg("time_limit") = 10.0, nb::arg("seed") = 42,
             nb::arg("config") = SearchConfig{}, nb::arg("hook_factory") = nb::none(),
@@ -2054,6 +2115,10 @@ NB_MODULE(_cbls_core, m) {
             // Model.extend from another thread could pass the check inside it.
             // `extend_unless_solving` runs holding the GIL, so with registration
             // under it too the check and the registration cannot interleave.
+            // A solve is itself a structural writer (objective row, pricing extend),
+            // so a second one on the same model -- nested from a callback or a
+            // pricer, or from another thread -- is refused like any other.
+            refuse_if_solving(model, "cbls.solve");
             const SolvingScope solving(model);  // refuses Model.extend until this returns
             const nb::gil_scoped_release release;
             return cbls::solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback,

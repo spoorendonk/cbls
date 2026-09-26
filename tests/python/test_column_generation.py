@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import _cbls_core as cbls
+import numpy as np
 import pytest
 
 CHILD_TIMEOUT_SECONDS = 60.0
@@ -295,6 +296,15 @@ def test_the_pricer_sees_the_configured_schedule() -> None:
     assert seen and {s[0] for s in seen} == {cbls.PricingEvent.NewBest}
     assert all(s[6] for s in seen)
 
+    # Stagnation only (the default schedule, pricing_period 0): before each kick.
+    seen.clear()
+    cm = build_trivial(cs)
+    cfg = _iteration_budget(20_000)
+    cfg.column_generator = Recorder()
+    result = _solve(cm.m, 1, cfg)
+    assert seen and {s[0] for s in seen} == {cbls.PricingEvent.Stagnation}
+    assert result.counters.pricing_calls == len(seen)
+
 
 def test_a_timed_run_reports_a_clock_to_the_pricer() -> None:
     cs = u120_00()
@@ -453,6 +463,9 @@ def _assert_scenario_ok(name: str) -> None:
         f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     )
     assert proc.stdout.strip().endswith("OK"), proc.stdout
+    # nanobind reports instances still alive at interpreter exit: a reference the
+    # binding holds and the cycle collector cannot see.
+    assert "nanobind: leaked" not in proc.stderr, proc.stderr
 
 
 def _expect(exc: type[BaseException], match: str, fn: Any, *args: Any) -> None:
@@ -541,10 +554,14 @@ def _attempt(log: list[tuple[str, str]], name: str, fn: Callable[[], object]) ->
     log.append((name, "NOT REFUSED"))
 
 
-def _two_var_model() -> tuple[Any, Any, Any]:
+def _two_var_model(with_list: bool = False) -> tuple[Any, Any, Any]:
+    """x + y >= 3 over [0, 10]^2, minimizing x + y; plus an unused permutation List
+    (variable 2) when asked, for the List-reading builders to name."""
     m = cbls.Model()
     x = m.Float(0, 10, "x")
     y = m.Float(0, 10, "y")
+    if with_list:
+        m.list_var(3)
     m.add_constraint(x + y >= 3.0)
     m.minimize(x + y)
     m.close()
@@ -562,8 +579,15 @@ def _scenario_structural_writes_are_refused_during_a_solve() -> None:
     is registered, so every attempt from it takes exactly the path another
     thread's would -- the same registry check, under the GIL -- deterministically.
     """
-    m, x, y = _two_var_model()
+    m, x, y = _two_var_model(with_list=True)
+    lst = -3  # the List's handle: variable 2
     target = m.objective_id()
+    cfg = cbls.SearchConfig()
+    cfg.max_iterations = 2_000
+    # Solve once first so the objective row exists before `early` is recorded:
+    # otherwise the solve below adds it, `early` goes stale, and its builders are
+    # refused by the structure token instead of by the registry under test.
+    cbls.solve(m, time_limit=0.0, seed=1, config=cfg)
     # One extension recorded BEFORE the solve, to check its builders mid-solve.
     early = cbls.ModelExtension(m)
     early_var = early.float_var(0, 1)
@@ -591,25 +615,39 @@ def _scenario_structural_writes_are_refused_during_a_solve() -> None:
                 ("cbls.sin", lambda: cbls.sin(x)),
                 ("cbls.min", lambda: cbls.min([x, y])),
                 ("Model.extend", lambda: m.extend(early)),
+                ("Model.close", lambda: m.close()),
+                ("Model.List", lambda: m.List(3)),
+                ("Model.minimize", lambda: m.minimize(target)),
+                ("Model.add_list_partition", lambda: m.add_list_partition([lst], "exact")),
+                ("Model.lambda_sum", lambda: m.lambda_sum(lst, lambda i: 0.0)),
+                ("Model.lambda_table_sum", lambda: m.lambda_table_sum(lst, np.zeros(3))),
+                ("Model.pair_lambda_sum", lambda: m.pair_lambda_sum(lst, lambda i, j: 0.0)),
+                ("Model.pair_table_sum", lambda: m.pair_table_sum(lst, np.zeros((3, 3)))),
+                ("Expr.__rpow__", lambda: 2.0**x),
+                ("cbls.if_then_else", lambda: cbls.if_then_else(x, x, y)),
+                # A second solve writes structure too (objective row, pricing
+                # extends, solve_master's freeze and move-assign).
+                ("cbls.solve", lambda: cbls.solve(m, time_limit=0.0, seed=2, config=cfg)),
+                (
+                    "solve_master",
+                    lambda: cbls.ParallelSearch(1).solve_master(m, time_limit=0.0, seed=1),
+                ),
             ]:
                 _attempt(attempts, name, fn)
 
-    cfg = cbls.SearchConfig()
-    cfg.max_iterations = 2_000
     n_vars, n_nodes = m.num_vars(), m.num_nodes()
     cbls.solve(m, time_limit=0.0, seed=1, callback=Probe(), config=cfg)
-    assert len(attempts) == 14, attempts
+    assert len(attempts) == 26, attempts
     for name, message in attempts:
         assert "cbls.solve is running on this model" in message, (name, message)
     # A query of the recording reads no model and is not refused.
     assert early.num_new_vars() == 1
-    # Nothing was written: solve adds its objective row (two nodes) and nothing else.
-    assert (m.num_vars(), m.num_nodes()) == (n_vars, n_nodes + 2)
+    # Nothing was written: the objective row already existed.
+    assert (m.num_vars(), m.num_nodes()) == (n_vars, n_nodes)
     # Scoped to the solve: afterwards the same writes work again.
     ext = cbls.ModelExtension(m)
     ext.add_constraint(ext.leq(ext.float_var(0, 1), ext.constant(1.0)))
     m.extend(ext)
-    _ = x + y
     print("OK")
 
 
@@ -779,6 +817,99 @@ def _scenario_the_factory_overload_refuses_a_generator() -> None:
     print("OK")
 
 
+def _scenario_solve_master_registers_the_master() -> None:
+    """Structural writes to the master raise while solve_master runs on it.
+
+    Without the registration the master is merely frozen, and the refusal names
+    that instead, so the message discriminates.
+    """
+    m, x, y = _two_var_model()
+    attempts: list[tuple[str, str]] = []
+    lock = threading.Lock()
+
+    class Probe(cbls.SolveCallback):  # type: ignore[misc]
+        def on_progress(self, p: Any) -> None:
+            with lock:
+                if attempts:
+                    return
+                _attempt(attempts, "ModelExtension()", lambda: cbls.ModelExtension(m))
+                _attempt(attempts, "Model.float_var", lambda: m.float_var(0, 1))
+                _attempt(attempts, "Expr.__add__", lambda: x + y)
+
+    cfg = cbls.SearchConfig()
+    cfg.max_iterations = 2_000
+    par = cbls.ParallelConfig()
+    par.n_threads = 2
+    cbls.ParallelSearch(2).solve_master(
+        m, time_limit=0.0, seed=1, config=cfg, callback=Probe(), par_config=par
+    )
+    assert len(attempts) == 3, attempts
+    for name, message in attempts:
+        assert "cbls.solve is running on this model" in message, (name, message)
+    print("OK")
+
+
+def _scenario_a_violation_manager_keeps_its_model_alive() -> None:
+    """ViolationManager holds a Model&; dropped, the model's arrays were read freed."""
+    import gc
+
+    def make() -> Any:
+        m, _, _ = _two_var_model()
+        return cbls.ViolationManager(m)
+
+    vm = make()
+    gc.collect()
+    # Same shape, different right-hand side: a freed model's storage is reused by
+    # one of these, and the dangling manager then reads ITS row (violation 100).
+    decoys = []
+    for _ in range(64):
+        d = cbls.Model()
+        dx = d.Float(0, 10)
+        dy = d.Float(0, 10)
+        d.add_constraint(dx + dy >= 100.0)
+        d.minimize(dx + dy)
+        d.close()
+        cbls.full_evaluate(d)
+        decoys.append(d)
+    # x + y >= 3 at x = y = 0.
+    assert vm.constraint_violation(0) == 3.0, vm.constraint_violation(0)
+    print("OK")
+
+
+class _Held(cbls.ColumnGenerator):  # type: ignore[misc]
+    def clone(self) -> "_Held":
+        return _Held()
+
+
+def _scenario_a_config_holding_a_generator_is_collectable() -> None:
+    """The config's C++ reference on its generator is invisible to the cycle
+    collector unless SearchConfig reports it: a config at module level (reached
+    from the generator's class through the module globals) leaked at exit, and an
+    explicit config <-> generator cycle was never collected."""
+    import gc
+    import weakref
+
+    global _MODULE_CFG
+    _MODULE_CFG = cbls.SearchConfig()
+    _MODULE_CFG.column_generator = _Held()  # checked at exit by _assert_scenario_ok
+
+    alive: list[Any] = []
+    for _ in range(20):
+        cfg = cbls.SearchConfig()
+        g = _Held()
+        g.cfg = cfg
+        cfg.column_generator = g
+        alive.append(weakref.ref(g))
+        del cfg, g
+    gc.collect()
+    assert all(r() is None for r in alive), sum(r() is not None for r in alive)
+
+    print("OK")
+
+
+_MODULE_CFG: Any = None
+
+
 SCENARIOS = {
     "retained_views": _scenario_retained_views_raise_after_the_call,
     "structural_writes": _scenario_structural_writes_are_refused_during_a_solve,
@@ -787,6 +918,9 @@ SCENARIOS = {
     "master_clones": _scenario_solve_master_prices_with_one_clone_per_worker,
     "master_reraises": _scenario_solve_master_reraises_when_every_worker_raises,
     "factory_refuses": _scenario_the_factory_overload_refuses_a_generator,
+    "master_registers": _scenario_solve_master_registers_the_master,
+    "vm_keeps_model": _scenario_a_violation_manager_keeps_its_model_alive,
+    "config_collectable": _scenario_a_config_holding_a_generator_is_collectable,
 }
 
 
@@ -816,6 +950,18 @@ def test_solve_master_reraises_a_pricer_exception_every_worker_raised() -> None:
 
 def test_the_factory_overload_refuses_a_generator() -> None:
     _assert_scenario_ok("factory_refuses")
+
+
+def test_solve_master_refuses_structural_writes_to_the_master() -> None:
+    _assert_scenario_ok("master_registers")
+
+
+def test_a_violation_manager_keeps_its_model_alive() -> None:
+    _assert_scenario_ok("vm_keeps_model")
+
+
+def test_a_config_holding_a_generator_is_collectable() -> None:
+    _assert_scenario_ok("config_collectable")
 
 
 if __name__ == "__main__":
