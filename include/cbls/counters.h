@@ -34,8 +34,10 @@ struct GeneratorCounters {
     /// The suffix is load-bearing, not cosmetic: `merge` below keys on this
     /// string, and `MoveGenerator::name()` does not promise to be unique -- the
     /// built-ins name themselves by TYPE, so two List variables would both say
-    /// "builtin_list" and one row would absorb the other's counts. See
-    /// `StructuralBatch`'s constructor.
+    /// "builtin_list" and one row would absorb the other's counts. Unique within
+    /// a batch UNLESS a registered generator's own `name()` already ends in
+    /// `#<n>`, which `StructuralBatch`'s constructor records as a documented
+    /// limit rather than defending against.
     ///
     /// The copy is needed either way: the generator is a per-worker clone that
     /// dies with its search, so the counters cannot borrow its `string_view`.
@@ -88,8 +90,9 @@ struct SearchCounters {
     /// read 0.0 otherwise. That is not an oversight, and the argument is about
     /// SCALING rather than about a literal zero: an iteration-budgeted run does
     /// read the clock a bounded number of times already (`solve()`'s entry and
-    /// exit, and `note_first_feasible` once -- `docs/architecture.md` names all
-    /// three), but each of those is O(1) per RUN, where timing the hook would add
+    /// exit, and `note_first_feasible` once; a `SolveCallback`, if one is
+    /// attached, adds one per batch -- `docs/architecture.md` names all four),
+    /// but each of the three is O(1) per RUN, where timing the hook would add
     /// two reads per inner-solver CALL and so scale with the run. That is what
     /// #169's "no additional clock read" criterion protects, and it is what makes
     /// an iteration-budgeted run bit-reproducible. The gate is exactly the one

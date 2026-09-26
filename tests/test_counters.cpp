@@ -279,6 +279,50 @@ TEST_CASE("merge sums scalars and merges generator rows by name", "[counters]") 
     REQUIRE(a.by_generator[2].moves_tried == 1);
 }
 
+TEST_CASE("merge walks positionally when the two row sets agree", "[counters]") {
+    // The shape every portfolio worker actually produces -- same generators, same
+    // order, suffixed names -- which the test above does not reach: it differs in
+    // one name and so falls through to the by-name scan. This does not prove WHICH
+    // path ran, and is not meant to: the two must agree, and that agreement is the
+    // property. What it pins is the walk's own arithmetic, which nothing else
+    // touches.
+    SearchCounters a;
+    a.by_generator.push_back({"builtin_list#0", 10, 2});
+    a.by_generator.push_back({"builtin_list#1", 5, 1});
+
+    SearchCounters b;
+    b.by_generator.push_back({"builtin_list#0", 3, 1});
+    b.by_generator.push_back({"builtin_list#1", 7, 4});
+
+    a.merge(b);
+
+    REQUIRE(a.by_generator.size() == 2);
+    REQUIRE(a.by_generator[0].name == "builtin_list#0");
+    REQUIRE(a.by_generator[0].moves_tried == 13);
+    REQUIRE(a.by_generator[0].moves_accepted == 3);
+    REQUIRE(a.by_generator[1].name == "builtin_list#1");
+    REQUIRE(a.by_generator[1].moves_tried == 12);
+    REQUIRE(a.by_generator[1].moves_accepted == 5);
+}
+
+TEST_CASE("an empty target takes every row unchanged", "[counters]") {
+    // The FIRST merge at both aggregation sites, and the one the size compare
+    // would otherwise send down the by-name path once per worker.
+    SearchCounters empty;
+    SearchCounters other;
+    other.batches = 5;
+    other.by_generator.push_back({"builtin_set#0", 4, 2});
+    other.by_generator.push_back({"builtin_set#1", 6, 0});
+
+    empty.merge(other);
+
+    REQUIRE(empty.batches == 5);
+    REQUIRE(empty.by_generator.size() == 2);
+    REQUIRE(empty.by_generator[0].name == "builtin_set#0");
+    REQUIRE(empty.by_generator[0].moves_tried == 4);
+    REQUIRE(empty.by_generator[1].moves_accepted == 0);
+}
+
 TEST_CASE("BatchKind has a distinct stable token", "[counters]") {
     const std::vector<BatchKind> all = {BatchKind::FeasibilityJump, BatchKind::NoveltyJump,
                                         BatchKind::Structural};

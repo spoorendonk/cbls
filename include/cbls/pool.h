@@ -19,7 +19,8 @@ namespace cbls {
 struct ParallelConfig {
     int n_threads = 0;  // 0 = hardware_concurrency()
     /// Solutions kept in the shared pool. 0 (or any non-positive value) = auto,
-    /// which is `max(10, 2 * n_threads)`.
+    /// which is `max(10, 2 * workers)` -- the workers that actually RUN, so an
+    /// `executor` narrower than `n_threads` narrows this too.
     ///
     /// Auto rather than a fixed 10 because a pool smaller than the worker count
     /// cannot represent the portfolio at all: `submit` sorts globally by
@@ -98,7 +99,8 @@ struct ParallelConfig {
 };
 
 /// The pool capacity a portfolio actually uses: `requested` when positive,
-/// otherwise auto -- `max(10, 2 * n_threads)`. See
+/// otherwise auto -- `max(10, 2 * n_threads)`, where `solve_portfolio` passes the
+/// workers that actually run rather than the number requested. See
 /// `ParallelConfig::pool_capacity`. Exposed for the same reason
 /// `portfolio_worker_seed` is: the rule is worth testing directly rather than
 /// inferring from two search trajectories.

@@ -2187,7 +2187,9 @@ touch concurrently.
 
 **Sort order:** feasible solutions first; among same feasibility, ascending
 objective. **Capacity:** `ParallelConfig::pool_capacity`, default 0 = auto =
-`max(10, 2 * n_threads)`, excess trimmed after each insert. **Restart selection:** `get_restart_point()` samples
+`max(10, 2 * workers)` — the workers that actually run, so an `executor`
+narrower than `n_threads` narrows this too — with the excess trimmed after each
+insert. **Restart selection:** `get_restart_point()` samples
 uniformly from the better half of the pool rather than the single best. That
 reduces the pull toward one basin without preventing it: `submit` applies no
 diversity criterion and no per-worker quota, so on an objective model the pool
@@ -2533,7 +2535,7 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `initial_step_size` | 0.1 | `inner_solver.h` | line-search starting step |
 | `max_line_search_steps` | 5 | `inner_solver.h` | max backtracking halvings |
 | `max_multi_var_constraints` | 5 | `inner_solver.h` | max constraints for multi-var Newton |
-| `pool_capacity` | 0 = max(10, 2·n_threads) | `ParallelConfig` | max solutions in the shared pool |
+| `pool_capacity` | 0 = max(10, 2·workers) | `ParallelConfig` | max solutions in the shared pool |
 | `n_threads` | 0 = hw_concurrency | CLI / `ParallelConfig` | portfolio workers |
 
 ---
@@ -2885,7 +2887,11 @@ the portfolio's clock and incumbent so a harness can integrate it as a step
 function. A `Tracer` is an unthrottled event stream delivered on the search's own
 thread with nothing rewritten, and under a portfolio each worker gets **its own**
 (`ParallelConfig::tracer_factory`, called once per worker with that worker's
-index, not once per restart). Routing N workers through one instance would either
+index, not once per restart). A factory, once set, **decides**: a call that
+returns null means that worker is untraced, and does *not* fall back to
+`SearchConfig::tracer` — falling back would hand the declining workers one
+shared, unsynchronised sink, which is the race the factory exists to remove.
+Routing N workers through one instance would either
 need a lock inside the host's tracer or serialise the portfolio on one — which is
 the price `SolveCallback` pays for an ordered stream, and the reason these are
 two mechanisms rather than one.

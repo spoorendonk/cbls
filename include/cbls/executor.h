@@ -134,10 +134,8 @@ public:
     /// per-worker vectors non-empty. That is all the clamp buys: it cannot make a
     /// zero-width pool actually RUN a chunk, and a pool that runs nothing leaves
     /// the portfolio with no result to return -- reported as `NoBudget`, exactly
-    /// as a run handed no budget is. Supply a pool that runs what it is given. Must be >= 1; a
-    /// value below 1 is clamped by the caller
-    /// (`src/pool.cpp`), since a zero-worker portfolio could return no result at
-    /// all.
+    /// as a run handed no budget is. Must be >= 1: supply a pool that runs what it
+    /// is given.
     [[nodiscard]] int n_threads() const { return table_->n_threads(obj_); }
 
 private:

@@ -858,7 +858,7 @@ NB_MODULE(_cbls_core, m) {
     nb::class_<ParallelConfig>(m, "ParallelConfig")
         .def(nb::init<>())
         .def_rw("n_threads", &ParallelConfig::n_threads)
-        // 0 = auto (max(10, 2 * n_threads)); see include/cbls/pool.h.
+        // 0 = auto (max(10, 2 * workers that run); see include/cbls/pool.h.
         .def_rw("pool_capacity", &ParallelConfig::pool_capacity)
         // Same non-owning-view rule, and the same keep_alive, as
         // SearchConfig.stop below. OR-ed with that one rather than replacing it.

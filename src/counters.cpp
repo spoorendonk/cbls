@@ -41,8 +41,8 @@ void SearchCounters::merge(const SearchCounters& other) {
     // order, so in the normal case the two vectors agree name-for-name at every
     // position -- checked in O(G) -- and the merge is a walk.
     //
-    // The fast path is a complexity fix, not a micro-optimisation, and it wins
-    // and loses in stated regimes. `by_generator` carries ONE ENTRY PER
+    // The fast paths are a complexity fix, not a micro-optimisation, and they win
+    // and lose in stated regimes. `by_generator` carries ONE ENTRY PER
     // List/Set VARIABLE, since the built-ins register per variable, and
     // `structural_batch.h` reasons about a 1500-List model: the by-name scan is
     // O(G^2) string comparisons, ~1.1M at G = 1500, and `merge` runs once per
@@ -50,6 +50,17 @@ void SearchCounters::merge(const SearchCounters& other) {
     // loses nothing when it does not apply -- one O(G) name comparison before
     // falling through -- and it does not apply exactly when the vectors differ,
     // which is the case the by-name scan exists for.
+    // An EMPTY target is the FIRST merge at BOTH aggregation sites -- a worker's
+    // first absorb, and solve_portfolio's first worker -- and neither the walk nor
+    // the by-name scan is needed for it: there is nothing to match against, so
+    // every row is appended unchanged. Taken first because the size compare would
+    // otherwise send exactly this case, which happens once per worker, down the
+    // by-name path. Without it the O(G) claim below covers only the per-restart
+    // term and the total stays O(W x G^2).
+    if (by_generator.empty()) {
+        by_generator = other.by_generator;
+        return;
+    }
     if (by_generator.size() == other.by_generator.size() &&
         std::equal(by_generator.begin(), by_generator.end(), other.by_generator.begin(),
                    [](const GeneratorCounters& mine, const GeneratorCounters& theirs) {

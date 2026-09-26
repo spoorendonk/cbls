@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <utility>
 
 namespace cbls {
@@ -74,7 +76,11 @@ StructuralBatch::StructuralBatch(const Model& model, const SearchConfig& config,
     // "builtin_list" or "builtin_set" for every List or Set variable -- so a
     // model with two Lists gives two rows spelled alike, and merging them
     // un-disambiguated folds both of a peer's rows into the first of ours while
-    // the second reads zero. A single `solve()` reports both correctly, so the
+    // the second reads zero. A registered generator whose own `name()` already
+    // ends in `#<n>` can still collide with a suffix generated here -- `foo`,
+    // `foo`, `foo#1` yields `foo#0`, `foo#1`, `foo#1` -- which is contrived
+    // enough to be left as a documented limit rather than a rule a registrant
+    // has to know. A single `solve()` reports both correctly, so the
     // portfolio would report a different row SHAPE for the same model.
     //
     // Every worker builds the same generators in the same order (the built-ins
@@ -88,8 +94,22 @@ StructuralBatch::StructuralBatch(const Model& model, const SearchConfig& config,
     for (const std::unique_ptr<MoveGenerator>& gen : generators_) {
         names.emplace_back(gen->name());
     }
+    // Occurrences counted ONCE, in O(G), rather than rescanned per entry.
+    // `counters_` carries one row per structured variable, and
+    // `SearchCounters::merge` reasons about a 1500-List model, where a
+    // `std::count` per entry is ~2.25M string comparisons per solve -- the same
+    // call frequency, and twice the size, of the cost merge's positional walk
+    // exists to remove. It loses a little on the one-to-three-generator model
+    // every benchmark in the tree has, where one small hash table is more work
+    // than three comparisons; the keys borrow `names`' storage, so nothing here
+    // allocates a string of its own.
+    std::unordered_map<std::string_view, int> occurrences;
+    occurrences.reserve(names.size());
+    for (const std::string& name : names) {
+        ++occurrences[name];
+    }
     for (size_t i = 0; i < names.size(); ++i) {
-        const bool repeated = std::count(names.begin(), names.end(), names[i]) > 1;
+        const bool repeated = occurrences[names[i]] > 1;
         GeneratorCounters entry;
         entry.name = repeated ? names[i] + '#' + std::to_string(i) : names[i];
         counters_.push_back(std::move(entry));
