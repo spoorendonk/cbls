@@ -167,6 +167,111 @@ std::vector<int32_t> elements_after(const Move::Change& change,
     return result;
 }
 
+// ---------------------------------------------------------------------------
+// Recorded application (#172)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Whether `apply_one_edit` would act on `edit` at all, i.e. whether its range
+/// guard passes. The SAME guards, kind by kind -- they have to agree, or the
+/// journal records an edit that never happened (or misses one that did), and
+/// its inverse is then wrong. Pinned by the recorded-apply cases in
+/// tests/test_custom_invariant.cpp, which replay the record against the
+/// unrecorded apply over in- and out-of-range edits.
+bool edit_takes_effect(const ElementEdit& edit, const std::vector<int32_t>& elements) {
+    const auto n = static_cast<int32_t>(elements.size());
+    switch (edit.kind) {
+        case EditKind::None:
+            return false;
+        case EditKind::Replace:
+            return true;
+        case EditKind::Swap:
+            return in_range(elements, 0, edit.from) && in_range(elements, 0, edit.to);
+        case EditKind::Reverse:
+            return in_range(elements, edit.from, edit.to);
+        case EditKind::MoveSegment:
+            return edit.length > 0 && edit.from >= 0 && edit.to >= 0 &&
+                   edit.from + edit.length <= n && edit.to + edit.length <= n;
+        case EditKind::Insert:
+            return edit.from >= 0 && edit.from <= n;
+        case EditKind::Erase:
+        case EditKind::Assign:
+            return in_range(elements, 0, edit.from);
+    }
+    return false;
+}
+
+}  // namespace
+
+PositionalEdit inverse_edit(const PositionalEdit& edit) noexcept {
+    PositionalEdit inv = edit;
+    switch (edit.kind) {
+        case EditKind::None:
+        case EditKind::Replace:
+        case EditKind::Swap:
+        case EditKind::Reverse:
+            break;  // self-inverse (or nothing to invert)
+        case EditKind::MoveSegment:
+            // The segment now starts at `to`; moving it back to `from` of the
+            // vector shortened by it is the exact reverse rotation.
+            inv.from = edit.to;
+            inv.to = edit.from;
+            break;
+        case EditKind::Insert:
+            inv.kind = EditKind::Erase;
+            inv.removed = edit.element;
+            inv.element = -1;
+            break;
+        case EditKind::Erase:
+            inv.kind = EditKind::Insert;
+            inv.element = edit.removed;
+            inv.removed = -1;
+            break;
+        case EditKind::Assign:
+            inv.element = edit.removed;
+            inv.removed = edit.element;
+            break;
+    }
+    return inv;
+}
+
+void apply_positional_edit(const PositionalEdit& edit, std::vector<int32_t>& elements) {
+    static const std::vector<int32_t> kNoReplacement;
+    ElementEdit plain;
+    plain.kind = edit.kind == EditKind::Replace ? EditKind::None : edit.kind;
+    plain.from = edit.from;
+    plain.to = edit.to;
+    plain.length = edit.length;
+    plain.element = edit.element;
+    apply_one_edit(plain, kNoReplacement, elements);
+}
+
+void apply_element_edits(const Move::Change& change, std::vector<int32_t>& elements,
+                         EditJournal& journal) {
+    journal.begin(change.var_id);
+    for (const ElementEdit& edit : change.edits) {
+        if (!edit_takes_effect(edit, elements)) {
+            continue;
+        }
+        if (edit.kind == EditKind::Replace) {
+            journal.mark_unknown();
+        } else {
+            PositionalEdit applied;
+            applied.kind = edit.kind;
+            applied.from = edit.from;
+            applied.to = edit.to;
+            applied.length = edit.length;
+            applied.element = edit.element;
+            if (edit.kind == EditKind::Erase || edit.kind == EditKind::Assign) {
+                applied.removed = elements[static_cast<size_t>(edit.from)];
+            }
+            journal.push(applied);
+        }
+        apply_one_edit(edit, change.replacement, elements);
+    }
+}
+
 bool change_is_noop(const Move::Change& change, const std::vector<int32_t>& elements) {
     // A pair of edits is inert only if both halves are -- `set_swap`'s erase and
     // append are never both inert, since the element it brings in is by
@@ -999,6 +1104,21 @@ std::vector<int32_t> apply_move(Model& model, const Move& move) {
             // `ElementEdit` and, for the several-candidates-per-sample case,
             // `StructuralBatch`.
             apply_element_edits(change, var.elements);
+        } else {
+            var.value = change.new_value;
+        }
+        changed.push_back(change.var_id);
+    }
+    return changed;
+}
+
+std::vector<int32_t> apply_move_recorded(Model& model, const Move& move, EditJournal& journal) {
+    std::vector<int32_t> changed;
+    changed.reserve(move.changes.size());
+    for (const auto& change : move.changes) {
+        auto& var = model.var_mut(change.var_id);
+        if (is_structured(var.type)) {
+            apply_element_edits(change, var.elements, journal);
         } else {
             var.value = change.new_value;
         }

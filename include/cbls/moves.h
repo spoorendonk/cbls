@@ -1,5 +1,6 @@
 #pragma once
 
+#include "element_edit.h"
 #include "model.h"
 #include "rng.h"
 
@@ -11,61 +12,6 @@
 namespace cbls {
 
 class NeighbourList;
-
-/// What one `ElementEdit` does to a structured variable's `elements` (#164).
-///
-/// POSITIONS RATHER THAN A WHOLE VECTOR. Every structured candidate used to
-/// carry the complete element vector it wanted, which cost AT LEAST two heap
-/// allocations (the generator's vector, and the copy of it into the candidate
-/// list) and three O(n) copies (into the undo snapshot, into the variable, and
-/// back out again) per candidate SCORED, on the batch's hot path, for a move
-/// that touches two positions. "At least", because whether the generator's own
-/// `push_back` counts depends on how it builds the vector -- so the ledger is
-/// written as a floor here, in docs/architecture.md and in CLAUDE.md, and those
-/// three must agree. All but the swap and the tail exchange are `std::rotate`,
-/// `std::reverse` or a single insert/erase on the vector that is already there.
-///
-/// This is an allocation-count argument, not a micro-optimisation: it holds on
-/// any machine and for any n, and it is what makes a larger candidate sample
-/// affordable (see `StructuralSelection`). `Replace` keeps the old form for the
-/// two things positions cannot express -- an inter-list tail exchange, and a
-/// move from a generator the engine knows nothing about.
-enum class EditKind : uint8_t {
-    None,         ///< absent. A scalar change carries `new_value` and no edit.
-    Replace,      ///< `elements = replacement`. The pre-#164 form.
-    Swap,         ///< exchange positions `from` and `to`.
-    Reverse,      ///< reverse the inclusive range [`from`, `to`].
-    MoveSegment,  ///< erase `length` elements at `from`, reinsert at `to` of the
-                  ///< SHORTENED vector. A `std::rotate`.
-    Insert,       ///< insert `element` at `from`.
-    Erase,        ///< erase position `from`.
-    Assign,       ///< `elements[from] = element`.
-};
-
-/// One in-place rewrite of a structured variable's `elements`.
-///
-/// Which fields a kind reads:
-///
-///     Swap         from, to
-///     Reverse      from, to
-///     MoveSegment  from, to, length
-///     Insert       from, element
-///     Erase        from
-///     Assign       from, element
-///     Replace      the change's `replacement` vector
-///
-/// IT IS RELATIVE TO THE ASSIGNMENT THE MOVE WAS BUILT AGAINST. Applying an
-/// edit to a different assignment is not merely a different move; the positions
-/// name different elements and `Erase`/`Assign` can be out of range. The
-/// structural batch is what makes that safe for the several-candidates-per-sample
-/// rule -- see `MoveGenerator::generate`.
-struct ElementEdit {
-    EditKind kind = EditKind::None;
-    int32_t from = 0;
-    int32_t to = 0;
-    int32_t length = 1;
-    int32_t element = -1;
-};
 
 struct Move {
     /// One variable's part of a move: a scalar value, or up to two positional
@@ -119,6 +65,16 @@ inline ElementEdit assign_edit(int32_t pos, int32_t element) {
 /// an edit built against a longer vector can be replayed against a shorter one
 /// without any check in the way (#156).
 void apply_element_edits(const Move::Change& change, std::vector<int32_t>& elements);
+
+/// `apply_element_edits`, and also RECORD what it did in `journal` (#172): opens
+/// `change.var_id`'s record and appends every edit that took effect, as a
+/// `PositionalEdit` carrying the element an Erase or Assign displaced. An edit
+/// the range guard ignores is not recorded, so the record replays -- and inverts
+/// -- exactly. A `Replace` marks the record Unknown.
+///
+/// Appends; the caller decides when the journal starts over.
+void apply_element_edits(const Move::Change& change, std::vector<int32_t>& elements,
+                         EditJournal& journal);
 
 /// `elements` with `change` applied -- the absolute vector the change used to
 /// carry. For tests, for Python, and for anything that wants the result without
@@ -218,6 +174,12 @@ void generate_partition_moves(const Model& model, int partition, int32_t anchor,
 
 // Move application
 std::vector<int32_t> apply_move(Model& model, const Move& move);
+/// `apply_move`, recording every structured change in `journal` -- the form to
+/// use when the following `delta_evaluate` is to hand a `CustomInvariant` its
+/// positional edits (#172). Scalar changes are applied and record nothing.
+/// Named rather than overloaded so that `&apply_move` stays unambiguous for the
+/// Python binding.
+std::vector<int32_t> apply_move_recorded(Model& model, const Move& move, EditJournal& journal);
 SavedValues save_move_values(const Model& model, const Move& move);
 void undo_move(Model& model, const Move& move, const SavedValues& saved);
 

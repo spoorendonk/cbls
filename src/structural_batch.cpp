@@ -258,6 +258,11 @@ void StructuralBatch::snapshot_sample_base(const Model& model) {
         base_values_[i] = var.value;
         base_elements_[i].assign(var.elements.begin(), var.elements.end());
     }
+    // Decided per sample rather than once per batch: `Model::extend` can add a
+    // custom node to a model mid-search. One predictable branch per sample.
+    journaling_ = model.has_custom_nodes();
+    applied_.clear();
+    previous_.clear();
     record_accepted(model);
     dirty_vars_.clear();
 }
@@ -281,6 +286,31 @@ void StructuralBatch::record_accepted(const Model& model) {
         accepted_values_[i] = var.value;
         accepted_elements_[i].assign(var.elements.begin(), var.elements.end());
     }
+    if (journaling_) {
+        // Copy-assignment into a warm journal reuses its capacity.
+        accepted_ = applied_;
+    }
+}
+
+// What `delta_evaluate` is to be told about a move from "baseline + `undo`" to
+// "baseline + `redo`" over `vars`: per structured variable, `undo` inverted and
+// then `redo`, each exact because both were recorded from edits that actually
+// took effect. A variable either side knows only as a `Replace` reads Unknown.
+//
+// O(|vars| x records), and both are the handful of variables one candidate
+// touches.
+void StructuralBatch::describe_transition(const Model& model, const EditJournal& undo,
+                                          const EditJournal& redo,
+                                          const std::vector<int32_t>& vars) {
+    journal_.clear();
+    for (const int32_t var_id : vars) {
+        if (!is_structured(model.var(var_id).type)) {
+            continue;
+        }
+        journal_.begin(var_id);
+        journal_.append_inverse(undo, var_id);
+        journal_.append_forward(redo, var_id);
+    }
 }
 
 void StructuralBatch::restore_accepted(Model& model) const {
@@ -303,10 +333,18 @@ const std::vector<int32_t>& StructuralBatch::apply_from_base(Model& model, const
     // allocated vector this caller would discard -- one malloc and free per
     // candidate SCORED, on the path the positional representation exists to take
     // allocations off.
+    if (journaling_) {
+        std::swap(previous_, applied_);
+        applied_.clear();
+    }
     for (const Move::Change& change : move.changes) {
         Variable& var = model.var_mut(change.var_id);
         if (is_structured(var.type)) {
-            apply_element_edits(change, var.elements);
+            if (journaling_) {
+                apply_element_edits(change, var.elements, applied_);
+            } else {
+                apply_element_edits(change, var.elements);
+            }
         } else {
             var.value = change.new_value;
         }
@@ -314,6 +352,9 @@ const std::vector<int32_t>& StructuralBatch::apply_from_base(Model& model, const
         if (std::find(touched_.begin(), touched_.end(), change.var_id) == touched_.end()) {
             touched_.push_back(change.var_id);
         }
+    }
+    if (journaling_) {
+        describe_transition(model, previous_, applied_, touched_);
     }
     return touched_;
 }
@@ -331,7 +372,7 @@ bool StructuralBatch::take_first_improving(Model& model, ViolationManager& vm, M
     for (const Move& move : candidates_) {
         const std::vector<int32_t>& touched = apply_from_base(model, move);
         assert_move_within_scope(gen, touched);
-        delta_evaluate(model, touched);
+        delta_evaluate(model, touched, DeltaMode::Commit, journal());
         const double delta =
             full_scan ? vm.weighted_delta_from(baseline_) : vm.weighted_delta_from(baseline_, rows);
         if (delta < kImprovementThreshold) {
@@ -364,7 +405,10 @@ bool StructuralBatch::take_first_improving(Model& model, ViolationManager& vm, M
     // correct with it, because take_best wants the baseline and that is exactly
     // what an empty last candidate leaves.
     restore_accepted(model);
-    delta_evaluate(model, base_vars_);
+    if (journaling_) {
+        describe_transition(model, applied_, accepted_, base_vars_);
+    }
+    delta_evaluate(model, base_vars_, DeltaMode::Commit, journal());
     dirty_vars_.clear();
     return changed;
 }
@@ -385,7 +429,7 @@ bool StructuralBatch::take_best(Model& model, ViolationManager& vm, MoveGenerato
         const Move& move = candidates_[i];
         const std::vector<int32_t>& touched = apply_from_base(model, move);
         assert_move_within_scope(gen, touched);
-        delta_evaluate(model, touched);
+        delta_evaluate(model, touched, DeltaMode::Commit, journal());
         const double delta =
             full_scan ? vm.weighted_delta_from(baseline_) : vm.weighted_delta_from(baseline_, rows);
         if (delta < best_delta) {
@@ -396,14 +440,18 @@ bool StructuralBatch::take_best(Model& model, ViolationManager& vm, MoveGenerato
     if (best < 0) {
         if (!dirty_vars_.empty()) {
             restore_sample_base(model, dirty_vars_);
-            delta_evaluate(model, dirty_vars_);
+            if (journaling_) {
+                previous_.clear();  // an empty "redo": back to the baseline
+                describe_transition(model, applied_, previous_, dirty_vars_);
+            }
+            delta_evaluate(model, dirty_vars_, DeltaMode::Commit, journal());
             dirty_vars_.clear();
         }
         return false;
     }
     const Move& move = candidates_[static_cast<size_t>(best)];
     const std::vector<int32_t>& touched = apply_from_base(model, move);
-    delta_evaluate(model, touched);
+    delta_evaluate(model, touched, DeltaMode::Commit, journal());
     vm.snapshot_violations(baseline_);
     gen.on_commit(move);
     ++counters.moves_accepted;

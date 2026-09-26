@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dag.h"
+#include "element_edit.h"
 
 #include <limits>
 #include <memory>
@@ -9,6 +10,44 @@
 namespace cbls {
 
 class Model;
+
+/// What the engine can say about WHERE a structured input changed, for one
+/// `delta()` call (#172). See `InvariantInputs::edits`.
+///
+/// **"No positional information" cannot be mistaken for "no changes".** Those
+/// are different answers and this type keeps them apart: `available()` is false
+/// for the first, and `list()` then THROWS rather than returning an empty span
+/// that would read as the second. An invariant that forgets the check fails
+/// loudly on the first resynchronisation instead of returning a plausible,
+/// wrong number from then on.
+///
+/// A VIEW into a buffer the caller of `delta_evaluate` owns (an `EditJournal`)
+/// and rewrites for its next call. Valid for the duration of the `delta()` it
+/// was obtained in; copy what you need, exactly as for `changed`.
+class InputEdits {
+public:
+    /// No positional information.
+    InputEdits() noexcept = default;
+    /// This complete, ordered list of applied edits.
+    explicit InputEdits(ConstSpan<PositionalEdit> edits) noexcept
+        : edits_(edits), available_(true) {}
+
+    /// Whether `list()` is a complete description of how this input moved since
+    /// the invariant's last committed state. False means RE-READ `elements(i)`.
+    [[nodiscard]] bool available() const noexcept { return available_; }
+
+    /// The edits, in application order; each position is into the vector as it
+    /// stood when that edit ran. Empty means "this input did not move".
+    ///
+    /// Throws `std::logic_error` when `available()` is false. Not an assert:
+    /// the whole point is that the mistake is caught in a Release build, where
+    /// the silent alternative is a wrong value.
+    [[nodiscard]] ConstSpan<PositionalEdit> list() const;
+
+private:
+    ConstSpan<PositionalEdit> edits_;
+    bool available_ = false;
+};
 
 /// The inputs of one `NodeOp::Custom` node: its children, in the order they
 /// were given to `Model::custom` (#166).
@@ -25,8 +64,21 @@ class Model;
 /// under NDEBUG, exactly as `ConstSpan::operator[]` is.
 class InvariantInputs {
 public:
+    /// Outside a `delta()` -- `evaluate` and `partial`. `edits(i)` reports no
+    /// positional information for every input: there is no "since" to describe.
     InvariantInputs(const Model& model, ConstSpan<ChildRef> children) noexcept
         : model_(&model), children_(children) {}
+
+    /// Inside a `delta()`. `changed` is the same list the call is handed;
+    /// `journal` is what the caller of `delta_evaluate` recorded, or null when
+    /// it recorded nothing -- which is every caller but the structural batch.
+    InvariantInputs(const Model& model, ConstSpan<ChildRef> children, ConstSpan<int32_t> changed,
+                    const EditJournal* journal) noexcept
+        : model_(&model),
+          children_(children),
+          changed_(changed),
+          journal_(journal),
+          in_delta_(true) {}
 
     /// The model being evaluated. Read-only: an invariant that wrote to it
     /// would be writing another worker's search state on the shared-structure
@@ -59,11 +111,47 @@ public:
     /// rather than `value(i)` is the input's content.
     [[nodiscard]] bool is_structured_input(int32_t i) const;
 
+    /// WHERE structured input `i` changed since this invariant's last committed
+    /// state: the ordered `PositionalEdit`s that took it from the elements the
+    /// invariant last committed to the elements `elements(i)` returns now (#172).
+    ///
+    /// With them, a `delta()` over a List can be O(edits) rather than
+    /// O(|elements|) -- an incremental route cost, a slack propagated from the
+    /// first changed position.
+    ///
+    /// **Check `available()` first; when it is false, re-read `elements(i)`.**
+    /// That is not a corner case. It is false:
+    ///
+    ///  - in `evaluate` and `partial`, which are not relative to anything;
+    ///  - for an input that is not a List/Set variable;
+    ///  - whenever the caller of `delta_evaluate` recorded nothing -- the
+    ///    diversification kick, LNS, the inner solver, a restore, anything that
+    ///    is not the structural batch, and any direct `var_mut` edit;
+    ///  - for a variable that saw a whole-vector `Replace` (a registered
+    ///    generator's, or the inter-list tail exchange);
+    ///  - after an exception left a probe open (see the class note).
+    ///
+    /// An input NOT listed in `changed` did not move, and reports an empty,
+    /// available list.
+    ///
+    /// Accumulation: the list describes the change since the last COMMITTED
+    /// state, not since the last call. A `rollback()` needs no edits -- the
+    /// caller has put the assignment back -- and the next `delta()`'s list
+    /// starts from the committed state again. Lifetime: as for `changed`, valid
+    /// for this call only.
+    ///
+    /// Cost: a binary search of `changed` and a scan of the journal's records,
+    /// one per variable the move touched.
+    [[nodiscard]] InputEdits edits(int32_t i) const;
+
 private:
     // A pointer rather than a reference so the class stays assignable; it is
     // never null, since the only constructor takes a reference.
     const Model* model_;
     ConstSpan<ChildRef> children_;
+    ConstSpan<int32_t> changed_;
+    const EditJournal* journal_ = nullptr;
+    bool in_delta_ = false;
 };
 
 /// User code inside the DAG: a node whose value is whatever this object says it
@@ -194,19 +282,19 @@ public:
     /// building it O(arity), against the O(sum of input sizes) a value
     /// comparison would cost.
     ///
-    /// **It says WHICH inputs moved, never WHERE inside one.** For a structured
-    /// input that is the whole of what it tells you: "this List changed", not
-    /// which positions. So an O(1) delta over a List -- an incremental route
-    /// cost, a time-window slack propagated from the first changed position --
-    /// is NOT expressible through this interface as it stands. The engine has
-    /// the information (the structural batch builds positional `ElementEdit`s
-    /// and drops them before `delta_evaluate`); carrying it here is follow-on
-    /// work. An invariant over a List today either re-reads `elements(i)`, or
-    /// keeps its own copy and diffs it: O(n) either way.
+    /// **It says WHICH inputs moved; `in.edits(i)` says WHERE inside one** (#172).
+    /// For a structured input, `changed` alone is "this List changed"; the
+    /// positional edits, when the engine has them, are the positions. When it
+    /// does not -- see `InvariantInputs::edits` for the list -- re-read
+    /// `elements(i)`, which is O(n) and always correct.
     ///
     /// `changed` points into a `thread_local` buffer that the NEXT custom node
     /// in the same pass reuses. Valid for the duration of this call only; copy
-    /// what you need.
+    /// what you need. `in.edits(i)` has the same lifetime, for a different
+    /// reason: it points into the caller's journal, which is not rewritten
+    /// between custom nodes in one pass -- every node in the pass reads the same
+    /// records, so no per-node buffer is needed -- but is rewritten for the
+    /// caller's next `delta_evaluate`.
     ///
     /// The default re-evaluates from scratch, which is always correct and is
     /// what an invariant with no cheap incremental form should keep.

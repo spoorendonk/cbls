@@ -243,7 +243,7 @@ struct DirtyFlagGuard {
 double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
                            const int32_t* changed_var_ids, size_t count,
                            const std::vector<uint8_t>& dirty_flags,
-                           std::vector<int32_t>& changed_scratch) {
+                           std::vector<int32_t>& changed_scratch, const EditJournal* journal) {
     const ExprNode& node = model.nodes()[nid];
     if (node.op != NodeOp::Custom) {
         return evaluate(node, model);
@@ -262,7 +262,14 @@ double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
         model.custom_invariant(slot).rollback();
         return model.custom_end_probe(slot);
     }
+    // Whether this call's positional edits describe the change since the
+    // invariant's committed state (#172). They do unless a probe is still open:
+    // the invariant then never heard the commit or rollback that probe owed, so
+    // its committed state and the caller's "since" are no longer the same
+    // assignment, and neither `changed` nor any edit list bridges the gap.
+    bool positional_ok = true;
     if (model.custom_probe_pending(slot)) {
+        positional_ok = false;
         // A `Commit` or `Probe` pass reached a slot that still owes a rollback,
         // which only an exception out of user code mid-probe can produce -- the two
         // bracketed probes have nothing between their legs that can throw. Drop the
@@ -274,9 +281,13 @@ double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
     }
     collect_changed_inputs(model, node, changed_var_ids, count, dirty_flags, changed_scratch);
     CustomInvariant& inv = model.custom_invariant(slot);
-    const double value =
-        inv.delta(InvariantInputs(model, model.children(node)),
-                  ConstSpan<int32_t>(changed_scratch.data(), changed_scratch.size()));
+    const ConstSpan<int32_t> changed(changed_scratch.data(), changed_scratch.size());
+    // The two-argument form reports no positional information for any input,
+    // which is the honest answer on the stale-probe path above.
+    const InvariantInputs inputs =
+        positional_ok ? InvariantInputs(model, model.children(node), changed, journal)
+                      : InvariantInputs(model, model.children(node));
+    const double value = inv.delta(inputs, changed);
     if (mode == DeltaMode::Probe) {
         // Read BEFORE the caller writes `value`: this is still the value the
         // probe is to be rolled back to.
@@ -289,7 +300,8 @@ double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
 
 }  // namespace
 
-double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count, DeltaMode mode) {
+double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count, DeltaMode mode,
+                      const EditJournal* journal) {
     const EvaluationGuard guard("delta_evaluate");
     if (count == 0) {
         if (model.objective_id() >= 0) {
@@ -342,7 +354,7 @@ double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count
         thread_local std::vector<int32_t> changed_inputs;
         evaluate_dirty_in_topo_order(model, dirty_list, dirty_flags, num_nodes, [&](int32_t nid) {
             return evaluate_dirty_node(model, nid, mode, changed_var_ids, count, dirty_flags,
-                                       changed_inputs);
+                                       changed_inputs, journal);
         });
     } else {
         evaluate_dirty_in_topo_order(

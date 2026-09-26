@@ -195,6 +195,28 @@ private:
     /// handed to `delta_evaluate`, unioned with the current move's own.
     std::vector<int32_t> dirty_vars_;
     std::vector<int32_t> touched_;
+
+    /// Positional edits for a `CustomInvariant` (#172). The batch already
+    /// builds positional edits; these keep what it used to discard, and only
+    /// when the model HAS a custom node (`journaling_`) -- a model without one
+    /// takes the pre-#172 path, records nothing and passes a null journal.
+    ///
+    /// `applied_` is what the current candidate did, `previous_` what the one
+    /// before it did (the restore undoes exactly that), `accepted_` what the
+    /// last accepted candidate did (the sweep's final restore lands there), and
+    /// `journal_` is what the next `delta_evaluate` is told: per variable, the
+    /// inverse of what is being undone followed by what is being applied. All
+    /// four are reused, so the steady state allocates nothing.
+    void describe_transition(const Model& model, const EditJournal& undo, const EditJournal& redo,
+                             const std::vector<int32_t>& vars);
+    [[nodiscard]] const EditJournal* journal() const noexcept {
+        return journaling_ ? &journal_ : nullptr;
+    }
+    bool journaling_ = false;
+    EditJournal applied_;
+    EditJournal previous_;
+    EditJournal accepted_;
+    EditJournal journal_;
 };
 
 }  // namespace cbls

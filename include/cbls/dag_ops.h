@@ -38,14 +38,26 @@ enum class DeltaMode : uint8_t {
     Rollback,
 };
 
-// Primary signature: accepts a contiguous range of var IDs
+class EditJournal;
+
+// Primary signature: accepts a contiguous range of var IDs.
+//
+// `journal`, when non-null, is WHERE the structured variables among
+// `changed_var_ids` changed since the assignment their previous evaluation was
+// measured at (#172): one record per such variable, which a `CustomInvariant`
+// reads through `InvariantInputs::edits`. Null -- the default, and every caller
+// but the structural batch -- means "no positional information", which an
+// invariant reads as "re-read the input". Only custom nodes ever look at it, so
+// a model without one evaluates identically either way. Read for the duration
+// of this call only.
 double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count,
-                      DeltaMode mode = DeltaMode::Commit);
+                      DeltaMode mode = DeltaMode::Commit, const EditJournal* journal = nullptr);
 
 // Convenience overloads
 inline double delta_evaluate(Model& model, const std::vector<int32_t>& changed_var_ids,
-                             DeltaMode mode = DeltaMode::Commit) {
-    return delta_evaluate(model, changed_var_ids.data(), changed_var_ids.size(), mode);
+                             DeltaMode mode = DeltaMode::Commit,
+                             const EditJournal* journal = nullptr) {
+    return delta_evaluate(model, changed_var_ids.data(), changed_var_ids.size(), mode, journal);
 }
 
 inline double delta_evaluate(Model& model, const std::set<int32_t>& changed_var_ids,
