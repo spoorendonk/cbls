@@ -732,3 +732,107 @@ TEST_CASE("a new row over existing variables enters their G_v in order", "[exten
     delta_evaluate(m, {0});
     REQUIRE(m.node_value(cut) == -1.0);
 }
+
+TEST_CASE("a column added mid-search is actually reachable by FJ", "[extend]") {
+    // The behavioural half of on_extended. The base model is INFEASIBLE and only
+    // the new column can fix it, so reaching feasibility after the extension needs
+    // all of it: the jump table grown, `violated_` set for the changed row,
+    // `vars_of_constraint_` carrying the new variable (which is what re-queues it
+    // after a weight bump), and G_v spliced so the probe sees the row at all.
+    Model m;
+    const int32_t a = m.bool_var();
+    const int32_t lhs = m.sum({m.prod(m.constant(1.0), a)});
+    m.add_constraint(m.geq(lhs, m.constant(2.0)));  // a >= 2, unsatisfiable
+    m.close();
+
+    ViolationManager vm(m);
+    RNG rng(11);
+    FeasibilityJump fj(m, vm, rng);
+    fj.begin(true);
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE_FALSE(fj.batch(50));
+    }
+
+    ModelExtension ext(m);
+    const int32_t c = ext.bool_var();
+    ext.append_to_sum(lhs, ext.prod(ext.constant(1.0), c));
+    const ExtensionResult res = m.extend(ext);
+    vm.on_extended(res);
+    fj.on_extended(res);
+
+    bool feasible = false;
+    for (int i = 0; i < 20 && !feasible; ++i) {
+        feasible = fj.batch(50);
+    }
+    REQUIRE(feasible);
+    REQUIRE(m.var(0).value == 1.0);
+    REQUIRE(m.var(1).value == 1.0);
+}
+
+TEST_CASE("extend reclassifies the linearity of the rows it changed", "[extend]") {
+    // Appending a term can make a linear row NON-linear, which is the case a
+    // "classify the new rows only" update would miss. `run()`'s first phase
+    // descends the linear submodel, so a stale classification would put a
+    // nonlinear row in it.
+    Model m;
+    const int32_t x = m.float_var(0.0, 2.0);
+    const int32_t y = m.float_var(0.0, 2.0);
+    const int32_t linear_row = m.sum({m.prod(m.constant(1.0), x)});
+    m.add_constraint(m.leq(linear_row, m.constant(1.0)));    // row 0: linear
+    m.add_constraint(m.leq(m.prod(x, y), m.constant(1.0)));  // row 1: bilinear
+    m.close();
+
+    ViolationManager vm(m);
+    RNG rng(3);
+    FeasibilityJump fj(m, vm, rng);
+    REQUIRE(fj.row_is_linear(0));
+    REQUIRE_FALSE(fj.row_is_linear(1));
+
+    ModelExtension ext(m);
+    const int32_t z = ext.float_var(0.0, 2.0);
+    // A bilinear term into the linear row, plus one new row of each kind.
+    ext.append_to_sum(linear_row, ext.prod(z, y));
+    ext.add_constraint(ext.leq(ext.prod(ext.constant(3.0), z), ext.constant(1.0)));
+    ext.add_constraint(ext.leq(ext.exp_expr(z), ext.constant(1.0)));
+    const ExtensionResult res = m.extend(ext);
+    vm.on_extended(res);
+    fj.on_extended(res);
+
+    REQUIRE_FALSE(fj.row_is_linear(0));  // reclassified by the appended term
+    REQUIRE_FALSE(fj.row_is_linear(1));
+    REQUIRE(fj.row_is_linear(2));
+    REQUIRE_FALSE(fj.row_is_linear(3));
+}
+
+TEST_CASE("a resynced FJ still reaches a column the extension added", "[extend]") {
+    // The same reachability check as above, but routed through resync() -- which
+    // rebuilds the scan set from `vars_of_constraint_` alone. It is therefore the
+    // pin on that table having gained the new variable: without it the column is
+    // never queued, never re-queued by a weight bump, and the row stays violated
+    // for ever.
+    Model m;
+    const int32_t a = m.bool_var();
+    const int32_t lhs = m.sum({m.prod(m.constant(1.0), a)});
+    m.add_constraint(m.geq(lhs, m.constant(2.0)));
+    m.close();
+
+    ViolationManager vm(m);
+    RNG rng(5);
+    FeasibilityJump fj(m, vm, rng);
+    fj.begin(true);
+    REQUIRE_FALSE(fj.batch(50));
+
+    ModelExtension ext(m);
+    const int32_t c = ext.bool_var();
+    ext.append_to_sum(lhs, ext.prod(ext.constant(1.0), c));
+    const ExtensionResult res = m.extend(ext);
+    vm.on_extended(res);
+    fj.on_extended(res);
+    fj.resync();
+
+    bool feasible = false;
+    for (int i = 0; i < 20 && !feasible; ++i) {
+        feasible = fj.batch(50);
+    }
+    REQUIRE(feasible);
+}

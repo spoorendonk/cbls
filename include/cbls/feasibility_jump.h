@@ -170,6 +170,16 @@ public:
     // test that pins the incremental accumulator against a fresh recomputation;
     // the search itself does not consult it.
     [[nodiscard]] double unweighted_violation() const { return unweighted_violation_; }
+    /// Whether row `ci` was classified as affine in the variables -- the linear
+    /// submodel `run()`'s first phase descends.
+    ///
+    /// Read-only observability, in the same spirit as `unweighted_violation()` and
+    /// `deadline_checks()` above: the classification is otherwise reachable only
+    /// through `run()`, which the batch API does not call, so an extension's
+    /// reclassification of a grown row would be an unpinned mechanism without it.
+    /// Throws `std::out_of_range` on an index this model has no row for.
+    [[nodiscard]] bool row_is_linear(int32_t ci) const;
+
     [[nodiscard]] bool all_satisfied() const;
     [[nodiscard]] int64_t iterations() const {
         return iterations_;

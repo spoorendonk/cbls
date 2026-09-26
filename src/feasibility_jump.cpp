@@ -651,6 +651,13 @@ void FeasibilityJump::compute_linear_constraints() {
     }
 }
 
+bool FeasibilityJump::row_is_linear(int32_t ci) const {
+    if (ci < 0 || static_cast<size_t>(ci) >= is_linear_.size()) {
+        throw std::out_of_range("row_is_linear: constraint index out of range");
+    }
+    return is_linear_[static_cast<size_t>(ci)] != 0;
+}
+
 void FeasibilityJump::recompute_linearity(const std::vector<int32_t>& rows) {
     const std::vector<int32_t>& cids = model_.constraint_ids();
     std::unordered_map<int32_t, uint8_t> memo;
