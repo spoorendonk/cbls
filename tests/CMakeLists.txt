@@ -1,5 +1,6 @@
 add_executable(cbls_tests
     test_dag.cpp
+    test_custom_invariant.cpp
     test_structured_trajectory.cpp
     test_list_partition.cpp
     test_pair_lambda.cpp
