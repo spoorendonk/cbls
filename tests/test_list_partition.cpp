@@ -630,3 +630,41 @@ TEST_CASE("a frozen model's replicas keep the partition and its cover", "[list][
     replica.restore_state(r.best_state);
     require_cover(replica, replica.list_partitions()[0]);
 }
+
+TEST_CASE("a malformed .cbls partition record is refused", "[list][partition][io]") {
+    // Node and variable names live in one map, and `add_list_partition` reads a
+    // non-negative handle as a raw variable id -- so a record naming a node
+    // would silently partition whichever variable carries that id.
+    const std::string text =
+        R"({"n":4,"type":"List","var":"a","min_len":0,"max_len":4,"init":"empty"})"
+        "\n"
+        R"({"node":"c0","op":"Const","value":1.0})"
+        "\n"
+        R"({"partition":["c0"],"cover":"exact"})"
+        "\n";
+    std::istringstream in(text);
+    REQUIRE_THROWS_AS(load_model(in), std::invalid_argument);
+
+    std::istringstream unknown_cover(
+        R"({"n":4,"type":"List","var":"a","min_len":0,"max_len":4,"init":"empty"})"
+        "\n"
+        R"({"partition":["a"],"cover":"sometimes"})"
+        "\n");
+    REQUIRE_THROWS_AS(load_model(unknown_cover), std::invalid_argument);
+
+    std::istringstream unknown_init(
+        R"({"n":4,"type":"List","var":"a","min_len":0,"max_len":4,"init":"whatever"})"
+        "\n");
+    REQUIRE_THROWS_AS(load_model(unknown_init), std::invalid_argument);
+
+    // A partition the model cannot satisfy is refused at load, not accepted and
+    // then searched: `add_list_partition` is the one place the rule lives.
+    std::istringstream impossible(
+        R"({"n":9,"type":"List","var":"a","min_len":0,"max_len":2,"init":"empty"})"
+        "\n"
+        R"({"n":9,"type":"List","var":"b","min_len":0,"max_len":2,"init":"empty"})"
+        "\n"
+        R"({"partition":["a","b"],"cover":"exact"})"
+        "\n");
+    REQUIRE_THROWS_AS(load_model(impossible), std::invalid_argument);
+}

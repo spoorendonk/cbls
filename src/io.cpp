@@ -391,7 +391,20 @@ void load_record(Model& m, const json& j, NameMap& name_to_handle, int line_num)
         // does and adds nothing to the DAG.
         std::vector<int32_t> lists;
         for (const auto& list_name : j["partition"]) {
-            lists.push_back(resolve(list_name.get<std::string>(), name_to_handle, line_num));
+            const int32_t handle = resolve(list_name.get<std::string>(), name_to_handle, line_num);
+            if (handle >= 0) {
+                // A node id, not a variable handle. `add_list_partition` decodes
+                // a negative handle and leaves a non-negative value alone as a
+                // raw variable id -- a property of the encoding rather than a
+                // second calling convention -- so a file naming a node here
+                // would silently partition whichever VARIABLE happens to carry
+                // that id. In this format the two name spaces are already
+                // distinct, so refuse instead.
+                throw std::invalid_argument("line " + std::to_string(line_num) +
+                                            ": partition member '" + list_name.get<std::string>() +
+                                            "' is a node, not a variable");
+            }
+            lists.push_back(handle);
         }
         m.add_list_partition(lists, parse_cover(j));
     } else if (j.contains("constraint")) {
