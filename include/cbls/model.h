@@ -402,7 +402,8 @@ public:
     ///
     /// It does not need to re-derive anything a builder added after `close()`,
     /// because the builders refuse a closed model (#173); `extend` splices what it
-    /// adds, so the structure it freezes is always complete.
+    /// adds, so the structure it freezes is complete -- unless an `extend` was
+    /// interrupted (`extend_interrupted()`), which `solve()` refuses anyway.
     ///
     /// What a frozen model can still do is everything a search does: assign
     /// variables, evaluate, snapshot and restore state, tighten and release the

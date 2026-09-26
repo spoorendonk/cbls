@@ -128,7 +128,9 @@ void Model::require_buildable(const char* method) const {
         throw std::logic_error(std::string("Model::") + method +
                                ": model is closed, and a node or row added now would never be "
                                "evaluated; grow a closed model with ModelExtension + "
-                               "Model::extend");
+                               "Model::extend (objectives, variable sequences, list "
+                               "partitions and List/Set variables cannot be added after "
+                               "close at all)");
     }
 }
 

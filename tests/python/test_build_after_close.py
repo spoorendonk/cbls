@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import _cbls_core as cbls
+import numpy as np
 import pytest
 
 if TYPE_CHECKING:
@@ -82,6 +83,16 @@ def _closed() -> tuple[cbls.Model, int, int, int, int]:
         pytest.param(
             lambda m, x, y, s, row: m.pair_lambda_sum(s, lambda a, b: float(a + b)),
             id="pair_lambda_sum",
+        ),
+        # The table forms copy and validate their table in the binding first,
+        # then reach the same refused builders.
+        pytest.param(
+            lambda m, x, y, s, row: m.lambda_table_sum(s, np.zeros(4, dtype=np.float64)),
+            id="lambda_table_sum",
+        ),
+        pytest.param(
+            lambda m, x, y, s, row: m.pair_table_sum(s, np.zeros((4, 4), dtype=np.float64)),
+            id="pair_table_sum",
         ),
         pytest.param(lambda m, x, y, s, row: m.add_constraint(row), id="add_constraint"),
         pytest.param(lambda m, x, y, s, row: m.minimize(row), id="minimize"),

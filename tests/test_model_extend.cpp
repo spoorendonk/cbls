@@ -1716,9 +1716,14 @@ TEST_CASE("the internal objective row still grows a closed model", "[extend][clo
     REQUIRE(m.node(static_cast<int32_t>(nodes)).op == NodeOp::Const);
     const ExprNode& row = m.node(static_cast<int32_t>(nodes + 1));
     REQUIRE(row.op == NodeOp::Leq);
+    REQUIRE(std::isinf(m.node(static_cast<int32_t>(nodes)).const_value));
+    const ConstSpan<ChildRef> kids = m.children(row);
+    REQUIRE(kids.size() == 2);
+    REQUIRE((!kids[0].is_var && kids[0].id == obj));
+    REQUIRE((!kids[1].is_var && kids[1].id == m.objective_bound_node()));
     REQUIRE(m.constraint_ids().back() == row.id);
     REQUIRE(m.objective_constraint_idx() == static_cast<int32_t>(rows));
-    REQUIRE(m.topo_position(row.id) >= 0);
+    require_valid_topo_order(m);  // the row is placed, not just appended
 
     const SearchResult r = solve(m, 0.2, 1);
     REQUIRE(r.feasible);
