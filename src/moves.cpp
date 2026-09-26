@@ -113,27 +113,39 @@ void apply_one_edit(const ElementEdit& edit, const std::vector<int32_t>& replace
 }
 
 /// Whether ONE edit is inert on `elements`. See `change_is_noop`.
+///
+/// EVERY KIND TESTS ITS RANGE FIRST, and an edit that does not fit reads as
+/// inert -- because that is what applying it does: `apply_one_edit` ignores an
+/// out-of-range position rather than indexing it (#156). The two have to agree
+/// or the predicate is lying about the thing it exists to answer, and "does not
+/// fit" is reachable exactly when a change is replayed against an assignment
+/// other than the one it was built on -- which is Python overwriting
+/// `Variable.elements`, the case the bounds test is there for in the first
+/// place.
 bool edit_is_noop(const ElementEdit& edit, const std::vector<int32_t>& replacement,
                   const std::vector<int32_t>& elements) {
+    const auto n = static_cast<int32_t>(elements.size());
     switch (edit.kind) {
         case EditKind::None:
             return true;
         case EditKind::Replace:
             return replacement == elements;
         case EditKind::Swap:
-            return edit.from == edit.to ||
-                   (in_range(elements, 0, edit.from) && in_range(elements, 0, edit.to) &&
-                    elements[static_cast<size_t>(edit.from)] ==
-                        elements[static_cast<size_t>(edit.to)]);
+            return edit.from == edit.to || !in_range(elements, 0, edit.from) ||
+                   !in_range(elements, 0, edit.to) ||
+                   elements[static_cast<size_t>(edit.from)] ==
+                       elements[static_cast<size_t>(edit.to)];
         case EditKind::Reverse:
-            return edit.from >= edit.to;
+            return edit.from >= edit.to || !in_range(elements, edit.from, edit.to);
         case EditKind::MoveSegment:
-            return edit.from == edit.to || edit.length <= 0;
+            return edit.from == edit.to || edit.length <= 0 || edit.from < 0 || edit.to < 0 ||
+                   edit.from + edit.length > n || edit.to + edit.length > n;
         case EditKind::Insert:
+            return edit.from < 0 || edit.from > n;
         case EditKind::Erase:
-            return false;  // the length changes
+            return !in_range(elements, 0, edit.from);
         case EditKind::Assign:
-            return in_range(elements, 0, edit.from) &&
+            return !in_range(elements, 0, edit.from) ||
                    elements[static_cast<size_t>(edit.from)] == edit.element;
     }
     return true;

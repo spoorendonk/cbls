@@ -188,8 +188,12 @@ TEST_CASE("an edit whose positions do not fit is ignored, not indexed", "[moves]
 
 TEST_CASE("change_is_noop agrees with materialising the change", "[moves][edits]") {
     // The predicate exists so the no-op filter never builds the vector it is
-    // asking about. It has to give the same answer as building it would.
+    // asking about. It has to give the same answer as building it would -- and
+    // for EVERY assignment, not only the one the change was built against, since
+    // `Variable.elements` is writable from Python at any moment (#156). So the
+    // same change list is checked against a vector it fits and one it does not.
     const std::vector<int32_t> base = {10, 11, 12, 13, 14};
+    const std::vector<int32_t> too_short = {10, 11};
     const std::vector<Move::Change> changes = {
         edit_change(0, swap_edit(2, 2)),
         edit_change(0, swap_edit(1, 4)),
@@ -208,6 +212,8 @@ TEST_CASE("change_is_noop agrees with materialising the change", "[moves][edits]
     };
     for (const Move::Change& change : changes) {
         REQUIRE(change_is_noop(change, base) == (elements_after(change, base) == base));
+        REQUIRE(change_is_noop(change, too_short) ==
+                (elements_after(change, too_short) == too_short));
     }
 }
 

@@ -22,53 +22,57 @@ namespace cbls {
 
 SolveCallback::~SolveCallback() = default;
 
-void initialize_random(Model& model, RNG& rng) {
-    for (int32_t v = 0; v < static_cast<int32_t>(model.num_vars()); ++v) {
-        randomize_var(model.var_mut(v), rng);
-    }
+namespace {
+
+// Is `v` the member at which its partition gets laid out?
+//
+// A partition is filled as a WHOLE -- "every element in exactly one list" is not
+// a property any single list has -- and exactly once, at its lowest-numbered
+// member, which is the one a sweep in variable order reaches first. `list_ids`
+// keeps the caller's order rather than an ascending one, so this is a
+// `min_element` rather than a `front()` test.
+bool is_partition_anchor(const ListPartition& part, int32_t v) {
+    return !part.list_ids.empty() &&
+           *std::min_element(part.list_ids.begin(), part.list_ids.end()) == v;
 }
 
-void initialize_structured_random(Model& model, RNG& rng) {
-    // A model with no partition takes the loop it always took, draw for draw:
-    // the partition pass below allocates nothing and draws nothing for it, and
-    // the early return keeps even the `partition_of_list` lookup off the path.
-    if (model.list_partitions().empty()) {
-        for (int32_t v = 0; v < static_cast<int32_t>(model.num_vars()); ++v) {
-            Variable& var = model.var_mut(v);
-            if (!is_structured(var.type)) {
-                continue;
-            }
-            randomize_var(var, rng);
-        }
-        return;
-    }
-    // With partitions, each is laid out as a WHOLE -- "every element in exactly
-    // one list" is not a property of any single list -- at the position of its
-    // lowest-numbered member, so the sweep stays in variable order and a
-    // partition is filled exactly once.
+// The shared body of the two initialisers, over whichever variables `want`
+// accepts. A partition member NEVER goes through `randomize_var`: that follows
+// the member's own `ListInit` with no account of its siblings, which puts an
+// element in several lists at once or in none -- and under `Cover::Exact` no
+// move can repair it, since Exact admits no insert or remove that is not half of
+// an inter-list move (#164).
+//
+// A model with no partition never reaches the lookup, so its draw sequence is
+// what it always was, variable for variable.
+template <typename Want>
+void initialize_over(Model& model, RNG& rng, Want want) {
+    const bool has_partitions = !model.list_partitions().empty();
     for (int32_t v = 0; v < static_cast<int32_t>(model.num_vars()); ++v) {
         Variable& var = model.var_mut(v);
-        if (!is_structured(var.type)) {
+        if (!want(var)) {
             continue;
         }
-        const int part = model.partition_of_list(v);
+        const int part = has_partitions ? model.partition_of_list(v) : -1;
         if (part < 0) {
             randomize_var(var, rng);
             continue;
         }
         const ListPartition& partition = model.list_partitions()[static_cast<size_t>(part)];
-        if (partition.list_ids.empty()) {
-            continue;  // unreachable: add_list_partition rejects an empty group
+        if (is_partition_anchor(partition, v)) {
+            randomize_list_partition(model, partition, rng);
         }
-        // Fill it at its lowest-numbered member -- the one this sweep reaches
-        // first -- so a partition is laid out exactly once. `list_ids` keeps the
-        // caller's order rather than an ascending one, so this is a min_element
-        // rather than a front() test.
-        if (*std::min_element(partition.list_ids.begin(), partition.list_ids.end()) != v) {
-            continue;
-        }
-        randomize_list_partition(model, partition, rng);
     }
+}
+
+}  // namespace
+
+void initialize_random(Model& model, RNG& rng) {
+    initialize_over(model, rng, [](const Variable&) { return true; });
+}
+
+void initialize_structured_random(Model& model, RNG& rng) {
+    initialize_over(model, rng, [](const Variable& var) { return is_structured(var.type); });
 }
 
 const char* termination_reason_name(TerminationReason reason) {

@@ -123,11 +123,16 @@ void apply_element_edits(const Move::Change& change, std::vector<int32_t>& eleme
 std::vector<int32_t> elements_after(const Move::Change& change,
                                     const std::vector<int32_t>& elements);
 
-/// Does `change` leave `elements` exactly as it is? Decided per kind rather
-/// than by materialising the result, which is the whole point of the
-/// representation. Exact: a List's elements are distinct, so a reversal of a
-/// non-empty range or a segment moved to a different position always changes
-/// the order.
+/// Does `change` leave `elements` exactly as it is? Decided per kind rather than
+/// by materialising the result, which is the whole point of the representation.
+///
+/// EXACT -- `change_is_noop(c, e) == (elements_after(c, e) == e)` for every `c`
+/// and every `e`, which `tests/test_moves.cpp` pins over both the fitting and
+/// the non-fitting cases. Two things make it so: a List's elements are distinct,
+/// so a reversal of a non-empty range or a segment moved to a different position
+/// always reorders it; and an edit whose positions do not fit `elements` reads
+/// as inert here because applying it IS inert (`apply_one_edit` ignores an
+/// out-of-range position rather than indexing it -- #156).
 [[nodiscard]] bool change_is_noop(const Move::Change& change, const std::vector<int32_t>& elements);
 
 /// The whole pre-move state of the variables a `Move` touches.

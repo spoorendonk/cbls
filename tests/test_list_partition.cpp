@@ -277,6 +277,20 @@ TEST_CASE("ListInit decides the initial assignment", "[list][partition]") {
     }
 }
 
+TEST_CASE("initialize_random lays out a partition rather than its members", "[list][partition]") {
+    // `initialize_random` is the documented recipe for a seed-varying start
+    // (`initialize_random(model, rng)` then `solve(..., skip_init = true)`), and
+    // it randomises EVERY variable. Run per member, that follows each list's own
+    // `ListInit` with no account of its siblings -- which under `Cover::Exact`
+    // is a cover no move can repair, because Exact admits no insert or remove
+    // that is not half of an inter-list move.
+    PartitionModel pm = build(/*universe=*/12, /*routes=*/3, /*min_len=*/0, /*max_len=*/12,
+                              ListInit::Empty, /*with_partition=*/true, Cover::Exact);
+    RNG rng(13);
+    initialize_random(pm.model, rng);
+    require_cover(pm.model, pm.model.list_partitions()[0]);
+}
+
 TEST_CASE("an Exact partition is initialised complete", "[list][partition]") {
     // It has to be: Exact admits no insert and no remove that is not half of an
     // inter-list move, so a partition that starts incomplete can never be
