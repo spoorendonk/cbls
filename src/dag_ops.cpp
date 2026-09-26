@@ -129,6 +129,13 @@ void evaluate_dirty_in_topo_order(Model& model, std::vector<int32_t>& dirty_list
 // exists to avoid. The result is therefore a SUPERSET of the inputs that really
 // changed -- a node child that recomputed to the same value is still listed --
 // which is what `CustomInvariant::delta` documents.
+//
+// Cost is O(arity * count), from the linear `std::find` over the changed-variable
+// range per variable input. `count` is 1 on every path but the inner solver's
+// multi-variable Newton step, where it is the number of Float variables with a
+// usable partial -- so O(arity) in practice, against the O(sum of input sizes) a
+// value comparison would cost. A var-id -> input-index map would beat it only at
+// an arity and a `count` no caller has.
 void collect_changed_inputs(const Model& model, const ExprNode& node,
                             const int32_t* changed_var_ids, size_t count,
                             const std::vector<uint8_t>& dirty_flags, std::vector<int32_t>& out) {
@@ -144,6 +151,33 @@ void collect_changed_inputs(const Model& model, const ExprNode& node,
         }
     }
 }
+
+// Clears the dirty flags the caller set, however the caller leaves.
+//
+// Not a tidiness wrapper: the flags are `thread_local`, and a LEAKED `1` is worse
+// than stale, because `delta_evaluate`'s seeding loop skips a node whose flag is
+// already set -- so the next call omits that node from its dirty list and never
+// recomputes it, silently, for the rest of the process. Only user code inside the
+// walk can throw (a `CustomInvariant`, a `lambda_sum` functor), so this was
+// unreachable in practice before #166 and is a documented surface after it;
+// `tests/test_custom_invariant.cpp`'s throwing-delta case fails without this.
+// The destructor cannot throw: every id in `list` already indexed `flags` on the
+// way in.
+struct DirtyFlagGuard {
+    DirtyFlagGuard(std::vector<uint8_t>& f, const std::vector<int32_t>& l) : flags(f), list(l) {}
+    DirtyFlagGuard(const DirtyFlagGuard&) = delete;
+    DirtyFlagGuard& operator=(const DirtyFlagGuard&) = delete;
+    DirtyFlagGuard(DirtyFlagGuard&&) = delete;
+    DirtyFlagGuard& operator=(DirtyFlagGuard&&) = delete;
+    ~DirtyFlagGuard() {
+        for (const int32_t nid : list) {
+            flags[nid] = 0;
+        }
+    }
+
+    std::vector<uint8_t>& flags;
+    const std::vector<int32_t>& list;
+};
 
 // The custom-aware evaluator: one dirty node, under the caller's DeltaMode.
 // Built-in ops take the same `evaluate()` they always did; only a Custom node
@@ -164,6 +198,16 @@ double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
         // found it.
         model.custom_invariant(slot).rollback();
         return model.custom_end_probe(slot);
+    }
+    if (model.custom_probe_pending(slot)) {
+        // A `Commit` or `Probe` pass reached a slot that still owes a rollback,
+        // which only an exception out of user code mid-probe can produce -- the two
+        // bracketed probes have nothing between their legs that can throw. Drop the
+        // stale stash: the assignment has moved on, so the value it holds is no
+        // longer anything to roll back TO, and leaving it would let a later
+        // `Rollback` restore a value from a different assignment. Defensive, with
+        // no observable effect on any non-throwing path.
+        (void)model.custom_end_probe(slot);
     }
     collect_changed_inputs(model, node, changed_var_ids, count, dirty_flags, changed_scratch);
     CustomInvariant& inv = model.custom_invariant(slot);
@@ -202,6 +246,10 @@ double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count
     }
     dirty_list.clear();
 
+    // Armed BEFORE the seeding loop, so it covers every flag this call sets --
+    // including the ones set before an exception out of the walk below.
+    const DirtyFlagGuard flag_guard(dirty_flags, dirty_list);
+
     // Seed dirty set from changed variables' dependents
     for (size_t ci = 0; ci < count; ++ci) {
         for (const int32_t dep_id : model.dependents(changed_var_ids[ci])) {
@@ -238,11 +286,8 @@ double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count
             [&model](int32_t nid) { return evaluate(model.nodes()[nid], model); });
     }
 
-    // Clean up dirty flags (only touch entries we set)
-    for (int32_t nid : dirty_list) {
-        dirty_flags[nid] = 0;
-    }
-
+    // The flags are cleared by `flag_guard` on the way out, which is also what
+    // covers a throw from user code inside the walk.
     if (model.objective_id() >= 0) {
         return model.node_values()[model.objective_id()];
     }

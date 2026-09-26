@@ -652,8 +652,10 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
   `lambda_funcs`, which every replica invokes concurrently and which therefore
   cannot carry state. A model holding one cannot be written to `.cbls`, and it
   is **not** exposed to Python (that waits on #132). `docs/architecture.md`
-  carries the contract table and names the two probe sites deliberately left
-  unbracketed.
+  carries the contract table, names the **three** apply-then-revert sites
+  deliberately left unbracketed, and states the one thing the interface cannot do
+  yet: `changed` says which input moved, never where inside a List, so an O(1)
+  delta over a List is follow-on work.
 
 ### Build targets
 

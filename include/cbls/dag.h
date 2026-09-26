@@ -144,9 +144,15 @@ enum class NodeOp : uint8_t {
     Lt,
     Gt,
     /// User code in the DAG: the node's value is whatever its `CustomInvariant`
-    /// says it is (#166). Appended LAST on purpose -- the two dispatch tables in
-    /// `src/dag.cpp` are `default:`-free so that the compiler names any op
-    /// nobody handled, and appending keeps every existing enumerator's value.
+    /// says it is (#166). Appended LAST so that every existing enumerator keeps
+    /// its value.
+    ///
+    /// The `default:`-free dispatch tables in `src/dag.cpp` are what make a missed
+    /// case visible -- but only to a compiler invoked with -Wswitch, which this
+    /// project is not: no -Wall, and `.clang-tidy`'s leading `-*` turns off
+    /// `clang-diagnostic-*` as well. See the note at `op_to_string` in
+    /// `src/io.cpp`, which carries the probe. A new NodeOp therefore has to be
+    /// carried to every switch by hand; grep `NodeOp::` for them.
     Custom
 };
 

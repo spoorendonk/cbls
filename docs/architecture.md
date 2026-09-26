@@ -188,9 +188,11 @@ partial in one reverse pass:
 
 `local_derivative` computes per-operation partial derivatives (chain rule
 components). Discrete operations (At, Count, Lambda, PairLambda) return 0. A
-`Custom` node asks its invariant's `partial`, whose NaN ("unknown") reads as 0
-here — the same answer, so a custom node with no derivative is exactly as
-differentiable as a structural op.
+`Custom` node asks its invariant's `partial`, whose NaN *or infinity* ("unknown")
+reads as 0 here — the same answer, so a custom node with no derivative is exactly
+as differentiable as a structural op. An infinity has to be folded too, not just
+propagated: the sweep accumulates `adjoint += adj * ld`, so one infinite edge
+would make `inf * 0` — NaN — in the partial of an unrelated sibling variable.
 
 AD is used to generate Newton-toward-root jump candidates for Float variables
 (in `compute_var_jump`) and by the inner solver.
@@ -216,7 +218,20 @@ structured, in any mix — and reach the invariant through `InvariantInputs`,
 a view over the node's children (`value(i)`, `elements(i)`,
 `is_structured_input(i)`).
 
-The interface is four calls plus a clone:
+**What `changed` does not carry, and what that costs.** It names the inputs that
+moved, never *where* inside one. For a structured input it says "this List
+changed" and nothing more, so an **O(1) delta over a List is not expressible
+through this interface as it stands** — which means #166's two routing motivations
+(an incremental route cost replacing `pair_lambda_sum`'s O(n) re-sum, time-window
+slack propagated from the first changed position) are follow-on work, not
+something this lands. An invariant over a List today either re-reads `elements(i)`
+or keeps its own copy and diffs it: O(n) either way. The engine *has* the
+information — the structural batch builds positional `ElementEdit`s and drops them
+before `delta_evaluate` — so carrying it through is a additive change, not a
+redesign. Scalar inputs have no such gap: `changed` is exactly the inputs that
+moved, and an O(1) delta over them is what the reference fixture does.
+
+The interface is five calls plus a clone:
 
 | Call | When | Contract |
 |---|---|---|
@@ -225,7 +240,7 @@ The interface is four calls plus a clone:
 | `commit()` | after a `delta` whose assignment is kept | The staged state becomes committed. |
 | `rollback()` | after a `delta` the caller has undone | Discard the staged state; the engine restores the node's cached *value* itself. |
 | `partial(in, i)` | reverse-mode AD | `d(value)/d(input i)`, or NaN for unknown. |
-| `clone()` | `Model` copy, i.e. one per portfolio worker | Must carry the current state — a replica starts from the master's node values and does not `full_evaluate`. |
+| `clone()` | `Model` copy, i.e. one per portfolio worker; entered CONCURRENTLY on the master | Must carry the current state — a copied `Model` needs no `full_evaluate`, so a caller may copy and `delta_evaluate` straight away. Must be safe to call from N threads on one instance: `ParallelSearch` replicates the master on each worker's own thread. |
 
 **Where the instance lives.** On the per-model side of the `ModelStructure`
 split: `ExprNode::lambda_func_id` indexes `Model::custom_invariant(id)`, a
@@ -240,19 +255,29 @@ replica invokes concurrently and which therefore cannot carry state at all.
 `per_constraint_violation_delta` — the per-candidate scalar probe Feasibility
 Jump runs for every jump value — are bracketed as `Probe` then `Rollback`, so a
 custom node in one of those cones costs **one `delta` and one `rollback`** per
-candidate rather than two deltas. The structural batch
-(`src/structural_batch.cpp`) and the inner solver (`src/inner_solver.cpp`) score
-by evaluating forwards and evaluating back, and both legs stay `Commit`: correct,
-because each leg really is a new committed assignment, but **twice the cost** of
-the scalar path, and an invariant caching a List's prefix sums rebuilds it on
-both legs. Bracketing those two is a separate change.
+candidate rather than two deltas. **Three** other sites score by evaluating
+forwards and evaluating back, and every leg of all three stays `Commit`: the
+structural batch (`src/structural_batch.cpp`), the inner solver
+(`src/inner_solver.cpp`), and Novelty Jump's backtracking compound-move search
+(`src/feasibility_jump.cpp`), which is on the same per-candidate path the
+bracketed probe is. All three are correct — each leg really is a new committed
+assignment, and the `changed` set each passes is a complete superset of what it
+moved — but **twice the cost** of the bracketed path, and an invariant caching a
+List's prefix sums rebuilds it on both legs. Bracketing them is a separate
+change.
 
 **A model with no custom node is untouched.** `Model::has_custom_nodes()` is
 tested once per `delta_evaluate`/`full_evaluate` call, not per node, and the
-false branch is the pre-#166 loop verbatim — so trajectories are bit-identical
-at one thread (verified against `899b5e0` on two seeded, iteration-bounded
-solves, mixed-integer/non-convex and List, over every `SearchResult` field plus
-a byte digest of `best_state`).
+false branch is the pre-#166 loop verbatim, and the dispatch is a template rather
+than a `std::function` so that branch inlines the same `evaluate` call it always
+did — so bit-identical trajectories at one thread follow structurally.
+*Dated record of one run*, not a standing test: at the first #166 commit, two
+`cbls::solve()` runs at seed 12345 with `max_iterations = 4000` and no time limit
+— one mixed-integer/non-convex model, one `pair_lambda_sum` List model — produced
+byte-identical output against `899b5e0` over every `SearchResult` field plus an
+FNV-1a digest of `best_state`. The standing fence is
+`tests/test_structural_equivalence.cpp` and `tests/test_structured_trajectory.cpp`,
+whose digests and signature strings this work leaves unchanged.
 
 **Serialisation refuses.** A `CustomInvariant` is C++ code, not a table of
 numbers the way a `Lambda` is, so `save_model` throws before writing its first
@@ -261,8 +286,10 @@ line, naming the node and the invariant. Checked before the stream is opened:
 an existing file with a prefix of a model.
 
 **Not exposed to Python.** A Python-subclassable invariant needs the trampoline
-and GIL machinery of #132; `NodeOp::Custom` is deliberately absent from
-`python/bindings.cpp`'s enum.
+and GIL machinery of #132, so nothing here is bound: `Model::custom` is not
+exposed, and without it no Python caller can make such a node. (`NodeOp::Custom`
+is also absent from the binding enum — but so is `PairLambda`, so absence there is
+not by itself the signal.)
 
 ---
 

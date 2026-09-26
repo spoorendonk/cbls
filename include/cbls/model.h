@@ -671,6 +671,14 @@ public:
         std::vector<std::vector<int32_t>> elements;
     };
     [[nodiscard]] State copy_state() const;
+    /// Writes the VARIABLES only. Every node value -- and every `CustomInvariant`'s
+    /// committed state (#166) -- still describes the assignment this replaces, so a
+    /// `full_evaluate` is MANDATORY before anything reads a node value or calls
+    /// `delta_evaluate`. For a built-in op, skipping it merely recomputes late; for
+    /// a custom node it is wrong values, because the next `delta()` is measured
+    /// against a baseline that is no longer there. Every in-tree caller pairs the
+    /// two -- `src/lns.cpp`, `src/search.cpp` (three sites, one of them by way of
+    /// `FeasibilityJump::perturb`'s trailing sweep), `src/cli.cpp`.
     void restore_state(const State& state);
 
 private:

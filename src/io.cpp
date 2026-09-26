@@ -73,9 +73,17 @@ static std::string op_to_string(NodeOp op) {
         case NodeOp::Custom:
             // Never written to a file -- `save_model` refuses a model holding
             // one before it opens the stream. Named here so a diagnostic that
-            // prints an op does not say "Unknown", and because this switch is
-            // `default:`-free so that a new NodeOp is a compile error rather
-            // than a silent "Unknown" (the build carries no -Wswitch).
+            // prints an op does not say "Unknown".
+            //
+            // This switch is `default:`-free so that a compiler invoked with
+            // -Wswitch names any op nobody handled. NOTHING IN THIS PROJECT IS
+            // SUCH A GATE, measured rather than assumed: CMakeLists.txt passes no
+            // -Wall, so GCC is silent, and `.clang-tidy`'s leading `-*` disables
+            // `clang-diagnostic-*`, so the sweep is silent as well (probe: an
+            // incomplete NodeOp switch and an unused local both go unreported
+            // under the project config, and the unused local IS reported with
+            // `clang-diagnostic-*` turned back on). So the convention helps a
+            // reader and a differently configured compiler; it is not enforced.
             return "Custom";
     }
     return "Unknown";
@@ -678,6 +686,12 @@ json objective_record(const Model& model, NameTable& var_names, NameTable& node_
 // model -- the same failure the benchmark runners guard against for published
 // tables, and for the same reason: it looks like a file.
 void refuse_custom_nodes(const Model& model) {
+    // O(1) for every model that has no custom node, which is every model any
+    // in-tree caller writes today -- and it is what makes calling this twice on
+    // the `path` overload free, rather than two walks of a 4.3M-node array.
+    if (!model.has_custom_nodes()) {
+        return;
+    }
     for (const auto& node : model.nodes()) {
         if (node.op != NodeOp::Custom) {
             continue;

@@ -17,10 +17,12 @@
 #include "cbls/dag_ops.h"
 #include "cbls/expr.h"
 #include "cbls/io.h"
+#include "cbls/lns.h"
 #include "cbls/model.h"
 #include "cbls/moves.h"
 #include "cbls/pool.h"
 #include "cbls/rng.h"
+#include "cbls/search.h"
 #include "cbls/violation.h"
 
 #include <atomic>
@@ -28,6 +30,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -225,6 +228,8 @@ struct Fixture {
     int32_t k = 0;
     int32_t f = 0;
     int32_t list = 0;
+    int32_t set = 0;
+    int32_t node_input = -1;
     int32_t custom_node = -1;
     int32_t row = -1;
 };
@@ -237,8 +242,15 @@ Fixture build_fixture(const std::shared_ptr<CallLog>& log) {
     fx.k = m.int_var(0, 9, "k");
     fx.f = m.float_var(-3.0, 3.0, "f");
     fx.list = m.list_var(6, 0, 6, ListInit::Random, "L");
-    fx.custom_node =
-        m.custom({fx.b, fx.k, fx.f, fx.list}, std::make_unique<BeliefSum>(log), "belief_sum");
+    fx.set = m.set_var(4, 0, 4, "S");
+    // A NODE input as well as variable ones. It is the only way to reach
+    // `collect_changed_inputs`'s dirty-flag branch and `InvariantInputs::value`'s
+    // node-value branch; a var-id/node-id mix-up in either would otherwise pass
+    // the whole suite. `k` therefore reaches the node twice, once directly and
+    // once doubled.
+    fx.node_input = m.prod(fx.k, m.constant(2.0));
+    fx.custom_node = m.custom({fx.b, fx.k, fx.f, fx.list, fx.set, fx.node_input},
+                              std::make_unique<BeliefSum>(log), "belief_sum");
     fx.row = m.leq(fx.custom_node, m.constant(2.0));
     m.add_constraint(fx.row);
     m.minimize(m.sum({fx.custom_node, m.constant(100.0)}));
@@ -249,9 +261,13 @@ Fixture build_fixture(const std::shared_ptr<CallLog>& log) {
 // What the fixture's custom node is worth at the model's current assignment,
 // computed here rather than by the invariant.
 double expected_value(const Model& m, const Fixture& fx) {
-    double total = m.var(handle_to_var_id(fx.b)).value + m.var(handle_to_var_id(fx.k)).value +
-                   m.var(handle_to_var_id(fx.f)).value;
+    const double kv = m.var(handle_to_var_id(fx.k)).value;
+    double total =
+        m.var(handle_to_var_id(fx.b)).value + kv + m.var(handle_to_var_id(fx.f)).value + (2.0 * kv);
     for (const int32_t e : m.var(handle_to_var_id(fx.list)).elements) {
+        total += static_cast<double>(e) + 1.0;
+    }
+    for (const int32_t e : m.var(handle_to_var_id(fx.set)).elements) {
         total += static_cast<double>(e) + 1.0;
     }
     return total;
@@ -376,6 +392,7 @@ TEST_CASE("delta_evaluate and full_evaluate agree over a random move sequence", 
     const int32_t kid = handle_to_var_id(live.k);
     const int32_t fid = handle_to_var_id(live.f);
     const int32_t lid = handle_to_var_id(live.list);
+    const int32_t sid = handle_to_var_id(live.set);
     ViolationManager vm(live.model);
 
     // Same starting assignment in both models.
@@ -384,8 +401,9 @@ TEST_CASE("delta_evaluate and full_evaluate agree over a random move sequence", 
 
     RNG rng(20250926);
     int structural_steps = 0;
+    int set_steps = 0;
     for (int step = 0; step < 400; ++step) {
-        const int64_t kind = rng.integers(0, 4);
+        const int64_t kind = rng.integers(0, 5);
         if (kind == 0) {
             live.model.var_mut(bid).value = static_cast<double>(rng.integers(0, 2));
             delta_evaluate(live.model, &bid, 1);
@@ -395,10 +413,9 @@ TEST_CASE("delta_evaluate and full_evaluate agree over a random move sequence", 
         } else if (kind == 2) {
             live.model.var_mut(fid).value = rng.uniform(-3.0, 3.0);
             delta_evaluate(live.model, &fid, 1);
-        } else {
+        } else if (kind == 3) {
             // A positional ElementEdit, the representation the structural batch
             // actually builds (#164) -- not a whole-vector replacement.
-            const auto len = static_cast<int32_t>(live.model.var(lid).elements.size());
             std::vector<Move> moves;
             generate_standard_moves(live.model.var(lid), rng, moves, nullptr);
             if (!moves.empty()) {
@@ -408,7 +425,16 @@ TEST_CASE("delta_evaluate and full_evaluate agree over a random move sequence", 
                 delta_evaluate(live.model, &lid, 1);
                 ++structural_steps;
             }
-            (void)len;
+        } else {
+            std::vector<Move> moves;
+            generate_standard_moves(live.model.var(sid), rng, moves, nullptr);
+            if (!moves.empty()) {
+                const auto pick =
+                    static_cast<size_t>(rng.integers(0, static_cast<int64_t>(moves.size())));
+                apply_move(live.model, moves[pick]);
+                delta_evaluate(live.model, &sid, 1);
+                ++set_steps;
+            }
         }
 
         // Interleave the bracketed probe, which is the thing most likely to
@@ -429,11 +455,102 @@ TEST_CASE("delta_evaluate and full_evaluate agree over a random move sequence", 
         REQUIRE_THAT(live.model.node_value(live.model.objective_id()),
                      WithinAbs(ref.model.node_value(ref.model.objective_id()), 1e-9));
     }
-    // The List half of criterion 1 is only covered if List edits actually
-    // happened -- a probe that connects nothing proves nothing.
+    // The structured half of criterion 1 is only covered if structured edits
+    // actually happened -- a probe that connects nothing proves nothing.
     REQUIRE(structural_steps > 20);
+    REQUIRE(set_steps > 20);
     REQUIRE(live_log->delta.load() > 0);
     REQUIRE(live_log->rollback.load() > 0);
+}
+
+TEST_CASE("a custom node may be fed by another custom node", "[custom]") {
+    // Two slots in one model, and a cone in which a probe has to open and roll
+    // back BOTH of them in topological order -- the child restored from its stash
+    // before the parent re-reads it. Nothing else here builds two custom nodes, so
+    // an off-by-one in slot assignment or in the clone ordering would otherwise
+    // pass.
+    auto log = std::make_shared<CallLog>();
+    Model m;
+    const int32_t x = m.int_var(0, 9, "x");
+    const int32_t y = m.int_var(0, 9, "y");
+    const int32_t s = m.sum({x, y});
+    const int32_t inner = m.custom({s}, std::make_unique<BeliefSum>(log), "inner");
+    const int32_t outer = m.custom({inner, x}, std::make_unique<BeliefSum>(log), "outer");
+    m.add_constraint(m.leq(outer, m.constant(4.0)));
+    m.minimize(outer);
+    m.close();
+
+    const int32_t xid = handle_to_var_id(x);
+    const int32_t yid = handle_to_var_id(y);
+    ViolationManager vm(m);
+    auto expected = [](double xv, double yv) { return (xv + yv) + xv; };
+
+    m.var_mut(xid).value = 3.0;
+    m.var_mut(yid).value = 2.0;
+    delta_evaluate(m, {xid, yid});
+    REQUIRE(m.custom_name(0) == "inner");
+    REQUIRE(m.custom_name(1) == "outer");
+    REQUIRE_THAT(m.node_value(inner), WithinAbs(5.0, 1e-12));
+    REQUIRE_THAT(m.node_value(outer), WithinAbs(expected(3.0, 2.0), 1e-12));
+
+    SECTION("a probe brackets both of them") {
+        log->clear_counts();
+        const double before_inner = m.node_value(inner);
+        const double before_outer = m.node_value(outer);
+        (void)vm.weighted_violation_delta(xid, 9.0);
+        CHECK(log->delta.load() == 2);  // one per custom node in the cone
+        CHECK(log->rollback.load() == 2);
+        CHECK(log->commit.load() == 0);
+        CHECK(log->evaluate.load() == 0);
+        REQUIRE_THAT(m.node_value(inner), WithinAbs(before_inner, 1e-12));
+        REQUIRE_THAT(m.node_value(outer), WithinAbs(before_outer, 1e-12));
+        // A committed move afterwards still lands right, which it only can if both
+        // rollbacks restored both beliefs.
+        m.var_mut(xid).value = 1.0;
+        delta_evaluate(m, &xid, 1);
+        REQUIRE_THAT(m.node_value(outer), WithinAbs(expected(1.0, 2.0), 1e-12));
+    }
+
+    SECTION("a changed node input is reported and an unchanged one is not") {
+        // y moves, so `inner`'s one input changed while `outer`'s `x` input did
+        // not. A wrong `changed` list desynchronises the belief and the next value
+        // is wrong.
+        m.var_mut(yid).value = 7.0;
+        delta_evaluate(m, &yid, 1);
+        REQUIRE_THAT(m.node_value(outer), WithinAbs(expected(3.0, 7.0), 1e-12));
+        Model fresh(m);
+        full_evaluate(fresh);
+        REQUIRE_THAT(fresh.node_value(outer), WithinAbs(m.node_value(outer), 1e-12));
+        REQUIRE(&fresh.custom_invariant(1) != &m.custom_invariant(1));
+    }
+}
+
+TEST_CASE("a solved model's custom node agrees with a from-scratch re-derivation", "[custom]") {
+    // The property test drives `apply_move` + `delta_evaluate` directly. This one
+    // goes through `cbls::solve()`, so the perturbation, LNS, structural-batch and
+    // restore_state paths run -- including the three that stay on unbracketed
+    // `Commit` deltas -- and then asks whether the incrementally maintained value
+    // is the one a fresh invariant computes at the same assignment.
+    auto log = std::make_shared<CallLog>();
+    Fixture fx = build_fixture(log);
+    SearchConfig cfg;
+    cfg.max_iterations = 1500;
+    LNS lns;
+    const SearchResult r =
+        solve(fx.model, 0.0, 4242, true, nullptr, &lns, 3, nullptr, cfg, nullptr);
+    REQUIRE(r.iterations > 0);
+    CHECK(log->delta.load() > 0);
+
+    // `finish()` leaves the model at `best_state` with a fresh full_evaluate, so
+    // the live value is the incremental machinery's answer for that assignment.
+    auto ref_log = std::make_shared<CallLog>();
+    Fixture ref = build_fixture(ref_log);
+    ref.model.restore_state(fx.model.copy_state());
+    full_evaluate(ref.model);
+    REQUIRE_THAT(fx.model.node_value(fx.custom_node),
+                 WithinAbs(ref.model.node_value(ref.custom_node), 1e-9));
+    REQUIRE_THAT(fx.model.node_value(fx.custom_node),
+                 WithinAbs(expected_value(fx.model, fx), 1e-9));
 }
 
 TEST_CASE("a custom node's partial reaches the AD path", "[custom]") {
@@ -450,6 +567,40 @@ TEST_CASE("a custom node's partial reaches the AD path", "[custom]") {
     REQUIRE_THAT(structured, WithinAbs(0.0, 1e-12));
     // And the row above it differentiates through the custom node.
     REQUIRE_THAT(compute_partial(m, fx.row, handle_to_var_id(fx.f)), WithinAbs(1.0, 1e-12));
+}
+
+TEST_CASE("an infinite partial does not poison a sibling variable's gradient", "[custom]") {
+    // The reverse sweep accumulates `adjoint[child] += adj * ld`. An infinite `ld`
+    // on one edge makes the NEXT `ld == 0.0` edge `inf * 0.0` -- NaN -- in the
+    // partial of a variable that has nothing to do with the custom node. So
+    // `local_derivative` folds a non-finite partial to 0, exactly as it folds NaN.
+    class WildPartial : public CustomInvariant {
+    public:
+        double evaluate(const InvariantInputs& in) override { return in.value(0) + in.value(1); }
+        double partial(const InvariantInputs& /*in*/, int32_t i) override {
+            return i == 0 ? std::numeric_limits<double>::infinity() : 0.0;
+        }
+        [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
+            return std::make_unique<WildPartial>(*this);
+        }
+    };
+
+    Model m;
+    const int32_t a = m.float_var(-5.0, 5.0, "a");
+    const int32_t b = m.float_var(-5.0, 5.0, "b");
+    const int32_t c = m.custom({a, b}, std::make_unique<WildPartial>(), "wild");
+    const int32_t row = m.leq(c, m.constant(1.0));
+    m.add_constraint(row);
+    m.minimize(c);
+    m.close();
+
+    const std::vector<double> partials = compute_all_partials(m, row);
+    REQUIRE(std::isfinite(partials[handle_to_var_id(a)]));
+    REQUIRE(std::isfinite(partials[handle_to_var_id(b)]));
+    // `b`'s edge carries a legitimate 0, and it must stay a 0 rather than becoming
+    // NaN because `a`'s edge was infinite.
+    REQUIRE_THAT(partials[handle_to_var_id(b)], WithinAbs(0.0, 1e-12));
+    REQUIRE_THAT(partials[handle_to_var_id(a)], WithinAbs(0.0, 1e-12));
 }
 
 TEST_CASE("copying a model clones its invariants rather than sharing them", "[custom]") {
@@ -539,6 +690,59 @@ TEST_CASE("a custom node cannot be serialised, and says which node", "[custom][i
     }
 }
 
+TEST_CASE("a throwing delta propagates, and full_evaluate recovers the model", "[custom]") {
+    // Nothing forbids user code from throwing, and "a black-box or external model"
+    // is exactly where a throw comes from. The engine makes no promise beyond
+    // this: the exception reaches the caller, the assignment and the node values
+    // are left mid-probe, and a `full_evaluate` -- which every portfolio restart
+    // and every `restore_state` caller performs -- puts both back in agreement.
+    class ThrowOnce : public CustomInvariant {
+    public:
+        explicit ThrowOnce(std::shared_ptr<int> armed) : armed_(std::move(armed)) {}
+        double evaluate(const InvariantInputs& in) override { return in.value(0) * 2.0; }
+        double delta(const InvariantInputs& in, ConstSpan<int32_t> /*changed*/) override {
+            if (*armed_ > 0) {
+                --*armed_;
+                throw std::runtime_error("invariant refused");
+            }
+            return evaluate(in);
+        }
+        [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
+            return std::make_unique<ThrowOnce>(*this);
+        }
+
+    private:
+        std::shared_ptr<int> armed_;
+    };
+
+    auto armed = std::make_shared<int>(1);
+    Model m;
+    const int32_t x = m.int_var(0, 9, "x");
+    const int32_t c = m.custom({x}, std::make_unique<ThrowOnce>(armed), "throws");
+    m.add_constraint(m.leq(c, m.constant(6.0)));
+    m.minimize(c);
+    m.close();
+    const int32_t xid = handle_to_var_id(x);
+    ViolationManager vm(m);
+
+    REQUIRE_THROWS_AS(vm.weighted_violation_delta(xid, 5.0), std::runtime_error);
+    REQUIRE(*armed == 0);
+
+    // The documented recovery. Note the variable is still at the probed value --
+    // the probe never got to restore it -- so the sweep is what makes the node
+    // values agree with the assignment again.
+    full_evaluate(m);
+    REQUIRE_THAT(m.node_value(c), WithinAbs(m.var(xid).value * 2.0, 1e-12));
+
+    // And the bracket works from there.
+    const double before = m.node_value(c);
+    (void)vm.weighted_violation_delta(xid, 1.0);
+    REQUIRE_THAT(m.node_value(c), WithinAbs(before, 1e-12));
+    m.var_mut(xid).value = 3.0;
+    delta_evaluate(m, &xid, 1);
+    REQUIRE_THAT(m.node_value(c), WithinAbs(6.0, 1e-12));
+}
+
 TEST_CASE("Model::custom refuses what it cannot build", "[custom]") {
     auto log = std::make_shared<CallLog>();
     Model m;
@@ -584,29 +788,41 @@ TEST_CASE("the default CustomInvariant delta is a from-scratch evaluate", "[cust
     // An invariant with no incremental form at all: the base-class `delta`
     // forwards to `evaluate`, which is what an author who has nothing cheaper
     // should be able to ship.
+    // The counter is SHARED rather than a member: the instance is moved into the
+    // model, so a member could not be read back, and the case would then assert
+    // only the value -- which an overridden `delta` would get right too. The point
+    // here is that `evaluate` is what ran.
     class PlainSquare : public CustomInvariant {
     public:
+        explicit PlainSquare(std::shared_ptr<int> calls) : calls_(std::move(calls)) {}
         double evaluate(const InvariantInputs& in) override {
-            ++calls;
+            ++*calls_;
             const double v = in.value(0);
             return v * v;
         }
         [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
             return std::make_unique<PlainSquare>(*this);
         }
-        int calls = 0;
+
+    private:
+        std::shared_ptr<int> calls_;
     };
 
+    auto calls = std::make_shared<int>(0);
     Model m;
     const int32_t x = m.int_var(0, 6, "x");
-    const int32_t c = m.custom({x}, std::make_unique<PlainSquare>(), "square");
+    const int32_t c = m.custom({x}, std::make_unique<PlainSquare>(calls), "square");
     m.add_constraint(m.leq(c, m.constant(100.0)));
     m.close();
+    REQUIRE(*calls == 1);  // close()'s full_evaluate
 
     const int32_t xid = handle_to_var_id(x);
     m.var_mut(xid).value = 5.0;
     delta_evaluate(m, &xid, 1);
     REQUIRE_THAT(m.node_value(c), WithinAbs(25.0, 1e-12));
+    // The move path called `delta`, and the base-class `delta` forwarded to
+    // `evaluate` -- which is what this case exists to pin.
+    REQUIRE(*calls == 2);
 
     // The default `partial` is NaN, read as zero -- so the node contributes no
     // gradient rather than a NaN one.

@@ -54,11 +54,16 @@ static double list_element(const ChildRef& ref, const Model& model, int idx) {
     return 0.0;
 }
 
-// The invariant behind a Custom node (#166). Unchecked, for the reason
-// child_val gives: `lambda_func_id` is written by `Model::custom` when the node
-// is made and the slot is appended in the same call, so the check could only
-// ever pass. Kept out of the two dispatch tables so their Custom cases stay one
-// line each.
+// The invariant behind a Custom node (#166). Kept out of the two dispatch tables
+// so their Custom cases stay one line each.
+//
+// Unlike `child_val` above, this is the CHECKED accessor -- `Model::custom_invariant`
+// range-tests the slot id and throws -- and deliberately so. The check could only
+// ever pass, since `Model::custom` writes `lambda_func_id` and appends the slot in
+// one call. But child_val's measurement was about one compare per DAG EDGE, and this
+// is one compare next to a virtual call into user code, where it is free. The assert
+// names the -1 a node left half-built by an allocation failure would carry, which
+// the range test alone would report only as "out of range".
 static CustomInvariant& custom_of(const ExprNode& node, const Model& model) {
     assert(node.lambda_func_id >= 0);
     return model.custom_invariant(node.lambda_func_id);
@@ -507,10 +512,17 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
             // NaN is the invariant's "unknown", which reads as 0.0 here -- the
             // same answer the structural ops above give, and the one that leaves
             // a Float input on FJ's non-gradient candidates.
+            //
+            // +/-inf reads as unknown TOO, and that is not pedantry: the reverse
+            // sweep accumulates `adjoint[child] += adj * ld`, so one infinite edge
+            // turns the very next `ld == 0.0` into `inf * 0.0` -- NaN -- in the
+            // partial of a SIBLING variable that has nothing to do with this node.
+            // Same clamp-rather-than-propagate rule as clamped_node_violation and
+            // comparison_residual.
             const double p =
                 custom_of(node, model)
                     .partial(InvariantInputs(model, children), static_cast<int32_t>(child_idx));
-            return std::isnan(p) ? 0.0 : p;
+            return std::isfinite(p) ? p : 0.0;
         }
     }
     return 0.0;

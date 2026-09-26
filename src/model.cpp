@@ -482,17 +482,21 @@ int32_t Model::custom(const std::vector<int32_t>& inputs, std::unique_ptr<Custom
         throw std::invalid_argument("custom: invariant must not be null");
     }
     const auto slot_id = static_cast<int32_t>(custom_invariants_.size());
-    // Room for the slot BEFORE the node, so that the only step that can throw
-    // once the node exists is one that cannot: a node carrying a slot id for a
-    // slot that was never appended would be dereferenced on the first
-    // evaluation. Same argument, and the same shape, as the reserve in
-    // pair_lambda_sum above. A throw from `alloc_node_over_handles` can still
-    // leave the reserve in place, which costs one pointer of capacity.
-    custom_invariants_.reserve(custom_invariants_.size() + 1);
-    const int32_t nid = alloc_node_over_handles(NodeOp::Custom, inputs);
+    // The slot is BUILT and its space RESERVED before the node exists, so that
+    // nothing between `alloc_node_over_handles` and the `lambda_func_id` write can
+    // throw. `slot.name = name` allocates, and doing it on the far side of the node
+    // would leave a Custom node carrying -1 for a slot that was never appended --
+    // which throws out of the middle of the first evaluation, or out of the `.cbls`
+    // writer's refusal, instead of out of this call. `CustomInvariantSlot`'s move is
+    // noexcept, so the push_back into reserved capacity cannot throw either. The
+    // reserve is the same argument, and the same shape, as the one in
+    // pair_lambda_sum above; a throw from `alloc_node_over_handles` can still leave
+    // it in place, which costs one pointer of capacity.
     CustomInvariantSlot slot;
     slot.invariant = std::move(inv);
     slot.name = name;
+    custom_invariants_.reserve(custom_invariants_.size() + 1);
+    const int32_t nid = alloc_node_over_handles(NodeOp::Custom, inputs);
     custom_invariants_.push_back(std::move(slot));
     st.nodes[nid].lambda_func_id = slot_id;
     return nid;
@@ -1040,14 +1044,17 @@ double Model::weighted_violation_delta(int32_t var_id, double j,
     // `delta()` and one `rollback()`, and the node's cached value is put back by
     // the engine rather than recomputed.
     //
-    // NARROWED DELIBERATELY: the structural batch and the inner solver also
-    // score by applying and then putting back, and both legs stay plain
-    // `Commit` deltas. They are correct -- each leg is a real assignment and
-    // `changed` is measured against the previous one -- but a custom node in one
-    // of their cones costs two `delta()` + two `commit()` per candidate instead
-    // of one `delta()` + one `rollback()`, and an invariant caching a List's
-    // prefix sums rebuilds it on both legs. Bracketing them is a separate change
-    // to `src/structural_batch.cpp` and `src/inner_solver.cpp`.
+    // NARROWED DELIBERATELY: THREE other sites score by applying and then putting
+    // back, and every leg of all three stays a plain `Commit` delta -- the
+    // structural batch, the inner solver, and Novelty Jump's backtracking chain
+    // (`novelty_jump_search`), which is on the same per-candidate path this probe
+    // is. They are correct: each leg is a real assignment and the `changed` set
+    // each passes is a complete superset of what it moved. But a custom node in
+    // one of their cones costs two `delta()` + two `commit()` per candidate
+    // instead of one `delta()` + one `rollback()`, and an invariant caching a
+    // List's prefix sums rebuilds it on both legs. Bracketing them is a separate
+    // change to `src/structural_batch.cpp`, `src/inner_solver.cpp` and
+    // `src/feasibility_jump.cpp`.
     const double old_value = v.value;
     var_mut(var_id).value = j;
     delta_evaluate(*this, &var_id, 1, DeltaMode::Probe);

@@ -43,17 +43,20 @@ double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count
                       DeltaMode mode = DeltaMode::Commit);
 
 // Convenience overloads
-inline double delta_evaluate(Model& model, const std::vector<int32_t>& changed_var_ids) {
-    return delta_evaluate(model, changed_var_ids.data(), changed_var_ids.size());
+inline double delta_evaluate(Model& model, const std::vector<int32_t>& changed_var_ids,
+                             DeltaMode mode = DeltaMode::Commit) {
+    return delta_evaluate(model, changed_var_ids.data(), changed_var_ids.size(), mode);
 }
 
-inline double delta_evaluate(Model& model, const std::set<int32_t>& changed_var_ids) {
+inline double delta_evaluate(Model& model, const std::set<int32_t>& changed_var_ids,
+                             DeltaMode mode = DeltaMode::Commit) {
     std::vector<int32_t> ids(changed_var_ids.begin(), changed_var_ids.end());
-    return delta_evaluate(model, ids.data(), ids.size());
+    return delta_evaluate(model, ids.data(), ids.size(), mode);
 }
 
-inline double delta_evaluate(Model& model, std::initializer_list<int32_t> changed_var_ids) {
-    return delta_evaluate(model, changed_var_ids.begin(), changed_var_ids.size());
+inline double delta_evaluate(Model& model, std::initializer_list<int32_t> changed_var_ids,
+                             DeltaMode mode = DeltaMode::Commit) {
+    return delta_evaluate(model, changed_var_ids.begin(), changed_var_ids.size(), mode);
 }
 
 double compute_partial(const Model& model, int32_t expr_id, int32_t var_id);
