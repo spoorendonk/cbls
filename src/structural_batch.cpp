@@ -67,10 +67,31 @@ StructuralBatch::StructuralBatch(const Model& model, const SearchConfig& config,
     // parallel to `generators_` and a generator that never proposed anything
     // still has a row reading zero -- which is the answer a caller asking "did
     // this generator do anything" wants, rather than a missing entry.
+    // A NAME THAT REPEATS CARRIES ITS INDEX, and that is load-bearing rather
+    // than cosmetic: `SearchCounters::merge` keys on this string, and
+    // `MoveGenerator::name()` does not promise to be unique. The built-ins name
+    // themselves by TYPE -- `StandardStructuralGenerator::name()` returns
+    // "builtin_list" or "builtin_set" for every List or Set variable -- so a
+    // model with two Lists gives two rows spelled alike, and merging them
+    // un-disambiguated folds both of a peer's rows into the first of ours while
+    // the second reads zero. A single `solve()` reports both correctly, so the
+    // portfolio would report a different row SHAPE for the same model.
+    //
+    // Every worker builds the same generators in the same order (the built-ins
+    // in variable-id order, then `SearchConfig::move_generators` in
+    // registration order), so the suffixed names agree across workers, which is
+    // what keeps the merge exact. Suffixed on BOTH occurrences rather than only
+    // the second, so the rows of one kind are symmetric.
     counters_.reserve(generators_.size());
+    std::vector<std::string> names;
+    names.reserve(generators_.size());
     for (const std::unique_ptr<MoveGenerator>& gen : generators_) {
+        names.emplace_back(gen->name());
+    }
+    for (size_t i = 0; i < names.size(); ++i) {
+        const bool repeated = std::count(names.begin(), names.end(), names[i]) > 1;
         GeneratorCounters entry;
-        entry.name = std::string(gen->name());
+        entry.name = repeated ? names[i] + '#' + std::to_string(i) : names[i];
         counters_.push_back(std::move(entry));
     }
 }
@@ -282,6 +303,10 @@ bool StructuralBatch::take_first_improving(Model& model, ViolationManager& vm, M
                                            GeneratorCounters& counters) {
     bool changed = false;
     snapshot_sample_base(model);
+    // Added up front because this loop CANNOT exit early -- every candidate is
+    // applied and scored. Move it inside the loop if a deadline check is ever
+    // added there, or the try count silently over-counts and
+    // `moves_accepted <= moves_tried` stops being the bound it is read as.
     counters.moves_tried += static_cast<int64_t>(candidates_.size());
     for (const Move& move : candidates_) {
         const std::vector<int32_t>& touched = apply_from_base(model, move);
@@ -331,8 +356,9 @@ bool StructuralBatch::take_best(Model& model, ViolationManager& vm, MoveGenerato
     double best_delta = kImprovementThreshold;
     snapshot_sample_base(model);
     // Every candidate is applied and scored below, whether or not it wins, so
-    // the try count is the sample size -- exactly as under FirstImprovingSample.
-    // At most ONE of them is then committed, which is the policy difference the
+    // the try count is the sample size -- exactly as under FirstImprovingSample,
+    // and added up front for the same reason: neither loop can exit early. At
+    // most ONE of them is then committed, which is the policy difference the
     // accepted count makes visible.
     counters.moves_tried += static_cast<int64_t>(candidates_.size());
     for (size_t i = 0; i < candidates_.size(); ++i) {

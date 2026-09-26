@@ -1573,9 +1573,15 @@ SearchResult ViolationLSLoop::run() {
     // a worker that solved the model did not stop, it finished).
     //
     // The host's cancel is asked before the peer flag: when both are true the
-    // outer cause is the one the caller asked about, and `ParallelSearch` raises
-    // its own flag in response to a host cancel anyway (src/pool.cpp), so the
-    // other order would report every cancelled portfolio worker as Stopped.
+    // outer cause is the one the caller asked about, which is what
+    // TerminationReason::Cancelled documents.
+    //
+    // The two flags are INDEPENDENT. `ParallelSearch` does not mirror a host
+    // cancel onto `coord.stop`: its only writers are a worker whose own run ended
+    // Feasible and the thread-creation failure path (src/pool.cpp), plus
+    // adopt_from_pool's pure-feasibility branch. So both can be true at once, and
+    // this order is what decides which one a worker reports when a peer finishes
+    // in the same instant the host cancels.
     if (termination_ == TerminationReason::TimeLimit && !clock_expired()) {
         if (cancel_requested()) {
             termination_ = TerminationReason::Cancelled;

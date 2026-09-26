@@ -28,7 +28,16 @@ const char* batch_kind_name(BatchKind kind);
 /// a registered one may cover several, and `MoveGenerator::name()` is the only
 /// identity either has.
 struct GeneratorCounters {
-    /// `MoveGenerator::name()`, copied. The generator is a per-worker clone that
+    /// `MoveGenerator::name()`, copied, with `#<index>` appended on every
+    /// occurrence where one batch built more than one generator of that name.
+    ///
+    /// The suffix is load-bearing, not cosmetic: `merge` below keys on this
+    /// string, and `MoveGenerator::name()` does not promise to be unique -- the
+    /// built-ins name themselves by TYPE, so two List variables would both say
+    /// "builtin_list" and one row would absorb the other's counts. See
+    /// `StructuralBatch`'s constructor.
+    ///
+    /// The copy is needed either way: the generator is a per-worker clone that
     /// dies with its search, so the counters cannot borrow its `string_view`.
     std::string name;
     /// Candidates APPLIED and SCORED -- not candidates generated. The two differ
@@ -65,21 +74,27 @@ struct SearchCounters {
     int64_t structural_moves_tried = 0;
     int64_t structural_moves_accepted = 0;
     /// One entry per generator the structural batch built, in the batch's own
-    /// order. Merged BY NAME across portfolio workers, so a portfolio reports
-    /// one row per distinct generator name rather than one per worker per
-    /// generator. Empty on a model with no structured variable and no
-    /// registered generator, where the batch builds nothing at all.
+    /// order -- and one row per GENERATOR, not per distinct `name()`, which is
+    /// what the `#<index>` suffix on `GeneratorCounters::name` buys. A portfolio
+    /// therefore reports the same rows a single `solve()` does, merged across its
+    /// workers rather than duplicated per worker. Empty on a model with no
+    /// structured variable and no registered generator, where the batch builds
+    /// nothing at all.
     std::vector<GeneratorCounters> by_generator;
 
     /// `InnerSolverHook::solve` calls, and the seconds they took.
     ///
     /// THE SECONDS ARE ONLY FILLED WHEN THE RUN HAS A WALL-CLOCK BUDGET, and
-    /// read 0.0 otherwise. That is not an oversight: `docs/architecture.md`
-    /// guarantees an iteration-budgeted run (`time_limit <= 0`) reads no clock
-    /// at all, which is what makes it bit-reproducible, and #169 asks for these
-    /// counters to cost no additional clock read. The gate is exactly the one
-    /// `last_improvement_` already carries in `src/search.cpp`. The CALL COUNT
-    /// is always filled -- it reads no clock.
+    /// read 0.0 otherwise. That is not an oversight, and the argument is about
+    /// SCALING rather than about a literal zero: an iteration-budgeted run does
+    /// read the clock a bounded number of times already (`solve()`'s entry and
+    /// exit, and `note_first_feasible` once -- `docs/architecture.md` names all
+    /// three), but each of those is O(1) per RUN, where timing the hook would add
+    /// two reads per inner-solver CALL and so scale with the run. That is what
+    /// #169's "no additional clock read" criterion protects, and it is what makes
+    /// an iteration-budgeted run bit-reproducible. The gate is exactly the one
+    /// `last_improvement_` already carries in `src/search.cpp`. The CALL COUNT is
+    /// always filled -- it reads no clock.
     int64_t inner_solver_calls = 0;
     double inner_solver_seconds = 0.0;
 
@@ -87,6 +102,10 @@ struct SearchCounters {
     /// workers. Always 0 for a single `cbls::solve()`, which cannot restart
     /// itself. See `src/pool.cpp`'s restart loop for what a restart is and why
     /// one happens.
+    ///
+    /// Counted per SOLVE THAT PRODUCED A RESULT, so a retry after a throwing
+    /// solve is not one: a worker whose first attempt threw and whose second
+    /// succeeded has run one solve, not one solve and a restart.
     int64_t portfolio_restarts = 0;
 
     /// Add `other` into this, as `ParallelSearch` sums `perturbations`: every

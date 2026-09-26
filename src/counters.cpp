@@ -1,8 +1,7 @@
 #include "cbls/counters.h"
 
-#include "cbls/tracer.h"
-
 #include <algorithm>
+#include <cstddef>
 
 namespace cbls {
 
@@ -15,19 +14,9 @@ const char* batch_kind_name(BatchKind kind) {
         case BatchKind::Structural:
             return "structural";
     }
+    // Unreachable for any value of the enum; keeps the function total so a caller
+    // can print the kind unconditionally.
     return "feasibility_jump";
-}
-
-const char* kick_kind_name(KickKind kind) {
-    switch (kind) {
-        case KickKind::Perturb:
-            return "perturb";
-        case KickKind::LNS:
-            return "lns";
-        case KickKind::Adopt:
-            return "adopt";
-    }
-    return "perturb";
 }
 
 void SearchCounters::merge(const SearchCounters& other) {
@@ -41,13 +30,37 @@ void SearchCounters::merge(const SearchCounters& other) {
     inner_solver_seconds += other.inner_solver_seconds;
     portfolio_restarts += other.portfolio_restarts;
 
-    // By NAME, not by position. Two workers build their own clones of the same
-    // registered generators, so their vectors agree position-for-position
-    // today -- but a worker that threw before building its batch contributes an
-    // EMPTY vector, and a linear merge by index would then silently attribute
-    // the survivors' rows to the wrong generator. The name is the only identity
-    // a generator has (`MoveGenerator::name()`), and the vector is a handful of
-    // entries, so the quadratic scan is not worth an index.
+    // Positionally when the two describe the SAME generator set, by name
+    // otherwise.
+    //
+    // By name is the correct rule and the fast path does not weaken it: a worker
+    // that threw before building its batch contributes an EMPTY vector, and a
+    // blind merge by index would then attribute the survivors' rows to the wrong
+    // generator. `StructuralBatch` makes the names unique within one batch (see
+    // its constructor), and every worker builds the same generators in the same
+    // order, so in the normal case the two vectors agree name-for-name at every
+    // position -- checked in O(G) -- and the merge is a walk.
+    //
+    // The fast path is a complexity fix, not a micro-optimisation, and it wins
+    // and loses in stated regimes. `by_generator` carries ONE ENTRY PER
+    // List/Set VARIABLE, since the built-ins register per variable, and
+    // `structural_batch.h` reasons about a 1500-List model: the by-name scan is
+    // O(G^2) string comparisons, ~1.1M at G = 1500, and `merge` runs once per
+    // restart per worker as well as once per worker. The fast path is O(G). It
+    // loses nothing when it does not apply -- one O(G) name comparison before
+    // falling through -- and it does not apply exactly when the vectors differ,
+    // which is the case the by-name scan exists for.
+    if (by_generator.size() == other.by_generator.size() &&
+        std::equal(by_generator.begin(), by_generator.end(), other.by_generator.begin(),
+                   [](const GeneratorCounters& mine, const GeneratorCounters& theirs) {
+                       return mine.name == theirs.name;
+                   })) {
+        for (size_t i = 0; i < by_generator.size(); ++i) {
+            by_generator[i].moves_tried += other.by_generator[i].moves_tried;
+            by_generator[i].moves_accepted += other.by_generator[i].moves_accepted;
+        }
+        return;
+    }
     for (const GeneratorCounters& g : other.by_generator) {
         auto it = std::find_if(by_generator.begin(), by_generator.end(),
                                [&g](const GeneratorCounters& mine) { return mine.name == g.name; });
@@ -59,15 +72,5 @@ void SearchCounters::merge(const SearchCounters& other) {
         it->moves_accepted += g.moves_accepted;
     }
 }
-
-// Key function: emits this class's vtable here rather than in every translation
-// unit that includes tracer.h. See the note on the declaration.
-Tracer::~Tracer() = default;
-
-void Tracer::batch_end(BatchKind /*kind*/, int64_t /*iterations*/, bool /*improved*/) {}
-void Tracer::new_best(double /*objective*/, double /*seconds*/) {}
-void Tracer::kick(KickKind /*kind*/) {}
-void Tracer::lns(bool /*accepted*/) {}
-void Tracer::hook(double /*seconds*/) {}
 
 }  // namespace cbls

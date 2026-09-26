@@ -1038,8 +1038,32 @@ NB_MODULE(_cbls_core, m) {
         // A raising on_progress still propagates out of this call unchanged;
         // nb::python_error re-acquires the GIL in its own destructor (see the
         // note above PySolveCallback).
+        //
+        // TWO CONSEQUENCES, both stated in the docstring below rather than left to
+        // be rediscovered:
+        //
+        //  - another Python thread can now reach the `model` WHILE the search is
+        //    running. It writes variables and node values throughout and locks
+        //    nothing, so reading `m.var(i).value` or `m.copy_state()` from another
+        //    thread is a data race -- the same hazard solve_parallel's docstring
+        //    already carries for its master model.
+        //  - a raw Python callable handed to lambda_sum/pair_lambda_sum now pays a
+        //    real gil_scoped_acquire per evaluation, where it used to re-enter a
+        //    GIL the caller already held. tests/python/test_pair_lambda.py already
+        //    says to use the *_table_sum forms for anything hot; this makes that
+        //    advice cost more to ignore.
         nb::call_guard<nb::gil_scoped_release>(),
-        "Single-threaded solve. An exception raised by callback.on_progress ends the "
+        "Single-threaded solve.\n"
+        "\n"
+        "The GIL is RELEASED for the whole C++ call (#169). That is what lets another "
+        "Python thread raise a cbls.StopToken mid-solve -- and it makes touching "
+        "`model` from another thread while this runs a DATA RACE: the search writes "
+        "variables and node values throughout and nothing locks them. Read the model "
+        "only after this returns. A raw Python function passed to lambda_sum or "
+        "pair_lambda_sum also re-acquires the GIL on every evaluation now; use the "
+        "*_table_sum forms where the function is a table.\n"
+        "\n"
+        "An exception raised by callback.on_progress ends the "
         "search and propagates out of this call unchanged -- no result is returned, "
         "and the model is left at the assignment the search had reached -- with its "
         "internal objective bound still tightened if a feasible point had been found "

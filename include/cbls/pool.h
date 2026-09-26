@@ -6,6 +6,8 @@
 #include "model.h"
 #include "search.h"
 #include "solution_pool.h"
+#include "stop.h"
+#include "tracer.h"
 
 #include <cstdint>
 #include <functional>
@@ -41,7 +43,13 @@ struct ParallelConfig {
     StopRef stop;
 
     /// Builds ONE `Tracer` per worker, given that worker's index in
-    /// `[0, n_threads)` (#169). Null -- the default -- means no tracing at all.
+    /// `[0, n_workers)` -- which is `n_threads` unless an `executor` below caps it
+    /// (#169). Null -- the default -- means no tracing at all.
+    ///
+    /// A factory, once set, DECIDES: a call that returns null means this worker is
+    /// not traced, and does NOT fall back to `SearchConfig::tracer`. Falling back
+    /// would hand the declining workers one shared sink, which is the race this
+    /// field exists to remove.
     ///
     /// Per worker rather than one shared instance, and deliberately: a `Tracer`'s
     /// events arrive per batch on the reporting worker's own thread, and routing
@@ -275,7 +283,7 @@ private:
         const SearchConfig& config,
         std::function<std::shared_ptr<InnerSolverHook>(Model&)>& hook_factory,
         std::function<std::shared_ptr<LNS>()>& lns_factory, SolveCallback* callback, int n_threads,
-        int pool_capacity, const ParallelConfig& par_config);
+        const ParallelConfig& par_config);
 };
 
 }  // namespace cbls

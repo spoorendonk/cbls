@@ -119,9 +119,8 @@ SearchResult ParallelSearch::solve(std::function<Model()> model_factory, double 
     pc.n_threads = n_threads_;
     std::function<std::shared_ptr<InnerSolverHook>(Model&)> no_hook;
     std::function<std::shared_ptr<LNS>()> no_lns;
-    int n = effective_threads(pc);
-    return solve_portfolio(model_factory, time_limit, seed, {}, no_hook, no_lns, nullptr, n,
-                           effective_pool_capacity(pc.pool_capacity, n), pc);
+    return solve_portfolio(model_factory, time_limit, seed, {}, no_hook, no_lns, nullptr,
+                           effective_threads(pc), pc);
 }
 
 // Full-featured solve
@@ -131,10 +130,8 @@ SearchResult ParallelSearch::solve(
     std::function<std::shared_ptr<InnerSolverHook>(Model&)> hook_factory,
     std::function<std::shared_ptr<LNS>()> lns_factory, SolveCallback* callback,
     const ParallelConfig& par_config) {
-    int n = effective_threads(par_config);
     return solve_portfolio(model_factory, time_limit, seed, config, hook_factory, lns_factory,
-                           callback, n, effective_pool_capacity(par_config.pool_capacity, n),
-                           par_config);
+                           callback, effective_threads(par_config), par_config);
 }
 
 // --- Master-model overloads: one structure, N workers ---
@@ -237,10 +234,7 @@ struct WorkerAccumulator {
     // clock. Every time on a worker's SearchResult is relative to its own
     // solve() start, so the pair below has to be shifted onto the shared clock
     // or a restart that began at t=19.9s reports "feasible at 0.001s".
-    // `restarted` is whether the run being absorbed is a RESTART rather than
-    // this worker's first solve -- the one counter the accumulator has to derive
-    // rather than read, since a SearchResult cannot know it was one.
-    void absorb(const SearchResult& r, double started_at, bool restarted) {
+    void absorb(const SearchResult& r, double started_at) {
         result.iterations += r.iterations;
         // Summed, not maxed, for the same reason iterations are: a worker's
         // restarts run BACK TO BACK on its own thread, so the wall time it held
@@ -250,8 +244,11 @@ struct WorkerAccumulator {
         // the run's duration.
         result.time_seconds += r.time_seconds;
         // Every restart's reason overwrites the previous one: the reason that
-        // matters is the one that ended the worker, and the loop below breaks
-        // on exactly the reasons worth reporting (Feasible, Stopped, NoBudget).
+        // matters is the one that ended the worker, and the loop below breaks on
+        // exactly the reasons worth reporting (Feasible, then Cancelled or
+        // Stopped through `ends_worker`, then NoBudget) -- plus the two it decides
+        // for itself between restarts, a raised stop and an exhausted shared
+        // clock.
         result.termination = r.termination;
         // Work done across the restarts, summed with the iterations above.
         result.perturbations += r.perturbations;
@@ -262,7 +259,13 @@ struct WorkerAccumulator {
         // solve_portfolio's loop across the workers -- so the two cannot drift
         // apart the way a hand-written sum per site would.
         result.counters.merge(r.counters);
-        if (restarted) {
+        // Every absorbed run after the first is a restart. Derived from
+        // `any_run` rather than from the loop's `restart` index, because a
+        // restart whose solve THREW never reaches here: counting loop turns would
+        // report a worker that failed once and then succeeded as having run a
+        // solve and a restart, when it ran one solve. See
+        // SearchCounters::portfolio_restarts.
+        if (any_run) {
             ++result.counters.portfolio_restarts;
         }
         // The earliest restart to reach feasibility, with the objective it
@@ -457,12 +460,20 @@ int portfolio_workers(int requested, const std::optional<ExecutorRef>& executor)
 void launch_workers(int n_workers, const std::optional<ExecutorRef>& executor,
                     std::atomic<bool>& stop, FunctionRef<void(int)> run_one) {
     if (executor.has_value()) {
-        executor->parallel_for_chunked(0, n_workers,
-                                       [run_one](int begin, int end, int /*chunk_idx*/) {
-                                           for (int i = begin; i < end; ++i) {
-                                               run_one(i);
-                                           }
-                                       });
+        executor->parallel_for_chunked(
+            0, n_workers, [n_workers, run_one](int begin, int end, int /*chunk_idx*/) {
+                // Clamped to the range that was ASKED for. `run_one` indexes
+                // `results` and `failures` by `i`, and those bounds come from a
+                // pool this library does not own -- so an executor that mis-chunks,
+                // or that ignores the requested range, would write past two heap
+                // vectors. This is the C++ shape of the #156 hazard class; the
+                // adapted executor's contract forbids it, and a compare per WORKER
+                // (workers are seconds long) turns a violation into a dropped
+                // worker instead of heap corruption.
+                for (int i = std::max(0, begin); i < std::min(end, n_workers); ++i) {
+                    run_one(i);
+                }
+            });
         return;
     }
     std::vector<std::thread> threads;
@@ -496,6 +507,25 @@ bool ends_worker(TerminationReason reason) {
     return reason == TerminationReason::Stopped || reason == TerminationReason::Cancelled;
 }
 
+// The reason a worker ends on when it is stopped BETWEEN restarts.
+//
+// `absorb` overwrites the reason per restart, so without this an IterationLimit
+// restart followed by a host cancel drops `Cancelled` from the worker's result --
+// and with every worker in that state `aggregate_termination` would report
+// IterationLimit for a run whose budget the host took away, inverting the
+// precedence TerminationReason::Cancelled documents.
+//
+// Feasible is left alone: a worker that answered the question finished, it did not
+// stop. The peer flag is left alone too, since aggregate_termination still
+// documents `Stopped` as unreachable from here (a worker raises it only on its own
+// Feasible exit, which this guard already excludes).
+void note_cancel_between_restarts(WorkerAccumulator& acc, const PortfolioContext& ctx) {
+    if (acc.any_run && acc.result.termination != TerminationReason::Feasible &&
+        ctx.config.stop.requested()) {
+        acc.result.termination = TerminationReason::Cancelled;
+    }
+}
+
 // Whether the worker should not start another restart at all: a peer raised the
 // shared flag, or the host cancelled.
 bool worker_should_stop(const PortfolioContext& ctx) {
@@ -518,16 +548,19 @@ std::unique_ptr<Tracer> make_worker_tracer(const PortfolioContext& ctx, int inde
 // Two things differ from the portfolio's own config, and both are per restart
 // rather than per worker, which is why this is not folded into worker_config:
 //
-//  - the worker's own tracer, which overrides whatever SearchConfig::tracer
-//    held; a single tracer shared by N workers is the hazard
-//    ParallelConfig::tracer_factory exists to remove;
+//  - the worker's own tracer, whenever a factory exists AT ALL -- including when
+//    that factory returned null for this worker. Assigning only a NON-null tracer
+//    would leave a declining worker on whatever single `SearchConfig::tracer` the
+//    caller set, i.e. N workers calling one unsynchronised sink on their own
+//    threads: exactly the data race `ParallelConfig::tracer_factory` exists to
+//    remove, in the one configuration that mixes the two knobs;
 //  - skip_init on every restart after the first, so the worker keeps the
 //    assignment it already holds -- its own incumbent, or a peer's if it adopted
 //    one -- instead of throwing the run away and starting from the
 //    closest-to-zero point again.
 SearchConfig restart_config(const PortfolioContext& ctx, Tracer* tracer, int restart) {
     SearchConfig cfg = ctx.config;
-    if (tracer != nullptr) {
+    if (ctx.tracer_factory) {
         cfg.tracer = tracer;
     }
     if (restart > 0) {
@@ -578,6 +611,7 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index,
         // arriving between two restarts ends the worker rather than launching one
         // more solve that immediately returns Cancelled.
         if (worker_should_stop(ctx)) {
+            note_cancel_between_restarts(acc, ctx);
             break;
         }
         // ONE read of the shared clock per restart, reused as this solve's
@@ -621,7 +655,7 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index,
             continue;
         }
         consecutive_failures = 0;
-        acc.absorb(r, started_at, /*restarted=*/restart > 0);
+        acc.absorb(r, started_at);
 
         if (r.termination == TerminationReason::Feasible) {
             // A pure-feasibility model: the first feasible solution IS the
@@ -673,7 +707,7 @@ SearchResult ParallelSearch::solve_portfolio(
     const SearchConfig& config,
     std::function<std::shared_ptr<InnerSolverHook>(Model&)>& hook_factory,
     std::function<std::shared_ptr<LNS>()>& lns_factory, SolveCallback* callback, int n_threads,
-    int pool_capacity, const ParallelConfig& par_config) {
+    const ParallelConfig& par_config) {
     // What the caller asked for, capped by a caller-owned executor's width. Every
     // per-worker vector below, and the aggregation at the end, is sized on this
     // rather than on the request -- a slot for a worker that never ran would
@@ -683,10 +717,15 @@ SearchResult ParallelSearch::solve_portfolio(
 
     // One StopRef for every worker to poll; see CombinedStop.
     const CombinedStop combined{par_config.stop, config.stop};
+
     SearchConfig worker_config = config;
     worker_config.stop = combined;
 
-    SolutionPool pool(pool_capacity);
+    // Sized on the workers that actually run, like every per-worker structure
+    // below: an 8-thread request on a 2-wide executor is a 2-worker portfolio, and
+    // auto capacity means `max(10, 2 * workers)`. A capacity the caller asked for
+    // explicitly is still honoured -- see effective_pool_capacity.
+    SolutionPool pool(effective_pool_capacity(par_config.pool_capacity, n_workers));
     std::atomic<bool> stop{false};
     SearchCoordination coord{&pool, &stop};
 

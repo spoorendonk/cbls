@@ -21,6 +21,7 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -312,6 +313,81 @@ TEST_CASE("structural batches are reported as structural", "[tracer][structural]
     }
 }
 
+TEST_CASE("an adoption is reported as an Adopt kick", "[tracer][parallel]") {
+    // `KickKind::Adopt` is the one kick a single-threaded run can never take, and
+    // the arm that emits it is one `else` branch in `maybe_diversify` -- so
+    // without this, deleting that branch fails nothing.
+    //
+    // The harness is `tests/test_parallel.cpp`'s: a capacity-one pool holding a
+    // gift the search cannot reach on its own, so the draw is deterministic and
+    // the adoption actually happens. `SearchCoordination` is the portfolio's own
+    // channel, driven here directly because that is far cheaper and far more
+    // deterministic than arranging a real portfolio to stall.
+    constexpr int kVars = 80;
+    constexpr double kTarget = 240.0;
+    auto build = []() {
+        Model m;
+        std::vector<int32_t> xs;
+        std::vector<int32_t> squares;
+        auto two = m.constant(2);
+        auto neg1 = m.constant(-1.0);
+        xs.reserve(kVars);
+        for (int i = 0; i < kVars; ++i) {
+            xs.push_back(m.int_var(0, 10));
+            squares.push_back(m.pow_expr(xs.back(), two));
+        }
+        std::vector<int32_t> row;
+        row.push_back(m.constant(kTarget));
+        for (int32_t x : xs) {
+            row.push_back(m.prod(neg1, x));
+        }
+        m.add_constraint(m.sum(row));
+        m.minimize(m.sum(squares));
+        m.close();
+        return m;
+    };
+
+    Model donor = build();
+    Model::State balanced = donor.copy_state();
+    for (int i = 0; i < kVars; ++i) {
+        balanced.values[static_cast<size_t>(i)] = 3.0;
+    }
+    Solution gift;
+    gift.state = balanced;
+    gift.objective = 720.0;  // the balanced optimum: 80 * 3^2
+    gift.feasible = true;
+    SolutionPool pool(1);
+    pool.submit(gift);
+    SearchCoordination coord;
+    coord.pool = &pool;
+
+    RecordingTracer tracer;
+    SearchConfig config;
+    config.max_iterations = 20000;
+    config.batch_iterations = 100;
+    config.perturbation_period = 2;  // reach a full-period kick inside the budget
+    config.tracer = &tracer;
+
+    Model m = build();
+    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/3, true, nullptr, nullptr, 3,
+                                 nullptr, config, &coord);
+
+    REQUIRE(r.feasible);
+    int64_t adoptions = 0;
+    for (const auto& e : tracer.events()) {
+        adoptions += (e.kind == Kind::Kick && e.kick_kind == KickKind::Adopt) ? 1 : 0;
+    }
+    REQUIRE(adoptions > 0);
+    // An adoption REPLACES the perturb half of the kick but is still a kick, and
+    // `adopt_from_pool` bumps `perturbations_` for it -- so the three kinds
+    // together still reconstruct `SearchResult::perturbations`, which is the same
+    // identity the perturb-only test above asserts. What the event stream adds is
+    // the BREAKDOWN: the result records only the total, so an adoption is
+    // indistinguishable from a perturb there.
+    REQUIRE(tracer.count(Kind::Kick) == r.perturbations);
+    REQUIRE(adoptions < tracer.count(Kind::Kick));
+}
+
 TEST_CASE("a null tracer changes nothing", "[tracer]") {
     // The load-bearing test, and the reason the default is a null pointer: every
     // benchmark in the tree and every published figure comes from a run without
@@ -361,6 +437,48 @@ TEST_CASE("the base Tracer is a no-op on every event", "[tracer]") {
     base.lns(true);
     base.hook(0.5);
     SUCCEED("the default implementations are no-ops");
+}
+
+TEST_CASE("a throwing tracer propagates, and a portfolio absorbs it", "[tracer][parallel]") {
+    // Both halves of the contract `Tracer` states. It matters because a host's
+    // tracer writes to a log or a socket and CAN fail, and the two entry points
+    // answer differently: a single solve hands the exception to its caller, a
+    // portfolio treats one worker's failure as that worker's.
+    struct Thrower : Tracer {
+        void batch_end(BatchKind /*kind*/, int64_t /*iterations*/, bool /*improved*/) override {
+            throw std::runtime_error("trace failed");
+        }
+    };
+
+    SearchConfig config;
+    config.max_iterations = 5000;
+    config.batch_iterations = 100;
+
+    SECTION("out of a single solve, unchanged") {
+        Thrower tracer;
+        config.tracer = &tracer;
+        Model m = quadratic_model();
+        REQUIRE_THROWS_AS(
+            solve(m, /*time_limit=*/0.0, /*seed=*/24, true, nullptr, nullptr, 3, nullptr, config),
+            std::runtime_error);
+    }
+
+    SECTION("absorbed per worker, so a surviving peer still answers") {
+        // Only worker 0 throws. Its peer has no tracer and runs normally, so the
+        // portfolio returns that worker's result rather than propagating -- which
+        // is the same rule a raising SolveCallback gets.
+        ParallelConfig par_config;
+        par_config.n_threads = 2;
+        par_config.tracer_factory = [](int worker) -> std::unique_ptr<Tracer> {
+            return worker == 0 ? std::make_unique<Thrower>() : nullptr;
+        };
+        ParallelSearch ps(2);
+        const SearchResult r = ps.solve(
+            [] { return quadratic_model(); }, /*time_limit=*/0.3, /*seed=*/24, config,
+            /*hook_factory=*/nullptr, /*lns_factory=*/nullptr, /*callback=*/nullptr, par_config);
+        REQUIRE(r.feasible);
+        REQUIRE(r.iterations > 0);
+    }
 }
 
 TEST_CASE("KickKind has a distinct stable token", "[tracer]") {

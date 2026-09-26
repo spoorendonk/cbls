@@ -128,7 +128,14 @@ public:
     /// How many chunks may run at once -- the bound on the portfolio's worker
     /// count. The adapted `n_threads()` should return `int`; anything merely
     /// convertible is converted in the return statement, which is a narrowing
-    /// conversion if it is wider. Must be >= 1; a value below 1 is clamped by the caller
+    /// conversion if it is wider.
+    ///
+    /// A value below 1 is clamped to 1 by `src/pool.cpp`, which keeps the
+    /// per-worker vectors non-empty. That is all the clamp buys: it cannot make a
+    /// zero-width pool actually RUN a chunk, and a pool that runs nothing leaves
+    /// the portfolio with no result to return -- reported as `NoBudget`, exactly
+    /// as a run handed no budget is. Supply a pool that runs what it is given. Must be >= 1; a
+    /// value below 1 is clamped by the caller
     /// (`src/pool.cpp`), since a zero-worker portfolio could return no result at
     /// all.
     [[nodiscard]] int n_threads() const { return table_->n_threads(obj_); }

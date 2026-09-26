@@ -10,11 +10,14 @@
 // numbers are reproducible and because that is the regime in which
 // `inner_solver_seconds` is deliberately blind -- which this file also pins.
 
+#include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace cbls;
@@ -59,6 +62,18 @@ Model structured_model() {
     m.close();
     return m;
 }
+
+// Counts this worker's batch_end events into a slot the TEST keeps, so the count
+// outlives the worker. A tracer dies with its worker, so a plain member would be
+// unreadable by the time the portfolio returns.
+struct CountingTracer : Tracer {
+    std::shared_ptr<std::atomic<int64_t>> batches;
+    explicit CountingTracer(std::shared_ptr<std::atomic<int64_t>> slot)
+        : batches(std::move(slot)) {}
+    void batch_end(BatchKind /*kind*/, int64_t /*iterations*/, bool /*improved*/) override {
+        batches->fetch_add(1, std::memory_order_relaxed);
+    }
+};
 
 SearchResult run(Model& model, const SearchConfig& config, uint64_t seed,
                  InnerSolverHook* hook = nullptr) {
@@ -152,6 +167,9 @@ TEST_CASE("BestOfSample commits at most one candidate per sample", "[counters][s
 
     REQUIRE(c.structural_batches > 0);
     REQUIRE(c.structural_moves_tried > 0);
+    // Not vacuous: the bound below is satisfied by zero acceptances, so the sweep
+    // has to be shown to commit something before it says anything.
+    REQUIRE(c.structural_moves_accepted > 0);
     // At most one commit per generator per structural batch.
     REQUIRE(c.structural_moves_accepted <=
             c.structural_batches * static_cast<int64_t>(c.by_generator.size()));
@@ -211,6 +229,8 @@ TEST_CASE("merge sums scalars and merges generator rows by name", "[counters]") 
     // and the name-keyed half is what keeps a worker that built no batch from
     // shifting the rows of the ones that did.
     SearchCounters a;
+    a.structural_moves_tried = 15;
+    a.structural_moves_accepted = 3;
     a.batches = 3;
     a.fj_batches = 2;
     a.structural_batches = 1;
@@ -221,6 +241,8 @@ TEST_CASE("merge sums scalars and merges generator rows by name", "[counters]") 
     a.by_generator.push_back({"set:1", 5, 1});
 
     SearchCounters b;
+    b.structural_moves_tried = 8;
+    b.structural_moves_accepted = 4;
     b.batches = 4;
     b.novelty_batches = 4;
     b.inner_solver_calls = 2;
@@ -239,6 +261,11 @@ TEST_CASE("merge sums scalars and merges generator rows by name", "[counters]") 
     REQUIRE(a.inner_solver_calls == 3);
     REQUIRE(a.inner_solver_seconds == 0.75);
     REQUIRE(a.portfolio_restarts == 3);
+    // The totals are summed as scalars rather than re-derived from the rows below,
+    // which is what keeps them consistent with a `by_generator` merge that appends
+    // a name the other side did not have.
+    REQUIRE(a.structural_moves_tried == 23);
+    REQUIRE(a.structural_moves_accepted == 7);
 
     REQUIRE(a.by_generator.size() == 3);
     REQUIRE(a.by_generator[0].name == "list:0");
@@ -265,6 +292,49 @@ TEST_CASE("BatchKind has a distinct stable token", "[counters]") {
     REQUIRE(tokens[2] == "structural");
 }
 
+TEST_CASE("two generators of one kind keep separate rows", "[counters][structural]") {
+    // The built-ins name themselves by TYPE -- `StandardStructuralGenerator::name()`
+    // returns "builtin_list" or "builtin_set" -- so a model with two List variables
+    // gives two generators with the SAME name. `SearchCounters::merge` keys
+    // `by_generator` on that name, and a portfolio merges through it even at one
+    // worker with no restart, so a collision makes the portfolio report a different
+    // row shape for the same model than `solve()` does, with one row absorbing the
+    // other's counts.
+    auto build = [] {
+        Model m;
+        auto a = m.list_var(6, "a");
+        auto b = m.list_var(6, "b");
+        auto cost = [](int i, int j) { return static_cast<double>(((i * 7) + (j * 3)) % 11); };
+        m.minimize(m.sum({m.pair_lambda_sum(a, cost, PairMode::Cyclic),
+                          m.pair_lambda_sum(b, cost, PairMode::Cyclic)}));
+        m.close();
+        return m;
+    };
+
+    SearchConfig config;
+    config.max_iterations = 300;
+    config.structural_batch_probability = 1.0;
+
+    Model single = build();
+    const SearchCounters& direct = run(single, config, /*seed=*/5).counters;
+    REQUIRE(direct.by_generator.size() == 2);
+    REQUIRE(direct.by_generator[0].name != direct.by_generator[1].name);
+
+    // One worker, no restart: the only merge is absorb's, into an empty vector.
+    ParallelConfig par_config;
+    par_config.n_threads = 1;
+    ParallelSearch ps(1);
+    const SearchResult r = ps.solve(build, /*time_limit=*/0.3, /*seed=*/5, config,
+                                    /*hook_factory=*/nullptr, /*lns_factory=*/nullptr,
+                                    /*callback=*/nullptr, par_config);
+    REQUIRE(r.counters.by_generator.size() == 2);
+    int64_t tried = 0;
+    for (const GeneratorCounters& g : r.counters.by_generator) {
+        tried += g.moves_tried;
+    }
+    REQUIRE(r.counters.structural_moves_tried == tried);
+}
+
 TEST_CASE("a portfolio's counters are the sum of its workers'", "[counters][parallel]") {
     // The half-aggregation bug this guards against: the portfolio sums some
     // counters in `WorkerAccumulator::absorb` and some in `solve_portfolio`'s own
@@ -277,14 +347,39 @@ TEST_CASE("a portfolio's counters are the sum of its workers'", "[counters][para
     SearchConfig config;
     config.batch_iterations = 100;
 
+    // Each worker counts its OWN batch_end events into a slot this test keeps, so
+    // the aggregate can be compared against its parts from OUTSIDE the
+    // aggregation. Without that the test could only re-check an identity that
+    // holds within the aggregate -- which a half-aggregation bug preserves.
+    std::mutex mutex;
+    std::vector<std::shared_ptr<std::atomic<int64_t>>> per_worker;
+
     ParallelConfig par_config;
     par_config.n_threads = 3;
+    par_config.tracer_factory = [&mutex, &per_worker](int /*worker*/) -> std::unique_ptr<Tracer> {
+        auto slot = std::make_shared<std::atomic<int64_t>>(0);
+        {
+            const std::scoped_lock lock(mutex);
+            per_worker.push_back(slot);
+        }
+        return std::make_unique<CountingTracer>(std::move(slot));
+    };
 
     ParallelSearch ps(3);
     const SearchResult r = ps.solve(
         [] { return structured_model(); }, /*time_limit=*/0.4, /*seed=*/21, config,
         /*hook_factory=*/nullptr, /*lns_factory=*/nullptr, /*callback=*/nullptr, par_config);
     const SearchCounters& c = r.counters;
+
+    // THE aggregation check: the batches the three workers actually ran, summed
+    // outside the portfolio, equal the batches it reports. A tracer spans its
+    // worker's restarts, so this crosses both merge sites at once.
+    REQUIRE(per_worker.size() == 3);
+    int64_t observed = 0;
+    for (const auto& slot : per_worker) {
+        observed += slot->load(std::memory_order_relaxed);
+    }
+    REQUIRE(observed == c.batches);
 
     // The same identity as the single-threaded case: summing three workers'
     // buckets preserves it.
@@ -299,7 +394,6 @@ TEST_CASE("a portfolio's counters are the sum of its workers'", "[counters][para
         tried += g.moves_tried;
     }
     REQUIRE(c.structural_moves_tried == tried);
-    REQUIRE(c.portfolio_restarts >= 0);
 }
 
 TEST_CASE("a restarted worker's restarts are counted", "[counters][parallel]") {

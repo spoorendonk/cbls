@@ -12,6 +12,7 @@
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <thread>
@@ -180,32 +181,54 @@ TEST_CASE("a host stop cancels every portfolio worker", "[stop][parallel]") {
 
 TEST_CASE("a stop raised from another thread reaches a running portfolio", "[stop][parallel]") {
     // The shape a host actually has: the cancel arrives from a thread that is
-    // not a worker, while the solve is in flight. A wall-clock budget is set
-    // here -- generously, 30 seconds -- precisely so that the assertion on
-    // `termination` is not satisfiable by the budget expiring: a run that
-    // reached its deadline would report TimeLimit.
+    // neither a worker nor the caller, while the solve is genuinely IN FLIGHT.
+    //
+    // "In flight" is the hard part, and an earlier version of this test did not
+    // get it: opening the gate before `ps.solve` let the canceller fire before any
+    // worker existed, so every worker broke out of its restart loop without ever
+    // searching and the result came from the no-result fallback -- the same path
+    // the pre-raised cases above already cover. The gate is now a PROGRESS ROW,
+    // which only a running worker can produce, and `iterations > 0` is the
+    // assertion that says the cancel landed on a search that had started.
+    //
+    // The wait is bounded so a regression cannot hang the suite: if no row ever
+    // arrives the canceller fires anyway, inside the 30-second budget, so the run
+    // is still mid-flight. That bound is not a duration assertion -- nothing here
+    // asserts on elapsed time. The 30 seconds are there so that `Cancelled` is not
+    // satisfiable by the clock expiring, which would report TimeLimit.
+    struct GateOnProgress : SolveCallback {
+        std::atomic<bool>* gate;
+        explicit GateOnProgress(std::atomic<bool>* g) : gate(g) {}
+        void on_progress(const SolveProgress& /*p*/) override {
+            gate->store(true, std::memory_order_release);
+        }
+    };
+
     StopToken token;
-    std::atomic<bool> running{false};
+    std::atomic<bool> searching{false};
+    GateOnProgress cb(&searching);
 
     ParallelConfig par_config;
     par_config.n_threads = 2;
     par_config.stop = token;
 
-    std::thread canceller([&token, &running]() {
-        while (!running.load(std::memory_order_acquire)) {
+    std::thread canceller([&token, &searching]() {
+        const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!searching.load(std::memory_order_acquire) &&
+               std::chrono::steady_clock::now() < give_up) {
             std::this_thread::yield();
         }
         token.request();
     });
 
     ParallelSearch ps(2);
-    running.store(true, std::memory_order_release);
-    const SearchResult r = ps.solve(
-        [] { return quadratic_model(); }, /*time_limit=*/30.0, /*seed=*/13, SearchConfig{},
-        /*hook_factory=*/nullptr, /*lns_factory=*/nullptr, /*callback=*/nullptr, par_config);
+    const SearchResult r =
+        ps.solve([] { return quadratic_model(); }, /*time_limit=*/30.0, /*seed=*/13, SearchConfig{},
+                 /*hook_factory=*/nullptr, /*lns_factory=*/nullptr, &cb, par_config);
     canceller.join();
 
     REQUIRE(r.termination == TerminationReason::Cancelled);
+    REQUIRE(r.iterations > 0);
 }
 
 TEST_CASE("SearchConfig::stop and ParallelConfig::stop are OR-ed", "[stop][parallel]") {

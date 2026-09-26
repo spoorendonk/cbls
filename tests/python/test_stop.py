@@ -29,7 +29,13 @@ CHILD_TIMEOUT_SECONDS = 30.0
 # Far more GLS iterations than a cancelled run can reach, so "the stop ended it"
 # is provable from the iteration count rather than from the wall clock -- the
 # #104 discipline the C++ tests follow.
-UNREACHABLE_ITERATIONS = 2_000_000
+#
+# Sized with a wide margin on purpose. `_scenario_cancel_running_solve` raises the
+# token on a 0.5s timer, so a budget the search could EXHAUST inside that window
+# would make the scenario report IterationLimit and fail with no other symptom --
+# a flake. At this size an unpolled stop instead runs into the child's own
+# wall-clock deadline, which `_assert_scenario_ok` reports by name.
+UNREACHABLE_ITERATIONS = 200_000_000
 
 
 def _quadratic() -> "cbls.Model":

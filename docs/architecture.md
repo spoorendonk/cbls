@@ -2601,9 +2601,16 @@ in both the human and the JSONL format:
   `SearchCounters::merge` at **both** aggregation sites (across a worker's
   restarts in `WorkerAccumulator::absorb`, and across the workers in
   `solve_portfolio`) so the two cannot drift apart, with the per-generator rows
-  merged by NAME rather than by position — a worker that threw before building
-  its batch contributes an empty vector, and an index-wise merge would attribute
-  the survivors' rows to the wrong generator; `first_feasible_objective` and `time_to_first_feasible`
+  matched by NAME — a worker that threw before building its batch contributes an
+  empty vector, and a blind index-wise merge would attribute the survivors' rows
+  to the wrong generator. That is why `GeneratorCounters::name` carries a
+  `#<index>` suffix wherever one batch built two generators of the same name: the
+  built-ins name themselves by TYPE, so two List variables would otherwise share
+  a key and one row would absorb the other's counts. When the two vectors do
+  agree name-for-name — the normal case, since every worker builds the same
+  generators in the same order — the merge is a positional walk rather than the
+  O(G²) scan, which matters because `by_generator` has one entry per structured
+  variable; `first_feasible_objective` and `time_to_first_feasible`
   are the pair from the earliest worker *and restart* to reach feasibility, with
   the time shifted onto the portfolio clock. Only `escape_probe_armed` reads its
   "not recorded" value: it is a latch on one worker's end state, and a pooled
@@ -2733,7 +2740,8 @@ Two `SolveCallback` implementations format solver output:
   `result`). `progress` carries iteration, time, objective (null when not
   feasible or not finite), violation, feasibility, perturbations and `new_best`;
   `result` carries time, iterations, `termination` (the `TerminationReason`
-  token — `time_limit` / `iteration_limit` / `feasible` / `no_budget`, which
+  token — `time_limit` / `iteration_limit` / `feasible` / `no_budget` /
+  `stopped` / `cancelled`, which
   qualifies the two above), objective, `feasible`, `status` and `solution`.
 
 Both write to a configurable `std::ostream` (default `std::cout`). The CLI

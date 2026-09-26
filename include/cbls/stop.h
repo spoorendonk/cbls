@@ -44,8 +44,15 @@ public:
     /// `requested()` throws is a contract violation, not a supported shape.
     [[nodiscard]] bool requested() const { return fn_ != nullptr && fn_(obj_); }
 
-    /// Whether a source is attached at all. `!attached()` is what a caller
-    /// checks to know the run is bounded by its budgets alone.
+    /// Whether a source is attached at all -- for a caller that wants to report
+    /// how a solve was configured, and for the bindings, which expose the
+    /// attachment rather than the source.
+    ///
+    /// AN ATTACHED STOP IS NOT A BUDGET. A run with no wall clock and no
+    /// iteration limit returns immediately with `TerminationReason::NoBudget`
+    /// whether or not one is attached, because "run until the host cancels" would
+    /// otherwise hang forever the moment the host forgot to. Give such a run a
+    /// generous `time_limit` and cancel inside it.
     [[nodiscard]] bool attached() const noexcept { return fn_ != nullptr; }
 
 private:

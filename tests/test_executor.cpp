@@ -54,6 +54,14 @@ public:
 
     [[nodiscard]] int n_threads() const { return width_; }
     [[nodiscard]] int threads_created() const { return created_.load(std::memory_order_relaxed); }
+    /// The ids of the threads this pool actually ran chunks on. This is what makes
+    /// the negative assertion falsifiable: `threads_created()` cannot see a thread
+    /// `ParallelSearch` made for ITSELF, but a worker running on one shows up here
+    /// as an id the pool never reported.
+    [[nodiscard]] std::set<std::thread::id> ran_on() const {
+        const std::scoped_lock lock(ids_mutex_);
+        return ids_;
+    }
 
     void parallel_for(int begin, int end, const std::function<void(int)>& f) {
         parallel_for_chunked(begin, end, [&f](int chunk_begin, int chunk_end, int /*chunk*/) {
@@ -78,8 +86,13 @@ public:
             const int chunk_begin = begin + (c * base) + std::min(c, extra);
             const int chunk_end = chunk_begin + base + (c < extra ? 1 : 0);
             created_.fetch_add(1, std::memory_order_relaxed);
-            threads.emplace_back(
-                [&f, chunk_begin, chunk_end, c]() { f(chunk_begin, chunk_end, c); });
+            threads.emplace_back([this, &f, chunk_begin, chunk_end, c]() {
+                {
+                    const std::scoped_lock lock(ids_mutex_);
+                    ids_.insert(std::this_thread::get_id());
+                }
+                f(chunk_begin, chunk_end, c);
+            });
         }
         for (std::thread& t : threads) {
             t.join();
@@ -96,6 +109,8 @@ public:
 private:
     int width_;
     std::atomic<int> created_{0};
+    mutable std::mutex ids_mutex_;
+    std::set<std::thread::id> ids_;
 };
 
 // The degenerate shape the field documents: everything on the calling thread, no
@@ -227,14 +242,20 @@ TEST_CASE("a portfolio on a caller's executor creates no threads of its own",
 
     std::mutex mutex;
     std::set<int> worker_indices;
+    // WHICH THREAD each worker started on. The count alone cannot tell "the
+    // portfolio used the pool" from "the portfolio used the pool AND spawned three
+    // threads of its own"; the thread identity can.
+    std::set<std::thread::id> worker_threads;
 
     ParallelConfig par_config;
     par_config.n_threads = 3;
     par_config.executor = pool;
-    par_config.tracer_factory = [&mutex, &worker_indices](int worker) -> std::unique_ptr<Tracer> {
+    par_config.tracer_factory = [&mutex, &worker_indices,
+                                 &worker_threads](int worker) -> std::unique_ptr<Tracer> {
         const std::scoped_lock lock(mutex);
         worker_indices.insert(worker);
-        return nullptr;  // the index is all this test wants
+        worker_threads.insert(std::this_thread::get_id());
+        return nullptr;  // the index and the thread are all this test wants
     };
 
     ParallelSearch ps(3);
@@ -247,6 +268,14 @@ TEST_CASE("a portfolio on a caller's executor creates no threads of its own",
     REQUIRE(pool.threads_created() == 3);
     const std::set<int> expected{0, 1, 2};
     REQUIRE(worker_indices == expected);
+    // The criterion, made falsifiable: every worker BEGAN on a thread the POOL
+    // created. A std::thread the portfolio made for itself would appear here as an
+    // id the pool never reported -- which is exactly what a count cannot see.
+    const std::set<std::thread::id> pool_threads = pool.ran_on();
+    REQUIRE(worker_threads.size() == 3);
+    for (const std::thread::id& id : worker_threads) {
+        REQUIRE(pool_threads.count(id) == 1);
+    }
 }
 
 TEST_CASE("the worker count is capped by the executor's width", "[executor][parallel]") {

@@ -80,6 +80,18 @@ public:
     /// this `solve()` started. Fires BEFORE the inner-solver polish that may
     /// follow in the same batch, and again after it if the polish improved on
     /// it -- the two are different points and both are new bests.
+    ///
+    /// ONE IMPROVEMENT IS DELIBERATELY NOT REPORTED HERE: a portfolio worker
+    /// adopting a peer's solution from the shared pool can install a better
+    /// incumbent than its own (`adopt_from_pool`, src/search.cpp), and that path
+    /// does not go through `record_best`. It reports `kick(KickKind::Adopt)`
+    /// instead. The reason is the ordering rule above: an adoption happens in the
+    /// diversification step, AFTER this batch's `batch_end`, so emitting it as a
+    /// `new_best` would break "a new best arrives before the batch_end of the
+    /// batch that produced it" -- which is the property that lets a consumer
+    /// attribute an improvement to a batch at all. A host reconstructing the
+    /// incumbent trajectory from this stream is seeing THIS WORKER's own
+    /// improvements; the portfolio's incumbent is what `SolveCallback` reports.
     virtual void new_best(double objective, double seconds);
 
     /// A diversification kick was taken. `KickKind::LNS` is followed by exactly
