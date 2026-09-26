@@ -450,6 +450,89 @@ before `solve()` returns so post-solve verifiers don't see it violated.
 `objective_bound()` expose this state. "Real feasibility" everywhere means *all
 constraints except* `objective_constraint_idx()`.
 
+### Growing a closed model: `extend` (#167)
+
+**Files:** `include/cbls/model_extension.h`, `src/model_extension.cpp`
+
+`close()` builds the back-references, the topological order, `topo_pos` and G_v,
+and `add_objective_soft_constraint()` rebuilds all four wholesale to append two
+nodes. That is the only post-close growth there was, and appending a term to an
+**existing** `Sum` -- what a new column does, since it enters rows that already
+exist -- had no representation at all. `ModelExtension` + `Model::extend` add
+both, incrementally.
+
+`ModelExtension` records; it touches nothing. Its handles are the model's own
+absolute ids, so a recording can name existing variables and nodes freely, and
+`extend` refuses a recording made against a different state of the model. It
+offers scalar variables, every expression op whose children are plain handles,
+`add_constraint`, and `append_to_sum`. It deliberately offers no `List`/`Set`
+variable (their starting assignment is laid out by `initialize_structured_random`
+inside `solve()`, and a partition member's cover is maintained only by the
+partition's moves), no `lambda_sum`/`pair_lambda_sum` (shared callables, see
+`freeze()`), and no `custom()` (#166 -- the slot's invariant would have no
+committed state short of the `full_evaluate` this path exists to avoid).
+
+What `extend` does, in order:
+
+1. appends the new variables and nodes (`vars_`, `node_values_`, `nodes`,
+   `parent_offsets`, `dependent_offsets`, `child_refs`);
+2. **relocates** each grown node's child slice to the end of `child_refs`, leaving
+   the old one as a hole. Relocation rather than insertion because a node
+   addresses its children by `(child_begin, child_count)` and every other node's
+   offsets must stay valid. `ModelStructure::child_ref_holes` counts the waste and
+   the array is compacted once the holes reach half of it;
+3. splices the three CSR indices. Each owner's list stays **strictly ascending and
+   distinct** -- contractual for `parents`, `dependents` and `constraints_of_var`
+   alike, since `weighted_delta_from` requires ascending rows and FJ's scan order
+   over G_v feeds the trajectory. An overflow list appended after the CSR base
+   would not have that property, so the splice **merges**, and it drops an
+   addition the owner already has exactly as `rebuild_back_references` dedups
+   `prod(x, x)`;
+4. inserts the new nodes into `topo_order` as one block immediately before the
+   earliest grown node, and renumbers `topo_pos` over the suffix. Falls back to a
+   full `compute_topo_order` -- reported as `ExtensionResult::topo_order_rebuilt`
+   -- when the existing order cannot absorb them, which needs an existing node to
+   be in the wrong place already;
+5. grows G_v by walking each new row's subtree and each existing row a grown `Sum`
+   sits inside. Which rows those are is an upward walk from the grown nodes plus
+   one pass over the constraint list, skipped entirely when nothing was appended;
+6. recomputes the node values of the new nodes, the grown nodes and everything
+   above them -- the same walk `delta_evaluate` does, seeded from nodes rather
+   than from changed variables. A model with custom nodes takes `full_evaluate`
+   instead, because a `CustomInvariant`'s `delta()` is defined against a variable
+   move and `full_evaluate` is its documented reset point.
+
+`ViolationManager::on_extended` and `FeasibilityJump::on_extended` then grow the
+search state in place. The property that matters is that **existing rows keep
+their GLS weights**: those weights are the search's accumulated knowledge of
+which rows are hard, and a fresh `ViolationManager` per column would restart the
+guided local search every time one arrived. FJ keeps the cached jumps of
+variables the extension did not touch, merges the new incidences into
+`vars_of_constraint_` (ascending, so the scan order is the one the constructor
+would have produced), reclassifies the linearity of the rows it changed, and
+queues the new variables. `pad_state` grows a `Model::State` captured before the
+extension so an old incumbent is still a restart point -- strictly, so that
+`restore_state`'s size check stays a check on something.
+
+**Cost.** Not O(k): the CSR indices share one offsets array and `topo_order` is a
+dense array `full_evaluate` walks, so an insertion in the middle of either moves
+the suffix. `Model::extend`'s comment enumerates every term with its measurement.
+Against `add_objective_soft_constraint` on a copy of the same closed model (the
+O(model) path it replaces, adding two nodes and one row), at Release on an idle
+machine: `atlanta-ip` (540k nodes) 29 ms rebuild against 0.11-0.65 ms, and
+`neos-5114902-kasavu` (4.30M nodes) 307 ms against 7.1-9.0 ms -- 35x to 260x. The
+**first** extend after a build that sized the arrays exactly pays one full copy of
+each (1.5-2.0x rather than 35x); growth is left geometric so a column-generation
+loop amortises it.
+
+**A frozen model is refused.** `freeze()` publishes one `ModelStructure` to every
+portfolio replica, so growth would rewrite a peer's DAG under a running search.
+`ParallelSearch::solve(Model&)` and the CLI at `--threads > 1` both freeze, so
+growth is **single-`solve()` only**; a per-worker extension overlay on a shared
+structure is #168's job. There is also no in-loop hook yet: `extend` is called
+between `solve()` calls, and the between-batches entry point #168 needs is that
+issue's API.
+
 ### State Save/Restore
 
 ```cpp
