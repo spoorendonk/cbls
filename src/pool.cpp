@@ -618,6 +618,52 @@ SearchConfig restart_config(const PortfolioContext& ctx, Tracer* tracer, int res
     return cfg;
 }
 
+// Whether a worker's restart loop ends after the solve that returned `r` -- and,
+// when that solve answered the question outright, raises the shared stop flag
+// on the way out. Lifted out of run_worker, which it put over the
+// cognitive-complexity threshold once column generation added its own exit:
+// "is this worker done" is one responsibility with an ordered list of reasons,
+// and the order is the content.
+bool worker_finished(const PortfolioContext& ctx, const SearchResult& r) {
+    if (r.termination == TerminationReason::Feasible) {
+        // A pure-feasibility model: the first feasible solution IS the answer,
+        // so every other worker is now searching a settled question. Stop them
+        // rather than leaving them to run their budget out.
+        //
+        // Raised BEFORE the no-deadline exit below, and the order is the whole
+        // point: an iteration-budgeted portfolio has no clock to run out, so its
+        // peers would otherwise grind their full iteration budgets on a question
+        // already answered -- which is exactly what pool.h promises does not
+        // happen, unqualified.
+        ctx.coord.stop->store(true, std::memory_order_relaxed);
+        return true;
+    }
+    if (ctx.grown_models != nullptr) {
+        // One solve per worker under column generation (#168). A restart would
+        // carry on with the grown model, but the accumulator would then be
+        // comparing states of different widths: an earlier solve's best is
+        // narrower than the model its successor grew, and nothing short of the
+        // ExtensionResults it missed can pad it. A solve returns early only on an
+        // iteration budget (Feasible is handled above), so what this costs is the
+        // idle-core guarantee for a `max_iterations` + wall-clock run, and it is
+        // stated on SearchConfig::column_generator.
+        return true;
+    }
+    if (!ctx.has_deadline) {
+        // No SHARED wall clock, so there is no "time the predecessor left" for a
+        // restart to run on: the worker's iteration budget IS the whole budget it
+        // was given, and restarting would hand it that budget again, forever. An
+        // IterationLimit return is not one of the exits below, so without this
+        // the loop never ends -- and `time_limit <= 0` with
+        // SearchConfig::max_iterations set is a supported call shape, reachable
+        // from C++ and from Python.
+        return true;
+    }
+    // Neither a wall clock nor an iteration budget (NoBudget): restarting would
+    // spin on a solve that does no work.
+    return ends_worker(r.termination) || r.termination == TerminationReason::NoBudget;
+}
+
 // `failure` is set to the last exception the SEARCH raised, whether or not the
 // worker went on to recover. The caller reports it only when the worker
 // produced nothing at all, so a worker that threw once and then succeeded is
@@ -709,53 +755,7 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index,
         consecutive_failures = 0;
         acc.absorb(r, started_at);
 
-        if (growing) {
-            // One solve per worker under column generation. A restart would
-            // carry on with the grown model, but the accumulator would then be
-            // comparing states of different widths: an earlier solve's best is
-            // narrower than the model its successor grew, and nothing short of
-            // the ExtensionResults it missed can pad it. A solve returns early
-            // only on an iteration budget (or Feasible, which ends the worker
-            // anyway), so what this costs is the idle-core guarantee for a
-            // `max_iterations` + wall-clock run, and it is stated on
-            // SearchConfig::column_generator.
-            if (r.termination == TerminationReason::Feasible) {
-                ctx.coord.stop->store(true, std::memory_order_relaxed);
-            }
-            break;
-        }
-
-        if (r.termination == TerminationReason::Feasible) {
-            // A pure-feasibility model: the first feasible solution IS the
-            // answer, so every other worker is now searching a settled
-            // question. Stop them rather than leaving them to run their budget
-            // out.
-            //
-            // Raised BEFORE the no-deadline break below, and the order is the
-            // whole point: an iteration-budgeted portfolio has no clock to run
-            // out, so its peers would otherwise grind their full iteration
-            // budgets on a question already answered -- which is exactly what
-            // pool.h promises does not happen, unqualified.
-            ctx.coord.stop->store(true, std::memory_order_relaxed);
-            break;
-        }
-        if (!ctx.has_deadline) {
-            // No SHARED wall clock, so there is no "time the predecessor left"
-            // for a restart to run on: the worker's iteration budget IS the
-            // whole budget it was given, and restarting would hand it that
-            // budget again, forever. An IterationLimit return is not one of the
-            // exits below, so without this the loop never ends -- and
-            // `time_limit <= 0` with SearchConfig::max_iterations set is a
-            // supported call shape, reachable from C++ and from Python.
-            break;
-        }
-
-        if (ends_worker(r.termination)) {
-            break;
-        }
-        if (r.termination == TerminationReason::NoBudget) {
-            // Neither a wall clock nor an iteration budget: restarting would
-            // spin on a solve that does no work.
+        if (worker_finished(ctx, r)) {
             break;
         }
     }
@@ -771,14 +771,43 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index,
     return acc.result;
 }
 
+// Column generation's (#168) share of solve_portfolio, gathered so that
+// function's own control flow is unchanged by it: every "is this a growing run"
+// question is asked here. `master` is null on every other run, and then each
+// member reports the ordinary portfolio's answer.
+struct GrowthMode {
+    Model* master;
+    // One slot per worker, into which run_worker moves its grown model.
+    std::vector<Model> models;
+
+    GrowthMode(Model* grow_master, int n_workers)
+        : master(grow_master),
+          models(grow_master != nullptr ? static_cast<size_t>(n_workers) : 0) {}
+    // The pool the SEARCH sees. Under column generation the workers' models stop
+    // being one model at their first extension, so a pooled state from one
+    // worker is not a point of another's -- it may not have the same width, and
+    // at the same width it would mean different columns. So nothing is shared
+    // mid-run and nothing is adopted. (The pool object itself still collects each
+    // worker's final result, for solve_portfolio's "did anyone produce anything"
+    // test; the winner is chosen from `results`.)
+    [[nodiscard]] SolutionPool* search_pool(SolutionPool& pool) const {
+        return master != nullptr ? nullptr : &pool;
+    }
+    [[nodiscard]] std::vector<Model>* slots() { return master != nullptr ? &models : nullptr; }
+};
+
 // Column generation (#168): the portfolio's answer is the best WORKER's, by
 // the pool's own order -- feasible first, then the lower objective -- and it
 // comes back together with that worker's grown model, which is the only model
 // its state indexes. Chosen from `results` rather than from the pool because the
 // pool carries no worker identity. A worker that produced nothing is skipped.
+// A no-op on a run without a generator.
 void adopt_growth_winner(const std::vector<SearchResult>& results,
-                         const std::vector<char>& produced, std::vector<Model>& grown_models,
-                         SearchResult& result, Model& master) {
+                         const std::vector<char>& produced, GrowthMode& growth,
+                         SearchResult& result) {
+    if (growth.master == nullptr) {
+        return;
+    }
     int winner = -1;
     for (size_t i = 0; i < results.size(); ++i) {
         if (produced[i] == 0) {
@@ -803,7 +832,7 @@ void adopt_growth_winner(const std::vector<SearchResult>& results,
     result.feasible = w.feasible;
     result.best_state = w.best_state;
     result.best_violation = w.best_violation;
-    master = std::move(grown_models[static_cast<size_t>(winner)]);
+    *growth.master = std::move(growth.models[static_cast<size_t>(winner)]);
 }
 
 }  // namespace
@@ -852,19 +881,8 @@ SearchResult ParallelSearch::solve_portfolio(
     // explicitly is still honoured -- see effective_pool_capacity.
     SolutionPool pool(effective_pool_capacity(par_config.pool_capacity, n_workers));
     std::atomic<bool> stop{false};
-    // Under column generation the workers' models stop being one model at their
-    // first extension, so a pooled state from one worker is not a point of
-    // another's -- it may not even have the same width, and at the same width
-    // it would mean different columns. So the search gets no pool: nothing is
-    // shared mid-run and nothing is adopted. The stop flag is still shared, since
-    // a pure-feasibility answer is an answer whichever columns found it. The pool
-    // object itself still collects each worker's final result below, for the
-    // "did anyone produce anything" test; the winner is chosen from `results`.
-    SearchCoordination coord{grow_master != nullptr ? nullptr : &pool, &stop};
-    std::vector<Model> grown_models;
-    if (grow_master != nullptr) {
-        grown_models.resize(static_cast<size_t>(n_workers));
-    }
+    GrowthMode growth(grow_master, n_workers);
+    SearchCoordination coord{growth.search_pool(pool), &stop};
 
     const bool has_deadline = time_limit > 0.0;
     const auto portfolio_start = std::chrono::steady_clock::now();
@@ -912,7 +930,7 @@ SearchResult ParallelSearch::solve_portfolio(
                          par_config.tracer_factory,
                          has_deadline,
                          seed,
-                         grow_master != nullptr ? &grown_models : nullptr};
+                         growth.slots()};
 
     std::vector<SearchResult> results(n_workers);
     // One slot per worker, left null unless that worker threw. Sized up front so
@@ -1021,9 +1039,7 @@ SearchResult ParallelSearch::solve_portfolio(
     // on the residual reads as a defective solution -- benchmarks/mipfeas does,
     // and refused every parallel row it was handed.
     result.best_violation = best->violation;
-    if (grow_master != nullptr) {
-        adopt_growth_winner(results, produced, grown_models, result, *grow_master);
-    }
+    adopt_growth_winner(results, produced, growth, result);
     // Sum iterations and take max time across threads
     int64_t total_iters = 0;
     double max_time = 0.0;

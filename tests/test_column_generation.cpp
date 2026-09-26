@@ -17,6 +17,7 @@
 #include "cbls/violation.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
@@ -52,7 +53,7 @@ namespace {
 // ---------------------------------------------------------------------------
 constexpr int kU120Capacity = 150;
 constexpr int kU120Optimum = 48;
-constexpr int kU120Items[120] = {
+constexpr std::array<int, 120> kU120Items = {
     42, 69, 67, 57, 93, 90, 38, 36, 45, 42, 33, 79, 27, 57, 44, 84, 86, 92, 46, 38, 85, 33, 82, 73,
     49, 70, 59, 23, 57, 72, 74, 69, 33, 42, 28, 46, 30, 64, 29, 74, 41, 49, 55, 98, 80, 32, 25, 38,
     82, 30, 35, 39, 57, 84, 62, 50, 55, 27, 30, 36, 20, 78, 47, 26, 45, 41, 58, 98, 91, 96, 73, 84,
@@ -514,8 +515,8 @@ TEST_CASE("NewBest pricing sees the weights the improving batch left", "[column]
         explicit FlatCheck(std::shared_ptr<int> n) : n_(std::move(n)) {}
         void price(const PricingContext& ctx, PricingEvent /*why*/,
                    ModelExtension& /*ext*/) override {
-            for (size_t i = 0; i < ctx.weights.size(); ++i) {
-                if (ctx.weights[i] != 1.0) {
+            for (const double w : ctx.weights) {
+                if (w != 1.0) {
                     ++*n_;
                     return;
                 }
@@ -1021,7 +1022,7 @@ TEST_CASE("the portfolio refuses a generator through a model factory", "[column]
     ParallelSearch ps(2);
     ParallelConfig pc;
     pc.n_threads = 2;
-    const Model copy = cm.model;
+    Model copy = cm.model;
     REQUIRE_THROWS_AS(
         ps.solve([&copy]() { return copy; }, 0.2, 1, cfg, nullptr, nullptr, nullptr, pc),
         std::invalid_argument);

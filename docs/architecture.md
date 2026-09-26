@@ -2208,6 +2208,147 @@ the forced-scalar fallback only fires when nothing moved at all. A model with no
 movable variable anywhere (every scalar pinned, every structure a dead end) still
 correctly changes nothing.
 
+### Column generation (#168)
+
+**Files:** `include/cbls/column_generator.h`, `src/column_generator.cpp`, the
+pricing methods of `ViolationLSLoop` in `src/search.cpp`, and the growth mode of
+`ParallelSearch` in `src/pool.cpp`. Tests: `tests/test_column_generation.cpp`.
+
+A `ColumnGenerator` registered on `SearchConfig::column_generator` is the
+local-search analogue of column generation: at chosen safe points the loop hands
+it the live GLS weights, it stages new columns (and optionally rows) into a
+`ModelExtension`, and the loop applies them through `Model::extend` (#167) and
+carries on with every existing row's weight intact. The weights are not LP duals
+and certify nothing; they are a measure of how hard the current columns find
+each row, which is enough to price with. The documented reduced-cost analogue: a
+column of cost `c_p` and coefficients `a_ip` changes the weighted violation by
+about `W_obj * c_p - sum_i W_i * a_ip`, where `W_obj` is the objective row's own
+weight (`PricingContext::objective_constraint_idx`).
+
+**Where it is called.** At most once per batch, never mid-batch:
+
+| Event | Where | Why there |
+|---|---|---|
+| `NewBest` (`price_on_new_best`, off by default) | after the batch's `batch_end`, **before** `apply_batch_outcome` | the new-best weight reset would otherwise hand the pricer a flat vector |
+| `Periodic` (`pricing_period`, 0 = off) | same point, when `batches % pricing_period == 0` | |
+| `Stagnation` (`price_on_stagnation`, on by default) | immediately **before** the kick, on **both** routes (full-period and #102's unproductive one) | the kick resets the weights too |
+
+A batch that raises two events prices once, carrying the first of NewBest,
+Periodic, Stagnation. A structural or novelty batch's pending `fj.resync()` is paid
+before the call rather than after it, since `FeasibilityJump::on_extended` patches
+only the touched rows and must be patching tables that describe the assignment.
+No call starts past the deadline (the same `past_deadline()` guard the inner
+solver has); the generator must itself return within
+`PricingContext::remaining_seconds`, which is `+inf` on an iteration-budgeted run.
+
+**What applying an extension does**, in order: `Model::extend`,
+`ViolationManager::on_extended`, `FeasibilityJump::on_extended` (#167's enforced
+order); `pad_state` on every state the loop may restore -- the incumbent, the
+closest approach, an adopted kick origin; then the incumbent is **re-evaluated**.
+That last step is not optional. An extension is an arbitrary DAG recording, so
+nothing short of evaluating the padded incumbent says whether it is still the
+point it was: a new row can cut it off, a column entering at a non-neutral start
+value moves its rows and its objective. Two `full_evaluate`s and one state copy
+per applied extension, O(model), paid only on a batch that priced. The outcomes:
+unchanged (the column-generation norm -- a column enters at 0 and adds nothing);
+feasible with a different objective (the incumbent's objective is re-derived, the
+bound tightened if it is now lower, never loosened); or no longer feasible, in
+which case it is demoted to the closest approach, the objective bound is released
+and the run looks for a feasible point of the model it now has. Counted in
+`SearchCounters::incumbents_revalidated`. Without it the run returned the cut-off
+incumbent as `feasible = true` (pinned red by `a row that cuts off the incumbent
+demotes it`).
+
+**Column pool growth: cap, retirement, duplicates.**
+
+- *Cap.* `max_generated_columns` (default 10 000, a safety ceiling, not a tuned
+  value) bounds the variables pricing may add over one `solve()`, retired ones
+  included. An extension that would pass it is refused **whole** -- cutting a
+  recording at a column boundary is not something `ModelExtension` can do, and the
+  generator was told the room it had (`columns_remaining`) -- and once the room is
+  zero the generator is not called again. The model never shrinks, because
+  `Model::extend` cannot remove (#167's non-goal), so the cap is the only thing
+  that bounds per-batch cost growth.
+- *Retirement* (`column_retire_age`, default 0 = off). `ColumnPool` ages a
+  generated column once per pricing call while it sits at its lower bound in the
+  current assignment **and** in every state the search may return to (the
+  incumbent, or the closest approach on an infeasible run, and an adopted
+  origin), and resets the age on any other value. At the age limit it is retired:
+  its upper bound is set to its lower bound -- which is what keeps every *other*
+  mover off it, an LNS destroy and the fresh `FeasibilityJump` an LNS repair
+  builds included (a pinned Bool had never existed before, so `random_in_domain`
+  and the Bool jump candidate now read the bound; neither changes a draw on any
+  model that existed before) -- and `FeasibilityJump::retire` drops it from the
+  scan tables and from kicks. Retirement is permanent and is **not removal**: the
+  column keeps its slot in G_v and its terms in their rows, and still counts
+  against the cap. What it buys is scan cost. Off by default because no
+  measurement in the tree says which age is worth losing a column over.
+- *Duplicates.* The engine cannot hash a column: a column is whatever DAG the
+  generator recorded, with no canonical form. The generator can, since it built
+  the coefficients. So the engine owns a `ColumnSignatureSet` per solve, hands it
+  over as `PricingContext::signatures`, and the generator registers each column's
+  (cost, sorted (row, coefficient) list) before staging it. Exact, not
+  probabilistic: a bucket hit compares the whole signature. A generator that
+  wants the base model's columns counted registers them on its first call.
+
+**Portfolio.** `Model::extend` refuses a frozen model, and a portfolio shares one
+frozen structure across its workers (#157). Under a column generator,
+`ParallelSearch`'s **`Model& master`** overload therefore gives each worker a
+**private deep copy** (`Model::private_copy`, the explicit form of the detach
+`freeze()` refuses to do silently), so the #157 memory saving is off for that run
+by construction. Each worker's `solve()` clones the generator, so each prices with
+its own instance and nothing mutable is shared (`clone()` is called on the shared
+prototype from several threads, so it must only read). Workers share **no pool**:
+after its first extension a worker's model is no longer its peers', and a pooled
+state would index the wrong columns -- and at equal widths it would pass
+`adopt_from_pool`'s shape guard, which is what `portfolio workers adopt nothing
+even when their models agree in width` pins. Each worker runs **one** solve: a
+restart would leave the worker's accumulator comparing states of different widths
+that nothing could pad, and a retry after a throw would search a model `extend`
+may have left unusable. The answer is the best worker's, and its grown model is
+**moved into `master`**, which comes back open, closed and grown, with
+`result.best_state` indexing it. The factory overloads refuse a generator with
+`std::invalid_argument`: their models never come back to the caller, so the
+state could not be read. A single `solve()` on a frozen model refuses it up
+front for the same reason `extend` would, naming `private_copy()` as the fix. A
+shared column pool across workers is the natural follow-up and is not built.
+
+**No generator, no change.** With `column_generator` null every pricing site is
+one null test: no clock, no draw, no resync. `pricing settings without a
+generator leave the trajectory bit-identical` pins the settings as inert, and `a
+generator that stages nothing leaves the trajectory bit-identical` pins the
+stronger claim that every site running (early resync, context, aging) still moves
+nothing.
+
+**Reporting.** `SearchCounters::pricing_calls`, `pricing_seconds` (the call plus
+the extension, filled only with a wall clock, like `inner_solver_seconds`),
+`columns_added`, `rows_added`, `columns_retired`, `extensions_refused`,
+`incumbents_revalidated`, all summed by `merge`; and `Tracer::pricing(why,
+columns, rows, seconds)`, at most once per batch.
+
+**Measured**, on Falkenauer `u120_00` (OR-Library `binpack1.txt`, 120 items in 58
+distinct sizes, capacity 150, optimum 48) as cutting stock from the trivial
+pattern set (one item per roll, so 120 without pricing), with the test file's
+bounded-knapsack pricer over the row weights -- up to four columns a call,
+`pricing_period = 5` plus the default Stagnation pricing, cap 400. Iteration
+budgets, so the numbers are deterministic and independent of machine load;
+engine commit `8b6a28d`, seeds 1-5:
+
+| GLS iterations | without pricer | with pricer | columns added |
+|---|---|---|---|
+| 30 000 (the test's budget) | 120 at every seed | 78-83 | 20-28 |
+| 300 000 | 120 | 60-65 | 67-110 |
+| 1 000 000 | 120 | 51-52 | 400 (the cap) at every seed |
+
+No incumbent was ever revalidated (a column enters at 0 and changes nothing), and
+retirement was off. The best run is 3-4 rolls above the optimum -- this is a
+heuristic over GLS weights, not a master LP, and nothing here claims more. The
+test pins only the direction: strictly better than the no-pricer run at five
+seeds, under the cap.
+
+**Python.** Not bound yet: a Python-subclassable `ColumnGenerator` needs the
+trampoline machinery #132 built, and is left to a follow-up.
+
 ### SearchConfig
 
 ```cpp
