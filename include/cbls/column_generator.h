@@ -15,6 +15,7 @@ namespace cbls {
 
 class ModelExtension;
 struct ExtensionResult;
+class ViolationManager;
 
 /// Duplicate detection for generated columns (#168): a set of column
 /// SIGNATURES, where a signature is the column's cost and its (row, coefficient)
@@ -71,7 +72,7 @@ private:
 /// THE CALL IS AT A SAFE POINT BETWEEN BATCHES: no GLS iteration is in flight,
 /// `model`'s node values are consistent with its variables (a structural batch's
 /// pending resync has been paid first), and `weights` is the live GLS weight
-/// vector itself, not a copy -- `weights.data() == vm.weights.data()`.
+/// vector itself, not a copy -- `weights.begin() == vm.weights.data()`.
 struct PricingContext {
     /// The model, holding the CURRENT assignment -- the point the search stands
     /// on, which is not necessarily the incumbent. Read the assignment through
@@ -121,6 +122,9 @@ struct PricingContext {
     int64_t columns_remaining = 0;
     /// This solve's duplicate registry; see `ColumnSignatureSet`.
     ColumnSignatureSet& signatures;
+    /// The violation manager `weights` belongs to, for a pricer that wants the
+    /// cached per-row violations too. `weights` above is exactly its `weights`.
+    const ViolationManager& violations;
 };
 
 /// A pricing oracle: proposes new columns (and optionally rows) from the GLS

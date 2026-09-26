@@ -1583,7 +1583,8 @@ void ViolationLSLoop::price(PricingEvent why) {
             elapsed(),
             has_deadline_ ? remaining() : std::numeric_limits<double>::infinity(),
             columns_.remaining(),
-            signatures_};
+            signatures_,
+            vm_};
         ++counters_.pricing_calls;
         generator_->price(ctx, why, ext);
     }
@@ -1878,6 +1879,17 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
                    const SearchConfig& config, SearchCoordination* coord) {
     (void)use_fj;  // GFJ is always the engine now; the flag is vestigial.
     RNG rng(seed);
+
+    // Column generation grows the model, and a frozen model's structure is shared
+    // with every other replica of it (#157), so Model::extend refuses it. Said
+    // here, before any work, rather than at the first pricing call deep inside
+    // the run: the caller's fix is to hand over `model.private_copy()`, or to use
+    // ParallelSearch's master overload, which does that per worker.
+    if (config.column_generator != nullptr && model.is_frozen()) {
+        throw std::invalid_argument(
+            "solve: SearchConfig::column_generator grows the model, and this model is frozen -- "
+            "its structure is shared with its replicas. Pass model.private_copy() (#168)");
+    }
 
     const bool has_obj = model.objective_id() >= 0;
     if (has_obj) {

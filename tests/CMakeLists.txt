@@ -36,6 +36,7 @@ add_executable(cbls_tests
     test_tracer.cpp
     test_executor.cpp
     test_custom_invariant_edits.cpp
+    test_column_generation.cpp
 )
 target_link_libraries(cbls_tests PRIVATE cbls_lib Catch2::Catch2WithMain)
 target_include_directories(cbls_tests PRIVATE ${CMAKE_SOURCE_DIR} ${json_SOURCE_DIR}/include)
