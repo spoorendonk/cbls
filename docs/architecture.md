@@ -1592,7 +1592,8 @@ the loop reads no clock at all, and iteration-budgeted runs stay bit-identical
 and deterministic. (`solve()` still timestamps entry and exit to fill
 `time_seconds`, a callback's ~1s progress cadence reads the clock once per
 batch, and `SearchResult::time_to_first_feasible` costs ONE read, at the first
-feasible point and latched thereafter (#149); none of the three reaches the
+feasible point and latched thereafter (#149). Three of those are O(1) per run and
+the callback's is per batch; none of the four reaches the
 search trajectory. #169 adds two more, and neither reaches the trajectory
 either. `SearchCounters::inner_solver_seconds` is gated on `has_deadline_`
 exactly as `last_improvement_` is, so a clockless run reads no clock for it and
@@ -2608,15 +2609,16 @@ in both the human and the JSONL format:
   `solve_portfolio`) so the two cannot drift apart, with the per-generator rows
   matched by NAME — a worker that threw before building its batch contributes an
   empty vector, and a blind index-wise merge would attribute the survivors' rows
-  to the wrong generator. That is why `GeneratorCounters::name` carries a
-  `#<index>` suffix wherever one batch built two generators of the same name: the
-  built-ins name themselves by TYPE, so two List variables would otherwise share
-  a key and one row would absorb the other's counts. When the two vectors do
+  to the wrong generator. When the two vectors do
   agree name-for-name — the normal case, since every worker builds the same
   generators in the same order — the merge is a positional walk rather than the
   O(G²) scan, which matters because `by_generator` has one entry per structured
-  variable; `first_feasible_objective` and `time_to_first_feasible`
-  are the pair from the earliest worker *and restart* to reach feasibility, with
+  variable, and an empty target simply takes every row. `GeneratorCounters::name`
+  additionally carries a `#<index>` suffix wherever one batch built two
+  generators of the same name, since the built-ins name themselves by type; that
+  is *defensive*, because the two fast paths already merge same-named rows
+  correctly and only the by-name scan could collapse them;
+  `first_feasible_objective` and `time_to_first_feasible` are the pair from the earliest worker *and restart* to reach feasibility, with
   the time shifted onto the portfolio clock. Only `escape_probe_armed` reads its
   "not recorded" value: it is a latch on one worker's end state, and a pooled
   solution carries no worker identity for it to belong to.
@@ -2853,10 +2855,17 @@ under the GIL, which is the serialisation a portfolio exists to avoid.
 
 `SearchConfig::stop` and `ParallelConfig::stop` are a `StopRef`
 (`include/cbls/stop.h`): a type-erased, **non-owning** view of anything with
-`bool requested() const`, including the built-in `cbls::StopToken` and a C++20
-`std::stop_token`. A host that cancels for its own reasons -- a peer component
-finished, the user pressed stop -- raises it and the run ends at its next
-**batch** boundary with `TerminationReason::Cancelled`.
+`bool requested() const`, such as the built-in `cbls::StopToken`. A host that
+cancels for its own reasons -- a peer component finished, the user pressed stop
+-- raises it and the run ends at its next **batch** boundary with
+`TerminationReason::Cancelled`.
+
+A C++20 `std::stop_token` is **not** directly adaptable: its member is
+`stop_requested()`. `include/cbls/stop.h` carries the three-line adaptor a host
+writes instead (a struct holding the token by value and forwarding
+`requested()`), which has to be a **named lvalue** outliving the solve -- the
+deleted rvalue constructor refuses a temporary at compile time rather than
+leaving a dangling view.
 
 Three things are worth stating precisely:
 
@@ -2932,8 +2941,12 @@ restart replaces the perturb with, and `adopt_from_pool` returns false at once
 without a pool.
 
 A null tracer changes nothing: `tests/test_tracer.cpp` compares the objective,
-the iteration count, every counter and the **full final assignment** between a
-traced and an untraced run of the same seed.
+feasibility, the residual, the iteration count, the perturbation and LNS
+counters, the termination reason, the escape-probe latch, every field of
+`SearchCounters` (including the per-generator rows) and the **full final
+assignment** between a traced and an untraced run of the same seed. The one
+exclusion is `inner_solver_seconds`, which is a duration: that run has no wall
+clock, so both arms are asserted to read 0.0 instead.
 
 ### CLI flags
 

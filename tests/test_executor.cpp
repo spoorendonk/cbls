@@ -1,4 +1,4 @@
-// A caller-owned executor (#169): `ExecutorRef`, `FunctionRef`, and
+// A caller-owned executor (#169): `ExecutorRef`, `detail::FunctionRef`, and
 // `ParallelConfig::executor`.
 //
 // The load-bearing assertion is negative and is made by COUNTING: with an
@@ -184,23 +184,25 @@ private:
 }  // namespace
 
 TEST_CASE("FunctionRef calls through to the referent", "[executor]") {
+    // detail:: on purpose -- it is implementation vocabulary, safe only as a
+    // parameter; see the note on the namespace.
     int seen = 0;
     auto add = [&seen](int i) { seen += i; };
-    const FunctionRef<void(int)> ref(add);
+    const detail::FunctionRef<void(int)> ref(add);
     ref(3);
     ref(4);
     REQUIRE(seen == 7);
 
     // A mutable lambda: the thunk invokes a non-const callable, which is why
-    // FunctionRef stores a non-const pointer.
+    // detail::FunctionRef stores a non-const pointer.
     auto counter = [n = 0]() mutable { return ++n; };
-    const FunctionRef<int()> counting(counter);
+    const detail::FunctionRef<int()> counting(counter);
     REQUIRE(counting() == 1);
     REQUIRE(counting() == 2);
 
     // Arguments are forwarded, not copied into a std::function.
     auto by_ref = [](int& out, int value) { out = value; };
-    const FunctionRef<void(int&, int)> writer(by_ref);
+    const detail::FunctionRef<void(int&, int)> writer(by_ref);
     int target = 0;
     writer(target, 9);
     REQUIRE(target == 9);

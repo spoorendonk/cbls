@@ -390,7 +390,6 @@ struct PortfolioContext {
     const std::function<std::unique_ptr<Tracer>(int)>& tracer_factory;
     bool has_deadline;
     uint64_t seed;
-    int n_threads;
 };
 
 // One worker: its own model, its own hook and LNS, and a restart loop over the
@@ -459,7 +458,7 @@ int portfolio_workers(int requested, const std::optional<ExecutorRef>& executor)
 // unwinding past a half-filled vector would abort the process instead of
 // reporting the failure.
 void launch_workers(int n_workers, const std::optional<ExecutorRef>& executor,
-                    std::atomic<bool>& stop, FunctionRef<void(int)> run_one) {
+                    std::atomic<bool>& stop, detail::FunctionRef<void(int)> run_one) {
     if (executor.has_value()) {
         executor->parallel_for_chunked(
             0, n_workers, [n_workers, run_one](int begin, int end, int /*chunk_idx*/) {
@@ -508,23 +507,39 @@ bool ends_worker(TerminationReason reason) {
     return reason == TerminationReason::Stopped || reason == TerminationReason::Cancelled;
 }
 
-// The reason a worker ends on when it is stopped BETWEEN restarts.
+// A host cancel outranks a per-worker ITERATION budget in the aggregate.
 //
-// `absorb` overwrites the reason per restart, so without this an IterationLimit
-// restart followed by a host cancel drops `Cancelled` from the worker's result --
-// and with every worker in that state `aggregate_termination` would report
-// IterationLimit for a run whose budget the host took away, inverting the
-// precedence TerminationReason::Cancelled documents.
+// `WorkerAccumulator::absorb` overwrites a worker's reason per restart, and a
+// worker can finish a restart's iteration budget and only then see the cancel --
+// the window between two restarts, and also the loop's own "shared clock
+// exhausted" exit. Such a worker reports IterationLimit for a run whose budget
+// the host took away, which inverts the precedence
+// TerminationReason::Cancelled documents.
 //
-// Feasible is left alone: a worker that answered the question finished, it did not
-// stop. The peer flag is left alone too, since aggregate_termination still
-// documents `Stopped` as unreachable from here (a worker raises it only on its own
-// Feasible exit, which this guard already excludes).
-void note_cancel_between_restarts(WorkerAccumulator& acc, const PortfolioContext& ctx) {
-    if (acc.any_run && acc.result.termination != TerminationReason::Feasible &&
-        ctx.config.stop.requested()) {
-        acc.result.termination = TerminationReason::Cancelled;
+// Applied HERE, to the aggregate, rather than inside the worker loop. Two
+// reasons, and the second is the one that decided it:
+//
+//  - it covers strictly more: both loop-top exits, and a cancel that lands after
+//    the loop but before the portfolio reports;
+//  - it is OBSERVABLE. Everything a host supplies -- callback, hook, LNS, tracer
+//    -- runs inside `cbls::solve`, so nothing can catch a worker between two
+//    restarts, and a relabel inside that loop is code no test can reach. This
+//    one is reached by any run that ends on an iteration budget with the stop
+//    raised (tests/test_stop.cpp).
+//
+// TimeLimit is deliberately NOT relabelled: the shared clock expiring is its own
+// cause, and `ViolationLSLoop::run` resolves the same ambiguity the same way, by
+// asking the clock first. Feasible is not either -- a worker that answered the
+// question finished, it did not stop.
+TerminationReason with_host_cancel(TerminationReason aggregate, bool cancelled) {
+    if (!cancelled) {
+        return aggregate;
     }
+    if (aggregate == TerminationReason::IterationLimit ||
+        aggregate == TerminationReason::NoBudget) {
+        return TerminationReason::Cancelled;
+    }
+    return aggregate;
 }
 
 // Whether the worker should not start another restart at all: a peer raised the
@@ -612,7 +627,6 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index,
         // arriving between two restarts ends the worker rather than launching one
         // more solve that immediately returns Cancelled.
         if (worker_should_stop(ctx)) {
-            note_cancel_between_restarts(acc, ctx);
             break;
         }
         // ONE read of the shared clock per restart, reused as this solve's
@@ -792,8 +806,7 @@ SearchResult ParallelSearch::solve_portfolio(
                          elapsed,
                          par_config.tracer_factory,
                          has_deadline,
-                         seed,
-                         n_workers};
+                         seed};
 
     std::vector<SearchResult> results(n_workers);
     // One slot per worker, left null unless that worker threw. Sized up front so
@@ -923,7 +936,10 @@ SearchResult ParallelSearch::solve_portfolio(
     }
     result.iterations = total_iters;
     result.time_seconds = max_time;
-    result.termination = aggregate_termination(results);
+    // See with_host_cancel: a worker can exhaust its iteration budget and only
+    // then see the cancel, and the aggregate must not report that as the engine's
+    // own choice to stop.
+    result.termination = with_host_cancel(aggregate_termination(results), combined.requested());
     return result;
 }
 

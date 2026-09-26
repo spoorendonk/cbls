@@ -346,8 +346,12 @@ TEST_CASE("two generators of one kind keep separate rows", "[counters][structura
     // gives two generators with the SAME name. `SearchCounters::merge` keys
     // `by_generator` on that name, and a portfolio merges through it even at one
     // worker with no restart, so a collision makes the portfolio report a different
-    // row shape for the same model than `solve()` does, with one row absorbing the
-    // other's counts.
+    // row shape for the same model than `solve()` does.
+    //
+    // The NAME assertion below is the one that bites. `merge`'s fast paths mean
+    // the counts themselves survive a collision in every shape a portfolio
+    // normally produces, so a size or total check alone would not catch it; see
+    // GeneratorCounters::name for exactly how much the suffix buys.
     auto build = [] {
         Model m;
         auto a = m.list_var(6, "a");

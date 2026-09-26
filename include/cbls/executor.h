@@ -10,6 +10,15 @@
 
 namespace cbls {
 
+/// Implementation vocabulary, not API. `FunctionRef` below is safe only in the
+/// one shape this library uses it in -- a PARAMETER, invoked before the call
+/// returns -- and it cannot police that itself: an rvalue must bind, or
+/// `exec.parallel_for(0, n, [](int){})` would not compile, so the sibling trick
+/// `StopRef` uses (a deleted `const S&&` overload) is not available. Storing one
+/// (`detail::FunctionRef<void(int)> f = [](int){};`) is a dangling reference with no
+/// diagnostic, which is why it is not in `cbls::`.
+namespace detail {
+
 /// A NON-OWNING view of a callable, for a parameter that is invoked before the
 /// call returns.
 ///
@@ -53,6 +62,8 @@ private:
     R (*fn_)(void*, Args...);
 };
 
+}  // namespace detail
+
 /// A NON-OWNING, type-erased view of a caller-owned thread pool (#169).
 ///
 /// WHY THIS EXISTS. `ParallelSearch` creates its own `std::thread`s. A host that
@@ -87,6 +98,15 @@ private:
 /// pool, and the pool must outlive the solve. Same rule, same reason, as
 /// `StopRef`.
 ///
+/// EVERY `parallel_*` CALL IS A JOIN POINT: it must not return until every call
+/// or chunk it made has finished. This is not a preference. `src/pool.cpp` hands
+/// `parallel_for_chunked` a callable that holds references into
+/// `solve_portfolio`'s own stack frame -- the shared solution pool, the stop flag,
+/// the per-worker result vectors -- and that frame is gone the moment the call
+/// returns. An executor that ENQUEUES its chunks and returns, which is an
+/// ordinary design for a fire-and-forget pool, therefore reads freed stack in
+/// every worker. `parallel_invoke` says the same in its own words.
+///
 /// CONCURRENCY IS REQUIRED, not merely permitted. A portfolio worker is
 /// long-running and COOPERATIVE: it shares incumbents through the pool as it
 /// finds them and restarts from a peer's, so the workers have to run at the same
@@ -109,7 +129,9 @@ public:
     ExecutorRef(E& executor) : obj_(std::addressof(executor)), table_(&kTableFor<E>) {}
 
     /// `f(i)` for each `i` in `[begin, end)`, possibly concurrently.
-    void parallel_for(int begin, int end, FunctionRef<void(int)> f) const {
+    ///
+    /// MUST NOT RETURN UNTIL EVERY CALL HAS FINISHED. See the note on the class.
+    void parallel_for(int begin, int end, detail::FunctionRef<void(int)> f) const {
         if (end <= begin) {
             return;
         }
@@ -119,7 +141,10 @@ public:
     /// `f(chunk_begin, chunk_end, chunk_idx)` over a partition of
     /// `[begin, end)`, possibly concurrently. This is the one `ParallelSearch`
     /// uses.
-    void parallel_for_chunked(int begin, int end, FunctionRef<void(int, int, int)> f) const {
+    ///
+    /// MUST NOT RETURN UNTIL EVERY CHUNK HAS FINISHED. See the note on the class.
+    void parallel_for_chunked(int begin, int end,
+                              detail::FunctionRef<void(int, int, int)> f) const {
         if (end <= begin) {
             return;
         }
@@ -127,7 +152,7 @@ public:
     }
 
     /// Run both, possibly concurrently. Returns once both have finished.
-    void parallel_invoke(FunctionRef<void()> f, FunctionRef<void()> g) const {
+    void parallel_invoke(detail::FunctionRef<void()> f, detail::FunctionRef<void()> g) const {
         table_->parallel_invoke(obj_, f, g);
     }
 
@@ -146,9 +171,9 @@ public:
 
 private:
     struct VTable {
-        void (*parallel_for)(void*, int, int, FunctionRef<void(int)>);
-        void (*parallel_for_chunked)(void*, int, int, FunctionRef<void(int, int, int)>);
-        void (*parallel_invoke)(void*, FunctionRef<void()>, FunctionRef<void()>);
+        void (*parallel_for)(void*, int, int, detail::FunctionRef<void(int)>);
+        void (*parallel_for_chunked)(void*, int, int, detail::FunctionRef<void(int, int, int)>);
+        void (*parallel_invoke)(void*, detail::FunctionRef<void()>, detail::FunctionRef<void()>);
         int (*n_threads)(void*);
     };
 
@@ -158,13 +183,13 @@ private:
     // order to reason about.
     template <typename E>
     static constexpr VTable kTableFor{
-        [](void* obj, int begin, int end, FunctionRef<void(int)> f) {
+        [](void* obj, int begin, int end, detail::FunctionRef<void(int)> f) {
             static_cast<E*>(obj)->parallel_for(begin, end, f);
         },
-        [](void* obj, int begin, int end, FunctionRef<void(int, int, int)> f) {
+        [](void* obj, int begin, int end, detail::FunctionRef<void(int, int, int)> f) {
             static_cast<E*>(obj)->parallel_for_chunked(begin, end, f);
         },
-        [](void* obj, FunctionRef<void()> f, FunctionRef<void()> g) {
+        [](void* obj, detail::FunctionRef<void()> f, detail::FunctionRef<void()> g) {
             static_cast<E*>(obj)->parallel_invoke(f, g);
         },
         // The return type is spelled on the lambda rather than cast inside it: an

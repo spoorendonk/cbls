@@ -31,13 +31,24 @@ struct GeneratorCounters {
     /// `MoveGenerator::name()`, copied, with `#<index>` appended on every
     /// occurrence where one batch built more than one generator of that name.
     ///
-    /// The suffix is load-bearing, not cosmetic: `merge` below keys on this
-    /// string, and `MoveGenerator::name()` does not promise to be unique -- the
-    /// built-ins name themselves by TYPE, so two List variables would both say
-    /// "builtin_list" and one row would absorb the other's counts. Unique within
-    /// a batch UNLESS a registered generator's own `name()` already ends in
-    /// `#<n>`, which `StructuralBatch`'s constructor records as a documented
-    /// limit rather than defending against.
+    /// The suffix is there because `merge` below keys on this string and
+    /// `MoveGenerator::name()` does not promise to be unique: the built-ins name
+    /// themselves by TYPE, so two List variables both say "builtin_list".
+    ///
+    /// BE PRECISE ABOUT WHAT IT BUYS, because the obvious reading overstates it.
+    /// `merge`'s two fast paths already handle the common case correctly without
+    /// it: an empty target appends every row, and two same-length vectors whose
+    /// names agree position-for-position are walked positionally -- and every
+    /// worker builds the same generators in the same order, so that is what a
+    /// portfolio actually produces. The collapse the suffix prevents needs the
+    /// BY-NAME scan to run, i.e. two vectors that differ in length or ordering:
+    /// merging a worker that built its batch against one that built a different
+    /// set. So this is defensive work on a largely latent bug, not a fix for one
+    /// that was happening.
+    ///
+    /// Unique within a batch UNLESS a registered generator's own `name()` already
+    /// ends in `#<n>`, which `StructuralBatch`'s constructor records as a
+    /// documented limit rather than defending against.
     ///
     /// The copy is needed either way: the generator is a per-worker clone that
     /// dies with its search, so the counters cannot borrow its `string_view`.
@@ -91,13 +102,27 @@ struct SearchCounters {
     /// SCALING rather than about a literal zero: an iteration-budgeted run does
     /// read the clock a bounded number of times already (`solve()`'s entry and
     /// exit, and `note_first_feasible` once; a `SolveCallback`, if one is
-    /// attached, adds one per batch -- `docs/architecture.md` names all four),
-    /// but each of the three is O(1) per RUN, where timing the hook would add
+    /// attached, adds one per batch -- `docs/architecture.md` names them),
+    /// but each of the three unconditional ones is O(1) per RUN, where timing the
+    /// hook would add
     /// two reads per inner-solver CALL and so scale with the run. That is what
     /// #169's "no additional clock read" criterion protects, and it is what makes
     /// an iteration-budgeted run bit-reproducible. The gate is exactly the one
     /// `last_improvement_` already carries in `src/search.cpp`. The CALL COUNT is
     /// always filled -- it reads no clock.
+    ///
+    /// WHAT THE WALL-CLOCK SIDE COSTS, measured rather than asserted, because the
+    /// gate is the RUN's and not the caller's: every timed run pays it whether or
+    /// not it reads the field. The hook fires on each new feasible point, so the
+    /// rate is the polish rate, not the iteration rate. On the three #125
+    /// throughput models at their 1s budget: 201 calls (milp/pk1), 52
+    /// (uc/ucp13-1p), 0 (minlp/chain50) -- so 402, 104 and 0 extra
+    /// `steady_clock::now()` per second. At 1359ns per read, measured on an HPET
+    /// clocksource (the pessimistic case; via the vDSO on a TSC one it is
+    /// ~20-25ns, see structural_batch.h), that is 546us, 141us and 0 per second of
+    /// budget -- 0.055%, 0.014% and 0. Derived from a call COUNT and a per-read
+    /// cost rather than by differencing two whole-program timings, which under any
+    /// load at all cannot resolve a number this size.
     int64_t inner_solver_calls = 0;
     double inner_solver_seconds = 0.0;
 

@@ -14,12 +14,32 @@ namespace cbls {
 /// was no supported way to say so. `SearchCoordination::stop` existed but is
 /// `ParallelSearch`'s private cross-worker channel, not an API.
 ///
-/// Adapts ANYTHING with `bool requested() const`: `cbls::StopToken` below, a
-/// `std::stop_token` (C++20), a host's own flag wrapper. Eight bytes of pointer
-/// plus eight of thunk; nothing here owns, copies or destroys the source, so the
-/// SOURCE MUST OUTLIVE THE SOLVE. A default-constructed `StopRef` is never
-/// requested and reads one null pointer compare, which is what keeps the
-/// unconfigured search on exactly the trajectory it had.
+/// Adapts ANYTHING with `bool requested() const`: `cbls::StopToken` below, or a
+/// host's own flag wrapper. Eight bytes of pointer plus eight of thunk; nothing
+/// here owns, copies or destroys the source, so the SOURCE MUST OUTLIVE THE
+/// SOLVE. A default-constructed `StopRef` is never requested and reads one null
+/// pointer compare, which is what keeps the unconfigured search on exactly the
+/// trajectory it had.
+///
+/// `std::stop_token` (C++20) is NOT one of them, and an earlier version of this
+/// comment wrongly said it was. Its member is `stop_requested()`, so handing one
+/// over fails to compile inside `thunk` below rather than at the call site. A
+/// C++20 host writes the three-line adaptor instead -- this library is C++17, so
+/// it cannot ship one:
+///
+/// ```
+///   struct CancelOn {                               // a NAMED lvalue, and it
+///       std::stop_token token;                      // must outlive the solve
+///       bool requested() const { return token.stop_requested(); }
+///   };
+///   CancelOn cancel{source.get_token()};
+///   config.stop = cancel;
+/// ```
+///
+/// Note what the named lvalue is for: `config.stop = CancelOn{src.get_token()};`
+/// is a temporary, which the deleted rvalue constructor below refuses at compile
+/// time -- the whole point of that overload. Hold the adaptor for at least as
+/// long as the solve, as with every other source.
 ///
 /// `requested()` is polled at the search's existing safe points -- the same
 /// places the wall clock is read -- so a raised stop ends the run within ONE

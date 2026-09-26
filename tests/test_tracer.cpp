@@ -18,6 +18,7 @@
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -424,12 +425,39 @@ TEST_CASE("a null tracer changes nothing", "[tracer]") {
 
     REQUIRE_FALSE(tracer.events().empty());
     REQUIRE(with.first.objective == without.first.objective);
+    REQUIRE(with.first.feasible == without.first.feasible);
+    REQUIRE(with.first.best_violation == without.first.best_violation);
     REQUIRE(with.first.iterations == without.first.iterations);
     REQUIRE(with.first.perturbations == without.first.perturbations);
     REQUIRE(with.first.lns_repairs == without.first.lns_repairs);
     REQUIRE(with.first.lns_repairs_accepted == without.first.lns_repairs_accepted);
     REQUIRE(with.first.termination == without.first.termination);
-    REQUIRE(with.first.counters.batches == without.first.counters.batches);
+    REQUIRE(with.first.escape_probe_armed == without.first.escape_probe_armed);
+    REQUIRE(with.first.first_feasible_objective == without.first.first_feasible_objective);
+
+    // EVERY counter, not a representative one. `inner_solver_seconds` is the only
+    // field excluded and it has to be: this run has no wall clock, so both arms
+    // read 0.0 and comparing it would assert nothing -- while on a timed run it is
+    // a duration and would differ between any two runs at all.
+    const SearchCounters& a = with.first.counters;
+    const SearchCounters& b = without.first.counters;
+    REQUIRE(a.batches == b.batches);
+    REQUIRE(a.fj_batches == b.fj_batches);
+    REQUIRE(a.novelty_batches == b.novelty_batches);
+    REQUIRE(a.structural_batches == b.structural_batches);
+    REQUIRE(a.structural_moves_tried == b.structural_moves_tried);
+    REQUIRE(a.structural_moves_accepted == b.structural_moves_accepted);
+    REQUIRE(a.inner_solver_calls == b.inner_solver_calls);
+    REQUIRE(a.inner_solver_seconds == 0.0);
+    REQUIRE(b.inner_solver_seconds == 0.0);
+    REQUIRE(a.portfolio_restarts == b.portfolio_restarts);
+    REQUIRE(a.by_generator.size() == b.by_generator.size());
+    for (size_t i = 0; i < a.by_generator.size(); ++i) {
+        REQUIRE(a.by_generator[i].name == b.by_generator[i].name);
+        REQUIRE(a.by_generator[i].moves_tried == b.by_generator[i].moves_tried);
+        REQUIRE(a.by_generator[i].moves_accepted == b.by_generator[i].moves_accepted);
+    }
+
     REQUIRE(with.second.values == without.second.values);
     REQUIRE(with.second.elements == without.second.elements);
 }
@@ -514,6 +542,57 @@ TEST_CASE("KickKind has a distinct stable token", "[tracer]") {
     REQUIRE(std::string(kick_kind_name(KickKind::Perturb)) == "perturb");
     REQUIRE(std::string(kick_kind_name(KickKind::LNS)) == "lns");
     REQUIRE(std::string(kick_kind_name(KickKind::Adopt)) == "adopt");
+}
+
+TEST_CASE("a declining factory does not fall back to the shared tracer", "[tracer][parallel]") {
+    // The shape `restart_config` exists for, and the one nothing else in the tree
+    // builds: a `SearchConfig::tracer` set AND a factory present that returns null
+    // for some workers. `ParallelSearch` refuses a shared tracer with NO factory
+    // (tests/test_executor.cpp), so this is the only way a shared sink can still
+    // reach a worker -- and it must not, because that worker's peers are tracing
+    // concurrently on their own threads with nothing between them.
+    //
+    // Restoring `restart_config`'s guard to `if (tracer != nullptr)` makes the
+    // shared tracer see events, which is what this asserts it does not.
+    struct CountingTracer : Tracer {
+        std::atomic<int>* batches;
+        explicit CountingTracer(std::atomic<int>* slot) : batches(slot) {}
+        void batch_end(BatchKind /*kind*/, int64_t /*iterations*/, bool /*improved*/) override {
+            batches->fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+
+    std::atomic<int> shared_events{0};
+    std::atomic<int> own_events{0};
+    CountingTracer shared(&shared_events);
+
+    SearchConfig config;
+    config.batch_iterations = 100;
+    config.tracer = &shared;  // the sink that must NOT be handed to a worker
+
+    ParallelConfig par_config;
+    par_config.n_threads = 2;
+    // Worker 0 gets its own tracer; worker 1 is declined.
+    par_config.tracer_factory = [&own_events](int worker) -> std::unique_ptr<Tracer> {
+        if (worker == 0) {
+            return std::make_unique<CountingTracer>(&own_events);
+        }
+        return nullptr;
+    };
+
+    ParallelSearch ps(2);
+    const SearchResult r = ps.solve(
+        [] { return quadratic_model(); }, /*time_limit=*/0.3, /*seed=*/26, config,
+        /*hook_factory=*/nullptr, /*lns_factory=*/nullptr, /*callback=*/nullptr, par_config);
+
+    REQUIRE(r.feasible);
+    // Worker 0 traced, so the factory really was consulted and the run really ran
+    // batches -- without this the assertion below passes on a portfolio that
+    // traced nothing at all.
+    REQUIRE(own_events.load(std::memory_order_relaxed) > 0);
+    // And the declining worker was left untraced rather than pointed at the shared
+    // sink.
+    REQUIRE(shared_events.load(std::memory_order_relaxed) == 0);
 }
 
 TEST_CASE("the portfolio builds one tracer per worker", "[tracer][parallel]") {

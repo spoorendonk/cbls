@@ -868,7 +868,8 @@ NB_MODULE(_cbls_core, m) {
             nb::for_setter(nb::arg("token").none()), nb::for_setter(nb::keep_alive<1, 2>()),
             "A cbls.StopToken whose request() cancels every worker, or None. Reads\n"
             "back as a bool (whether one is attached), not as the token: the C++\n"
-            "side holds a view, not the object.");
+            "side holds a view, not the object. Same accumulating keep-alive as\n"
+            "SearchConfig.stop -- see its docstring.");
 
     // SearchConfig — must be registered before ParallelSearch / solve, which
     // use SearchConfig{} as a default argument (nanobind casts defaults to
@@ -916,7 +917,14 @@ NB_MODULE(_cbls_core, m) {
             [](SearchConfig& c, StopToken* token) { c.stop = stop_ref_or_none(token); },
             nb::for_setter(nb::arg("token").none()), nb::for_setter(nb::keep_alive<1, 2>()),
             "A cbls.StopToken whose request() ends this solve at its next batch\n"
-            "boundary, or None. Reads back as a bool (whether one is attached).");
+            "boundary, or None. Reads back as a bool (whether one is attached).\n"
+            "\n"
+            "The token is kept alive by this config for as long as the config lives,\n"
+            "which is what stops the C++ side reading a collected object. That tie\n"
+            "only ACCUMULATES: a long-lived config assigned several tokens retains\n"
+            "every one of them, and `config.stop = None` detaches the view but does\n"
+            "not release the tie. Harmless -- it errs toward keeping objects alive --\n"
+            "but build a fresh SearchConfig per solve if that matters.");
 
     // ParallelSearch
     nb::class_<ParallelSearch>(m, "ParallelSearch")

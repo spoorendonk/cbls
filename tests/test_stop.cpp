@@ -14,6 +14,7 @@
 #include <cbls/cbls.h>
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -270,6 +271,97 @@ TEST_CASE("a stop raised from another thread reaches a running portfolio", "[sto
 
     REQUIRE(r.termination == TerminationReason::Cancelled);
     REQUIRE(r.iterations > 0);
+}
+
+TEST_CASE("a cancel seen only after a worker's last solve still reports Cancelled",
+          "[stop][parallel]") {
+    // The window `with_host_cancel` exists for: a worker finishes a restart on its
+    // ITERATION budget and the cancel is only visible afterwards. Reporting
+    // IterationLimit there says the engine chose to stop, when the host took the
+    // budget away.
+    //
+    // ONE worker, and that is load-bearing. With two, the first worker to finish
+    // raises the token while its PEER is still mid-solve, the peer's own
+    // `past_deadline()` sees it and returns Cancelled, and the aggregate is then
+    // Cancelled for a completely different reason -- which is exactly how this test
+    // passed with the guard neutered when it was first written. One worker has no
+    // peer to see it.
+    //
+    // Reverting `with_host_cancel` to `return aggregate;` makes this report
+    // IterationLimit.
+    // A `Tracer`'s DESTRUCTOR runs on the worker's thread after its last solve and
+    // before the portfolio aggregates, which is the only seam a host has into that
+    // moment: callback, hook, LNS and tracer EVENTS all fire inside `cbls::solve`.
+    struct RaiseOnDestruction : Tracer {
+        StopToken* token;
+        explicit RaiseOnDestruction(StopToken* t) : token(t) {}
+        RaiseOnDestruction(const RaiseOnDestruction&) = delete;
+        RaiseOnDestruction& operator=(const RaiseOnDestruction&) = delete;
+        RaiseOnDestruction(RaiseOnDestruction&&) = delete;
+        RaiseOnDestruction& operator=(RaiseOnDestruction&&) = delete;
+        ~RaiseOnDestruction() override { token->request(); }
+    };
+
+    StopToken token;
+    SearchConfig config;
+    // No wall clock, so the worker runs exactly ONE solve and ends on this budget.
+    config.max_iterations = 2000;
+    config.batch_iterations = 100;
+
+    ParallelConfig par_config;
+    par_config.n_threads = 1;
+    par_config.stop = token;
+    par_config.tracer_factory = [&token](int /*worker*/) -> std::unique_ptr<Tracer> {
+        return std::make_unique<RaiseOnDestruction>(&token);
+    };
+
+    ParallelSearch ps(1);
+    const SearchResult r = ps.solve(
+        [] { return quadratic_model(); }, /*time_limit=*/0.0, /*seed=*/17, config,
+        /*hook_factory=*/nullptr, /*lns_factory=*/nullptr, /*callback=*/nullptr, par_config);
+
+    REQUIRE(token.requested());
+    // The worker did a full solve, so this is not the no-result fallback (which
+    // reports Cancelled by a different route -- see empty_portfolio_reason).
+    REQUIRE(r.iterations >= config.max_iterations);
+    REQUIRE(r.termination == TerminationReason::Cancelled);
+}
+
+TEST_CASE("a wall clock that expires is not relabelled as a cancel", "[stop][parallel]") {
+    // The other half of `with_host_cancel`, and why it is restricted to the
+    // iteration budget: a portfolio whose SHARED CLOCK ran out is time-limited, and
+    // a host cancel arriving in the same instant must not rewrite that. Same order
+    // `ViolationLSLoop::run` applies by asking the clock first.
+    //
+    // One worker, for the same reason as the test above.
+    // A `Tracer`'s DESTRUCTOR runs on the worker's thread after its last solve and
+    // before the portfolio aggregates, which is the only seam a host has into that
+    // moment: callback, hook, LNS and tracer EVENTS all fire inside `cbls::solve`.
+    struct RaiseOnDestruction : Tracer {
+        StopToken* token;
+        explicit RaiseOnDestruction(StopToken* t) : token(t) {}
+        RaiseOnDestruction(const RaiseOnDestruction&) = delete;
+        RaiseOnDestruction& operator=(const RaiseOnDestruction&) = delete;
+        RaiseOnDestruction(RaiseOnDestruction&&) = delete;
+        RaiseOnDestruction& operator=(RaiseOnDestruction&&) = delete;
+        ~RaiseOnDestruction() override { token->request(); }
+    };
+
+    StopToken token;
+    ParallelConfig par_config;
+    par_config.n_threads = 1;
+    par_config.stop = token;
+    par_config.tracer_factory = [&token](int /*worker*/) -> std::unique_ptr<Tracer> {
+        return std::make_unique<RaiseOnDestruction>(&token);
+    };
+
+    ParallelSearch ps(1);
+    const SearchResult r = ps.solve(
+        [] { return quadratic_model(); }, /*time_limit=*/0.25, /*seed=*/19, SearchConfig{},
+        /*hook_factory=*/nullptr, /*lns_factory=*/nullptr, /*callback=*/nullptr, par_config);
+
+    REQUIRE(token.requested());
+    REQUIRE(r.termination == TerminationReason::TimeLimit);
 }
 
 TEST_CASE("SearchConfig::stop and ParallelConfig::stop are OR-ed", "[stop][parallel]") {
