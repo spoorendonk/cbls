@@ -23,6 +23,7 @@ the binding hands the same operations through.
 import math
 import os
 import random
+import resource
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -559,6 +560,146 @@ def _scenario_extend_during_solve() -> None:
     print("OK")
 
 
+def _scenario_replay_refused() -> None:
+    """An extension that adds no variable and no node cannot be applied twice.
+
+    Neither count moves, so a count check waved the replay through and every
+    term and row it carried landed twice.
+    """
+    b = _base()
+    ext = cbls.ModelExtension(b.m)
+    ext.append_to_sum(b.row, b.y)  # row = x + 2y
+    b.m.extend(ext)
+    _expect_raises(ValueError, lambda: b.m.extend(ext), "replayed append-only extension")
+    b.m.var_mut(vid(b.x)).value = 0.0
+    b.m.var_mut(vid(b.y)).value = 1.0
+    cbls.full_evaluate(b.m)
+    assert b.m.node_value(b.row) == 2.0, b.m.node_value(b.row)
+
+    cut = b.m.constraint_ids()[0]  # an existing node, added again as a row
+    n_rows = len(b.m.constraint_ids())
+    ext = cbls.ModelExtension(b.m)
+    ext.add_constraint(cut)
+    b.m.extend(ext)
+    _expect_raises(ValueError, lambda: b.m.extend(ext), "replayed add_constraint")
+    assert len(b.m.constraint_ids()) == n_rows + 1
+    print("OK")
+
+
+def _scenario_same_base_cycle_refused() -> None:
+    """Two extensions recorded against one base, closing a cycle between them.
+
+    Each passes its own cycle check. The second used to reach extend's re-sort
+    backstop after the growth had begun, and the model then evaluated to 0.0 and
+    solved "feasible". It is refused now before anything changes.
+    """
+    b = _base()
+    s2 = b.obj  # Sum(x); b.row is Sum(x, y)
+    e1 = cbls.ModelExtension(b.m)
+    e1.append_to_sum(b.row, s2)
+    e2 = cbls.ModelExtension(b.m)
+    e2.append_to_sum(s2, b.row)
+    b.m.extend(e1)
+    n_nodes = b.m.num_nodes()
+    _expect_raises(ValueError, lambda: b.m.extend(e2), "second same-base extension")
+    assert b.m.num_nodes() == n_nodes
+    assert not b.m.extend_interrupted()
+    b.m.var_mut(vid(b.x)).value = 0.25
+    b.m.var_mut(vid(b.y)).value = 0.5
+    cbls.full_evaluate(b.m)
+    assert b.m.node_value(b.row) == 1.0  # x + y + s2
+    # Still growable: a fresh extension over the current structure applies.
+    e3 = cbls.ModelExtension(b.m)
+    e3.append_to_sum(b.row, e3.float_var(0, 1))
+    b.m.extend(e3)
+    print("OK")
+
+
+def _scenario_variable_handle_outlives_growth() -> None:
+    """A Variable held across growth reads and writes the model, not freed heap.
+
+    var()/var_mut() returned a reference into the variable array, which extend
+    (and any builder before close) reallocates; writing `.value` through one
+    held across that was a heap use-after-free.
+    """
+    b = _base()
+    held = b.m.var_mut(vid(b.x))
+    held_ro = b.m.var(vid(b.y))
+    held.value = 0.75
+    node = b.m.node(b.row)
+    ext = cbls.ModelExtension(b.m)
+    for _ in range(5000):  # enough to force the variable array to reallocate
+        ext.float_var(0, 1)
+    ext.append_to_sum(b.row, ext.constant(0.0))
+    b.m.extend(ext)
+    junk = [bytearray(64) for _ in range(20000)]  # reuse whatever was freed
+    held.value = 0.25
+    assert b.m.var(vid(b.x)).value == 0.25, b.m.var(vid(b.x)).value
+    assert held.value == 0.25
+    assert held.id == vid(b.x)
+    assert (held_ro.lb, held_ro.ub, held_ro.type) == (0.0, 1.0, cbls.VarType.Float)
+    assert node.id == b.row and node.op == cbls.NodeOp.Sum
+    del junk
+
+    # The same hazard before close(), through the ordinary builders.
+    m = cbls.Model()
+    h = m.float_var(0, 1)
+    w = m.var_mut(vid(h))
+    for _ in range(5000):
+        m.float_var(0, 1)
+    w.value = 0.5
+    assert m.var(vid(h)).value == 0.5
+
+    # A handle keeps its model alive, and still refuses an id that names nothing.
+    lone = cbls.Model()
+    lone_var = lone.var_mut(vid(lone.int_var(0, 3)))
+    del lone
+    lone_var.value = 2.0
+    assert lone_var.value == 2.0
+    _expect_raises(IndexError, lambda: m.var(10**6), "out-of-range var()")
+    print("OK")
+
+
+def _scenario_interrupted_extend_is_refused() -> None:
+    """An extend that fails part-way leaves a model every entry point refuses.
+
+    There is no rollback, so the half-grown model must not be evaluated or
+    searched. The one way to reach that state from Python is to run out of memory
+    mid-growth: cap the address space just above what the process holds, then
+    extend by enough variables that the variable array's reallocation fails.
+    """
+    b = _base()
+    ext = cbls.ModelExtension(b.m)
+    for _ in range(1_000_000):
+        ext.float_var(0, 1)
+    fresh = cbls.ModelExtension(b.m)  # recorded before the failure
+    with open("/proc/self/status", encoding="ascii") as status:
+        vm_bytes = (
+            next(int(line.split()[1]) for line in status if line.startswith("VmSize:")) * 1024
+        )
+    soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+    resource.setrlimit(resource.RLIMIT_AS, (vm_bytes + 16 * 1024 * 1024, hard))
+    try:
+        _expect_raises(MemoryError, lambda: b.m.extend(ext), "extend under a tight address space")
+    finally:
+        resource.setrlimit(resource.RLIMIT_AS, (soft, hard))
+    assert b.m.extend_interrupted()
+    config = cbls.SearchConfig()
+    config.max_iterations = 100
+    refusals: dict[str, Callable[[], object]] = {
+        "extend(fresh)": lambda: b.m.extend(fresh),
+        "extend(ext)": lambda: b.m.extend(ext),
+        "ModelExtension": lambda: cbls.ModelExtension(b.m),
+        "full_evaluate": lambda: cbls.full_evaluate(b.m),
+        "delta_evaluate": lambda: cbls.delta_evaluate(b.m, {vid(b.x)}),
+        "ViolationManager": lambda: cbls.ViolationManager(b.m),
+        "solve": lambda: cbls.solve(b.m, time_limit=1.0, seed=1, config=config),
+    }
+    for what, call in refusals.items():
+        _expect_raises(RuntimeError, call, what)
+    print("OK")
+
+
 SCENARIOS: dict[str, "Callable[[], None]"] = {
     "bad_handles": _scenario_bad_handles,
     "node_required": _scenario_node_required,
@@ -572,6 +713,10 @@ SCENARIOS: dict[str, "Callable[[], None]"] = {
     "keep_alive": _scenario_keep_alive,
     "append_after_another_extend": _scenario_append_after_another_extend,
     "extend_during_solve": _scenario_extend_during_solve,
+    "replay_refused": _scenario_replay_refused,
+    "same_base_cycle_refused": _scenario_same_base_cycle_refused,
+    "variable_handle_outlives_growth": _scenario_variable_handle_outlives_growth,
+    "interrupted_extend_is_refused": _scenario_interrupted_extend_is_refused,
 }
 
 

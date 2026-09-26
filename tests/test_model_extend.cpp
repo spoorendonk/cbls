@@ -1371,3 +1371,120 @@ TEST_CASE("extend refuses to run inside an evaluation", "[extend][custom]") {
     // The refusal left the model untouched -- it is taken before anything mutates.
     REQUIRE(m.num_vars() == 1);
 }
+
+// ---------------------------------------------------------------------------
+// Staleness beyond the counts (#167's cold review). An extension whose every
+// addition is over EXISTING nodes -- an append of an existing variable, a row
+// over an existing node -- leaves the variable and node counts where they were,
+// so a count check waved its replay through.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("an append-only extension cannot be applied twice", "[extend]") {
+    Model m;
+    const int32_t x = m.float_var(0.0, 1.0);
+    const int32_t y = m.float_var(0.0, 1.0);
+    const int32_t row = m.sum({x, y});
+    m.add_constraint(m.leq(row, m.constant(1.5)));
+    m.close();
+
+    ModelExtension ext(m);
+    ext.append_to_sum(row, y);  // row = x + 2y
+    const ExtensionResult first = m.extend(ext);
+    REQUIRE(first.num_new_nodes == 0);
+    REQUIRE(first.num_new_vars == 0);
+    REQUIRE_THROWS_AS(m.extend(ext), std::invalid_argument);
+
+    // Only the one append landed.
+    m.var_mut(handle_to_var_id(x)).value = 0.0;
+    m.var_mut(handle_to_var_id(y)).value = 1.0;
+    full_evaluate(m);
+    REQUIRE(m.node_value(row) == 2.0);
+    REQUIRE(m.children(m.node(row)).size() == 3);
+}
+
+TEST_CASE("a row over an existing node cannot be added twice by replay", "[extend]") {
+    Model m;
+    const int32_t x = m.float_var(0.0, 1.0);
+    const int32_t body = m.leq(m.sum({x}), m.constant(1.0));
+    const int32_t cut = m.leq(x, m.constant(0.5));  // built, not yet a row
+    m.add_constraint(body);
+    m.close();
+    const size_t rows_before = m.constraint_ids().size();
+
+    ModelExtension ext(m);
+    ext.add_constraint(cut);
+    (void)m.extend(ext);
+    REQUIRE_THROWS_AS(m.extend(ext), std::invalid_argument);
+    REQUIRE(m.constraint_ids().size() == rows_before + 1);
+    REQUIRE(m.constraints_of_var(handle_to_var_id(x)).size() == 2);
+}
+
+TEST_CASE("the second of two same-base extensions closing a cycle is refused whole", "[extend]") {
+    // Each append passes its own cycle check, because each was recorded against
+    // the base alone. Applied together they close s1 -> s2 -> s1, which `extend`
+    // used to discover only in its re-sort backstop -- after it had appended the
+    // nodes, with no rollback, and the model then evaluated to 0.0 and "solved"
+    // feasible. The structure token refuses the second before it touches
+    // anything.
+    Model m;
+    const int32_t x = m.float_var(0.0, 1.0);
+    const int32_t y = m.float_var(0.0, 1.0);
+    const int32_t s1 = m.sum({x});
+    const int32_t s2 = m.sum({y});
+    m.add_constraint(m.leq(s1, m.constant(1.0)));
+    m.add_constraint(m.leq(s2, m.constant(1.0)));
+    m.close();
+
+    ModelExtension e1(m);
+    e1.append_to_sum(s1, s2);
+    ModelExtension e2(m);
+    e2.append_to_sum(s2, s1);
+    (void)m.extend(e1);
+    const size_t nodes_before = m.num_nodes();
+    REQUIRE_THROWS_AS(m.extend(e2), std::invalid_argument);
+
+    REQUIRE_FALSE(m.extend_interrupted());
+    REQUIRE(m.num_nodes() == nodes_before);
+    require_valid_topo_order(m);
+    m.var_mut(handle_to_var_id(x)).value = 0.25;
+    m.var_mut(handle_to_var_id(y)).value = 0.5;
+    full_evaluate(m);
+    REQUIRE(m.node_value(s1) == 0.75);  // x + s2
+    REQUIRE(m.node_value(s2) == 0.5);
+
+    // And an append recorded against the old structure is refused at record
+    // time too, where the cycle walk would otherwise answer over a stale graph.
+    ModelExtension e3(m);
+    ModelExtension e4(m);
+    e4.append_to_sum(s2, x);
+    (void)m.extend(e4);
+    REQUIRE_THROWS_AS(e3.append_to_sum(s2, s1), std::invalid_argument);
+}
+
+TEST_CASE("a structural write after close retires outstanding extensions", "[extend]") {
+    // `close(); add_constraint(...)` is legal (see Model::freeze), and changes
+    // neither count. An extension recorded before it describes a structure that
+    // no longer exists.
+    Model m;
+    const int32_t x = m.float_var(0.0, 1.0);
+    const int32_t s = m.sum({x});
+    const int32_t cut = m.leq(s, m.constant(0.5));
+    m.add_constraint(m.leq(s, m.constant(1.0)));
+    m.close();
+
+    ModelExtension ext(m);
+    ext.append_to_sum(s, x);
+    const uint64_t token = m.structure_version();
+    m.add_constraint(cut);
+    REQUIRE(m.structure_version() != token);
+    REQUIRE_THROWS_AS(m.extend(ext), std::invalid_argument);
+
+    // A copy carries the token -- it IS the same structure -- but the extension
+    // names its base by address, so the copy refuses it too.
+    ModelExtension fresh(m);
+    fresh.append_to_sum(s, x);
+    Model copy = m;
+    REQUIRE(copy.structure_version() == m.structure_version());
+    REQUIRE_THROWS_AS(copy.extend(fresh), std::invalid_argument);
+    REQUIRE(m.extend(fresh).touched_constraints.size() == 2);
+}

@@ -789,6 +789,9 @@ NB_MODULE(_cbls_core, m) {
         // RuntimeError -- see tests/python/test_model_freeze.py.
         .def("freeze", &Model::freeze)
         .def("is_frozen", &Model::is_frozen)
+        // True after an extend that threw part-way through its growth; the model
+        // is then refused by extend, solve, full_evaluate and friends (#167).
+        .def("extend_interrupted", &Model::extend_interrupted)
         // Accessors
         // NOT by reference into the model's arrays, which a builder before
         // close() and Model.extend after it reallocate (#167's review found a
