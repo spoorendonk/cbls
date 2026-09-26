@@ -570,6 +570,30 @@ this into the search loop:
   stale, which `full_evaluate` recovers. A throw from anything earlier does not,
   and the model is not usable afterwards.
 
+**From Python** the same surface is bound one-for-one: `cbls.ModelExtension(model)`
+with the handle-based builders (no `Expr` form -- an `Expr`'s operators build
+through its model, which is closed), `Model.extend(ext)`,
+`ViolationManager.on_extended(result, new_weight=1.0)` and
+`cbls.pad_state(state, result)`. FeasibilityJump is not bound, so its half of the
+call order is internal to `solve()`. The binding adds three things of its own:
+
+- the extension **keeps its model alive** (`keep_alive`), because it holds a raw
+  pointer the cycle walk and the `Sum` check read;
+- `ExtensionResult` has **no Python constructor and read-only fields**, so the
+  only result Python can hand back to `on_extended`/`pad_state` is one `extend`
+  produced -- and both still check it against the manager or state they grow;
+- `LNS.destroy_repair`/`destroy_repair_cycle` **refuse a manager that has not
+  seen `on_extended`** before they run. The engine refuses it too, but only in
+  the repair, after the destroy has already moved the assignment.
+
+One hazard it does **not** close, and which predates this: `Model.var()`,
+`var_mut()` and `node()` return references into the model's arrays, and `extend`
+appends to those arrays -- so an object fetched before the call may point at
+reallocated storage. Fetch again after extending (the ordinary builders on an
+open model have always had the same property). `tests/python/test_model_extend.py`
+pins every refusal in a child interpreter and checks an extended model against
+the same model built whole.
+
 ### State Save/Restore
 
 ```cpp

@@ -237,11 +237,12 @@ StopRef stop_ref_or_none(StopToken* token) {
     return token != nullptr ? StopRef(*token) : StopRef();
 }
 
-// Refuse a ViolationManager that is out of step with the model BEFORE an entry
-// point that moves the assignment runs. The engine refuses it too -- the
-// FeasibilityJump these build checks the weight count -- but LNS destroys (moves
-// a random share of the variables) before it builds one, so the engine's refusal
-// arrives after the assignment has changed. The reachable case is a Model.extend
+// Refuse a ViolationManager that is out of step with the model BEFORE LNS runs.
+// The engine refuses it too -- the FeasibilityJump the repair builds checks the
+// weight count -- but LNS destroys (moves a random share of the variables) before
+// it builds one, so the engine's refusal arrives after the assignment has
+// changed. fj_nl_initialize needs no such guard: it builds its FeasibilityJump
+// before it moves anything. The reachable case is a Model.extend
 // with no ViolationManager.on_extended after it (#167). The weights setter keeps
 // `weights` the size of the manager's own cache, so this one compare is the
 // whole of what the engine's check would find.
@@ -1250,12 +1251,6 @@ NB_MODULE(_cbls_core, m) {
     // What solve() calls: List/Set only, scalars untouched (#108).
     m.def("initialize_structured_random", &initialize_structured_random, nb::arg("model"),
           nb::arg("rng"));
-    m.def(
-        "fj_nl_initialize",
-        [](Model& model, ViolationManager& vm, int max_iterations, RNG* rng, double time_limit) {
-            require_vm_in_step(model, vm, "fj_nl_initialize");
-            return fj_nl_initialize(model, vm, max_iterations, rng, time_limit);
-        },
-        nb::arg("model"), nb::arg("vm"), nb::arg("max_iterations") = 10000,
-        nb::arg("rng") = nullptr, nb::arg("time_limit") = 2.0);
+    m.def("fj_nl_initialize", &fj_nl_initialize, nb::arg("model"), nb::arg("vm"),
+          nb::arg("max_iterations") = 10000, nb::arg("rng") = nullptr, nb::arg("time_limit") = 2.0);
 }
