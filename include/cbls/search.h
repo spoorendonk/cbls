@@ -257,8 +257,10 @@ struct SearchConfig {
     // The most VARIABLES pricing may add over one solve(), retired ones included
     // -- a retired column is still in the model. An extension that would pass it
     // is refused whole (`SearchCounters::extensions_refused`), and once it is
-    // reached the generator is not called again. A safety ceiling on model
-    // growth, NOT a tuned value: nothing in the tree has measured a better one.
+    // reached the generator is not called again -- so 0 switches pricing off
+    // entirely, a generator that only adds rows included. A safety ceiling on
+    // model growth, NOT a tuned value: nothing in the tree has measured a better
+    // one.
     int64_t max_generated_columns = 10000;
     // Retire a generated column after it has sat at its lower bound -- in the
     // current assignment AND in the incumbent -- for this many consecutive
