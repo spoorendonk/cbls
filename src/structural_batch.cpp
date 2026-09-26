@@ -164,10 +164,14 @@ static void assert_move_within_scope(const MoveGenerator& gen,
 // Replaying k+1's EDIT on top of k's committed state would be a different move
 // -- and for an `Erase` past the shortened end, not a move at all.
 //
-// So the batch keeps the sample's starting elements and puts them back before
-// each candidate. That is one copy per VARIABLE per sample where the old code
-// paid one per candidate, and `assign` into a vector that already has the
-// capacity, so the steady state allocates nothing.
+// So the batch keeps the sample's starting elements and puts back, before each
+// candidate, exactly what the previous one disturbed. The ledger per candidate
+// is then one allocation-free `assign` per variable THAT CANDIDATE'S PREDECESSOR
+// changed -- one or two for every built-in -- against the absolute form's three
+// copies (into the Move, into the undo snapshot, and back out again) and two
+// allocations, whatever the sample size. The snapshot itself is taken once per
+// sample, and its buffers are reused across sweeps, so the steady state
+// allocates nothing at all.
 void StructuralBatch::snapshot_sample_base(const Model& model) {
     base_vars_.clear();
     for (const Move& move : candidates_) {
@@ -193,12 +197,17 @@ void StructuralBatch::snapshot_sample_base(const Model& model) {
         base_elements_[i].assign(var.elements.begin(), var.elements.end());
     }
     record_accepted(model);
-    base_dirty_ = false;
+    dirty_vars_.clear();
 }
 
-void StructuralBatch::restore_sample_base(Model& model) const {
-    for (size_t i = 0; i < base_vars_.size(); ++i) {
-        Variable& var = model.var_mut(base_vars_[i]);
+void StructuralBatch::restore_sample_base(Model& model, const std::vector<int32_t>& which) const {
+    for (int32_t var_id : which) {
+        const auto it = std::find(base_vars_.begin(), base_vars_.end(), var_id);
+        if (it == base_vars_.end()) {
+            continue;  // not part of this sample; nothing was recorded for it
+        }
+        const auto i = static_cast<size_t>(it - base_vars_.begin());
+        Variable& var = model.var_mut(var_id);
         var.value = base_values_[i];
         var.elements.assign(base_elements_[i].begin(), base_elements_[i].end());
     }
@@ -221,16 +230,30 @@ void StructuralBatch::restore_accepted(Model& model) const {
 }
 
 const std::vector<int32_t>& StructuralBatch::apply_from_base(Model& model, const Move& move) {
-    if (base_dirty_) {
-        restore_sample_base(model);
+    // Every candidate is applied to the baseline, so the model differs from it
+    // only in what the PREVIOUS candidate changed -- putting exactly those back
+    // is enough, and is what keeps the restore proportional to a move rather
+    // than to the sample.
+    restore_sample_base(model, dirty_vars_);
+    touched_ = dirty_vars_;  // the restore moved these; a node reading one is dirty
+    dirty_vars_.clear();
+    // Inlined rather than calling `apply_move`, whose return value is a freshly
+    // allocated vector this caller would discard -- one malloc and free per
+    // candidate SCORED, on the path the positional representation exists to take
+    // allocations off.
+    for (const Move::Change& change : move.changes) {
+        Variable& var = model.var_mut(change.var_id);
+        if (is_structured(var.type)) {
+            apply_element_edits(change, var.elements);
+        } else {
+            var.value = change.new_value;
+        }
+        dirty_vars_.push_back(change.var_id);
+        if (std::find(touched_.begin(), touched_.end(), change.var_id) == touched_.end()) {
+            touched_.push_back(change.var_id);
+        }
     }
-    base_dirty_ = true;
-    static_cast<void>(apply_move(model, move));
-    // Every sampled variable, not just this move's own: the restore above moved
-    // the others back, and a node reading one of them is dirty too. It is a
-    // superset by construction -- `base_vars_` is drawn from the candidates'
-    // changes, which the scope assertion already holds to `gen.scope()`.
-    return base_vars_;
+    return touched_;
 }
 
 bool StructuralBatch::take_first_improving(Model& model, ViolationManager& vm, MoveGenerator& gen,
@@ -256,9 +279,15 @@ bool StructuralBatch::take_first_improving(Model& model, ViolationManager& vm, M
         // in between reads the rejected state. Only the sweep's final state has
         // to be right, which the restore below sees to.
     }
-    if (!base_vars_.empty()) {
+    if (!dirty_vars_.empty()) {
+        // The last candidate was not rolled back, so put the sweep at the
+        // assignment it is keeping: the sample baseline plus the last ACCEPTED
+        // candidate, which is what the absolute form's final `undo_move` left
+        // behind. Cheap when nothing was accepted, since `accepted_*` is then
+        // the baseline itself.
         restore_accepted(model);
         delta_evaluate(model, base_vars_);
+        dirty_vars_.clear();
     }
     return changed;
 }
@@ -281,9 +310,10 @@ bool StructuralBatch::take_best(Model& model, ViolationManager& vm, MoveGenerato
         }
     }
     if (best < 0) {
-        if (!base_vars_.empty()) {
-            restore_sample_base(model);
-            delta_evaluate(model, base_vars_);
+        if (!dirty_vars_.empty()) {
+            restore_sample_base(model, dirty_vars_);
+            delta_evaluate(model, dirty_vars_);
+            dirty_vars_.clear();
         }
         return false;
     }

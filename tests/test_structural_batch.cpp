@@ -760,3 +760,101 @@ TEST_CASE("the batch scores a two-variable generator through the union path",
     REQUIRE(stats->generated > 0);
     REQUIRE(passes_with_commit > 0);
 }
+
+// ---------------------------------------------------------------------------
+// The per-sample baseline (#164)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Two candidates in ONE `generate` call, over overlapping but different
+/// variable sets, both improving. This is the shape that distinguishes the
+/// baseline restore from a per-move one: candidate 0 changes A and B, candidate
+/// 1 changes A and C, and under `FirstImprovingSample` both are committed in
+/// turn. If the batch put back only what candidate 1 names, candidate 0's change
+/// to B would survive into the result -- which is exactly the class of bug
+/// `MoveGenerator::generate` describes for a generator maintaining an invariant
+/// across variables.
+class TwoCandidateGenerator final : public MoveGenerator {
+public:
+    explicit TwoCandidateGenerator(std::array<int32_t, 3> scope) : scope_(scope) {}
+
+    [[nodiscard]] std::string_view name() const override { return "two_candidate"; }
+    [[nodiscard]] ConstSpan<int32_t> scope() const override { return {scope_.data(), 3}; }
+
+    void generate(MoveContext& ctx, std::vector<Move>& out) override {
+        if (spent_) {
+            return;  // one sample only, so the sweep is a known two-candidate run
+        }
+        spent_ = true;
+        static_cast<void>(ctx);
+        Move first;
+        first.move_type = "a_and_b";
+        first.changes.push_back(replace_change(scope_[0], {0}));
+        first.changes.push_back(replace_change(scope_[1], {0}));
+        out.push_back(std::move(first));
+
+        Move second;
+        second.move_type = "a_and_c";
+        second.changes.push_back(replace_change(scope_[0], {0, 1}));
+        second.changes.push_back(replace_change(scope_[2], {0}));
+        out.push_back(std::move(second));
+    }
+
+    [[nodiscard]] std::unique_ptr<MoveGenerator> clone() const override {
+        return std::make_unique<TwoCandidateGenerator>(scope_);
+    }
+
+private:
+    std::array<int32_t, 3> scope_;
+    bool spent_ = false;
+};
+
+}  // namespace
+
+TEST_CASE("a committed candidate is undone by the next one from the same sample",
+          "[structural][batch]") {
+    // Three Sets, each wanted at size >= 2 and each starting empty, so the
+    // weighted violation is 2 + 2 + 2. Candidate 0 lands at (1, 1, 0) -- an
+    // improvement of 2, so it is committed. Candidate 1 is built against the
+    // SAME starting assignment and lands at (2, 0, 1), a total of 3 against the
+    // re-snapshotted baseline's 4, so it is committed too.
+    //
+    // The result must be candidate 1's assignment and nothing else. B holding an
+    // element is the failure: that is candidate 0's change surviving a commit
+    // that was supposed to replace it.
+    Model m;
+    std::array<int32_t, 3> ids{};
+    std::vector<int32_t> counts;
+    counts.reserve(3);
+    for (int k = 0; k < 3; ++k) {
+        const int32_t handle = m.set_var(4, 0, 4, std::string(1, static_cast<char>('a' + k)));
+        ids[static_cast<size_t>(k)] = vid(handle);
+        counts.push_back(m.count(handle));
+        m.add_constraint(m.geq(counts.back(), m.constant(2)));
+    }
+    m.minimize(m.sum(counts));
+    m.close();
+    for (int32_t id : ids) {
+        m.var_mut(id).elements.clear();
+    }
+    full_evaluate(m);
+
+    SearchConfig config;
+    config.default_structural_generators = false;
+    config.move_generators.push_back(std::make_shared<const TwoCandidateGenerator>(ids));
+    StructuralBatch batch(m, config, /*enabled=*/true);
+    ViolationManager vm(m);
+    RNG rng(42);
+    REQUIRE(batch.run(m, vm, rng, /*has_deadline=*/false, kNoDeadline));
+
+    REQUIRE(m.var(ids[0]).elements == std::vector<int32_t>{0, 1});
+    REQUIRE(m.var(ids[1]).elements.empty());
+    REQUIRE(m.var(ids[2]).elements == std::vector<int32_t>{0});
+    // And the node values are consistent with the assignment the sweep left.
+    Model fresh = m;
+    full_evaluate(fresh);
+    for (int32_t nid : counts) {
+        REQUIRE(m.node_value(nid) == fresh.node_value(nid));
+    }
+}

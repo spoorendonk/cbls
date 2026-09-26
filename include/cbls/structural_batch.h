@@ -131,15 +131,16 @@ private:
     void draw_candidates(MoveContext& ctx, MoveGenerator& gen);
 
     /// Record the value and the elements of every variable `candidates_` names,
-    /// as they stand BEFORE any candidate is applied. One copy per variable per
-    /// sample -- not per candidate. Scalars are included even though no built-in
-    /// generator emits one: nothing in the `MoveGenerator` contract forbids it,
-    /// and a variable missing from this list would be missing from the `touched`
-    /// set `delta_evaluate` is given.
+    /// as they stand BEFORE any candidate is applied. Taken ONCE per sample;
+    /// `apply_from_base` then replays as much of it as the previous candidate
+    /// disturbed. Scalars are included even though no built-in generator emits
+    /// one: nothing in the `MoveGenerator` contract forbids it, and a variable
+    /// missing from this list would be missing from the `touched` set
+    /// `delta_evaluate` is given.
     void snapshot_sample_base(const Model& model);
-    /// Put those variables back. `assign` rather than a fresh vector, so the
-    /// capacity is reused and no candidate allocates.
-    void restore_sample_base(Model& model) const;
+    /// Put the variables named by `which` back to the baseline. `assign` rather
+    /// than a fresh vector, so the capacity is reused and nothing allocates.
+    void restore_sample_base(Model& model, const std::vector<int32_t>& which) const;
     /// Copy the current assignment of the sampled variables into
     /// `accepted_*` -- the state the sweep falls back to when its last
     /// candidate was rejected.
@@ -148,7 +149,7 @@ private:
     void restore_accepted(Model& model) const;
     /// Apply `move` to the sample baseline, as an absolute element vector would
     /// have. Returns every variable whose value may have moved -- the union of
-    /// the move's own and the ones the restore touched, which `delta_evaluate`
+    /// the move's own and the ones the restore put back, which `delta_evaluate`
     /// needs in full.
     const std::vector<int32_t>& apply_from_base(Model& model, const Move& move);
 
@@ -172,7 +173,12 @@ private:
     /// it tried was rejected.
     std::vector<double> accepted_values_;
     std::vector<std::vector<int32_t>> accepted_elements_;
-    bool base_dirty_ = false;
+    /// The variables the PREVIOUS candidate of this sample changed -- exactly
+    /// what the next one has to put back, since every candidate is applied to
+    /// the baseline and so disturbs nothing else. Doubles as the `touched` set
+    /// handed to `delta_evaluate`, unioned with the current move's own.
+    std::vector<int32_t> dirty_vars_;
+    std::vector<int32_t> touched_;
 };
 
 }  // namespace cbls
