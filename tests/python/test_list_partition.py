@@ -126,6 +126,13 @@ def test_add_list_partition_rejects_an_unknown_cover_string() -> None:
 
 
 def test_add_list_partition_validates_its_group() -> None:
+    """Each failed call must leave the model exactly as it was.
+
+    The sequence is deliberately cumulative: every later assertion relies on the
+    earlier ones having *thrown*, so `wide` is still unpartitioned when the
+    successful call reaches it. That is the property being checked -- a rejected
+    group writes nothing to the structure and sets no `partitioned` flag.
+    """
     m = cbls.Model()
     a = m.list_var(4, 0, 4)
     scalar = m.bool_var("b")

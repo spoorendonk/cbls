@@ -748,3 +748,50 @@ TEST_CASE("a malformed .cbls partition record is refused", "[list][partition][io
         "\n");
     REQUIRE_THROWS_AS(load_model(impossible), std::invalid_argument);
 }
+
+TEST_CASE("the degenerate partitions are legal and inert", "[list][partition]") {
+    SECTION("a single-list Exact partition offers no inter-list move") {
+        // Legal -- one list that must hold everything -- and by construction
+        // there is nowhere to move an element to. The generator is still
+        // registered; it simply never yields a candidate.
+        Model m;
+        const int32_t only = m.list_var(5, 5, 5, ListInit::Random, "only");
+        m.add_list_partition({only}, Cover::Exact);
+        m.minimize(m.lambda_sum(only, element_weight));
+        m.close();
+        RNG init(3);
+        initialize_structured_random(m, init);
+        require_cover(m, m.list_partitions()[0]);
+
+        RNG rng(9);
+        std::vector<Move> out;
+        for (int k = 0; k < 20; ++k) {
+            generate_partition_moves(m, 0, /*anchor=*/-1, rng, out, nullptr);
+        }
+        REQUIRE(out.empty());
+    }
+    SECTION("a zero-size universe is a partition over nothing") {
+        Model m;
+        const int32_t a = m.list_var(0, 0, 0, ListInit::Empty, "a");
+        const int32_t b = m.list_var(0, 0, 0, ListInit::Empty, "b");
+        m.add_list_partition({a, b}, Cover::Exact);
+        m.minimize(m.sum({m.count(a), m.count(b)}));
+        m.close();
+        RNG init(3);
+        initialize_structured_random(m, init);
+        REQUIRE(m.var(handle_to_var_id(a)).elements.empty());
+        require_cover(m, m.list_partitions()[0]);
+
+        RNG rng(9);
+        std::vector<Move> out;
+        for (int k = 0; k < 20; ++k) {
+            generate_partition_moves(m, 0, /*anchor=*/-1, rng, out, nullptr);
+        }
+        REQUIRE(out.empty());
+        // And a partition index nobody has is a no-op rather than a read past
+        // the vector -- `Model.partition_of_list` is reachable from Python.
+        generate_partition_moves(m, 7, -1, rng, out, nullptr);
+        generate_partition_moves(m, -1, -1, rng, out, nullptr);
+        REQUIRE(out.empty());
+    }
+}
