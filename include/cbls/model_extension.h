@@ -190,6 +190,12 @@ private:
     /// Validate a handle against the base model plus what this extension has
     /// recorded so far, and return it unchanged. Throws `std::out_of_range` if
     /// it names nothing.
+    // Two intents, deliberately separate: `validate_handle` is the throwing check,
+    // `check_handle` is the same check returning the handle so a caller can pass it
+    // straight into a builder. A call site that only wants the check must use the
+    // former -- discarding the latter's result is a -Wunused-result warning, which
+    // no gate in this tree reports (see #171).
+    void validate_handle(int32_t handle) const;
     [[nodiscard]] int32_t check_handle(int32_t handle) const;
     int32_t check_node_handle(int32_t handle, const char* what) const;
     int32_t push(NodeOp op, std::vector<int32_t> children, double const_value = 0.0);

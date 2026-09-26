@@ -35,7 +35,7 @@ ModelExtension::ModelExtension(const Model& base)
     }
 }
 
-int32_t ModelExtension::check_handle(int32_t handle) const {
+void ModelExtension::validate_handle(int32_t handle) const {
     if (handle < 0) {
         const int32_t vid = -(handle + 1);
         if (vid >= base_num_vars_ + static_cast<int32_t>(new_vars_.size())) {
@@ -44,6 +44,10 @@ int32_t ModelExtension::check_handle(int32_t handle) const {
     } else if (handle >= base_num_nodes_ + static_cast<int32_t>(new_nodes_.size())) {
         throw std::out_of_range("ModelExtension: node handle out of range");
     }
+}
+
+int32_t ModelExtension::check_handle(int32_t handle) const {
+    validate_handle(handle);
     return handle;
 }
 
@@ -103,7 +107,7 @@ void ModelExtension::set_initial(int32_t var, double value) {
 
 int32_t ModelExtension::push(NodeOp op, std::vector<int32_t> children, double const_value) {
     for (const int32_t h : children) {
-        check_handle(h);
+        validate_handle(h);
     }
     NewNode n;
     n.op = op;
