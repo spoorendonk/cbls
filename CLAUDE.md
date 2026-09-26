@@ -122,6 +122,12 @@ Install `pyright-lsp@claude-plugins-official`. Pyright reads `[tool.mypy]` and p
   rather than per read on a hot path, and pin it with a child-process test
   (`tests/python/test_model_handles.py`), since the unguarded state crashes the
   interpreter rather than failing a test.
+- **Never return `reference_internal` to an element of a container the owner
+  can grow.** `keep_alive` keeps the *owner* alive, not the element: once
+  `Model.extend` could grow a closed model, a held `m.var_mut(i)` wrote into
+  freed heap and the write was silently lost (#167's cold review). Return an
+  (owner, index) handle that resolves on every access — `VariableRef`, bound as
+  `cbls.Variable`, is the pattern — or a copy.
 
 ## Testing
 
