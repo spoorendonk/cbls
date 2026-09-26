@@ -99,7 +99,15 @@ public:
     ~EvaluationGuard() { in_evaluation = false; }
 };
 
+bool detail_in_evaluation() {
+    return in_evaluation;
+}
+
 }  // namespace
+
+bool in_evaluation() {
+    return detail_in_evaluation();
+}
 
 double full_evaluate(Model& model) {
     const EvaluationGuard guard("full_evaluate");

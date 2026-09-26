@@ -8,6 +8,7 @@
 // representation at all before this change. So both builders record a name for
 // every node they make, and the comparison runs over those names.
 
+#include "cbls/custom_invariant.h"
 #include "cbls/dag_ops.h"
 #include "cbls/feasibility_jump.h"
 #include "cbls/model.h"
@@ -16,6 +17,7 @@
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cmath>
 #include <map>
 #include <random>
@@ -1227,4 +1229,145 @@ TEST_CASE("an FJ out of step with a grown model refuses to run", "[extend]") {
 
     fj.on_extended(res);
     REQUIRE_NOTHROW(fj.batch(20));
+}
+
+// ---------------------------------------------------------------------------
+// The #166 x #167 seam. `Model::extend`'s `if (has_custom_nodes())
+// full_evaluate(*this)` is the one line where the two changes meet, and until
+// this test nothing in the suite executed it: test_model_extend.cpp never built
+// a custom node and test_custom_invariant.cpp never extended a model.
+// ---------------------------------------------------------------------------
+namespace {
+
+// Counts which entry point the engine used, so the test can tell a full reset
+// from an incremental delta. The value is a pure function of the one input,
+// which is what `evaluate()` being the documented reset point requires.
+class CountingSum : public CustomInvariant {
+public:
+    int evaluate_calls = 0;
+    int delta_calls = 0;
+
+    double evaluate(const InvariantInputs& in) override {
+        ++evaluate_calls;
+        return recompute(in);
+    }
+    double delta(const InvariantInputs& in, ConstSpan<int32_t> changed) override {
+        (void)changed;
+        ++delta_calls;
+        return recompute(in);
+    }
+    [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
+        return std::make_unique<CountingSum>(*this);
+    }
+
+private:
+    static double recompute(const InvariantInputs& in) {
+        double total = 0.0;
+        for (int32_t i = 0; i < static_cast<int32_t>(in.size()); ++i) {
+            total += in.value(i);
+        }
+        return total;
+    }
+};
+
+}  // namespace
+
+TEST_CASE("extend re-evaluates a model holding a custom node", "[extend][custom]") {
+    Model m;
+    const int32_t x = m.float_var(0.0, 10.0, "x");
+    auto inv = std::make_unique<CountingSum>();
+    CountingSum* probe = inv.get();
+    const int32_t c = m.custom({x}, std::move(inv), "counting");
+    const int32_t row = m.sum({c});
+    m.add_constraint(m.leq(row, m.constant(100.0)));
+    m.var_mut(handle_to_var_id(x)).value = 3.0;
+    m.close();
+
+    REQUIRE(m.has_custom_nodes());
+    REQUIRE_THAT(m.node_value(c), Catch::Matchers::WithinAbs(3.0, 1e-12));
+    const int evaluates_after_close = probe->evaluate_calls;
+    REQUIRE(evaluates_after_close > 0);
+
+    // Grow the model. The new variable feeds a new row, so the custom node's own
+    // inputs do not change -- but `extend` must still re-evaluate through
+    // `full_evaluate`, which is the invariants' documented reset point.
+    ModelExtension ext(m);
+    const int32_t y = ext.float_var(0.0, 5.0, "y");
+    ext.set_initial(y, 2.0);
+    ext.add_constraint(ext.leq(ext.sum({y}), ext.constant(4.0)));
+    const ExtensionResult res = m.extend(ext);
+
+    // The reset happened via `evaluate`, NOT via `delta`: a stateful invariant
+    // cannot be handed an incremental step across a structural change, because
+    // the engine cannot describe what changed.
+    REQUIRE(probe->evaluate_calls > evaluates_after_close);
+    REQUIRE(probe->delta_calls == 0);
+
+    // And the grown model is consistent: the custom node still reads its input,
+    // and the new variable took the initial value the extension declared.
+    REQUIRE_THAT(m.node_value(c), Catch::Matchers::WithinAbs(3.0, 1e-12));
+    REQUIRE(res.num_new_vars == 1);
+    REQUIRE_THAT(m.var(res.first_new_var).value, Catch::Matchers::WithinAbs(2.0, 1e-12));
+
+    // The invariant slot survived the append: indices are append-only and are
+    // never renumbered, so the node still resolves to the same instance.
+    REQUIRE(m.has_custom_nodes());
+    const double before = m.node_value(c);
+    m.var_mut(handle_to_var_id(x)).value = 7.0;
+    delta_evaluate(m, {handle_to_var_id(x)});
+    REQUIRE_THAT(m.node_value(c), Catch::Matchers::WithinAbs(7.0, 1e-12));
+    REQUIRE(m.node_value(c) != before);
+    REQUIRE(probe->delta_calls == 1);
+}
+
+TEST_CASE("extend refuses to run inside an evaluation", "[extend][custom]") {
+    // A CustomInvariant that grows the model it is being evaluated in. Narrow,
+    // but the failure it would cause is silent: `dirty_flags` is sized for the
+    // smaller node count at the outer call, so the outer walk would index it
+    // with the new ids.
+    class Grower : public CustomInvariant {
+    public:
+        Model* target = nullptr;
+        bool threw_logic_error = false;
+        // Non-zero only if extend() wrongly succeeded, which is the evidence the
+        // test needs if the refusal ever regresses -- and it uses the
+        // [[nodiscard]] result rather than casting it away.
+        int32_t vars_added_anyway = 0;
+
+        double evaluate(const InvariantInputs& in) override {
+            (void)in;
+            if (target != nullptr && target->is_closed()) {
+                ModelExtension ext(*target);
+                ext.float_var(0.0, 1.0);
+                try {
+                    const ExtensionResult grown = target->extend(ext);
+                    vars_added_anyway = grown.num_new_vars;
+                } catch (const std::logic_error&) {
+                    threw_logic_error = true;
+                }
+            }
+            return 1.0;
+        }
+        [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
+            return std::make_unique<Grower>(*this);
+        }
+    };
+
+    Model m;
+    const int32_t x = m.float_var(0.0, 10.0, "x");
+    auto inv = std::make_unique<Grower>();
+    Grower* probe = inv.get();
+    const int32_t c = m.custom({x}, std::move(inv), "grower");
+    m.add_constraint(m.leq(m.sum({c}), m.constant(100.0)));
+    m.close();
+    probe->target = &m;
+
+    // Now drive an evaluation, from inside which the invariant tries to extend.
+    m.var_mut(handle_to_var_id(x)).value = 4.0;
+    REQUIRE_NOTHROW(full_evaluate(m));
+    REQUIRE(probe->threw_logic_error);
+    REQUIRE(probe->vars_added_anyway == 0);
+
+    // The refusal left the model untouched -- it is taken before anything mutates.
+    REQUIRE(m.num_vars() == 1);
 }

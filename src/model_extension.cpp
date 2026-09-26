@@ -732,6 +732,27 @@ void Model::append_extension_entities(const ModelExtension& ext, ExtensionResult
 }
 
 ExtensionResult Model::extend(const ModelExtension& ext) {
+    // Refused from inside the evaluation walk, and asked rather than guarded.
+    // #166's `EvaluationGuard` cannot be armed here: this function PERFORMS a
+    // `full_evaluate` on the custom-node path, so arming it would refuse
+    // `extend`'s own closing evaluation rather than the caller that had no
+    // business being here.
+    //
+    // Reaching this needs user code holding a non-const `Model*` from inside the
+    // walk -- a `lambda_sum` functor or a `CustomInvariant` that captured one;
+    // `evaluate()` and `local_derivative()` take a `const Model&`, and neither
+    // `InnerSolverHook::solve` nor `MoveGenerator::generate` runs inside an
+    // evaluation. Narrow, but silent if it happens: `dag_ops.cpp`'s
+    // `thread_local dirty_flags` was sized for the SMALLER node count at the
+    // outer call and only ever grows, so the outer walk would then index it with
+    // the new node ids -- a heap over-read, which is the same class of silent
+    // corruption the re-entry refusal exists to close.
+    if (in_evaluation()) {
+        throw std::logic_error(
+            "Model::extend: called from inside an evaluation. A CustomInvariant or lambda_sum "
+            "callable must not grow the model it is being evaluated in; extend() is a "
+            "between-solves (and, once #168 lands, between-batches) operation");
+    }
     if (is_frozen()) {
         throw std::logic_error(
             "Model::extend: the model is frozen. freeze() publishes one ModelStructure to every "

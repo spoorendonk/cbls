@@ -59,6 +59,15 @@ inline double delta_evaluate(Model& model, std::initializer_list<int32_t> change
     return delta_evaluate(model, changed_var_ids.begin(), changed_var_ids.size(), mode);
 }
 
+/// Whether this thread is currently inside `full_evaluate` or `delta_evaluate`.
+///
+/// For an operation that must not run inside the evaluation walk but cannot take
+/// the guard itself because it *performs* an evaluation -- `Model::extend` is the
+/// one such caller. Arming the guard there would refuse `extend`'s own closing
+/// `full_evaluate`; asking the question refuses only the caller that had no
+/// business being here. See `Model::extend`.
+[[nodiscard]] bool in_evaluation();
+
 double compute_partial(const Model& model, int32_t expr_id, int32_t var_id);
 
 // Batch AD: compute partials of expr_id w.r.t. ALL variables in one reverse pass.

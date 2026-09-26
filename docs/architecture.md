@@ -292,16 +292,22 @@ line, naming the node and the invariant. Checked before the stream is opened:
 `std::ofstream` truncates on open, so a refusal after that point would replace
 an existing file with a prefix of a model.
 
-**Two contract obligations the engine enforces rather than documents.** A custom
-node's value must be a pure function of its declared inputs — a node with no
-inputs, or only `Const` ones, never enters a dirty cone, so `delta()` is never
-called on it. And none of the five calls may re-enter `delta_evaluate` or
-`full_evaluate`: that throws `std::logic_error`, because the nested call clears the
+**One contract obligation the engine enforces, and two it only documents.** The
+enforced one: none of the five calls may re-enter `delta_evaluate` or
+`full_evaluate`. That throws `std::logic_error`, because the nested call clears the
 `thread_local` dirty list the outer one is holding, which would leak the outer
 call's flags and silently stop those nodes being recomputed for the rest of the
-process. `Model::restore_state` carries the third: it writes variables only, so a
-`full_evaluate` before the next `delta_evaluate` is mandatory — and unlike the
-first two, nothing enforces that one.
+process.
+
+The two that are documented and **not** checked anywhere in the engine. First, a
+custom node's value must be a pure function of its declared inputs — a node with
+no inputs, or only `Const` ones, never enters a dirty cone, so `delta()` is never
+called on it and its value only ever moves at `full_evaluate`. Nothing detects an
+impure one; `cbls::verify_model` is a verifier a caller opts into, not a gate, and
+an impure invariant otherwise shows up as trajectory divergence. Second,
+`Model::restore_state` writes variables only, so a `full_evaluate` before the next
+`delta_evaluate` is mandatory. Both are contracts on the caller, and the cost of
+breaking either is a wrong answer rather than an exception.
 
 **Not exposed to Python.** A Python-subclassable invariant needs the trampoline
 and GIL machinery of #132, so nothing here is bound: `Model::custom` is not
