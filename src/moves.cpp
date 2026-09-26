@@ -283,6 +283,12 @@ bool change_is_noop(const Move::Change& change, const std::vector<int32_t>& elem
 }
 
 static std::vector<Move> bool_moves(const Variable& var) {
+    // A pinned Bool -- a column retired by column generation (#168) -- has no
+    // flip, for the reason FJ's Bool candidate and random_in_domain skip it. No
+    // builder makes a pinned Bool otherwise, so this changes no existing move.
+    if (!(var.lb < var.ub)) {
+        return {};
+    }
     Move m;
     m.move_type = "flip";
     m.changes.push_back(scalar_change(var.id, 1.0 - var.value));

@@ -796,14 +796,15 @@ ExtensionResult Model::extend(const ModelExtension& ext) {
         throw std::logic_error(
             "Model::extend: called from inside an evaluation. A CustomInvariant or lambda_sum "
             "callable must not grow the model it is being evaluated in; extend() is a "
-            "between-solves (and, once #168 lands, between-batches) operation");
+            "between-solves or between-batches (SearchConfig::column_generator, #168) operation");
     }
     if (is_frozen()) {
         throw std::logic_error(
             "Model::extend: the model is frozen. freeze() publishes one ModelStructure to every "
             "portfolio replica, so growing it would mutate a peer's model under a running search "
             "-- ParallelSearch::solve(Model&) and the CLI at --threads > 1 both freeze, so growth "
-            "is single-solve() only until #168 gives each worker its own extension overlay");
+            "needs a private structure: pass model.private_copy(), which ParallelSearch's master "
+            "overload does per worker under a column generator (#168)");
     }
     if (!closed_) {
         throw std::logic_error(

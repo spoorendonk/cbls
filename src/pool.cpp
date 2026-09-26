@@ -816,8 +816,14 @@ void adopt_growth_winner(const std::vector<SearchResult>& results,
         const SearchResult& r = results[i];
         if (winner >= 0) {
             const SearchResult& w = results[static_cast<size_t>(winner)];
+            // The pool's order -- feasible first, then the lower objective --
+            // plus one tie-break it lacks: between two infeasible workers every
+            // objective is +inf, and the pool would keep whichever came first.
+            // Here the answer carries its whole grown model back, so the closer
+            // approach is the one worth returning.
             const bool better = (r.feasible && !w.feasible) ||
-                                (r.feasible == w.feasible && r.objective < w.objective);
+                                (r.feasible == w.feasible && r.objective < w.objective) ||
+                                (!r.feasible && !w.feasible && r.best_violation < w.best_violation);
             if (!better) {
                 continue;
             }

@@ -101,14 +101,20 @@ struct PricingContext {
     /// The objective row's current RHS (+inf before the first feasible point).
     double objective_bound = 0.0;
     /// The best feasible assignment this solve has recorded, or null before the
-    /// first one. Sized for the model AS IT IS NOW -- the engine pads it after
-    /// every extension -- so `Model::restore_state` would accept it.
+    /// first one. A progress row (`SolveCallback`) may already have reported its
+    /// objective; if an extension then changes that objective or cuts the point
+    /// off, the engine re-derives it (`SearchCounters::incumbents_revalidated`)
+    /// and the returned result reflects that, but no correcting row is emitted. Sized for the model
+    /// AS IT IS NOW -- the engine pads it after every extension -- so `Model::restore_state` would
+    /// accept it.
     const Model::State* incumbent = nullptr;
     /// The incumbent's objective, or +inf with no incumbent.
     double incumbent_objective = 0.0;
     /// Batches completed so far in this solve.
     int64_t batches = 0;
-    /// Seconds since `solve()` started.
+    /// Seconds since `solve()` started, or NaN on a run with no wall clock: an
+    /// iteration-budgeted run reads no clock at all, so that its trajectory -- a
+    /// generator's decisions included -- is reproducible on any machine.
     double elapsed_seconds = 0.0;
     /// Seconds left before the wall-clock deadline, or +inf when the run has no
     /// wall clock (an iteration-budgeted run). A generator must return within
@@ -118,9 +124,14 @@ struct PricingContext {
     /// How many more VARIABLES this solve may still add
     /// (`SearchConfig::max_generated_columns` minus those already added). An
     /// extension that stages more than this is refused whole, so a generator
-    /// that cannot stay under it wastes its call.
+    /// that cannot stay under it wastes its call -- and any signature it
+    /// registered for that call stays registered (see `signatures`).
     int64_t columns_remaining = 0;
-    /// This solve's duplicate registry; see `ColumnSignatureSet`.
+    /// This solve's duplicate registry; see `ColumnSignatureSet`. The engine
+    /// never un-registers anything: a signature registered for an extension that
+    /// is then refused (over `columns_remaining`) or abandoned (the generator
+    /// threw) marks a column the model does not have. So register only what you
+    /// stage, and stage only what fits.
     ColumnSignatureSet& signatures;
     /// The violation manager `weights` belongs to, for a pricer that wants the
     /// cached per-row violations too. `weights` above is exactly its `weights`.

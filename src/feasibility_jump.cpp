@@ -884,6 +884,20 @@ void FeasibilityJump::retire(const std::vector<int32_t>& vars) {
     rebuild_violated_and_scan_set();
 }
 
+void FeasibilityJump::requeue(int32_t first, int32_t end) {
+    require_tables_in_step();
+    if (first < 0 || end < first || static_cast<size_t>(end) > model_.num_vars()) {
+        throw std::out_of_range(
+            "FeasibilityJump::requeue: range names variables that do not exist");
+    }
+    for (int32_t v = first; v < end; ++v) {
+        if (jumpable(v)) {
+            jumps_.invalidate(v);
+            enqueue(v);
+        }
+    }
+}
+
 // `vars_of_constraint_` is the transpose of G_v restricted to jumpable variables,
 // and ASCENDING in variable id -- the constructor builds it by walking the
 // variables in order, and FJ's scan order over it feeds the trajectory. So this

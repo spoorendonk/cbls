@@ -465,9 +465,10 @@ private:
     void price(PricingEvent why);
     // Apply a staged extension and grow every piece of search state with it.
     void apply_extension(const ModelExtension& ext, int64_t& columns, int64_t& rows);
-    // Re-derive the incumbent's standing after an extension changed the model it
-    // was recorded on. See the definition.
-    void revalidate_incumbent();
+    // Re-derive the standing of the incumbent (or, on an infeasible run, of the
+    // closest approach) after an extension changed the model it was recorded on.
+    // See the definition.
+    void revalidate_after_extension(const ExtensionResult& res);
     // Retire the columns ColumnPool says have aged out.
     void retire_aged_columns();
     // ---- the host's event stream (#169), no-ops without a tracer ------------
@@ -1519,8 +1520,14 @@ void ViolationLSLoop::maybe_emit_periodic_progress() {
 
 std::optional<PricingEvent> ViolationLSLoop::pricing_due_after_batch(bool improved) const {
     // A pure-feasibility model that just improved is solved: apply_batch_outcome
-    // ends the run, so pricing for it would be work nobody reads.
-    if (improved && config_.price_on_new_best && has_obj_) {
+    // ends the run with TerminationReason::Feasible, so NO event fires on that
+    // batch. Pricing would be work nobody reads -- and an extension that cut the
+    // point off would demote it, ending a run reported Feasible with
+    // feasible == false and, under ParallelSearch, stopping every peer on it.
+    if (improved && !has_obj_) {
+        return std::nullopt;
+    }
+    if (improved && config_.price_on_new_best) {
         return PricingEvent::NewBest;
     }
     if (config_.pricing_period > 0 && batches_ % config_.pricing_period == 0) {
@@ -1530,8 +1537,13 @@ std::optional<PricingEvent> ViolationLSLoop::pricing_due_after_batch(bool improv
 }
 
 bool ViolationLSLoop::pricing_possible() const {
+    // The iteration budget is asked too: budget_exhausted() is only consulted at
+    // the top of the loop, so without it the batch that spent the budget would
+    // still price, and pay an extension no batch ever searches.
+    const bool iterations_spent =
+        config_.max_iterations > 0 && fj_.iterations() >= config_.max_iterations;
     return generator_ != nullptr && !priced_this_batch_ && columns_.remaining() > 0 &&
-           !past_deadline();
+           !past_deadline() && !iterations_spent;
 }
 
 void ViolationLSLoop::maybe_price_after_batch(bool improved, bool& resync) {
@@ -1570,21 +1582,25 @@ void ViolationLSLoop::price(PricingEvent why) {
     const auto started =
         time_it ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 
+    // Age BEFORE asking for columns, so a column is first aged at the call AFTER
+    // the one that added it. Aged after applying, a column entering at its lower
+    // bound (the norm) was counted in the very call that added it -- before FJ had
+    // one batch with it -- and column_retire_age = 1 retired every such column on
+    // arrival. It also lets the generator see this call's retirements.
+    retire_aged_columns();
+
     ModelExtension ext(model_);
     {
         PricingContext ctx{
-            model_,
-            ConstSpan<double>(vm_.weights.data(), vm_.weights.size()),
-            obj_ci_,
-            model_.objective_bound(),
-            have_feasible_ ? &best_state_ : nullptr,
-            have_feasible_ ? best_feasible_obj_ : std::numeric_limits<double>::infinity(),
-            batches_,
-            elapsed(),
+            model_, ConstSpan<double>(vm_.weights.data(), vm_.weights.size()), obj_ci_,
+            model_.objective_bound(), have_feasible_ ? &best_state_ : nullptr,
+            have_feasible_ ? best_feasible_obj_ : std::numeric_limits<double>::infinity(), batches_,
+            // No clock on a clockless run, for the reason pricing_seconds has
+            // none: an iteration-budgeted run reads no clock at all, so that its
+            // trajectory -- a generator's decisions included -- is reproducible.
+            has_deadline_ ? elapsed() : std::numeric_limits<double>::quiet_NaN(),
             has_deadline_ ? remaining() : std::numeric_limits<double>::infinity(),
-            columns_.remaining(),
-            signatures_,
-            vm_};
+            columns_.remaining(), signatures_, vm_};
         ++counters_.pricing_calls;
         generator_->price(ctx, why, ext);
     }
@@ -1601,7 +1617,6 @@ void ViolationLSLoop::price(PricingEvent why) {
             apply_extension(ext, columns, rows);
         }
     }
-    retire_aged_columns();
 
     if (time_it) {
         const double seconds =
@@ -1639,22 +1654,33 @@ void ViolationLSLoop::apply_extension(const ModelExtension& ext, int64_t& column
     counters_.columns_added += columns;
     counters_.rows_added += rows;
 
-    revalidate_incumbent();
+    revalidate_after_extension(res);
 }
 
-// The incumbent was recorded on the model BEFORE this extension. Padded, it is
-// restorable again, but that does not make it the same point: a new row may
-// cut it off, and a new column entering at a starting value that is not neutral
-// in its rows (anything but a zero contribution) moves its rows and its
-// objective. Nothing short of evaluating it can tell, because an extension is an
-// arbitrary DAG recording -- so evaluate it. That is two full_evaluates and one
-// state copy per APPLIED extension, O(model), on the same order as what extend
-// already costs once it appends to a row (an O(#constraints) walk) and paid only
-// on a batch that priced, never per iteration.
+// A stored state was recorded on the model BEFORE this extension. Padded, it is
+// restorable again, but that does not make it the same point: a new row may cut
+// it off, and a new column entering at a starting value that is not neutral in
+// its rows (anything but a zero contribution) moves its rows and its objective.
+// Nothing short of evaluating it can tell, because an extension is an arbitrary
+// DAG recording -- so evaluate it.
 //
-// Three outcomes:
-//  - unchanged (the column-generation norm: new columns start at zero and add
-//    nothing): nothing to do;
+// WHICH state: the incumbent on a run that has one. On a run that has none, the
+// closest approach, whose recorded violation `note_closest_approach` compares
+// every later batch against -- left stale-low, it would refuse genuinely closer
+// points of the grown model -- but only when a row changed, since a pure column
+// addition at a neutral start cannot move it and the check would be wasted.
+//
+// Cost, per APPLIED extension that needs it: two full_evaluates, one state copy,
+// and one FJ resync (the re-evaluation rewrote every node value -- to the same
+// assignment, but not necessarily to the same last bit an incremental walk had
+// reached -- so FJ's violated set, scan set and cached jumps are re-grounded;
+// that also discards on_extended's localised patching, so the new columns are
+// re-queued by hand). O(model), paid only on a batch that priced, never per
+// iteration; the same order as extend itself once it appends to a row.
+//
+// Outcomes for the incumbent:
+//  - unchanged up to record_best's own relative tolerance (the column-generation
+//    norm: new columns start at zero and add nothing): nothing to do;
 //  - still feasible, different objective: the incumbent's objective is
 //    re-derived, and the bound tightened if that is now lower -- never loosened,
 //    for adopt_from_pool's reason;
@@ -1662,13 +1688,16 @@ void ViolationLSLoop::apply_extension(const ModelExtension& ext, int64_t& column
 //    approach, the objective bound is released, and the search goes back to
 //    looking for a feasible point of the model it now has. SearchResult then
 //    reports what the grown model can actually vouch for, rather than an
-//    assignment that violates one of its rows.
-void ViolationLSLoop::revalidate_incumbent() {
-    if (!have_feasible_) {
+//    assignment that violates one of its rows. The first-feasible pair (#149)
+//    stays latched: it records when the run first stood on a feasible point of
+//    the model AS IT WAS, which is still true.
+void ViolationLSLoop::revalidate_after_extension(const ExtensionResult& res) {
+    const bool rows_changed = res.num_new_constraints > 0 || !res.touched_constraints.empty();
+    if (!have_feasible_ && !rows_changed) {
         return;
     }
     const Model::State here = model_.copy_state();
-    model_.restore_state(best_state_);
+    model_.restore_state(have_feasible_ ? best_state_ : closest_state_);
     full_evaluate(model_);
     const bool feasible = real_feasible();
     const double violation = max_real_violation();
@@ -1676,41 +1705,40 @@ void ViolationLSLoop::revalidate_incumbent() {
     model_.restore_state(here);
     full_evaluate(model_);
     vm_.invalidate_cache();
-    // The re-evaluation rewrote every node value -- to the same assignment, but
-    // not necessarily to the same last bit an incremental walk had reached --
-    // so FJ's violated set and cached jumps are re-grounded against them.
-    fj_.resync();
 
-    const bool same_obj =
-        (obj == best_feasible_obj_) || (!std::isfinite(obj) && !std::isfinite(best_feasible_obj_));
-    if (feasible && same_obj) {
-        return;
-    }
-    ++counters_.incumbents_revalidated;
-    if (feasible) {
-        best_feasible_obj_ = std::isfinite(obj) ? obj : std::numeric_limits<double>::infinity();
-        if (has_obj_ && std::isfinite(obj)) {
-            const double bound = obj - (1e-3 * (std::abs(obj) + 1.0));
-            if (bound < model_.objective_bound()) {
-                model_.set_objective_bound(bound);
-                vm_.invalidate_cache();
-                fj_.resync();
+    if (!have_feasible_) {
+        best_violation_ = violation;
+    } else if (feasible) {
+        const bool same_obj =
+            (std::isfinite(obj) && std::isfinite(best_feasible_obj_) &&
+             std::abs(obj - best_feasible_obj_) <= 1e-12 * (std::abs(best_feasible_obj_) + 1.0)) ||
+            (!std::isfinite(obj) && !std::isfinite(best_feasible_obj_));
+        if (!same_obj) {
+            ++counters_.incumbents_revalidated;
+            best_feasible_obj_ = std::isfinite(obj) ? obj : std::numeric_limits<double>::infinity();
+            if (has_obj_ && std::isfinite(obj)) {
+                const double bound = obj - (1e-3 * (std::abs(obj) + 1.0));
+                if (bound < model_.objective_bound()) {
+                    model_.set_objective_bound(bound);
+                }
             }
         }
-        return;
+    } else {
+        ++counters_.incumbents_revalidated;
+        have_feasible_ = false;
+        best_feasible_obj_ = std::numeric_limits<double>::infinity();
+        best_violation_ = violation;
+        closest_state_ = std::move(best_state_);
+        best_state_ = closest_state_;
+        has_adopted_origin_ = false;
+        adopted_origin_ = Model::State{};
+        if (has_obj_) {
+            model_.set_objective_bound(std::numeric_limits<double>::infinity());
+        }
     }
-    have_feasible_ = false;
-    best_feasible_obj_ = std::numeric_limits<double>::infinity();
-    best_violation_ = violation;
-    closest_state_ = std::move(best_state_);
-    best_state_ = closest_state_;
-    has_adopted_origin_ = false;
-    adopted_origin_ = Model::State{};
-    if (has_obj_) {
-        model_.set_objective_bound(std::numeric_limits<double>::infinity());
-        vm_.invalidate_cache();
-        fj_.resync();
-    }
+    vm_.invalidate_cache();
+    fj_.resync();
+    fj_.requeue(res.first_new_var, res.end_var());
 }
 
 void ViolationLSLoop::retire_aged_columns() {
@@ -1889,6 +1917,15 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         throw std::invalid_argument(
             "solve: SearchConfig::column_generator grows the model, and this model is frozen -- "
             "its structure is shared with its replicas. Pass model.private_copy() (#168)");
+    }
+    // A shared pool carries states indexed by their submitter's model; once this
+    // model grows, a pooled state of the same width names different columns.
+    // ParallelSearch's growth mode passes a null pool for exactly this reason, and
+    // a direct caller handing both over is refused rather than trusted.
+    if (config.column_generator != nullptr && coord != nullptr && coord->pool != nullptr) {
+        throw std::invalid_argument(
+            "solve: SearchConfig::column_generator cannot share a SolutionPool -- a growing "
+            "model's states do not index a peer's columns (#168)");
     }
 
     const bool has_obj = model.objective_id() >= 0;

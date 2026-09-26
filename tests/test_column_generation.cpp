@@ -10,9 +10,11 @@
 #include "cbls/feasibility_jump.h"
 #include "cbls/model.h"
 #include "cbls/model_extension.h"
+#include "cbls/moves.h"
 #include "cbls/pool.h"
 #include "cbls/randomize.h"
 #include "cbls/search.h"
+#include "cbls/stop.h"
 #include "cbls/tracer.h"
 #include "cbls/violation.h"
 
@@ -245,7 +247,9 @@ private:
 
 // Every row of `m` satisfied at `state`, re-evaluated from scratch.
 bool feasible_at(Model m, const Model::State& state, double tol = 1e-6) {
-    m.set_objective_bound(std::numeric_limits<double>::infinity());
+    if (m.has_objective_constraint()) {
+        m.set_objective_bound(std::numeric_limits<double>::infinity());
+    }
     m.restore_state(state);
     full_evaluate(m);
     for (size_t i = 0; i < m.constraint_ids().size(); ++i) {
@@ -328,7 +332,14 @@ Model infeasible_pair() {
 // The context: the live weights, at a safe point.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("the pricer receives exactly the live GLS weights at a safe point", "[column]") {
+TEST_CASE("the pricer receives the manager's weights at a safe point", "[column]") {
+    // What this can see from outside solve(): the weights handed over are the
+    // violation manager's own vector (aliased, not copied -- ctx.violations is the
+    // search's manager, which the engine hands over by reference), sized to the
+    // grown model, the ones its totals are computed with, over node values a fresh
+    // evaluation agrees with, and visibly shaped by the GLS dynamics. That the
+    // manager in the context IS the loop's vm_ rests on src/search.cpp, where the
+    // context is built from `vm_` in one place.
     const CuttingStock cs = u120_00();
     CuttingModel cm = build_trivial(cs);
 
@@ -435,12 +446,20 @@ TEST_CASE("Stagnation pricing fires immediately before every kick", "[column]") 
         const SearchResult r = solve(m, 0.0, 3, true, nullptr, nullptr, 3, nullptr, cfg);
 
         REQUIRE(r.perturbations > 5);
-        REQUIRE(static_cast<int>(log->size()) == r.perturbations);
+        // Every kick but possibly the LAST: the batch that spends the iteration
+        // budget still kicks (the loop only asks the budget at its top), but it
+        // prices nothing, since no batch would ever search what it added.
+        REQUIRE(static_cast<int>(log->size()) >= r.perturbations - 1);
+        REQUIRE(static_cast<int>(log->size()) <= r.perturbations);
         int kicks = 0;
         for (size_t k = 0; k < tracer.events.size(); ++k) {
             const OrderTracer::Event& e = tracer.events[k];
             if (e.kind == OrderTracer::Kind::Kick) {
                 ++kicks;
+                if (kicks == r.perturbations &&
+                    static_cast<int>(log->size()) == r.perturbations - 1) {
+                    continue;  // the post-budget kick above
+                }
                 // The event right before every kick is its pricing call.
                 REQUIRE(k > 0);
                 REQUIRE(tracer.events[k - 1].kind == OrderTracer::Kind::Pricing);
@@ -572,6 +591,10 @@ TEST_CASE("a knapsack pricer beats the trivial pattern set on u120_00", "[column
                               << with.counters.columns_added);
         REQUIRE(with.objective < without.objective);
         REQUIRE(with.objective >= kU120Optimum);
+        // "Strictly better than 120" is a low bar -- the trivial set admits no
+        // other objective -- so hold it to what the measurement says it reaches
+        // at this budget (78-83 over these seeds, docs/architecture.md).
+        REQUIRE(with.objective <= 90);
         // Under the cap, and the counters agree with the model.
         REQUIRE(with.counters.columns_added > 0);
         REQUIRE(with.counters.columns_added <= kCap);
@@ -633,9 +656,54 @@ TEST_CASE("no pricing call starts past the deadline", "[column]") {
     REQUIRE(r.termination == TerminationReason::TimeLimit);
     REQUIRE(log->size() > 2);
     for (const auto& c : *log) {
-        REQUIRE(c.remaining > 0.0);  // the engine's own reading at the call
+        // The engine's own reading at the call. >= rather than >: remaining() is
+        // read a few instructions after the past_deadline() guard, and a
+        // deadline passing in between reads as exactly 0 -- which the guard did
+        // not start late, so it is at most the last call.
+        REQUIRE(c.remaining >= 0.0);
     }
     REQUIRE(r.counters.pricing_calls == static_cast<int64_t>(log->size()));
+    for (size_t k = 0; k + 1 < log->size(); ++k) {
+        REQUIRE((*log)[k].remaining > 0.0);
+    }
+}
+
+TEST_CASE("no pricing call starts once the budget is gone, exactly", "[column]") {
+    // The deterministic form of the test above. The pricing guard is the same
+    // past_deadline() the clock ends a run on, and a host cancel raises it too --
+    // so raise it from a tracer at the end of batch 6, the instant before that
+    // batch's Periodic call would start. No timing window, no race: the call must
+    // not happen, and every earlier one must.
+    Model m = infeasible_pair();
+    auto log = std::make_shared<std::vector<RecordingGenerator::Call>>();
+    StopToken stop;
+    class StopAt : public Tracer {
+    public:
+        StopAt(StopToken& stop, int at) : stop_(stop), at_(at) {}
+        void batch_end(BatchKind /*kind*/, int64_t /*iterations*/, bool /*improved*/) override {
+            if (++seen_ == at_) {
+                stop_.request();
+            }
+        }
+
+    private:
+        StopToken& stop_;
+        int at_;
+        int seen_ = 0;
+    };
+    StopAt tracer(stop, 6);
+    SearchConfig cfg = iteration_budget(1'000'000);
+    cfg.batch_iterations = 100;
+    cfg.column_generator = std::make_shared<RecordingGenerator>(log);
+    cfg.pricing_period = 1;
+    cfg.price_on_stagnation = false;
+    cfg.stop = stop;
+    cfg.tracer = &tracer;
+    const SearchResult r = solve(m, 0.0, 1, true, nullptr, nullptr, 3, nullptr, cfg);
+    REQUIRE(r.termination == TerminationReason::Cancelled);
+    REQUIRE(r.counters.batches == 6);
+    REQUIRE(log->size() == 5);  // batches 1..5 priced; batch 6's call never started
+    REQUIRE(log->back().batches == 5);
 }
 
 TEST_CASE("a run with a slow pricer still honours its wall clock", "[column]") {
@@ -952,6 +1020,20 @@ TEST_CASE("a retired column is invisible to FJ, kicks included", "[column]") {
     REQUIRE(rng_a.random() == rng_b.random());
 }
 
+TEST_CASE("the standard move generator offers no flip of a pinned Bool", "[column]") {
+    // Since #165 a registered MoveGenerator may move scalars, and one built on
+    // the standard moves would flip a retired Bool column to 1, where FJ -- which
+    // skips it as retired -- could never move it back.
+    Model m;
+    const int32_t b = m.bool_var();
+    m.close();
+    const int32_t bid = -(b + 1);
+    RNG rng(1);
+    REQUIRE(generate_standard_moves(m.var(bid), rng).size() == 1);  // unpinned: the flip
+    m.var_mut(bid).ub = 0.0;
+    REQUIRE(generate_standard_moves(m.var(bid), rng).empty());
+}
+
 // ---------------------------------------------------------------------------
 // The incumbent stays honest.
 // ---------------------------------------------------------------------------
@@ -992,6 +1074,116 @@ TEST_CASE("a row that cuts off the incumbent demotes it", "[column]") {
     // hand back the cut-off incumbent as a solution.
     REQUIRE_FALSE(r.feasible);
     REQUIRE_FALSE(feasible_at(cm.model, r.best_state));
+}
+
+TEST_CASE("the batch that solves a pure-feasibility model prices nothing", "[column]") {
+    // A Periodic call on the solving batch used to run: with a generator that
+    // cuts the point off, the run then ended TerminationReason::Feasible with
+    // feasible == false -- and under ParallelSearch stopped every peer on it.
+    // A cut on x0 alone, x0 <= 0, which every feasible point violates.
+    Model m;
+    const int32_t x0 = m.bool_var();
+    const int32_t x1 = m.bool_var();
+    m.add_constraint(
+        m.geq(m.sum({m.prod(m.constant(1.0), x0), m.prod(m.constant(1.0), x1)}), m.constant(2.0)));
+    m.close();
+    class CutX0 : public ColumnGenerator {
+    public:
+        explicit CutX0(int32_t x0) : x0_(x0) {}
+        void price(const PricingContext& /*ctx*/, PricingEvent /*why*/,
+                   ModelExtension& ext) override {
+            ext.add_constraint(ext.leq(x0_, ext.constant(0.0)));
+        }
+        [[nodiscard]] std::unique_ptr<ColumnGenerator> clone() const override {
+            return std::make_unique<CutX0>(*this);
+        }
+
+    private:
+        int32_t x0_;
+    };
+    SearchConfig cfg = iteration_budget(10'000);
+    cfg.column_generator = std::make_shared<CutX0>(x0);
+    cfg.pricing_period = 1;
+    const SearchResult r = solve(m, 0.0, 1, true, nullptr, nullptr, 3, nullptr, cfg);
+    // The model is solved on its first batch (x0 = x1 = 1), and that batch is
+    // the one that must not price.
+    REQUIRE(r.termination == TerminationReason::Feasible);
+    REQUIRE(r.feasible);
+    REQUIRE(r.counters.pricing_calls == 0);
+    REQUIRE(feasible_at(m, r.best_state));
+}
+
+TEST_CASE("a column is not aged by the call that added it", "[column]") {
+    // column_retire_age = 1 means "retire after ONE pricing call at the bound".
+    // Aged in the call that added it, every column entering at its lower bound
+    // was retired on arrival and pricing added only dead columns.
+    const CuttingStock cs = u120_00();
+    CuttingModel cm = build_trivial(cs);
+    SearchConfig cfg = iteration_budget(30'000);
+    cfg.column_generator = std::make_shared<KnapsackPricer>(cs, cm.row_sums, cm.objective_sum);
+    cfg.pricing_period = 5;
+    cfg.column_retire_age = 1;
+    const SearchResult r = solve(cm.model, 0.0, 2, true, nullptr, nullptr, 3, nullptr, cfg);
+    REQUIRE(r.counters.columns_added > 0);
+    REQUIRE(r.counters.columns_retired < r.counters.columns_added);
+    // And the columns it kept did the work: the trivial set alone is stuck at 120.
+    REQUIRE(r.feasible);
+    REQUIRE(r.objective < static_cast<double>(cs.total_items()));
+}
+
+TEST_CASE("a column entering at a non-neutral value re-derives the incumbent", "[column]") {
+    // The "still feasible, different objective" branch. After the first
+    // feasible point, one column is added to the objective only, starting at 1
+    // with cost 1: every stored point's objective rises by exactly 1 and stays
+    // feasible. The incumbent's objective must be re-derived rather than keep
+    // describing a point that no longer has it.
+    const CuttingStock cs = u120_00();
+    CuttingModel cm = build_trivial(cs);
+    class ObjectiveColumn : public ColumnGenerator {
+    public:
+        explicit ObjectiveColumn(int32_t obj) : obj_(obj) {}
+        void price(const PricingContext& ctx, PricingEvent /*why*/, ModelExtension& ext) override {
+            if (done_ || ctx.incumbent == nullptr) {
+                return;
+            }
+            const int32_t x = ext.int_var(0, 1);
+            ext.set_initial(x, 1.0);
+            ext.append_to_sum(obj_, x);
+            done_ = true;
+        }
+        [[nodiscard]] std::unique_ptr<ColumnGenerator> clone() const override {
+            return std::make_unique<ObjectiveColumn>(*this);
+        }
+
+    private:
+        int32_t obj_;
+        bool done_ = false;
+    };
+    SearchConfig cfg = iteration_budget(3'000);
+    cfg.column_generator = std::make_shared<ObjectiveColumn>(cm.objective_sum);
+    cfg.pricing_period = 1;
+    const SearchResult r = solve(cm.model, 0.0, 1, true, nullptr, nullptr, 3, nullptr, cfg);
+    REQUIRE(r.counters.columns_added == 1);
+    REQUIRE(r.counters.incumbents_revalidated == 1);
+    REQUIRE(r.feasible);
+    // Whatever the returned point is, its reported objective is its own on the
+    // grown model.
+    Model check = cm.model;
+    check.restore_state(r.best_state);
+    full_evaluate(check);
+    REQUIRE(check.node_value(check.objective_id()) == r.objective);
+}
+
+TEST_CASE("solve refuses a generator alongside a shared pool", "[column]") {
+    const CuttingStock cs = u120_00();
+    CuttingModel cm = build_trivial(cs);
+    SolutionPool pool(4);
+    std::atomic<bool> stop{false};
+    SearchCoordination coord{&pool, &stop};
+    SearchConfig cfg = iteration_budget(1000);
+    cfg.column_generator = std::make_shared<KnapsackPricer>(cs, cm.row_sums, cm.objective_sum);
+    REQUIRE_THROWS_AS(solve(cm.model, 0.0, 1, true, nullptr, nullptr, 3, nullptr, cfg, &coord),
+                      std::invalid_argument);
 }
 
 // ---------------------------------------------------------------------------
@@ -1035,7 +1227,8 @@ namespace {
 struct CloneRegistry {
     std::atomic<int> clones{0};
     std::mutex mutex;
-    std::set<const void*> pricers;
+    std::set<int> pricers;  // clone serial numbers, not addresses: a freed clone's
+                            // address can be reused by a later one
 };
 
 class TrackedPricer : public KnapsackPricer {
@@ -1046,17 +1239,19 @@ public:
     void price(const PricingContext& ctx, PricingEvent why, ModelExtension& ext) override {
         {
             const std::scoped_lock lock(reg_->mutex);
-            reg_->pricers.insert(this);
+            reg_->pricers.insert(id_);
         }
         KnapsackPricer::price(ctx, why, ext);
     }
     [[nodiscard]] std::unique_ptr<ColumnGenerator> clone() const override {
-        reg_->clones.fetch_add(1, std::memory_order_relaxed);
-        return std::make_unique<TrackedPricer>(*this);
+        auto copy = std::make_unique<TrackedPricer>(*this);
+        copy->id_ = reg_->clones.fetch_add(1, std::memory_order_relaxed);
+        return copy;
     }
 
 private:
     std::shared_ptr<CloneRegistry> reg_;
+    int id_ = -1;  // the registered prototype, which never prices
 };
 }  // namespace
 
@@ -1150,23 +1345,31 @@ TEST_CASE("each portfolio worker grows its own model with its own generator",
     pc.n_threads = kWorkers;
     std::atomic<int> adopts{0};
     std::atomic<int> kicks{0};
-    class KickCounter : public Tracer {
+    // Each worker's own best, written only by that worker's tracer and read after
+    // the join, so the portfolio's winner selection can be checked against it.
+    std::vector<double> worker_best(kWorkers, std::numeric_limits<double>::infinity());
+    class WorkerTracer : public Tracer {
     public:
-        KickCounter(std::atomic<int>& adopts, std::atomic<int>& kicks)
-            : adopts_(adopts), kicks_(kicks) {}
+        WorkerTracer(std::atomic<int>& adopts, std::atomic<int>& kicks, double& best)
+            : adopts_(adopts), kicks_(kicks), best_(best) {}
         void kick(KickKind kind) override {
             kicks_.fetch_add(1, std::memory_order_relaxed);
             if (kind == KickKind::Adopt) {
                 adopts_.fetch_add(1, std::memory_order_relaxed);
             }
         }
+        void new_best(double objective, double /*seconds*/) override {
+            best_ = std::min(best_, objective);
+        }
 
     private:
         std::atomic<int>& adopts_;
         std::atomic<int>& kicks_;
+        double& best_;
     };
-    pc.tracer_factory = [&adopts, &kicks](int /*worker*/) -> std::unique_ptr<Tracer> {
-        return std::make_unique<KickCounter>(adopts, kicks);
+    pc.tracer_factory = [&adopts, &kicks, &worker_best](int worker) -> std::unique_ptr<Tracer> {
+        return std::make_unique<WorkerTracer>(adopts, kicks,
+                                              worker_best[static_cast<size_t>(worker)]);
     };
     cfg.max_iterations = 40'000;  // work, not wall time: see the test above
     const SearchResult r = ps.solve(cm.model, 0.0, 17, cfg, nullptr, nullptr, nullptr, pc);
@@ -1189,4 +1392,13 @@ TEST_CASE("each portfolio worker grows its own model with its own generator",
     REQUIRE(feasible_at(cm.model, r.best_state));
     REQUIRE(r.objective < static_cast<double>(cs.total_items()));
     REQUIRE(r.counters.pricing_calls > 0);
+    // The BEST worker's answer: no incumbent was revalidated here, so each
+    // worker's last new_best is its result, and the portfolio must return the
+    // minimum of them -- with that worker's model, which the feasibility check
+    // above already ties to the state.
+    REQUIRE(r.counters.incumbents_revalidated == 0);
+    REQUIRE(r.objective == *std::min_element(worker_best.begin(), worker_best.end()));
+    // The workers really did differ, or the check above would prove nothing.
+    REQUIRE(*std::min_element(worker_best.begin(), worker_best.end()) <
+            *std::max_element(worker_best.begin(), worker_best.end()));
 }

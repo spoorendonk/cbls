@@ -241,6 +241,13 @@ TEST_CASE("merge sums scalars and merges generator rows by name", "[counters]") 
     a.inner_solver_calls = 1;
     a.inner_solver_seconds = 0.25;
     a.portfolio_restarts = 1;
+    a.pricing_calls = 1;
+    a.pricing_seconds = 0.125;
+    a.columns_added = 2;
+    a.rows_added = 1;
+    a.columns_retired = 1;
+    a.extensions_refused = 1;
+    a.incumbents_revalidated = 1;
     a.by_generator.push_back({"list:0", 10, 2});
     a.by_generator.push_back({"set:1", 5, 1});
 
@@ -252,6 +259,13 @@ TEST_CASE("merge sums scalars and merges generator rows by name", "[counters]") 
     b.inner_solver_calls = 2;
     b.inner_solver_seconds = 0.5;
     b.portfolio_restarts = 2;
+    b.pricing_calls = 3;
+    b.pricing_seconds = 0.25;
+    b.columns_added = 5;
+    b.rows_added = 2;
+    b.columns_retired = 4;
+    b.extensions_refused = 2;
+    b.incumbents_revalidated = 3;
     // Deliberately in the other order, and with one name `a` does not have.
     b.by_generator.push_back({"set:1", 7, 3});
     b.by_generator.push_back({"list:9", 1, 1});
@@ -265,6 +279,14 @@ TEST_CASE("merge sums scalars and merges generator rows by name", "[counters]") 
     REQUIRE(a.inner_solver_calls == 3);
     REQUIRE(a.inner_solver_seconds == 0.75);
     REQUIRE(a.portfolio_restarts == 3);
+    // Column generation's counters (#168), summed like every other scalar.
+    REQUIRE(a.pricing_calls == 4);
+    REQUIRE(a.pricing_seconds == 0.375);
+    REQUIRE(a.columns_added == 7);
+    REQUIRE(a.rows_added == 3);
+    REQUIRE(a.columns_retired == 5);
+    REQUIRE(a.extensions_refused == 3);
+    REQUIRE(a.incumbents_revalidated == 4);
     // The totals are summed as scalars rather than re-derived from the rows below,
     // which is what keeps them consistent with a `by_generator` merge that appends
     // a name the other side did not have.

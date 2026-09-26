@@ -227,8 +227,12 @@ struct SearchConfig {
     // A pricing oracle that proposes new columns from the GLS weights while the
     // search runs. Null -- the default -- turns the whole mechanism off, and a run
     // without one is BIT-IDENTICAL to the run before this block existed: every
-    // site below is behind a single null test, reads no clock and draws no random
-    // number. See `ColumnGenerator` and docs/architecture.md, "Column generation".
+    // pricing site is behind a single null test, reads no clock and draws no
+    // random number. Outside those sites the feature adds three compares -- a
+    // pinned-Bool test in FJ's Bool candidate, in `random_in_domain` and in the
+    // Bool move generator, and a size test in FJ's `jumpable` -- which are inert on
+    // every model without a pinned Bool or a retired column, i.e. every model no
+    // generator has touched. See `ColumnGenerator` and docs/architecture.md, "Column generation".
     //
     // CLONED PER solve(), so per portfolio worker and per restart: the prototype
     // is only ever `clone()`d, which is what the `const` says.
@@ -245,15 +249,22 @@ struct SearchConfig {
     int pricing_period = 0;
     // Price immediately before every diversification kick, on both kick routes
     // (`PricingEvent::Stagnation`) -- while the weights still describe the basin
-    // the search is stuck in, since the kick resets them.
+    // the search is stuck in, since the kick resets them. KNOW THE RATE: #102's
+    // unproductive route takes ~98% of kicks at a median of ~2 batches apart
+    // (measured at #158), so with this on a generator is asked about every other
+    // batch once the search stalls -- far more often than `pricing_period`
+    // suggests. Cheap for a cheap pricer; for an expensive one turn this off and
+    // use `pricing_period`. Not restricted to the full-period route, because the
+    // issue asks for "before a kick" and that route is 2% of them.
     bool price_on_stagnation = true;
     // Price on a batch that recorded a new best, before its weight reset
     // (`PricingEvent::NewBest`).
     bool price_on_new_best = false;
     // At most ONE pricing call per batch. When two events fall on the same batch
     // the call carries the first of NewBest, Periodic, Stagnation, and the others
-    // are not raised for that batch.
-    //
+    // are not raised for that batch. On a pure-feasibility model the batch that
+    // solves it prices nothing: the run is over.
+
     // The most VARIABLES pricing may add over one solve(), retired ones included
     // -- a retired column is still in the model. An extension that would pass it
     // is refused whole (`SearchCounters::extensions_refused`), and once it is

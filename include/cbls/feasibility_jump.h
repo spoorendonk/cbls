@@ -302,6 +302,14 @@ public:
     /// changing anything.
     void retire(const std::vector<int32_t>& vars);
 
+    /// Queue the variables `[first, end)` and drop their cached jumps, so the next
+    /// batch considers them whether or not they sit in a violated row -- what
+    /// `on_extended` does for the columns it adds, re-done after a `resync` has
+    /// rebuilt the scan set from the violated rows only (#168's post-extension
+    /// revalidation). Non-jumpable ids in the range are skipped; an out-of-range
+    /// one throws `std::out_of_range`.
+    void requeue(int32_t first, int32_t end);
+
     // Novelty Jump (paper Algorithms 4-5): a bounded-backtracking compound-move
     // search that escapes local optima single-variable FJ cannot (chained-
     // invariant fixes). Commits the improving compound move(s) it finds (left

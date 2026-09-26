@@ -505,9 +505,11 @@ public:
     /// reason `mut()` throws. `ParallelSearch::solve(Model&)` and the CLI at
     /// `--threads > 1` both freeze, so **growth is single-`solve()` only**:
     /// `solve()` itself never freezes, and the CLI at `--threads 1` hands it an
-    /// open model. A per-worker extension overlay on a shared structure is #168's
-    /// job, and is the reason this is a refusal and not a copy-on-write detach --
-    /// see `freeze()` on why a silent detach is the wrong failure.
+    /// open model. #168 settled the portfolio case with an EXPLICIT detach rather
+    /// than an overlay: `private_copy()` gives a worker a writable deep copy, and
+    /// `ParallelSearch`'s master overload uses it under a column generator. That is
+    /// why this stays a refusal and not a silent copy-on-write detach -- see
+    /// `freeze()` on why a silent detach is the wrong failure.
     ///
     /// Also throws `std::logic_error` on a model that is not closed (use the
     /// ordinary builders), and `std::invalid_argument` if `ext` was built against

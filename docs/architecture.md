@@ -603,10 +603,11 @@ loop amortises it.
 **A frozen model is refused.** `freeze()` publishes one `ModelStructure` to every
 portfolio replica, so growth would rewrite a peer's DAG under a running search.
 `ParallelSearch::solve(Model&)` and the CLI at `--threads > 1` both freeze, so
-growth is **single-`solve()` only**; a per-worker extension overlay on a shared
-structure is #168's job. There is also no in-loop hook yet: `extend` is called
-between `solve()` calls, and the between-batches entry point #168 needs is that
-issue's API.
+growth is **single-`solve()` only** on a frozen model. #168 resolved both ends
+this left open: a portfolio worker that grows gets an explicit deep copy
+(`Model::private_copy`) rather than an overlay on the shared structure, and the
+between-batches entry point is `SearchConfig::column_generator` -- see "Column
+generation (#168)".
 
 **Three things the cold review of #167 closed**, worth knowing before #168 wires
 this into the search loop:
@@ -671,8 +672,9 @@ call order is internal to `solve()`. The binding adds four things of its own:
   can reach `extend` mid-search. An extension that only appends existing
   variables to existing rows changes neither count, so the engine's table checks
   missed it and the search returned `feasible=True` on a model it had left
-  infeasible. The engine has no in-search growth point until #168, so the binding
-  keeps a registry of the models a bound `solve` is running on.
+  infeasible. The engine's own in-search growth point (#168's column generator)
+  applies its extensions itself, between batches; a callback has no such hook, so
+  the binding keeps a registry of the models a bound `solve` is running on.
 
 **Staleness is detected by a structure token, not by counts.**
 `Model::structure_version()` is drawn from one process-wide atomic counter at
