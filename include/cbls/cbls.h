@@ -7,6 +7,7 @@ inline constexpr const char* kVersion = "0.1.0";
 #include "counters.h"
 #include "dag.h"
 #include "dag_ops.h"
+#include "executor.h"
 #include "expr.h"
 #include "feasibility_jump.h"
 #include "formatter.h"

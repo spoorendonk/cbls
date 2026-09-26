@@ -415,6 +415,69 @@ struct CombinedStop {
     [[nodiscard]] bool requested() const { return host.requested() || search.requested(); }
 };
 
+// How many workers a portfolio actually runs.
+//
+// Without a caller-owned executor it is what the caller asked for. WITH one it
+// is capped by the executor's own width: a chunk is what a worker runs on, so
+// asking for more workers than the pool can run at once would produce workers
+// that only start as earlier ones finish -- and a portfolio worker holds its
+// core for the whole shared deadline, so the late ones would get no budget at
+// all. Floored at 1, because a zero-worker portfolio returns no result.
+int portfolio_workers(int requested, const std::optional<ExecutorRef>& executor) {
+    if (!executor.has_value()) {
+        return std::max(1, requested);
+    }
+    return std::max(1, std::min(requested, executor->n_threads()));
+}
+
+// Run `run_one(i)` for every worker index in `[0, n_workers)`, concurrently.
+//
+// Two launch paths, one meaning. `run_one` swallows every exception a worker can
+// raise (see its definition), so the only thing either path here has to handle
+// is a failure to LAUNCH -- and the two differ in what that is.
+//
+// With a caller-owned executor (#169) this creates no thread at all. Worker `i`
+// runs as index `i`, and the loop over [begin, end) is written for ANY chunking
+// rather than assuming one index per chunk: `parallel_for_chunked` does not
+// promise a partition of one, and a chunking that groups several indices runs
+// those workers one after another, which is correct and merely less parallel --
+// each is handed the shared deadline as it stands when it starts. `chunk_idx` is
+// unused on purpose: it indexes the CHUNK, while a worker is identified by its
+// index, which is what `results`, `failures` and `portfolio_worker_seed` key on.
+// Nothing is caught around the executor call, because an exception from there is
+// the CALLER's own failure to report rather than a worker's to absorb, and the
+// executor is responsible for having finished or abandoned its chunks before it
+// returns.
+//
+// On our own threads, `threads.emplace_back` can throw (the process thread
+// limit, or bad_alloc). The stop flag is raised and whatever was created is
+// joined before rethrowing -- ~thread on a joinable thread is std::terminate, so
+// unwinding past a half-filled vector would abort the process instead of
+// reporting the failure.
+void launch_workers(int n_workers, const std::optional<ExecutorRef>& executor,
+                    std::atomic<bool>& stop, FunctionRef<void(int)> run_one) {
+    if (executor.has_value()) {
+        executor->parallel_for_chunked(0, n_workers,
+                                       [run_one](int begin, int end, int /*chunk_idx*/) {
+                                           for (int i = begin; i < end; ++i) {
+                                               run_one(i);
+                                           }
+                                       });
+        return;
+    }
+    std::vector<std::thread> threads;
+    try {
+        for (int i = 0; i < n_workers; ++i) {
+            threads.emplace_back([run_one, i]() { run_one(i); });
+        }
+    } catch (...) {
+        stop.store(true, std::memory_order_relaxed);
+        join_all(threads);
+        throw;
+    }
+    join_all(threads);
+}
+
 // What a portfolio that produced no result at all reports.
 //
 // A cancelled portfolio reaches that path too, and must NOT be reported as
@@ -611,6 +674,13 @@ SearchResult ParallelSearch::solve_portfolio(
     std::function<std::shared_ptr<InnerSolverHook>(Model&)>& hook_factory,
     std::function<std::shared_ptr<LNS>()>& lns_factory, SolveCallback* callback, int n_threads,
     int pool_capacity, const ParallelConfig& par_config) {
+    // What the caller asked for, capped by a caller-owned executor's width. Every
+    // per-worker vector below, and the aggregation at the end, is sized on this
+    // rather than on the request -- a slot for a worker that never ran would
+    // contribute a default SearchResult to the aggregate and read as a worker
+    // that searched and found nothing.
+    const int n_workers = portfolio_workers(n_threads, par_config.executor);
+
     // One StopRef for every worker to poll; see CombinedStop.
     const CombinedStop combined{par_config.stop, config.stop};
     SearchConfig worker_config = config;
@@ -666,9 +736,9 @@ SearchResult ParallelSearch::solve_portfolio(
                          par_config.tracer_factory,
                          has_deadline,
                          seed,
-                         n_threads};
+                         n_workers};
 
-    std::vector<SearchResult> results(n_threads);
+    std::vector<SearchResult> results(n_workers);
     // One slot per worker, left null unless that worker threw. Sized up front so
     // the lambdas below only ever write their own index.
     //
@@ -677,51 +747,50 @@ SearchResult ParallelSearch::solve_portfolio(
     // thread, which reached here through a binding that released the GIL. That is
     // safe only because python_error takes the GIL in its own destructor; see
     // PySolveCallback in python/bindings.cpp before changing what gets parked.
-    std::vector<std::exception_ptr> failures(n_threads);
-    std::vector<std::thread> threads;
+    std::vector<std::exception_ptr> failures(n_workers);
 
-    try {
-        for (int i = 0; i < n_threads; ++i) {
-            threads.emplace_back([&, i]() {
-                try {
-                    std::exception_ptr worker_failure;
-                    auto r = run_worker(ctx, i, worker_failure);
-                    if (!r.has_value()) {
-                        // Either handed no budget at all (worker_failure null,
-                        // nothing to report) or every attempt threw.
-                        failures[i] = worker_failure;
-                        return;
-                    }
-                    results[i] = *r;
+    // One worker, whichever thing is running it. Written once and used by both
+    // launch paths below, so the two cannot come to mean different things:
+    // everything that distinguishes a caller's executor from our own threads is
+    // in HOW this is invoked, not in what it does.
+    //
+    // It catches everything, which is what lets an executor run it: a thread
+    // function that lets an exception escape is std::terminate, and an executor
+    // is free to do anything at all with one -- rethrow it on the calling
+    // thread, swallow it, abort. Parking it here means the portfolio's own
+    // failure handling is the same either way.
+    auto run_one = [&ctx, &failures, &results, &pool](int i) {
+        try {
+            std::exception_ptr worker_failure;
+            auto r = run_worker(ctx, i, worker_failure);
+            if (!r.has_value()) {
+                // Either handed no budget at all (worker_failure null, nothing
+                // to report) or every attempt threw.
+                failures[i] = worker_failure;
+                return;
+            }
+            results[i] = *r;
 
-                    // The end-of-run submit still matters even though every
-                    // incumbent was shared as it was found: on a run that never
-                    // reached feasibility nothing was ever recorded, and this is
-                    // what puts the closest approach in the pool so the
-                    // aggregate below has something to return.
-                    Solution sol;
-                    sol.state = r->best_state;
-                    sol.objective = r->objective;
-                    sol.feasible = r->feasible;
-                    sol.violation = r->best_violation;
-                    pool.submit(sol);
-                } catch (...) {
-                    // A thread function must not let an exception escape -- that
-                    // is std::terminate -- and one worker failing is not a
-                    // reason to lose the others' work. Park it rather than drop
-                    // it; whether it is rethrown is decided below, once every
-                    // worker has reported.
-                    failures[i] = std::current_exception();
-                }
-            });
+            // The end-of-run submit still matters even though every incumbent
+            // was shared as it was found: on a run that never reached
+            // feasibility nothing was ever recorded, and this is what puts the
+            // closest approach in the pool so the aggregate below has something
+            // to return.
+            Solution sol;
+            sol.state = r->best_state;
+            sol.objective = r->objective;
+            sol.feasible = r->feasible;
+            sol.violation = r->best_violation;
+            pool.submit(sol);
+        } catch (...) {
+            // One worker failing is not a reason to lose the others' work. Park
+            // it rather than drop it; whether it is rethrown is decided below,
+            // once every worker has reported.
+            failures[i] = std::current_exception();
         }
-    } catch (...) {
-        stop.store(true, std::memory_order_relaxed);
-        join_all(threads);
-        throw;
-    }
+    };
 
-    join_all(threads);
+    launch_workers(n_workers, par_config.executor, stop, run_one);
 
     // Every worker either submits a solution or parks its exception, and the
     // pool keeps the best `pool_capacity`, so an empty pool means every one of

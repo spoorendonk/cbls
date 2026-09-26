@@ -1,5 +1,6 @@
 #pragma once
 
+#include "executor.h"
 #include "inner_solver.h"
 #include "lns.h"
 #include "model.h"
@@ -9,6 +10,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 
 namespace cbls {
 
@@ -62,6 +64,29 @@ struct ParallelConfig {
     /// itself is called from N threads at once, so a factory that touches shared
     /// state of its own needs its own lock.
     std::function<std::unique_ptr<Tracer>(int worker)> tracer_factory;
+
+    /// The CALLER's thread pool, or unset for today's `std::thread` workers
+    /// (#169).
+    ///
+    /// With it set, `ParallelSearch` creates no thread of its own: worker `i`
+    /// runs as index `i` of `parallel_for_chunked(0, n_workers, ...)`, with
+    /// `n_workers = min(n_threads, executor->n_threads())`. The cap is not
+    /// cosmetic -- a portfolio worker holds its chunk for the whole shared
+    /// deadline, so a worker queued behind another would get no budget at all.
+    ///
+    /// THE EXECUTOR MUST RUN CHUNKS CONCURRENTLY. Workers are cooperative: they
+    /// share incumbents through the pool as they find them and restart from a
+    /// peer's, which is not a portfolio if they run one after another. A
+    /// SEQUENTIAL executor is not rejected -- it degenerates to a one-worker
+    /// portfolio, since the first worker takes the whole deadline -- and nothing
+    /// detects it. See `ExecutorRef`.
+    ///
+    /// NON-OWNING, like `stop`: the pool must outlive the solve.
+    ///
+    /// C++-only, and deliberately not bound to Python: a Python "executor" would
+    /// have to be called back into from the engine under the GIL, which is the
+    /// serialisation a portfolio exists to avoid.
+    std::optional<ExecutorRef> executor;
 };
 
 /// The pool capacity a portfolio actually uses: `requested` when positive,

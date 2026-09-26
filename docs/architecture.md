@@ -2786,6 +2786,52 @@ cooperative portfolio exists for -- live sharing, pool restarts, a global stop
 reproducible was also what left workers idling at it. Pass `--threads 1` (or
 call `cbls::solve()` directly) when reproducibility is what is wanted.
 
+### Caller-owned threads
+
+`ParallelConfig::executor` is a `std::optional<ExecutorRef>`
+(`include/cbls/executor.h`), unset by default. Unset, `ParallelSearch` creates one
+`std::thread` per worker as it always has. Set, **it creates none**: worker `i`
+runs as index `i` of `parallel_for_chunked(0, n_workers, ...)` on the caller's own
+pool, with `n_workers = min(n_threads, executor->n_threads())`.
+
+This exists because a host that already owns a thread pool — another solver, a
+pipeline stage, a batch job — oversubscribes its cores the moment it runs cbls
+next to anything else, and had no way to say "use mine". `ExecutorRef` is a
+type-erased, non-owning view (a pointer plus a vtable pointer) of anything with
+`parallel_for`, `parallel_for_chunked`, `parallel_invoke` and `n_threads`; the
+caller owns and outlives the pool, exactly as with `StopRef`. Under C++20 a
+caller can check its type against the `cbls::Executor` concept in the same header;
+the library itself is C++17, so the concept is compiled only when the *including*
+translation unit is C++20 or later.
+
+Three things about it are worth stating, because none is guessable:
+
+- **The width cap is not cosmetic.** A portfolio worker holds its chunk for the
+  whole shared deadline, so a worker queued behind another would search on no
+  budget at all. Asking for more workers than the pool is wide silently gets
+  fewer workers, not slower ones.
+- **The executor must run chunks concurrently.** Workers are cooperative — they
+  share incumbents through the pool as they find them and restart from a peer's —
+  which is not a portfolio if they run one after another. A *sequential* executor
+  is not rejected: it degenerates to a one-worker portfolio, because the first
+  worker takes the whole deadline. Nothing detects that, and nothing should; it is
+  a property of the executor the caller supplied.
+- **Chunk index is not worker index.** `chunk_idx` is a chunk's number in
+  `[0, n_threads())`, so `src/pool.cpp` ignores it and keys `results`, `failures`
+  and `portfolio_worker_seed` on the loop index instead. The loop over
+  `[chunk_begin, chunk_end)` is written for *any* chunking rather than assuming
+  one index per chunk.
+
+`launch_workers` in `src/pool.cpp` is the one place the two paths differ, and one
+worker's body (`run_one`) is shared between them. `run_one` swallows every
+exception a worker can raise, which is what makes an executor usable: an executor
+is free to do anything at all with an escaping exception, including abort. An
+exception out of the *executor call itself* is left to propagate — that is the
+caller's failure to report, not a worker's to absorb.
+
+C++-only, deliberately. A Python "executor" would have to be called back into
+under the GIL, which is the serialisation a portfolio exists to avoid.
+
 ### External cancellation
 
 `SearchConfig::stop` and `ParallelConfig::stop` are a `StopRef`
