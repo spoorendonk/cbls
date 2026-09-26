@@ -1121,7 +1121,10 @@ TEST_CASE("portfolio workers adopt nothing even when their models agree in width
     pc.tracer_factory = [&adopts, &kicks](int /*worker*/) -> std::unique_ptr<Tracer> {
         return std::make_unique<KickCounter>(adopts, kicks);
     };
-    const SearchResult r = ps.solve(cm.model, 0.5, 5, cfg, nullptr, nullptr, nullptr, pc);
+    // An iteration budget, not a clock: the kick count below must not depend on
+    // how fast the machine (or a sanitizer build) runs.
+    cfg.max_iterations = 40'000;
+    const SearchResult r = ps.solve(cm.model, 0.0, 5, cfg, nullptr, nullptr, nullptr, pc);
     REQUIRE(r.feasible);
     REQUIRE(cm.model.num_vars() == cs.sizes.size() + 3);
     REQUIRE(kicks.load() > 10);
@@ -1165,7 +1168,8 @@ TEST_CASE("each portfolio worker grows its own model with its own generator",
     pc.tracer_factory = [&adopts, &kicks](int /*worker*/) -> std::unique_ptr<Tracer> {
         return std::make_unique<KickCounter>(adopts, kicks);
     };
-    const SearchResult r = ps.solve(cm.model, 1.0, 17, cfg, nullptr, nullptr, nullptr, pc);
+    cfg.max_iterations = 40'000;  // work, not wall time: see the test above
+    const SearchResult r = ps.solve(cm.model, 0.0, 17, cfg, nullptr, nullptr, nullptr, pc);
     // Workers' models diverge at their first extension, so nothing is shared
     // and nothing is adopted.
     REQUIRE(kicks.load() > 10);
