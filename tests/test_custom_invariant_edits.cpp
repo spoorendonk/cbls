@@ -152,12 +152,12 @@ public:
     }
 
 private:
-    double dist(int32_t a, int32_t b) const {
+    [[nodiscard]] double dist(int32_t a, int32_t b) const {
         ++stats_->dist_evals;
         return std::abs(coord(a) - coord(b));
     }
 
-    double full_cost(const std::vector<int32_t>& m) const {
+    [[nodiscard]] double full_cost(const std::vector<int32_t>& m) const {
         double c = 0.0;
         for (size_t j = 0; j + 1 < m.size(); ++j) {
             c += dist(m[j], m[j + 1]);
@@ -175,7 +175,7 @@ private:
 
     // Edge j joins positions j and j+1. Sums the listed edges that exist, each
     // once.
-    double edges(const std::vector<int32_t>& m, std::vector<int64_t> which) const {
+    [[nodiscard]] double edges(const std::vector<int32_t>& m, std::vector<int64_t> which) const {
         std::sort(which.begin(), which.end());
         which.erase(std::unique(which.begin(), which.end()), which.end());
         double c = 0.0;
@@ -411,6 +411,167 @@ TEST_CASE("an edit-consuming List invariant is O(edits) where a re-read is O(n)"
     REQUIRE(inc->stats->dist_evals * 10 < full->stats->dist_evals);
 }
 
+namespace {
+
+// The random apply/undo sequence below, one method per kind of step, so each
+// reads on its own. Every step leaves `live` consistent with its assignment by
+// its own route; the test then checks that against a from-scratch pass.
+class ApplyUndoSequence {
+public:
+    explicit ApplyUndoSequence(uint64_t seed)
+        : live_(build_route_model(/*use_edits=*/true, 40, 0, 40)), rng_(seed) {
+        set_route(*live_, random_route(rng_, 40, 25), random_route(rng_, 12, 5));
+        kid_ = handle_to_var_id(live_->k);
+        lid_ = handle_to_var_id(live_->list);
+        sid_ = handle_to_var_id(live_->set);
+        vm_ = std::make_unique<ViolationManager>(live_->model);
+        anchor_ = live_->model.copy_state();
+    }
+
+    [[nodiscard]] RouteModel& live() { return *live_; }
+    [[nodiscard]] RNG& rng() { return rng_; }
+    int undos = 0;
+    int probes = 0;
+    int two_var = 0;
+
+    // A journaled move on L or S, kept on the undo stack.
+    void journaled_move() {
+        const int32_t var = rng_.integers(0, 2) == 0 ? lid_ : sid_;
+        const std::vector<Move> moves = draw(var);
+        if (moves.empty()) {
+            return;
+        }
+        commit_recorded(pick(moves));
+    }
+
+    // ONE move over TWO structured inputs: the edits are keyed per input.
+    void two_variable_move() {
+        const std::vector<Move> lm = draw(lid_);
+        const std::vector<Move> sm = draw(sid_);
+        if (lm.empty() || sm.empty()) {
+            return;
+        }
+        Move both = pick(lm);
+        both.changes.push_back(pick(sm).changes.front());
+        commit_recorded(both);
+        ++two_var;
+    }
+
+    // Undo the most recent journaled move EXACTLY, by its inverse edits.
+    void undo() {
+        if (undo_stack_.empty()) {
+            return;
+        }
+        Applied a = std::move(undo_stack_.back());
+        undo_stack_.pop_back();
+        EditJournal inverse;
+        for (const int32_t var : a.vars) {
+            inverse.begin(var);
+            inverse.append_inverse(a.journal, var);
+            ConstSpan<PositionalEdit> edits;
+            REQUIRE(inverse.lookup(var, edits) == EditJournal::Status::Known);
+            for (const PositionalEdit& e : edits) {
+                apply_positional_edit(e, model().var_mut(var).elements);
+            }
+        }
+        delta_evaluate(model(), a.vars, DeltaMode::Commit, &inverse);
+        ++undos;
+    }
+
+    // A journaled PROBE, put back and rolled back: the next delta's edits must
+    // be relative to the committed state, not to the probe.
+    void probe_and_roll_back() {
+        const std::vector<Move> moves = draw(lid_);
+        if (moves.empty()) {
+            return;
+        }
+        Model& m = model();
+        const double before = m.node_value(live_->route);
+        const std::vector<int32_t> saved = m.var(lid_).elements;
+        EditJournal journal;
+        const std::vector<int32_t> vars = apply_move_recorded(m, pick(moves), journal);
+        delta_evaluate(m, vars, DeltaMode::Probe, &journal);
+        REQUIRE(m.node_value(live_->route) == expected_route(*live_));
+        m.var_mut(lid_).elements = saved;
+        delta_evaluate(m, vars, DeltaMode::Rollback);
+        REQUIRE(m.node_value(live_->route) == before);
+        ++probes;
+    }
+
+    // A move with NO journal: the fallback.
+    void unjournaled_move() {
+        const std::vector<Move> moves = draw(lid_);
+        if (moves.empty()) {
+            return;
+        }
+        delta_evaluate(model(), apply_move(model(), pick(moves)));
+        undo_stack_.clear();
+    }
+
+    // A Replace, journaled: the record is Unknown, so the fallback.
+    void replace() {
+        std::vector<int32_t> reversed = model().var(lid_).elements;
+        std::reverse(reversed.begin(), reversed.end());
+        Move move;
+        move.changes.push_back(replace_change(lid_, reversed));
+        EditJournal journal;
+        const std::vector<int32_t> vars = apply_move_recorded(model(), move, journal);
+        delta_evaluate(model(), vars, DeltaMode::Commit, &journal);
+        undo_stack_.clear();
+    }
+
+    // Mostly a scalar move; one time in ten a restore, the other fallback.
+    void scalar_or_restore() {
+        if (rng_.integers(0, 10) == 0) {
+            model().restore_state(anchor_);
+            full_evaluate(model());
+            undo_stack_.clear();
+            return;
+        }
+        model().var_mut(kid_).value = static_cast<double>(rng_.integers(0, 10));
+        delta_evaluate(model(), &kid_, 1);
+    }
+
+    // The bracketed scalar probe Feasibility Jump runs.
+    void scalar_probe() {
+        (void)vm_->weighted_violation_delta(kid_, static_cast<double>(rng_.integers(0, 10)));
+    }
+
+private:
+    struct Applied {
+        std::vector<int32_t> vars;
+        EditJournal journal;
+    };
+
+    [[nodiscard]] Model& model() { return live_->model; }
+
+    std::vector<Move> draw(int32_t var_id) {
+        std::vector<Move> moves;
+        generate_standard_moves(model().var(var_id), rng_, moves, nullptr);
+        return moves;
+    }
+    const Move& pick(const std::vector<Move>& moves) {
+        return moves[static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(moves.size())))];
+    }
+    void commit_recorded(const Move& move) {
+        Applied a;
+        a.vars = apply_move_recorded(model(), move, a.journal);
+        delta_evaluate(model(), a.vars, DeltaMode::Commit, &a.journal);
+        undo_stack_.push_back(std::move(a));
+    }
+
+    std::unique_ptr<RouteModel> live_;
+    RNG rng_;
+    int32_t kid_ = 0;
+    int32_t lid_ = 0;
+    int32_t sid_ = 0;
+    std::unique_ptr<ViolationManager> vm_;
+    Model::State anchor_;
+    std::vector<Applied> undo_stack_;
+};
+
+}  // namespace
+
 TEST_CASE("delta_evaluate and full_evaluate agree over a random apply/undo sequence with edits",
           "[custom][edits]") {
     // Criterion 2 of #172: #166's equivalence property, now with an invariant
@@ -419,138 +580,51 @@ TEST_CASE("delta_evaluate and full_evaluate agree over a random apply/undo seque
     // undo, a journaled probe rolled back, a move with no journal, a Replace,
     // a restore, and the bracketed scalar probe. After every step the live
     // value must match a from-scratch pass on a different instance.
-    auto live = build_route_model(/*use_edits=*/true, 40, 0, 40);
+    ApplyUndoSequence seq(20260926);
     auto ref = build_route_model(/*use_edits=*/true, 40, 0, 40);
-    RNG rng(20260926);
-    set_route(*live, random_route(rng, 40, 25), random_route(rng, 12, 5));
-
-    const int32_t kid = handle_to_var_id(live->k);
-    const int32_t lid = handle_to_var_id(live->list);
-    const int32_t sid = handle_to_var_id(live->set);
-    ViolationManager vm(live->model);
-
-    struct Applied {
-        std::vector<int32_t> vars;
-        EditJournal journal;
-    };
-    std::vector<Applied> undo_stack;
-    const Model::State anchor = live->model.copy_state();
-    int undos = 0;
-    int probes = 0;
-    int two_var = 0;
-
-    auto draw = [&rng](const Model& m, int32_t var_id) {
-        std::vector<Move> moves;
-        generate_standard_moves(m.var(var_id), rng, moves, nullptr);
-        return moves;
-    };
-    auto pick = [&rng](const std::vector<Move>& moves) -> const Move& {
-        return moves[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(moves.size())))];
-    };
+    RouteModel& live = seq.live();
 
     for (int step = 0; step < 3000; ++step) {
-        const int64_t kind = rng.integers(0, 10);
-        Model& m = live->model;
-        if (kind <= 2) {
-            // A journaled move on L or S, kept on the undo stack.
-            const int32_t var = rng.integers(0, 2) == 0 ? lid : sid;
-            const std::vector<Move> moves = draw(m, var);
-            if (!moves.empty()) {
-                Applied a;
-                a.vars = apply_move_recorded(m, pick(moves), a.journal);
-                delta_evaluate(m, a.vars, DeltaMode::Commit, &a.journal);
-                undo_stack.push_back(std::move(a));
-            }
-        } else if (kind == 3) {
-            // ONE move over TWO structured inputs: the edits are keyed per input.
-            const std::vector<Move> lm = draw(m, lid);
-            const std::vector<Move> sm = draw(m, sid);
-            if (!lm.empty() && !sm.empty()) {
-                Move both = pick(lm);
-                both.changes.push_back(pick(sm).changes.front());
-                Applied a;
-                a.vars = apply_move_recorded(m, both, a.journal);
-                delta_evaluate(m, a.vars, DeltaMode::Commit, &a.journal);
-                undo_stack.push_back(std::move(a));
-                ++two_var;
-            }
-        } else if (kind == 4) {
-            // Undo the most recent journaled move EXACTLY, by its inverse edits.
-            if (!undo_stack.empty()) {
-                Applied a = std::move(undo_stack.back());
-                undo_stack.pop_back();
-                EditJournal inverse;
-                for (const int32_t var : a.vars) {
-                    inverse.begin(var);
-                    inverse.append_inverse(a.journal, var);
-                    ConstSpan<PositionalEdit> edits;
-                    REQUIRE(inverse.lookup(var, edits) == EditJournal::Status::Known);
-                    for (const PositionalEdit& e : edits) {
-                        apply_positional_edit(e, m.var_mut(var).elements);
-                    }
-                }
-                delta_evaluate(m, a.vars, DeltaMode::Commit, &inverse);
-                ++undos;
-            }
-        } else if (kind == 5) {
-            // A journaled PROBE, put back and rolled back: the next delta's edits
-            // must be relative to the committed state, not to the probe.
-            const std::vector<Move> moves = draw(m, lid);
-            if (!moves.empty()) {
-                const double before = m.node_value(live->route);
-                const std::vector<int32_t> saved = m.var(lid).elements;
-                Applied a;
-                a.vars = apply_move_recorded(m, pick(moves), a.journal);
-                delta_evaluate(m, a.vars, DeltaMode::Probe, &a.journal);
-                REQUIRE(m.node_value(live->route) == expected_route(*live));
-                m.var_mut(lid).elements = saved;
-                delta_evaluate(m, a.vars, DeltaMode::Rollback);
-                REQUIRE(m.node_value(live->route) == before);
-                ++probes;
-            }
-        } else if (kind == 6) {
-            // A move with NO journal: the fallback.
-            const std::vector<Move> moves = draw(m, lid);
-            if (!moves.empty()) {
-                const std::vector<int32_t> vars = apply_move(m, pick(moves));
-                delta_evaluate(m, vars);
-                undo_stack.clear();
-            }
-        } else if (kind == 7) {
-            // A Replace, journaled: the record is Unknown, so the fallback.
-            std::vector<int32_t> reversed = m.var(lid).elements;
-            std::reverse(reversed.begin(), reversed.end());
-            Move replace;
-            replace.changes.push_back(replace_change(lid, reversed));
-            Applied a;
-            a.vars = apply_move_recorded(m, replace, a.journal);
-            delta_evaluate(m, a.vars, DeltaMode::Commit, &a.journal);
-            undo_stack.clear();
-        } else if (kind == 8) {
-            if (rng.integers(0, 10) == 0) {
-                m.restore_state(anchor);
-                full_evaluate(m);
-                undo_stack.clear();
-            } else {
-                m.var_mut(kid).value = static_cast<double>(rng.integers(0, 10));
-                delta_evaluate(m, &kid, 1);
-            }
-        } else {
-            (void)vm.weighted_violation_delta(kid, static_cast<double>(rng.integers(0, 10)));
+        switch (seq.rng().integers(0, 10)) {
+            case 0:
+            case 1:
+            case 2:
+                seq.journaled_move();
+                break;
+            case 3:
+                seq.two_variable_move();
+                break;
+            case 4:
+                seq.undo();
+                break;
+            case 5:
+                seq.probe_and_roll_back();
+                break;
+            case 6:
+                seq.unjournaled_move();
+                break;
+            case 7:
+                seq.replace();
+                break;
+            case 8:
+                seq.scalar_or_restore();
+                break;
+            default:
+                seq.scalar_probe();
+                break;
         }
-
-        ref.get()->model.restore_state(m.copy_state());
+        ref->model.restore_state(live.model.copy_state());
         full_evaluate(ref->model);
-        REQUIRE(m.node_value(live->route) == ref->model.node_value(ref->route));
-        REQUIRE(m.node_value(live->row) == ref->model.node_value(ref->row));
-        REQUIRE(live->stats->mirror_mismatches == 0);
+        REQUIRE(live.model.node_value(live.route) == ref->model.node_value(ref->route));
+        REQUIRE(live.model.node_value(live.row) == ref->model.node_value(ref->row));
+        REQUIRE(live.stats->mirror_mismatches == 0);
     }
     // Every path above must actually have been exercised.
-    REQUIRE(live->stats->incremental > 500);
-    REQUIRE(live->stats->rereads > 50);
-    REQUIRE(undos > 100);
-    REQUIRE(probes > 100);
-    REQUIRE(two_var > 100);
+    REQUIRE(live.stats->incremental > 500);
+    REQUIRE(live.stats->rereads > 50);
+    REQUIRE(seq.undos > 100);
+    REQUIRE(seq.probes > 100);
+    REQUIRE(seq.two_var > 100);
 }
 
 namespace {
