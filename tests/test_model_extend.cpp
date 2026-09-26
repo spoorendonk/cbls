@@ -620,10 +620,10 @@ TEST_CASE("a padded pre-extension state is still a valid restart point", "[exten
 }
 
 TEST_CASE("extending a running FJ keeps the existing rows' GLS weights", "[extend]") {
-    // The issue's third criterion, pinned where it can be pinned in this slice:
-    // at component level, on a ViolationManager and a FeasibilityJump driven
-    // directly. The end-to-end "between batches of a running search" version needs
-    // a hook surface inside ViolationLSLoop, which is #168's API.
+    // The issue's third criterion, pinned at component level, on a
+    // ViolationManager and a FeasibilityJump driven directly. #168's pricing hook
+    // is now the in-search caller; no test pins the end-to-end version (weights
+    // surviving an extension applied inside a running search), only this one.
     //
     // The model is deliberately infeasible so the GLS dynamics bump the weights
     // well away from 1: an extension that quietly reset them would look identical

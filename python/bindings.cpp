@@ -176,8 +176,9 @@ constexpr const char* kModelNodeDoc =
 // engine's own table checks, but one that only appends terms over existing
 // variables to existing Sum rows changes neither count: the search carried on
 // with stale FeasibilityJump tables and returned feasible=True on a model it had
-// left infeasible. The engine has no in-search growth point until #168, so the
-// binding refuses the call outright. A multiset, because nothing stops two
+// left infeasible. The engine's only in-search growth point is #168's
+// ColumnGenerator, which Python cannot reach, so the binding refuses the call
+// outright. A multiset, because nothing stops two
 // solves on one model from two threads (a data race of its own, but not this
 // check's to refuse). Only the bound single-model `solve` registers:
 // ParallelSearch is bound in factory form only, whose workers solve copies.
@@ -815,8 +816,13 @@ NB_MODULE(_cbls_core, m) {
                 return std::vector<int32_t>(cs.begin(), cs.end());
             },
             nb::arg("var_id"))
-        .def("per_constraint_violation_delta", &Model::per_constraint_violation_delta,
-             nb::arg("var_id"), nb::arg("j"))
+        .def(
+            "per_constraint_violation_delta",
+            [](Model& m, int32_t var_id, double j) {
+                m.require_intact("per_constraint_violation_delta");
+                return m.per_constraint_violation_delta(var_id, j);
+            },
+            nb::arg("var_id"), nb::arg("j"))
         .def("num_vars", &Model::num_vars)
         .def("num_nodes", &Model::num_nodes)
         // State snapshot/restore
@@ -1277,8 +1283,14 @@ NB_MODULE(_cbls_core, m) {
         model.require_intact("delta_evaluate");
         return delta_evaluate(model, changed);
     });
-    m.def("compute_partial", &compute_partial);
-    m.def("compute_all_partials", &compute_all_partials);
+    m.def("compute_partial", [](const Model& model, int32_t expr_id, int32_t var_id) {
+        model.require_intact("compute_partial");
+        return compute_partial(model, expr_id, var_id);
+    });
+    m.def("compute_all_partials", [](const Model& model, int32_t expr_id) {
+        model.require_intact("compute_all_partials");
+        return compute_all_partials(model, expr_id);
+    });
     // The vector-returning overload, explicitly: #165 added an appending one
     // that also takes a NeighbourList, and an unqualified address-of is then
     // ambiguous. Python keeps the simple form.

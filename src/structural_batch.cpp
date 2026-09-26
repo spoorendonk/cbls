@@ -289,11 +289,12 @@ void StructuralBatch::record_accepted(const Model& model) {
     }
 }
 
-// Whether any custom node reads positional edits (#172). Decided per SWEEP
-// rather than once per batch, because `Model::extend` can add a custom node to
-// a model mid-search; O(#custom nodes) virtual calls, and one predictable
-// branch when the model has none -- which is every model without a custom
-// node, whose path is then the pre-#172 one exactly.
+// Whether any custom node reads positional edits (#172). Asked on every run()
+// rather than cached at construction; O(#custom nodes) virtual calls, and one
+// predictable branch when the model has none -- which is every model without a
+// custom node, whose path is then the pre-#172 one exactly. (A ModelExtension
+// cannot add a custom node today, so the answer does not change mid-search;
+// asking per run keeps it right if that refusal is ever lifted.)
 bool StructuralBatch::wants_journal(const Model& model) {
     for (int32_t id = 0; id < model.num_custom_invariants(); ++id) {
         if (model.custom_invariant(id).wants_positional_edits()) {

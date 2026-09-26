@@ -1211,6 +1211,24 @@ TEST_CASE("solve refuses a generator on a frozen model", "[column]") {
     REQUIRE(cm.model.num_vars() == cs.sizes.size());  // the shared structure never grew
 }
 
+TEST_CASE("solve refuses a generator on a model that is not closed", "[column]") {
+    // Model::extend needs a closed model; without this refusal the run searched
+    // until its first pricing call and threw a logic_error from there.
+    Model m;
+    const int32_t x = m.bool_var();
+    const int32_t y = m.bool_var();
+    const int32_t s = m.sum({x, y});
+    m.add_constraint(m.geq(s, m.constant(1.0)));
+    m.minimize(s);
+    auto log = std::make_shared<std::vector<RecordingGenerator::Call>>();
+    SearchConfig cfg = iteration_budget(5000);
+    cfg.column_generator = std::make_shared<RecordingGenerator>(log);
+    cfg.pricing_period = 1;
+    REQUIRE_THROWS_AS(solve(m, 0.0, 1, true, nullptr, nullptr, 3, nullptr, cfg),
+                      std::invalid_argument);
+    REQUIRE(log->empty());
+}
+
 TEST_CASE("the portfolio refuses a generator through a model factory", "[column][parallel]") {
     const CuttingStock cs = u120_00();
     CuttingModel cm = build_trivial(cs);

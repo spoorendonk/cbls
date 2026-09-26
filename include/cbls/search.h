@@ -277,7 +277,9 @@ struct SearchConfig {
     // current assignment AND in the incumbent -- for this many consecutive
     // pricing calls. 0 = never retire, the default: retirement is permanent (see
     // `ColumnPool`), and no measurement in the tree says which age is worth
-    // losing a column over. Retiring buys scan cost, not memory.
+    // losing a column over. Retiring buys scan cost, not memory. Aging runs only
+    // inside a pricing call, so once `max_generated_columns` is reached no column
+    // is aged or retired again.
     int column_retire_age = 0;
 };
 

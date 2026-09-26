@@ -170,9 +170,12 @@ public:
     /// valid answer and costs the engine nothing further.
     ///
     /// Must respect `ctx.remaining_seconds` and `ctx.columns_remaining`. A throw
-    /// propagates out of `solve()` with the model unchanged by this call (nothing
-    /// is applied until `price` returns), exactly as a throwing `InnerSolverHook`
-    /// does.
+    /// propagates out of `solve()`, exactly as a throwing `InnerSolverHook` does,
+    /// with nothing this call STAGED applied (nothing is applied until `price`
+    /// returns). The engine's own bookkeeping for the call has run by then: any
+    /// column `ColumnPool` aged out at this call was retired -- pinned at its
+    /// lower bound in the model -- before `price` was invoked. Retirement pins
+    /// outlive `solve()`: the caller's model comes back with them.
     ///
     /// New variables must be SCALAR -- `ModelExtension` offers nothing else, and
     /// says why.

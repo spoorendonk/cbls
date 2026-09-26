@@ -693,6 +693,9 @@ def _scenario_interrupted_extend_is_refused() -> None:
         "full_evaluate": lambda: cbls.full_evaluate(b.m),
         "delta_evaluate": lambda: cbls.delta_evaluate(b.m, {vid(b.x)}),
         "ViolationManager": lambda: cbls.ViolationManager(b.m),
+        "per_constraint_violation_delta": lambda: b.m.per_constraint_violation_delta(vid(b.x), 0.5),
+        "compute_partial": lambda: cbls.compute_partial(b.m, b.row, vid(b.x)),
+        "compute_all_partials": lambda: cbls.compute_all_partials(b.m, b.row),
         "solve": lambda: cbls.solve(b.m, time_limit=1.0, seed=1, config=config),
         "freeze": lambda: b.m.freeze(),
     }

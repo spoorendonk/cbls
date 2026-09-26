@@ -1918,6 +1918,14 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             "solve: SearchConfig::column_generator grows the model, and this model is frozen -- "
             "its structure is shared with its replicas. Pass model.private_copy() (#168)");
     }
+    // Model::extend needs a closed model (its derived indices must exist), and
+    // solve() never closes one -- refused here for the frozen check's reason, not
+    // at the first pricing call after the search has already run.
+    if (config.column_generator != nullptr && !model.is_closed()) {
+        throw std::invalid_argument(
+            "solve: SearchConfig::column_generator grows the model through Model::extend, which "
+            "needs a closed model -- call model.close() first (#168)");
+    }
     // A shared pool carries states indexed by their submitter's model; once this
     // model grows, a pooled state of the same width names different columns.
     // ParallelSearch's growth mode passes a null pool for exactly this reason, and
