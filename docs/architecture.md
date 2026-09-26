@@ -2293,8 +2293,9 @@ demotes it`).
   origin), and resets the age on any other value. At the age limit it is retired:
   its upper bound is set to its lower bound -- which is what keeps every *other*
   mover off it, an LNS destroy and the fresh `FeasibilityJump` an LNS repair
-  builds included (a pinned Bool had never existed before, so `random_in_domain`
-  the Bool jump candidate and the standard Bool flip move now read the bound; none changes a draw on any
+  builds included (a pinned Bool had never existed before, so `random_in_domain`,
+  the Bool jump candidate and the standard Bool flip move now read the bound;
+  none changes a draw on any
   model that existed before) -- and `FeasibilityJump::retire` drops it from the
   scan tables and from kicks. Retirement is permanent and is **not removal**: the
   column keeps its slot in G_v and its terms in their rows, and still counts
