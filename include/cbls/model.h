@@ -16,6 +16,11 @@ namespace cbls {
 
 // Forward declare Expr
 class Expr;
+// #167: the staged-extension pair, defined in model_extension.h. Forward-declared
+// here so that `extend`'s declaration costs this header nothing -- every model in
+// the tree includes model.h, and almost none of them extends.
+class ModelExtension;
+struct ExtensionResult;
 
 struct VarSequence {
     std::vector<int32_t> var_ids;  // ordered variable IDs in this sequence
@@ -92,10 +97,18 @@ struct ModelStructure {
     // build a few small allocations per node -- 2.66M on atlanta-ip's 540k nodes
     // -- and a portfolio replica a deep copy of all of them.
     //
-    // `child_refs` is append-only: a node's children are written when the node
-    // is made and addressed by its (child_begin, child_count), so they are
-    // readable before close(). The two back-reference arrays are CSR, rebuilt
-    // wholesale by `Model::rebuild_back_references`: the parents of node `i` are
+    // `child_refs` grows only at the end: a node's children are written when the
+    // node is made and addressed by its (child_begin, child_count), so they are
+    // readable before close(). It is NOT written once and never again --
+    // `ModelExtension::append_to_sum` (#167) RELOCATES a grown node's slice to
+    // the end of the array and leaves the old one as a hole, which is what keeps
+    // every other node's offsets valid; `child_ref_holes` counts what that has
+    // cost and `Model::extend` compacts when the holes pass half the array. A
+    // node's children are therefore stable between `extend` calls and only
+    // between them, which is exactly the window `ConstSpan` documents (dag.h).
+    // The two back-reference arrays are CSR, rebuilt
+    // wholesale by `Model::rebuild_back_references` and spliced incrementally by
+    // `Model::extend`: the parents of node `i` are
     // `parent_ids[parent_offsets[i] .. parent_offsets[i + 1])`, and likewise
     // for variables. Once its owner array is non-empty, each offsets array holds
     // at least one entry more -- creating a node or variable appends an empty
@@ -106,6 +119,10 @@ struct ModelStructure {
     // That is also why Model hands out no mutable nodes or vars vector: a
     // node or variable that bypassed push_node/alloc_var would have no range.
     std::vector<ChildRef> child_refs;
+    /// Entries in `child_refs` that no node addresses any more, left behind by
+    /// `Model::extend` relocating a grown node's slice (#167). 0 on every model
+    /// that never extends, and the trigger for compaction.
+    size_t child_ref_holes = 0;
     std::vector<uint32_t> parent_offsets;
     std::vector<int32_t> parent_ids;
     std::vector<uint32_t> dependent_offsets;
@@ -397,6 +414,57 @@ public:
     void freeze();
     [[nodiscard]] bool is_frozen() const noexcept { return open_structure_ == nullptr; }
 
+    /// Grow a CLOSED model: new variables, new nodes, new constraints, and terms
+    /// appended to existing `Sum` rows (#167). `include/cbls/model_extension.h`
+    /// carries `ModelExtension` and `ExtensionResult`.
+    ///
+    /// The point is that it does NOT rebuild the model. `close()` and
+    /// `add_objective_soft_constraint()` recompute the back-references, the
+    /// topological order, `topo_pos` and G_v wholesale -- O(model) for two nodes
+    /// -- and then `full_evaluate`. This splices instead, and evaluates only the
+    /// cone the addition dirties. What that costs, honestly:
+    ///
+    ///  - **O(k) when every addition is new and reaches no existing row.** New
+    ///    variables, new nodes and new constraints whose subtrees are themselves
+    ///    new: every array is appended to, the new nodes go on the end of
+    ///    `topo_order`, and the evaluation is the new cone.
+    ///  - **plus O(size of the touched cones)** when a new node names an
+    ///    existing node or variable: the new row's subtree is walked for G_v, and
+    ///    the CSR splice moves the suffix from the first touched id.
+    ///  - **plus O(#constraints)** as soon as ANY `append_to_sum` is recorded:
+    ///    finding which existing rows contain the grown node means walking up
+    ///    from it and asking of each constraint root whether it was reached.
+    ///    Skipped entirely when there is no append.
+    ///  - **O(model) in one case, reported as `topo_order_rebuilt`:** a new node
+    ///    that must sit before a grown `Sum` while one of its existing children
+    ///    sits after it. The existing order is then not extendable and
+    ///    `compute_topo_order` runs. Nothing in the tree produces this shape --
+    ///    a term is built out of a new variable and a new constant -- but a
+    ///    caller can, so it is correct rather than rejected.
+    ///
+    /// **A FROZEN model is refused** (`std::logic_error`). `freeze()` publishes
+    /// one `ModelStructure` to every portfolio replica, so growing it would
+    /// mutate a peer's model from under a running search -- which is the same
+    /// reason `mut()` throws. `ParallelSearch::solve(Model&)` and the CLI at
+    /// `--threads > 1` both freeze, so **growth is single-`solve()` only**:
+    /// `solve()` itself never freezes, and the CLI at `--threads 1` hands it an
+    /// open model. A per-worker extension overlay on a shared structure is #168's
+    /// job, and is the reason this is a refusal and not a copy-on-write detach --
+    /// see `freeze()` on why a silent detach is the wrong failure.
+    ///
+    /// Also throws `std::logic_error` on a model that is not closed (use the
+    /// ordinary builders), and `std::invalid_argument` if `ext` was built against
+    /// a different state of this model.
+    ///
+    /// Node values of the affected cone are brought up to date before it
+    /// returns, so the model is as consistent as it is after `close()`. The one
+    /// exception is a model that has custom nodes (#166): the cone walk cannot
+    /// give a `CustomInvariant` a meaningful `delta()` for a change that is not a
+    /// variable move, so such a model takes a `full_evaluate` -- which is that
+    /// interface's documented reset point -- and pays O(model) for the
+    /// evaluation. `has_custom_nodes()` is the test.
+    ExtensionResult extend(const ModelExtension& ext);
+
     // ViolationLS objective-as-soft-constraint (paper §5, P2 #67). Folds the
     // objective into the constraint set as `objective_expr <= bound`, with the
     // bound a mutable RHS. Must be called after close() and only when an
@@ -501,9 +569,13 @@ public:
     /// Deliberately NOT bound to Python: an index supplied from there would be
     /// an unguarded heap write (#156). `node_value` is the checked reader.
     void set_node_value_unchecked(int32_t id, double value) noexcept { node_values_[id] = value; }
-    /// `node`'s children, in the order they were given when it was created.
-    /// Valid from creation, not only after `close()`: a node's children are
-    /// written once, when it is made, and never change.
+    /// `node`'s children, in the order they were given when it was created,
+    /// followed by any terms `ModelExtension::append_to_sum` has added (#167).
+    /// Valid from creation, not only after `close()`.
+    ///
+    /// The span is invalidated by `extend`, which may relocate this node's slice
+    /// or compact the array; it is stable across everything else, `close()`
+    /// included.
     ///
     /// `node` must be one of THIS model's nodes (from `node()` or `nodes()`),
     /// unmodified in `child_begin`/`child_count`. Its offsets are
@@ -748,6 +820,10 @@ private:
     void require_open(const char* method) const;
 
     void build_var_constraints();
+    /// The one step of `extend` that writes `Model`'s own per-model arrays --
+    /// `vars_` and `node_values_` -- rather than the shared structure (#167).
+    /// Defined in `src/model_extension.cpp` with the rest of the extension path.
+    void append_extension_entities(const ModelExtension& ext, ExtensionResult& res);
     void rebuild_back_references();
     void rebuild_topo_positions();
     int32_t alloc_var(VarType type, double lb, double ub, const std::string& name);

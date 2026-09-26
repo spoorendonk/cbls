@@ -37,6 +37,15 @@ public:
             e.valid = false;
         }
     }
+    /// Make room for variables the model has gained since construction (#167).
+    /// New entries are invalid, which is what every entry starts as, so a grown
+    /// table reads exactly as a freshly constructed one for the new variables and
+    /// keeps its cached jumps for the old.
+    void grow(size_t num_vars) {
+        if (num_vars > entries_.size()) {
+            entries_.resize(num_vars);
+        }
+    }
     void set(int32_t var_id, double jump_value, double score) {
         entries_[var_id] = {jump_value, score, true};
     }
@@ -221,6 +230,37 @@ public:
     [[nodiscard]] int64_t structural_kick_checks() const { return kick_checks_; }
     [[nodiscard]] int64_t structural_kick_stride() const { return kick_stride_; }
 
+    /// Grow with a model that `Model::extend` just grew (#167).
+    ///
+    /// Every table here is indexed by a variable id or a constraint index, and
+    /// `ExtensionResult` guarantees both new ranges are contiguous and at the end
+    /// -- so each one keeps its existing entries and appends. What that preserves
+    /// is the search state that matters: the cached jumps of variables the
+    /// extension did not touch, and (in `ViolationManager`) the GLS weights.
+    ///
+    /// What it re-derives, and what that costs:
+    ///
+    ///  - `is_linear_` for the new rows and for every existing row a grown `Sum`
+    ///    sits inside, by walking those rows' subtrees -- O(size of the touched
+    ///    rows), not the O(model) sweep `compute_linear_constraints` does;
+    ///  - `vars_of_constraint_` from `ExtensionResult::new_incidences`, MERGED so
+    ///    each row's list stays ascending in variable id, which is how the
+    ///    constructor leaves it and therefore what the scan order depends on;
+    ///  - `violated_` for those same rows, and `unweighted_violation_` from
+    ///    scratch: one O(#constraints) sweep, which is what every batch entry
+    ///    already pays.
+    ///
+    /// Then it queues the new variables and every variable reading a touched or
+    /// new row, and invalidates their cached jumps -- their scores were computed
+    /// against rows that have since changed.
+    ///
+    /// Call it AFTER `ViolationManager::on_extended`: `active()` reads the weight
+    /// vector, and this reads `active()`.
+    ///
+    /// Throws `std::invalid_argument` if `ext` does not describe this model's
+    /// current variable and constraint counts.
+    void on_extended(const ExtensionResult& ext);
+
     // Novelty Jump (paper Algorithms 4-5): a bounded-backtracking compound-move
     // search that escapes local optima single-variable FJ cannot (chained-
     // invariant fixes). Commits the improving compound move(s) it finds (left
@@ -320,6 +360,11 @@ private:
     void rebuild_violated_and_scan_set();
     void set_initial_assignment();
     void compute_linear_constraints();
+    // The same classification as compute_linear_constraints, restricted to the
+    // rows an extension touched and memoised over their subtrees (#167).
+    void recompute_linearity(const std::vector<int32_t>& rows);
+    // Fold an extension's added G_v incidences into vars_of_constraint_ (#167).
+    void merge_new_incidences(const ExtensionResult& ext);
     void enqueue(int32_t var_id);
 
     // Novelty Jump internals (Algorithm 5). A candidate var with its W'-argmin

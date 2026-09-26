@@ -1,13 +1,18 @@
 #include "cbls/feasibility_jump.h"
 
 #include "cbls/dag_ops.h"
+#include "cbls/model_extension.h"
 #include "cbls/moves.h"
 #include "cbls/randomize.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <iterator>
 #include <limits>
+#include <stdexcept>
+#include <unordered_map>
+#include <utility>
 
 namespace cbls {
 
@@ -530,21 +535,28 @@ namespace {
 // compile-time constant. Vacuously true for a leaf (a Const node has no
 // children); a variable child is never constant, since its value is search
 // state.
-bool children_all_const(ConstSpan<ChildRef> children, const std::vector<uint8_t>& is_const) {
+//
+// `is_const` is a callable `int32_t node id -> bool`, not an array, so the same
+// rule serves the wholesale sweep below (which indexes a node-sized vector) and
+// the per-row reclassification an extension needs (#167), which memoises over the
+// touched subtrees instead of allocating one entry per node in the model.
+template <typename IsConst>
+bool children_all_const(ConstSpan<ChildRef> children, IsConst is_const) {
     return std::all_of(children.begin(), children.end(),
-                       [&](const ChildRef& ch) { return !ch.is_var && is_const[ch.id] != 0; });
+                       [&](const ChildRef& ch) { return !ch.is_var && is_const(ch.id); });
 }
 
 // Is this node affine in the variables, given the same classification already
 // settled for every node below it? Only called for nodes that are NOT wholly
 // constant, so `children` is populated for every op that indexes it.
-bool node_is_affine(NodeOp op, ConstSpan<ChildRef> children, const std::vector<uint8_t>& is_const,
-                    const std::vector<uint8_t>& is_affine) {
-    auto child_const = [&](const ChildRef& c) -> bool {
-        return c.is_var ? false : static_cast<bool>(is_const[c.id]);
-    };
+//
+// `is_const`/`is_affine` are callables over node ids, for the reason
+// `children_all_const` above gives.
+template <typename IsConst, typename IsAffine>
+bool node_is_affine(NodeOp op, ConstSpan<ChildRef> children, IsConst is_const, IsAffine is_affine) {
+    auto child_const = [&](const ChildRef& c) -> bool { return c.is_var ? false : is_const(c.id); };
     auto child_affine = [&](const ChildRef& c) -> bool {
-        return c.is_var ? true : static_cast<bool>(is_affine[c.id]);
+        return c.is_var ? true : is_affine(c.id);
     };
     switch (op) {
         case NodeOp::Const:
@@ -566,6 +578,51 @@ bool node_is_affine(NodeOp op, ConstSpan<ChildRef> children, const std::vector<u
     }
 }
 
+// Classify the subtree rooted at `root` and return whether the root is affine in
+// the variables (#167).
+//
+// `memo` caches both flags per node -- bit 0 constant, bit 1 affine -- and is
+// shared across the rows of one reclassification, because affineness is a property
+// of the node and not of the row reading it. An `unordered_map` rather than a
+// node-indexed array on purpose: allocating and clearing one entry per node is the
+// O(model) cost the incremental path exists to avoid, and the map holds only the
+// nodes the touched rows actually reach.
+//
+// Iterative, and a node is expanded before it is scored, so the recursion depth of
+// a deep expression tree does not become stack depth.
+bool cone_is_affine(const Model& model, int32_t root, std::unordered_map<int32_t, uint8_t>& memo) {
+    struct Frame {
+        int32_t nid;
+        bool expanded;
+    };
+    std::vector<Frame> stack{{root, false}};
+    while (!stack.empty()) {
+        const Frame frame = stack.back();
+        if (memo.count(frame.nid) != 0) {
+            stack.pop_back();
+            continue;
+        }
+        const ExprNode& nd = model.nodes()[static_cast<size_t>(frame.nid)];
+        const ConstSpan<ChildRef> children = model.children(nd);
+        if (!frame.expanded) {
+            stack.back().expanded = true;
+            for (const ChildRef& child : children) {
+                if (!child.is_var && memo.count(child.id) == 0) {
+                    stack.push_back({child.id, false});
+                }
+            }
+            continue;
+        }
+        stack.pop_back();
+        auto const_at = [&memo](int32_t id) { return (memo[id] & 1U) != 0; };
+        auto affine_at = [&memo](int32_t id) { return (memo[id] & 2U) != 0; };
+        const bool all_const = children_all_const(children, const_at);
+        const bool affine = all_const || node_is_affine(nd.op, children, const_at, affine_at);
+        memo[frame.nid] = static_cast<uint8_t>((all_const ? 1U : 0U) | (affine ? 2U : 0U));
+    }
+    return (memo[root] & 2U) != 0;
+}
+
 }  // namespace
 
 void FeasibilityJump::compute_linear_constraints() {
@@ -578,17 +635,113 @@ void FeasibilityJump::compute_linear_constraints() {
     for (int32_t nid : model_.topo_order()) {
         const ExprNode& nd = nodes[nid];
         const ConstSpan<ChildRef> children = model_.children(nd);
-        const bool all_const = children_all_const(children, is_const);
+        auto const_at = [&is_const](int32_t id) { return is_const[id] != 0; };
+        auto affine_at = [&is_affine](int32_t id) { return is_affine[id] != 0; };
+        const bool all_const = children_all_const(children, const_at);
         is_const[nid] = static_cast<uint8_t>(all_const);
         // A constant subtree is affine, and short-circuiting there is what keeps
         // node_is_affine from indexing the children of a childless leaf.
         is_affine[nid] =
-            static_cast<uint8_t>(all_const || node_is_affine(nd.op, children, is_const, is_affine));
+            static_cast<uint8_t>(all_const || node_is_affine(nd.op, children, const_at, affine_at));
     }
 
     const auto& cids = model_.constraint_ids();
     for (size_t c = 0; c < cids.size(); ++c) {
         is_linear_[c] = is_affine[cids[c]];
+    }
+}
+
+void FeasibilityJump::recompute_linearity(const std::vector<int32_t>& rows) {
+    const std::vector<int32_t>& cids = model_.constraint_ids();
+    std::unordered_map<int32_t, uint8_t> memo;
+    for (const int32_t ci : rows) {
+        is_linear_[static_cast<size_t>(ci)] =
+            static_cast<uint8_t>(cone_is_affine(model_, cids[static_cast<size_t>(ci)], memo));
+    }
+}
+
+void FeasibilityJump::on_extended(const ExtensionResult& ext) {
+    const size_t nc = model_.constraint_ids().size();
+    const size_t nv = model_.num_vars();
+    if (ext.first_new_constraint < 0 || ext.first_new_var < 0 ||
+        static_cast<size_t>(ext.end_constraint()) != nc ||
+        static_cast<size_t>(ext.end_var()) != nv ||
+        static_cast<size_t>(ext.first_new_constraint) != violated_.size() ||
+        static_cast<size_t>(ext.first_new_var) != in_queue_.size()) {
+        throw std::invalid_argument(
+            "FeasibilityJump::on_extended: the extension does not describe this model's current "
+            "variable and constraint counts");
+    }
+    jumps_.grow(nv);
+    in_queue_.resize(nv, 0);
+    violated_.resize(nc, 0);
+    is_linear_.resize(nc, 0);
+    vars_of_constraint_.resize(nc);
+
+    // The rows whose body changed: the new ones, and the existing ones a grown Sum
+    // sits inside.
+    std::vector<int32_t> rows = ext.touched_constraints;
+    for (int32_t ci = ext.first_new_constraint; ci < ext.end_constraint(); ++ci) {
+        rows.push_back(ci);
+    }
+    recompute_linearity(rows);
+    merge_new_incidences(ext);
+
+    const std::vector<int32_t>& cids = model_.constraint_ids();
+    for (const int32_t ci : rows) {
+        violated_[static_cast<size_t>(ci)] =
+            static_cast<uint8_t>(is_violated(model_.node_value(cids[static_cast<size_t>(ci)])));
+    }
+    // One O(#constraints) sweep, which is what every gls_loop entry already pays.
+    // Correcting the accumulator per touched row instead would mean carrying each
+    // row's contribution, which is exactly the storage the accumulator exists not
+    // to have.
+    refresh_unweighted_violation();
+
+    // Queue the new variables and everything reading a changed row, and drop their
+    // cached jumps: those scores were computed against rows that have moved.
+    // Unconditional on whether the row is currently violated, unlike
+    // rebuild_violated_and_scan_set -- a variable with no improving jump leaves Q
+    // again on the next apply_jump, and a new column that is not yet in a violated
+    // row is still the thing the extension was made to try.
+    for (int32_t v = ext.first_new_var; v < ext.end_var(); ++v) {
+        if (jumpable(v)) {
+            jumps_.invalidate(v);
+            enqueue(v);
+        }
+    }
+    for (const int32_t ci : rows) {
+        for (const int32_t v : vars_of_constraint_[static_cast<size_t>(ci)]) {
+            jumps_.invalidate(v);
+            enqueue(v);
+        }
+    }
+}
+
+// `vars_of_constraint_` is the transpose of G_v restricted to jumpable variables,
+// and ASCENDING in variable id -- the constructor builds it by walking the
+// variables in order, and FJ's scan order over it feeds the trajectory. So this
+// MERGES rather than appending: a term appended to an existing row can name an
+// existing variable whose id is below one the row already listed.
+void FeasibilityJump::merge_new_incidences(const ExtensionResult& ext) {
+    const std::vector<std::pair<int32_t, int32_t>>& inc = ext.new_incidences;
+    size_t i = 0;
+    std::vector<int32_t> added;
+    std::vector<int32_t> merged;
+    while (i < inc.size()) {
+        const int32_t ci = inc[i].first;
+        added.clear();
+        for (; i < inc.size() && inc[i].first == ci; ++i) {
+            if (jumpable(inc[i].second)) {
+                added.push_back(inc[i].second);
+            }
+        }
+        std::vector<int32_t>& list = vars_of_constraint_[static_cast<size_t>(ci)];
+        merged.clear();
+        merged.reserve(list.size() + added.size());
+        std::set_union(list.begin(), list.end(), added.begin(), added.end(),
+                       std::back_inserter(merged));
+        list = merged;
     }
 }
 

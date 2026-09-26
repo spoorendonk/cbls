@@ -98,6 +98,26 @@ public:
     /// constraint. An out-of-range entry in `rows` throws `std::out_of_range`.
     double weighted_delta_from(const std::vector<double>& snapshot, ConstSpan<int32_t> rows) const;
 
+    /// Grow with a model that `Model::extend` just grew (#167).
+    ///
+    /// EXISTING ROWS KEEP THEIR GLS WEIGHTS -- that is the whole point, and the
+    /// reason this exists rather than a fresh `ViolationManager`: the weights are
+    /// the search's accumulated knowledge of which rows are hard, and dropping
+    /// them would restart the guided local search from scratch every time a
+    /// column arrived. New rows start at `new_weight`, which defaults to 1 -- the
+    /// value the constructor gives every row -- so an extension applied before
+    /// the first batch leaves the weight vector where a whole-model construction
+    /// would have.
+    ///
+    /// The cached total is invalidated rather than patched: an extension changes
+    /// the node value of every row above a grown `Sum`, and `total_violation()`
+    /// self-corrects against the node values on its next call.
+    ///
+    /// Throws `std::invalid_argument` if `ext` does not describe THIS model's
+    /// constraint count, which is what stops a mismatched result silently sizing
+    /// the weights to something the model does not have.
+    void on_extended(const ExtensionResult& ext, double new_weight = 1.0);
+
     // Invalidate cached total (call after weights change or full_evaluate)
     void invalidate_cache() { cache_valid_ = false; }
 

@@ -1,5 +1,7 @@
 #include "cbls/violation.h"
 
+#include "cbls/model_extension.h"
+
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -171,6 +173,24 @@ void ViolationManager::bump_weights(double factor) {
         weights[i] += factor;
     }
     cache_valid_ = false;  // weights changed, invalidate
+}
+
+void ViolationManager::on_extended(const ExtensionResult& ext, double new_weight) {
+    const size_t nc = model_.constraint_ids().size();
+    if (static_cast<size_t>(ext.end_constraint()) != nc || ext.first_new_constraint < 0 ||
+        static_cast<size_t>(ext.first_new_constraint) != weights.size()) {
+        throw std::invalid_argument(
+            "ViolationManager::on_extended: the extension does not describe this model's "
+            "constraint count");
+    }
+    // resize, not assign: every existing row keeps the weight the GLS dynamics
+    // gave it.
+    weights.resize(nc, new_weight);
+    cached_violations_.resize(nc, 0.0);
+    // An extension changes the node value of every row above a grown Sum, and the
+    // new rows have no cached violation at all. total_violation() re-reads the
+    // node values, so invalidating is both correct and cheaper than patching.
+    cache_valid_ = false;
 }
 
 double ViolationManager::weighted_violation_delta(int32_t var_id, double j) const {
