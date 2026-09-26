@@ -4,6 +4,7 @@
 #include "cbls/feasibility_jump.h"
 #include "cbls/randomize.h"
 #include "cbls/structural_batch.h"
+#include "cbls/tracer.h"
 // search.h only forward-declares SearchCoordination, deliberately -- see the
 // declaration there. This translation unit is one of the few that needs the
 // definition, because ViolationLSLoop reads both of its channels.

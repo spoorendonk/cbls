@@ -15,6 +15,7 @@
 // asserting a per-iteration cadence would be asserting a contract the class is
 // written to refuse.
 
+#include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cstdint>
@@ -276,11 +277,18 @@ TEST_CASE("an inner-solver call is reported with its duration", "[tracer]") {
 
     REQUIRE(tracer.count(Kind::Hook) == r.counters.inner_solver_calls);
     REQUIRE(tracer.count(Kind::Hook) > 0);
+    double traced_seconds = 0.0;
     for (const auto& e : tracer.events()) {
         if (e.kind == Kind::Hook) {
             REQUIRE(e.seconds >= 0.0);
+            traced_seconds += e.seconds;
         }
     }
+    // Summed and required POSITIVE, which `>= 0.0` per event is not. The subject of
+    // this test is that a tracer WIDENS polish_and_record's timing gate, and a gate
+    // that still only timed the hook under has_deadline_ would reach here handing
+    // every event a 0.0.
+    REQUIRE(traced_seconds > 0.0);
     // The counter is blind on a clockless run; the event is not. Both halves of
     // that asymmetry are deliberate.
     REQUIRE(r.counters.inner_solver_seconds == 0.0);
@@ -445,7 +453,10 @@ TEST_CASE("a throwing tracer propagates, and a portfolio absorbs it", "[tracer][
     // answer differently: a single solve hands the exception to its caller, a
     // portfolio treats one worker's failure as that worker's.
     struct Thrower : Tracer {
+        std::atomic<int>* throws;
+        explicit Thrower(std::atomic<int>* counter) : throws(counter) {}
         void batch_end(BatchKind /*kind*/, int64_t /*iterations*/, bool /*improved*/) override {
+            throws->fetch_add(1, std::memory_order_relaxed);
             throw std::runtime_error("trace failed");
         }
     };
@@ -453,14 +464,21 @@ TEST_CASE("a throwing tracer propagates, and a portfolio absorbs it", "[tracer][
     SearchConfig config;
     config.max_iterations = 5000;
     config.batch_iterations = 100;
+    // Counted rather than assumed. Every other assertion below is also satisfied by
+    // a tracer that was never ATTACHED -- a restart_config that dropped
+    // cfg.tracer, a factory never called -- which is exactly the defect the
+    // per-worker tracer contract exists to prevent.
+    std::atomic<int> throws{0};
 
     SECTION("out of a single solve, unchanged") {
-        Thrower tracer;
+        Thrower tracer(&throws);
         config.tracer = &tracer;
         Model m = quadratic_model();
         REQUIRE_THROWS_AS(
             solve(m, /*time_limit=*/0.0, /*seed=*/24, true, nullptr, nullptr, 3, nullptr, config),
             std::runtime_error);
+        // The first batch_end threw and nothing ran after it.
+        REQUIRE(throws.load(std::memory_order_relaxed) == 1);
     }
 
     SECTION("absorbed per worker, so a surviving peer still answers") {
@@ -469,8 +487,8 @@ TEST_CASE("a throwing tracer propagates, and a portfolio absorbs it", "[tracer][
         // is the same rule a raising SolveCallback gets.
         ParallelConfig par_config;
         par_config.n_threads = 2;
-        par_config.tracer_factory = [](int worker) -> std::unique_ptr<Tracer> {
-            return worker == 0 ? std::make_unique<Thrower>() : nullptr;
+        par_config.tracer_factory = [&throws](int worker) -> std::unique_ptr<Tracer> {
+            return worker == 0 ? std::make_unique<Thrower>(&throws) : nullptr;
         };
         ParallelSearch ps(2);
         const SearchResult r = ps.solve(
@@ -478,6 +496,10 @@ TEST_CASE("a throwing tracer propagates, and a portfolio absorbs it", "[tracer][
             /*hook_factory=*/nullptr, /*lns_factory=*/nullptr, /*callback=*/nullptr, par_config);
         REQUIRE(r.feasible);
         REQUIRE(r.iterations > 0);
+        // Worker 0's tracer actually fired, so this section shows a throw ABSORBED
+        // rather than one that never happened. kMaxWorkerRetries bounds it at three
+        // attempts, each raising on its first batch.
+        REQUIRE(throws.load(std::memory_order_relaxed) > 0);
     }
 }
 

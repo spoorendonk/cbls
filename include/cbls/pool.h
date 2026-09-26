@@ -52,6 +52,13 @@ struct ParallelConfig {
     /// would hand the declining workers one shared sink, which is the race this
     /// field exists to remove.
     ///
+    /// And a `SearchConfig::tracer` with NO factory here is REFUSED --
+    /// `std::invalid_argument`, thrown on the calling thread before any worker
+    /// exists -- whenever more than one worker would run. One tracer cannot serve N
+    /// worker threads, and neither silent repair is defensible: dropping it loses
+    /// events the caller asked for, keeping it is the race. A one-worker portfolio
+    /// is allowed through, since there is no peer to race with.
+    ///
     /// Per worker rather than one shared instance, and deliberately: a `Tracer`'s
     /// events arrive per batch on the reporting worker's own thread, and routing
     /// N of them through one object would either need a lock inside the host's
@@ -86,9 +93,11 @@ struct ParallelConfig {
     /// THE EXECUTOR MUST RUN CHUNKS CONCURRENTLY. Workers are cooperative: they
     /// share incumbents through the pool as they find them and restart from a
     /// peer's, which is not a portfolio if they run one after another. A
-    /// SEQUENTIAL executor is not rejected -- it degenerates to a one-worker
-    /// portfolio, since the first worker takes the whole deadline -- and nothing
-    /// detects it. See `ExecutorRef`.
+    /// SEQUENTIAL executor is not rejected -- under a WALL CLOCK it degenerates to
+    /// a one-worker portfolio, since the first worker takes the whole deadline, and
+    /// with `time_limit <= 0` there is no deadline to take, so it runs every
+    /// worker's full iteration budget in series instead: N solves back to back, N
+    /// times the wall time. Nothing detects either. See `ExecutorRef`.
     ///
     /// NON-OWNING, like `stop`: the pool must outlive the solve.
     ///

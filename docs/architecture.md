@@ -1400,9 +1400,10 @@ the question the fields above cannot: not how much work a run did but **on what*
 (#169). Batches bucketed by `BatchKind` — and
 `fj_batches + novelty_batches + structural_batches == batches` exactly, since
 `pick_batch_kind` returns one of three and every batch is counted once — the
-structural sweep's candidates tried and committed, per generator by
-`MoveGenerator::name()`, the inner solver's call count, and a portfolio's restart
-count. LNS stays on `lns_repairs` / `lns_repairs_accepted` rather than being
+structural sweep's candidates tried and committed, one row per generator (keyed
+by `MoveGenerator::name()` plus a `#<index>` suffix wherever one batch built two
+of a kind, since the built-ins name themselves by type), the inner solver's call
+count, and a portfolio's restart count. LNS stays on `lns_repairs` / `lns_repairs_accepted` rather than being
 duplicated here.
 
 Observational only, and one field pays for that explicitly:
@@ -1592,12 +1593,14 @@ and deterministic. (`solve()` still timestamps entry and exit to fill
 `time_seconds`, a callback's ~1s progress cadence reads the clock once per
 batch, and `SearchResult::time_to_first_feasible` costs ONE read, at the first
 feasible point and latched thereafter (#149); none of the three reaches the
-search trajectory. Two more are OPT-IN and cost nothing unless the caller asks
-for them: `SearchCounters::inner_solver_seconds` is gated on `has_deadline_`
-exactly as `last_improvement_` is, so it reads 0.0 on a clockless run rather
-than reading a clock (#169), and a `SearchConfig::tracer`, if one is attached,
-costs one read per new best and two per inner-solver call. Neither reaches the
-trajectory either, and with no tracer attached neither happens at all.)
+search trajectory. #169 adds two more, and neither reaches the trajectory
+either. `SearchCounters::inner_solver_seconds` is gated on `has_deadline_`
+exactly as `last_improvement_` is, so a clockless run reads no clock for it and
+the field reads 0.0 — but the gate is the RUN's, not the caller's: a run that
+*has* a wall clock pays two reads per inner-solver call whether or not anybody
+ever looks at the field. A `SearchConfig::tracer`, by contrast, is opt-in:
+attached it costs one read per new best and two per inner-solver call, and
+unattached neither happens at all.)
 
 #### Why this is tested the way it is
 
@@ -2823,9 +2826,13 @@ Three things about it are worth stating, because none is guessable:
 - **The executor must run chunks concurrently.** Workers are cooperative — they
   share incumbents through the pool as they find them and restart from a peer's —
   which is not a portfolio if they run one after another. A *sequential* executor
-  is not rejected: it degenerates to a one-worker portfolio, because the first
-  worker takes the whole deadline. Nothing detects that, and nothing should; it is
-  a property of the executor the caller supplied.
+  is not rejected, and what it degenerates to depends on the budget: under a wall
+  clock it is a one-worker portfolio, because the first worker takes the whole
+  deadline and every later one finds it already past. With `time_limit <= 0` there
+  is no shared deadline to consume, so it instead runs each worker's full
+  `max_iterations` budget in series — N solves back to back, N times the wall
+  time. Nothing detects either, and nothing should; both are properties of the
+  executor the caller supplied.
 - **Chunk index is not worker index.** `chunk_idx` is a chunk's number in
   `[0, n_threads())`, so `src/pool.cpp` ignores it and keys `results`, `failures`
   and `portfolio_worker_seed` on the loop index instead. The loop over
@@ -2868,6 +2875,12 @@ Three things are worth stating precisely:
   objects both of them name must outlive the solve; nothing in the engine owns
   or extends them.
 
+**An attached stop is not a budget.** A run with no `time_limit` and no
+`max_iterations` returns at once with `TerminationReason::NoBudget` whether or
+not a stop is attached, because "run until the host cancels" would hang forever
+the first time the host forgot to. Give such a run a generous `time_limit` and
+cancel inside it; `StopRef::attached()` says the same.
+
 A portfolio cancelled before its first worker ran reports `Cancelled` rather
 than `NoBudget` -- that run did not lack a budget, the host took it away.
 
@@ -2890,7 +2903,13 @@ thread with nothing rewritten, and under a portfolio each worker gets **its own*
 index, not once per restart). A factory, once set, **decides**: a call that
 returns null means that worker is untraced, and does *not* fall back to
 `SearchConfig::tracer` — falling back would hand the declining workers one
-shared, unsynchronised sink, which is the race the factory exists to remove.
+shared, unsynchronised sink, which is the race the factory exists to remove. And
+a `SearchConfig::tracer` with **no** factory is refused outright
+(`std::invalid_argument`, on the calling thread, before any worker exists)
+whenever more than one worker would run: one tracer cannot serve N worker
+threads, and neither silent repair is defensible — dropping it loses events the
+caller asked for, keeping it is the race. A one-worker portfolio is allowed
+through, since there is no peer to race with.
 Routing N workers through one instance would either
 need a lock inside the host's tracer or serialise the portfolio on one — which is
 the price `SolveCallback` pays for an ordered stream, and the reason these are

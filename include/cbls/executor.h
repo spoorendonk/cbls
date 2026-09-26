@@ -78,6 +78,9 @@ private:
 /// A C++20 caller can check its type against the concept below at compile time
 /// (`static_assert(cbls::Executor<MyPool>)`). Under C++17 -- which this library
 /// is -- a mismatch is an ordinary template error inside the constructor instead.
+/// Note what that means for the concept: NO translation unit in this repository is
+/// C++20, so nothing here compiles it and no gate would catch a syntax error in
+/// it. It is checked by hand against a C++20 compiler when it changes.
 ///
 /// OWNERSHIP AND LIFETIME. The CALLER owns the pool. This is a pointer plus a
 /// vtable pointer, copied by value; nothing in cbls owns, copies or destroys the
@@ -88,10 +91,13 @@ private:
 /// long-running and COOPERATIVE: it shares incumbents through the pool as it
 /// finds them and restarts from a peer's, so the workers have to run at the same
 /// time to be a portfolio at all. An executor that runs chunks SEQUENTIALLY is
-/// not an error -- it yields a one-worker portfolio, because the first worker
-/// takes the whole shared deadline and every later one finds it already past and
-/// returns without searching. Nothing detects that; it is a property of the
-/// executor the caller supplied.
+/// not an error, and what it degenerates to depends on the budget: under a WALL
+/// CLOCK it is a one-worker portfolio, because the first worker takes the whole
+/// shared deadline and every later one finds it already past and returns without
+/// searching. With `time_limit <= 0` there is no shared deadline to take, so each
+/// worker instead runs its full `max_iterations` budget one after another -- N
+/// solves in series, N times the wall time. Nothing detects either; both are
+/// properties of the executor the caller supplied.
 class ExecutorRef {
 public:
     /// Non-explicit on purpose: `par_config.executor = my_pool;` is the call

@@ -105,6 +105,10 @@ TEST_CASE("batches by kind sum to the batch count", "[counters]") {
     // the identity would hold trivially with everything in one bucket.
     REQUIRE(c.structural_batches > 0);
     REQUIRE(c.fj_batches > 0);
+    // The third bucket, and the only place in the tree it is shown nonzero. The
+    // identity above holds just as well with novelty batches counted into
+    // fj_batches, so without this the whole file passes on that bug.
+    REQUIRE(c.novelty_batches > 0);
 }
 
 TEST_CASE("a scalar model runs feasibility-jump batches only", "[counters]") {
@@ -415,9 +419,14 @@ TEST_CASE("a portfolio's counters are the sum of its workers'", "[counters][para
         /*hook_factory=*/nullptr, /*lns_factory=*/nullptr, /*callback=*/nullptr, par_config);
     const SearchCounters& c = r.counters;
 
-    // THE aggregation check: the batches the three workers actually ran, summed
-    // outside the portfolio, equal the batches it reports. A tracer spans its
-    // worker's restarts, so this crosses both merge sites at once.
+    // THE aggregation check: each worker's OWN tracer count, summed outside the
+    // portfolio, equals the batches it reports. Be precise about what that does
+    // and does not cover: `count_batch` and `trace_batch_end` are adjacent
+    // statements in one loop body, so a bug in COUNTING a batch moves both numbers
+    // together and this cannot see it. What it does see is the AGGREGATION -- the
+    // tracer side never touches `SearchCounters::merge` -- across a worker's
+    // restarts and across the workers, which is the half-aggregation bug named
+    // above.
     REQUIRE(per_worker.size() == 3);
     int64_t observed = 0;
     for (const auto& slot : per_worker) {
@@ -458,5 +467,8 @@ TEST_CASE("a restarted worker's restarts are counted", "[counters][parallel]") {
         /*hook_factory=*/nullptr, /*lns_factory=*/nullptr, /*callback=*/nullptr, par_config);
 
     REQUIRE(r.counters.portfolio_restarts > 0);
-    REQUIRE(r.iterations > config.max_iterations);  // more than one solve's worth
+    // Not load-bearing -- two workers at 200 iterations each already exceed this
+    // without any restart. The counter above is the assertion; this only says the
+    // run did real work.
+    REQUIRE(r.iterations > config.max_iterations);
 }

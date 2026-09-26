@@ -9,7 +9,6 @@
 #include "randomize.h"
 #include "rng.h"
 #include "stop.h"
-#include "tracer.h"
 #include "violation.h"
 
 #include <cstdint>
@@ -26,6 +25,12 @@ namespace cbls {
 /// builds one includes `cbls/pool.h` (or `cbls/solution_pool.h`), as
 /// `ParallelSearch` does.
 struct SearchCoordination;
+
+/// Defined in `tracer.h`. Forward-declared for the same reason
+/// `SearchCoordination` is: `SearchConfig` holds only a pointer, and a caller
+/// that actually builds one includes `cbls/tracer.h` (or `cbls/cbls.h`, or
+/// `cbls/pool.h`, which needs the definition for `tracer_factory`).
+class Tracer;
 
 struct SearchConfig {
     // Keep the assignment the caller handed in, whole: suppresses both the

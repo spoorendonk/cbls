@@ -40,6 +40,18 @@ public:
     // Implicit by design; see above.
     StopRef(const S& source) : obj_(&source), fn_(&thunk<S>) {}
 
+    /// A TEMPORARY is rejected at compile time rather than documented. `const S&`
+    /// above would happily bind `config.stop = HostFlag{};` and store a pointer
+    /// into an object that dies at the end of that statement -- a silent read of
+    /// freed memory at every poll, from the most natural first attempt at an
+    /// ad-hoc flag wrapper. `ExecutorRef` takes `E&` and so cannot be handed one
+    /// at all; this is the overload that makes the two symmetric.
+    ///
+    /// `const S&&` is not a forwarding reference, so it binds rvalues only and
+    /// leaves `config.stop = token;` on the constructor above.
+    template <typename S, typename = std::enable_if_t<!std::is_same_v<std::decay_t<S>, StopRef>>>
+    StopRef(const S&&) = delete;
+
     /// False when no source is attached. Never throws: a source whose
     /// `requested()` throws is a contract violation, not a supported shape.
     [[nodiscard]] bool requested() const { return fn_ != nullptr && fn_(obj_); }

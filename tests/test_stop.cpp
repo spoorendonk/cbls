@@ -121,6 +121,47 @@ TEST_CASE("an unattached stop leaves the run to its own budgets", "[stop]") {
     REQUIRE(r.iterations >= config.max_iterations);
 }
 
+TEST_CASE("an attached but unraised stop leaves the run to its own budgets", "[stop]") {
+    // Stronger than the unattached control above, and the case that separates
+    // `StopRef::requested()` from `StopRef::attached()` AT THE POLL SITE: a
+    // `cancel_requested()` that asked whether a source is ATTACHED would end every
+    // configured run as Cancelled, and every other solve in this file attaches a
+    // token it then raises -- so nothing else here would notice.
+    StopToken token;
+    SearchConfig config;
+    config.max_iterations = 5000;
+    config.stop = token;
+    REQUIRE(config.stop.attached());
+    REQUIRE_FALSE(config.stop.requested());
+
+    Model m = quadratic_model();
+    const SearchResult r =
+        solve(m, /*time_limit=*/0.0, /*seed=*/5, true, nullptr, nullptr, 3, nullptr, config);
+
+    REQUIRE(r.termination == TerminationReason::IterationLimit);
+    REQUIRE(r.iterations >= config.max_iterations);
+    // And the search never wrote to the token.
+    REQUIRE_FALSE(token.requested());
+}
+
+TEST_CASE("an attached stop is not a budget", "[stop]") {
+    // Documented on `StopRef::attached()` and in docs/architecture.md, and worth
+    // pinning because "run until the host cancels me" is the first thing a host
+    // tries: with neither a wall clock nor an iteration limit the run returns at
+    // once with NoBudget, attached stop or not. Treating an attachment as a budget
+    // would hang forever the first time a host forgot to cancel.
+    StopToken token;
+    SearchConfig config;  // no max_iterations
+    config.stop = token;
+
+    Model m = quadratic_model();
+    const SearchResult r =
+        solve(m, /*time_limit=*/0.0, /*seed=*/5, true, nullptr, nullptr, 3, nullptr, config);
+
+    REQUIRE(r.termination == TerminationReason::NoBudget);
+    REQUIRE(r.iterations == 0);
+}
+
 TEST_CASE("a stop source is adapted by shape, not by type", "[stop]") {
     // StopRef takes anything with `bool requested() const`, which is what lets a
     // host hand over its own flag wrapper (or a C++20 std::stop_token) without

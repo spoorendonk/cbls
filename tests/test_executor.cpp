@@ -147,6 +147,40 @@ private:
     int chunks_ = 0;
 };
 
+// An executor that does NOT honour the range it was given. The portfolio indexes
+// `results` and `failures` by the loop index, and those bounds come from a pool
+// this library does not own, so `launch_workers` clamps them -- this is the pool
+// that proves the clamp is there.
+class MisbehavingPool {
+public:
+    // Non-static deliberately: `ExecutorRef`'s thunk calls it through a pointer, and
+    // a static member reached that way is itself a lint finding.
+    [[nodiscard]] int n_threads() const { return width_; }
+
+    void parallel_for(int begin, int end, const std::function<void(int)>& f) {
+        parallel_for_chunked(begin, end, [&f](int lo, int hi, int /*chunk*/) {
+            for (int i = lo; i < hi; ++i) {
+                f(i);
+            }
+        });
+    }
+    void parallel_for_chunked(int /*begin*/, int end, const std::function<void(int, int, int)>& f) {
+        // Deliberately out of range on both ends, and on the calling thread.
+        ++calls_;
+        f(-3, end + 5, 0);
+    }
+    void parallel_invoke(const std::function<void()>& f, const std::function<void()>& g) {
+        ++calls_;
+        f();
+        g();
+    }
+    [[nodiscard]] int calls() const { return calls_; }
+
+private:
+    int width_ = 2;
+    int calls_ = 0;
+};
+
 }  // namespace
 
 TEST_CASE("FunctionRef calls through to the referent", "[executor]") {
@@ -380,6 +414,97 @@ TEST_CASE("a worker that throws on an executor does not escape the executor",
                       std::runtime_error);
     // The pool was used, and it survived: two chunks ran and joined normally.
     REQUIRE(pool.threads_created() == 2);
+}
+
+TEST_CASE("an executor that ignores the range cannot index past the workers",
+          "[executor][parallel]") {
+    // The clamp in `launch_workers`. Without it this call writes `results[-3]` and
+    // `results[n_workers + 4]` -- two heap vectors, silently. With it the run is an
+    // ordinary two-worker portfolio.
+    //
+    // Note the limit of what the clamp promises: it bounds the INDEX, not the
+    // multiplicity. An executor handing the SAME index to two chunks still races on
+    // `results[i]`, and nothing here or anywhere detects that.
+    MisbehavingPool pool;
+    ParallelConfig par_config;
+    par_config.n_threads = 2;
+    par_config.executor = pool;
+
+    ParallelSearch ps(2);
+    const SearchResult r = ps.solve(
+        [] { return quadratic_model(); }, /*time_limit=*/0.3, /*seed=*/43, SearchConfig{},
+        /*hook_factory=*/nullptr, /*lns_factory=*/nullptr, /*callback=*/nullptr, par_config);
+
+    REQUIRE(pool.calls() == 1);
+    REQUIRE(r.feasible);
+    REQUIRE(r.iterations > 0);
+}
+
+TEST_CASE("a zero-width executor still yields one worker", "[executor][parallel]") {
+    // `portfolio_workers` floors the count at 1, which is what keeps the per-worker
+    // vectors non-empty. The pool below reports 0 but still runs what it is handed,
+    // so the run is a one-worker portfolio -- and `ExecutorRef::n_threads` says what
+    // happens with a pool that reports 0 AND runs nothing: no result, reported as
+    // NoBudget.
+    SequentialPool pool(0);
+    REQUIRE(pool.n_threads() == 1);  // SequentialPool clamps its own width
+
+    struct ZeroWidthPool {
+        SequentialPool* inner = nullptr;
+        int width = 0;
+        [[nodiscard]] int n_threads() const { return width; }
+        void parallel_for(int begin, int end, const std::function<void(int)>& f) const {
+            inner->parallel_for(begin, end, f);
+        }
+        void parallel_for_chunked(int begin, int end,
+                                  const std::function<void(int, int, int)>& f) const {
+            inner->parallel_for_chunked(begin, end, f);
+        }
+        void parallel_invoke(const std::function<void()>& f, const std::function<void()>& g) const {
+            inner->parallel_invoke(f, g);
+        }
+    };
+
+    ZeroWidthPool zero{&pool};
+    REQUIRE(zero.n_threads() == 0);
+    ParallelConfig par_config;
+    par_config.n_threads = 4;
+    par_config.executor = zero;
+
+    ParallelSearch ps(4);
+    const SearchResult r = ps.solve(
+        [] { return quadratic_model(); }, /*time_limit=*/0.3, /*seed=*/45, SearchConfig{},
+        /*hook_factory=*/nullptr, /*lns_factory=*/nullptr, /*callback=*/nullptr, par_config);
+
+    REQUIRE(r.feasible);
+    REQUIRE(pool.chunks_run() == 1);
+}
+
+TEST_CASE("a shared tracer with no factory is refused", "[executor][parallel][tracer]") {
+    // Not an executor property, but the same class of caller error and the same
+    // place it is caught: on the calling thread, before any worker exists. One
+    // tracer cannot serve N worker threads.
+    struct Silent : Tracer {};
+    Silent tracer;
+    SearchConfig config;
+    config.tracer = &tracer;
+
+    ParallelConfig par_config;
+    par_config.n_threads = 2;
+    ParallelSearch ps(2);
+    REQUIRE_THROWS_AS(ps.solve([] { return quadratic_model(); }, /*time_limit=*/0.2, /*seed=*/47,
+                               config, /*hook_factory=*/nullptr, /*lns_factory=*/nullptr,
+                               /*callback=*/nullptr, par_config),
+                      std::invalid_argument);
+
+    // One worker has no peer to race with, so it is allowed through.
+    ParallelConfig single;
+    single.n_threads = 1;
+    ParallelSearch one(1);
+    const SearchResult r =
+        one.solve([] { return quadratic_model(); }, /*time_limit=*/0.2, /*seed=*/47, config,
+                  /*hook_factory=*/nullptr, /*lns_factory=*/nullptr, /*callback=*/nullptr, single);
+    REQUIRE(r.feasible);
 }
 
 TEST_CASE("an executor and a stop token compose", "[executor][parallel][stop]") {

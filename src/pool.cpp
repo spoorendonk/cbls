@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 
@@ -714,6 +715,23 @@ SearchResult ParallelSearch::solve_portfolio(
     // contribute a default SearchResult to the aggregate and read as a worker
     // that searched and found nothing.
     const int n_workers = portfolio_workers(n_threads, par_config.executor);
+
+    // A tracer set on the SearchConfig and no factory to replace it is a data
+    // race, not a configuration: every worker would call that one object from its
+    // own thread with nothing between them. Refused LOUDLY rather than silently
+    // repaired, because either repair is worse -- dropping the tracer loses events
+    // the caller asked for, and keeping it is the race. The cold review closed the
+    // mirror-image hole (a factory that DECLINED one worker used to leave it on
+    // this same shared pointer); this is the one a host reaches first, since
+    // setting the field is the obvious thing to try and it works single-threaded.
+    //
+    // Which is exactly why a ONE-worker portfolio is allowed through: there is no
+    // peer to race with, and `cbls::solve()` itself takes a tracer this way.
+    if (config.tracer != nullptr && !par_config.tracer_factory && n_workers > 1) {
+        throw std::invalid_argument(
+            "ParallelSearch: SearchConfig::tracer is set with no ParallelConfig::tracer_factory; "
+            "one tracer cannot be shared by several workers -- supply a factory");
+    }
 
     // One StopRef for every worker to poll; see CombinedStop.
     const CombinedStop combined{par_config.stop, config.stop};
