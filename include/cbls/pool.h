@@ -24,6 +24,19 @@ struct ParallelConfig {
     /// does NOT make the pool diverse -- see `get_restart_point` -- it only
     /// stops the capacity itself from being the binding constraint.
     int pool_capacity = 0;
+
+    /// The HOST's cancellation channel for the whole portfolio (#169).
+    ///
+    /// OR-ed with `SearchConfig::stop`, not a replacement for it: a caller may
+    /// set either or both, and a raised stop on either ends every worker at its
+    /// next batch boundary with `TerminationReason::Cancelled`. The combined
+    /// source lives on `solve_portfolio`'s stack for the duration of the call,
+    /// so nothing here extends any lifetime -- the objects BOTH refs name must
+    /// outlive the solve, exactly as `StopRef` says.
+    ///
+    /// It is polled from every worker thread and from the restart loop, so the
+    /// source has to be safe to read concurrently. `cbls::StopToken` is.
+    StopRef stop;
 };
 
 /// The pool capacity a portfolio actually uses: `requested` when positive,
@@ -212,7 +225,7 @@ private:
         const SearchConfig& config,
         std::function<std::shared_ptr<InnerSolverHook>(Model&)>& hook_factory,
         std::function<std::shared_ptr<LNS>()>& lns_factory, SolveCallback* callback, int n_threads,
-        int pool_capacity);
+        int pool_capacity, StopRef host_stop);
 };
 
 }  // namespace cbls

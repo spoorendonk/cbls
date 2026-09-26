@@ -1,5 +1,6 @@
 #pragma once
 
+#include "counters.h"
 #include "inner_solver.h"
 #include "lns.h"
 #include "model.h"
@@ -7,6 +8,8 @@
 #include "moves.h"
 #include "randomize.h"
 #include "rng.h"
+#include "stop.h"
+#include "tracer.h"
 #include "violation.h"
 
 #include <cstdint>
@@ -182,6 +185,32 @@ struct SearchConfig {
     //      Don't re-derive a per-instance cost here without a floor.
     //
     int64_t unproductive_iterations = 300;
+
+    // ---- host integration (#169): cancellation and tracing ------------------
+    //
+    // Both are NON-OWNING views of objects the CALLER keeps alive for the whole
+    // solve, and both are copied wherever a SearchConfig is -- which is what
+    // makes them reach a portfolio worker's restart, since `run_worker` copies
+    // this struct per restart.
+    //
+    // They live here rather than as trailing `solve()` parameters for one
+    // concrete reason: the Python `solve` wrapper drops `solve()`'s trailing
+    // `SearchCoordination*`, and a parameter that a binding silently drops is
+    // the defect #169 exists to fix. A field is bound once and cannot be
+    // dropped by accident.
+
+    // The host's cancellation channel. Default: nothing attached, and the run is
+    // bounded by `time_limit` and `max_iterations` alone. A raised stop ends the
+    // run at the next batch boundary with `TerminationReason::Cancelled`. See
+    // `StopRef`, and note the lifetime rule there.
+    StopRef stop;
+
+    // The host's event sink, or null. Null is the default and costs one null
+    // compare per event site. PER WORKER under a portfolio -- do not hand the
+    // same `Tracer` to several workers unless it is itself thread-safe; use
+    // `ParallelConfig::tracer_factory`, which builds one per worker. See
+    // `Tracer` for the granularity contract and for what attaching one costs.
+    Tracer* tracer = nullptr;
 };
 
 /// Why `solve()`'s outer loop stopped. Exactly one of these ends every run.
@@ -217,13 +246,22 @@ enum class TerminationReason : std::uint8_t {
     /// `TimeLimit` on purpose: a worker cancelled 0.2s into a 60s budget did not
     /// run out of clock, and `time_seconds` must not be read as though it did.
     Stopped,
+    /// The HOST cancelled: `SearchConfig::stop` (or `ParallelConfig::stop`) was
+    /// requested while the run still had budget. Distinct from `Stopped`, which
+    /// is a PEER WORKER ending the run from inside `ParallelSearch` -- a host
+    /// integrating cbls as a component needs to tell "I cancelled it" from "it
+    /// finished early on its own", and both from "it ran out of clock". Takes
+    /// precedence over `Stopped` when both are true, because the host's cancel
+    /// is the outer cause; `Feasible` still outranks both, since a worker that
+    /// solved the model finished rather than stopped.
+    Cancelled,
 };
 
 /// Stable snake_case token for a TerminationReason ("time_limit",
-/// "iteration_limit", "feasible", "no_budget", "stopped"). Machine-readable — it is the
-/// value the CLI writes to the JSONL `termination` field — and used verbatim in
-/// the human output too, so there is exactly one spelling to keep in step with
-/// the enum. Returns a static string; never null.
+/// "iteration_limit", "feasible", "no_budget", "stopped", "cancelled"). Machine-readable — it is
+/// the value the CLI writes to the JSONL `termination` field — and used verbatim in the human
+/// output too, so there is exactly one spelling to keep in step with the enum. Returns a static
+/// string; never null.
 const char* termination_reason_name(TerminationReason reason);
 
 struct SearchResult {
@@ -383,6 +421,22 @@ struct SearchResult {
     /// `first_feasible_objective` above; the two are recorded together and are
     /// NaN together on a run that never reached feasibility.
     double time_to_first_feasible = std::numeric_limits<double>::quiet_NaN();
+
+    /// Where the run spent its work: batches by kind, the structural sweep's
+    /// acceptance, the inner solver's cost, portfolio restarts (#169). The
+    /// fields above answer "how much" and "how good"; this answers "on what".
+    ///
+    /// Summed across workers AND across a worker's restarts by `ParallelSearch`,
+    /// exactly as `perturbations` is -- through `SearchCounters::merge`, which
+    /// both aggregation sites call so the two cannot drift apart. It describes
+    /// work DONE, so a portfolio's totals are not comparable to a single run's
+    /// at the same wall time.
+    ///
+    /// Observational only. Nothing in the search reads a counter back, and
+    /// filling them adds no clock read to a run without a wall-clock budget --
+    /// see `SearchCounters::inner_solver_seconds` for the one field that gate
+    /// costs.
+    SearchCounters counters;
 };
 
 /// One progress row. Under `ParallelSearch` a row is a HYBRID by design and has

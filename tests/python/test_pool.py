@@ -608,14 +608,16 @@ def test_termination_reason_exposes_stopped() -> None:
     Python needs, and it is what this pins.
     """
     assert hasattr(cbls.TerminationReason, "Stopped")
+    assert hasattr(cbls.TerminationReason, "Cancelled")
     members = {
         cbls.TerminationReason.TimeLimit,
         cbls.TerminationReason.IterationLimit,
         cbls.TerminationReason.Feasible,
         cbls.TerminationReason.NoBudget,
         cbls.TerminationReason.Stopped,
+        cbls.TerminationReason.Cancelled,
     }
-    assert len(members) == 5, "a duplicated enum value would collapse this set"
+    assert len(members) == 6, "a duplicated enum value would collapse this set"
 
 
 def test_parallel_config_pool_capacity_round_trips() -> None:

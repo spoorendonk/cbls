@@ -174,6 +174,7 @@ add_library(cbls_lib
     src/bound_propagation.cpp
     src/feasibility_jump.cpp
     src/search.cpp
+    src/counters.cpp
     src/lns.cpp
     src/pool.cpp
     src/inner_solver.cpp

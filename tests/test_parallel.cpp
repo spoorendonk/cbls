@@ -1052,7 +1052,7 @@ TEST_CASE("every TerminationReason has a distinct stable token", "[parallel][sea
     const std::vector<TerminationReason> all = {
         TerminationReason::TimeLimit, TerminationReason::IterationLimit,
         TerminationReason::Feasible,  TerminationReason::NoBudget,
-        TerminationReason::Stopped,
+        TerminationReason::Stopped,   TerminationReason::Cancelled,
     };
     std::set<std::string> tokens;
     for (TerminationReason t : all) {
@@ -1063,6 +1063,7 @@ TEST_CASE("every TerminationReason has a distinct stable token", "[parallel][sea
     }
     REQUIRE(tokens.size() == all.size());
     REQUIRE(std::string(termination_reason_name(TerminationReason::Stopped)) == "stopped");
+    REQUIRE(std::string(termination_reason_name(TerminationReason::Cancelled)) == "cancelled");
 }
 
 // ---------------------------------------------------------------------------

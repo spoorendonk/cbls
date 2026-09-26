@@ -2759,6 +2759,42 @@ cooperative portfolio exists for -- live sharing, pool restarts, a global stop
 reproducible was also what left workers idling at it. Pass `--threads 1` (or
 call `cbls::solve()` directly) when reproducibility is what is wanted.
 
+### External cancellation
+
+`SearchConfig::stop` and `ParallelConfig::stop` are a `StopRef`
+(`include/cbls/stop.h`): a type-erased, **non-owning** view of anything with
+`bool requested() const`, including the built-in `cbls::StopToken` and a C++20
+`std::stop_token`. A host that cancels for its own reasons -- a peer component
+finished, the user pressed stop -- raises it and the run ends at its next
+**batch** boundary with `TerminationReason::Cancelled`.
+
+Three things are worth stating precisely:
+
+- **The granularity is the batch, not the iteration.** `requested()` is polled
+  exactly where the wall clock is read (`past_deadline()`), so a batch already
+  running finishes first. A batch is `batch_iterations` GLS iterations, which is
+  microseconds on a small model and seconds on an expensive one.
+- **`Cancelled` is not `Stopped`.** `Stopped` is a *peer worker* ending a
+  portfolio run from the inside, which only `ParallelSearch` can cause;
+  `Cancelled` is the host. When both are true the host's cancel is reported,
+  because it is the outer cause. `Feasible` still outranks both -- a worker that
+  solved the model finished rather than stopped.
+- **The two `stop` fields are OR-ed, not alternatives.** `solve_portfolio`
+  combines `ParallelConfig::stop` with `SearchConfig::stop` into one `StopRef`
+  that lives on the calling thread's frame for the duration of the call. The
+  objects both of them name must outlive the solve; nothing in the engine owns
+  or extends them.
+
+A portfolio cancelled before its first worker ran reports `Cancelled` rather
+than `NoBudget` -- that run did not lack a budget, the host took it away.
+
+From Python, `cbls.StopToken` has `request()`, `reset()` and `requested()`, and
+`SearchConfig.stop` / `ParallelConfig.stop` accept one (or `None`), reading back
+as a bool. The single-threaded `cbls.solve` releases the GIL for the whole call,
+which is what makes a token raised from another Python thread reach a running
+solve at all; `tests/python/test_stop.py` pins that in a child process, since a
+regression there starves the interpreter rather than failing an assertion.
+
 ### CLI flags
 
 ```

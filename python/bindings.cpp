@@ -210,6 +210,13 @@ std::function<double(int, int)> matrix_lookup(std::vector<double> tbl, int32_t n
     };
 }
 
+// `None` detaches; a token attaches a NON-OWNING view of it. The keep_alive on
+// each setter is what keeps the token alive for as long as the config naming it,
+// so this cannot hand the engine a dangling view (the #156 hazard class).
+StopRef stop_ref_or_none(StopToken* token) {
+    return token != nullptr ? StopRef(*token) : StopRef();
+}
+
 }  // namespace
 
 constexpr const char* kPairLambdaSumDoc =
@@ -345,7 +352,30 @@ NB_MODULE(_cbls_core, m) {
         .value("IterationLimit", TerminationReason::IterationLimit)
         .value("Feasible", TerminationReason::Feasible)
         .value("NoBudget", TerminationReason::NoBudget)
-        .value("Stopped", TerminationReason::Stopped);
+        .value("Stopped", TerminationReason::Stopped)
+        // The HOST cancelled through a StopToken, as against Stopped, which is a
+        // peer worker ending the run from inside the portfolio (#169).
+        .value("Cancelled", TerminationReason::Cancelled);
+
+    // StopToken -- cancellation from another Python thread.
+    //
+    // Bound before SearchConfig, which takes one. Held by the Python caller:
+    // SearchConfig.stop is a NON-OWNING view, so the binding below keeps the
+    // token alive for as long as the config that names it (nb::keep_alive), and
+    // a token that outlives neither is a dangling read rather than a Python
+    // error -- the #156 hazard class, which is why the lifetime is enforced here
+    // rather than documented and hoped for.
+    nb::class_<StopToken>(m, "StopToken")
+        .def(nb::init<>())
+        .def("request", &StopToken::request,
+             "Ask the solve to stop. Safe to call from any thread, including while\n"
+             "a solve is running -- which is the point: cbls.solve releases the GIL,\n"
+             "so another Python thread can reach this. The run ends at its next\n"
+             "batch boundary with termination == TerminationReason.Cancelled.")
+        .def("reset", &StopToken::reset,
+             "Clear the flag so the token can be reused. A solve does NOT reset it:\n"
+             "handing the same raised token to the next solve cancels that one too.")
+        .def("requested", &StopToken::requested);
 
     // StructuralSelection — how the structural batch turns a generator's
     // candidates into a commit (#165). FirstImprovingSample is the default and
@@ -795,7 +825,16 @@ NB_MODULE(_cbls_core, m) {
         .def(nb::init<>())
         .def_rw("n_threads", &ParallelConfig::n_threads)
         // 0 = auto (max(10, 2 * n_threads)); see include/cbls/pool.h.
-        .def_rw("pool_capacity", &ParallelConfig::pool_capacity);
+        .def_rw("pool_capacity", &ParallelConfig::pool_capacity)
+        // Same non-owning-view rule, and the same keep_alive, as
+        // SearchConfig.stop below. OR-ed with that one rather than replacing it.
+        .def_prop_rw(
+            "stop", [](const ParallelConfig& pc) { return pc.stop.attached(); },
+            [](ParallelConfig& pc, StopToken* token) { pc.stop = stop_ref_or_none(token); },
+            nb::for_setter(nb::arg("token").none()), nb::for_setter(nb::keep_alive<1, 2>()),
+            "A cbls.StopToken whose request() cancels every worker, or None. Reads\n"
+            "back as a bool (whether one is attached), not as the token: the C++\n"
+            "side holds a view, not the object.");
 
     // SearchConfig — must be registered before ParallelSearch / solve, which
     // use SearchConfig{} as a default argument (nanobind casts defaults to
@@ -826,7 +865,24 @@ NB_MODULE(_cbls_core, m) {
                 c.structural_neighbours =
                     value.has_value() ? std::make_shared<const NeighbourList>(*value) : nullptr;
             })
-        .def_rw("feasibility_tolerance", &SearchConfig::feasibility_tolerance);
+        .def_rw("feasibility_tolerance", &SearchConfig::feasibility_tolerance)
+        // A NON-OWNING view of a StopToken the Python caller holds (#169). The
+        // keep_alive is what makes that safe: it ties the token's lifetime to
+        // this config, so `cbls.solve(m, cfg)` cannot be reading a token Python
+        // already collected. Reads back as a bool for the same reason
+        // ParallelConfig.stop does -- there is no object on the C++ side to hand
+        // back, only a pointer and a thunk.
+        //
+        // Tracer is deliberately NOT bound: it is a C++ extension point whose
+        // events arrive per batch on a worker thread, so a Python subclass would
+        // need the trampoline-plus-GIL machinery of #132 and would serialise
+        // every portfolio worker on the interpreter. #169 scopes it to C++.
+        .def_prop_rw(
+            "stop", [](const SearchConfig& c) { return c.stop.attached(); },
+            [](SearchConfig& c, StopToken* token) { c.stop = stop_ref_or_none(token); },
+            nb::for_setter(nb::arg("token").none()), nb::for_setter(nb::keep_alive<1, 2>()),
+            "A cbls.StopToken whose request() ends this solve at its next batch\n"
+            "boundary, or None. Reads back as a bool (whether one is attached).");
 
     // ParallelSearch
     nb::class_<ParallelSearch>(m, "ParallelSearch")
@@ -934,6 +990,21 @@ NB_MODULE(_cbls_core, m) {
         nb::arg("use_fj") = true, nb::arg("hook") = nullptr, nb::arg("lns") = nullptr,
         nb::arg("lns_interval") = 3, nb::arg("callback") = nullptr,
         nb::arg("config") = SearchConfig{},
+        // THE GIL IS RELEASED FOR THE WHOLE CALL (#128's fix, extended to this
+        // entry point by #169). Without it `config.stop` is unusable: a Python
+        // thread that wants to call StopToken.request() mid-solve cannot run at
+        // all while this one holds the interpreter, so the only reachable stop
+        // would be one raised before the call.
+        //
+        // Everything this call can reach back into Python re-acquires the GIL
+        // for itself: a SolveCallback subclass through nanobind's trampoline,
+        // and a lambda_sum/pair_lambda_sum functor through the std::function
+        // caster. Both did so already -- they had to, being callable from
+        // portfolio worker threads -- so releasing here adds no new requirement.
+        // A raising on_progress still propagates out of this call unchanged;
+        // nb::python_error re-acquires the GIL in its own destructor (see the
+        // note above PySolveCallback).
+        nb::call_guard<nb::gil_scoped_release>(),
         "Single-threaded solve. An exception raised by callback.on_progress ends the "
         "search and propagates out of this call unchanged -- no result is returned, "
         "and the model is left at the assignment the search had reached -- with its "

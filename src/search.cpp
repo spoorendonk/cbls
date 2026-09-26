@@ -87,6 +87,8 @@ const char* termination_reason_name(TerminationReason reason) {
             return "no_budget";
         case TerminationReason::Stopped:
             return "stopped";
+        case TerminationReason::Cancelled:
+            return "cancelled";
     }
     // Unreachable for any value of the enum; keeps the function total so a
     // caller can print the result unconditionally.
@@ -196,12 +198,6 @@ double effective_structural_probability(const Model& model, const SearchConfig& 
     return config.structural_batch_probability >= 0.0 ? config.structural_batch_probability : 0.33;
 }
 
-// Pick this batch's kind (paper Algorithm 6 alternates FJ/NJ; the
-// STRUCTURAL batch is the list/set peer added in P4). Structural and
-// Novelty batches commit changes outside the FJ scan-set/jump-table, so
-// they must be followed by a resync.
-enum class BatchKind : std::uint8_t { FeasibilityJump, NoveltyJump, Structural };
-
 // Second arming condition for the Float escape probe (#117).
 // `perturbation_period` counts BATCHES, and a batch is `batch_iterations`
 // GLS iterations: microseconds on a small model, seconds on an expensive
@@ -310,16 +306,26 @@ private:
     // Whether a peer worker has answered the question. Relaxed is the right
     // ordering: the flag guards no data -- the pool has its own mutex -- and
     // the only cost of observing it a batch late is that batch.
-    [[nodiscard]] bool stop_requested() const {
+    [[nodiscard]] bool peer_stopped() const {
         return coord_ != nullptr && coord_->stop != nullptr &&
                coord_->stop->load(std::memory_order_relaxed);
     }
+    // Whether the HOST cancelled (#169). Kept apart from peer_stopped() rather
+    // than folded into it because the two report different TerminationReasons,
+    // and a host integrating cbls as a component has to be able to tell its own
+    // cancel from a peer worker finishing the job. One null compare when
+    // nothing is attached, which is every call site that does not use the
+    // feature.
+    [[nodiscard]] bool cancel_requested() const { return config_.stop.requested(); }
     [[nodiscard]] bool clock_expired() const {
         return has_deadline_ && std::chrono::steady_clock::now() >= deadline_;
     }
     // Read by the loop condition and by every mid-batch "is there budget left"
-    // guard, so a raised stop flag halts a worker everywhere the clock would.
-    [[nodiscard]] bool past_deadline() const { return stop_requested() || clock_expired(); }
+    // guard, so a raised stop flag -- a peer's or the host's -- halts the search
+    // everywhere the clock would.
+    [[nodiscard]] bool past_deadline() const {
+        return cancel_requested() || peer_stopped() || clock_expired();
+    }
     [[nodiscard]] double remaining() const {
         if (!has_deadline_) {
             return 0.0;  // unbounded: sub-steps use their own iteration budgets
@@ -1457,8 +1463,17 @@ SearchResult ViolationLSLoop::run() {
     // not a peer happened to raise the flag in the same instant. Every other
     // exit is a `break` that already wrote its own reason (Feasible above all:
     // a worker that solved the model did not stop, it finished).
-    if (termination_ == TerminationReason::TimeLimit && stop_requested() && !clock_expired()) {
-        termination_ = TerminationReason::Stopped;
+    //
+    // The host's cancel is asked before the peer flag: when both are true the
+    // outer cause is the one the caller asked about, and `ParallelSearch` raises
+    // its own flag in response to a host cancel anyway (src/pool.cpp), so the
+    // other order would report every cancelled portfolio worker as Stopped.
+    if (termination_ == TerminationReason::TimeLimit && !clock_expired()) {
+        if (cancel_requested()) {
+            termination_ = TerminationReason::Cancelled;
+        } else if (peer_stopped()) {
+            termination_ = TerminationReason::Stopped;
+        }
     }
     return finish();
 }

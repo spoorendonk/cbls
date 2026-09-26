@@ -121,7 +121,7 @@ SearchResult ParallelSearch::solve(std::function<Model()> model_factory, double 
     std::function<std::shared_ptr<LNS>()> no_lns;
     int n = effective_threads(pc);
     return solve_portfolio(model_factory, time_limit, seed, {}, no_hook, no_lns, nullptr, n,
-                           effective_pool_capacity(pc.pool_capacity, n));
+                           effective_pool_capacity(pc.pool_capacity, n), pc.stop);
 }
 
 // Full-featured solve
@@ -133,7 +133,8 @@ SearchResult ParallelSearch::solve(
     const ParallelConfig& par_config) {
     int n = effective_threads(par_config);
     return solve_portfolio(model_factory, time_limit, seed, config, hook_factory, lns_factory,
-                           callback, n, effective_pool_capacity(par_config.pool_capacity, n));
+                           callback, n, effective_pool_capacity(par_config.pool_capacity, n),
+                           par_config.stop);
 }
 
 // --- Master-model overloads: one structure, N workers ---
@@ -174,12 +175,16 @@ SearchResult ParallelSearch::solve(
 // own run ended Feasible, and Feasible short-circuits this loop before
 // any_stopped is consulted. It is kept so that a future second reason to raise
 // the flag surfaces as "a peer ended this" rather than being reported as a
-// budget exit. Among budget exits the shared wall clock outranks the per-worker
+// budget exit. Cancelled sits directly below Feasible: a host that cancelled
+// needs to read that back whatever its workers' own budgets did in the same
+// instant, and a cancelled portfolio's `time_seconds` must not be read as an
+// expired budget. Among budget exits the shared wall clock outranks the per-worker
 // iteration budget, because the portfolio's answer is clock-limited as soon as
 // any worker ran the clock out. NoBudget is last: it is also what a worker that
 // threw leaves behind, and one crashed thread should not relabel a run the
 // others budget-limited.
 static TerminationReason aggregate_termination(const std::vector<SearchResult>& results) {
+    bool any_cancelled = false;
     bool any_stopped = false;
     bool any_time = false;
     bool any_iterations = false;
@@ -187,9 +192,13 @@ static TerminationReason aggregate_termination(const std::vector<SearchResult>& 
         if (r.termination == TerminationReason::Feasible) {
             return TerminationReason::Feasible;
         }
+        any_cancelled = any_cancelled || r.termination == TerminationReason::Cancelled;
         any_stopped = any_stopped || r.termination == TerminationReason::Stopped;
         any_time = any_time || r.termination == TerminationReason::TimeLimit;
         any_iterations = any_iterations || r.termination == TerminationReason::IterationLimit;
+    }
+    if (any_cancelled) {
+        return TerminationReason::Cancelled;
     }
     if (any_stopped) {
         return TerminationReason::Stopped;
@@ -379,6 +388,42 @@ struct PortfolioContext {
 // deterministic one must not spend the portfolio's whole budget re-raising.
 constexpr int kMaxWorkerRetries = 3;
 
+// The two cancellation channels a caller may set -- ParallelConfig::stop and
+// SearchConfig::stop -- behind one StopRef, OR-ed. A caller may set either or
+// both; branching on which would put the question at every poll site instead of
+// once at setup. An instance lives on solve_portfolio's frame for the whole
+// call, and the workers are joined before it returns, so the StopRef the workers
+// hold never outlives it.
+struct CombinedStop {
+    StopRef host;
+    StopRef search;
+    [[nodiscard]] bool requested() const { return host.requested() || search.requested(); }
+};
+
+// What a portfolio that produced no result at all reports.
+//
+// A cancelled portfolio reaches that path too, and must NOT be reported as
+// NoBudget: a stop raised before the first worker got going leaves every worker
+// breaking out of its restart loop without ever calling solve(), so nothing is
+// submitted and nothing throws. That run did not lack a budget -- the host took
+// it away (#169).
+TerminationReason empty_portfolio_reason(bool cancelled) {
+    return cancelled ? TerminationReason::Cancelled : TerminationReason::NoBudget;
+}
+
+// Whether this restart's exit ends the worker rather than earning it another
+// one. A peer answered the question, or the host cancelled; either way there is
+// nothing left for this worker to do.
+bool ends_worker(TerminationReason reason) {
+    return reason == TerminationReason::Stopped || reason == TerminationReason::Cancelled;
+}
+
+// Whether the worker should not start another restart at all: a peer raised the
+// shared flag, or the host cancelled.
+bool worker_should_stop(const PortfolioContext& ctx) {
+    return ctx.coord.stop->load(std::memory_order_relaxed) || ctx.config.stop.requested();
+}
+
 // `failure` is set to the last exception the SEARCH raised, whether or not the
 // worker went on to recover. The caller reports it only when the worker
 // produced nothing at all, so a worker that threw once and then succeeded is
@@ -414,7 +459,11 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index,
     // exists today -- and the core it was using would then sit out the rest of
     // the run. Restart it instead, on the time its predecessor left.
     for (int restart = 0;; ++restart) {
-        if (ctx.coord.stop->load(std::memory_order_relaxed)) {
+        // A peer answered the question, or the HOST cancelled (#169). The second
+        // is checked here as well as inside `cbls::solve` so that a cancel
+        // arriving between two restarts ends the worker rather than launching one
+        // more solve that immediately returns Cancelled.
+        if (worker_should_stop(ctx)) {
             break;
         }
         // ONE read of the shared clock per restart, reused as this solve's
@@ -491,7 +540,7 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index,
             break;
         }
 
-        if (r.termination == TerminationReason::Stopped) {
+        if (ends_worker(r.termination)) {
             break;
         }
         if (r.termination == TerminationReason::NoBudget) {
@@ -516,7 +565,12 @@ SearchResult ParallelSearch::solve_portfolio(
     const SearchConfig& config,
     std::function<std::shared_ptr<InnerSolverHook>(Model&)>& hook_factory,
     std::function<std::shared_ptr<LNS>()>& lns_factory, SolveCallback* callback, int n_threads,
-    int pool_capacity) {
+    int pool_capacity, StopRef host_stop) {
+    // One StopRef for every worker to poll; see CombinedStop.
+    const CombinedStop combined{host_stop, config.stop};
+    SearchConfig worker_config = config;
+    worker_config.stop = combined;
+
     SolutionPool pool(pool_capacity);
     std::atomic<bool> stop{false};
     SearchCoordination coord{&pool, &stop};
@@ -558,7 +612,7 @@ SearchResult ParallelSearch::solve_portfolio(
     PortfolioContext ctx{model_factory,
                          hook_factory,
                          lns_factory,
-                         config,
+                         worker_config,
                          callback != nullptr ? &heartbeat : nullptr,
                          callback != nullptr ? &peer : nullptr,
                          coord,
@@ -656,8 +710,9 @@ SearchResult ParallelSearch::solve_portfolio(
         // feasible-looking default. (A NON-positive time limit does not reach
         // here: it disables the wall clock, the worker runs exactly one solve,
         // and that solve's result is submitted.)
+        // A cancelled portfolio reaches here too; see empty_portfolio_reason.
         SearchResult empty;
-        empty.termination = TerminationReason::NoBudget;
+        empty.termination = empty_portfolio_reason(combined.requested());
         return empty;
     }
 
