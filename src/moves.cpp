@@ -4,6 +4,7 @@
 #include "cbls/randomize.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <iterator>
@@ -298,6 +299,38 @@ static std::vector<bool> list_membership(const Variable& var) {
     return present;
 }
 
+// One element of the universe that `var` does not hold, or -1 if it holds them
+// all.
+//
+// Granular where a neighbour list says so: grow the sequence next to what it
+// already holds rather than anywhere in the universe, the same rule
+// `pick_added_element` applies to a Set. Falls back to the uniform draw when the
+// list is empty or the list names nobody absent, so a partial neighbour list
+// restricts where the search looks and never what it can reach.
+static int32_t pick_absent_element(const Variable& var, RNG& rng, const NeighbourList* neighbours,
+                                   const std::vector<bool>& present) {
+    const auto n = static_cast<int32_t>(var.elements.size());
+    if (neighbours != nullptr && !neighbours->empty() && n > 0) {
+        const int32_t seed = var.elements[static_cast<size_t>(rng.integers(0, n))];
+        for (int32_t f : neighbours->of(seed)) {
+            if (f >= 0 && static_cast<size_t>(f) < present.size() &&
+                !present[static_cast<size_t>(f)]) {
+                return f;
+            }
+        }
+    }
+    std::vector<int32_t> absent;
+    for (int32_t e = 0; e < var.universe_size; ++e) {
+        if (!present[static_cast<size_t>(e)]) {
+            absent.push_back(e);
+        }
+    }
+    if (absent.empty()) {
+        return -1;
+    }
+    return absent[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(absent.size())))];
+}
+
 // Insert one absent element at a random position (#164).
 //
 // GUARDS BEFORE DRAWS, which is what keeps a permutation List's trajectory
@@ -309,38 +342,46 @@ static void list_insert_move(const Variable& var, RNG& rng, const NeighbourList*
     if (var.partitioned || n >= var.max_size || var.universe_size <= 0) {
         return;
     }
-    const std::vector<bool> present = list_membership(var);
-    // Granular where a neighbour list says so: grow the sequence next to what it
-    // already holds rather than anywhere in the universe, the same rule
-    // `pick_added_element` applies to a Set. Falls back to the uniform draw when
-    // the list is empty or names nobody absent.
-    int32_t chosen = -1;
-    if (neighbours != nullptr && !neighbours->empty() && n > 0) {
-        const int32_t seed = var.elements[static_cast<size_t>(rng.integers(0, n))];
-        for (int32_t f : neighbours->of(seed)) {
-            if (f >= 0 && static_cast<size_t>(f) < present.size() &&
-                !present[static_cast<size_t>(f)]) {
-                chosen = f;
-                break;
-            }
-        }
-    }
+    const int32_t chosen = pick_absent_element(var, rng, neighbours, list_membership(var));
     if (chosen < 0) {
-        std::vector<int32_t> absent;
-        for (int32_t e = 0; e < var.universe_size; ++e) {
-            if (!present[static_cast<size_t>(e)]) {
-                absent.push_back(e);
-            }
-        }
-        if (absent.empty()) {
-            return;
-        }
-        chosen = absent[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(absent.size())))];
+        return;
     }
     const int64_t pos = rng.integers(0, n + 1);
     Move m;
     m.move_type = "list_insert";
     m.changes.push_back(edit_change(var.id, insert_edit(static_cast<int32_t>(pos), chosen)));
+    moves.push_back(m);
+}
+
+// Exchange the element at a random position for one the List does not hold: the
+// only move that changes a List's MEMBERSHIP without changing its length (#164).
+//
+// Without it a List declared `min_len == max_len < universe` -- a fixed-count
+// orienteering or selection model -- is a dead end. Insert is refused at
+// max_len, remove at min_len, and the five reordering moves are all
+// permutations of what is already there, so the membership drawn at
+// initialisation is the membership for the whole run and the search silently
+// explores one of C(universe, k) equivalence classes. It is the List analogue of
+// `set_swap`, and it is guarded before it draws, so a permutation List
+// (universe == n) still consumes nothing.
+//
+// Not offered for a partition member: membership there is shared with the
+// sibling lists, and `partition_swap` is the length-preserving exchange that
+// keeps the cover.
+static void list_exchange_move(const Variable& var, RNG& rng, const NeighbourList* neighbours,
+                               std::vector<Move>& moves) {
+    const auto n = static_cast<int32_t>(var.elements.size());
+    if (var.partitioned || n <= 0 || var.universe_size <= n) {
+        return;
+    }
+    const int32_t chosen = pick_absent_element(var, rng, neighbours, list_membership(var));
+    if (chosen < 0) {
+        return;
+    }
+    const auto pos = static_cast<int32_t>(rng.integers(0, n));
+    Move m;
+    m.move_type = "list_exchange";
+    m.changes.push_back(edit_change(var.id, assign_edit(pos, chosen)));
     moves.push_back(m);
 }
 
@@ -430,19 +471,22 @@ static void list_reorder_moves(const Variable& var, RNG& rng, std::vector<Move>&
     }
 }
 
-// A List's typed moves: the five length-preserving ones first, then the two that
-// change the length (#164).
+// A List's typed moves: the five length-preserving reorderings first, then the
+// three that can only apply to a List that is not a permutation (#164) -- insert,
+// remove, and the fixed-length membership exchange.
 //
-// ORDER MATTERS AND THE TAIL MUST STAY LAST. Both tail moves test their guard
-// before touching the RNG, so on a permutation List -- where the length is
-// pinned at min_size == max_size -- they draw nothing and the resulting draw
-// sequence is the pre-#164 one, move for move. Putting either ahead of the five
-// would not change that, but putting a DRAW ahead of a guard would.
+// ORDER MATTERS AND THE TAIL MUST STAY LAST. All three tail moves test their
+// guards before touching the RNG, so on a permutation List -- where the length is
+// pinned at min_size == max_size == universe_size -- they draw nothing and the
+// resulting draw sequence is the pre-#164 one, move for move. Putting one of
+// them ahead of the five would not change that, but putting a DRAW ahead of a
+// guard would.
 static void list_moves(const Variable& var, RNG& rng, std::vector<Move>& moves,
                        const NeighbourList* neighbours) {
     list_reorder_moves(var, rng, moves, neighbours);
     list_insert_move(var, rng, neighbours, moves);
     list_remove_move(var, rng, moves);
+    list_exchange_move(var, rng, neighbours, moves);
 }
 
 // The current subset, its complement and the membership flag, which all three
@@ -800,21 +844,41 @@ void partition_remove(const Model& model, int32_t a, RNG& rng, std::vector<Move>
 /// cover permits. Drawn from uniformly, so this list is also the mix.
 enum class PartitionMoveKind : std::uint8_t { Relocate, Swap, TwoOptStar, Insert, Remove };
 
-std::vector<PartitionMoveKind> applicable_kinds(const ListPartition& part) {
-    std::vector<PartitionMoveKind> kinds;
+/// Written into `out`; the return is how many. A fixed array rather than a
+/// vector because this runs once per candidate PROPOSED, and the argument for
+/// the whole positional representation is that a candidate must not cost a heap
+/// allocation.
+size_t applicable_kinds(const ListPartition& part, std::array<PartitionMoveKind, 5>& out) {
+    size_t n = 0;
     if (part.list_ids.size() >= 2) {
-        kinds.push_back(PartitionMoveKind::Relocate);
-        kinds.push_back(PartitionMoveKind::Swap);
-        kinds.push_back(PartitionMoveKind::TwoOptStar);
+        out[n++] = PartitionMoveKind::Relocate;
+        out[n++] = PartitionMoveKind::Swap;
+        out[n++] = PartitionMoveKind::TwoOptStar;
     }
     if (part.cover == Cover::AtMostOnce) {
         // Under Exact these are the two halves of a relocate and never stand
         // alone: an insert would double-serve, a remove would leave an element
         // unserved, and no later move could repair either.
-        kinds.push_back(PartitionMoveKind::Insert);
-        kinds.push_back(PartitionMoveKind::Remove);
+        out[n++] = PartitionMoveKind::Insert;
+        out[n++] = PartitionMoveKind::Remove;
     }
-    return kinds;
+    return n;
+}
+
+/// A member of `part` other than `a`, uniformly, by the shift-past trick the
+/// intra-list move pair already uses. PRECONDITION: at least two members. `a`
+/// may be an anchor from outside the id list, in which case the shift is inert
+/// and the draw is uniform over all of them.
+int32_t pick_other_list(const ListPartition& part, int32_t a, RNG& rng) {
+    const auto count = static_cast<int64_t>(part.list_ids.size());
+    const auto it = std::find(part.list_ids.begin(), part.list_ids.end(), a);
+    const auto skip =
+        (it == part.list_ids.end()) ? count : static_cast<int64_t>(it - part.list_ids.begin());
+    int64_t pick = rng.integers(0, count - (skip < count ? 1 : 0));
+    if (skip < count && pick >= skip) {
+        ++pick;
+    }
+    return part.list_ids[static_cast<size_t>(pick)];
 }
 
 }  // namespace
@@ -826,46 +890,32 @@ void generate_partition_moves(const Model& model, int partition, int32_t anchor,
         return;
     }
     const ListPartition& part = partitions[static_cast<size_t>(partition)];
-    const std::vector<PartitionMoveKind> kinds = applicable_kinds(part);
-    if (kinds.empty() || part.list_ids.empty()) {
+    std::array<PartitionMoveKind, 5> kinds{};
+    const size_t num_kinds = applicable_kinds(part, kinds);
+    if (num_kinds == 0 || part.list_ids.empty()) {
         return;
     }
     const PartitionMoveKind kind =
-        kinds[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(kinds.size())))];
+        kinds[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(num_kinds)))];
 
     // The first list is the anchor when the caller named one -- the
     // diversification kick does, because it asks "move THIS variable" and reads
-    // the answer off that variable alone. Otherwise both are drawn.
-    const auto count = static_cast<int64_t>(part.list_ids.size());
-    int32_t a = anchor;
-    if (a < 0) {
-        a = part.list_ids[static_cast<size_t>(rng.integers(0, count))];
-    }
-    int32_t b = -1;
-    if (count >= 2) {
-        // Uniform over the members other than `a`, by the shift-past trick the
-        // intra-list move pair already uses. `a` may be an anchor from outside
-        // the id list, in which case the shift is inert and the draw is uniform
-        // over all members.
-        const auto it = std::find(part.list_ids.begin(), part.list_ids.end(), a);
-        const auto skip =
-            (it == part.list_ids.end()) ? count : static_cast<int64_t>(it - part.list_ids.begin());
-        int64_t pick = rng.integers(0, count - (skip < count ? 1 : 0));
-        if (skip < count && pick >= skip) {
-            ++pick;
-        }
-        b = part.list_ids[static_cast<size_t>(pick)];
-    }
+    // the answer off that variable alone. The second is drawn only by the three
+    // kinds that need one, so an insert or a removal costs the draws it actually
+    // uses rather than one more.
+    const int32_t a = (anchor >= 0) ? anchor
+                                    : part.list_ids[static_cast<size_t>(rng.integers(
+                                          0, static_cast<int64_t>(part.list_ids.size())))];
 
     switch (kind) {
         case PartitionMoveKind::Relocate:
-            partition_relocate(model, a, b, rng, neighbours, out);
+            partition_relocate(model, a, pick_other_list(part, a, rng), rng, neighbours, out);
             return;
         case PartitionMoveKind::Swap:
-            partition_swap(model, a, b, rng, neighbours, out);
+            partition_swap(model, a, pick_other_list(part, a, rng), rng, neighbours, out);
             return;
         case PartitionMoveKind::TwoOptStar:
-            partition_two_opt_star(model, a, b, rng, out);
+            partition_two_opt_star(model, a, pick_other_list(part, a, rng), rng, out);
             return;
         case PartitionMoveKind::Insert:
             partition_insert(model, part, a, rng, neighbours, out);

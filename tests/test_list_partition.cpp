@@ -377,6 +377,41 @@ TEST_CASE("random move sequences keep an unpartitioned variable-length List well
     hammer(pm, /*rounds=*/600, /*seed=*/93, /*with_partition=*/false, Cover::Exact);
 }
 
+TEST_CASE("a fixed-length ordered subset can still change its membership", "[list][partition]") {
+    // `min_len == max_len < universe` is a fixed-count selection model -- pick k
+    // of n sites and sequence them. Insert is refused at max_len and remove at
+    // min_len, so without `list_exchange` the membership drawn at initialisation
+    // would be the membership for the whole run and the search would silently
+    // explore one of C(universe, k) equivalence classes.
+    Model m;
+    const int32_t h = m.list_var(9, 3, 3, ListInit::Random, "pick3");
+    m.minimize(m.lambda_sum(h, element_weight));
+    m.close();
+    auto& var = m.var_mut(handle_to_var_id(h));
+    var.elements = {0, 1, 2};
+
+    RNG rng(77);
+    bool saw_exchange = false;
+    for (int trial = 0; trial < 50 && !saw_exchange; ++trial) {
+        std::vector<Move> out;
+        generate_standard_moves(var, rng, out, nullptr);
+        for (const Move& mv : out) {
+            REQUIRE(mv.move_type != "list_insert");
+            REQUIRE(mv.move_type != "list_remove");
+            if (mv.move_type == "list_exchange") {
+                saw_exchange = true;
+                const std::vector<int32_t> after = elements_after(mv.changes.front(), var.elements);
+                REQUIRE(after.size() == 3);
+                std::vector<int32_t> sorted = after;
+                std::sort(sorted.begin(), sorted.end());
+                REQUIRE(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end());
+                REQUIRE(sorted.back() >= 3);  // an element from outside the initial set
+            }
+        }
+    }
+    REQUIRE(saw_exchange);
+}
+
 TEST_CASE("a permutation List still offers no insert or remove", "[list][partition]") {
     Model m;
     const int32_t h = m.list_var(5, "perm");
@@ -386,6 +421,7 @@ TEST_CASE("a permutation List still offers no insert or remove", "[list][partiti
     for (const Move& mv : moves) {
         REQUIRE(mv.move_type != "list_insert");
         REQUIRE(mv.move_type != "list_remove");
+        REQUIRE(mv.move_type != "list_exchange");
     }
     // ... and the draws it takes are unchanged: a second generator on a fresh
     // RNG of the same seed lands on the same state.
@@ -412,6 +448,7 @@ TEST_CASE("a partition member offers no intra-list insert or remove", "[list][pa
     for (const Move& mv : moves) {
         REQUIRE(mv.move_type != "list_insert");
         REQUIRE(mv.move_type != "list_remove");
+        REQUIRE(mv.move_type != "list_exchange");
     }
 }
 
