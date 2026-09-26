@@ -1263,7 +1263,7 @@ public:
 private:
     static double recompute(const InvariantInputs& in) {
         double total = 0.0;
-        for (int32_t i = 0; i < static_cast<int32_t>(in.size()); ++i) {
+        for (int32_t i = 0; i < in.size(); ++i) {
             total += in.value(i);
         }
         return total;
