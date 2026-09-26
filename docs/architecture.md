@@ -274,36 +274,69 @@ valid for the one `delta()` call.
 
 *Opt in, because it is measurable.* The batch records only while some invariant
 in the model returns true from `wants_positional_edits()`, checked once per
-sweep. Not opting in is still correct — `available()` is false — and costs
-nothing. Opting in costs ~5-7% per structural candidate and no allocation.
-*Dated record of two A/B runs*, at `6771047` (base) against this change (the
-second run at the review-fix commit), Release, one binary per side, 200,000 batch
-sweeps after a 50-sweep warm-up, alternating repeats, medians. **Not an idle
-machine**: a 12-core box shared with other agents' jobs, load average 2.4-3.1 for
-the first run (7 repeats) and 2.5-2.7 for the second (9 repeats), one core busy
-with an unrelated process throughout. The harness is a scratch program, not
-committed: a `StructuralBatch` driven directly over each model below, with a
-counting `operator new`.
+sweep. Not opting in is still correct — `available()` is false — and costs no
+allocation. Opting in costs ~6% per structural candidate and no allocation.
 
-| Model (200-element List / 300-universe Set) | base ns/candidate | #172 ns/candidate | allocations/candidate |
-|---|---|---|---|
-| `pair_lambda_sum` route, no custom node | 1012.4 / 1024.8 | 1012.7 / 1020.3 | 1.999 / 1.999 |
-| `lambda_sum` over a Set, no custom node | 695.2 / 698.4 | 684.0 / 685.7 | 5.665 / 5.665 |
-| re-reading custom route, not opted in | 628.7 / 624.2 | 625.2 / 632.2 | 1.999 / 1.999 |
-| the same invariant, opted in | — | 660.8 / 666.0 | 1.999 |
+*Dated record of the no-regression A/B, idle machine* (2026-09-26). Engine
+commits: `7c94461` (base, the parent of #172), `f9d4514` (#172 with its
+cold-review fix) and `b3e5a77` (main at the time, carrying #167, #168 and #173 on
+top). One Release build per commit (`CBLS_SANITIZE` empty), all built before any
+run. Machine: 12-thread AMD Ryzen 5 5600H, `powersave` governor, load average
+0.6-1.3 across both runs with no other job running (top: every other process
+under 6% of one core; a constant ~16% iowait from a process in D state, no CPU).
+Harness, not committed: a scratch program over the library that builds each
+model below, sets a fixed starting assignment, and calls `StructuralBatch::run`
+directly (default `SearchConfig`, i.e. `FirstImprovingSample`) for 200,000 sweeps
+after a 50-sweep warm-up, dividing wall time and a global `operator new` count by
+the batch's own `moves_tried`. Each process pinned with `taskset` (core 5, then
+core 3 for the second run), 9 repeats per side per run, the three sides
+interleaved in rotating order, never concurrent. Medians, run 1 / run 2:
 
-Every not-opted-in row moves by under 2% between the two sides -- the
-`pair_lambda_sum` and custom-route rows in both directions across the two runs,
-the Set `lambda_sum` row faster on the branch in both (-1.6%, -1.8%). On a
-machine at load 2.4-3.1 that is not a measured effect either way; the claim that
-not opting in costs nothing rests on the code (one predictable `bool` branch per
-step), not on this timing. The allocation column is load-independent and is the
-criterion's actual evidence: identical on both sides, and zero added by opting in.
-Final elements and every node value hashed identically on both sides for every
-row, and `cbls::solve()` at seed 12345, `max_iterations = 4000`, no time limit,
-produced identical digests (every `SearchResult` scalar plus `best_state`) for
-all four models. Scalar inputs never had the gap: `changed` is exactly the inputs
-that moved, and an O(1) delta over them is what the #166 reference fixture does.
+| Model (200-element permutation List / 300-universe Set) | `7c94461` ns/cand | `f9d4514` ns/cand | `b3e5a77` ns/cand | allocations/cand |
+|---|---|---|---|---|
+| `pair_lambda_sum` route, no custom node | 1037.5 / 1036.8 | 1022.0 / 1021.7 | 1075.6 / 1075.2 | 2.000 |
+| `lambda_sum` over a Set, no custom node | 903.7 / 903.2 | 887.6 / 888.3 | 884.3 / 885.2 | 5.667 |
+| re-reading custom route, not opted in | 622.9 / 623.5 | 630.4 / 630.8 | 631.9 / 631.7 | 2.000 |
+| the same invariant, opted in | — | 670.0 / 670.0 | 668.1 / 668.4 | 2.000 |
+
+The within-side spread was tight -- in every cell the fastest repeat is within
+0.5% of the median, and no more than one or two repeats of a cell ran slower, by
+up to ~4% -- so differences of ~1% are resolvable here, and the two runs agree to
+within 1 ns on every median. Read against that:
+
+- **#172, models without a custom node: no regression.** Both rows are *faster*
+  on `f9d4514` (-1.5%, -1.7%), in both runs. That path is the pre-#172 one
+  apart from one predictable `bool` per step, so the gain is code placement,
+  not something #172 did.
+- **#172, a custom node that does not opt in: a measured +1.2% regression**
+  (+7.5 ns/candidate, 622.9 → 630.4; run 2 623.5 → 630.8; the ranges do not
+  overlap). Allocations are identical. This row's path is the one #172 did
+  change without opting in: every custom `delta` now builds an
+  `InvariantInputs` carrying the `changed` span and the journal pointer, behind
+  a branch on the stale-probe flag. The cost is per custom-node delta, fixed,
+  and does not grow with the List.
+- **Opting in** costs +6.3% over not opting in (630.4 → 670.0) and zero
+  allocations — the journal's buffers are reused.
+- **`b3e5a77` against `f9d4514`**: the Set and custom rows are unchanged within
+  0.5%. The `pair_lambda_sum` row is +5.2% (1022 → 1075), and it is not #172's.
+  Bisected over the same harness (7 repeats, interleaved): `2768314` (end of
+  #167) 1021.0, `99551c9` (end of #168) 1079.9, `3ca0fb7` (#173) 1075.7. So it
+  arrives with #168 — and #168 changed none of the code that row executes
+  (`dag.cpp`, `dag_ops.cpp` and `StructuralBatch`'s logic are untouched;
+  `structural_batch.cpp` gained a comment), and reverting its one edit to a
+  structural-path file, the pinned-Bool guard in `moves.cpp`, leaves the row at
+  ~1071. Attributed to code placement in the static library, not to a cost
+  #168 added; not proven beyond that.
+
+**Verdict against #172's criterion**: no allocation is added per candidate on
+any row, opted in or not. On time, a model with no custom node does not regress;
+a model whose custom node does not opt in pays a fixed ~7.5 ns (1.2%) per
+structural candidate. Final elements and the constraint body hashed identically
+on all three commits for every row. (The earlier, loaded run of this A/B also
+found identical `cbls::solve()` digests at seed 12345, `max_iterations = 4000`,
+for all four models; not repeated here.) Scalar inputs never had the gap:
+`changed` is exactly the inputs that moved, and an O(1) delta over them is what
+the #166 reference fixture does.
 
 The interface is six calls plus a clone:
 
