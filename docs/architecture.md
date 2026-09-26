@@ -575,7 +575,7 @@ with the handle-based builders (no `Expr` form -- an `Expr`'s operators build
 through its model, which is closed), `Model.extend(ext)`,
 `ViolationManager.on_extended(result, new_weight=1.0)` and
 `cbls.pad_state(state, result)`. FeasibilityJump is not bound, so its half of the
-call order is internal to `solve()`. The binding adds three things of its own:
+call order is internal to `solve()`. The binding adds four things of its own:
 
 - the extension **keeps its model alive** (`keep_alive`), because it holds a raw
   pointer the cycle walk and the `Sum` check read;
@@ -584,13 +584,35 @@ call order is internal to `solve()`. The binding adds three things of its own:
   produced -- and both still check it against the manager or state they grow;
 - `LNS.destroy_repair`/`destroy_repair_cycle` **refuse a manager that has not
   seen `on_extended`** before they run. The engine refuses it too, but only in
-  the repair, after the destroy has already moved the assignment.
+  the repair, after the destroy has already moved the assignment;
+- `Model.extend` **refuses while `cbls.solve` runs on that model**. `solve`
+  releases the GIL and calls a `SolveCallback` on the search thread, so Python
+  can reach `extend` mid-search. An extension that only appends existing
+  variables to existing rows changes neither count, so the engine's table checks
+  missed it and the search returned `feasible=True` on a model it had left
+  infeasible. The engine has no in-search growth point until #168, so the binding
+  keeps a registry of the models a bound `solve` is running on.
+
+`ModelExtension::append_to_sum` also refuses to record once the model has grown
+since the extension was started: its cycle walk reads the model's current
+children, and indexed its own node table with an id another extension had
+created -- a SIGSEGV from Python, and from C++ too.
+
+Staleness is still detected by **counts**: an extension that adds no variables
+and no nodes (appends of existing handles, or `add_constraint` on an existing
+node) is accepted a second time and appends its terms twice, and two such
+extensions recorded against the same base can close a cycle neither saw -- which
+`extend`'s backstop turns into a `RuntimeError` on a model that is then unusable.
+A generation counter on `Model`, captured by the extension and compared in
+`extend`, would close both; it is not in this slice.
 
 One hazard it does **not** close, and which predates this: `Model.var()`,
 `var_mut()` and `node()` return references into the model's arrays, and `extend`
 appends to those arrays -- so an object fetched before the call may point at
-reallocated storage. Fetch again after extending (the ordinary builders on an
-open model have always had the same property). `tests/python/test_model_extend.py`
+reallocated storage, and writing through it can abort the interpreter. Fetch
+again after extending; the three accessors' docstrings say so. The ordinary
+builders on an open model have always had the same property -- what `extend`
+changes is that a closed model's arrays can now grow too. `tests/python/test_model_extend.py`
 pins every refusal in a child interpreter and checks an extended model against
 the same model built whole.
 

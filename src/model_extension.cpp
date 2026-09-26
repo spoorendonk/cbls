@@ -285,6 +285,18 @@ void ModelExtension::add_constraint(int32_t expr) {
 }
 
 void ModelExtension::append_to_sum(int32_t sum_node, int32_t term) {
+    // The cycle walk below reads the base model's CURRENT children and indexes
+    // `new_nodes_` by `id - base_num_nodes_`. If another extension grew the model
+    // since this one was started, a base Sum can name a node at or above
+    // `base_num_nodes_` that is not ours, and that index runs off `new_nodes_` -- a
+    // SIGSEGV reached from Python. `extend` would refuse this recording anyway, so
+    // refusing it here loses nothing.
+    if (static_cast<int32_t>(base_->num_nodes()) != base_num_nodes_ ||
+        static_cast<int32_t>(base_->num_vars()) != base_num_vars_) {
+        throw std::invalid_argument(
+            "ModelExtension::append_to_sum: the model has grown since this extension was "
+            "started, so its handles no longer name what they did. Start a new extension");
+    }
     validate_node_handle(sum_node, "ModelExtension::append_to_sum");
     if (sum_node >= base_num_nodes_) {
         throw std::invalid_argument(

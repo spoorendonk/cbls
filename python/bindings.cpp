@@ -1,5 +1,6 @@
 #include <cbls/cbls.h>
 #include <cbls/model_extension.h>
+#include <mutex>
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/function.h>
@@ -10,6 +11,7 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 #include <nanobind/trampoline.h>
+#include <unordered_set>
 
 namespace nb = nanobind;
 using namespace cbls;
@@ -129,21 +131,96 @@ struct PySolveCallback : SolveCallback {
 constexpr const char* kModelExtendDoc =
     "Apply a ModelExtension to this closed model and return an ExtensionResult.\n"
     "\n"
-    "Raises RuntimeError on a model that is frozen or not closed, or when called\n"
+    "Raises RuntimeError on a model that is frozen or not closed, when called\n"
     "from inside an evaluation (a lambda_sum callable extending the model it is\n"
-    "being evaluated in); ValueError if the extension was built against a\n"
-    "different model or against this one before it last grew.\n"
+    "being evaluated in), or while cbls.solve is running on this model (from a\n"
+    "SolveCallback, or from another thread): extend is a between-solves\n"
+    "operation. ValueError if the extension was built against a different model,\n"
+    "or against this one before it last gained variables or nodes. An extension\n"
+    "that adds neither is NOT detected as stale: applying it twice appends its\n"
+    "terms twice. The first solve() of a model with an objective adds the\n"
+    "objective row, so an extension recorded before that solve is stale.\n"
     "\n"
     "Afterwards, in this order: ViolationManager.on_extended(result) on every\n"
-    "manager of this model (its reads raise until then), and pad_state(state,\n"
-    "result) on every ModelState captured before the call, which restore_state\n"
-    "otherwise rejects. A Variable or ExprNode fetched with var()/var_mut()/node()\n"
-    "before the call may refer to reallocated storage: fetch it again.\n"
+    "manager of this model, once per extend and before the next one (its\n"
+    "weight-indexed reads raise until then, and a manager that missed an extend\n"
+    "must be rebuilt), and pad_state(state, result) on every ModelState captured\n"
+    "before the call, which restore_state otherwise rejects. A Variable or\n"
+    "ExprNode fetched with var()/var_mut()/node() before the call refers to\n"
+    "storage the call may reallocate -- using it afterwards can crash the\n"
+    "interpreter. Fetch it again.\n"
     "\n"
     "There is no rollback: an exception from the growth itself (as opposed to\n"
     "the refusals above, which fire before anything changes) leaves the model\n"
-    "unusable. A callable raising during the closing evaluation is the benign\n"
-    "exception -- the structure is complete and full_evaluate recovers it.";
+    "unusable. The one reachable from Python is the RuntimeError for a cycle\n"
+    "closed by two extensions that were each recorded against the same base.";
+
+constexpr const char* kModelRefDoc =
+    "The returned object refers into the model's own arrays. Any variable or\n"
+    "node builder before close(), and Model.extend after it, may reallocate them,\n"
+    "after which using the object can crash the interpreter. Fetch it again.";
+
+// The models a bound `cbls.solve` is currently running on (#167). `solve`
+// releases the GIL and calls a SolveCallback on the search thread, so Python can
+// reach `Model.extend` mid-search -- from the callback or from another thread.
+// An extension that changes the variable or row count is then refused by the
+// engine's own table checks, but one that only appends terms over existing
+// variables to existing Sum rows changes neither count: the search carried on
+// with stale FeasibilityJump tables and returned feasible=True on a model it had
+// left infeasible. The engine has no in-search growth point until #168, so the
+// binding refuses the call outright. A multiset, because nothing stops two
+// solves on one model from two threads (a data race of its own, but not this
+// check's to refuse). Only the bound single-model `solve` registers:
+// ParallelSearch is bound in factory form only, whose workers solve copies.
+class SolvingModels {
+public:
+    static SolvingModels& instance() {
+        static SolvingModels registry;
+        return registry;
+    }
+    void add(const Model* m) {
+        const std::scoped_lock lock(mutex_);
+        models_.insert(m);
+    }
+    void remove(const Model* m) {
+        const std::scoped_lock lock(mutex_);
+        models_.erase(models_.find(m));
+    }
+    bool contains(const Model* m) {
+        const std::scoped_lock lock(mutex_);
+        return models_.count(m) > 0;
+    }
+
+private:
+    std::mutex mutex_;
+    std::unordered_multiset<const Model*> models_;
+};
+
+// Model.extend as bound: refused while a bound solve runs on the model. A free
+// function rather than a lambda in the module body, whose cognitive-complexity
+// score counts every lambda's branches as its own.
+ExtensionResult extend_unless_solving(Model& self, const ModelExtension& ext) {
+    if (SolvingModels::instance().contains(&self)) {
+        throw std::logic_error(
+            "Model.extend: cbls.solve is running on this model (from a SolveCallback or "
+            "another thread). extend is a between-solves operation: the running search's "
+            "tables cannot grow with it");
+    }
+    return self.extend(ext);
+}
+
+class SolvingScope {
+public:
+    explicit SolvingScope(const Model& m) : model_(&m) { SolvingModels::instance().add(model_); }
+    SolvingScope(const SolvingScope&) = delete;
+    SolvingScope& operator=(const SolvingScope&) = delete;
+    SolvingScope(SolvingScope&&) = delete;
+    SolvingScope& operator=(SolvingScope&&) = delete;
+    ~SolvingScope() { SolvingModels::instance().remove(model_); }
+
+private:
+    const Model* model_;
+};
 
 // ---------------------------------------------------------------------------
 // Table-backed lambda_sum / pair_lambda_sum (#163).
@@ -657,7 +734,7 @@ NB_MODULE(_cbls_core, m) {
         // `extend` appends to the variable and node arrays, so a Variable or
         // ExprNode obtained from var()/var_mut()/node() earlier refers to storage
         // that may have been reallocated. Re-fetch after extending.
-        .def("extend", &Model::extend, nb::arg("ext"), kModelExtendDoc)
+        .def("extend", &extend_unless_solving, nb::arg("ext"), kModelExtendDoc)
         // Freezing makes the structure immutable and shareable. It is what lets a
         // model_factory hand the SAME model to every worker without duplicating
         // the DAG: nanobind copies the returned object, and copying a frozen model
@@ -668,9 +745,12 @@ NB_MODULE(_cbls_core, m) {
         .def("freeze", &Model::freeze)
         .def("is_frozen", &Model::is_frozen)
         // Accessors
-        .def("var", &Model::var, nb::rv_policy::reference_internal)
-        .def("var_mut", &Model::var_mut, nb::rv_policy::reference_internal)
-        .def("node", &Model::node, nb::rv_policy::reference_internal)
+        // By reference into the model's arrays, which a builder before close()
+        // and Model.extend after it can reallocate (#167). Said in the docstring,
+        // which is where a caller holding one across an extend would look.
+        .def("var", &Model::var, nb::rv_policy::reference_internal, kModelRefDoc)
+        .def("var_mut", &Model::var_mut, nb::rv_policy::reference_internal, kModelRefDoc)
+        .def("node", &Model::node, nb::rv_policy::reference_internal, kModelRefDoc)
         .def("node_value", &Model::node_value, nb::arg("id"))
         .def("objective_id", &Model::objective_id)
         .def("constraint_ids", &Model::constraint_ids)
@@ -880,18 +960,23 @@ NB_MODULE(_cbls_core, m) {
         .def("invalidate_cache", &ViolationManager::invalidate_cache)
         // Validated in C++: `ext` must describe exactly this manager's model's
         // constraint growth, and new_weight must be finite and >= 0 (ValueError).
-        // Until it runs after a Model.extend, every read on the manager raises
-        // RuntimeError rather than indexing the short weight vector.
+        // Until it runs after a Model.extend, every read that indexes the weights
+        // (total_violation, augmented_objective, weighted_violation_delta,
+        // bump_weights) raises RuntimeError rather than indexing the short vector;
+        // is_feasible, violated_constraints and constraint_violation read node
+        // values only and already answer for the grown model.
         .def("on_extended", &ViolationManager::on_extended, nb::arg("ext"),
              nb::arg("new_weight") = 1.0,
              "Grow with a model Model.extend just grew. Existing rows keep their GLS\n"
              "weights; new rows start at new_weight (0 = masked). Call it as soon as\n"
-             "extend returns: until then every read on this manager raises.")
+             "extend returns: until then total_violation, augmented_objective,\n"
+             "weighted_violation_delta and bump_weights raise RuntimeError. Once per\n"
+             "extend, in order: a manager that missed one must be rebuilt.")
         // `weights` is indexed by constraint index with no bounds check on the
         // hot path (weighted_violation_delta, total_violation), so a short list
-        // assigned from Python read past its end. The engine cannot desync it --
-        // solve() constructs the manager after add_objective_soft_constraint() --
-        // so the length rule is enforced here rather than per read.
+        // assigned from Python read past its end. The length rule is enforced here
+        // rather than per read, against the manager's OWN size: Model.extend is the
+        // one legitimate desync, and on_extended (not this setter) is how it closes.
         .def_prop_rw(
             "weights", [](ViolationManager& self) -> std::vector<double>& { return self.weights; },
             [](ViolationManager& self, std::vector<double> w) {
@@ -1187,6 +1272,7 @@ NB_MODULE(_cbls_core, m) {
         "solve",
         [](Model& model, double time_limit, uint64_t seed, bool use_fj, InnerSolverHook* hook,
            LNS* lns, int lns_interval, SolveCallback* callback, const SearchConfig& config) {
+            const SolvingScope solving(model);  // refuses Model.extend until this returns
             return cbls::solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback,
                                config);
         },

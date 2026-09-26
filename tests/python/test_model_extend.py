@@ -7,9 +7,9 @@ builder takes raw int32 handles, and the failure each check guards against is a
 crash -- an unvalidated handle in the CSR splice, a cyclic append leaving nodes
 out of the topological order, a ViolationManager indexed past its weights --
 which in-process would take the whole pytest run down instead of failing one
-test. Each scenario asserts the Python exception AND that the model is still
-usable afterwards, since a refusal that left the model half-grown would be a
-crash deferred to the next call.
+test. Each scenario that refuses an operation on the model asserts the Python
+exception AND that the model is still usable afterwards, since a refusal that
+left the model half-grown would be a crash deferred to the next call.
 
 The round trips run in-process: build a model whole, build the same model as a
 closed base plus an extension, and compare everything Python can observe --
@@ -460,20 +460,102 @@ def _scenario_result_is_read_only() -> None:
 
 
 def _scenario_keep_alive() -> None:
-    """The extension keeps its base model alive (it holds a raw pointer to it)."""
+    """The extension keeps its base model alive (it holds a raw pointer to it).
+
+    Asserted through a weak reference rather than through a use-after-free
+    happening to crash: freed memory often still reads fine.
+    """
     import gc
+    import weakref
 
-    def make() -> tuple[Any, int]:
-        b = _base()
-        return cbls.ModelExtension(b.m), b.row
+    class Tracked(cbls.Model):  # type: ignore[misc]  # a subclass is weak-referenceable
+        pass
 
-    kept, row = make()
+    def make() -> tuple[Any, int, "weakref.ref[Any]"]:
+        m = Tracked()
+        x = m.float_var(0, 1)
+        row = m.sum([x])
+        m.add_constraint(m.leq(row, m.constant(1.0)))
+        m.close()
+        return cbls.ModelExtension(m), row, weakref.ref(m)
+
+    kept, row, model_ref = make()
     gc.collect()
+    assert model_ref() is not None
     # The cycle walk and the Sum check both read the base model.
     kept.append_to_sum(row, kept.float_var(0, 1))
     _expect_raises(ValueError, partial(kept.append_to_sum, row, row), "cycle on the kept model")
+    # ... and it is released with the extension, not leaked.
     del kept
     gc.collect()
+    assert model_ref() is None
+    print("OK")
+
+
+def _scenario_append_after_another_extend() -> None:
+    """Recording into an extension started before another one was applied.
+
+    The cycle walk reads the base model's current children; once another
+    extension has grown the model, a base Sum can name a node this extension's
+    own table does not cover, and the walk indexed past it -- a SIGSEGV.
+    """
+    b = _base()
+    constraint_root = b.m.constraint_ids()[0]
+    early = cbls.ModelExtension(b.m)
+    other = cbls.ModelExtension(b.m)
+    other.append_to_sum(b.row, other.prod(other.constant(2.0), b.y))
+    b.m.extend(other)
+    _expect_raises(ValueError, partial(early.append_to_sum, b.obj, constraint_root), "stale append")
+    _still_usable(b)
+    print("OK")
+
+
+def _scenario_extend_during_solve() -> None:
+    """A SolveCallback that extends the model it is being solved on is refused.
+
+    Append-only is the case that matters: it changes neither the variable nor
+    the row count, so the engine's own table checks see nothing, and the search
+    used to carry on with stale tables and report feasible on a model it had
+    left infeasible. A count-changing extension is refused the same way.
+    """
+    for shape in ("append_only", "new_var_and_row"):
+        b = _base()
+        attempts: list[str] = []
+
+        class Grow(cbls.SolveCallback):  # type: ignore[misc]
+            def on_progress(
+                self, p: Any, shape: str = shape, b: Base = b, attempts: list[str] = attempts
+            ) -> None:
+                ext = cbls.ModelExtension(b.m)
+                if shape == "append_only":
+                    ext.append_to_sum(b.row, ext.prod(ext.constant(3.0), b.y))
+                else:
+                    z = ext.float_var(0, 1)
+                    ext.append_to_sum(b.row, z)
+                    ext.add_constraint(ext.leq(z, ext.constant(0.5)))
+                try:
+                    b.m.extend(ext)
+                except RuntimeError as exc:
+                    attempts.append(str(exc))
+                    raise
+
+        n_vars, n_nodes = b.m.num_vars(), b.m.num_nodes()
+        config = cbls.SearchConfig()
+        config.max_iterations = 2_000
+        _expect_raises(
+            RuntimeError,
+            partial(cbls.solve, b.m, time_limit=5.0, seed=1, callback=Grow(), config=config),
+            f"extend from on_progress ({shape})",
+        )
+        assert attempts and "cbls.solve is running" in attempts[0], attempts
+        # solve adds its objective row; nothing else grew.
+        assert b.m.num_vars() == n_vars, shape
+        assert b.m.num_nodes() == n_nodes + 2, shape
+        # The refusal is scoped to the solve: afterwards the same extension applies.
+        ext = cbls.ModelExtension(b.m)
+        ext.append_to_sum(b.row, ext.prod(ext.constant(3.0), b.y))
+        b.m.extend(ext)
+        assert cbls.solve(b.m, time_limit=5.0, seed=1, config=config).feasible
     print("OK")
 
 
@@ -488,6 +570,8 @@ SCENARIOS: dict[str, "Callable[[], None]"] = {
     "pad_state": _scenario_pad_state,
     "result_is_read_only": _scenario_result_is_read_only,
     "keep_alive": _scenario_keep_alive,
+    "append_after_another_extend": _scenario_append_after_another_extend,
+    "extend_during_solve": _scenario_extend_during_solve,
 }
 
 
@@ -634,9 +718,11 @@ def test_an_extended_model_matches_the_same_model_built_whole(seed: int) -> None
     for v in range(n):
         assert grown.constraints_of_var(v) == whole.constraints_of_var(v), v
         assert grown.var(v).value == whole.var(v).value, v
-    # Every incidence the extension reports is one G_v now has.
-    for c, v in res.new_incidences:
-        assert c in grown.constraints_of_var(v)
+    # new_incidences is EXACTLY what G_v gained -- every incidence the base rows
+    # did not already have -- sorted by constraint then variable.
+    base_incidences = {(r, v) for r, row in enumerate(spec.base_rows) for v, _ in row}
+    gained = {(c, v) for v in range(n) for c in grown.constraints_of_var(v)} - base_incidences
+    assert list(res.new_incidences) == sorted(gained)
 
     # extend leaves the node values current, exactly as close() does.
     assert _observe(grown, gobj) == _observe(whole, wobj)
@@ -731,9 +817,70 @@ def test_solve_resumes_from_a_padded_incumbent_after_extending() -> None:
     vm = cbls.ViolationManager(base)
     assert vm.is_feasible()
 
-    second = cbls.solve(base, time_limit=5.0, seed=3, config=config)
+    # skip_init keeps the assignment solve() is handed; without it FJ re-seeds
+    # every scalar and the padded incumbent is never the start.
+    config.skip_init = True
+    reported: list[float] = []
+
+    class Recorder(cbls.SolveCallback):  # type: ignore[misc]
+        def on_progress(self, p: Any) -> None:
+            reported.append(p.objective)
+
+    second = cbls.solve(base, time_limit=5.0, seed=3, config=config, callback=Recorder())
+    assert reported and reported[0] == pytest.approx(8.0)  # started from the incumbent
     assert second.feasible and second.objective == pytest.approx(5.0)
     assert base.var(vid(z)).value == 3.0
+
+
+_UNARY = ["neg", "abs_expr", "sin_expr", "cos_expr", "tan_expr", "exp_expr", "log_expr",
+          "sqrt_expr", "tanh_expr"]  # fmt: skip
+_BINARY = ["prod", "div_expr", "pow_expr", "signpower_expr", "leq", "eq_expr", "geq", "neq",
+           "lt", "gt"]  # fmt: skip
+_LIST = ["at", "count"]
+
+
+def _op_value(name: str, use_ext: bool) -> float:
+    """The value of one op over fixed inputs, built by Model or by ModelExtension."""
+    m = cbls.Model()
+    a, b = m.float_var(0.3, 2), m.float_var(0.2, 3)
+    lst = m.list_var(4)
+    m.var_mut(vid(a)).value = 0.7
+    m.var_mut(vid(b)).value = 1.9
+    m.var_mut(vid(lst)).elements = [3, 0, 2, 1]
+    m.add_constraint(m.leq(a, m.constant(5.0)))
+    m.add_constraint(m.leq(m.count(lst), m.constant(5.0)))  # the list is read
+    builder: Any = m
+    if use_ext:
+        m.close()
+        builder = cbls.ModelExtension(m)
+    args: list[Any]
+    if name in _UNARY:
+        args = [a]
+    elif name in _BINARY:
+        args = [a, b]
+    elif name == "if_then_else":
+        args = [a, b, a]
+    elif name == "at":
+        args = [lst, builder.constant(2.0)]
+    elif name == "count":
+        args = [lst]
+    else:
+        args = [[a, b]]
+    node = int(getattr(builder, name)(*args))
+    builder.add_constraint(builder.leq(node, builder.constant(99.0)))
+    if use_ext:
+        m.extend(builder)
+    else:
+        m.close()
+    return float(m.node_value(node))
+
+
+@pytest.mark.parametrize(
+    "name", _UNARY + _BINARY + _LIST + ["if_then_else", "min_expr", "max_expr", "sum"]
+)
+def test_each_extension_builder_builds_the_same_op_as_the_model(name: str) -> None:
+    got, want = _op_value(name, True), _op_value(name, False)
+    assert got == want
 
 
 if __name__ == "__main__":
