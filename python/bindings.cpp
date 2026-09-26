@@ -333,8 +333,8 @@ auto guarded(R (Model::*method)(A...), const char* what) {
 // A model with no Python object (none is reachable from Python today) is left
 // untied, which is what the plain binding did.
 nb::object expr_object(const Expr& e) {
-    nb::object out = nb::cast(e, nb::rv_policy::move);
     const nb::object owner = nb::find(*e.model);
+    nb::object out = nb::cast(e, nb::rv_policy::copy);
     if (owner.is_valid()) {
         nb::detail::keep_alive(out.ptr(), owner.ptr());
     }
