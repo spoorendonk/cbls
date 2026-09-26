@@ -440,6 +440,29 @@ private:
     void maybe_arm_escape_probe();
     void maybe_diversify(BatchKind kind, bool improved);
     void maybe_emit_periodic_progress();
+    // ---- the host's event stream (#169), no-ops without a tracer ------------
+    // One null test per event, and every one of them is at batch, kick or
+    // inner-solver granularity -- never per GLS iteration. See `Tracer`.
+    void trace_batch_end(BatchKind kind, bool improved) {
+        if (tracer_ != nullptr) {
+            tracer_->batch_end(kind, fj_.iterations(), improved);
+        }
+    }
+    // `objective` is what share() was given, so the two agree about the #100
+    // witness (which is shared, and traced, as +inf rather than as its NaN).
+    // The clock read is why this is a method and not a call site: it happens
+    // only when a tracer is attached. See docs/architecture.md's determinism
+    // note.
+    void trace_new_best(double objective) {
+        if (tracer_ != nullptr) {
+            tracer_->new_best(objective, elapsed());
+        }
+    }
+    void trace_kick(KickKind kind) {
+        if (tracer_ != nullptr) {
+            tracer_->kick(kind);
+        }
+    }
     SearchResult finish();
 
     Model& model_;
@@ -451,6 +474,10 @@ private:
     LNS* lns_;
     int lns_interval_;
     SolveCallback* callback_;
+    // The host's event sink (SearchConfig::tracer), or null. Held rather than
+    // read through config_ at each site so the null test is one load; per
+    // WORKER under a portfolio, which ParallelConfig::tracer_factory arranges.
+    Tracer* tracer_;
     // Non-null only under ParallelSearch. Null here means the search touches
     // nothing shared, which is what keeps a single-threaded solve's trajectory
     // exactly what it was before this parameter existed.
@@ -534,6 +561,7 @@ ViolationLSLoop::ViolationLSLoop(Model& model, ViolationManager& vm, RNG& rng, F
       lns_(lns),
       lns_interval_(lns_interval),
       callback_(callback),
+      tracer_(config.tracer),
       coord_(coord),
       start_(budget.start),
       deadline_(budget.deadline),
@@ -706,6 +734,7 @@ bool ViolationLSLoop::record_best() {
         // -- which is exactly its standing.
         share(std::numeric_limits<double>::infinity());
         emit_progress(/*new_best=*/true);
+        trace_new_best(std::numeric_limits<double>::infinity());
         return true;
     }
     // isfinite(best_feasible_obj) guards the case where the incumbent is the
@@ -733,6 +762,7 @@ bool ViolationLSLoop::record_best() {
     }
     share(obj);
     emit_progress(/*new_best=*/true);
+    trace_new_best(obj);
     return true;
 }
 
@@ -1117,11 +1147,16 @@ void ViolationLSLoop::diversify(bool allow_lns) {
         // re-descends from a point it has already converged on. Whether such a
         // kick should fall through to a perturb is a trajectory change and so a
         // separate measurement, not a tidy-up.
+        trace_kick(KickKind::LNS);
         const bool accepted = lns_->destroy_repair(model_, vm_, rng_, repair_limit);
         ++lns_repairs_;
         lns_repairs_accepted_ += accepted ? 1 : 0;
+        if (tracer_ != nullptr) {
+            tracer_->lns(accepted);
+        }
         fj_.reset_weights();  // LNS mutated state outside GFJ
     } else {
+        trace_kick(KickKind::Perturb);
         fj_.perturb(config_.perturbation_probability);  // self-resyncs
     }
     sample_rho();
@@ -1235,13 +1270,25 @@ bool ViolationLSLoop::polish_and_record(double batch_violation, bool& resync) {
         // "no additional clock read" criterion). The consequence is stated on
         // SearchCounters::inner_solver_seconds: the call COUNT is always right,
         // the seconds read 0.0 on a run with no wall clock.
-        const auto hook_started = has_deadline_ ? std::chrono::steady_clock::now()
+        //
+        // A tracer widens the gate -- `Tracer::hook` carries the duration, so a
+        // host that asked for events gets them on a clockless run too. That is
+        // stated on `Tracer`: an attached tracer costs clock reads, and no
+        // tracer costs none.
+        const bool time_the_hook = has_deadline_ || tracer_ != nullptr;
+        const auto hook_started = time_the_hook ? std::chrono::steady_clock::now()
                                                 : std::chrono::steady_clock::time_point{};
         hook_->solve(model_, vm_, {});  // continuous-objective polish (mutates floats)
-        if (has_deadline_) {
-            counters_.inner_solver_seconds +=
+        if (time_the_hook) {
+            const double hook_seconds =
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - hook_started)
                     .count();
+            if (has_deadline_) {
+                counters_.inner_solver_seconds += hook_seconds;
+            }
+            if (tracer_ != nullptr) {
+                tracer_->hook(hook_seconds);
+            }
         }
         resync = true;
         if (real_feasible()) {  // keep the polish only if it stayed feasible
@@ -1379,6 +1426,11 @@ void ViolationLSLoop::maybe_diversify(BatchKind kind, bool improved) {
         // half of the kick, not the destroy-repair half.
         if (lns_kick_due() || !adopt_from_pool()) {
             diversify();
+        } else {
+            // Adoption REPLACED the kick, so it is the kick this batch took --
+            // the one KickKind a single-threaded run can never report, since
+            // adopt_from_pool returns false at once without a pool.
+            trace_kick(KickKind::Adopt);
         }
     } else if (unproductive_kick && !past_deadline()) {
         // Kick early, but do NOT arm the escape probe and do NOT reset the
@@ -1501,6 +1553,10 @@ SearchResult ViolationLSLoop::run() {
         const double batch_violation = max_real_violation();
         note_closest_approach(batch_violation);
         const bool improved = polish_and_record(batch_violation, resync);
+        // Before apply_batch_outcome, which can end the run: the last batch of a
+        // pure-feasibility solve is a batch like any other and has to be
+        // reported as one.
+        trace_batch_end(kind, improved);
         if (!apply_batch_outcome(improved, resync)) {
             break;
         }

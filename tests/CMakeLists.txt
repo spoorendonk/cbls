@@ -33,6 +33,7 @@ add_executable(cbls_tests
     test_throughput.cpp
     test_stop.cpp
     test_counters.cpp
+    test_tracer.cpp
 )
 target_link_libraries(cbls_tests PRIVATE cbls_lib Catch2::Catch2WithMain)
 target_include_directories(cbls_tests PRIVATE ${CMAKE_SOURCE_DIR} ${json_SOURCE_DIR}/include)

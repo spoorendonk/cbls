@@ -121,7 +121,7 @@ SearchResult ParallelSearch::solve(std::function<Model()> model_factory, double 
     std::function<std::shared_ptr<LNS>()> no_lns;
     int n = effective_threads(pc);
     return solve_portfolio(model_factory, time_limit, seed, {}, no_hook, no_lns, nullptr, n,
-                           effective_pool_capacity(pc.pool_capacity, n), pc.stop);
+                           effective_pool_capacity(pc.pool_capacity, n), pc);
 }
 
 // Full-featured solve
@@ -134,7 +134,7 @@ SearchResult ParallelSearch::solve(
     int n = effective_threads(par_config);
     return solve_portfolio(model_factory, time_limit, seed, config, hook_factory, lns_factory,
                            callback, n, effective_pool_capacity(par_config.pool_capacity, n),
-                           par_config.stop);
+                           par_config);
 }
 
 // --- Master-model overloads: one structure, N workers ---
@@ -380,6 +380,10 @@ struct PortfolioContext {
     /// another -- which a worker's own solve() clock does not, least of all
     /// across restarts.
     std::function<double()> elapsed;
+    /// Builds one Tracer per worker, or empty. See
+    /// ParallelConfig::tracer_factory for why it is per worker rather than one
+    /// instance shared through the progress wrapper.
+    const std::function<std::unique_ptr<Tracer>(int)>& tracer_factory;
     bool has_deadline;
     uint64_t seed;
     int n_threads;
@@ -435,6 +439,40 @@ bool worker_should_stop(const PortfolioContext& ctx) {
     return ctx.coord.stop->load(std::memory_order_relaxed) || ctx.config.stop.requested();
 }
 
+// One tracer for this worker, or none. Called on the worker's own thread, ONCE
+// rather than once per restart: a restarted worker carries on with the same
+// tracer, exactly as it carries on with the same model, hook and LNS. See
+// ParallelConfig::tracer_factory, including why it is per worker.
+std::unique_ptr<Tracer> make_worker_tracer(const PortfolioContext& ctx, int index) {
+    if (!ctx.tracer_factory) {
+        return nullptr;
+    }
+    return ctx.tracer_factory(index);
+}
+
+// The SearchConfig for ONE of a worker's restarts.
+//
+// Two things differ from the portfolio's own config, and both are per restart
+// rather than per worker, which is why this is not folded into worker_config:
+//
+//  - the worker's own tracer, which overrides whatever SearchConfig::tracer
+//    held; a single tracer shared by N workers is the hazard
+//    ParallelConfig::tracer_factory exists to remove;
+//  - skip_init on every restart after the first, so the worker keeps the
+//    assignment it already holds -- its own incumbent, or a peer's if it adopted
+//    one -- instead of throwing the run away and starting from the
+//    closest-to-zero point again.
+SearchConfig restart_config(const PortfolioContext& ctx, Tracer* tracer, int restart) {
+    SearchConfig cfg = ctx.config;
+    if (tracer != nullptr) {
+        cfg.tracer = tracer;
+    }
+    if (restart > 0) {
+        cfg.skip_init = true;
+    }
+    return cfg;
+}
+
 // `failure` is set to the last exception the SEARCH raised, whether or not the
 // worker went on to recover. The caller reports it only when the worker
 // produced nothing at all, so a worker that threw once and then succeeded is
@@ -458,6 +496,8 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index,
     if (ctx.lns_factory) {
         lns = ctx.lns_factory();
     }
+    // Dies with this function, on this worker's thread. See make_worker_tracer.
+    const std::unique_ptr<Tracer> tracer = make_worker_tracer(ctx, index);
 
     // Every worker reports, through the portfolio stream that serializes them
     // and reconciles their clocks; worker 0 additionally carries the heartbeat.
@@ -488,13 +528,7 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index,
         if (ctx.has_deadline && budget <= 0.0) {
             break;
         }
-        SearchConfig cfg = ctx.config;
-        if (restart > 0) {
-            // Keep the assignment this worker already holds -- its own
-            // incumbent, or a peer's if it adopted one -- instead of throwing
-            // the run away and starting from the closest-to-zero point again.
-            cfg.skip_init = true;
-        }
+        const SearchConfig cfg = restart_config(ctx, tracer.get(), restart);
         // Distinct per (worker, restart), and decorrelated ACROSS base seeds --
         // see portfolio_worker_seed.
         const uint64_t run_seed = portfolio_worker_seed(ctx.seed, index, restart);
@@ -576,9 +610,9 @@ SearchResult ParallelSearch::solve_portfolio(
     const SearchConfig& config,
     std::function<std::shared_ptr<InnerSolverHook>(Model&)>& hook_factory,
     std::function<std::shared_ptr<LNS>()>& lns_factory, SolveCallback* callback, int n_threads,
-    int pool_capacity, StopRef host_stop) {
+    int pool_capacity, const ParallelConfig& par_config) {
     // One StopRef for every worker to poll; see CombinedStop.
-    const CombinedStop combined{host_stop, config.stop};
+    const CombinedStop combined{par_config.stop, config.stop};
     SearchConfig worker_config = config;
     worker_config.stop = combined;
 
@@ -629,6 +663,7 @@ SearchResult ParallelSearch::solve_portfolio(
                          coord,
                          remaining,
                          elapsed,
+                         par_config.tracer_factory,
                          has_deadline,
                          seed,
                          n_threads};

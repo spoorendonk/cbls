@@ -37,6 +37,31 @@ struct ParallelConfig {
     /// It is polled from every worker thread and from the restart loop, so the
     /// source has to be safe to read concurrently. `cbls::StopToken` is.
     StopRef stop;
+
+    /// Builds ONE `Tracer` per worker, given that worker's index in
+    /// `[0, n_threads)` (#169). Null -- the default -- means no tracing at all.
+    ///
+    /// Per worker rather than one shared instance, and deliberately: a `Tracer`'s
+    /// events arrive per batch on the reporting worker's own thread, and routing
+    /// N of them through one object would either need a lock inside the host's
+    /// tracer or serialise the portfolio on one -- which is exactly what
+    /// `SolveCallback` pays for an ordered progress stream, and why a tracer is
+    /// NOT that. A host wanting a portfolio-wide view keeps the tracers it built
+    /// and aggregates across them after the solve; the worker index is handed
+    /// over so it can tell them apart.
+    ///
+    /// `unique_ptr`, unlike the hook and LNS factories' `shared_ptr`: those are
+    /// shaped by what nanobind can do with an in-place instance, and a `Tracer`
+    /// is C++-only (see the note on `SearchConfig::tracer`), so the honest
+    /// ownership is the one written here.
+    ///
+    /// Called ONCE per worker, on that worker's thread, before its first solve --
+    /// not once per restart. A worker that restarts keeps its tracer, so a
+    /// tracer's counts span its worker's restarts the way
+    /// `SearchCounters::merge` makes the result's counters span them. The factory
+    /// itself is called from N threads at once, so a factory that touches shared
+    /// state of its own needs its own lock.
+    std::function<std::unique_ptr<Tracer>(int worker)> tracer_factory;
 };
 
 /// The pool capacity a portfolio actually uses: `requested` when positive,
@@ -225,7 +250,7 @@ private:
         const SearchConfig& config,
         std::function<std::shared_ptr<InnerSolverHook>(Model&)>& hook_factory,
         std::function<std::shared_ptr<LNS>()>& lns_factory, SolveCallback* callback, int n_threads,
-        int pool_capacity, StopRef host_stop);
+        int pool_capacity, const ParallelConfig& par_config);
 };
 
 }  // namespace cbls

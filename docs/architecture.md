@@ -2822,6 +2822,40 @@ which is what makes a token raised from another Python thread reach a running
 solve at all; `tests/python/test_stop.py` pins that in a child process, since a
 regression there starves the interpreter rather than failing an assertion.
 
+### Event tracing
+
+`SearchConfig::tracer` is a `Tracer*` (`include/cbls/tracer.h`), null by default.
+It is **not** `SolveCallback` and must not become it: that is a throttled
+progress stream, one row about every second, rewritten by `ParallelSearch` onto
+the portfolio's clock and incumbent so a harness can integrate it as a step
+function. A `Tracer` is an unthrottled event stream delivered on the search's own
+thread with nothing rewritten, and under a portfolio each worker gets **its own**
+(`ParallelConfig::tracer_factory`, called once per worker with that worker's
+index, not once per restart). Routing N workers through one instance would either
+need a lock inside the host's tracer or serialise the portfolio on one — which is
+the price `SolveCallback` pays for an ordered stream, and the reason these are
+two mechanisms rather than one.
+
+Five events: `batch_end(kind, iterations, improved)`, `new_best(objective,
+seconds)`, `kick(KickKind)`, `lns(accepted)`, `hook(seconds)`. **The granularity
+is the batch, the kick or the inner-solver call — never the GLS iteration.** A
+per-iteration hook would put a virtual call on the engine's hottest loop, which
+runs `batch_iterations` (1000 by default) times per batch. `iterations` on
+`batch_end` is the run's cumulative GLS count, so a consumer differences
+consecutive events to get one batch's cost, and the value repeats across
+structural and novelty batches, which charge the GLS counter nothing.
+
+Ordering rules a consumer can rely on: `new_best` arrives before the `batch_end`
+of the batch that produced it, and that `batch_end` carries `improved = true`; a
+`KickKind::LNS` is immediately followed by exactly one `lns()` carrying the
+repair's outcome. `KickKind::Adopt` is portfolio-only — it is the kick a pool
+restart replaces the perturb with, and `adopt_from_pool` returns false at once
+without a pool.
+
+A null tracer changes nothing: `tests/test_tracer.cpp` compares the objective,
+the iteration count, every counter and the **full final assignment** between a
+traced and an untraced run of the same seed.
+
 ### CLI flags
 
 ```
