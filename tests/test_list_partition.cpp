@@ -453,10 +453,11 @@ TEST_CASE("a partition member offers no intra-list insert or remove", "[list][pa
 }
 
 TEST_CASE("the partition generator appends at most one candidate", "[list][partition]") {
-    // Not a budget: every candidate from one call carries an absolute element
-    // vector built against the same assignment, and FirstImprovingSample may
-    // commit several of them in turn -- so a second candidate would reinstate a
-    // list the first one moved an element out of.
+    // Not a budget: every candidate from one call is built against, and applied
+    // to, the same assignment, and FirstImprovingSample may commit several of
+    // them in turn. The batch's per-sample baseline is what makes that safe in
+    // general; one candidate per call is the belt-and-braces choice for an
+    // invariant maintained by construction.
     PartitionModel pm = build(/*universe=*/10, /*routes=*/3, /*min_len=*/0, /*max_len=*/10,
                               ListInit::Empty, /*with_partition=*/true, Cover::Exact);
     RNG init(2);

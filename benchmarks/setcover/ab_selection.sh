@@ -31,11 +31,12 @@
 #
 # The RECORDED null result predates #164, which made a candidate much cheaper --
 # a structured change is now a positional edit rather than a whole element
-# vector, so scoring one costs no allocation and no O(|elements|) copy where it
-# used to cost two of each. That does not make the two arms equal, but it shrinks
-# the term that confounded them, so the A/B is worth re-running before the null
-# is read as "the policy does not help" rather than "the policy helps less than
-# its per-candidate cost". Say which you measured.
+# vector, so scoring one no longer allocates at all and costs one O(|elements|)
+# copy where it used to cost three plus two allocations. That does not make the
+# two arms equal, and no search-throughput A/B has been run at the new cost --
+# but it shrinks the term that confounded them, so re-run this before the null is
+# read as "the policy does not help" rather than "the policy helps less than its
+# per-candidate cost". Say which you measured.
 #
 # Quote the result with the engine commit the script prints.
 set -euo pipefail

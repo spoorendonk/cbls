@@ -235,6 +235,13 @@ bool structure_moved(const Variable& var, const std::vector<int32_t>& before) {
 // closed for the scalar case. `generate_partition_moves` appends at most one
 // candidate and draws nothing on a model with no partition, so the draw sequence
 // of every pre-#164 model is untouched.
+//
+// "All-empty partition" means an `AtMostOnce` one, which is the only kind that
+// can be empty: `partition_insert` is what moves it, and it is `AtMostOnce`-only
+// because under `Exact` an insert would double-serve. An all-empty `Exact`
+// partition is unreachable rather than repairable — both initialisers lay one
+// out complete, which they must, since no `Exact` move can repair an incomplete
+// cover.
 bool apply_random_structural_move(Model& model, int32_t var_id, RNG& rng) {
     std::vector<Move> moves = generate_standard_moves(model.var(var_id), rng);
     const int partition = model.partition_of_list(var_id);
@@ -1153,12 +1160,17 @@ bool FeasibilityJump::kick_past_deadline() {
 }
 
 bool FeasibilityJump::perturb_structural(double probability) {
-    // Cost per structural variable is O(k * (|elements| + universe)) element
-    // copies, k = round(p * |elements|): the generator builds each candidate as a
-    // whole new element vector, and a Set's candidates also scan its universe.
-    // That is superlinear in a single structure's size, which is why the deadline
-    // is checked between moves rather than between variables — see
-    // kick_past_deadline() for the bound that buys and what it costs.
+    // Cost per structural variable is O(k * (|elements| + universe)),
+    // k = round(p * |elements|). Since #164 a candidate is a POSITIONAL EDIT
+    // rather than a whole element vector, so the per-candidate term is the
+    // MEMBERSHIP SCAN the length-changing moves need — a Set's complement, a
+    // variable-length List's absent-element sweep, a partition's unassigned pool
+    // — rather than an O(|elements|) copy. Still superlinear in a single
+    // structure's size, which is why the deadline is checked between moves rather
+    // than between variables — see kick_past_deadline() for the bound that buys
+    // and what it costs. The hundredfold drop that change brought is what forced
+    // tests/test_perturb.cpp's mid-kick deadline case onto a ten-times-longer
+    // List to keep outrunning its budget.
     arm_structural_kick();
     bool changed = false;
     for (int32_t v = 0; v < static_cast<int32_t>(model_.num_vars()); ++v) {

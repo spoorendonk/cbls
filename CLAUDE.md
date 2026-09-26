@@ -826,9 +826,8 @@ wall-clock budget the comparison measures policy quality *minus* representation
 cost, and the guided arm scores more candidates while every candidate then
 copied the whole element vector twice. **#164 landed the position-based move
 representation**: a structured `Move::Change` now carries positional
-`ElementEdit`s, so scoring a candidate costs no allocation and no
-O(|elements|) copy where it used to cost two of each, plus two more to apply and
-roll back. **The setcover A/B has NOT been re-run under it** — the tables in
+`ElementEdit`s, so scoring a candidate no longer allocates at all and costs one
+O(|elements|) copy where it used to cost three plus two allocations. **The setcover A/B has NOT been re-run under it** — the tables in
 `benchmarks/instances/setcover/README.md` and in `docs/architecture.md` still
 describe the old cost, and both say so. Re-running it is the next step, and
 until it has been run no null result licenses a claim in either direction.

@@ -178,17 +178,17 @@ void generate_standard_moves(const Variable& var, RNG& rng, std::vector<Move>& o
 /// The kind is drawn uniformly from the ones the partition admits, so this list
 /// is also the mix; a kind whose guards reject the draw appends nothing.
 ///
-/// EXACTLY ONE CANDIDATE PER CALL IS A CORRECTNESS REQUIREMENT, not a budget.
-/// Every candidate from one `MoveGenerator::generate` carries an ABSOLUTE
-/// element vector built against the same pre-commit assignment, and
-/// `StructuralSelection::FirstImprovingSample` may commit several of them in
-/// turn -- so a second candidate built before the first was committed would
-/// reinstate the list the first one moved an element out of, leaving that
-/// element in two lists with nothing to notice. `move_generator.h` names the two
-/// ways out; this is the first of them (emit one candidate per call), chosen
-/// because it holds under EVERY selection policy rather than only under the two
-/// that commit at most one. The sampling policies call `generate` repeatedly, so
-/// they still get a sample of the size they asked for.
+/// AT MOST ONE CANDIDATE PER CALL, deliberately. Every candidate from one
+/// `MoveGenerator::generate` is built against, and applied to, the same
+/// assignment -- the structural batch puts the sample's baseline back before
+/// each one -- and `StructuralSelection::FirstImprovingSample` may commit
+/// several of them in turn, so committing k and then k+1 leaves only k+1's
+/// change. That baseline is what makes several candidates safe in general
+/// (`move_generator.h` carries the argument); one per call is kept anyway,
+/// because a cover maintained by construction is expensive to get wrong and one
+/// candidate is safe under any batch that applies moves at all rather than under
+/// this one's particular discipline. The sampling policies call `generate`
+/// repeatedly, so they still get a sample of the size they asked for.
 ///
 /// `anchor` is a member list id that every candidate must change, or -1 to draw
 /// both lists. The diversification kick names one, because it asks "move THIS

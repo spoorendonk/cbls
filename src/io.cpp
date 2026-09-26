@@ -374,7 +374,7 @@ json parse_record(const std::string& line, int line_num) {
 }
 
 // Dispatch one already-parsed record to the loader for its kind, recording any
-// name it defines. Every record is exactly one of the five kinds.
+// name it defines. Every record is exactly one of the six kinds.
 void load_record(Model& m, const json& j, NameMap& name_to_handle, int line_num) {
     if (j.contains("var")) {
         std::string name = j["var"].get<std::string>();

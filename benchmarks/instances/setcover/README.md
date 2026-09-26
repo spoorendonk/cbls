@@ -191,11 +191,14 @@ against the default's 3-5.
 
 **The table above predates #164**, which landed the position-based move
 representation: a structured candidate carries positional edits rather than the
-whole element vector, so scoring one no longer costs two heap allocations and
-two O(|elements|) copies, nor two more to apply and roll back. The confounding
-term is much smaller than it was — on the one path where it was measured
-directly, a diversification kick over a 20 000-element `List` went from ~2.3 s to
-0.022 s. So this table still measures "the guided policy did not pay for itself
+whole element vector, so scoring one no longer allocates at all and costs one
+O(|elements|) copy where it used to cost three plus two allocations. The
+confounding term is much smaller than it was. The one place the effect was
+measured directly is the diversification kick, which does not go through the
+structural batch: over a 20 000-element `List` it now runs in 0.022 s against a
+budget the pre-#164 code did not finish inside 0.2 s, i.e. at least tenfold. **No
+search-throughput A/B has been run**, which is exactly why this table has to be
+re-measured rather than reasoned about. So it still measures "the guided policy did not pay for itself
 at 10s on this roster **at the representation it was measured under**", and the
 A/B is worth re-running before it is read as "guiding the choice of element is
 worthless".

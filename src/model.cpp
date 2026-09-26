@@ -581,7 +581,14 @@ int32_t Model::add_list_partition(const std::vector<int32_t>& lists, Cover cover
     int64_t min_total = 0;
     int64_t max_total = 0;
     for (int32_t handle : lists) {
-        // Var handles, as every other public entry point takes them.
+        // Var handles, as every other public entry point takes them. The decode
+        // leaves a non-negative value alone, so a raw var id survives it -- but
+        // that is a property of the encoding rather than a second calling
+        // convention, exactly as `add_var_sequence` says of itself: a
+        // non-negative value is indistinguishable from a NODE id elsewhere in
+        // this API. `.cbls`'s partition record resolves names through a table
+        // that yields node ids, which is where that would actually bite, so the
+        // loader refuses a non-negative handle before it reaches here.
         const int32_t vid = (handle < 0) ? handle_to_var_id(handle) : handle;
         if (vid < 0 || vid >= static_cast<int32_t>(vars_.size())) {
             throw std::invalid_argument("add_list_partition: variable handle out of range");

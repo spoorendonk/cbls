@@ -81,8 +81,11 @@ enum class VarType : uint8_t { Bool, Int, Float, List, Set };
 ```
 
 Each `Variable` stores: `id`, `type`, `value` (scalar), `lb`/`ub` (bounds),
-`elements` (for List/Set), `universe_size`, `min_size`/`max_size` (Set
-cardinality). It owns no edge storage: the nodes that use it are
+`elements` (for List/Set), `universe_size`, `min_size`/`max_size` — which mean
+the same thing for **both** structured types since #164: `elements` is drawn from
+`{0..universe_size-1}` and its size stays within `[min_size, max_size]` — plus,
+for a List, `list_init` and `partitioned`. It owns no edge storage: the nodes
+that use it are
 `Model::dependents(id)`, a slice of one flat CSR array the model holds.
 
 Bool, Int and Float are *scalar* (jumpable by GFJ). List and Set are
@@ -754,12 +757,18 @@ one of them.
 A structured `Move::Change` carries **positional `ElementEdit`s** rather than the
 whole element vector it wants (#164) — a swap of two positions, a reversal, a
 `std::rotate` for a relocated segment, an insert, an erase, an assignment — or a
-`replacement` vector for what positions cannot express. Scoring a candidate
-therefore costs the edit rather than two heap allocations and four O(n) copies.
-Positions are relative, so the structural batch keeps the sample's starting
-assignment and restores it before each candidate: that is one copy per variable
-per sample, and it is what reproduces the pre-#164 rule that committing candidate
-k and then candidate k+1 leaves k's change gone.
+`replacement` vector for what positions cannot express. Positions are relative,
+so the structural batch keeps the sample's starting assignment and puts back,
+before each candidate, exactly what the previous one disturbed — which is what
+reproduces the pre-#164 rule that committing candidate k and then candidate k+1
+leaves k's change gone.
+
+The per-candidate ledger is then one allocation-free `assign` per variable the
+previous candidate changed — one or two for every built-in — against the
+absolute form's **two heap allocations** (the generator's vector, and the copy of
+it into the candidate list) and **three O(n) copies** (into the undo snapshot,
+into the variable, and back out again). Removing the allocations is the part that
+holds for any n on any machine; no search-throughput A/B has been run.
 
 (The scalar move generators `flip`, `int_dec`/`int_inc`/`int_rand` and
 `float_perturb` also live here and are used by LNS randomization paths.
@@ -806,7 +815,10 @@ Not routed through the generator set: the diversification kick's structural half
 of the search, so changing what it draws shifts every later draw on every model
 with a structured variable — and it wants an arbitrary legal move rather than a
 good one, which is the opposite of what a cost-aware generator gives it. #164
-owns that change.
+did not change that and left it with #165. What #164 added is a second SOURCE of
+moves rather than a second source of policy: a List in a `ListPartition` also
+offers that partition's inter-list moves, anchored on the variable being kicked,
+which is what lets a kick move an all-empty `AtMostOnce` partition at all.
 
 ### Selection policies and neighbour lists
 
@@ -876,11 +888,10 @@ default configuration — which remains what a user gets. The reading to avoid i
 measures policy quality *minus* representation cost, and the guided arm scores
 more candidates per pass. **That A/B predates #164**, which landed the
 position-based move representation — a structured candidate is now a positional
-`ElementEdit` rather than a whole element vector, so scoring one costs no
-allocation and no O(|elements|) copy where it used to cost two of each, plus two
-more to apply and roll back. The confounding term is much smaller than it was,
-so the A/B is worth re-running before the null is read as a verdict on the
-policy.
+`ElementEdit` rather than a whole element vector, so scoring one no longer
+allocates at all and costs one O(|elements|) copy where it used to cost three
+plus two allocations. The confounding term is much smaller than it was, so the
+A/B is worth re-running before the null is read as a verdict on the policy.
 
 That is invisible on a mixed model — where List/Set variables sit alongside
 scalars that GFJ drives — but it is the whole search on a model whose
@@ -891,7 +902,7 @@ only variables are structured. There, everything else is inert:
 | FJ batch | no jumpable variable: `apply_jump` fails every iteration and the batch degenerates into a pure GLS weight pump |
 | Novelty Jump | compound moves are chains of scalar jumps — nothing to chain |
 | `perturb` kick | reaches them since #111 (each List/Set variable gets its own pass of `clamp(round(p*|elements|), 1, |elements|)` random structural moves), but the moves are the same unguided ones — see [Diversification](#diversification) |
-| LNS | destroys the structured variables wholesale, i.e. a random restart, then repairs with an FJ that has nothing to jump |
+| LNS | destroys the structured variables wholesale, i.e. a random restart, then repairs with an FJ that has nothing to jump. On a `ListPartition` it is weaker still: its destroy step uses `ListOrder::Perturb`, which shuffles a list in place, so it can neither gain nor lose an element — which is what keeps the cover safe, and also means LNS diversifies the ORDER within each list and never the membership across them |
 
 so progress is slow once the sampled neighbourhood stops improving — slow, not
 finished: 6x the budget still buys ~18% on these instances (scp41 `set`, best of
@@ -1003,7 +1014,7 @@ Exactly one path initialises each variable, split by type:
 | Variable type | Initialised by | To what |
 |---------------|----------------|---------|
 | Bool, Int, Float | `FeasibilityJump::begin(set_initial_x)` | the domain value closest to 0 (the published Feasibility Jump start) |
-| List, Set | `initialize_structured_random` | a random permutation / random subset |
+| List, Set | `initialize_structured_random` | a Set: a random subset of an admissible size. A List: whatever its `ListInit` says — a random permutation, empty, or a random subset of a random admissible length. A member of a `ListPartition` is laid out with its whole partition by `randomize_list_partition` instead, which under `Cover::Exact` ignores the per-list `ListInit` because the cover has to hold at the first assignment |
 
 **The scalar starting point does not depend on the seed, and this is deliberate.**
 Feasibility Jump specifies the closest-to-zero start, and the priority-1
@@ -1742,9 +1753,12 @@ Its effect there is measured, not assumed — see
 
 The structural pass applies `k = max(1, round(p * |elements|))` random moves to
 **each** List/Set variable, drawn from the same typed generators the [structural
-batch](#structural-batch) uses (`generate_standard_moves`), so every move is
-legal by construction: a List stays a permutation of its elements, a Set stays
-inside `min_size`/`max_size`. Candidates that happen to be no-ops (a relocate to
+batch](#structural-batch) uses (`generate_standard_moves`) plus, for a member of
+a `ListPartition`, that partition's inter-list moves anchored on this variable
+(`generate_partition_moves` — which is what lets a kick move an all-empty
+`AtMostOnce` partition at all, #164). Every move is legal by construction: a
+List keeps its elements distinct and its length inside `[min_size, max_size]`, a
+partition member keeps its cover, and a Set stays inside `min_size`/`max_size`. Candidates that happen to be no-ops (a relocate to
 the adjacent position) are filtered out before the draw, and a variable counts as
 moved only if its elements *net* changed — a run that adds an element and removes
 it again has to fall through to the guarantee below like any other no-op.
@@ -2449,7 +2463,12 @@ an empty box.
 **Files:** `include/cbls/io.h`, `src/io.cpp`
 
 Models are serialized as `.cbls` files — one JSON object per line (JSONL),
-describing a variable, expression node, constraint, or objective:
+describing a variable, a list partition, an expression node, a constraint, or an
+objective. A List variable carries `n` (its universe) alone when it is a
+permutation — the bytes every pre-#164 file holds — and additionally `min_len`,
+`max_len` and `init` (`identity` / `empty` / `random`) when it is not. A
+partition is `{"partition": [<list names>], "cover": "exact" | "at_most_once"}`,
+written after the variables and before the nodes so its members always resolve:
 
 ```jsonl
 {"var":"x","type":"int","lb":0,"ub":10}
