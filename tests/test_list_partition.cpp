@@ -594,3 +594,39 @@ TEST_CASE("granular guidance survives a universe wider than the list", "[list][p
         REQUIRE(after[9] != var.elements[9]);
     }
 }
+
+TEST_CASE("a frozen model's replicas keep the partition and its cover", "[list][partition]") {
+    // A portfolio worker gets a COPY of the model, which shares the frozen
+    // `ModelStructure` (#157) and owns its own variables. The partition lives in
+    // the shared half and `Variable::partitioned` in the per-worker half, so
+    // this is the one place the two could drift apart.
+    Model m;
+    std::vector<int32_t> handles;
+    handles.reserve(3);
+    for (int r = 0; r < 3; ++r) {
+        handles.push_back(m.list_var(12, 0, 12, ListInit::Empty, "r" + std::to_string(r)));
+    }
+    m.add_list_partition(handles, Cover::Exact);
+    std::vector<int32_t> terms;
+    terms.reserve(handles.size());
+    for (int32_t h : handles) {
+        terms.push_back(m.pair_lambda_sum(h, pair_weight));
+        m.add_constraint(m.leq(m.count(h), m.constant(5)));
+    }
+    m.minimize(m.sum(terms));
+    m.close();
+    m.freeze();
+    REQUIRE(m.is_frozen());
+
+    Model replica = m;
+    REQUIRE(replica.is_frozen());
+    REQUIRE(replica.list_partitions().size() == 1);
+    REQUIRE(replica.partition_of_list(handle_to_var_id(handles[1])) == 0);
+    REQUIRE(replica.var(handle_to_var_id(handles[1])).partitioned);
+    REQUIRE(default_move_generators(replica, nullptr).size() == 4);
+
+    const SearchResult r = solve_deterministic(replica, /*max_iterations=*/20000);
+    REQUIRE(r.feasible);
+    replica.restore_state(r.best_state);
+    require_cover(replica, replica.list_partitions()[0]);
+}
