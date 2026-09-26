@@ -281,8 +281,9 @@ allocation. Opting in costs ~6% per structural candidate and no allocation.
 commits: `7c94461` (base, the parent of #172), `f9d4514` (#172 with its
 cold-review fix) and `b3e5a77` (main at the time, carrying #167, #168 and #173 on
 top). One Release build per commit (`CBLS_SANITIZE` empty), all built before any
-run. Machine: 12-thread AMD Ryzen 5 5600H, `powersave` governor, load average
-0.6-1.3 across both runs with no other job running (top: every other process
+run. Machine: 12-thread AMD Ryzen 5 5600H, `powersave` governor, 1-minute load
+average 0.60-0.90 across both runs (1.13-1.30 during the bisection below) with no
+other job running (top: every other process
 under 6% of one core; a constant ~16% iowait from a process in D state, no CPU).
 Harness, not committed: a scratch program over the library that builds each
 model below, sets a fixed starting assignment, and calls `StructuralBatch::run`
@@ -299,22 +300,32 @@ interleaved in rotating order, never concurrent. Medians, run 1 / run 2:
 | re-reading custom route, not opted in | 622.9 / 623.5 | 630.4 / 630.8 | 631.9 / 631.7 | 2.000 |
 | the same invariant, opted in | — | 670.0 / 670.0 | 668.1 / 668.4 | 2.000 |
 
-The within-side spread was tight -- in every cell the fastest repeat is within
-0.5% of the median, and no more than one or two repeats of a cell ran slower, by
-up to ~4% -- so differences of ~1% are resolvable here, and the two runs agree to
-within 1 ns on every median. Read against that:
+The within-side spread is tight at the fast end -- in every cell the fastest
+repeat is within 0.4% of the median -- with a slow tail of at most three repeats
+per cell more than 1% slow, the worst +7.2% (`f9d4514`, `pair_lambda_sum`, run
+1). Medians are robust to that tail, and the two runs agree to within 1 ns on
+every median. But code placement alone moves a row by 1.5-5% here (below), so a
+~1% difference between two binaries is not attributable to source changes
+without isolating them. Read against that:
 
 - **#172, models without a custom node: no regression.** Both rows are *faster*
-  on `f9d4514` (-1.5%, -1.7%), in both runs. That path is the pre-#172 one
-  apart from one predictable `bool` per step, so the gain is code placement,
-  not something #172 did.
-- **#172, a custom node that does not opt in: a measured +1.2% regression**
-  (+7.5 ns/candidate, 622.9 → 630.4; run 2 623.5 → 630.8; the ranges do not
-  overlap). Allocations are identical. This row's path is the one #172 did
-  change without opting in: every custom `delta` now builds an
-  `InvariantInputs` carrying the `changed` span and the journal pointer, behind
-  a branch on the stale-probe flag. The cost is per custom-node delta, fixed,
-  and does not grow with the List.
+  on `f9d4514` (-1.5%, -1.8%), in both runs. That path is the pre-#172 one
+  apart from a few predictable `journaling_` branches per candidate and one
+  `wants_journal` scan per sweep, so the gain is code placement, not something
+  #172 did.
+- **#172, a custom node that does not opt in: +1.2% measured, not isolated**
+  (+7.5 ns/candidate, 622.9 → 630.4; run 2 623.5 → 630.8; every base repeat is
+  faster than every #172 repeat in run 1, seven of nine in run 2). Allocations
+  are identical. This row's path is the one #172 did change without opting in:
+  every custom `delta` now builds an `InvariantInputs` carrying the `changed`
+  span and the journal pointer, behind a branch on the stale-probe flag, and
+  `StructuralBatch::run` makes one `wants_positional_edits()` virtual call per
+  custom node per sweep. That is the likely cause, but +1.2% is smaller than
+  the placement shifts the other rows show, and this row itself drifts +0.65%
+  between `f9d4514` and `2768314` with nothing on its path changed -- so read it
+  as an upper bound on #172's cost. That it is fixed per custom-node delta and
+  does not grow with the List is argued from the code; only a 200-element List
+  was measured.
 - **Opting in** costs +6.3% over not opting in (630.4 → 670.0) and zero
   allocations — the journal's buffers are reused.
 - **`b3e5a77` against `f9d4514`**: the Set and custom rows are unchanged within
@@ -323,16 +334,17 @@ within 1 ns on every median. Read against that:
   #167) 1021.0, `99551c9` (end of #168) 1079.9, `3ca0fb7` (#173) 1075.7. So it
   arrives with #168 — and #168 changed none of the code that row executes
   (`dag.cpp`, `dag_ops.cpp` and `StructuralBatch`'s logic are untouched;
-  `structural_batch.cpp` gained a comment), and reverting its one edit to a
-  structural-path file, the pinned-Bool guard in `moves.cpp`, leaves the row at
-  ~1071. Attributed to code placement in the static library, not to a cost
-  #168 added; not proven beyond that.
+  `structural_batch.cpp` gained a comment; its one `moves.cpp` edit, the
+  pinned-Bool guard, is in `bool_moves`, which a List-only model never reaches
+  -- an unlogged spot check with it reverted stayed at ~1071). Attributed to
+  code placement in the static library, not to a cost #168 added; not proven
+  beyond that.
 
 **Verdict against #172's criterion**: no allocation is added per candidate on
 any row, opted in or not. On time, a model with no custom node does not regress;
-a model whose custom node does not opt in pays a fixed ~7.5 ns (1.2%) per
-structural candidate. Final elements and the constraint body hashed identically
-on all three commits for every row. (The earlier, loaded run of this A/B also
+a model whose custom node does not opt in measured at most ~7.5 ns (1.2%) per
+structural candidate, within the code-placement spread seen here. Final elements
+and the constraint body hashed identically on every commit that runs each row. (The earlier, loaded run of this A/B also
 found identical `cbls::solve()` digests at seed 12345, `max_iterations = 4000`,
 for all four models; not repeated here.) Scalar inputs never had the gap:
 `changed` is exactly the inputs that moved, and an O(1) delta over them is what

@@ -1508,7 +1508,7 @@ private:
 // batches that kicked. A retirement pins ub to lb inside the step after a
 // batch's batch_end, so it is first visible at the NEXT batch_end. Optionally
 // raises `stop` at the end of batch `stop_at`, the instant before that batch's
-// pricing step, as the budget test above does.
+// pricing step, as "no pricing call starts once the budget is gone, exactly" does.
 class RetireWatch : public Tracer {
 public:
     RetireWatch(const Model& model, StopToken* stop, int64_t stop_at)
@@ -1578,7 +1578,7 @@ TEST_CASE("an AgeOnly step counts as the batch's one pricing step", "[column]") 
     REQUIRE(watch.retired_after == 1 + kRetireAge);
 }
 
-TEST_CASE("an AgeOnly step starts no more once the budget is gone than a call does", "[column]") {
+TEST_CASE("no AgeOnly step starts once the budget is gone, exactly", "[column]") {
     // The AgeOnly form of "no pricing call starts once the budget is gone,
     // exactly", for both of pricing_step()'s budget tests. The column is added at
     // batch 1 and would retire in batch kRetiringBatch's step. Ending the run at
@@ -1625,6 +1625,7 @@ TEST_CASE("an AgeOnly step starts no more once the budget is gone than a call do
         REQUIRE(r->result.termination == TerminationReason::Cancelled);
         REQUIRE(r->result.counters.batches == kRetiringBatch);
         REQUIRE(*r->calls == std::vector<int64_t>{1});
+        REQUIRE(r->result.counters.columns_added == 1);
         REQUIRE(r->result.counters.columns_retired == 0);
         REQUIRE(r->model.var(RetireWatch::kColumn).ub == 1.0);
     }
@@ -1636,6 +1637,7 @@ TEST_CASE("an AgeOnly step starts no more once the budget is gone than a call do
         REQUIRE(r->result.termination == TerminationReason::IterationLimit);
         REQUIRE(r->result.counters.batches == kRetiringBatch);
         REQUIRE(*r->calls == std::vector<int64_t>{1});
+        REQUIRE(r->result.counters.columns_added == 1);
         REQUIRE(r->result.counters.columns_retired == 0);
         REQUIRE(r->model.var(RetireWatch::kColumn).ub == 1.0);
     }
