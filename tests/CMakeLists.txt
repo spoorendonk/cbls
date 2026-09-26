@@ -57,7 +57,7 @@ include(Catch)
 #
 # Measured at Release: the 6 [slow]-tagged tests account for ~46s of the suite's
 # aggregate (summed per-test) time; with `-j$(nproc)` the full run is ~25s of
-# wall clock. The remaining 557 (555 discovered, plus the
+# wall clock. The remaining 599 (597 discovered, plus the
 # two hand-registered tests that carry no slow label --
 # timing_structural_batch_deadline and hang_guard_iteration_only_portfolio)
 # finish in ~12s with `-j`, which is what pre-commit runs via `ctest -LE slow`.
@@ -71,8 +71,8 @@ include(Catch)
 # the tag -- "measure both ways before tagging" applies to KEEPING a tag as
 # much as to adding one.
 #
-# The roster is therefore 566 ctest tests: 561 discovered here plus the 5
-# hand-registered ones below. That is one more than the 565 TEST_CASEs in
+# The roster is therefore 608 ctest tests: 603 discovered here plus the 5
+# hand-registered ones below. That is one more than the 607 TEST_CASEs in
 # tests/*.cpp, because hang_guard_iteration_only_portfolio is both discovered
 # and hand-registered -- see its note below. `ctest -N -L slow` reports 9, not 6 --
 # the three #125 throughput floors carry the slow LABEL without the Catch2
