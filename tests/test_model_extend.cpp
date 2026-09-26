@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
+#include <cmath>
 #include <map>
 #include <random>
 #include <set>
@@ -490,6 +491,14 @@ TEST_CASE("repeated appends compact the child array instead of leaking holes", "
     full_evaluate(m);
     REQUIRE(m.node_value(s) == 4.0);
 
+    // Relocation leaves the grown row's old slice behind as a hole, and compaction
+    // is what stops those accumulating. `child_ref_holes()` is the counter, so the
+    // firing is observable rather than merely inferred from the arithmetic: holes
+    // only ever GROW between extends, so a drop is a compaction and nothing else.
+    REQUIRE(m.child_ref_holes() == 0);
+    bool compacted = false;
+    size_t holes_before = 0;
+
     for (int round = 0; round < 12; ++round) {
         ModelExtension ext(m);
         const int32_t h = ext.float_var(0.0, 1.0);
@@ -497,6 +506,10 @@ TEST_CASE("repeated appends compact the child array instead of leaking holes", "
         ext.append_to_sum(s, ext.prod(ext.constant(1.0), h));
         const ExtensionResult res = m.extend(ext);
         REQUIRE(res.num_new_vars == 1);
+        if (m.child_ref_holes() < holes_before) {
+            compacted = true;
+        }
+        holes_before = m.child_ref_holes();
         require_valid_topo_order(m);
         REQUIRE(m.node_value(s) == 4.0 + static_cast<double>(round + 1));
         REQUIRE(m.children(m.node(s)).size() == static_cast<size_t>(5 + round));
@@ -507,6 +520,7 @@ TEST_CASE("repeated appends compact the child array instead of leaking holes", "
             REQUIRE(g[0] == 0);
         }
     }
+    REQUIRE(compacted);
 }
 
 TEST_CASE("extend refuses what it cannot represent", "[extend]") {
@@ -992,5 +1006,150 @@ TEST_CASE("on_extended refuses a result whose row indices name nothing", "[exten
     SECTION("a result that does describe the model is accepted") {
         REQUIRE_NOTHROW(vm.on_extended(base));
         REQUIRE_NOTHROW(fj.on_extended(base));
+    }
+}
+
+TEST_CASE("appending a bare variable to a Sum merges into its dependents", "[extend]") {
+    // The one way a variable gains a dependent with a LOWER node id than one it
+    // already has, so the one shape where `dependent_ids` must MERGE rather than
+    // append. The property test never reaches it: every term it appends is a fresh
+    // `prod` whose id is above everything, and for a variable the merge is only
+    // ever into G_v. Appending a variable handle straight into the row is also the
+    // cheapest form of the column-generation append -- a unit coefficient needs no
+    // product node at all -- and it adds no nodes and no variables, so it exercises
+    // an extension whose only effect is on the CSR arrays.
+    Model m;
+    const int32_t x = m.float_var(0.0, 5.0);
+    const int32_t y = m.float_var(0.0, 5.0);
+    const int32_t row0 = m.sum({m.prod(m.constant(1.0), y)});
+    m.add_constraint(m.leq(row0, m.constant(100.0)));
+    // A HIGHER-id node reading x, made after the Sum, so x's dependents already
+    // hold an id above the one the append will add.
+    const int32_t high = m.prod(m.constant(2.0), x);
+    m.add_constraint(m.leq(high, m.constant(100.0)));
+    m.close();
+    m.var_mut(0).value = 3.0;  // x
+    m.var_mut(1).value = 4.0;  // y
+    full_evaluate(m);
+    REQUIRE(m.node_value(row0) == 4.0);
+    REQUIRE(m.dependents(0).size() == 1);
+    REQUIRE(m.dependents(0)[0] == high);
+    REQUIRE(high > row0);
+
+    ModelExtension ext(m);
+    ext.append_to_sum(row0, x);  // a bare variable handle, no term node
+    const ExtensionResult res = m.extend(ext);
+
+    REQUIRE(res.num_new_nodes == 0);
+    REQUIRE(res.num_new_vars == 0);
+    REQUIRE(res.num_new_constraints == 0);
+    REQUIRE(res.touched_constraints == std::vector<int32_t>{0});
+    REQUIRE_FALSE(res.topo_order_rebuilt);
+    require_valid_topo_order(m);
+
+    // Merged, not appended: the new dependent sorts in front of the one x had.
+    const ConstSpan<int32_t> deps = m.dependents(0);
+    REQUIRE(deps.size() == 2);
+    REQUIRE(deps[0] == row0);
+    REQUIRE(deps[1] == high);
+    // And the same shape in G_v: x was in row 1 only, and gains row 0 below it.
+    const ConstSpan<int32_t> g = m.constraints_of_var(0);
+    REQUIRE(g.size() == 2);
+    REQUIRE(g[0] == 0);
+    REQUIRE(g[1] == 1);
+
+    REQUIRE(m.node_value(row0) == 7.0);  // y + x
+    // The row is now dirtied by an ordinary move on x, which is what the merged
+    // dependents entry buys.
+    m.var_mut(0).value = 1.0;
+    delta_evaluate(m, {0});
+    REQUIRE(m.node_value(row0) == 5.0);
+    REQUIRE(m.node_value(high) == 2.0);
+}
+
+TEST_CASE("an extension can read an existing List or Set variable", "[extend]") {
+    // `at` and `count` over a structured variable that already exists are the two
+    // builders `ModelExtension` deliberately offers (a NEW List or Set is refused,
+    // because its starting assignment is laid out above this layer). Untested until
+    // now: the class comment promises them.
+    Model m;
+    const int32_t lv = m.list_var(5);
+    const int32_t sv = m.set_var(10, 0, 10);
+    const int32_t z = m.float_var(0.0, 10.0);
+    m.add_constraint(m.leq(m.prod(m.constant(1.0), z), m.constant(100.0)));
+    m.close();
+    const int32_t lv_id = -(lv + 1);
+    const int32_t sv_id = -(sv + 1);
+    m.var_mut(lv_id).elements = {4, 3, 2, 1, 0};
+    m.var_mut(sv_id).elements = {1, 3, 5, 7};
+    m.var_mut(-(z + 1)).value = 2.0;
+    full_evaluate(m);
+
+    ModelExtension ext(m);
+    const int32_t second = ext.at(lv, ext.constant(1.0));
+    const int32_t size = ext.count(sv);
+    ext.add_constraint(ext.leq(second, ext.constant(3.0)));
+    ext.add_constraint(ext.leq(size, ext.constant(2.0)));
+    const ExtensionResult res = m.extend(ext);
+
+    REQUIRE(res.num_new_constraints == 2);
+    require_valid_topo_order(m);
+    REQUIRE(m.node_value(second) == 3.0);  // elements[1]
+    REQUIRE(m.node_value(size) == 4.0);
+    // The structured variables entered G_v and the new nodes entered their
+    // dependents, which is what makes a structural move dirty the new rows.
+    REQUIRE(m.constraints_of_var(lv_id).size() == 1);
+    REQUIRE(m.constraints_of_var(lv_id)[0] == 1);
+    REQUIRE(m.constraints_of_var(sv_id).size() == 1);
+    REQUIRE(m.constraints_of_var(sv_id)[0] == 2);
+    REQUIRE(m.dependents(lv_id).size() == 1);
+    REQUIRE(m.dependents(lv_id)[0] == second);
+
+    m.var_mut(lv_id).elements = {0, 1, 2, 3, 4};
+    m.var_mut(sv_id).elements = {2, 4};
+    delta_evaluate(m, {lv_id, sv_id});
+    REQUIRE(m.node_value(second) == 1.0);
+    REQUIRE(m.node_value(size) == 2.0);
+}
+
+TEST_CASE("a ViolationManager out of step with a grown model refuses to read", "[extend]") {
+    // The window between `Model::extend` returning and `on_extended`: the model has
+    // more rows than the manager has weights, and every read indexes both by
+    // constraint index -- `bump_weights` WRITES. It is the window #168's in-loop
+    // hook will sit in, so it throws rather than overreading the heap.
+    Model m;
+    const int32_t x = m.bool_var();
+    m.add_constraint(m.leq(m.prod(m.constant(1.0), x), m.constant(0.0)));
+    m.close();
+    full_evaluate(m);
+    ViolationManager vm(m);
+    REQUIRE(vm.total_violation() == 0.0);
+
+    ModelExtension ext(m);
+    const int32_t c = ext.bool_var();
+    ext.add_constraint(ext.geq(ext.prod(ext.constant(1.0), c), ext.constant(1.0)));
+    const ExtensionResult res = m.extend(ext);
+
+    std::vector<double> snapshot;
+    REQUIRE_THROWS_AS(vm.total_violation(), std::logic_error);
+    REQUIRE_THROWS_AS(vm.augmented_objective(), std::logic_error);
+    REQUIRE_THROWS_AS(vm.snapshot_violations(snapshot), std::logic_error);
+    REQUIRE_THROWS_AS(vm.bump_weights(), std::logic_error);
+    REQUIRE_THROWS_AS(vm.weighted_violation_delta(0, 1.0), std::logic_error);
+
+    SECTION("a weight that is not a weight is refused too") {
+        REQUIRE_THROWS_AS(vm.on_extended(res, std::nan("")), std::invalid_argument);
+        REQUIRE_THROWS_AS(vm.on_extended(res, -1.0), std::invalid_argument);
+        // Zero is legitimate: active() is weight > 0, so the row starts masked --
+        // which is how run()'s linear-submodel phase masks the nonlinear rows.
+        vm.on_extended(res, 0.0);
+        REQUIRE(vm.weights.size() == 2);
+        REQUIRE(vm.weights[1] == 0.0);
+    }
+    SECTION("and reads again once it has grown") {
+        vm.on_extended(res);
+        REQUIRE(vm.weights.size() == 2);
+        REQUIRE(vm.total_violation() == 1.0);  // the new row is violated at c = 0
+        REQUIRE_NOTHROW(vm.bump_weights());
     }
 }

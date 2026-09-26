@@ -769,6 +769,14 @@ void FeasibilityJump::on_extended(const ExtensionResult& ext) {
             enqueue(v);
         }
     }
+    // The progress trackers are deliberately left alone. `batch()` clears
+    // `batch_stuck_` on entry and `gls_loop` zeroes `unproductive_streak_` before
+    // it takes the batch's reference minimum, so re-grounding them here would be a
+    // no-op that reads as a policy; `escape_probe_` is the CALLER's arming (see
+    // set_escape_probe) and clearing it would silently override a decision
+    // solve() made on its own stagnation count. What does have to be re-grounded
+    // is `unweighted_violation_`, above, because the accumulator is a number and
+    // not a flag.
 }
 
 // `vars_of_constraint_` is the transpose of G_v restricted to jumpable variables,
