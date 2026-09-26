@@ -1,5 +1,6 @@
 #include <cbls/cbls.h>
 #include <cbls/model_extension.h>
+#include <memory>
 #include <mutex>
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -108,6 +109,27 @@ constexpr const char* kParallelSolveDoc =
     "module-level, single-threaded cbls.solve differs: there a raising callback\n"
     "ends the search and the exception propagates at once.)";
 
+constexpr const char* kSolveMasterDoc =
+    "Run the parallel search on ONE model and return the best result.\n"
+    "\n"
+    "The C++ `Model& master` entry point, which the factory forms cannot reach.\n"
+    "`model` is FROZEN on this thread first and each worker searches a copy that\n"
+    "shares its immutable structure (#157), so the model comes back frozen: build\n"
+    "any further structure before calling this. hook_factory, lns_factory,\n"
+    "callback and par_config behave as in solve_parallel (see there, including\n"
+    "the GIL release and the exception contract).\n"
+    "\n"
+    "This is the only ParallelSearch entry point that accepts a\n"
+    "SearchConfig.column_generator (solve_parallel raises ValueError on one).\n"
+    "With one, each worker searches a PRIVATE deep copy that it grows, prices\n"
+    "with its own clone() of the generator, shares no incumbents with its peers\n"
+    "and runs one solve without restarting; the best worker's grown model is\n"
+    "moved into `model`, which comes back open, closed and grown. Its clone() is\n"
+    "called from every worker thread in turn, each holding the GIL.\n"
+    "\n"
+    "While this runs, structural writes to `model` from Python -- builders,\n"
+    "extend, ModelExtension -- raise RuntimeError, as under cbls.solve.";
+
 // A Python on_progress that raises leaves this override as an nb::python_error,
 // which owns a strong reference to the Python exception object. ParallelSearch
 // parks such exceptions in std::exception_ptr slots (src/pool.cpp,
@@ -206,19 +228,6 @@ private:
     std::unordered_multiset<const Model*> models_;
 };
 
-// Model.extend as bound: refused while a bound solve runs on the model. A free
-// function rather than a lambda in the module body, whose cognitive-complexity
-// score counts every lambda's branches as its own.
-ExtensionResult extend_unless_solving(Model& self, const ModelExtension& ext) {
-    if (SolvingModels::instance().contains(&self)) {
-        throw std::logic_error(
-            "Model.extend: cbls.solve is running on this model (from a SolveCallback or "
-            "another thread). extend is a between-solves operation: the running search's "
-            "tables cannot grow with it");
-    }
-    return self.extend(ext);
-}
-
 // What `Model.var()` / `Model.var_mut()` return: a (model, id) pair resolved
 // through the model on EVERY attribute access, never a pointer into `vars_`.
 //
@@ -261,6 +270,342 @@ public:
 private:
     const Model* model_;
 };
+
+// ---------------------------------------------------------------------------
+// Structural writes from Python while a bound solve runs on the model.
+//
+// #167 refused Model.extend here. The same hazard reaches every OTHER structural
+// write, and the objective row is the one nobody sees coming: the first solve of
+// a model with an objective adds that row (a builder call on the model) after the
+// GIL is released, so a second Python thread building a ModelExtension against the
+// same model -- whose constructor and append_to_sum read the node array and the
+// structure version -- or calling any Model builder, raced a write with no lock.
+// A ColumnGenerator makes it worse: the engine's own extend (#168) then grows the
+// model mid-search, as often as every batch.
+//
+// So every structural write Python can reach consults the same registry: the
+// Model builders and close/freeze/extend, the Expr operators and free functions
+// (each of which calls a Model builder), and ModelExtension construction and
+// every ModelExtension builder. Each check runs holding the GIL, and a bound
+// solve registers holding the GIL before releasing it, so a check and a
+// registration cannot interleave. The engine's own writes -- the objective row,
+// a pricing extend -- are C++ calls that never pass through here, so they are
+// unaffected, and the ONE extension a running solve accepts from Python is the
+// one it lends to ColumnGenerator.price (see ExtensionHandle).
+//
+// Value writes (Variable.value, restore_state) are NOT structural and are not
+// refused: they are the data race the `solve` docstring already warns about.
+// ---------------------------------------------------------------------------
+
+void refuse_if_solving(const Model& m, const char* what) {
+    if (SolvingModels::instance().contains(&m)) {
+        throw std::logic_error(
+            std::string(what) +
+            ": cbls.solve is running on this model (from a SolveCallback, a "
+            "ColumnGenerator or another thread). Structural changes are between-solves "
+            "operations: the running search reads the structure without a lock");
+    }
+}
+
+// A Model builder bound through the registry check. `A...` is spelled out
+// rather than deduced from a forwarding pack so that nanobind sees the member's
+// own parameter types (and its nb::arg names line up with them).
+template <typename R, typename... A>
+auto guarded(R (Model::*method)(A...), const char* what) {
+    return [method, what](Model& self, A... args) -> R {
+        refuse_if_solving(self, what);
+        return (self.*method)(std::forward<A>(args)...);
+    };
+}
+
+// An Expr as a Python object that keeps its model alive.
+//
+// `Expr` carries a raw `Model*`, and nothing tied the Python Model's lifetime to
+// it: `x = cbls.Model().Float(0, 1)` dropped the model at the end of the
+// statement and left `x.model`, and every operator on `x`, reading freed heap.
+// The patient is the MODEL's own Python object, found by pointer, rather than
+// the operand Expr a `keep_alive<0, 1>` policy would name: that would chain every
+// intermediate of `s = s + x` in a loop to the next, keeping the whole chain
+// alive for as long as the last one. Here each Expr pins the model and nothing
+// else. `nb::detail::keep_alive` is the function the public keep_alive call
+// policy is implemented with; the policy itself can only name call arguments.
+//
+// A model with no Python object (none is reachable from Python today) is left
+// untied, which is what the plain binding did.
+nb::object expr_object(const Expr& e) {
+    nb::object out = nb::cast(e, nb::rv_policy::move);
+    const nb::object owner = nb::find(*e.model);
+    if (owner.is_valid()) {
+        nb::detail::keep_alive(out.ptr(), owner.ptr());
+    }
+    return out;
+}
+
+template <typename... A>
+auto guarded_expr(Expr (Model::*method)(A...), const char* what) {
+    return [method, what](Model& self, A... args) -> nb::object {
+        refuse_if_solving(self, what);
+        return expr_object((self.*method)(std::forward<A>(args)...));
+    };
+}
+
+// Build an Expr through `anchor`'s model: refused while it is being solved, and
+// tied to it on the way out.
+template <typename F>
+nb::object build_expr(const Expr& anchor, const char* what, F&& build) {
+    refuse_if_solving(*anchor.model, what);
+    return expr_object(std::forward<F>(build)());
+}
+
+// The same for an Expr list. An empty list reaches cbls::min/max, which reject it.
+template <typename F>
+nb::object build_expr_list(const std::vector<Expr>& args, const char* what, F&& build) {
+    for (const Expr& a : args) {
+        refuse_if_solving(*a.model, what);
+    }
+    return expr_object(std::forward<F>(build)());
+}
+
+// ---------------------------------------------------------------------------
+// Column generation from Python (#168).
+//
+// There is no #132 machinery to reuse: #132 closed not-planned, and the only
+// trampoline in this file is SolveCallback's. A ColumnGenerator is bound as an
+// ADAPTER instead: `PyColumnGenerator` is a C++ ColumnGenerator holding the
+// Python object, and every entry point acquires the GIL itself -- `price` and
+// `clone` run on the search thread (a portfolio worker, under solve_master) while
+// the caller has the GIL released, and the destructor can run there too. A
+// trampoline would add nothing: the Python class never needs a C++ state of its
+// own, and `clone()` has to hand the engine a unique_ptr, which a Python-owned
+// instance cannot be relinquished into (the same reason pool.h's factories return
+// shared_ptr) -- so a wrapper was needed on that path whatever the base was.
+//
+// WHAT PRICE LENDS. The engine's PricingContext and ModelExtension live on its
+// stack for the duration of one `price()` call. Handing either to Python by
+// reference would let a pricer keep it -- `self.saved = ext` -- and a use after
+// the call would dereference a dead stack frame. So Python receives Python-OWNED
+// view objects that read through one shared `PricingLease`, and the adapter
+// clears the lease on the way out, thrown or not. A retained view is then a
+// valid object whose every use raises RuntimeError.
+// ---------------------------------------------------------------------------
+
+struct PricingLease {
+    const PricingContext* ctx = nullptr;
+    ModelExtension* ext = nullptr;
+};
+
+constexpr const char* kLeaseExpired =
+    ": used after the ColumnGenerator.price call it was handed to returned. The "
+    "context, its signatures and the extension are lent for that one call; copy out "
+    "what you need to keep";
+
+// Clears a lease on scope exit, so the views expire on a throw as well.
+class LeaseScope {
+public:
+    explicit LeaseScope(PricingLease& lease) : lease_(&lease) {}
+    LeaseScope(const LeaseScope&) = delete;
+    LeaseScope& operator=(const LeaseScope&) = delete;
+    LeaseScope(LeaseScope&&) = delete;
+    LeaseScope& operator=(LeaseScope&&) = delete;
+    ~LeaseScope() {
+        lease_->ctx = nullptr;
+        lease_->ext = nullptr;
+    }
+
+private:
+    PricingLease* lease_;
+};
+
+// What Python's `ModelExtension` is: either an extension Python built (owned
+// here) or the engine's, lent to one `price()` call.
+//
+// OWNED: records against `base_`, which the binding's keep_alive<1, 2> keeps
+// alive. Construction and every builder are refused while a bound solve runs on
+// `base_` (see refuse_if_solving): the builders read the base's nodes and its
+// structure version, which the running search may be rewriting.
+//
+// LENT: the only extension a running solve accepts from Python. It is exempt from
+// the solving check -- the search is parked inside `price()` for exactly as long
+// as the lease lasts, so nothing is writing the model -- and raises once the call
+// has returned.
+class ExtensionHandle {
+public:
+    explicit ExtensionHandle(const Model& base) : base_(&base) {
+        refuse_if_solving(base, "ModelExtension");
+        owned_ = std::make_unique<ModelExtension>(base);
+    }
+    explicit ExtensionHandle(std::shared_ptr<const PricingLease> lease)
+        : lease_(std::move(lease)) {}
+
+    // For a builder: the extension, or a refusal.
+    [[nodiscard]] ModelExtension& get(const char* what) const {
+        if (lease_ != nullptr) {
+            return lent(what);
+        }
+        refuse_if_solving(*base_, what);
+        return *owned_;
+    }
+    // For a query of the recording itself, which reads no model: never refused
+    // for a running solve, only for an expired lease.
+    [[nodiscard]] const ModelExtension& peek(const char* what) const {
+        return lease_ != nullptr ? lent(what) : *owned_;
+    }
+
+private:
+    [[nodiscard]] ModelExtension& lent(const char* what) const {
+        if (lease_->ext == nullptr) {
+            throw std::logic_error(std::string(what) + kLeaseExpired);
+        }
+        return *lease_->ext;
+    }
+
+    const Model* base_ = nullptr;
+    std::unique_ptr<ModelExtension> owned_;
+    std::shared_ptr<const PricingLease> lease_;
+};
+
+template <typename R, typename... A>
+auto ext_builder(R (ModelExtension::*method)(A...), const char* what) {
+    return [method, what](const ExtensionHandle& self, A... args) -> R {
+        return (self.get(what).*method)(std::forward<A>(args)...);
+    };
+}
+
+// Model.extend as bound: refused while a bound solve runs on the model. A free
+// function rather than a lambda in the module body, whose cognitive-complexity
+// score counts every lambda's branches as its own. The model check comes first,
+// so a lent extension handed to Model.extend inside price() is refused for the
+// model's solve rather than for its lease.
+ExtensionResult extend_unless_solving(Model& self, const ExtensionHandle& ext) {
+    if (SolvingModels::instance().contains(&self)) {
+        throw std::logic_error(
+            "Model.extend: cbls.solve is running on this model (from a SolveCallback, a "
+            "ColumnGenerator or another thread). extend is a between-solves operation: the "
+            "running search's tables cannot grow with it");
+    }
+    return self.extend(ext.get("Model.extend"));
+}
+
+// Python's view of a PricingContext. Every accessor COPIES out: see the class
+// docstring in the module body for which fields and why.
+class PricingContextView {
+public:
+    explicit PricingContextView(std::shared_ptr<const PricingLease> lease)
+        : lease_(std::move(lease)) {}
+    [[nodiscard]] const PricingContext& get(const char* what) const {
+        if (lease_->ctx == nullptr) {
+            throw std::logic_error(std::string(what) + kLeaseExpired);
+        }
+        return *lease_->ctx;
+    }
+    [[nodiscard]] const std::shared_ptr<const PricingLease>& lease() const { return lease_; }
+
+private:
+    std::shared_ptr<const PricingLease> lease_;
+};
+
+// `ctx.signatures`: the engine's ColumnSignatureSet for this solve, through the
+// same lease.
+class SignatureSetView {
+public:
+    explicit SignatureSetView(std::shared_ptr<const PricingLease> lease)
+        : lease_(std::move(lease)) {}
+    [[nodiscard]] ColumnSignatureSet& get(const char* what) const {
+        if (lease_->ctx == nullptr) {
+            throw std::logic_error(std::string(what) + kLeaseExpired);
+        }
+        return lease_->ctx->signatures;
+    }
+
+private:
+    std::shared_ptr<const PricingLease> lease_;
+};
+
+std::optional<Model::State> incumbent_copy(const PricingContextView& view) {
+    const PricingContext& ctx = view.get("PricingContext.incumbent");
+    if (ctx.incumbent == nullptr) {
+        return std::nullopt;
+    }
+    return *ctx.incumbent;
+}
+
+// The Python-visible base class. Holds nothing: a subclass's state is its own
+// Python attributes, and the engine reaches it only through PyColumnGenerator.
+struct ColumnGeneratorBase {};
+
+[[noreturn]] void raise_not_implemented(const char* what) {
+    PyErr_SetString(PyExc_NotImplementedError, what);
+    throw nb::python_error();
+}
+
+class PyColumnGenerator final : public ColumnGenerator {
+public:
+    explicit PyColumnGenerator(nb::object impl) : impl_(std::move(impl)) {}
+    PyColumnGenerator(const PyColumnGenerator&) = delete;
+    PyColumnGenerator& operator=(const PyColumnGenerator&) = delete;
+    PyColumnGenerator(PyColumnGenerator&&) = delete;
+    PyColumnGenerator& operator=(PyColumnGenerator&&) = delete;
+    // The last reference to a clone drops on the search thread, without the GIL.
+    // After interpreter finalisation there is no interpreter to decref into, so
+    // the reference is leaked instead (only a SearchConfig outliving the
+    // interpreter, e.g. a C++ static, can get there).
+    ~PyColumnGenerator() override {
+        if (Py_IsInitialized() == 0) {
+            static_cast<void>(impl_.release());
+            return;
+        }
+        const nb::gil_scoped_acquire gil;
+        impl_.reset();
+    }
+
+    void price(const PricingContext& ctx, PricingEvent why, ModelExtension& ext) override {
+        const nb::gil_scoped_acquire gil;
+        auto lease = std::make_shared<PricingLease>(PricingLease{&ctx, &ext});
+        const LeaseScope expire(*lease);
+        nb::object py_ctx = nb::cast(PricingContextView(lease), nb::rv_policy::move);
+        nb::object py_ext = nb::cast(ExtensionHandle(lease), nb::rv_policy::move);
+        impl_.attr("price")(py_ctx, why, py_ext);
+    }
+
+    [[nodiscard]] std::unique_ptr<ColumnGenerator> clone() const override {
+        const nb::gil_scoped_acquire gil;
+        nb::object copy = impl_.attr("clone")();
+        if (!nb::isinstance<ColumnGeneratorBase>(copy)) {
+            throw nb::type_error("ColumnGenerator.clone() must return a cbls.ColumnGenerator");
+        }
+        // One object pricing in two solves is shared mutable state between
+        // portfolio workers, and it breaks the engine's contract that the
+        // registered prototype is never priced with.
+        if (copy.is(impl_)) {
+            throw std::invalid_argument(
+                "ColumnGenerator.clone() returned self: return a new object (copy.copy(self) "
+                "for a generator whose state may be shared, a deeper copy otherwise)");
+        }
+        return std::make_unique<PyColumnGenerator>(std::move(copy));
+    }
+
+    [[nodiscard]] const nb::object& impl() const { return impl_; }
+
+private:
+    nb::object impl_;
+};
+
+nb::object column_generator_of(const SearchConfig& c) {
+    const auto* g = dynamic_cast<const PyColumnGenerator*>(c.column_generator.get());
+    return g != nullptr ? g->impl() : nb::none();
+}
+
+void set_column_generator(SearchConfig& c, const nb::object& impl) {
+    if (impl.is_none()) {
+        c.column_generator = nullptr;
+        return;
+    }
+    if (!nb::isinstance<ColumnGeneratorBase>(impl)) {
+        throw nb::type_error(
+            "SearchConfig.column_generator must be a cbls.ColumnGenerator or None");
+    }
+    c.column_generator = std::make_shared<const PyColumnGenerator>(impl);
+}
 
 // ---------------------------------------------------------------------------
 // Table-backed lambda_sum / pair_lambda_sum (#163).
@@ -613,7 +958,17 @@ NB_MODULE(_cbls_core, m) {
         // 0.0 on a run with no wall-clock budget, by design -- see
         // include/cbls/counters.h. The call count above is always filled.
         .def_ro("inner_solver_seconds", &SearchCounters::inner_solver_seconds)
-        .def_ro("portfolio_restarts", &SearchCounters::portfolio_restarts);
+        .def_ro("portfolio_restarts", &SearchCounters::portfolio_restarts)
+        // Column generation (#168); all zero without a column_generator.
+        // pricing_seconds follows inner_solver_seconds' rule: 0.0 on a run with
+        // no wall-clock budget.
+        .def_ro("pricing_calls", &SearchCounters::pricing_calls)
+        .def_ro("pricing_seconds", &SearchCounters::pricing_seconds)
+        .def_ro("columns_added", &SearchCounters::columns_added)
+        .def_ro("rows_added", &SearchCounters::rows_added)
+        .def_ro("columns_retired", &SearchCounters::columns_retired)
+        .def_ro("extensions_refused", &SearchCounters::extensions_refused)
+        .def_ro("incumbents_revalidated", &SearchCounters::incumbents_revalidated);
 
     // SearchResult
     nb::class_<SearchResult>(m, "SearchResult")
@@ -631,31 +986,38 @@ NB_MODULE(_cbls_core, m) {
     nb::class_<Model>(m, "Model")
         .def(nb::init<>())
         // Variable creation
-        .def("bool_var", &Model::bool_var, nb::arg("name") = "")
-        .def("int_var", &Model::int_var, nb::arg("lb"), nb::arg("ub"), nb::arg("name") = "")
-        .def("float_var", &Model::float_var, nb::arg("lb"), nb::arg("ub"), nb::arg("name") = "")
+        .def("bool_var", guarded(&Model::bool_var, "Model.bool_var"), nb::arg("name") = "")
+        .def("int_var", guarded(&Model::int_var, "Model.int_var"), nb::arg("lb"), nb::arg("ub"),
+             nb::arg("name") = "")
+        .def("float_var", guarded(&Model::float_var, "Model.float_var"), nb::arg("lb"),
+             nb::arg("ub"), nb::arg("name") = "")
         // Two overloads, tried in order: the permutation form first, so
         // `list_var(n)` and `list_var(n, "name")` keep resolving to it exactly as
         // they did before #164.
-        .def("list_var", nb::overload_cast<int, const std::string&>(&Model::list_var), nb::arg("n"),
-             nb::arg("name") = "",
-             "A fixed-length permutation of {0..n-1}: universe == min_len == max_len.")
+        .def(
+            "list_var",
+            guarded(nb::overload_cast<int, const std::string&>(&Model::list_var), "Model.list_var"),
+            nb::arg("n"), nb::arg("name") = "",
+            "A fixed-length permutation of {0..n-1}: universe == min_len == max_len.")
         .def("list_var",
-             nb::overload_cast<int, int, int, ListInit, const std::string&>(&Model::list_var),
+             guarded(
+                 nb::overload_cast<int, int, int, ListInit, const std::string&>(&Model::list_var),
+                 "Model.list_var"),
              nb::arg("universe"), nb::arg("min_len"), nb::arg("max_len"),
              nb::arg("init") = ListInit::Empty, nb::arg("name") = "",
              "An ordered sequence of distinct elements of {0..universe-1} whose\n"
              "length stays within [min_len, max_len].")
-        .def("set_var", &Model::set_var, nb::arg("n"), nb::arg("min_size") = 0,
-             nb::arg("max_size") = -1, nb::arg("name") = "")
-        .def("add_list_partition", &Model::add_list_partition, nb::arg("lists"),
-             nb::arg("cover") = Cover::Exact,
+        .def("set_var", guarded(&Model::set_var, "Model.set_var"), nb::arg("n"),
+             nb::arg("min_size") = 0, nb::arg("max_size") = -1, nb::arg("name") = "")
+        .def("add_list_partition", guarded(&Model::add_list_partition, "Model.add_list_partition"),
+             nb::arg("lists"), nb::arg("cover") = Cover::Exact,
              "Declare that `lists` partition their shared universe, maintained by\n"
              "the moves rather than by a constraint row. Returns the partition index.\n"
              "`cover` accepts a Cover value or the strings 'exact' / 'at_most_once'.")
         .def(
             "add_list_partition",
             [](Model& model, const std::vector<int32_t>& lists, const std::string& cover) {
+                refuse_if_solving(model, "Model.add_list_partition");
                 if (cover == "exact") {
                     return model.add_list_partition(lists, Cover::Exact);
                 }
@@ -670,35 +1032,36 @@ NB_MODULE(_cbls_core, m) {
              "to, or -1. Takes a var ID, not a handle.")
         .def_prop_ro("list_partitions", [](const Model& model) { return model.list_partitions(); })
         // Expression creation
-        .def("constant", &Model::constant)
-        .def("neg", &Model::neg)
-        .def("sum", &Model::sum)
-        .def("prod", &Model::prod)
-        .def("div_expr", &Model::div_expr)
-        .def("pow_expr", &Model::pow_expr)
-        .def("min_expr", &Model::min_expr)
-        .def("max_expr", &Model::max_expr)
-        .def("abs_expr", &Model::abs_expr)
-        .def("sin_expr", &Model::sin_expr)
-        .def("cos_expr", &Model::cos_expr)
-        .def("tan_expr", &Model::tan_expr)
-        .def("exp_expr", &Model::exp_expr)
-        .def("log_expr", &Model::log_expr)
-        .def("sqrt_expr", &Model::sqrt_expr)
-        .def("signpower_expr", &Model::signpower_expr)
-        .def("tanh_expr", &Model::tanh_expr)
-        .def("if_then_else", &Model::if_then_else)
-        .def("at", &Model::at)
-        .def("count", &Model::count)
-        .def("leq", &Model::leq)
-        .def("eq_expr", &Model::eq_expr)
-        .def("geq", &Model::geq)
-        .def("neq", &Model::neq)
-        .def("lt", &Model::lt)
-        .def("gt", &Model::gt)
+        .def("constant", guarded(&Model::constant, "Model.constant"))
+        .def("neg", guarded(&Model::neg, "Model.neg"))
+        .def("sum", guarded(&Model::sum, "Model.sum"))
+        .def("prod", guarded(&Model::prod, "Model.prod"))
+        .def("div_expr", guarded(&Model::div_expr, "Model.div_expr"))
+        .def("pow_expr", guarded(&Model::pow_expr, "Model.pow_expr"))
+        .def("min_expr", guarded(&Model::min_expr, "Model.min_expr"))
+        .def("max_expr", guarded(&Model::max_expr, "Model.max_expr"))
+        .def("abs_expr", guarded(&Model::abs_expr, "Model.abs_expr"))
+        .def("sin_expr", guarded(&Model::sin_expr, "Model.sin_expr"))
+        .def("cos_expr", guarded(&Model::cos_expr, "Model.cos_expr"))
+        .def("tan_expr", guarded(&Model::tan_expr, "Model.tan_expr"))
+        .def("exp_expr", guarded(&Model::exp_expr, "Model.exp_expr"))
+        .def("log_expr", guarded(&Model::log_expr, "Model.log_expr"))
+        .def("sqrt_expr", guarded(&Model::sqrt_expr, "Model.sqrt_expr"))
+        .def("signpower_expr", guarded(&Model::signpower_expr, "Model.signpower_expr"))
+        .def("tanh_expr", guarded(&Model::tanh_expr, "Model.tanh_expr"))
+        .def("if_then_else", guarded(&Model::if_then_else, "Model.if_then_else"))
+        .def("at", guarded(&Model::at, "Model.at"))
+        .def("count", guarded(&Model::count, "Model.count"))
+        .def("leq", guarded(&Model::leq, "Model.leq"))
+        .def("eq_expr", guarded(&Model::eq_expr, "Model.eq_expr"))
+        .def("geq", guarded(&Model::geq, "Model.geq"))
+        .def("neq", guarded(&Model::neq, "Model.neq"))
+        .def("lt", guarded(&Model::lt, "Model.lt"))
+        .def("gt", guarded(&Model::gt, "Model.gt"))
         .def(
             "lambda_sum",
             [](Model& model, int32_t list_var, std::function<double(int)> func) {
+                refuse_if_solving(model, "Model.lambda_sum");
                 // Held to the same handle rule as lambda_table_sum and the pair
                 // forms: `wrap()` alone accepts a node handle or a scalar
                 // variable and builds a node that evaluates to 0.0 for ever,
@@ -711,6 +1074,7 @@ NB_MODULE(_cbls_core, m) {
         .def(
             "lambda_table_sum",
             [](Model& model, int32_t list_var, const Table1D& table) {
+                refuse_if_solving(model, "Model.lambda_table_sum");
                 const int32_t n = table_universe(model, list_var, "lambda_table_sum");
                 return model.lambda_sum(
                     list_var, table_lookup(copy_vector(table, n, "lambda_table_sum table"), n,
@@ -725,6 +1089,7 @@ NB_MODULE(_cbls_core, m) {
             [](Model& model, int32_t list_var, std::function<double(int, int)> func, bool cyclic,
                std::optional<std::function<double(int)>> head,
                std::optional<std::function<double(int)>> tail) {
+                refuse_if_solving(model, "Model.pair_lambda_sum");
                 // Held to the same handle rule as pair_table_sum. `wrap()`
                 // alone accepts a node handle or a scalar variable and builds
                 // a node that then evaluates to 0.0 for ever, which from
@@ -741,6 +1106,7 @@ NB_MODULE(_cbls_core, m) {
             "pair_table_sum",
             [](Model& model, int32_t list_var, const Table2D& dist, bool cyclic,
                const std::optional<Table1D>& head, const std::optional<Table1D>& tail) {
+                refuse_if_solving(model, "Model.pair_table_sum");
                 const int32_t n = table_universe(model, list_var, "pair_table_sum");
                 auto endpoint = [n](const std::optional<Table1D>& t,
                                     const char* what) -> std::function<double(int)> {
@@ -767,16 +1133,20 @@ NB_MODULE(_cbls_core, m) {
         // to the type the expression already has -- the check resolves the
         // overload *using* the cast and then calls it redundant. Say which
         // overload is wanted instead of casting to say it.
-        .def("add_constraint", nb::overload_cast<int32_t>(&Model::add_constraint))
-        .def("minimize", nb::overload_cast<int32_t>(&Model::minimize))
-        .def("maximize", nb::overload_cast<int32_t>(&Model::maximize))
-        .def("add_constraint", nb::overload_cast<const Expr&>(&Model::add_constraint))
-        .def("minimize", nb::overload_cast<const Expr&>(&Model::minimize))
-        .def("maximize", nb::overload_cast<const Expr&>(&Model::maximize))
-        .def("add_var_sequence", &Model::add_var_sequence, nb::arg("var_ids"),
-             nb::arg("min_block_on") = 1, nb::arg("min_block_off") = 1)
+        .def("add_constraint",
+             guarded(nb::overload_cast<int32_t>(&Model::add_constraint), "Model.add_constraint"))
+        .def("minimize", guarded(nb::overload_cast<int32_t>(&Model::minimize), "Model.minimize"))
+        .def("maximize", guarded(nb::overload_cast<int32_t>(&Model::maximize), "Model.maximize"))
+        .def("add_constraint", guarded(nb::overload_cast<const Expr&>(&Model::add_constraint),
+                                       "Model.add_constraint"))
+        .def("minimize",
+             guarded(nb::overload_cast<const Expr&>(&Model::minimize), "Model.minimize"))
+        .def("maximize",
+             guarded(nb::overload_cast<const Expr&>(&Model::maximize), "Model.maximize"))
+        .def("add_var_sequence", guarded(&Model::add_var_sequence, "Model.add_var_sequence"),
+             nb::arg("var_ids"), nb::arg("min_block_on") = 1, nb::arg("min_block_off") = 1)
         .def("var_sequence_for", &Model::var_sequence_for)
-        .def("close", &Model::close)
+        .def("close", guarded(&Model::close, "Model.close"))
         // Growth of a closed model (#167). Returns an ExtensionResult BY VALUE:
         // Python owns the copy and it holds no pointer into the model. Nothing
         // else Python can hold does either: var()/var_mut() return a (model, id)
@@ -790,7 +1160,7 @@ NB_MODULE(_cbls_core, m) {
         // RuntimeError rather than corrupting a peer: the refusal is a
         // std::logic_error, which nanobind has no mapping for and so translates to
         // RuntimeError -- see tests/python/test_model_freeze.py.
-        .def("freeze", &Model::freeze)
+        .def("freeze", guarded(&Model::freeze, "Model.freeze"))
         .def("is_frozen", &Model::is_frozen)
         // True after an extend that threw part-way through its growth; the model
         // is then refused by extend, solve, full_evaluate and friends (#167).
@@ -829,74 +1199,173 @@ NB_MODULE(_cbls_core, m) {
         .def("copy_state", &Model::copy_state)
         .def("restore_state", &Model::restore_state)
         // Expr-returning variable creation
-        .def("Bool", &Model::Bool, nb::arg("name") = "")
-        .def("Int", &Model::Int, nb::arg("lb"), nb::arg("ub"), nb::arg("name") = "")
-        .def("Float", &Model::Float, nb::arg("lb"), nb::arg("ub"), nb::arg("name") = "")
-        .def("List", nb::overload_cast<int, const std::string&>(&Model::List), nb::arg("n"),
+        .def("Bool", guarded_expr(&Model::Bool, "Model.Bool"), nb::arg("name") = "")
+        .def("Int", guarded_expr(&Model::Int, "Model.Int"), nb::arg("lb"), nb::arg("ub"),
              nb::arg("name") = "")
-        .def("List", nb::overload_cast<int, int, int, ListInit, const std::string&>(&Model::List),
+        .def("Float", guarded_expr(&Model::Float, "Model.Float"), nb::arg("lb"), nb::arg("ub"),
+             nb::arg("name") = "")
+        .def("List",
+             guarded_expr(nb::overload_cast<int, const std::string&>(&Model::List), "Model.List"),
+             nb::arg("n"), nb::arg("name") = "")
+        .def("List",
+             guarded_expr(
+                 nb::overload_cast<int, int, int, ListInit, const std::string&>(&Model::List),
+                 "Model.List"),
              nb::arg("universe"), nb::arg("min_len"), nb::arg("max_len"),
              nb::arg("init") = ListInit::Empty, nb::arg("name") = "")
-        .def("Set", &Model::Set, nb::arg("n"), nb::arg("min_size") = 0, nb::arg("max_size") = -1,
-             nb::arg("name") = "")
-        .def("Constant", &Model::Constant);
+        .def("Set", guarded_expr(&Model::Set, "Model.Set"), nb::arg("n"), nb::arg("min_size") = 0,
+             nb::arg("max_size") = -1, nb::arg("name") = "")
+        .def("Constant", guarded_expr(&Model::Constant, "Model.Constant"));
 
     // Expr
+    // Every Expr-returning entry point below goes through build_expr: refused while
+    // its model is being solved (each calls a Model builder), and tied to that
+    // model on the way out so the Expr cannot outlive it (see expr_object).
     nb::class_<Expr>(m, "Expr")
         .def_ro("model", &Expr::model)
         .def_ro("handle", &Expr::handle)
         .def("var_id", &Expr::var_id)
-        .def("__add__", [](const Expr& a, const Expr& b) { return a + b; })
-        .def("__add__", [](const Expr& a, double b) { return a + b; })
-        .def("__radd__", [](const Expr& a, double b) { return b + a; })
-        .def("__mul__", [](const Expr& a, const Expr& b) { return a * b; })
-        .def("__mul__", [](const Expr& a, double b) { return a * b; })
-        .def("__rmul__", [](const Expr& a, double b) { return b * a; })
-        .def("__sub__", [](const Expr& a, const Expr& b) { return a - b; })
-        .def("__sub__", [](const Expr& a, double b) { return a - b; })
-        .def("__rsub__", [](const Expr& a, double b) { return b - a; })
-        .def("__truediv__", [](const Expr& a, const Expr& b) { return a / b; })
-        .def("__truediv__", [](const Expr& a, double b) { return a / b; })
-        .def("__rtruediv__", [](const Expr& a, double b) { return b / a; })
-        .def("__neg__", [](const Expr& a) { return -a; })
-        .def("__pow__", [](const Expr& a, const Expr& b) { return a.pow(b); })
+        .def("__add__",
+             [](const Expr& a, const Expr& b) {
+                 return build_expr(a, "Expr.__add__", [&] { return a + b; });
+             })
+        .def("__add__",
+             [](const Expr& a, double b) {
+                 return build_expr(a, "Expr.__add__", [&] { return a + b; });
+             })
+        .def("__radd__",
+             [](const Expr& a, double b) {
+                 return build_expr(a, "Expr.__radd__", [&] { return b + a; });
+             })
+        .def("__mul__",
+             [](const Expr& a, const Expr& b) {
+                 return build_expr(a, "Expr.__mul__", [&] { return a * b; });
+             })
+        .def("__mul__",
+             [](const Expr& a, double b) {
+                 return build_expr(a, "Expr.__mul__", [&] { return a * b; });
+             })
+        .def("__rmul__",
+             [](const Expr& a, double b) {
+                 return build_expr(a, "Expr.__rmul__", [&] { return b * a; });
+             })
+        .def("__sub__",
+             [](const Expr& a, const Expr& b) {
+                 return build_expr(a, "Expr.__sub__", [&] { return a - b; });
+             })
+        .def("__sub__",
+             [](const Expr& a, double b) {
+                 return build_expr(a, "Expr.__sub__", [&] { return a - b; });
+             })
+        .def("__rsub__",
+             [](const Expr& a, double b) {
+                 return build_expr(a, "Expr.__rsub__", [&] { return b - a; });
+             })
+        .def("__truediv__",
+             [](const Expr& a, const Expr& b) {
+                 return build_expr(a, "Expr.__truediv__", [&] { return a / b; });
+             })
+        .def("__truediv__",
+             [](const Expr& a, double b) {
+                 return build_expr(a, "Expr.__truediv__", [&] { return a / b; });
+             })
+        .def("__rtruediv__",
+             [](const Expr& a, double b) {
+                 return build_expr(a, "Expr.__rtruediv__", [&] { return b / a; });
+             })
+        .def("__neg__",
+             [](const Expr& a) { return build_expr(a, "Expr.__neg__", [&] { return -a; }); })
         .def("__pow__",
-             [](const Expr& a, double b) { return a.pow(Expr{a.model, a.model->constant(b)}); })
+             [](const Expr& a, const Expr& b) {
+                 return build_expr(a, "Expr.__pow__", [&] { return a.pow(b); });
+             })
+        .def("__pow__",
+             [](const Expr& a, double b) {
+                 return build_expr(a, "Expr.__pow__",
+                                   [&] { return a.pow(Expr{a.model, a.model->constant(b)}); });
+             })
         .def("__pow__",
              [](const Expr& a, int b) {
-                 return a.pow(Expr{a.model, a.model->constant(static_cast<double>(b))});
+                 return build_expr(a, "Expr.__pow__", [&] {
+                     return a.pow(Expr{a.model, a.model->constant(static_cast<double>(b))});
+                 });
              })
         .def("__rpow__",
              [](const Expr& a, double b) {
-                 return Expr{a.model, a.model->pow_expr(a.model->constant(b), a.handle)};
+                 return build_expr(a, "Expr.__rpow__", [&] {
+                     return Expr{a.model, a.model->pow_expr(a.model->constant(b), a.handle)};
+                 });
              })
-        .def("__le__", [](const Expr& a, const Expr& b) { return a <= b; })
-        .def("__le__", [](const Expr& a, double b) { return a <= b; })
-        .def("__ge__", [](const Expr& a, const Expr& b) { return a >= b; })
-        .def("__ge__", [](const Expr& a, double b) { return a >= b; })
-        .def("__lt__", [](const Expr& a, const Expr& b) { return a < b; })
-        .def("__lt__", [](const Expr& a, double b) { return a < b; })
-        .def("__gt__", [](const Expr& a, const Expr& b) { return a > b; })
-        .def("__gt__", [](const Expr& a, double b) { return a > b; })
-        .def("__abs__", [](const Expr& a) { return cbls::abs(a); })
+        .def("__le__",
+             [](const Expr& a, const Expr& b) {
+                 return build_expr(a, "Expr.__le__", [&] { return a <= b; });
+             })
+        .def("__le__",
+             [](const Expr& a, double b) {
+                 return build_expr(a, "Expr.__le__", [&] { return a <= b; });
+             })
+        .def("__ge__",
+             [](const Expr& a, const Expr& b) {
+                 return build_expr(a, "Expr.__ge__", [&] { return a >= b; });
+             })
+        .def("__ge__",
+             [](const Expr& a, double b) {
+                 return build_expr(a, "Expr.__ge__", [&] { return a >= b; });
+             })
+        .def("__lt__",
+             [](const Expr& a, const Expr& b) {
+                 return build_expr(a, "Expr.__lt__", [&] { return a < b; });
+             })
+        .def("__lt__", [](const Expr& a,
+                          double b) { return build_expr(a, "Expr.__lt__", [&] { return a < b; }); })
+        .def("__gt__",
+             [](const Expr& a, const Expr& b) {
+                 return build_expr(a, "Expr.__gt__", [&] { return a > b; });
+             })
+        .def("__gt__", [](const Expr& a,
+                          double b) { return build_expr(a, "Expr.__gt__", [&] { return a > b; }); })
+        .def("__abs__",
+             [](const Expr& a) {
+                 return build_expr(a, "Expr.__abs__", [&] { return cbls::abs(a); });
+             })
         .def("is_var", &Expr::is_var)
-        .def("eq", &Expr::eq)
-        .def("neq", &Expr::neq)
-        .def("pow", &Expr::pow);
+        .def("eq", [](const Expr& a,
+                      const Expr& b) { return build_expr(a, "Expr.eq", [&] { return a.eq(b); }); })
+        .def("neq",
+             [](const Expr& a, const Expr& b) {
+                 return build_expr(a, "Expr.neq", [&] { return a.neq(b); });
+             })
+        .def("pow", [](const Expr& a, const Expr& b) {
+            return build_expr(a, "Expr.pow", [&] { return a.pow(b); });
+        });
 
     // Expr free functions
-    m.def("sin", [](const Expr& x) { return cbls::sin(x); });
-    m.def("cos", [](const Expr& x) { return cbls::cos(x); });
-    m.def("tan", [](const Expr& x) { return cbls::tan(x); });
-    m.def("exp", [](const Expr& x) { return cbls::exp(x); });
-    m.def("log", [](const Expr& x) { return cbls::log(x); });
-    m.def("sqrt", [](const Expr& x) { return cbls::sqrt(x); });
-    m.def("abs", [](const Expr& x) { return cbls::abs(x); });
-    m.def("pow", [](const Expr& base, const Expr& exp) { return cbls::pow(base, exp); });
-    m.def("min", [](const std::vector<Expr>& args) { return cbls::min(args); });
-    m.def("max", [](const std::vector<Expr>& args) { return cbls::max(args); });
+    m.def("sin",
+          [](const Expr& x) { return build_expr(x, "cbls.sin", [&] { return cbls::sin(x); }); });
+    m.def("cos",
+          [](const Expr& x) { return build_expr(x, "cbls.cos", [&] { return cbls::cos(x); }); });
+    m.def("tan",
+          [](const Expr& x) { return build_expr(x, "cbls.tan", [&] { return cbls::tan(x); }); });
+    m.def("exp",
+          [](const Expr& x) { return build_expr(x, "cbls.exp", [&] { return cbls::exp(x); }); });
+    m.def("log",
+          [](const Expr& x) { return build_expr(x, "cbls.log", [&] { return cbls::log(x); }); });
+    m.def("sqrt",
+          [](const Expr& x) { return build_expr(x, "cbls.sqrt", [&] { return cbls::sqrt(x); }); });
+    m.def("abs",
+          [](const Expr& x) { return build_expr(x, "cbls.abs", [&] { return cbls::abs(x); }); });
+    m.def("pow", [](const Expr& base, const Expr& exp) {
+        return build_expr(base, "cbls.pow", [&] { return cbls::pow(base, exp); });
+    });
+    m.def("min", [](const std::vector<Expr>& args) {
+        return build_expr_list(args, "cbls.min", [&] { return cbls::min(args); });
+    });
+    m.def("max", [](const std::vector<Expr>& args) {
+        return build_expr_list(args, "cbls.max", [&] { return cbls::max(args); });
+    });
     m.def("if_then_else", [](const Expr& cond, const Expr& then_, const Expr& else_) {
-        return cbls::if_then_else(cond, then_, else_);
+        return build_expr(cond, "cbls.if_then_else",
+                          [&] { return cbls::if_then_else(cond, then_, else_); });
     });
 
     // Model::State
@@ -941,8 +1410,11 @@ NB_MODULE(_cbls_core, m) {
     // reference to the Python Model, and dropping every other reference to the
     // model cannot leave the extension pointing at a freed one. The pointer is
     // only read (node ops and children, for the Sum check and the cycle walk);
-    // nothing is ever written through it.
-    nb::class_<ModelExtension>(m, "ModelExtension")
+    // nothing is ever written through it. The Python class is an ExtensionHandle
+    // (see there), so that the extension ColumnGenerator.price is LENT -- the
+    // engine's own, on its stack -- is the same Python type as one Python builds,
+    // and expires rather than dangles.
+    nb::class_<ExtensionHandle>(m, "ModelExtension")
         .def(nb::init<const Model&>(), nb::arg("model"), nb::keep_alive<1, 2>(),
              "Record additions to a CLOSED model: new scalar variables, expression\n"
              "nodes over new or existing handles, new constraints, and terms appended\n"
@@ -950,54 +1422,72 @@ NB_MODULE(_cbls_core, m) {
              "\n"
              "Handles are absolute: the ones returned here are the ids the entities\n"
              "will have after extend, and existing handles may be used freely. Raises\n"
-             "RuntimeError if the model is not closed, or if a failed extend left it\n"
-             "corrupt (Model.extend_interrupted()). An extension is single-use; see\n"
-             "Model.extend. Keeps the model alive.")
-        .def("bool_var", &ModelExtension::bool_var, nb::arg("name") = "")
-        .def("int_var", &ModelExtension::int_var, nb::arg("lb"), nb::arg("ub"),
+             "RuntimeError if the model is not closed, if a failed extend left it\n"
+             "corrupt (Model.extend_interrupted()), or while cbls.solve is running on\n"
+             "it -- and every builder below raises RuntimeError for as long as one is:\n"
+             "the running search changes the structure they read. The one extension a\n"
+             "running solve accepts is the one it hands to ColumnGenerator.price, and\n"
+             "that one raises RuntimeError once price() has returned. An extension is\n"
+             "single-use; see Model.extend. Keeps the model alive.")
+        .def("bool_var", ext_builder(&ModelExtension::bool_var, "ModelExtension.bool_var"),
              nb::arg("name") = "")
-        .def("float_var", &ModelExtension::float_var, nb::arg("lb"), nb::arg("ub"),
-             nb::arg("name") = "")
-        .def("set_initial", &ModelExtension::set_initial, nb::arg("var"), nb::arg("value"),
+        .def("int_var", ext_builder(&ModelExtension::int_var, "ModelExtension.int_var"),
+             nb::arg("lb"), nb::arg("ub"), nb::arg("name") = "")
+        .def("float_var", ext_builder(&ModelExtension::float_var, "ModelExtension.float_var"),
+             nb::arg("lb"), nb::arg("ub"), nb::arg("name") = "")
+        .def("set_initial", ext_builder(&ModelExtension::set_initial, "ModelExtension.set_initial"),
+             nb::arg("var"), nb::arg("value"),
              "Starting value of a variable THIS extension created, and the value\n"
              "pad_state writes for it. Defaults to the lower bound. Raises ValueError\n"
              "for any other handle or for a value outside the bounds.")
-        .def("constant", &ModelExtension::constant)
-        .def("neg", &ModelExtension::neg)
-        .def("sum", &ModelExtension::sum)
-        .def("prod", &ModelExtension::prod)
-        .def("div_expr", &ModelExtension::div_expr)
-        .def("pow_expr", &ModelExtension::pow_expr)
-        .def("min_expr", &ModelExtension::min_expr)
-        .def("max_expr", &ModelExtension::max_expr)
-        .def("abs_expr", &ModelExtension::abs_expr)
-        .def("sin_expr", &ModelExtension::sin_expr)
-        .def("cos_expr", &ModelExtension::cos_expr)
-        .def("tan_expr", &ModelExtension::tan_expr)
-        .def("exp_expr", &ModelExtension::exp_expr)
-        .def("log_expr", &ModelExtension::log_expr)
-        .def("sqrt_expr", &ModelExtension::sqrt_expr)
-        .def("signpower_expr", &ModelExtension::signpower_expr)
-        .def("tanh_expr", &ModelExtension::tanh_expr)
-        .def("if_then_else", &ModelExtension::if_then_else)
-        .def("at", &ModelExtension::at)
-        .def("count", &ModelExtension::count)
-        .def("leq", &ModelExtension::leq)
-        .def("eq_expr", &ModelExtension::eq_expr)
-        .def("geq", &ModelExtension::geq)
-        .def("neq", &ModelExtension::neq)
-        .def("lt", &ModelExtension::lt)
-        .def("gt", &ModelExtension::gt)
-        .def("add_constraint", &ModelExtension::add_constraint, nb::arg("expr"))
-        .def("append_to_sum", &ModelExtension::append_to_sum, nb::arg("sum_node"), nb::arg("term"),
+        .def("constant", ext_builder(&ModelExtension::constant, "ModelExtension.constant"))
+        .def("neg", ext_builder(&ModelExtension::neg, "ModelExtension.neg"))
+        .def("sum", ext_builder(&ModelExtension::sum, "ModelExtension.sum"))
+        .def("prod", ext_builder(&ModelExtension::prod, "ModelExtension.prod"))
+        .def("div_expr", ext_builder(&ModelExtension::div_expr, "ModelExtension.div_expr"))
+        .def("pow_expr", ext_builder(&ModelExtension::pow_expr, "ModelExtension.pow_expr"))
+        .def("min_expr", ext_builder(&ModelExtension::min_expr, "ModelExtension.min_expr"))
+        .def("max_expr", ext_builder(&ModelExtension::max_expr, "ModelExtension.max_expr"))
+        .def("abs_expr", ext_builder(&ModelExtension::abs_expr, "ModelExtension.abs_expr"))
+        .def("sin_expr", ext_builder(&ModelExtension::sin_expr, "ModelExtension.sin_expr"))
+        .def("cos_expr", ext_builder(&ModelExtension::cos_expr, "ModelExtension.cos_expr"))
+        .def("tan_expr", ext_builder(&ModelExtension::tan_expr, "ModelExtension.tan_expr"))
+        .def("exp_expr", ext_builder(&ModelExtension::exp_expr, "ModelExtension.exp_expr"))
+        .def("log_expr", ext_builder(&ModelExtension::log_expr, "ModelExtension.log_expr"))
+        .def("sqrt_expr", ext_builder(&ModelExtension::sqrt_expr, "ModelExtension.sqrt_expr"))
+        .def("signpower_expr",
+             ext_builder(&ModelExtension::signpower_expr, "ModelExtension.signpower_expr"))
+        .def("tanh_expr", ext_builder(&ModelExtension::tanh_expr, "ModelExtension.tanh_expr"))
+        .def("if_then_else",
+             ext_builder(&ModelExtension::if_then_else, "ModelExtension.if_then_else"))
+        .def("at", ext_builder(&ModelExtension::at, "ModelExtension.at"))
+        .def("count", ext_builder(&ModelExtension::count, "ModelExtension.count"))
+        .def("leq", ext_builder(&ModelExtension::leq, "ModelExtension.leq"))
+        .def("eq_expr", ext_builder(&ModelExtension::eq_expr, "ModelExtension.eq_expr"))
+        .def("geq", ext_builder(&ModelExtension::geq, "ModelExtension.geq"))
+        .def("neq", ext_builder(&ModelExtension::neq, "ModelExtension.neq"))
+        .def("lt", ext_builder(&ModelExtension::lt, "ModelExtension.lt"))
+        .def("gt", ext_builder(&ModelExtension::gt, "ModelExtension.gt"))
+        .def("add_constraint",
+             ext_builder(&ModelExtension::add_constraint, "ModelExtension.add_constraint"),
+             nb::arg("expr"))
+        .def("append_to_sum",
+             ext_builder(&ModelExtension::append_to_sum, "ModelExtension.append_to_sum"),
+             nb::arg("sum_node"), nb::arg("term"),
              "Append `term` to an EXISTING Sum node of the base model: a new column\n"
              "entering an old row. Raises ValueError if the target is not a Sum of the\n"
              "base model, if `term` already reads the target (the append would make\n"
              "the DAG cyclic), or if the model has changed since this extension was\n"
              "started (another extend was applied, or a structural write after close).")
-        .def("empty", &ModelExtension::empty)
-        .def("num_new_vars", &ModelExtension::num_new_vars)
-        .def("num_new_nodes", &ModelExtension::num_new_nodes);
+        .def("empty",
+             [](const ExtensionHandle& self) { return self.peek("ModelExtension.empty").empty(); })
+        .def("num_new_vars",
+             [](const ExtensionHandle& self) {
+                 return self.peek("ModelExtension.num_new_vars").num_new_vars();
+             })
+        .def("num_new_nodes", [](const ExtensionHandle& self) {
+            return self.peek("ModelExtension.num_new_nodes").num_new_nodes();
+        });
 
     // In place, on a state the caller owns: nothing is retained.
     m.def("pad_state", &pad_state, nb::arg("state"), nb::arg("ext"),
@@ -1179,6 +1669,173 @@ NB_MODULE(_cbls_core, m) {
             "side holds a view, not the object. Same accumulating keep-alive as\n"
             "SearchConfig.stop -- see its docstring.");
 
+    // ---- Column generation (#168) --------------------------------------------
+    // See PyColumnGenerator and PricingLease above for the GIL and lifetime design.
+    nb::enum_<PricingEvent>(m, "PricingEvent")
+        .value("Periodic", PricingEvent::Periodic)
+        .value("Stagnation", PricingEvent::Stagnation)
+        .value("NewBest", PricingEvent::NewBest);
+
+    nb::class_<SignatureSetView>(
+        m, "ColumnSignatureSet",
+        "This solve's duplicate registry for generated columns, lent with the\n"
+        "PricingContext (ctx.signatures) and valid only during that price() call.\n"
+        "A signature is a column's cost and its (row index, coefficient) list; it\n"
+        "is canonicalised (rows sorted, repeats summed, zeros dropped) and compared\n"
+        "exactly. The engine never un-registers: register only what you stage, and\n"
+        "stage only what fits in ctx.columns_remaining.")
+        .def(
+            "insert",
+            [](const SignatureSetView& self, std::vector<std::pair<int32_t, double>> coefficients,
+               double cost) {
+                return self.get("ColumnSignatureSet.insert").insert(std::move(coefficients), cost);
+            },
+            nb::arg("coefficients"), nb::arg("cost"),
+            "Register a column. True if it was new, False if already registered.")
+        .def(
+            "contains",
+            [](const SignatureSetView& self, std::vector<std::pair<int32_t, double>> coefficients,
+               double cost) {
+                return self.get("ColumnSignatureSet.contains")
+                    .contains(std::move(coefficients), cost);
+            },
+            nb::arg("coefficients"), nb::arg("cost"))
+        .def("__len__", [](const SignatureSetView& self) {
+            return self.get("ColumnSignatureSet.__len__").size();
+        });
+
+    nb::class_<PricingContextView>(
+        m, "PricingContext",
+        "What a ColumnGenerator sees at a pricing call, at a safe point between\n"
+        "batches. LENT FOR THAT ONE CALL: every attribute and method raises\n"
+        "RuntimeError once price() has returned, so copy out what you need.\n"
+        "\n"
+        "Everything is returned as a COPY, never a view into the engine. `weights`\n"
+        "in particular is a fresh list per access, not a zero-copy view of the\n"
+        "live GLS weight vector: that vector is reallocated by every extension the\n"
+        "engine applies (and a view kept past the call would read freed memory),\n"
+        "and O(rows) per access is negligible next to a Python pricer. Read it once\n"
+        "per call. The model itself is not exposed: under ParallelSearch.solve_master\n"
+        "it is a worker's private copy that no Python object owns. Its current\n"
+        "assignment, node values, constraints and violations are read here.")
+        .def_prop_ro(
+            "weights",
+            [](const PricingContextView& v) {
+                const ConstSpan<double> w = v.get("PricingContext.weights").weights;
+                return std::vector<double>(w.begin(), w.end());
+            },
+            "The GLS weight per constraint index (a copy). Not LP duals; reset to\n"
+            "1.0 on every new best and every diversification kick.")
+        .def_prop_ro(
+            "objective_constraint_idx",
+            [](const PricingContextView& v) {
+                return v.get("PricingContext.objective_constraint_idx").objective_constraint_idx;
+            },
+            "Index of the `obj <= bound` row in weights, or -1 without an objective.")
+        .def_prop_ro("objective_bound",
+                     [](const PricingContextView& v) {
+                         return v.get("PricingContext.objective_bound").objective_bound;
+                     })
+        .def_prop_ro("incumbent", &incumbent_copy,
+                     "A COPY of the best feasible assignment so far, sized for the model as\n"
+                     "it is now, or None before the first one.")
+        .def_prop_ro("incumbent_objective",
+                     [](const PricingContextView& v) {
+                         return v.get("PricingContext.incumbent_objective").incumbent_objective;
+                     })
+        .def_prop_ro(
+            "batches",
+            [](const PricingContextView& v) { return v.get("PricingContext.batches").batches; })
+        .def_prop_ro(
+            "elapsed_seconds",
+            [](const PricingContextView& v) {
+                return v.get("PricingContext.elapsed_seconds").elapsed_seconds;
+            },
+            "NaN on a run with no wall clock (an iteration-budgeted run).")
+        .def_prop_ro(
+            "remaining_seconds",
+            [](const PricingContextView& v) {
+                return v.get("PricingContext.remaining_seconds").remaining_seconds;
+            },
+            "+inf on a run with no wall clock. price() must return within it.")
+        .def_prop_ro(
+            "columns_remaining",
+            [](const PricingContextView& v) {
+                return v.get("PricingContext.columns_remaining").columns_remaining;
+            },
+            "How many more variables this solve may add. An extension staging\n"
+            "more is refused whole.")
+        .def_prop_ro("signatures",
+                     [](const PricingContextView& v) {
+                         static_cast<void>(v.get("PricingContext.signatures"));
+                         return SignatureSetView(v.lease());
+                     })
+        .def("num_vars",
+             [](const PricingContextView& v) {
+                 return v.get("PricingContext.num_vars").model.num_vars();
+             })
+        .def("num_nodes",
+             [](const PricingContextView& v) {
+                 return v.get("PricingContext.num_nodes").model.num_nodes();
+             })
+        .def("constraint_ids",
+             [](const PricingContextView& v) {
+                 return v.get("PricingContext.constraint_ids").model.constraint_ids();
+             })
+        .def(
+            "var_value",
+            [](const PricingContextView& v, int32_t var_id) {
+                return v.get("PricingContext.var_value").model.var(var_id).value;
+            },
+            nb::arg("var_id"), "Current value of variable `var_id` (an id, not a handle).")
+        .def(
+            "node_value",
+            [](const PricingContextView& v, int32_t id) {
+                return v.get("PricingContext.node_value").model.node_value(id);
+            },
+            nb::arg("id"))
+        .def(
+            "constraint_violation",
+            [](const PricingContextView& v, int i) {
+                return v.get("PricingContext.constraint_violation")
+                    .violations.constraint_violation(i);
+            },
+            nb::arg("i"), "The cached violation of constraint index `i`.");
+
+    nb::class_<ColumnGeneratorBase>(
+        m, "ColumnGenerator",
+        "A pricing oracle that proposes new columns from the GLS weights while the\n"
+        "search runs (#168). Subclass it and override both methods:\n"
+        "\n"
+        "  price(ctx: PricingContext, why: PricingEvent, ext: ModelExtension) -> None\n"
+        "      Stage new scalar variables, terms on existing Sum rows (append_to_sum)\n"
+        "      and new rows into `ext`; the engine applies them when price returns.\n"
+        "      Staging nothing is a valid answer. `ctx` and `ext` are LENT for this\n"
+        "      call and raise RuntimeError if used after it. Must respect\n"
+        "      ctx.remaining_seconds and ctx.columns_remaining.\n"
+        "  clone() -> ColumnGenerator\n"
+        "      A NEW object carrying this generator's configuration. Returning self\n"
+        "      raises ValueError.\n"
+        "\n"
+        "Register it on SearchConfig.column_generator. Every solve -- every\n"
+        "ParallelSearch.solve_master worker -- calls clone() once on the registered\n"
+        "prototype and prices with the clone, so per-search state (a cursor, a\n"
+        "cache) belongs on the clone, and the prototype itself is never priced with.\n"
+        "Both methods are called with the GIL held, on the search thread (a worker\n"
+        "thread under solve_master); the search waits while they run.\n"
+        "\n"
+        "An exception raised by price or clone propagates out of cbls.solve as that\n"
+        "exception, with nothing the call staged applied. Only Python code is\n"
+        "accepted here: the engine's C++ generators are not bound.")
+        .def(nb::init<>())
+        .def("price",
+             [](nb::handle /*self*/, nb::handle /*ctx*/, nb::handle /*why*/, nb::handle /*ext*/) {
+                 raise_not_implemented("ColumnGenerator.price must be overridden");
+             })
+        .def("clone", [](nb::handle /*self*/) -> nb::object {
+            raise_not_implemented("ColumnGenerator.clone must be overridden");
+        });
+
     // SearchConfig — must be registered before ParallelSearch / solve, which
     // use SearchConfig{} as a default argument (nanobind casts defaults to
     // Python eagerly at .def() time; an unregistered type throws std::bad_cast).
@@ -1209,6 +1866,29 @@ NB_MODULE(_cbls_core, m) {
                     value.has_value() ? std::make_shared<const NeighbourList>(*value) : nullptr;
             })
         .def_rw("feasibility_tolerance", &SearchConfig::feasibility_tolerance)
+        // Column generation (#168). The generator is held as a C++ adapter that
+        // owns a reference to the Python object (PyColumnGenerator), so the config
+        // keeps the prototype alive; reading it back returns that same object.
+        .def_prop_rw("column_generator", &column_generator_of, &set_column_generator,
+                     nb::for_setter(nb::arg("generator").none()),
+                     "A cbls.ColumnGenerator, or None (the default: no pricing, and a\n"
+                     "trajectory bit-identical to a run without these fields). Accepted by\n"
+                     "cbls.solve and ParallelSearch.solve_master; the factory entry points\n"
+                     "(ParallelSearch.solve_parallel) raise ValueError on it, because the\n"
+                     "grown model would be one the caller never sees.")
+        .def_rw("pricing_period", &SearchConfig::pricing_period,
+                "Price every this many batches (PricingEvent.Periodic). 0 = never.")
+        .def_rw("price_on_stagnation", &SearchConfig::price_on_stagnation,
+                "Price before every diversification kick (PricingEvent.Stagnation).\n"
+                "On by default, and frequent once a search stalls: turn it off for an\n"
+                "expensive pricer.")
+        .def_rw("price_on_new_best", &SearchConfig::price_on_new_best,
+                "Price on a batch that recorded a new best (PricingEvent.NewBest).")
+        .def_rw("max_generated_columns", &SearchConfig::max_generated_columns,
+                "Most variables pricing may add over one solve. 0 switches pricing off.")
+        .def_rw("column_retire_age", &SearchConfig::column_retire_age,
+                "Retire a generated column after this many consecutive pricing calls at\n"
+                "its lower bound. 0 = never.")
         // A NON-OWNING view of a StopToken the Python caller holds (#169). The
         // keep_alive is what makes that safe: it ties the token's lifetime to
         // this config, so `cbls.solve(m, cfg)` cannot be reading a token Python
@@ -1261,7 +1941,27 @@ NB_MODULE(_cbls_core, m) {
              // acquire the GIL from a worker thread: the hook and LNS
              // factories. A None default reaches the std::function caster as an
              // empty function, which src/pool.cpp skips.
-             nb::call_guard<nb::gil_scoped_release>(), kParallelSolveDoc);
+             nb::call_guard<nb::gil_scoped_release>(), kParallelSolveDoc)
+        // The `Model& master` overload (#157, #168). Bound as a lambda rather than a
+        // member pointer for the same reason `solve` is: the master is registered
+        // in SolvingModels WHILE THE GIL IS HELD and only then released, so no
+        // other Python thread can slip a structural write in between.
+        .def(
+            "solve_master",
+            [](ParallelSearch& self, Model& master, double time_limit, uint64_t seed,
+               const SearchConfig& config,
+               std::function<std::shared_ptr<InnerSolverHook>(Model&)> hook_factory,
+               std::function<std::shared_ptr<LNS>()> lns_factory, SolveCallback* callback,
+               const ParallelConfig& par_config) {
+                const SolvingScope solving(master);
+                const nb::gil_scoped_release release;
+                return self.solve(master, time_limit, seed, config, std::move(hook_factory),
+                                  std::move(lns_factory), callback, par_config);
+            },
+            nb::arg("model"), nb::arg("time_limit") = 10.0, nb::arg("seed") = 42,
+            nb::arg("config") = SearchConfig{}, nb::arg("hook_factory") = nb::none(),
+            nb::arg("lns_factory") = nb::none(), nb::arg("callback") = nullptr,
+            nb::arg("par_config") = ParallelConfig{}, kSolveMasterDoc);
 
     // Free functions
     // Exposed so the "adjacent base seeds do not share worker streams" property

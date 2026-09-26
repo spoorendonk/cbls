@@ -518,22 +518,26 @@ def _scenario_extend_during_solve() -> None:
     the row count, so the engine's own table checks see nothing, and the search
     used to carry on with stale tables and report feasible on a model it had
     left infeasible. A count-changing extension is refused the same way.
+
+    The extension is recorded BEFORE the solve: building one during it is itself
+    refused now (test_model_extension_is_refused_during_a_solve in
+    test_column_generation.py), so this scenario isolates the extend check.
     """
     for shape in ("append_only", "new_var_and_row"):
         b = _base()
         attempts: list[str] = []
+        ext = cbls.ModelExtension(b.m)
+        if shape == "append_only":
+            ext.append_to_sum(b.row, ext.prod(ext.constant(3.0), b.y))
+        else:
+            z = ext.float_var(0, 1)
+            ext.append_to_sum(b.row, z)
+            ext.add_constraint(ext.leq(z, ext.constant(0.5)))
 
         class Grow(cbls.SolveCallback):  # type: ignore[misc]
             def on_progress(
-                self, p: Any, shape: str = shape, b: Base = b, attempts: list[str] = attempts
+                self, p: Any, b: Base = b, ext: Any = ext, attempts: list[str] = attempts
             ) -> None:
-                ext = cbls.ModelExtension(b.m)
-                if shape == "append_only":
-                    ext.append_to_sum(b.row, ext.prod(ext.constant(3.0), b.y))
-                else:
-                    z = ext.float_var(0, 1)
-                    ext.append_to_sum(b.row, z)
-                    ext.add_constraint(ext.leq(z, ext.constant(0.5)))
                 try:
                     b.m.extend(ext)
                 except RuntimeError as exc:
