@@ -690,6 +690,89 @@ TEST_CASE("a custom node cannot be serialised, and says which node", "[custom][i
     }
 }
 
+TEST_CASE("re-entering the evaluator from inside an invariant is refused", "[custom]") {
+    // The realistic shape, and the reason this is refused rather than documented:
+    // an invariant that IS a sub-model evaluates that sub-model from inside the
+    // outer walk. It needs no const_cast to do it -- the sub-model is its own --
+    // and the nested call would `clear()` the same `thread_local` dirty list the
+    // outer call's guard holds, leaving the outer call's flags set forever. A
+    // leaked flag makes the seeding loop skip that node for the life of the
+    // process, so the symptom would be a node that silently stops updating, long
+    // after and nowhere near the cause.
+    class NestsIntoASubModel : public CustomInvariant {
+    public:
+        NestsIntoASubModel(Model* sub, int32_t sub_var) : sub_(sub), sub_var_(sub_var) {}
+        double evaluate(const InvariantInputs& in) override {
+            // The offending call. `sub_` is this invariant's own model, so nothing
+            // here is a cast around the const contract -- which is the point: the
+            // contract cannot be enforced by the type system.
+            sub_->var_mut(sub_var_).value = in.value(0);
+            return delta_evaluate(*sub_, &sub_var_, 1);
+        }
+        [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
+            return std::make_unique<NestsIntoASubModel>(*this);
+        }
+
+    private:
+        Model* sub_;
+        int32_t sub_var_;
+    };
+
+    Model sub;
+    const int32_t sv = sub.int_var(0, 9, "sv");
+    const int32_t doubled = sub.prod(sv, sub.constant(2.0));
+    sub.minimize(doubled);
+    sub.close();
+    const int32_t svid = handle_to_var_id(sv);
+
+    Model m;
+    const int32_t x = m.int_var(0, 9, "x");
+    const int32_t c = m.custom({x}, std::make_unique<NestsIntoASubModel>(&sub, svid), "nests");
+    m.add_constraint(m.leq(c, m.constant(6.0)));
+    m.minimize(c);
+
+    // `close()` runs the first `full_evaluate`, so the refusal lands there.
+    REQUIRE_THROWS_AS(m.close(), std::logic_error);
+
+    // And the guard is RAII, so the thread is not poisoned: an ordinary model
+    // still evaluates on this very thread afterwards.
+    Model plain;
+    const int32_t y = plain.int_var(0, 9, "y");
+    const int32_t row = plain.leq(y, plain.constant(4.0));
+    plain.add_constraint(row);
+    plain.close();
+    const int32_t yid = handle_to_var_id(y);
+    plain.var_mut(yid).value = 7.0;
+    delta_evaluate(plain, &yid, 1);
+    REQUIRE_THAT(plain.node_value(row), WithinAbs(3.0, 1e-12));
+
+    SECTION("and from delta too, not just evaluate") {
+        auto log = std::make_shared<CallLog>();
+        Model outer;
+        const int32_t a = outer.int_var(0, 9, "a");
+        // A well-behaved node first, so the model closes; the nesting one is added
+        // second and only ever reached by a delta.
+        const int32_t good = outer.custom({a}, std::make_unique<BeliefSum>(log), "good");
+        outer.add_constraint(outer.leq(good, outer.constant(6.0)));
+        outer.minimize(good);
+        outer.close();
+        const int32_t aid = handle_to_var_id(a);
+        outer.var_mut(aid).value = 2.0;
+        REQUIRE_NOTHROW(delta_evaluate(outer, &aid, 1));
+
+        Model sub2;
+        const int32_t s2 = sub2.int_var(0, 9, "s2");
+        sub2.minimize(sub2.prod(s2, sub2.constant(3.0)));
+        sub2.close();
+        Model nested;
+        const int32_t b = nested.int_var(0, 9, "b");
+        const int32_t nc = nested.custom(
+            {b}, std::make_unique<NestsIntoASubModel>(&sub2, handle_to_var_id(s2)), "nests2");
+        nested.add_constraint(nested.leq(nc, nested.constant(6.0)));
+        REQUIRE_THROWS_AS(nested.close(), std::logic_error);
+    }
+}
+
 TEST_CASE("a throwing delta propagates, and full_evaluate recovers the model", "[custom]") {
     // Nothing forbids user code from throwing, and "a black-box or external model"
     // is exactly where a throw comes from. The engine makes no promise beyond

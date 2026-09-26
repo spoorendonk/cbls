@@ -194,6 +194,13 @@ as differentiable as a structural op. An infinity has to be folded too, not just
 propagated: the sweep accumulates `adjoint += adj * ld`, so one infinite edge
 would make `inf * 0` — NaN — in the partial of an unrelated sibling variable.
 
+That makes the `Custom` edge **stricter than the built-in ones**, deliberately:
+`Div`, `Pow`, `Log` and `SignPower` can each return an infinite `local_derivative`
+at a singular point and nothing clamps them. Pre-existing, and widening the clamp
+to them would move every AD trajectory in the suite; the `Custom` arm is new, so
+it starts strict. The asymmetry is recorded at the site in `src/dag.cpp` so it
+does not read as an oversight — don't harmonise the two by loosening the new one.
+
 AD is used to generate Newton-toward-root jump candidates for Float variables
 (in `compute_var_jump`) and by the inner solver.
 
@@ -227,7 +234,7 @@ slack propagated from the first changed position) are follow-on work, not
 something this lands. An invariant over a List today either re-reads `elements(i)`
 or keeps its own copy and diffs it: O(n) either way. The engine *has* the
 information — the structural batch builds positional `ElementEdit`s and drops them
-before `delta_evaluate` — so carrying it through is a additive change, not a
+before `delta_evaluate` — so carrying it through is an additive change, not a
 redesign. Scalar inputs have no such gap: `changed` is exactly the inputs that
 moved, and an O(1) delta over them is what the reference fixture does.
 
@@ -239,7 +246,7 @@ The interface is five calls plus a clone:
 | `delta(in, changed)` | `delta_evaluate`, per dirtied pass | Incremental. `changed` is the input indices the engine recomputed since the last committed state — a *superset* of those that actually differ. Defaults to `evaluate(in)`. |
 | `commit()` | after a `delta` whose assignment is kept | The staged state becomes committed. |
 | `rollback()` | after a `delta` the caller has undone | Discard the staged state; the engine restores the node's cached *value* itself. |
-| `partial(in, i)` | reverse-mode AD | `d(value)/d(input i)`, or NaN for unknown. |
+| `partial(in, i)` | reverse-mode AD | `d(value)/d(input i)`, or NaN **or ±inf** for unknown — both fold to 0, so one infinite edge cannot NaN a sibling's partial. |
 | `clone()` | `Model` copy, i.e. one per portfolio worker; entered CONCURRENTLY on the master | Must carry the current state — a copied `Model` needs no `full_evaluate`, so a caller may copy and `delta_evaluate` straight away. Must be safe to call from N threads on one instance: `ParallelSearch` replicates the master on each worker's own thread. |
 
 **Where the instance lives.** On the per-model side of the `ModelStructure`
@@ -284,6 +291,17 @@ numbers the way a `Lambda` is, so `save_model` throws before writing its first
 line, naming the node and the invariant. Checked before the stream is opened:
 `std::ofstream` truncates on open, so a refusal after that point would replace
 an existing file with a prefix of a model.
+
+**Two contract obligations the engine enforces rather than documents.** A custom
+node's value must be a pure function of its declared inputs — a node with no
+inputs, or only `Const` ones, never enters a dirty cone, so `delta()` is never
+called on it. And none of the five calls may re-enter `delta_evaluate` or
+`full_evaluate`: that throws `std::logic_error`, because the nested call clears the
+`thread_local` dirty list the outer one is holding, which would leak the outer
+call's flags and silently stop those nodes being recomputed for the rest of the
+process. `Model::restore_state` carries the third: it writes variables only, so a
+`full_evaluate` before the next `delta_evaluate` is mandatory — and unlike the
+first two, nothing enforces that one.
 
 **Not exposed to Python.** A Python-subclassable invariant needs the trampoline
 and GIL machinery of #132, so nothing here is bound: `Model::custom` is not

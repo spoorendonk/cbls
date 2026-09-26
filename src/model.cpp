@@ -48,6 +48,13 @@ Model::Model(const Model& other)
     // owing a rollback would be worse than starting it owing nothing.
     custom_invariants_.reserve(other.custom_invariants_.size());
     for (const CustomInvariantSlot& slot : other.custom_invariants_) {
+        // Copying MID-PROBE is a contract violation, not a supported state, and it
+        // cannot be made one here: `node_values_` above is copied verbatim, so it
+        // carries the counterfactual, while `clone()` contractually carries the
+        // staged state -- so the copy would owe a rollback that nothing can ever
+        // tell it about. Nothing in the tree does it (a probe's two legs are
+        // adjacent), but this constructor is public, so say so where it happens.
+        assert(!slot.probe_pending);
         CustomInvariantSlot copy;
         copy.invariant = slot.invariant->clone();
         if (copy.invariant == nullptr) {

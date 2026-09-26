@@ -676,9 +676,15 @@ public:
     /// `full_evaluate` is MANDATORY before anything reads a node value or calls
     /// `delta_evaluate`. For a built-in op, skipping it merely recomputes late; for
     /// a custom node it is wrong values, because the next `delta()` is measured
-    /// against a baseline that is no longer there. Every in-tree caller pairs the
-    /// two -- `src/lns.cpp`, `src/search.cpp` (three sites, one of them by way of
-    /// `FeasibilityJump::perturb`'s trailing sweep), `src/cli.cpp`.
+    /// against a baseline that is no longer there.
+    ///
+    /// Every C++ caller in the tree pairs the two -- `src/lns.cpp`, `src/search.cpp`
+    /// (three sites, one of them by way of `FeasibilityJump::perturb`'s trailing
+    /// sweep), `src/cli.cpp`. **Python is the exception**: `python/bindings.cpp`
+    /// exposes this method raw, with no sweep attached and nothing telling the
+    /// caller to add one. Harmless only because `Model::custom` is not bound, so no
+    /// Python caller can build a custom node; #132, which would bind one, is what
+    /// makes it wrong.
     void restore_state(const State& state);
 
 private:

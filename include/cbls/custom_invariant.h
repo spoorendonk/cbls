@@ -85,18 +85,30 @@ private:
 /// route.
 ///
 /// **The value must be a pure function of the declared inputs.** Two consequences,
-/// neither obvious. A node with NO inputs, or with only `Const` inputs, is
-/// classified a constant subtree by `FeasibilityJump::compute_linear_constraints`
-/// and is never put in a dirty cone -- so `delta()` is never called on it and its
-/// value only ever moves at a `full_evaluate`. And an `evaluate` that consumes a
-/// random draw, or folds a call count into its result, makes `cbls::verify_model`
-/// report a spurious `VerifyError::Kind::DagConsistency`, because that function
-/// re-derives every node and compares against the cached value.
+/// neither obvious.
 ///
-/// **No reentrancy.** None of these calls may invoke `delta_evaluate` or
-/// `full_evaluate`, on this model or any other. `delta_evaluate` keeps its dirty
-/// set -- and the `changed` span it hands to `delta` -- in `thread_local` buffers,
-/// which a nested call overwrites underneath the invariant reading them.
+/// A node with NO inputs, or with only `Const` inputs, never enters a dirty cone,
+/// because that cone is seeded from the changed VARIABLES' dependents -- so
+/// `delta()` is never called on it and its value only ever moves at a
+/// `full_evaluate`. Separately, and for its own reasons,
+/// `FeasibilityJump::compute_linear_constraints` classifies such a node as a
+/// constant subtree, hence affine, so a constraint containing it can be treated as
+/// linear. Both readings are right for a pure value and both are silently wrong
+/// for one that drifts; neither follows from the other.
+///
+/// And an `evaluate` that consumes a random draw, or folds a call count into its
+/// result, makes `cbls::verify_model` report a spurious
+/// `VerifyError::Kind::DagConsistency`, because that function re-derives every node
+/// and compares against the cached value.
+///
+/// **No reentrancy, and it is ENFORCED.** None of these calls may invoke
+/// `delta_evaluate` or `full_evaluate`, on this model or any other; doing so
+/// throws `std::logic_error` from the nested call. `delta_evaluate` keeps its dirty
+/// set -- and the `changed` span it hands to `delta` -- in `thread_local` buffers
+/// that a nested call clears underneath the outer one, which would leak the outer
+/// call's dirty flags and make those nodes stop being recomputed for the life of
+/// the process. A refusal is the only failure mode that names the cause; the
+/// alternative was a wrong answer somewhere else entirely, later.
 ///
 /// **The probe protocol.** The search scores a candidate move by applying it,
 /// evaluating, and then putting the old assignment back. A stateful invariant
@@ -157,6 +169,12 @@ private:
 /// NEITHER a `commit()` nor a `rollback()`, because `evaluate()` is about to
 /// redefine the committed state anyway. Only an exception out of `delta()` can put
 /// the engine in that position; the next `Commit` pass over the node does the same.
+///
+/// **So `evaluate()` must discard STAGED state as well as redefining committed
+/// state.** It is the only call that closes the bracket without a `commit()` or a
+/// `rollback()`, so an implementation that clears its staged entries only in those
+/// two would carry a stale one across the reset and fold it into the next
+/// `commit()`. Clear both in `evaluate()`.
 class CustomInvariant {
 public:
     CustomInvariant() = default;

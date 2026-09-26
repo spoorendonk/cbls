@@ -4,6 +4,9 @@
 #include "cbls/model.h"
 
 #include <algorithm>
+#include <cassert>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace cbls {
@@ -52,7 +55,54 @@ std::vector<int32_t> compute_topo_order(const Model& model) {
 
 }  // namespace detail
 
+namespace {
+
+// Is this thread already inside `full_evaluate` or `delta_evaluate`?
+//
+// `CustomInvariant` (#166) puts arbitrary user code inside the evaluation walk,
+// and its motivating use case -- a black-box or simulation value -- is exactly
+// the code that might reach for a sub-model. Re-entering from there is not merely
+// unsupported, it is SILENT PERMANENT CORRUPTION of this thread: the nested call
+// does `dirty_list.clear()` on the same `thread_local` vector that the outer
+// call's `DirtyFlagGuard` holds a reference to, so the guard then clears the
+// INNER call's ids and leaks the outer call's flags -- and a leaked flag makes
+// `delta_evaluate`'s seeding loop skip that node for the life of the process (see
+// `DirtyFlagGuard`). The symptom would be a node that quietly stops updating,
+// long after and nowhere near the cause. So it is refused rather than documented.
+//
+// One `thread_local` test and one store per call, on both entry points -- the
+// price `Model::has_custom_nodes()` already pays per call. It changes no value and
+// draws no random number, so trajectories are unaffected; re-verified against main
+// with the #166 witness.
+thread_local bool in_evaluation = false;
+
+// RAII, so that an exception out of user code inside the walk -- which
+// `CustomInvariant` documents as possible -- clears the flag on the way out
+// instead of poisoning every later call on this thread.
+class EvaluationGuard {
+public:
+    explicit EvaluationGuard(const char* entry) {
+        if (in_evaluation) {
+            // Not an assert: this is reachable from user code in a Release build,
+            // and the silent wrong answer above is the thing being prevented.
+            throw std::logic_error(std::string(entry) +
+                                   ": re-entered from inside an evaluation. A CustomInvariant's "
+                                   "evaluate/delta/partial must not call full_evaluate or "
+                                   "delta_evaluate, on this model or any other.");
+        }
+        in_evaluation = true;
+    }
+    EvaluationGuard(const EvaluationGuard&) = delete;
+    EvaluationGuard& operator=(const EvaluationGuard&) = delete;
+    EvaluationGuard(EvaluationGuard&&) = delete;
+    EvaluationGuard& operator=(EvaluationGuard&&) = delete;
+    ~EvaluationGuard() { in_evaluation = false; }
+};
+
+}  // namespace
+
 double full_evaluate(Model& model) {
+    const EvaluationGuard guard("full_evaluate");
     // A from-scratch pass is a `CustomInvariant`'s reset point (#166): every
     // custom node below is about to be told `evaluate()`, which redefines its
     // committed state, so a probe left open by a caller that never rolled back
@@ -191,6 +241,11 @@ double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
         return evaluate(node, model);
     }
     const int32_t slot = node.lambda_func_id;
+    // Unreachable: `Model::custom` appends the slot and writes this id with nothing
+    // that can throw in between. Asserted rather than assumed, for the symmetry
+    // `custom_of` in src/dag.cpp keeps -- the three probe accessors below index the
+    // slot vector unchecked, so -1 would be a heap read one entry before it.
+    assert(slot >= 0);
     if (mode == DeltaMode::Rollback && model.custom_probe_pending(slot)) {
         // The engine restores the node's VALUE; the invariant discards only its
         // own staged state. Its parents recompute from the restored value below,
@@ -227,6 +282,7 @@ double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
 }  // namespace
 
 double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count, DeltaMode mode) {
+    const EvaluationGuard guard("delta_evaluate");
     if (count == 0) {
         if (model.objective_id() >= 0) {
             return model.node_values()[model.objective_id()];

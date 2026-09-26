@@ -85,10 +85,19 @@ static int list_size(const ChildRef& ref, const Model& model) {
 // or nests deeper than two, and none can affect another.
 //
 // So the readable unit here is the table, and per-family helpers would hide it.
-// The switch is also deliberately `default:`-free, so the compiler rather than
-// this metric is what catches a NodeOp nobody handled, and delta_evaluate calls
-// this once per dirtied node per candidate move -- any split would have to stay
-// inlinable, which rules out the dispatch-through-a-table alternative outright.
+// And delta_evaluate calls this once per dirtied node per candidate move, so any
+// split would have to stay inlinable -- which rules out the
+// dispatch-through-a-table alternative outright.
+//
+// ADDING A NodeOp: the switch is deliberately `default:`-free, but that catches
+// nothing in THIS project, measured rather than assumed. CMakeLists.txt passes no
+// -Wall, so GCC is silent on a missing case; and `.clang-tidy`'s leading `-*`
+// disables `clang-diagnostic-*`, so the sweep is silent too (probe: an incomplete
+// NodeOp switch goes unreported under the project config, while an unused local IS
+// reported once `clang-diagnostic-*` is turned back on). It helps a reader and a
+// compiler configured with -Wswitch, and it is not a gate. Carry a new op to every
+// switch by hand -- `grep -rn 'NodeOp::' src/ include/ python/` finds them, and
+// `src/io.cpp` has two.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 double evaluate(const ExprNode& node, const Model& model) {
     const ConstSpan<ChildRef> children = model.children(node);
@@ -328,7 +337,16 @@ double evaluate(const ExprNode& node, const Model& model) {
 // non-finite or non-differentiable point rather than any nesting between them.
 // It scores higher than evaluate() only because a derivative needs more such
 // guards, not because the cases interact. Reverse-mode AD calls it once per DAG
-// edge, so it sits on the same hot path.
+// edge, so it sits on the same hot path. The `default:`-free table is enforced by
+// nothing here either -- see the note on evaluate() above.
+//
+// One asymmetry worth naming, because it is DELIBERATE and looks like an
+// oversight: the `Custom` case folds a non-finite partial to 0, and the built-in
+// cases do not. `Div`, `Pow`, `Log` and `SignPower` can each return an infinite
+// derivative at a singular point, and nothing clamps them. That is pre-existing
+// behaviour the whole engine is tuned around, and widening the clamp to the
+// built-ins would change every AD trajectory; the Custom arm is new, so it starts
+// strict. Do not "harmonise" the two by loosening the new one.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 double local_derivative(const ExprNode& node, int child_idx, const Model& model) {
     const ConstSpan<ChildRef> children = model.children(node);
