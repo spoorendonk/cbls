@@ -224,18 +224,18 @@ Three conventions therefore rest on you rather than on a tool: branch only from 
 
 ### Fast vs. slow tests
 
-The C++ suite is **553 ctest tests** over **552 `TEST_CASE`s**: 548 registered
+The C++ suite is **564 ctest tests** over **563 `TEST_CASE`s**: 559 registered
 by `catch_discover_tests` plus **5 registered by hand** — the 4 `[timing]` cases
 and `hang_guard_iteration_only_portfolio`, which is hand-registered *as well as*
 discovered (it needs a `TIMEOUT` to report a hang, but is cheap enough to belong
-in the fast set), so one `TEST_CASE` accounts for two ctest tests. Of the 548,
+in the fast set), so one `TEST_CASE` accounts for two ctest tests. Of the 559,
 **6 carry the
 Catch2 `[slow]` tag** — the CHPED and UC-CHPED benchmark solves, ~46s of
 aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~25s
 wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 544 tests, ~12s with `-j`. This is what **pre-commit** runs.
+- `ctest -LE slow` — the other 555 tests, ~12s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
 - `ctest -L timing` — 4 tests: `timing_structural_batch_deadline` plus the three
   `timing_throughput_*` floors added for #125. Each is registered by an explicit
@@ -452,7 +452,7 @@ Release when the caller sets none, so this fence, CI and a plain `cmake -B build
 all gate the same binaries from one place. An explicit `-DCMAKE_BUILD_TYPE=Debug`
 still overrides it. The suite is mostly real solver runs, so the type is not
 cosmetic: the full `ctest` is ~490s at the old empty default and ~25s at
-Release (both re-measured 2026-09-26 at 553 tests, `-j12`, on an idle machine).
+Release (both re-measured 2026-09-26 at 564 tests, `-j12`, on an idle machine).
 
 `CMakeLists.txt` also picks up `ccache` as a compiler launcher when the machine
 has it (`apt install ccache`), which matters because pre-push's ```clean fence is

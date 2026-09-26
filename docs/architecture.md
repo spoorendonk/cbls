@@ -533,6 +533,37 @@ structure is #168's job. There is also no in-loop hook yet: `extend` is called
 between `solve()` calls, and the between-batches entry point #168 needs is that
 issue's API.
 
+**Three things the cold review of #167 closed**, worth knowing before #168 wires
+this into the search loop:
+
+- **`append_to_sum` refuses a term that would make the DAG cyclic.** It is the
+  first operation in the codebase that *could*: `close()` is safe only because a
+  node names already-existing children, so a cycle was unrepresentable. Appending
+  a term to an existing row lifts that, and a cycle is silent rather than loud --
+  `compute_topo_order` is Kahn's, so it returns a **short** order with the cycle
+  and everything above it simply absent, `rebuild_topo_positions` gives every
+  missing node position 0, and `full_evaluate` then never recomputes them again
+  for the life of the model. Exit code 0, stale constraint rows, wrong answer. The
+  check walks **down** from the term over the graph the extension will produce
+  (base children, recorded children, and appends already recorded), so it also
+  catches two appends that only close a loop together. `extend` additionally
+  refuses a re-sorted order that does not cover every node, as defence in depth.
+- **The call order is enforced, not merely documented.** `extend` grows the model
+  without touching `ViolationManager`'s weights or FJ's tables, so between it and
+  the two `on_extended` calls every ordinary read of either indexes past the end
+  -- `bump_weights` writes past it. Both components now refuse a model whose row
+  count has outrun their tables, and `FeasibilityJump::on_extended` refuses to run
+  before the manager's. The required order is `extend`, then
+  `ViolationManager::on_extended`, then `FeasibilityJump::on_extended`.
+- **There is no rollback.** A throw part-way through `extend` leaves a half-grown
+  model, and deliberately so: the CSR splices rewrite in place, so restoring them
+  means copying them, which is the O(model) cost `extend` exists to avoid. One
+  case is benign and separated in the comment -- a throw out of the closing
+  evaluation (`CustomInvariant::evaluate` or a `lambda_sum` callable, neither
+  `noexcept`) leaves every structural array consistent with only node values
+  stale, which `full_evaluate` recovers. A throw from anything earlier does not,
+  and the model is not usable afterwards.
+
 ### State Save/Restore
 
 ```cpp
