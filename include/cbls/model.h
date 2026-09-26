@@ -422,25 +422,63 @@ public:
     /// `add_objective_soft_constraint()` recompute the back-references, the
     /// topological order, `topo_pos` and G_v wholesale -- O(model) for two nodes
     /// -- and then `full_evaluate`. This splices instead, and evaluates only the
-    /// cone the addition dirties. What that costs, honestly:
+    /// cone the addition dirties.
     ///
-    ///  - **O(k) when every addition is new and reaches no existing row.** New
-    ///    variables, new nodes and new constraints whose subtrees are themselves
-    ///    new: every array is appended to, the new nodes go on the end of
-    ///    `topo_order`, and the evaluation is the new cone.
-    ///  - **plus O(size of the touched cones)** when a new node names an
-    ///    existing node or variable: the new row's subtree is walked for G_v, and
-    ///    the CSR splice moves the suffix from the first touched id.
-    ///  - **plus O(#constraints)** as soon as ANY `append_to_sum` is recorded:
-    ///    finding which existing rows contain the grown node means walking up
-    ///    from it and asking of each constraint root whether it was reached.
-    ///    Skipped entirely when there is no append.
+    /// **It is NOT O(k), and the issue's claim that it could be is wrong for the
+    /// representation this tree has.** What it actually costs, measured:
+    ///
+    ///  - **O(k)** for the arrays that only grow at the end -- `vars_`,
+    ///    `node_values_`, the node array, `constraint_ids`, and the new nodes'
+    ///    own child slices.
+    ///  - **O(size of the touched cones)** for G_v and for the linearity
+    ///    reclassification: each new row, and each existing row a grown `Sum`
+    ///    sits inside, has its subtree walked.
+    ///  - **O(the tail of each CSR array from the LOWEST touched owner id.)** The
+    ///    three back-reference arrays are CSR over one shared offsets array, so an
+    ///    insertion in the middle moves the suffix. A new row over variable 0
+    ///    therefore moves the whole of `dependent_ids` and `var_constraint_ids`.
+    ///    Making this O(degree) instead means giving each owner a
+    ///    (begin, count) pair so its list can be RELOCATED the way a grown node's
+    ///    child slice is -- four more bytes per node and per variable, and a
+    ///    change to three accessors. Deliberately not in this slice.
+    ///  - **O(the tail of `topo_order` from the earliest grown node.)** Same
+    ///    reason: the order is a dense array that `full_evaluate` walks, so
+    ///    inserting the new block before the earliest grown `Sum` memmoves the
+    ///    tail and renumbers `topo_pos` over it. The insertion point is as late as
+    ///    correctness allows, so the cost is set by where in the evaluation order
+    ///    the grown row sits -- position 0 on `neos-5114902-kasavu`'s first row,
+    ///    2.39M of 4.30M on its last. Zero when nothing is grown.
+    ///  - **O(#constraints)** as soon as ANY `append_to_sum` is recorded: finding
+    ///    which existing rows contain the grown node means walking up from it and
+    ///    asking of each constraint root whether it was reached. Skipped entirely
+    ///    when there is no append.
+    ///  - **one full copy of each structural array it grows, on the FIRST extend
+    ///    after a build that sized them exactly** -- which is every `Model` copy,
+    ///    since a copied vector's capacity is its size. Growth is deliberately
+    ///    left geometric (`push_back`/`insert`, no exact `reserve`) so that a
+    ///    column-generation loop amortises it; `add_objective_soft_constraint`
+    ///    makes the opposite choice for the opposite reason, because it runs once.
     ///  - **O(model) in one case, reported as `topo_order_rebuilt`:** a new node
     ///    that must sit before a grown `Sum` while one of its existing children
     ///    sits after it. The existing order is then not extendable and
     ///    `compute_topo_order` runs. Nothing in the tree produces this shape --
     ///    a term is built out of a new variable and a new constant -- but a
     ///    caller can, so it is correct rather than rejected.
+    ///
+    /// Measured against the rebuild it replaces -- `add_objective_soft_constraint`
+    /// on a copy of the same closed model, which adds two nodes and one row the
+    /// O(model) way -- at Release on an idle machine (load average 0.2-0.8, no
+    /// concurrent build):
+    ///
+    /// | instance | nodes | rebuild | extend, 1st | extend, later |
+    /// |---|---|---|---|---|
+    /// | `atlanta-ip` | 540k | 29 ms | 14 ms (2.0x) | 0.11-0.65 ms (46-260x) |
+    /// | `neos-5114902-kasavu` | 4.30M | 307 ms | 209 ms (1.5x) | 7.1-9.0 ms (35-44x) |
+    ///
+    /// "later" is the second and following extends on the same model, i.e. the
+    /// regime a column-generation loop is in; the range is over appending one
+    /// column into 1, 10 and 100 rows. The first-extend column is the
+    /// exact-capacity copy above and is a one-off.
     ///
     /// **A FROZEN model is refused** (`std::logic_error`). `freeze()` publishes
     /// one `ModelStructure` to every portfolio replica, so growing it would

@@ -711,6 +711,13 @@ void FeasibilityJump::on_extended(const ExtensionResult& ext) {
     // rebuild_violated_and_scan_set -- a variable with no improving jump leaves Q
     // again on the next apply_jump, and a new column that is not yet in a violated
     // row is still the thing the extension was made to try.
+    //
+    // The ENQUEUE is promptness, not reachability, and no test pins it: neutering
+    // it leaves `a column added mid-search is actually reachable by FJ` green,
+    // because bump_weights_and_requeue re-queues from vars_of_constraint_ within
+    // the same batch. It is kept because waiting for a weight bump to notice a
+    // column that was just added is the wrong default, not because the search
+    // would otherwise never find it.
     for (int32_t v = ext.first_new_var; v < ext.end_var(); ++v) {
         if (jumpable(v)) {
             jumps_.invalidate(v);

@@ -672,6 +672,13 @@ ExtensionResult Model::extend(const ModelExtension& ext) {
         return res;
     }
 
+    // Nothing below reserves exactly. Every array here grows through push_back or
+    // insert, so libstdc++'s geometric policy amortises the reallocation over a
+    // run of extends -- which is the regime a column-generation loop is in, and
+    // the opposite of `add_objective_soft_constraint`'s, which reserves exactly
+    // because it runs once and a doubling there is address space for nothing. The
+    // price is one full copy of each array on the first extend after a build that
+    // sized them exactly; `Model::extend`'s comment carries the measurement.
     append_extension_entities(ext, res);
     ModelStructure& st = mut();
 
