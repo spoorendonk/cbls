@@ -2248,7 +2248,18 @@ No call starts past the deadline (the same `past_deadline()` guard the inner
 solver has); the generator must itself return within
 `PricingContext::remaining_seconds`, which is `+inf` on an iteration-budgeted run
 (and `elapsed_seconds` is NaN there: a clockless run reads no clock, pricing
-included).
+included). The guard covers the *start* of the call, not the extension: once
+`price()` returns, `Model::extend`, the incumbent revalidation (two
+`full_evaluate`s and a state copy) and the FJ resync run with no deadline check,
+so a call started just before the deadline overruns it by that much -- O(model),
+which #167 measured at up to ~0.3s for `extend` alone on a 4.3M-node model.
+
+ThreadSanitizer, 2026-09-26 at `3b9185f` (`-DCBLS_SANITIZE=thread`, tests only):
+`cbls_tests "[column]"` 29/29 green with **zero** TSan reports, and
+`"[parallel],[pool]"` zero reports, 59/60 -- the one failure is the pre-existing
+0.3s wall-clock case "ParallelSearch records the first-feasible pair on the
+portfolio clock", which finds no feasible point inside its budget under TSan's
+slowdown and passes in the Release build. A dated record of one run.
 
 **What applying an extension does**, in order: `Model::extend`,
 `ViolationManager::on_extended`, `FeasibilityJump::on_extended` (#167's enforced
@@ -2350,7 +2361,7 @@ pattern set (one item per roll, so 120 without pricing), with the test file's
 bounded-knapsack pricer over the row weights -- up to four columns a call,
 `pricing_period = 5` plus the default Stagnation pricing, cap 400. Iteration
 budgets, so the numbers are deterministic and independent of machine load;
-engine commit `8190f9c`, seeds 1-5:
+engine commit `bcaf8f0`, seeds 1-5:
 
 | GLS iterations | without pricer | with pricer | columns added |
 |---|---|---|---|

@@ -645,7 +645,12 @@ SearchResult timed_pricing_run(double limit, double slice,
 }
 }  // namespace
 
-TEST_CASE("no pricing call starts past the deadline", "[column]") {
+// SMOKE TEST, not the regression test for the guard: an unguarded late call is
+// by construction the last one and `remaining()` clamps at 0, so removing
+// `past_deadline()` from `pricing_possible()` leaves this green. The
+// deterministic case below ("... once the budget is gone, exactly") is the one
+// that pins the guard; this one checks the timed path end to end.
+TEST_CASE("no pricing call starts past the deadline (timed smoke test)", "[column]") {
     // A pricer that takes no time, so the deadline lands inside a BATCH, which
     // FJ ends at the deadline -- exactly the moment an unguarded pricing call
     // would start late, with nothing left to spend. (A pricer that sleeps hides

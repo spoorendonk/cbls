@@ -610,6 +610,8 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
    which takes the DAG by reference and duplicates only what a search writes;
    the `std::function<Model()>` **factory** overloads share nothing and are kept
    for `tests/test_search.cpp` and the Python contract. Use the master overload.
+   A run with a `ColumnGenerator` is the exception to sharing: each worker gets
+   a private deep copy, because `extend` refuses a frozen model (#168).
    Measured on `neos-5114902-kasavu` (710k columns, 4.30M nodes), before at
    `0dc826b` and after at `06eb3e5`: peak RSS at 8 workers fell from 6.04 to
    3.15 GiB, the marginal worker from ~0.75-0.86 to ~0.34-0.39 GiB, at identical

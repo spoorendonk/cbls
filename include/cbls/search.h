@@ -228,7 +228,7 @@ struct SearchConfig {
     // search runs. Null -- the default -- turns the whole mechanism off, and a run
     // without one is BIT-IDENTICAL to the run before this block existed: every
     // pricing site is behind a single null test, reads no clock and draws no
-    // random number. Outside those sites the feature adds three compares -- a
+    // random number. Outside those sites the feature adds four compares -- a
     // pinned-Bool test in FJ's Bool candidate, in `random_in_domain` and in the
     // Bool move generator, and a size test in FJ's `jumpable` -- which are inert on
     // every model without a pinned Bool or a retired column, i.e. every model no
