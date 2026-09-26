@@ -1548,7 +1548,8 @@ NB_MODULE(_cbls_core, m) {
              "entering an old row. Raises ValueError if the target is not a Sum of the\n"
              "base model, if `term` already reads the target (the append would make\n"
              "the DAG cyclic), or if the model has changed since this extension was\n"
-             "started (another extend was applied, or a structural write after close).")
+             "started (another extend was applied, or the first solve/freeze added the\n"
+             "objective row).")
         .def("empty",
              [](const ExtensionHandle& self) { return self.peek("ModelExtension.empty").empty(); })
         .def("num_new_vars",
@@ -1963,8 +1964,11 @@ NB_MODULE(_cbls_core, m) {
         .def_rw("max_generated_columns", &SearchConfig::max_generated_columns,
                 "Most variables pricing may add over one solve. 0 switches pricing off.")
         .def_rw("column_retire_age", &SearchConfig::column_retire_age,
-                "Retire a generated column after this many consecutive pricing calls at\n"
-                "its lower bound. 0 = never.")
+                "Retire a generated column after this many consecutive pricing events at\n"
+                "its lower bound -- including events at a full column pool, where the\n"
+                "generator is no longer called. A retired column's upper bound is pinned\n"
+                "to its lower bound in the model itself, so it stays pinned in the model\n"
+                "the solve returns. 0 = never.")
         // A NON-OWNING view of a StopToken the Python caller holds (#169). The
         // keep_alive is what makes that safe: it ties the token's lifetime to
         // this config, so `cbls.solve(m, cfg)` cannot be reading a token Python

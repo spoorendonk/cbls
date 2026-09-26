@@ -319,9 +319,9 @@ public:
     /// node in the model returns true here, so a model whose invariants all
     /// re-read records no journal. Measured idle on a 200-element List route
     /// invariant that re-reads: opting in costs ~6% per structural candidate,
-    /// and a custom node that does not opt in pays at most ~1.2% for the
-    /// plumbing (an upper bound -- code placement alone moves these rows by
-    /// more). Allocation-free either way; docs/architecture.md has the runs and
+    /// and a custom node that does not opt in measured +1.2% for the
+    /// plumbing (not isolated: code placement alone moves these rows by more,
+    /// in either direction). Allocation-free either way; docs/architecture.md has the runs and
     /// their load. The opt-in cost is why this is not simply always on.
     ///
     /// An invariant that returns false still gets a correct answer from

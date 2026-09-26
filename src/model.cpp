@@ -945,6 +945,14 @@ void Model::add_objective_soft_constraint() {
     rebuild_topo_positions();
     build_var_constraints();
     full_evaluate(*this);
+    // The rebuild above is exactly close()'s, so say so: on a model solve()
+    // was handed unclosed, leaving closed_ false let every later builder
+    // through (#173's refusal keys on it), and a row added then was never
+    // evaluated. On an already-closed model this changes nothing.
+    if (!closed_) {
+        closed_ = true;
+        structure_version_ = next_structure_version();
+    }
 }
 
 void Model::set_objective_bound(double bound) {

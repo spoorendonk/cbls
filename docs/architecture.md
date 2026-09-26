@@ -321,9 +321,13 @@ without isolating them. Read against that:
   span and the journal pointer, behind a branch on the stale-probe flag, and
   `StructuralBatch::run` makes one `wants_positional_edits()` virtual call per
   custom node per sweep. That is the likely cause, but +1.2% is smaller than
-  the placement shifts the other rows show, and this row itself drifts +0.65%
-  between `f9d4514` and `2768314` with nothing on its path changed -- so read it
-  as an upper bound on #172's cost. That it is fixed per custom-node delta and
+  the placement shifts the other rows show, and this row itself drifts +0.75%
+  (median 629.9 ns at `f9d4514`, 634.6 ns at `2768314`, 7 repeats each in the
+  bisection run at load 1.1-1.3) with nothing on its path changed -- so read it
+  as the measured difference, not isolated from placement (which moves rows by
+  1.5-5% in either direction here; the same shift the no-custom rows got would
+  put it nearer 3%), rather than as a bound on #172's cost. That it is fixed per
+  custom-node delta and
   does not grow with the List is argued from the code; only a 200-element List
   was measured.
 - **Opting in** costs +6.3% over not opting in (630.4 → 670.0) and zero
@@ -342,7 +346,7 @@ without isolating them. Read against that:
 
 **Verdict against #172's criterion**: no allocation is added per candidate on
 any row, opted in or not. On time, a model with no custom node does not regress;
-a model whose custom node does not opt in measured at most ~7.5 ns (1.2%) per
+a model whose custom node does not opt in measured ~7.5 ns (1.2%) per
 structural candidate, within the code-placement spread seen here. Final elements
 and the constraint body hashed identically on every commit that runs each row. (The earlier, loaded run of this A/B also
 found identical `cbls::solve()` digests at seed 12345, `max_iterations = 4000`,

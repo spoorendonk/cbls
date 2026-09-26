@@ -427,6 +427,7 @@ def test_counters_report_zero_pricing_without_a_generator() -> None:
     c = _solve(cm.m, 1, _iteration_budget(2_000)).counters
     assert (c.pricing_calls, c.columns_added, c.rows_added, c.columns_retired) == (0, 0, 0, 0)
     assert (c.extensions_refused, c.incumbents_revalidated, c.pricing_seconds) == (0, 0, 0.0)
+    assert c.revalidation_evaluations == 0
 
 
 # ---------------------------------------------------------------------------

@@ -1572,6 +1572,24 @@ void require_refused(ClosedFixture& f, const std::function<void()>& build) {
 
 }  // namespace
 
+TEST_CASE("solving an unclosed objective model closes it, so later builders refuse",
+          "[extend][closed]") {
+    // The first solve of an objective model appends the objective row and runs
+    // the same rebuild close() does. It used to leave closed_ false, so a row
+    // added afterwards was accepted, never evaluated, and the next solve
+    // reported feasible over it -- #173's wrong answer without a close() call.
+    Model m;
+    const int32_t x = m.float_var(0.0, 10.0, "x");
+    const int32_t five = m.constant(5.0);
+    m.minimize(m.sum({x}));
+    REQUIRE_FALSE(m.is_closed());
+    SearchConfig cfg;
+    cfg.max_iterations = 200;
+    (void)solve(m, 0.0, 1, true, nullptr, nullptr, 3, nullptr, cfg);
+    REQUIRE(m.is_closed());
+    REQUIRE_THROWS_AS(m.add_constraint(m.geq(x, five)), std::logic_error);
+}
+
 TEST_CASE("add_constraint after close is refused rather than silently unevaluated",
           "[extend][closed]") {
     // The issue's repro: the row x >= 5 arrived after close(), was never
