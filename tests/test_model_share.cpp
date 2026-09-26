@@ -13,6 +13,7 @@
 #include "cbls/inner_solver.h"
 #include "cbls/lns.h"
 #include "cbls/model.h"
+#include "cbls/model_extension.h"
 #include "cbls/pool.h"
 #include "cbls/search.h"
 #include "cbls/verify.h"
@@ -231,6 +232,14 @@ TEST_CASE("a frozen model refuses every structural change", "[share]") {
     REQUIRE_THROWS_AS(m.add_var_sequence({x, y}), std::logic_error);
     REQUIRE_THROWS_AS(m.reserve(100, 100), std::logic_error);
     REQUIRE_THROWS_AS(m.close(), std::logic_error);
+    // Growing a closed model (#167) is refused on the same grounds: the structure
+    // is shared, so an extension would rewrite a peer's DAG under a running
+    // search. The refusal is why growth is single-solve() only.
+    {
+        ModelExtension ext(m);
+        ext.bool_var();
+        REQUIRE_THROWS_AS(m.extend(ext), std::logic_error);
+    }
 
     // Nothing was appended by any of the refusals.
     REQUIRE(m.num_vars() == 2);

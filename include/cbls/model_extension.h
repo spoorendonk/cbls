@@ -190,7 +190,7 @@ private:
     /// Validate a handle against the base model plus what this extension has
     /// recorded so far, and return it unchanged. Throws `std::out_of_range` if
     /// it names nothing.
-    int32_t check_handle(int32_t handle) const;
+    [[nodiscard]] int32_t check_handle(int32_t handle) const;
     int32_t check_node_handle(int32_t handle, const char* what) const;
     int32_t push(NodeOp op, std::vector<int32_t> children, double const_value = 0.0);
     int32_t add_var(VarType type, double lb, double ub, const std::string& name);

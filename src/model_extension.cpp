@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <limits>
 #include <map>
@@ -90,7 +91,10 @@ void ModelExtension::set_initial(int32_t var, double value) {
             "assignment the model is already sitting on");
     }
     NewVar& nv = new_vars_[static_cast<size_t>(idx)];
-    if (!(value >= nv.lb && value <= nv.ub)) {
+    // Spelled with an explicit NaN test rather than as `!(lb <= v && v <= ub)`:
+    // the negated form rejects NaN by accident, and the positive comparisons alone
+    // would let it through.
+    if (std::isnan(value) || value < nv.lb || value > nv.ub) {
         throw std::invalid_argument(
             "ModelExtension::set_initial: value is outside the variable's bounds");
     }
@@ -434,8 +438,13 @@ void evaluate_extension_cone(Model& model, int32_t first_new_node, int32_t end_n
     for (const int32_t nid : grown_nodes) {
         mark(nid);
     }
-    for (size_t i = 0; i < list.size(); ++i) {
-        for (const int32_t parent : model.parents(list[i])) {
+    // `list` grows inside the walk, so it is indexed rather than iterated: a
+    // range-based loop over a container the body appends to is undefined.
+    size_t head = 0;
+    while (head < list.size()) {
+        const int32_t nid = list[head];
+        ++head;
+        for (const int32_t parent : model.parents(nid)) {
             mark(parent);
         }
     }
@@ -529,7 +538,7 @@ void insert_topo_block(ModelStructure& st, const ExtensionResult& res, int32_t i
     }
     st.topo_order.insert(st.topo_order.begin() + insert_pos, block.begin(), block.end());
     st.topo_pos.resize(st.nodes.size());
-    for (size_t i = static_cast<size_t>(insert_pos); i < st.topo_order.size(); ++i) {
+    for (auto i = static_cast<size_t>(insert_pos); i < st.topo_order.size(); ++i) {
         st.topo_pos[static_cast<size_t>(st.topo_order[i])] = static_cast<int32_t>(i);
     }
 }

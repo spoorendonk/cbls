@@ -29,6 +29,7 @@ add_executable(cbls_tests
     test_minlplib.cpp
     test_setcover.cpp
     test_model_share.cpp
+    test_model_extend.cpp
     test_throughput.cpp
 )
 target_link_libraries(cbls_tests PRIVATE cbls_lib Catch2::Catch2WithMain)
