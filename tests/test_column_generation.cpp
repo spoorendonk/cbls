@@ -11,6 +11,7 @@
 #include "cbls/model.h"
 #include "cbls/model_extension.h"
 #include "cbls/pool.h"
+#include "cbls/randomize.h"
 #include "cbls/search.h"
 #include "cbls/tracer.h"
 #include "cbls/violation.h"
@@ -844,6 +845,30 @@ TEST_CASE("FeasibilityJump::retire refuses an unpinned variable and drops a pinn
     REQUIRE(m.var(bid).value == 0.0);  // never moved again, not even by a kick
 }
 
+TEST_CASE("a pinned Bool stays put for a fresh FJ and a random draw", "[column]") {
+    // What keeps a retired Bool column retired outside the FJ that retired it:
+    // an LNS repair builds a FeasibilityJump of its own, which knows nothing of
+    // `retire`, and the destroy step draws through random_in_domain. Both must
+    // read the pinned bound. (A Bool was never pinned before #168.)
+    Model m;
+    const int32_t b = m.bool_var();
+    m.add_constraint(m.geq(m.sum({m.prod(m.constant(1.0), b)}), m.constant(1.0)));  // wants b = 1
+    m.close();
+    const int32_t bid = -(b + 1);
+    m.var_mut(bid).ub = 0.0;
+    RNG rng(3);
+    for (int i = 0; i < 20; ++i) {
+        REQUIRE(random_in_domain(m.var(bid), rng) == 0.0);
+    }
+    ViolationManager vm(m);
+    FeasibilityJump fj(m, vm, rng);
+    fj.begin(true);
+    for (int i = 0; i < 5; ++i) {
+        (void)fj.batch(100);
+    }
+    REQUIRE(m.var(bid).value == 0.0);
+}
+
 // ---------------------------------------------------------------------------
 // The incumbent stays honest.
 // ---------------------------------------------------------------------------
@@ -962,11 +987,38 @@ TEST_CASE("each portfolio worker grows its own model with its own generator",
     cfg.column_generator = std::make_shared<TrackedPricer>(cs, cm, reg);
     cfg.pricing_period = 5;
     cfg.max_generated_columns = 200;
+    // Frequent full-period kicks, which is the route that adopts from the pool --
+    // so a pool left shared would show up below as Adopt kicks.
+    cfg.perturbation_period = 5;
     constexpr int kWorkers = 3;
     ParallelSearch ps(kWorkers);
     ParallelConfig pc;
     pc.n_threads = kWorkers;
+    std::atomic<int> adopts{0};
+    std::atomic<int> kicks{0};
+    class KickCounter : public Tracer {
+    public:
+        KickCounter(std::atomic<int>& adopts, std::atomic<int>& kicks)
+            : adopts_(adopts), kicks_(kicks) {}
+        void kick(KickKind kind) override {
+            kicks_.fetch_add(1, std::memory_order_relaxed);
+            if (kind == KickKind::Adopt) {
+                adopts_.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+
+    private:
+        std::atomic<int>& adopts_;
+        std::atomic<int>& kicks_;
+    };
+    pc.tracer_factory = [&adopts, &kicks](int /*worker*/) -> std::unique_ptr<Tracer> {
+        return std::make_unique<KickCounter>(adopts, kicks);
+    };
     const SearchResult r = ps.solve(cm.model, 1.0, 17, cfg, nullptr, nullptr, nullptr, pc);
+    // Workers' models diverge at their first extension, so nothing is shared
+    // and nothing is adopted.
+    REQUIRE(kicks.load() > 10);
+    REQUIRE(adopts.load() == 0);
 
     // One clone per worker (one solve each, no restarts), and every worker priced
     // with a distinct instance.
