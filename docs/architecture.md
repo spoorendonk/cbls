@@ -442,9 +442,13 @@ uniformly correct for both senses.
 `close()` rebuilds the back-references, computes the topological order,
 builds the `var_id -> constraint-index` adjacency (`build_var_constraints`, the
 paper's `G_v`), performs an initial full evaluation, and sets the `closed_`
-flag. The model is immutable in structure
-after close — *except* for the objective soft constraint, which `solve()`
-appends lazily (see below).
+flag. After close the ordinary builders — variable and expression creation,
+`add_constraint`, `minimize`/`maximize`, `add_var_sequence`,
+`add_list_partition` — throw `std::logic_error` (#173): a node or row they
+appended then was never placed in the topological order, so no evaluation
+reached it and `solve()` reported feasible over it. A closed model grows only
+through `ModelExtension` + `Model::extend` (#167), and internally through the
+objective soft constraint, which `solve()` appends lazily (see below).
 
 ### Structure vs. state: `ModelStructure` and `freeze()` (#157)
 
