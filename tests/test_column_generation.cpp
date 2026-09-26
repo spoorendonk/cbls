@@ -593,7 +593,7 @@ TEST_CASE("a knapsack pricer beats the trivial pattern set on u120_00", "[column
         REQUIRE(with.objective >= kU120Optimum);
         // "Strictly better than 120" is a low bar -- the trivial set admits no
         // other objective -- so hold it to what the measurement says it reaches
-        // at this budget (78-83 over these seeds, docs/architecture.md).
+        // at this budget (77-84 over these seeds, docs/architecture.md).
         REQUIRE(with.objective <= 90);
         // Under the cap, and the counters agree with the model.
         REQUIRE(with.counters.columns_added > 0);

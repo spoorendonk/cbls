@@ -2236,12 +2236,19 @@ weight (`PricingContext::objective_constraint_idx`).
 | `Stagnation` (`price_on_stagnation`, on by default) | immediately **before** the kick, on **both** routes (full-period and #102's unproductive one) | the kick resets the weights too |
 
 A batch that raises two events prices once, carrying the first of NewBest,
-Periodic, Stagnation. A structural or novelty batch's pending `fj.resync()` is paid
+Periodic, Stagnation. The batch that solves a pure-feasibility model prices
+nothing (the run is over, and a cut there would end it `Feasible` with
+`feasible == false`), and neither does the batch that spends the iteration
+budget. The Stagnation default has a RATE worth knowing: #102's unproductive route
+takes ~98% of kicks, a median of ~2 batches apart (#158), so a stalled search asks
+the generator about every other batch -- turn it off for an expensive pricer. A structural or novelty batch's pending `fj.resync()` is paid
 before the call rather than after it, since `FeasibilityJump::on_extended` patches
 only the touched rows and must be patching tables that describe the assignment.
 No call starts past the deadline (the same `past_deadline()` guard the inner
 solver has); the generator must itself return within
-`PricingContext::remaining_seconds`, which is `+inf` on an iteration-budgeted run.
+`PricingContext::remaining_seconds`, which is `+inf` on an iteration-budgeted run
+(and `elapsed_seconds` is NaN there: a clockless run reads no clock, pricing
+included).
 
 **What applying an extension does**, in order: `Model::extend`,
 `ViolationManager::on_extended`, `FeasibilityJump::on_extended` (#167's enforced
@@ -2250,8 +2257,15 @@ closest approach, an adopted kick origin; then the incumbent is **re-evaluated**
 That last step is not optional. An extension is an arbitrary DAG recording, so
 nothing short of evaluating the padded incumbent says whether it is still the
 point it was: a new row can cut it off, a column entering at a non-neutral start
-value moves its rows and its objective. Two `full_evaluate`s and one state copy
-per applied extension, O(model), paid only on a batch that priced. The outcomes:
+value moves its rows and its objective. Two `full_evaluate`s, one state copy and
+one FJ resync per applied extension, O(model), paid only on a batch that priced;
+the resync discards `on_extended`'s localised patching, so the new columns are
+re-queued by hand (`FeasibilityJump::requeue`). On a run with no incumbent the
+same check re-derives the closest approach's violation, but only when a row
+changed -- left stale-low it would refuse closer points of the grown model. The
+incumbent's objective is compared within `record_best`'s own relative tolerance,
+so round-off between the incremental and the fresh evaluation is not counted. The
+outcomes:
 unchanged (the column-generation norm -- a column enters at 0 and adds nothing);
 feasible with a different objective (the incumbent's objective is re-derived, the
 bound tightened if it is now lower, never loosened); or no longer feasible, in
@@ -2272,14 +2286,15 @@ demotes it`).
   `Model::extend` cannot remove (#167's non-goal), so the cap is the only thing
   that bounds per-batch cost growth.
 - *Retirement* (`column_retire_age`, default 0 = off). `ColumnPool` ages a
-  generated column once per pricing call while it sits at its lower bound in the
+  generated column once per pricing call -- starting with the call AFTER the one
+  that added it, since aging runs before the generator is asked -- while it sits at its lower bound in the
   current assignment **and** in every state the search may return to (the
   incumbent, or the closest approach on an infeasible run, and an adopted
   origin), and resets the age on any other value. At the age limit it is retired:
   its upper bound is set to its lower bound -- which is what keeps every *other*
   mover off it, an LNS destroy and the fresh `FeasibilityJump` an LNS repair
   builds included (a pinned Bool had never existed before, so `random_in_domain`
-  and the Bool jump candidate now read the bound; neither changes a draw on any
+  the Bool jump candidate and the standard Bool flip move now read the bound; none changes a draw on any
   model that existed before) -- and `FeasibilityJump::retire` drops it from the
   scan tables and from kicks. Retirement is permanent and is **not removal**: the
   column keeps its slot in G_v and its terms in their rows, and still counts
@@ -2334,16 +2349,16 @@ pattern set (one item per roll, so 120 without pricing), with the test file's
 bounded-knapsack pricer over the row weights -- up to four columns a call,
 `pricing_period = 5` plus the default Stagnation pricing, cap 400. Iteration
 budgets, so the numbers are deterministic and independent of machine load;
-engine commit `8b6a28d`, seeds 1-5:
+engine commit `8190f9c`, seeds 1-5:
 
 | GLS iterations | without pricer | with pricer | columns added |
 |---|---|---|---|
-| 30 000 (the test's budget) | 120 at every seed | 78-83 | 20-28 |
-| 300 000 | 120 | 60-65 | 67-110 |
-| 1 000 000 | 120 | 51-52 | 400 (the cap) at every seed |
+| 30 000 (the test's budget) | 120 at every seed | 77-84 | 20-28 |
+| 300 000 | 120 | 61-66 | 53-110 |
+| 1 000 000 | 120 | 51-53 | 400 (the cap) at every seed |
 
 No incumbent was ever revalidated (a column enters at 0 and changes nothing), and
-retirement was off. The best run is 3-4 rolls above the optimum -- this is a
+retirement was off. The runs end 3-5 rolls above the optimum -- this is a
 heuristic over GLS weights, not a master LP, and nothing here claims more. The
 test pins only the direction: strictly better than the no-pricer run at five
 seeds, under the cap.
