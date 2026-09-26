@@ -345,9 +345,12 @@ int32_t build_node(Model& m, NodeOp op, const json& j, const std::vector<int32_t
             break;  // handled by the caller, which needs no children
         case NodeOp::Custom:
             // Unreachable: `string_to_op` has no "Custom" entry, so a file
-            // naming one is rejected as an unknown op with the line number
-            // attached. Listed because this switch is `default:`-free.
-            break;
+            // naming one is rejected as an unknown op, with the line number
+            // attached, before it gets here. Listed because this switch is
+            // `default:`-free, and a throw rather than a `break` so that a
+            // future reader-side entry cannot silently return -1.
+            throw std::invalid_argument("line " + std::to_string(line_num) +
+                                        ": Custom nodes hold user code and cannot be loaded");
     }
     return -1;
 }

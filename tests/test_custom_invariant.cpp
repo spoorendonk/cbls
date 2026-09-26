@@ -59,17 +59,17 @@ struct CallLog {
     std::mutex mu;
     std::set<int> serials;  // guarded by mu: which instances did any work
 
-    void reset() {
+    void clear_counts() {
         evaluate = 0;
         delta = 0;
         commit = 0;
         rollback = 0;
         clone = 0;
-        const std::lock_guard<std::mutex> guard(mu);
+        const std::scoped_lock guard(mu);
         serials.clear();
     }
     [[nodiscard]] size_t distinct_workers() {
-        const std::lock_guard<std::mutex> guard(mu);
+        const std::scoped_lock guard(mu);
         return serials.size();
     }
 };
@@ -191,7 +191,7 @@ private:
             return;
         }
         noted_ = true;
-        const std::lock_guard<std::mutex> guard(log_->mu);
+        const std::scoped_lock guard(log_->mu);
         log_->serials.insert(serial_);
     }
 
@@ -308,7 +308,7 @@ TEST_CASE("the move path calls delta, never evaluate", "[custom]") {
     Model& m = fx.model;
     const int32_t kid = handle_to_var_id(fx.k);
 
-    log->reset();
+    log->clear_counts();
     m.var_mut(kid).value = 5.0;
     delta_evaluate(m, &kid, 1);
 
@@ -327,7 +327,7 @@ TEST_CASE("one scalar probe costs one delta and one rollback", "[custom]") {
     const int32_t kid = handle_to_var_id(fx.k);
     const double before = m.node_value(fx.custom_node);
 
-    log->reset();
+    log->clear_counts();
     const double d = vm.weighted_violation_delta(kid, 9.0);
 
     // This is criterion 2 of #166: the per-candidate scalar probe is bracketed,
@@ -342,7 +342,7 @@ TEST_CASE("one scalar probe costs one delta and one rollback", "[custom]") {
     REQUIRE(std::isfinite(d));
 
     SECTION("and the sparse variant is bracketed too") {
-        log->reset();
+        log->clear_counts();
         const auto per_row = m.per_constraint_violation_delta(kid, 9.0);
         CHECK(log->delta.load() == 1);
         CHECK(log->rollback.load() == 1);
@@ -492,7 +492,7 @@ TEST_CASE("a portfolio gives every worker its own invariant", "[custom][parallel
     Fixture fx = build_fixture(log);
     fx.model.freeze();
 
-    log->reset();
+    log->clear_counts();
     ParallelSearch ps(2);
     const SearchResult r = ps.solve(fx.model, 0.4, 7);
 

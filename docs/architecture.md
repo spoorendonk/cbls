@@ -141,6 +141,7 @@ node is the 8-byte value.
 | Conditional  | If                                                   |
 | Collection   | At (indexing), Count, Lambda, PairLambda (functional aggregation¹) |
 | Comparison   | Leq, Eq, Geq, Neq, Lt, Gt                           |
+| User code    | Custom (a `CustomInvariant`², #166)                  |
 
 Comparison nodes evaluate to a **violation measure** (0 when satisfied,
 positive when violated):
@@ -186,7 +187,10 @@ partial in one reverse pass:
    node adjoints
 
 `local_derivative` computes per-operation partial derivatives (chain rule
-components). Discrete operations (At, Count, Lambda, PairLambda) return 0.
+components). Discrete operations (At, Count, Lambda, PairLambda) return 0. A
+`Custom` node asks its invariant's `partial`, whose NaN ("unknown") reads as 0
+here — the same answer, so a custom node with no derivative is exactly as
+differentiable as a structural op.
 
 AD is used to generate Newton-toward-root jump candidates for Float variables
 (in `compute_var_jump`) and by the inner solver.
@@ -202,6 +206,63 @@ written only when it says something, so an open chain with no endpoints — ever
 PairLambda the format could express before those variants existed — still
 serialises to exactly the bytes it did; the reader defaults each absent key to
 that node.
+
+² **Custom nodes: user code in the DAG (#166).**
+`Model::custom(inputs, std::unique_ptr<CustomInvariant>, name)` appends a node
+whose value is whatever that object says it is. It is an ordinary node
+afterwards: usable inside an expression, as the objective, or as a constraint
+body. The inputs are ordinary handles — variables or nodes, scalar or
+structured, in any mix — and reach the invariant through `InvariantInputs`,
+a view over the node's children (`value(i)`, `elements(i)`,
+`is_structured_input(i)`).
+
+The interface is four calls plus a clone:
+
+| Call | When | Contract |
+|---|---|---|
+| `evaluate(in)` | `full_evaluate` — `close()`, after `restore_state`, every restart | From scratch. Redefines the committed state. |
+| `delta(in, changed)` | `delta_evaluate`, per dirtied pass | Incremental. `changed` is the input indices the engine recomputed since the last committed state — a *superset* of those that actually differ. Defaults to `evaluate(in)`. |
+| `commit()` | after a `delta` whose assignment is kept | The staged state becomes committed. |
+| `rollback()` | after a `delta` the caller has undone | Discard the staged state; the engine restores the node's cached *value* itself. |
+| `partial(in, i)` | reverse-mode AD | `d(value)/d(input i)`, or NaN for unknown. |
+| `clone()` | `Model` copy, i.e. one per portfolio worker | Must carry the current state — a replica starts from the master's node values and does not `full_evaluate`. |
+
+**Where the instance lives.** On the per-model side of the `ModelStructure`
+split: `ExprNode::lambda_func_id` indexes `Model::custom_invariant(id)`, a
+per-model `std::vector<CustomInvariantSlot>` that the copy constructor
+`clone()`s entry by entry. The *index* is structure and is shared; the
+*instance* is not. That is the difference from `lambda_funcs`, which every
+replica invokes concurrently and which therefore cannot carry state at all.
+
+**The probe bracket, and what is not bracketed.** `delta_evaluate` takes a
+`DeltaMode`: `Commit` (the default, and what every pre-#166 call site means),
+`Probe` and `Rollback`. `Model::weighted_violation_delta` and
+`per_constraint_violation_delta` — the per-candidate scalar probe Feasibility
+Jump runs for every jump value — are bracketed as `Probe` then `Rollback`, so a
+custom node in one of those cones costs **one `delta` and one `rollback`** per
+candidate rather than two deltas. The structural batch
+(`src/structural_batch.cpp`) and the inner solver (`src/inner_solver.cpp`) score
+by evaluating forwards and evaluating back, and both legs stay `Commit`: correct,
+because each leg really is a new committed assignment, but **twice the cost** of
+the scalar path, and an invariant caching a List's prefix sums rebuilds it on
+both legs. Bracketing those two is a separate change.
+
+**A model with no custom node is untouched.** `Model::has_custom_nodes()` is
+tested once per `delta_evaluate`/`full_evaluate` call, not per node, and the
+false branch is the pre-#166 loop verbatim — so trajectories are bit-identical
+at one thread (verified against `899b5e0` on two seeded, iteration-bounded
+solves, mixed-integer/non-convex and List, over every `SearchResult` field plus
+a byte digest of `best_state`).
+
+**Serialisation refuses.** A `CustomInvariant` is C++ code, not a table of
+numbers the way a `Lambda` is, so `save_model` throws before writing its first
+line, naming the node and the invariant. Checked before the stream is opened:
+`std::ofstream` truncates on open, so a refusal after that point would replace
+an existing file with a prefix of a model.
+
+**Not exposed to Python.** A Python-subclassable invariant needs the trampoline
+and GIL machinery of #132; `NodeOp::Custom` is deliberately absent from
+`python/bindings.cpp`'s enum.
 
 ---
 

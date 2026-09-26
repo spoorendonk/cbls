@@ -184,13 +184,19 @@ CheckOptions:
   # actually rests on.)
   - key: readability-identifier-naming.FunctionCase
     value: lower_case
-  # The typed-variable factory API on Model is deliberately CamelCase: each
-  # method names the variable type it creates (`m.Bool()`, `m.Int()`), and
-  # `bool`/`int`/`float` cannot be spelled lower_case at all without
+  # The Expr-returning factory API on Model is deliberately CamelCase: each
+  # method names the THING it creates (`m.Bool()`, `m.Int()`, `m.Custom()`),
+  # and `bool`/`int`/`float` cannot be spelled lower_case at all without
   # colliding with a keyword -- clang-tidy says so itself and declines to
-  # fix them. Six methods, the only survivors of the naming sweep.
+  # fix them. Seven methods, the only survivors of the naming sweep.
+  #
+  # `Constant` and `Custom` name a node rather than a variable type, which is
+  # why the rule is stated as "Expr-returning factory" and not "variable type":
+  # every one of the seven is the `Expr` sibling of a lower_case `int32_t`
+  # builder (`constant`, `custom`), and it is the return type rather than the
+  # keyword collision that the set actually has in common.
   - key: readability-identifier-naming.MethodIgnoredRegexp
-    value: '^(Bool|Int|Float|List|Set|Constant)$'
+    value: '^(Bool|Int|Float|List|Set|Constant|Custom)$'
   - key: readability-identifier-naming.VariableCase
     value: lower_case
   # A single ConstantCase of UPPER_CASE is a spelling used nowhere here, and
