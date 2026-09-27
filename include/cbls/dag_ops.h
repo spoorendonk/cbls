@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <set>
+#include <utility>
 #include <vector>
 
 namespace cbls {
@@ -80,10 +81,31 @@ inline double delta_evaluate(Model& model, std::initializer_list<int32_t> change
 /// business being here. See `Model::extend`.
 [[nodiscard]] bool in_evaluation();
 
+// Reverse-mode AD over the cone of `expr_id` (the nodes reachable from it
+// through children), visited in reverse topological order. Cost O(c log c) for
+// a cone of c nodes, not O(|nodes|); a cone too large for the sort to pay falls
+// back to the full-order walk. Results are bit-identical either way. The
+// rationale and the cutover are at `reverse_sweep` in src/dag_ops.cpp.
+//
+// All three share one thread_local scratch, so none may be called from inside
+// another on the same thread -- i.e. not from a `CustomInvariant::partial`.
+
+/// ∂expr/∂var for one variable; 0.0 for a `var_id` outside the model.
 double compute_partial(const Model& model, int32_t expr_id, int32_t var_id);
 
-// Batch AD: compute partials of expr_id w.r.t. ALL variables in one reverse pass.
-// Returns vector of size num_vars; entry[i] = ∂expr/∂var_i.
+/// Batch AD: partials of `expr_id` w.r.t. ALL variables in one reverse pass.
+/// Returns a vector of size `num_vars()`; entry[i] = ∂expr/∂var_i. The O(num_vars)
+/// result is the floor here; prefer `compute_partials_sparse` on a large model.
 std::vector<double> compute_all_partials(const Model& model, int32_t expr_id);
+
+/// Sparse batch AD: fills `out` (cleared first) with (var_id, ∂expr/∂var_id) for
+/// every variable whose partial is nonzero -- each variable at most once, in
+/// the deterministic order the sweep first reached it. Values are bit-identical
+/// to `compute_all_partials`' entries. Costs the sweep plus O(output) -- never
+/// the O(num_vars) result `compute_all_partials` pays -- which is what a per-row
+/// slope cache over a linear model wants. `out` is the caller's buffer so a hot
+/// loop can reuse its capacity.
+void compute_partials_sparse(const Model& model, int32_t expr_id,
+                             std::vector<std::pair<int32_t, double>>& out);
 
 }  // namespace cbls

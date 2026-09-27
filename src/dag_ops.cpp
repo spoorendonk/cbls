@@ -5,8 +5,10 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace cbls {
@@ -370,122 +372,184 @@ double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count
     return 0.0;
 }
 
-// Sparse reverse-mode AD: only visit ancestors of expr_id
-double compute_partial(const Model& model, int32_t expr_id, int32_t var_id) {
-    const size_t num_nodes = model.num_nodes();
-    const size_t num_vars = model.num_vars();
+namespace {
 
-    // Flat adjoint vector: [0..num_nodes-1] for nodes, [num_nodes..num_nodes+num_vars-1] for vars
-    thread_local std::vector<double> adjoint;
-    thread_local std::vector<int32_t> written;  // dirty list for cleanup
+// Scratch for the reverse sweep, shared by the three entry points below. Every
+// buffer is left all-zero / empty between calls; `AdjointScratchGuard` restores
+// that on the way out, including when a `CustomInvariant::partial` throws.
+//
+// `adjoint` is flat: [0, num_nodes) for nodes, [num_nodes, num_nodes + num_vars)
+// for variables. It only ever grows, so a thread that sees a larger model keeps
+// the larger buffer.
+struct AdjointScratch {
+    std::vector<double> adjoint;
+    std::vector<int32_t> written;  // adjoint entries touched, for O(touched) cleanup
+    std::vector<uint8_t> in_cone;  // node id -> collected into `cone`
+    std::vector<int32_t> cone;     // nodes reachable from expr_id through children
+};
 
-    const size_t total_size = num_nodes + num_vars;
-    if (adjoint.size() < total_size) {
-        adjoint.resize(total_size, 0.0);
-    }
-    written.clear();
-
-    adjoint[expr_id] = 1.0;
-    written.push_back(expr_id);
-
-    // Find ancestors of expr_id by walking topo_order in reverse,
-    // only visiting nodes that have nonzero adjoint (i.e., are reachable from expr_id)
-    const auto& order = model.topo_order();
-    for (auto it = order.rbegin(); it != order.rend(); ++it) {
-        int32_t nid = *it;
-        if (adjoint[nid] == 0.0) {
-            continue;
-        }
-        double adj = adjoint[nid];
-
-        const auto& nd = model.node(nid);
-        const ConstSpan<ChildRef> children = model.children(nd);
-        for (int i = 0; i < static_cast<int>(children.size()); ++i) {
-            double ld = local_derivative(nd, i, model);
-            const ChildRef& child = children[i];
-            if (child.is_var) {
-                int32_t key = static_cast<int32_t>(num_nodes) + child.id;
-                if (adjoint[key] == 0.0) {
-                    written.push_back(key);
-                }
-                adjoint[key] += adj * ld;
-            } else {
-                if (adjoint[child.id] == 0.0) {
-                    written.push_back(child.id);
-                }
-                adjoint[child.id] += adj * ld;
-            }
-        }
-    }
-
-    int32_t key = static_cast<int32_t>(num_nodes) + var_id;
-    double result = (key < static_cast<int32_t>(adjoint.size())) ? adjoint[key] : 0.0;
-
-    // Clean up only entries we wrote
-    for (int32_t idx : written) {
-        adjoint[idx] = 0.0;
-    }
-
-    return result;
+AdjointScratch& adjoint_scratch() {
+    thread_local AdjointScratch scratch;
+    return scratch;
 }
 
-// Batch AD: one reverse pass computing ∂expr/∂(all vars)
-std::vector<double> compute_all_partials(const Model& model, int32_t expr_id) {
-    const size_t num_nodes = model.num_nodes();
-    const size_t num_vars = model.num_vars();
-
-    thread_local std::vector<double> adjoint;
-    thread_local std::vector<int32_t> written;
-
-    const size_t total_size = num_nodes + num_vars;
-    if (adjoint.size() < total_size) {
-        adjoint.resize(total_size, 0.0);
-    }
-    written.clear();
-
-    adjoint[expr_id] = 1.0;
-    written.push_back(expr_id);
-
-    const auto& order = model.topo_order();
-    for (auto it = order.rbegin(); it != order.rend(); ++it) {
-        int32_t nid = *it;
-        if (adjoint[nid] == 0.0) {
-            continue;
+class AdjointScratchGuard {
+public:
+    explicit AdjointScratchGuard(AdjointScratch& scratch) : scratch_(scratch) {}
+    AdjointScratchGuard(const AdjointScratchGuard&) = delete;
+    AdjointScratchGuard& operator=(const AdjointScratchGuard&) = delete;
+    AdjointScratchGuard(AdjointScratchGuard&&) = delete;
+    AdjointScratchGuard& operator=(AdjointScratchGuard&&) = delete;
+    ~AdjointScratchGuard() {
+        for (const int32_t idx : scratch_.written) {
+            scratch_.adjoint[idx] = 0.0;
         }
-        double adj = adjoint[nid];
+        scratch_.written.clear();
+        for (const int32_t nid : scratch_.cone) {
+            scratch_.in_cone[nid] = 0;
+        }
+        scratch_.cone.clear();
+    }
 
-        const auto& nd = model.node(nid);
-        const ConstSpan<ChildRef> children = model.children(nd);
-        for (int i = 0; i < static_cast<int>(children.size()); ++i) {
-            double ld = local_derivative(nd, i, model);
-            const ChildRef& child = children[i];
-            if (child.is_var) {
-                int32_t key = static_cast<int32_t>(num_nodes) + child.id;
-                if (adjoint[key] == 0.0) {
-                    written.push_back(key);
-                }
-                adjoint[key] += adj * ld;
-            } else {
-                if (adjoint[child.id] == 0.0) {
-                    written.push_back(child.id);
-                }
-                adjoint[child.id] += adj * ld;
+private:
+    AdjointScratch& scratch_;
+};
+
+// Push the adjoint of one node onto its children -- the body of the sweep,
+// unchanged from the full-order walk it replaced.
+void propagate_adjoint(const Model& model, int32_t nid, size_t num_nodes, AdjointScratch& s) {
+    const double adj = s.adjoint[nid];
+    const auto& nd = model.node(nid);
+    const ConstSpan<ChildRef> children = model.children(nd);
+    for (int i = 0; i < static_cast<int>(children.size()); ++i) {
+        const double ld = local_derivative(nd, i, model);
+        const ChildRef& child = children[i];
+        const int32_t key = child.is_var ? static_cast<int32_t>(num_nodes) + child.id : child.id;
+        if (s.adjoint[key] == 0.0) {
+            s.written.push_back(key);
+        }
+        s.adjoint[key] += adj * ld;
+    }
+}
+
+// Reverse-mode sweep from `expr_id`: on return `s.adjoint` holds d expr / d x
+// for every node and variable x, and `s.written` lists every entry touched.
+//
+// Only the cone of `expr_id` -- the nodes reachable from it through children --
+// can ever carry a nonzero adjoint, so the sweep visits the cone in reverse
+// topological order rather than all of `topo_order()`. It keeps the full walk's
+// `adjoint == 0.0` skip, so it performs exactly the same floating-point
+// operations in exactly the same order: every node outside the cone had adjoint
+// 0 in the full walk too, and the cone sorted by `topo_position` is the full
+// order restricted to the cone. The results, and every search trajectory built
+// on them, are bit-identical to the full walk.
+//
+// Cost: collecting the cone is O(cone + its edges), sorting it O(c log c) with
+// two scattered `topo_position` loads per comparison, against the full walk's
+// O(|nodes|) sequential adjoint tests. That wins by orders of magnitude where
+// the callers live -- a linear MIP row of a few dozen terms against the 765k
+// nodes of MIPfeas' uccase12, where the full walk cost ~0.9 ms per (row,
+// variable) pair and was 80-87% of CPU. It loses as the cone approaches the
+// whole DAG (an objective over every node, a dense continuous model), where the
+// sort does ~log2(c) scattered comparisons per node the scan tests once. So the
+// same cost model as `evaluate_dirty_in_topo_order` picks the route: collect
+// while c * (log2|nodes| + 1) < |nodes|, and on crossing it abandon the cone and
+// scan the full order exactly as before. That bounds the wasted collection at
+// ~|nodes| / log2|nodes| and makes the worst case the old cost plus that.
+void reverse_sweep(const Model& model, int32_t expr_id, AdjointScratch& s) {
+    const size_t num_nodes = model.num_nodes();
+    const size_t total_size = num_nodes + model.num_vars();
+    if (s.adjoint.size() < total_size) {
+        s.adjoint.resize(total_size, 0.0);
+    }
+    if (s.in_cone.size() < num_nodes) {
+        s.in_cone.resize(num_nodes, 0);
+    }
+
+    s.adjoint[expr_id] = 1.0;
+    s.written.push_back(expr_id);
+
+    size_t log2_nodes = 0;
+    while ((size_t{1} << (log2_nodes + 1)) <= num_nodes) {
+        ++log2_nodes;
+    }
+    const size_t max_sorted_cone = num_nodes / (log2_nodes + 1);
+
+    // Breadth-first over node children, using `cone` itself as the queue.
+    bool cone_fits = true;
+    s.in_cone[expr_id] = 1;
+    s.cone.push_back(expr_id);
+    for (size_t head = 0; head < s.cone.size() && cone_fits; ++head) {
+        for (const ChildRef& child : model.children(model.node(s.cone[head]))) {
+            if (child.is_var || s.in_cone[child.id] != 0) {
+                continue;
+            }
+            s.in_cone[child.id] = 1;
+            s.cone.push_back(child.id);
+            if (s.cone.size() > max_sorted_cone) {
+                cone_fits = false;
+                break;
             }
         }
     }
 
-    // Extract var partials
-    std::vector<double> partials(num_vars);
-    for (size_t i = 0; i < num_vars; ++i) {
-        partials[i] = adjoint[num_nodes + i];
+    if (cone_fits) {
+        // Descending position = reverse topological order.
+        std::sort(s.cone.begin(), s.cone.end(), [&model](int32_t a, int32_t b) {
+            return model.topo_position(a) > model.topo_position(b);
+        });
+        for (const int32_t nid : s.cone) {
+            if (s.adjoint[nid] != 0.0) {
+                propagate_adjoint(model, nid, num_nodes, s);
+            }
+        }
+        return;
     }
-
-    // Clean up
-    for (int32_t idx : written) {
-        adjoint[idx] = 0.0;
+    const auto& order = model.topo_order();
+    for (auto it = order.rbegin(); it != order.rend(); ++it) {
+        if (s.adjoint[*it] != 0.0) {
+            propagate_adjoint(model, *it, num_nodes, s);
+        }
     }
+}
 
-    return partials;
+}  // namespace
+
+double compute_partial(const Model& model, int32_t expr_id, int32_t var_id) {
+    AdjointScratch& s = adjoint_scratch();
+    const AdjointScratchGuard guard(s);
+    reverse_sweep(model, expr_id, s);
+    if (var_id < 0 || static_cast<size_t>(var_id) >= model.num_vars()) {
+        return 0.0;
+    }
+    return s.adjoint[model.num_nodes() + static_cast<size_t>(var_id)];
+}
+
+std::vector<double> compute_all_partials(const Model& model, int32_t expr_id) {
+    AdjointScratch& s = adjoint_scratch();
+    const AdjointScratchGuard guard(s);
+    reverse_sweep(model, expr_id, s);
+    const size_t num_nodes = model.num_nodes();
+    const auto first = s.adjoint.begin() + static_cast<std::ptrdiff_t>(num_nodes);
+    return {first, first + static_cast<std::ptrdiff_t>(model.num_vars())};
+}
+
+void compute_partials_sparse(const Model& model, int32_t expr_id,
+                             std::vector<std::pair<int32_t, double>>& out) {
+    out.clear();
+    AdjointScratch& s = adjoint_scratch();
+    const AdjointScratchGuard guard(s);
+    reverse_sweep(model, expr_id, s);
+    const auto num_nodes = static_cast<int32_t>(model.num_nodes());
+    // `written` can list a variable twice -- its adjoint cancelled to 0.0 and was
+    // touched again -- so each emitted entry is zeroed at once, which makes the
+    // second listing read 0.0 and skip. The guard zeroes the rest.
+    for (const int32_t key : s.written) {
+        if (key >= num_nodes && s.adjoint[key] != 0.0) {
+            out.emplace_back(key - num_nodes, s.adjoint[key]);
+            s.adjoint[key] = 0.0;
+        }
+    }
 }
 
 }  // namespace cbls
