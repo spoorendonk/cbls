@@ -2693,9 +2693,9 @@ separated from this rule: each arm's mean paired primal-gap difference had a 95%
 CI spanning zero, and the narrowest half-width (0.013) was about four times the
 largest mean (0.0033). The engagement counters explain part of that:
 - the slot changed the candidate set on a third of draws but was picked on only
-  6% of them;
-- despite slot and tabu each altering the draw in every run, 13 of 40 runs of
-  each ended on control's objective bit for bit;
+  6% of draws;
+- despite slot and tabu each changing the candidate set in every run, 13 of 40
+  runs of each ended on control's objective bit for bit;
 - the distance weights were close to uniform, because the asker sits at about
   the same distance from every entry of a pool of near-identical refinements.
 
