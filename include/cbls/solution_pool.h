@@ -58,36 +58,52 @@ public:
     /// alternatives against this rule. None earned its place, so this rule
     /// stands.
     ///
-    /// Protocol, pre-registered: engine `0113c8f` (`ea89d15` plus a temporary
-    /// switch since removed), `cbls_mipfeas --threads 4 --budget 60`, seeds
-    /// 101-108, on the six instances #158's last-improvement times put at or
-    /// before 75% of the budget (binkar10_1, neos5, gen-ip054, markshare2,
-    /// mas76, mad). 192 runs, serial, arm order rotated per (instance, seed),
-    /// no worker lost. The metric is the MIPLIB primal gap to the proven
-    /// optimum, paired per (instance, seed). Figures are the mean paired
-    /// difference against this rule (negative = better) with a stratified
-    /// bootstrap 95% CI:
+    /// Protocol, pre-registered: engine `ea89d15` plus a temporary A/B switch,
+    /// since removed; `cbls_mipfeas --threads 4 --budget 60`; seeds 101-108.
+    /// The roster is the six instances whose single-threaded, pre-`0dc826b`
+    /// last-improvement times in #158 fell at or before 75% of the budget:
+    /// binkar10_1, neos5, gen-ip054, markshare2, mas76 and mad. 192 runs,
+    /// serial, arm order rotated per (instance, seed), no worker lost. The
+    /// metric is the MIPLIB primal gap to the proven optimum, paired per
+    /// (instance, seed). An arm would land only if its mean paired difference
+    /// had bootstrap and t 95% CIs both below zero, and it made no more
+    /// instances worse than better. Figures are the mean paired difference
+    /// against this rule (negative = better), with a stratified bootstrap 95%
+    /// CI:
     ///
-    ///  - a per-worker RESERVED SLOT, the answer this comment used to name: the
-    ///    better half plus the asking worker's own best, whatever its rank.
+    ///  - a per-worker RESERVED SLOT, the answer #135 named: the better half
+    ///    plus the asking worker's own best, whatever its rank.
     ///    -0.0024, CI [-0.0087, +0.0038].
     ///  - a per-worker TABU set of start points already handed to that worker,
     ///    by exact identity (objective plus an assignment hash): -0.0015,
     ///    CI [-0.0075, +0.0041]. 53% of its draws found the whole better half
-    ///    tabu and fell back to an ordinary kick.
+    ///    tabu and fell back to an ordinary kick. That rate is pooled: 919 of
+    ///    the 1,110 fallbacks were on markshare2, and none on binkar10_1.
     ///  - a draw over the whole pool WEIGHTED BY DISTANCE (Hamming, integer
     ///    variables) from the asker's live assignment: -0.0019,
     ///    CI [-0.0073, +0.0041].
     ///
-    /// Every interval spans zero, so the slot is now declined on a measurement
-    /// rather than for the lack of one. What the data does NOT show is that the
-    /// draw matters much here. After #158's restore-before-kick (`0dc826b`) this
-    /// roster no longer stalls the way #161's motivating table did: binkar10_1
-    /// at four threads finished between 9,097 and 10,135 on all 8 control seeds,
-    /// where the pre-`0dc826b` spread ran from 10K to 3.0M. On two of the six
-    /// instances the draw could not decide anything: neos5 reached its optimum
-    /// on every run, and gen-ip054 drew 0-3 times per run. Revisit only with a
-    /// roster that stalls on the engine as it stands then.
+    /// Every interval spans zero, so none is adopted. That is "could not be
+    /// separated from this rule at this power", not "measured to make no
+    /// difference". All three point estimates lean the alternative's way, and
+    /// each CI's half-width exceeds its mean. The roster was also weak:
+    ///
+    ///  - after #158's restore-before-kick (`0dc826b`), it mostly no longer
+    ///    stalls. Off neos5, only 19 of 40 control runs made their last
+    ///    improvement by the 45s mark;
+    ///  - binkar10_1 at four threads finished between 9,097 and 10,135 on all
+    ///    8 control seeds, where #161's 3-seed pre-`0dc826b` table ran from 10K
+    ///    to 3.0M;
+    ///  - neos5 reached its optimum on every run;
+    ///  - gen-ip054 drew only 0-3 times per run. Slot and tabu matched control
+    ///    on all 8 seeds there;
+    ///  - markshare2 sits at a gap of 0.98-0.99 on every run, where the metric
+    ///    is saturated.
+    ///
+    /// The signal therefore comes mostly from binkar10_1 and mas76. Revisit
+    /// only with a roster that stalls on the engine as it then stands; the
+    /// distance draw, whose point estimate was best on binkar10_1, is the
+    /// natural first arm.
     std::optional<Solution> get_restart_point(RNG& rng) const;
     size_t size() const;
 

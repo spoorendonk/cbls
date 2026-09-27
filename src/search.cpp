@@ -1448,8 +1448,8 @@ void ViolationLSLoop::maybe_diversify(BatchKind kind, bool improved) {
         // assignment: the pool holds points this worker has not seen, drawn
         // from the better half rather than the best so the workers stay spread.
         // Nothing here measures that, and it should not be read as settled --
-        // "cooperative vs non-cooperative sharing at a fixed worker count" is
-        // an open acceptance criterion on issue #135, and a null
+        // "cooperative vs non-cooperative sharing at a fixed worker count" was
+        // left unmeasured when issue #135 closed, and a null
         // SearchCoordination* is exactly how to run the control arm. adopt_from_pool() performs the
         // kick itself -- it disarms the probe it just armed, resamples rho, counts the perturbation
         // and zeroes stagnation -- so diversify() is skipped when it succeeds. With no pool it

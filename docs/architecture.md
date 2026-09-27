@@ -2686,8 +2686,11 @@ tends to fill with one worker's successive refinements of a single point, and
 the better half of that is close to the best. Three structural alternatives
 were measured against it in #161: a per-worker reserved slot, a per-worker tabu
 set of start points, and a draw weighted by distance from the asking worker.
-They ran at 4 threads and 60s, 8 seeds, on six stalling MIPfeas instances. None
-beat this rule: every paired primal-gap difference had a 95% CI spanning zero.
+They ran at 4 threads and 60s, 8 seeds, on six MIPfeas instances that #158 had
+recorded as stalling. None was shown to beat this rule: each arm's mean paired
+primal-gap difference had a 95% CI spanning zero. After #158's restore-before-kick
+that roster mostly no longer stalls, so this is weak evidence that the draw
+matters at all, not strong evidence for this rule.
 The rule stands; the numbers and protocol are in the comment on
 `SolutionPool::get_restart_point`.
 
