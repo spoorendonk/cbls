@@ -255,6 +255,34 @@ def test_score_instance_refuses_a_result_it_cannot_score_honestly(
 
 
 @pytest.mark.parametrize(
+    ("extra", "match"),
+    [
+        # #170: a portfolio absorbs a worker that dies inside the solve and returns
+        # the survivors' result, so `threads` alone overstates what ran.
+        ({"threads": 8, "workers_completed": 3}, "only 3 portfolio workers completed"),
+        ({"threads": 8, "workers_completed": 8}, None),
+        # A multi-threaded row from before the count cannot show it lost nothing.
+        ({"threads": 8}, "no workers_completed count"),
+        # One worker cannot be lost without the solve throwing (a solve_error row),
+        # so a single-threaded row without the count is still a measurement.
+        ({"threads": 1}, None),
+        ({"threads": 1, "workers_completed": 1}, None),
+    ],
+    ids=["lost-workers", "all-workers", "multi-thread-uncounted", "single-thread", "one-of-one"],
+)
+def test_score_instance_refuses_a_row_that_lost_portfolio_workers(
+    tmp_path: Path, extra: dict[str, object], match: str | None
+) -> None:
+    record = {"status": "feasible", "objective": 100.0, "wall_seconds": 60.0, **extra}
+    _write_result(tmp_path, "cbls", "inst", record, trace=[(1.0, 100.0)])
+    if match is None:
+        assert _score(tmp_path).status == "feasible"
+    else:
+        with pytest.raises(ValueError, match=match):
+            _score(tmp_path)
+
+
+@pytest.mark.parametrize(
     ("records", "verdicts", "match"),
     [
         # The budget guard catches only the budget. Novelty Jump and the bound clamp

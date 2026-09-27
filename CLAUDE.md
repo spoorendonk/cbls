@@ -673,7 +673,10 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
    bracket opens, and reports the cost as `replicate_seconds`. That has to stay
    outside the bracket for two reasons: inside it the copies come out of the
    search's own deadline, and a `bad_alloc` there is parked by `ParallelSearch`,
-   which would publish a row claiming N threads when three workers ran. It still
+   which returns the survivors' result. A worker that dies later, inside the
+   bracket, is not silent either (#170): `SearchResult::workers_completed` and
+   `worker_failures` report it, the runner publishes them per row, and the scorer
+   refuses a row with fewer completed workers than `threads`. It still
    grows with `--threads`, but with the per-worker mutable side rather than a whole
    DAG — 0.60s at eight workers against ~1.6s before. Its driver
    refuses `--cbls-threads != --cpsat-workers` without `--allow-asymmetric-cpu`:

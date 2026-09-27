@@ -677,10 +677,10 @@ int run_benchmark(int argc, char** argv) {
     //  - memory is the EXPECTED way an over-sized `--threads` fails under the
     //    driver's `ulimit -v`, and it has to fail here. Inside the bracket the
     //    allocation happens on a worker thread, where `ParallelSearch` parks the
-    //    `bad_alloc` and returns the survivors' result -- publishing a row that
-    //    claims N threads at exit 0 when three workers ran. `threads` is a scorer
-    //    config key, so that is a silently wrong published measurement. Allocating
-    //    all N here makes it a reported `replicate_error` row instead.
+    //    `bad_alloc` and returns the survivors' result. Since #170 that row
+    //    reports `workers_completed < threads` and the scorer refuses it, but a
+    //    refused row still costs the whole budget; allocating all N here fails in
+    //    a millisecond as a `replicate_error` row instead.
     //
     // This costs nothing at the peak: here we hold one structure plus N mutable
     // sides, and the solve holds the same plus each worker's FJ tables,

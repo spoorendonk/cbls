@@ -293,6 +293,15 @@ bool solve_parallel(const CliOptions& opt, Model& model, int effective_threads,
         std::cerr << "Error: parallel search failed: " << e.what() << "\n";
         return false;
     }
+    // A worker that died is absorbed and the survivors' answer returned (#170).
+    // Say so: the run the user asked for is not the run that happened.
+    if (result.workers_completed < effective_threads) {
+        std::cerr << "Warning: " << result.workers_completed << " of " << effective_threads
+                  << " portfolio workers completed\n";
+        for (const WorkerFailure& f : result.worker_failures) {
+            std::cerr << "  worker " << f.worker << ": " << f.reason << "\n";
+        }
+    }
     return true;
 }
 

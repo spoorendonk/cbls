@@ -20,14 +20,22 @@ so the scenarios stay next to the assertions that consume them.
 """
 
 import gc
+import json
 import os
 import subprocess
 import sys
 import threading
 import traceback
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import _cbls_core as cbls
+import pytest
+
+from benchmarks.mipfeas.primal_integral import score_instance
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # Generous relative to a 0.5s solve: this is a deadlock detector, not a
 # performance floor, so it only has to be shorter than a developer's patience.
@@ -283,6 +291,47 @@ def test_solve_parallel_absorbs_a_callback_that_kills_one_worker() -> None:
     assert "reraised_original=False" in out
     assert "raises=3 raising_threads=1" in out
     assert "destroyed=3 destroyed_on_calling_thread=1" in out
+
+
+def test_a_portfolio_that_loses_a_worker_says_so_and_its_row_is_refused(
+    tmp_path: "Path",
+) -> None:
+    """A dead worker is counted, and a MIPfeas row built from the result is refused (#170).
+
+    One worker's hook factory raises `MemoryError` -- the failure an
+    address-space cap produces -- so that worker never searches, while its peer
+    does. The portfolio absorbs it and returns the peer's answer, as it always
+    has; what is new is that the result says 1 of 2 completed and why the other
+    did not. The row below carries the keys `benchmarks/mipfeas/mipfeas.cpp`
+    writes, filled from this result, and the scorer must refuse it rather than
+    average it in as a 2-thread measurement.
+    """
+    out = _assert_scenario_ok("hook_factory_fails_one_worker")
+    report = json.loads(out.splitlines()[0])
+    assert report["workers_launched"] == 2
+    assert report["workers_completed"] == 1
+    assert len(report["worker_failures"]) == 1
+    failure = report["worker_failures"][0]
+    assert failure["produced_result"] is False
+    assert "MemoryError" in failure["reason"]
+
+    engine_dir = tmp_path / "cbls"
+    engine_dir.mkdir()
+    row = {
+        "engine": "cbls",
+        "instance": "inst",
+        "status": "feasible",
+        "objective": 3.0,
+        "wall_seconds": 0.5,
+        "budget_seconds": 0.5,
+        "threads": 2,
+        "workers_launched": report["workers_launched"],
+        "workers_completed": report["workers_completed"],
+        "worker_failures": report["worker_failures"],
+    }
+    (engine_dir / "inst.json").write_text(json.dumps(row))
+    with pytest.raises(ValueError, match="only 1 portfolio workers completed"):
+        score_instance("inst", "cbls", 3.0, "opt", tmp_path, 0.5)
 
 
 # --- Scenarios, executed in the child interpreter ---
@@ -578,6 +627,37 @@ def _scenario_callback_kills_one_worker() -> None:
     )
 
 
+def _scenario_hook_factory_fails_one_worker() -> None:
+    lock = threading.Lock()
+    calls = 0
+
+    def hook_factory(_model: "cbls.Model") -> "cbls.FloatIntensifyHook":
+        nonlocal calls
+        with lock:
+            calls += 1
+            first = calls == 1
+        if first:
+            # Raised inline, not bound first: see _run_raising_callback.
+            raise MemoryError("worker could not allocate")
+        return cbls.FloatIntensifyHook()
+
+    par = cbls.ParallelConfig()
+    par.n_threads = 2
+    result = cbls.ParallelSearch(2).solve_parallel(
+        _feasible_model, 0.5, 42, cbls.SearchConfig(), hook_factory, None, None, par
+    )
+    assert result.feasible, "the surviving worker should still have solved x + y >= 3"
+    report = {
+        "workers_launched": result.workers_launched,
+        "workers_completed": result.workers_completed,
+        "worker_failures": [
+            {"worker": f.worker, "produced_result": f.produced_result, "reason": f.reason}
+            for f in result.worker_failures
+        ],
+    }
+    print(json.dumps(report))
+
+
 if __name__ == "__main__":
     _scenarios = {
         "solve": _scenario_solve,
@@ -591,6 +671,7 @@ if __name__ == "__main__":
         "callback_raises_always": _scenario_callback_raises_always,
         "callback_raises_once": _scenario_callback_raises_once,
         "callback_kills_one_worker": _scenario_callback_kills_one_worker,
+        "hook_factory_fails_one_worker": _scenario_hook_factory_fails_one_worker,
     }
     _scenarios[sys.argv[1]]()
     print("OK")

@@ -455,8 +455,19 @@ stays the operator's, and is called out below rather than implied away:
   A replication that runs out of memory is at least reported rather than silent:
   all N replicas are built before the solve bracket opens, and the row is written
   with `status: replicate_error`. That is why they are built there and not on the
-  worker threads, where `ParallelSearch` would park the `bad_alloc` and publish a
-  row claiming N threads at exit 0 with only three workers having run.
+  worker threads, where `ParallelSearch` parks the `bad_alloc` and returns the
+  survivors' result.
+  The rest of a worker's footprint — its FJ tables, violation vectors and state
+  snapshots — is still allocated on its own thread, so a cap can fit every
+  replica and still starve a worker once it searches. That is reported too
+  (#170): every row carries `workers_launched`, `workers_completed` and
+  `worker_failures` (worker index, whether it had produced a result, the
+  exception's message), a row with `workers_completed < threads` makes the
+  runner exit 1, and the scorer **refuses** it, as it refuses a row from another
+  budget. A worker is *completed* when its last solve attempt returned normally,
+  so one that searched and then died on a restart counts as lost. A
+  multi-threaded row written before the column existed is refused as well,
+  since it cannot show it lost nothing.
 * **The two arms are separate results directories.** `threads` is a scorer
   config key, so a directory mixing thread counts is refused rather than
   averaged — and the driver refuses to *resume* a directory recorded at another
