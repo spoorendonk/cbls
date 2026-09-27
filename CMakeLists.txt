@@ -289,22 +289,41 @@ if(CBLS_BUILD_TESTS)
     add_subdirectory(tests)
     cbls_enable_warnings(cbls_tests)
 
-    # The clang-tidy gate probe (issue #171). The target is never built -- its
-    # source is deliberately not warning-clean -- and exists only so that the
-    # probe has a real entry in compile_commands.json, with the same flags as
-    # every other first-party target, rather than flags clang-tidy guesses.
-    add_library(cbls_tidy_probe STATIC EXCLUDE_FROM_ALL
-        .githooks/tidy-probe/incomplete_switch.cpp)
+    # The clang-tidy gate probe (issue #171). Its source is deliberately not
+    # warning-clean, so an ordinary build leaves it out (EXCLUDE_FROM_ALL); the
+    # target exists so the probe has a real entry in compile_commands.json,
+    # with the same flags as every other first-party target.
+    #
+    # The pre-push hook alone configures with CBLS_GATE_PROBE_IN_ALL=1 in the
+    # environment, which puts the probe INTO the gated build. Its three
+    # warnings then pass through exactly the output path of every other TU,
+    # and the hook's compiler-warning scan must find them in that same log
+    # before it may trust a clean result: a fence change that stops compiler
+    # output reaching the log blinds the scan and the control together. The
+    # hook reconfigures without the variable afterwards, so build/ is left
+    # building the probe only on request.
+    if("$ENV{CBLS_GATE_PROBE_IN_ALL}" STREQUAL "1")
+        add_library(cbls_tidy_probe STATIC .githooks/tidy-probe/incomplete_switch.cpp)
+    else()
+        add_library(cbls_tidy_probe STATIC EXCLUDE_FROM_ALL
+            .githooks/tidy-probe/incomplete_switch.cpp)
+    endif()
     cbls_enable_warnings(cbls_tidy_probe)
     # Only the pinned copy: a system clang-tidy of another vintage merges a
     # different default set and rejects keys this .clang-tidy uses. Without it
-    # the test exits 77 and ctest reports it Skipped, not Passed.
+    # the probe still checks the compile flags, then exits 77, and ctest
+    # reports it Skipped, not Passed.
     find_program(CBLS_CLANG_TIDY clang-tidy
         HINTS "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin" NO_DEFAULT_PATH)
     add_test(NAME clang_tidy_gate_probe
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/.githooks/tidy-probe.sh"
                 "${CBLS_CLANG_TIDY}" "${CMAKE_BINARY_DIR}")
     set_tests_properties(clang_tidy_gate_probe PROPERTIES SKIP_RETURN_CODE 77)
+    # The gates' text filters and the probe's skip/fail contract, on
+    # synthetic input -- a filter that matches nothing makes a gate pass.
+    add_test(NAME gate_lib_shell_test
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/.githooks/tests/gate-lib-test.sh"
+                "${CMAKE_BINARY_DIR}")
 endif()
 
 # Examples

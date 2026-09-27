@@ -25,6 +25,15 @@
 
 set -e
 
+# The compiler-warning gates' text filters (issue #171), tested on their own by
+# .githooks/tests/gate-lib-test.sh. From beside this hook, so the hook and its
+# filters are always the same version.
+if [ ! -f "$(dirname "$0")/gate-lib.sh" ]; then
+	echo "pre-push: $(dirname "$0")/gate-lib.sh is missing -- merge main."
+	exit 1
+fi
+source "$(dirname "$0")/gate-lib.sh"
+
 # Git feeds one line per ref being pushed:
 #   <local ref> <local sha> <remote ref> <remote sha>
 # and an all-zero local sha means that ref is being deleted.  A deletion
@@ -283,26 +292,6 @@ run_block() {
 	return $rc
 }
 
-# Print the compiler warnings in a build log that are in this repository's own
-# code: `$1` the log, `$2` the source root CMake recorded. Colour codes are
-# stripped first. First-party is everything under the root EXCEPT the trees
-# holding other people's code -- build*/ (FetchContent's _deps), .venv/
-# (nanobind) and .claude/ (agent worktrees) -- so a new top-level source
-# directory is gated rather than skipped. A relative path (ccache's base_dir
-# rewrites them) counts as ours unless it names one of those trees.
-first_party_warnings() {
-	sed 's/\x1b\[[0-9;]*[mK]//g' "$1" | awk -v root="$2/" '
-		/^[^ :]+:[0-9]+:([0-9]+:)? warning:/ {
-			path = substr($0, 1, index($0, ":") - 1)
-			if (substr(path, 1, 1) == "/") {
-				if (index(path, root) != 1) next
-				rest = substr(path, length(root) + 1)
-				if (rest ~ /^(build[^\/]*|\.venv|\.claude)\//) next
-			} else if (path ~ /(^|\/)(_deps|\.venv|site-packages)\//) next
-			print
-		}'
-}
-
 if [ -z "$CODE_FILES" ]; then
 	echo ""
 	echo "=== Skipping build+test (docs-only) ==="
@@ -336,11 +325,17 @@ else
 	if [ "$BUILD_FAILED" -eq 0 ]; then
 		echo ""
 		echo "=== Build ==="
+		echo "(The three warnings from .githooks/tidy-probe/ below are expected:"
+		echo " they are the compiler-warning scan's positive control.)"
 		# Teed to a log so the compiler's own warnings can be gated below.
 		# PIPESTATUS, not the pipeline's status, which is tee's.
+		# CBLS_GATE_PROBE_IN_ALL=1 puts the gate probe TU into this build (see
+		# cbls_tidy_probe in CMakeLists.txt); it is reset right after.
 		BUILD_LOG=$(git rev-parse --git-path cbls-pre-push-build.log)
+		export CBLS_GATE_PROBE_IN_ALL=1
 		run_block "$BUILD_CMD" 2>&1 | tee "$BUILD_LOG"
 		[ "${PIPESTATUS[0]}" -eq 0 ] || BUILD_FAILED=1
+		unset CBLS_GATE_PROBE_IN_ALL
 	fi
 	# Compiler warnings in first-party code block, like clang-tidy findings
 	# (issue #171). The clang-tidy sweep is clang's reading of the same -Wall
@@ -351,28 +346,41 @@ else
 	# hide them.
 	#
 	# A scan that matches nothing looks exactly like a clean build, so it fails
-	# OPEN on anything that changes the text -- colour codes
-	# (CMAKE_COLOR_DIAGNOSTICS=ON splits ": warning:" with ESC[m), a
-	# translated "warning:", a source path spelled differently from the one
-	# assumed. Hence the positive control below: the gate probe TU is compiled
-	# on its own and the same scan must find its -Wswitch, or the push blocks.
+	# OPEN on anything that changes the text or where it goes -- colour codes,
+	# a translated "warning:", a path spelled differently from the one
+	# assumed, or a fence that stops sending compiler output to this log.
+	# Hence the positive control, taken from the SAME log: the gate probe TU
+	# was compiled inside the fenced build, and the scan must find its
+	# -Wswitch there before a clean result counts.
 	if [ "$BUILD_FAILED" -eq 0 ]; then
-		# The source root as CMake recorded it: the spelling GCC prints.
+		# Leave build/ as an ordinary configure would: probe excluded again.
+		(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE && cmake build) >/dev/null 2>&1 ||
+			echo "note: could not reconfigure build/ without the gate probe"
+		# Source and binary dirs as CMake recorded them: the spelling GCC prints.
 		SRC_ROOT=$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' build/CMakeCache.txt 2>/dev/null)
-		[ -n "$SRC_ROOT" ] || SRC_ROOT=$(pwd -P)
-		BUILD_WARNINGS=$(first_party_warnings "$BUILD_LOG" "$SRC_ROOT")
-		PROBE_LOG="${BUILD_LOG}.probe"
-		# Its objects are removed first so the TU really compiles: an
-		# up-to-date target prints nothing, which would read as a blind scan.
-		# Only the objects: the directory also holds the generator's rules.
-		find build/CMakeFiles/cbls_tidy_probe.dir -name '*.o' -delete 2>/dev/null || true
-		(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE && cmake --build build --target cbls_tidy_probe) >"$PROBE_LOG" 2>&1 || true
-		if ! first_party_warnings "$PROBE_LOG" "$SRC_ROOT" | grep -F 'incomplete_switch.cpp' | grep -qF -- '-Wswitch'; then
+		BIN_DIR=$(sed -n 's/^CMAKE_CACHEFILE_DIR:INTERNAL=//p' build/CMakeCache.txt 2>/dev/null)
+		ALL_WARNINGS=""
+		[ -z "$SRC_ROOT" ] || ALL_WARNINGS=$(first_party_warnings "$BUILD_LOG" "$SRC_ROOT" "$BIN_DIR")
+		BUILD_WARNINGS=$(echo "$ALL_WARNINGS" | grep -vF '.githooks/tidy-probe/incomplete_switch.cpp' | sed '/^$/d' || true)
+		if [ -z "$SRC_ROOT" ]; then
 			echo ""
-			echo "Push blocked: the compiler-warning scan could not see the"
-			echo "gate probe's -Wswitch in a build of cbls_tidy_probe, so it"
-			echo "would miss real warnings too. Its output was:"
-			head -20 "$PROBE_LOG"
+			echo "Push blocked: the fenced build left no build/CMakeCache.txt,"
+			echo "so the compiler-warning scan cannot tell our code from"
+			echo "anyone else's. Every gate here assumes the build is in build/."
+			BUILD_FAILED=1
+		elif ! grep -qF 'tidy-probe/incomplete_switch.cpp' build/compile_commands.json 2>/dev/null; then
+			echo ""
+			echo "Push blocked: this tree has no cbls_tidy_probe target, which the"
+			echo "compiler-warning scan needs as its positive control. The hook"
+			echo "is newer than the branch -- merge main."
+			BUILD_FAILED=1
+		elif ! echo "$ALL_WARNINGS" | grep -F 'tidy-probe/incomplete_switch.cpp' | grep -qF -- '-Wswitch'; then
+			echo ""
+			echo "Push blocked: the gate probe's -Wswitch, compiled inside the"
+			echo "fenced build, is not in the scanned build log -- so the scan"
+			echo "would miss real warnings too. Check that the \`\`\`build fence"
+			echo "still sends compiler output to stdout/stderr, uncoloured or"
+			echo "coloured, and builds in build/."
 			BUILD_FAILED=1
 		elif [ -n "$BUILD_WARNINGS" ]; then
 			echo ""
