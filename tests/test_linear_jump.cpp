@@ -11,6 +11,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -90,13 +91,15 @@ void build_random_linear(RandomLinearModel& r, uint64_t seed, bool integral) {
         return coefs[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(coefs.size())))];
     };
     auto term = [&](int32_t v) {
-        switch (rng.integers(0, 4)) {
+        switch (rng.integers(0, 5)) {
             case 0:
                 return m.prod(m.constant(pick_coef()), v);
             case 1:
                 return m.neg(v);
             case 2:
                 return m.prod(v, m.constant(pick_coef()));
+            case 3:  // affine / const; a power-of-two divisor keeps it exact
+                return m.div_expr(v, m.constant(rng.integers(0, 2) == 0 ? 2.0 : -0.5));
             default:
                 return v;
         }
@@ -426,12 +429,106 @@ TEST_CASE("FeasibilityJump scores through the linear scorer", "[fj][linear_jump]
     // the +inf literal bound, which the closed form models).
     REQUIRE(fj.linear_scorer().fast_prepares() > 0);
     REQUIRE(fj.linear_scorer().fallback_prepares() == 0);
+}
 
-    // Novelty Jump scores through it too, both its W'-argmin and its W score.
+TEST_CASE("novelty jump scores both its W'-argmin and its W score in closed form",
+          "[fj][linear_jump]") {
+    // One jumpable variable, so exactly one is sampled; select_novelty_var then
+    // prepares twice -- once under W' (the argmin) and once under W (the score).
+    // A count, not "grew": either call site reverting to the probe loses one.
+    Model m;
+    const int32_t x = m.int_var(0, 5);
+    m.add_constraint(m.leq(x, m.constant(0.0)));
+    m.close();
+    m.var_mut(vid(x)).value = 3.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+    RNG rng(1);
+    FeasibilityJump fj(m, vm, rng);
+    fj.begin(false);
     const int64_t before = fj.linear_scorer().fast_prepares();
-    (void)fj.apply_novelty_jump();
-    fj.resync();
-    REQUIRE(fj.linear_scorer().fast_prepares() > before);
+    REQUIRE(fj.apply_novelty_jump());
+    REQUIRE(fj.linear_scorer().fast_prepares() == before + 2);
+    REQUIRE(m.var(vid(x)).value == 0.0);
+}
+
+TEST_CASE("a Float's Newton step reads the cached row partial", "[fj][linear_jump]") {
+    Model m;
+    const int32_t x = m.float_var(-10.0, 10.0);
+    // Row 0 is satisfied and has a different slope, so reading the partial of the
+    // wrong row would move the Newton candidate.
+    m.add_constraint(m.leq(m.prod(m.constant(3.0), x), m.constant(100.0)));
+    m.add_constraint(m.leq(m.prod(m.constant(2.0), x), m.constant(3.0)));  // 2x <= 3
+    m.close();
+    m.var_mut(vid(x)).value = 5.0;
+    full_evaluate(m);
+    LinearJumpScorer sc(m);
+    mark_all_rows(m, sc);
+    const std::vector<double> w = {1.0, 1.0};
+    // Newton lands exactly on the root and is considered first; the midpoint and
+    // lb tie with it at zero violation, so a wrong partial picks another value.
+    const JumpResult r = compute_var_jump(m, w, vid(x), false, &sc);
+    REQUIRE(r.jump_value == 1.5);
+    REQUIRE(sc.cached_partials() == 1);
+}
+
+TEST_CASE("a zero slope through Div by a near-zero constant still falls back",
+          "[fj][linear_jump]") {
+    Model m;
+    const int32_t x = m.int_var(0, 2);
+    const int32_t y = m.int_var(-1, 1);
+    // Affine by rule (affine / const) with local derivative 0, but the value is
+    // +inf for y >= 0 and -inf for y < 0: moving y flips the row.
+    m.add_constraint(m.leq(m.sum({x, m.div_expr(y, m.constant(0.0))}), m.constant(1.0)));
+    m.close();
+    m.var_mut(vid(x)).value = 0.0;
+    m.var_mut(vid(y)).value = 1.0;
+    full_evaluate(m);
+    LinearJumpScorer sc(m);
+    mark_all_rows(m, sc);
+    const std::vector<double> w = {1.0};
+    REQUIRE(m.weighted_violation_delta(vid(y), -1.0, w) == -kInfPenalty);
+    REQUIRE_FALSE(sc.prepare(vid(y), w));
+    REQUIRE(compute_var_jump(m, w, vid(y), false, &sc).score == kInfPenalty);
+}
+
+TEST_CASE("an infinite candidate takes the probe, not the closed form", "[fj][linear_jump]") {
+    // s unbounded, so -inf and +inf are candidates. Five violated rows s <= -10k:
+    // Newton serves only the first four roots, so -inf is the one candidate that
+    // satisfies all five. But row 5 reads 0 * s, which the DAG evaluates to NaN
+    // at s = -inf -- a maximal violation -- while `p + r D` never sees it (zero
+    // slope). Scored in closed form, -inf would win; the probe says it loses.
+    const double inf = std::numeric_limits<double>::infinity();
+    Model m;
+    const int32_t s = m.float_var(-inf, inf);
+    const int32_t z = m.int_var(0, 1);
+    for (int k = 1; k <= 5; ++k) {
+        m.add_constraint(m.leq(s, m.constant(-10.0 * k)));
+    }
+    m.add_constraint(m.leq(m.sum({m.prod(m.constant(0.0), s), z}), m.constant(1.0)));
+    m.close();
+    m.var_mut(vid(s)).value = 0.0;
+    m.var_mut(vid(z)).value = 0.0;
+    full_evaluate(m);
+    LinearJumpScorer sc(m);
+    mark_all_rows(m, sc);
+    const std::vector<double> w(m.constraint_ids().size(), 1.0);
+    REQUIRE(sc.prepare(vid(s), w));
+    const JumpResult probe = compute_var_jump(m, w, vid(s));
+    REQUIRE(probe.jump_value == -40.0);
+    const JumpResult fast = compute_var_jump(m, w, vid(s), false, &sc);
+    REQUIRE(fast.jump_value == probe.jump_value);
+    REQUIRE(fast.score == probe.score);
+}
+
+TEST_CASE("a scorer out of step with the model refuses to prepare", "[fj][linear_jump]") {
+    Model m;
+    const int32_t x = m.int_var(0, 2);
+    m.add_constraint(m.leq(x, m.constant(1.0)));
+    m.close();
+    LinearJumpScorer sc(m);  // never sized
+    const std::vector<double> w = {1.0};
+    REQUIRE_THROWS_AS(sc.prepare(vid(x), w), std::logic_error);
 }
 
 TEST_CASE("the linear scorer follows Model::extend through on_extended", "[fj][linear_jump]") {

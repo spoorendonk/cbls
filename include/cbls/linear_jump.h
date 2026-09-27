@@ -3,6 +3,8 @@
 #include "dag.h"
 
 #include <cstdint>
+#include <memory>
+#include <utility>
 #include <vector>
 
 namespace cbls {
@@ -41,9 +43,18 @@ class Model;
 /// per-node affineness) through `set_row_eligible`, and each row's slopes are
 /// built LAZILY, on the first prepare that reads the row: a short-lived FJ (the
 /// LNS repair builds one per call) pays only for the rows it touches. Storage is
-/// per row -- ascending variable ids plus slopes, 12 bytes per nonzero -- so an
-/// extension (#167) invalidates exactly the rows it changed, the same unit as
-/// FeasibilityJump's other per-row tables.
+/// per row -- a 40-byte header for every row, plus ascending variable ids and
+/// slopes, 12 bytes per nonzero, for each row built -- so an extension (#167)
+/// invalidates exactly the rows it changed, the same unit as FeasibilityJump's
+/// other per-row tables. The slopes are structure, but each portfolio worker's FJ
+/// builds its own; the build also sizes `dag_ops.cpp`'s thread_local adjoint
+/// scratch, which a pure MIP otherwise never allocated.
+///
+/// One property the probe has and this does not: exact antisymmetry. The probe's
+/// score of x -> j and of j -> x (after committing) are exact negations; here the
+/// committed row is re-summed by the DAG, so on an exactly balanced Float plateau
+/// both directions can score +1 ulp. Integral rows are exact and immune; a
+/// threshold would change the selection rule, so none is applied.
 class LinearJumpScorer {
 public:
     explicit LinearJumpScorer(const Model& model);
@@ -55,6 +66,8 @@ public:
     /// (Re)classify row `ci` and drop any slopes cached for it. Call for every
     /// row whose body changed -- a new row, or one a grown Sum sits inside.
     void set_row_eligible(int32_t ci, bool eligible);
+    /// As classified. A row not yet built can still be demoted by its build, on a
+    /// non-finite slope.
     [[nodiscard]] bool row_eligible(int32_t ci) const;
 
     /// Snapshot the rows of G_v for closed-form scoring under `weights`. False
@@ -65,7 +78,9 @@ public:
     /// is also what lets a variable touching a MASKED nonlinear row (the linear
     /// phase of two-phase GLS) score in closed form.
     ///
-    /// The snapshot is valid until the assignment or `weights` changes.
+    /// The snapshot is valid until the assignment or `weights` changes. Throws
+    /// `std::logic_error` if this scorer is not sized to the model's rows (a
+    /// `Model::extend` it was not told about).
     bool prepare(int32_t var_id, const std::vector<double>& weights);
 
     /// Weighted violation delta of moving the prepared variable to `j`, which
@@ -77,18 +92,26 @@ public:
     /// cached slope provably is (see the definition). False: call compute_partial.
     bool residual_partial(int32_t ci, int32_t var_id, double& out);
 
-    /// Prepares that took the closed form / fell back. Diagnostics and tests.
+    /// Prepares that took the closed form / fell back, and row partials served
+    /// from the cache. Diagnostics, and the pins on the wiring in tests.
     [[nodiscard]] int64_t fast_prepares() const { return fast_prepares_; }
     [[nodiscard]] int64_t fallback_prepares() const { return fallback_prepares_; }
+    [[nodiscard]] int64_t cached_partials() const { return cached_partials_; }
 
 private:
     enum class RowState : uint8_t { Ineligible, Pending, Ready };
+    // Every row carries one of these whether or not it is ever built, so it is
+    // kept to 40 bytes: owning arrays rather than two std::vectors, and the two
+    // residual arguments as (id, is_var) fields rather than ChildRefs.
     struct Row {
-        std::vector<int32_t> vars;   // ascending
-        std::vector<double> slopes;  // r = d(p - q)/dv, parallel to vars
-        ChildRef p;                  // first argument of the residual
-        ChildRef q;                  // second argument
+        std::unique_ptr<int32_t[]> vars;   // ascending, `count` long
+        std::unique_ptr<double[]> slopes;  // r = d(p - q)/dv, parallel to vars
+        uint32_t count = 0;
+        int32_t p_id = -1;  // first argument of the residual
+        int32_t q_id = -1;  // second argument
         RowState state = RowState::Ineligible;
+        bool p_is_var = false;
+        bool q_is_var = false;
         bool p_literal = false;  // a Const node: comparison_residual's sentinel flag
         bool q_literal = false;
         bool is_abs = false;        // Eq: |p - q|
@@ -109,15 +132,20 @@ private:
     };
 
     void build_row(int32_t ci);
-    [[nodiscard]] double child_value(const ChildRef& ref) const;
+    [[nodiscard]] double child_value(int32_t id, bool is_var) const;
     [[nodiscard]] static double slope_of(const Row& row, int32_t var_id);
 
     const Model& model_;
     std::vector<Row> rows_;
     std::vector<Term> terms_;
+    // build_row's scratch, kept so a build allocates only the row it keeps.
+    std::vector<std::pair<int32_t, double>> merged_;
+    std::vector<std::pair<int32_t, double>> side0_;
+    std::vector<std::pair<int32_t, double>> side1_;
     double x0_ = 0.0;
     int64_t fast_prepares_ = 0;
     int64_t fallback_prepares_ = 0;
+    int64_t cached_partials_ = 0;
 };
 
 }  // namespace cbls
