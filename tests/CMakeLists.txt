@@ -57,7 +57,7 @@ include(Catch)
 #
 # Measured at Release: the 6 [slow]-tagged tests account for ~46s of the suite's
 # aggregate (summed per-test) time; with `-j$(nproc)` the full run is ~25s of
-# wall clock. The remaining 615 (611 discovered, plus the
+# wall clock. The remaining 625 (621 discovered, plus the
 # four hand-registered tests that carry no slow label --
 # timing_structural_batch_deadline and hang_guard_iteration_only_portfolio
 # here, and the two shell gate tests clang_tidy_gate_probe and
@@ -73,9 +73,9 @@ include(Catch)
 # the tag -- "measure both ways before tagging" applies to KEEPING a tag as
 # much as to adding one.
 #
-# The roster is therefore 624 ctest tests: 617 discovered here, the 5
+# The roster is therefore 634 ctest tests: 627 discovered here, the 5
 # hand-registered ones below, and the 2 non-Catch2 shell gate tests the root
-# CMakeLists.txt registers. The 622 Catch2 ones are one more than the 621
+# CMakeLists.txt registers. The 632 Catch2 ones are one more than the 631
 # TEST_CASEs in tests/*.cpp, because hang_guard_iteration_only_portfolio is both discovered
 # and hand-registered -- see its note below. `ctest -N -L slow` reports 9, not 6 --
 # the three #125 throughput floors carry the slow LABEL without the Catch2
