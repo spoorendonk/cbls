@@ -1065,7 +1065,8 @@ void FeasibilityJump::update_var(int32_t var_id) {
                 continue;
             }
             jumps_.invalidate(vp);
-            if (participates_in_active_violated(vp)) {
+            // enqueue() is a no-op for a queued var, so skip the O(|G_vp|) test.
+            if (in_queue_[vp] == 0 && participates_in_active_violated(vp)) {
                 enqueue(vp);
             }
         }

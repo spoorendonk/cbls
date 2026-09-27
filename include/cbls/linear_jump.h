@@ -1,7 +1,6 @@
 #pragma once
 
-#include "dag.h"
-
+#include <cstddef>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -96,7 +95,8 @@ public:
     /// must be finite (and so must `j - x0`); see `prepare`.
     [[nodiscard]] double delta(double j) const;
 
-    /// d(residual of row ci)/d(var_id), BIT-IDENTICAL to
+    /// d(residual of row ci)/d(var_id), bit-identical (up to the sign of a zero
+    /// on a satisfied Eq row) to
     /// `compute_partial(model, constraint_ids()[ci], var_id)`, when the row's
     /// cached slope provably is (see the definition). False: call compute_partial.
     bool residual_partial(int32_t ci, int32_t var_id, double& out);

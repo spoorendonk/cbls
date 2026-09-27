@@ -274,7 +274,10 @@ bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weight
         // sign, so a zero slope alone does not make the row constant -- but that
         // side is never finite, which this catches. (At exactly 1e-15 `evaluate`
         // divides while `local_derivative` still reports 0: a pre-existing AD
-        // inconsistency this inherits, as every Newton step already does.)
+        // inconsistency. Before this scorer only Newton steps saw it; here the
+        // row is scored as constant while the DAG moves it by 1e15 per unit, so
+        // such a row's jump SCORE is wrong too. Reachable only with a literal
+        // divisor of exactly +/-1e-15.)
         if ((p_literal ? std::isnan(p) : !std::isfinite(p)) ||
             (q_literal ? std::isnan(q) : !std::isfinite(q))) {
             ok = false;
@@ -326,6 +329,9 @@ double LinearJumpScorer::delta(double j) const {
 }
 
 bool LinearJumpScorer::residual_partial(int32_t ci, int32_t var_id, double& out) {
+    if (ci < 0 || static_cast<size_t>(ci) >= slots_.size()) {
+        return false;  // unsized (an extension not yet seen): compute_partial instead
+    }
     const BuiltRow* built = ready_row(ci);
     if (built == nullptr || (built->flags & kNewtonExact) == 0) {
         return false;

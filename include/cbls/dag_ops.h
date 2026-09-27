@@ -112,7 +112,7 @@ std::vector<double> compute_all_partials(const Model& model, int32_t expr_id);
 ///
 /// Partials are taken at the CURRENT node values, so a cached slope stays valid
 /// only while every op on the path has a constant local derivative: `Sum`,
-/// `Neg`, `Prod` by a constant, and `Leq`/`Geq`/`Lt`/`Gt` do; `Eq` is
+/// `Neg`, `Prod` or `Div` by a constant, and `Leq`/`Geq`/`Lt`/`Gt` do; `Eq` is
 /// sign(residual), hence 0.0 when satisfied and sign-flipping otherwise; `Neq`
 /// and the structural ops are always 0.0. A partial that is exactly 0.0 --
 /// cancelled, or through a zero local derivative -- is absent, not listed.

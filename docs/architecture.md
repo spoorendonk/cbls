@@ -172,19 +172,30 @@ BFS-marks dirty nodes upward through `Model::dependents`/`Model::parents`, then
 recomputes only dirty nodes in topological order. This is the hot path during
 GFJ — each jump changes one variable and touches a small subgraph, and each
 jump *candidate* is scored by a no-commit delta probe (see
-[`weighted_violation_delta`](#violation--gls-weights)).
+[`weighted_violation_delta`](#violation--gls-weights)) unless every weighted
+row of the variable's column is a linear comparison, where `LinearJumpScorer`
+(`include/cbls/linear_jump.h`) scores it in closed form instead. A committed
+jump always goes through `delta_evaluate`.
 
 ### Reverse-Mode Automatic Differentiation
 
 `compute_partial(model, expr_id, var_id)` computes `d(expr)/d(var)` via
 reverse-mode AD; `compute_all_partials(model, expr_id)` returns every variable's
-partial in one reverse pass:
+partial in one reverse pass, and `compute_partials_sparse(model, expr_id, out)`
+only the nonzero ones, as `(var_id, partial)` pairs:
 
 1. Initialize `adjoint[expr_id] = 1.0`
-2. Traverse nodes in reverse topological order
+2. Traverse the **cone** of `expr_id` (the nodes reachable from it through
+   children) in reverse topological order, skipping any node whose adjoint is
+   0. A cone larger than `|nodes| / (log2|nodes| + 1)` falls back to the whole
+   `topo_order()`; both routes perform the same operations in the same order,
+   so the partials are bit-identical either way (`reverse_sweep` in
+   `src/dag_ops.cpp`).
 3. For each node, propagate: `adjoint[child] += adjoint[node] * local_derivative(node, child_index)`
-4. Variable adjoints use negative keys `-(var_id + 1)` to distinguish from
-   node adjoints
+4. Adjoints live in one flat per-thread scratch: `[0, num_nodes)` for nodes,
+   `num_nodes + var_id` for variables. The three entry points share it, so none
+   may be called from inside another -- in particular not from a
+   `CustomInvariant::partial`; the nested call throws `std::logic_error`.
 
 `local_derivative` computes per-operation partial derivatives (chain rule
 components). Discrete operations (At, Count, Lambda, PairLambda) return 0. A
