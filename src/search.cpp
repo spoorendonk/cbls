@@ -382,8 +382,6 @@ private:
     void reground_objective_bound_after_adoption(bool feasible_here, double obj);
     // Whether `state` is the assignment this model currently holds.
     [[nodiscard]] bool holds_assignment(const Model::State& state) const;
-    // See the definition: the distance a distance-drawn restart weighs by.
-    [[nodiscard]] double restart_distance(const Model::State& state) const;
     // Whether the NEXT diversification kick is the one that draws LNS -- the
     // same test diversify() makes, asked before the fact. Adoption stands down
     // on those kicks, and advances `lns_slot_` on the ones it does take, so the
@@ -838,7 +836,6 @@ void ViolationLSLoop::share(double objective) {
     sol.state = best_state_;
     sol.objective = objective;
     sol.feasible = true;  // record_best's precondition
-    sol.submitter = coord_->worker;
     // The model still holds `best_state_` -- record_best copies the state out of
     // it immediately above every call to this -- so the live residual is the
     // residual of the state being shared.
@@ -860,30 +857,6 @@ bool ViolationLSLoop::holds_assignment(const Model::State& state) const {
         }
     }
     return true;
-}
-
-// Distance from the live assignment to `state` (#161): the number of Bool/Int
-// variables whose value differs, or -- on a model with none -- the number of
-// variables whose value or elements differ.
-double ViolationLSLoop::restart_distance(const Model::State& state) const {
-    const auto& vars = model_.variables();
-    if (state.values.size() != vars.size() || state.elements.size() != vars.size()) {
-        return 0.0;
-    }
-    int64_t integral = 0;
-    int64_t differ_integral = 0;
-    int64_t differ_any = 0;
-    for (size_t i = 0; i < vars.size(); ++i) {
-        const bool is_integral = vars[i].type == VarType::Bool || vars[i].type == VarType::Int;
-        const bool differs =
-            vars[i].value != state.values[i] || vars[i].elements != state.elements[i];
-        if (is_integral) {
-            ++integral;
-            differ_integral += differs ? 1 : 0;
-        }
-        differ_any += differs ? 1 : 0;
-    }
-    return static_cast<double>(integral > 0 ? differ_integral : differ_any);
 }
 
 // The objective-bound half of an adoption, lifted out of adopt_from_pool: it is
@@ -929,10 +902,7 @@ bool ViolationLSLoop::adopt_from_pool() {
     if (coord_ == nullptr || coord_->pool == nullptr) {
         return false;
     }
-    RestartRequest request;
-    request.worker = coord_->worker;
-    request.distance = [this](const Model::State& st) { return restart_distance(st); };
-    auto sol = coord_->pool->get_restart_point(rng_, request);
+    auto sol = coord_->pool->get_restart_point(rng_);
     if (!sol.has_value()) {
         return false;
     }

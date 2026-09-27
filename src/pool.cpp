@@ -4,10 +4,6 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
-#include <cstdint>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
 #include <exception>
 #include <limits>
 #include <memory>
@@ -23,88 +19,10 @@ namespace cbls {
 
 // --- SolutionPool ---
 
-namespace {
-
-// TEMPORARY (#161): the A/B switch. Read once per pool.
-RestartRule restart_rule_from_env() {
-    const char* arm = std::getenv("CBLS_ISSUE161_ARM");  // NOLINT(concurrency-mt-unsafe)
-    if (arm == nullptr) {
-        return RestartRule::Control;
-    }
-    const std::string a(arm);
-    if (a == "slot") {
-        return RestartRule::ReservedSlot;
-    }
-    if (a == "tabu") {
-        return RestartRule::Tabu;
-    }
-    if (a == "distance") {
-        return RestartRule::Distance;
-    }
-    return RestartRule::Control;
-}
-
-// FNV-1a over the bit patterns of the scalar values and every element.
-uint64_t state_hash(const Model::State& st) {
-    constexpr uint64_t kFnvOffset = 1469598103934665603ULL;
-    constexpr uint64_t kFnvPrime = 1099511628211ULL;
-    uint64_t h = kFnvOffset;
-    auto mix = [&h](uint64_t x) {
-        for (int b = 0; b < 8; ++b) {
-            h ^= (x >> (8 * b)) & 0xffU;
-            h *= kFnvPrime;
-        }
-    };
-    for (double v : st.values) {
-        uint64_t bits = 0;
-        std::memcpy(&bits, &v, sizeof(bits));
-        mix(bits);
-    }
-    for (const auto& e : st.elements) {
-        mix(e.size());
-        for (int32_t x : e) {
-            mix(static_cast<uint64_t>(static_cast<uint32_t>(x)));
-        }
-    }
-    return h;
-}
-
-bool better_than(const Solution& a, const Solution& b) {
-    if (a.feasible != b.feasible) {
-        return a.feasible;
-    }
-    return a.objective < b.objective;
-}
-
-}  // namespace
-
-SolutionPool::SolutionPool(int capacity)
-    : capacity_(std::max(1, capacity)),
-      rule_(restart_rule_from_env()),
-      report_(std::getenv("CBLS_ISSUE161_ARM") != nullptr) {}  // NOLINT(concurrency-mt-unsafe)
-
-SolutionPool::~SolutionPool() {
-    if (report_) {
-        std::fprintf(stderr, "issue161 arm=%d draws=%lld declines=%lld\n", static_cast<int>(rule_),
-                     static_cast<long long>(draws_), static_cast<long long>(declines_));
-    }
-}
+SolutionPool::SolutionPool(int capacity) : capacity_(std::max(1, capacity)) {}
 
 bool SolutionPool::submit(Solution sol) {
-    std::optional<Solution> reserve_copy;
-    if (rule_ == RestartRule::ReservedSlot && sol.submitter >= 0) {
-        reserve_copy = sol;  // copied outside the lock
-    }
     std::scoped_lock lock(mutex_);
-    if (reserve_copy.has_value()) {
-        const auto w = static_cast<size_t>(sol.submitter);
-        if (reserved_.size() <= w) {
-            reserved_.resize(w + 1);
-        }
-        if (!reserved_[w].has_value() || better_than(*reserve_copy, *reserved_[w])) {
-            reserved_[w] = std::move(reserve_copy);
-        }
-    }
     solutions_.push_back(std::move(sol));
     std::sort(solutions_.begin(), solutions_.end(), [](const Solution& a, const Solution& b) {
         if (a.feasible != b.feasible) {
@@ -133,100 +51,13 @@ std::vector<Solution> SolutionPool::top_k(int k) const {
     return {solutions_.begin(), solutions_.begin() + n};
 }
 
-std::optional<Solution> SolutionPool::get_restart_point(RNG& rng, const RestartRequest& request) {
+std::optional<Solution> SolutionPool::get_restart_point(RNG& rng) const {
     std::scoped_lock lock(mutex_);
     if (solutions_.empty()) {
         return std::nullopt;
     }
-    ++draws_;
-    const int half = std::max(1, static_cast<int>(solutions_.size()) / 2);
-    const int w = request.worker;
-
-    if (rule_ == RestartRule::ReservedSlot && w >= 0) {
-        // Better half, plus the asker's own reserved best when it is not
-        // already one of them.
-        const Solution* own = nullptr;
-        if (static_cast<size_t>(w) < reserved_.size() && reserved_[w].has_value()) {
-            own = &*reserved_[w];
-            const uint64_t own_hash = state_hash(own->state);
-            for (int i = 0; i < half; ++i) {
-                if (solutions_[i].objective == own->objective &&
-                    state_hash(solutions_[i].state) == own_hash) {
-                    own = nullptr;
-                    break;
-                }
-            }
-        }
-        const int n = half + (own != nullptr ? 1 : 0);
-        const int idx = static_cast<int>(rng.integers(0, n));
-        if (own != nullptr && idx == half) {
-            return *own;
-        }
-        return solutions_[idx];
-    }
-
-    if (rule_ == RestartRule::Tabu && w >= 0) {
-        if (tabu_.size() <= static_cast<size_t>(w)) {
-            tabu_.resize(static_cast<size_t>(w) + 1);
-        }
-        auto& tabu = tabu_[w];
-        std::vector<int> open;
-        std::vector<uint64_t> hashes(half);
-        for (int i = 0; i < half; ++i) {
-            hashes[i] = state_hash(solutions_[i].state);
-            const bool seen = std::any_of(tabu.begin(), tabu.end(), [&](const TabuKey& k) {
-                return k.hash == hashes[i] && k.objective == solutions_[i].objective;
-            });
-            if (!seen) {
-                open.push_back(i);
-            }
-        }
-        if (open.empty()) {
-            ++declines_;
-            return std::nullopt;
-        }
-        const int pick =
-            open[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(open.size())))];
-        tabu.push_back(TabuKey{solutions_[pick].objective, hashes[pick]});
-        return solutions_[pick];
-    }
-
-    if (rule_ == RestartRule::Distance && request.distance) {
-        // Whole pool, restricted to entries sharing the best entry's
-        // feasibility; probability proportional to distance from the asker.
-        const bool feas = solutions_[0].feasible;
-        std::vector<double> weight(solutions_.size(), 0.0);
-        double total = 0.0;
-        for (size_t i = 0; i < solutions_.size(); ++i) {
-            if (solutions_[i].feasible != feas) {
-                continue;
-            }
-            weight[i] = std::max(0.0, request.distance(solutions_[i].state));
-            total += weight[i];
-        }
-        if (!(total > 0.0)) {
-            ++declines_;
-            return std::nullopt;
-        }
-        double r = rng.uniform(0.0, total);
-        for (size_t i = 0; i < solutions_.size(); ++i) {
-            if (weight[i] <= 0.0) {
-                continue;
-            }
-            if (r < weight[i]) {
-                return solutions_[i];
-            }
-            r -= weight[i];
-        }
-        for (size_t i = solutions_.size(); i-- > 0;) {
-            if (weight[i] > 0.0) {
-                return solutions_[i];
-            }
-        }
-        return std::nullopt;
-    }
-
-    const int idx = static_cast<int>(rng.integers(0, half));
+    int n = std::max(1, static_cast<int>(solutions_.size()) / 2);
+    int idx = static_cast<int>(rng.integers(0, n));
     return solutions_[idx];
 }
 
@@ -878,12 +709,6 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index, W
     // and reconciles their clocks; worker 0 additionally carries the heartbeat.
     SolveCallback* cb = (index == 0) ? ctx.heartbeat_callback : ctx.peer_callback;
 
-    // This worker's own view of the shared coordination: the same pool and
-    // stop flag, tagged with the worker's index so the pool knows who submits
-    // and who asks (#161).
-    SearchCoordination coord = ctx.coord;
-    coord.worker = index;
-
     WorkerAccumulator acc;
     int consecutive_failures = 0;
     const bool growing = ctx.grown_models != nullptr;
@@ -920,7 +745,7 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index, W
         const double started_at = ctx.elapsed();
         try {
             r = cbls::solve(m, budget, run_seed, cfg.use_fj, hook.get(), lns.get(),
-                            cfg.lns_interval, cb, cfg, &coord);
+                            cfg.lns_interval, cb, cfg, &ctx.coord);
         } catch (...) {
             // The model, hook and LNS are already built, so this throw came from
             // the SEARCH -- a bad_alloc on a large model, a throwing custom

@@ -2683,8 +2683,13 @@ uniformly from the better half of the pool rather than the single best. That
 reduces the pull toward one basin without preventing it: `submit` applies no
 diversity criterion and no per-worker quota, so on an objective model the pool
 tends to fill with one worker's successive refinements of a single point, and
-the better half of that is close to the best. Whether it costs anything
-measurable is open -- see issue #135.
+the better half of that is close to the best. Three structural alternatives
+were measured against it in #161: a per-worker reserved slot, a per-worker tabu
+set of start points, and a draw weighted by distance from the asking worker.
+They ran at 4 threads and 60s, 8 seeds, on six stalling MIPfeas instances. None
+beat this rule: every paired primal-gap difference had a 95% CI spanning zero.
+The rule stands; the numbers and protocol are in the comment on
+`SolutionPool::get_restart_point`.
 
 ### Parallel Search
 

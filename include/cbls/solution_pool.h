@@ -5,8 +5,6 @@
 
 #include <atomic>
 #include <cstddef>
-#include <cstdint>
-#include <functional>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -25,22 +23,7 @@ struct Solution {
     /// owns no `Model` to evaluate it against, and a result whose violation did
     /// not describe its own state reported +inf for every portfolio run.
     double violation = std::numeric_limits<double>::infinity();
-    /// Portfolio worker index that submitted this point, or -1 (#161).
-    int submitter = -1;
 };
-
-/// What the asking worker tells a restart draw (#161, A/B measurement only).
-struct RestartRequest {
-    /// The asking worker's portfolio index, or -1 when unknown.
-    int worker = -1;
-    /// Distance from the asker's LIVE assignment to a candidate state. Empty
-    /// when the caller cannot supply one.
-    std::function<double(const Model::State&)> distance;
-};
-
-/// TEMPORARY (#161): the restart rule under measurement, read once from the
-/// environment variable CBLS_ISSUE161_ARM. Removed before landing.
-enum class RestartRule : uint8_t { Control, ReservedSlot, Tabu, Distance };
 
 /// A bounded, sorted store of the best solutions seen, shared across the workers
 /// of a `ParallelSearch`. Every method takes the mutex, so it is the one object
@@ -49,11 +32,6 @@ enum class RestartRule : uint8_t { Control, ReservedSlot, Tabu, Distance };
 class SolutionPool {
 public:
     explicit SolutionPool(int capacity = 10);
-    ~SolutionPool();  // TEMPORARY (#161): prints draw counts when the arm is set
-    SolutionPool(const SolutionPool&) = delete;
-    SolutionPool& operator=(const SolutionPool&) = delete;
-    SolutionPool(SolutionPool&&) = delete;
-    SolutionPool& operator=(SolutionPool&&) = delete;
 
     /// By value, then moved into the store: the caller's copy is made outside
     /// the lock, so the critical section never copies a `Model::State`. That is
@@ -74,32 +52,48 @@ public:
     /// entry per worker -- which `ParallelConfig::pool_capacity`'s auto mode now
     /// fixes, by scaling the capacity with the worker count.
     ///
-    /// Capacity was the only part fixed, deliberately. The structural answer is
-    /// a per-worker reserved slot, so each worker's own best is always drawable
-    /// whatever the global ranking; that needs a submitter identity on
-    /// `Solution` and a draw that knows which worker is asking, and it changes
-    /// search behaviour in a way only a quality measurement could justify.
-    /// Issue #135 scopes measurement out, so the slot is declined there rather
-    /// than guessed at here. Raising the capacity needs no such justification:
-    /// it only stops the capacity itself from being the binding constraint.
-    std::optional<Solution> get_restart_point(RNG& rng, const RestartRequest& request = {});
+    /// Capacity was the only part fixed, deliberately: raising it only stops
+    /// the capacity itself from being the binding constraint. Changing the DRAW
+    /// changes search behaviour, and #161 measured three structural
+    /// alternatives against this rule. None earned its place, so this rule
+    /// stands.
+    ///
+    /// Protocol, pre-registered: engine `0113c8f` (`ea89d15` plus a temporary
+    /// switch since removed), `cbls_mipfeas --threads 4 --budget 60`, seeds
+    /// 101-108, on the six instances #158's last-improvement times put at or
+    /// before 75% of the budget (binkar10_1, neos5, gen-ip054, markshare2,
+    /// mas76, mad). 192 runs, serial, arm order rotated per (instance, seed),
+    /// no worker lost. The metric is the MIPLIB primal gap to the proven
+    /// optimum, paired per (instance, seed). Figures are the mean paired
+    /// difference against this rule (negative = better) with a stratified
+    /// bootstrap 95% CI:
+    ///
+    ///  - a per-worker RESERVED SLOT, the answer this comment used to name: the
+    ///    better half plus the asking worker's own best, whatever its rank.
+    ///    -0.0024, CI [-0.0087, +0.0038].
+    ///  - a per-worker TABU set of start points already handed to that worker,
+    ///    by exact identity (objective plus an assignment hash): -0.0015,
+    ///    CI [-0.0075, +0.0041]. 53% of its draws found the whole better half
+    ///    tabu and fell back to an ordinary kick.
+    ///  - a draw over the whole pool WEIGHTED BY DISTANCE (Hamming, integer
+    ///    variables) from the asker's live assignment: -0.0019,
+    ///    CI [-0.0073, +0.0041].
+    ///
+    /// Every interval spans zero, so the slot is now declined on a measurement
+    /// rather than for the lack of one. What the data does NOT show is that the
+    /// draw matters much here. After #158's restore-before-kick (`0dc826b`) this
+    /// roster no longer stalls the way #161's motivating table did: binkar10_1
+    /// at four threads finished between 9,097 and 10,135 on all 8 control seeds,
+    /// where the pre-`0dc826b` spread ran from 10K to 3.0M. On two of the six
+    /// instances the draw could not decide anything: neos5 reached its optimum
+    /// on every run, and gen-ip054 drew 0-3 times per run. Revisit only with a
+    /// roster that stalls on the engine as it stands then.
+    std::optional<Solution> get_restart_point(RNG& rng) const;
     size_t size() const;
 
 private:
-    struct TabuKey {
-        double objective;
-        uint64_t hash;
-    };
     int capacity_;
-    RestartRule rule_ = RestartRule::Control;
     std::vector<Solution> solutions_;
-    /// Per worker: that worker's best submission, kept whatever its global rank.
-    std::vector<std::optional<Solution>> reserved_;
-    /// Per worker: the start points that worker has already been handed.
-    std::vector<std::vector<TabuKey>> tabu_;
-    int64_t draws_ = 0;
-    int64_t declines_ = 0;
-    bool report_ = false;
     mutable std::mutex mutex_;
 };
 
@@ -117,8 +111,6 @@ struct SearchCoordination {
     /// -- so the rest stop within a batch instead of running the clock out on a
     /// question already answered.
     std::atomic<bool>* stop = nullptr;
-    /// The worker this coordination object belongs to, or -1 (#161).
-    int worker = -1;
 };
 
 }  // namespace cbls
