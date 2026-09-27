@@ -15,16 +15,19 @@
 #      -- the state this repository was in until #171. No warning, no error.
 #   2. -Wall -Wextra in every first-party compile command. clang-tidy reads its
 #      flags from compile_commands.json, so a diagnostic the build does not turn
-#      on can never be reported, whatever the check list says.
+#      on can never be reported, whatever the check list says. (Not -Wswitch
+#      itself: clang enables that by default, so for the NodeOp switches item 1
+#      was the whole hole on the clang-tidy side. GCC, which compiles the
+#      build, needs -Wall for it -- pre-push gates GCC's warnings separately.)
 #
 # Check 1 lints .githooks/tidy-probe/incomplete_switch.cpp under the EFFECTIVE
 # config of each config directory (dumped for a canary file in it, then passed
 # back with --config), so a nested .clang-tidy that re-breaks the list is caught
-# as surely as the root one. Check 2 reads the compile database: the probe's own
-# entry proves the flags reach clang-tidy, and the scan proves every first-party
-# target carries them -- the flags are per target (cbls_enable_warnings in
-# CMakeLists.txt), so a new target that forgets the call would otherwise compile
-# without them in silence.
+# as surely as the root one; its three diagnostics pin the check list, -Wall
+# and -Wextra respectively. Check 2 reads the compile database and proves every
+# first-party target carries the flags -- they are per target
+# (cbls_enable_warnings in CMakeLists.txt), so a new target that forgets the
+# call would otherwise compile without them in silence.
 #
 # Exit 0: the gate bites. Exit 1: it does not, or the probe could not run.
 # Exit 77: no clang-tidy to run (ctest reports that as Skipped, not Passed).
@@ -45,7 +48,7 @@ PROBE=.githooks/tidy-probe/incomplete_switch.cpp
 # One canary per clang-tidy config directory -- the same pair the pre-push
 # hook seeds its lint with when a .clang-tidy changes.
 CANARIES="src/search.cpp src/io/mps_to_model.cpp"
-EXPECTED="clang-diagnostic-switch clang-diagnostic-unused-parameter"
+EXPECTED="clang-diagnostic-switch clang-diagnostic-unused-variable clang-diagnostic-unused-parameter"
 DB="$BUILD_DIR/compile_commands.json"
 
 if [ -z "$CLANG_TIDY" ] || ! command -v "$CLANG_TIDY" >/dev/null 2>&1; then

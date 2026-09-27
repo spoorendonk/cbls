@@ -20,9 +20,10 @@ enum class VarType : uint8_t { Bool, Int, Float, List, Set };
 /// the scalars, `initialize_structured_random` sets the rest.
 ///
 /// Both are whitelists rather than one being `!other`, so a VarType added later
-/// has to opt in on each side. Nothing catches it if you forget: the build uses
-/// no `-Wall`/`-Wswitch`, so a new type would silently be neither initialised nor
-/// jumped. Add it here and to `jumpable()` in the same change.
+/// has to opt in on each side. Nothing catches it if you forget: both are `==`
+/// comparisons, not switches, so no -Wswitch can report a type they omit, and a
+/// new type would silently be neither initialised nor jumped. Add it here and to
+/// `jumpable()` in the same change.
 constexpr bool is_structured(VarType type) {
     return type == VarType::List || type == VarType::Set;
 }
@@ -150,12 +151,13 @@ enum class NodeOp : uint8_t {
     /// says it is (#166). Appended LAST so that every existing enumerator keeps
     /// its value.
     ///
-    /// The `default:`-free dispatch tables in `src/dag.cpp` are what make a missed
-    /// case visible -- but only to a compiler invoked with -Wswitch, which this
-    /// project is not: no -Wall, and `.clang-tidy`'s leading `-*` turns off
-    /// `clang-diagnostic-*` as well. See the note at `op_to_string` in
-    /// `src/io.cpp`, which carries the probe. A new NodeOp therefore has to be
-    /// carried to every switch by hand; grep `NodeOp::` for them.
+    /// The `default:`-free dispatch tables in `src/dag.cpp` and `src/io.cpp` are
+    /// what make a missed case visible, and since #171 something does see it: the
+    /// build compiles with -Wall (GCC's -Wswitch) and pre-push fails on any
+    /// warning in its output, and the clang-tidy gate reports
+    /// `clang-diagnostic-switch`. `.githooks/tidy-probe.sh` proves the latter
+    /// still bites. Only a switch is covered -- an `if`/`==` chain over NodeOp
+    /// is not -- so `grep -rn 'NodeOp::' src/ include/ python/` for the rest.
     Custom
 };
 

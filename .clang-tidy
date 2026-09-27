@@ -139,9 +139,12 @@
 # re-enables it. For as long as that was the case no compiler warning reached
 # the sweep, and the NodeOp switches, written without a `default:` on the
 # assumption that -Wswitch reports a missed case, had nothing reporting one.
-# It is only half the fix: a diagnostic the compile command never turns on
-# still cannot fire, which is why CMakeLists.txt gives every first-party
-# target -Wall -Wextra (`cbls_enable_warnings`).
+# (Clang enables -Wswitch by default, so for that one diagnostic this entry
+# alone closes the hole here.) For the rest it is only half the fix: a
+# diagnostic the compile command never turns on still cannot fire, which is
+# why CMakeLists.txt gives every first-party target -Wall -Wextra
+# (`cbls_enable_warnings`) -- and GCC, which compiles the build, needs -Wall
+# even for -Wswitch.
 #
 # It cannot stand alone either: it is a mapping of compiler diagnostics, not a
 # registered check, so `-*,clang-diagnostic-*` exits 1 with "Error: no checks

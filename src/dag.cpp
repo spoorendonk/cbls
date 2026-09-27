@@ -89,15 +89,15 @@ static int list_size(const ChildRef& ref, const Model& model) {
 // split would have to stay inlinable -- which rules out the
 // dispatch-through-a-table alternative outright.
 //
-// ADDING A NodeOp: the switch is deliberately `default:`-free, but that catches
-// nothing in THIS project, measured rather than assumed. CMakeLists.txt passes no
-// -Wall, so GCC is silent on a missing case; and `.clang-tidy`'s leading `-*`
-// disables `clang-diagnostic-*`, so the sweep is silent too (probe: an incomplete
-// NodeOp switch goes unreported under the project config, while an unused local IS
-// reported once `clang-diagnostic-*` is turned back on). It helps a reader and a
-// compiler configured with -Wswitch, and it is not a gate. Carry a new op to every
-// switch by hand -- `grep -rn 'NodeOp::' src/ include/ python/` finds them, and
-// `src/io.cpp` has two.
+// ADDING A NodeOp: the switch is deliberately `default:`-free, so a missed case is
+// a -Wswitch warning, and since #171 that warning blocks a push twice over: GCC
+// compiles this with -Wall and pre-push fails on a warning in the build output,
+// and the clang-tidy gate reports `clang-diagnostic-switch` (before #171 neither
+// did -- no -Wall, and `.clang-tidy`'s leading `-*` switched the diagnostics
+// off). `.githooks/tidy-probe.sh` keeps proving the clang-tidy half bites. Never
+// add a `default:` here: it is exactly what would hide the missed case. The
+// warning covers switches only, so `grep -rn 'NodeOp::' src/ include/ python/`
+// for the other places an op is named; `src/io.cpp` has two switches.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 double evaluate(const ExprNode& node, const Model& model) {
     const ConstSpan<ChildRef> children = model.children(node);
@@ -337,8 +337,8 @@ double evaluate(const ExprNode& node, const Model& model) {
 // non-finite or non-differentiable point rather than any nesting between them.
 // It scores higher than evaluate() only because a derivative needs more such
 // guards, not because the cases interact. Reverse-mode AD calls it once per DAG
-// edge, so it sits on the same hot path. The `default:`-free table is enforced by
-// nothing here either -- see the note on evaluate() above.
+// edge, so it sits on the same hot path. The `default:`-free table is gated the
+// same way -- see the note on evaluate() above.
 //
 // One asymmetry worth naming, because it is DELIBERATE and looks like an
 // oversight: the `Custom` case folds a non-finite partial to 0, and the built-in

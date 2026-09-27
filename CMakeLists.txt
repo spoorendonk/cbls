@@ -162,9 +162,11 @@ FetchContent_MakeAvailable(json)
 #
 # -Wall -Wextra reach clang-tidy through compile_commands.json, and that is the
 # reason they are here: `clang-diagnostic-*` in .clang-tidy can only report a
-# diagnostic the compile command turned on. -Wswitch, which is in -Wall, is what
-# reports a NodeOp that some `default:`-free switch in src/dag.cpp or src/io.cpp
-# does not handle -- without it that gate does not exist.
+# diagnostic the compile command turned on (-Wunused-variable, the -Wextra set).
+# -Wswitch -- what reports a NodeOp that some `default:`-free switch in
+# src/dag.cpp or src/io.cpp does not handle -- is on by default in clang but
+# only under -Wall in GCC, the compiler this build actually uses, whose output
+# the pre-push hook also gates.
 #
 # Per target, never add_compile_options(): a directory-wide flag would also
 # reach Catch2's own library, which FetchContent builds in this tree, and the

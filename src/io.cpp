@@ -75,15 +75,12 @@ static std::string op_to_string(NodeOp op) {
             // one before it opens the stream. Named here so a diagnostic that
             // prints an op does not say "Unknown".
             //
-            // This switch is `default:`-free so that a compiler invoked with
-            // -Wswitch names any op nobody handled. NOTHING IN THIS PROJECT IS
-            // SUCH A GATE, measured rather than assumed: CMakeLists.txt passes no
-            // -Wall, so GCC is silent, and `.clang-tidy`'s leading `-*` disables
-            // `clang-diagnostic-*`, so the sweep is silent as well (probe: an
-            // incomplete NodeOp switch and an unused local both go unreported
-            // under the project config, and the unused local IS reported with
-            // `clang-diagnostic-*` turned back on). So the convention helps a
-            // reader and a differently configured compiler; it is not enforced.
+            // This switch is `default:`-free so that -Wswitch names any op
+            // nobody handled, and since #171 that is a gate: the build passes
+            // -Wall and pre-push fails on a warning in its output, and the
+            // clang-tidy sweep reports `clang-diagnostic-switch` (measured:
+            // deleting this case is reported by both). See the note on
+            // evaluate() in src/dag.cpp.
             return "Custom";
     }
     return "Unknown";

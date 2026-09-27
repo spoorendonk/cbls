@@ -220,6 +220,28 @@ The hooks live in **`.githooks/`, tracked in this repo** — that directory is t
   is itself part of the push, since such a change otherwise touches no source
   file and would skip the step that polices it.
 
+  A clean canary cannot tell a gate that sees compiler warnings from one that
+  does not, and for a long time this one did not (#171): clang-tidy prepends
+  `clang-diagnostic-*`, the leading `-*` switched it off, and no target compiled
+  with `-Wall`. Now `clang-diagnostic-*` is named **after** the wildcards, every
+  first-party target gets `-Wall -Wextra` through `cbls_enable_warnings()` in the
+  root `CMakeLists.txt` (a new target needs the call), and
+  **`.githooks/tidy-probe.sh`** proves it: it lints a deliberately dirty TU,
+  `.githooks/tidy-probe/incomplete_switch.cpp`, under each config directory's
+  effective config and fails unless its incomplete `enum class` switch, unused
+  local and unused parameter are all reported, and fails on any first-party
+  compile command missing the flags. Pre-push runs it when a `.clang-tidy`, a
+  `CMakeLists.txt` or the probe changes; ctest runs it as
+  `clang_tidy_gate_probe` (Skipped, not Passed, without the pinned clang-tidy).
+  Never add a `default:` to a `NodeOp` switch — it is what would hide the case.
+
+  **No `-Werror`**: with it in `compile_commands.json` every clang-diagnostic
+  finding becomes a compiler error and clang-tidy exits 1, which the step above
+  reports as a config fault. GCC — the build compiler — has warnings clang lacks
+  (two `-Wrange-loop-construct` at #171), so instead pre-push **blocks on any
+  compiler warning in first-party code in the gated build's output**. The tree
+  is held at zero there too.
+
 Nothing enforces `/review` at push time, by design — a gate keyed on gitignored local tooling can only be satisfied in whichever checkout happens to carry it, and passes silently everywhere else. `/review` is still expected on every change (see **Agent Self-Review**); running it is on you.
 
 Gating lives in git hooks only — `.claude/settings.json` carries no `hooks` block, and none should be added. A `PostToolUse` formatter cannot see which file was edited, so it silently formats nothing; formatting belongs at commit time. Don't hand-tune formatting.
