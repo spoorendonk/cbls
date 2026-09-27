@@ -186,7 +186,12 @@ FetchContent_MakeAvailable(json)
 # The blocking gates are instead the pre-push clang-tidy sweep (clang's view of
 # these flags) and the pre-push scan of the gated build's own output (GCC's
 # view -- at this commit GCC reported two -Wrange-loop-construct that clang
-# does not, so the sweep alone is not enough).
+# does not, so the sweep alone is not enough). That scan follows the local
+# GCC version, so a compiler upgrade can block a push -- never a user's build.
+#
+# Only flags both compilers know belong here: clang-tidy parses this command
+# line, and a GCC-only -W option would make every TU report
+# clang-diagnostic-unknown-warning-option.
 set(CBLS_WARNING_FLAGS "")
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     set(CBLS_WARNING_FLAGS -Wall -Wextra)

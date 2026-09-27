@@ -30,6 +30,9 @@
 # call would otherwise compile without them in silence.
 #
 # Exit 0: the gate bites. Exit 1: it does not, or the probe could not run.
+# Check 3 fails when the tracked .clang-tidy set changes, so a new config
+# directory cannot go unprobed.
+#
 # Exit 77: no clang-tidy to run (ctest reports that as Skipped, not Passed).
 
 set -u
@@ -38,16 +41,23 @@ CLANG_TIDY="${1:-}"
 BUILD_DIR="${2:-build}"
 
 cd "$(dirname "$0")/.." || exit 1
-ROOT=$(pwd -P)
 case "$BUILD_DIR" in
 /*) ;;
-*) BUILD_DIR="$ROOT/$BUILD_DIR" ;;
+*) BUILD_DIR="$(pwd -P)/$BUILD_DIR" ;;
 esac
+# The source root exactly as CMake recorded it, which is the spelling every
+# path in compile_commands.json uses. `pwd -P` is only the fallback: through a
+# symlinked path the two can differ, and a prefix match on the wrong one would
+# see no first-party TU at all.
+ROOT=$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$BUILD_DIR/CMakeCache.txt" 2>/dev/null)
+[ -n "$ROOT" ] || ROOT=$(pwd -P)
 
 PROBE=.githooks/tidy-probe/incomplete_switch.cpp
 # One canary per clang-tidy config directory -- the same pair the pre-push
-# hook seeds its lint with when a .clang-tidy changes.
+# hook seeds its lint with when a .clang-tidy changes. CONFIGS is the tracked
+# config set those canaries cover; Check 3 fails when the tree's set differs.
 CANARIES="src/search.cpp src/io/mps_to_model.cpp"
+CONFIGS=".clang-tidy src/io/.clang-tidy"
 EXPECTED="clang-diagnostic-switch clang-diagnostic-unused-variable clang-diagnostic-unused-parameter"
 DB="$BUILD_DIR/compile_commands.json"
 
@@ -63,7 +73,7 @@ fi
 if ! grep -qF "$ROOT/$PROBE" "$DB"; then
 	echo "tidy-probe: FAIL -- $PROBE has no entry in $DB, so it would be"
 	echo "linted with guessed flags. The cbls_tidy_probe target in"
-	echo "CMakeLists.txt puts it there; reconfigure the build."
+	echo "CMakeLists.txt puts it there; reconfigure with CBLS_BUILD_TESTS=ON."
 	exit 1
 fi
 
@@ -71,14 +81,15 @@ FAIL=0
 
 # --- Check 2: every first-party compile command carries the flags ---------
 # CMake writes one "command" line per translation unit, ending in
-# `-c <absolute source path>`. First-party is named by directory rather than
-# "anything under this checkout", because FetchContent sources live in
-# build*/_deps and, in a checkout whose .venv is a real directory, nanobind's
-# own sources under .venv/ -- neither is ours to warn on.
-# A fixed-string prefix match, not a regex: the checkout path is arbitrary text.
+# `-c <absolute source path>`. First-party is everything under the source
+# root EXCEPT the trees that hold other people's code -- build*/ (FetchContent
+# sources in _deps), .venv/ (nanobind's sources, where .venv is a real
+# directory) and .claude/ (agent worktrees) -- so that a TU in a new top-level
+# directory is checked rather than silently skipped. The prefix is matched as
+# a fixed string, not a regex: the checkout path is arbitrary text.
 FIRST_PARTY=$(grep '"command"' "$DB" | awk -v root="$ROOT/" '{
 	i = index($0, " -c " root)
-	if (i && substr($0, i + 4 + length(root)) ~ /^(src|tests|benchmarks|examples|python|\.githooks)\//) print
+	if (i && substr($0, i + 4 + length(root)) !~ /^(build[^\/]*|\.venv|\.claude)\//) print
 }')
 if [ -z "$FIRST_PARTY" ]; then
 	echo "tidy-probe: FAIL -- no first-party compile command found in $DB."
@@ -96,6 +107,32 @@ if [ -n "$MISSING" ]; then
 	echo "cannot report their compiler warnings. Give the target"
 	echo "cbls_enable_warnings() in CMakeLists.txt:"
 	echo "$MISSING" | sort -u | sed "s|^$ROOT/|  |"
+	FAIL=1
+fi
+# Present is not enough: a later `-w` or `-Wno-switch` on one target cancels
+# the flags for exactly that target while this check and Check 1 (which sees
+# only the probe's own command) stay green. -Werror is refused for the reason
+# CMakeLists.txt gives: it turns every clang-tidy finding into a compiler
+# error that the gate reports as a configuration fault.
+CANCELLED=$(echo "$FIRST_PARTY" |
+	grep -E -- ' (-w|-Werror|-Wno-(all|extra|switch|unused[a-z-]*))( |")' |
+	sed -E 's/.* -c ([^"]*)".*/\1/' || true)
+if [ -n "$CANCELLED" ]; then
+	echo "tidy-probe: FAIL -- a compile command cancels the warning flags"
+	echo "(-w, -Werror or -Wno-all/extra/switch/unused*):"
+	echo "$CANCELLED" | sort -u | sed "s|^$ROOT/|  |"
+	FAIL=1
+fi
+
+# --- Check 3: every config directory has a canary --------------------------
+# A new nested .clang-tidy that re-breaks the list would otherwise go
+# unprobed while this script still reported OK for "each config directory".
+# Skipped only where there is no git checkout to ask (an exported tarball).
+TRACKED=$(git -C "$ROOT" ls-files -- '*.clang-tidy' 2>/dev/null | sort | tr '\n' ' ')
+if [ -n "$TRACKED" ] && [ "$TRACKED" != "$(echo "$CONFIGS" | tr ' ' '\n' | sort | tr '\n' ' ')" ]; then
+	echo "tidy-probe: FAIL -- the tracked .clang-tidy set is now: $TRACKED"
+	echo "Give each config directory a canary: update CANARIES and CONFIGS"
+	echo "here, and the canary list in pre-push."
 	FAIL=1
 fi
 

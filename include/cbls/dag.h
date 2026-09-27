@@ -154,10 +154,12 @@ enum class NodeOp : uint8_t {
     /// The `default:`-free dispatch tables in `src/dag.cpp` and `src/io.cpp` are
     /// what make a missed case visible, and since #171 something does see it: the
     /// build compiles with -Wall (GCC's -Wswitch) and pre-push fails on any
-    /// warning in its output, and the clang-tidy gate reports
+    /// first-party warning in its output, and the clang-tidy gate reports
     /// `clang-diagnostic-switch`. `.githooks/tidy-probe.sh` proves the latter
-    /// still bites. Only a switch is covered -- an `if`/`==` chain over NodeOp
-    /// is not -- so `grep -rn 'NodeOp::' src/ include/ python/` for the rest.
+    /// still bites. Only a `default:`-free switch is covered -- not an `if`/`==`
+    /// chain, and not `node_is_affine` in `src/feasibility_jump.cpp`, whose
+    /// deliberate `default:` classes a new op as non-affine without a word --
+    /// so `grep -rn 'NodeOp::' src/ include/ python/` for the rest.
     Custom
 };
 

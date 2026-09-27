@@ -4,8 +4,10 @@
 #
 # Flow:
 #   1. Python lint + type gate → block on failure (cheapest, so it runs first)
-#   2. Clean build + test → block on failure
-#   3. Remaining issues (complexity, type errors, warnings) → warn and continue
+#   2. Clean build + test → block on failure, and on any compiler warning in
+#      first-party code (issue #171)
+#   3. clang-tidy + its gate probe → block; complexity, shellcheck and mypy
+#      over the pushed files → warn and continue
 #
 # There is no /review stamp gate. It was removed with the .claude/ review
 # command when .claude/ became gitignored local tooling: the gate could only
@@ -96,7 +98,9 @@ fi
 
 # Check if only non-code files changed (skip build+test for docs-only pushes).
 # .githooks/ is excluded: a hook change cannot alter build or test outcomes, so
-# a hooks-only push should not pay for a clean rebuild.
+# a hooks-only push should not pay for a clean rebuild -- except the gate probe
+# (issue #171), which CMake compiles into compile_commands.json and ctest runs
+# as clang_tidy_gate_probe, so a change to it is added back as code below.
 #
 # `.txt` is deliberately NOT in the docs extension list. Every tracked .txt in
 # this repo is load-bearing -- the three CMakeLists.txt files and the setcover
@@ -277,6 +281,26 @@ run_block() {
 	return $rc
 }
 
+# Print the compiler warnings in a build log that are in this repository's own
+# code: `$1` the log, `$2` the source root CMake recorded. Colour codes are
+# stripped first. First-party is everything under the root EXCEPT the trees
+# holding other people's code -- build*/ (FetchContent's _deps), .venv/
+# (nanobind) and .claude/ (agent worktrees) -- so a new top-level source
+# directory is gated rather than skipped. A relative path (ccache's base_dir
+# rewrites them) counts as ours unless it names one of those trees.
+first_party_warnings() {
+	sed 's/\x1b\[[0-9;]*[mK]//g' "$1" | awk -v root="$2/" '
+		/^[^ :]+:[0-9]+:([0-9]+:)? warning:/ {
+			path = substr($0, 1, index($0, ":") - 1)
+			if (substr(path, 1, 1) == "/") {
+				if (index(path, root) != 1) next
+				rest = substr(path, length(root) + 1)
+				if (rest ~ /^(build[^\/]*|\.venv|\.claude)\//) next
+			} else if (path ~ /(^|\/)(_deps|\.venv|site-packages)\//) next
+			print
+		}'
+}
+
 if [ -z "$CODE_FILES" ]; then
 	echo ""
 	echo "=== Skipping build+test (docs-only) ==="
@@ -321,15 +345,34 @@ else
 	# -Wextra; the build compiler (GCC here) has diagnostics clang lacks, and
 	# at the commit that added this it reported two -Wrange-loop-construct the
 	# sweep did not. No -Werror does this job instead -- CMakeLists.txt says
-	# why. First-party is named by directory, as in tidy-probe.sh: warnings in
-	# FetchContent'd dependencies under build*/ or in nanobind under .venv/ are
-	# not ours to fix. ccache replays a cached compile's warnings, so a warm
-	# cache does not hide them.
+	# why. ccache replays a cached compile's warnings, so a warm cache does not
+	# hide them.
+	#
+	# A scan that matches nothing looks exactly like a clean build, so it fails
+	# OPEN on anything that changes the text -- colour codes
+	# (CMAKE_COLOR_DIAGNOSTICS=ON splits ": warning:" with ESC[m), a
+	# translated "warning:", a source path spelled differently from the one
+	# assumed. Hence the positive control below: the gate probe TU is compiled
+	# on its own and the same scan must find its -Wswitch, or the push blocks.
 	if [ "$BUILD_FAILED" -eq 0 ]; then
-		BUILD_WARNINGS=$(grep -F ': warning:' "$BUILD_LOG" | awk -v root="$(pwd -P)/" '
-			index($0, root) == 1 &&
-			substr($0, length(root) + 1) ~ /^(src|include|tests|benchmarks|examples|python)\// { print }' || true)
-		if [ -n "$BUILD_WARNINGS" ]; then
+		# The source root as CMake recorded it: the spelling GCC prints.
+		SRC_ROOT=$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' build/CMakeCache.txt 2>/dev/null)
+		[ -n "$SRC_ROOT" ] || SRC_ROOT=$(pwd -P)
+		BUILD_WARNINGS=$(first_party_warnings "$BUILD_LOG" "$SRC_ROOT")
+		PROBE_LOG="${BUILD_LOG}.probe"
+		# Its objects are removed first so the TU really compiles: an
+		# up-to-date target prints nothing, which would read as a blind scan.
+		# Only the objects: the directory also holds the generator's rules.
+		find build/CMakeFiles/cbls_tidy_probe.dir -name '*.o' -delete 2>/dev/null || true
+		(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE && cmake --build build --target cbls_tidy_probe) >"$PROBE_LOG" 2>&1 || true
+		if ! first_party_warnings "$PROBE_LOG" "$SRC_ROOT" | grep -F 'incomplete_switch.cpp' | grep -qF -- '-Wswitch'; then
+			echo ""
+			echo "Push blocked: the compiler-warning scan could not see the"
+			echo "gate probe's -Wswitch in a build of cbls_tidy_probe, so it"
+			echo "would miss real warnings too. Its output was:"
+			head -20 "$PROBE_LOG"
+			BUILD_FAILED=1
+		elif [ -n "$BUILD_WARNINGS" ]; then
 			echo ""
 			echo "Push blocked: the build emitted compiler warnings in this"
 			echo "repository's own code. Fix them -- the tree is held at zero:"
@@ -420,10 +463,16 @@ if [ "$TIDY_PROBE" -eq 1 ]; then
 	PROBE_DB=""
 	[ -f "build/compile_commands.json" ] && PROBE_DB="build"
 	[ -f "compile_commands.json" ] && PROBE_DB="."
-	if [ -z "$CLANG_TIDY" ] || [ -z "$PROBE_DB" ]; then
-		echo "tidy-probe: not run -- needs clang-tidy and a compile database."
+	# Pinned copy only, as for the ctest: another vintage rejects keys this
+	# .clang-tidy uses, and would fail the probe for the wrong reason. A probe
+	# that cannot run blocks -- skipping it is the fail-open this step exists
+	# to prevent. The working tree's copy, not "$0"'s neighbour: core.hooksPath
+	# may point at another checkout's .githooks.
+	if [ ! -x "$VENV_BIN/clang-tidy" ] || [ -z "$PROBE_DB" ]; then
+		TIDY_CONFIG_ERR=1
+		TIDY_ISSUES="${TIDY_ISSUES}tidy-probe could not run: it needs $VENV_BIN/clang-tidy and a compile database"$'\n'
 	else
-		RESULT=$(bash "$(dirname "$0")/tidy-probe.sh" "$CLANG_TIDY" "$PROBE_DB" 2>&1) && PROBE_RC=0 || PROBE_RC=$?
+		RESULT=$(bash .githooks/tidy-probe.sh "$VENV_BIN/clang-tidy" "$PROBE_DB" 2>&1) && PROBE_RC=0 || PROBE_RC=$?
 		echo "$RESULT"
 		if [ "$PROBE_RC" -ne 0 ]; then
 			TIDY_CONFIG_ERR=1
