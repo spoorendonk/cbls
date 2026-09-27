@@ -717,6 +717,40 @@ def test_the_driver_verifies_what_it_ran(tmp_path: Path) -> None:
     assert scored.objective is not None
 
 
+@pytest.mark.parametrize("threads", [1, 2])
+def test_the_runner_publishes_how_many_workers_completed(tmp_path: Path, threads: int) -> None:
+    """Every row says how many portfolio workers ran to the end (#170).
+
+    `threads` is what was asked for; `workers_completed` is what the scorer holds
+    it to. A healthy run -- single-threaded or a portfolio -- completes them all,
+    lists no failures, exits 0 and scores. The lost-worker side is pinned where a
+    failure can be injected: tests/test_parallel.cpp for the engine and
+    tests/python/test_pool.py for the refusal of a row built from it.
+    """
+    pytest.importorskip("pyscipopt", reason="pyscipopt is in the 'benchmarks' extra, not 'dev'")
+    from test_verify_solution import TINY_MPS
+
+    inst_dir, _ = _instance_dir(tmp_path, "tiny", TINY_MPS.encode(), 9.0)
+    out_dir = tmp_path / "cbls"
+    completed = subprocess.run(
+        [
+            str(_binary()),
+            *("--instance", "tiny", "--inst-dir", str(inst_dir), "--out-dir", str(out_dir)),
+            *("--budget", "0.5", "--threads", str(threads)),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    row = json.loads((out_dir / "tiny.json").read_text())
+    assert row["threads"] == threads
+    assert row["workers_launched"] == threads
+    assert row["workers_completed"] == threads
+    assert row["worker_failures"] == []
+    scored = score_instance("tiny", "cbls", 9.0, "opt", tmp_path, 0.5, require_verification=False)
+    assert scored.status == "feasible"
+
+
 # --- Preconditions: the bytes are what the pins say ---------------------------
 #
 # A corrupted or substituted instance measures a different program under a
