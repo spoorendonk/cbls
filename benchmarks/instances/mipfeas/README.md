@@ -460,16 +460,16 @@ stays the operator's, and is called out below rather than implied away:
   The rest of a worker's footprint — its FJ tables, violation vectors and state
   snapshots — is still allocated on its own thread, so a cap can fit every
   replica and still starve a worker once it searches. That is reported too
-  (#170): every row that reached the end of the solve carries `workers_launched`, `workers_completed` and
-  `worker_failures` (worker index, whether it had produced a result, the
-  exception's message), a row with `workers_completed < threads` makes the
-  runner exit 1, and the scorer **refuses** it, as it refuses a row from another
-  budget. A worker is *completed* unless an exception ended it or the deadline
-  was gone before its first solve, so one that searched and then died on a
-  restart counts as lost; a worker that never started because a peer had
-  already solved a pure-feasibility model does not. A multi-threaded row written
-  before the column existed is refused as well, since it cannot show it lost
-  nothing.
+  (#170): every row that reached the end of the solve carries
+  `workers_launched`, `workers_completed` and `worker_failures` (worker index,
+  whether it had produced a result, the reason), a row with
+  `workers_completed < threads` makes the runner exit 1, and the scorer
+  **refuses** it, as it refuses a row from another budget. A worker is
+  *completed* unless an exception ended it or the deadline was gone before its
+  first solve, so one that searched and then died on a restart counts as lost;
+  a worker that never started because a peer had already solved a
+  pure-feasibility model does not. A multi-threaded row written before the
+  column existed is refused as well, since it cannot show it lost nothing.
   A resume re-runs a refused row up to twice (`MAX_WORKER_LOSS_ATTEMPTS`, the
   attempt number stamped on the row as `worker_loss_attempts`), and the driver
   exits 1 with a `LOST WORKERS` line while any remains. A loss that survives

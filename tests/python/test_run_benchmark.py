@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from benchmarks.common.jobs import Outcome
 from benchmarks.instances.mipfeas.download import PINNED_REFERENCE_FILES
 from benchmarks.mipfeas import run_benchmark
 from benchmarks.mipfeas.primal_integral import (
@@ -377,6 +378,67 @@ def test_resume_reruns_a_row_that_lost_portfolio_workers(
     assert count_lost_workers([job], tmp_path) == (0 if extra.get("workers_completed") == 2 else 1)
 
 
+def test_a_resume_left_with_a_lost_worker_row_is_not_a_clean_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A spent lost-worker row keeps the driver's exit at 1 and says why (#170).
+
+    Its re-runs are used up, so the resume runs nothing -- and a resume that runs
+    nothing must not report a clean run, which is the rule `rejected` and
+    `unchecked` already follow.
+    """
+    inst_dir, roster = _instance_dir(tmp_path, "tiny", b"NAME tiny\nENDATA\n", 9.0)
+    results_dir = tmp_path / "results"
+    (results_dir / "cbls").mkdir(parents=True)
+    row = {
+        "status": "feasible",
+        "objective": 9.0,
+        "wall_seconds": 1.0,
+        "budget_seconds": 1.0,
+        "threads": 2,
+        "workers_completed": 1,
+        "worker_loss_attempts": MAX_WORKER_LOSS_ATTEMPTS,
+    }
+    (results_dir / "cbls" / "tiny.json").write_text(json.dumps(row))
+    argv = [
+        *("--roster", str(roster), "--inst-dir", str(inst_dir)),
+        *("--results-dir", str(results_dir), "--cbls-bin", str(_binary())),
+        *("--engines", "cbls", "--budget", "1", "--cbls-threads", "2", "--cpsat-workers", "2"),
+        *("--skip-preconditions", "--no-verify"),
+    ]
+    assert _main_with(argv) == 1
+    err = capsys.readouterr().err
+    assert "LOST WORKERS: 1 row(s)" in err, err
+
+
+def test_a_rerun_killed_before_it_writes_records_the_kill_not_the_old_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A re-run of a lost-worker row that dies without writing leaves `killed` (#170).
+
+    The runner is killed (the OOM killer, say) before it writes anything. Were the
+    old row still on disk, `_run_solver` would not record the kill -- it writes
+    `killed` only when no result exists -- and the stale row would be stamped as
+    this attempt, with its old solution still beside it.
+    """
+    job = _row(tmp_path, "feasible", solution=True)
+    lost = {"status": "feasible", "objective": 1.0, "wall_seconds": 1.0, "threads": 2}
+    job.result_path(tmp_path).write_text(
+        json.dumps({**lost, "workers_completed": 1, "worker_loss_attempts": 1})
+    )
+    monkeypatch.setattr(
+        run_benchmark,
+        "run_process",
+        lambda *_args, **_kwargs: Outcome(returncode=-9, stdout="", stderr="", elapsed=1.0),
+    )
+    line = run_benchmark._run_job(job, _driver_args(), tmp_path)
+    assert "FAILED" in line
+    row = json.loads(job.result_path(tmp_path).read_text())
+    assert row["status"] == "killed"
+    assert "worker_loss_attempts" not in row
+    assert not job.solution_path(tmp_path).exists()
+
+
 def test_a_rerun_that_loses_workers_again_drops_the_old_verdict_and_counts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -391,7 +453,9 @@ def test_a_rerun_that_loses_workers_again_drops_the_old_verdict_and_counts(
     job.result_path(tmp_path).write_text(json.dumps({**lost, "worker_loss_attempts": 1}))
 
     def solver(job: Job, _args: argparse.Namespace, results_dir: Path) -> tuple[str, bool]:
-        job.result_path(results_dir).write_text(json.dumps(lost))  # the runner's new row
+        # The runner's new row, with its solution written first, as the runner does.
+        job.solution_path(results_dir).write_text("=obj= 1.0\nx 1\n")
+        job.result_path(results_dir).write_text(json.dumps(lost))
         return "FAILED (exit 1)", False
 
     monkeypatch.setattr(run_benchmark, "_run_solver", solver)

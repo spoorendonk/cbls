@@ -2825,9 +2825,9 @@ had already answered, or the host cancelled, completes; one that searched and
 then died on a restart is lost even though its earlier work is in the
 aggregate; and one starved by the deadline is lost too -- which is what a
 sequential executor does to every worker after the first, and what a budget
-spent during launch does to all of them. A single `solve()` reports 1 of 1. The MIPfeas
-runner publishes the count per row and its scorer refuses a row with fewer
-completed workers than `threads`.
+spent during launch does to all of them. A single `solve()` reports 1 of 1.
+The MIPfeas runner publishes the count per row and its scorer refuses a row
+with fewer completed workers than `threads`.
 
 `ParallelSearch::solve()` takes hook and LNS *factories* (these objects are
 stateful and per-model); each worker gets its own instance, built on that

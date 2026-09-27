@@ -553,13 +553,23 @@ def _run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
     (results_dir / job.engine).mkdir(parents=True, exist_ok=True)
     line = f"{job.engine}/{job.instance}: already solved"
     if needs_solve(job, results_dir, args.verify):
-        previous_losses = worker_loss_attempts(read_json_object(job.result_path(results_dir)) or {})
+        previous = read_json_object(job.result_path(results_dir)) or {}
+        previous_losses = worker_loss_attempts(previous)
         # The search is about to produce a new point, so any verdict sitting beside
         # the old one would read as current. Dropped BEFORE the solve, not after
         # it: a solve that fails still leaves a new row -- one that lost portfolio
         # workers (#170) is written and exits 1 -- and the old verdict must not
         # survive beside it.
         job.verification_path(results_dir).unlink(missing_ok=True)
+        if lost_workers(previous) is not None:
+            # A re-run of a row that lost workers (#170) replaces that row, so the
+            # old one goes first. Left in place, a runner killed before it writes
+            # (the OOM killer, SIGKILL) would leave the previous row on disk --
+            # `_run_solver` records `killed` only when no result exists -- and
+            # `record_worker_loss` would stamp it as this attempt. Its attempt count
+            # is already in `previous_losses`, which is all that is carried over.
+            job.result_path(results_dir).unlink(missing_ok=True)
+            job.solution_path(results_dir).unlink(missing_ok=True)
         line, solved = _run_solver(job, args, results_dir)
         record_worker_loss(job, results_dir, previous_losses)
         if not solved:
