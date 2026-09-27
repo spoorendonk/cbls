@@ -1116,3 +1116,30 @@ def test_the_jsonl_solution_object_is_a_solution_of_the_printed_problem(threads:
     # Full double precision here, unlike the human format's two decimals, so the
     # objective must match the assignment to within the solver's own tolerance.
     assert final["objective"] == pytest.approx(solution["x"] ** 2 + solution["y"] ** 2, rel=1e-6)
+
+
+NQUEENS = Path(__file__).resolve().parents[2] / "examples" / "nqueens.cbls"
+
+
+def test_the_cli_warns_when_portfolio_workers_did_not_complete() -> None:
+    """A lost worker is not silent in the CLI either (#170).
+
+    A 1-microsecond budget is gone before any worker has copied its model, so
+    every worker is starved before its first solve and the warning lists each
+    one with its reason. No test seam: the deadline is real.
+    """
+    result = _run_cbls(str(MODEL), "--quiet", "--threads", "3", "--time-limit", "0.000001")
+    assert "Warning: 0 of 3 portfolio workers completed" in result.stderr, result.stderr
+    assert result.stderr.count("before this worker's first solve") == 3, result.stderr
+
+
+def test_the_cli_does_not_warn_when_a_peer_answered_first() -> None:
+    """Workers a solved feasibility model never needed are not lost (#170).
+
+    nqueens has no objective, so the first worker to a feasible point stops its
+    peers, most before their first solve. Nothing failed, and the CLI once warned
+    "3 of 8 portfolio workers completed" on every such run.
+    """
+    result = _run_cbls(str(NQUEENS), "--quiet", "--threads", "8", "--time-limit", "5")
+    assert result.returncode == 0, result.stderr
+    assert "Warning" not in result.stderr, result.stderr
