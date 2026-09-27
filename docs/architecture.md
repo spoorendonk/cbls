@@ -2686,13 +2686,19 @@ tends to fill with one worker's successive refinements of a single point, and
 the better half of that is close to the best. Three structural alternatives
 were measured against it in #161: a per-worker reserved slot, a per-worker tabu
 set of start points, and a draw weighted by distance from the asking worker.
-They ran at 4 threads and 60s, 8 seeds, on six MIPfeas instances that #158 had
-recorded as stalling. None was shown to beat this rule: each arm's mean paired
-primal-gap difference had a 95% CI spanning zero. After #158's restore-before-kick
-that roster mostly no longer stalls, so this is weak evidence that the draw
-matters at all, not strong evidence for this rule.
-The rule stands; the numbers and protocol are in the comment on
-`SolutionPool::get_restart_point`.
+They ran at 4 threads and 60s, 8 seeds, on five MIPfeas instances admitted by a
+pre-registered control-only pilot as stalling on the current engine. The engine
+was `ea89d15` plus the switch in `8b7b37b` (`CBLS_ISSUE161_ARM`). None could be
+separated from this rule: each arm's mean paired primal-gap difference had a 95%
+CI spanning zero, and each CI was wider than its mean. The engagement counters
+explain part of that:
+- the slot and tabu arms consume the RNG exactly as this rule until their
+  condition fires;
+- the distance weights were close to uniform, because the asker sits at about
+  the same distance from every entry of a pool of near-identical refinements.
+
+The rule stands. The numbers, the protocol and the earlier, superseded campaign
+are in the comment on `SolutionPool::get_restart_point`.
 
 ### Parallel Search
 
