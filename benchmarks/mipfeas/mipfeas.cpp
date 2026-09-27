@@ -416,6 +416,44 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     }
 }
 
+/// How many portfolio workers actually ran to the end (#170), as row columns.
+///
+/// `threads` is what was ASKED for, and it is a scorer configuration key: a
+/// worker that died inside the solve bracket -- a bad_alloc on its FJ tables
+/// under the driver's address-space cap, after every replica fitted -- is
+/// absorbed by ParallelSearch, which returns the survivors' result. Without these
+/// columns such a row reads as a valid N-thread measurement; with them the scorer
+/// refuses it. "Completed" is defined on SearchResult::workers_completed. The
+/// single-threaded arm reports 1 of 1: cbls::solve has one worker, and a throw
+/// from it is a `solve_error` row instead.
+void add_worker_accounting(const cbls::SearchResult& result, nlohmann::json& row) {
+    row["workers_launched"] = result.workers_launched;
+    row["workers_completed"] = result.workers_completed;
+    nlohmann::json failures = nlohmann::json::array();
+    for (const cbls::WorkerFailure& f : result.worker_failures) {
+        failures.push_back(
+            {{"worker", f.worker}, {"produced_result", f.produced_result}, {"reason", f.reason}});
+    }
+    row["worker_failures"] = failures;
+}
+
+/// Whether the portfolio completed fewer workers than `--threads` asked for,
+/// saying so on stderr with each failure's reason when it did. Such a row is
+/// still written -- its failures are the record -- but the scorer refuses it and
+/// the job exits non-zero.
+bool report_lost_workers(const Args& args, const cbls::SearchResult& result) {
+    if (result.workers_completed >= args.threads) {
+        return false;
+    }
+    std::fprintf(stderr, "%s: only %d of %d portfolio workers completed; the row is refused\n",
+                 args.instance.c_str(), result.workers_completed, args.threads);
+    for (const cbls::WorkerFailure& f : result.worker_failures) {
+        std::fprintf(stderr, "  worker %d%s: %s\n", f.worker,
+                     f.produced_result ? " (after producing a result)" : "", f.reason.c_str());
+    }
+    return true;
+}
+
 /// Whether the arguments name a run that can produce a result at all. Returns 0
 /// when they do, otherwise the process exit code. Separate from run_benchmark
 /// because these guards are the parse layer's other half rather than part of
@@ -826,33 +864,9 @@ int run_benchmark(int argc, char** argv) {
     };
     j["objective"] =
         verdict.have_solution ? nlohmann::json(result.objective) : nlohmann::json(nullptr);
-    // How many portfolio workers actually ran to the end (#170). `threads` above
-    // is what was ASKED for, and it is a scorer configuration key: a worker that
-    // died inside the solve bracket -- a bad_alloc on its FJ tables under the
-    // driver's address-space cap, after every replica fitted -- is absorbed by
-    // ParallelSearch, which returns the survivors' result. Without this column
-    // such a row reads as a valid N-thread measurement; with it the scorer
-    // refuses the row. "Completed" is defined on SearchResult::workers_completed.
-    // The single-threaded arm reports 1 of 1: cbls::solve has one worker, and a
-    // throw from it is a `solve_error` row instead.
-    const bool lost_workers = result.workers_completed < args.threads;
-    j["workers_launched"] = result.workers_launched;
-    j["workers_completed"] = result.workers_completed;
-    nlohmann::json failures = nlohmann::json::array();
-    for (const cbls::WorkerFailure& f : result.worker_failures) {
-        failures.push_back(
-            {{"worker", f.worker}, {"produced_result", f.produced_result}, {"reason", f.reason}});
-    }
-    j["worker_failures"] = failures;
+    add_worker_accounting(result, j);
     write_result(args, j);
-    if (lost_workers) {
-        std::fprintf(stderr, "%s: only %d of %d portfolio workers completed; the row is refused\n",
-                     args.instance.c_str(), result.workers_completed, args.threads);
-        for (const cbls::WorkerFailure& f : result.worker_failures) {
-            std::fprintf(stderr, "  worker %d%s: %s\n", f.worker,
-                         f.produced_result ? " (after producing a result)" : "", f.reason.c_str());
-        }
-    }
+    const bool lost_workers = report_lost_workers(args, result);
 
     std::printf("%-28s %-12s obj=%-16.8g viol=%-10.3g %8.2fs\n", args.instance.c_str(),
                 verdict.status,
@@ -862,7 +876,8 @@ int run_benchmark(int argc, char** argv) {
     // produced a row nothing can verify, and the driver has to see that. The same
     // for a portfolio that lost workers: the row is written, so the failure is
     // on disk with its reasons, but the job did not measure what it was asked to.
-    return (solution_write_failed || lost_workers) ? 1 : 0;
+    // Exit 1 on either, 0 otherwise.
+    return static_cast<int>(solution_write_failed || lost_workers);
 }
 
 }  // namespace
