@@ -5,8 +5,12 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cbls/cbls.h>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <memory>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 using namespace cbls;
@@ -649,5 +653,258 @@ TEST_CASE("Tanh AD matches finite difference", "[dag]") {
         REQUIRE_THAT(compute_partial(m, t, vid(x)), WithinAbs(1.0 - (th * th), 1e-10));
         REQUIRE_THAT(compute_partial(m, t, vid(x)),
                      WithinAbs(fd_partial(m, t, vid(x), 1e-5), 1e-5));
+    }
+}
+
+// ---- Cone-restricted reverse-mode AD ----
+//
+// compute_partial / compute_all_partials / compute_partials_sparse sweep only
+// the cone of the expression, in reverse topological order, instead of the
+// whole `topo_order()`. The claim is that this performs exactly the same
+// floating-point operations in the same order, so every partial -- and every
+// search trajectory built on them -- is bit-identical. The reference below is
+// the full-order walk those functions used before, kept verbatim so the
+// comparison is against the old arithmetic, not a re-derivation of it.
+
+namespace {
+
+std::vector<double> full_walk_all_partials(const Model& model, int32_t expr_id) {
+    const size_t num_nodes = model.num_nodes();
+    std::vector<double> adjoint(num_nodes + model.num_vars(), 0.0);
+    adjoint[expr_id] = 1.0;
+    const auto& order = model.topo_order();
+    for (auto it = order.rbegin(); it != order.rend(); ++it) {
+        const int32_t nid = *it;
+        if (adjoint[nid] == 0.0) {
+            continue;
+        }
+        const double adj = adjoint[nid];
+        const auto& nd = model.node(nid);
+        const ConstSpan<ChildRef> children = model.children(nd);
+        for (int i = 0; i < static_cast<int>(children.size()); ++i) {
+            const double ld = local_derivative(nd, i, model);
+            const ChildRef& child = children[i];
+            const size_t key = child.is_var ? num_nodes + static_cast<size_t>(child.id)
+                                            : static_cast<size_t>(child.id);
+            adjoint[key] += adj * ld;
+        }
+    }
+    return {adjoint.begin() + static_cast<std::ptrdiff_t>(num_nodes), adjoint.end()};
+}
+
+uint64_t bits_of(double d) {
+    uint64_t b = 0;
+    std::memcpy(&b, &d, sizeof b);
+    return b;
+}
+
+// Every entry point, against the reference, bit for bit, for one expression.
+void require_bit_identical_partials(const Model& m, int32_t expr_id) {
+    const std::vector<double> expected = full_walk_all_partials(m, expr_id);
+
+    const std::vector<double> all = compute_all_partials(m, expr_id);
+    REQUIRE(all.size() == expected.size());
+    for (size_t v = 0; v < expected.size(); ++v) {
+        INFO("expr " << expr_id << " var " << v);
+        REQUIRE(bits_of(all[v]) == bits_of(expected[v]));
+        REQUIRE(bits_of(compute_partial(m, expr_id, static_cast<int32_t>(v))) ==
+                bits_of(expected[v]));
+    }
+
+    std::vector<std::pair<int32_t, double>> sparse{{-1, 99.0}};  // must be cleared
+    compute_partials_sparse(m, expr_id, sparse);
+    std::vector<uint8_t> seen(expected.size(), 0);
+    for (const auto& [var, partial] : sparse) {
+        INFO("expr " << expr_id << " sparse var " << var);
+        REQUIRE(var >= 0);
+        REQUIRE(static_cast<size_t>(var) < expected.size());
+        REQUIRE(seen[static_cast<size_t>(var)] == 0);  // each variable at most once
+        seen[static_cast<size_t>(var)] = 1;
+        REQUIRE(partial != 0.0);
+        REQUIRE(bits_of(partial) == bits_of(expected[static_cast<size_t>(var)]));
+    }
+    for (size_t v = 0; v < expected.size(); ++v) {
+        INFO("expr " << expr_id << " var " << v << " missing from sparse");
+        REQUIRE((seen[v] != 0) == (expected[v] != 0.0));
+    }
+}
+
+// The sweep only sorts the cone when it is small against the DAG; on a toy
+// model every cone is "large" and the full-order fallback runs instead. Pads the
+// model with an unrelated constrained chain so the expressions under test take
+// the sorted-cone route. Returns the chain's constraint, which is itself a
+// whole-chain cone for the fallback route.
+int32_t pad_with_unrelated_chain(Model& m, int length) {
+    int32_t node = m.float_var(-1.0, 1.0);
+    for (int i = 0; i < length; ++i) {
+        node = m.sin_expr(node);
+    }
+    const int32_t row = m.leq(node, m.constant(1.0));
+    m.add_constraint(row);
+    return row;
+}
+
+}  // namespace
+
+TEST_CASE("cone AD is bit-identical to the full-order walk on nonlinear shared DAGs", "[dag]") {
+    Model m;
+    auto x = m.float_var(-10, 10);
+    auto y = m.float_var(-10, 10);
+    auto z = m.float_var(0.1, 10);
+    auto w = m.float_var(-10, 10);  // appears in no expression below but one
+    auto three = m.constant(3.0);
+    // Shared subexpression `xy` reached along three paths, and x along four.
+    auto xy = m.prod(x, y);
+    auto s = m.sin_expr(xy);
+    auto e = m.exp_expr(m.div_expr(xy, z));
+    auto l = m.log_expr(m.sum({z, m.prod(x, x)}));
+    auto p = m.pow_expr(m.sum({x, y, xy}), three);
+    auto f = m.sum({s, e, l, p, m.tanh_expr(m.neg(y)), m.sqrt_expr(z)});
+    auto g = m.leq(m.sum({f, m.prod(xy, e)}), m.constant(1.0));
+    auto h = m.leq(w, m.constant(0.0));
+    m.add_constraint(g);
+    m.add_constraint(h);
+    pad_with_unrelated_chain(m, 400);
+    m.minimize(f);
+    m.close();
+
+    for (const auto& pt : std::vector<std::vector<double>>{
+             {0.3, -0.7, 1.1, 0.0}, {1.2, 0.4, 2.5, -1.0}, {-0.9, 1.3, 0.6, 2.0}}) {
+        m.var_mut(vid(x)).value = pt[0];
+        m.var_mut(vid(y)).value = pt[1];
+        m.var_mut(vid(z)).value = pt[2];
+        m.var_mut(vid(w)).value = pt[3];
+        full_evaluate(m);
+        for (int32_t node = 0; node < static_cast<int32_t>(m.num_nodes()); ++node) {
+            require_bit_identical_partials(m, node);
+        }
+    }
+}
+
+TEST_CASE("cone AD keeps the zero-adjoint skip for cancelled and zero-derivative paths", "[dag]") {
+    Model m;
+    auto x = m.float_var(-1000, 1000);
+    auto y = m.float_var(-10, 10);
+    auto z = m.float_var(-10, 10);
+    // u's adjoint is 1 + (-1) == 0.0 exactly, so nothing below u is propagated:
+    // d/dx of (u - u) is 0 and x must be absent from the sparse result. The skip
+    // is load-bearing, not just a saving: u = exp(800) overflows, so its local
+    // derivative is +inf, and propagating the zero adjoint would write
+    // 0 * inf = NaN into x's partial.
+    auto u = m.exp_expr(x);
+    auto cancelled = m.sum({u, m.neg(u)});
+    // y * z at z == 0: the local derivative w.r.t. y is 0.0 -- y is written but
+    // stays zero, so it too is absent from the sparse result.
+    auto yz = m.prod(y, z);
+    auto f = m.sum({cancelled, yz});
+    const int32_t chain = pad_with_unrelated_chain(m, 400);
+    m.minimize(f);
+    m.close();
+    m.var_mut(vid(x)).value = 800.0;
+    m.var_mut(vid(y)).value = 2.0;
+    m.var_mut(vid(z)).value = 0.0;
+    full_evaluate(m);
+
+    REQUIRE(compute_partial(m, f, vid(x)) == 0.0);
+    REQUIRE(compute_partial(m, f, vid(y)) == 0.0);
+    REQUIRE(compute_partial(m, f, vid(z)) == 2.0);
+    std::vector<std::pair<int32_t, double>> sparse;
+    compute_partials_sparse(m, f, sparse);
+    REQUIRE(sparse == std::vector<std::pair<int32_t, double>>{{vid(z), 2.0}});
+    require_bit_identical_partials(m, f);
+    require_bit_identical_partials(m, cancelled);
+    require_bit_identical_partials(m, chain);
+}
+
+TEST_CASE("cone AD is bit-identical on a large linear model for small and whole-DAG cones",
+          "[dag]") {
+    // A MIP-shaped model: many rows over a shared pool of variables, so a row's
+    // cone is a handful of nodes against thousands -- the sorted-cone route --
+    // while the objective, summing every row, has a cone of nearly the whole DAG
+    // and takes the full-order fallback. Both must match the reference.
+    constexpr int kVars = 400;
+    constexpr int kRows = 600;
+    Model m;
+    std::vector<int32_t> vars;
+    vars.reserve(kVars);
+    for (int i = 0; i < kVars; ++i) {
+        vars.push_back(m.float_var(-5.0, 5.0));
+    }
+    std::vector<int32_t> lhs;
+    std::vector<int32_t> rows;
+    for (int r = 0; r < kRows; ++r) {
+        std::vector<int32_t> terms;
+        for (int k = 0; k < 4; ++k) {
+            // Deterministic, non-trivial coefficients. Every third row repeats
+            // its first variable as the last term, so one variable collects its
+            // partial along two paths.
+            const int step = 13 * ((r % 5) + 1);
+            const int v = (k == 3 && r % 3 == 0) ? (r * 7) % kVars : ((r * 7) + (k * step)) % kVars;
+            const double coef = (0.1 * static_cast<double>(((r * 31) + (k * 17)) % 23)) - 1.05;
+            terms.push_back(m.prod(m.constant(coef), vars[static_cast<size_t>(v)]));
+        }
+        const int32_t row_lhs = m.sum(terms);
+        lhs.push_back(row_lhs);
+        const int32_t row = m.leq(row_lhs, m.constant(1.0));
+        m.add_constraint(row);
+        rows.push_back(row);
+    }
+    const int32_t obj = m.sum(lhs);
+    m.minimize(obj);
+    m.close();
+    for (int i = 0; i < kVars; ++i) {
+        m.var_mut(vid(vars[static_cast<size_t>(i)])).value =
+            (0.01 * static_cast<double>(i % 97)) - 0.3;
+    }
+    full_evaluate(m);
+
+    for (int r = 0; r < kRows; r += 37) {
+        require_bit_identical_partials(m, rows[static_cast<size_t>(r)]);
+        require_bit_identical_partials(m, lhs[static_cast<size_t>(r)]);
+    }
+    require_bit_identical_partials(m, obj);
+}
+
+TEST_CASE("a partial that throws does not poison later AD calls on the thread", "[dag]") {
+    // The sweep's scratch is thread_local and is restored by a guard. Without it,
+    // a throw from user code would leave adjoints and cone marks set, and every
+    // later call on this thread would start from them.
+    class ThrowingPartial : public CustomInvariant {
+    public:
+        double evaluate(const InvariantInputs& in) override { return in.value(0) + in.value(1); }
+        double partial(const InvariantInputs& /*in*/, int32_t /*i*/) override {
+            throw std::runtime_error("partial unavailable");
+        }
+        [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
+            return std::make_unique<ThrowingPartial>(*this);
+        }
+    };
+
+    Model bad;
+    const int32_t a = bad.float_var(-5.0, 5.0);
+    const int32_t b = bad.float_var(-5.0, 5.0);
+    const int32_t c = bad.custom({a, b}, std::make_unique<ThrowingPartial>(), "throws");
+    const int32_t bad_row = bad.leq(bad.sum({c, bad.sin_expr(a)}), bad.constant(1.0));
+    bad.add_constraint(bad_row);
+    bad.close();
+    full_evaluate(bad);
+    REQUIRE_THROWS_AS(compute_partial(bad, bad_row, vid(a)), std::runtime_error);
+    REQUIRE_THROWS_AS(compute_all_partials(bad, bad_row), std::runtime_error);
+    std::vector<std::pair<int32_t, double>> sparse;
+    REQUIRE_THROWS_AS(compute_partials_sparse(bad, bad_row, sparse), std::runtime_error);
+
+    // Same shape without the custom node, so its node ids overlap the ones the
+    // throwing sweeps touched.
+    Model good;
+    const int32_t x = good.float_var(-5.0, 5.0);
+    const int32_t y = good.float_var(-5.0, 5.0);
+    const int32_t s = good.sum({x, y});
+    const int32_t row = good.leq(good.sum({s, good.sin_expr(x)}), good.constant(1.0));
+    good.add_constraint(row);
+    good.close();
+    good.var_mut(vid(x)).value = 0.5;
+    full_evaluate(good);
+    for (int32_t node = 0; node < static_cast<int32_t>(good.num_nodes()); ++node) {
+        require_bit_identical_partials(good, node);
     }
 }
