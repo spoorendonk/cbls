@@ -49,6 +49,31 @@ double score_magnitude(Model& m, const std::vector<double>& w, int32_t v, double
     return before + after;
 }
 
+// One comparison row of a random kind over (lhs, rhs), or a range row over lhs.
+void add_random_comparison(Model& m, RNG& rng, int32_t lhs, int32_t rhs) {
+    switch (rng.integers(0, 6)) {
+        case 0:
+            m.add_constraint(m.leq(lhs, rhs));
+            break;
+        case 1:
+            m.add_constraint(m.geq(lhs, rhs));
+            break;
+        case 2:
+            m.add_constraint(m.lt(lhs, rhs));
+            break;
+        case 3:
+            m.add_constraint(m.gt(lhs, rhs));
+            break;
+        case 4:
+            m.add_constraint(m.eq_expr(lhs, rhs));
+            break;
+        default:  // a range row: two constraints over one lhs
+            m.add_constraint(m.geq(lhs, m.constant(-2.0)));
+            m.add_constraint(m.leq(lhs, m.constant(3.0)));
+            break;
+    }
+}
+
 struct RandomLinearModel {
     Model m;
     std::vector<int32_t> handles;
@@ -127,27 +152,7 @@ void build_random_linear(RandomLinearModel& r, uint64_t seed, bool integral) {
     for (int row = 0; row < 14; ++row) {
         const int32_t lhs = side();
         const int32_t rhs = rng.integers(0, 4) == 0 ? side() : rhs_const();
-        switch (rng.integers(0, 6)) {
-            case 0:
-                m.add_constraint(m.leq(lhs, rhs));
-                break;
-            case 1:
-                m.add_constraint(m.geq(lhs, rhs));
-                break;
-            case 2:
-                m.add_constraint(m.lt(lhs, rhs));
-                break;
-            case 3:
-                m.add_constraint(m.gt(lhs, rhs));
-                break;
-            case 4:
-                m.add_constraint(m.eq_expr(lhs, rhs));
-                break;
-            default:  // a range row: two constraints over one lhs
-                m.add_constraint(m.geq(lhs, m.constant(-2.0)));
-                m.add_constraint(m.leq(lhs, m.constant(3.0)));
-                break;
-        }
+        add_random_comparison(m, rng, lhs, rhs);
     }
     // Reverse the operand order on one Eq, so a literal on the LEFT is covered.
     m.add_constraint(m.eq_expr(m.constant(1.0), side()));

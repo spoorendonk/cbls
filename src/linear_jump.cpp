@@ -32,6 +32,26 @@ void side_partials(const Model& model, const ChildRef& ref,
     std::sort(out.begin(), out.end());
 }
 
+// r = s0 - s1 per variable, for an Eq row: a union merge of two id-sorted lists.
+void merge_sides(const std::vector<std::pair<int32_t, double>>& s0,
+                 const std::vector<std::pair<int32_t, double>>& s1,
+                 std::vector<std::pair<int32_t, double>>& out) {
+    size_t i = 0;
+    size_t k = 0;
+    while (i < s0.size() || k < s1.size()) {
+        if (k == s1.size() || (i < s0.size() && s0[i].first < s1[k].first)) {
+            out.push_back(s0[i++]);
+        } else if (i == s0.size() || s1[k].first < s0[i].first) {
+            out.emplace_back(s1[k].first, -s1[k].second);
+            ++k;
+        } else {
+            out.emplace_back(s0[i].first, s0[i].second - s1[k].second);
+            ++i;
+            ++k;
+        }
+    }
+}
+
 // The sign `local_derivative` gives an Eq node: 0 for a zero OR NaN difference.
 double eq_sign(double diff) {
     if (diff > 0.0) {
@@ -99,20 +119,7 @@ void LinearJumpScorer::build_row(int32_t ci) {
     if (row.is_abs) {
         side_partials(model_, p, side0_);
         side_partials(model_, q, side1_);
-        size_t i = 0;
-        size_t k = 0;
-        while (i < side0_.size() || k < side1_.size()) {
-            if (k == side1_.size() || (i < side0_.size() && side0_[i].first < side1_[k].first)) {
-                merged_.push_back(side0_[i++]);
-            } else if (i == side0_.size() || side1_[k].first < side0_[i].first) {
-                merged_.emplace_back(side1_[k].first, -side1_[k].second);
-                ++k;
-            } else {
-                merged_.emplace_back(side0_[i].first, side0_[i].second - side1_[k].second);
-                ++i;
-                ++k;
-            }
-        }
+        merge_sides(side0_, side1_, merged_);
         row.newton_exact = row.p_literal || row.q_literal;
     } else {
         compute_partials_sparse(model_, nid, merged_);
@@ -128,28 +135,24 @@ void LinearJumpScorer::build_row(int32_t ci) {
         }
         n += e.second != 0.0 ? 1 : 0;
     }
-    row.vars = std::make_unique<int32_t[]>(n);
-    row.slopes = std::make_unique<double[]>(n);
-    row.count = static_cast<uint32_t>(n);
-    size_t k = 0;
+    // Exactly sized: a row is built once and then read for the rest of the run.
+    row.vars.reserve(n);
+    row.slopes.reserve(n);
     for (const auto& e : merged_) {
         if (e.second != 0.0) {
-            row.vars[k] = e.first;
-            row.slopes[k] = e.second;
-            ++k;
+            row.vars.push_back(e.first);
+            row.slopes.push_back(e.second);
         }
     }
     row.state = RowState::Ready;
 }
 
 double LinearJumpScorer::slope_of(const Row& row, int32_t var_id) {
-    const int32_t* first = row.vars.get();
-    const int32_t* last = first + row.count;
-    const int32_t* it = std::lower_bound(first, last, var_id);
-    if (it == last || *it != var_id) {
+    const auto it = std::lower_bound(row.vars.begin(), row.vars.end(), var_id);
+    if (it == row.vars.end() || *it != var_id) {
         return 0.0;
     }
-    return row.slopes[static_cast<size_t>(it - first)];
+    return row.slopes[static_cast<size_t>(it - row.vars.begin())];
 }
 
 double LinearJumpScorer::child_value(int32_t id, bool is_var) const {

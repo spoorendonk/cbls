@@ -3,7 +3,6 @@
 #include "dag.h"
 
 #include <cstdint>
-#include <memory>
 #include <utility>
 #include <vector>
 
@@ -43,7 +42,7 @@ class Model;
 /// per-node affineness) through `set_row_eligible`, and each row's slopes are
 /// built LAZILY, on the first prepare that reads the row: a short-lived FJ (the
 /// LNS repair builds one per call) pays only for the rows it touches. Storage is
-/// per row -- a 40-byte header for every row, plus ascending variable ids and
+/// per row -- a 64-byte header for every row, plus ascending variable ids and
 /// slopes, 12 bytes per nonzero, for each row built -- so an extension (#167)
 /// invalidates exactly the rows it changed, the same unit as FeasibilityJump's
 /// other per-row tables. The slopes are structure, but each portfolio worker's FJ
@@ -101,14 +100,13 @@ public:
 private:
     enum class RowState : uint8_t { Ineligible, Pending, Ready };
     // Every row carries one of these whether or not it is ever built, so it is
-    // kept to 40 bytes: owning arrays rather than two std::vectors, and the two
-    // residual arguments as (id, is_var) fields rather than ChildRefs.
+    // kept to 64 bytes: the two residual arguments as (id, is_var) fields rather
+    // than padded ChildRefs.
     struct Row {
-        std::unique_ptr<int32_t[]> vars;   // ascending, `count` long
-        std::unique_ptr<double[]> slopes;  // r = d(p - q)/dv, parallel to vars
-        uint32_t count = 0;
-        int32_t p_id = -1;  // first argument of the residual
-        int32_t q_id = -1;  // second argument
+        std::vector<int32_t> vars;   // ascending
+        std::vector<double> slopes;  // r = d(p - q)/dv, parallel to vars
+        int32_t p_id = -1;           // first argument of the residual
+        int32_t q_id = -1;           // second argument
         RowState state = RowState::Ineligible;
         bool p_is_var = false;
         bool q_is_var = false;
