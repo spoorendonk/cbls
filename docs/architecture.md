@@ -2819,10 +2819,13 @@ infeasible-looking result. A partial failure is absorbed -- the survivors'
 best is returned -- but not silently (#170): the result carries
 `workers_launched`, `workers_completed` and one `WorkerFailure` (index, whether
 it had produced a result, the exception's message) per worker that did not
-complete. A worker *completes* unless an exception ended it -- including one
-that never needed to start because a peer had already answered -- so one that
-searched, then died on a restart, is counted as lost even though its earlier
-work is in the aggregate. A single `solve()` reports 1 of 1. The MIPfeas
+complete. A worker *completes* unless an exception ended it or the shared
+deadline was gone before its first solve. One that never started because a peer
+had already answered, or the host cancelled, completes; one that searched and
+then died on a restart is lost even though its earlier work is in the
+aggregate; and one starved by the deadline is lost too -- which is what a
+sequential executor does to every worker after the first, and what a budget
+spent during launch does to all of them. A single `solve()` reports 1 of 1. The MIPfeas
 runner publishes the count per row and its scorer refuses a row with fewer
 completed workers than `threads`.
 
