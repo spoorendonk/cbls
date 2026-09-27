@@ -928,12 +928,13 @@ the probe to rounding, not to the bit -- so the chosen jump is guaranteed the
 probe's only on integral data, and an ulp can flip a near-tie on fractional
 data -- and a committed jump still goes
 through `delta_evaluate`. Any other weighted row, or a non-finite computed side,
-takes the probe. On MIPfeas at a 20s budget this raised FJ iterations 7–62×
-(gen-ip002 4,803 → 299,283; neos-860300 1,207 → 8,174; n2seq36q 19,504 →
-238,097; swath3 12,152 → 297,258), measured serially, Release, on an otherwise
-idle 12-core box, at `53e0587` (cone-restricted AD, the parent) against
-`78f5332`; the per-worker memory it costs is recorded under the portfolio
-section below. The Float Newton step reads the
+takes the probe. On MIPfeas at a 20s budget, one thread, this raised FJ
+iterations 7–58× (gen-ip002 4,803 → 278,793; neos-860300 1,207 → 8,997;
+n2seq36q 19,504 → 256,589; mas76 142,065 → 1,426,857; binkar10_1 83,917 →
+924,596; swath3 12,152 → 307,857), measured serially, Release, on a 12-core box
+with no other job (load 1.8–4.7, the tail of the preceding build), at `53e0587`
+(cone-restricted AD, the parent) against `cf9da09`; the per-worker memory it
+costs is recorded under the portfolio section below. The Float Newton step reads the
 same cache for a row's partial where it is bit-identical to `compute_partial`
 (Leq/Geq/Lt/Gt always; Eq only against a literal side). Newton
 candidates are considered first so that, on a tie in violation delta (a feasible
@@ -2782,15 +2783,15 @@ What remains per worker is genuinely per-worker: the variables whole (104 B x 71
 = 74 MB), the node values (8 B x 4.3M = 34 MB), at least three `Model::State`
 snapshots (~23 MB each — a `vector<vector<int32_t>>` sized `num_vars` is 17 MB of
 empty headers alone), FJ's per-variable and per-constraint tables,
-`ViolationManager`'s two per-constraint vectors, FJ's `LinearJumpScorer` (a
-64 B header per row plus 12 B per nonzero of every row it has built -- the slopes
+`ViolationManager`'s two per-constraint vectors, FJ's `LinearJumpScorer` (4 B
+per row, plus 20 B and 12 B per nonzero for every row it has built -- the slopes
 are structure, but each worker builds its own), and `dag_ops.cpp`'s
-`thread_local` adjoint scratch, which that scorer's slope build allocates on a
-pure MIP too, not only once the Newton paths run. The scorer and the scratch
-together moved kasavu's peak RSS (30s, Release, 12-core box) from 820 MB to
-960 MB at one worker and from 3.16 to 3.96 GiB at eight -- about +100 MB per
-worker -- measured at `53e0587` against `018416a`; the table above predates
-them. The shared pool's
+`thread_local` adjoint scratch (~44 MB here), which that scorer's slope build
+allocates on a pure MIP too, not only once the Newton paths run. The scorer and
+the scratch together moved kasavu's peak RSS (30s, Release, 12-core box) from
+820 MB to 923 MB at one worker and from 3.16 to 3.93 GiB at eight -- about
++95 MB per worker, nearly all of it the scratch and the built slopes -- measured
+at `53e0587` against `cf9da09`; the table above predates them. The shared pool's
 `max(10, 2N)` `Solution`s grow with N too. So the criterion to hold this to is
 "1-worker + N x a measured per-worker constant", not "1-worker + a small
 constant" — and treat that constant as a **floor**: its largest term scales with
