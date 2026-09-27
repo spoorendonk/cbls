@@ -584,6 +584,7 @@ public:
         f(begin, end, 0);
     }
     void parallel_invoke(const std::function<void()>& f, const std::function<void()>& g) {
+        std::this_thread::sleep_for(delay_);
         f();
         g();
     }
