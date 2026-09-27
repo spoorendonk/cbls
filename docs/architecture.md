@@ -2819,9 +2819,10 @@ infeasible-looking result. A partial failure is absorbed -- the survivors'
 best is returned -- but not silently (#170): the result carries
 `workers_launched`, `workers_completed` and one `WorkerFailure` (index, whether
 it had produced a result, the exception's message) per worker that did not
-complete. A worker *completes* when its last solve attempt returned normally, so
-one that searched, then died on a restart, is counted as lost even though its
-earlier work is in the aggregate. A single `solve()` reports 1 of 1. The MIPfeas
+complete. A worker *completes* unless an exception ended it -- including one
+that never needed to start because a peer had already answered -- so one that
+searched, then died on a restart, is counted as lost even though its earlier
+work is in the aggregate. A single `solve()` reports 1 of 1. The MIPfeas
 runner publishes the count per row and its scorer refuses a row with fewer
 completed workers than `threads`.
 

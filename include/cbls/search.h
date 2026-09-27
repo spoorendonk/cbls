@@ -346,9 +346,10 @@ struct WorkerFailure {
     /// The worker's index in `[0, workers_launched)`.
     int worker = 0;
     /// Whether the worker returned at least one solve before it died. When true
-    /// its work is IN the aggregate -- its iterations, counters and any incumbent
-    /// it pooled -- and only its remaining budget was lost; when false it
-    /// contributed nothing.
+    /// the solves it RETURNED are in the aggregate's iterations and counters; the
+    /// attempt that threw, and the budget after it, are not. Either way an
+    /// incumbent it shared with the pool mid-run may be the returned answer, so
+    /// false means "no counters in the aggregate", not "contributed nothing".
     bool produced_result = false;
     /// `what()` of the exception that ended the worker, or a fixed string for an
     /// exception not derived from `std::exception`. For a Python exception this is
@@ -532,23 +533,27 @@ struct SearchResult {
 
     /// How many portfolio workers ran, and how many of them COMPLETED (#170).
     ///
-    /// A worker is COMPLETED when its last `solve()` attempt returned normally:
-    /// it was still searching when the portfolio ended -- on the shared deadline,
-    /// a peer's stop, a host cancel or its own iteration budget. Precisely:
+    /// A worker is COMPLETED unless an exception ended it: its last `solve()`
+    /// attempt returned normally, or it never needed one. Precisely:
     ///
     ///  - a worker that threw and recovered on a retry, and whose last attempt
     ///    returned, IS completed;
     ///  - a worker whose last attempt THREW is NOT, and is listed in
     ///    `worker_failures` -- including one that returned results earlier and
     ///    died on a later restart (`produced_result` says so), and one that threw
-    ///    once and then found the deadline gone before it could retry. The first
-    ///    of those ran for part of the budget only, which is what makes a row that
-    ///    counts it as a thread wrong; the second is conservative by one retry;
-    ///  - a worker that never started a solve, because the shared deadline had
-    ///    already passed when it launched, is neither completed nor failed.
+    ///    once and then met the deadline, a peer's stop or a host cancel before
+    ///    it could retry. The first of those ran for part of the budget only,
+    ///    which is what makes a row that counts it as a thread wrong; the second
+    ///    is conservative by one retry;
+    ///  - so is a worker whose model, hook, LNS or tracer factory threw;
+    ///  - a worker that never started a solve because there was nothing left to
+    ///    do -- a peer had already answered a pure-feasibility model, the host
+    ///    had cancelled, or the shared deadline had passed during launch -- IS
+    ///    completed. Nothing failed, and on a feasibility model solved at once
+    ///    that is most of the portfolio: counting them as lost would flag every
+    ///    easy run. `termination` still says why the run ended.
     ///
-    /// So `workers_completed + worker_failures.size() <= workers_launched`, with
-    /// equality unless the budget expired during launch.
+    /// So `workers_completed + worker_failures.size() == workers_launched`.
     ///
     /// `workers_launched` is the portfolio's worker count after an executor's cap
     /// (see `ParallelConfig::executor`), which can be fewer than the threads

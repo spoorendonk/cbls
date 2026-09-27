@@ -549,12 +549,15 @@ def _run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
     (results_dir / job.engine).mkdir(parents=True, exist_ok=True)
     line = f"{job.engine}/{job.instance}: already solved"
     if needs_solve(job, results_dir, args.verify):
+        # The search is about to produce a new point, so any verdict sitting beside
+        # the old one would read as current. Dropped BEFORE the solve, not after
+        # it: a solve that fails still leaves a new row -- one that lost portfolio
+        # workers (#170) is written and exits 1 -- and the old verdict must not
+        # survive beside it.
+        job.verification_path(results_dir).unlink(missing_ok=True)
         line, solved = _run_solver(job, args, results_dir)
         if not solved:
             return line
-        # The search just produced a new point, so any verdict sitting beside it
-        # describes the previous one and would read as current.
-        job.verification_path(results_dir).unlink(missing_ok=True)
     if needs_verification(job, results_dir, args.verify):
         line = f"{line} | {_verify(job, args, results_dir)}"
     return line
@@ -735,6 +738,21 @@ def needs_solve(job: Job, results_dir: Path, verify: bool) -> bool:
         # read-only directory). Nothing else can produce the solution vector, and
         # the scorer withholds the row until one exists.
         print(f"Re-running {job.engine}/{job.instance}: the solution could not be written.")
+        return True
+    completed, threads = result.get("workers_completed"), result.get("threads")
+    if (
+        isinstance(completed, int)
+        and isinstance(threads, int)
+        and not isinstance(completed, bool)
+        and completed < threads
+    ):
+        # #170: the scorer refuses a row whose portfolio lost workers, so resume
+        # must not count it as done (and exit 0) -- and --force would clear the
+        # whole roster to redo one row. A memory cap hit under load may not recur.
+        print(
+            f"Re-running {job.engine}/{job.instance}: only {completed} of {threads} "
+            f"portfolio workers completed."
+        )
         return True
     if (
         verify

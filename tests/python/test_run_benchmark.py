@@ -343,6 +343,22 @@ def _row(
     return job
 
 
+@pytest.mark.parametrize("verify", [True, False])
+@pytest.mark.parametrize(("completed", "solve"), [(1, True), (2, False)])
+def test_resume_reruns_a_row_that_lost_portfolio_workers(
+    tmp_path: Path, verify: bool, completed: int, solve: bool
+) -> None:
+    """The scorer refuses a row with fewer completed workers than threads (#170).
+
+    Treating it as done would let a resume exit 0 on a directory that cannot be
+    scored, and the scorer's only other way out, --force, redoes the whole roster.
+    """
+    job = _row(tmp_path, "feasible", solution=True)
+    row = {"status": "feasible", "objective": 1.0, "threads": 2, "workers_completed": completed}
+    job.result_path(tmp_path).write_text(json.dumps(row))
+    assert needs_solve(job, tmp_path, verify=verify) is solve
+
+
 def _driver_verdict(attempts: int | None) -> dict[str, object]:
     verdict: dict[str, object] = {"verdict": "error", "reason": "verifier_died"}
     return verdict if attempts is None else {**verdict, "attempts": attempts}

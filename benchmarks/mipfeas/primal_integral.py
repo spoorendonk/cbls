@@ -409,14 +409,15 @@ def refuse_lost_workers(result: dict[str, object], result_path: Path) -> None:
             raise ValueError(
                 f"{result_path} asked for {threads} threads but only {completed} portfolio "
                 f"workers completed (see its worker_failures). It is not a {threads}-thread "
-                f"measurement. Re-run it, with --force, under enough memory for every worker."
+                f"measurement. Resume the run (the driver re-runs rows that lost workers) "
+                f"under enough memory for every worker."
             )
         return
     if threads > 1 and "wall_seconds" in result:
         raise ValueError(
             f"{result_path} is a {threads}-thread row with no workers_completed count: it "
             f"predates the count, so whether every worker ran cannot be established. "
-            f"Re-run it with --force."
+            f"Re-run it (--force re-runs every job in the directory)."
         )
 
 

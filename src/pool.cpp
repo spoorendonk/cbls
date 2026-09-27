@@ -862,8 +862,8 @@ std::string describe_failure(const std::exception_ptr& failure) {
 
 // Fill the result's worker accounting (#170) from what each worker left behind:
 // whether it produced a result, and the exception that ended it, if any. The
-// definition of "completed" is on SearchResult::workers_completed; this is the
-// one place that applies it.
+// definition of "completed" -- not ended by an exception -- is on
+// SearchResult::workers_completed; this is the one place that applies it.
 void report_workers(const std::vector<char>& produced,
                     const std::vector<std::exception_ptr>& ended_by, SearchResult& result) {
     result.workers_launched = static_cast<int>(produced.size());
@@ -873,7 +873,7 @@ void report_workers(const std::vector<char>& produced,
         if (ended_by[i] != nullptr) {
             result.worker_failures.push_back(WorkerFailure{static_cast<int>(i), produced[i] != 0,
                                                            describe_failure(ended_by[i])});
-        } else if (produced[i] != 0) {
+        } else {
             ++result.workers_completed;
         }
     }
@@ -990,10 +990,17 @@ SearchResult ParallelSearch::solve_portfolio(
     // answer must come from a worker whose grown model is handed back with it.
     std::vector<char> produced(n_workers, 0);
     // The exception that ENDED each worker, null for one whose last solve attempt
-    // returned (or that never ran one). Unlike `failures`, which only decides the
-    // all-failed rethrow below and so is set only for a worker that left nothing
-    // behind, this is set for a worker that produced results and died LATER too:
-    // it is what the result's worker accounting reports (#170).
+    // returned (or that never ran one). Unlike `failures`, which decides the
+    // all-failed rethrow below and is set for a worker that left no result behind
+    // (and, predating #170, for one whose end-of-run copy or submit threw), this
+    // is set for a worker that produced results and died LATER too: it is what
+    // the result's worker accounting reports (#170).
+    //
+    // A throw OUTSIDE a solve attempt -- `absorb`'s copy of a best state, say --
+    // escapes run_worker into run_one's catch, which reports the worker with
+    // `produced_result` false even if earlier attempts returned. Those attempts'
+    // counters are lost with it; the worker is still counted as failed, which is
+    // the part a thread count depends on.
     std::vector<std::exception_ptr> ended_by(n_workers);
 
     // One worker, whichever thing is running it. Written once and used by both

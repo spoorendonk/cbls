@@ -1323,10 +1323,12 @@ TEST_CASE("a portfolio whose worker cannot allocate reports it", "[parallel][wor
 TEST_CASE("a worker that dies on a restart is not counted as completed", "[parallel][workers]") {
     // The worker returns one whole solve, so it PRODUCED a result, and then dies
     // on its restart: it searched for part of the budget only, which is what a
-    // row claiming it as a thread would get wrong. No clock decides where the
-    // throw lands: SearchConfig::max_iterations caps an attempt at kCap batches,
-    // so batch kCap + 1 belongs to a later attempt, and the first attempt -- whose
-    // batches the tracer spares -- returned normally.
+    // row claiming it as a thread would get wrong. SearchConfig::max_iterations
+    // caps an attempt at kCap batches (and kCap FJ iterations, so in practice
+    // about one batch), so the first attempt -- whose batches the tracer spares --
+    // returns normally, and batch kCap + 1 belongs to a later attempt. The one
+    // clock dependency is reaching that batch inside the budget: roughly kCap
+    // cheap restarts of a two-variable model in 0.5s.
     constexpr int kCap = 50;
     constexpr int kThreads = 2;
     SearchConfig config;
@@ -1363,6 +1365,32 @@ TEST_CASE("a worker that recovers from a throw still completes", "[parallel][wor
                                  /*seed=*/42, SearchConfig{}, hook_factory,
                                  /*lns_factory=*/nullptr, /*callback=*/nullptr, pc));
     REQUIRE(r.feasible);
+    REQUIRE(r.workers_launched == kThreads);
+    REQUIRE(r.workers_completed == kThreads);
+    REQUIRE(r.worker_failures.empty());
+}
+
+TEST_CASE("workers a solved feasibility model never needed still completed",
+          "[parallel][workers]") {
+    // No objective, so the first worker to reach a feasible point ends the run
+    // and its peers typically stop before their first attempt. Nothing failed:
+    // counting them as lost flagged every easy run (the CLI warned "1 of 8
+    // completed" on examples/nqueens.cbls). Red-checked: under a definition that
+    // required a returned attempt this reported 1 or 2 of 8.
+    auto feasibility_model = [] {
+        Model m;
+        auto x = m.int_var(0, 100);
+        auto y = m.int_var(0, 100);
+        auto neg1 = m.constant(-1.0);
+        auto three = m.constant(3.0);
+        m.add_constraint(m.sum({three, m.prod(neg1, x), m.prod(neg1, y)}));  // x + y >= 3
+        m.close();
+        return m;
+    };
+    constexpr int kThreads = 8;
+    ParallelSearch ps(kThreads);
+    const SearchResult r = ps.solve(feasibility_model, /*time_limit=*/5.0, /*seed=*/42);
+    REQUIRE(r.termination == TerminationReason::Feasible);
     REQUIRE(r.workers_launched == kThreads);
     REQUIRE(r.workers_completed == kThreads);
     REQUIRE(r.worker_failures.empty());
