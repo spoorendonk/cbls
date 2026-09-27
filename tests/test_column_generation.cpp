@@ -1213,9 +1213,11 @@ TEST_CASE("solve refuses a generator on a frozen model", "[column]") {
     REQUIRE(cm.model.num_vars() == cs.sizes.size());  // the shared structure never grew
 }
 
-TEST_CASE("solve refuses a generator on a model that is not closed", "[column]") {
-    // Model::extend needs a closed model; without this refusal the run searched
-    // until its first pricing call and threw a logic_error from there.
+TEST_CASE("solve closes an unclosed model before pricing on it", "[column]") {
+    // Model::extend needs a closed model. solve() closes an unclosed one at
+    // entry, generator or not, so the pricer runs on a closed model instead of
+    // the run being refused (or, before that refusal, throwing at the first
+    // pricing call).
     Model m;
     const int32_t x = m.bool_var();
     const int32_t y = m.bool_var();
@@ -1226,9 +1228,11 @@ TEST_CASE("solve refuses a generator on a model that is not closed", "[column]")
     SearchConfig cfg = iteration_budget(5000);
     cfg.column_generator = std::make_shared<RecordingGenerator>(log);
     cfg.pricing_period = 1;
-    REQUIRE_THROWS_AS(solve(m, 0.0, 1, true, nullptr, nullptr, 3, nullptr, cfg),
-                      std::invalid_argument);
-    REQUIRE(log->empty());
+    REQUIRE_FALSE(m.is_closed());
+    const SearchResult r = solve(m, 0.0, 1, true, nullptr, nullptr, 3, nullptr, cfg);
+    REQUIRE(m.is_closed());
+    REQUIRE_FALSE(log->empty());
+    REQUIRE(r.counters.pricing_calls == static_cast<int64_t>(log->size()));
 }
 
 TEST_CASE("the portfolio refuses a generator through a model factory", "[column][parallel]") {

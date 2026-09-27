@@ -1972,16 +1972,6 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             "solve: SearchConfig::column_generator grows the model, and this model is frozen -- "
             "its structure is shared with its replicas. Pass model.private_copy() (#168)");
     }
-    // Model::extend needs a closed model (its derived indices must exist). solve()
-    // now closes an unclosed model a few lines below, so this refusal is
-    // stricter than it needs to be; it predates that and is kept pending a
-    // decision to drop it -- a generator run must start from a model the caller
-    // closed.
-    if (config.column_generator != nullptr && !model.is_closed()) {
-        throw std::invalid_argument(
-            "solve: SearchConfig::column_generator grows the model through Model::extend, which "
-            "needs a closed model -- call model.close() first (#168)");
-    }
     // A shared pool carries states indexed by their submitter's model; once this
     // model grows, a pooled state of the same width names different columns.
     // ParallelSearch's growth mode passes a null pool for exactly this reason, and
@@ -1998,6 +1988,8 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     // the run read an unbuilt variable-to-constraint index ("var id out of
     // range"). Closing it explicitly makes both cases the same, and makes the
     // model refuse later builders (#173) instead of accepting unevaluated rows.
+    // It also gives a column generator the closed model Model::extend needs,
+    // before the first pricing call rather than at it.
     if (!model.is_closed()) {
         model.close();
     }
