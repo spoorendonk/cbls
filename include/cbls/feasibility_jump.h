@@ -246,9 +246,12 @@ public:
     // now pays one steady_clock::now() per kick where it paid none before.
     [[nodiscard]] int64_t structural_kick_moves() const { return kick_moves_; }
     [[nodiscard]] int64_t structural_kick_checks() const { return kick_checks_; }
-    /// The closed-form linear scorer this object scores jumps with. Read-only;
-    /// for its fast/fallback counters and for tests.
+    /// The closed-form linear scorer this object scores jumps with -- its
+    /// fast/fallback counters, and a way for tests to check its scores after an
+    /// extension. `prepare` on it touches only its own scratch and lazily built
+    /// rows, never the assignment, so calling it between batches is harmless.
     [[nodiscard]] const LinearJumpScorer& linear_scorer() const { return linear_; }
+    [[nodiscard]] LinearJumpScorer& linear_scorer() { return linear_; }
     [[nodiscard]] int64_t structural_kick_stride() const { return kick_stride_; }
 
     /// Grow with a model that `Model::extend` just grew (#167).
