@@ -1572,6 +1572,25 @@ void require_refused(ClosedFixture& f, const std::function<void()>& build) {
 
 }  // namespace
 
+TEST_CASE("solving an unclosed model without an objective closes it and solves it",
+          "[extend][closed]") {
+    // Without an objective there is no objective row, so nothing rebuilt the
+    // derived indices: the run read an unbuilt variable-to-constraint index and
+    // failed with "var id out of range" instead of solving the model.
+    Model m;
+    const int32_t x = m.int_var(0, 10, "x");
+    m.add_constraint(m.geq(x, m.constant(5.0)));
+    REQUIRE_FALSE(m.is_closed());
+    SearchConfig cfg;
+    cfg.max_iterations = 2000;
+    const SearchResult r = solve(m, 0.0, 1, true, nullptr, nullptr, 3, nullptr, cfg);
+    REQUIRE(m.is_closed());
+    REQUIRE(r.feasible);
+    m.restore_state(r.best_state);
+    REQUIRE(m.var(handle_to_var_id(x)).value >= 5.0);
+    REQUIRE_THROWS_AS(m.add_constraint(m.leq(x, m.constant(9.0))), std::logic_error);
+}
+
 TEST_CASE("solving an unclosed objective model closes it, so later builders refuse",
           "[extend][closed]") {
     // The first solve of an objective model appends the objective row and runs

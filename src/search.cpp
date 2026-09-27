@@ -1990,6 +1990,15 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             "model's states do not index a peer's columns (#168)");
     }
 
+    // An unclosed model is closed here rather than refused: callers have always
+    // handed solve() one, and on an objective model the objective row's rebuild
+    // used to close it as a side effect. Without an objective nothing did, and
+    // the run read an unbuilt variable-to-constraint index ("var id out of
+    // range"). Closing it explicitly makes both cases the same, and makes the
+    // model refuse later builders (#173) instead of accepting unevaluated rows.
+    if (!model.is_closed()) {
+        model.close();
+    }
     const bool has_obj = model.objective_id() >= 0;
     if (has_obj) {
         if (!model.has_objective_constraint()) {
