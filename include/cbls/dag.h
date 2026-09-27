@@ -280,6 +280,12 @@ inline double comparison_residual(double a, double b, bool a_is_const, bool b_is
     return a - b;
 }
 
+/// The strictness margin `Lt`/`Gt` add on top of `comparison_residual`: a strict
+/// row reads as violated by this much at equality (see above). One constant for
+/// `evaluate` and for FJ's closed-form linear scorer (`linear_jump.h`), which
+/// must reproduce the residual exactly.
+inline constexpr double kStrictComparisonEps = 1e-9;
+
 // Forward declaration
 class Model;
 

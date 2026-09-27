@@ -307,23 +307,19 @@ double evaluate(const ExprNode& node, const Model& model) {
                        ? 1.0
                        : 0.0;
 
-        case NodeOp::Lt: {
+        case NodeOp::Lt:
             // a - b + ε (≤ 0 when a < b strictly)
-            constexpr double kEps = 1e-9;
             return comparison_residual(child_val(children[0], model), child_val(children[1], model),
                                        child_is_const(children[0], model),
                                        child_is_const(children[1], model)) +
-                   kEps;
-        }
+                   kStrictComparisonEps;
 
-        case NodeOp::Gt: {
+        case NodeOp::Gt:
             // b - a + ε (≤ 0 when a > b strictly)
-            constexpr double kEps = 1e-9;
             return comparison_residual(child_val(children[1], model), child_val(children[0], model),
                                        child_is_const(children[1], model),
                                        child_is_const(children[0], model)) +
-                   kEps;
-        }
+                   kStrictComparisonEps;
 
         case NodeOp::Custom:
             // From scratch, which is what this entry point means: the

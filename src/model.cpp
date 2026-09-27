@@ -142,23 +142,6 @@ Model& Model::operator=(const Model& other) {
     return *this;
 }
 
-namespace {
-// Mirror ViolationManager's clamp: a non-convex node value that overflows to
-// +inf or NaN is mapped to a large finite penalty so jump scoring stays ordered
-// and never propagates NaN/inf into the search. Must match violation.cpp.
-double clamped_node_violation(double node_value) {
-    // NaN before max(): std::max(0.0, NaN) == 0.0 would mask a NaN as satisfied.
-    if (std::isnan(node_value)) {
-        return kInfPenalty;
-    }
-    double v = std::max(0.0, node_value);
-    if (v > kInfPenalty) {  // also catches +inf
-        return kInfPenalty;
-    }
-    return v;
-}
-}  // namespace
-
 int32_t Model::alloc_var(VarType type, double lb, double ub, const std::string& name) {
     ModelStructure& st = mut();
     Variable v;

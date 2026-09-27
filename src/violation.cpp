@@ -8,29 +8,8 @@
 
 namespace cbls {
 
-// Non-convex objectives/constraints (exp/pow/div blowups — the MINLPLib target)
-// can drive a node value to +inf or NaN. Such a value would poison the
-// total_violation cache, the structural pass's move comparison and the
-// best-objective bookkeeping. Map every non-finite (or absurdly large) violation
-// to a large but finite penalty so the search treats the point as very bad but
-// still well-ordered. The clamp is one-sided on the violation (which is already
-// max(0, .)), so a finite-but-huge value and a +inf value both become kInfPenalty.
-namespace {
-
-double clamped_node_violation(double node_value) {
-    // NaN must be handled before max(): std::max(0.0, NaN) returns 0.0, which
-    // would silently mask a NaN constraint as satisfied. NaN (e.g. inf-inf,
-    // 0*inf) is treated as a maximal violation — we have no evidence it holds.
-    if (std::isnan(node_value)) {
-        return kInfPenalty;
-    }
-    double v = std::max(0.0, node_value);
-    if (v > kInfPenalty) {  // also catches +inf
-        return kInfPenalty;
-    }
-    return v;
-}
-}  // namespace
+// clamped_node_violation lives in violation.h: model.cpp's jump scoring and
+// FJ's closed-form linear scorer must apply the identical clamp.
 
 ViolationManager::ViolationManager(Model& model) : model_(model) {
     // Every solve builds one, so this is where a model a failed Model::extend

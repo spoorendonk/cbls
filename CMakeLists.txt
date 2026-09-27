@@ -215,6 +215,7 @@ add_library(cbls_lib
     src/randomize.cpp
     src/bound_propagation.cpp
     src/feasibility_jump.cpp
+    src/linear_jump.cpp
     src/search.cpp
     src/counters.cpp
     src/tracer.cpp

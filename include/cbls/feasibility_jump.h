@@ -1,5 +1,6 @@
 #pragma once
 
+#include "linear_jump.h"
 #include "model.h"
 #include "rng.h"
 #include "violation.h"
@@ -79,8 +80,15 @@ struct JumpResult {
 // `allow_escape_probe` opts a Float at a stationary point into a local
 // two-sided probe. Off by default: it is a last resort, not a steady-state
 // behaviour — see the comment on the probe in feasibility_jump.cpp.
+//
+// `linear`, when given, scores the candidates in closed form wherever every
+// weighted row of G_v is a linear comparison (see linear_jump.h), and falls
+// back to `Model::weighted_violation_delta` otherwise. Same candidates, same
+// first-seen-minimum selection; the scores agree to rounding, not to the bit.
+// It also supplies the Float Newton candidates' row partials where its cached
+// slope is bit-identical to `compute_partial`, so those candidates do not move.
 JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id,
-                            bool allow_escape_probe = false);
+                            bool allow_escape_probe = false, LinearJumpScorer* linear = nullptr);
 
 // Guided Local Search weight update (paper Algorithm 3, lines 8-10): decay all
 // weights by rho, then bump every currently-violated constraint by 1. Weights
@@ -238,6 +246,9 @@ public:
     // now pays one steady_clock::now() per kick where it paid none before.
     [[nodiscard]] int64_t structural_kick_moves() const { return kick_moves_; }
     [[nodiscard]] int64_t structural_kick_checks() const { return kick_checks_; }
+    /// The closed-form linear scorer this object scores jumps with. Read-only;
+    /// for its fast/fallback counters and for tests.
+    [[nodiscard]] const LinearJumpScorer& linear_scorer() const { return linear_; }
     [[nodiscard]] int64_t structural_kick_stride() const { return kick_stride_; }
 
     /// Grow with a model that `Model::extend` just grew (#167).
@@ -446,6 +457,11 @@ private:
     std::vector<int32_t> queue_;      // scan set Q (vars with possibly-positive score)
     std::vector<int32_t> examined_;   // scratch: distinct vars sampled in one apply_jump
     std::vector<uint8_t> is_linear_;  // per constraint
+    // Closed-form scoring over linear comparison rows. Its per-row eligibility is
+    // maintained wherever is_linear_ is: compute_linear_constraints and
+    // recompute_linearity (the constructor and on_extended). retire() leaves it
+    // alone -- a retired column is never scored, and the rows are unchanged.
+    LinearJumpScorer linear_;
     std::vector<std::vector<int32_t>> vars_of_constraint_;  // constraint idx -> jumpable vars (G_c)
     // Per var: retired by column generation (#168). EMPTY until the first
     // retire(), and sized to the model then; a variable past its end is not

@@ -280,9 +280,13 @@ bool apply_random_structural_move(Model& model, int32_t var_id, RNG& rng) {
 }
 
 // Integer jump candidates: exhaustive over a small domain, else a coarse grid
-// plus neighbours/endpoints. Each consider() runs one weighted_violation_delta
-// (two delta_evaluate passes); the JumpTable cache amortises this across the
-// GLS loop. (Closed-form linear-constraint argmin is a deferred optimisation.)
+// plus neighbours/endpoints. Each consider() costs O(|G_v|) when every weighted
+// row of G_v is a linear comparison (LinearJumpScorer), else one
+// weighted_violation_delta (two delta_evaluate passes); the JumpTable cache
+// amortises either across the GLS loop. Scoring is still per candidate: a
+// closed-form ARGMIN over a linear column would pick from a different candidate
+// set, which is a different algorithm rather than a cheaper evaluation of this
+// one.
 //
 // Bounds are read as doubles through `domain_window` (#114): no `long`, so
 // nothing overflows and an unbounded Int gets candidates instead of freezing in
@@ -351,9 +355,14 @@ void int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
 // unrelated to local geometry and the variable may have no move at all.
 //
 // A variable in no violated constraint reports true: nothing to escape.
+//
+// `linear`, when given, supplies a violated row's partial from its cached slope
+// where that is bit-identical to compute_partial (LinearJumpScorer::
+// residual_partial), so the Newton candidates are exactly the ones the AD sweep
+// would produce, without the sweep.
 template <class Consider>
 bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, double x0,
-                           Consider&& consider) {
+                           LinearJumpScorer* linear, Consider&& consider) {
     if (var.ub <= var.lb) {
         return true;  // fixed: nothing to escape
     }
@@ -370,7 +379,10 @@ bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
             continue;  // satisfied: no root to chase
         }
         saw_violated = true;
-        double grad = compute_partial(model, cids[c], var_id);
+        double grad = 0.0;
+        if (linear == nullptr || !linear->residual_partial(c, var_id, grad)) {
+            grad = compute_partial(model, cids[c], var_id);
+        }
         if (std::abs(grad) > 1e-12) {
             consider(clamp_to_domain(var, x0 - (residual / grad)));
             any_newton = true;
@@ -422,13 +434,24 @@ void float_escape_candidates(const Variable& var, double x0, Consider&& consider
 // ---------------------------------------------------------------------------
 
 JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id,
-                            bool allow_escape_probe) {
+                            bool allow_escape_probe, LinearJumpScorer* linear) {
     const Variable& var = model.var(var_id);
     const double x0 = var.value;
 
     // f(j) = weighted violation delta of moving var_id to j (0 at the current
     // value). The best jump minimises f; score is the reduction -min f.
-    auto f = [&](double j) { return model.weighted_violation_delta(var_id, j, weights); };
+    //
+    // In closed form when every weighted row of G_v allows it (prepared once per
+    // call, O(|G_v|)); a non-finite candidate or step -- an infinite Float bound
+    // -- is one the closed form does not model, so that one candidate takes the
+    // probe. The probe restores the assignment exactly, so the snapshot survives.
+    const bool fast = linear != nullptr && linear->prepare(var_id, weights);
+    auto f = [&](double j) {
+        if (fast && std::isfinite(j - x0)) {
+            return linear->delta(j);
+        }
+        return model.weighted_violation_delta(var_id, j, weights);
+    };
 
     double best_j = x0;
     double best_f = 0.0;  // f(x0) == 0
@@ -458,7 +481,8 @@ JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, in
         // seed: the drip of tiny improvements suppresses stagnation, so
         // diversification never fires. Hence `allow_escape_probe`, which the
         // search loop arms only once it is genuinely stuck.
-        const bool gradient_usable = float_jump_candidates(model, var_id, var, x0, consider);
+        const bool gradient_usable =
+            float_jump_candidates(model, var_id, var, x0, linear, consider);
         if (allow_escape_probe && !gradient_usable && best_f >= 0.0) {
             float_escape_candidates(var, x0, consider);
         }
@@ -485,11 +509,12 @@ void gls_update_weights(ViolationManager& vm, double rho) {
 // ---------------------------------------------------------------------------
 
 FeasibilityJump::FeasibilityJump(Model& model, ViolationManager& vm, RNG& rng, GFJConfig config)
-    : model_(model), vm_(vm), rng_(rng), config_(config), jumps_(model.num_vars()) {
+    : model_(model), vm_(vm), rng_(rng), config_(config), jumps_(model.num_vars()), linear_(model) {
     const size_t nc = model_.constraint_ids().size();
     violated_.assign(nc, 0);
     in_queue_.assign(model_.num_vars(), 0);
     is_linear_.assign(nc, 0);
+    linear_.resize_rows(nc);
     vars_of_constraint_.assign(nc, {});
 
     objective_ci_ = model_.objective_constraint_idx();
@@ -589,6 +614,26 @@ bool node_is_affine(NodeOp op, ConstSpan<ChildRef> children, IsConst is_const, I
     }
 }
 
+// Can LinearJumpScorer score this row in closed form: a comparison whose two
+// children are both affine in the variables? Asked of the CHILDREN, not of the
+// row's own affineness, because Eq is |lhs - rhs| -- not affine, yet exactly
+// computable from two affine sides. Neq (a step) and Custom never qualify.
+template <typename IsAffine>
+bool comparison_of_affine_children(const ExprNode& nd, ConstSpan<ChildRef> children,
+                                   IsAffine is_affine) {
+    switch (nd.op) {
+        case NodeOp::Leq:
+        case NodeOp::Geq:
+        case NodeOp::Lt:
+        case NodeOp::Gt:
+        case NodeOp::Eq:
+            return std::all_of(children.begin(), children.end(),
+                               [&](const ChildRef& c) { return c.is_var || is_affine(c.id); });
+        default:
+            return false;
+    }
+}
+
 // Classify the subtree rooted at `root` and return whether the root is affine in
 // the variables (#167).
 //
@@ -657,8 +702,12 @@ void FeasibilityJump::compute_linear_constraints() {
     }
 
     const auto& cids = model_.constraint_ids();
+    auto affine_at = [&is_affine](int32_t id) { return is_affine[id] != 0; };
     for (size_t c = 0; c < cids.size(); ++c) {
         is_linear_[c] = is_affine[cids[c]];
+        const ExprNode& nd = nodes[cids[c]];
+        linear_.set_row_eligible(static_cast<int32_t>(c),
+                                 comparison_of_affine_children(nd, model_.children(nd), affine_at));
     }
 }
 
@@ -673,8 +722,15 @@ void FeasibilityJump::recompute_linearity(const std::vector<int32_t>& rows) {
     const std::vector<int32_t>& cids = model_.constraint_ids();
     std::unordered_map<int32_t, uint8_t> memo;
     for (const int32_t ci : rows) {
+        const int32_t nid = cids[static_cast<size_t>(ci)];
         is_linear_[static_cast<size_t>(ci)] =
-            static_cast<uint8_t>(cone_is_affine(model_, cids[static_cast<size_t>(ci)], memo));
+            static_cast<uint8_t>(cone_is_affine(model_, nid, memo));
+        // cone_is_affine above classified every node under the row, children
+        // included, so the memo answers for them.
+        const ExprNode& nd = model_.nodes()[static_cast<size_t>(nid)];
+        auto affine_at = [&memo](int32_t id) { return (memo[id] & 2U) != 0; };
+        linear_.set_row_eligible(ci,
+                                 comparison_of_affine_children(nd, model_.children(nd), affine_at));
     }
 }
 
@@ -751,8 +807,8 @@ void validate_extension_indices(const ExtensionResult& ext, size_t nc, size_t nv
 void FeasibilityJump::require_tables_in_step() const {
     const size_t nc = model_.constraint_ids().size();
     const size_t nv = model_.num_vars();
-    if (violated_.size() != nc || is_linear_.size() != nc || vars_of_constraint_.size() != nc ||
-        in_queue_.size() != nv || vm_.weights.size() != nc) {
+    if (violated_.size() != nc || is_linear_.size() != nc || linear_.num_rows() != nc ||
+        vars_of_constraint_.size() != nc || in_queue_.size() != nv || vm_.weights.size() != nc) {
         throw std::logic_error(
             "FeasibilityJump: the model has grown since this object last matched it. Model::extend "
             "must be followed by ViolationManager::on_extended and then "
@@ -784,6 +840,7 @@ void FeasibilityJump::on_extended(const ExtensionResult& ext) {
     in_queue_.resize(nv, 0);
     violated_.resize(nc, 0);
     is_linear_.resize(nc, 0);
+    linear_.resize_rows(nc);
     vars_of_constraint_.resize(nc);
 
     // The rows whose body changed: the new ones, and the existing ones a grown Sum
@@ -1035,7 +1092,7 @@ bool FeasibilityJump::apply_jump(int sample_size) {
             continue;  // already sampled this call; redraw for a distinct var
         }
         if (!jumps_.valid(v)) {
-            JumpResult r = compute_var_jump(model_, vm_.weights, v, escape_probe_);
+            JumpResult r = compute_var_jump(model_, vm_.weights, v, escape_probe_, &linear_);
             jumps_.set(v, r.jump_value, r.score);
         }
         double s = jumps_.score(v);
@@ -1679,8 +1736,15 @@ FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, dou
         }
         examined_.push_back(v);
         ++sampled;
-        JumpResult nr = compute_var_jump(model_, novelty_weights_, v);  // W'-argmin
-        double score = -model_.weighted_violation_delta(v, nr.jump_value, vm_.weights);
+        // W'-argmin, then its score under W. Both in closed form where the rows
+        // allow it, exactly as apply_jump scores.
+        JumpResult nr = compute_var_jump(model_, novelty_weights_, v, false, &linear_);
+        double score = 0.0;
+        if (linear_.prepare(v, vm_.weights) && std::isfinite(nr.jump_value - model_.var(v).value)) {
+            score = -linear_.delta(nr.jump_value);
+        } else {
+            score = -model_.weighted_violation_delta(v, nr.jump_value, vm_.weights);
+        }
         bool passes = (s_m + nr.score > 0.0) || (score > s_c);
         if (passes && (best.var < 0 || score > best.score)) {
             best = {v, nr.jump_value, score, nr.score};

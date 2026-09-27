@@ -2,6 +2,8 @@
 
 #include "model.h"
 
+#include <algorithm>
+#include <cmath>
 #include <vector>
 
 namespace cbls {
@@ -27,6 +29,29 @@ inline constexpr double kDefaultFeasibilityTolerance = 1e-6;
 /// (#116). That argument is only sound while the clamp and the sentinel are the
 /// same number, so they read one constant rather than three copies.
 inline constexpr double kInfPenalty = 1.0e30;
+
+/// A constraint node's value as a violation: max(0, value), clamped.
+///
+/// Non-convex objectives/constraints (exp/pow/div blowups -- the MINLPLib
+/// target) can drive a node value to +inf or NaN. Such a value would poison the
+/// total_violation cache, the structural pass's move comparison and the
+/// best-objective bookkeeping. Every non-finite (or absurdly large) violation is
+/// mapped to kInfPenalty, so the search treats the point as very bad but still
+/// well-ordered. One definition for ViolationManager, `Model`'s jump scoring
+/// and FJ's closed-form linear scorer, which must all agree on it.
+inline double clamped_node_violation(double node_value) {
+    // NaN must be handled before max(): std::max(0.0, NaN) returns 0.0, which
+    // would silently mask a NaN constraint as satisfied. NaN (e.g. inf-inf,
+    // 0*inf) is treated as a maximal violation -- we have no evidence it holds.
+    if (std::isnan(node_value)) {
+        return kInfPenalty;
+    }
+    const double v = std::max(0.0, node_value);
+    if (v > kInfPenalty) {  // also catches +inf
+        return kInfPenalty;
+    }
+    return v;
+}
 
 class ViolationManager {
 public:
