@@ -5,6 +5,8 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -23,7 +25,22 @@ struct Solution {
     /// owns no `Model` to evaluate it against, and a result whose violation did
     /// not describe its own state reported +inf for every portfolio run.
     double violation = std::numeric_limits<double>::infinity();
+    /// Portfolio worker index that submitted this point, or -1 (#161).
+    int submitter = -1;
 };
+
+/// What the asking worker tells a restart draw (#161, A/B measurement only).
+struct RestartRequest {
+    /// The asking worker's portfolio index, or -1 when unknown.
+    int worker = -1;
+    /// Distance from the asker's LIVE assignment to a candidate state. Empty
+    /// when the caller cannot supply one.
+    std::function<double(const Model::State&)> distance;
+};
+
+/// TEMPORARY (#161): the restart rule under measurement, read once from the
+/// environment variable CBLS_ISSUE161_ARM. Removed before landing.
+enum class RestartRule : uint8_t { Control, ReservedSlot, Tabu, Distance, WholePool };
 
 /// A bounded, sorted store of the best solutions seen, shared across the workers
 /// of a `ParallelSearch`. Every method takes the mutex, so it is the one object
@@ -104,12 +121,42 @@ public:
     /// only with a roster that stalls on the engine as it then stands; the
     /// distance draw, whose point estimate was best on binkar10_1, is the
     /// natural first arm.
-    std::optional<Solution> get_restart_point(RNG& rng) const;
+    std::optional<Solution> get_restart_point(RNG& rng, const RestartRequest& request = {});
+    /// TEMPORARY (#161): the tabu arm's memory, written only once an adoption
+    /// has actually happened -- a draw refused as the held assignment is not a
+    /// start point the worker restarted from.
+    void mark_restarted(int worker, const Solution& sol);
     size_t size() const;
 
+    ~SolutionPool();  // TEMPORARY (#161): prints engagement counters
+    SolutionPool(const SolutionPool&) = delete;
+    SolutionPool& operator=(const SolutionPool&) = delete;
+    SolutionPool(SolutionPool&&) = delete;
+    SolutionPool& operator=(SolutionPool&&) = delete;
+
 private:
+    struct TabuKey {
+        double objective;
+        uint64_t hash;
+    };
     int capacity_;
+    RestartRule rule_ = RestartRule::Control;
     std::vector<Solution> solutions_;
+    /// Per worker: that worker's best submission, kept whatever its global rank.
+    std::vector<std::optional<Solution>> reserved_;
+    /// Per worker: the start points that worker has restarted from.
+    std::vector<std::vector<TabuKey>> tabu_;
+    // Engagement counters (#161).
+    bool report_ = false;
+    int64_t draws_ = 0;
+    int64_t declines_ = 0;
+    int64_t own_offered_ = 0;  // slot: asker's own best added to the candidates
+    int64_t own_picked_ = 0;   // slot: ...and drawn
+    int64_t narrowed_ = 0;     // tabu: >= 1 better-half entry excluded
+    int64_t marked_ = 0;       // tabu: adoptions recorded
+    int64_t worse_half_ = 0;   // distance/wholepool: pick outside the better half
+    double tv_sum_ = 0.0;      // distance: sum of TV(weights, uniform)
+    int64_t tv_n_ = 0;
     mutable std::mutex mutex_;
 };
 
@@ -127,6 +174,8 @@ struct SearchCoordination {
     /// -- so the rest stop within a batch instead of running the clock out on a
     /// question already answered.
     std::atomic<bool>* stop = nullptr;
+    /// The worker this coordination object belongs to, or -1 (#161).
+    int worker = -1;
 };
 
 }  // namespace cbls
