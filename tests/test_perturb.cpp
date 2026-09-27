@@ -148,7 +148,7 @@ TEST_CASE("perturb keeps the configured density on a large model", "[fj][perturb
     // not n. Bounds are wide (p*n = 40, sd ~ 6 per kick, ~0.9 over 200 kicks) so
     // this cannot flake, while still catching "nothing moves"/"everything moves".
     const int n = 400;
-    auto make = [n](Model& m) {
+    auto make = [](Model& m) {
         std::vector<int32_t> h;
         h.reserve(static_cast<size_t>(n));
         for (int i = 0; i < n; ++i) {

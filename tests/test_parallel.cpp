@@ -46,19 +46,6 @@ Model quadratic_model() {
     return m;
 }
 
-// A pure-feasibility model: no objective, so the first feasible assignment IS
-// the answer and solve() returns TerminationReason::Feasible.
-Model satisfaction_model() {
-    Model m;
-    auto x = m.int_var(0, 100);
-    auto y = m.int_var(0, 100);
-    auto neg1 = m.constant(-1.0);
-    auto ten = m.constant(10.0);
-    m.add_constraint(m.sum({ten, m.prod(neg1, x), m.prod(neg1, y)}));  // x + y >= 10
-    m.close();
-    return m;
-}
-
 // A 20-column integer model: reaching the target is easy, but the optimum is
 // the balanced assignment, so the search keeps finding new incumbents for a
 // long time -- which is what fills a shared pool.

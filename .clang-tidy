@@ -131,12 +131,32 @@
 # lower-case-only pattern misses. That is how src/io/ went unlinted for as long
 # as it did. Use the pinned .venv copy -- a system clang-tidy of another
 # vintage merges a different default check set.
+#
+# `clang-diagnostic-*` is the compiler's own warnings, and it has to be named
+# AFTER the `-*` (issue #171). clang-tidy prepends it to this list, so without
+# the explicit entry `--dump-config` reads "clang-diagnostic-*,-*, bugprone-*,
+# ..." and the `-*` switches it straight back off -- none of the four groups
+# re-enables it. For as long as that was the case no compiler warning reached
+# the sweep, and the NodeOp switches, written without a `default:` on the
+# assumption that -Wswitch reports a missed case, had nothing reporting one.
+# It is only half the fix: a diagnostic the compile command never turns on
+# still cannot fire, which is why CMakeLists.txt gives every first-party
+# target -Wall -Wextra (the `cbls_warnings` interface target).
+#
+# It cannot stand alone either: it is a mapping of compiler diagnostics, not a
+# registered check, so `-*,clang-diagnostic-*` exits 1 with "Error: no checks
+# enabled." The pre-push hook's probe (.githooks/tidy-probe.sh, also ctest
+# `clang_tidy_gate_probe`) lints tools/tidy-probe/incomplete_switch.cpp under
+# each config directory's effective config and fails unless the incomplete
+# enum-class switch in it is reported -- so an edit here that drops or
+# reorders this entry goes red rather than quiet.
 Checks: >
   -*,
   bugprone-*,
   modernize-*,
   performance-*,
   readability-*,
+  clang-diagnostic-*,
   -modernize-use-trailing-return-type,
   -readability-magic-numbers,
   -bugprone-chained-comparison,

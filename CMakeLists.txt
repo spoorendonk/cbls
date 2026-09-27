@@ -158,6 +158,32 @@ FetchContent_Declare(json
 )
 FetchContent_MakeAvailable(json)
 
+# Compiler warnings, for first-party targets only (issue #171).
+#
+# -Wall -Wextra reach clang-tidy through compile_commands.json, and that is the
+# reason they are here: `clang-diagnostic-*` in .clang-tidy can only report a
+# diagnostic the compile command turned on. -Wswitch, which is in -Wall, is what
+# reports a NodeOp that some `default:`-free switch in src/dag.cpp or src/io.cpp
+# does not handle -- without it that gate does not exist.
+#
+# Per target, never add_compile_options(): a directory-wide flag would also
+# reach Catch2's own library, which FetchContent builds in this tree, and the
+# point is to hold OUR code at zero, not to inherit other projects' warnings.
+# Third-party headers our code includes are a separate matter (see
+# cbls_system_includes below).
+#
+# No -Werror. The gate that blocks is clang-tidy at push, which now sees these
+# same diagnostics; -Werror on top would duplicate it, and would turn the next
+# GCC release's new -Wall member into a build that does not compile rather than
+# a finding to fix -- on a user's machine as readily as ours.
+set(CBLS_WARNING_FLAGS "")
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set(CBLS_WARNING_FLAGS -Wall -Wextra)
+endif()
+function(cbls_enable_warnings target)
+    target_compile_options(${target} PRIVATE ${CBLS_WARNING_FLAGS})
+endfunction()
+
 # Library
 add_library(cbls_lib
     src/dag.cpp
@@ -200,6 +226,7 @@ set_target_properties(cbls_lib PROPERTIES
 # Link json headers privately (interface lib, so use target_include_directories instead)
 target_include_directories(cbls_lib PRIVATE ${json_SOURCE_DIR}/include)
 target_link_libraries(cbls_lib PRIVATE pthread ZLIB::ZLIB)
+cbls_enable_warnings(cbls_lib)
 if(CBLS_USE_BZIP2)
     target_compile_definitions(cbls_lib PRIVATE CBLS_HAS_BZIP2)
     target_link_libraries(cbls_lib PRIVATE BZip2::BZip2)
@@ -208,6 +235,7 @@ endif()
 # CLI executable
 add_executable(cbls_cli src/cli.cpp)
 target_link_libraries(cbls_cli PRIVATE cbls_lib)
+cbls_enable_warnings(cbls_cli)
 set_target_properties(cbls_cli PROPERTIES OUTPUT_NAME cbls)
 
 # Install
@@ -243,6 +271,7 @@ if(CBLS_BUILD_TESTS)
     list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
     include(CTest)
     add_subdirectory(tests)
+    cbls_enable_warnings(cbls_tests)
 endif()
 
 # Examples
@@ -250,9 +279,11 @@ option(CBLS_BUILD_EXAMPLES "Build examples" ON)
 if(CBLS_BUILD_EXAMPLES)
     add_executable(cbls_simple examples/simple.cpp)
     target_link_libraries(cbls_simple PRIVATE cbls_lib)
+    cbls_enable_warnings(cbls_simple)
 
     add_executable(cbls_chped examples/chped.cpp)
     target_link_libraries(cbls_chped PRIVATE cbls_lib)
+    cbls_enable_warnings(cbls_chped)
     target_include_directories(cbls_chped PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
@@ -261,18 +292,22 @@ option(CBLS_BUILD_BENCHMARKS "Build benchmarks" ON)
 if(CBLS_BUILD_BENCHMARKS)
     add_executable(cbls_uc_chped benchmarks/uc-chped/uc_chped.cpp)
     target_link_libraries(cbls_uc_chped PRIVATE cbls_lib)
+    cbls_enable_warnings(cbls_uc_chped)
     target_include_directories(cbls_uc_chped PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${json_SOURCE_DIR}/include)
 
     add_executable(cbls_minlplib benchmarks/minlplib/minlplib.cpp)
     target_link_libraries(cbls_minlplib PRIVATE cbls_lib)
+    cbls_enable_warnings(cbls_minlplib)
     target_include_directories(cbls_minlplib PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
     add_executable(cbls_setcover benchmarks/setcover/setcover.cpp)
     target_link_libraries(cbls_setcover PRIVATE cbls_lib)
+    cbls_enable_warnings(cbls_setcover)
     target_include_directories(cbls_setcover PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
     add_executable(cbls_mipfeas benchmarks/mipfeas/mipfeas.cpp)
     target_link_libraries(cbls_mipfeas PRIVATE cbls_lib)
+    cbls_enable_warnings(cbls_mipfeas)
     target_include_directories(cbls_mipfeas PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${json_SOURCE_DIR}/include)
 endif()
 
@@ -280,4 +315,9 @@ endif()
 option(CBLS_BUILD_PYTHON "Build Python bindings" OFF)
 if(CBLS_BUILD_PYTHON)
     add_subdirectory(python)
+    # python/CMakeLists.txt degrades to no module when Python or nanobind is
+    # missing, so the target may not exist.
+    if(TARGET _cbls_core)
+        cbls_enable_warnings(_cbls_core)
+    endif()
 endif()

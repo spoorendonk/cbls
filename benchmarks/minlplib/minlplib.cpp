@@ -738,9 +738,8 @@ std::string integrality_check(const cbls::NlProblem& prob, const Bounds& b, cons
 /// row that fails here is a solver bug, and must not be published as a solved
 /// instance. Returns false having set `note` in that case.
 bool verify_assignment(const cbls::NlProblem& prob, const cbls::NlToModelResult& built,
-                       const Args& args, const cbls::SearchResult& result, double obj,
-                       const std::string& name, Tally& t, std::string& note,
-                       double& max_violation) {
+                       const Args& args, double obj, const std::string& name, Tally& t,
+                       std::string& note, double& max_violation) {
     Residual r = worst_residual(prob, built, args.feas_tol);
     max_violation = r.worst;
     int frac = 0;
@@ -1042,7 +1041,7 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
 
     bool verified = result.feasible;
     if (result.feasible) {
-        verified = verify_assignment(prob, built, args, result, obj, name, t, note, max_violation);
+        verified = verify_assignment(prob, built, args, obj, name, t, note, max_violation);
     }
 
     if (verified) {
