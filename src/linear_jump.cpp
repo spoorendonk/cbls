@@ -185,13 +185,8 @@ bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weight
             ok = false;
             break;
         }
-        // D goes on a computed side. When both are computed they are finite, and
-        // comparison_residual is then the plain difference, so the side is
-        // immaterial up to rounding.
-        const bool move_p = !row.p_literal;
         terms_.push_back(Term{w, clamped_node_violation(node_values[static_cast<size_t>(cids[c])]),
-                              p, q, r, move_p, row.p_literal, row.q_literal, row.is_abs,
-                              row.strict});
+                              p, q, r, row.p_literal, row.q_literal, row.is_abs, row.strict});
     }
     if (!ok) {
         terms_.clear();
@@ -206,13 +201,13 @@ double LinearJumpScorer::delta(double j) const {
     const double d = j - x0_;
     double delta = 0.0;
     for (const Term& t : terms_) {
-        double p = t.p;
-        double q = t.q;
-        if (t.move_p) {
-            p += t.slope * d;
-        } else {
-            q -= t.slope * d;
-        }
+        // The whole move lands on p. Which side carries it matters only where a
+        // side is infinite, and there it does not either: the computed sides are
+        // finite (prepare), so an infinite side is a literal, and a literal
+        // +/-inf plus any finite step is itself -- the residual comes out as the
+        // DAG's whichever side moves. Elsewhere the two differ in rounding only.
+        const double p = t.p + (t.slope * d);
+        const double q = t.q;
         double residual = 0.0;
         if (t.is_abs) {
             residual = std::abs(p - q);

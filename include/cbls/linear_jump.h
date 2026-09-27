@@ -102,7 +102,6 @@ private:
         double p;
         double q;
         double slope;
-        bool move_p;  // D lands on p (else on q, with the sign flipped)
         bool p_literal;
         bool q_literal;
         bool is_abs;

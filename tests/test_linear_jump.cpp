@@ -149,6 +149,7 @@ void build_random_linear(RandomLinearModel& r, uint64_t seed, bool integral) {
     // Reverse the operand order on one Eq, so a literal on the LEFT is covered.
     m.add_constraint(m.eq_expr(m.constant(1.0), side()));
     std::vector<int32_t> obj_terms;
+    obj_terms.reserve(r.handles.size());
     for (const int32_t h : r.handles) {
         obj_terms.push_back(m.prod(m.constant(pick_coef()), h));
     }
@@ -188,8 +189,11 @@ std::vector<double> candidates_for(const Variable& var, RNG& rng) {
         }
         return js;
     }
-    for (double x = var.lb; x <= var.ub; x += (var.ub - var.lb > 20.0 ? 37.0 : 1.0)) {
-        js.push_back(x);
+    const auto lb = static_cast<int64_t>(var.lb);
+    const auto ub = static_cast<int64_t>(var.ub);
+    const int64_t step = ub - lb > 20 ? 37 : 1;
+    for (int64_t x = lb; x <= ub; x += step) {
+        js.push_back(static_cast<double>(x));
     }
     js.push_back(var.ub);
     return js;
@@ -479,7 +483,8 @@ TEST_CASE("the linear scorer follows Model::extend through on_extended", "[fj][l
     w[2] = 0.0;  // mask the now-bilinear row, so every variable takes the closed form
     for (const int32_t h : {a, b, c}) {
         const int32_t v = vid(h);
-        for (double j = 0.0; j <= m.var(v).ub; j += 1.0) {
+        for (int64_t k = 0; k <= static_cast<int64_t>(m.var(v).ub); ++k) {
+            const auto j = static_cast<double>(k);
             REQUIRE(sc.prepare(v, w));
             REQUIRE(sc.delta(j) == m.weighted_violation_delta(v, j, w));
         }

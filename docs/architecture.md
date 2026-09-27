@@ -916,7 +916,21 @@ candidate set, plus its score:
 | Int (otherwise) | window endpoints, neighbours `x±1` (clamped to the *declared* bounds, so a value that has drifted outside the window keeps a local move), and a 32-point rounded grid across the window |
 | Float | Newton step toward the root of each violated constraint containing `v` (`x - residual/grad`, gradient via reverse-mode AD; up to 4), then midpoint and endpoints. Once the search has stagnated, a Float at a *stationary* point of every violated constraint containing it additionally gets a two-sided local probe at `x ± {1e-6, 1e-2}·(|x|+1)` — see below |
 
-Each candidate is scored with one `weighted_violation_delta` probe. Newton
+Each candidate is scored with one `weighted_violation_delta` probe — or, when
+every weighted row of `G_v` is a comparison (`Leq`/`Geq`/`Lt`/`Gt`/`Eq`) whose
+two children are affine, in closed form by `LinearJumpScorer`
+(`include/cbls/linear_jump.h`): each such row has a constant slope
+`r = ∂(p − q)/∂v`, cached lazily per row from `compute_partials_sparse`, and the
+candidate costs `Σ_c w_c·(clamped(cmp(p + rΔ, q)) − clamped(old))` — O(|G_v|)
+instead of two `delta_evaluate`s over every row in the column. Same candidates,
+same first-seen selection, same per-row differencing (#100); the scores agree
+with the probe to rounding, not to the bit, and a committed jump still goes
+through `delta_evaluate`. Any other weighted row, or a non-finite computed side,
+takes the probe. On MIPfeas at a 20s budget this raised FJ iterations 7–60×
+(gen-ip002 4,803 → 299,283; neos-860300 1,207 → 8,174; measured serially
+against the cone-restricted-AD parent branch). The Float Newton step reads the
+same cache for a row's partial where it is bit-identical to `compute_partial`
+(Leq/Geq/Lt/Gt always; Eq only against a literal side). Newton
 candidates are considered first so that, on a tie in violation delta (a feasible
 plateau), the gradient-informed point wins. Because the objective is a
 constraint `obj <= bound`, when that constraint is violated its Newton candidate
