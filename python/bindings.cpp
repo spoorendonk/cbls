@@ -1040,6 +1040,13 @@ NB_MODULE(_cbls_core, m) {
         .def_ro("incumbents_revalidated", &SearchCounters::incumbents_revalidated)
         .def_ro("revalidation_evaluations", &SearchCounters::revalidation_evaluations);
 
+    // One portfolio worker that did not complete (#170). Registered before
+    // SearchResult, whose `worker_failures` converts to a list of these.
+    nb::class_<WorkerFailure>(m, "WorkerFailure")
+        .def_ro("worker", &WorkerFailure::worker)
+        .def_ro("produced_result", &WorkerFailure::produced_result)
+        .def_ro("reason", &WorkerFailure::reason);
+
     // SearchResult
     nb::class_<SearchResult>(m, "SearchResult")
         .def_ro("objective", &SearchResult::objective)
@@ -1047,6 +1054,11 @@ NB_MODULE(_cbls_core, m) {
         .def_ro("iterations", &SearchResult::iterations)
         .def_ro("time_seconds", &SearchResult::time_seconds)
         .def_ro("termination", &SearchResult::termination)
+        // Portfolio worker accounting (#170); see SearchResult::workers_completed.
+        // `worker_failures` is returned as a fresh list of copies on each read.
+        .def_ro("workers_launched", &SearchResult::workers_launched)
+        .def_ro("workers_completed", &SearchResult::workers_completed)
+        .def_ro("worker_failures", &SearchResult::worker_failures)
         // By reference to the result that owns it: a SearchCounters is a plain
         // aggregate with a vector in it, and copying it per attribute read would
         // be a surprise on a field a caller reads several times.

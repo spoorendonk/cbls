@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace cbls {
@@ -339,6 +340,22 @@ enum class TerminationReason : std::uint8_t {
 /// string; never null.
 const char* termination_reason_name(TerminationReason reason);
 
+/// One `ParallelSearch` worker that did not complete, and why (#170). See
+/// `SearchResult::workers_completed` for what "complete" means.
+struct WorkerFailure {
+    /// The worker's index in `[0, workers_launched)`.
+    int worker = 0;
+    /// Whether the worker returned at least one solve before it died. When true
+    /// its work is IN the aggregate -- its iterations, counters and any incumbent
+    /// it pooled -- and only its remaining budget was lost; when false it
+    /// contributed nothing.
+    bool produced_result = false;
+    /// `what()` of the exception that ended the worker, or a fixed string for an
+    /// exception not derived from `std::exception`. For a Python exception this is
+    /// nanobind's formatted traceback.
+    std::string reason;
+};
+
 struct SearchResult {
     /// Objective at `best_state`, or `+inf` when there is nothing to report.
     /// `+inf` does NOT imply infeasible: a feasible point on which the objective
@@ -512,6 +529,41 @@ struct SearchResult {
     /// see `SearchCounters::inner_solver_seconds` for the one field that gate
     /// costs.
     SearchCounters counters;
+
+    /// How many portfolio workers ran, and how many of them COMPLETED (#170).
+    ///
+    /// A worker is COMPLETED when its last `solve()` attempt returned normally:
+    /// it was still searching when the portfolio ended -- on the shared deadline,
+    /// a peer's stop, a host cancel or its own iteration budget. Precisely:
+    ///
+    ///  - a worker that threw and recovered on a retry, and whose last attempt
+    ///    returned, IS completed;
+    ///  - a worker whose last attempt THREW is NOT, and is listed in
+    ///    `worker_failures` -- including one that returned results earlier and
+    ///    died on a later restart (`produced_result` says so), and one that threw
+    ///    once and then found the deadline gone before it could retry. The first
+    ///    of those ran for part of the budget only, which is what makes a row that
+    ///    counts it as a thread wrong; the second is conservative by one retry;
+    ///  - a worker that never started a solve, because the shared deadline had
+    ///    already passed when it launched, is neither completed nor failed.
+    ///
+    /// So `workers_completed + worker_failures.size() <= workers_launched`, with
+    /// equality unless the budget expired during launch.
+    ///
+    /// `workers_launched` is the portfolio's worker count after an executor's cap
+    /// (see `ParallelConfig::executor`), which can be fewer than the threads
+    /// requested. A caller that publishes a thread count compares
+    /// `workers_completed` against what it ASKED for, not against this.
+    ///
+    /// A single `cbls::solve()` reports 1 and 1 with no failures: it has exactly
+    /// one worker, and a throw from it propagates instead of being absorbed.
+    /// `ParallelSearch` still THROWS, as before, when every worker died without a
+    /// result; these fields describe the runs it returns from.
+    int workers_launched = 1;
+    int workers_completed = 1;
+    /// One entry per worker that did not complete because it threw, in worker
+    /// order. Empty on every non-portfolio result.
+    std::vector<WorkerFailure> worker_failures;
 };
 
 /// One progress row. Under `ParallelSearch` a row is a HYBRID by design and has

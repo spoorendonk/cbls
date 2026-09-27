@@ -826,15 +826,43 @@ int run_benchmark(int argc, char** argv) {
     };
     j["objective"] =
         verdict.have_solution ? nlohmann::json(result.objective) : nlohmann::json(nullptr);
+    // How many portfolio workers actually ran to the end (#170). `threads` above
+    // is what was ASKED for, and it is a scorer configuration key: a worker that
+    // died inside the solve bracket -- a bad_alloc on its FJ tables under the
+    // driver's address-space cap, after every replica fitted -- is absorbed by
+    // ParallelSearch, which returns the survivors' result. Without this column
+    // such a row reads as a valid N-thread measurement; with it the scorer
+    // refuses the row. "Completed" is defined on SearchResult::workers_completed.
+    // The single-threaded arm reports 1 of 1: cbls::solve has one worker, and a
+    // throw from it is a `solve_error` row instead.
+    const bool lost_workers = result.workers_completed < args.threads;
+    j["workers_launched"] = result.workers_launched;
+    j["workers_completed"] = result.workers_completed;
+    nlohmann::json failures = nlohmann::json::array();
+    for (const cbls::WorkerFailure& f : result.worker_failures) {
+        failures.push_back(
+            {{"worker", f.worker}, {"produced_result", f.produced_result}, {"reason", f.reason}});
+    }
+    j["worker_failures"] = failures;
     write_result(args, j);
+    if (lost_workers) {
+        std::fprintf(stderr, "%s: only %d of %d portfolio workers completed; the row is refused\n",
+                     args.instance.c_str(), result.workers_completed, args.threads);
+        for (const cbls::WorkerFailure& f : result.worker_failures) {
+            std::fprintf(stderr, "  worker %d%s: %s\n", f.worker,
+                         f.produced_result ? " (after producing a result)" : "", f.reason.c_str());
+        }
+    }
 
     std::printf("%-28s %-12s obj=%-16.8g viol=%-10.3g %8.2fs\n", args.instance.c_str(),
                 verdict.status,
                 verdict.have_solution ? result.objective : std::numeric_limits<double>::quiet_NaN(),
                 result.best_violation, wall);
     // Non-zero when the solution could not be written: the job did run, but it
-    // produced a row nothing can verify, and the driver has to see that.
-    return solution_write_failed ? 1 : 0;
+    // produced a row nothing can verify, and the driver has to see that. The same
+    // for a portfolio that lost workers: the row is written, so the failure is
+    // on disk with its reasons, but the job did not measure what it was asked to.
+    return (solution_write_failed || lost_workers) ? 1 : 0;
 }
 
 }  // namespace

@@ -10,8 +10,10 @@
 #include <mutex>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace cbls {
 
@@ -664,10 +666,12 @@ bool worker_finished(const PortfolioContext& ctx, const SearchResult& r) {
     return ends_worker(r.termination) || r.termination == TerminationReason::NoBudget;
 }
 
-// `failure` is set to the last exception the SEARCH raised, whether or not the
-// worker went on to recover. The caller reports it only when the worker
-// produced nothing at all, so a worker that threw once and then succeeded is
-// not counted as failed.
+// On return `failure` holds the exception that ENDED the worker -- the one its
+// last solve attempt threw -- or null when that attempt returned normally (or no
+// attempt ran). A throw followed by a successful retry is cleared by the retry,
+// so a worker that recovered is not reported as failed; one that returned
+// results and then died on a later restart is (#170, see
+// SearchResult::workers_completed).
 std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index,
                                        std::exception_ptr& failure) {
     // Built ONCE per worker, not once per restart: a restart carries on with
@@ -753,6 +757,7 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index,
             continue;
         }
         consecutive_failures = 0;
+        failure = nullptr;
         acc.absorb(r, started_at);
 
         if (worker_finished(ctx, r)) {
@@ -839,6 +844,39 @@ void adopt_growth_winner(const std::vector<SearchResult>& results,
     result.best_state = w.best_state;
     result.best_violation = w.best_violation;
     *growth.master = std::move(growth.models[static_cast<size_t>(winner)]);
+}
+
+// The text a WorkerFailure carries. Called on the calling thread after every
+// worker has joined; a parked nanobind python_error takes the GIL inside its own
+// what(), as it does in its destructor (see PySolveCallback in
+// python/bindings.cpp).
+std::string describe_failure(const std::exception_ptr& failure) {
+    try {
+        std::rethrow_exception(failure);
+    } catch (const std::exception& e) {
+        return e.what();
+    } catch (...) {
+        return "an exception not derived from std::exception";
+    }
+}
+
+// Fill the result's worker accounting (#170) from what each worker left behind:
+// whether it produced a result, and the exception that ended it, if any. The
+// definition of "completed" is on SearchResult::workers_completed; this is the
+// one place that applies it.
+void report_workers(const std::vector<char>& produced,
+                    const std::vector<std::exception_ptr>& ended_by, SearchResult& result) {
+    result.workers_launched = static_cast<int>(produced.size());
+    result.workers_completed = 0;
+    result.worker_failures.clear();
+    for (size_t i = 0; i < produced.size(); ++i) {
+        if (ended_by[i] != nullptr) {
+            result.worker_failures.push_back(WorkerFailure{static_cast<int>(i), produced[i] != 0,
+                                                           describe_failure(ended_by[i])});
+        } else if (produced[i] != 0) {
+            ++result.workers_completed;
+        }
+    }
 }
 
 }  // namespace
@@ -951,6 +989,12 @@ SearchResult ParallelSearch::solve_portfolio(
     // Which workers produced a result. Only column generation reads it: there the
     // answer must come from a worker whose grown model is handed back with it.
     std::vector<char> produced(n_workers, 0);
+    // The exception that ENDED each worker, null for one whose last solve attempt
+    // returned (or that never ran one). Unlike `failures`, which only decides the
+    // all-failed rethrow below and so is set only for a worker that left nothing
+    // behind, this is set for a worker that produced results and died LATER too:
+    // it is what the result's worker accounting reports (#170).
+    std::vector<std::exception_ptr> ended_by(n_workers);
 
     // One worker, whichever thing is running it. Written once and used by both
     // launch paths below, so the two cannot come to mean different things:
@@ -962,10 +1006,11 @@ SearchResult ParallelSearch::solve_portfolio(
     // is free to do anything at all with one -- rethrow it on the calling
     // thread, swallow it, abort. Parking it here means the portfolio's own
     // failure handling is the same either way.
-    auto run_one = [&ctx, &failures, &results, &pool, &produced](int i) {
+    auto run_one = [&ctx, &failures, &results, &pool, &produced, &ended_by](int i) {
         try {
             std::exception_ptr worker_failure;
             auto r = run_worker(ctx, i, worker_failure);
+            ended_by[i] = worker_failure;
             if (!r.has_value()) {
                 // Either handed no budget at all (worker_failure null, nothing
                 // to report) or every attempt threw.
@@ -991,6 +1036,7 @@ SearchResult ParallelSearch::solve_portfolio(
             // it rather than drop it; whether it is rethrown is decided below,
             // once every worker has reported.
             failures[i] = std::current_exception();
+            ended_by[i] = failures[i];
         }
     };
 
@@ -1032,6 +1078,7 @@ SearchResult ParallelSearch::solve_portfolio(
         // A cancelled portfolio reaches here too; see empty_portfolio_reason.
         SearchResult empty;
         empty.termination = empty_portfolio_reason(combined.requested());
+        report_workers(produced, ended_by, empty);
         return empty;
     }
 
@@ -1075,6 +1122,7 @@ SearchResult ParallelSearch::solve_portfolio(
     // then see the cancel, and the aggregate must not report that as the engine's
     // own choice to stop.
     result.termination = with_host_cancel(aggregate_termination(results), combined.requested());
+    report_workers(produced, ended_by, result);
     return result;
 }
 

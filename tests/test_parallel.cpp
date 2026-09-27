@@ -20,6 +20,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -1255,4 +1256,130 @@ TEST_CASE("each portfolio worker gets its own move generator", "[parallel][struc
         summed += c;
     }
     REQUIRE(summed == registry->total_commits);
+}
+
+// ---------------------------------------------------------------------------
+// Worker accounting (#170)
+// ---------------------------------------------------------------------------
+//
+// A worker that dies is absorbed -- the survivors' result is returned -- so the
+// result has to SAY how many ran, or a benchmark row claims every thread it asked
+// for. Failures are injected through `ParallelConfig::tracer_factory`, which is
+// handed the worker's index: a tracer that throws from `batch_end` raises inside
+// that one worker's `solve()`, on its own thread, deterministically and through
+// public API only -- no test seam in src/.
+
+namespace {
+
+// Throws `std::bad_alloc` -- the failure a memory cap produces -- from every
+// `batch_end` after the first `spared` ones.
+struct AllocFailingTracer : Tracer {
+    explicit AllocFailingTracer(int spared) : spared_batches(spared) {}
+    void batch_end(BatchKind /*kind*/, int64_t /*iterations*/, bool /*improved*/) override {
+        if (++batches > spared_batches) {
+            throw std::bad_alloc();
+        }
+    }
+    int spared_batches;
+    int batches = 0;
+};
+
+// A tracer factory that fails worker `victim` after `spared` batches and leaves
+// every other worker untraced.
+std::function<std::unique_ptr<Tracer>(int)> fail_worker(int victim, int spared) {
+    return [victim, spared](int worker) -> std::unique_ptr<Tracer> {
+        if (worker != victim) {
+            return nullptr;
+        }
+        return std::make_unique<AllocFailingTracer>(spared);
+    };
+}
+
+}  // namespace
+
+TEST_CASE("a portfolio whose worker cannot allocate reports it", "[parallel][workers]") {
+    // Worker 1 throws bad_alloc on its first batch of every attempt, exhausts its
+    // retries and contributes nothing. Before #170 the result was
+    // indistinguishable from a healthy 3-worker run.
+    constexpr int kThreads = 3;
+    ParallelConfig pc;
+    pc.n_threads = kThreads;
+    pc.tracer_factory = fail_worker(/*victim=*/1, /*spared=*/0);
+    ParallelSearch ps(kThreads);
+    SearchResult r;
+    REQUIRE_NOTHROW(r = ps.solve([] { return quadratic_model(); }, /*time_limit=*/0.3,
+                                 /*seed=*/42, SearchConfig{}, /*hook_factory=*/nullptr,
+                                 /*lns_factory=*/nullptr, /*callback=*/nullptr, pc));
+    REQUIRE(r.feasible);  // the survivors still answered
+    REQUIRE(r.workers_launched == kThreads);
+    REQUIRE(r.workers_completed == kThreads - 1);
+    REQUIRE(r.worker_failures.size() == 1);
+    const WorkerFailure& f = r.worker_failures.front();
+    REQUIRE(f.worker == 1);
+    REQUIRE_FALSE(f.produced_result);
+    REQUIRE(f.reason == std::string(std::bad_alloc().what()));
+}
+
+TEST_CASE("a worker that dies on a restart is not counted as completed", "[parallel][workers]") {
+    // The worker returns one whole solve, so it PRODUCED a result, and then dies
+    // on its restart: it searched for part of the budget only, which is what a
+    // row claiming it as a thread would get wrong. No clock decides where the
+    // throw lands: SearchConfig::max_iterations caps an attempt at kCap batches,
+    // so batch kCap + 1 belongs to a later attempt, and the first attempt -- whose
+    // batches the tracer spares -- returned normally.
+    constexpr int kCap = 50;
+    constexpr int kThreads = 2;
+    SearchConfig config;
+    config.max_iterations = kCap;
+    ParallelConfig pc;
+    pc.n_threads = kThreads;
+    pc.tracer_factory = fail_worker(/*victim=*/1, /*spared=*/kCap);
+    ParallelSearch ps(kThreads);
+    SearchResult r;
+    REQUIRE_NOTHROW(r = ps.solve([] { return quadratic_model(); }, /*time_limit=*/0.5,
+                                 /*seed=*/42, config, /*hook_factory=*/nullptr,
+                                 /*lns_factory=*/nullptr, /*callback=*/nullptr, pc));
+    REQUIRE(r.workers_launched == kThreads);
+    REQUIRE(r.workers_completed == kThreads - 1);
+    REQUIRE(r.worker_failures.size() == 1);
+    REQUIRE(r.worker_failures.front().worker == 1);
+    REQUIRE(r.worker_failures.front().produced_result);
+}
+
+TEST_CASE("a worker that recovers from a throw still completes", "[parallel][workers]") {
+    // One transient failure per worker, then fine: every worker's last attempt
+    // returned, so every worker completed and none is listed. Red-checked: a
+    // run_worker that kept the recovered-from exception instead of clearing it on
+    // the next successful attempt listed both workers here as failed.
+    auto hook_factory = [](Model&) -> std::shared_ptr<InnerSolverHook> {
+        return std::make_shared<FlakyHook>(1);
+    };
+    constexpr int kThreads = 2;
+    ParallelConfig pc;
+    pc.n_threads = kThreads;
+    ParallelSearch ps(kThreads);
+    SearchResult r;
+    REQUIRE_NOTHROW(r = ps.solve([] { return quadratic_model(); }, /*time_limit=*/0.5,
+                                 /*seed=*/42, SearchConfig{}, hook_factory,
+                                 /*lns_factory=*/nullptr, /*callback=*/nullptr, pc));
+    REQUIRE(r.feasible);
+    REQUIRE(r.workers_launched == kThreads);
+    REQUIRE(r.workers_completed == kThreads);
+    REQUIRE(r.worker_failures.empty());
+}
+
+TEST_CASE("a single-threaded solve reports one completed worker", "[parallel][workers]") {
+    Model m = quadratic_model();
+    const SearchResult single = solve(m, /*time_limit=*/0.1, /*seed=*/42);
+    REQUIRE(single.workers_launched == 1);
+    REQUIRE(single.workers_completed == 1);
+    REQUIRE(single.worker_failures.empty());
+
+    // And a healthy portfolio reports every worker it launched.
+    constexpr int kThreads = 3;
+    ParallelSearch ps(kThreads);
+    const SearchResult portfolio = ps.solve([] { return quadratic_model(); }, 0.2, 42);
+    REQUIRE(portfolio.workers_launched == kThreads);
+    REQUIRE(portfolio.workers_completed == kThreads);
+    REQUIRE(portfolio.worker_failures.empty());
 }

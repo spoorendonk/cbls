@@ -383,6 +383,43 @@ def _provenance(result: dict[str, object]) -> str:
     return "unknown"
 
 
+def refuse_lost_workers(result: dict[str, object], result_path: Path) -> None:
+    """Refuse a row whose portfolio ran fewer workers than its `threads` says (#170).
+
+    `threads` is a configuration key, so a row that says 8 threads when 3 workers
+    ran would be averaged in as a valid 8-thread measurement. `ParallelSearch`
+    absorbs a worker that dies inside the solve -- a `bad_alloc` under the
+    driver's address-space cap is the realistic case -- and returns the
+    survivors' result, so the runner publishes `workers_completed` and this
+    refuses the row, the way `score_instance` refuses a row from another budget.
+
+    A row that reached the solve (it carries `wall_seconds`) with `threads > 1`
+    and no count predates the column and is refused too: whether it lost workers
+    cannot be established. A single-threaded row without one is accepted, because
+    `cbls::solve` has one worker and a throw from it is a `solve_error` row.
+    Rows that never reached the solve carry no count and no score, and CP-SAT
+    rows carry no `threads` at all.
+    """
+    threads = result.get("threads")
+    if not isinstance(threads, int) or isinstance(threads, bool):
+        return
+    completed = result.get("workers_completed")
+    if isinstance(completed, int) and not isinstance(completed, bool):
+        if completed < threads:
+            raise ValueError(
+                f"{result_path} asked for {threads} threads but only {completed} portfolio "
+                f"workers completed (see its worker_failures). It is not a {threads}-thread "
+                f"measurement. Re-run it, with --force, under enough memory for every worker."
+            )
+        return
+    if threads > 1 and "wall_seconds" in result:
+        raise ValueError(
+            f"{result_path} is a {threads}-thread row with no workers_completed count: it "
+            f"predates the count, so whether every worker ran cannot be established. "
+            f"Re-run it with --force."
+        )
+
+
 def score_instance(
     instance: str,
     engine: str,
@@ -449,6 +486,7 @@ def score_instance(
             f"{result_path} was produced at a {recorded}s budget but is being scored "
             f"at {budget}s. Re-run those jobs, or score at the budget they used."
         )
+    refuse_lost_workers(result, result_path)
     status = str(result.get("status", "unknown"))
     raw_objective = result.get("objective")
     objective = float(raw_objective) if isinstance(raw_objective, (int, float)) else None

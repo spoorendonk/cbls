@@ -167,8 +167,14 @@ public:
     //
     // The "and none of them produced a result" half is not pedantry: a worker
     // can now share incumbents, exhaust its retries on a later restart, and
-    // still have a result worth keeping. Such a run returns normally and its
-    // exceptions are not reported.
+    // still have a result worth keeping. Such a run returns normally.
+    //
+    // Absorbed is not hidden (#170): a returned result says how many workers
+    // COMPLETED and lists each one that died, with the exception's message --
+    // `SearchResult::workers_completed` and `worker_failures`, where "completed"
+    // is defined. A caller that reports a thread count must read them, because a
+    // run that lost workers otherwise looks exactly like one that did not. The
+    // all-failed throw above is unchanged.
     //
     // Simple portfolio solve (backward-compatible)
     SearchResult solve(std::function<Model()> model_factory, double time_limit = 10.0,
