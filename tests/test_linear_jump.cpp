@@ -319,22 +319,58 @@ TEST_CASE("cached row partials are bit-identical to compute_partial where claime
         LinearJumpScorer sc(m);
         mark_all_rows(m, sc);
         RNG rng(seed);
-        randomise_assignment(m, rng);
         const auto& cids = m.constraint_ids();
-        for (int32_t c = 0; c < static_cast<int32_t>(cids.size()); ++c) {
-            for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
-                double g = 0.0;
-                if (sc.residual_partial(c, v, g)) {
-                    ++claimed;
-                    REQUIRE(g == compute_partial(m, cids[static_cast<size_t>(c)], v));
-                } else {
-                    ++declined;
+        // Rows are built on the first pass; the later passes run at new
+        // assignments, where an Eq row's sign has typically flipped -- so a
+        // partial that cached the sign along with the slope goes red.
+        for (int pass = 0; pass < 3; ++pass) {
+            randomise_assignment(m, rng);
+            for (int32_t c = 0; c < static_cast<int32_t>(cids.size()); ++c) {
+                for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
+                    double g = 0.0;
+                    if (sc.residual_partial(c, v, g)) {
+                        ++claimed;
+                        REQUIRE(g == compute_partial(m, cids[static_cast<size_t>(c)], v));
+                    } else {
+                        ++declined;
+                    }
                 }
             }
         }
     }
     REQUIRE(claimed > 500);
     REQUIRE(declined > 0);  // Eq rows with a computed side on both ends decline
+}
+
+TEST_CASE("row invalidations compact the slope pool without changing a score",
+          "[fj][linear_jump]") {
+    // What an extension-heavy run does to the cache: rows re-marked (their body
+    // changed) and rebuilt, over and over. The pool compacts once the dead
+    // entries outnumber the live, and every surviving row must still read its own
+    // slice afterwards.
+    RandomLinearModel r;
+    build_random_linear(r, 31, /*integral=*/true);
+    Model& m = r.m;
+    LinearJumpScorer sc(m);
+    mark_all_rows(m, sc);
+    RNG rng(31);
+    randomise_assignment(m, rng);
+    const std::vector<double> w(m.constraint_ids().size(), 1.0);
+    const auto nc = static_cast<int32_t>(m.constraint_ids().size());
+    REQUIRE(check_scores(m, sc, w, rng, /*exact=*/true) > 50);
+    const size_t live = sc.pooled_slopes();  // every row built once, none dead
+    REQUIRE(live > 0);
+    for (int round = 0; round < 12; ++round) {
+        // Invalidate a varying half of the rows, then score everything.
+        for (int32_t c = round % 2; c < nc; c += 2) {
+            sc.set_row_eligible(c, true);
+        }
+        REQUIRE(check_scores(m, sc, w, rng, /*exact=*/true) > 50);
+        // Dead entries never exceed the live ones by more than the row that
+        // tipped the balance; without compaction this grows ~half of `live` per
+        // round.
+        REQUIRE(sc.pooled_slopes() <= 3 * live);
+    }
 }
 
 TEST_CASE("a row clamped to kInfPenalty cancels exactly in the closed form (#100)",

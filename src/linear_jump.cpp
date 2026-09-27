@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -68,17 +70,61 @@ double eq_sign(double diff) {
 LinearJumpScorer::LinearJumpScorer(const Model& model) : model_(model) {}
 
 void LinearJumpScorer::resize_rows(size_t n) {
-    rows_.resize(n);
+    for (size_t ci = n; ci < slots_.size(); ++ci) {
+        release_row(slots_[ci]);
+    }
+    slots_.resize(n, kIneligible);
+}
+
+// A built row's pool entries and record become dead; counted, not freed, until
+// compact_pool runs.
+void LinearJumpScorer::release_row(uint32_t slot) {
+    if (slot >= kFirstBuilt) {
+        dead_entries_ += built_[slot - kFirstBuilt].count;
+        ++dead_rows_;
+    }
 }
 
 void LinearJumpScorer::set_row_eligible(int32_t ci, bool eligible) {
-    Row& row = rows_.at(static_cast<size_t>(ci));
-    row = Row{};  // drops the slopes and their capacity: the body changed
-    row.state = eligible ? RowState::Pending : RowState::Ineligible;
+    uint32_t& slot = slots_.at(static_cast<size_t>(ci));
+    release_row(slot);  // the body changed: its slopes are stale
+    slot = eligible ? kPending : kIneligible;
 }
 
 bool LinearJumpScorer::row_eligible(int32_t ci) const {
-    return rows_.at(static_cast<size_t>(ci)).state != RowState::Ineligible;
+    return slots_.at(static_cast<size_t>(ci)) != kIneligible;
+}
+
+// Rewrite the pool and the records with the live rows only, in row order.
+// O(rows + live entries), run only once the dead outnumber the live -- so an
+// extension-heavy run (column generation touches rows every batch) holds at
+// most about twice its live slopes, and the copy is amortised over the builds
+// that made the garbage.
+void LinearJumpScorer::compact_pool() {
+    std::vector<BuiltRow> built;
+    std::vector<int32_t> vars;
+    std::vector<double> slopes;
+    built.reserve(built_.size() - dead_rows_);
+    vars.reserve(pool_vars_.size() - dead_entries_);
+    slopes.reserve(pool_slopes_.size() - dead_entries_);
+    for (uint32_t& slot : slots_) {
+        if (slot < kFirstBuilt) {
+            continue;
+        }
+        BuiltRow row = built_[slot - kFirstBuilt];
+        const auto first = static_cast<std::ptrdiff_t>(row.begin);
+        const auto last = first + static_cast<std::ptrdiff_t>(row.count);
+        row.begin = static_cast<uint32_t>(vars.size());
+        vars.insert(vars.end(), pool_vars_.begin() + first, pool_vars_.begin() + last);
+        slopes.insert(slopes.end(), pool_slopes_.begin() + first, pool_slopes_.begin() + last);
+        slot = kFirstBuilt + static_cast<uint32_t>(built.size());
+        built.push_back(row);
+    }
+    built_ = std::move(built);
+    pool_vars_ = std::move(vars);
+    pool_slopes_ = std::move(slopes);
+    dead_entries_ = 0;
+    dead_rows_ = 0;
 }
 
 // Slopes of one eligible row, built on first use.
@@ -98,61 +144,81 @@ bool LinearJumpScorer::row_eligible(int32_t ci) const {
 // through Prod by an infinite constant has no linear model. (Div by a constant
 // below 1e-15 is the opposite case -- local derivative 0, value +/-inf -- and is
 // caught in `prepare` by its non-finite side, not here.)
-void LinearJumpScorer::build_row(int32_t ci) {
-    Row& row = rows_[static_cast<size_t>(ci)];
+const LinearJumpScorer::BuiltRow* LinearJumpScorer::build_row(int32_t ci) {
     const int32_t nid = model_.constraint_ids()[static_cast<size_t>(ci)];
     const ExprNode& nd = model_.nodes()[static_cast<size_t>(nid)];
     const ConstSpan<ChildRef> children = model_.children(nd);
     const bool swap = nd.op == NodeOp::Geq || nd.op == NodeOp::Gt;
     const ChildRef p = children[swap ? 1 : 0];
     const ChildRef q = children[swap ? 0 : 1];
+    BuiltRow row;
     row.p_id = p.id;
-    row.p_is_var = p.is_var;
     row.q_id = q.id;
-    row.q_is_var = q.is_var;
-    row.p_literal = is_literal(model_, p);
-    row.q_literal = is_literal(model_, q);
-    row.is_abs = nd.op == NodeOp::Eq;
-    row.strict = nd.op == NodeOp::Lt || nd.op == NodeOp::Gt;
+    const bool p_literal = is_literal(model_, p);
+    const bool q_literal = is_literal(model_, q);
+    const bool is_abs = nd.op == NodeOp::Eq;
+    bool newton_exact = true;
 
     merged_.clear();
-    if (row.is_abs) {
+    if (is_abs) {
         side_partials(model_, p, side0_);
         side_partials(model_, q, side1_);
         merge_sides(side0_, side1_, merged_);
-        row.newton_exact = row.p_literal || row.q_literal;
+        newton_exact = p_literal || q_literal;
     } else {
         compute_partials_sparse(model_, nid, merged_);
         std::sort(merged_.begin(), merged_.end());
-        row.newton_exact = true;
     }
-
     size_t n = 0;
     for (const auto& e : merged_) {
         if (!std::isfinite(e.second)) {
-            set_row_eligible(ci, false);
-            return;
+            slots_[static_cast<size_t>(ci)] = kIneligible;
+            return nullptr;
         }
         n += e.second != 0.0 ? 1 : 0;
     }
-    // Exactly sized: a row is built once and then read for the rest of the run.
-    row.vars.reserve(n);
-    row.slopes.reserve(n);
+
+    if (dead_entries_ > pool_vars_.size() - dead_entries_) {
+        compact_pool();
+    }
+    if (pool_vars_.size() + n > std::numeric_limits<uint32_t>::max() ||
+        built_.size() + kFirstBuilt > std::numeric_limits<uint32_t>::max()) {
+        throw std::length_error("LinearJumpScorer: more than 2^32 - 1 cached slopes");
+    }
+    row.flags = static_cast<uint8_t>((p.is_var ? kPIsVar : 0U) | (q.is_var ? kQIsVar : 0U) |
+                                     (p_literal ? kPLiteral : 0U) | (q_literal ? kQLiteral : 0U) |
+                                     (is_abs ? kAbs : 0U) |
+                                     (nd.op == NodeOp::Lt || nd.op == NodeOp::Gt ? kStrict : 0U) |
+                                     (newton_exact ? kNewtonExact : 0U));
+    row.begin = static_cast<uint32_t>(pool_vars_.size());
+    row.count = static_cast<uint32_t>(n);
     for (const auto& e : merged_) {
         if (e.second != 0.0) {
-            row.vars.push_back(e.first);
-            row.slopes.push_back(e.second);
+            pool_vars_.push_back(e.first);
+            pool_slopes_.push_back(e.second);
         }
     }
-    row.state = RowState::Ready;
+    slots_[static_cast<size_t>(ci)] = kFirstBuilt + static_cast<uint32_t>(built_.size());
+    built_.push_back(row);
+    return &built_.back();
 }
 
-double LinearJumpScorer::slope_of(const Row& row, int32_t var_id) {
-    const auto it = std::lower_bound(row.vars.begin(), row.vars.end(), var_id);
-    if (it == row.vars.end() || *it != var_id) {
+const LinearJumpScorer::BuiltRow* LinearJumpScorer::ready_row(int32_t ci) {
+    const uint32_t slot = slots_[static_cast<size_t>(ci)];
+    if (slot >= kFirstBuilt) {
+        return &built_[slot - kFirstBuilt];
+    }
+    return slot == kPending ? build_row(ci) : nullptr;
+}
+
+double LinearJumpScorer::slope_of(const BuiltRow& row, int32_t var_id) const {
+    const auto first = pool_vars_.begin() + static_cast<std::ptrdiff_t>(row.begin);
+    const auto last = first + static_cast<std::ptrdiff_t>(row.count);
+    const auto it = std::lower_bound(first, last, var_id);
+    if (it == last || *it != var_id) {
         return 0.0;
     }
-    return row.slopes[static_cast<size_t>(it - row.vars.begin())];
+    return pool_slopes_[static_cast<size_t>(it - pool_vars_.begin())];
 }
 
 double LinearJumpScorer::child_value(int32_t id, bool is_var) const {
@@ -164,7 +230,7 @@ double LinearJumpScorer::child_value(int32_t id, bool is_var) const {
 
 bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weights) {
     const std::vector<int32_t>& cids = model_.constraint_ids();
-    if (rows_.size() != cids.size()) {
+    if (slots_.size() != cids.size()) {
         throw std::logic_error(
             "LinearJumpScorer::prepare: the model has a different row count than this scorer; "
             "an extension must be followed by resize_rows and set_row_eligible on its rows");
@@ -180,7 +246,7 @@ bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weight
     bool ok = std::isfinite(x0_);
     for (size_t k = 0; ok && k < gv.size(); ++k) {
         const auto c = static_cast<size_t>(gv[k]);
-        ok = weights[c] == 0.0 || rows_[c].state != RowState::Ineligible;
+        ok = weights[c] == 0.0 || slots_[c] != kIneligible;
     }
     const std::vector<double>& node_values = model_.node_values();
     for (size_t k = 0; ok && k < gv.size(); ++k) {
@@ -189,16 +255,16 @@ bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weight
         if (w == 0.0) {
             continue;
         }
-        Row& row = rows_[static_cast<size_t>(c)];
-        if (row.state == RowState::Pending) {
-            build_row(c);
-        }
-        if (row.state != RowState::Ready) {
+        const BuiltRow* built = ready_row(c);
+        if (built == nullptr) {
             ok = false;  // demoted by its build: a non-finite slope
             break;
         }
-        const double p = child_value(row.p_id, row.p_is_var);
-        const double q = child_value(row.q_id, row.q_is_var);
+        const BuiltRow& row = *built;
+        const bool p_literal = (row.flags & kPLiteral) != 0;
+        const bool q_literal = (row.flags & kQLiteral) != 0;
+        const double p = child_value(row.p_id, (row.flags & kPIsVar) != 0);
+        const double q = child_value(row.q_id, (row.flags & kQIsVar) != 0);
         // A computed side must be finite for `p + r D` to be the DAG's value; a
         // literal side may be the +/-inf bound sentinel (the objective row's
         // bound opens at +inf) but not NaN.
@@ -209,8 +275,8 @@ bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weight
         // side is never finite, which this catches. (At exactly 1e-15 `evaluate`
         // divides while `local_derivative` still reports 0: a pre-existing AD
         // inconsistency this inherits, as every Newton step already does.)
-        if ((row.p_literal ? std::isnan(p) : !std::isfinite(p)) ||
-            (row.q_literal ? std::isnan(q) : !std::isfinite(q))) {
+        if ((p_literal ? std::isnan(p) : !std::isfinite(p)) ||
+            (q_literal ? std::isnan(q) : !std::isfinite(q))) {
             ok = false;
             break;
         }
@@ -222,7 +288,8 @@ bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weight
             continue;
         }
         terms_.push_back(Term{w, clamped_node_violation(node_values[static_cast<size_t>(cids[c])]),
-                              p, q, r, row.p_literal, row.q_literal, row.is_abs, row.strict});
+                              p, q, r, p_literal, q_literal, (row.flags & kAbs) != 0,
+                              (row.flags & kStrict) != 0});
     }
     if (!ok) {
         terms_.clear();
@@ -259,18 +326,20 @@ double LinearJumpScorer::delta(double j) const {
 }
 
 bool LinearJumpScorer::residual_partial(int32_t ci, int32_t var_id, double& out) {
-    Row& row = rows_[static_cast<size_t>(ci)];
-    if (row.state == RowState::Pending) {
-        build_row(ci);
-    }
-    if (row.state != RowState::Ready || !row.newton_exact) {
+    const BuiltRow* built = ready_row(ci);
+    if (built == nullptr || (built->flags & kNewtonExact) == 0) {
         return false;
     }
+    const BuiltRow& row = *built;
     const double r = slope_of(row, var_id);
-    out =
-        row.is_abs
-            ? eq_sign(child_value(row.p_id, row.p_is_var) - child_value(row.q_id, row.q_is_var)) * r
-            : r;
+    if ((row.flags & kAbs) != 0) {
+        // Read live: the sign follows the assignment, only r is structure.
+        const double diff = child_value(row.p_id, (row.flags & kPIsVar) != 0) -
+                            child_value(row.q_id, (row.flags & kQIsVar) != 0);
+        out = eq_sign(diff) * r;
+    } else {
+        out = r;
+    }
     ++cached_partials_;
     return true;
 }

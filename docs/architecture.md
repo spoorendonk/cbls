@@ -923,8 +923,10 @@ two children are affine, in closed form by `LinearJumpScorer`
 `r = ∂(p − q)/∂v`, cached lazily per row from `compute_partials_sparse`, and the
 candidate costs `Σ_c w_c·(clamped(cmp(p + rΔ, q)) − clamped(old))` — O(|G_v|)
 instead of two `delta_evaluate`s over every row in the column. Same candidates,
-same first-seen selection, same per-row differencing (#100); the scores agree
-with the probe to rounding, not to the bit, and a committed jump still goes
+same first-seen rule, same per-row differencing (#100); the scores agree with
+the probe to rounding, not to the bit -- so the chosen jump is guaranteed the
+probe's only on integral data, and an ulp can flip a near-tie on fractional
+data -- and a committed jump still goes
 through `delta_evaluate`. Any other weighted row, or a non-finite computed side,
 takes the probe. On MIPfeas at a 20s budget this raised FJ iterations 7–62×
 (gen-ip002 4,803 → 299,283; neos-860300 1,207 → 8,174; n2seq36q 19,504 →

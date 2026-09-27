@@ -41,13 +41,23 @@ class Model;
 /// Rows are classified by the OWNER (FeasibilityJump, which already derives
 /// per-node affineness) through `set_row_eligible`, and each row's slopes are
 /// built LAZILY, on the first prepare that reads the row: a short-lived FJ (the
-/// LNS repair builds one per call) pays only for the rows it touches. Storage is
-/// per row -- a 64-byte header for every row, plus ascending variable ids and
-/// slopes, 12 bytes per nonzero, for each row built -- so an extension (#167)
-/// invalidates exactly the rows it changed, the same unit as FeasibilityJump's
-/// other per-row tables. The slopes are structure, but each portfolio worker's FJ
-/// builds its own; the build also sizes `dag_ops.cpp`'s thread_local adjoint
-/// scratch, which a pure MIP otherwise never allocated.
+/// LNS repair builds one per call) pays only for the rows it touches.
+///
+/// Storage: 4 bytes per row (a slot: ineligible, pending, or the index of its
+/// built record), plus, for each row BUILT, a 20-byte record and 12 bytes per
+/// nonzero in one pooled CSR (ascending variable ids, parallel slopes). An
+/// extension (#167) invalidates exactly the rows it changed, the same unit as
+/// FeasibilityJump's other per-row tables; their old pool entries become dead
+/// and the pool is compacted once the dead outnumber the live. The slopes are
+/// structure, but each portfolio worker's FJ builds its own; the build also
+/// sizes `dag_ops.cpp`'s thread_local adjoint scratch, which a pure MIP
+/// otherwise never allocated.
+///
+/// **Selection is unchanged to the bit only on integral data.** Scores there are
+/// exact (small integers and dyadic coefficients sum without rounding), so the
+/// first-seen minimum picks the same candidate as the probe. On fractional data a
+/// score can differ by an ulp, which can flip a near-tie between candidates; the
+/// candidate set and the rule are the same, the arithmetic is not.
 ///
 /// One property the probe has and this does not: exact antisymmetry. The probe's
 /// score of x -> j and of j -> x (after committing) are exact negations; here the
@@ -60,7 +70,7 @@ public:
 
     /// Size the per-row table to `n` rows. New rows start ineligible.
     void resize_rows(size_t n);
-    [[nodiscard]] size_t num_rows() const { return rows_.size(); }
+    [[nodiscard]] size_t num_rows() const { return slots_.size(); }
 
     /// (Re)classify row `ci` and drop any slopes cached for it. Call for every
     /// row whose body changed -- a new row, or one a grown Sum sits inside.
@@ -96,25 +106,29 @@ public:
     [[nodiscard]] int64_t fast_prepares() const { return fast_prepares_; }
     [[nodiscard]] int64_t fallback_prepares() const { return fallback_prepares_; }
     [[nodiscard]] int64_t cached_partials() const { return cached_partials_; }
+    /// Slopes held in the pool, live and dead: what the cache costs, 12 B each.
+    [[nodiscard]] size_t pooled_slopes() const { return pool_vars_.size(); }
 
 private:
-    enum class RowState : uint8_t { Ineligible, Pending, Ready };
-    // Every row carries one of these whether or not it is ever built, so it is
-    // kept to 64 bytes: the two residual arguments as (id, is_var) fields rather
-    // than padded ChildRefs.
-    struct Row {
-        std::vector<int32_t> vars;   // ascending
-        std::vector<double> slopes;  // r = d(p - q)/dv, parallel to vars
-        int32_t p_id = -1;           // first argument of the residual
-        int32_t q_id = -1;           // second argument
-        RowState state = RowState::Ineligible;
-        bool p_is_var = false;
-        bool q_is_var = false;
-        bool p_literal = false;  // a Const node: comparison_residual's sentinel flag
-        bool q_literal = false;
-        bool is_abs = false;        // Eq: |p - q|
-        bool strict = false;        // Lt/Gt: + the strictness epsilon
-        bool newton_exact = false;  // see residual_partial
+    // slots_[ci]: kIneligible, kPending, or kFirstBuilt + index into built_.
+    static constexpr uint32_t kIneligible = 0;
+    static constexpr uint32_t kPending = 1;
+    static constexpr uint32_t kFirstBuilt = 2;
+    // BuiltRow::flags bits.
+    static constexpr uint32_t kPIsVar = 1U << 0U;
+    static constexpr uint32_t kQIsVar = 1U << 1U;
+    static constexpr uint32_t kPLiteral = 1U << 2U;  // a Const node: the sentinel flag
+    static constexpr uint32_t kQLiteral = 1U << 3U;
+    static constexpr uint32_t kAbs = 1U << 4U;          // Eq: |p - q|
+    static constexpr uint32_t kStrict = 1U << 5U;       // Lt/Gt: + the strictness epsilon
+    static constexpr uint32_t kNewtonExact = 1U << 6U;  // see residual_partial
+    // A built row: its slice of the pool and its two residual arguments.
+    struct BuiltRow {
+        uint32_t begin = 0;  // into pool_vars_ / pool_slopes_
+        uint32_t count = 0;
+        int32_t p_id = -1;  // first argument of the residual
+        int32_t q_id = -1;  // second argument
+        uint8_t flags = 0;
     };
     // One row of G_v with a nonzero weight and slope, as prepare snapshots it.
     struct Term {
@@ -129,12 +143,25 @@ private:
         bool strict;
     };
 
-    void build_row(int32_t ci);
+    // Build row ci (must be pending); returns the row, or nullptr if the build
+    // demoted it to ineligible. May compact the pool, so any BuiltRow pointer
+    // held across a call is invalidated.
+    const BuiltRow* build_row(int32_t ci);
+    // The built record of row ci, building it first if pending; nullptr if the
+    // row is (or becomes) ineligible.
+    const BuiltRow* ready_row(int32_t ci);
+    void release_row(uint32_t slot);
+    void compact_pool();
     [[nodiscard]] double child_value(int32_t id, bool is_var) const;
-    [[nodiscard]] static double slope_of(const Row& row, int32_t var_id);
+    [[nodiscard]] double slope_of(const BuiltRow& row, int32_t var_id) const;
 
     const Model& model_;
-    std::vector<Row> rows_;
+    std::vector<uint32_t> slots_;  // per row
+    std::vector<BuiltRow> built_;  // live and dead records
+    std::vector<int32_t> pool_vars_;
+    std::vector<double> pool_slopes_;
+    size_t dead_entries_ = 0;  // pool entries of released rows
+    size_t dead_rows_ = 0;     // released records in built_
     std::vector<Term> terms_;
     // build_row's scratch, kept so a build allocates only the row it keeps.
     std::vector<std::pair<int32_t, double>> merged_;

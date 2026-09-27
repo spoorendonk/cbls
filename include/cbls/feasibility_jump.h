@@ -83,8 +83,10 @@ struct JumpResult {
 //
 // `linear`, when given, scores the candidates in closed form wherever every
 // weighted row of G_v is a linear comparison (see linear_jump.h), and falls
-// back to `Model::weighted_violation_delta` otherwise. Same candidates, same
-// first-seen-minimum selection; the scores agree to rounding, not to the bit.
+// back to `Model::weighted_violation_delta` otherwise. Same candidates and the
+// same first-seen-minimum rule; the scores agree to rounding, not to the bit, so
+// the selected jump is guaranteed identical only on integral data (where both
+// are exact) -- on fractional data an ulp can flip a near-tie.
 // It also supplies the Float Newton candidates' row partials where its cached
 // slope is bit-identical to `compute_partial`, so those candidates do not move.
 JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id,
