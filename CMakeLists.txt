@@ -169,13 +169,22 @@ FetchContent_MakeAvailable(json)
 # Per target, never add_compile_options(): a directory-wide flag would also
 # reach Catch2's own library, which FetchContent builds in this tree, and the
 # point is to hold OUR code at zero, not to inherit other projects' warnings.
-# Third-party headers our code includes are a separate matter (see
-# cbls_system_includes below).
+# (Their headers, included from our code, do still see the flags. Measured with
+# GCC 15.2 at the commit that added this: Catch2, nlohmann/json and nanobind
+# headers produce no warning under them, so nothing is re-declared SYSTEM.)
+# A new target needs the call too -- .githooks/tidy-probe.sh fails on any
+# first-party compile command without the flags, so forgetting it is caught.
 #
-# No -Werror. The gate that blocks is clang-tidy at push, which now sees these
-# same diagnostics; -Werror on top would duplicate it, and would turn the next
-# GCC release's new -Wall member into a build that does not compile rather than
-# a finding to fix -- on a user's machine as readily as ours.
+# No -Werror, deliberately. Two reasons, the second measured:
+#  - It would turn the next compiler release's new -Wall member into a build
+#    that does not compile, on a user's machine as readily as ours.
+#  - It breaks the clang-tidy gate. With -Werror in compile_commands.json every
+#    clang-diagnostic finding becomes a compiler error, clang-tidy exits 1, and
+#    the pre-push hook reports a configuration fault instead of the finding.
+# The blocking gates are instead the pre-push clang-tidy sweep (clang's view of
+# these flags) and the pre-push scan of the gated build's own output (GCC's
+# view -- at this commit GCC reported two -Wrange-loop-construct that clang
+# does not, so the sweep alone is not enough).
 set(CBLS_WARNING_FLAGS "")
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     set(CBLS_WARNING_FLAGS -Wall -Wextra)
@@ -272,6 +281,23 @@ if(CBLS_BUILD_TESTS)
     include(CTest)
     add_subdirectory(tests)
     cbls_enable_warnings(cbls_tests)
+
+    # The clang-tidy gate probe (issue #171). The target is never built -- its
+    # source is deliberately not warning-clean -- and exists only so that the
+    # probe has a real entry in compile_commands.json, with the same flags as
+    # every other first-party target, rather than flags clang-tidy guesses.
+    add_library(cbls_tidy_probe STATIC EXCLUDE_FROM_ALL
+        .githooks/tidy-probe/incomplete_switch.cpp)
+    cbls_enable_warnings(cbls_tidy_probe)
+    # Only the pinned copy: a system clang-tidy of another vintage merges a
+    # different default set and rejects keys this .clang-tidy uses. Without it
+    # the test exits 77 and ctest reports it Skipped, not Passed.
+    find_program(CBLS_CLANG_TIDY clang-tidy
+        HINTS "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin" NO_DEFAULT_PATH)
+    add_test(NAME clang_tidy_gate_probe
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/.githooks/tidy-probe.sh"
+                "${CBLS_CLANG_TIDY}" "${CMAKE_BINARY_DIR}")
+    set_tests_properties(clang_tidy_gate_probe PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 # Examples

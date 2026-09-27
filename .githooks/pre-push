@@ -54,7 +54,9 @@ if [ -z "$CHANGED_FILES" ]; then
 	exit 0
 fi
 
-CPP_FILES=$(echo "$CHANGED_FILES" | grep -E '\.(cpp|cc|cxx|h|hpp|hxx)$' || true)
+# .githooks/ is excluded: its one C++ file is the gate probe, which is
+# deliberately not clean and is linted by tidy-probe.sh below, not here.
+CPP_FILES=$(echo "$CHANGED_FILES" | grep -E '\.(cpp|cc|cxx|h|hpp|hxx)$' | grep -vE '^\.githooks/' || true)
 # A .clang-tidy edit is how the gate itself breaks: a missing
 # InheritParentConfig silently disabled every check under src/io/ for as long
 # as that file existed (issue #121). Such a push touches no source file, so the
@@ -67,6 +69,18 @@ if echo "$CHANGED_FILES" | grep -qE '(^|/)\.clang-tidy$'; then
 			CPP_FILES="${CPP_FILES}"$'\n'"$canary"
 		fi
 	done
+fi
+# A canary proves each config still RUNS checks; it cannot prove the gate still
+# sees compiler diagnostics, because a clean canary reads the same either way.
+# That needs a TU that is meant to be reported: tidy-probe.sh (issue #171) lints
+# an incomplete enum-class switch under each directory's effective config and
+# fails unless it is reported. Run it whenever the push could change the answer
+# -- a .clang-tidy (the check list), a CMakeLists.txt (the -Wall -Wextra that
+# clang-tidy reads from compile_commands.json), or the probe itself. ctest runs
+# the same script as clang_tidy_gate_probe, so the full suite covers it too.
+TIDY_PROBE=0
+if echo "$CHANGED_FILES" | grep -qE '(^|/)\.clang-tidy$|(^|/)CMakeLists\.txt$|^\.githooks/tidy-probe'; then
+	TIDY_PROBE=1
 fi
 PY_FILES=$(echo "$CHANGED_FILES" | grep -E '\.py$' || true)
 # The tracked hooks themselves are extensionless shell scripts; include them so
@@ -296,7 +310,32 @@ else
 	if [ "$BUILD_FAILED" -eq 0 ]; then
 		echo ""
 		echo "=== Build ==="
-		run_block "$BUILD_CMD" || BUILD_FAILED=1
+		# Teed to a log so the compiler's own warnings can be gated below.
+		# PIPESTATUS, not the pipeline's status, which is tee's.
+		BUILD_LOG=$(git rev-parse --git-path cbls-pre-push-build.log)
+		run_block "$BUILD_CMD" 2>&1 | tee "$BUILD_LOG"
+		[ "${PIPESTATUS[0]}" -eq 0 ] || BUILD_FAILED=1
+	fi
+	# Compiler warnings in first-party code block, like clang-tidy findings
+	# (issue #171). The clang-tidy sweep is clang's reading of the same -Wall
+	# -Wextra; the build compiler (GCC here) has diagnostics clang lacks, and
+	# at the commit that added this it reported two -Wrange-loop-construct the
+	# sweep did not. No -Werror does this job instead -- CMakeLists.txt says
+	# why. First-party is named by directory, as in tidy-probe.sh: warnings in
+	# FetchContent'd dependencies under build*/ or in nanobind under .venv/ are
+	# not ours to fix. ccache replays a cached compile's warnings, so a warm
+	# cache does not hide them.
+	if [ "$BUILD_FAILED" -eq 0 ]; then
+		BUILD_WARNINGS=$(grep -F ': warning:' "$BUILD_LOG" | awk -v root="$(pwd -P)/" '
+			index($0, root) == 1 &&
+			substr($0, length(root) + 1) ~ /^(src|include|tests|benchmarks|examples|python)\// { print }' || true)
+		if [ -n "$BUILD_WARNINGS" ]; then
+			echo ""
+			echo "Push blocked: the build emitted compiler warnings in this"
+			echo "repository's own code. Fix them -- the tree is held at zero:"
+			echo "$BUILD_WARNINGS"
+			BUILD_FAILED=1
+		fi
 	fi
 	if [ "$BUILD_FAILED" -eq 0 ]; then
 		echo ""
@@ -373,6 +412,26 @@ if [ -n "$CPP_FILES" ] && [ -n "$CLANG_TIDY" ]; then
 	fi
 fi
 
+# The gate probe (see TIDY_PROBE above). A failure is a configuration fault
+# of the gate, not a finding in the pushed code, so it is reported as one.
+if [ "$TIDY_PROBE" -eq 1 ]; then
+	echo ""
+	echo "=== clang-tidy gate probe ==="
+	PROBE_DB=""
+	[ -f "build/compile_commands.json" ] && PROBE_DB="build"
+	[ -f "compile_commands.json" ] && PROBE_DB="."
+	if [ -z "$CLANG_TIDY" ] || [ -z "$PROBE_DB" ]; then
+		echo "tidy-probe: not run -- needs clang-tidy and a compile database."
+	else
+		RESULT=$(bash "$(dirname "$0")/tidy-probe.sh" "$CLANG_TIDY" "$PROBE_DB" 2>&1) && PROBE_RC=0 || PROBE_RC=$?
+		echo "$RESULT"
+		if [ "$PROBE_RC" -ne 0 ]; then
+			TIDY_CONFIG_ERR=1
+			TIDY_ISSUES="${TIDY_ISSUES}tidy-probe exited ${PROBE_RC}:"$'\n'"${RESULT}"$'\n'
+		fi
+	fi
+fi
+
 # ruff complexity (C901, not auto-fixable)
 if [ -n "$PY_FILES" ] && [ -x "$VENV_BIN/ruff" ]; then
 	for f in $PY_FILES; do
@@ -431,6 +490,9 @@ if [ -n "$TIDY_ISSUES" ]; then
 		echo "check .clang-tidy and any per-directory config -- a nested"
 		echo ".clang-tidy needs \`InheritParentConfig: true\`, or it REPLACES"
 		echo "the root check list and leaves nothing enabled (issue #121)."
+		echo "If tidy-probe failed, the gate runs but is blind to compiler"
+		echo "diagnostics: its output above names which half is missing"
+		echo "(issue #171)."
 	else
 		echo "FAILED: the tree is kept at zero clang-tidy warnings."
 		echo "Fix the finding above. Do NOT silence it by adding the check to"

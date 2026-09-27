@@ -21,6 +21,10 @@
 # `cd src/io && ../../.venv/bin/clang-tidy --dump-config` -- the pinned copy,
 # because a system clang-tidy of another vintage merges a different default set
 # -- and check the root's check list is actually present in the output.
+# A `-*` or `-clang-diagnostic-*` here would re-blind this directory to compiler
+# warnings (issue #171) while the list above still read as present; the gate
+# probe, .githooks/tidy-probe.sh, lints its probe under this directory's
+# effective config (via mps_to_model.cpp) and fails if that happens.
 #
 # The exemption below is LIVE: issue #121 cleared readability-identifier-naming
 # from the root ratchet, so the check now runs everywhere except here. Deleting

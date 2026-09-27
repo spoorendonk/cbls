@@ -207,8 +207,8 @@ TEST_CASE("a value flag with no value falls through to the unknown-option path",
     // the default either -- a published results table is what a silently-kept
     // default costs. It has to reach the runner's unknown-option branch, which
     // reports and exits 2.
-    for (const std::string& flag : {"--lns-interval", "--novelty-prob", "--unproductive-iters",
-                                    "--perturbation-period", "--max-iterations"}) {
+    for (const char* flag : {"--lns-interval", "--novelty-prob", "--unproductive-iters",
+                             "--perturbation-period", "--max-iterations"}) {
         const ParseOutcome parsed = parse({flag});
         REQUIRE(parsed.unmatched == std::vector<std::string>{flag});
         REQUIRE(cbls::bench::first_non_default_search_flag(parsed.flags) == nullptr);
@@ -373,7 +373,7 @@ TEST_CASE("a negative --unproductive-iters is the same run as zero, so it is ref
     // that invariant is the justification for refusing the two no-effect flag
     // combinations elsewhere in this file. An earlier cut accepted both.
     std::string error;
-    for (const std::string& value : {"-1", "-300"}) {
+    for (const char* value : {"-1", "-300"}) {
         const ParseOutcome parsed = parse({"--unproductive-iters", value});
         REQUIRE_FALSE(cbls::bench::validate_search_flags(parsed.flags, false, error));
         REQUIRE(error.find("--unproductive-iters") != std::string::npos);
