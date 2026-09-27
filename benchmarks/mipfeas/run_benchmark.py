@@ -60,6 +60,10 @@ from benchmarks.common.provenance import (  # noqa: E402
 )
 from benchmarks.common.records import read_json_object, write_json  # noqa: E402
 from benchmarks.instances.mipfeas.download import PINNED_REFERENCE_FILES  # noqa: E402
+from benchmarks.mipfeas.primal_integral import (  # noqa: E402
+    MAX_WORKER_LOSS_ATTEMPTS,
+    lost_workers,
+)
 
 DEFAULT_INSTANCE_DIR = REPO_ROOT / "benchmarks" / "instances" / "mipfeas"
 DEFAULT_CBLS_BIN = REPO_ROOT / "build" / "cbls_mipfeas"
@@ -549,6 +553,7 @@ def _run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
     (results_dir / job.engine).mkdir(parents=True, exist_ok=True)
     line = f"{job.engine}/{job.instance}: already solved"
     if needs_solve(job, results_dir, args.verify):
+        previous_losses = worker_loss_attempts(read_json_object(job.result_path(results_dir)) or {})
         # The search is about to produce a new point, so any verdict sitting beside
         # the old one would read as current. Dropped BEFORE the solve, not after
         # it: a solve that fails still leaves a new row -- one that lost portfolio
@@ -556,6 +561,7 @@ def _run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
         # survive beside it.
         job.verification_path(results_dir).unlink(missing_ok=True)
         line, solved = _run_solver(job, args, results_dir)
+        record_worker_loss(job, results_dir, previous_losses)
         if not solved:
             return line
     if needs_verification(job, results_dir, args.verify):
@@ -739,20 +745,12 @@ def needs_solve(job: Job, results_dir: Path, verify: bool) -> bool:
         # the scorer withholds the row until one exists.
         print(f"Re-running {job.engine}/{job.instance}: the solution could not be written.")
         return True
-    completed, threads = result.get("workers_completed"), result.get("threads")
-    if (
-        isinstance(completed, int)
-        and isinstance(threads, int)
-        and not isinstance(completed, bool)
-        and completed < threads
-    ):
-        # #170: the scorer refuses a row whose portfolio lost workers, so resume
-        # must not count it as done (and exit 0) -- and --force would clear the
-        # whole roster to redo one row. A memory cap hit under load may not recur.
-        print(
-            f"Re-running {job.engine}/{job.instance}: only {completed} of {threads} "
-            f"portfolio workers completed."
-        )
+    problem = lost_workers(result)
+    if problem is not None and worker_loss_attempts(result) < MAX_WORKER_LOSS_ATTEMPTS:
+        # #170: the scorer refuses this row, so resume must not count it as done
+        # -- and --force would clear the whole roster to redo one row. Bounded, as
+        # a driver-written verdict is: a loss that recurs is the cap, not bad luck.
+        print(f"Re-running {job.engine}/{job.instance}: it {problem}.")
         return True
     if (
         verify
@@ -766,6 +764,39 @@ def needs_solve(job: Job, results_dir: Path, verify: bool) -> bool:
         print(f"Re-running {job.engine}/{job.instance}: feasible result with no solution file.")
         return True
     return False
+
+
+def worker_loss_attempts(result: dict[str, object]) -> int:
+    """How many solves have already produced a row that lost workers (#170)."""
+    attempts = result.get("worker_loss_attempts")
+    return attempts if isinstance(attempts, int) and not isinstance(attempts, bool) else 0
+
+
+def record_worker_loss(job: Job, results_dir: Path, previous: int) -> None:
+    """Stamp a freshly written row that lost workers with its attempt number.
+
+    The runner rewrites the row on every solve, so the count lives on the row
+    and is carried across by the driver. A row that did not lose workers is left
+    alone.
+    """
+    result = read_json_object(job.result_path(results_dir))
+    if result is not None and lost_workers(result) is not None:
+        result["worker_loss_attempts"] = previous + 1
+        write_json(job.result_path(results_dir), result)
+
+
+def count_lost_workers(jobs: list[Job], results_dir: Path) -> int:
+    """Rows the scorer will refuse because their portfolio lost workers (#170).
+
+    Counted over every planned job, like `count_rejected`: once the attempts are
+    spent the row is dropped from later resumes, and a resume that runs nothing
+    must not report a clean run.
+    """
+    return sum(
+        1
+        for job in jobs
+        if lost_workers(read_json_object(job.result_path(results_dir)) or {}) is not None
+    )
 
 
 def needs_verification(job: Job, results_dir: Path, verify: bool) -> bool:
@@ -975,6 +1006,37 @@ def check_arguments(args: argparse.Namespace) -> int | None:
     return None
 
 
+def report_defects(results_dir: Path, rejected: int, unchecked: int, lost: int) -> None:
+    """Say on stderr what makes a finished run unclean; each also fails the exit code."""
+    if rejected:
+        print(
+            f"\nDEFECT: {rejected} solution(s) in {results_dir} were rejected by the "
+            f"independent check against the instance file. Score the run to see "
+            f"which, or read the .verify.json files.",
+            file=sys.stderr,
+        )
+    if unchecked:
+        # Same shape as `rejected`, and counted over every planned job for the same
+        # reason: a resume that runs nothing must not report a clean run.
+        print(
+            f"\nUNCHECKED: {unchecked} feasible row(s) in {results_dir} carry no verdict "
+            f"saying they were checked -- the verification was exhausted after "
+            f"{MAX_VERIFY_ATTEMPTS} attempts, refused to run, or never happened. Those "
+            f"rows publish no objective. Read their .verify.json files, or re-run them "
+            f"with --force once the cause is fixed.",
+            file=sys.stderr,
+        )
+    if lost:
+        print(
+            f"\nLOST WORKERS: {lost} row(s) in {results_dir} ran fewer portfolio workers "
+            f"than --cbls-threads asked for (#170), and the scorer refuses them. Resume "
+            f"re-runs each up to {MAX_WORKER_LOSS_ATTEMPTS} times; a loss that recurs is "
+            f"the memory cap -- raise --mem-limit-gb or lower --cbls-threads, then "
+            f"re-run with --force. Their worker_failures say why each worker stopped.",
+            file=sys.stderr,
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--roster", default="smoke", help="'smoke', 'full', or a path to a CSV")
@@ -1140,6 +1202,7 @@ def main() -> int:
     # and tell an unattended wrapper the run was clean.
     rejected = count_rejected(planned, results_dir)
     unchecked = count_unchecked(planned, results_dir, args.verify)
+    lost = count_lost_workers(planned, results_dir)
     record["status"] = "complete"
     record["finished_at"] = datetime.now(UTC).isoformat(timespec="seconds")
     record["outcome"] = {
@@ -1147,27 +1210,11 @@ def main() -> int:
         "failures": failures,
         "rejected": rejected,
         "unchecked": unchecked,
+        "lost_workers": lost,
         "wall_seconds": round(elapsed, 3),
     }
     close_run_record(results_dir, record)
-    if rejected:
-        print(
-            f"\nDEFECT: {rejected} solution(s) in {results_dir} were rejected by the "
-            f"independent check against the instance file. Score the run to see "
-            f"which, or read the .verify.json files.",
-            file=sys.stderr,
-        )
-    if unchecked:
-        # Same shape as `rejected`, and counted over every planned job for the same
-        # reason: a resume that runs nothing must not report a clean run.
-        print(
-            f"\nUNCHECKED: {unchecked} feasible row(s) in {results_dir} carry no verdict "
-            f"saying they were checked -- the verification was exhausted after "
-            f"{MAX_VERIFY_ATTEMPTS} attempts, refused to run, or never happened. Those "
-            f"rows publish no objective. Read their .verify.json files, or re-run them "
-            f"with --force once the cause is fixed.",
-            file=sys.stderr,
-        )
+    report_defects(results_dir, rejected, unchecked, lost)
     # Score beside the results, not into the instance directory: both
     # comparison.csv and smoke_comparison.csv there are committed, README-cited
     # artifacts, and following a printed command must not be able to overwrite one
@@ -1193,7 +1240,7 @@ def main() -> int:
             "--allow-unverified and the table it writes is not publishable."
         )
     )
-    return 1 if failures or rejected or unchecked else 0
+    return 1 if failures or rejected or unchecked or lost else 0
 
 
 if __name__ == "__main__":

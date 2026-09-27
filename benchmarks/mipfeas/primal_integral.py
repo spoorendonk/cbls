@@ -102,6 +102,15 @@ UNVERIFIED = "unverified"
 #: the recurring way this repo has published a wrong number.
 FULL_ROSTER_SIZE = 233
 
+#: How many solves the driver's resume spends on a row that lost portfolio workers
+#: (#170) before it leaves the row refused. The same reasoning as the driver's
+#: MAX_VERIFY_ATTEMPTS: a worker starved by a cap hit under load may run on a
+#: second pass, but one whose footprint does not fit the cap loses it every time,
+#: and re-paying a whole budget on every resume of a roster that cannot converge
+#: buys nothing. Here rather than in the driver because the scorer's message
+#: quotes it, and the driver already imports from this module.
+MAX_WORKER_LOSS_ATTEMPTS = 2
+
 #: Result keys describing *how* a run was configured. Two results disagreeing on any
 #: of them are not comparable. The driver resumes on file existence alone and
 #: defaults to one results directory whatever the flags, so a flag changed between
@@ -383,41 +392,52 @@ def _provenance(result: dict[str, object]) -> str:
     return "unknown"
 
 
-def refuse_lost_workers(result: dict[str, object], result_path: Path) -> None:
-    """Refuse a row whose portfolio ran fewer workers than its `threads` says (#170).
+def lost_workers(result: dict[str, object]) -> str | None:
+    """Why a row cannot stand for the thread count it records (#170), or None.
 
     `threads` is a configuration key, so a row that says 8 threads when 3 workers
     ran would be averaged in as a valid 8-thread measurement. `ParallelSearch`
     absorbs a worker that dies inside the solve -- a `bad_alloc` under the
     driver's address-space cap is the realistic case -- and returns the
-    survivors' result, so the runner publishes `workers_completed` and this
-    refuses the row, the way `score_instance` refuses a row from another budget.
+    survivors' result, so the runner publishes `workers_completed`.
 
     A row that reached the solve (it carries `wall_seconds`) with `threads > 1`
-    and no count predates the column and is refused too: whether it lost workers
-    cannot be established. A single-threaded row without one is accepted, because
-    `cbls::solve` has one worker and a throw from it is a `solve_error` row.
-    Rows that never reached the solve carry no count and no score, and CP-SAT
-    rows carry no `threads` at all.
+    and no count predates the column, and cannot establish that it lost nothing.
+    A single-threaded row without one is accepted, because `cbls::solve` has one
+    worker and a throw from it is a `solve_error` row. Rows that never reached the
+    solve carry no count and no score, and CP-SAT rows carry no `threads` at all.
+
+    The ONE rule: the scorer refuses what this names, and the driver's resume
+    re-runs it (`needs_solve`), so the two cannot disagree about a row.
     """
     threads = result.get("threads")
     if not isinstance(threads, int) or isinstance(threads, bool):
-        return
+        return None
     completed = result.get("workers_completed")
     if isinstance(completed, int) and not isinstance(completed, bool):
         if completed < threads:
-            raise ValueError(
-                f"{result_path} asked for {threads} threads but only {completed} portfolio "
-                f"workers completed (see its worker_failures). It is not a {threads}-thread "
-                f"measurement. Resume the run (the driver re-runs rows that lost workers) "
-                f"under enough memory for every worker."
+            return (
+                f"asked for {threads} threads but only {completed} portfolio workers "
+                f"completed (see its worker_failures)"
             )
-        return
+        return None
     if threads > 1 and "wall_seconds" in result:
+        return (
+            f"is a {threads}-thread row with no workers_completed count: it predates "
+            f"the count, so whether every worker ran cannot be established"
+        )
+    return None
+
+
+def refuse_lost_workers(result: dict[str, object], result_path: Path) -> None:
+    """Refuse a row `lost_workers` names, as `score_instance` refuses another budget."""
+    problem = lost_workers(result)
+    if problem is not None:
         raise ValueError(
-            f"{result_path} is a {threads}-thread row with no workers_completed count: it "
-            f"predates the count, so whether every worker ran cannot be established. "
-            f"Re-run it (--force re-runs every job in the directory)."
+            f"{result_path} {problem}. It is not a measurement at the thread count it "
+            f"records. Resuming the run re-runs it (up to "
+            f"{MAX_WORKER_LOSS_ATTEMPTS} attempts); if the loss recurs, give each job "
+            f"more memory (--mem-limit-gb) or fewer threads (--cbls-threads)."
         )
 
 

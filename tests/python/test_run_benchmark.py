@@ -23,12 +23,18 @@ import pytest
 
 from benchmarks.instances.mipfeas.download import PINNED_REFERENCE_FILES
 from benchmarks.mipfeas import run_benchmark
-from benchmarks.mipfeas.primal_integral import NO_SOLUTION_GAP, score_instance, summarize
+from benchmarks.mipfeas.primal_integral import (
+    MAX_WORKER_LOSS_ATTEMPTS,
+    NO_SOLUTION_GAP,
+    score_instance,
+    summarize,
+)
 from benchmarks.mipfeas.run_benchmark import (
     FAILURE_MARKERS,
     MAX_VERIFY_ATTEMPTS,
     Job,
     build_command,
+    count_lost_workers,
     count_rejected,
     count_unchecked,
     drop_completed,
@@ -344,19 +350,56 @@ def _row(
 
 
 @pytest.mark.parametrize("verify", [True, False])
-@pytest.mark.parametrize(("completed", "solve"), [(1, True), (2, False)])
+@pytest.mark.parametrize(
+    ("extra", "solve"),
+    [
+        ({"workers_completed": 1}, True),
+        ({"workers_completed": 2}, False),
+        # A row from before the count: the scorer refuses it, so resume re-runs it.
+        ({}, True),
+        # Attempts spent: the loss is the cap, and the row is left refused.
+        ({"workers_completed": 1, "worker_loss_attempts": MAX_WORKER_LOSS_ATTEMPTS}, False),
+    ],
+    ids=["lost-a-worker", "all-completed", "pre-count", "attempts-spent"],
+)
 def test_resume_reruns_a_row_that_lost_portfolio_workers(
-    tmp_path: Path, verify: bool, completed: int, solve: bool
+    tmp_path: Path, verify: bool, extra: dict[str, object], solve: bool
 ) -> None:
-    """The scorer refuses a row with fewer completed workers than threads (#170).
+    """Resume re-runs exactly the rows the scorer refuses for lost workers (#170).
 
-    Treating it as done would let a resume exit 0 on a directory that cannot be
+    Treating one as done would let a resume exit 0 on a directory that cannot be
     scored, and the scorer's only other way out, --force, redoes the whole roster.
     """
     job = _row(tmp_path, "feasible", solution=True)
-    row = {"status": "feasible", "objective": 1.0, "threads": 2, "workers_completed": completed}
+    row = {"status": "feasible", "objective": 1.0, "wall_seconds": 1.0, "threads": 2, **extra}
     job.result_path(tmp_path).write_text(json.dumps(row))
     assert needs_solve(job, tmp_path, verify=verify) is solve
+    assert count_lost_workers([job], tmp_path) == (0 if extra.get("workers_completed") == 2 else 1)
+
+
+def test_a_rerun_that_loses_workers_again_drops_the_old_verdict_and_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The re-run fails, so nothing after it runs: what it must still do is (#170)
+
+    - remove the verdict of the PREVIOUS point, which would otherwise read as the
+      verdict of the new row the runner just wrote, and
+    - stamp the new row with its attempt number, which is what bounds the re-runs.
+    """
+    job = _row(tmp_path, "feasible", solution=True, verdict={"verdict": "pass"})
+    lost = {"status": "feasible", "objective": 1.0, "threads": 2, "workers_completed": 1}
+    job.result_path(tmp_path).write_text(json.dumps({**lost, "worker_loss_attempts": 1}))
+
+    def solver(job: Job, _args: argparse.Namespace, results_dir: Path) -> tuple[str, bool]:
+        job.result_path(results_dir).write_text(json.dumps(lost))  # the runner's new row
+        return "FAILED (exit 1)", False
+
+    monkeypatch.setattr(run_benchmark, "_run_solver", solver)
+    assert run_benchmark._run_job(job, _driver_args(), tmp_path) == "FAILED (exit 1)"
+    assert not job.verification_path(tmp_path).exists()
+    row = json.loads(job.result_path(tmp_path).read_text())
+    assert row["worker_loss_attempts"] == 2
+    assert needs_solve(job, tmp_path, verify=True) is False  # spent: left refused
 
 
 def _driver_verdict(attempts: int | None) -> dict[str, object]:
