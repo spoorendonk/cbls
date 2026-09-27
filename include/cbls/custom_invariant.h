@@ -205,7 +205,10 @@ private:
 /// that a nested call clears underneath the outer one, which would leak the outer
 /// call's dirty flags and make those nodes stop being recomputed for the life of
 /// the process. A refusal is the only failure mode that names the cause; the
-/// alternative was a wrong answer somewhere else entirely, later.
+/// alternative was a wrong answer somewhere else entirely, later. The same holds,
+/// and is enforced the same way, for `partial` calling `compute_partial`,
+/// `compute_all_partials` or `compute_partials_sparse`: the reverse sweep that
+/// calls `partial` owns one `thread_local` scratch those share.
 ///
 /// **The probe protocol.** The search scores a candidate move by applying it,
 /// evaluating, and then putting the old assignment back. A stateful invariant

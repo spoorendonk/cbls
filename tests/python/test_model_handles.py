@@ -89,6 +89,14 @@ def test_a_short_state_or_weight_vector_raises_instead_of_reading_past_it() -> N
     assert proc.stdout.strip().endswith("OK"), proc.stdout
 
 
+def test_an_out_of_range_ad_expression_handle_raises() -> None:
+    proc = _run_scenario("bad_ad_expr")
+    assert proc.returncode == 0, (
+        f"child exited {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    )
+    assert proc.stdout.strip().endswith("OK"), proc.stdout
+
+
 def test_constraints_of_var_lists_ascending_constraint_indices() -> None:
     m = cbls.Model()
     x = m.float_var(0, 1)
@@ -188,6 +196,30 @@ def _scenario_bad_root() -> None:
     print("OK")
 
 
+def _scenario_bad_ad_expr() -> None:
+    """The AD sweep indexes its buffers by `expr_id` unchecked; the binding must not."""
+    m = cbls.Model()
+    x = m.float_var(0, 1)
+    f = m.sum([x, m.constant(1.0)])
+    m.minimize(f)
+    m.close()
+    # num_nodes() is the first id past the end; x is a variable handle, not a node.
+    calls: dict[str, Callable[[int], object]] = {
+        "compute_partial": lambda e: cbls.compute_partial(m, e, vid(x)),
+        "compute_all_partials": lambda e: cbls.compute_all_partials(m, e),
+    }
+    for bad in (m.num_nodes(), 100_000_000, -1, x):
+        for name, call in calls.items():
+            try:
+                call(bad)
+            except IndexError:
+                continue
+            raise AssertionError(f"{name}({bad}) was accepted")
+    assert cbls.compute_partial(m, f, vid(x)) == 1.0
+    assert list(cbls.compute_all_partials(m, f)) == [1.0]
+    print("OK")
+
+
 def _scenario_empty_min_max() -> None:
     """Min and Max read their first child unchecked, so neither may be empty."""
     builders: dict[str, Callable[[Any], object]] = {
@@ -216,6 +248,8 @@ if __name__ == "__main__":
         _scenario_bad_child(int(scenario.split(":", 1)[1]))
     elif scenario == "bad_root":
         _scenario_bad_root()
+    elif scenario == "bad_ad_expr":
+        _scenario_bad_ad_expr()
     elif scenario == "empty_min_max":
         _scenario_empty_min_max()
     elif scenario == "short_state_or_weights":

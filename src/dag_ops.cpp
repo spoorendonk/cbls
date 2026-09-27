@@ -378,6 +378,13 @@ namespace {
 // buffer is left all-zero / empty between calls; `AdjointScratchGuard` restores
 // that on the way out, including when a `CustomInvariant::partial` throws.
 //
+// `busy` refuses re-entry, the same way `EvaluationGuard` does for evaluation: a
+// `CustomInvariant::partial` that differentiated a sub-model through one of the
+// entry points would push onto `cone` while the outer sweep iterates it (UB),
+// and its guard would then clear the outer sweep's bookkeeping and leak its
+// adjoints into every later call on the thread. One thread_local test and store
+// per call.
+//
 // `adjoint` is flat: [0, num_nodes) for nodes, [num_nodes, num_nodes + num_vars)
 // for variables. It only ever grows, so a thread that sees a larger model keeps
 // the larger buffer.
@@ -386,6 +393,7 @@ struct AdjointScratch {
     std::vector<int32_t> written;  // adjoint entries touched, for O(touched) cleanup
     std::vector<uint8_t> in_cone;  // node id -> collected into `cone`
     std::vector<int32_t> cone;     // nodes reachable from expr_id through children
+    bool busy = false;             // a sweep is in progress on this thread
 };
 
 AdjointScratch& adjoint_scratch() {
@@ -395,7 +403,17 @@ AdjointScratch& adjoint_scratch() {
 
 class AdjointScratchGuard {
 public:
-    explicit AdjointScratchGuard(AdjointScratch& scratch) : scratch_(scratch) {}
+    AdjointScratchGuard(AdjointScratch& scratch, const char* entry) : scratch_(scratch) {
+        if (scratch_.busy) {
+            // Thrown from the constructor, so the destructor -- which would clear
+            // the OUTER sweep's state -- never runs for the refused call.
+            throw std::logic_error(std::string(entry) +
+                                   ": re-entered from inside a reverse-mode AD sweep. A "
+                                   "CustomInvariant's partial must not call compute_partial, "
+                                   "compute_all_partials or compute_partials_sparse.");
+        }
+        scratch_.busy = true;
+    }
     AdjointScratchGuard(const AdjointScratchGuard&) = delete;
     AdjointScratchGuard& operator=(const AdjointScratchGuard&) = delete;
     AdjointScratchGuard(AdjointScratchGuard&&) = delete;
@@ -409,6 +427,7 @@ public:
             scratch_.in_cone[nid] = 0;
         }
         scratch_.cone.clear();
+        scratch_.busy = false;
     }
 
 private:
@@ -446,16 +465,25 @@ void propagate_adjoint(const Model& model, int32_t nid, size_t num_nodes, Adjoin
 //
 // Cost: collecting the cone is O(cone + its edges), sorting it O(c log c) with
 // two scattered `topo_position` loads per comparison, against the full walk's
-// O(|nodes|) sequential adjoint tests. That wins by orders of magnitude where
-// the callers live -- a linear MIP row of a few dozen terms against the 765k
-// nodes of MIPfeas' uccase12, where the full walk cost ~0.9 ms per (row,
-// variable) pair and was 80-87% of CPU. It loses as the cone approaches the
-// whole DAG (an objective over every node, a dense continuous model), where the
-// sort does ~log2(c) scattered comparisons per node the scan tests once. So the
-// same cost model as `evaluate_dirty_in_topo_order` picks the route: collect
-// while c * (log2|nodes| + 1) < |nodes|, and on crossing it abandon the cone and
-// scan the full order exactly as before. That bounds the wasted collection at
-// ~|nodes| / log2|nodes| and makes the worst case the old cost plus that.
+// O(|nodes|) adjoint tests (a sequential read of `topo_order`, gathering the
+// adjoint by id). That wins by orders of magnitude where the callers live -- a
+// linear MIP row of a few dozen terms against the 765k nodes of MIPfeas'
+// uccase12, where the full walk was 87% of CPU in a gprof profile at 175e617
+// (~0.9 ms per call, from that profile's self time over its call count). It
+// loses as the cone approaches the whole DAG (an objective over every node, a
+// dense continuous model), where the sort does ~log2(c) scattered comparisons
+// per node the scan tests once. So a cost model like
+// `evaluate_dirty_in_topo_order`'s picks the route -- with log2|nodes| standing
+// in for log2(c), since c is unknown while collecting: collect while
+// c * (log2|nodes| + 1) <= |nodes|, and on crossing it abandon the cone and scan
+// the full order exactly as before. The abandoned collection is at most
+// ~|nodes| / log2|nodes| nodes, all of them reachable from `expr_id` and so
+// nodes and edges the fallback walk visits anyway: the worst case is the old
+// cost plus a comparable amount.
+//
+// A model whose `topo_order` does not cover every node -- one not yet closed
+// has none -- has no position to sort by, so it takes the full-order walk as it
+// always did (over an empty order: all zeros).
 void reverse_sweep(const Model& model, int32_t expr_id, AdjointScratch& s) {
     const size_t num_nodes = model.num_nodes();
     const size_t total_size = num_nodes + model.num_vars();
@@ -466,8 +494,10 @@ void reverse_sweep(const Model& model, int32_t expr_id, AdjointScratch& s) {
         s.in_cone.resize(num_nodes, 0);
     }
 
-    s.adjoint[expr_id] = 1.0;
+    // Each push precedes the write it records, so a `bad_alloc` in the push
+    // leaves nothing the guard does not know to undo.
     s.written.push_back(expr_id);
+    s.adjoint[expr_id] = 1.0;
 
     size_t log2_nodes = 0;
     while ((size_t{1} << (log2_nodes + 1)) <= num_nodes) {
@@ -476,16 +506,16 @@ void reverse_sweep(const Model& model, int32_t expr_id, AdjointScratch& s) {
     const size_t max_sorted_cone = num_nodes / (log2_nodes + 1);
 
     // Breadth-first over node children, using `cone` itself as the queue.
-    bool cone_fits = true;
-    s.in_cone[expr_id] = 1;
+    bool cone_fits = model.topo_order().size() == num_nodes;
     s.cone.push_back(expr_id);
+    s.in_cone[expr_id] = 1;
     for (size_t head = 0; head < s.cone.size() && cone_fits; ++head) {
         for (const ChildRef& child : model.children(model.node(s.cone[head]))) {
             if (child.is_var || s.in_cone[child.id] != 0) {
                 continue;
             }
-            s.in_cone[child.id] = 1;
             s.cone.push_back(child.id);
+            s.in_cone[child.id] = 1;
             if (s.cone.size() > max_sorted_cone) {
                 cone_fits = false;
                 break;
@@ -517,7 +547,7 @@ void reverse_sweep(const Model& model, int32_t expr_id, AdjointScratch& s) {
 
 double compute_partial(const Model& model, int32_t expr_id, int32_t var_id) {
     AdjointScratch& s = adjoint_scratch();
-    const AdjointScratchGuard guard(s);
+    const AdjointScratchGuard guard(s, "compute_partial");
     reverse_sweep(model, expr_id, s);
     if (var_id < 0 || static_cast<size_t>(var_id) >= model.num_vars()) {
         return 0.0;
@@ -527,7 +557,7 @@ double compute_partial(const Model& model, int32_t expr_id, int32_t var_id) {
 
 std::vector<double> compute_all_partials(const Model& model, int32_t expr_id) {
     AdjointScratch& s = adjoint_scratch();
-    const AdjointScratchGuard guard(s);
+    const AdjointScratchGuard guard(s, "compute_all_partials");
     reverse_sweep(model, expr_id, s);
     const size_t num_nodes = model.num_nodes();
     const auto first = s.adjoint.begin() + static_cast<std::ptrdiff_t>(num_nodes);
@@ -538,7 +568,7 @@ void compute_partials_sparse(const Model& model, int32_t expr_id,
                              std::vector<std::pair<int32_t, double>>& out) {
     out.clear();
     AdjointScratch& s = adjoint_scratch();
-    const AdjointScratchGuard guard(s);
+    const AdjointScratchGuard guard(s, "compute_partials_sparse");
     reverse_sweep(model, expr_id, s);
     const auto num_nodes = static_cast<int32_t>(model.num_nodes());
     // `written` can list a variable twice -- its adjoint cancelled to 0.0 and was

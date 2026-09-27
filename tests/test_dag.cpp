@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <cbls/cbls.h>
 #include <cmath>
 #include <cstddef>
@@ -14,6 +15,7 @@
 #include <vector>
 
 using namespace cbls;
+using Catch::Matchers::ContainsSubstring;
 using Catch::Matchers::WithinAbs;
 
 TEST_CASE("Sum evaluation", "[dag]") {
@@ -816,6 +818,95 @@ TEST_CASE("cone AD keeps the zero-adjoint skip for cancelled and zero-derivative
     require_bit_identical_partials(m, chain);
 }
 
+TEST_CASE("cone AD lists a variable once when its adjoint cancels and is touched again", "[dag]") {
+    // f = x - (x + 3x). Reverse order visits h = -k before q = 3x, so x's adjoint
+    // goes 1 -> 0 (at k: 1 + -1) -> -3 (at q), and `written` lists x twice. All
+    // the arithmetic is exact. The sparse result must still hold x once.
+    Model d;
+    const int32_t dx = d.float_var(-5.0, 5.0);
+    const int32_t q = d.prod(d.constant(3.0), dx);
+    const int32_t k = d.sum({dx, q});
+    const int32_t dh = d.neg(k);
+    const int32_t df = d.sum({dx, dh});
+    pad_with_unrelated_chain(d, 400);
+    d.minimize(df);
+    d.close();
+    d.var_mut(vid(dx)).value = 1.0;
+    full_evaluate(d);
+    std::vector<std::pair<int32_t, double>> dup;
+    compute_partials_sparse(d, df, dup);
+    REQUIRE(dup == std::vector<std::pair<int32_t, double>>{{vid(dx), -3.0}});
+    require_bit_identical_partials(d, df);
+}
+
+TEST_CASE("cone AD on an unclosed model returns zeros instead of sorting by no position", "[dag]") {
+    // Before close() there is no topological order and no position to sort a
+    // cone by. The sweep must take the full-order walk -- over an empty order,
+    // the all-zero answer it always gave -- rather than read `topo_pos` past its
+    // end, which is what a small cone on the sorted route would do.
+    Model m;
+    const int32_t x = m.float_var(-1.0, 1.0);
+    const int32_t y = m.float_var(-1.0, 1.0);
+    const int32_t row = m.leq(m.sum({m.prod(x, y), m.sin_expr(x)}), m.constant(1.0));
+    m.add_constraint(row);
+    pad_with_unrelated_chain(m, 400);  // so the row's cone would fit the sorted route
+    REQUIRE(m.topo_order().empty());
+    REQUIRE(compute_partial(m, row, vid(x)) == 0.0);
+    REQUIRE(compute_all_partials(m, row) == std::vector<double>(m.num_vars(), 0.0));
+    std::vector<std::pair<int32_t, double>> sparse;
+    compute_partials_sparse(m, row, sparse);
+    REQUIRE(sparse.empty());
+}
+
+TEST_CASE("an AD call from inside a CustomInvariant partial is refused", "[dag]") {
+    // The sweep that calls `partial` owns the thread's AD scratch; a nested sweep
+    // would push onto the cone the outer one is iterating. It must throw, and the
+    // outer sweep's guard must leave the scratch clean for the next call.
+    class NestedAd : public CustomInvariant {
+    public:
+        NestedAd(const Model* inner, int32_t inner_expr) : inner_(inner), inner_expr_(inner_expr) {}
+        double evaluate(const InvariantInputs& in) override { return in.value(0); }
+        double partial(const InvariantInputs& /*in*/, int32_t /*i*/) override {
+            return compute_partial(*inner_, inner_expr_, 0);
+        }
+        [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
+            return std::make_unique<NestedAd>(*this);
+        }
+
+    private:
+        const Model* inner_;
+        int32_t inner_expr_;
+    };
+
+    Model inner;
+    const int32_t ix = inner.float_var(-1.0, 1.0);
+    const int32_t iexpr = inner.sin_expr(ix);
+    inner.minimize(iexpr);
+    inner.close();
+    full_evaluate(inner);
+
+    Model outer;
+    const int32_t a = outer.float_var(-1.0, 1.0);
+    const int32_t c = outer.custom({a}, std::make_unique<NestedAd>(&inner, iexpr), "nested");
+    const int32_t row = outer.leq(outer.sum({c, outer.sin_expr(a)}), outer.constant(1.0));
+    outer.add_constraint(row);
+    pad_with_unrelated_chain(outer, 400);  // sorted-cone route: the cone is being iterated
+    outer.close();
+    full_evaluate(outer);
+
+    // The message, not just the type: without the refusal the nested sweep
+    // corrupts the outer one's cone and a garbage node id throws
+    // std::out_of_range -- itself a std::logic_error.
+    const auto refused = ContainsSubstring("re-entered from inside a reverse-mode AD sweep");
+    REQUIRE_THROWS_WITH(compute_partial(outer, row, vid(a)), refused);
+    REQUIRE_THROWS_WITH(compute_all_partials(outer, row), refused);
+    std::vector<std::pair<int32_t, double>> sparse;
+    REQUIRE_THROWS_WITH(compute_partials_sparse(outer, row, sparse), refused);
+    // Outside a sweep the same call is fine, and the scratch was left clean.
+    REQUIRE(compute_partial(inner, iexpr, 0) == std::cos(inner.var(0).value));
+    require_bit_identical_partials(inner, iexpr);
+}
+
 TEST_CASE("cone AD is bit-identical on a large linear model for small and whole-DAG cones",
           "[dag]") {
     // A MIP-shaped model: many rows over a shared pool of variables, so a row's
@@ -886,6 +977,7 @@ TEST_CASE("a partial that throws does not poison later AD calls on the thread", 
     const int32_t c = bad.custom({a, b}, std::make_unique<ThrowingPartial>(), "throws");
     const int32_t bad_row = bad.leq(bad.sum({c, bad.sin_expr(a)}), bad.constant(1.0));
     bad.add_constraint(bad_row);
+    pad_with_unrelated_chain(bad, 400);  // sorted-cone route: the throw lands mid-cone
     bad.close();
     full_evaluate(bad);
     REQUIRE_THROWS_AS(compute_partial(bad, bad_row, vid(a)), std::runtime_error);
@@ -894,16 +986,20 @@ TEST_CASE("a partial that throws does not poison later AD calls on the thread", 
     REQUIRE_THROWS_AS(compute_partials_sparse(bad, bad_row, sparse), std::runtime_error);
 
     // Same shape without the custom node, so its node ids overlap the ones the
-    // throwing sweeps touched.
+    // throwing sweeps touched. Both models are padded onto the sorted-cone route:
+    // there the whole cone is marked before the throw, so a leaked `in_cone` mark
+    // would make this model's collection skip a node and its partials go wrong.
     Model good;
     const int32_t x = good.float_var(-5.0, 5.0);
     const int32_t y = good.float_var(-5.0, 5.0);
     const int32_t s = good.sum({x, y});
     const int32_t row = good.leq(good.sum({s, good.sin_expr(x)}), good.constant(1.0));
     good.add_constraint(row);
+    pad_with_unrelated_chain(good, 400);
     good.close();
     good.var_mut(vid(x)).value = 0.5;
     full_evaluate(good);
+    require_bit_identical_partials(good, row);  // first: before any call clears a stale mark
     for (int32_t node = 0; node < static_cast<int32_t>(good.num_nodes()); ++node) {
         require_bit_identical_partials(good, node);
     }

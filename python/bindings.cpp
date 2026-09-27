@@ -13,6 +13,8 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 #include <nanobind/trampoline.h>
+#include <stdexcept>
+#include <string>
 #include <unordered_set>
 
 namespace nb = nanobind;
@@ -817,6 +819,20 @@ constexpr const char* kPairTableSumDoc =
     "points take a model factory, so a portfolio builds one Model -- and one\n"
     "copy of this matrix -- per worker: an (n, n) float64 table costs\n"
     "8 * n * n bytes per thread.";
+
+namespace {
+
+// An expression handle the engine will index unchecked: must name a node of
+// `model`. std::out_of_range becomes IndexError through the translator below.
+void require_node_id(const Model& model, int32_t expr_id, const char* entry) {
+    if (expr_id < 0 || static_cast<size_t>(expr_id) >= model.num_nodes()) {
+        throw std::out_of_range(std::string(entry) + ": expr_id " + std::to_string(expr_id) +
+                                " is not a node of this model (" +
+                                std::to_string(model.num_nodes()) + " nodes)");
+    }
+}
+
+}  // namespace
 
 NB_MODULE(_cbls_core, m) {
     m.doc() = "CBLS: Constraint-Based Local Search engine (C++ core)";
@@ -2077,12 +2093,17 @@ NB_MODULE(_cbls_core, m) {
         model.require_intact("delta_evaluate");
         return delta_evaluate(model, changed);
     });
+    // The engine indexes its adjoint and cone buffers by `expr_id` unchecked (a
+    // hot path), so a variable handle or a stale id from Python would write out
+    // of bounds. Checked here, where the value is handed over (#156's rule).
     m.def("compute_partial", [](const Model& model, int32_t expr_id, int32_t var_id) {
         model.require_intact("compute_partial");
+        require_node_id(model, expr_id, "compute_partial");
         return compute_partial(model, expr_id, var_id);
     });
     m.def("compute_all_partials", [](const Model& model, int32_t expr_id) {
         model.require_intact("compute_all_partials");
+        require_node_id(model, expr_id, "compute_all_partials");
         return compute_all_partials(model, expr_id);
     });
     // The vector-returning overload, explicitly: #165 added an appending one

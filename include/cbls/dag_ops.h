@@ -88,7 +88,11 @@ inline double delta_evaluate(Model& model, std::initializer_list<int32_t> change
 // rationale and the cutover are at `reverse_sweep` in src/dag_ops.cpp.
 //
 // All three share one thread_local scratch, so none may be called from inside
-// another on the same thread -- i.e. not from a `CustomInvariant::partial`.
+// another on the same thread -- i.e. not from a `CustomInvariant::partial`. That
+// is enforced: the nested call throws `std::logic_error`.
+//
+// `expr_id` must be a node id of `model` (not a variable handle); it is not
+// range-checked here, on the hot path. The Python binding checks it.
 
 /// ∂expr/∂var for one variable; 0.0 for a `var_id` outside the model.
 double compute_partial(const Model& model, int32_t expr_id, int32_t var_id);
@@ -105,6 +109,13 @@ std::vector<double> compute_all_partials(const Model& model, int32_t expr_id);
 /// the O(num_vars) result `compute_all_partials` pays -- which is what a per-row
 /// slope cache over a linear model wants. `out` is the caller's buffer so a hot
 /// loop can reuse its capacity.
+///
+/// Partials are taken at the CURRENT node values, so a cached slope stays valid
+/// only while every op on the path has a constant local derivative: `Sum`,
+/// `Neg`, `Prod` by a constant, and `Leq`/`Geq`/`Lt`/`Gt` do; `Eq` is
+/// sign(residual), hence 0.0 when satisfied and sign-flipping otherwise; `Neq`
+/// and the structural ops are always 0.0. A partial that is exactly 0.0 --
+/// cancelled, or through a zero local derivative -- is absent, not listed.
 void compute_partials_sparse(const Model& model, int32_t expr_id,
                              std::vector<std::pair<int32_t, double>>& out);
 
