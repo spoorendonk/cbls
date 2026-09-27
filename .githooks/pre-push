@@ -109,6 +109,8 @@ fi
 # Misclassifying a real doc as code costs one clean cycle; misclassifying code
 # as a doc pushes it untested, so the extension list errs toward running.
 CODE_FILES=$(echo "$CHANGED_FILES" | grep -vE '^(LICENSE|CHANGELOG)' | grep -vE '\.(md|rst)$' | grep -vE '^\.(gitignore|gitattributes)$' | grep -vE '^\.githooks/' || true)
+PROBE_CHANGES=$(echo "$CHANGED_FILES" | grep -E '^\.githooks/(tidy-probe|gate-lib|tests/)' || true)
+[ -z "$PROBE_CHANGES" ] || CODE_FILES="${CODE_FILES}"$'\n'"${PROBE_CHANGES}"
 
 # ============================================================
 # Step 1: Python lint + type gate (hard block)
