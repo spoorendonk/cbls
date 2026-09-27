@@ -67,6 +67,74 @@ missing_warning_flags() {
 # check is, and closed for the same reason; fix the code instead. -Werror is
 # refused because it turns every clang-tidy finding into a compiler error the
 # gate reports as a configuration fault (CMakeLists.txt, cbls_enable_warnings).
-cancelled_warning_flags() {
-	grep -E -- ' (-w|-Werror(=[^ "]*)?|-Wno-[^ "]+)( |")' | command_source | sort -u
+#
+# EXEMPT is a space-separated token list not to police: the caller passes the
+# cache's CMAKE_CXX_FLAGS and CMAKE_CXX_FLAGS_<CONFIG>, which CMake seeds from
+# the user's CXXFLAGS (dpkg-buildflags' -Werror=format-security, -Wno-psabi on
+# ARM). The rule is about the project's own target flags, not the machine it
+# is built on. -Wall/-Wextra are still required by missing_warning_flags, and
+# an environment flag that really blinds clang-tidy (-w, -Werror) still turns
+# the probe's diagnostics check red.
+cancelled_warning_flags() { # [EXEMPT]
+	awk -v exempt="${1:-}" '
+		BEGIN { n = split(exempt, e, " "); for (i = 1; i <= n; i++) skip[e[i]] = 1 }
+		{
+			line = $0
+			sub(/^ *"command": "/, "", line)
+			sub(/",?$/, "", line)
+			m = split(line, tok, " ")
+			src = ""
+			for (i = 1; i < m; i++) if (tok[i] == "-c") src = tok[i + 1]
+			for (i = 1; i <= m; i++) {
+				t = tok[i]
+				if (t in skip) continue
+				if (t == "-w" || t ~ /^-Werror(=.*)?$/ || t ~ /^-Wno-./) { print src; break }
+			}
+		}' | sort -u
+}
+
+# scan_build_log LOG SRC_ROOT BIN_DIR
+# The pre-push compiler-warning decision on a build log that the gate probe
+# TU was compiled into. Returns 2 when the probe's -Wswitch is absent (the
+# scan cannot see this build's compiler output, so a clean result would mean
+# nothing); 1, printing them, when first-party warnings other than the
+# probe's remain; 0 when the log is clean apart from the control.
+scan_build_log() {
+	local all
+	all=$(first_party_warnings "$1" "$2" "$3")
+	if ! echo "$all" | grep -F 'tidy-probe/incomplete_switch.cpp' | grep -qF -- '-Wswitch'; then
+		return 2
+	fi
+	local rest
+	rest=$(echo "$all" | grep -vF 'tidy-probe/incomplete_switch.cpp' | sed '/^$/d')
+	if [ -n "$rest" ]; then
+		echo "$rest"
+		return 1
+	fi
+	return 0
+}
+
+# hook_files_that_are_code: of the changed paths on stdin, the .githooks/ files
+# a push must still build and test for, though the hooks directory is otherwise
+# treated as not-code by pre-push. The probe and its lib feed a CMake target and
+# two ctests; pre-push itself holds the compiler-warning scan, which only a
+# build exercises.
+hook_files_that_are_code() {
+	grep -E '^\.githooks/(tidy-probe|gate-lib|tests/|pre-push$)' || true
+}
+
+# probe_trigger_files: of the changed paths on stdin, those that can change
+# what the clang-tidy gate sees, so pre-push runs tidy-probe.sh for them.
+probe_trigger_files() {
+	grep -E '(^|/)\.clang-tidy$|(^|/)CMakeLists\.txt$|^\.githooks/(tidy-probe|gate-lib\.sh$)' || true
+}
+
+# restore_probe_exclusion_in BUILD_DIR
+# Reconfigure BUILD_DIR without CBLS_GATE_PROBE_IN_ALL, so the dirty probe TU
+# is out of its default build again. Idempotent; a missing build dir is fine.
+restore_probe_exclusion_in() {
+	unset CBLS_GATE_PROBE_IN_ALL
+	[ -f "$1/CMakeCache.txt" ] || return 0
+	(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE && cmake "$1") >/dev/null 2>&1 ||
+		echo "note: could not reconfigure $1 without the gate probe"
 }

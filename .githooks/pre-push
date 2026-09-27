@@ -92,7 +92,7 @@ fi
 # clang-tidy is missing; this step does not skip, it blocks -- that difference
 # is why it is kept alongside the ctest.
 TIDY_PROBE=0
-if echo "$CHANGED_FILES" | grep -qE '(^|/)\.clang-tidy$|(^|/)CMakeLists\.txt$|^\.githooks/tidy-probe'; then
+if [ -n "$(echo "$CHANGED_FILES" | probe_trigger_files)" ]; then
 	TIDY_PROBE=1
 fi
 PY_FILES=$(echo "$CHANGED_FILES" | grep -E '\.py$' || true)
@@ -120,7 +120,9 @@ fi
 # Misclassifying a real doc as code costs one clean cycle; misclassifying code
 # as a doc pushes it untested, so the extension list errs toward running.
 CODE_FILES=$(echo "$CHANGED_FILES" | grep -vE '^(LICENSE|CHANGELOG)' | grep -vE '\.(md|rst)$' | grep -vE '^\.(gitignore|gitattributes)$' | grep -vE '^\.githooks/' || true)
-PROBE_CHANGES=$(echo "$CHANGED_FILES" | grep -E '^\.githooks/(tidy-probe|gate-lib|tests/)' || true)
+# pre-push itself too: it holds the compiler-warning scan, which only a build
+# exercises.
+PROBE_CHANGES=$(echo "$CHANGED_FILES" | hook_files_that_are_code)
 [ -z "$PROBE_CHANGES" ] || CODE_FILES="${CODE_FILES}"$'\n'"${PROBE_CHANGES}"
 
 # ============================================================
@@ -294,6 +296,12 @@ run_block() {
 	return $rc
 }
 
+# Reconfigure build/ without CBLS_GATE_PROBE_IN_ALL, so the dirty probe TU is
+# out of the default build again. Idempotent; a missing build/ is fine.
+restore_probe_exclusion() {
+	restore_probe_exclusion_in build
+}
+
 if [ -z "$CODE_FILES" ]; then
 	echo ""
 	echo "=== Skipping build+test (docs-only) ==="
@@ -332,12 +340,17 @@ else
 		# Teed to a log so the compiler's own warnings can be gated below.
 		# PIPESTATUS, not the pipeline's status, which is tee's.
 		# CBLS_GATE_PROBE_IN_ALL=1 puts the gate probe TU into this build (see
-		# cbls_tidy_probe in CMakeLists.txt); it is reset right after.
+		# cbls_tidy_probe in CMakeLists.txt). build/ is reconfigured without it
+		# straight after -- whether the build passed or not -- and by the EXIT
+		# trap on any other way out (Ctrl-C, a set -e abort), so it is never
+		# left building the dirty probe by default.
 		BUILD_LOG=$(git rev-parse --git-path cbls-pre-push-build.log)
+		trap restore_probe_exclusion EXIT
 		export CBLS_GATE_PROBE_IN_ALL=1
 		run_block "$BUILD_CMD" 2>&1 | tee "$BUILD_LOG"
 		[ "${PIPESTATUS[0]}" -eq 0 ] || BUILD_FAILED=1
-		unset CBLS_GATE_PROBE_IN_ALL
+		restore_probe_exclusion
+		trap - EXIT
 	fi
 	# Compiler warnings in first-party code block, like clang-tidy findings
 	# (issue #171). The clang-tidy sweep is clang's reading of the same -Wall
@@ -355,15 +368,12 @@ else
 	# was compiled inside the fenced build, and the scan must find its
 	# -Wswitch there before a clean result counts.
 	if [ "$BUILD_FAILED" -eq 0 ]; then
-		# Leave build/ as an ordinary configure would: probe excluded again.
-		(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE && cmake build) >/dev/null 2>&1 ||
-			echo "note: could not reconfigure build/ without the gate probe"
 		# Source and binary dirs as CMake recorded them: the spelling GCC prints.
 		SRC_ROOT=$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' build/CMakeCache.txt 2>/dev/null)
 		BIN_DIR=$(sed -n 's/^CMAKE_CACHEFILE_DIR:INTERNAL=//p' build/CMakeCache.txt 2>/dev/null)
-		ALL_WARNINGS=""
-		[ -z "$SRC_ROOT" ] || ALL_WARNINGS=$(first_party_warnings "$BUILD_LOG" "$SRC_ROOT" "$BIN_DIR")
-		BUILD_WARNINGS=$(echo "$ALL_WARNINGS" | grep -vF '.githooks/tidy-probe/incomplete_switch.cpp' | sed '/^$/d' || true)
+		SCAN_RC=0
+		BUILD_WARNINGS=""
+		[ -z "$SRC_ROOT" ] || { BUILD_WARNINGS=$(scan_build_log "$BUILD_LOG" "$SRC_ROOT" "$BIN_DIR") || SCAN_RC=$?; }
 		if [ -z "$SRC_ROOT" ]; then
 			echo ""
 			echo "Push blocked: the fenced build left no build/CMakeCache.txt,"
@@ -376,7 +386,7 @@ else
 			echo "compiler-warning scan needs as its positive control. The hook"
 			echo "is newer than the branch -- merge main."
 			BUILD_FAILED=1
-		elif ! echo "$ALL_WARNINGS" | grep -F 'tidy-probe/incomplete_switch.cpp' | grep -qF -- '-Wswitch'; then
+		elif [ "$SCAN_RC" -eq 2 ]; then
 			echo ""
 			echo "Push blocked: the gate probe's -Wswitch, compiled inside the"
 			echo "fenced build, is not in the scanned build log -- so the scan"
@@ -384,7 +394,7 @@ else
 			echo "still sends compiler output to stdout/stderr, uncoloured or"
 			echo "coloured, and builds in build/."
 			BUILD_FAILED=1
-		elif [ -n "$BUILD_WARNINGS" ]; then
+		elif [ "$SCAN_RC" -ne 0 ]; then
 			echo ""
 			echo "Push blocked: the build emitted compiler warnings in this"
 			echo "repository's own code. Fix them -- the tree is held at zero:"

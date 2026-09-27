@@ -234,7 +234,12 @@ The hooks live in **`.githooks/`, tracked in this repo** — that directory is t
   are all reported. It also fails on any first-party compile command missing
   the flags or cancelling them — **any** `-Wno-*`, `-w` or `-Werror`: a
   per-target suppression is a NOLINT without a written reason, so fix the code.
-  That flag check needs no clang-tidy and always runs. Pre-push runs the probe
+  Flags from the environment (`CXXFLAGS`, which CMake seeds into the cache's
+  `CMAKE_CXX_FLAGS[_<CONFIG>]`) are exempt: the rule polices the project, not
+  the machine. That flag check needs no clang-tidy and always runs. The mirror
+  sits inside the checkout, so each probe copy's `--dump-config` must equal
+  the real directory's — otherwise a missing copy would let the lookup climb
+  into the real tree and pass on the wrong config. Pre-push runs the probe
   (pinned clang-tidy only, and blocking if it cannot run) when a `.clang-tidy`,
   a `CMakeLists.txt` or the probe changes; ctest runs it as
   `clang_tidy_gate_probe` (Skipped, not Passed, without the pinned clang-tidy),

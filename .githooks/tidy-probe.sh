@@ -97,10 +97,17 @@ if [ -n "$MISSING" ]; then
 	echo "${MISSING//"$ROOT"\//  }"
 	FAIL=1
 fi
-CANCELLED=$(echo "$FIRST_PARTY" | cancelled_warning_flags)
+# Flags CMake seeded from the user's environment (CXXFLAGS -> CMAKE_CXX_FLAGS,
+# and the per-config set) are the machine's, not the project's: exempt them.
+BUILD_TYPE=$(sed -n 's/^CMAKE_BUILD_TYPE:[A-Z]*=//p' "$CACHE" 2>/dev/null | tr '[:lower:]' '[:upper:]')
+ENV_FLAGS=$(sed -n -e 's/^CMAKE_CXX_FLAGS:[A-Z]*=//p' \
+	-e "s/^CMAKE_CXX_FLAGS_${BUILD_TYPE:-NONE}:[A-Z]*=//p" "$CACHE" 2>/dev/null | tr '\n' ' ')
+CANCELLED=$(echo "$FIRST_PARTY" | cancelled_warning_flags "$ENV_FLAGS")
 if [ -n "$CANCELLED" ]; then
-	echo "tidy-probe: FAIL -- a compile command cancels the warnings (any"
-	echo "-Wno-*, -w or -Werror; fix the code rather than the flags):"
+	echo "tidy-probe: FAIL -- a target's compile options cancel the warnings"
+	echo "(any -Wno-*, -w or -Werror; fix the code rather than the flags)."
+	echo "Flags in CMAKE_CXX_FLAGS -- where CXXFLAGS from your environment"
+	echo "land -- are exempt, so these come from the project or a -D:"
 	echo "${CANCELLED//"$ROOT"\//  }"
 	FAIL=1
 fi
@@ -116,6 +123,12 @@ if [ -z "$CLANG_TIDY" ] || ! command -v "$CLANG_TIDY" >/dev/null 2>&1; then
 fi
 
 # --- Check B: the probe is reported under every config directory ----------
+# The mirror lives inside the build dir, i.e. inside the checkout, so a copy
+# that is missing would not fail: clang-tidy's upward lookup would climb out
+# of the mirror into the real tree and find the ROOT config, and the probe
+# would pass while that directory's own config was never tested. Two guards:
+# every copy is checked, and each probe copy's effective config
+# (--dump-config) must equal the one the real directory gets.
 # Tracked configs where git can say; otherwise every .clang-tidy outside the
 # trees that hold other people's code (an exported tarball).
 CONFIGS=$(git -C "$ROOT" ls-files -- '*.clang-tidy' 2>/dev/null)
@@ -138,10 +151,12 @@ ENTRIES=""
 PROBED=""
 for config in $CONFIGS; do
 	dir=$(dirname "$config")
-	mkdir -p "$MIRROR/$dir"
-	cp "$ROOT/$config" "$MIRROR/$config"
 	copy="$MIRROR/$dir/cbls_tidy_probe.cpp"
-	cp "$ROOT/$PROBE" "$copy"
+	if ! mkdir -p "$MIRROR/$dir" || ! cp "$ROOT/$config" "$MIRROR/$config" ||
+		! cp "$ROOT/$PROBE" "$copy"; then
+		echo "tidy-probe: FAIL -- could not mirror $config and the probe."
+		exit 1
+	fi
 	args=$(awk -v cmd="$PROBE_ARGS" -v from="$ROOT/$PROBE" -v to="$copy" 'BEGIN {
 		i = index(cmd, from)
 		print substr(cmd, 1, i - 1) to substr(cmd, i + length(from))
@@ -154,6 +169,16 @@ echo "[${ENTRIES}]" >"$MIRROR/compile_commands.json"
 
 for dir in $PROBED; do
 	copy="$MIRROR/$dir/cbls_tidy_probe.cpp"
+	# The file need not exist for --dump-config: only its directory is read.
+	WANT=$("$CLANG_TIDY" --dump-config "$ROOT/$dir/cbls_tidy_probe.cpp" 2>/dev/null)
+	GOT=$("$CLANG_TIDY" --dump-config "$copy" 2>/dev/null)
+	if [ -z "$WANT" ] || [ "$WANT" != "$GOT" ]; then
+		echo "tidy-probe: FAIL -- the probe copy for $dir/ does not see the"
+		echo "config the real directory gets (its lookup escaped the mirror,"
+		echo "or a copy is wrong), so a result there would test the wrong file."
+		FAIL=1
+		continue
+	fi
 	OUT=$("$CLANG_TIDY" -p "$MIRROR" --quiet "$copy" 2>&1) && RC=0 || RC=$?
 	if [ "$RC" -ne 0 ]; then
 		# Nonzero is a config fault ("Error: no checks enabled.") or a compile
