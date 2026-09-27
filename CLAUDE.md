@@ -131,7 +131,7 @@ Install `pyright-lsp@claude-plugins-official`. Pyright reads `[tool.mypy]` and p
 
 ## Testing
 
-C++ tests use **Catch2** (not GoogleTest): files in `tests/`, registered in `tests/CMakeLists.txt`, run via `ctest`. Python tests use **pytest**: `test_<module>.py` under `tests/python/`, `conftest.py` for shared fixtures, `pytest.mark.parametrize` for data-driven cases.
+C++ tests use **Catch2** (not GoogleTest): files in `tests/`, registered in `tests/CMakeLists.txt`, run via `ctest` (the two shell tests pinning the git-hook gates, in the root `CMakeLists.txt`, are the only non-Catch2 ctest entries). Python tests use **pytest**: `test_<module>.py` under `tests/python/`, `conftest.py` for shared fixtures, `pytest.mark.parametrize` for data-driven cases.
 
 - Name tests descriptively — `returns_optimal_for_feasible_input`, `test_solver_returns_optimal_for_feasible_input`.
 - Test nanobind bindings from Python with pytest, not from C++ — the binding is an implementation detail. Include round-trip tests: create in Python → pass to C++ → get result back.
@@ -271,18 +271,21 @@ Three conventions therefore rest on you rather than on a tool: branch only from 
 
 ### Fast vs. slow tests
 
-The C++ suite is **622 ctest tests** over **621 `TEST_CASE`s**: 617 registered
-by `catch_discover_tests` plus **5 registered by hand** — the 4 `[timing]` cases
-and `hang_guard_iteration_only_portfolio`, which is hand-registered *as well as*
-discovered (it needs a `TIMEOUT` to report a hang, but is cheap enough to belong
-in the fast set), so one `TEST_CASE` accounts for two ctest tests. Of the 617,
+The C++ suite is **624 ctest tests**: 622 Catch2 ones over **621 `TEST_CASE`s**
+— 617 registered by `catch_discover_tests` plus **5 registered by hand**, the 4
+`[timing]` cases and `hang_guard_iteration_only_portfolio`, which is
+hand-registered *as well as* discovered (it needs a `TIMEOUT` to report a hang,
+but is cheap enough to belong in the fast set), so one `TEST_CASE` accounts for
+two ctest tests — plus **2 shell tests that are not Catch2 at all**,
+`clang_tidy_gate_probe` and `gate_lib_shell_test`, registered in the root
+`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 617,
 **6 carry the
 Catch2 `[slow]` tag** — the CHPED and UC-CHPED benchmark solves, ~46s of
 aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~25s
 wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 613 tests, ~12s with `-j`. This is what **pre-commit** runs.
+- `ctest -LE slow` — the other 615 tests, ~12s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
 - `ctest -L timing` — 4 tests: `timing_structural_batch_deadline` plus the three
   `timing_throughput_*` floors added for #125. Each is registered by an explicit
