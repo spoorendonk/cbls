@@ -13,12 +13,14 @@
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <set>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -529,4 +531,86 @@ TEST_CASE("an executor and a stop token compose", "[executor][parallel][stop]") 
                  /*callback=*/nullptr, par_config);
 
     REQUIRE(r.termination == TerminationReason::Cancelled);
+}
+
+// ---------------------------------------------------------------------------
+// Worker accounting under a caller's executor (#170)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a sequential executor reports the workers the deadline starved",
+          "[executor][parallel][workers]") {
+    // The first worker takes the whole shared deadline, so the other three find it
+    // past before their first solve and never search. The result must not say
+    // four workers completed: it says one did, and lists the other three.
+    SequentialPool pool(4);
+    ParallelConfig par_config;
+    par_config.n_threads = 4;
+    par_config.executor = pool;
+
+    ParallelSearch ps(4);
+    const SearchResult r = ps.solve(
+        [] { return quadratic_model(); }, /*time_limit=*/0.3, /*seed=*/35, SearchConfig{},
+        /*hook_factory=*/nullptr, /*lns_factory=*/nullptr, /*callback=*/nullptr, par_config);
+
+    REQUIRE(r.feasible);
+    REQUIRE(r.workers_launched == 4);
+    REQUIRE(r.workers_completed == 1);
+    REQUIRE(r.worker_failures.size() == 3);
+    for (int i = 0; i < 3; ++i) {
+        const WorkerFailure& f = r.worker_failures[static_cast<size_t>(i)];
+        REQUIRE(f.worker == i + 1);
+        REQUIRE_FALSE(f.produced_result);
+        REQUIRE(f.reason.find("deadline") != std::string::npos);
+    }
+}
+
+namespace {
+
+// Runs every chunk on the calling thread, but only after sleeping past the
+// deadline the test hands the portfolio: every worker then finds the shared clock
+// already gone before its first solve, deterministically.
+class LatePool {
+public:
+    explicit LatePool(std::chrono::milliseconds delay) : delay_(delay) {}
+    [[nodiscard]] int n_threads() const { return width_; }
+    void parallel_for(int begin, int end, const std::function<void(int)>& f) {
+        std::this_thread::sleep_for(delay_);
+        for (int i = begin; i < end; ++i) {
+            f(i);
+        }
+    }
+    void parallel_for_chunked(int begin, int end, const std::function<void(int, int, int)>& f) {
+        std::this_thread::sleep_for(delay_);
+        f(begin, end, 0);
+    }
+    void parallel_invoke(const std::function<void()>& f, const std::function<void()>& g) {
+        f();
+        g();
+    }
+
+private:
+    std::chrono::milliseconds delay_;
+    int width_ = 3;
+};
+
+}  // namespace
+
+TEST_CASE("a budget spent before launch starves every worker and says so",
+          "[executor][parallel][workers]") {
+    // No worker searched, so the portfolio returns its EMPTY result -- NoBudget --
+    // and that path reports the accounting too: none of the three completed.
+    LatePool pool(std::chrono::milliseconds(100));
+    ParallelConfig par_config;
+    par_config.n_threads = 3;
+    par_config.executor = pool;
+
+    ParallelSearch ps(3);
+    const SearchResult r = ps.solve(
+        [] { return quadratic_model(); }, /*time_limit=*/0.01, /*seed=*/35, SearchConfig{},
+        /*hook_factory=*/nullptr, /*lns_factory=*/nullptr, /*callback=*/nullptr, par_config);
+
+    REQUIRE(r.termination == TerminationReason::NoBudget);
+    REQUIRE(r.workers_launched == 3);
+    REQUIRE(r.workers_completed == 0);
+    REQUIRE(r.worker_failures.size() == 3);
 }

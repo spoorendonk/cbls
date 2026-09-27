@@ -1295,6 +1295,23 @@ std::function<std::unique_ptr<Tracer>(int)> fail_worker(int victim, int spared) 
     };
 }
 
+// Throws `std::bad_alloc` from the first `batch_end` of the worker's SECOND
+// attempt, and from every one after it. `iterations` is the attempt's own
+// cumulative count and each attempt starts it again from zero, so the first
+// value that is LOWER than its predecessor opens a new attempt: the first
+// attempt returned normally, and the worker dies on its restart.
+struct DiesOnRestartTracer : Tracer {
+    void batch_end(BatchKind /*kind*/, int64_t iterations, bool /*improved*/) override {
+        restarted = restarted || iterations < last_iterations;
+        last_iterations = iterations;
+        if (restarted) {
+            throw std::bad_alloc();
+        }
+    }
+    int64_t last_iterations = 0;
+    bool restarted = false;
+};
+
 }  // namespace
 
 TEST_CASE("a portfolio whose worker cannot allocate reports it", "[parallel][workers]") {
@@ -1323,19 +1340,23 @@ TEST_CASE("a portfolio whose worker cannot allocate reports it", "[parallel][wor
 TEST_CASE("a worker that dies on a restart is not counted as completed", "[parallel][workers]") {
     // The worker returns one whole solve, so it PRODUCED a result, and then dies
     // on its restart: it searched for part of the budget only, which is what a
-    // row claiming it as a thread would get wrong. SearchConfig::max_iterations
-    // caps an attempt at kCap batches (and kCap FJ iterations, so in practice
-    // about one batch), so the first attempt -- whose batches the tracer spares --
-    // returns normally, and batch kCap + 1 belongs to a later attempt. The one
-    // clock dependency is reaching that batch inside the budget: roughly kCap
-    // cheap restarts of a two-variable model in 0.5s.
-    constexpr int kCap = 50;
+    // row claiming it as a thread would get wrong. An attempt is capped at 50 FJ
+    // iterations in batches of 10, so it spans several batches and its count
+    // climbs; the restart's first batch reports a lower count, which is where
+    // DiesOnRestartTracer throws. One restart is all it takes, so no clock
+    // decides whether the throw lands.
     constexpr int kThreads = 2;
     SearchConfig config;
-    config.max_iterations = kCap;
+    config.max_iterations = 50;
+    config.batch_iterations = 10;
     ParallelConfig pc;
     pc.n_threads = kThreads;
-    pc.tracer_factory = fail_worker(/*victim=*/1, /*spared=*/kCap);
+    pc.tracer_factory = [](int worker) -> std::unique_ptr<Tracer> {
+        if (worker != 1) {
+            return nullptr;
+        }
+        return std::make_unique<DiesOnRestartTracer>();
+    };
     ParallelSearch ps(kThreads);
     SearchResult r;
     REQUIRE_NOTHROW(r = ps.solve([] { return quadratic_model(); }, /*time_limit=*/0.5,
@@ -1410,4 +1431,26 @@ TEST_CASE("a single-threaded solve reports one completed worker", "[parallel][wo
     REQUIRE(portfolio.workers_launched == kThreads);
     REQUIRE(portfolio.workers_completed == kThreads);
     REQUIRE(portfolio.worker_failures.empty());
+}
+
+TEST_CASE("a portfolio cancelled before it starts still accounts for its workers",
+          "[parallel][workers]") {
+    // The host cancelled before any worker began, so none searched and the
+    // portfolio returns its EMPTY result. That path fills the accounting too:
+    // nothing failed and nothing was left undone, so every worker completed.
+    StopToken token;
+    token.request();
+    constexpr int kThreads = 3;
+    ParallelConfig pc;
+    pc.n_threads = kThreads;
+    pc.stop = token;
+    ParallelSearch ps(kThreads);
+    const SearchResult r = ps.solve([] { return quadratic_model(); }, /*time_limit=*/5.0,
+                                    /*seed=*/42, SearchConfig{}, /*hook_factory=*/nullptr,
+                                    /*lns_factory=*/nullptr, /*callback=*/nullptr, pc);
+    REQUIRE(r.termination == TerminationReason::Cancelled);
+    REQUIRE(r.best_state.values.empty());  // the empty-portfolio path, not a run
+    REQUIRE(r.workers_launched == kThreads);
+    REQUIRE(r.workers_completed == kThreads);
+    REQUIRE(r.worker_failures.empty());
 }

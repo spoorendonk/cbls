@@ -353,7 +353,9 @@ struct WorkerFailure {
     bool produced_result = false;
     /// `what()` of the exception that ended the worker, or a fixed string for an
     /// exception not derived from `std::exception`. For a Python exception this is
-    /// nanobind's formatted traceback.
+    /// nanobind's formatted traceback. A worker the shared deadline starved before
+    /// its first solve threw nothing, and is listed with a fixed sentence saying
+    /// so.
     std::string reason;
 };
 
@@ -533,8 +535,9 @@ struct SearchResult {
 
     /// How many portfolio workers ran, and how many of them COMPLETED (#170).
     ///
-    /// A worker is COMPLETED unless an exception ended it: its last `solve()`
-    /// attempt returned normally, or it never needed one. Precisely:
+    /// A worker is COMPLETED unless an exception ended it or the clock ran out
+    /// before it started: its last `solve()` attempt returned normally, or there
+    /// was nothing left for it to do. Precisely:
     ///
     ///  - a worker that threw and recovered on a retry, and whose last attempt
     ///    returned, IS completed;
@@ -547,11 +550,18 @@ struct SearchResult {
     ///    is conservative by one retry;
     ///  - so is a worker whose model, hook, LNS or tracer factory threw;
     ///  - a worker that never started a solve because there was nothing left to
-    ///    do -- a peer had already answered a pure-feasibility model, the host
-    ///    had cancelled, or the shared deadline had passed during launch -- IS
-    ///    completed. Nothing failed, and on a feasibility model solved at once
-    ///    that is most of the portfolio: counting them as lost would flag every
-    ///    easy run. `termination` still says why the run ended.
+    ///    do -- a peer had already answered a pure-feasibility model, or the host
+    ///    had cancelled -- IS completed. Nothing failed, and on a feasibility
+    ///    model solved at once that is most of the portfolio: counting them as
+    ///    lost would flag every easy run. `termination` still says why the run
+    ///    ended;
+    ///  - a worker that never started a solve because the shared DEADLINE had
+    ///    already passed is NOT, and is listed in `worker_failures` with no
+    ///    exception behind it. It had work and no time: a caller's executor that
+    ///    runs several workers one after another (legal, and undetected -- see
+    ///    `ParallelConfig::executor`) hands the first the whole deadline, and a
+    ///    budget that expires during launch starves every worker. Counting such a
+    ///    worker as completed would report N threads when one searched.
     ///
     /// So `workers_completed + worker_failures.size() == workers_launched`.
     ///
@@ -566,8 +576,8 @@ struct SearchResult {
     /// result; these fields describe the runs it returns from.
     int workers_launched = 1;
     int workers_completed = 1;
-    /// One entry per worker that did not complete because it threw, in worker
-    /// order. Empty on every non-portfolio result.
+    /// One entry per worker that did not complete -- it threw, or the deadline
+    /// starved it -- in worker order. Empty on every non-portfolio result.
     std::vector<WorkerFailure> worker_failures;
 };
 

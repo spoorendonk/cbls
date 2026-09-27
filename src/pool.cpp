@@ -666,14 +666,25 @@ bool worker_finished(const PortfolioContext& ctx, const SearchResult& r) {
     return ends_worker(r.termination) || r.termination == TerminationReason::NoBudget;
 }
 
-// On return `failure` holds the exception that ENDED the worker -- the one its
-// last solve attempt threw -- or null when that attempt returned normally (or no
-// attempt ran). A throw followed by a successful retry is cleared by the retry,
-// so a worker that recovered is not reported as failed; one that returned
-// results and then died on a later restart is (#170, see
+// How a worker ended, for the result's worker accounting (#170, see
 // SearchResult::workers_completed).
-std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index,
-                                       std::exception_ptr& failure) {
+struct WorkerEnd {
+    // The exception that ENDED the worker -- the one its last solve attempt
+    // threw -- or null when that attempt returned normally (or no attempt ran). A
+    // throw followed by a successful retry is cleared by the retry, so a worker
+    // that recovered is not reported as failed; one that returned results and
+    // then died on a later restart is.
+    std::exception_ptr failure;
+    // The shared deadline had passed before the worker's FIRST attempt, so it
+    // never searched. Distinct from a peer's stop or a host cancel, which end a
+    // worker that has nothing left to do: this one had work and no time, which
+    // happens when a caller's executor runs workers one after another, or when
+    // the budget expires during launch.
+    bool starved = false;
+};
+
+std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index, WorkerEnd& end) {
+    std::exception_ptr& failure = end.failure;
     // Built ONCE per worker, not once per restart: a restart carries on with
     // the model it already holds, which is also what makes `skip_init` below
     // mean "keep the assignment this worker converged to".
@@ -722,6 +733,7 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index,
         // it.
         const double budget = ctx.remaining();
         if (ctx.has_deadline && budget <= 0.0) {
+            end.starved = restart == 0;
             break;
         }
         const SearchConfig cfg = restart_config(ctx, tracer.get(), restart);
@@ -860,12 +872,17 @@ std::string describe_failure(const std::exception_ptr& failure) {
     }
 }
 
+// The reason a starved worker (WorkerEnd::starved) is listed with.
+constexpr const char* kStarvedReason =
+    "the shared deadline had passed before this worker's first solve";
+
 // Fill the result's worker accounting (#170) from what each worker left behind:
-// whether it produced a result, and the exception that ended it, if any. The
-// definition of "completed" -- not ended by an exception -- is on
+// whether it produced a result, the exception that ended it, and whether the
+// deadline starved it. The definition of "completed" is on
 // SearchResult::workers_completed; this is the one place that applies it.
 void report_workers(const std::vector<char>& produced,
-                    const std::vector<std::exception_ptr>& ended_by, SearchResult& result) {
+                    const std::vector<std::exception_ptr>& ended_by,
+                    const std::vector<char>& starved, SearchResult& result) {
     result.workers_launched = static_cast<int>(produced.size());
     result.workers_completed = 0;
     result.worker_failures.clear();
@@ -873,6 +890,9 @@ void report_workers(const std::vector<char>& produced,
         if (ended_by[i] != nullptr) {
             result.worker_failures.push_back(WorkerFailure{static_cast<int>(i), produced[i] != 0,
                                                            describe_failure(ended_by[i])});
+        } else if (starved[i] != 0) {
+            result.worker_failures.push_back(
+                WorkerFailure{static_cast<int>(i), false, kStarvedReason});
         } else {
             ++result.workers_completed;
         }
@@ -1002,6 +1022,9 @@ SearchResult ParallelSearch::solve_portfolio(
     // counters are lost with it; the worker is still counted as failed, which is
     // the part a thread count depends on.
     std::vector<std::exception_ptr> ended_by(n_workers);
+    // Workers the shared deadline starved before their first attempt; see
+    // WorkerEnd::starved. Reported, never rethrown: no exception exists.
+    std::vector<char> starved(n_workers, 0);
 
     // One worker, whichever thing is running it. Written once and used by both
     // launch paths below, so the two cannot come to mean different things:
@@ -1013,15 +1036,16 @@ SearchResult ParallelSearch::solve_portfolio(
     // is free to do anything at all with one -- rethrow it on the calling
     // thread, swallow it, abort. Parking it here means the portfolio's own
     // failure handling is the same either way.
-    auto run_one = [&ctx, &failures, &results, &pool, &produced, &ended_by](int i) {
+    auto run_one = [&ctx, &failures, &results, &pool, &produced, &ended_by, &starved](int i) {
         try {
-            std::exception_ptr worker_failure;
-            auto r = run_worker(ctx, i, worker_failure);
-            ended_by[i] = worker_failure;
+            WorkerEnd end;
+            auto r = run_worker(ctx, i, end);
+            ended_by[i] = end.failure;
+            starved[i] = end.starved ? 1 : 0;
             if (!r.has_value()) {
-                // Either handed no budget at all (worker_failure null, nothing
-                // to report) or every attempt threw.
-                failures[i] = worker_failure;
+                // Handed no budget, stopped before its first attempt (failure
+                // null: nothing to rethrow), or every attempt threw.
+                failures[i] = end.failure;
                 return;
             }
             results[i] = *r;
@@ -1085,7 +1109,7 @@ SearchResult ParallelSearch::solve_portfolio(
         // A cancelled portfolio reaches here too; see empty_portfolio_reason.
         SearchResult empty;
         empty.termination = empty_portfolio_reason(combined.requested());
-        report_workers(produced, ended_by, empty);
+        report_workers(produced, ended_by, starved, empty);
         return empty;
     }
 
@@ -1129,7 +1153,7 @@ SearchResult ParallelSearch::solve_portfolio(
     // then see the cancel, and the aggregate must not report that as the engine's
     // own choice to stop.
     result.termination = with_host_cancel(aggregate_termination(results), combined.requested());
-    report_workers(produced, ended_by, result);
+    report_workers(produced, ended_by, starved, result);
     return result;
 }
 
