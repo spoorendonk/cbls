@@ -84,11 +84,13 @@ fi
 # A canary proves each config still RUNS checks; it cannot prove the gate still
 # sees compiler diagnostics, because a clean canary reads the same either way.
 # That needs a TU that is meant to be reported: tidy-probe.sh (issue #171) lints
-# an incomplete enum-class switch under each directory's effective config and
-# fails unless it is reported. Run it whenever the push could change the answer
-# -- a .clang-tidy (the check list), a CMakeLists.txt (the -Wall -Wextra that
-# clang-tidy reads from compile_commands.json), or the probe itself. ctest runs
-# the same script as clang_tidy_gate_probe, so the full suite covers it too.
+# an incomplete enum-class switch in every config directory and fails unless it
+# is reported. Run it whenever the push could change the answer -- a .clang-tidy
+# (the check list), a CMakeLists.txt (the -Wall -Wextra that clang-tidy reads
+# from compile_commands.json), or the probe itself. ctest runs the same script
+# as clang_tidy_gate_probe, but skips its clang-tidy half where the pinned
+# clang-tidy is missing; this step does not skip, it blocks -- that difference
+# is why it is kept alongside the ctest.
 TIDY_PROBE=0
 if echo "$CHANGED_FILES" | grep -qE '(^|/)\.clang-tidy$|(^|/)CMakeLists\.txt$|^\.githooks/tidy-probe'; then
 	TIDY_PROBE=1

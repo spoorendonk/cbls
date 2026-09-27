@@ -227,25 +227,32 @@ The hooks live in **`.githooks/`, tracked in this repo** — that directory is t
   first-party target gets `-Wall -Wextra` through `cbls_enable_warnings()` in the
   root `CMakeLists.txt` (a new target needs the call), and
   **`.githooks/tidy-probe.sh`** proves it: it lints a deliberately dirty TU,
-  `.githooks/tidy-probe/incomplete_switch.cpp`, under each config directory's
-  effective config and fails unless its incomplete `enum class` switch, unused
-  local and unused parameter are all reported. It also fails on any first-party
-  compile command missing the flags or cancelling them (`-w`, `-Werror`,
-  `-Wno-switch`, ...), and when the tracked `.clang-tidy` set changes, so a new
-  config directory must be given a canary. Pre-push runs it (pinned clang-tidy
-  only, and blocking if it cannot run) when a `.clang-tidy`, a `CMakeLists.txt`
-  or the probe changes; ctest runs it as `clang_tidy_gate_probe` (Skipped, not
-  Passed, without the pinned clang-tidy). Never add a `default:` to a `NodeOp`
-  switch — it is what would hide the case.
+  `.githooks/tidy-probe/incomplete_switch.cpp`, copied into every config
+  directory of a mirror of the configs (so clang-tidy's real directory lookup
+  applies, and a new config directory is probed automatically), and fails
+  unless its incomplete `enum class` switch, unused local and unused parameter
+  are all reported. It also fails on any first-party compile command missing
+  the flags or cancelling them — **any** `-Wno-*`, `-w` or `-Werror`: a
+  per-target suppression is a NOLINT without a written reason, so fix the code.
+  That flag check needs no clang-tidy and always runs. Pre-push runs the probe
+  (pinned clang-tidy only, and blocking if it cannot run) when a `.clang-tidy`,
+  a `CMakeLists.txt` or the probe changes; ctest runs it as
+  `clang_tidy_gate_probe` (Skipped, not Passed, without the pinned clang-tidy),
+  and `gate_lib_shell_test` tests the gates' text filters in
+  `.githooks/gate-lib.sh`. Never add a `default:` to a `NodeOp` switch — it is
+  what would hide the case.
 
   **No `-Werror`**: with it in `compile_commands.json` every clang-diagnostic
   finding becomes a compiler error and clang-tidy exits 1, which the step above
   reports as a config fault. GCC — the build compiler — has warnings clang lacks
   (two `-Wrange-loop-construct` at #171), so instead pre-push **blocks on any
-  compiler warning in first-party code in the gated build's output**, and first
-  proves that scan can see: it recompiles the probe TU on its own and blocks
-  unless the scan finds its `-Wswitch` (colour codes, a translated `warning:` or
-  an unexpected path spelling would otherwise make it match nothing). That gate
+  compiler warning in first-party code in the gated build's output**, and
+  proves that scan can see: it configures with `CBLS_GATE_PROBE_IN_ALL=1`, which
+  puts the probe TU into the fenced build, and blocks unless the scan finds its
+  `-Wswitch` in that same log (colour codes, a translated `warning:`, an
+  unexpected path spelling or a fence that stops sending compiler output there
+  would otherwise make it match nothing). The three probe warnings in pre-push's
+  build output are that control, not findings. That gate
   follows the local GCC version, so an upgrade can block a push; it cannot
   break a user's build, which is what `-Werror` would.
 
