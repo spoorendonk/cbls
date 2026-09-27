@@ -1055,7 +1055,10 @@ NB_MODULE(_cbls_core, m) {
         .def_ro("time_seconds", &SearchResult::time_seconds)
         .def_ro("termination", &SearchResult::termination)
         // Portfolio worker accounting (#170); see SearchResult::workers_completed.
-        // `worker_failures` is returned as a fresh list of copies on each read.
+        // `worker_failures` is a fresh list on each read, but its ELEMENTS are
+        // references into this result (`def_ro` is reference_internal), so
+        // `r.worker_failures[0] is r.worker_failures[0]`. Safe: the result keeps
+        // the vector alive, and nothing reachable from Python can grow it.
         .def_ro("workers_launched", &SearchResult::workers_launched)
         .def_ro("workers_completed", &SearchResult::workers_completed)
         .def_ro("worker_failures", &SearchResult::worker_failures)

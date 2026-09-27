@@ -13,6 +13,7 @@
 #include "test_helpers.h"
 
 #include <algorithm>
+#include <benchmarks/mipfeas/worker_accounting.h>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cbls/io_mps.h>
@@ -293,4 +294,49 @@ TEST_CASE("MIPfeas pk1 solves to a feasible point never better than its optimum"
 
         REQUIRE(result.objective >= reference - band);
     }
+}
+
+// ---------------------------------------------------------------------------
+// The runner's worker accounting (#170), on a synthesised result: a lost worker
+// cannot be provoked in the runner binary without a seam in production code.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+cbls::SearchResult lost_one_of_three() {
+    cbls::SearchResult r;
+    r.workers_launched = 3;
+    r.workers_completed = 2;
+    r.worker_failures.push_back(cbls::WorkerFailure{1, true, "std::bad_alloc"});
+    return r;
+}
+
+}  // namespace
+
+TEST_CASE("mipfeas rows carry each lost worker's failure", "[mipfeas][workers]") {
+    nlohmann::json row;
+    cbls::mipfeas::add_worker_accounting(lost_one_of_three(), row);
+    REQUIRE(row["workers_launched"] == 3);
+    REQUIRE(row["workers_completed"] == 2);
+    REQUIRE(row["worker_failures"].size() == 1);
+    const nlohmann::json& f = row["worker_failures"][0];
+    REQUIRE(f["worker"] == 1);
+    REQUIRE(f["produced_result"] == true);
+    REQUIRE(f["reason"] == "std::bad_alloc");
+}
+
+TEST_CASE("a mipfeas row that lost workers is reported and fails the job", "[mipfeas][workers]") {
+    const cbls::SearchResult lost = lost_one_of_three();
+    REQUIRE(cbls::mipfeas::lost_workers(lost, 3));
+    REQUIRE(cbls::mipfeas::lost_workers_message("inst", 3, lost) ==
+            "inst: only 2 of 3 portfolio workers completed; the row is refused\n"
+            "  worker 1 (after producing a result): std::bad_alloc\n");
+    REQUIRE(cbls::mipfeas::runner_exit_code(false, true) == 1);
+    REQUIRE(cbls::mipfeas::runner_exit_code(true, false) == 1);
+    REQUIRE(cbls::mipfeas::runner_exit_code(false, false) == 0);
+
+    // A healthy single-threaded result: nothing to say, and the job succeeds.
+    const cbls::SearchResult single;
+    REQUIRE_FALSE(cbls::mipfeas::lost_workers(single, 1));
+    REQUIRE(cbls::mipfeas::lost_workers_message("inst", 1, single).empty());
 }

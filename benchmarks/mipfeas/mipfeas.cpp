@@ -22,6 +22,7 @@
 
 #include <atomic>
 #include <benchmarks/common/runner_args.h>
+#include <benchmarks/mipfeas/worker_accounting.h>
 #include <cbls/cbls.h>
 #include <cbls/io_mps.h>
 #include <chrono>
@@ -414,44 +415,6 @@ void write_result(const Args& args, const nlohmann::json& extra) {
                      rename_ec.message().c_str());
         std::exit(2);
     }
-}
-
-/// How many portfolio workers actually ran to the end (#170), as row columns.
-///
-/// `threads` is what was ASKED for, and it is a scorer configuration key: a
-/// worker that died inside the solve bracket -- a bad_alloc on its FJ tables
-/// under the driver's address-space cap, after every replica fitted -- is
-/// absorbed by ParallelSearch, which returns the survivors' result. Without these
-/// columns such a row reads as a valid N-thread measurement; with them the scorer
-/// refuses it. "Completed" is defined on SearchResult::workers_completed. The
-/// single-threaded arm reports 1 of 1: cbls::solve has one worker, and a throw
-/// from it is a `solve_error` row instead.
-void add_worker_accounting(const cbls::SearchResult& result, nlohmann::json& row) {
-    row["workers_launched"] = result.workers_launched;
-    row["workers_completed"] = result.workers_completed;
-    nlohmann::json failures = nlohmann::json::array();
-    for (const cbls::WorkerFailure& f : result.worker_failures) {
-        failures.push_back(
-            {{"worker", f.worker}, {"produced_result", f.produced_result}, {"reason", f.reason}});
-    }
-    row["worker_failures"] = failures;
-}
-
-/// Whether the portfolio completed fewer workers than `--threads` asked for,
-/// saying so on stderr with each failure's reason when it did. Such a row is
-/// still written -- its failures are the record -- but the scorer refuses it and
-/// the job exits non-zero.
-bool report_lost_workers(const Args& args, const cbls::SearchResult& result) {
-    if (result.workers_completed >= args.threads) {
-        return false;
-    }
-    std::fprintf(stderr, "%s: only %d of %d portfolio workers completed; the row is refused\n",
-                 args.instance.c_str(), result.workers_completed, args.threads);
-    for (const cbls::WorkerFailure& f : result.worker_failures) {
-        std::fprintf(stderr, "  worker %d%s: %s\n", f.worker,
-                     f.produced_result ? " (after producing a result)" : "", f.reason.c_str());
-    }
-    return true;
 }
 
 /// Whether the arguments name a run that can produce a result at all. Returns 0
@@ -864,20 +827,19 @@ int run_benchmark(int argc, char** argv) {
     };
     j["objective"] =
         verdict.have_solution ? nlohmann::json(result.objective) : nlohmann::json(nullptr);
-    add_worker_accounting(result, j);
+    // How many portfolio workers ran to the end (#170); see worker_accounting.h.
+    cbls::mipfeas::add_worker_accounting(result, j);
     write_result(args, j);
-    const bool lost_workers = report_lost_workers(args, result);
+    const std::string lost =
+        cbls::mipfeas::lost_workers_message(args.instance, args.threads, result);
+    std::fputs(lost.c_str(), stderr);
 
     std::printf("%-28s %-12s obj=%-16.8g viol=%-10.3g %8.2fs\n", args.instance.c_str(),
                 verdict.status,
                 verdict.have_solution ? result.objective : std::numeric_limits<double>::quiet_NaN(),
                 result.best_violation, wall);
-    // Non-zero when the solution could not be written: the job did run, but it
-    // produced a row nothing can verify, and the driver has to see that. The same
-    // for a portfolio that lost workers: the row is written, so the failure is
-    // on disk with its reasons, but the job did not measure what it was asked to.
-    // Exit 1 on either, 0 otherwise.
-    return static_cast<int>(solution_write_failed || lost_workers);
+    return cbls::mipfeas::runner_exit_code(solution_write_failed,
+                                           cbls::mipfeas::lost_workers(result, args.threads));
 }
 
 }  // namespace
