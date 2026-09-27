@@ -1213,28 +1213,6 @@ TEST_CASE("solve refuses a generator on a frozen model", "[column]") {
     REQUIRE(cm.model.num_vars() == cs.sizes.size());  // the shared structure never grew
 }
 
-TEST_CASE("solve closes an unclosed model before pricing on it", "[column]") {
-    // Model::extend needs a closed model. solve() closes an unclosed one at
-    // entry, generator or not, so the pricer runs on a closed model instead of
-    // the run being refused (or, before that refusal, throwing at the first
-    // pricing call).
-    Model m;
-    const int32_t x = m.bool_var();
-    const int32_t y = m.bool_var();
-    const int32_t s = m.sum({x, y});
-    m.add_constraint(m.geq(s, m.constant(1.0)));
-    m.minimize(s);
-    auto log = std::make_shared<std::vector<RecordingGenerator::Call>>();
-    SearchConfig cfg = iteration_budget(5000);
-    cfg.column_generator = std::make_shared<RecordingGenerator>(log);
-    cfg.pricing_period = 1;
-    REQUIRE_FALSE(m.is_closed());
-    const SearchResult r = solve(m, 0.0, 1, true, nullptr, nullptr, 3, nullptr, cfg);
-    REQUIRE(m.is_closed());
-    REQUIRE_FALSE(log->empty());
-    REQUIRE(r.counters.pricing_calls == static_cast<int64_t>(log->size()));
-}
-
 TEST_CASE("the portfolio refuses a generator through a model factory", "[column][parallel]") {
     const CuttingStock cs = u120_00();
     CuttingModel cm = build_trivial(cs);
@@ -1506,6 +1484,29 @@ public:
 private:
     std::shared_ptr<std::vector<int64_t>> calls_;
 };
+
+TEST_CASE("solve closes an unclosed model before pricing on it", "[column]") {
+    // Model::extend needs a closed model. solve() closes an unclosed one at
+    // entry, generator or not. No objective on purpose: an objective model was
+    // closed as a side effect of its objective row's rebuild even before that,
+    // so only an objective-free model pins the explicit close. The generator
+    // actually extends, so extend/on_extended run on the model solve() closed.
+    // Unsatisfiable (a Bool >= 2), so the run never ends Feasible before a
+    // pricing call -- a pure-feasibility run that solves prices nothing.
+    Model m;
+    const int32_t x = m.bool_var();
+    m.add_constraint(m.geq(x, m.constant(2.0)));
+    auto calls = std::make_shared<std::vector<int64_t>>();
+    SearchConfig cfg = iteration_budget(5000);
+    cfg.column_generator = std::make_shared<OneColumn>(calls);
+    cfg.pricing_period = 1;
+    cfg.max_generated_columns = 1;
+    REQUIRE_FALSE(m.is_closed());
+    const SearchResult r = solve(m, 0.0, 1, true, nullptr, nullptr, 3, nullptr, cfg);
+    REQUIRE(m.is_closed());
+    REQUIRE(r.counters.columns_added == 1);
+    REQUIRE(m.num_vars() == 2);
+}
 
 // Watches the one generated column of `infeasible_pair()` + `OneColumn` (var
 // id 2) from the tracer: the batch whose pricing step retired it, and the
