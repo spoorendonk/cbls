@@ -495,7 +495,9 @@ flag. After close the ordinary builders — variable and expression creation,
 `add_constraint`, `minimize`/`maximize`, `add_var_sequence`,
 `add_list_partition` — throw `std::logic_error` (#173): a node or row they
 appended then was never placed in the topological order, so no evaluation
-reached it and `solve()` reported feasible over it. A closed model grows only
+reached it and `solve()` reported feasible over it. `solve()` itself closes a
+model it is handed unclosed (except with a `column_generator`, which it refuses),
+so a model that has been solved refuses the builders too. A closed model grows only
 through `ModelExtension` + `Model::extend` (#167), and internally through the
 objective soft constraint, which `solve()` appends lazily (see below).
 

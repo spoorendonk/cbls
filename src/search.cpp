@@ -1972,9 +1972,11 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
             "solve: SearchConfig::column_generator grows the model, and this model is frozen -- "
             "its structure is shared with its replicas. Pass model.private_copy() (#168)");
     }
-    // Model::extend needs a closed model (its derived indices must exist), and
-    // solve() never closes one -- refused here for the frozen check's reason, not
-    // at the first pricing call after the search has already run.
+    // Model::extend needs a closed model (its derived indices must exist). solve()
+    // now closes an unclosed model a few lines below, so this refusal is
+    // stricter than it needs to be; it predates that and is kept pending a
+    // decision to drop it -- a generator run must start from a model the caller
+    // closed.
     if (config.column_generator != nullptr && !model.is_closed()) {
         throw std::invalid_argument(
             "solve: SearchConfig::column_generator grows the model through Model::extend, which "
