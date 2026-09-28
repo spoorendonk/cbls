@@ -1028,7 +1028,8 @@ seeds faster, four slower), and rd-rplusc-21 7,389 before and 8,000 after
 (paired mean +612; four seeds faster, two slower). No instance is measurably slower; the change moves
 trajectories, so the iteration count per seed moves with them, and the
 objective (max violation) moves within the seed-to-seed spread the #175 table
-above already showed for uccase12.
+above already showed for uccase12. **Every published table recorded before
+`ab56e73` is therefore at an older engine**, as for `d424dbd` above.
 
 ### JumpTable
 
