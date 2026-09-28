@@ -570,6 +570,17 @@ void FeasibilityJump::reconcile_counted(int32_t c) {
     violated_[ci] = static_cast<uint8_t>(want ? (kInV | kCounted) : (violated_[ci] & kInV));
 }
 
+void FeasibilityJump::uncount(int32_t c) {
+    const auto ci = static_cast<size_t>(c);
+    if ((violated_[ci] & kCounted) == 0) {
+        return;
+    }
+    for (const int32_t v : vars_of_constraint_[ci]) {
+        --active_violated_of_var_[static_cast<size_t>(v)];
+    }
+    violated_[ci] = kInV;
+}
+
 void FeasibilityJump::set_violated(int32_t c, bool now) {
     const auto ci = static_cast<size_t>(c);
     const bool was = (violated_[ci] & kInV) != 0;
@@ -588,11 +599,7 @@ void FeasibilityJump::set_violated(int32_t c, bool now) {
     if (!was) {
         return;
     }
-    if ((violated_[ci] & kCounted) != 0) {
-        for (const int32_t v : vars_of_constraint_[ci]) {
-            --active_violated_of_var_[static_cast<size_t>(v)];
-        }
-    }
+    uncount(c);
     violated_[ci] = 0;
     const auto pos = static_cast<size_t>(violated_pos_[ci]);
     const int32_t last = violated_rows_.back();
@@ -615,9 +622,25 @@ void FeasibilityJump::sort_violated_rows() {
     if (violated_rows_sorted_) {
         return;
     }
-    std::sort(violated_rows_.begin(), violated_rows_.end());
-    for (size_t i = 0; i < violated_rows_.size(); ++i) {
-        violated_pos_[static_cast<size_t>(violated_rows_[i])] = static_cast<int32_t>(i);
+    // Past |V| log2 |V| > #rows a comparison sort would cost more than the
+    // whole-row sweep the ordered scans replaced, so re-derive the list from the
+    // kInV bits instead: sorted by construction, and never worse than that sweep.
+    const size_t k = violated_rows_.size();
+    const size_t nc = violated_.size();
+    if (static_cast<double>(k) * std::log2(static_cast<double>(std::max<size_t>(k, 2))) >
+        static_cast<double>(nc)) {
+        violated_rows_.clear();
+        for (size_t c = 0; c < nc; ++c) {
+            if ((violated_[c] & kInV) != 0) {
+                violated_pos_[c] = static_cast<int32_t>(violated_rows_.size());
+                violated_rows_.push_back(static_cast<int32_t>(c));
+            }
+        }
+    } else {
+        std::sort(violated_rows_.begin(), violated_rows_.end());
+        for (size_t i = 0; i < k; ++i) {
+            violated_pos_[static_cast<size_t>(violated_rows_[i])] = static_cast<int32_t>(i);
+        }
     }
     violated_rows_sorted_ = true;
 }
@@ -961,16 +984,6 @@ void FeasibilityJump::on_extended(const ExtensionResult& ext) {
     // recounted against the merged one after (#174). ExtensionResult promises the
     // incidence rows are among `rows`, but the uncount is keyed on the incidences
     // themselves, so the counts cannot depend on that promise.
-    auto uncount = [this](int32_t ci) {
-        const auto c = static_cast<size_t>(ci);
-        if ((violated_[c] & kCounted) == 0) {
-            return;
-        }
-        for (const int32_t v : vars_of_constraint_[c]) {
-            --active_violated_of_var_[static_cast<size_t>(v)];
-        }
-        violated_[c] = kInV;
-    };
     for (const std::pair<int32_t, int32_t>& inc : ext.new_incidences) {
         uncount(inc.first);
     }
@@ -1194,8 +1207,10 @@ void FeasibilityJump::update_var(int32_t var_id) {
     unweighted_violation_ += violation_delta;
     // A vp sharing several rows with var_id is visited once per shared row. Not
     // deduplicated (#174 proposed a stamp): with the participation test now O(1),
-    // a repeat visit costs an idempotent invalidate and two byte loads, which is
-    // what a stamp check-and-set would cost to skip it.
+    // a repeat visit costs an idempotent invalidate on a line the first visit
+    // already touched, a byte load and at most one 4-byte count load -- no more
+    // than a stamp check-and-set, which would also charge every FIRST visit and
+    // 4 B per variable.
     for (int32_t c : gv) {
         for (int32_t vp : vars_of_constraint_[c]) {
             if (vp == var_id) {
@@ -1976,9 +1991,12 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
 bool FeasibilityJump::apply_novelty_jump() {
     require_tables_in_step();
     const size_t nv = model_.num_vars();
-    nj_in_queue_.assign(nv, 0);
-    on_stack_.assign(nv, 0);
-    move_stack_.clear();
+    // Flags stay set only for entries of nj_queue_ / move_stack_, which
+    // seed_novelty_scan_set and clear_stack clear through below -- also across
+    // calls, since an early return leaves both populated. resize only grows them
+    // for a model extended since the last call.
+    nj_in_queue_.resize(nv, 0);
+    on_stack_.resize(nv, 0);
     nj_work_remaining_ = kNoveltyWorkBudget;  // bound the compound-move search
 
     // on_stack_[v] is set exactly for the v on move_stack_ (pushed together,

@@ -903,7 +903,7 @@ The engine's state maps to the paper's `S = <G, X, W, V, Q, J>`:
 | `G` | constraint graph | `Model` |
 | `X` | variable values | `Model` variable values |
 | `W` | constraint weights | `ViolationManager::weights` |
-| `V` | violated constraints | `violated_` bitset |
+| `V` | violated constraints | `violated_` flags, plus the dense list `violated_rows_` and per-variable active-violated counts, kept incrementally (#174) |
 | `Q` | scan set of candidate vars | `queue_` / `in_queue_` |
 | `J` | cached per-var best jump | `JumpTable` |
 

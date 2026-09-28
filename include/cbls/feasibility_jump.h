@@ -201,9 +201,12 @@ public:
     ///    list `v` are violated AND active (weight > 0) -- the count
     ///    `participates_in_active_violated` reads. Meaningful for a jumpable
     ///    variable; a structured or retired one is in no row's list and reads 0.
+    ///    "Active" is as of the row's last reconcile: a weight a caller changes
+    ///    between batches shows up here only once the next batch, resync or
+    ///    reset has re-read the rows in V.
     ///
-    /// Each throws `std::out_of_range` on an index the model has no row or
-    /// variable for.
+    /// `row_violated` and `active_violated_rows_of` throw `std::out_of_range` on
+    /// an index the model has no row or variable for.
     [[nodiscard]] bool row_violated(int32_t ci) const;
     [[nodiscard]] std::vector<int32_t> violated_rows() const;
     [[nodiscard]] int32_t active_violated_rows_of(int32_t var_id) const;
@@ -455,14 +458,18 @@ private:
     // counts from violated_'s in-V bits (which it does not re-evaluate). One
     // O(#constraints + nonzeros of the counted rows) sweep.
     void rebuild_violated_index();
-    // reconcile_counted over every row in V: O(|V|). Run wherever weights may
-    // have changed outside this object's view -- after the GLS bump and at every
-    // gls_loop entry.
+    // reconcile_counted over every row in V: O(|V|). Run at every gls_loop entry,
+    // since weights may have changed outside this object's view between batches
+    // (bump_weights_and_requeue does the same inline, row by row).
     void reconcile_all_counted();
-    // Sort violated_rows_ ascending (and fix the positions) if a swap-remove or
-    // an out-of-order append has disturbed it. The scans that queue variables
-    // must visit rows in ascending order: that is the order the whole-row sweep
-    // they replace visited them in, and the scan set's order feeds the RNG draw.
+    // Drop row c's contribution to active_violated_of_var_ if it is counted,
+    // leaving it in V (kInV kept).
+    void uncount(int32_t c);
+    // Put violated_rows_ back in ascending order (and fix the positions) if a
+    // swap-remove or an out-of-order append has disturbed it: a sort while
+    // |V| log2 |V| <= #rows, a linear re-sweep of the kInV bits above that. The scans that queue
+    // variables must visit rows in ascending order: that is the order the whole-row sweep they
+    // replace visited them in, and the scan set's order feeds the RNG draw.
     void sort_violated_rows();
     void set_initial_assignment();
     void compute_linear_constraints();
@@ -505,8 +512,13 @@ private:
     // and so is counted in active_violated_of_var_). `violated_[c] != 0` still
     // reads "in V", because kCounted is never set without kInV.
     //
-    // Every write goes through set_violated / rebuild_violated_index, which keep
-    // three derived structures in step:
+    // Every write goes through set_violated, reconcile_counted, uncount or
+    // rebuild_violated_index (which re-derives everything from the raw kInV bits
+    // rebuild_violated_and_scan_set fills in). Two sites step outside that on
+    // purpose: on_extended uncounts a row against its OLD variable list before
+    // merging new incidences into it, and retire() edits the lists of possibly
+    // counted rows and leaves the counts wrong until the full rebuild it ends
+    // with -- nothing may read them in between. The derived structures are:
     //   - violated_rows_ + violated_pos_: V as a dense list with a position index
     //     (-1 = absent), swap-removed on the way out;
     //   - active_violated_of_var_: per variable, the number of COUNTED rows whose
@@ -516,22 +528,38 @@ private:
     // WHERE IT WINS AND WHERE IT LOSES. The scans it replaces were O(#rows) per
     // weight bump, per Novelty seed and per any_active_violated, and
     // update_var paid O(|G_vp|) per neighbour vp -- the two-hop nonzeros, per
-    // committed move. Now those scans are O(|V|) (plus an O(|V| log |V|) sort
-    // when a removal has disturbed the order), and the per-neighbour test is one
-    // load. The price is a constant per row FLIP: a push or a swap-remove, and a
-    // walk of the flipped row's variable list to adjust the counts -- a walk
-    // update_var's neighbour loop makes over the same row anyway, so what a move
-    // adds is at most one more pass of the one-hop loop it already runs. It loses
-    // only where almost every row flips on almost every move, and where |V| is
-    // close to #rows (the sort's log factor over a linear scan); neither is the
-    // regime a local search spends its time in.
+    // committed move. Now any_active_violated is O(|V|), and the bump's and the
+    // seed's scans are O(|V|) plus putting V back in ascending order, which
+    // between two bumps a swap-remove or an out-of-order append almost always
+    // has disturbed: an O(|V| log |V|) sort while |V| log |V| <= #rows, and above
+    // that a linear re-sweep of the kInV bits (sort_violated_rows), so the
+    // ordering never costs more than the whole-row sweep it replaced. The bump
+    // itself stays O(#rows) through gls_update_weights (#175 is that half).
     //
-    // "Active" is read live wherever the state is evaluated -- set_violated
-    // reconciles the row it writes, and reconcile_all_counted re-reads every row
-    // in V after the GLS bump and at each gls_loop entry -- so nothing assumes
-    // the weights evolve in any particular way. Only rows IN V ever have their
-    // weight read, which is what keeps a lazily-decayed weight scheme free to
-    // leave the others untouched.
+    // The price is a constant per row FLIP: a push or a swap-remove, and a walk
+    // of the flipped row's variable list to adjust the counts. In update_var that
+    // is a walk its neighbour loop makes over the same row anyway, so a move adds
+    // at most one more pass of the one-hop loop it already runs. Novelty's apply
+    // AND undo pay it too, where they used to write one byte per row, although
+    // Novelty never reads the counts -- bounded by kNoveltyWorkBudget moves per
+    // call, and accepted to keep one write path. So it loses where almost every
+    // row flips on almost every move, and on Novelty probes over long rows (the
+    // objective row lists every objective column).
+    //
+    // Memory, per worker: 4 B per row (violated_pos_), up to 4 B per row more
+    // for violated_rows_' capacity (it keeps the largest V it has held), and 4 B
+    // per variable.
+    //
+    // "Active" is read live wherever this state is evaluated -- set_violated
+    // reconciles the row it writes, bump_weights_and_requeue reconciles each row
+    // in V against its bumped weight, and reconcile_all_counted re-reads every
+    // row in V at each gls_loop entry -- so a weight changed between batches, or
+    // by the bump, is picked up. A weight changed from outside WHILE gls_loop runs
+    // would not be; nothing does that. This bookkeeping reads the weight only of
+    // a row in V or entering it; other readers -- refresh_unweighted_violation,
+    // update_var's residual over G_v, init_novelty_weights, gls_update_weights --
+    // still read rows outside V, so a lazily-decayed weight scheme must serve
+    // those too.
     static constexpr uint8_t kInV = 1;
     static constexpr uint8_t kCounted = 2;
     std::vector<uint8_t> violated_;                // per constraint: kInV | kCounted
