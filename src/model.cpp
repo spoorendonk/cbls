@@ -71,7 +71,7 @@ Model::Model(const Model& other)
         structure_ = other.structure_;
     } else {
         // Open: deep-copy, exactly as the implicit copy did before the split, so
-        // that a half-built model can be copied and then extended on its own.
+        // that a half-built model can be copied and then built further on its own.
         auto structure = std::make_shared<ModelStructure>(*other.structure_);
         open_structure_ = structure;
         structure_ = std::move(structure);

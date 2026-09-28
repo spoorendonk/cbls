@@ -133,24 +133,3 @@ def test_an_objective_model_still_solves_after_close() -> None:
     r = cbls.solve(m, time_limit=0.2, seed=1)
     assert r.feasible
     assert r.objective == pytest.approx(3.0)
-
-
-def test_a_violation_manager_built_before_freeze_raises_instead_of_overreading() -> None:
-    # freeze() appends the objective row, so a manager built before it has one
-    # weight too few; every weight-indexed read would run past the end. The
-    # engine refuses it (std::logic_error -> RuntimeError) instead.
-    m = cbls.Model()
-    x = m.int_var(0, 10, "x")
-    m.add_constraint(m.geq(x, m.constant(3.0)))
-    m.minimize(m.sum([x]))
-    m.close()
-    vm = cbls.ViolationManager(m)
-    assert len(vm.weights) == len(m.constraint_ids())
-    m.freeze()
-    assert len(vm.weights) + 1 == len(m.constraint_ids())
-    with pytest.raises(RuntimeError, match="one entry per constraint"):
-        vm.total_violation()
-    with pytest.raises(RuntimeError, match="one entry per constraint"):
-        vm.bump_weights()
-    # A manager built after the row reads normally.
-    assert cbls.ViolationManager(m).total_violation() >= 0.0

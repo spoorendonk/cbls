@@ -125,8 +125,9 @@ Install `pyright-lsp@claude-plugins-official`. Pyright reads `[tool.mypy]` and p
 - **Never return `reference_internal` to an element of a container the owner
   can grow.** `keep_alive` keeps the *owner* alive, not the element: every
   variable builder appends to the model's variable array and can reallocate it,
-  so a `m.var_mut(i)` held across one wrote into freed heap and the write was
-  silently lost (#167's cold review). Return an
+  so a `m.var_mut(i)` held across one writes into freed heap and the write is
+  silently lost (first found through the since-removed `Model.extend`, #167's
+  cold review). Return an
   (owner, index) handle that resolves on every access — `VariableRef`, bound as
   `cbls.Variable`, is the pattern — or a copy.
 
@@ -313,7 +314,7 @@ agree:
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
 4. the comment above the `ctest` call in `.githooks/pre-commit`,
-5. the `.venv/bin/pytest` line in `README.md` for the Python side (860 tests, 206
+5. the `.venv/bin/pytest` line in `README.md` for the Python side (862 tests, 208
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`),
 6. the `-LE slow` guidance and the ~25s/~490s figures in `docs/profiling.md`.
@@ -321,7 +322,7 @@ agree:
    named commit**, not a current count — it says so inline. Leave it alone
    apart from the parenthetical restating the current fast-set size.
 7. the binding count in **`## Build & Test`** below, in the paragraph explaining
-   why the gated build turns `CBLS_BUILD_PYTHON` on ("206 binding tests silently
+   why the gated build turns `CBLS_BUILD_PYTHON` on ("208 binding tests silently
    unrun"). It is in this file, but not in this section, so a search that stops
    at the enumeration above misses it.
 
@@ -518,7 +519,7 @@ ctest --test-dir build --output-on-failure -j$(nproc) && (CBLS_REQUIRE_BINDINGS=
 **The gated build turns the Python bindings on, and the gated test run requires
 them.** `CBLS_BUILD_PYTHON` defaults to `OFF` and `tests/python/conftest.py`
 skips every test that imports `_cbls_core` when the module is missing, so a build
-without the flag would leave 206 binding tests silently unrun.
+without the flag would leave 208 binding tests silently unrun.
 `CBLS_REQUIRE_BINDINGS=1` turns that skip into a hard error. Bindings cost ~2.4s
 of build and ~6s of pytest against a suite that already spends ~25s in `ctest` —
 always build them. The cost argument is the weaker one: the reason is that

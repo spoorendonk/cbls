@@ -141,7 +141,7 @@ private:
     /// `weights` is a public member, so it also catches a C++ caller that
     /// shortened it; Python cannot -- that setter is a `def_prop_rw` which
     /// rejects a length change (#156), though it checks against the manager's
-    /// own size rather than the model's. One size compare against
+    /// own size rather than the model's. One size compare is noise against
     /// bodies that are already O(#constraints) or that already compare a snapshot's
     /// size. `weighted_violation_delta` is the exception, and it is free for a
     /// different reason: FJ calls `Model::weighted_violation_delta` directly, so

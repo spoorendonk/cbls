@@ -341,11 +341,11 @@ TEST_CASE("cached row partials are bit-identical to compute_partial where claime
     REQUIRE(declined > 0);  // Eq rows with a computed side on both ends decline
 }
 
-TEST_CASE("row invalidations compact the slope pool without changing a score",
-          "[fj][linear_jump]") {
-    // Rows re-marked through set_row_eligible and rebuilt, over and over. The pool compacts once
-    // the dead entries outnumber the live, and every surviving row must still read its own slice
-    // afterwards.
+TEST_CASE("a built row is never reclassified", "[fj][linear_jump]") {
+    // A closed model's rows do not change, so a row's slopes are built once and
+    // kept: the pool holds no stale entries. Reclassifying a built row would
+    // orphan its record and pool entries, so it is refused instead; an unbuilt
+    // row can still be (re)classified.
     RandomLinearModel r;
     build_random_linear(r, 31, /*integral=*/true);
     Model& m = r.m;
@@ -354,21 +354,19 @@ TEST_CASE("row invalidations compact the slope pool without changing a score",
     RNG rng(31);
     randomise_assignment(m, rng);
     const std::vector<double> w(m.constraint_ids().size(), 1.0);
-    const auto nc = static_cast<int32_t>(m.constraint_ids().size());
     REQUIRE(check_scores(m, sc, w, rng, /*exact=*/true) > 50);
-    const size_t live = sc.pooled_slopes();  // every row built once, none dead
-    REQUIRE(live > 0);
-    for (int round = 0; round < 12; ++round) {
-        // Invalidate a varying half of the rows, then score everything.
-        for (int32_t c = round % 2; c < nc; c += 2) {
-            sc.set_row_eligible(c, true);
-        }
-        REQUIRE(check_scores(m, sc, w, rng, /*exact=*/true) > 50);
-        // Dead entries never exceed the live ones by more than the row that
-        // tipped the balance; without compaction this grows ~half of `live` per
-        // round.
-        REQUIRE(sc.pooled_slopes() <= 3 * live);
-    }
+    const size_t pooled = sc.pooled_slopes();  // every row built once
+    REQUIRE(pooled > 0);
+    REQUIRE_THROWS_AS(sc.set_row_eligible(0, false), std::logic_error);
+    REQUIRE(sc.row_eligible(0));
+    REQUIRE(check_scores(m, sc, w, rng, /*exact=*/true) > 50);
+    REQUIRE(sc.pooled_slopes() == pooled);  // scoring again builds nothing new
+
+    LinearJumpScorer fresh(m);
+    fresh.resize_rows(m.constraint_ids().size());
+    fresh.set_row_eligible(0, true);
+    REQUIRE_NOTHROW(fresh.set_row_eligible(0, false));  // not built yet
+    REQUIRE_FALSE(fresh.row_eligible(0));
 }
 
 TEST_CASE("a row clamped to kInfPenalty cancels exactly in the closed form (#100)",

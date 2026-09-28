@@ -153,7 +153,7 @@ public:
     ///    cheap and is the point of `freeze()`. The copy is frozen too, so it
     ///    cannot change what its peers read.
     ///  - an OPEN model deep-copies it, exactly as it always did, so a model
-    ///    still being built can be copied and then extended independently.
+    ///    still being built can be copied and then built further independently.
     ///
     /// The delta probe's scratch buffer is not copied: it is overwritten before
     /// it is read on every call, so its contents are not state.

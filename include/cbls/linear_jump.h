@@ -44,10 +44,8 @@ class Model;
 ///
 /// Storage: 4 bytes per row (a slot: ineligible, pending, or the index of its
 /// built record), plus, for each row BUILT, a 20-byte record and 12 bytes per
-/// nonzero in one pooled CSR (ascending variable ids, parallel slopes). A row
-/// reclassified through `set_row_eligible` drops its built slopes; their pool
-/// entries become dead and the pool is compacted once the dead outnumber the
-/// live. The slopes are
+/// nonzero in one pooled CSR (ascending variable ids, parallel slopes). A row is
+/// classified once, before it is built, and never rebuilt. The slopes are
 /// structure, but each portfolio worker's FJ builds its own; the build also
 /// sizes `dag_ops.cpp`'s thread_local adjoint scratch, which a pure MIP
 /// otherwise never allocated.
@@ -71,7 +69,9 @@ public:
     void resize_rows(size_t n);
     [[nodiscard]] size_t num_rows() const { return slots_.size(); }
 
-    /// (Re)classify row `ci` and drop any slopes cached for it.
+    /// Classify row `ci`. Throws `std::logic_error` if its slopes are already
+    /// built: a row's body does not change once the model is closed, so a
+    /// built row is never reclassified.
     void set_row_eligible(int32_t ci, bool eligible);
     /// As classified. A row not yet built can still be demoted by its build, on a
     /// non-finite slope.
@@ -105,7 +105,7 @@ public:
     [[nodiscard]] int64_t fast_prepares() const { return fast_prepares_; }
     [[nodiscard]] int64_t fallback_prepares() const { return fallback_prepares_; }
     [[nodiscard]] int64_t cached_partials() const { return cached_partials_; }
-    /// Slopes held in the pool, live and dead: what the cache costs, 12 B each.
+    /// Slopes held in the pool: what the cache costs, 12 B each.
     [[nodiscard]] size_t pooled_slopes() const { return pool_vars_.size(); }
 
 private:
@@ -143,24 +143,20 @@ private:
     };
 
     // Build row ci (must be pending); returns the row, or nullptr if the build
-    // demoted it to ineligible. May compact the pool, so any BuiltRow pointer
+    // demoted it to ineligible. Appends to built_, so any BuiltRow pointer
     // held across a call is invalidated.
     const BuiltRow* build_row(int32_t ci);
     // The built record of row ci, building it first if pending; nullptr if the
     // row is (or becomes) ineligible.
     const BuiltRow* ready_row(int32_t ci);
-    void release_row(uint32_t slot);
-    void compact_pool();
     [[nodiscard]] double child_value(int32_t id, bool is_var) const;
     [[nodiscard]] double slope_of(const BuiltRow& row, int32_t var_id) const;
 
     const Model& model_;
     std::vector<uint32_t> slots_;  // per row
-    std::vector<BuiltRow> built_;  // live and dead records
+    std::vector<BuiltRow> built_;  // one record per built row
     std::vector<int32_t> pool_vars_;
     std::vector<double> pool_slopes_;
-    size_t dead_entries_ = 0;  // pool entries of released rows
-    size_t dead_rows_ = 0;     // released records in built_
     std::vector<Term> terms_;
     // build_row's scratch, kept so a build allocates only the row it keeps.
     std::vector<std::pair<int32_t, double>> merged_;

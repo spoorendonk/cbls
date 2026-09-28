@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace cbls {
@@ -70,60 +71,20 @@ double eq_sign(double diff) {
 LinearJumpScorer::LinearJumpScorer(const Model& model) : model_(model) {}
 
 void LinearJumpScorer::resize_rows(size_t n) {
-    for (size_t ci = n; ci < slots_.size(); ++ci) {
-        release_row(slots_[ci]);
-    }
     slots_.resize(n, kIneligible);
-}
-
-// A built row's pool entries and record become dead; counted, not freed, until
-// compact_pool runs.
-void LinearJumpScorer::release_row(uint32_t slot) {
-    if (slot >= kFirstBuilt) {
-        dead_entries_ += built_[slot - kFirstBuilt].count;
-        ++dead_rows_;
-    }
 }
 
 void LinearJumpScorer::set_row_eligible(int32_t ci, bool eligible) {
     uint32_t& slot = slots_.at(static_cast<size_t>(ci));
-    release_row(slot);  // the body changed: its slopes are stale
+    if (slot >= kFirstBuilt) {
+        throw std::logic_error("LinearJumpScorer::set_row_eligible: row " + std::to_string(ci) +
+                               " is already built");
+    }
     slot = eligible ? kPending : kIneligible;
 }
 
 bool LinearJumpScorer::row_eligible(int32_t ci) const {
     return slots_.at(static_cast<size_t>(ci)) != kIneligible;
-}
-
-// Rewrite the pool and the records with the live rows only, in row order.
-// O(rows + live entries), run only once the dead outnumber the live -- so a
-// caller that reclassifies rows repeatedly holds at most about twice its live
-// slopes, and the copy is amortised over the builds that made the garbage.
-void LinearJumpScorer::compact_pool() {
-    std::vector<BuiltRow> built;
-    std::vector<int32_t> vars;
-    std::vector<double> slopes;
-    built.reserve(built_.size() - dead_rows_);
-    vars.reserve(pool_vars_.size() - dead_entries_);
-    slopes.reserve(pool_slopes_.size() - dead_entries_);
-    for (uint32_t& slot : slots_) {
-        if (slot < kFirstBuilt) {
-            continue;
-        }
-        BuiltRow row = built_[slot - kFirstBuilt];
-        const auto first = static_cast<std::ptrdiff_t>(row.begin);
-        const auto last = first + static_cast<std::ptrdiff_t>(row.count);
-        row.begin = static_cast<uint32_t>(vars.size());
-        vars.insert(vars.end(), pool_vars_.begin() + first, pool_vars_.begin() + last);
-        slopes.insert(slopes.end(), pool_slopes_.begin() + first, pool_slopes_.begin() + last);
-        slot = kFirstBuilt + static_cast<uint32_t>(built.size());
-        built.push_back(row);
-    }
-    built_ = std::move(built);
-    pool_vars_ = std::move(vars);
-    pool_slopes_ = std::move(slopes);
-    dead_entries_ = 0;
-    dead_rows_ = 0;
 }
 
 // Slopes of one eligible row, built on first use.
@@ -177,9 +138,6 @@ const LinearJumpScorer::BuiltRow* LinearJumpScorer::build_row(int32_t ci) {
         n += e.second != 0.0 ? 1 : 0;
     }
 
-    if (dead_entries_ > pool_vars_.size() - dead_entries_) {
-        compact_pool();
-    }
     if (pool_vars_.size() + n > std::numeric_limits<uint32_t>::max() ||
         built_.size() + kFirstBuilt > std::numeric_limits<uint32_t>::max()) {
         throw std::length_error("LinearJumpScorer: more than 2^32 - 1 cached slopes");
