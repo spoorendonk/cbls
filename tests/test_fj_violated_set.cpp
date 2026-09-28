@@ -126,28 +126,38 @@ TEST_CASE("FJ's violated set matches a recompute through moves and weight bumps"
 
 TEST_CASE("FJ's violated set follows a decay that deactivates a violated row",
           "[fj][violated_set]") {
-    // With a small rho a satisfied row's weight decays toward 0 quickly and can
-    // underflow to exactly 0 -- after which, violated again, it is not bumped
-    // (gls_update_weights tests the decayed weight) and stays inactive. The row
-    // is still in V, but no longer counted: the bump must re-read the weight of
-    // every row in V rather than trust the bit it set when the row entered.
+    // gls_update_weights decays FIRST and bumps only a row whose DECAYED weight is
+    // still > 0, so a violated row whose w * rho underflows to 0 is left at 0:
+    // still in V, but no longer active. The bump must therefore re-read the
+    // weight of every row in V rather than trust the bit it set when the row
+    // entered. rho = 0 makes that happen to every violated row at the first bump
+    // of the batch, deterministically; a small positive rho does it only to a row
+    // that turns violated while its weight is a few decays from underflowing,
+    // which is too rare to pin on.
     Model m;
-    build_random_rows(m, 17, 12, 40);
+    build_random_rows(m, 17, 30, 60);
     m.close();
     ViolationManager vm(m);
     RNG rng(9);
     FeasibilityJump fj(m, vm, rng, small_batch_config());
     fj.begin(true);
-    fj.set_rho(1e-3);  // 1e-3^108 underflows past the smallest denormal
-    bool saw_masked_violated = false;
-    for (int b = 0; b < 400; ++b) {
-        (void)fj.batch(5);
+    int deactivated = 0;
+    for (int round = 0; round < 30; ++round) {
+        fj.set_rho(0.95);
+        (void)fj.batch(20);
+        require_consistent(fj, m, vm);
+        fj.set_rho(0.0);
+        (void)fj.batch(3);
         require_consistent(fj, m, vm);
         for (const int32_t c : fj.violated_rows()) {
-            saw_masked_violated = saw_masked_violated || vm.weights[static_cast<size_t>(c)] == 0.0;
+            if (vm.weights[static_cast<size_t>(c)] == 0.0) {
+                ++deactivated;
+            }
         }
+        fj.reset_weights();
+        require_consistent(fj, m, vm);
     }
-    REQUIRE(saw_masked_violated);  // the case this test exists for did occur
+    REQUIRE(deactivated > 0);  // the case this test exists for did occur
 }
 
 TEST_CASE("FJ's violated set picks up weights masked and unmasked between batches",
