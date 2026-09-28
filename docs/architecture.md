@@ -1003,6 +1003,33 @@ The "before" rd-rplusc-21 runs overran the 20s budget to ~32s wall, because a
 single iteration was too expensive for the deadline stride to catch in time. The
 "after" runs stop at 20.1s.
 
+Dropping the sort was measured at `4400a17` (#175's head, sorted V) against
+`ab56e73` (list order; the later commits on top change comments only),
+`cbls_mipfeas` at 20s, one thread, Release, serially and interleaved per
+instance and seed on the same idle 12-core Ryzen 5 5600H (load 0.8-1.1). GLS
+iterations and the final max violation, seeds 1 / 2 (no instance reached
+feasibility in either arm):
+
+| instance | iterations before (s1 / s2) | after (s1 / s2) | max violation before | after |
+|---|---|---|---|---|
+| cbs-cta | 640,645 / 644,304 | 655,416 / 651,123 | 10.3 / 12.6 | 10.3 / 12.6 |
+| rail01 | 440,537 / 450,548 | 442,612 / 479,216 | 1 / 2 | 1 / 1 |
+| uccase12 | 233,494 / 271,229 | 314,318 / 291,426 | 6.3 / 9.81 | 3.6 / 12.9 |
+| neos-860300 | 15,264 / 16,739 | 12,719 / 17,829 | 1 / 1 | 1 / 1 |
+| rd-rplusc-21 | 7,446 / 7,918 | 6,626 / 8,857 | 1 / 1 | 1 / 1 |
+
+neos-860300 and rd-rplusc-21 were slower on seed 1 and faster on seed 2, so
+both were re-run on seeds 3-6 and seed 1 was repeated. The repeat reproduced
+each arm's seed-1 count to within 1-4% (neos-860300 12,818 against 12,719;
+rd-rplusc-21 7,123 / 6,466 against 7,446 / 6,626), so the gap is the
+trajectory, not timing noise. Over seeds 1-6 neos-860300 averages 16,794
+before and 16,332 after (paired mean -463, 0.7 standard errors from zero; two
+seeds faster, four slower), and rd-rplusc-21 7,389 before and 8,000 after
+(paired mean +612; four seeds faster, two slower). No instance is measurably slower; the change moves
+trajectories, so the iteration count per seed moves with them, and the
+objective (max violation) moves within the seed-to-seed spread the #175 table
+above already showed for uccase12.
+
 ### JumpTable
 
 A per-variable cache of the best jump found for that variable: the
