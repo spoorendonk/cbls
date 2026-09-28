@@ -300,8 +300,8 @@ public:
     /// from-scratch recomputation read it here, the search never does.
     ///
     ///  - `row_violated(ci)`: row `ci` is in V (the violated set FJ tracks);
-    ///  - `violated_rows()`: V as a list, ascending -- a copy, so reading it does
-    ///    not reorder anything;
+    ///  - `violated_rows()`: V sorted ascending -- a sorted copy; the search keeps
+    ///    V in flip order and never sorts it;
     ///  - `active_violated_rows_of(v)`: how many rows of `vars_of_constraint_` that
     ///    list `v` are violated AND active (weight > 0) -- the count
     ///    `participates_in_active_violated` reads. Meaningful for a jumpable
@@ -577,12 +577,6 @@ private:
     // Drop row c's contribution to active_violated_of_var_ if it is counted,
     // leaving it in V (kInV kept).
     void uncount(int32_t c);
-    // Put violated_rows_ back in ascending order (and fix the positions) if a
-    // swap-remove or an out-of-order append has disturbed it: a sort while
-    // |V| log2 |V| <= #rows, a linear re-sweep of the kInV bits above that. The scans that queue
-    // variables must visit rows in ascending order: that is the order the whole-row sweep they
-    // replace visited them in, and the scan set's order feeds the RNG draw.
-    void sort_violated_rows();
     void set_initial_assignment();
     void compute_linear_constraints();
     // The same classification as compute_linear_constraints, restricted to the
@@ -643,17 +637,18 @@ private:
     // WHERE IT WINS AND WHERE IT LOSES. The scans it replaces were O(#rows) per
     // weight bump, per Novelty seed and per any_active_violated, and
     // update_var paid O(|G_vp|) per neighbour vp -- the two-hop nonzeros, per
-    // committed move. Now any_active_violated is O(|V|), and the bump's and the
-    // seed's scans are O(|V|) plus putting V back in ascending order, which
-    // between two bumps a swap-remove or an out-of-order append almost always
-    // has disturbed: an O(|V| log |V|) sort while |V| log |V| <= #rows, and above
-    // that a linear re-sweep of the kInV bits (sort_violated_rows), so the
-    // ordering never costs more than the whole-row sweep it replaced. The bump
-    // itself used to stay O(#rows) through gls_update_weights; #175 made the
-    // decay lazy (LazyWeightDecay), so a bump is now the O(|V|) scan and the
-    // ordering above, plus one O(#rows + #vars) fold per gls_loop exit that
-    // decayed (and, in an unlimited gls()/run() loop, one per 1347 decays at
-    // rho = 0.95).
+    // committed move. Now any_active_violated, the Novelty seed's scan and the
+    // bump's scan are each O(|V|), plus the variable lists of the rows they
+    // queue from. They visit V in its list order, which is deterministic -- a
+    // function of the flip history alone -- but not ascending: #174 sorted V
+    // before each of them to stay bit-identical with the whole-row sweep, which
+    // made a bump O(|V| log |V|) capped at O(#rows); once #175 gave up
+    // bit-identity that sort bought nothing, and it is gone. The bump itself
+    // used to stay O(#rows) through gls_update_weights; #175 made the decay
+    // lazy (LazyWeightDecay), so a bump is now O(|V|) plus the nonzeros of V's
+    // counted rows it requeues, plus one O(#rows + #vars) fold per gls_loop
+    // exit that decayed (and, in an unlimited gls()/run() loop, one per 1347
+    // decays at rho = 0.95).
     // A Novelty batch as a whole likewise stays O(#rows), through
     // init_novelty_weights (every row, every b-round) and the caller's resync;
     // only the seeds repeated after each committed compound move got cheaper.
@@ -688,7 +683,6 @@ private:
     std::vector<uint8_t> violated_;                // per constraint: kInV | kCounted
     std::vector<int32_t> violated_rows_;           // V, dense
     std::vector<int32_t> violated_pos_;            // per constraint: index in violated_rows_, or -1
-    bool violated_rows_sorted_ = true;             // violated_rows_ is ascending
     std::vector<int32_t> active_violated_of_var_;  // per var: counted rows listing it
     std::vector<uint8_t> in_queue_;                // per var: in Q
     std::vector<int32_t> queue_;                   // scan set Q (vars with possibly-positive score)

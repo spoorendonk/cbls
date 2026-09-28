@@ -622,9 +622,6 @@ void FeasibilityJump::set_violated(int32_t c, bool now) {
     const bool was = (violated_[ci] & kInV) != 0;
     if (now) {
         if (!was) {
-            if (!violated_rows_.empty() && violated_rows_.back() > c) {
-                violated_rows_sorted_ = false;
-            }
             violated_pos_[ci] = static_cast<int32_t>(violated_rows_.size());
             violated_rows_.push_back(c);
             violated_[ci] = kInV;
@@ -642,7 +639,6 @@ void FeasibilityJump::set_violated(int32_t c, bool now) {
     if (pos + 1 != violated_rows_.size()) {
         violated_rows_[pos] = last;
         violated_pos_[static_cast<size_t>(last)] = static_cast<int32_t>(pos);
-        violated_rows_sorted_ = false;
     }
     violated_rows_.pop_back();
     violated_pos_[ci] = -1;
@@ -652,33 +648,6 @@ void FeasibilityJump::reconcile_all_counted() {
     for (const int32_t c : violated_rows_) {
         reconcile_counted(c);
     }
-}
-
-void FeasibilityJump::sort_violated_rows() {
-    if (violated_rows_sorted_) {
-        return;
-    }
-    // Past |V| log2 |V| > #rows a comparison sort would cost more than the
-    // whole-row sweep the ordered scans replaced, so re-derive the list from the
-    // kInV bits instead: sorted by construction, and never worse than that sweep.
-    const size_t k = violated_rows_.size();
-    const size_t nc = violated_.size();
-    if (static_cast<double>(k) * std::log2(static_cast<double>(std::max<size_t>(k, 2))) >
-        static_cast<double>(nc)) {
-        violated_rows_.clear();
-        for (size_t c = 0; c < nc; ++c) {
-            if ((violated_[c] & kInV) != 0) {
-                violated_pos_[c] = static_cast<int32_t>(violated_rows_.size());
-                violated_rows_.push_back(static_cast<int32_t>(c));
-            }
-        }
-    } else {
-        std::sort(violated_rows_.begin(), violated_rows_.end());
-        for (size_t i = 0; i < k; ++i) {
-            violated_pos_[static_cast<size_t>(violated_rows_[i])] = static_cast<int32_t>(i);
-        }
-    }
-    violated_rows_sorted_ = true;
 }
 
 void FeasibilityJump::rebuild_violated_index() {
@@ -695,7 +664,6 @@ void FeasibilityJump::rebuild_violated_index() {
         violated_rows_.push_back(static_cast<int32_t>(c));
         reconcile_counted(static_cast<int32_t>(c));
     }
-    violated_rows_sorted_ = true;
 }
 
 bool FeasibilityJump::row_violated(int32_t ci) const {
@@ -1199,9 +1167,9 @@ void FeasibilityJump::rebuild_violated_and_scan_set() {
     refresh_unweighted_violation();
     std::fill(in_queue_.begin(), in_queue_.end(), 0);
     queue_.clear();
-    // violated_rows_ is ascending straight out of the rebuild, and a counted row
-    // is exactly one in V and active: the whole-row sweep this replaced, in the
-    // same order.
+    // A counted row is exactly one in V and active. The rebuild has just laid V
+    // out ascending, so this visits rows in index order -- a by-product of the
+    // O(#rows) rebuild, not a requirement: any deterministic order would do.
     for (const int32_t c : violated_rows_) {
         if ((violated_[static_cast<size_t>(c)] & kCounted) != 0) {
             for (int32_t v : vars_of_constraint_[static_cast<size_t>(c)]) {
@@ -1421,13 +1389,12 @@ void FeasibilityJump::arm_deadline() {
 // The weight update is gls_update_weights' -- decay every row by rho, add 1 to
 // every active violated row -- in LazyWeightDecay's representation (#175): the
 // decay is O(1) on the global scale, and only the rows in V are touched, so the
-// bump is O(|V|) plus the ordering and requeue below rather than O(#rows). The
-// algorithm's weights are unchanged (ViolationLS, Davies et al. CPAIOR 2024,
-// Algorithm 3); only their storage is. The violated rows are V's, which is the
-// eager form's `constraint_violation(c) > kTol` row for row: is_violated is the
-// same kTol test and a NaN or +inf clamps to kInfPenalty there. That holds only
-// while V is current -- update_var keeps it so inside the loop, and a caller
-// that mutates the assignment outside FJ must resync() before the next batch
+// bump is O(|V|) plus the requeue below (the nonzeros of V's counted rows)
+// rather than O(#rows). The algorithm's weights are unchanged (ViolationLS, Davies et al. CPAIOR
+// 2024, Algorithm 3); only their storage is. The violated rows are V's, which is the eager form's
+// `constraint_violation(c) > kTol` row for row: is_violated is the same kTol test and a NaN or +inf
+// clamps to kInfPenalty there. That holds only while V is current -- update_var keeps it so inside
+// the loop, and a caller that mutates the assignment outside FJ must resync() before the next batch
 // (solve() does). A stale V now mis-weights rows, not just mis-queues them.
 void FeasibilityJump::bump_weights_and_requeue() {
     const double folded = weight_decay_.decay(vm_.weights, config_.rho);
@@ -1446,12 +1413,16 @@ void FeasibilityJump::bump_weights_and_requeue() {
         jumps_.scale_scores(folded);
     }
     vm_.invalidate_cache();
-    // Ascending, as the whole-row sweep this replaced visited them: the order
-    // variables enter Q is the order apply_jump's draw indexes. Each row's counted
-    // bit is re-read against its bumped weight on the way past (a fold by
-    // rho = 0 deactivates every row), which is also the only weight read the
-    // bump's own bookkeeping needs -- rows outside V are never looked at.
-    sort_violated_rows();
+    // V in its list order. The order variables enter Q is the order apply_jump's
+    // draw indexes, so it matters for the trajectory, but only that it is
+    // deterministic: the list order is a function of the flip history alone
+    // (appends and swap-removes), so a seeded run reproduces. It is NOT
+    // ascending, and keeping it ascending would cost a sort per bump (#174 did,
+    // for bit-identity with the whole-row sweep; the lazy decay gave that up).
+    // Each row's counted bit is re-read against its bumped weight on the way
+    // past (a fold by rho = 0 deactivates every row), which is also the only
+    // weight read the bump's own bookkeeping needs -- rows outside V are never
+    // looked at.
     for (const int32_t c : violated_rows_) {
         weight_decay_.bump(vm_.weights, static_cast<size_t>(c));
         reconcile_counted(c);
@@ -1954,14 +1925,15 @@ void FeasibilityJump::nj_enqueue(int32_t var_id) {
 // O(|Q'| + |V|) rather than O(#vars + #rows) (#174). nj_in_queue_[v] is set
 // exactly for the v in nj_queue_ (nj_enqueue sets it with the push,
 // select_novelty_var clears it with the swap-remove), so clearing it through the
-// queue is the same as clearing the whole vector. The rows are visited ascending
-// with a live weight read, as the whole-row sweep this replaced did.
+// queue is the same as clearing the whole vector. The rows are visited in V's
+// list order (deterministic; see bump_weights_and_requeue) with a live weight
+// read. That order feeds select_novelty_var's draw, so it is part of the
+// trajectory, but no longer ascending.
 void FeasibilityJump::seed_novelty_scan_set() {
     for (const int32_t v : nj_queue_) {
         nj_in_queue_[static_cast<size_t>(v)] = 0;
     }
     nj_queue_.clear();
-    sort_violated_rows();
     for (const int32_t c : violated_rows_) {
         if (active(c)) {
             for (int32_t v : vars_of_constraint_[static_cast<size_t>(c)]) {

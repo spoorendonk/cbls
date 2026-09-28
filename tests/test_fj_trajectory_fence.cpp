@@ -7,23 +7,32 @@
 // a list visited in the wrong order changes the search while leaving every
 // consistency check in tests/test_fj_violated_set.cpp green. This pins it.
 //
-// The hashes below were first recorded at engine commit c19c982, the last commit
-// before #174, and reproduced unchanged by #174 -- which is the claim: the new
-// bookkeeping is bit-identical. Like tests/test_structured_trajectory.cpp, this is
-// a REGRESSION FENCE and not a quality assertion. A change that moves an FJ
-// trajectory on purpose re-records them and says why in its commit.
+// The hashes were first recorded at engine commit c19c982, the last commit
+// before #174, and #174 reproduced both unchanged: its bookkeeping was
+// bit-identical, which it bought by sorting V back into ascending row order
+// before every scan that queues variables. Like
+// tests/test_structured_trajectory.cpp, this is a REGRESSION FENCE and not a
+// quality assertion. A change that moves an FJ trajectory on purpose re-records
+// them and says why here and in its commit.
 //
 // #175 moved the batch-API hash on purpose: the GLS decay became lazy (a global
 // scale, LazyWeightDecay), which agrees with the eager decay to rounding, not to
 // the bit, and keeps cached jump scores in the same scaled space as fresh ones.
-// Re-recorded at #175. The two-phase run() hash reproduced unchanged: its first
-// phase spends the whole 6000-iteration budget, its general phase stops after
-// one bump-free iteration with the weights at exactly 1, and the phase-1
-// assignment it ends on happened to come out identical.
+// The two-phase run() hash reproduced unchanged then.
 //
-// Only public API that existed at c19c982 is used here, so the two-phase
-// recording can be repeated against that commit; the batch-API one only against
-// #175 or later.
+// Both hashes were re-recorded once more when the ascending-order sort went
+// (the #175 review round): with bit-identity already given up, the sort only
+// made each bump O(|V| log |V|). The bump's requeue and the Novelty seed now
+// visit V in its list order -- appends plus swap-removes, a deterministic
+// function of the flip history, but not ascending -- so the order variables
+// enter Q and the Novelty scan set changes, and with it apply_jump's and
+// select_novelty_var's draws. That order is what this fence pins now: a
+// swap-remove that mis-places a row still moves both hashes. Neither can be
+// reproduced against c19c982 any more.
+//
+// The two-phase hash sees only the final assignment and weights, and run()
+// refills every weight to 1 before its general phase, so phase-1 weights never
+// reach it directly -- only through the assignment phase 1 ends on.
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
@@ -143,16 +152,16 @@ uint64_t two_phase_run_trajectory() {
 
 }  // namespace
 
-TEST_CASE("FJ's batch-API trajectory is unchanged by the violated-set bookkeeping",
+TEST_CASE("FJ's batch-API trajectory matches its recorded fingerprint",
           "[fj][violated_set][trajectory]") {
     const uint64_t h = batch_api_trajectory();
     CAPTURE(h);
-    REQUIRE(h == 0x21e6a196656938a3ULL);
+    REQUIRE(h == 0xf79597c62086247bULL);
 }
 
-TEST_CASE("FJ's two-phase run() trajectory is unchanged by the violated-set bookkeeping",
+TEST_CASE("FJ's two-phase run() trajectory matches its recorded fingerprint",
           "[fj][violated_set][trajectory]") {
     const uint64_t h = two_phase_run_trajectory();
     CAPTURE(h);
-    REQUIRE(h == 0x9b067ed723c83166ULL);
+    REQUIRE(h == 0xac3e4c76b0aa79ecULL);
 }
