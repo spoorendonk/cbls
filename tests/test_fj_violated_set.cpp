@@ -172,12 +172,12 @@ TEST_CASE("FJ's violated set picks up weights masked and unmasked between batche
     RNG rng(13);
     FeasibilityJump fj(m, vm, rng, small_batch_config());
     fj.begin(true);
-    std::mt19937 gen(99);
-    std::uniform_int_distribution<size_t> pick_row(0, vm.weights.size() - 1);
+    RNG pick(99);  // separate from the search's stream
+    const auto nc = static_cast<int64_t>(vm.weights.size());
     bool masked_a_violated_row = false;
     for (int b = 0; b < 150; ++b) {
         for (int k = 0; k < 6; ++k) {
-            const size_t c = pick_row(gen);
+            const auto c = static_cast<size_t>(pick.integers(0, nc));
             masked_a_violated_row =
                 masked_a_violated_row ||
                 (fj.row_violated(static_cast<int32_t>(c)) && vm.weights[c] > 0.0);
