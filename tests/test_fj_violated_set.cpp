@@ -1,0 +1,284 @@
+// FeasibilityJump's incremental violated-row state (#174): the dense list of
+// violated rows and the per-variable count of active violated rows are kept up
+// to date at every site that moves a row in or out of V, instead of being
+// recomputed by a sweep. These tests pin that state against a from-scratch
+// recomputation from the model's node values and the live GLS weights, through
+// every kind of change: committed moves, weight bumps (including a decay that
+// deactivates a violated row), weights masked from outside between batches,
+// Novelty apply/undo, retirement, and Model::extend / on_extended.
+
+#include <algorithm>
+#include <catch2/catch_test_macros.hpp>
+#include <cbls/cbls.h>
+#include <cbls/model_extension.h>
+#include <cstdint>
+#include <random>
+#include <vector>
+
+using namespace cbls;
+
+namespace {
+
+// is_violated's threshold in src/feasibility_jump.cpp; NaN counts as violated.
+constexpr double kTol = 1e-9;
+
+bool fresh_violated(const Model& m, size_t ci) {
+    return !(m.node_value(m.constraint_ids()[ci]) <= kTol);
+}
+
+// The from-scratch recomputation. `skip` names variables that are not jumpable
+// (retired): they are in no row's variable list, so their count must be 0.
+void require_consistent(const FeasibilityJump& fj, const Model& m, const ViolationManager& vm,
+                        const std::vector<uint8_t>& skip = {}) {
+    const size_t nc = m.constraint_ids().size();
+    std::vector<int32_t> expected_rows;
+    for (size_t c = 0; c < nc; ++c) {
+        const bool v = fresh_violated(m, c);
+        CAPTURE(c);
+        REQUIRE(fj.row_violated(static_cast<int32_t>(c)) == v);
+        if (v) {
+            expected_rows.push_back(static_cast<int32_t>(c));
+        }
+    }
+    REQUIRE(fj.violated_rows() == expected_rows);
+    for (size_t v = 0; v < m.num_vars(); ++v) {
+        int32_t expected = 0;
+        if (v >= skip.size() || skip[v] == 0) {
+            for (const int32_t c : m.constraints_of_var(static_cast<int32_t>(v))) {
+                if (fresh_violated(m, static_cast<size_t>(c)) &&
+                    vm.weights[static_cast<size_t>(c)] > 0.0) {
+                    ++expected;
+                }
+            }
+        }
+        CAPTURE(v);
+        REQUIRE(fj.active_violated_rows_of(static_cast<int32_t>(v)) == expected);
+    }
+}
+
+// A random sparse integer model with more rows than it can satisfy at once, so
+// V keeps changing under the search rather than emptying on the first batch.
+// Returns the Sum node of every row, for extensions to grow.
+std::vector<int32_t> build_random_rows(Model& m, uint32_t seed, int num_vars, int num_rows) {
+    std::mt19937 gen(seed);
+    std::uniform_int_distribution<int> pick_var(0, num_vars - 1);
+    std::uniform_int_distribution<int> pick_coef(1, 3);
+    std::uniform_int_distribution<int> pick_sign(0, 1);
+    std::uniform_int_distribution<int> pick_rhs(-2, 6);
+    std::vector<int32_t> handles;
+    handles.reserve(static_cast<size_t>(num_vars));
+    for (int i = 0; i < num_vars; ++i) {
+        handles.push_back(m.int_var(0, 4));
+    }
+    std::vector<int32_t> sums;
+    for (int r = 0; r < num_rows; ++r) {
+        std::vector<int32_t> terms;
+        std::vector<int> used;
+        while (used.size() < 4) {
+            const int v = pick_var(gen);
+            if (std::find(used.begin(), used.end(), v) != used.end()) {
+                continue;
+            }
+            used.push_back(v);
+            const double coef = (pick_sign(gen) != 0 ? 1.0 : -1.0) * pick_coef(gen);
+            terms.push_back(m.prod(m.constant(coef), handles[static_cast<size_t>(v)]));
+        }
+        const int32_t sum = m.sum(terms);
+        sums.push_back(sum);
+        const double rhs = pick_rhs(gen);
+        m.add_constraint(r % 2 == 0 ? m.leq(sum, m.constant(rhs)) : m.geq(sum, m.constant(rhs)));
+    }
+    return sums;
+}
+
+GFJConfig small_batch_config() {
+    GFJConfig cfg;
+    cfg.two_phase = false;
+    cfg.time_limit = 0.0;
+    cfg.unproductive_iterations = 0;
+    return cfg;
+}
+
+}  // namespace
+
+TEST_CASE("FJ's violated set matches a recompute through moves and weight bumps",
+          "[fj][violated_set]") {
+    // Short batches, checked after each: every batch mixes committed moves
+    // (update_var) and GLS bumps, and rho alternates between the two values
+    // solve() samples.
+    Model m;
+    build_random_rows(m, 3, 30, 60);
+    m.close();
+    ViolationManager vm(m);
+    RNG rng(5);
+    FeasibilityJump fj(m, vm, rng, small_batch_config());
+    fj.begin(true);
+    require_consistent(fj, m, vm);
+    bool saw_violated = false;
+    for (int b = 0; b < 200; ++b) {
+        fj.set_rho(b % 2 == 0 ? 0.95 : 1.0);
+        (void)fj.batch(7);
+        require_consistent(fj, m, vm);
+        saw_violated = saw_violated || !fj.violated_rows().empty();
+    }
+    REQUIRE(saw_violated);  // not vacuous: V was non-empty at some check
+}
+
+TEST_CASE("FJ's violated set follows a decay that deactivates a violated row",
+          "[fj][violated_set]") {
+    // With a small rho a satisfied row's weight decays toward 0 quickly and can
+    // underflow to exactly 0 -- after which, violated again, it is not bumped
+    // (gls_update_weights tests the decayed weight) and stays inactive. The row
+    // is still in V, but no longer counted: the bump must re-read the weight of
+    // every row in V rather than trust the bit it set when the row entered.
+    Model m;
+    build_random_rows(m, 17, 12, 40);
+    m.close();
+    ViolationManager vm(m);
+    RNG rng(9);
+    FeasibilityJump fj(m, vm, rng, small_batch_config());
+    fj.begin(true);
+    fj.set_rho(1e-3);  // 1e-3^108 underflows past the smallest denormal
+    bool saw_masked_violated = false;
+    for (int b = 0; b < 400; ++b) {
+        (void)fj.batch(5);
+        require_consistent(fj, m, vm);
+        for (const int32_t c : fj.violated_rows()) {
+            saw_masked_violated = saw_masked_violated || vm.weights[static_cast<size_t>(c)] == 0.0;
+        }
+    }
+    REQUIRE(saw_masked_violated);  // the case this test exists for did occur
+}
+
+TEST_CASE("FJ's violated set picks up weights masked and unmasked between batches",
+          "[fj][violated_set]") {
+    // run()'s two-phase mask sets weights to 0 from outside FJ's bookkeeping,
+    // and a caller can do the same between batches. The counts must follow the
+    // live weights by the time the next batch has run, however few moves it made.
+    Model m;
+    build_random_rows(m, 23, 30, 60);
+    m.close();
+    ViolationManager vm(m);
+    RNG rng(13);
+    FeasibilityJump fj(m, vm, rng, small_batch_config());
+    fj.begin(true);
+    std::mt19937 gen(99);
+    std::uniform_int_distribution<size_t> pick_row(0, vm.weights.size() - 1);
+    bool masked_a_violated_row = false;
+    for (int b = 0; b < 150; ++b) {
+        for (int k = 0; k < 6; ++k) {
+            const size_t c = pick_row(gen);
+            masked_a_violated_row =
+                masked_a_violated_row ||
+                (fj.row_violated(static_cast<int32_t>(c)) && vm.weights[c] > 0.0);
+            vm.weights[c] = vm.weights[c] > 0.0 ? 0.0 : 1.0;  // flip the mask
+        }
+        vm.invalidate_cache();
+        (void)fj.batch(1);
+        require_consistent(fj, m, vm);
+    }
+    REQUIRE(masked_a_violated_row);
+}
+
+TEST_CASE("FJ's violated set survives Novelty apply and undo", "[fj][violated_set]") {
+    // apply_novelty_jump moves variables and reverts most of them while it
+    // searches; each of those writes V through the same path as update_var. It
+    // leaves V describing the assignment it ends on, which is checked BEFORE the
+    // resync the caller then owes -- a resync would rebuild it and hide a lapse.
+    Model m;
+    build_random_rows(m, 31, 30, 60);
+    m.close();
+    ViolationManager vm(m);
+    RNG rng(21);
+    FeasibilityJump fj(m, vm, rng, small_batch_config());
+    fj.begin(true);
+    int novelty_calls_with_violation = 0;
+    for (int b = 0; b < 60; ++b) {
+        (void)fj.batch(20);
+        const bool had_violation = !fj.violated_rows().empty();
+        const std::vector<double> before = m.copy_state().values;
+        (void)fj.apply_novelty_jump();
+        require_consistent(fj, m, vm);
+        if (had_violation && m.copy_state().values != before) {
+            ++novelty_calls_with_violation;
+        }
+        fj.resync();
+        require_consistent(fj, m, vm);
+    }
+    REQUIRE(novelty_calls_with_violation > 0);  // Novelty did commit moves
+}
+
+TEST_CASE("FJ's violated set follows retirement", "[fj][violated_set]") {
+    Model m;
+    build_random_rows(m, 41, 20, 40);
+    m.close();
+    ViolationManager vm(m);
+    RNG rng(3);
+    FeasibilityJump fj(m, vm, rng, small_batch_config());
+    fj.begin(true);
+    (void)fj.batch(30);
+    std::vector<uint8_t> retired(m.num_vars(), 0);
+    std::vector<int32_t> to_retire;
+    for (int32_t v = 0; v < 5; ++v) {
+        Variable& var = m.var_mut(v);
+        var.lb = var.value;
+        var.ub = var.value;
+        retired[static_cast<size_t>(v)] = 1;
+        to_retire.push_back(v);
+    }
+    fj.retire(to_retire);
+    require_consistent(fj, m, vm, retired);
+    for (int b = 0; b < 40; ++b) {
+        (void)fj.batch(5);
+        require_consistent(fj, m, vm, retired);
+    }
+}
+
+TEST_CASE("FJ's violated set follows Model::extend through on_extended", "[fj][violated_set]") {
+    // New columns entering existing rows -- some of them violated and active, so
+    // their variable lists grow while they are counted -- and new rows over old
+    // and new variables. Checked straight after on_extended and again after
+    // further batches on the grown model.
+    Model m;
+    const std::vector<int32_t> sums = build_random_rows(m, 57, 20, 40);
+    m.close();
+    ViolationManager vm(m);
+    RNG rng(8);
+    FeasibilityJump fj(m, vm, rng, small_batch_config());
+    fj.begin(true);
+    (void)fj.batch(25);
+    require_consistent(fj, m, vm);
+
+    for (int round = 0; round < 3; ++round) {
+        // Grow a counted row if there is one: that is the case whose count
+        // depends on the list being re-walked after the merge.
+        std::vector<int32_t> targets;
+        for (const int32_t c : fj.violated_rows()) {
+            if (vm.weights[static_cast<size_t>(c)] > 0.0) {
+                targets.push_back(c);
+            }
+        }
+        REQUIRE_FALSE(targets.empty());
+        ModelExtension ext(m);
+        const int32_t col = ext.int_var(0, 4);
+        ext.set_initial(col, 0.0);  // leave the grown rows' values where they were
+        for (size_t k = 0; k < targets.size() && k < 3; ++k) {
+            ext.append_to_sum(sums[static_cast<size_t>(targets[k])],
+                              ext.prod(ext.constant(1.0), col));
+        }
+        // A new row over an old variable and the new column, violated at once
+        // (both are at most 4). Handle -1 is variable 0.
+        const int32_t old_var = -1;
+        ext.add_constraint(ext.geq(
+            ext.sum({ext.prod(ext.constant(1.0), old_var), ext.prod(ext.constant(1.0), col)}),
+            ext.constant(20.0)));
+        const ExtensionResult res = m.extend(ext);
+        vm.on_extended(res);
+        fj.on_extended(res);
+        require_consistent(fj, m, vm);
+        for (int b = 0; b < 10; ++b) {
+            (void)fj.batch(5);
+            require_consistent(fj, m, vm);
+        }
+    }
+}
