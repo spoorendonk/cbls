@@ -119,7 +119,8 @@ constexpr const char* kSolveMasterDoc =
     "shares its immutable structure (#157), so the model comes back frozen: build\n"
     "any further structure before calling this. hook_factory, lns_factory,\n"
     "callback and par_config behave as in solve_parallel (see there, including\n"
-    "the GIL release and the exception contract).\n"
+    "that hook_factory is handed a COPY of its worker's model, the GIL release\n"
+    "and the exception contract).\n"
     "\n"
     "While this runs, structural writes to `model` from Python -- builders,\n"
     "extend, ModelExtension -- raise RuntimeError, as under cbls.solve.";

@@ -803,7 +803,7 @@ ExtensionResult Model::extend(const ModelExtension& ext) {
             "Model::extend: the model is frozen. freeze() publishes one ModelStructure to every "
             "portfolio replica, so growing it would mutate a peer's model under a running search "
             "-- ParallelSearch::solve(Model&) and the CLI at --threads > 1 both freeze, so growth "
-            "needs a private structure: pass model.private_copy()");
+            "needs an open model");
     }
     if (!closed_) {
         throw std::logic_error(

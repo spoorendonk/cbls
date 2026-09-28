@@ -669,9 +669,7 @@ amortises it.
 **A frozen model is refused.** `freeze()` publishes one `ModelStructure` to every
 portfolio replica, so growth would rewrite a peer's DAG under a running search.
 `ParallelSearch::solve(Model&)` and the CLI at `--threads > 1` both freeze, so
-growth is **single-`solve()` only** on a frozen model. A caller that needs to grow
-a frozen model takes an explicit deep copy (`Model::private_copy`) rather than an
-overlay on the shared structure.
+growth is **single-`solve()` only** on a frozen model.
 
 **Three things the cold review of #167 closed**, worth knowing before anything
 wires this into the search loop:

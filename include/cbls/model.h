@@ -421,19 +421,6 @@ public:
     void freeze();
     [[nodiscard]] bool is_frozen() const noexcept { return open_structure_ == nullptr; }
 
-    /// A copy with a PRIVATE, writable structure, even of a frozen model.
-    ///
-    /// The explicit form of the detach `freeze()` refuses to do silently: the
-    /// shared structure is deep-copied, so the copy can `extend` without touching
-    /// what any peer reads, and it costs exactly what a copy of an open model
-    /// costs -- the whole DAG. Everything else about the copy is the ordinary copy
-    /// constructor's: closedness, the objective row, the assignment, the node
-    /// values and a clone of every custom invariant.
-    ///
-    /// Safe to call on a frozen model from several threads at once, for the reason
-    /// the copy constructor is: it only reads the shared structure.
-    [[nodiscard]] Model private_copy() const;
-
     /// Grow a CLOSED model: new variables, new nodes, new constraints, and terms
     /// appended to existing `Sum` rows (#167). `include/cbls/model_extension.h`
     /// carries `ModelExtension` and `ExtensionResult`.
@@ -506,10 +493,8 @@ public:
     /// reason `mut()` throws. `ParallelSearch::solve(Model&)` and the CLI at
     /// `--threads > 1` both freeze, so **growth is single-`solve()` only**:
     /// `solve()` itself never freezes, and the CLI at `--threads 1` hands it an
-    /// open model. The escape is an EXPLICIT detach rather than an overlay:
-    /// `private_copy()` gives a writable deep copy. That is
-    /// why this stays a refusal and not a silent copy-on-write detach -- see
-    /// `freeze()` on why a silent detach is the wrong failure.
+    /// open model. This stays a refusal and not a silent copy-on-write detach --
+    /// see `freeze()` on why a silent detach is the wrong failure.
     ///
     /// Also throws `std::logic_error` on a model that is not closed (use the
     /// ordinary builders), and `std::invalid_argument` if `ext` was built against
