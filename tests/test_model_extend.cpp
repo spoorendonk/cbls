@@ -1711,9 +1711,9 @@ TEST_CASE("constraints, objectives and declarations refuse a closed model", "[ex
 }
 
 TEST_CASE("a closed model still takes per-variable and search writes", "[extend][closed]") {
-    // The refusal is for STRUCTURE. What a search, FeasibilityJump::retire or a
-    // column-generation pricer writes -- a variable's value or bounds, the
-    // objective bound, a state restore -- is per-model state and stays open.
+    // The refusal is for STRUCTURE. What a search writes -- a variable's value or
+    // bounds, the objective bound, a state restore -- is per-model state and
+    // stays open.
     ClosedFixture f;
     Model& m = f.m;
     const Footprint before(m);

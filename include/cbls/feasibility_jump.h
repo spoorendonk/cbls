@@ -305,7 +305,7 @@ public:
     ///  - `active_violated_rows_of(v)`: how many rows of `vars_of_constraint_` that
     ///    list `v` are violated AND active (weight > 0) -- the count
     ///    `participates_in_active_violated` reads. Meaningful for a jumpable
-    ///    variable; a structured or retired one is in no row's list and reads 0.
+    ///    variable; a structured one is in no row's list and reads 0.
     ///    "Active" is as of the row's last reconcile: a weight a caller changes
     ///    between batches shows up here only once the next batch, resync or
     ///    reset has re-read the rows in V.

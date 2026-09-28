@@ -262,7 +262,46 @@ def _scenario_a_violation_manager_keeps_its_model_alive() -> None:
     print("OK")
 
 
+def _scenario_solve_master_round_trips_and_reraises() -> None:
+    """solve_master's own result and exception contract.
+
+    A callback raising in the one worker comes out of the call as that
+    exception, and the unwind releases the registration: a second solve_master
+    on the same model runs, answers correctly, reports every worker completed
+    and leaves the model frozen.
+    """
+    m, _, _ = _two_var_model()
+
+    class CallbackError(ValueError):
+        pass
+
+    class Raiser(cbls.SolveCallback):  # type: ignore[misc]
+        def on_progress(self, p: Any) -> None:
+            raise CallbackError("every worker")
+
+    cfg = cbls.SearchConfig()
+    cfg.max_iterations = 20_000
+    par = cbls.ParallelConfig()
+    par.n_threads = 1
+    try:
+        cbls.ParallelSearch(1).solve_master(
+            m, time_limit=0.0, seed=1, config=cfg, callback=Raiser(), par_config=par
+        )
+    except CallbackError as e:
+        assert "every worker" in str(e)
+    else:
+        raise AssertionError("solve_master swallowed an exception every worker raised")
+    par.n_threads = 2
+    r = cbls.ParallelSearch(2).solve_master(m, time_limit=0.0, seed=2, config=cfg, par_config=par)
+    assert r.feasible, r
+    assert abs(r.objective - 3.0) < 1e-6, r.objective
+    assert r.workers_completed == 2, r.workers_completed
+    assert m.is_frozen()
+    print("OK")
+
+
 SCENARIOS = {
+    "master_round_trip": _scenario_solve_master_round_trips_and_reraises,
     "structural_writes": _scenario_structural_writes_are_refused_during_a_solve,
     "master_registers": _scenario_solve_master_registers_the_master,
     "expr_keeps_model": _scenario_an_expr_keeps_its_model_alive,
@@ -284,6 +323,10 @@ def test_an_expr_keeps_its_model_alive() -> None:
 
 def test_a_violation_manager_keeps_its_model_alive() -> None:
     _assert_scenario_ok("vm_keeps_model")
+
+
+def test_solve_master_round_trips_and_reraises() -> None:
+    _assert_scenario_ok("master_round_trip")
 
 
 if __name__ == "__main__":

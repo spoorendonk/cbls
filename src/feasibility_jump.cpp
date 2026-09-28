@@ -1032,6 +1032,11 @@ void FeasibilityJump::on_extended(const ExtensionResult& ext) {
     // the extension's effect looks.
 }
 
+// `vars_of_constraint_` is the transpose of G_v restricted to jumpable variables,
+// and ASCENDING in variable id -- the constructor builds it by walking the
+// variables in order, and FJ's scan order over it feeds the trajectory. So this
+// MERGES rather than appending: a term appended to an existing row can name an
+// existing variable whose id is below one the row already listed.
 void FeasibilityJump::merge_new_incidences(const ExtensionResult& ext) {
     const std::vector<std::pair<int32_t, int32_t>>& inc = ext.new_incidences;
     size_t i = 0;

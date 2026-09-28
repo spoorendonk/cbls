@@ -5,7 +5,7 @@
 // recomputation from the model's node values and the live GLS weights, through
 // every kind of change: committed moves, weight bumps (including a decay that
 // deactivates a violated row), weights masked from outside between batches,
-// Novelty apply/undo, retirement, and Model::extend / on_extended.
+// Novelty apply/undo, and Model::extend / on_extended.
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
