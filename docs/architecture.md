@@ -881,7 +881,7 @@ pass) stay `0` under decay and are never bumped, so they remain inactive.
 O(#constraints) per bump, and stays as the public reference. `FeasibilityJump`
 applies the same update through `LazyWeightDecay`: it stores `w' = w / s`, a
 decay is `s *= rho` (O(1)), and a bump adds `1/s` to the rows in V only, so a
-bump costs O(|V|) plus V's ordering. `s` is folded into the stored weights (and
+bump costs O(|V|) plus the variables it requeues. `s` is folded into the stored weights (and
 into the cached jump scores) when it would leave `[1e-30, 1e30]` -- once per
 1347 decays at `rho = 0.95`, never at `rho = 1` -- and on every exit from the
 GLS loop, so `ViolationManager::weights` holds effective weights whenever FJ is
@@ -893,8 +893,10 @@ zeroes a weight. Trajectories also move for a second reason: the eager form
 left a cached jump score that the bump did not invalidate at its pre-decay
 scale, stale by `rho^-k` against freshly computed ones, whereas in the scaled
 space a decay leaves every cached score exact. That affects only entries whose
-rows the bump did not touch -- in practice rows violated by at most `kTol` --
-and the scores carried across a batch boundary.
+rows the bump did not touch, which in practice means rows violated by at most
+`kTol`: any other valid entry in Q has a positive score, so it sits in a counted
+row and the bump invalidates it. Scores carried across a batch boundary are
+rescaled by the folded factor and match the eager form to rounding.
 
 Measured at `40f39a3` (#174's head, eager decay) against `d424dbd` (lazy),
 Release, one thread, serially on an idle 12-core Ryzen 5 5600H (load 1.0-1.5),
@@ -969,15 +971,22 @@ be answered by rescanning: every neighbour `vp` of a committed move re-read all
 of `G_vp` (the two-hop nonzeros per move), and each weight bump, Novelty seed and
 feasibility test swept every row. Now a dense list of violated rows and a
 per-variable count of active violated rows are maintained wherever a row flips,
-so the participation test is O(1) and those scans are O(|V|) -- plus restoring
-V's ascending order, a sort while |V|·log|V| <= #rows and an O(#rows) re-sweep
-above that. A Novelty batch as a whole stays O(#rows), through
-`init_novelty_weights` and the resync that follows it. The scans that
-queue variables still visit rows in ascending order, since the scan set's order
-feeds the RNG draw, so trajectories are bit-identical: an iteration-bounded
-fingerprint of `solve()` and of a direct batch/Novelty/kick driver matched
-before and after on nine MIPfeas instances, two seeds each, and
-`tests/test_fj_trajectory_fence.cpp` pins two hashes recorded at `c19c982` (#175's lazy decay re-recorded the batch-API one on purpose). The
+so the participation test is O(1) and those scans are O(|V|), plus the variable
+lists of the rows they queue from. A Novelty batch as a whole stays O(#rows),
+through `init_novelty_weights` and the resync that follows it. At #174
+(`f9edd3b`) the scans that queue variables sorted V back into ascending row
+order first, because the scan set's order feeds the RNG draw, and trajectories
+were bit-identical to `c19c982`: an iteration-bounded fingerprint of `solve()`
+and of a direct batch/Novelty/kick driver matched before and after on nine
+MIPfeas instances, two seeds each. That sort cost O(|V| log |V|) per bump
+(capped at O(#rows) by a re-sweep of the flags), and once #175's lazy decay had
+given up bit-identity anyway it bought nothing, so it was dropped: the bump's
+requeue and the Novelty seed now visit V in its list order. That order --
+appends plus swap-removes -- is a deterministic function of the flip history,
+so a seeded run still reproduces, but it is not ascending, and it moved both
+hashes `tests/test_fj_trajectory_fence.cpp` pins (re-recorded; the file says
+which change moved which). The rebuild's enqueue still happens to run
+ascending, because the O(#rows) rebuild lays V out that way. The
 header comment on `violated_` states where it wins and loses and what it costs
 in memory. Measured with `cbls_mipfeas`, 20s budget, one thread, seed 42,
 Release, serially on an idle 12-core Ryzen 5 5600H (load 0.2-1.2), at `c19c982`

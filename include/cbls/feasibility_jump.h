@@ -155,7 +155,7 @@ void gls_update_weights(ViolationManager& vm, double rho);
 // default 1000-iteration batch can make, so inside solve() at the default
 // batch_iterations it does not fire at all; at rho = 1 it never does. A rho the scale cannot absorb
 // (0, negative, NaN, or anything that underflows s past the bound in one step) takes the same fold,
-// which is then exactly the eager update.
+// which is then the eager update (to the bit when s = 1 at that point).
 //
 // WEIGHT 0 STAYS EXACTLY 0, and a positive weight stays positive. A masked row
 // stores 0, and 0 / s, 0 + nothing and 0 * s are all 0. A positive stored
