@@ -7,7 +7,7 @@
 // a list visited in the wrong order changes the search while leaving every
 // consistency check in tests/test_fj_violated_set.cpp green. This pins it.
 //
-// The hashes below were recorded at engine commit c19c982, the last commit
+// The hashes below were first recorded at engine commit c19c982, the last commit
 // before #174, and reproduced unchanged by #174 -- which is the claim: the new
 // bookkeeping is bit-identical. Like tests/test_structured_trajectory.cpp, this is
 // a REGRESSION FENCE and not a quality assertion. A change that moves an FJ
@@ -21,8 +21,9 @@
 // one bump-free iteration with the weights at exactly 1, and the phase-1
 // assignment it ends on happened to come out identical.
 //
-// Only public API that existed at c19c982 is used here, so the recording can be
-// repeated against that commit.
+// Only public API that existed at c19c982 is used here, so the two-phase
+// recording can be repeated against that commit; the batch-API one only against
+// #175 or later.
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>

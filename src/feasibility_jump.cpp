@@ -1425,11 +1425,20 @@ void FeasibilityJump::arm_deadline() {
 // algorithm's weights are unchanged (ViolationLS, Davies et al. CPAIOR 2024,
 // Algorithm 3); only their storage is. The violated rows are V's, which is the
 // eager form's `constraint_violation(c) > kTol` row for row: is_violated is the
-// same kTol test and a NaN or +inf clamps to kInfPenalty there.
+// same kTol test and a NaN or +inf clamps to kInfPenalty there. That holds only
+// while V is current -- update_var keeps it so inside the loop, and a caller
+// that mutates the assignment outside FJ must resync() before the next batch
+// (solve() does). A stale V now mis-weights rows, not just mis-queues them.
 void FeasibilityJump::bump_weights_and_requeue() {
     const double folded = weight_decay_.decay(vm_.weights, config_.rho);
     if (folded != 1.0) {
-        jumps_.scale_scores(folded);  // cached scores live in the scaled space too
+        // Cached scores live in the scaled space too. Kept for the invariant
+        // rather than for an observable effect: a valid entry that survives a
+        // bump has no counted violated row, so its score is <= 0 except in the
+        // (0, kTol] residual band, and folding by a positive factor keeps the
+        // sign. The rescale at materialise_weights is the one the batch-API
+        // fence pins (unchosen positive scores carried into the next batch).
+        jumps_.scale_scores(folded);
     }
     vm_.invalidate_cache();
     // Ascending, as the whole-row sweep this replaced visited them: the order
@@ -2119,7 +2128,7 @@ GFJStatus FeasibilityJump::run() {
     if (config_.two_phase && has_nonlinear) {
         // Phase 1: GLS on the linear submodel. Non-linear constraint weights are
         // masked to 0 (a mask, not a learned weight); active() == weight>0 then
-        // excludes them, and gls_update_weights leaves 0-weights at 0. Phase 2
+        // excludes them, and the GLS decay leaves 0-weights at 0. Phase 2
         // restores all weights to 1 (the paper uses fresh weights per phase).
         for (size_t c = 0; c < nc; ++c) {
             vm_.weights[c] = is_linear_[c] != 0 ? 1.0 : 0.0;

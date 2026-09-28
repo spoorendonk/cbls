@@ -126,14 +126,13 @@ TEST_CASE("FJ's violated set matches a recompute through moves and weight bumps"
 
 TEST_CASE("FJ's violated set follows a decay that deactivates a violated row",
           "[fj][violated_set]") {
-    // gls_update_weights decays FIRST and bumps only a row whose DECAYED weight is
-    // still > 0, so a violated row whose w * rho underflows to 0 is left at 0:
-    // still in V, but no longer active. The bump must therefore re-read the
-    // weight of every row in V rather than trust the bit it set when the row
-    // entered. rho = 0 makes that happen to every violated row at the first bump
-    // of the batch, deterministically; a small positive rho does it only to a row
-    // that turns violated while its weight is a few decays from underflowing,
-    // which is too rare to pin on.
+    // The GLS update decays FIRST and bumps only a row whose DECAYED weight is
+    // still > 0, so a violated row decayed to 0 is left at 0: still in V, but no
+    // longer active. The bump must therefore re-read the weight of every row in V
+    // rather than trust the bit it set when the row entered. rho = 0 makes that
+    // happen to every violated row at the first bump of the batch,
+    // deterministically. Under FJ's lazy decay (#175) it is the only way: a
+    // positive rho never takes a positive weight to 0 (LazyWeightDecay floors it).
     Model m;
     build_random_rows(m, 17, 30, 60);
     m.close();

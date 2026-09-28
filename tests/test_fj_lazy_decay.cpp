@@ -11,7 +11,7 @@
 // weight twice per step, the lazy one rounds the scale once per step and each
 // bumped weight once -- and over the ~12 000 steps here either accumulates at
 // most ~1e4 roundings of 2^-53, about 1e-12 relative. 1e-9 is three orders
-// above that and ten below any scale error, since a neglected scale is off by
+// above that and over seven below any scale error, since a neglected scale is off by
 // a factor of rho^k. A masked (0) weight must be EXACTLY 0 on both sides, and a
 // positive one positive.
 

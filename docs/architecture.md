@@ -863,12 +863,11 @@ Tracks per-constraint violation and the GLS weight vector.
   over *all* constraints (including the objective soft constraint).
 - `bump_weights(factor=1.0)` — increments the weight of each currently-violated
   constraint (a simple additive scheme; the GFJ engine uses the
-  decay-then-bump `gls_update_weights` below instead).
+  decay-then-bump GLS update below instead).
 
 ### GLS Weight Dynamics
 
-`gls_update_weights(vm, rho)` is the Guided Local Search update fired on GFJ
-stagnation (paper Algorithm 3):
+The Guided Local Search update fired on GFJ stagnation (paper Algorithm 3) is:
 
 1. **Decay**: multiply every weight by `rho`.
 2. **Bump**: add `1.0` to every currently-violated, *active* (weight > 0)
@@ -877,6 +876,50 @@ stagnation (paper Algorithm 3):
 `rho` is sampled per batch from `{0.95, 1.0}` (decay or pure additive). Weights
 masked to `0` (e.g. nonlinear constraints during the two-phase linear-first
 pass) stay `0` under decay and are never bumped, so they remain inactive.
+
+**The decay is lazy (#175).** `gls_update_weights(vm, rho)` is the eager form,
+O(#constraints) per bump, and stays as the public reference. `FeasibilityJump`
+applies the same update through `LazyWeightDecay`: it stores `w' = w / s`, a
+decay is `s *= rho` (O(1)), and a bump adds `1/s` to the rows in V only, so a
+bump costs O(|V|) plus V's ordering. `s` is folded into the stored weights (and
+into the cached jump scores) when it would leave `[1e-30, 1e30]` -- once per
+1347 decays at `rho = 0.95`, never at `rho = 1` -- and on every exit from the
+GLS loop, so `ViolationManager::weights` holds effective weights whenever FJ is
+not running. The algorithm's weights are unchanged; the representation agrees
+with the eager one to rounding, not to the bit (bit-identical at `rho = 1`). A
+positive weight is floored at the smallest subnormal instead of underflowing to
+0 (the eager form at 0.95 sticks at 9 subnormal ulps anyway); only `rho = 0`
+zeroes a weight. Trajectories also move for a second reason: the eager form
+left a cached jump score that the bump did not invalidate at its pre-decay
+scale, stale by `rho^-k` against freshly computed ones, whereas in the scaled
+space a decay leaves every cached score exact. That affects only entries whose
+rows the bump did not touch -- in practice rows violated by at most `kTol` --
+and the scores carried across a batch boundary.
+
+Measured at `40f39a3` (#174's head, eager decay) against `d424dbd` (lazy),
+Release, one thread, serially on an idle 12-core Ryzen 5 5600H (load 1.0-1.5),
+seeds 1 and 2. `cbls_mipfeas` at 20s, GLS iterations and the final max violation
+(no instance reached feasibility in either arm):
+
+| instance | iterations before (s1 / s2) | after (s1 / s2) | max violation before | after |
+|---|---|---|---|---|
+| cbs-cta | 485,649 / 487,301 | 636,090 / 635,932 | 10.3 / 12.6 | 10.3 / 12.6 |
+| rail01 | 446,319 / 407,655 | 431,537 / 436,548 | 1 / 2 | 1 / 2 |
+| uccase12 | 235,412 / 283,928 | 233,799 / 265,302 | 5.28 / 4.57 | 6.3 / 9.81 |
+| neos-860300 | 14,619 / 19,573 | 16,261 / 16,388 | 1 / 1 | 1 / 1 |
+| rd-rplusc-21 | 7,742 / 7,839 | 7,495 / 7,906 | 1 / 1 | 1 / 1 |
+
+cbs-cta, the instance #175 was found on, runs 31% more iterations on both seeds;
+the others move within their own seed-to-seed spread, which is what a bump that
+was not their bottleneck predicts. uccase12's worse final violation is two seeds
+of a trajectory-changing edit, not evidence either way. `cbls_minlplib` at 5s over
+its 50-instance roster: 46 / 48 feasible in both arms on seeds 1 / 2, 41 / 43
+objectives identical, and of the rest the lazy arm is better on 3 / 4 and worse
+on 2 / 1 (the largest move, kall_ellipsoids_tc02b seed 2, 52.17 -> 77.78, is
+matched by a 52.07 -> 50.48 improvement on seed 1). Two seeds cannot separate
+that from trajectory noise. **This change moves FJ trajectories, so every
+published table recorded before `d424dbd` is at an older engine** (see
+"Measuring and testing engine changes" in CLAUDE.md).
 
 After a new best feasible solution, the search resets all weights to `1.0`
 (`FeasibilityJump::reset_weights`) — a fresh penalty landscape per the paper.
@@ -920,7 +963,7 @@ queue variables still visit rows in ascending order, since the scan set's order
 feeds the RNG draw, so trajectories are bit-identical: an iteration-bounded
 fingerprint of `solve()` and of a direct batch/Novelty/kick driver matched
 before and after on nine MIPfeas instances, two seeds each, and
-`tests/test_fj_trajectory_fence.cpp` pins two hashes recorded at `c19c982`. The
+`tests/test_fj_trajectory_fence.cpp` pins two hashes recorded at `c19c982` (#175's lazy decay re-recorded the batch-API one on purpose). The
 header comment on `violated_` states where it wins and loses and what it costs
 in memory. Measured with `cbls_mipfeas`, 20s budget, one thread, seed 42,
 Release, serially on an idle 12-core Ryzen 5 5600H (load 0.2-1.2), at `c19c982`
@@ -1068,7 +1111,7 @@ cheap jumps. The continuous heavy lifting is left to the
 loop:
     if apply_jump(sample_size) fails (no sampled var improves):
         if no active constraint is violated: return Feasible
-        gls_update_weights(vm, rho)          # decay + bump violated
+        decay by rho, bump active violated   # lazily: s *= rho, w' += 1/s on V (#175)
         re-enqueue vars of violated active constraints, invalidate their jumps
     ++iterations
     stop if batch / global iteration budget reached

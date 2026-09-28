@@ -129,7 +129,10 @@ void gls_update_weights(ViolationManager& vm, double rho);
 // arithmetic, and agrees with the eager form to rounding, not to the bit. It is
 // what CP-SAT's violation_ls does too (it grows the bump instead of shrinking a
 // scale, the same thing). At rho = 1 with s = 1 the step is exactly 1.0 and the
-// two forms ARE bit-identical.
+// two forms ARE bit-identical. Trajectories differ by more than rounding all the
+// same: the eager form left a cached jump score the bump did not invalidate at
+// its pre-decay scale, stale by rho^-k against fresh ones, while a decay leaves
+// every cached score exact in the scaled space (docs/architecture.md, #175).
 //
 // SCALE-FREE READERS. Every consumer FJ has inside its GLS loop only compares
 // weighted sums with each other or with 0 (a jump is improving iff its score is
@@ -143,14 +146,16 @@ void gls_update_weights(ViolationManager& vm, double rho);
 // resets s = 1. The bound is about RANGE, not precision -- the lazy form rounds
 // no worse than the eager one, which re-rounds every weight on every decay --
 // and 1e30 leaves room: a stored weight is at most 1e30 times its effective
-// value, a residual is clamped at kInfPenalty = 1e30, and an effective weight at
-// rho < 1 is below 1 / (1 - rho), so a weighted term stays under ~1e62 -- nowhere
-// near overflow (at rho = 1, s never moves from 1). At rho = 0.95 a fold
+// value and a residual is clamped at kInfPenalty = 1e30, so a weighted term is at
+// most ~1e60 times the effective weight -- which from begin()/reset_weights' 1 is
+// below 1 / (1 - rho) = 20 at rho = 0.95 and grows by one per bump only in
+// rho = 1 batches, where s never moves from 1. Nowhere near overflow; a weight a
+// caller sets huge overflows the eager form just the same. At rho = 0.95 a fold
 // happens once per ceil(log(1e-30) / log(0.95)) = 1347 decays, more than a
-// default 1000-iteration batch can make, so inside solve() it does not fire at
-// all; at rho = 1 it never does. A rho the scale cannot absorb (0, negative,
-// NaN, or anything that underflows s past the bound in one step) takes the
-// same fold, which is then exactly the eager update.
+// default 1000-iteration batch can make, so inside solve() at the default
+// batch_iterations it does not fire at all; at rho = 1 it never does. A rho the scale cannot absorb
+// (0, negative, NaN, or anything that underflows s past the bound in one step) takes the same fold,
+// which is then exactly the eager update.
 //
 // WEIGHT 0 STAYS EXACTLY 0, and a positive weight stays positive. A masked row
 // stores 0, and 0 / s, 0 + nothing and 0 * s are all 0. A positive stored
@@ -645,7 +650,10 @@ private:
     // that a linear re-sweep of the kInV bits (sort_violated_rows), so the
     // ordering never costs more than the whole-row sweep it replaced. The bump
     // itself used to stay O(#rows) through gls_update_weights; #175 made the
-    // decay lazy (LazyWeightDecay), so now it is the O(|V|) scan alone.
+    // decay lazy (LazyWeightDecay), so a bump is now the O(|V|) scan and the
+    // ordering above, plus one O(#rows + #vars) fold per gls_loop exit that
+    // decayed (and, in an unlimited gls()/run() loop, one per 1347 decays at
+    // rho = 0.95).
     // A Novelty batch as a whole likewise stays O(#rows), through
     // init_novelty_weights (every row, every b-round) and the caller's resync;
     // only the seeds repeated after each committed compound move got cheaper.
