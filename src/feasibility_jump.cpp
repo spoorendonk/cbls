@@ -505,6 +505,42 @@ void gls_update_weights(ViolationManager& vm, double rho) {
 }
 
 // ---------------------------------------------------------------------------
+// LazyWeightDecay (#175): see the header for the representation and its bounds
+// ---------------------------------------------------------------------------
+
+double LazyWeightDecay::decay(std::vector<double>& w, double rho) {
+    const double next = scale_ * rho;
+    // Written so that NaN takes the fold: it fails both comparisons.
+    if (next >= kMinScale && next <= kMaxScale) {
+        scale_ = next;
+        step_ = 1.0 / scale_;
+        return 1.0;
+    }
+    return fold(w, next);
+}
+
+double LazyWeightDecay::materialise(std::vector<double>& w) {
+    if (scale_ == 1.0) {
+        return 1.0;  // already effective: a rho = 1 batch never pays the sweep
+    }
+    return fold(w, scale_);
+}
+
+double LazyWeightDecay::fold(std::vector<double>& w, double factor) {
+    constexpr double kFloor = std::numeric_limits<double>::denorm_min();
+    for (double& x : w) {
+        const double y = x * factor;
+        // A positive weight decayed by a positive factor is positive in exact
+        // arithmetic; do not let an underflow mask the row for good. 0 stays 0,
+        // and a factor of exactly 0 (rho = 0) zeroes it as the eager form does.
+        x = (y == 0.0 && x > 0.0 && factor > 0.0) ? kFloor : y;
+    }
+    scale_ = 1.0;
+    step_ = 1.0;
+    return factor;
+}
+
+// ---------------------------------------------------------------------------
 // FeasibilityJump
 // ---------------------------------------------------------------------------
 
@@ -1381,15 +1417,29 @@ void FeasibilityJump::arm_deadline() {
 // No improving jump anywhere in the scan set. Bump the GLS weights, then
 // invalidate and re-queue every variable of every active violated constraint, so
 // the next iteration re-scores them against the new penalty landscape.
+//
+// The weight update is gls_update_weights' -- decay every row by rho, add 1 to
+// every active violated row -- in LazyWeightDecay's representation (#175): the
+// decay is O(1) on the global scale, and only the rows in V are touched, so the
+// bump is O(|V|) plus the ordering and requeue below rather than O(#rows). The
+// algorithm's weights are unchanged (ViolationLS, Davies et al. CPAIOR 2024,
+// Algorithm 3); only their storage is. The violated rows are V's, which is the
+// eager form's `constraint_violation(c) > kTol` row for row: is_violated is the
+// same kTol test and a NaN or +inf clamps to kInfPenalty there.
 void FeasibilityJump::bump_weights_and_requeue() {
-    gls_update_weights(vm_, config_.rho);
+    const double folded = weight_decay_.decay(vm_.weights, config_.rho);
+    if (folded != 1.0) {
+        jumps_.scale_scores(folded);  // cached scores live in the scaled space too
+    }
+    vm_.invalidate_cache();
     // Ascending, as the whole-row sweep this replaced visited them: the order
     // variables enter Q is the order apply_jump's draw indexes. Each row's counted
-    // bit is re-read against its bumped weight on the way past (a decay that
-    // underflows to 0 deactivates a row), which is also the only weight read the
+    // bit is re-read against its bumped weight on the way past (a fold by
+    // rho = 0 deactivates every row), which is also the only weight read the
     // bump's own bookkeeping needs -- rows outside V are never looked at.
     sort_violated_rows();
     for (const int32_t c : violated_rows_) {
+        weight_decay_.bump(vm_.weights, static_cast<size_t>(c));
         reconcile_counted(c);
         if ((violated_[static_cast<size_t>(c)] & kCounted) != 0) {
             for (int32_t v : vars_of_constraint_[static_cast<size_t>(c)]) {
@@ -1489,7 +1539,30 @@ bool FeasibilityJump::deadline_passed_and_retune() {
     return false;
 }
 
+void FeasibilityJump::materialise_weights() {
+    const double folded = weight_decay_.materialise(vm_.weights);
+    if (folded != 1.0) {
+        // A positive weight stays positive and 0 stays 0 (see fold), so no row's
+        // active bit moves and the counted bits need no reconcile.
+        jumps_.scale_scores(folded);
+        vm_.invalidate_cache();
+    }
+}
+
 GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
+    // The lazy decay's scale is local to the loop: whatever way the loop is left,
+    // vm_.weights are effective weights again afterwards (#175).
+    try {
+        const GFJStatus status = gls_loop_scaled(sample_size, batch_iter_limit);
+        materialise_weights();
+        return status;
+    } catch (...) {
+        materialise_weights();
+        throw;
+    }
+}
+
+GFJStatus FeasibilityJump::gls_loop_scaled(int sample_size, int64_t batch_iter_limit) {
     int64_t batch_iters = 0;
     // Re-ground before taking the batch's reference minimum. Consecutive
     // non-improving FJ batches reach here without a rebuild in between, so

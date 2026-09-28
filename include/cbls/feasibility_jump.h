@@ -52,6 +52,18 @@ public:
     }
     [[nodiscard]] double jump_value(int32_t var_id) const { return entries_[var_id].jump_value; }
     [[nodiscard]] double score(int32_t var_id) const { return entries_[var_id].score; }
+    /// Multiply every cached score by `factor` (#175). A score is linear in the
+    /// weights it was computed under, so when `LazyWeightDecay` folds a factor
+    /// into the stored weights the cached scores move with them and stay
+    /// comparable to the ones computed afterwards. O(#vars); called only when a
+    /// factor is actually folded, never per bump.
+    void scale_scores(double factor) {
+        for (auto& e : entries_) {
+            if (e.valid) {
+                e.score *= factor;
+            }
+        }
+    }
 
 private:
     struct Entry {
@@ -96,7 +108,95 @@ JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, in
 // weights by rho, then bump every currently-violated constraint by 1. Weights
 // of constraints masked to 0 (e.g. non-linear constraints in the linear phase)
 // stay 0 under decay and are never bumped while satisfied.
+//
+// This is the EAGER form, O(#constraints) per call: every weight is multiplied
+// and every row's violation read. FeasibilityJump no longer calls it -- its bump
+// uses LazyWeightDecay below (#175), the same update in a different
+// representation -- and it stays as the public reference the lazy form is
+// tested against.
 void gls_update_weights(ViolationManager& vm, double rho);
+
+// The GLS weight decay of ViolationLS (Davies et al., CPAIOR 2024, Algorithm 3),
+// represented lazily (#175). THE ALGORITHM'S WEIGHTS ARE UNCHANGED; only how
+// they are stored moves. With a global scale s, the stored vector holds
+// w'_c = w_c / s, so
+//
+//   decay by rho:   s <- s * rho                      O(1), not O(#rows)
+//   bump row c:     w'_c <- w'_c + 1/s  (if w'_c > 0)  O(1) per violated row
+//   effective w_c:  s * w'_c
+//
+// which is `w <- rho * w; w += 1 on the active violated rows` in exact
+// arithmetic, and agrees with the eager form to rounding, not to the bit. It is
+// what CP-SAT's violation_ls does too (it grows the bump instead of shrinking a
+// scale, the same thing). At rho = 1 with s = 1 the step is exactly 1.0 and the
+// two forms ARE bit-identical.
+//
+// SCALE-FREE READERS. Every consumer FJ has inside its GLS loop only compares
+// weighted sums with each other or with 0 (a jump is improving iff its score is
+// > 0, the best of a sample is the largest), and multiplying every weight by the
+// same s > 0 multiplies every such sum by s. So the loop reads the stored w'
+// directly and never pays for s. `active()` reads `w' > 0`, which is
+// `w > 0` because s > 0.
+//
+// RENORMALISATION. s may not leave [kMinScale, kMaxScale]: a decay that would
+// take it out instead FOLDS s * rho into every stored weight (O(#rows)) and
+// resets s = 1. The bound is about RANGE, not precision -- the lazy form rounds
+// no worse than the eager one, which re-rounds every weight on every decay --
+// and 1e30 leaves room: a stored weight is at most 1e30 times its effective
+// value, a residual is clamped at kInfPenalty = 1e30, and an effective weight at
+// rho < 1 is below 1 / (1 - rho), so a weighted term stays under ~1e62 -- nowhere
+// near overflow (at rho = 1, s never moves from 1). At rho = 0.95 a fold
+// happens once per ceil(log(1e-30) / log(0.95)) = 1347 decays, more than a
+// default 1000-iteration batch can make, so inside solve() it does not fire at
+// all; at rho = 1 it never does. A rho the scale cannot absorb (0, negative,
+// NaN, or anything that underflows s past the bound in one step) takes the
+// same fold, which is then exactly the eager update.
+//
+// WEIGHT 0 STAYS EXACTLY 0, and a positive weight stays positive. A masked row
+// stores 0, and 0 / s, 0 + nothing and 0 * s are all 0. A positive stored
+// weight times a positive fold factor that underflows is floored at the
+// smallest subnormal instead of becoming 0, because decay by rho > 0 cannot
+// reach 0 in exact arithmetic and a row at 0 is masked for good (the bump skips
+// it). The eager form agrees at the rho values solve() draws: at 0.95 a
+// repeatedly decayed weight sticks at 9 subnormal ulps (w * 0.95 rounds back to
+// w there) and never reaches 0. Only a fold by exactly 0 (rho = 0) zeroes a
+// positive weight, as the eager `w * 0` does.
+//
+// Between calls that fold, the stored vector is NOT the effective weights. The
+// owner must `materialise` before anything outside its scale-free readers looks
+// at them; FeasibilityJump does so on every exit from its GLS loop, so
+// ViolationManager::weights means effective weights whenever FJ is not running.
+class LazyWeightDecay {
+public:
+    static constexpr double kMinScale = 1e-30;
+    static constexpr double kMaxScale = 1e30;
+
+    /// Decay every weight in `w` by rho. Returns the factor folded into the
+    /// stored weights, 1.0 when none was: the caller must multiply anything
+    /// else it keeps in the scaled space (cached jump scores) by it.
+    double decay(std::vector<double>& w, double rho);
+    /// The bump of row c: effective w_c += 1, unless the row is masked (0).
+    void bump(std::vector<double>& w, size_t c) const {
+        if (w[c] > 0.0) {
+            w[c] += step_;
+        }
+    }
+    /// Row c's effective weight, s * w'_c.
+    [[nodiscard]] double effective(const std::vector<double>& w, size_t c) const {
+        return scale_ * w[c];
+    }
+    /// Fold s into the stored weights so they ARE the effective weights, and
+    /// reset s = 1. O(#rows) unless s is already 1, when it touches nothing.
+    /// Returns the factor folded (1.0 if none), as `decay` does.
+    double materialise(std::vector<double>& w);
+    [[nodiscard]] double scale() const { return scale_; }
+
+private:
+    double fold(std::vector<double>& w, double factor);
+
+    double scale_ = 1.0;
+    double step_ = 1.0;  // 1 / scale_, so a bump is one add
+};
 
 struct GFJConfig {
     int sample_size_linear = 5;   // best-of-N sampling, linear phase (paper)
@@ -365,6 +465,9 @@ private:
     // GLS inner loop reusing current state, bounded by a per-call iteration
     // limit (<=0 for none) plus the global budget/deadline.
     GFJStatus gls_loop(int sample_size, int64_t batch_iter_limit);
+    // gls_loop's body. The weights are in LazyWeightDecay's scaled space while it
+    // runs; gls_loop materialises them on every way out.
+    GFJStatus gls_loop_scaled(int sample_size, int64_t batch_iter_limit);
     [[nodiscard]] bool any_active_violated() const;
     // How a batch reports its own end when it ran out of budget rather than out
     // of work: Feasible only if nothing active is still violated. Used at every
@@ -376,6 +479,10 @@ private:
     // the violated constraints and re-queue their variables, so the next
     // iteration scores them against the new penalty landscape.
     void bump_weights_and_requeue();
+    // Fold the lazy decay's scale into vm_.weights and the cached jump scores, so
+    // both are in effective terms again (#175). Every exit from gls_loop calls it,
+    // exceptional ones included: outside the loop the weights are public.
+    void materialise_weights();
     // Fold the iteration just completed into the batch's progress state:
     // `batch_best_violation` is the running minimum of the unweighted real-row
     // violation and `unproductive_streak_` counts iterations since it last
@@ -505,6 +612,9 @@ private:
     GFJConfig config_;
 
     JumpTable jumps_;
+    // The GLS decay's lazy scale (#175). s != 1 only inside gls_loop; see
+    // LazyWeightDecay and materialise_weights.
+    LazyWeightDecay weight_decay_;
     // ---- V, the violated set, kept incrementally (#174) ----
     //
     // Per constraint, two bits: kInV (the row is violated, i.e. in V) and
@@ -534,7 +644,8 @@ private:
     // has disturbed: an O(|V| log |V|) sort while |V| log |V| <= #rows, and above
     // that a linear re-sweep of the kInV bits (sort_violated_rows), so the
     // ordering never costs more than the whole-row sweep it replaced. The bump
-    // itself stays O(#rows) through gls_update_weights (#175 is that half).
+    // itself used to stay O(#rows) through gls_update_weights; #175 made the
+    // decay lazy (LazyWeightDecay), so now it is the O(|V|) scan alone.
     // A Novelty batch as a whole likewise stays O(#rows), through
     // init_novelty_weights (every row, every b-round) and the caller's resync;
     // only the seeds repeated after each committed compound move got cheaper.
@@ -560,9 +671,10 @@ private:
     // by the bump, is picked up. A weight changed from outside WHILE gls_loop runs
     // would not be; nothing does that. This bookkeeping reads the weight only of
     // a row in V or entering it; other readers -- refresh_unweighted_violation,
-    // update_var's residual over G_v, init_novelty_weights, gls_update_weights --
-    // still read rows outside V, so a lazily-decayed weight scheme must serve
-    // those too.
+    // update_var's residual over G_v, init_novelty_weights -- still read rows
+    // outside V. Under the lazy decay (#175) the first two read `w' > 0`, which is
+    // `w > 0`, and init_novelty_weights runs outside the GLS loop, where the
+    // weights have been materialised.
     static constexpr uint8_t kInV = 1;
     static constexpr uint8_t kCounted = 2;
     std::vector<uint8_t> violated_;                // per constraint: kInV | kCounted
@@ -656,11 +768,13 @@ private:
     //     rejects a positive delta.
     //   * rho = 0.95. `w *= 0.95; w += 1` is a contraction: a permanently
     //     violated row converges to the fixed point 1/(1 - 0.95) = 20 instead of
-    //     growing, and a row that stops being violated decays geometrically to
-    //     zero (and to exactly 0.0, at which point active() masks it out
-    //     entirely). The deltas therefore do not stay pinned -- they decay to
-    //     exactly 0. But `fv < best_f` is STRICT, so a zero delta is rejected
-    //     too, and the cycle holds for the opposite arithmetic reason.
+    //     growing, and a row that stops being violated decays geometrically
+    //     toward zero -- though not to exactly 0.0: w * 0.95 rounds back to w at
+    //     9 subnormal ulps, so the eager form sticks there, and LazyWeightDecay
+    //     floors a positive weight above 0 (#175). The deltas therefore do not
+    //     stay pinned -- they decay to (numerically) 0. But `fv < best_f` is
+    //     STRICT, so a zero delta is rejected too, and the cycle holds for the
+    //     opposite arithmetic reason.
     //
     // Either way no jump is ever improving, the loop bumps and re-bumps, and
     // nothing in FJ can tell that the assignment has stopped moving anywhere.

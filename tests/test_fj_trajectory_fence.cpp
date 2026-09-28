@@ -13,6 +13,14 @@
 // a REGRESSION FENCE and not a quality assertion. A change that moves an FJ
 // trajectory on purpose re-records them and says why in its commit.
 //
+// #175 moved the batch-API hash on purpose: the GLS decay became lazy (a global
+// scale, LazyWeightDecay), which agrees with the eager decay to rounding, not to
+// the bit, and keeps cached jump scores in the same scaled space as fresh ones.
+// Re-recorded at #175. The two-phase run() hash reproduced unchanged: its first
+// phase spends the whole 6000-iteration budget, its general phase stops after
+// one bump-free iteration with the weights at exactly 1, and the phase-1
+// assignment it ends on happened to come out identical.
+//
 // Only public API that existed at c19c982 is used here, so the recording can be
 // repeated against that commit.
 
@@ -138,7 +146,7 @@ TEST_CASE("FJ's batch-API trajectory is unchanged by the violated-set bookkeepin
           "[fj][violated_set][trajectory]") {
     const uint64_t h = batch_api_trajectory();
     CAPTURE(h);
-    REQUIRE(h == 0x83c54d4c74f22177ULL);
+    REQUIRE(h == 0x21e6a196656938a3ULL);
 }
 
 TEST_CASE("FJ's two-phase run() trajectory is unchanged by the violated-set bookkeeping",

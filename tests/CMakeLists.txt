@@ -15,6 +15,7 @@ add_executable(cbls_tests
     test_nonfinite_guard.cpp
     test_feasibility_jump.cpp
     test_fj_violated_set.cpp
+    test_fj_lazy_decay.cpp
     test_fj_trajectory_fence.cpp
     test_linear_jump.cpp
     test_perturb.cpp
