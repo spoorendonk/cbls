@@ -508,9 +508,10 @@ flag. After close the ordinary builders — variable and expression creation,
 appended then was never placed in the topological order, so no evaluation
 reached it and `solve()` reported feasible over it. `solve()` itself closes a
 model it is handed unclosed, so a model that has been
-solved refuses the builders too. A closed model grows only
-through `ModelExtension` + `Model::extend` (#167), and internally through the
-objective soft constraint, which `solve()` appends lazily (see below).
+solved refuses the builders too. A closed model does not grow, apart from the
+objective soft constraint, which `solve()` appends lazily (see below). (Growth of
+a closed model, `Model::extend` from #167, was removed in #181 together with its
+only user, column generation, #180.)
 
 ### Structure vs. state: `ModelStructure` and `freeze()` (#157)
 
@@ -591,206 +592,54 @@ before `solve()` returns so post-solve verifiers don't see it violated.
 `objective_bound()` expose this state. "Real feasibility" everywhere means *all
 constraints except* `objective_constraint_idx()`.
 
-### Growing a closed model: `extend` (#167)
+### Mid-solve structural writes (Python)
 
-**Files:** `include/cbls/model_extension.h`, `src/model_extension.cpp`
+A bound `cbls.solve` (and `ParallelSearch.solve_master`) releases the GIL for the
+whole search, and writes the model's structure itself under it: the first solve
+of a model with an objective appends the objective row (closing an unclosed
+model on the way), and `solve_master` freezes the model. A `SolveCallback` runs
+on the search thread, and any other Python thread runs freely, so either can
+reach the model mid-search -- and the search reads the node array, the CSR
+indices and the topological order without a lock. A builder call, `close`,
+`freeze` or a second solve of the same model from there races that write.
 
-`close()` builds the back-references, the topological order, `topo_pos` and G_v,
-and `add_objective_soft_constraint()` rebuilds all four wholesale to append two
-nodes. That is the only post-close growth there was, and appending a term to an
-**existing** `Sum` -- what a new column does, since it enters rows that already
-exist -- had no representation at all. `ModelExtension` + `Model::extend` add
-both, incrementally.
-
-`ModelExtension` records; it touches nothing. Its handles are the model's own
-absolute ids, so a recording can name existing variables and nodes freely, and
-`extend` refuses a recording made against a different state of the model. It
-offers scalar variables, every expression op whose children are plain handles,
-`add_constraint`, and `append_to_sum`. It deliberately offers no `List`/`Set`
-variable (their starting assignment is laid out by `initialize_structured_random`
-inside `solve()`, and a partition member's cover is maintained only by the
-partition's moves), no `lambda_sum`/`pair_lambda_sum` (shared callables, see
-`freeze()`), and no `custom()` (#166 -- the slot's invariant would have no
-committed state short of the `full_evaluate` this path exists to avoid).
-
-What `extend` does, in order:
-
-1. appends the new variables and nodes (`vars_`, `node_values_`, `nodes`,
-   `parent_offsets`, `dependent_offsets`, `child_refs`);
-2. **relocates** each grown node's child slice to the end of `child_refs`, leaving
-   the old one as a hole. Relocation rather than insertion because a node
-   addresses its children by `(child_begin, child_count)` and every other node's
-   offsets must stay valid. `ModelStructure::child_ref_holes` counts the waste and
-   the array is compacted once the holes reach half of it;
-3. splices the three CSR indices. Each owner's list stays **strictly ascending and
-   distinct** -- contractual for `parents`, `dependents` and `constraints_of_var`
-   alike, since `weighted_delta_from` requires ascending rows and FJ's scan order
-   over G_v feeds the trajectory. An overflow list appended after the CSR base
-   would not have that property, so the splice **merges**, and it drops an
-   addition the owner already has exactly as `rebuild_back_references` dedups
-   `prod(x, x)`;
-4. inserts the new nodes into `topo_order` as one block immediately before the
-   earliest grown node, and renumbers `topo_pos` over the suffix. Falls back to a
-   full `compute_topo_order` -- reported as `ExtensionResult::topo_order_rebuilt`
-   -- when the existing order cannot absorb them, which needs an existing node to
-   be in the wrong place already;
-5. grows G_v by walking each new row's subtree and each existing row a grown `Sum`
-   sits inside. Which rows those are is an upward walk from the grown nodes plus
-   one pass over the constraint list, skipped entirely when nothing was appended;
-6. recomputes the node values of the new nodes, the grown nodes and everything
-   above them -- the same walk `delta_evaluate` does, seeded from nodes rather
-   than from changed variables. A model with custom nodes takes `full_evaluate`
-   instead, because a `CustomInvariant`'s `delta()` is defined against a variable
-   move and `full_evaluate` is its documented reset point.
-
-`ViolationManager::on_extended` and `FeasibilityJump::on_extended` then grow the
-search state in place. The property that matters is that **existing rows keep
-their GLS weights**: those weights are the search's accumulated knowledge of
-which rows are hard, and a fresh `ViolationManager` per column would restart the
-guided local search every time one arrived. FJ keeps the cached jumps of
-variables the extension did not touch, merges the new incidences into
-`vars_of_constraint_` (ascending, so the scan order is the one the constructor
-would have produced), reclassifies the linearity of the rows it changed, and
-queues the new variables. `pad_state` grows a `Model::State` captured before the
-extension so an old incumbent is still a restart point -- strictly, so that
-`restore_state`'s size check stays a check on something.
-
-**Cost.** Not O(k): the CSR indices share one offsets array and `topo_order` is a
-dense array `full_evaluate` walks, so an insertion in the middle of either moves
-the suffix. `Model::extend`'s comment enumerates every term with its measurement.
-Against `add_objective_soft_constraint` on a copy of the same closed model (the
-O(model) path it replaces, adding two nodes and one row), at Release on an idle
-machine: `atlanta-ip` (540k nodes) 29 ms rebuild against 0.11-0.65 ms, and
-`neos-5114902-kasavu` (4.30M nodes) 307 ms against 7.1-9.0 ms -- 35x to 260x. The
-**first** extend after a build that sized the arrays exactly pays one full copy of
-each (1.5-2.0x rather than 35x); growth is left geometric so a loop of extends
-amortises it.
-
-**A frozen model is refused.** `freeze()` publishes one `ModelStructure` to every
-portfolio replica, so growth would rewrite a peer's DAG under a running search.
-`ParallelSearch::solve(Model&)` and the CLI at `--threads > 1` both freeze, so
-growth is **single-`solve()` only** on a frozen model.
-
-**Three things the cold review of #167 closed**, worth knowing before anything
-wires this into the search loop:
-
-- **`append_to_sum` refuses a term that would make the DAG cyclic.** It is the
-  first operation in the codebase that *could*: `close()` is safe only because a
-  node names already-existing children, so a cycle was unrepresentable. Appending
-  a term to an existing row lifts that, and a cycle is silent rather than loud --
-  `compute_topo_order` is Kahn's, so it returns a **short** order with the cycle
-  and everything above it simply absent, `rebuild_topo_positions` gives every
-  missing node position 0, and `full_evaluate` then never recomputes them again
-  for the life of the model. Exit code 0, stale constraint rows, wrong answer. The
-  check walks **down** from the term over the graph the extension will produce
-  (base children, recorded children, and appends already recorded), so it also
-  catches two appends that only close a loop together. `extend` additionally
-  refuses a re-sorted order that does not cover every node, as defence in depth
-  -- unreachable now that a stale extension is refused (below), since the walk
-  and the splice then always see the same graph.
-- **The call order is enforced, not merely documented.** `extend` grows the model
-  without touching `ViolationManager`'s weights or FJ's tables, so between it and
-  the two `on_extended` calls every ordinary read of either indexes past the end
-  -- `bump_weights` writes past it. Both components now refuse a model whose row
-  count has outrun their tables, and `FeasibilityJump::on_extended` refuses to run
-  before the manager's. The required order is `extend`, then
-  `ViolationManager::on_extended`, then `FeasibilityJump::on_extended`.
-- **There is no rollback.** A throw part-way through `extend` leaves a half-grown
-  model, and deliberately so: the CSR splices rewrite in place, so restoring them
-  means copying them, which is the O(model) cost `extend` exists to avoid. One
-  case is benign and separated in the comment -- a throw out of the closing
-  evaluation (`CustomInvariant::evaluate` or a `lambda_sum` callable, neither
-  `noexcept`) leaves every structural array consistent with only node values
-  stale, which `full_evaluate` recovers. A throw from anything earlier does not,
-  so `extend` sets `Model::extend_interrupted()` for the window between its
-  first write and its last splice, and `require_intact` refuses such a model in
-  `extend`, `ModelExtension`'s constructor, `add_objective_soft_constraint` (so a
-  first `solve` or `freeze` refuses before rebuilding anything) and
-  `ViolationManager`'s (so every `solve`), and in the Python
-  `full_evaluate`/`delta_evaluate`. Objects built before the failed call are not
-  re-checked; discard them with the model. The C++
-  `full_evaluate`/`delta_evaluate` do not check it (one branch per evaluation on
-  the hot path for a state that takes an out-of-memory to reach). With every
-  caller refusal now taken before the window opens, what can still land in it is
-  `bad_alloc` or a `length_error` past 2^32 index entries.
-
-**From Python** the same surface is bound one-for-one: `cbls.ModelExtension(model)`
-with the handle-based builders (no `Expr` form -- an `Expr`'s operators build
-through its model, which is closed), `Model.extend(ext)`,
-`ViolationManager.on_extended(result, new_weight=1.0)` and
-`cbls.pad_state(state, result)`. FeasibilityJump is not bound, so its half of the
-call order is internal to `solve()`. The binding adds four things of its own:
-
-- the extension **keeps its model alive** (`keep_alive`), because it holds a raw
-  pointer the cycle walk and the `Sum` check read;
-- `ExtensionResult` has **no Python constructor and read-only fields**, so the
-  only result Python can hand back to `on_extended`/`pad_state` is one `extend`
-  produced -- and both still check it against the manager or state they grow;
-- `LNS.destroy_repair`/`destroy_repair_cycle` **refuse a manager that has not
-  seen `on_extended`** before they run. The engine refuses it too, but only in
-  the repair, after the destroy has already moved the assignment;
-- `Model.extend` **refuses while `cbls.solve` runs on that model**. `solve`
-  releases the GIL and calls a `SolveCallback` on the search thread, so Python
-  can reach `extend` mid-search. An extension that only appends existing
-  variables to existing rows changes neither count, so the engine's table checks
-  missed it and the search returned `feasible=True` on a model it had left
-  infeasible. So the binding keeps a registry of the models a bound `solve` (or
-  `ParallelSearch.solve_master`) is running on. Every OTHER structural write
-  Python can reach consults it too and raises `RuntimeError` mid-solve:
-  `ModelExtension(model)` and every `ModelExtension` builder (they read the node
-  array and the structure token), the `Model` builders, `close`, `freeze`, and the
-  `Expr` operators and free functions, which build through their model, and a
-  second `cbls.solve`/`solve_master` of the same model (nested from a callback or
-  from another thread), which writes the objective row and -- `solve_master` --
-  freezes the model. The race
-  was real without a callback in sight: the first solve of a model with an
-  objective adds the objective row after releasing the GIL, and a second thread
-  building an extension over the same model read the arrays it was writing. These
-  refusals are pinned in child interpreters by `tests/python/test_solve_guards.py`.
-  Value writes (`Variable.value`, `restore_state`) are not structural and stay the
-  documented data race.
-
-**Staleness is detected by a structure token, not by counts.**
-`Model::structure_version()` is drawn from one process-wide atomic counter at
-`close()` and again on every structural write after it (`mut()` retires it while
-the model is closed, so the builders pay one branch and no atomic while a model
-is being built). `ModelExtension` captures it; `extend` and `append_to_sum`
-compare it, alongside the variable and node counts and the base's address. Counts
-alone were the first version, and missed exactly the most common growth shape:
-an extension that adds no variable and no node -- appends of
-existing handles, `add_constraint` over an existing node -- was accepted a second
-time and appended its terms twice, and two such extensions recorded against one
-base could each pass the cycle check and close a cycle together, reaching the
-re-sort backstop only after the growth had begun. A successful `extend` retires
-the token, so **a non-empty extension is single-use**: replaying it is refused, and so is
-every other extension recorded against the same base. A copy of a model carries
-its token (it is the same structure) but is still refused by address.
-`append_to_sum` checks it at record time because its cycle walk reads the base's
-current children and indexes its own node table past the base count -- once
-another extension has grown the model, that was a SIGSEGV.
-
-**Python holds nothing `extend` can invalidate.** `Model.var()`/`var_mut()`
-return a `(model, id)` handle bound as `cbls.Variable`, which resolves through the
-model on every attribute access and keeps the model alive; `node()` returns a copy
-of the node, whose two exposed fields never change. An `Expr` holds a raw
-`Model*` too, and nothing tied the model to it: `cbls.Model().Float(0, 1)` left
-the `Expr` reading (and its operators building into) freed heap, reused by the
-next `Model` of the same size. Every `Expr` the binding returns now keeps its
-model's Python object alive -- the model itself, not the operand, so a
-`s = s + x` loop does not chain every intermediate to the next. `ViolationManager`
-had the same hole and now keeps its model alive too. The cost: a `lambda_sum` /
-`pair_lambda_sum` callable that reaches an `Expr` (or the model) makes a cycle
-the collector cannot see -- the model holds the callable in a C++
-`std::function` -- so it pins the model for the process lifetime. Capture handles
-or plain data in such callables. `Model.var()` and friends
-used to be `reference_internal` into the arrays `extend` (and any builder before `close()`)
-reallocates, and writing `.value` through one held across that was a heap
-use-after-free. `cbls.solve` registers the model as solving **before** it releases
-the GIL, in the body rather than through a `call_guard`, so a `Model.extend` from
+So the binding keeps a registry of the models a bound `solve` or `solve_master`
+is running on, and every structural write Python can reach consults it and
+raises `RuntimeError` mid-solve: the `Model` builders, `close`, `freeze`, the
+`Expr` operators and free functions (which build through their model), and a
+second `cbls.solve`/`solve_master` of the same model, nested from a callback or
+from another thread. `cbls.solve` registers the model **before** it releases the
+GIL, in the body rather than through a `call_guard`, so a builder call from
 another thread -- which runs holding the GIL -- cannot pass its check in the gap.
-`tests/python/test_model_extend.py` pins every refusal in a child interpreter,
-including an out-of-memory `extend` under a capped address space, and checks an
-extended model against the same model built whole.
+The engine's own write, the objective row, is a C++ call and never passes
+through the registry. These refusals are pinned in child interpreters by
+`tests/python/test_solve_guards.py`. Value writes (`Variable.value`,
+`restore_state`) are not structural and stay the documented data race.
+
+A `ViolationManager` built before the objective row exists is one weight short
+once `freeze()` or the first `solve()` appends it. Its weight-indexed reads
+refuse such a manager rather than read past the end, and `LNS.destroy_repair` /
+`destroy_repair_cycle` refuse it before the destroy moves the assignment; build
+the manager after the model's last row.
+
+### Python handles and model lifetime
+
+Python holds nothing a builder can invalidate. `Model.var()`/`var_mut()` return
+a `(model, id)` handle bound as `cbls.Variable`, which resolves through the model
+on every attribute access and keeps the model alive; `node()` returns a copy of
+the node, whose two exposed fields never change. They used to be
+`reference_internal` into `vars_`, which any builder before `close()` can
+reallocate, and writing `.value` through one held across that was a heap
+use-after-free. An `Expr` holds a raw `Model*` too, and nothing tied the model to
+it: `cbls.Model().Float(0, 1)` left the `Expr` reading (and its operators
+building into) freed heap, reused by the next `Model` of the same size. Every
+`Expr` the binding returns now keeps its model's Python object alive -- the model
+itself, not the operand, so a `s = s + x` loop does not chain every intermediate
+to the next. `ViolationManager` had the same hole and now keeps its model alive
+too. The cost: a `lambda_sum` / `pair_lambda_sum` callable that reaches an `Expr`
+(or the model) makes a cycle the collector cannot see -- the model holds the
+callable in a C++ `std::function` -- so it pins the model for the process
+lifetime. Capture handles or plain data in such callables.
 
 ### State Save/Restore
 
