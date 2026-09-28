@@ -123,8 +123,9 @@ Install `pyright-lsp@claude-plugins-official`. Pyright reads `[tool.mypy]` and p
   (`tests/python/test_model_handles.py`), since the unguarded state crashes the
   interpreter rather than failing a test.
 - **Never return `reference_internal` to an element of a container the owner
-  can grow.** `keep_alive` keeps the *owner* alive, not the element: every
-  variable builder appends to the model's variable array and can reallocate it,
+  can grow.** `keep_alive` keeps the *owner* alive, not the element: before
+  `close()` every variable builder appends to the model's variable array and
+  can reallocate it,
   so a `m.var_mut(i)` held across one writes into freed heap and the write is
   silently lost (first found through the since-removed `Model.extend`, #167's
   cold review). Return an
@@ -651,11 +652,14 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 9. **Parallel search** (`src/pool.cpp`) — `SolutionPool` + `ParallelSearch`: a cooperative portfolio. Workers share incumbents through the mutex-guarded pool as they find them, restart from it on stagnation, are restarted rather than left idle while budget remains, and stop each other once one has solved a pure-feasibility model. All of it reaches the engine through `cbls::solve()`'s trailing `SearchCoordination*`, which is null everywhere else. Nondeterministic by construction; `--threads 1` is the reproducible run (on the same hardware under the same load — it is still wall-clock bounded).
 
    **Workers share the model's immutable structure** (#157). `ParallelSearch::solve`
-   has two entry shapes and only one of them shares: the `Model&` **master**
-   overload freezes the model on the calling thread and hands each worker a copy,
-   which takes the DAG by reference and duplicates only what a search writes;
-   the `std::function<Model()>` **factory** overloads share nothing and are kept
-   for `tests/test_search.cpp` and the Python contract. Use the master overload.
+   has two entry shapes: the `Model&` **master** overload freezes the model on
+   the calling thread and hands each worker a copy, which takes the DAG by
+   reference and duplicates only what a search writes; the
+   `std::function<Model()>` **factory** overloads share exactly what the
+   factory's models share — nothing for freshly built ones, the structure for
+   copies of a frozen model. Python binds both: `ParallelSearch.solve_master` is
+   the master overload, `solve_parallel` the factory one. Prefer the master
+   overload.
    Measured on `neos-5114902-kasavu` (710k columns, 4.30M nodes), before at
    `0dc826b` and after at `06eb3e5`: peak RSS at 8 workers fell from 6.04 to
    3.15 GiB, the marginal worker from ~0.75-0.86 to ~0.34-0.39 GiB, at identical
@@ -666,8 +670,10 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
    column count. Size a run against "1-worker + N x a measured per-worker
    constant". `docs/architecture.md` carries the table with its commit.
 
-   Two callers drive it: `src/cli.cpp`, which loads the model once and passes it
-   as the master, and `benchmarks/mipfeas/` at `--threads > 1` (the other three
+   Three callers drive it: `src/cli.cpp`, which loads the model once and passes it
+   as the master; Python's `ParallelSearch.solve_master`, likewise; and
+   `benchmarks/mipfeas/` at `--threads > 1`, through the factory overload over
+   pre-built copies of its frozen master (the other three
    runners are still single-threaded, so their trajectories are unchanged). The
    runner freezes the model and replicates it once per worker **before** the solve
    bracket opens, and reports the cost as `replicate_seconds`. That has to stay

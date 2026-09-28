@@ -252,13 +252,14 @@ TEST_CASE("constraints, objectives and declarations refuse a closed model", "[cl
 }
 
 TEST_CASE("a closed model still takes per-variable and search writes", "[closed]") {
-    // The refusal is for STRUCTURE. What a search writes -- a variable's value,
-    // the objective bound, a state restore -- is per-model state and stays open.
+    // The refusal is for STRUCTURE. What a search writes -- a variable's value
+    // or bounds, a state restore -- is per-model state and stays open.
     ClosedFixture f;
     Model& m = f.m;
     const Footprint before(m);
     Variable& vx = m.var_mut(handle_to_var_id(f.x));
     vx.value = 7.0;
+    vx.ub = 8.0;
     delta_evaluate(m, {handle_to_var_id(f.x)});
     REQUIRE_THAT(m.node_value(f.row), Catch::Matchers::WithinAbs(7.0, 1e-12));
     const Model::State state = m.copy_state();
@@ -353,6 +354,10 @@ TEST_CASE("an FJ built before the objective row refuses to run", "[closed]") {
     // linear scorer's slots -- are sized at construction and indexed by the
     // model's current row count, unchecked. The entry points a driver calls once
     // per batch check the counts instead.
+    //
+    // The manager's weights are brought back to the new row count first (the
+    // "a C++ caller resized the public weights vector" case), so FJ's own tables
+    // are the only thing out of step, and the message says FJ refused.
     ObjectiveFixture f;
     ViolationManager vm(f.m);
     RNG rng(17);
@@ -361,14 +366,17 @@ TEST_CASE("an FJ built before the objective row refuses to run", "[closed]") {
     REQUIRE_FALSE(fj.batch(20));
 
     f.m.add_objective_soft_constraint();
+    vm.weights.resize(f.m.constraint_ids().size(), 1.0);
 
-    REQUIRE_THROWS_AS(fj.batch(20), std::logic_error);
-    REQUIRE_THROWS_AS(fj.resync(), std::logic_error);
-    REQUIRE_THROWS_AS(fj.reset_weights(), std::logic_error);
-    REQUIRE_THROWS_AS(fj.begin(false), std::logic_error);
-    REQUIRE_THROWS_AS(fj.perturb(0.5), std::logic_error);
-    REQUIRE_THROWS_AS(fj.apply_novelty_jump(), std::logic_error);
-    REQUIRE_THROWS_AS(fj.run(), std::logic_error);
+    const auto fj_refused = Catch::Matchers::MessageMatches(
+        Catch::Matchers::StartsWith("FeasibilityJump: the model or its ViolationManager"));
+    REQUIRE_THROWS_MATCHES(fj.batch(20), std::logic_error, fj_refused);
+    REQUIRE_THROWS_MATCHES(fj.resync(), std::logic_error, fj_refused);
+    REQUIRE_THROWS_MATCHES(fj.reset_weights(), std::logic_error, fj_refused);
+    REQUIRE_THROWS_MATCHES(fj.begin(false), std::logic_error, fj_refused);
+    REQUIRE_THROWS_MATCHES(fj.perturb(0.5), std::logic_error, fj_refused);
+    REQUIRE_THROWS_MATCHES(fj.apply_novelty_jump(), std::logic_error, fj_refused);
+    REQUIRE_THROWS_MATCHES(fj.run(), std::logic_error, fj_refused);
 
     // Both rebuilt after the row: runs.
     ViolationManager vm2(f.m);

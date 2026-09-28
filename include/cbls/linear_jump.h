@@ -65,7 +65,10 @@ class LinearJumpScorer {
 public:
     explicit LinearJumpScorer(const Model& model);
 
-    /// Size the per-row table to `n` rows. New rows start ineligible.
+    /// Size the per-row table to `n` rows. New rows start ineligible. Grow-only:
+    /// a shrink throws `std::logic_error`, for the reason `set_row_eligible`
+    /// refuses a built row -- a dropped row's built record and pool entries
+    /// would be orphaned, and a closed model's rows are never removed.
     void resize_rows(size_t n);
     [[nodiscard]] size_t num_rows() const { return slots_.size(); }
 

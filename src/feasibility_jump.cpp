@@ -684,24 +684,21 @@ namespace {
 // compile-time constant. Vacuously true for a leaf (a Const node has no
 // children); a variable child is never constant, since its value is search
 // state.
-//
-// `is_const` is a callable `int32_t node id -> bool` over node ids.
-template <typename IsConst>
-bool children_all_const(ConstSpan<ChildRef> children, IsConst is_const) {
+bool children_all_const(ConstSpan<ChildRef> children, const std::vector<uint8_t>& is_const) {
     return std::all_of(children.begin(), children.end(),
-                       [&](const ChildRef& ch) { return !ch.is_var && is_const(ch.id); });
+                       [&](const ChildRef& ch) { return !ch.is_var && is_const[ch.id] != 0; });
 }
 
 // Is this node affine in the variables, given the same classification already
 // settled for every node below it? Only called for nodes that are NOT wholly
 // constant, so `children` is populated for every op that indexes it.
-//
-// `is_const`/`is_affine` are callables over node ids.
-template <typename IsConst, typename IsAffine>
-bool node_is_affine(NodeOp op, ConstSpan<ChildRef> children, IsConst is_const, IsAffine is_affine) {
-    auto child_const = [&](const ChildRef& c) -> bool { return c.is_var ? false : is_const(c.id); };
+bool node_is_affine(NodeOp op, ConstSpan<ChildRef> children, const std::vector<uint8_t>& is_const,
+                    const std::vector<uint8_t>& is_affine) {
+    auto child_const = [&](const ChildRef& c) -> bool {
+        return c.is_var ? false : static_cast<bool>(is_const[c.id]);
+    };
     auto child_affine = [&](const ChildRef& c) -> bool {
-        return c.is_var ? true : is_affine(c.id);
+        return c.is_var ? true : static_cast<bool>(is_affine[c.id]);
     };
     switch (op) {
         case NodeOp::Const:
@@ -727,9 +724,8 @@ bool node_is_affine(NodeOp op, ConstSpan<ChildRef> children, IsConst is_const, I
 // children are both affine in the variables? Asked of the CHILDREN, not of the
 // row's own affineness, because Eq is |lhs - rhs| -- not affine, yet exactly
 // computable from two affine sides. Neq (a step) and Custom never qualify.
-template <typename IsAffine>
 bool comparison_of_affine_children(const ExprNode& nd, ConstSpan<ChildRef> children,
-                                   IsAffine is_affine) {
+                                   const std::vector<uint8_t>& is_affine) {
     switch (nd.op) {
         case NodeOp::Leq:
         case NodeOp::Geq:
@@ -737,7 +733,7 @@ bool comparison_of_affine_children(const ExprNode& nd, ConstSpan<ChildRef> child
         case NodeOp::Gt:
         case NodeOp::Eq:
             return std::all_of(children.begin(), children.end(),
-                               [&](const ChildRef& c) { return c.is_var || is_affine(c.id); });
+                               [&](const ChildRef& c) { return c.is_var || is_affine[c.id] != 0; });
         default:
             return false;
     }
@@ -755,23 +751,20 @@ void FeasibilityJump::compute_linear_constraints() {
     for (int32_t nid : model_.topo_order()) {
         const ExprNode& nd = nodes[nid];
         const ConstSpan<ChildRef> children = model_.children(nd);
-        auto const_at = [&is_const](int32_t id) { return is_const[id] != 0; };
-        auto affine_at = [&is_affine](int32_t id) { return is_affine[id] != 0; };
-        const bool all_const = children_all_const(children, const_at);
+        const bool all_const = children_all_const(children, is_const);
         is_const[nid] = static_cast<uint8_t>(all_const);
         // A constant subtree is affine, and short-circuiting there is what keeps
         // node_is_affine from indexing the children of a childless leaf.
         is_affine[nid] =
-            static_cast<uint8_t>(all_const || node_is_affine(nd.op, children, const_at, affine_at));
+            static_cast<uint8_t>(all_const || node_is_affine(nd.op, children, is_const, is_affine));
     }
 
     const auto& cids = model_.constraint_ids();
-    auto affine_at = [&is_affine](int32_t id) { return is_affine[id] != 0; };
     for (size_t c = 0; c < cids.size(); ++c) {
         is_linear_[c] = is_affine[cids[c]];
         const ExprNode& nd = nodes[cids[c]];
         linear_.set_row_eligible(static_cast<int32_t>(c),
-                                 comparison_of_affine_children(nd, model_.children(nd), affine_at));
+                                 comparison_of_affine_children(nd, model_.children(nd), is_affine));
     }
 }
 

@@ -101,9 +101,10 @@ def _scenario_structural_writes_are_refused_during_a_solve() -> None:
     target = m.objective_id()
     cfg = cbls.SearchConfig()
     cfg.max_iterations = 2_000
-    # Solve once first so the objective row exists and the model is closed before
-    # the probed solve: then the only thing that can refuse a write mid-solve is
-    # the registry under test, and "nothing was written" below is exact.
+    # Solve once first so the objective row exists before the probed solve, which
+    # makes "nothing was written" below exact. The model is then closed, so #173's
+    # closed-model refusal would refuse most of these writes too; what shows the
+    # registry did the refusing is the message each attempt is checked for.
     cbls.solve(m, time_limit=0.0, seed=1, config=cfg)
     attempts: list[tuple[str, str]] = []
 

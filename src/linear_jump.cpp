@@ -71,6 +71,11 @@ double eq_sign(double diff) {
 LinearJumpScorer::LinearJumpScorer(const Model& model) : model_(model) {}
 
 void LinearJumpScorer::resize_rows(size_t n) {
+    if (n < slots_.size()) {
+        throw std::logic_error("LinearJumpScorer::resize_rows: cannot shrink from " +
+                               std::to_string(slots_.size()) + " to " + std::to_string(n) +
+                               " rows; a closed model's rows are never removed");
+    }
     slots_.resize(n, kIneligible);
 }
 

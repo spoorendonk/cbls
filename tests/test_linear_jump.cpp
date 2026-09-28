@@ -367,6 +367,14 @@ TEST_CASE("a built row is never reclassified", "[fj][linear_jump]") {
     fresh.set_row_eligible(0, true);
     REQUIRE_NOTHROW(fresh.set_row_eligible(0, false));  // not built yet
     REQUIRE_FALSE(fresh.row_eligible(0));
+
+    // The row table only grows: a shrink would orphan built rows the same way.
+    const size_t nc = m.constraint_ids().size();
+    REQUIRE_THROWS_AS(sc.resize_rows(nc - 1), std::logic_error);
+    REQUIRE(sc.num_rows() == nc);
+    REQUIRE_NOTHROW(sc.resize_rows(nc));
+    REQUIRE_NOTHROW(fresh.resize_rows(nc + 1));
+    REQUIRE(fresh.num_rows() == nc + 1);
 }
 
 TEST_CASE("a row clamped to kInfPenalty cancels exactly in the closed form (#100)",
