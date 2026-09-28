@@ -881,7 +881,7 @@ pass) stay `0` under decay and are never bumped, so they remain inactive.
 O(#constraints) per bump, and stays as the public reference. `FeasibilityJump`
 applies the same update through `LazyWeightDecay`: it stores `w' = w / s`, a
 decay is `s *= rho` (O(1)), and a bump adds `1/s` to the rows in V only, so a
-bump costs O(|V|) plus the variables it requeues. `s` is folded into the stored weights (and
+bump costs O(|V|) plus the nonzeros of V's counted rows it requeues. `s` is folded into the stored weights (and
 into the cached jump scores) when it would leave `[1e-30, 1e30]` -- once per
 1347 decays at `rho = 0.95`, never at `rho = 1` -- and on every exit from the
 GLS loop, so `ViolationManager::weights` holds effective weights whenever FJ is
@@ -1020,15 +1020,16 @@ feasibility in either arm):
 
 neos-860300 and rd-rplusc-21 were slower on seed 1 and faster on seed 2, so
 both were re-run on seeds 3-6 and seed 1 was repeated. The repeat reproduced
-each arm's seed-1 count to within 1-4% (neos-860300 12,818 against 12,719;
+each arm's seed-1 count to within 1-4.3% (neos-860300, after arm only, 12,818 against 12,719;
 rd-rplusc-21 7,123 / 6,466 against 7,446 / 6,626), so the gap is the
 trajectory, not timing noise. Over seeds 1-6 neos-860300 averages 16,794
 before and 16,332 after (paired mean -463, 0.7 standard errors from zero; two
 seeds faster, four slower), and rd-rplusc-21 7,389 before and 8,000 after
 (paired mean +612; four seeds faster, two slower). No instance is measurably slower; the change moves
 trajectories, so the iteration count per seed moves with them, and the
-objective (max violation) moves within the seed-to-seed spread the #175 table
-above already showed for uccase12. **Every published table recorded before
+objective (max violation) moves by seed: uccase12's seed-2 12.9 is outside
+the 3.63-9.81 spread the #175 table above showed for it, on two seeds only, so
+that is unmeasured rather than shown neutral. **Every published table recorded before
 `ab56e73` is therefore at an older engine**, as for `d424dbd` above.
 
 ### JumpTable
