@@ -21,7 +21,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <random>
 #include <vector>
 
 using namespace cbls;
@@ -34,39 +33,25 @@ bool close_rel(double got, double want) {
     return std::abs(got - want) <= kRelTol * std::abs(want);
 }
 
-}  // namespace
-
-TEST_CASE("LazyWeightDecay's effective weights match the eager update through renormalisation",
-          "[fj][gls][lazy_decay]") {
-    constexpr size_t kRows = 40;
-    constexpr int kSteps = 12000;
-    std::mt19937 gen(175);
-    std::uniform_real_distribution<double> u(0.0, 1.0);
-
-    std::vector<double> eager(kRows, 1.0);
-    std::vector<double> stored(kRows, 1.0);
-    for (size_t c = 0; c < 5; ++c) {  // masked from the start
-        eager[c] = 0.0;
-        stored[c] = 0.0;
-    }
+// The eager reference and the lazy representation, driven in lockstep.
+struct LockstepWeights {
+    std::vector<double> eager;
+    std::vector<double> stored;
     LazyWeightDecay lazy;
-
     int folds = 0;
     int materialisations = 0;
     bool saw_scaled = false;  // the stored vector was NOT the effective weights
-    std::vector<uint8_t> violated(kRows, 0);
-    for (int step = 0; step < kSteps; ++step) {
-        // Rows 5-9 are violated rarely, so they decay through long stretches
-        // (still well inside the normal range); the rest about a third of the time.
-        for (size_t c = 0; c < kRows; ++c) {
-            violated[c] = u(gen) < (c < 10 ? 0.002 : 0.3) ? 1 : 0;
-        }
-        // Mostly the two rho values solve() draws; now and then 0.5, which moves
-        // the scale 13x faster toward the bound.
-        const double r = u(gen);
-        const double rho = r < 0.7 ? 0.95 : (r < 0.995 ? 1.0 : 0.5);
 
-        for (size_t c = 0; c < kRows; ++c) {  // the reference: gls_update_weights' body
+    explicit LockstepWeights(size_t rows) : eager(rows, 1.0), stored(rows, 1.0) {}
+
+    void set(size_t c, double w) {  // only 0 is scale-free; others need s = 1
+        eager[c] = w;
+        stored[c] = w;
+    }
+
+    // One GLS update: decay by rho, then bump the active violated rows.
+    void update(const std::vector<uint8_t>& violated, double rho) {
+        for (size_t c = 0; c < eager.size(); ++c) {  // gls_update_weights' body
             eager[c] *= rho;
             if (eager[c] > 0.0 && violated[c] != 0) {
                 eager[c] += 1.0;
@@ -75,54 +60,88 @@ TEST_CASE("LazyWeightDecay's effective weights match the eager update through re
         if (lazy.decay(stored, rho) != 1.0) {
             ++folds;
         }
-        for (size_t c = 0; c < kRows; ++c) {
+        for (size_t c = 0; c < stored.size(); ++c) {
             if (violated[c] != 0) {
                 lazy.bump(stored, c);
             }
         }
+    }
 
-        // Now and then a batch boundary: fold the scale in, and do what a caller
-        // may do between batches -- mask a live row, unmask a masked one. A mask
-        // is written as 0 in either space; an unmask only once s = 1.
-        if (step % 2999 == 2998) {
-            lazy.materialise(stored);
-            ++materialisations;
-            REQUIRE(lazy.scale() == 1.0);
-            const auto flip = static_cast<size_t>(10 + (step % 30));
-            const double w = stored[flip] > 0.0 ? 0.0 : 1.0;
-            stored[flip] = w;
-            eager[flip] = w;
-            const auto unmask = static_cast<size_t>(step % 5);
-            if (eager[unmask] == 0.0 && step > 4000) {
-                stored[unmask] = 1.0;
-                eager[unmask] = 1.0;
-            }
-        } else if (step % 331 == 330) {
-            const auto mask = static_cast<size_t>(10 + (step % 30));
-            stored[mask] = 0.0;  // 0 means 0 in the scaled space too
-            eager[mask] = 0.0;
+    // A batch boundary: fold the scale in, then do what a caller may do between
+    // batches -- mask a live row, unmask a masked one.
+    void boundary(int step) {
+        lazy.materialise(stored);
+        ++materialisations;
+        const auto flip = static_cast<size_t>(10 + (step % 30));
+        set(flip, stored[flip] > 0.0 ? 0.0 : 1.0);
+        const auto unmask = static_cast<size_t>(step % 5);
+        if (eager[unmask] == 0.0) {
+            set(unmask, 1.0);
         }
+    }
 
-        for (size_t c = 0; c < kRows; ++c) {
+    void require_match() {
+        for (size_t c = 0; c < eager.size(); ++c) {
             const double eff = lazy.effective(stored, c);
-            CAPTURE(step, c, rho, eff, eager[c], lazy.scale());
+            CAPTURE(c, eff, eager[c], lazy.scale());
             if (eager[c] == 0.0) {
                 REQUIRE(eff == 0.0);
                 REQUIRE(stored[c] == 0.0);
-            } else {
-                REQUIRE(eff > 0.0);
-                REQUIRE(close_rel(eff, eager[c]));
-                saw_scaled = saw_scaled || !close_rel(stored[c], eager[c]);
+                continue;
             }
+            REQUIRE(eff > 0.0);
+            REQUIRE(close_rel(eff, eager[c]));
+            saw_scaled = saw_scaled || !close_rel(stored[c], eager[c]);
         }
+    }
+};
+
+// Mostly the two rho values solve() draws; now and then 0.5, which moves the
+// scale 13x faster toward the bound.
+double draw_rho(RNG& rng) {
+    const double r = rng.random();
+    if (r < 0.7) {
+        return 0.95;
+    }
+    return r < 0.995 ? 1.0 : 0.5;
+}
+
+}  // namespace
+
+TEST_CASE("LazyWeightDecay's effective weights match the eager update through renormalisation",
+          "[fj][gls][lazy_decay]") {
+    constexpr size_t kRows = 40;
+    constexpr int kSteps = 12000;
+    RNG rng(175);
+    LockstepWeights w(kRows);
+    for (size_t c = 0; c < 5; ++c) {
+        w.set(c, 0.0);  // masked from the start
+    }
+    std::vector<uint8_t> violated(kRows, 0);
+    for (int step = 0; step < kSteps; ++step) {
+        // Rows 5-9 are violated rarely, so they decay through long stretches
+        // (still well inside the normal range); the rest about a third of the time.
+        for (size_t c = 0; c < kRows; ++c) {
+            violated[c] = rng.random() < (c < 10 ? 0.002 : 0.3) ? 1 : 0;
+        }
+        const double rho = draw_rho(rng);
+        w.update(violated, rho);
+        if (step % 2999 == 2998) {
+            w.boundary(step);
+            REQUIRE(w.lazy.scale() == 1.0);
+        } else if (step % 331 == 330) {
+            w.set(static_cast<size_t>(10 + (step % 30)), 0.0);  // 0 is 0 in either space
+        }
+        CAPTURE(step, rho);
+        w.require_match();
     }
     // Not vacuous: the scale crossed the bound and was folded several times, and
     // for long stretches the stored vector was far from the effective weights --
     // so a reader that neglected the scale would have been caught above.
-    CAPTURE(folds, materialisations);
-    REQUIRE(folds >= 3);
-    REQUIRE(materialisations >= 3);
-    REQUIRE(saw_scaled);
+    CAPTURE(w.folds, w.materialisations);
+    REQUIRE(w.folds >= 3);
+    REQUIRE(w.materialisations >= 3);
+    REQUIRE(w.saw_scaled);
 }
 
 TEST_CASE("LazyWeightDecay keeps 0 exactly 0 and a positive weight positive",
