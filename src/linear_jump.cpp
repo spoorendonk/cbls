@@ -97,7 +97,7 @@ bool LinearJumpScorer::row_eligible(int32_t ci) const {
 
 // Rewrite the pool and the records with the live rows only, in row order.
 // O(rows + live entries), run only once the dead outnumber the live -- so an
-// extension-heavy run (column generation touches rows every batch) holds at
+// extension-heavy run (one that touches rows every batch) holds at
 // most about twice its live slopes, and the copy is amortised over the builds
 // that made the garbage.
 void LinearJumpScorer::compact_pool() {

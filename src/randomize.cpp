@@ -63,16 +63,6 @@ double random_in_domain(const Variable& var, RNG& rng) {
     const DomainWindow w = domain_window(var);
     switch (var.type) {
         case VarType::Bool:
-            // A PINNED Bool keeps its value and draws nothing. No model builder
-            // makes one -- every Bool is created on [0, 1] and nothing in the
-            // engine writes a bound afterwards -- so this cannot move an existing
-            // draw sequence. Column generation (#168) is what pins one: a retired
-            // column has its upper bound set to its lower bound, and the LNS
-            // destroy step must not draw it back to 1, where nothing that honours
-            // the bound could ever move it again.
-            if (!(var.lb < var.ub)) {
-                return var.lb;
-            }
             return static_cast<double>(rng.integers(0, 2));
         case VarType::Int: {
             const DomainWindow s = int_sample_window(var);

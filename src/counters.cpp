@@ -19,19 +19,6 @@ const char* batch_kind_name(BatchKind kind) {
     return "feasibility_jump";
 }
 
-const char* pricing_event_name(PricingEvent event) {
-    switch (event) {
-        case PricingEvent::Periodic:
-            return "periodic";
-        case PricingEvent::Stagnation:
-            return "stagnation";
-        case PricingEvent::NewBest:
-            return "new_best";
-    }
-    // Unreachable for any value of the enum; see batch_kind_name.
-    return "periodic";
-}
-
 void SearchCounters::merge(const SearchCounters& other) {
     batches += other.batches;
     fj_batches += other.fj_batches;
@@ -42,14 +29,6 @@ void SearchCounters::merge(const SearchCounters& other) {
     inner_solver_calls += other.inner_solver_calls;
     inner_solver_seconds += other.inner_solver_seconds;
     portfolio_restarts += other.portfolio_restarts;
-    pricing_calls += other.pricing_calls;
-    pricing_seconds += other.pricing_seconds;
-    columns_added += other.columns_added;
-    rows_added += other.rows_added;
-    columns_retired += other.columns_retired;
-    extensions_refused += other.extensions_refused;
-    incumbents_revalidated += other.incumbents_revalidated;
-    revalidation_evaluations += other.revalidation_evaluations;
 
     // Positionally when the two describe the SAME generator set, by name
     // otherwise.

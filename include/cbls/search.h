@@ -33,11 +33,6 @@ struct SearchCoordination;
 /// `cbls/pool.h`, which needs the definition for `tracer_factory`).
 class Tracer;
 
-/// Defined in `column_generator.h`. Forward-declared for the same reason: the
-/// config holds only a pointer, and `std::shared_ptr` of an incomplete type is
-/// fine to hold, copy and destroy.
-class ColumnGenerator;
-
 struct SearchConfig {
     // Keep the assignment the caller handed in, whole: suppresses both the
     // List/Set randomisation and FeasibilityJump's closest-to-zero scalar start.
@@ -222,71 +217,6 @@ struct SearchConfig {
     // `ParallelConfig::tracer_factory`, which builds one per worker. See
     // `Tracer` for the granularity contract and for what attaching one costs.
     Tracer* tracer = nullptr;
-
-    // ---- column generation (#168) ------------------------------------------
-    //
-    // A pricing oracle that proposes new columns from the GLS weights while the
-    // search runs. Null -- the default -- turns the whole mechanism off, and a run
-    // without one is BIT-IDENTICAL to the run before this block existed: every
-    // pricing site is behind a single null test, reads no clock and draws no
-    // random number. Outside those sites the feature adds four compares -- a
-    // pinned-Bool test in FJ's Bool candidate, in `random_in_domain` and in the
-    // Bool move generator, and a size test in FJ's `jumpable` -- which are inert on
-    // every model without a pinned Bool or a retired column, i.e. every model no
-    // generator has touched. See `ColumnGenerator` and docs/architecture.md, "Column generation".
-    //
-    // CLONED PER solve(), so per portfolio worker and per restart: the prototype
-    // is only ever `clone()`d, which is what the `const` says.
-    //
-    // Under `ParallelSearch` only the `Model& master` overloads accept it: each
-    // worker then grows a PRIVATE copy of the model, workers share no incumbents
-    // (their models stop being the same model at the first extension), a worker
-    // runs one solve() and does not restart, and the winning worker's grown model
-    // is moved back into `master`. The factory overloads refuse it, because the
-    // model the answer indexes would be one the caller never sees. See
-    // `ParallelSearch::solve` in pool.h.
-    std::shared_ptr<const ColumnGenerator> column_generator;
-    // Price every this many batches (`PricingEvent::Periodic`). 0 = never.
-    int pricing_period = 0;
-    // Price immediately before every diversification kick, on both kick routes
-    // (`PricingEvent::Stagnation`) -- while the weights still describe the basin
-    // the search is stuck in, since the kick resets them. KNOW THE RATE: #102's
-    // unproductive route takes ~98% of kicks at a median of ~2 batches apart
-    // (measured at #158), so with this on a generator is asked about every other
-    // batch once the search stalls -- far more often than `pricing_period`
-    // suggests. Cheap for a cheap pricer; for an expensive one turn this off and
-    // use `pricing_period`. Not restricted to the full-period route, because the
-    // issue asks for "before a kick" and that route is 2% of them.
-    bool price_on_stagnation = true;
-    // Price on a batch that recorded a new best, before its weight reset
-    // (`PricingEvent::NewBest`).
-    bool price_on_new_best = false;
-    // At most ONE pricing call per batch. When two events fall on the same batch
-    // the call carries the first of NewBest, Periodic, Stagnation, and the others
-    // are not raised for that batch. On a pure-feasibility model the batch that
-    // solves it prices nothing: the run is over.
-
-    // The most VARIABLES pricing may add over one solve(), retired ones included
-    // -- a retired column is still in the model. An extension that would pass it
-    // is refused whole (`SearchCounters::extensions_refused`), and once it is
-    // reached the generator is not called again -- so 0 switches pricing off
-    // entirely, a generator that only adds rows included. A safety ceiling on
-    // model growth, NOT a tuned value: nothing in the tree has measured a better
-    // one.
-    int64_t max_generated_columns = 10000;
-    // Retire a generated column after it has sat at its lower bound -- in the
-    // current assignment AND in the incumbent -- for this many consecutive
-    // pricing events. 0 = never retire, the default: retirement is permanent (see
-    // `ColumnPool`), and no measurement in the tree says which age is worth
-    // losing a column over. Retiring buys scan cost, not memory. Columns are aged
-    // at the start of every pricing call and, once `max_generated_columns` is
-    // reached and the generator is no longer called, at every pricing event that
-    // would have called it -- same schedule, same budget guards, but no
-    // generator call, no `pricing_calls` count, no `pricing_seconds` and no
-    // `Tracer::pricing` event -- so a full pool, where retiring saves the most
-    // scan cost, keeps aging until every column is retired
-    // (a column held off its lower bound in the incumbent never retires).
-    int column_retire_age = 0;
 };
 
 /// Why `solve()`'s outer loop stopped. Exactly one of these ends every run.

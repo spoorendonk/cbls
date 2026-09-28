@@ -430,28 +430,6 @@ public:
     /// the batch then indexes per row without one.
     void on_extended(const ExtensionResult& ext);
 
-    /// Take variables out of the search for good -- column generation's
-    /// retirement (#168). Each must already be PINNED (`ub == lb == value`),
-    /// which is what keeps every other mover (LNS's destroy step, a fresh
-    /// `FeasibilityJump` inside an LNS repair, the kick) from moving it too; this
-    /// removes it from the scan tables, so a retired column costs no scan work.
-    ///
-    /// Permanent for this object: `jumpable` reports false from here on, which
-    /// also keeps it out of kicks. Keeps the GLS weights; rebuilds the violated
-    /// set and the scan set (one O(model) sweep, like `resync`). Structured or
-    /// already-retired ids are skipped. Throws `std::out_of_range` on an id naming
-    /// nothing and `std::invalid_argument` on an unpinned variable, before
-    /// changing anything.
-    void retire(const std::vector<int32_t>& vars);
-
-    /// Queue the variables `[first, end)` and drop their cached jumps, so the next
-    /// batch considers them whether or not they sit in a violated row -- what
-    /// `on_extended` does for the columns it adds, re-done after a `resync` has
-    /// rebuilt the scan set from the violated rows only (#168's post-extension
-    /// revalidation). Non-jumpable ids in the range are skipped; an out-of-range
-    /// one throws `std::out_of_range`.
-    void requeue(int32_t first, int32_t end);
-
     // Novelty Jump (paper Algorithms 4-5): a bounded-backtracking compound-move
     // search that escapes local optima single-variable FJ cannot (chained-
     // invariant fixes). Commits the improving compound move(s) it finds (left
@@ -623,11 +601,9 @@ private:
     //
     // Every write goes through set_violated, reconcile_counted, uncount or
     // rebuild_violated_index (which re-derives everything from the raw kInV bits
-    // rebuild_violated_and_scan_set fills in). Two sites step outside that on
+    // rebuild_violated_and_scan_set fills in). One site steps outside that on
     // purpose: on_extended uncounts a row against its OLD variable list before
-    // merging new incidences into it, and retire() edits the lists of possibly
-    // counted rows and leaves the counts wrong until the full rebuild it ends
-    // with -- nothing may read them in between. The derived structures are:
+    // merging new incidences into it. The derived structures are:
     //   - violated_rows_ + violated_pos_: V as a dense list with a position index
     //     (-1 = absent), swap-removed on the way out;
     //   - active_violated_of_var_: per variable, the number of COUNTED rows whose
@@ -690,14 +666,9 @@ private:
     std::vector<uint8_t> is_linear_;  // per constraint
     // Closed-form scoring over linear comparison rows. Its per-row eligibility is
     // maintained wherever is_linear_ is: compute_linear_constraints and
-    // recompute_linearity (the constructor and on_extended). retire() leaves it
-    // alone -- a retired column is never scored, and the rows are unchanged.
+    // recompute_linearity (the constructor and on_extended).
     LinearJumpScorer linear_;
     std::vector<std::vector<int32_t>> vars_of_constraint_;  // constraint idx -> jumpable vars (G_c)
-    // Per var: retired by column generation (#168). EMPTY until the first
-    // retire(), and sized to the model then; a variable past its end is not
-    // retired. See jumpable().
-    std::vector<uint8_t> retired_;
     // Arm/disarm the deadline and reset the stride tuner (both entry points).
     void arm_deadline();
 

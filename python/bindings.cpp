@@ -1,4 +1,3 @@
-#include <array>
 #include <cbls/cbls.h>
 #include <cbls/model_extension.h>
 #include <memory>
@@ -117,19 +116,10 @@ constexpr const char* kSolveMasterDoc =
     "\n"
     "The C++ `Model& master` entry point, which the factory forms cannot reach.\n"
     "`model` is FROZEN on this thread first and each worker searches a copy that\n"
-    "shares its immutable structure (#157), so -- without a column_generator -- the\n"
-    "model comes back frozen: build\n"
+    "shares its immutable structure (#157), so the model comes back frozen: build\n"
     "any further structure before calling this. hook_factory, lns_factory,\n"
     "callback and par_config behave as in solve_parallel (see there, including\n"
     "the GIL release and the exception contract).\n"
-    "\n"
-    "This is the only ParallelSearch entry point that accepts a\n"
-    "SearchConfig.column_generator (solve_parallel raises ValueError on one).\n"
-    "With one, each worker searches a PRIVATE deep copy that it grows, prices\n"
-    "with its own clone() of the generator, shares no incumbents with its peers\n"
-    "and runs one solve without restarting; the best worker's grown model is\n"
-    "moved into `model`, which comes back unfrozen (still closed) and grown. Its clone() is\n"
-    "called from every worker thread in turn, each holding the GIL.\n"
     "\n"
     "While this runs, structural writes to `model` from Python -- builders,\n"
     "extend, ModelExtension -- raise RuntimeError, as under cbls.solve.";
@@ -202,12 +192,10 @@ constexpr const char* kModelNodeDoc =
 // engine's own table checks, but one that only appends terms over existing
 // variables to existing Sum rows changes neither count: the search carried on
 // with stale FeasibilityJump tables and returned feasible=True on a model it had
-// left infeasible. The engine's only in-search growth point is #168's
-// ColumnGenerator, whose extension the ENGINE applies, so the binding refuses the
-// call outright; every other structural write consults this too (see
-// refuse_if_solving) -- a SECOND solve of a registered model included, which
-// adds the objective row, applies pricing extends, and (solve_master) freezes the
-// model and moves a grown one into it, all under the running search. The two
+// left infeasible. So the binding refuses the call outright; every other
+// structural write consults this too (see refuse_if_solving) -- a SECOND solve
+// of a registered model included, which adds the objective row and
+// (solve_master) freezes the model, all under the running search. The two
 // single-model entry points register: `solve` and `ParallelSearch.solve_master`.
 // The factory forms do not: their workers solve frozen copies. A multiset only so
 // that remove() pairs with add() whatever happens; a duplicate add is refused by
@@ -288,18 +276,14 @@ private:
 // GIL is released, so a second Python thread building a ModelExtension against the
 // same model -- whose constructor and append_to_sum read the node array and the
 // structure version -- or calling any Model builder, raced a write with no lock.
-// A ColumnGenerator makes it worse: the engine's own extend (#168) then grows the
-// model mid-search, as often as every batch.
 //
 // So every structural write Python can reach consults the same registry: the
 // Model builders and close/freeze/extend, the Expr operators and free functions
 // (each of which calls a Model builder), and ModelExtension construction and
 // every ModelExtension builder. Each check runs holding the GIL, and a bound
 // solve registers holding the GIL before releasing it, so a check and a
-// registration cannot interleave. The engine's own writes -- the objective row,
-// a pricing extend -- are C++ calls that never pass through here, so they are
-// unaffected, and the ONE extension a running solve accepts from Python is the
-// one it lends to ColumnGenerator.price (see ExtensionHandle).
+// registration cannot interleave. The engine's own write -- the objective row --
+// is a C++ call that never passes through here, so it is unaffected.
 //
 // Value writes (Variable.value, restore_state) are NOT structural and are not
 // refused: they are the data race the `solve` docstring already warns about.
@@ -309,9 +293,9 @@ void refuse_if_solving(const Model& m, const char* what) {
     if (SolvingModels::instance().contains(&m)) {
         throw std::logic_error(
             std::string(what) +
-            ": cbls.solve is running on this model (from a SolveCallback, a "
-            "ColumnGenerator or another thread). Structural changes are between-solves "
-            "operations: the running search reads the structure without a lock");
+            ": cbls.solve is running on this model (from a SolveCallback or another "
+            "thread). Structural changes are between-solves operations: the running "
+            "search reads the structure without a lock");
     }
 }
 
@@ -374,102 +358,29 @@ nb::object build_expr_list(const std::vector<Expr>& args, const char* what, F&& 
     return expr_object(std::forward<F>(build)());
 }
 
-// ---------------------------------------------------------------------------
-// Column generation from Python (#168).
-//
-// There is no #132 machinery to reuse: #132 closed not-planned, and the only
-// trampoline in this file is SolveCallback's. A ColumnGenerator is bound as an
-// ADAPTER instead: `PyColumnGenerator` is a C++ ColumnGenerator holding the
-// Python object, and every entry point acquires the GIL itself -- `price` and
-// `clone` run on the search thread (a portfolio worker, under solve_master) while
-// the caller has the GIL released, and the destructor can run there too. A
-// trampoline would add nothing: the Python class never needs a C++ state of its
-// own, and `clone()` has to hand the engine a unique_ptr, which a Python-owned
-// instance cannot be relinquished into (the same reason pool.h's factories return
-// shared_ptr) -- so a wrapper was needed on that path whatever the base was.
-//
-// WHAT PRICE LENDS. The engine's PricingContext and ModelExtension live on its
-// stack for the duration of one `price()` call. Handing either to Python by
-// reference would let a pricer keep it -- `self.saved = ext` -- and a use after
-// the call would dereference a dead stack frame. So Python receives Python-OWNED
-// view objects that read through one shared `PricingLease`, and the adapter
-// clears the lease on the way out, thrown or not. A retained view is then a
-// valid object whose every use raises RuntimeError.
-// ---------------------------------------------------------------------------
-
-struct PricingLease {
-    const PricingContext* ctx = nullptr;
-    ModelExtension* ext = nullptr;
-};
-
-constexpr const char* kLeaseExpired =
-    ": used after the ColumnGenerator.price call it was handed to returned. The "
-    "context, its signatures and the extension are lent for that one call; copy out "
-    "what you need to keep";
-
-// Clears a lease on scope exit, so the views expire on a throw as well.
-class LeaseScope {
-public:
-    explicit LeaseScope(PricingLease& lease) : lease_(&lease) {}
-    LeaseScope(const LeaseScope&) = delete;
-    LeaseScope& operator=(const LeaseScope&) = delete;
-    LeaseScope(LeaseScope&&) = delete;
-    LeaseScope& operator=(LeaseScope&&) = delete;
-    ~LeaseScope() {
-        lease_->ctx = nullptr;
-        lease_->ext = nullptr;
-    }
-
-private:
-    PricingLease* lease_;
-};
-
-// What Python's `ModelExtension` is: either an extension Python built (owned
-// here) or the engine's, lent to one `price()` call.
-//
-// OWNED: records against `base_`, which the binding's keep_alive<1, 2> keeps
-// alive. Construction and every builder are refused while a bound solve runs on
+// What Python's `ModelExtension` is: an extension Python built, recording
+// against `base_`, which the binding's keep_alive<1, 2> keeps alive.
+// Construction and every builder are refused while a bound solve runs on
 // `base_` (see refuse_if_solving): the builders read the base's nodes and its
 // structure version, which the running search may be rewriting.
-//
-// LENT: the only extension a running solve accepts from Python. It is exempt from
-// the solving check -- the search is parked inside `price()` for exactly as long
-// as the lease lasts, so nothing is writing the model -- and raises once the call
-// has returned.
 class ExtensionHandle {
 public:
     explicit ExtensionHandle(const Model& base) : base_(&base) {
         refuse_if_solving(base, "ModelExtension");
         owned_ = std::make_unique<ModelExtension>(base);
     }
-    explicit ExtensionHandle(std::shared_ptr<const PricingLease> lease)
-        : lease_(std::move(lease)) {}
 
     // For a builder: the extension, or a refusal.
     [[nodiscard]] ModelExtension& get(const char* what) const {
-        if (lease_ != nullptr) {
-            return lent(what);
-        }
         refuse_if_solving(*base_, what);
         return *owned_;
     }
-    // For a query of the recording itself, which reads no model: never refused
-    // for a running solve, only for an expired lease.
-    [[nodiscard]] const ModelExtension& peek(const char* what) const {
-        return lease_ != nullptr ? lent(what) : *owned_;
-    }
+    // For a query of the recording itself, which reads no model: never refused.
+    [[nodiscard]] const ModelExtension& peek() const { return *owned_; }
 
 private:
-    [[nodiscard]] ModelExtension& lent(const char* what) const {
-        if (lease_->ext == nullptr) {
-            throw std::logic_error(std::string(what) + kLeaseExpired);
-        }
-        return *lease_->ext;
-    }
-
     const Model* base_ = nullptr;
     std::unique_ptr<ModelExtension> owned_;
-    std::shared_ptr<const PricingLease> lease_;
 };
 
 template <typename R, typename... A>
@@ -481,178 +392,16 @@ auto ext_builder(R (ModelExtension::*method)(A...), const char* what) {
 
 // Model.extend as bound: refused while a bound solve runs on the model. A free
 // function rather than a lambda in the module body, whose cognitive-complexity
-// score counts every lambda's branches as its own. The model check comes first,
-// so a lent extension handed to Model.extend inside price() is refused for the
-// model's solve rather than for its lease.
+// score counts every lambda's branches as its own.
 ExtensionResult extend_unless_solving(Model& self, const ExtensionHandle& ext) {
     if (SolvingModels::instance().contains(&self)) {
         throw std::logic_error(
-            "Model.extend: cbls.solve is running on this model (from a SolveCallback, a "
-            "ColumnGenerator or another thread). extend is a between-solves operation: the "
-            "running search's tables cannot grow with it");
+            "Model.extend: cbls.solve is running on this model (from a SolveCallback or "
+            "another thread). extend is a between-solves operation: the running search's "
+            "tables cannot grow with it");
     }
     return self.extend(ext.get("Model.extend"));
 }
-
-// Python's view of a PricingContext. Every accessor COPIES out: see the class
-// docstring in the module body for which fields and why.
-class PricingContextView {
-public:
-    explicit PricingContextView(std::shared_ptr<const PricingLease> lease)
-        : lease_(std::move(lease)) {}
-    [[nodiscard]] const PricingContext& get(const char* what) const {
-        if (lease_->ctx == nullptr) {
-            throw std::logic_error(std::string(what) + kLeaseExpired);
-        }
-        return *lease_->ctx;
-    }
-    [[nodiscard]] const std::shared_ptr<const PricingLease>& lease() const { return lease_; }
-
-private:
-    std::shared_ptr<const PricingLease> lease_;
-};
-
-// `ctx.signatures`: the engine's ColumnSignatureSet for this solve, through the
-// same lease.
-class SignatureSetView {
-public:
-    explicit SignatureSetView(std::shared_ptr<const PricingLease> lease)
-        : lease_(std::move(lease)) {}
-    [[nodiscard]] ColumnSignatureSet& get(const char* what) const {
-        if (lease_->ctx == nullptr) {
-            throw std::logic_error(std::string(what) + kLeaseExpired);
-        }
-        return lease_->ctx->signatures;
-    }
-
-private:
-    std::shared_ptr<const PricingLease> lease_;
-};
-
-std::optional<Model::State> incumbent_copy(const PricingContextView& view) {
-    const PricingContext& ctx = view.get("PricingContext.incumbent");
-    if (ctx.incumbent == nullptr) {
-        return std::nullopt;
-    }
-    return *ctx.incumbent;
-}
-
-// The Python-visible base class. Holds nothing: a subclass's state is its own
-// Python attributes, and the engine reaches it only through PyColumnGenerator.
-struct ColumnGeneratorBase {};
-
-[[noreturn]] void raise_not_implemented(const char* what) {
-    PyErr_SetString(PyExc_NotImplementedError, what);
-    throw nb::python_error();
-}
-
-class PyColumnGenerator final : public ColumnGenerator {
-public:
-    explicit PyColumnGenerator(nb::object impl) : impl_(std::move(impl)) {}
-    PyColumnGenerator(const PyColumnGenerator&) = delete;
-    PyColumnGenerator& operator=(const PyColumnGenerator&) = delete;
-    PyColumnGenerator(PyColumnGenerator&&) = delete;
-    PyColumnGenerator& operator=(PyColumnGenerator&&) = delete;
-    // The last reference to a clone drops on the search thread, without the GIL.
-    // With no interpreter to decref into the reference is leaked instead -- but
-    // only then: Py_IsInitialized() is already 0 while Py_FinalizeEx clears module
-    // globals, and a config held in a global dies there WITH the GIL held.
-    // Leaking in that case pinned the subclass, its methods' __globals__ and so
-    // the whole __main__ namespace.
-    ~PyColumnGenerator() override {
-        if (Py_IsInitialized() == 0 && PyGILState_Check() == 0) {
-            static_cast<void>(impl_.release());
-            return;
-        }
-        const nb::gil_scoped_acquire gil;
-        impl_.reset();
-    }
-
-    void price(const PricingContext& ctx, PricingEvent why, ModelExtension& ext) override {
-        const nb::gil_scoped_acquire gil;
-        auto lease = std::make_shared<PricingLease>(PricingLease{&ctx, &ext});
-        const LeaseScope expire(*lease);
-        nb::object py_ctx = nb::cast(PricingContextView(lease), nb::rv_policy::move);
-        nb::object py_ext = nb::cast(ExtensionHandle(lease), nb::rv_policy::move);
-        impl_.attr("price")(py_ctx, why, py_ext);
-    }
-
-    [[nodiscard]] std::unique_ptr<ColumnGenerator> clone() const override {
-        const nb::gil_scoped_acquire gil;
-        nb::object copy = impl_.attr("clone")();
-        if (!nb::isinstance<ColumnGeneratorBase>(copy)) {
-            throw nb::type_error("ColumnGenerator.clone() must return a cbls.ColumnGenerator");
-        }
-        // One object pricing in two solves is shared mutable state between
-        // portfolio workers, and it breaks the engine's contract that the
-        // registered prototype is never priced with.
-        if (copy.is(impl_)) {
-            throw std::invalid_argument(
-                "ColumnGenerator.clone() returned self: return a new object (copy.copy(self) "
-                "for a generator whose state may be shared, a deeper copy otherwise)");
-        }
-        return std::make_unique<PyColumnGenerator>(std::move(copy));
-    }
-
-    [[nodiscard]] const nb::object& impl() const { return impl_; }
-
-private:
-    nb::object impl_;
-};
-
-nb::object column_generator_of(const SearchConfig& c) {
-    const auto* g = dynamic_cast<const PyColumnGenerator*>(c.column_generator.get());
-    return g != nullptr ? g->impl() : nb::none();
-}
-
-void set_column_generator(SearchConfig& c, const nb::object& impl) {
-    if (impl.is_none()) {
-        c.column_generator = nullptr;
-        return;
-    }
-    if (!nb::isinstance<ColumnGeneratorBase>(impl)) {
-        throw nb::type_error(
-            "SearchConfig.column_generator must be a cbls.ColumnGenerator or None");
-    }
-    c.column_generator = std::make_shared<const PyColumnGenerator>(impl);
-}
-
-// Cyclic GC support for SearchConfig. The config holds its generator through a
-// C++ shared_ptr the cycle collector cannot see, so `cfg -> generator -> its
-// class -> module globals -> cfg` -- any config held at module level -- was never
-// collected, and nanobind reported leaked instances at exit. Visited only while
-// this config is the adapter's SOLE owner: a Python copy of the config shares the
-// same adapter (and so the same one Python reference), and two configs each
-// reporting that reference would make the collector count it twice and free a
-// generator that is still referenced. Shared, it is not reported -- a leak of the
-// old kind, never a premature free.
-int search_config_traverse(PyObject* self, visitproc visit, void* arg) {
-    Py_VISIT(Py_TYPE(self));
-    if (!nb::inst_ready(self)) {
-        return 0;
-    }
-    const SearchConfig* cfg = nb::inst_ptr<SearchConfig>(self);
-    if (cfg->column_generator.use_count() != 1) {
-        return 0;
-    }
-    const auto* g = dynamic_cast<const PyColumnGenerator*>(cfg->column_generator.get());
-    if (g != nullptr) {
-        Py_VISIT(g->impl().ptr());
-    }
-    return 0;
-}
-
-int search_config_clear(PyObject* self) {
-    if (nb::inst_ready(self)) {
-        nb::inst_ptr<SearchConfig>(self)->column_generator = nullptr;
-    }
-    return 0;
-}
-
-std::array<PyType_Slot, 3> search_config_slots = {
-    {{Py_tp_traverse, reinterpret_cast<void*>(&search_config_traverse)},
-     {Py_tp_clear, reinterpret_cast<void*>(&search_config_clear)},
-     {0, nullptr}}};
 
 SearchResult solve_master_bound(
     ParallelSearch& self, Model& master, double time_limit, uint64_t seed,
@@ -1043,18 +792,7 @@ NB_MODULE(_cbls_core, m) {
         // 0.0 on a run with no wall-clock budget, by design -- see
         // include/cbls/counters.h. The call count above is always filled.
         .def_ro("inner_solver_seconds", &SearchCounters::inner_solver_seconds)
-        .def_ro("portfolio_restarts", &SearchCounters::portfolio_restarts)
-        // Column generation (#168); all zero without a column_generator.
-        // pricing_seconds follows inner_solver_seconds' rule: 0.0 on a run with
-        // no wall-clock budget.
-        .def_ro("pricing_calls", &SearchCounters::pricing_calls)
-        .def_ro("pricing_seconds", &SearchCounters::pricing_seconds)
-        .def_ro("columns_added", &SearchCounters::columns_added)
-        .def_ro("rows_added", &SearchCounters::rows_added)
-        .def_ro("columns_retired", &SearchCounters::columns_retired)
-        .def_ro("extensions_refused", &SearchCounters::extensions_refused)
-        .def_ro("incumbents_revalidated", &SearchCounters::incumbents_revalidated)
-        .def_ro("revalidation_evaluations", &SearchCounters::revalidation_evaluations);
+        .def_ro("portfolio_restarts", &SearchCounters::portfolio_restarts);
 
     // One portfolio worker that did not complete (#170). Registered before
     // SearchResult, whose `worker_failures` converts to a list of these.
@@ -1512,9 +1250,7 @@ NB_MODULE(_cbls_core, m) {
     // model cannot leave the extension pointing at a freed one. The pointer is
     // only read (node ops and children, for the Sum check and the cycle walk);
     // nothing is ever written through it. The Python class is an ExtensionHandle
-    // (see there), so that the extension ColumnGenerator.price is LENT -- the
-    // engine's own, on its stack -- is the same Python type as one Python builds,
-    // and expires rather than dangles.
+    // (see there), which refuses every builder while a solve runs on the base.
     nb::class_<ExtensionHandle>(m, "ModelExtension")
         .def(nb::init<const Model&>(), nb::arg("model"), nb::keep_alive<1, 2>(),
              "Record additions to a CLOSED model: new scalar variables, expression\n"
@@ -1526,9 +1262,7 @@ NB_MODULE(_cbls_core, m) {
              "RuntimeError if the model is not closed, if a failed extend left it\n"
              "corrupt (Model.extend_interrupted()), or while cbls.solve is running on\n"
              "it -- and every builder below raises RuntimeError for as long as one is:\n"
-             "the running search changes the structure they read. The one extension a\n"
-             "running solve accepts is the one it hands to ColumnGenerator.price, and\n"
-             "that one raises RuntimeError once price() has returned. An extension is\n"
+             "the running search changes the structure they read. An extension is\n"
              "single-use; see Model.extend. Keeps the model alive.")
         .def("bool_var", ext_builder(&ModelExtension::bool_var, "ModelExtension.bool_var"),
              nb::arg("name") = "")
@@ -1581,15 +1315,10 @@ NB_MODULE(_cbls_core, m) {
              "the DAG cyclic), or if the model has changed since this extension was\n"
              "started (another extend was applied, or the first solve/freeze added the\n"
              "objective row).")
-        .def("empty",
-             [](const ExtensionHandle& self) { return self.peek("ModelExtension.empty").empty(); })
-        .def("num_new_vars",
-             [](const ExtensionHandle& self) {
-                 return self.peek("ModelExtension.num_new_vars").num_new_vars();
-             })
-        .def("num_new_nodes", [](const ExtensionHandle& self) {
-            return self.peek("ModelExtension.num_new_nodes").num_new_nodes();
-        });
+        .def("empty", [](const ExtensionHandle& self) { return self.peek().empty(); })
+        .def("num_new_vars", [](const ExtensionHandle& self) { return self.peek().num_new_vars(); })
+        .def("num_new_nodes",
+             [](const ExtensionHandle& self) { return self.peek().num_new_nodes(); });
 
     // In place, on a state the caller owns: nothing is retained.
     m.def("pad_state", &pad_state, nb::arg("state"), nb::arg("ext"),
@@ -1774,180 +1503,10 @@ NB_MODULE(_cbls_core, m) {
             "side holds a view, not the object. Same accumulating keep-alive as\n"
             "SearchConfig.stop -- see its docstring.");
 
-    // ---- Column generation (#168) --------------------------------------------
-    // See PyColumnGenerator and PricingLease above for the GIL and lifetime design.
-    nb::enum_<PricingEvent>(m, "PricingEvent")
-        .value("Periodic", PricingEvent::Periodic)
-        .value("Stagnation", PricingEvent::Stagnation)
-        .value("NewBest", PricingEvent::NewBest);
-
-    nb::class_<SignatureSetView>(
-        m, "ColumnSignatureSet",
-        "This solve's duplicate registry for generated columns, lent with the\n"
-        "PricingContext (ctx.signatures) and valid only during that price() call.\n"
-        "A signature is a column's cost and its (row index, coefficient) list; it\n"
-        "is canonicalised (rows sorted, repeats summed, zeros dropped) and compared\n"
-        "exactly. The engine never un-registers: register only what you stage, and\n"
-        "stage only what fits in ctx.columns_remaining.")
-        .def(
-            "insert",
-            [](const SignatureSetView& self, std::vector<std::pair<int32_t, double>> coefficients,
-               double cost) {
-                return self.get("ColumnSignatureSet.insert").insert(std::move(coefficients), cost);
-            },
-            nb::arg("coefficients"), nb::arg("cost"),
-            "Register a column. True if it was new, False if already registered.")
-        .def(
-            "contains",
-            [](const SignatureSetView& self, std::vector<std::pair<int32_t, double>> coefficients,
-               double cost) {
-                return self.get("ColumnSignatureSet.contains")
-                    .contains(std::move(coefficients), cost);
-            },
-            nb::arg("coefficients"), nb::arg("cost"))
-        .def("__len__", [](const SignatureSetView& self) {
-            return self.get("ColumnSignatureSet.__len__").size();
-        });
-
-    nb::class_<PricingContextView>(
-        m, "PricingContext",
-        "What a ColumnGenerator sees at a pricing call, at a safe point between\n"
-        "batches. LENT FOR THAT ONE CALL: every attribute and method raises\n"
-        "RuntimeError once price() has returned, so copy out what you need.\n"
-        "\n"
-        "Everything is returned as a COPY, never a view into the engine. `weights`\n"
-        "in particular is a fresh list per access, not a zero-copy view of the\n"
-        "live GLS weight vector: that vector is reallocated by every extension the\n"
-        "engine applies (and a view kept past the call would read freed memory),\n"
-        "and O(rows) per access is negligible next to a Python pricer. Read it once\n"
-        "per call. The model itself is not exposed: under ParallelSearch.solve_master\n"
-        "it is a worker's private copy. Its current assignment, node values,\n"
-        "constraints and violations are read here.")
-        .def_prop_ro(
-            "weights",
-            [](const PricingContextView& v) {
-                const ConstSpan<double> w = v.get("PricingContext.weights").weights;
-                return std::vector<double>(w.begin(), w.end());
-            },
-            "The GLS weight per constraint index (a copy). Not LP duals; reset to\n"
-            "1.0 on every new best and every diversification kick.")
-        .def_prop_ro(
-            "objective_constraint_idx",
-            [](const PricingContextView& v) {
-                return v.get("PricingContext.objective_constraint_idx").objective_constraint_idx;
-            },
-            "Index of the `obj <= bound` row in weights, or -1 without an objective.")
-        .def_prop_ro("objective_bound",
-                     [](const PricingContextView& v) {
-                         return v.get("PricingContext.objective_bound").objective_bound;
-                     })
-        .def_prop_ro("incumbent", &incumbent_copy,
-                     "A COPY of the best feasible assignment so far, sized for the model as\n"
-                     "it is now, or None before the first one.")
-        .def_prop_ro("incumbent_objective",
-                     [](const PricingContextView& v) {
-                         return v.get("PricingContext.incumbent_objective").incumbent_objective;
-                     })
-        .def_prop_ro(
-            "batches",
-            [](const PricingContextView& v) { return v.get("PricingContext.batches").batches; })
-        .def_prop_ro(
-            "elapsed_seconds",
-            [](const PricingContextView& v) {
-                return v.get("PricingContext.elapsed_seconds").elapsed_seconds;
-            },
-            "NaN on a run with no wall clock (an iteration-budgeted run).")
-        .def_prop_ro(
-            "remaining_seconds",
-            [](const PricingContextView& v) {
-                return v.get("PricingContext.remaining_seconds").remaining_seconds;
-            },
-            "+inf on a run with no wall clock. price() must return within it.")
-        .def_prop_ro(
-            "columns_remaining",
-            [](const PricingContextView& v) {
-                return v.get("PricingContext.columns_remaining").columns_remaining;
-            },
-            "How many more variables this solve may add. An extension staging\n"
-            "more is refused whole.")
-        .def_prop_ro("signatures",
-                     [](const PricingContextView& v) {
-                         static_cast<void>(v.get("PricingContext.signatures"));
-                         return SignatureSetView(v.lease());
-                     })
-        .def("num_vars",
-             [](const PricingContextView& v) {
-                 return v.get("PricingContext.num_vars").model.num_vars();
-             })
-        .def("num_nodes",
-             [](const PricingContextView& v) {
-                 return v.get("PricingContext.num_nodes").model.num_nodes();
-             })
-        .def("constraint_ids",
-             [](const PricingContextView& v) {
-                 return v.get("PricingContext.constraint_ids").model.constraint_ids();
-             })
-        .def(
-            "var_value",
-            [](const PricingContextView& v, int32_t var_id) {
-                return v.get("PricingContext.var_value").model.var(var_id).value;
-            },
-            nb::arg("var_id"), "Current value of variable `var_id` (an id, not a handle).")
-        .def(
-            "node_value",
-            [](const PricingContextView& v, int32_t id) {
-                return v.get("PricingContext.node_value").model.node_value(id);
-            },
-            nb::arg("id"))
-        .def(
-            "constraint_violation",
-            [](const PricingContextView& v, int i) {
-                return v.get("PricingContext.constraint_violation")
-                    .violations.constraint_violation(i);
-            },
-            nb::arg("i"), "The violation of constraint index `i`, from its current node value.");
-
-    nb::class_<ColumnGeneratorBase>(
-        m, "ColumnGenerator",
-        "A pricing oracle that proposes new columns from the GLS weights while the\n"
-        "search runs (#168). Subclass it and override both methods:\n"
-        "\n"
-        "  price(ctx: PricingContext, why: PricingEvent, ext: ModelExtension) -> None\n"
-        "      Stage new scalar variables, terms on existing Sum rows (append_to_sum)\n"
-        "      and new rows into `ext`; the engine applies them when price returns.\n"
-        "      Staging nothing is a valid answer. `ctx` and `ext` are LENT for this\n"
-        "      call and raise RuntimeError if used after it. Must respect\n"
-        "      ctx.remaining_seconds and ctx.columns_remaining.\n"
-        "  clone() -> ColumnGenerator\n"
-        "      A NEW object carrying this generator's configuration. Returning self\n"
-        "      raises ValueError.\n"
-        "\n"
-        "Register it on SearchConfig.column_generator. Every solve -- every\n"
-        "ParallelSearch.solve_master worker -- calls clone() once on the registered\n"
-        "prototype and prices with the clone, so per-search state (a cursor, a\n"
-        "cache) belongs on the clone, and the prototype itself is never priced with.\n"
-        "Both methods are called with the GIL held, on the search thread (a worker\n"
-        "thread under solve_master); the search waits while they run.\n"
-        "\n"
-        "An exception raised by price or clone propagates out of cbls.solve as that\n"
-        "exception, with nothing the call staged applied. Under\n"
-        "ParallelSearch.solve_master it ends only the worker that raised (no retry):\n"
-        "it is re-raised only if no worker produced a result, and is otherwise\n"
-        "DISCARDED and the best surviving worker's model adopted. Only Python code is\n"
-        "accepted here: the engine's C++ generators are not bound.")
-        .def(nb::init<>())
-        .def("price",
-             [](nb::handle /*self*/, nb::handle /*ctx*/, nb::handle /*why*/, nb::handle /*ext*/) {
-                 raise_not_implemented("ColumnGenerator.price must be overridden");
-             })
-        .def("clone", [](nb::handle /*self*/) -> nb::object {
-            raise_not_implemented("ColumnGenerator.clone must be overridden");
-        });
-
     // SearchConfig — must be registered before ParallelSearch / solve, which
     // use SearchConfig{} as a default argument (nanobind casts defaults to
     // Python eagerly at .def() time; an unregistered type throws std::bad_cast).
-    nb::class_<SearchConfig>(m, "SearchConfig", nb::type_slots(search_config_slots.data()))
+    nb::class_<SearchConfig>(m, "SearchConfig")
         .def(nb::init<>())
         .def_rw("skip_init", &SearchConfig::skip_init)
         .def_rw("max_iterations", &SearchConfig::max_iterations)
@@ -1974,32 +1533,6 @@ NB_MODULE(_cbls_core, m) {
                     value.has_value() ? std::make_shared<const NeighbourList>(*value) : nullptr;
             })
         .def_rw("feasibility_tolerance", &SearchConfig::feasibility_tolerance)
-        // Column generation (#168). The generator is held as a C++ adapter that
-        // owns a reference to the Python object (PyColumnGenerator), so the config
-        // keeps the prototype alive; reading it back returns that same object.
-        .def_prop_rw("column_generator", &column_generator_of, &set_column_generator,
-                     nb::for_setter(nb::arg("generator").none()),
-                     "A cbls.ColumnGenerator, or None (the default: no pricing, and a\n"
-                     "trajectory bit-identical to a run without these fields). Accepted by\n"
-                     "cbls.solve and ParallelSearch.solve_master; the factory entry points\n"
-                     "(ParallelSearch.solve_parallel) raise ValueError on it, because the\n"
-                     "grown model would be one the caller never sees.")
-        .def_rw("pricing_period", &SearchConfig::pricing_period,
-                "Price every this many batches (PricingEvent.Periodic). 0 = never.")
-        .def_rw("price_on_stagnation", &SearchConfig::price_on_stagnation,
-                "Price before every diversification kick (PricingEvent.Stagnation).\n"
-                "On by default, and frequent once a search stalls: turn it off for an\n"
-                "expensive pricer.")
-        .def_rw("price_on_new_best", &SearchConfig::price_on_new_best,
-                "Price on a batch that recorded a new best (PricingEvent.NewBest).")
-        .def_rw("max_generated_columns", &SearchConfig::max_generated_columns,
-                "Most variables pricing may add over one solve. 0 switches pricing off.")
-        .def_rw("column_retire_age", &SearchConfig::column_retire_age,
-                "Retire a generated column after this many consecutive pricing events at\n"
-                "its lower bound -- including events at a full column pool, where the\n"
-                "generator is no longer called. A retired column's upper bound is pinned\n"
-                "to its lower bound in the model itself, so it stays pinned in the model\n"
-                "the solve returns. 0 = never.")
         // A NON-OWNING view of a StopToken the Python caller holds (#169). The
         // keep_alive is what makes that safe: it ties the token's lifetime to
         // this config, so `cbls.solve(m, cfg)` cannot be reading a token Python
@@ -2053,7 +1586,7 @@ NB_MODULE(_cbls_core, m) {
              // factories. A None default reaches the std::function caster as an
              // empty function, which src/pool.cpp skips.
              nb::call_guard<nb::gil_scoped_release>(), kParallelSolveDoc)
-        // The `Model& master` overload (#157, #168). Bound through a wrapper rather than a
+        // The `Model& master` overload (#157). Bound through a wrapper rather than a
         // member pointer for the same reason `solve` is: the master is registered
         // in SolvingModels WHILE THE GIL IS HELD and only then released, so no
         // other Python thread can slip a structural write in between.
@@ -2167,9 +1700,9 @@ NB_MODULE(_cbls_core, m) {
             // Model.extend from another thread could pass the check inside it.
             // `extend_unless_solving` runs holding the GIL, so with registration
             // under it too the check and the registration cannot interleave.
-            // A solve is itself a structural writer (objective row, pricing extend),
-            // so a second one on the same model -- nested from a callback or a
-            // pricer, or from another thread -- is refused like any other.
+            // A solve is itself a structural writer (the objective row), so a
+            // second one on the same model -- nested from a callback, or from
+            // another thread -- is refused like any other.
             refuse_if_solving(model, "cbls.solve");
             const SolvingScope solving(model);  // refuses Model.extend until this returns
             const nb::gil_scoped_release release;
@@ -2218,8 +1751,7 @@ NB_MODULE(_cbls_core, m) {
         "only after this returns. STRUCTURAL writes to `model` -- its builders, "
         "close, freeze, extend, Expr operators over it, and constructing or building "
         "a ModelExtension over it -- raise RuntimeError while this runs, from any "
-        "thread, a SolveCallback and a ColumnGenerator included; the one extension "
-        "accepted is the one handed to ColumnGenerator.price. A raw Python function passed to "
+        "thread, a SolveCallback included. A raw Python function passed to "
         "lambda_sum or "
         "pair_lambda_sum also re-acquires the GIL on every evaluation now; use the "
         "*_table_sum forms where the function is a table.\n"

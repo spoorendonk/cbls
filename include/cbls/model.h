@@ -421,14 +421,12 @@ public:
     void freeze();
     [[nodiscard]] bool is_frozen() const noexcept { return open_structure_ == nullptr; }
 
-    /// A copy with a PRIVATE, writable structure, even of a frozen model (#168).
+    /// A copy with a PRIVATE, writable structure, even of a frozen model.
     ///
     /// The explicit form of the detach `freeze()` refuses to do silently: the
     /// shared structure is deep-copied, so the copy can `extend` without touching
     /// what any peer reads, and it costs exactly what a copy of an open model
-    /// costs -- the whole DAG. `ParallelSearch` uses it for column generation,
-    /// where each worker grows its own model and sharing is therefore off by
-    /// construction. Everything else about the copy is the ordinary copy
+    /// costs -- the whole DAG. Everything else about the copy is the ordinary copy
     /// constructor's: closedness, the objective row, the assignment, the node
     /// values and a clone of every custom invariant.
     ///
@@ -508,9 +506,8 @@ public:
     /// reason `mut()` throws. `ParallelSearch::solve(Model&)` and the CLI at
     /// `--threads > 1` both freeze, so **growth is single-`solve()` only**:
     /// `solve()` itself never freezes, and the CLI at `--threads 1` hands it an
-    /// open model. #168 settled the portfolio case with an EXPLICIT detach rather
-    /// than an overlay: `private_copy()` gives a worker a writable deep copy, and
-    /// `ParallelSearch`'s master overload uses it under a column generator. That is
+    /// open model. The escape is an EXPLICIT detach rather than an overlay:
+    /// `private_copy()` gives a writable deep copy. That is
     /// why this stays a refusal and not a silent copy-on-write detach -- see
     /// `freeze()` on why a silent detach is the wrong failure.
     ///

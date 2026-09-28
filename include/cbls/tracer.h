@@ -105,14 +105,6 @@ public:
 
     /// An `InnerSolverHook::solve` call finished, and how long it took.
     virtual void hook(double seconds);
-
-    /// A `ColumnGenerator::price` call finished and what it staged was applied
-    /// (or refused): `why` is the event that triggered it, `columns_added` and
-    /// `rows_added` what reached the model (0 for an empty or refused
-    /// extension), and `seconds` the call plus the extension (#168). Fires at
-    /// most once per batch.
-    virtual void pricing(PricingEvent why, int64_t columns_added, int64_t rows_added,
-                         double seconds);
 };
 
 }  // namespace cbls

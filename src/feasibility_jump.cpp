@@ -467,11 +467,7 @@ JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, in
     };
 
     if (var.type == VarType::Bool) {
-        // A pinned Bool (a retired column, #168) has no jump. No Bool was ever
-        // pinned before that, so this skips nothing an existing model offered.
-        if (var.lb < var.ub) {
-            consider(1.0 - x0);
-        }
+        consider(1.0 - x0);
     } else if (var.type == VarType::Int) {
         int_jump_candidates(var, x0, consider);
     } else if (var.type == VarType::Float) {
@@ -575,13 +571,6 @@ FeasibilityJump::FeasibilityJump(Model& model, ViolationManager& vm, RNG& rng, G
 // Deliberately a whitelist, not `!is_structured(t)`: a VarType added later must
 // opt in to being jumped rather than default into it.
 bool FeasibilityJump::jumpable(int32_t var_id) const {
-    // A retired column (#168) is out of every scan table for good. `retired_` is
-    // empty until the first retire(), so a run without column generation pays one
-    // size compare here and nothing else.
-    if (static_cast<size_t>(var_id) < retired_.size() &&
-        retired_[static_cast<size_t>(var_id)] != 0) {
-        return false;
-    }
     auto t = model_.var(var_id).type;
     return t == VarType::Bool || t == VarType::Int || t == VarType::Float;
 }
@@ -1043,66 +1032,6 @@ void FeasibilityJump::on_extended(const ExtensionResult& ext) {
     // the extension's effect looks.
 }
 
-void FeasibilityJump::retire(const std::vector<int32_t>& vars) {
-    require_tables_in_step();
-    const size_t nv = model_.num_vars();
-    for (const int32_t v : vars) {
-        if (v < 0 || static_cast<size_t>(v) >= nv) {
-            throw std::out_of_range("FeasibilityJump::retire: variable id names nothing");
-        }
-        const Variable& var = model_.var(v);
-        if (var.lb < var.ub || var.value != var.lb) {
-            throw std::invalid_argument(
-                "FeasibilityJump::retire: pin the variable first (ub == lb == value); a retired "
-                "variable is never moved again, so an unpinned one would be frozen wherever it "
-                "happened to be");
-        }
-    }
-    for (const int32_t v : vars) {
-        if (!jumpable(v)) {
-            continue;  // structured, or already retired: in no scan table
-        }
-        if (retired_.size() < nv) {
-            retired_.resize(nv, 0);
-        }
-        retired_[static_cast<size_t>(v)] = 1;
-        jumps_.invalidate(v);
-        // Out of every row's list, which is what keeps bump_weights_and_requeue
-        // and rebuild_violated_and_scan_set from queueing it again. The lists are
-        // ascending (see merge_new_incidences), so each removal is a binary search
-        // plus the tail move.
-        for (const int32_t c : model_.constraints_of_var(v)) {
-            std::vector<int32_t>& list = vars_of_constraint_[static_cast<size_t>(c)];
-            const auto it = std::lower_bound(list.begin(), list.end(), v);
-            if (it != list.end() && *it == v) {
-                list.erase(it);
-            }
-        }
-    }
-    // The queue may still hold a retired variable; rebuilding it from the lists
-    // just edited is the one way out that cannot miss an entry.
-    rebuild_violated_and_scan_set();
-}
-
-void FeasibilityJump::requeue(int32_t first, int32_t end) {
-    require_tables_in_step();
-    if (first < 0 || end < first || static_cast<size_t>(end) > model_.num_vars()) {
-        throw std::out_of_range(
-            "FeasibilityJump::requeue: range names variables that do not exist");
-    }
-    for (int32_t v = first; v < end; ++v) {
-        if (jumpable(v)) {
-            jumps_.invalidate(v);
-            enqueue(v);
-        }
-    }
-}
-
-// `vars_of_constraint_` is the transpose of G_v restricted to jumpable variables,
-// and ASCENDING in variable id -- the constructor builds it by walking the
-// variables in order, and FJ's scan order over it feeds the trajectory. So this
-// MERGES rather than appending: a term appended to an existing row can name an
-// existing variable whose id is below one the row already listed.
 void FeasibilityJump::merge_new_incidences(const ExtensionResult& ext) {
     const std::vector<std::pair<int32_t, int32_t>>& inc = ext.new_incidences;
     size_t i = 0;

@@ -26,10 +26,8 @@ bool fresh_violated(const Model& m, size_t ci) {
     return !(m.node_value(m.constraint_ids()[ci]) <= kTol);
 }
 
-// The from-scratch recomputation. `skip` names variables that are not jumpable
-// (retired): they are in no row's variable list, so their count must be 0.
-void require_consistent(const FeasibilityJump& fj, const Model& m, const ViolationManager& vm,
-                        const std::vector<uint8_t>& skip = {}) {
+// The from-scratch recomputation.
+void require_consistent(const FeasibilityJump& fj, const Model& m, const ViolationManager& vm) {
     const size_t nc = m.constraint_ids().size();
     std::vector<int32_t> expected_rows;
     for (size_t c = 0; c < nc; ++c) {
@@ -43,12 +41,10 @@ void require_consistent(const FeasibilityJump& fj, const Model& m, const Violati
     REQUIRE(fj.violated_rows() == expected_rows);
     for (size_t v = 0; v < m.num_vars(); ++v) {
         int32_t expected = 0;
-        if (v >= skip.size() || skip[v] == 0) {
-            for (const int32_t c : m.constraints_of_var(static_cast<int32_t>(v))) {
-                if (fresh_violated(m, static_cast<size_t>(c)) &&
-                    vm.weights[static_cast<size_t>(c)] > 0.0) {
-                    ++expected;
-                }
+        for (const int32_t c : m.constraints_of_var(static_cast<int32_t>(v))) {
+            if (fresh_violated(m, static_cast<size_t>(c)) &&
+                vm.weights[static_cast<size_t>(c)] > 0.0) {
+                ++expected;
             }
         }
         CAPTURE(v);
@@ -215,32 +211,6 @@ TEST_CASE("FJ's violated set survives Novelty apply and undo", "[fj][violated_se
         require_consistent(fj, m, vm);
     }
     REQUIRE(novelty_calls_with_violation > 0);  // Novelty did commit moves
-}
-
-TEST_CASE("FJ's violated set follows retirement", "[fj][violated_set]") {
-    Model m;
-    build_random_rows(m, 41, 20, 40);
-    m.close();
-    ViolationManager vm(m);
-    RNG rng(3);
-    FeasibilityJump fj(m, vm, rng, small_batch_config());
-    fj.begin(true);
-    (void)fj.batch(30);
-    std::vector<uint8_t> retired(m.num_vars(), 0);
-    std::vector<int32_t> to_retire;
-    for (int32_t v = 0; v < 5; ++v) {
-        Variable& var = m.var_mut(v);
-        var.lb = var.value;
-        var.ub = var.value;
-        retired[static_cast<size_t>(v)] = 1;
-        to_retire.push_back(v);
-    }
-    fj.retire(to_retire);
-    require_consistent(fj, m, vm, retired);
-    for (int b = 0; b < 40; ++b) {
-        (void)fj.batch(5);
-        require_consistent(fj, m, vm, retired);
-    }
 }
 
 TEST_CASE("FJ's violated set follows Model::extend through on_extended", "[fj][violated_set]") {

@@ -626,10 +626,7 @@ TEST_CASE("a padded pre-extension state is still a valid restart point", "[exten
 
 TEST_CASE("extending a running FJ keeps the existing rows' GLS weights", "[extend]") {
     // The issue's third criterion, pinned at component level, on a
-    // ViolationManager and a FeasibilityJump driven directly. The end-to-end
-    // version -- weights surviving an extension applied inside a running search
-    // by #168's pricing hook -- is `existing rows keep their GLS weights across
-    // an in-search extension` in tests/test_column_generation.cpp.
+    // ViolationManager and a FeasibilityJump driven directly.
     //
     // The model is deliberately infeasible so the GLS dynamics bump the weights
     // well away from 1: an extension that quietly reset them would look identical
@@ -1160,8 +1157,8 @@ TEST_CASE("an extension can read an existing List or Set variable", "[extend]") 
 TEST_CASE("a ViolationManager out of step with a grown model refuses to read", "[extend]") {
     // The window between `Model::extend` returning and `on_extended`: the model has
     // more rows than the manager has weights, and every read indexes both by
-    // constraint index -- `bump_weights` WRITES. It is the window #168's in-loop
-    // hook will sit in, so it throws rather than overreading the heap.
+    // constraint index -- `bump_weights` WRITES. It is the window an in-loop
+    // extension sits in, so it throws rather than overreading the heap.
     Model m;
     const int32_t x = m.bool_var();
     m.add_constraint(m.leq(m.prod(m.constant(1.0), x), m.constant(0.0)));
@@ -1200,8 +1197,8 @@ TEST_CASE("a ViolationManager out of step with a grown model refuses to read", "
 }
 
 TEST_CASE("an FJ out of step with a grown model refuses to run", "[extend]") {
-    // The other half of the ordering mistake, and the one #168's in-loop hook is at
-    // least as likely to make: extend, tell the ViolationManager, forget FJ. Then
+    // The other half of the ordering mistake, and the one an in-loop extension is
+    // at least as likely to make: extend, tell the ViolationManager, forget FJ. Then
     // `violated_`, `is_linear_` and `vars_of_constraint_` are one entry per OLD row
     // while every sweep indexes them by the new count, and `in_queue_` is one per
     // old variable while `enqueue` indexes it by the new ones -- all unchecked. The

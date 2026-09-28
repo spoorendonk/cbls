@@ -103,8 +103,8 @@ struct ExtensionResult {
 ///    could keep in step (it is append-only, exactly like `node_values_`), but
 ///    the slot's invariant instance would then have no committed state and no
 ///    `evaluate()` to establish one short of a `full_evaluate` -- which is the
-///    O(model) cost `extend` exists to avoid. #168 did not need it -- a
-///    generated column is a scalar in `Sum` rows -- so it is still refused.
+///    O(model) cost `extend` exists to avoid. Nothing has needed it, so it is
+///    still refused.
 ///
 /// Each refusal throws `std::invalid_argument` with the reason, rather than
 /// silently producing something the engine cannot initialise.

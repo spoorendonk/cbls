@@ -521,7 +521,7 @@ def _scenario_extend_during_solve() -> None:
 
     The extension is recorded BEFORE the solve: building one during it is itself
     refused now (test_model_extension_is_refused_during_a_solve in
-    test_column_generation.py), so this scenario isolates the extend check. It is
+    test_solve_guards.py), so this scenario isolates the extend check. It is
     recorded after a priming solve, which adds the objective row: recorded before
     that, the structure token would refuse it (ValueError) whatever the registry
     did, and the scenario would no longer show that the registry is what stops a

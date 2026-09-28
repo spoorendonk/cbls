@@ -28,7 +28,5 @@ void Tracer::new_best(double /*objective*/, double /*seconds*/) {}
 void Tracer::kick(KickKind /*kind*/) {}
 void Tracer::lns(bool /*accepted*/) {}
 void Tracer::hook(double /*seconds*/) {}
-void Tracer::pricing(PricingEvent /*why*/, int64_t /*columns_added*/, int64_t /*rows_added*/,
-                     double /*seconds*/) {}
 
 }  // namespace cbls
