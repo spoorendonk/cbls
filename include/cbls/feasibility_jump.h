@@ -190,6 +190,24 @@ public:
     /// Throws `std::out_of_range` on an index this model has no row for.
     [[nodiscard]] bool row_is_linear(int32_t ci) const;
 
+    /// Read-only observability for the incremental violated-row state (#174), in
+    /// the same spirit as `unweighted_violation()`: the tests that pin it against a
+    /// from-scratch recomputation read it here, the search never does.
+    ///
+    ///  - `row_violated(ci)`: row `ci` is in V (the violated set FJ tracks);
+    ///  - `violated_rows()`: V as a list, ascending -- a copy, so reading it does
+    ///    not reorder anything;
+    ///  - `active_violated_rows_of(v)`: how many rows of `vars_of_constraint_` that
+    ///    list `v` are violated AND active (weight > 0) -- the count
+    ///    `participates_in_active_violated` reads. Meaningful for a jumpable
+    ///    variable; a structured or retired one is in no row's list and reads 0.
+    ///
+    /// Each throws `std::out_of_range` on an index the model has no row or
+    /// variable for.
+    [[nodiscard]] bool row_violated(int32_t ci) const;
+    [[nodiscard]] std::vector<int32_t> violated_rows() const;
+    [[nodiscard]] int32_t active_violated_rows_of(int32_t var_id) const;
+
     [[nodiscard]] bool all_satisfied() const;
     [[nodiscard]] int64_t iterations() const {
         return iterations_;
@@ -421,8 +439,31 @@ private:
     // otherwise change nothing on a model with no movable scalar. False if
     // every structure is a dead end.
     bool force_structural_move();
-    [[nodiscard]] bool participates_in_active_violated(int32_t var_id) const;
+    [[nodiscard]] bool participates_in_active_violated(int32_t var_id) const {
+        return active_violated_of_var_[static_cast<size_t>(var_id)] > 0;
+    }
     void rebuild_violated_and_scan_set();
+    // ---- Incremental violated-row state (#174); see violated_rows_ ----
+    // Move row `c` into or out of V. When it stays in (or enters), reconciles its
+    // counted bit with the LIVE active(c), so a weight change is picked up at the
+    // next evaluation of the row whatever caused it.
+    void set_violated(int32_t c, bool now);
+    // Bring row c's counted bit in line with violated && active(c), adjusting
+    // active_violated_of_var_ over the row's variable list if it changes.
+    void reconcile_counted(int32_t c);
+    // Re-derive the list, the positions, the counted bits and the per-variable
+    // counts from violated_'s in-V bits (which it does not re-evaluate). One
+    // O(#constraints + nonzeros of the counted rows) sweep.
+    void rebuild_violated_index();
+    // reconcile_counted over every row in V: O(|V|). Run wherever weights may
+    // have changed outside this object's view -- after the GLS bump and at every
+    // gls_loop entry.
+    void reconcile_all_counted();
+    // Sort violated_rows_ ascending (and fix the positions) if a swap-remove or
+    // an out-of-order append has disturbed it. The scans that queue variables
+    // must visit rows in ascending order: that is the order the whole-row sweep
+    // they replace visited them in, and the scan set's order feeds the RNG draw.
+    void sort_violated_rows();
     void set_initial_assignment();
     void compute_linear_constraints();
     // The same classification as compute_linear_constraints, restricted to the
@@ -457,9 +498,49 @@ private:
     GFJConfig config_;
 
     JumpTable jumps_;
-    std::vector<uint8_t> violated_;   // per constraint: in V
-    std::vector<uint8_t> in_queue_;   // per var: in Q
-    std::vector<int32_t> queue_;      // scan set Q (vars with possibly-positive score)
+    // ---- V, the violated set, kept incrementally (#174) ----
+    //
+    // Per constraint, two bits: kInV (the row is violated, i.e. in V) and
+    // kCounted (it is in V AND was active -- weight > 0 -- when last evaluated,
+    // and so is counted in active_violated_of_var_). `violated_[c] != 0` still
+    // reads "in V", because kCounted is never set without kInV.
+    //
+    // Every write goes through set_violated / rebuild_violated_index, which keep
+    // three derived structures in step:
+    //   - violated_rows_ + violated_pos_: V as a dense list with a position index
+    //     (-1 = absent), swap-removed on the way out;
+    //   - active_violated_of_var_: per variable, the number of COUNTED rows whose
+    //     vars_of_constraint_ list names it. participates_in_active_violated is
+    //     then `> 0`, O(1) instead of O(|G_v|).
+    //
+    // WHERE IT WINS AND WHERE IT LOSES. The scans it replaces were O(#rows) per
+    // weight bump, per Novelty seed and per any_active_violated, and
+    // update_var paid O(|G_vp|) per neighbour vp -- the two-hop nonzeros, per
+    // committed move. Now those scans are O(|V|) (plus an O(|V| log |V|) sort
+    // when a removal has disturbed the order), and the per-neighbour test is one
+    // load. The price is a constant per row FLIP: a push or a swap-remove, and a
+    // walk of the flipped row's variable list to adjust the counts -- a walk
+    // update_var's neighbour loop makes over the same row anyway, so what a move
+    // adds is at most one more pass of the one-hop loop it already runs. It loses
+    // only where almost every row flips on almost every move, and where |V| is
+    // close to #rows (the sort's log factor over a linear scan); neither is the
+    // regime a local search spends its time in.
+    //
+    // "Active" is read live wherever the state is evaluated -- set_violated
+    // reconciles the row it writes, and reconcile_all_counted re-reads every row
+    // in V after the GLS bump and at each gls_loop entry -- so nothing assumes
+    // the weights evolve in any particular way. Only rows IN V ever have their
+    // weight read, which is what keeps a lazily-decayed weight scheme free to
+    // leave the others untouched.
+    static constexpr uint8_t kInV = 1;
+    static constexpr uint8_t kCounted = 2;
+    std::vector<uint8_t> violated_;                // per constraint: kInV | kCounted
+    std::vector<int32_t> violated_rows_;           // V, dense
+    std::vector<int32_t> violated_pos_;            // per constraint: index in violated_rows_, or -1
+    bool violated_rows_sorted_ = true;             // violated_rows_ is ascending
+    std::vector<int32_t> active_violated_of_var_;  // per var: counted rows listing it
+    std::vector<uint8_t> in_queue_;                // per var: in Q
+    std::vector<int32_t> queue_;                   // scan set Q (vars with possibly-positive score)
     std::vector<int32_t> examined_;   // scratch: distinct vars sampled in one apply_jump
     std::vector<uint8_t> is_linear_;  // per constraint
     // Closed-form scoring over linear comparison rows. Its per-row eligibility is

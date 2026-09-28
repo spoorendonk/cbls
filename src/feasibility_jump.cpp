@@ -512,6 +512,8 @@ FeasibilityJump::FeasibilityJump(Model& model, ViolationManager& vm, RNG& rng, G
     : model_(model), vm_(vm), rng_(rng), config_(config), jumps_(model.num_vars()), linear_(model) {
     const size_t nc = model_.constraint_ids().size();
     violated_.assign(nc, 0);
+    violated_pos_.assign(nc, -1);
+    active_violated_of_var_.assign(model_.num_vars(), 0);
     in_queue_.assign(model_.num_vars(), 0);
     is_linear_.assign(nc, 0);
     linear_.resize_rows(nc);
@@ -552,10 +554,109 @@ bool FeasibilityJump::active(int32_t constraint_idx) const {
     return vm_.weights[constraint_idx] > 0.0;
 }
 
-bool FeasibilityJump::participates_in_active_violated(int32_t var_id) const {
-    const ConstSpan<int32_t> cs = model_.constraints_of_var(var_id);
-    return std::any_of(cs.begin(), cs.end(),
-                       [this](int32_t c) { return violated_[c] != 0 && active(c); });
+// ---- Incremental violated-row state (#174); see violated_ in the header ----
+
+void FeasibilityJump::reconcile_counted(int32_t c) {
+    const auto ci = static_cast<size_t>(c);
+    const bool want = (violated_[ci] & kInV) != 0 && active(c);
+    const bool have = (violated_[ci] & kCounted) != 0;
+    if (want == have) {
+        return;
+    }
+    const int32_t step = want ? 1 : -1;
+    for (const int32_t v : vars_of_constraint_[ci]) {
+        active_violated_of_var_[static_cast<size_t>(v)] += step;
+    }
+    violated_[ci] = static_cast<uint8_t>(want ? (kInV | kCounted) : (violated_[ci] & kInV));
+}
+
+void FeasibilityJump::set_violated(int32_t c, bool now) {
+    const auto ci = static_cast<size_t>(c);
+    const bool was = (violated_[ci] & kInV) != 0;
+    if (now) {
+        if (!was) {
+            if (!violated_rows_.empty() && violated_rows_.back() > c) {
+                violated_rows_sorted_ = false;
+            }
+            violated_pos_[ci] = static_cast<int32_t>(violated_rows_.size());
+            violated_rows_.push_back(c);
+            violated_[ci] = kInV;
+        }
+        reconcile_counted(c);
+        return;
+    }
+    if (!was) {
+        return;
+    }
+    if ((violated_[ci] & kCounted) != 0) {
+        for (const int32_t v : vars_of_constraint_[ci]) {
+            --active_violated_of_var_[static_cast<size_t>(v)];
+        }
+    }
+    violated_[ci] = 0;
+    const auto pos = static_cast<size_t>(violated_pos_[ci]);
+    const int32_t last = violated_rows_.back();
+    if (pos + 1 != violated_rows_.size()) {
+        violated_rows_[pos] = last;
+        violated_pos_[static_cast<size_t>(last)] = static_cast<int32_t>(pos);
+        violated_rows_sorted_ = false;
+    }
+    violated_rows_.pop_back();
+    violated_pos_[ci] = -1;
+}
+
+void FeasibilityJump::reconcile_all_counted() {
+    for (const int32_t c : violated_rows_) {
+        reconcile_counted(c);
+    }
+}
+
+void FeasibilityJump::sort_violated_rows() {
+    if (violated_rows_sorted_) {
+        return;
+    }
+    std::sort(violated_rows_.begin(), violated_rows_.end());
+    for (size_t i = 0; i < violated_rows_.size(); ++i) {
+        violated_pos_[static_cast<size_t>(violated_rows_[i])] = static_cast<int32_t>(i);
+    }
+    violated_rows_sorted_ = true;
+}
+
+void FeasibilityJump::rebuild_violated_index() {
+    std::fill(active_violated_of_var_.begin(), active_violated_of_var_.end(), 0);
+    violated_rows_.clear();
+    const size_t nc = violated_.size();
+    for (size_t c = 0; c < nc; ++c) {
+        violated_[c] = static_cast<uint8_t>(violated_[c] & kInV);
+        if (violated_[c] == 0) {
+            violated_pos_[c] = -1;
+            continue;
+        }
+        violated_pos_[c] = static_cast<int32_t>(violated_rows_.size());
+        violated_rows_.push_back(static_cast<int32_t>(c));
+        reconcile_counted(static_cast<int32_t>(c));
+    }
+    violated_rows_sorted_ = true;
+}
+
+bool FeasibilityJump::row_violated(int32_t ci) const {
+    if (ci < 0 || static_cast<size_t>(ci) >= violated_.size()) {
+        throw std::out_of_range("FeasibilityJump::row_violated: no such row");
+    }
+    return (violated_[static_cast<size_t>(ci)] & kInV) != 0;
+}
+
+std::vector<int32_t> FeasibilityJump::violated_rows() const {
+    std::vector<int32_t> rows = violated_rows_;
+    std::sort(rows.begin(), rows.end());
+    return rows;
+}
+
+int32_t FeasibilityJump::active_violated_rows_of(int32_t var_id) const {
+    if (var_id < 0 || static_cast<size_t>(var_id) >= active_violated_of_var_.size()) {
+        throw std::out_of_range("FeasibilityJump::active_violated_rows_of: no such variable");
+    }
+    return active_violated_of_var_[static_cast<size_t>(var_id)];
 }
 
 void FeasibilityJump::enqueue(int32_t var_id) {
@@ -803,12 +904,13 @@ void validate_extension_indices(const ExtensionResult& ext, size_t nc, size_t nv
 // grown before the ViolationManager, is refused in `on_extended`.
 //
 // Checked at the entry points a driver calls once per batch or kick, never per row:
-// five size compares against a body that then runs thousands of iterations.
+// eight size compares against a body that then runs thousands of iterations.
 void FeasibilityJump::require_tables_in_step() const {
     const size_t nc = model_.constraint_ids().size();
     const size_t nv = model_.num_vars();
     if (violated_.size() != nc || is_linear_.size() != nc || linear_.num_rows() != nc ||
-        vars_of_constraint_.size() != nc || in_queue_.size() != nv || vm_.weights.size() != nc) {
+        vars_of_constraint_.size() != nc || violated_pos_.size() != nc || in_queue_.size() != nv ||
+        active_violated_of_var_.size() != nv || vm_.weights.size() != nc) {
         throw std::logic_error(
             "FeasibilityJump: the model has grown since this object last matched it. Model::extend "
             "must be followed by ViolationManager::on_extended and then "
@@ -839,6 +941,8 @@ void FeasibilityJump::on_extended(const ExtensionResult& ext) {
     jumps_.grow(nv);
     in_queue_.resize(nv, 0);
     violated_.resize(nc, 0);
+    violated_pos_.resize(nc, -1);
+    active_violated_of_var_.resize(nv, 0);
     is_linear_.resize(nc, 0);
     linear_.resize_rows(nc);
     vars_of_constraint_.resize(nc);
@@ -850,12 +954,34 @@ void FeasibilityJump::on_extended(const ExtensionResult& ext) {
         rows.push_back(ci);
     }
     recompute_linearity(rows);
+
+    // A counted row's contribution to active_violated_of_var_ was made over its
+    // variable list as it stood; the merge below may add to that list. So every
+    // row whose list can grow is uncounted against the OLD list first and
+    // recounted against the merged one after (#174). ExtensionResult promises the
+    // incidence rows are among `rows`, but the uncount is keyed on the incidences
+    // themselves, so the counts cannot depend on that promise.
+    auto uncount = [this](int32_t ci) {
+        const auto c = static_cast<size_t>(ci);
+        if ((violated_[c] & kCounted) == 0) {
+            return;
+        }
+        for (const int32_t v : vars_of_constraint_[c]) {
+            --active_violated_of_var_[static_cast<size_t>(v)];
+        }
+        violated_[c] = kInV;
+    };
+    for (const std::pair<int32_t, int32_t>& inc : ext.new_incidences) {
+        uncount(inc.first);
+    }
     merge_new_incidences(ext);
 
     const std::vector<int32_t>& cids = model_.constraint_ids();
     for (const int32_t ci : rows) {
-        violated_[static_cast<size_t>(ci)] =
-            static_cast<uint8_t>(is_violated(model_.node_value(cids[static_cast<size_t>(ci)])));
+        set_violated(ci, is_violated(model_.node_value(cids[static_cast<size_t>(ci)])));
+    }
+    for (const std::pair<int32_t, int32_t>& inc : ext.new_incidences) {
+        reconcile_counted(inc.first);
     }
     // One O(#constraints) sweep, which is what every gls_loop entry already pays.
     // Correcting the accumulator per touched row instead would mean carrying each
@@ -1018,14 +1144,18 @@ void FeasibilityJump::rebuild_violated_and_scan_set() {
     const auto& cids = model_.constraint_ids();
     const size_t nc = cids.size();
     for (size_t c = 0; c < nc; ++c) {
-        violated_[c] = static_cast<uint8_t>(is_violated(model_.node_value(cids[c])));
+        violated_[c] = is_violated(model_.node_value(cids[c])) ? kInV : 0;
     }
+    rebuild_violated_index();
     refresh_unweighted_violation();
     std::fill(in_queue_.begin(), in_queue_.end(), 0);
     queue_.clear();
-    for (size_t c = 0; c < nc; ++c) {
-        if (violated_[c] != 0 && active(static_cast<int32_t>(c))) {
-            for (int32_t v : vars_of_constraint_[c]) {
+    // violated_rows_ is ascending straight out of the rebuild, and a counted row
+    // is exactly one in V and active: the whole-row sweep this replaced, in the
+    // same order.
+    for (const int32_t c : violated_rows_) {
+        if ((violated_[static_cast<size_t>(c)] & kCounted) != 0) {
+            for (int32_t v : vars_of_constraint_[static_cast<size_t>(c)]) {
                 enqueue(v);
             }
         }
@@ -1051,21 +1181,27 @@ void FeasibilityJump::update_var(int32_t var_id) {
     delta_evaluate(model_, &var_id, 1);
     jumps_.invalidate(var_id);
 
+    // Every row of gv is settled (in V or not, counted or not) before any
+    // neighbour is tested below, so a neighbour sharing several rows with var_id
+    // sees all of them -- as the O(|G_vp|) rescan this count replaced did.
     for (int32_t c : gv) {
         const double after = model_.node_value(cids[c]);
         if (c != objective_ci_ && active(c)) {
             violation_delta += progress_residual(after);
         }
-        violated_[c] = static_cast<uint8_t>(is_violated(after));
+        set_violated(c, is_violated(after));
     }
     unweighted_violation_ += violation_delta;
+    // A vp sharing several rows with var_id is visited once per shared row. Not
+    // deduplicated (#174 proposed a stamp): with the participation test now O(1),
+    // a repeat visit costs an idempotent invalidate and two byte loads, which is
+    // what a stamp check-and-set would cost to skip it.
     for (int32_t c : gv) {
         for (int32_t vp : vars_of_constraint_[c]) {
             if (vp == var_id) {
                 continue;
             }
             jumps_.invalidate(vp);
-            // enqueue() is a no-op for a queued var, so skip the O(|G_vp|) test.
             if (in_queue_[vp] == 0 && participates_in_active_violated(vp)) {
                 enqueue(vp);
             }
@@ -1117,14 +1253,12 @@ bool FeasibilityJump::apply_jump(int sample_size) {
     return true;
 }
 
+// O(|V|) over the violated list, reading each row's weight live -- so it answers
+// correctly even for a weight changed since the row was last evaluated, which the
+// counted bits would only catch at the next reconcile.
 bool FeasibilityJump::any_active_violated() const {
-    const size_t nc = violated_.size();
-    for (size_t c = 0; c < nc; ++c) {
-        if (violated_[c] != 0 && active(static_cast<int32_t>(c))) {
-            return true;
-        }
-    }
-    return false;
+    return std::any_of(violated_rows_.begin(), violated_rows_.end(),
+                       [this](int32_t c) { return active(c); });
 }
 
 // Next deadline-check stride, given how long the last one actually took.
@@ -1234,10 +1368,16 @@ void FeasibilityJump::arm_deadline() {
 // the next iteration re-scores them against the new penalty landscape.
 void FeasibilityJump::bump_weights_and_requeue() {
     gls_update_weights(vm_, config_.rho);
-    const size_t nc = model_.constraint_ids().size();
-    for (size_t c = 0; c < nc; ++c) {
-        if (violated_[c] != 0 && active(static_cast<int32_t>(c))) {
-            for (int32_t v : vars_of_constraint_[c]) {
+    // Ascending, as the whole-row sweep this replaced visited them: the order
+    // variables enter Q is the order apply_jump's draw indexes. Each row's counted
+    // bit is re-read against its bumped weight on the way past (a decay that
+    // underflows to 0 deactivates a row), which is also the only weight read the
+    // bump's own bookkeeping needs -- rows outside V are never looked at.
+    sort_violated_rows();
+    for (const int32_t c : violated_rows_) {
+        reconcile_counted(c);
+        if ((violated_[static_cast<size_t>(c)] & kCounted) != 0) {
+            for (int32_t v : vars_of_constraint_[static_cast<size_t>(c)]) {
                 jumps_.invalidate(v);
                 enqueue(v);
             }
@@ -1341,6 +1481,10 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
     // without this the accumulator would carry a whole stagnant run's rounding
     // into the comparison that decides whether the run IS stagnant.
     refresh_unweighted_violation();
+    // The weights may have been changed between batches by something other than
+    // the GLS bump; re-read them for every row in V before update_var trusts the
+    // counts. O(|V|).
+    reconcile_all_counted();
     double batch_best_violation = unweighted_violation_;
     unproductive_streak_ = 0;
     // Only the batch API has an outer loop to hand control back to; gls()/run()
@@ -1705,13 +1849,20 @@ void FeasibilityJump::nj_enqueue(int32_t var_id) {
     }
 }
 
+// O(|Q'| + |V|) rather than O(#vars + #rows) (#174). nj_in_queue_[v] is set
+// exactly for the v in nj_queue_ (nj_enqueue sets it with the push,
+// select_novelty_var clears it with the swap-remove), so clearing it through the
+// queue is the same as clearing the whole vector. The rows are visited ascending
+// with a live weight read, as the whole-row sweep this replaced did.
 void FeasibilityJump::seed_novelty_scan_set() {
-    std::fill(nj_in_queue_.begin(), nj_in_queue_.end(), 0);
+    for (const int32_t v : nj_queue_) {
+        nj_in_queue_[static_cast<size_t>(v)] = 0;
+    }
     nj_queue_.clear();
-    const auto& cids = model_.constraint_ids();
-    for (size_t c = 0; c < cids.size(); ++c) {
-        if (violated_[c] != 0 && active(static_cast<int32_t>(c))) {
-            for (int32_t v : vars_of_constraint_[c]) {
+    sort_violated_rows();
+    for (const int32_t c : violated_rows_) {
+        if (active(c)) {
+            for (int32_t v : vars_of_constraint_[static_cast<size_t>(c)]) {
                 nj_enqueue(v);
             }
         }
@@ -1794,7 +1945,7 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         // Refresh violated_ for v's constraints; promote any now-broken
         // constraint to full novelty weight and add its vars to the scan set.
         for (int32_t c : model_.constraints_of_var(v)) {
-            violated_[c] = static_cast<uint8_t>(is_violated(model_.node_value(cids[c])));
+            set_violated(c, is_violated(model_.node_value(cids[c])));
             if (violated_[c] != 0 && novelty_weights_[c] != vm_.weights[c]) {
                 novelty_weights_[c] = vm_.weights[c];
                 for (int32_t vp : vars_of_constraint_[c]) {
@@ -1816,7 +1967,7 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         model_.var_mut(v).value = old_value;
         delta_evaluate(model_, &v, 1);
         for (int32_t c : model_.constraints_of_var(v)) {
-            violated_[c] = static_cast<uint8_t>(is_violated(model_.node_value(cids[c])));
+            set_violated(c, is_violated(model_.node_value(cids[c])));
         }
         budget -= 1;
     }
@@ -1830,12 +1981,20 @@ bool FeasibilityJump::apply_novelty_jump() {
     move_stack_.clear();
     nj_work_remaining_ = kNoveltyWorkBudget;  // bound the compound-move search
 
+    // on_stack_[v] is set exactly for the v on move_stack_ (pushed together,
+    // popped together, and select_novelty_var never picks a var already on it),
+    // so clearing through the stack is the whole-vector clear at O(|T|) (#174).
+    auto clear_stack = [this]() {
+        for (const StackMove& m : move_stack_) {
+            on_stack_[static_cast<size_t>(m.var)] = 0;
+        }
+        move_stack_.clear();
+    };
     int b = 0;
     while (b <= 2) {
         init_novelty_weights();
         seed_novelty_scan_set();
-        on_stack_.assign(nv, 0);
-        move_stack_.clear();
+        clear_stack();
         while (novelty_jump_search(0.0, b)) {
             if (!any_active_violated()) {
                 return true;  // reached feasibility
@@ -1844,8 +2003,7 @@ bool FeasibilityJump::apply_novelty_jump() {
             // (reset budget per Algorithm 4 line 8, keep evolving W').
             b = 0;
             seed_novelty_scan_set();
-            on_stack_.assign(nv, 0);
-            move_stack_.clear();
+            clear_stack();
         }
         b += 1;
     }
