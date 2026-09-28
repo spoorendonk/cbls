@@ -96,10 +96,9 @@ bool LinearJumpScorer::row_eligible(int32_t ci) const {
 }
 
 // Rewrite the pool and the records with the live rows only, in row order.
-// O(rows + live entries), run only once the dead outnumber the live -- so an
-// extension-heavy run (one that touches rows every batch) holds at
-// most about twice its live slopes, and the copy is amortised over the builds
-// that made the garbage.
+// O(rows + live entries), run only once the dead outnumber the live -- so a
+// caller that reclassifies rows repeatedly holds at most about twice its live
+// slopes, and the copy is amortised over the builds that made the garbage.
 void LinearJumpScorer::compact_pool() {
     std::vector<BuiltRow> built;
     std::vector<int32_t> vars;
@@ -233,7 +232,7 @@ bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weight
     if (slots_.size() != cids.size()) {
         throw std::logic_error(
             "LinearJumpScorer::prepare: the model has a different row count than this scorer; "
-            "an extension must be followed by resize_rows and set_row_eligible on its rows");
+            "a row added to the model must be followed by resize_rows and set_row_eligible on it");
     }
     terms_.clear();
     x0_ = model_.var(var_id).value;
@@ -330,7 +329,7 @@ double LinearJumpScorer::delta(double j) const {
 
 bool LinearJumpScorer::residual_partial(int32_t ci, int32_t var_id, double& out) {
     if (ci < 0 || static_cast<size_t>(ci) >= slots_.size()) {
-        return false;  // unsized (an extension not yet seen): compute_partial instead
+        return false;  // unsized (a row added after resize_rows): compute_partial instead
     }
     const BuiltRow* built = ready_row(ci);
     if (built == nullptr || (built->flags & kNewtonExact) == 0) {

@@ -44,10 +44,10 @@ class Model;
 ///
 /// Storage: 4 bytes per row (a slot: ineligible, pending, or the index of its
 /// built record), plus, for each row BUILT, a 20-byte record and 12 bytes per
-/// nonzero in one pooled CSR (ascending variable ids, parallel slopes). An
-/// extension (#167) invalidates exactly the rows it changed, the same unit as
-/// FeasibilityJump's other per-row tables; their old pool entries become dead
-/// and the pool is compacted once the dead outnumber the live. The slopes are
+/// nonzero in one pooled CSR (ascending variable ids, parallel slopes). A row
+/// reclassified through `set_row_eligible` drops its built slopes; their pool
+/// entries become dead and the pool is compacted once the dead outnumber the
+/// live. The slopes are
 /// structure, but each portfolio worker's FJ builds its own; the build also
 /// sizes `dag_ops.cpp`'s thread_local adjoint scratch, which a pure MIP
 /// otherwise never allocated.
@@ -71,8 +71,7 @@ public:
     void resize_rows(size_t n);
     [[nodiscard]] size_t num_rows() const { return slots_.size(); }
 
-    /// (Re)classify row `ci` and drop any slopes cached for it. Call for every
-    /// row whose body changed -- a new row, or one a grown Sum sits inside.
+    /// (Re)classify row `ci` and drop any slopes cached for it.
     void set_row_eligible(int32_t ci, bool eligible);
     /// As classified. A row not yet built can still be demoted by its build, on a
     /// non-finite slope.
@@ -87,8 +86,8 @@ public:
     /// phase of two-phase GLS) score in closed form.
     ///
     /// The snapshot is valid until the assignment or `weights` changes. Throws
-    /// `std::logic_error` if this scorer is not sized to the model's rows (a
-    /// `Model::extend` it was not told about).
+    /// `std::logic_error` if this scorer is not sized to the model's rows (a row
+    /// added to the model after `resize_rows`).
     bool prepare(int32_t var_id, const std::vector<double>& weights);
 
     /// Weighted violation delta of moving the prepared variable to `j`, which

@@ -3,10 +3,10 @@
 Before the refusal, `add_constraint` (or any other builder) on a closed model was
 accepted, but the new node was never placed in the topological order, so no
 evaluation computed it and `solve` reported feasible over a violated row -- a
-silent wrong answer. `ModelExtension` + `Model.extend` is the one way to grow a
-closed model, and the refusal names it.
+silent wrong answer. A closed model does not grow; build the whole model before
+`close()`.
 
-The binding half of the `[closed]` cases in `tests/test_model_extend.cpp`: the
+The binding half of the `[closed]` cases in `tests/test_build_after_close.cpp`: the
 refusal is a C++ `std::logic_error`, which reaches Python as `RuntimeError`
 with no binding code of its own, so this pins that it does.
 """
@@ -22,12 +22,7 @@ import pytest
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-REFUSAL = r"ModelExtension.*Model::extend"
-
-
-def vid(handle: int) -> int:
-    """Variable handle (negative, as the builders return) -> variable id."""
-    return -(handle + 1)
+REFUSAL = r"model is closed"
 
 
 def test_add_constraint_after_close_raises_instead_of_solving_wrong() -> None:
@@ -44,14 +39,6 @@ def test_add_constraint_after_close_raises_instead_of_solving_wrong() -> None:
     with pytest.raises(RuntimeError, match=REFUSAL):
         m.constant(5)
     assert len(m.constraint_ids()) == rows
-
-    # The route the message names grows the model and gets the row evaluated.
-    ext = cbls.ModelExtension(m)
-    ext.add_constraint(ext.geq(x, ext.constant(5)))
-    m.extend(ext)
-    r = cbls.solve(m, time_limit=0.2, seed=1)
-    assert r.feasible
-    assert m.var(vid(x)).value >= 5.0
 
 
 def _closed() -> tuple[cbls.Model, int, int, int, int]:
@@ -146,3 +133,24 @@ def test_an_objective_model_still_solves_after_close() -> None:
     r = cbls.solve(m, time_limit=0.2, seed=1)
     assert r.feasible
     assert r.objective == pytest.approx(3.0)
+
+
+def test_a_violation_manager_built_before_freeze_raises_instead_of_overreading() -> None:
+    # freeze() appends the objective row, so a manager built before it has one
+    # weight too few; every weight-indexed read would run past the end. The
+    # engine refuses it (std::logic_error -> RuntimeError) instead.
+    m = cbls.Model()
+    x = m.int_var(0, 10, "x")
+    m.add_constraint(m.geq(x, m.constant(3.0)))
+    m.minimize(m.sum([x]))
+    m.close()
+    vm = cbls.ViolationManager(m)
+    assert len(vm.weights) == len(m.constraint_ids())
+    m.freeze()
+    assert len(vm.weights) + 1 == len(m.constraint_ids())
+    with pytest.raises(RuntimeError, match="one entry per constraint"):
+        vm.total_violation()
+    with pytest.raises(RuntimeError, match="one entry per constraint"):
+        vm.bump_weights()
+    # A manager built after the row reads normally.
+    assert cbls.ViolationManager(m).total_violation() >= 0.0

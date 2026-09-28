@@ -1,13 +1,12 @@
 // The closed-form linear jump scorer (include/cbls/linear_jump.h): its scores
 // against Model::weighted_violation_delta, its fallback conditions, and its
-// upkeep across Model::extend.
+// slope-pool upkeep.
 #include "test_helpers.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cbls/custom_invariant.h>
 #include <cbls/linear_jump.h>
-#include <cbls/model_extension.h>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -344,10 +343,9 @@ TEST_CASE("cached row partials are bit-identical to compute_partial where claime
 
 TEST_CASE("row invalidations compact the slope pool without changing a score",
           "[fj][linear_jump]") {
-    // What an extension-heavy run does to the cache: rows re-marked (their body
-    // changed) and rebuilt, over and over. The pool compacts once the dead
-    // entries outnumber the live, and every surviving row must still read its own
-    // slice afterwards.
+    // Rows re-marked through set_row_eligible and rebuilt, over and over. The pool compacts once
+    // the dead entries outnumber the live, and every surviving row must still read its own slice
+    // afterwards.
     RandomLinearModel r;
     build_random_linear(r, 31, /*integral=*/true);
     Model& m = r.m;
@@ -570,66 +568,4 @@ TEST_CASE("a scorer out of step with the model refuses to prepare", "[fj][linear
     LinearJumpScorer sc(m);  // never sized
     const std::vector<double> w = {1.0};
     REQUIRE_THROWS_AS(sc.prepare(vid(x), w), std::logic_error);
-}
-
-TEST_CASE("the linear scorer follows Model::extend through on_extended", "[fj][linear_jump]") {
-    Model m;
-    const int32_t a = m.int_var(0, 4);
-    const int32_t b = m.int_var(0, 4);
-    const int32_t lhs = m.sum({m.prod(m.constant(1.0), a), m.prod(m.constant(2.0), b)});
-    m.add_constraint(m.leq(lhs, m.constant(3.0)));  // row 0
-    m.add_constraint(m.geq(lhs, m.constant(1.0)));  // row 1, sharing the lhs
-    const int32_t other = m.sum({m.prod(m.constant(-1.0), b)});
-    m.add_constraint(m.eq_expr(other, m.constant(-2.0)));  // row 2
-    m.close();
-
-    ViolationManager vm(m);
-    RNG rng(11);
-    FeasibilityJump fj(m, vm, rng);
-    fj.begin(true);
-    (void)fj.batch(20);
-    // Build every row's slopes BEFORE the extension, so a stale cache would exist
-    // to be caught.
-    LinearJumpScorer& sc = fj.linear_scorer();
-    std::vector<double> w(m.constraint_ids().size(), 1.0);
-    REQUIRE(sc.prepare(vid(a), w));
-    REQUIRE(sc.prepare(vid(b), w));
-
-    ModelExtension ext(m);
-    const int32_t c = ext.int_var(0, 3);
-    ext.set_initial(c, 1.0);
-    // A new column into the shared lhs, and -- the case a slope cache can get
-    // wrong -- an EXISTING variable appended again, which changes a's slope in
-    // rows 0 and 1 from 1 to 4.
-    ext.append_to_sum(lhs, ext.prod(ext.constant(1.0), c));
-    ext.append_to_sum(lhs, ext.prod(ext.constant(3.0), a));
-    // Row 2 grows a bilinear term: it must stop being eligible.
-    ext.append_to_sum(other, ext.prod(c, a));
-    // And a new linear row over old and new variables.
-    ext.add_constraint(ext.leq(ext.sum({ext.prod(ext.constant(2.0), c), b}), ext.constant(2.0)));
-    const ExtensionResult res = m.extend(ext);
-    vm.on_extended(res);
-    fj.on_extended(res);
-
-    REQUIRE(sc.num_rows() == 4);
-    REQUIRE(sc.row_eligible(0));
-    REQUIRE(sc.row_eligible(1));
-    REQUIRE_FALSE(sc.row_eligible(2));
-    REQUIRE(sc.row_eligible(3));
-
-    w.assign(m.constraint_ids().size(), 1.0);
-    w[2] = 0.0;  // mask the now-bilinear row, so every variable takes the closed form
-    for (const int32_t h : {a, b, c}) {
-        const int32_t v = vid(h);
-        for (int64_t k = 0; k <= static_cast<int64_t>(m.var(v).ub); ++k) {
-            const auto j = static_cast<double>(k);
-            REQUIRE(sc.prepare(v, w));
-            REQUIRE(sc.delta(j) == m.weighted_violation_delta(v, j, w));
-        }
-    }
-    // With the bilinear row weighted again, every variable reading it falls back.
-    w[2] = 1.0;
-    REQUIRE_FALSE(sc.prepare(vid(a), w));
-    REQUIRE_FALSE(sc.prepare(vid(b), w));
-    REQUIRE_FALSE(sc.prepare(vid(c), w));
 }

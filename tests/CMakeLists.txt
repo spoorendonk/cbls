@@ -33,7 +33,7 @@ add_executable(cbls_tests
     test_minlplib.cpp
     test_setcover.cpp
     test_model_share.cpp
-    test_model_extend.cpp
+    test_build_after_close.cpp
     test_throughput.cpp
     test_stop.cpp
     test_counters.cpp

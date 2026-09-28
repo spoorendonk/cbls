@@ -13,7 +13,6 @@
 #include "cbls/inner_solver.h"
 #include "cbls/lns.h"
 #include "cbls/model.h"
-#include "cbls/model_extension.h"
 #include "cbls/pool.h"
 #include "cbls/search.h"
 #include "cbls/verify.h"
@@ -88,15 +87,15 @@ TEST_CASE("an open model is still deep-copied, structure and all", "[share]") {
     REQUIRE_FALSE(copy.is_frozen());
     REQUIRE(&copy.node(0) != &master.node(0));
 
-    // And the copy can still be extended without touching the original, which is
-    // the reason an open model keeps deep-copying. Through `extend`: the model is
-    // closed, and the ordinary builders refuse a closed model (#173).
+    // And the copy's structure can still change without touching the original,
+    // which is the reason an open model keeps deep-copying. Through the objective
+    // row: the model is closed, and the ordinary builders refuse a closed model
+    // (#173).
     const size_t before = master.num_nodes();
-    ModelExtension ext(copy);
-    ext.add_constraint(ext.leq(ext.constant(1.0), ext.constant(2.0)));
-    (void)copy.extend(ext);
+    copy.add_objective_soft_constraint();
     REQUIRE(master.num_nodes() == before);
-    REQUIRE(copy.num_nodes() == before + 3);  // two constants and the row
+    REQUIRE_FALSE(master.has_objective_constraint());
+    REQUIRE(copy.num_nodes() == before + 2);  // the bound constant and the row
 }
 
 TEST_CASE("two replicas sharing a structure cannot observe each other's values", "[share]") {
@@ -235,14 +234,6 @@ TEST_CASE("a frozen model refuses every structural change", "[share]") {
     REQUIRE_THROWS_AS(m.add_var_sequence({x, y}), std::logic_error);
     REQUIRE_THROWS_AS(m.reserve(100, 100), std::logic_error);
     REQUIRE_THROWS_AS(m.close(), std::logic_error);
-    // Growing a closed model (#167) is refused on the same grounds: the structure
-    // is shared, so an extension would rewrite a peer's DAG under a running
-    // search. The refusal is why growth is single-solve() only.
-    {
-        ModelExtension ext(m);
-        ext.bool_var();
-        REQUIRE_THROWS_AS(m.extend(ext), std::logic_error);
-    }
 
     // Nothing was appended by any of the refusals.
     REQUIRE(m.num_vars() == 2);

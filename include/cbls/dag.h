@@ -88,11 +88,8 @@ struct Variable {
 ///
 /// Invalidated by whatever reallocates the array it points into: appending a
 /// node for `children`, and the rebuild in `close()` /
-/// `add_objective_soft_constraint()` for the other three. `Model::extend` (#167)
-/// invalidates ALL FOUR -- it relocates a grown node's child slice, may compact
-/// `child_refs` outright, and splices each of the three CSR pairs. No caller
-/// holds one across any of those: the search reads spans inside a batch, and
-/// `extend` is a between-solves operation for exactly this reason.
+/// `add_objective_soft_constraint()` for the other three. No caller holds one
+/// across either.
 ///
 /// `operator[]` asserts its bound. That is not decoration: an index past a
 /// node's children now lands on the NEXT node's children inside one heap block,

@@ -123,35 +123,6 @@ public:
     /// constraint. An out-of-range entry in `rows` throws `std::out_of_range`.
     double weighted_delta_from(const std::vector<double>& snapshot, ConstSpan<int32_t> rows) const;
 
-    /// Grow with a model that `Model::extend` just grew (#167).
-    ///
-    /// EXISTING ROWS KEEP THEIR GLS WEIGHTS -- that is the whole point, and the
-    /// reason this exists rather than a fresh `ViolationManager`: the weights are
-    /// the search's accumulated knowledge of which rows are hard, and dropping
-    /// them would restart the guided local search from scratch every time a
-    /// column arrived. New rows start at `new_weight`, which defaults to 1 -- the
-    /// value the constructor gives every row -- so an extension applied before
-    /// the first batch leaves the weight vector where a whole-model construction
-    /// would have.
-    ///
-    /// The cached total is invalidated rather than patched: an extension changes
-    /// the node value of every row above a grown `Sum`, and `total_violation()`
-    /// self-corrects against the node values on its next call.
-    ///
-    /// Throws `std::invalid_argument` if `ext` does not describe THIS model's
-    /// constraint count, which is what stops a mismatched result silently sizing
-    /// the weights to something the model does not have, or if `new_weight` is
-    /// not finite and non-negative. Zero IS allowed and means the new rows start
-    /// MASKED, since `FeasibilityJump::active` is `weight > 0` -- which is how
-    /// `run()`'s linear-submodel phase masks the nonlinear rows.
-    ///
-    /// **Until this is called, the manager is out of step with the model and
-    /// every read below throws** (`std::logic_error`): `Model::extend` grows the
-    /// constraint list without touching the weights or the violation cache, and
-    /// every loop here indexes both by constraint index -- `bump_weights` writes
-    /// to them. Call it as soon as `extend` returns.
-    void on_extended(const ExtensionResult& ext, double new_weight = 1.0);
-
     // Invalidate cached total (call after weights change or full_evaluate)
     void invalidate_cache() { cache_valid_ = false; }
 
@@ -161,12 +132,16 @@ private:
     /// Throw unless the weight vector and the violation cache are one entry per
     /// constraint of the model as it is NOW.
     ///
-    /// The window this closes is the one between `Model::extend` returning and
-    /// `on_extended` (#167), where every read below would be a heap overread and
-    /// `bump_weights` a heap write. `weights` is a public member, so it also
-    /// catches a C++ caller that shortened it; Python cannot -- that setter is a
-    /// `def_prop_rw` which rejects a length change (#156), though it checks against
-    /// the manager's own size rather than the model's. One size compare against
+    /// Both are sized at construction, but the model can gain a row afterwards:
+    /// `add_objective_soft_constraint`, which `freeze()` and the first `solve()`
+    /// of a model with an objective run, appends the objective row. A manager
+    /// built before that is one row short, and every read below would then be a
+    /// heap overread and `bump_weights` a heap write -- reachable from Python as
+    /// `ViolationManager(m)` followed by `m.freeze()`. Build a new manager then.
+    /// `weights` is a public member, so it also catches a C++ caller that
+    /// shortened it; Python cannot -- that setter is a `def_prop_rw` which
+    /// rejects a length change (#156), though it checks against the manager's
+    /// own size rather than the model's. One size compare against
     /// bodies that are already O(#constraints) or that already compare a snapshot's
     /// size. `weighted_violation_delta` is the exception, and it is free for a
     /// different reason: FJ calls `Model::weighted_violation_delta` directly, so

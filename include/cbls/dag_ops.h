@@ -72,15 +72,6 @@ inline double delta_evaluate(Model& model, std::initializer_list<int32_t> change
     return delta_evaluate(model, changed_var_ids.begin(), changed_var_ids.size(), mode);
 }
 
-/// Whether this thread is currently inside `full_evaluate` or `delta_evaluate`.
-///
-/// For an operation that must not run inside the evaluation walk but cannot take
-/// the guard itself because it *performs* an evaluation -- `Model::extend` is the
-/// one such caller. Arming the guard there would refuse `extend`'s own closing
-/// `full_evaluate`; asking the question refuses only the caller that had no
-/// business being here. See `Model::extend`.
-[[nodiscard]] bool in_evaluation();
-
 // Reverse-mode AD over the cone of `expr_id` (the nodes reachable from it
 // through children), visited in reverse topological order. Cost O(c log c) for
 // a cone of c nodes, not O(|nodes|); a cone too large for the sort to pay falls

@@ -2,10 +2,10 @@
 
 `cbls.solve` and `ParallelSearch.solve_master` release the GIL for the whole
 search and register the model while they run, so every structural write Python
-can reach -- Model builders, Expr operators, close/freeze/extend, ModelExtension
-construction and builders, a second solve -- raises RuntimeError until the solve
-returns. A solve writes structure itself (the objective row), so the refusal
-protects every solve, not only one whose model grows.
+can reach -- Model builders, Expr operators, close/freeze, a second solve --
+raises RuntimeError until the solve returns. A solve writes structure itself
+(the objective row, and solve_master's freeze), so the refusal protects every
+solve.
 
 Every scenario runs in a child process under a wall-clock timeout: a structural
 write racing a running search, or an object outliving the model it points into,
@@ -86,8 +86,8 @@ def _two_var_model(with_list: bool = False) -> tuple[Any, Any, Any]:
 
 
 def _scenario_structural_writes_are_refused_during_a_solve() -> None:
-    """ModelExtension construction and builders, Model builders and Expr operators
-    all raise while cbls.solve runs on their model.
+    """Model builders, close/freeze, Expr operators and a second solve all raise
+    while cbls.solve runs on their model.
 
     The race this closes is a SECOND Python thread writing structure while the
     solve, GIL released, writes it too -- the objective row at the start. A
@@ -101,13 +101,10 @@ def _scenario_structural_writes_are_refused_during_a_solve() -> None:
     target = m.objective_id()
     cfg = cbls.SearchConfig()
     cfg.max_iterations = 2_000
-    # Solve once first so the objective row exists before `early` is recorded:
-    # otherwise the solve below adds it, `early` goes stale, and its builders are
-    # refused by the structure token instead of by the registry under test.
+    # Solve once first so the objective row exists and the model is closed before
+    # the probed solve: then the only thing that can refuse a write mid-solve is
+    # the registry under test, and "nothing was written" below is exact.
     cbls.solve(m, time_limit=0.0, seed=1, config=cfg)
-    # One extension recorded BEFORE the solve, to check its builders mid-solve.
-    early = cbls.ModelExtension(m)
-    early_var = early.float_var(0, 1)
     attempts: list[tuple[str, str]] = []
 
     class Probe(cbls.SolveCallback):  # type: ignore[misc]
@@ -118,10 +115,6 @@ def _scenario_structural_writes_are_refused_during_a_solve() -> None:
                 return
             Probe.done = True
             for name, fn in [
-                ("ModelExtension()", lambda: cbls.ModelExtension(m)),
-                ("early.float_var", lambda: early.float_var(0, 1)),
-                ("early.append_to_sum", lambda: early.append_to_sum(target, early_var)),
-                ("early.constant", lambda: early.constant(2.0)),
                 ("Model.float_var", lambda: m.float_var(0, 1)),
                 ("Model.constant", lambda: m.constant(1.0)),
                 ("Model.add_constraint", lambda: m.add_constraint(target)),
@@ -131,7 +124,6 @@ def _scenario_structural_writes_are_refused_during_a_solve() -> None:
                 ("Expr.__le__", lambda: x <= 1.0),
                 ("cbls.sin", lambda: cbls.sin(x)),
                 ("cbls.min", lambda: cbls.min([x, y])),
-                ("Model.extend", lambda: m.extend(early)),
                 ("Model.close", lambda: m.close()),
                 ("Model.List", lambda: m.List(3)),
                 ("Model.minimize", lambda: m.minimize(target)),
@@ -154,17 +146,14 @@ def _scenario_structural_writes_are_refused_during_a_solve() -> None:
 
     n_vars, n_nodes = m.num_vars(), m.num_nodes()
     cbls.solve(m, time_limit=0.0, seed=1, callback=Probe(), config=cfg)
-    assert len(attempts) == 26, attempts
+    assert len(attempts) == 21, attempts
     for name, message in attempts:
         assert "cbls.solve is running on this model" in message, (name, message)
-    # A query of the recording reads no model and is not refused.
-    assert early.num_new_vars() == 1
     # Nothing was written: the objective row already existed.
     assert (m.num_vars(), m.num_nodes()) == (n_vars, n_nodes)
     # Scoped to the solve: afterwards the same writes work again.
-    ext = cbls.ModelExtension(m)
-    ext.add_constraint(ext.leq(ext.float_var(0, 1), ext.constant(1.0)))
-    m.extend(ext)
+    m.freeze()
+    assert m.is_frozen()
     print("OK")
 
 
@@ -183,7 +172,6 @@ def _scenario_solve_master_registers_the_master() -> None:
             with lock:
                 if attempts:
                     return
-                _attempt(attempts, "ModelExtension()", lambda: cbls.ModelExtension(m))
                 _attempt(attempts, "Model.float_var", lambda: m.float_var(0, 1))
                 _attempt(attempts, "Expr.__add__", lambda: x + y)
 
@@ -194,7 +182,7 @@ def _scenario_solve_master_registers_the_master() -> None:
     cbls.ParallelSearch(2).solve_master(
         m, time_limit=0.0, seed=1, config=cfg, callback=Probe(), par_config=par
     )
-    assert len(attempts) == 3, attempts
+    assert len(attempts) == 2, attempts
     for name, message in attempts:
         assert "cbls.solve is running on this model" in message, (name, message)
     print("OK")
@@ -309,7 +297,7 @@ SCENARIOS = {
 }
 
 
-def test_model_extension_is_refused_during_a_solve() -> None:
+def test_structural_writes_are_refused_during_a_solve() -> None:
     _assert_scenario_ok("structural_writes")
 
 

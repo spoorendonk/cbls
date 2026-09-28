@@ -5,12 +5,11 @@
 // recomputation from the model's node values and the live GLS weights, through
 // every kind of change: committed moves, weight bumps (including a decay that
 // deactivates a violated row), weights masked from outside between batches,
-// Novelty apply/undo, and Model::extend / on_extended.
+// Novelty apply/undo.
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
-#include <cbls/model_extension.h>
 #include <cstdint>
 #include <random>
 #include <vector>
@@ -54,8 +53,7 @@ void require_consistent(const FeasibilityJump& fj, const Model& m, const Violati
 
 // A random sparse integer model with more rows than it can satisfy at once, so
 // V keeps changing under the search rather than emptying on the first batch.
-// Returns the Sum node of every row, for extensions to grow.
-std::vector<int32_t> build_random_rows(Model& m, uint32_t seed, int num_vars, int num_rows) {
+void build_random_rows(Model& m, uint32_t seed, int num_vars, int num_rows) {
     std::mt19937 gen(seed);
     std::uniform_int_distribution<int> pick_var(0, num_vars - 1);
     std::uniform_int_distribution<int> pick_coef(1, 3);
@@ -66,7 +64,6 @@ std::vector<int32_t> build_random_rows(Model& m, uint32_t seed, int num_vars, in
     for (int i = 0; i < num_vars; ++i) {
         handles.push_back(m.int_var(0, 4));
     }
-    std::vector<int32_t> sums;
     for (int r = 0; r < num_rows; ++r) {
         std::vector<int32_t> terms;
         std::vector<int> used;
@@ -80,11 +77,9 @@ std::vector<int32_t> build_random_rows(Model& m, uint32_t seed, int num_vars, in
             terms.push_back(m.prod(m.constant(coef), handles[static_cast<size_t>(v)]));
         }
         const int32_t sum = m.sum(terms);
-        sums.push_back(sum);
         const double rhs = pick_rhs(gen);
         m.add_constraint(r % 2 == 0 ? m.leq(sum, m.constant(rhs)) : m.geq(sum, m.constant(rhs)));
     }
-    return sums;
 }
 
 GFJConfig small_batch_config() {
@@ -211,103 +206,4 @@ TEST_CASE("FJ's violated set survives Novelty apply and undo", "[fj][violated_se
         require_consistent(fj, m, vm);
     }
     REQUIRE(novelty_calls_with_violation > 0);  // Novelty did commit moves
-}
-
-TEST_CASE("FJ's violated set follows Model::extend through on_extended", "[fj][violated_set]") {
-    // New columns entering existing rows -- some of them violated and active, so
-    // their variable lists grow while they are counted -- and new rows over old
-    // and new variables. Checked straight after on_extended and again after
-    // further batches on the grown model.
-    Model m;
-    const std::vector<int32_t> sums = build_random_rows(m, 57, 20, 40);
-    m.close();
-    ViolationManager vm(m);
-    RNG rng(8);
-    FeasibilityJump fj(m, vm, rng, small_batch_config());
-    fj.begin(true);
-    (void)fj.batch(25);
-    require_consistent(fj, m, vm);
-
-    for (int round = 0; round < 3; ++round) {
-        // Grow a counted row if there is one: that is the case whose count
-        // depends on the list being re-walked after the merge.
-        std::vector<int32_t> targets;
-        for (const int32_t c : fj.violated_rows()) {
-            if (vm.weights[static_cast<size_t>(c)] > 0.0) {
-                targets.push_back(c);
-            }
-        }
-        REQUIRE_FALSE(targets.empty());
-        ModelExtension ext(m);
-        const int32_t col = ext.int_var(0, 4);
-        ext.set_initial(col, 0.0);  // leave the grown rows' values where they were
-        for (size_t k = 0; k < targets.size() && k < 3; ++k) {
-            ext.append_to_sum(sums[static_cast<size_t>(targets[k])],
-                              ext.prod(ext.constant(1.0), col));
-        }
-        // A new row over an old variable and the new column, violated at once
-        // (both are at most 4). Handle -1 is variable 0.
-        const int32_t old_var = -1;
-        ext.add_constraint(ext.geq(
-            ext.sum({ext.prod(ext.constant(1.0), old_var), ext.prod(ext.constant(1.0), col)}),
-            ext.constant(20.0)));
-        const ExtensionResult res = m.extend(ext);
-        vm.on_extended(res);
-        fj.on_extended(res);
-        require_consistent(fj, m, vm);
-        for (int b = 0; b < 10; ++b) {
-            (void)fj.batch(5);
-            require_consistent(fj, m, vm);
-        }
-    }
-}
-
-TEST_CASE("FJ's violated set recounts an incidence row missing from touched_constraints",
-          "[fj][violated_set]") {
-    // ExtensionResult promises every row in new_incidences is also in
-    // touched_constraints or new, and Model::extend keeps that promise. But
-    // on_extended's validation does not enforce it -- ExtensionResult is a plain
-    // struct -- so the counts are kept right without it: a counted row whose
-    // variable list the merge grows is uncounted against the old list and
-    // recounted against the merged one whether or not it is in `rows`. This
-    // hands on_extended a real extension with that row dropped from
-    // touched_constraints. The new column starts at 0, so the row's value, and
-    // hence its in-V bit, is unchanged -- only the recount is at stake.
-    Model m;
-    const std::vector<int32_t> sums = build_random_rows(m, 57, 20, 40);
-    m.close();
-    ViolationManager vm(m);
-    RNG rng(8);
-    FeasibilityJump fj(m, vm, rng, small_batch_config());
-    fj.begin(true);
-    (void)fj.batch(25);
-
-    int32_t target = -1;
-    for (const int32_t c : fj.violated_rows()) {
-        if (vm.weights[static_cast<size_t>(c)] > 0.0) {
-            target = c;
-            break;
-        }
-    }
-    REQUIRE(target >= 0);  // a counted row to grow
-
-    ModelExtension ext(m);
-    const int32_t col = ext.int_var(0, 4);
-    ext.set_initial(col, 0.0);
-    ext.append_to_sum(sums[static_cast<size_t>(target)], ext.prod(ext.constant(1.0), col));
-    ExtensionResult res = m.extend(ext);
-    const auto it =
-        std::find(res.touched_constraints.begin(), res.touched_constraints.end(), target);
-    REQUIRE(it != res.touched_constraints.end());
-    res.touched_constraints.erase(it);
-    const int32_t new_var = res.first_new_var;
-    REQUIRE(std::any_of(res.new_incidences.begin(), res.new_incidences.end(),
-                        [&](const std::pair<int32_t, int32_t>& inc) {
-                            return inc.first == target && inc.second == new_var;
-                        }));
-
-    vm.on_extended(res);
-    fj.on_extended(res);
-    require_consistent(fj, m, vm);
-    REQUIRE(fj.active_violated_rows_of(new_var) > 0);  // it sits in the counted row
 }

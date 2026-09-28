@@ -285,8 +285,8 @@ TEST_CASE("flat edge storage keeps child, parent, dependent and topological orde
     REQUIRE(m.topo_order() == std::vector<int32_t>{n, c, p1, p2, p3, top});
 
     // No node can be made after the rebuild by the ordinary builders -- they
-    // refuse a closed model (#173), so no parent list goes stale; `extend` is the
-    // growth path, and splices. The refusal moves no existing slice.
+    // refuse a closed model (#173), so no parent list goes stale. The refusal
+    // moves no existing slice.
     REQUIRE_THROWS_AS(m.neg(top), std::logic_error);
     REQUIRE(m.parents(top).empty());
     REQUIRE(as_vector(m.parents(n)) == std::vector<int32_t>{p1, p2, p3});
@@ -317,7 +317,7 @@ TEST_CASE("flat edge storage keeps child, parent, dependent and topological orde
     REQUIRE(as_vector(g.constraints_of_var(vid(gy))) == std::vector<int32_t>{0, 1});
     // The CSR bounds: one past the last id is out of range. A variable made
     // after the build used to sit past G_v's end too; the builders now refuse a
-    // closed model instead (#173), and `extend` grows G_v for the ones it adds.
+    // closed model instead (#173).
     REQUIRE_THROWS_AS(g.constraints_of_var(2), std::out_of_range);
     REQUIRE_THROWS_AS(g.parents(static_cast<int32_t>(g.num_nodes())), std::out_of_range);
     REQUIRE_THROWS_AS(g.dependents(2), std::out_of_range);

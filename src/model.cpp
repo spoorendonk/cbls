@@ -36,9 +36,7 @@ Model::Model(const Model& other)
       objective_constraint_node_(other.objective_constraint_node_),
       objective_constraint_idx_(other.objective_constraint_idx_),
       objective_bound_(other.objective_bound_),
-      closed_(other.closed_),
-      structure_version_(other.structure_version_),
-      extend_interrupted_(other.extend_interrupted_) {
+      closed_(other.closed_) {
     // probe_old_violation_ is deliberately left empty: it is resized and
     // overwritten before it is read on every call, so it carries no state.
     //
@@ -104,23 +102,13 @@ void Model::require_open(const char* method) const {
     }
 }
 
-// Option (a) of #173, refuse, rather than (b), route the builder through the
-// extension path. Routing would make every public builder on a closed model an
-// `extend` of one entity -- a structure-token bump, a CSR splice and a cone
-// evaluation per call -- and would still leave the caller owing
-// `ViolationManager::on_extended` and `FeasibilityJump::on_extended`, which a
-// plain `add_constraint` gives them no reason to know about. A refusal that names
-// the extension path hands them both the batching and that obligation, in the one
-// place `extend` documents it.
 void Model::require_buildable(const char* method) const {
     require_open(method);  // a frozen model keeps its own, more specific message
     if (closed_) {
         throw std::logic_error(std::string("Model::") + method +
                                ": model is closed, and a node or row added now would never be "
-                               "evaluated; grow a closed model with ModelExtension + "
-                               "Model::extend (objectives, variable sequences, list "
-                               "partitions, List/Set variables, lambda_sum/pair_lambda_sum "
-                               "and custom nodes cannot be added after close at all)");
+                               "evaluated; a closed model cannot grow, so build the whole "
+                               "model before close()");
     }
 }
 
@@ -861,7 +849,6 @@ void Model::close() {
     build_var_constraints();
     full_evaluate(*this);
     closed_ = true;
-    structure_version_ = next_structure_version();
 }
 
 void Model::add_objective_soft_constraint() {
@@ -876,10 +863,6 @@ void Model::add_objective_soft_constraint() {
         return;
     }
     require_open("add_objective_soft_constraint");
-    // Before anything is appended: solve() and freeze() reach this ahead of
-    // ViolationManager's own check, and a rebuild over a half-grown model is
-    // exactly what extend_interrupted() exists to prevent (#167).
-    require_intact("add_objective_soft_constraint");
     ModelStructure& st = mut();
 
     // Exactly the room the row takes -- two nodes, two child refs, two node
@@ -922,10 +905,7 @@ void Model::add_objective_soft_constraint() {
     // was handed unclosed, leaving closed_ false let every later builder
     // through (#173's refusal keys on it), and a row added then was never
     // evaluated. On an already-closed model this changes nothing.
-    if (!closed_) {
-        closed_ = true;
-        structure_version_ = next_structure_version();
-    }
+    closed_ = true;
 }
 
 void Model::set_objective_bound(double bound) {

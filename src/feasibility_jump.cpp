@@ -1,18 +1,14 @@
 #include "cbls/feasibility_jump.h"
 
 #include "cbls/dag_ops.h"
-#include "cbls/model_extension.h"
 #include "cbls/moves.h"
 #include "cbls/randomize.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <iterator>
 #include <limits>
 #include <stdexcept>
-#include <unordered_map>
-#include <utility>
 
 namespace cbls {
 
@@ -689,10 +685,7 @@ namespace {
 // children); a variable child is never constant, since its value is search
 // state.
 //
-// `is_const` is a callable `int32_t node id -> bool`, not an array, so the same
-// rule serves the wholesale sweep below (which indexes a node-sized vector) and
-// the per-row reclassification an extension needs (#167), which memoises over the
-// touched subtrees instead of allocating one entry per node in the model.
+// `is_const` is a callable `int32_t node id -> bool` over node ids.
 template <typename IsConst>
 bool children_all_const(ConstSpan<ChildRef> children, IsConst is_const) {
     return std::all_of(children.begin(), children.end(),
@@ -703,8 +696,7 @@ bool children_all_const(ConstSpan<ChildRef> children, IsConst is_const) {
 // settled for every node below it? Only called for nodes that are NOT wholly
 // constant, so `children` is populated for every op that indexes it.
 //
-// `is_const`/`is_affine` are callables over node ids, for the reason
-// `children_all_const` above gives.
+// `is_const`/`is_affine` are callables over node ids.
 template <typename IsConst, typename IsAffine>
 bool node_is_affine(NodeOp op, ConstSpan<ChildRef> children, IsConst is_const, IsAffine is_affine) {
     auto child_const = [&](const ChildRef& c) -> bool { return c.is_var ? false : is_const(c.id); };
@@ -751,51 +743,6 @@ bool comparison_of_affine_children(const ExprNode& nd, ConstSpan<ChildRef> child
     }
 }
 
-// Classify the subtree rooted at `root` and return whether the root is affine in
-// the variables (#167).
-//
-// `memo` caches both flags per node -- bit 0 constant, bit 1 affine -- and is
-// shared across the rows of one reclassification, because affineness is a property
-// of the node and not of the row reading it. An `unordered_map` rather than a
-// node-indexed array on purpose: allocating and clearing one entry per node is the
-// O(model) cost the incremental path exists to avoid, and the map holds only the
-// nodes the touched rows actually reach.
-//
-// Iterative, and a node is expanded before it is scored, so the recursion depth of
-// a deep expression tree does not become stack depth.
-bool cone_is_affine(const Model& model, int32_t root, std::unordered_map<int32_t, uint8_t>& memo) {
-    struct Frame {
-        int32_t nid;
-        bool expanded;
-    };
-    std::vector<Frame> stack{{root, false}};
-    while (!stack.empty()) {
-        const Frame frame = stack.back();
-        if (memo.count(frame.nid) != 0) {
-            stack.pop_back();
-            continue;
-        }
-        const ExprNode& nd = model.nodes()[static_cast<size_t>(frame.nid)];
-        const ConstSpan<ChildRef> children = model.children(nd);
-        if (!frame.expanded) {
-            stack.back().expanded = true;
-            for (const ChildRef& child : children) {
-                if (!child.is_var && memo.count(child.id) == 0) {
-                    stack.push_back({child.id, false});
-                }
-            }
-            continue;
-        }
-        stack.pop_back();
-        auto const_at = [&memo](int32_t id) { return (memo[id] & 1U) != 0; };
-        auto affine_at = [&memo](int32_t id) { return (memo[id] & 2U) != 0; };
-        const bool all_const = children_all_const(children, const_at);
-        const bool affine = all_const || node_is_affine(nd.op, children, const_at, affine_at);
-        memo[frame.nid] = static_cast<uint8_t>((all_const ? 1U : 0U) | (affine ? 2U : 0U));
-    }
-    return (memo[root] & 2U) != 0;
-}
-
 }  // namespace
 
 void FeasibilityJump::compute_linear_constraints() {
@@ -828,96 +775,14 @@ void FeasibilityJump::compute_linear_constraints() {
     }
 }
 
-bool FeasibilityJump::row_is_linear(int32_t ci) const {
-    if (ci < 0 || static_cast<size_t>(ci) >= is_linear_.size()) {
-        throw std::out_of_range("row_is_linear: constraint index out of range");
-    }
-    return is_linear_[static_cast<size_t>(ci)] != 0;
-}
-
-void FeasibilityJump::recompute_linearity(const std::vector<int32_t>& rows) {
-    const std::vector<int32_t>& cids = model_.constraint_ids();
-    std::unordered_map<int32_t, uint8_t> memo;
-    for (const int32_t ci : rows) {
-        const int32_t nid = cids[static_cast<size_t>(ci)];
-        is_linear_[static_cast<size_t>(ci)] =
-            static_cast<uint8_t>(cone_is_affine(model_, nid, memo));
-        // cone_is_affine above classified every node under the row, children
-        // included, so the memo answers for them.
-        const ExprNode& nd = model_.nodes()[static_cast<size_t>(nid)];
-        auto affine_at = [&memo](int32_t id) { return (memo[id] & 2U) != 0; };
-        linear_.set_row_eligible(ci,
-                                 comparison_of_affine_children(nd, model_.children(nd), affine_at));
-    }
-}
-
-namespace {
-
-// The count fields on an `ExtensionResult` bound the id RANGES; its two index
-// vectors carry raw indices, and every use of them is an unchecked subscript --
-// `is_linear_[ci]`, `violated_[ci]`, `cids[ci]`, `vars_of_constraint_[ci]`.
-// `ExtensionResult` is a plain struct with public members and `on_extended`
-// already treats a hand-built one as a reachable input, so half-guarding it would
-// be the inconsistency.
-//
-// The ORDER is load-bearing on one of the two, and only one:
-// `touched_constraints` out of order merely redoes work, but
-// `merge_new_incidences` groups the CONSECUTIVE run of equal rows and hands each
-// group to `std::set_union` as a sorted range. An unsorted `new_incidences` breaks
-// that precondition and leaves `vars_of_constraint_[ci]` non-ascending or
-// duplicated -- which is contractual (FJ's scan order over it feeds the
-// trajectory), so the failure is a silently different search rather than a bad
-// read. Both are checked, because the producer sorts anyway and the check is free.
-//
-// Split out of `on_extended` rather than inlined, for the reason
-// CLAUDE.md's Complexity section gives: "is this result well formed" is a
-// different question from "grow the tables", and the body was one increment from
-// the cognitive-complexity block. O(|touched| + |incidences|), against a body that
-// walks those same rows' subtrees.
-void validate_extension_indices(const ExtensionResult& ext, size_t nc, size_t nv) {
-    int32_t previous = -1;
-    for (const int32_t ci : ext.touched_constraints) {
-        if (ci < 0 || ci >= ext.first_new_constraint) {
-            throw std::out_of_range(
-                "FeasibilityJump::on_extended: touched_constraints names a row that is not an "
-                "existing constraint of this model");
-        }
-        if (ci <= previous) {
-            throw std::invalid_argument(
-                "FeasibilityJump::on_extended: touched_constraints must be ascending and distinct");
-        }
-        previous = ci;
-    }
-    std::pair<int32_t, int32_t> previous_inc{-1, -1};
-    for (const std::pair<int32_t, int32_t>& inc : ext.new_incidences) {
-        if (inc.first < 0 || static_cast<size_t>(inc.first) >= nc) {
-            throw std::out_of_range(
-                "FeasibilityJump::on_extended: new_incidences names a constraint this model does "
-                "not have");
-        }
-        if (inc.second < 0 || static_cast<size_t>(inc.second) >= nv) {
-            throw std::out_of_range(
-                "FeasibilityJump::on_extended: new_incidences names a variable this model does not "
-                "have");
-        }
-        if (inc <= previous_inc) {
-            throw std::invalid_argument(
-                "FeasibilityJump::on_extended: new_incidences must be ascending by (constraint, "
-                "variable) and distinct -- merge_new_incidences groups consecutive rows and "
-                "set_unions each group into a list it keeps ascending in variable id");
-        }
-        previous_inc = inc;
-    }
-}
-
-}  // namespace
-
 // Every per-row and per-variable table here is sized once, at construction, and
-// grown only by `on_extended`. So a size that disagrees with the model means
-// `Model::extend` ran and nobody told this object -- after which `violated_[ci]`,
-// `is_linear_[ci]`, `vars_of_constraint_[ci]`, `in_queue_[v]` and `active(ci)` are
-// all indexed by the GROWN counts, unchecked. The symmetric mistake, this object
-// grown before the ViolationManager, is refused in `on_extended`.
+// never grown. The model can still gain a row afterwards: the objective row, which
+// `add_objective_soft_constraint` appends -- and `freeze()` and the first `solve()`
+// of a model with an objective both run it. So can the ViolationManager's weights
+// fall out of step, if the manager was built before that row. After either,
+// `violated_[ci]`, `is_linear_[ci]`, `vars_of_constraint_[ci]` and `active(ci)` are
+// indexed by the NEW row count, unchecked -- so the mismatch is refused here rather
+// than read past; build the ViolationManager and this object after the row exists.
 //
 // Checked at the entry points a driver calls once per batch or kick, never per row:
 // eight size compares against a body that then runs thousands of iterations.
@@ -928,134 +793,10 @@ void FeasibilityJump::require_tables_in_step() const {
         vars_of_constraint_.size() != nc || violated_pos_.size() != nc || in_queue_.size() != nv ||
         active_violated_of_var_.size() != nv || vm_.weights.size() != nc) {
         throw std::logic_error(
-            "FeasibilityJump: the model has grown since this object last matched it. Model::extend "
-            "must be followed by ViolationManager::on_extended and then "
-            "FeasibilityJump::on_extended(result) before the search runs again (#167)");
-    }
-}
-
-void FeasibilityJump::on_extended(const ExtensionResult& ext) {
-    const size_t nc = model_.constraint_ids().size();
-    const size_t nv = model_.num_vars();
-    if (ext.first_new_constraint < 0 || ext.first_new_var < 0 ||
-        static_cast<size_t>(ext.end_constraint()) != nc ||
-        static_cast<size_t>(ext.end_var()) != nv ||
-        static_cast<size_t>(ext.first_new_constraint) != violated_.size() ||
-        static_cast<size_t>(ext.first_new_var) != in_queue_.size()) {
-        throw std::invalid_argument(
-            "FeasibilityJump::on_extended: the extension does not describe this model's current "
-            "variable and constraint counts");
-    }
-    if (vm_.weights.size() != nc) {
-        throw std::invalid_argument(
-            "FeasibilityJump::on_extended: the ViolationManager has not grown with the model yet. "
-            "active() reads its weight vector by constraint index and unchecked, so running first "
-            "would read past the end for every new row -- and mask real rows on the way. Call "
-            "ViolationManager::on_extended(result) first (#167)");
-    }
-    validate_extension_indices(ext, nc, nv);
-    jumps_.grow(nv);
-    in_queue_.resize(nv, 0);
-    violated_.resize(nc, 0);
-    violated_pos_.resize(nc, -1);
-    active_violated_of_var_.resize(nv, 0);
-    is_linear_.resize(nc, 0);
-    linear_.resize_rows(nc);
-    vars_of_constraint_.resize(nc);
-
-    // The rows whose body changed: the new ones, and the existing ones a grown Sum
-    // sits inside.
-    std::vector<int32_t> rows = ext.touched_constraints;
-    for (int32_t ci = ext.first_new_constraint; ci < ext.end_constraint(); ++ci) {
-        rows.push_back(ci);
-    }
-    recompute_linearity(rows);
-
-    // A counted row's contribution to active_violated_of_var_ was made over its
-    // variable list as it stood; the merge below may add to that list. So every
-    // row whose list can grow is uncounted against the OLD list first and
-    // recounted against the merged one after (#174). ExtensionResult promises the
-    // incidence rows are among `rows`, but the uncount is keyed on the incidences
-    // themselves, so the counts cannot depend on that promise.
-    for (const std::pair<int32_t, int32_t>& inc : ext.new_incidences) {
-        uncount(inc.first);
-    }
-    merge_new_incidences(ext);
-
-    const std::vector<int32_t>& cids = model_.constraint_ids();
-    for (const int32_t ci : rows) {
-        set_violated(ci, is_violated(model_.node_value(cids[static_cast<size_t>(ci)])));
-    }
-    for (const std::pair<int32_t, int32_t>& inc : ext.new_incidences) {
-        reconcile_counted(inc.first);
-    }
-    // One O(#constraints) sweep, which is what every gls_loop entry already pays.
-    // Correcting the accumulator per touched row instead would mean carrying each
-    // row's contribution, which is exactly the storage the accumulator exists not
-    // to have.
-    refresh_unweighted_violation();
-
-    // Queue the new variables and everything reading a changed row, and drop their
-    // cached jumps: those scores were computed against rows that have moved.
-    // Unconditional on whether the row is currently violated, unlike
-    // rebuild_violated_and_scan_set -- a variable with no improving jump leaves Q
-    // again on the next apply_jump, and a new column that is not yet in a violated
-    // row is still the thing the extension was made to try.
-    //
-    // The ENQUEUE is promptness, not reachability, and no test pins it: neutering
-    // it leaves `a column added mid-search is actually reachable by FJ` green,
-    // because bump_weights_and_requeue re-queues from vars_of_constraint_ within
-    // the same batch. It is kept because waiting for a weight bump to notice a
-    // column that was just added is the wrong default, not because the search
-    // would otherwise never find it.
-    for (int32_t v = ext.first_new_var; v < ext.end_var(); ++v) {
-        if (jumpable(v)) {
-            jumps_.invalidate(v);
-            enqueue(v);
-        }
-    }
-    for (const int32_t ci : rows) {
-        for (const int32_t v : vars_of_constraint_[static_cast<size_t>(ci)]) {
-            jumps_.invalidate(v);
-            enqueue(v);
-        }
-    }
-    // The progress trackers are deliberately left alone. `batch()` clears
-    // `batch_stuck_` on entry and `gls_loop` zeroes `unproductive_streak_` before
-    // it takes the batch's reference minimum, so re-grounding them here would be a
-    // no-op that reads as a policy; `escape_probe_` is the CALLER's arming (see
-    // set_escape_probe) and clearing it would silently override a decision solve()
-    // made on its own stagnation count. The `refresh_unweighted_violation()` above
-    // is in the same position and kept anyway, for a narrower reason: it is what
-    // makes the public `unweighted_violation()` accessor read the grown model
-    // BETWEEN the extension and the next batch, which is where a caller measuring
-    // the extension's effect looks.
-}
-
-// `vars_of_constraint_` is the transpose of G_v restricted to jumpable variables,
-// and ASCENDING in variable id -- the constructor builds it by walking the
-// variables in order, and FJ's scan order over it feeds the trajectory. So this
-// MERGES rather than appending: a term appended to an existing row can name an
-// existing variable whose id is below one the row already listed.
-void FeasibilityJump::merge_new_incidences(const ExtensionResult& ext) {
-    const std::vector<std::pair<int32_t, int32_t>>& inc = ext.new_incidences;
-    size_t i = 0;
-    std::vector<int32_t> added;
-    std::vector<int32_t> merged;
-    while (i < inc.size()) {
-        const int32_t ci = inc[i].first;
-        added.clear();
-        for (; i < inc.size() && inc[i].first == ci; ++i) {
-            if (jumpable(inc[i].second)) {
-                added.push_back(inc[i].second);
-            }
-        }
-        std::vector<int32_t>& list = vars_of_constraint_[static_cast<size_t>(ci)];
-        merged.clear();
-        merged.reserve(list.size() + added.size());
-        std::set_union(list.begin(), list.end(), added.begin(), added.end(),
-                       std::back_inserter(merged));
-        list = merged;
+            "FeasibilityJump: the model or its ViolationManager no longer has the row and "
+            "variable counts this object was built for -- a row (the objective row that freeze() "
+            "and solve() add) was added after it or the manager was built. Build both after the "
+            "model's last row");
     }
 }
 
@@ -1986,8 +1727,8 @@ bool FeasibilityJump::apply_novelty_jump() {
     const size_t nv = model_.num_vars();
     // Flags stay set only for entries of nj_queue_ / move_stack_, which
     // seed_novelty_scan_set and clear_stack clear through below -- also across
-    // calls, since an early return leaves both populated. resize only grows them
-    // for a model extended since the last call.
+    // calls, since an early return leaves both populated. resize sizes them on
+    // the first call and is a no-op after.
     nj_in_queue_.resize(nv, 0);
     on_stack_.resize(nv, 0);
     nj_work_remaining_ = kNoveltyWorkBudget;  // bound the compound-move search

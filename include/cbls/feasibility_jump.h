@@ -38,15 +38,6 @@ public:
             e.valid = false;
         }
     }
-    /// Make room for variables the model has gained since construction (#167).
-    /// New entries are invalid, which is what every entry starts as, so a grown
-    /// table reads exactly as a freshly constructed one for the new variables and
-    /// keeps its cached jumps for the old.
-    void grow(size_t num_vars) {
-        if (num_vars > entries_.size()) {
-            entries_.resize(num_vars);
-        }
-    }
     void set(int32_t var_id, double jump_value, double score) {
         entries_[var_id] = {jump_value, score, true};
     }
@@ -285,15 +276,6 @@ public:
     // test that pins the incremental accumulator against a fresh recomputation;
     // the search itself does not consult it.
     [[nodiscard]] double unweighted_violation() const { return unweighted_violation_; }
-    /// Whether row `ci` was classified as affine in the variables -- the linear
-    /// submodel `run()`'s first phase descends.
-    ///
-    /// Read-only observability, in the same spirit as `unweighted_violation()` and
-    /// `deadline_checks()` above: the classification is otherwise reachable only
-    /// through `run()`, which the batch API does not call, so an extension's
-    /// reclassification of a grown row would be an unpinned mechanism without it.
-    /// Throws `std::out_of_range` on an index this model has no row for.
-    [[nodiscard]] bool row_is_linear(int32_t ci) const;
 
     /// Read-only observability for the incremental violated-row state (#174), in
     /// the same spirit as `unweighted_violation()`: the tests that pin it against a
@@ -375,60 +357,12 @@ public:
     [[nodiscard]] int64_t structural_kick_moves() const { return kick_moves_; }
     [[nodiscard]] int64_t structural_kick_checks() const { return kick_checks_; }
     /// The closed-form linear scorer this object scores jumps with -- its
-    /// fast/fallback counters, and a way for tests to check its scores after an
-    /// extension. `prepare` on it touches only its own scratch and lazily built
+    /// fast/fallback counters, and a way for tests to check its scores.
+    /// `prepare` on it touches only its own scratch and lazily built
     /// rows, never the assignment, so calling it between batches is harmless.
     [[nodiscard]] const LinearJumpScorer& linear_scorer() const { return linear_; }
     [[nodiscard]] LinearJumpScorer& linear_scorer() { return linear_; }
     [[nodiscard]] int64_t structural_kick_stride() const { return kick_stride_; }
-
-    /// Grow with a model that `Model::extend` just grew (#167).
-    ///
-    /// Every table here is indexed by a variable id or a constraint index, and
-    /// `ExtensionResult` guarantees both new ranges are contiguous and at the end
-    /// -- so each one keeps its existing entries and appends. What that preserves
-    /// is the search state that matters: the cached jumps of variables the
-    /// extension did not touch, and (in `ViolationManager`) the GLS weights.
-    ///
-    /// What it re-derives, and what that costs:
-    ///
-    ///  - `is_linear_` for the new rows and for every existing row a grown `Sum`
-    ///    sits inside, by walking those rows' subtrees -- O(size of the touched
-    ///    rows), not the O(model) sweep `compute_linear_constraints` does;
-    ///  - `vars_of_constraint_` from `ExtensionResult::new_incidences`, MERGED so
-    ///    each row's list stays ascending in variable id, which is how the
-    ///    constructor leaves it and therefore what the scan order depends on;
-    ///  - `violated_` for those same rows, and `unweighted_violation_` from
-    ///    scratch: one O(#constraints) sweep, which is what every batch entry
-    ///    already pays.
-    ///
-    /// Then it queues the new variables and every variable reading a touched or
-    /// new row, and invalidates their cached jumps -- their scores were computed
-    /// against rows that have since changed.
-    ///
-    /// Call it AFTER `ViolationManager::on_extended`: `active()` reads the weight
-    /// vector by constraint index and unchecked, and this reads `active()` over
-    /// the GROWN row count. That order is now enforced rather than merely
-    /// documented -- the wrong one throws instead of reading past the end of the
-    /// weights.
-    ///
-    /// Throws `std::invalid_argument` if `ext` does not describe this model's
-    /// current variable and constraint counts, if the weight vector has not grown
-    /// yet, or if `touched_constraints`/`new_incidences` is not ascending and
-    /// distinct; `std::out_of_range` if either names a row or a variable this
-    /// model does not have. `ExtensionResult` is a plain struct, so those raw
-    /// indices are validated rather than trusted: every use of them is an
-    /// unchecked subscript, and `merge_new_incidences` additionally relies on
-    /// `new_incidences` being SORTED -- it groups consecutive rows and
-    /// `set_union`s each group into a list whose ascending order is contractual.
-    ///
-    /// **Forgetting this call is refused too, from the other end**: every entry
-    /// point a search driver calls (`begin`, `batch`, `run`, `resync`,
-    /// `reset_weights`, `perturb`, `apply_novelty_jump`) throws
-    /// `std::logic_error` while these tables are one entry per row of a model
-    /// that has since grown. That is one size compare per batch, against tables
-    /// the batch then indexes per row without one.
-    void on_extended(const ExtensionResult& ext);
 
     // Novelty Jump (paper Algorithms 4-5): a bounded-backtracking compound-move
     // search that escapes local optima single-variable FJ cannot (chained-
@@ -557,15 +491,10 @@ private:
     void uncount(int32_t c);
     void set_initial_assignment();
     void compute_linear_constraints();
-    // The same classification as compute_linear_constraints, restricted to the
-    // rows an extension touched and memoised over their subtrees (#167).
     /// Throw unless every per-row and per-variable table here, and the
     /// ViolationManager's weights, are sized for the model as it is NOW. See the
     /// definition for why it is checked per batch rather than per row.
     void require_tables_in_step() const;
-    void recompute_linearity(const std::vector<int32_t>& rows);
-    // Fold an extension's added G_v incidences into vars_of_constraint_ (#167).
-    void merge_new_incidences(const ExtensionResult& ext);
     void enqueue(int32_t var_id);
 
     // Novelty Jump internals (Algorithm 5). A candidate var with its W'-argmin
@@ -601,9 +530,7 @@ private:
     //
     // Every write goes through set_violated, reconcile_counted, uncount or
     // rebuild_violated_index (which re-derives everything from the raw kInV bits
-    // rebuild_violated_and_scan_set fills in). One site steps outside that on
-    // purpose: on_extended uncounts a row against its OLD variable list before
-    // merging new incidences into it. The derived structures are:
+    // rebuild_violated_and_scan_set fills in). The derived structures are:
     //   - violated_rows_ + violated_pos_: V as a dense list with a position index
     //     (-1 = absent), swap-removed on the way out;
     //   - active_violated_of_var_: per variable, the number of COUNTED rows whose
@@ -665,8 +592,8 @@ private:
     std::vector<int32_t> examined_;   // scratch: distinct vars sampled in one apply_jump
     std::vector<uint8_t> is_linear_;  // per constraint
     // Closed-form scoring over linear comparison rows. Its per-row eligibility is
-    // maintained wherever is_linear_ is: compute_linear_constraints and
-    // recompute_linearity (the constructor and on_extended).
+    // maintained wherever is_linear_ is: compute_linear_constraints (the
+    // constructor).
     LinearJumpScorer linear_;
     std::vector<std::vector<int32_t>> vars_of_constraint_;  // constraint idx -> jumpable vars (G_c)
     // Arm/disarm the deadline and reset the stride tuner (both entry points).

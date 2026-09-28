@@ -206,7 +206,6 @@ add_library(cbls_lib
     src/dag_ops.cpp
     src/custom_invariant.cpp
     src/model.cpp
-    src/model_extension.cpp
     src/expr.cpp
     src/violation.cpp
     src/moves.cpp

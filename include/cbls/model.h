@@ -17,11 +17,6 @@ namespace cbls {
 
 // Forward declare Expr
 class Expr;
-// #167: the staged-extension pair, defined in model_extension.h. Forward-declared
-// here so that `extend`'s declaration costs this header nothing -- every model in
-// the tree includes model.h, and almost none of them extends.
-class ModelExtension;
-struct ExtensionResult;
 
 struct VarSequence {
     std::vector<int32_t> var_ids;  // ordered variable IDs in this sequence
@@ -98,18 +93,10 @@ struct ModelStructure {
     // build a few small allocations per node -- 2.66M on atlanta-ip's 540k nodes
     // -- and a portfolio replica a deep copy of all of them.
     //
-    // `child_refs` grows only at the end: a node's children are written when the
-    // node is made and addressed by its (child_begin, child_count), so they are
-    // readable before close(). It is NOT written once and never again --
-    // `ModelExtension::append_to_sum` (#167) RELOCATES a grown node's slice to
-    // the end of the array and leaves the old one as a hole, which is what keeps
-    // every other node's offsets valid; `child_ref_holes` counts what that has
-    // cost and `Model::extend` compacts when the holes pass half the array. A
-    // node's children are therefore stable between `extend` calls and only
-    // between them, which is exactly the window `ConstSpan` documents (dag.h).
-    // The two back-reference arrays are CSR, rebuilt
-    // wholesale by `Model::rebuild_back_references` and spliced incrementally by
-    // `Model::extend`: the parents of node `i` are
+    // `child_refs` is append-only: a node's children are written when the node
+    // is made and addressed by its (child_begin, child_count), so they are
+    // readable before close(). The two back-reference arrays are CSR, rebuilt
+    // wholesale by `Model::rebuild_back_references`: the parents of node `i` are
     // `parent_ids[parent_offsets[i] .. parent_offsets[i + 1])`, and likewise
     // for variables. Once its owner array is non-empty, each offsets array holds
     // at least one entry more -- creating a node or variable appends an empty
@@ -120,10 +107,6 @@ struct ModelStructure {
     // That is also why Model hands out no mutable nodes or vars vector: a
     // node or variable that bypassed push_node/alloc_var would have no range.
     std::vector<ChildRef> child_refs;
-    /// Entries in `child_refs` that no node addresses any more, left behind by
-    /// `Model::extend` relocating a grown node's slice (#167). 0 on every model
-    /// that never extends, and the trigger for compaction.
-    size_t child_ref_holes = 0;
     std::vector<uint32_t> parent_offsets;
     std::vector<int32_t> parent_ids;
     std::vector<uint32_t> dependent_offsets;
@@ -136,11 +119,9 @@ struct ModelStructure {
     // var_id -> constraint indices (G_v), CSR like the back-references above: a
     // per-variable vector here was the largest allocation site left once those
     // were flat. Empty until close(), and then sized for the variables that
-    // existed at the last build or `Model::extend` (#167) -- unlike
-    // dependent_offsets it is NOT extended as variables are made by the ordinary
-    // builders, which is what keeps constraints_of_var's range check meaningful
-    // before close(). `extend_var_constraints` grows it deliberately, so a
-    // variable that arrived with an extension IS in range.
+    // existed at the last build -- unlike dependent_offsets it is NOT grown as
+    // variables are made by the builders, which is what keeps
+    // constraints_of_var's range check meaningful before close().
     std::vector<uint32_t> var_constraint_offsets;
     std::vector<int32_t> var_constraint_ids;
     // Shared, and therefore invoked by every worker CONCURRENTLY once a model is
@@ -194,9 +175,9 @@ public:
     ~Model() = default;
 
     // The builders below are for an OPEN model. On a closed one each throws
-    // `std::logic_error` naming `ModelExtension` + `extend`, which is the way to
-    // grow it (#173): before that refusal they appended nodes and rows that no
-    // evaluation ever reached. A frozen model is refused too, as before.
+    // `std::logic_error` (#173): before that refusal they appended nodes and rows
+    // that no evaluation ever reached. A closed model does not grow; build the
+    // whole model before `close()`. A frozen model is refused too, as before.
 
     // Variable creation — returns var ID
     int32_t bool_var(const std::string& name = "");
@@ -401,9 +382,8 @@ public:
     /// order; `tests/test_model_share.cpp` pins it.
     ///
     /// It does not need to re-derive anything a builder added after `close()`,
-    /// because the builders refuse a closed model (#173); `extend` splices what it
-    /// adds, so the structure it freezes is complete -- unless an `extend` was
-    /// interrupted (`extend_interrupted()`), which `solve()` refuses anyway.
+    /// because the builders refuse a closed model (#173), so the structure it
+    /// freezes is complete.
     ///
     /// What a frozen model can still do is everything a search does: assign
     /// variables, evaluate, snapshot and restore state, tighten and release the
@@ -420,136 +400,6 @@ public:
     ///    `std::function`, and an old one where it is captured by reference.
     void freeze();
     [[nodiscard]] bool is_frozen() const noexcept { return open_structure_ == nullptr; }
-
-    /// Grow a CLOSED model: new variables, new nodes, new constraints, and terms
-    /// appended to existing `Sum` rows (#167). `include/cbls/model_extension.h`
-    /// carries `ModelExtension` and `ExtensionResult`.
-    ///
-    /// The point is that it does NOT rebuild the model. `close()` and
-    /// `add_objective_soft_constraint()` recompute the back-references, the
-    /// topological order, `topo_pos` and G_v wholesale -- O(model) for two nodes
-    /// -- and then `full_evaluate`. This splices instead, and evaluates only the
-    /// cone the addition dirties.
-    ///
-    /// **It is NOT O(k), and the issue's claim that it could be is wrong for the
-    /// representation this tree has.** What it actually costs, measured:
-    ///
-    ///  - **O(k)** for the arrays that only grow at the end -- `vars_`,
-    ///    `node_values_`, the node array, `constraint_ids`, and the new nodes'
-    ///    own child slices.
-    ///  - **O(size of the touched cones)** for G_v and for the linearity
-    ///    reclassification: each new row, and each existing row a grown `Sum`
-    ///    sits inside, has its subtree walked.
-    ///  - **O(the tail of each CSR array from the LOWEST touched owner id.)** The
-    ///    three back-reference arrays are CSR over one shared offsets array, so an
-    ///    insertion in the middle moves the suffix. A new row over variable 0
-    ///    therefore moves the whole of `dependent_ids` and `var_constraint_ids`.
-    ///    Making this O(degree) instead means giving each owner a
-    ///    (begin, count) pair so its list can be RELOCATED the way a grown node's
-    ///    child slice is -- four more bytes per node and per variable, and a
-    ///    change to three accessors. Deliberately not in this slice.
-    ///  - **O(the tail of `topo_order` from the earliest grown node.)** Same
-    ///    reason: the order is a dense array that `full_evaluate` walks, so
-    ///    inserting the new block before the earliest grown `Sum` memmoves the
-    ///    tail and renumbers `topo_pos` over it. The insertion point is as late as
-    ///    correctness allows, so the cost is set by where in the evaluation order
-    ///    the grown row sits -- position 0 on `neos-5114902-kasavu`'s first row,
-    ///    2.39M of 4.30M on its last. Zero when nothing is grown.
-    ///  - **O(#constraints)** as soon as ANY `append_to_sum` is recorded: finding
-    ///    which existing rows contain the grown node means walking up from it and
-    ///    asking of each constraint root whether it was reached. Skipped entirely
-    ///    when there is no append.
-    ///  - **one full copy of each structural array it grows, on the FIRST extend
-    ///    after a build that sized them exactly** -- which is every `Model` copy,
-    ///    since a copied vector's capacity is its size. Growth is deliberately
-    ///    left geometric (`push_back`/`insert`, no exact `reserve`) so that a
-    ///    column-generation loop amortises it; `add_objective_soft_constraint`
-    ///    makes the opposite choice for the opposite reason, because it runs once.
-    ///  - **O(model) in one case, reported as `topo_order_rebuilt`:** a new node
-    ///    that must sit before a grown `Sum` while one of its existing children
-    ///    sits after it. The existing order is then not extendable and
-    ///    `compute_topo_order` runs. Nothing in the tree produces this shape --
-    ///    a term is built out of a new variable and a new constant -- but a
-    ///    caller can, so it is correct rather than rejected.
-    ///
-    /// Measured against the rebuild it replaces -- `add_objective_soft_constraint`
-    /// on a copy of the same closed model, which adds two nodes and one row the
-    /// O(model) way -- at Release on an idle machine (load average 0.2-0.8, no
-    /// concurrent build):
-    ///
-    /// | instance | nodes | rebuild | extend, 1st | extend, later |
-    /// |---|---|---|---|---|
-    /// | `atlanta-ip` | 540k | 29 ms | 14 ms (2.0x) | 0.11-0.65 ms (46-260x) |
-    /// | `neos-5114902-kasavu` | 4.30M | 307 ms | 209 ms (1.5x) | 7.1-9.0 ms (35-44x) |
-    ///
-    /// "later" is the second and following extends on the same model, i.e. the
-    /// regime a column-generation loop is in; the range is over appending one
-    /// column into 1, 10 and 100 rows. The first-extend column is the
-    /// exact-capacity copy above and is a one-off.
-    ///
-    /// **A FROZEN model is refused** (`std::logic_error`). `freeze()` publishes
-    /// one `ModelStructure` to every portfolio replica, so growing it would
-    /// mutate a peer's model from under a running search -- which is the same
-    /// reason `mut()` throws. `ParallelSearch::solve(Model&)` and the CLI at
-    /// `--threads > 1` both freeze, so **growth is single-`solve()` only**:
-    /// `solve()` itself never freezes, and the CLI at `--threads 1` hands it an
-    /// open model. This stays a refusal and not a silent copy-on-write detach --
-    /// see `freeze()` on why a silent detach is the wrong failure.
-    ///
-    /// Also throws `std::logic_error` on a model that is not closed (use the
-    /// ordinary builders), and `std::invalid_argument` if `ext` was built against
-    /// a different model or a different state of this one -- compared by
-    /// `structure_version()`, so that includes this same extension applied
-    /// already, and any other recorded against the same base. An extension is
-    /// single-use.
-    ///
-    /// **There is no rollback: a throw from inside `extend` leaves the model
-    /// CORRUPT**, not merely unchanged. Once the new variables and nodes have
-    /// been appended, the node array, `vars_`, `node_values_` and the offset
-    /// arrays describe them while the CSR indices, the topological order and G_v
-    /// still do not. The throws that can land there are `std::length_error` past
-    /// 2^32 CSR entries or child references, a `std::bad_alloc` from any of the
-    /// arrays or the working sets (remote on a small model, not remote while
-    /// growing a 4.3M-node one), and the cyclic-order backstop -- which a stale
-    /// extension can no longer reach, since the structure token refuses it before
-    /// anything is written. Restoring the arrays the splices rewrite in place
-    /// would mean copying them, which is the O(model) cost this exists to avoid,
-    /// so instead the window is MARKED: `extend_interrupted()` is set from the
-    /// first write until the last splice, and `require_intact` refuses the model
-    /// in `extend`, `ModelExtension`, `add_objective_soft_constraint` (so a first
-    /// `solve` or `freeze`), `ViolationManager` (so every `solve`) and the Python
-    /// evaluators. Objects built before the failed call are not re-checked. On an
-    /// exception from `extend`, discard the model and everything built on it.
-    /// Everything `extend` can refuse on the caller's behalf is refused BEFORE
-    /// it touches anything -- the checks above, and `ModelExtension`'s own,
-    /// including the cycle check in `append_to_sum`.
-    ///
-    /// One throw is benign and worth naming separately: the closing evaluation
-    /// runs caller code, and `extend_interrupted()` is already clear by then. A
-    /// `CustomInvariant::evaluate` on the `full_evaluate` branch, a
-    /// `lambda_sum`/`pair_lambda_sum` callable inside the cone -- neither is
-    /// `noexcept`, and a model with custom nodes takes that branch by design. A
-    /// throw from there lands with every structural array complete and
-    /// consistent and only node values stale, so `full_evaluate` recovers it. A
-    /// throw from anything earlier does not.
-    ///
-    /// Two callers have to grow with it, in this order, as soon as it returns:
-    /// `ViolationManager::on_extended` and then `FeasibilityJump::on_extended`.
-    /// Until the first of those runs, the manager's weights and violation cache
-    /// are one entry per OLD row while every read indexes them by the new row
-    /// count -- so `ViolationManager` throws rather than reading past the end,
-    /// and `FeasibilityJump::on_extended` refuses to run before it. Stored
-    /// assignments (`Model::State`, pool solutions, LNS's saved state) need
-    /// `pad_state` for the same reason.
-    ///
-    /// Node values of the affected cone are brought up to date before it
-    /// returns, so the model is as consistent as it is after `close()`. The one
-    /// exception is a model that has custom nodes (#166): the cone walk cannot
-    /// give a `CustomInvariant` a meaningful `delta()` for a change that is not a
-    /// variable move, so such a model takes a `full_evaluate` -- which is that
-    /// interface's documented reset point -- and pays O(model) for the
-    /// evaluation. `has_custom_nodes()` is the test.
-    [[nodiscard]] ExtensionResult extend(const ModelExtension& ext);
 
     // ViolationLS objective-as-soft-constraint (paper §5, P2 #67). Folds the
     // objective into the constraint set as `objective_expr <= bound`, with the
@@ -584,8 +434,7 @@ public:
     // Constraints (by index into constraint_ids()) that variable var_id can
     // affect. This is the paper's G_v, in ascending constraint index. Built by
     // close() and add_objective_soft_constraint() for the variables that existed
-    // then, and grown by `extend` for the variables it adds (#167); any other id
-    // -- every id, before close() -- is out of range.
+    // then; any other id -- every id, before close() -- is out of range.
     [[nodiscard]] ConstSpan<int32_t> constraints_of_var(int32_t var_id) const {
         const ModelStructure& st = s();
         if (var_id < 0 || static_cast<size_t>(var_id) + 1 >= st.var_constraint_offsets.size()) {
@@ -656,13 +505,9 @@ public:
     /// Deliberately NOT bound to Python: an index supplied from there would be
     /// an unguarded heap write (#156). `node_value` is the checked reader.
     void set_node_value_unchecked(int32_t id, double value) noexcept { node_values_[id] = value; }
-    /// `node`'s children, in the order they were given when it was created,
-    /// followed by any terms `ModelExtension::append_to_sum` has added (#167).
-    /// Valid from creation, not only after `close()`.
-    ///
-    /// The span is invalidated by `extend`, which may relocate this node's slice
-    /// or compact the array; it is stable across everything else, `close()`
-    /// included.
+    /// `node`'s children, in the order they were given when it was created.
+    /// Valid from creation, not only after `close()`: a node's children are
+    /// written once, when it is made, and never change.
     ///
     /// `node` must be one of THIS model's nodes (from `node()` or `nodes()`),
     /// unmodified in `child_begin`/`child_count`. Its offsets are
@@ -672,19 +517,10 @@ public:
     [[nodiscard]] ConstSpan<ChildRef> children(const ExprNode& node) const noexcept {
         return {s().child_refs.data() + node.child_begin, node.child_count};
     }
-    /// Entries in the flat child array that no node addresses any more, left
-    /// behind by `extend` relocating a grown node's slice (#167). 0 on every
-    /// model that never extends, and reset to 0 by the compaction `extend`
-    /// triggers once they pass half the array. Diagnostic: it is what makes that
-    /// compaction observable to a test.
-    [[nodiscard]] size_t child_ref_holes() const noexcept { return s().child_ref_holes; }
     /// The distinct nodes that name node `id` as a child, in ascending id order,
     /// each listed once however many times it names `id` (`prod(n, n)`).
-    /// Rebuilt by `close()` and `add_objective_soft_constraint()`, and SPLICED by
-    /// `extend`, which leaves a node it created with the parents it has and adds
-    /// an appended term's new parent to the list it already had (#167). Empty for
-    /// every node before `close()`; the ordinary builders cannot add one after it
-    /// (#173).
+    /// Rebuilt by `close()` and `add_objective_soft_constraint()`. Empty for
+    /// every node before `close()`; the builders cannot add one after it (#173).
     [[nodiscard]] ConstSpan<int32_t> parents(int32_t id) const {
         const ModelStructure& st = s();
         if (id < 0 || id >= static_cast<int32_t>(st.nodes.size())) {
@@ -747,28 +583,6 @@ public:
     [[nodiscard]] size_t num_vars() const noexcept { return vars_.size(); }
     [[nodiscard]] size_t num_nodes() const noexcept { return s().nodes.size(); }
     [[nodiscard]] bool is_closed() const noexcept { return closed_; }
-
-    /// An opaque token for the structure's current state, which is what a
-    /// `ModelExtension` captures and `extend` compares (#167). Drawn from one
-    /// process-wide counter at `close()` and on every structural write after it
-    /// -- so two tokens are equal only when one structure is a copy of the other
-    /// with nothing grown since. A variable or node COUNT cannot say that: an
-    /// extension that only appends terms or adds rows over existing nodes leaves
-    /// both unchanged, and replaying it duplicated those terms and rows silently.
-    /// Meaningless before `close()`, which is fine: an extension needs a closed
-    /// base.
-    [[nodiscard]] uint64_t structure_version() const noexcept { return structure_version_; }
-
-    /// True once `extend` has thrown from the middle of its growth, after the
-    /// first array was written and before the last index was spliced (#167).
-    /// The model is then internally inconsistent and there is no rollback; see
-    /// `extend`. `extend`, `add_objective_soft_constraint`, `ViolationManager`'s
-    /// constructor (so every `solve`) and `ModelExtension`'s constructor refuse
-    /// such a model through `require_intact`. Copied with the model, since a copy is just as
-    /// broken.
-    [[nodiscard]] bool extend_interrupted() const noexcept { return extend_interrupted_; }
-    /// Throws `std::logic_error` naming `where` if `extend_interrupted()`.
-    void require_intact(const char* where) const;
 
     // Lambda function access
     [[nodiscard]] const std::function<double(int)>& lambda_func(int32_t idx) const {
@@ -901,20 +715,8 @@ private:
         if (open_structure_ == nullptr) {
             throw std::logic_error("model is frozen: its structure is shared and cannot change");
         }
-        // Every structural write after close() retires the structure's token, so
-        // an extension recorded against the old structure is refused (#167). Not
-        // taken while the model is being built -- no extension can exist then --
-        // so building pays one predictable branch and no atomic. After close()
-        // it is one relaxed fetch_add per write, i.e. per entity `extend` adds.
-        if (closed_) {
-            structure_version_ = next_structure_version();
-        }
         return *open_structure_;
     }
-    /// The process-wide source of `structure_version()` tokens. Atomic because
-    /// models are built and grown on several threads at once (a factory-form
-    /// portfolio builds one per worker).
-    static uint64_t next_structure_version() noexcept;
 
     std::vector<Variable> vars_;
     /// Node id -> its current value. Was `ExprNode::value`; moved out so that the
@@ -935,8 +737,6 @@ private:
     int32_t objective_constraint_idx_ = -1;   // its index in constraint_ids()
     double objective_bound_ = 0.0;
     bool closed_ = false;
-    uint64_t structure_version_ = 0;   // see structure_version()
-    bool extend_interrupted_ = false;  // see extend_interrupted()
     // Scratch for weighted_violation_delta's pre-probe violations. A member so
     // the hot scoring path allocates only until it reaches the widest variable's
     // constraint count. Not reentrant — same single-thread-per-Model contract as
@@ -959,18 +759,14 @@ private:
     /// `add_constraint`, `minimize`/`maximize`, `add_var_sequence`,
     /// `add_list_partition` -- because a node or row they appended to a closed
     /// model was never placed in the topological order: no evaluation computed
-    /// it and `solve()` reported feasible over it. Growth after `close()` goes
-    /// through `extend`, and the internal growth paths (`extend`'s helpers,
-    /// `add_objective_soft_constraint`) use the private allocators below, which
-    /// do not take it. `reserve`, `close` and the per-model writes (`var_mut`,
+    /// it and `solve()` reported feasible over it. The one internal post-close
+    /// addition, `add_objective_soft_constraint`, uses the private allocators
+    /// below, which do not take it, and rebuilds the derived indices itself.
+    /// `reserve`, `close` and the per-model writes (`var_mut`,
     /// `set_objective_bound`, `restore_state`) are not builders and stay open.
     void require_buildable(const char* method) const;
 
     void build_var_constraints();
-    /// The one step of `extend` that writes `Model`'s own per-model arrays --
-    /// `vars_` and `node_values_` -- rather than the shared structure (#167).
-    /// Defined in `src/model_extension.cpp` with the rest of the extension path.
-    void append_extension_entities(const ModelExtension& ext, ExtensionResult& res);
     void rebuild_back_references();
     void rebuild_topo_positions();
     int32_t alloc_var(VarType type, double lb, double ub, const std::string& name);

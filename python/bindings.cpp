@@ -1,5 +1,4 @@
 #include <cbls/cbls.h>
-#include <cbls/model_extension.h>
 #include <memory>
 #include <mutex>
 #include <nanobind/nanobind.h>
@@ -123,7 +122,7 @@ constexpr const char* kSolveMasterDoc =
     "and the exception contract).\n"
     "\n"
     "While this runs, structural writes to `model` from Python -- builders,\n"
-    "extend, ModelExtension -- raise RuntimeError, as under cbls.solve.";
+    "close, freeze -- raise RuntimeError, as under cbls.solve.";
 
 // A Python on_progress that raises leaves this override as an nb::python_error,
 // which owns a strong reference to the Python exception object. ParallelSearch
@@ -145,62 +144,25 @@ struct PySolveCallback : SolveCallback {
     void on_progress(const SolveProgress& p) override { NB_OVERRIDE_PURE(on_progress, p); }
 };
 
-constexpr const char* kModelExtendDoc =
-    "Apply a ModelExtension to this closed model and return an ExtensionResult.\n"
-    "\n"
-    "Raises RuntimeError on a model that is frozen or not closed, when called\n"
-    "from inside an evaluation (a lambda_sum callable extending the model it is\n"
-    "being evaluated in), or while cbls.solve is running on this model (from a\n"
-    "SolveCallback, or from another thread): extend is a between-solves\n"
-    "operation. ValueError if the extension was built against a different model,\n"
-    "or against this one before it last changed in any way -- which includes\n"
-    "applying this same extension, and applying another one recorded against the\n"
-    "same base. An extension is therefore single-use: record a new one against\n"
-    "the current model for each extend. The first solve() of a model with an\n"
-    "objective adds the objective row, so an extension recorded before that\n"
-    "solve is stale.\n"
-    "\n"
-    "Afterwards, in this order: ViolationManager.on_extended(result) on every\n"
-    "manager of this model, once per extend and before the next one (its\n"
-    "weight-indexed reads raise until then, and a manager that missed an extend\n"
-    "must be rebuilt), and pad_state(state, result) on every ModelState captured\n"
-    "before the call, which restore_state otherwise rejects. Variable handles\n"
-    "from var()/var_mut() stay valid and read the model's current state.\n"
-    "\n"
-    "There is no rollback: an exception from the growth itself (as opposed to\n"
-    "the refusals above, which fire before anything changes) leaves the model\n"
-    "corrupt. That takes running out of memory part-way through; the model then\n"
-    "raises RuntimeError from extend, solve, freeze, ViolationManager,\n"
-    "full_evaluate, delta_evaluate and ModelExtension rather than being searched.\n"
-    "Objects built before the failed call (a ViolationManager, say) are not\n"
-    "re-checked: discard them with the model.";
-
 constexpr const char* kModelVarDoc =
     "A handle to variable `id` of this model. It holds the model and the id, not\n"
     "a pointer into the model's storage, so it stays valid across builders and\n"
-    "Model.extend and always reads the variable's current state. Keeps the model\n"
-    "alive. var() and var_mut() return the same kind of handle.";
+    "always reads the variable's current state. Keeps the model alive. var() and\n"
+    "var_mut() return the same kind of handle.";
 
 constexpr const char* kModelNodeDoc =
     "A COPY of node `id`'s id and op -- neither ever changes once the node\n"
     "exists, so the copy cannot go stale. Its current value is\n"
     "Model.node_value(id).";
 
-// The models a bound `cbls.solve` is currently running on (#167). `solve`
-// releases the GIL and calls a SolveCallback on the search thread, so Python can
-// reach `Model.extend` mid-search -- from the callback or from another thread.
-// An extension that changes the variable or row count is then refused by the
-// engine's own table checks, but one that only appends terms over existing
-// variables to existing Sum rows changes neither count: the search carried on
-// with stale FeasibilityJump tables and returned feasible=True on a model it had
-// left infeasible. So the binding refuses the call outright; every other
-// structural write consults this too (see refuse_if_solving) -- a SECOND solve
-// of a registered model included, which adds the objective row and
-// (solve_master) freezes the model, all under the running search. The two
-// single-model entry points register: `solve` and `ParallelSearch.solve_master`.
-// The factory forms do not: their workers solve frozen copies. A multiset only so
-// that remove() pairs with add() whatever happens; a duplicate add is refused by
-// the callers' refuse_if_solving first.
+// The models a bound `cbls.solve` is currently running on. `solve` releases the
+// GIL and calls a SolveCallback on the search thread, so Python can reach the
+// model mid-search -- from the callback or from another thread -- and the
+// search reads its structure without a lock. See refuse_if_solving for what
+// consults this. The two single-model entry points register: `solve` and
+// `ParallelSearch.solve_master`. The factory forms do not: their workers solve
+// frozen copies. A multiset only so that remove() pairs with add() whatever
+// happens; a duplicate add is refused by the callers' refuse_if_solving first.
 class SolvingModels {
 public:
     static SolvingModels& instance() {
@@ -229,9 +191,9 @@ private:
 // through the model on EVERY attribute access, never a pointer into `vars_`.
 //
 // They used to return `reference_internal` into that vector, and anything that
-// appends a variable -- a builder before close(), `Model.extend` after it --
-// can reallocate it. Writing `.value` through one held across such a call was a
-// write into freed heap (#167's review), which is the segfault class CLAUDE.md
+// appends a variable -- a builder before close() -- can reallocate it. Writing
+// `.value` through one held across such a call was a write into freed heap
+// (found in #167's review), which is the segfault class CLAUDE.md
 // says to close at the hand-over rather than document. Resolving per access
 // costs one bounds-checked index per attribute read, on a path that crosses the
 // Python boundary anyway.
@@ -271,18 +233,17 @@ private:
 // ---------------------------------------------------------------------------
 // Structural writes from Python while a bound solve runs on the model.
 //
-// #167 refused Model.extend here. The same hazard reaches every OTHER structural
-// write, and the objective row is the one nobody sees coming: the first solve of
-// a model with an objective adds that row (a builder call on the model) after the
-// GIL is released, so a second Python thread building a ModelExtension against the
-// same model -- whose constructor and append_to_sum read the node array and the
-// structure version -- or calling any Model builder, raced a write with no lock.
+// A bound solve releases the GIL and writes the model's structure under it: the
+// first solve of a model with an objective adds the objective row (and closes an
+// unclosed model), and `solve_master` freezes it. A Python builder call from a
+// SolveCallback or from a second thread -- close, freeze, a second solve, any
+// Model builder -- would race that write, and the running search reads the node
+// array, the CSR indices and the topological order without a lock.
 //
 // So every structural write Python can reach consults the same registry: the
-// Model builders and close/freeze/extend, the Expr operators and free functions
-// (each of which calls a Model builder), and ModelExtension construction and
-// every ModelExtension builder. Each check runs holding the GIL, and a bound
-// solve registers holding the GIL before releasing it, so a check and a
+// Model builders and close/freeze, and the Expr operators and free functions
+// (each of which calls a Model builder). Each check runs holding the GIL, and a
+// bound solve registers holding the GIL before releasing it, so a check and a
 // registration cannot interleave. The engine's own write -- the objective row --
 // is a C++ call that never passes through here, so it is unaffected.
 //
@@ -357,51 +318,6 @@ nb::object build_expr_list(const std::vector<Expr>& args, const char* what, F&& 
         refuse_if_solving(*a.model, what);
     }
     return expr_object(std::forward<F>(build)());
-}
-
-// What Python's `ModelExtension` is: an extension Python built, recording
-// against `base_`, which the binding's keep_alive<1, 2> keeps alive.
-// Construction and every builder are refused while a bound solve runs on
-// `base_` (see refuse_if_solving): the builders read the base's nodes and its
-// structure version, which the running search may be rewriting.
-class ExtensionHandle {
-public:
-    explicit ExtensionHandle(const Model& base) : base_(&base) {
-        refuse_if_solving(base, "ModelExtension");
-        owned_ = std::make_unique<ModelExtension>(base);
-    }
-
-    // For a builder: the extension, or a refusal.
-    [[nodiscard]] ModelExtension& get(const char* what) const {
-        refuse_if_solving(*base_, what);
-        return *owned_;
-    }
-    // For a query of the recording itself, which reads no model: never refused.
-    [[nodiscard]] const ModelExtension& peek() const { return *owned_; }
-
-private:
-    const Model* base_ = nullptr;
-    std::unique_ptr<ModelExtension> owned_;
-};
-
-template <typename R, typename... A>
-auto ext_builder(R (ModelExtension::*method)(A...), const char* what) {
-    return [method, what](const ExtensionHandle& self, A... args) -> R {
-        return (self.get(what).*method)(std::forward<A>(args)...);
-    };
-}
-
-// Model.extend as bound: refused while a bound solve runs on the model. A free
-// function rather than a lambda in the module body, whose cognitive-complexity
-// score counts every lambda's branches as its own.
-ExtensionResult extend_unless_solving(Model& self, const ExtensionHandle& ext) {
-    if (SolvingModels::instance().contains(&self)) {
-        throw std::logic_error(
-            "Model.extend: cbls.solve is running on this model (from a SolveCallback or "
-            "another thread). extend is a between-solves operation: the running search's "
-            "tables cannot grow with it");
-    }
-    return self.extend(ext.get("Model.extend"));
 }
 
 SearchResult solve_master_bound(
@@ -514,15 +430,17 @@ StopRef stop_ref_or_none(StopToken* token) {
 // weight count -- but LNS destroys (moves a random share of the variables) before
 // it builds one, so the engine's refusal arrives after the assignment has
 // changed. fj_nl_initialize needs no such guard: it builds its FeasibilityJump
-// before it moves anything. The reachable case is a Model.extend
-// with no ViolationManager.on_extended after it (#167). The weights setter keeps
-// `weights` the size of the manager's own cache, so this one compare is the
-// whole of what the engine's check would find.
+// before it moves anything. The reachable case is a manager built before the
+// model gained its objective row (freeze(), or the first solve of a model with an
+// objective, appends it). The weights setter keeps `weights` the size of the
+// manager's own cache, so this one compare is the whole of what the engine's
+// check would find.
 void require_vm_in_step(const Model& model, const ViolationManager& vm, const char* what) {
     if (vm.weights.size() != model.constraint_ids().size()) {
         throw std::logic_error(std::string(what) +
                                ": the ViolationManager does not have one weight per constraint of "
-                               "this model. After Model.extend, call vm.on_extended(result) first");
+                               "this model. Build the ViolationManager after the model's last row "
+                               "(freeze() and solve() add the objective row)");
     }
 }
 
@@ -987,12 +905,6 @@ NB_MODULE(_cbls_core, m) {
              nb::arg("var_ids"), nb::arg("min_block_on") = 1, nb::arg("min_block_off") = 1)
         .def("var_sequence_for", &Model::var_sequence_for)
         .def("close", guarded(&Model::close, "Model.close"))
-        // Growth of a closed model (#167). Returns an ExtensionResult BY VALUE:
-        // Python owns the copy and it holds no pointer into the model. Nothing
-        // else Python can hold does either: var()/var_mut() return a (model, id)
-        // handle and node() a copy, precisely because `extend` reallocates the
-        // arrays they used to point into.
-        .def("extend", &extend_unless_solving, nb::arg("ext"), kModelExtendDoc)
         // Freezing makes the structure immutable and shareable. It is what lets a
         // model_factory hand the SAME model to every worker without duplicating
         // the DAG: nanobind copies the returned object, and copying a frozen model
@@ -1002,13 +914,10 @@ NB_MODULE(_cbls_core, m) {
         // RuntimeError -- see tests/python/test_model_freeze.py.
         .def("freeze", guarded(&Model::freeze, "Model.freeze"))
         .def("is_frozen", &Model::is_frozen)
-        // True after an extend that threw part-way through its growth; the model
-        // is then refused by extend, solve, full_evaluate and friends (#167).
-        .def("extend_interrupted", &Model::extend_interrupted)
         // Accessors
         // NOT by reference into the model's arrays, which a builder before
-        // close() and Model.extend after it reallocate (#167's review found a
-        // held var_mut() writing into freed heap). var()/var_mut() return a
+        // close() reallocates (#167's review found a held var_mut() writing into
+        // freed heap). var()/var_mut() return a
         // VariableRef -- see there -- and node() returns a copy of an ExprNode,
         // whose two exposed fields are immutable once the node exists.
         .def("var", &variable_ref, nb::keep_alive<0, 1>(), kModelVarDoc)
@@ -1026,13 +935,8 @@ NB_MODULE(_cbls_core, m) {
                 return std::vector<int32_t>(cs.begin(), cs.end());
             },
             nb::arg("var_id"))
-        .def(
-            "per_constraint_violation_delta",
-            [](Model& m, int32_t var_id, double j) {
-                m.require_intact("per_constraint_violation_delta");
-                return m.per_constraint_violation_delta(var_id, j);
-            },
-            nb::arg("var_id"), nb::arg("j"))
+        .def("per_constraint_violation_delta", &Model::per_constraint_violation_delta,
+             nb::arg("var_id"), nb::arg("j"))
         .def("num_vars", &Model::num_vars)
         .def("num_nodes", &Model::num_nodes)
         // State snapshot/restore
@@ -1214,119 +1118,6 @@ NB_MODULE(_cbls_core, m) {
         .def_rw("values", &Model::State::values)
         .def_rw("elements", &Model::State::elements);
 
-    // ---------------------------------------------------------------------------
-    // Growing a closed model (#167).
-    //
-    // ExtensionResult has NO Python constructor and every field is read-only. The
-    // engine indexes its search state by the ids it carries (on_extended,
-    // pad_state), and a hand-built one with `touched_constraints = [999]` was a
-    // SIGSEGV on the C++ side before that path gained its own checks. From Python
-    // the only ExtensionResult that exists is one Model.extend returned, and the
-    // two consumers bound here re-check it against the model/state they are given.
-    nb::class_<ExtensionResult>(m, "ExtensionResult")
-        .def_ro("first_new_var", &ExtensionResult::first_new_var)
-        .def_ro("num_new_vars", &ExtensionResult::num_new_vars)
-        .def_ro("first_new_node", &ExtensionResult::first_new_node)
-        .def_ro("num_new_nodes", &ExtensionResult::num_new_nodes)
-        .def_ro("first_new_constraint", &ExtensionResult::first_new_constraint)
-        .def_ro("num_new_constraints", &ExtensionResult::num_new_constraints)
-        .def_ro("new_var_initial", &ExtensionResult::new_var_initial)
-        .def_ro("touched_constraints", &ExtensionResult::touched_constraints)
-        .def_ro("new_incidences", &ExtensionResult::new_incidences)
-        .def_ro("topo_order_rebuilt", &ExtensionResult::topo_order_rebuilt)
-        .def("end_var", &ExtensionResult::end_var)
-        .def("end_node", &ExtensionResult::end_node)
-        .def("end_constraint", &ExtensionResult::end_constraint);
-
-    // Every handle the builder takes is validated by ModelExtension itself at
-    // record time, against the base model plus what has been recorded so far:
-    // an out-of-range id raises IndexError (std::out_of_range), a variable handle
-    // where a node is required and a cyclic append raise ValueError
-    // (std::invalid_argument). Nothing here reaches the model until
-    // Model.extend, which re-checks that the recording still matches it.
-    //
-    // OWNERSHIP: the extension keeps a raw `const Model*` to its base, so the
-    // constructor carries keep_alive<1, 2> -- the Python ModelExtension holds a
-    // reference to the Python Model, and dropping every other reference to the
-    // model cannot leave the extension pointing at a freed one. The pointer is
-    // only read (node ops and children, for the Sum check and the cycle walk);
-    // nothing is ever written through it. The Python class is an ExtensionHandle
-    // (see there), which refuses every builder while a solve runs on the base.
-    nb::class_<ExtensionHandle>(m, "ModelExtension")
-        .def(nb::init<const Model&>(), nb::arg("model"), nb::keep_alive<1, 2>(),
-             "Record additions to a CLOSED model: new scalar variables, expression\n"
-             "nodes over new or existing handles, new constraints, and terms appended\n"
-             "to existing Sum rows. Nothing touches the model until Model.extend.\n"
-             "\n"
-             "Handles are absolute: the ones returned here are the ids the entities\n"
-             "will have after extend, and existing handles may be used freely. Raises\n"
-             "RuntimeError if the model is not closed, if a failed extend left it\n"
-             "corrupt (Model.extend_interrupted()), or while cbls.solve is running on\n"
-             "it -- and every builder below raises RuntimeError for as long as one is:\n"
-             "the running search changes the structure they read. An extension is\n"
-             "single-use; see Model.extend. Keeps the model alive.")
-        .def("bool_var", ext_builder(&ModelExtension::bool_var, "ModelExtension.bool_var"),
-             nb::arg("name") = "")
-        .def("int_var", ext_builder(&ModelExtension::int_var, "ModelExtension.int_var"),
-             nb::arg("lb"), nb::arg("ub"), nb::arg("name") = "")
-        .def("float_var", ext_builder(&ModelExtension::float_var, "ModelExtension.float_var"),
-             nb::arg("lb"), nb::arg("ub"), nb::arg("name") = "")
-        .def("set_initial", ext_builder(&ModelExtension::set_initial, "ModelExtension.set_initial"),
-             nb::arg("var"), nb::arg("value"),
-             "Starting value of a variable THIS extension created, and the value\n"
-             "pad_state writes for it. Defaults to the lower bound. Raises ValueError\n"
-             "for any other handle or for a value outside the bounds.")
-        .def("constant", ext_builder(&ModelExtension::constant, "ModelExtension.constant"))
-        .def("neg", ext_builder(&ModelExtension::neg, "ModelExtension.neg"))
-        .def("sum", ext_builder(&ModelExtension::sum, "ModelExtension.sum"))
-        .def("prod", ext_builder(&ModelExtension::prod, "ModelExtension.prod"))
-        .def("div_expr", ext_builder(&ModelExtension::div_expr, "ModelExtension.div_expr"))
-        .def("pow_expr", ext_builder(&ModelExtension::pow_expr, "ModelExtension.pow_expr"))
-        .def("min_expr", ext_builder(&ModelExtension::min_expr, "ModelExtension.min_expr"))
-        .def("max_expr", ext_builder(&ModelExtension::max_expr, "ModelExtension.max_expr"))
-        .def("abs_expr", ext_builder(&ModelExtension::abs_expr, "ModelExtension.abs_expr"))
-        .def("sin_expr", ext_builder(&ModelExtension::sin_expr, "ModelExtension.sin_expr"))
-        .def("cos_expr", ext_builder(&ModelExtension::cos_expr, "ModelExtension.cos_expr"))
-        .def("tan_expr", ext_builder(&ModelExtension::tan_expr, "ModelExtension.tan_expr"))
-        .def("exp_expr", ext_builder(&ModelExtension::exp_expr, "ModelExtension.exp_expr"))
-        .def("log_expr", ext_builder(&ModelExtension::log_expr, "ModelExtension.log_expr"))
-        .def("sqrt_expr", ext_builder(&ModelExtension::sqrt_expr, "ModelExtension.sqrt_expr"))
-        .def("signpower_expr",
-             ext_builder(&ModelExtension::signpower_expr, "ModelExtension.signpower_expr"))
-        .def("tanh_expr", ext_builder(&ModelExtension::tanh_expr, "ModelExtension.tanh_expr"))
-        .def("if_then_else",
-             ext_builder(&ModelExtension::if_then_else, "ModelExtension.if_then_else"))
-        .def("at", ext_builder(&ModelExtension::at, "ModelExtension.at"))
-        .def("count", ext_builder(&ModelExtension::count, "ModelExtension.count"))
-        .def("leq", ext_builder(&ModelExtension::leq, "ModelExtension.leq"))
-        .def("eq_expr", ext_builder(&ModelExtension::eq_expr, "ModelExtension.eq_expr"))
-        .def("geq", ext_builder(&ModelExtension::geq, "ModelExtension.geq"))
-        .def("neq", ext_builder(&ModelExtension::neq, "ModelExtension.neq"))
-        .def("lt", ext_builder(&ModelExtension::lt, "ModelExtension.lt"))
-        .def("gt", ext_builder(&ModelExtension::gt, "ModelExtension.gt"))
-        .def("add_constraint",
-             ext_builder(&ModelExtension::add_constraint, "ModelExtension.add_constraint"),
-             nb::arg("expr"))
-        .def("append_to_sum",
-             ext_builder(&ModelExtension::append_to_sum, "ModelExtension.append_to_sum"),
-             nb::arg("sum_node"), nb::arg("term"),
-             "Append `term` to an EXISTING Sum node of the base model: a new column\n"
-             "entering an old row. Raises ValueError if the target is not a Sum of the\n"
-             "base model, if `term` already reads the target (the append would make\n"
-             "the DAG cyclic), or if the model has changed since this extension was\n"
-             "started (another extend was applied, or the first solve/freeze added the\n"
-             "objective row).")
-        .def("empty", [](const ExtensionHandle& self) { return self.peek().empty(); })
-        .def("num_new_vars", [](const ExtensionHandle& self) { return self.peek().num_new_vars(); })
-        .def("num_new_nodes",
-             [](const ExtensionHandle& self) { return self.peek().num_new_nodes(); });
-
-    // In place, on a state the caller owns: nothing is retained.
-    m.def("pad_state", &pad_state, nb::arg("state"), nb::arg("ext"),
-          "Grow a ModelState captured BEFORE `ext` was applied so that restore_state\n"
-          "accepts it again, giving each new variable its declared initial value.\n"
-          "Raises ValueError unless the state is exactly the pre-extension size.");
-
     // ViolationManager
     nb::class_<ViolationManager>(m, "ViolationManager")
         // keep_alive<1, 2>: the manager holds a Model& and reads its arrays on
@@ -1344,25 +1135,12 @@ NB_MODULE(_cbls_core, m) {
         .def("weighted_violation_delta", &ViolationManager::weighted_violation_delta,
              nb::arg("var_id"), nb::arg("j"))
         .def("invalidate_cache", &ViolationManager::invalidate_cache)
-        // Validated in C++: `ext` must describe exactly this manager's model's
-        // constraint growth, and new_weight must be finite and >= 0 (ValueError).
-        // Until it runs after a Model.extend, every read that indexes the weights
-        // (total_violation, augmented_objective, weighted_violation_delta,
-        // bump_weights) raises RuntimeError rather than indexing the short vector;
-        // is_feasible, violated_constraints and constraint_violation read node
-        // values only and already answer for the grown model.
-        .def("on_extended", &ViolationManager::on_extended, nb::arg("ext"),
-             nb::arg("new_weight") = 1.0,
-             "Grow with a model Model.extend just grew. Existing rows keep their GLS\n"
-             "weights; new rows start at new_weight (0 = masked). Call it as soon as\n"
-             "extend returns: until then total_violation, augmented_objective,\n"
-             "weighted_violation_delta and bump_weights raise RuntimeError. Once per\n"
-             "extend, in order: a manager that missed one must be rebuilt.")
         // `weights` is indexed by constraint index with no bounds check on the
         // hot path (weighted_violation_delta, total_violation), so a short list
         // assigned from Python read past its end. The length rule is enforced here
-        // rather than per read, against the manager's OWN size: Model.extend is the
-        // one legitimate desync, and on_extended (not this setter) is how it closes.
+        // rather than per read, against the manager's OWN size. A manager out of
+        // step with its MODEL (built before the objective row) is refused by the
+        // manager's own reads instead.
         .def_prop_rw(
             "weights", [](ViolationManager& self) -> std::vector<double>& { return self.weights; },
             [](ViolationManager& self, std::vector<double> w) {
@@ -1616,27 +1394,18 @@ NB_MODULE(_cbls_core, m) {
           "(base_seed, worker, restart). Mixed rather than added so that adjacent base "
           "seeds give genuinely different portfolios.");
 
-    // Both refuse a model a failed Model.extend left half-grown (#167), which the
-    // engine's own evaluators do not check: evaluating one reads index arrays
-    // that are shorter than the node array.
-    m.def("full_evaluate", [](Model& model) {
-        model.require_intact("full_evaluate");
-        return full_evaluate(model);
-    });
+    m.def("full_evaluate", [](Model& model) { return full_evaluate(model); });
     m.def("delta_evaluate", [](Model& model, const std::set<int32_t>& changed) {
-        model.require_intact("delta_evaluate");
         return delta_evaluate(model, changed);
     });
     // The engine indexes its adjoint and cone buffers by `expr_id` unchecked (a
     // hot path), so a variable handle or a stale id from Python would write out
     // of bounds. Checked here, where the value is handed over (#156's rule).
     m.def("compute_partial", [](const Model& model, int32_t expr_id, int32_t var_id) {
-        model.require_intact("compute_partial");
         require_node_id(model, expr_id, "compute_partial");
         return compute_partial(model, expr_id, var_id);
     });
     m.def("compute_all_partials", [](const Model& model, int32_t expr_id) {
-        model.require_intact("compute_all_partials");
         require_node_id(model, expr_id, "compute_all_partials");
         return compute_all_partials(model, expr_id);
     });
@@ -1698,14 +1467,14 @@ NB_MODULE(_cbls_core, m) {
             // Registered WHILE THE GIL IS HELD, and only then released. Released
             // first (as a call_guard did), there was a window in which this solve
             // was already running on the model but not yet registered, and a
-            // Model.extend from another thread could pass the check inside it.
-            // `extend_unless_solving` runs holding the GIL, so with registration
-            // under it too the check and the registration cannot interleave.
+            // builder call from another thread could pass the check inside it.
+            // refuse_if_solving runs holding the GIL, so with registration under
+            // it too the check and the registration cannot interleave.
             // A solve is itself a structural writer (the objective row), so a
             // second one on the same model -- nested from a callback, or from
             // another thread -- is refused like any other.
             refuse_if_solving(model, "cbls.solve");
-            const SolvingScope solving(model);  // refuses Model.extend until this returns
+            const SolvingScope solving(model);  // refuses structural writes until this returns
             const nb::gil_scoped_release release;
             return cbls::solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback,
                                config);
@@ -1750,9 +1519,8 @@ NB_MODULE(_cbls_core, m) {
         "`model` from another thread while this runs a DATA RACE: the search writes "
         "variables and node values throughout and nothing locks them. Read the model "
         "only after this returns. STRUCTURAL writes to `model` -- its builders, "
-        "close, freeze, extend, Expr operators over it, and constructing or building "
-        "a ModelExtension over it -- raise RuntimeError while this runs, from any "
-        "thread, a SolveCallback included. A raw Python function passed to "
+        "close, freeze and Expr operators over it -- raise RuntimeError while this "
+        "runs, from any thread, a SolveCallback included. A raw Python function passed to "
         "lambda_sum or "
         "pair_lambda_sum also re-acquires the GIL on every evaluation now; use the "
         "*_table_sum forms where the function is a table.\n"

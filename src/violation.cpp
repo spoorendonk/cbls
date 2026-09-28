@@ -1,7 +1,5 @@
 #include "cbls/violation.h"
 
-#include "cbls/model_extension.h"
-
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -12,9 +10,6 @@ namespace cbls {
 // FJ's closed-form linear scorer must apply the identical clamp.
 
 ViolationManager::ViolationManager(Model& model) : model_(model) {
-    // Every solve builds one, so this is where a model a failed Model::extend
-    // left half-grown is refused rather than searched (#167).
-    model.require_intact("ViolationManager");
     weights.resize(model.constraint_ids().size(), 1.0);
     cached_violations_.resize(model.constraint_ids().size(), 0.0);
 }
@@ -24,9 +19,9 @@ void ViolationManager::require_row_count() const {
     if (weights.size() != nc || cached_violations_.size() != nc) {
         throw std::logic_error(
             "ViolationManager: the weight vector is not one entry per constraint of this model. "
-            "Either a row was added after this manager was built -- Model::extend is the case that "
-            "motivated this check, and ViolationManager::on_extended(result) is the answer to it "
-            "(#167) -- or a C++ caller resized the public weights vector");
+            "Either a row was added after this manager was built -- the objective row, which "
+            "freeze() and the first solve() of a model with an objective add; build a new "
+            "manager after them -- or a C++ caller resized the public weights vector");
     }
 }
 
@@ -171,32 +166,6 @@ void ViolationManager::bump_weights(double factor) {
         weights[i] += factor;
     }
     cache_valid_ = false;  // weights changed, invalidate
-}
-
-void ViolationManager::on_extended(const ExtensionResult& ext, double new_weight) {
-    const size_t nc = model_.constraint_ids().size();
-    // A NaN weight poisons every total the new row enters and cannot be recovered
-    // from by the GLS dynamics (bump and decay both keep it NaN); a negative one
-    // pays the search for violating the row. Zero is allowed: `active()` is
-    // `weight > 0`, so it means the row starts masked.
-    if (!std::isfinite(new_weight) || new_weight < 0.0) {
-        throw std::invalid_argument(
-            "ViolationManager::on_extended: new_weight must be finite and >= 0");
-    }
-    if (static_cast<size_t>(ext.end_constraint()) != nc || ext.first_new_constraint < 0 ||
-        static_cast<size_t>(ext.first_new_constraint) != weights.size()) {
-        throw std::invalid_argument(
-            "ViolationManager::on_extended: the extension does not describe this model's "
-            "constraint count");
-    }
-    // resize, not assign: every existing row keeps the weight the GLS dynamics
-    // gave it.
-    weights.resize(nc, new_weight);
-    cached_violations_.resize(nc, 0.0);
-    // An extension changes the node value of every row above a grown Sum, and the
-    // new rows have no cached violation at all. total_violation() re-reads the
-    // node values, so invalidating is both correct and cheaper than patching.
-    cache_valid_ = false;
 }
 
 double ViolationManager::weighted_violation_delta(int32_t var_id, double j) const {
