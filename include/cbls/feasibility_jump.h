@@ -535,6 +535,9 @@ private:
     // that a linear re-sweep of the kInV bits (sort_violated_rows), so the
     // ordering never costs more than the whole-row sweep it replaced. The bump
     // itself stays O(#rows) through gls_update_weights (#175 is that half).
+    // A Novelty batch as a whole likewise stays O(#rows), through
+    // init_novelty_weights (every row, every b-round) and the caller's resync;
+    // only the seeds repeated after each committed compound move got cheaper.
     //
     // The price is a constant per row FLIP: a push or a swap-remove, and a walk
     // of the flipped row's variable list to adjust the counts. In update_var that

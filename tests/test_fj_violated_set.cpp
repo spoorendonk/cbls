@@ -292,3 +292,53 @@ TEST_CASE("FJ's violated set follows Model::extend through on_extended", "[fj][v
         }
     }
 }
+
+TEST_CASE("FJ's violated set recounts an incidence row missing from touched_constraints",
+          "[fj][violated_set]") {
+    // ExtensionResult promises every row in new_incidences is also in
+    // touched_constraints or new, and Model::extend keeps that promise. But
+    // on_extended's validation does not enforce it -- ExtensionResult is a plain
+    // struct -- so the counts are kept right without it: a counted row whose
+    // variable list the merge grows is uncounted against the old list and
+    // recounted against the merged one whether or not it is in `rows`. This
+    // hands on_extended a real extension with that row dropped from
+    // touched_constraints. The new column starts at 0, so the row's value, and
+    // hence its in-V bit, is unchanged -- only the recount is at stake.
+    Model m;
+    const std::vector<int32_t> sums = build_random_rows(m, 57, 20, 40);
+    m.close();
+    ViolationManager vm(m);
+    RNG rng(8);
+    FeasibilityJump fj(m, vm, rng, small_batch_config());
+    fj.begin(true);
+    (void)fj.batch(25);
+
+    int32_t target = -1;
+    for (const int32_t c : fj.violated_rows()) {
+        if (vm.weights[static_cast<size_t>(c)] > 0.0) {
+            target = c;
+            break;
+        }
+    }
+    REQUIRE(target >= 0);  // a counted row to grow
+
+    ModelExtension ext(m);
+    const int32_t col = ext.int_var(0, 4);
+    ext.set_initial(col, 0.0);
+    ext.append_to_sum(sums[static_cast<size_t>(target)], ext.prod(ext.constant(1.0), col));
+    ExtensionResult res = m.extend(ext);
+    const auto it =
+        std::find(res.touched_constraints.begin(), res.touched_constraints.end(), target);
+    REQUIRE(it != res.touched_constraints.end());
+    res.touched_constraints.erase(it);
+    const int32_t new_var = res.first_new_var;
+    REQUIRE(std::any_of(res.new_incidences.begin(), res.new_incidences.end(),
+                        [&](const std::pair<int32_t, int32_t>& inc) {
+                            return inc.first == target && inc.second == new_var;
+                        }));
+
+    vm.on_extended(res);
+    fj.on_extended(res);
+    require_consistent(fj, m, vm);
+    REQUIRE(fj.active_violated_rows_of(new_var) > 0);  // it sits in the counted row
+}

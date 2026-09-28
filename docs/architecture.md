@@ -912,7 +912,10 @@ be answered by rescanning: every neighbour `vp` of a committed move re-read all
 of `G_vp` (the two-hop nonzeros per move), and each weight bump, Novelty seed and
 feasibility test swept every row. Now a dense list of violated rows and a
 per-variable count of active violated rows are maintained wherever a row flips,
-so the participation test is O(1) and those scans are O(|V|). The scans that
+so the participation test is O(1) and those scans are O(|V|) -- plus restoring
+V's ascending order, a sort while |V|·log|V| <= #rows and an O(#rows) re-sweep
+above that. A Novelty batch as a whole stays O(#rows), through
+`init_novelty_weights` and the resync that follows it. The scans that
 queue variables still visit rows in ascending order, since the scan set's order
 feeds the RNG draw, so trajectories are bit-identical: an iteration-bounded
 fingerprint of `solve()` and of a direct batch/Novelty/kick driver matched
