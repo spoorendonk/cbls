@@ -907,6 +907,33 @@ The engine's state maps to the paper's `S = <G, X, W, V, Q, J>`:
 | `Q` | scan set of candidate vars | `queue_` / `in_queue_` |
 | `J` | cached per-var best jump | `JumpTable` |
 
+**V is kept incrementally (#174).** Which rows are violated and active used to
+be answered by rescanning: every neighbour `vp` of a committed move re-read all
+of `G_vp` (the two-hop nonzeros per move), and each weight bump, Novelty seed and
+feasibility test swept every row. Now a dense list of violated rows and a
+per-variable count of active violated rows are maintained wherever a row flips,
+so the participation test is O(1) and those scans are O(|V|). The scans that
+queue variables still visit rows in ascending order, since the scan set's order
+feeds the RNG draw, so trajectories are bit-identical: an iteration-bounded
+fingerprint of `solve()` and of a direct batch/Novelty/kick driver matched
+before and after on nine MIPfeas instances, two seeds each, and
+`tests/test_fj_trajectory_fence.cpp` pins two hashes recorded at `c19c982`. The
+header comment on `violated_` states where it wins and loses and what it costs
+in memory. Measured with `cbls_mipfeas`, 20s budget, one thread, seed 42,
+Release, serially on an idle 12-core Ryzen 5 5600H (load 0.2-1.2), at `c19c982`
+against `f9edd3b`, two passes run in opposite orders:
+
+| instance | GLS iterations before | after |
+|---|---|---|
+| rd-rplusc-21 | 173 / 178 | 9,052 / 8,782 |
+| rail01 | 350,936 / 348,700 | 440,400 / 441,095 |
+| uccase12 | 263,159 / 264,159 | 284,462 / 288,067 |
+| neos-860300 | 12,584 / 11,666 | 17,355 / 17,289 |
+
+The "before" rd-rplusc-21 runs overran the 20s budget to ~32s wall, because a
+single iteration was too expensive for the deadline stride to catch in time. The
+"after" runs stop at 20.1s.
+
 ### JumpTable
 
 A per-variable cache of the best jump found for that variable: the
