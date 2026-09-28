@@ -167,13 +167,15 @@ TEST_CASE("LazyWeightDecay keeps 0 exactly 0 and a positive weight positive",
         lazy.bump(w, 0);  // a zeroed row is masked: the bump skips it
         REQUIRE(w[0] == 0.0);
     }
-    SECTION("materialise at s = 1 touches nothing") {
+    SECTION("materialise reports the factor it folded, which FJ rescales its scores by") {
         std::vector<double> w = {3.0, 0.0};
         LazyWeightDecay lazy;
-        (void)lazy.decay(w, 1.0);
-        lazy.bump(w, 0);
-        REQUIRE(lazy.materialise(w) == 1.0);
-        REQUIRE(w == std::vector<double>{4.0, 0.0});  // rho = 1 is bit-exact
+        REQUIRE(lazy.materialise(w) == 1.0);  // s = 1: nothing to fold
+        (void)lazy.decay(w, 0.5);
+        lazy.bump(w, 0);                      // stored 3 + 1/0.5 = 5, effective 2.5
+        REQUIRE(lazy.materialise(w) == 0.5);  // folded s = 0.5
+        REQUIRE(w == std::vector<double>{2.5, 0.0});
+        REQUIRE(lazy.scale() == 1.0);
     }
 }
 
