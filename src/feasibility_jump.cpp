@@ -1432,12 +1432,17 @@ void FeasibilityJump::arm_deadline() {
 void FeasibilityJump::bump_weights_and_requeue() {
     const double folded = weight_decay_.decay(vm_.weights, config_.rho);
     if (folded != 1.0) {
-        // Cached scores live in the scaled space too. Kept for the invariant
-        // rather than for an observable effect: a valid entry that survives a
-        // bump has no counted violated row, so its score is <= 0 except in the
-        // (0, kTol] residual band, and folding by a positive factor keeps the
-        // sign. The rescale at materialise_weights is the one the batch-API
-        // fence pins (unchosen positive scores carried into the next batch).
+        // Cached scores live in the scaled space too, and this rescale is
+        // REQUIRED, not cosmetic. A valid entry that survives a bump has no
+        // counted violated row, so its score is <= 0 -- except in the (0, kTol]
+        // residual band, where it is positive. Such an entry left in Q
+        // unrescaled would be up to 1 / folded (~1e30) times too large against
+        // every score computed after the fold, and apply_jump's argmax would take
+        // it over any real improving jump. Reachable wherever one gls_loop makes
+        // more than 1347 decays at rho = 0.95 -- run()/gls(), or LNS repair's
+        // fj_nl_initialize on continuous equality rows (#102) -- but only for an
+        // entry sampling happened to miss, which is why no test pins this site;
+        // the batch-API fence pins the rescale in materialise_weights.
         jumps_.scale_scores(folded);
     }
     vm_.invalidate_cache();

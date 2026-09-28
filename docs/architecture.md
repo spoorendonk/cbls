@@ -911,8 +911,22 @@ seeds 1 and 2. `cbls_mipfeas` at 20s, GLS iterations and the final max violation
 
 cbs-cta, the instance #175 was found on, runs 31% more iterations on both seeds;
 the others move within their own seed-to-seed spread, which is what a bump that
-was not their bottleneck predicts. uccase12's worse final violation is two seeds
-of a trajectory-changing edit, not evidence either way. `cbls_minlplib` at 5s over
+was not their bottleneck predicts. uccase12 was worse on both of those seeds, so
+it was re-run on seeds 3-6 the same way (the "after" binary is `d424dbd`; the
+review commits after it change comments only):
+
+| uccase12 seed | 1 | 2 | 3 | 4 | 5 | 6 | mean |
+|---|---|---|---|---|---|---|---|
+| iterations before | 235,412 | 283,928 | 225,114 | 257,532 | 247,597 | 231,948 | 246,922 |
+| iterations after | 233,799 | 265,302 | 255,079 | 255,035 | 240,985 | 241,536 | 248,623 |
+| max violation before | 5.28 | 4.57 | 4.38 | 3.87 | 5.00 | 6.50 | 4.93 |
+| max violation after | 6.30 | 9.81 | 3.63 | 8.27 | 3.75 | 3.95 | 5.95 |
+
+Three seeds worse, three better, and the "after" spread (3.6-9.8) is wider than
+the "before" one (3.9-6.5). The mean is 1.0 worse, carried by seeds 2 and 4; with
+that spread and six pairs this is not distinguishable from trajectory noise, and
+it is not evidence the lazy decay helps uccase12 either. Throughput there is
+unchanged, as expected when the bump was not its bottleneck. `cbls_minlplib` at 5s over
 its 50-instance roster: 46 / 48 feasible in both arms on seeds 1 / 2, 41 / 43
 objectives identical, and of the rest the lazy arm is better on 3 / 4 and worse
 on 2 / 1 (the largest move, kall_ellipsoids_tc02b seed 2, 52.17 -> 77.78, is
