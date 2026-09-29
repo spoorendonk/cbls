@@ -175,7 +175,48 @@ jump *candidate* is scored by a no-commit delta probe (see
 [`weighted_violation_delta`](#violation--gls-weights)) unless every weighted
 row of the variable's column is a linear comparison, where `LinearJumpScorer`
 (`include/cbls/linear_jump.h`) scores it in closed form instead. A committed
-jump always goes through `delta_evaluate`.
+jump goes through the same walk, as `commit_scalar_move`, which is told the
+variable's old value (below).
+
+**Incremental Sum** (#177). A committed FJ move changes one term of each row it
+touches, and re-summing a row costs its whole length -- 36% of swath3's run at
+`634001b`, where a committed dirty Sum averaged 1315 terms. So a walk that knows
+the changed variables' old values moves each eligible `Sum` by its terms'
+changes instead: a variable term's from the old value passed in, a node term's
+from the value it held just before the walk rewrote it. A Sum is eligible
+(`ExprNode::incremental_sum`, set at `close()`) unless one of its terms is a
+Sum or appears twice. The walks that pass old values are FJ's committed moves,
+Novelty Jump's legs (`commit_scalar_move`) and the per-candidate probes
+(`probe_scalar_move`, inside `weighted_violation_delta` and
+`per_constraint_violation_delta`).
+
+That is floating point, so a Sum's value drifts from the re-sum by one rounding
+per update; on integral data every partial sum is exact and nothing drifts, so
+MIP rows with integer coefficients over integer columns keep the re-summing
+engine's bits and trajectory. Drift is bounded and never leaves an FJ batch:
+
+| Mechanism | What it guarantees |
+|---|---|
+| A Commit re-sums a Sum on its `kIncrementalSumPeriod`-th (64) update | at most 64 roundings per Sum, on every path |
+| `reground_incremental_sums` at the end of every FJ batch and Novelty Jump batch | everything outside FJ -- the search's feasibility test and objective, the pool, LNS, the inner solver, the structural batch -- reads exact sums |
+| A non-finite value (the Sum's, or a term's old or new one) re-sums the Sum | no `inf - inf` |
+| `Probe` stashes the cone; `Rollback` writes it back | a probe leaves the committed state bit for bit, and a probe of the value a variable already holds scores exactly 0 |
+
+What is kept consistent is the state derived from node values, not bit-identity
+to a re-sum. A walk that is not told old values (the structural batch, the
+inner solver, `full_evaluate`) re-sums -- snaps -- the Sums in its cone, but a
+snap only ever touches the cone of the variables that walk moved, which are the
+rows its caller already re-reads. The periodic re-sum happens inside a commit,
+whose rows `update_var` settles anyway. The batch-end re-grounding moves rows
+nothing else re-reads, so `FeasibilityJump::reground_and_resettle` settles each
+row it moved exactly as `update_var` settles a changed row: the unweighted
+total, V and its counts, and the row's variables' cached jumps and scan-set
+membership. A batch that ended "Feasible" on drifted values and is no longer
+feasible after the re-grounding carries on.
+
+K was chosen from a sweep on three instances held out of the A/B (#177): K=16
+cost 2-11% of the throughput of K=64, K=255 was at most 2% ahead of it, and the
+drift re-grounded at batch end was the same at every K.
 
 ### Reverse-Mode Automatic Differentiation
 
@@ -909,7 +950,7 @@ same first-seen rule, same per-row differencing (#100); the scores agree with
 the probe to rounding, not to the bit -- so the chosen jump is guaranteed the
 probe's only on integral data, and an ulp can flip a near-tie on fractional
 data -- and a committed jump still goes
-through `delta_evaluate`. Any other weighted row, or a non-finite computed side,
+through the DAG (`commit_scalar_move`). Any other weighted row, or a non-finite computed side,
 takes the probe. On MIPfeas at a 20s budget, one thread, this raised FJ
 iterations 7–58× (gen-ip002 4,803 → 278,793; neos-860300 1,207 → 8,997;
 n2seq36q 19,504 → 256,589; mas76 142,065 → 1,426,857; binkar10_1 83,917 →

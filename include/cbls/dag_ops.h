@@ -11,12 +11,14 @@ namespace cbls {
 
 double full_evaluate(Model& model);
 
-/// What a `delta_evaluate` call means for a `CustomInvariant` (#166).
+/// What a `delta_evaluate` call means for a `CustomInvariant` (#166), and for
+/// the node values themselves (#177).
 ///
-/// Built-in ops are identical under all three -- they recompute from the
-/// assignment in front of them, whatever the caller intends to do next -- so a
-/// model with no custom node evaluates the same way it always did whichever of
-/// these is passed. Only a custom node reads the mode.
+/// A built-in op recomputes from the assignment in front of it under `Commit`
+/// and `Probe` alike. What differs is the way back: `Probe` stashes every dirty
+/// node's value, and the matching `Rollback` writes the stash back rather than
+/// re-evaluating, so the committed state -- including an incremental `Sum`'s
+/// drift, see `commit_scalar_move` -- comes back bit for bit.
 enum class DeltaMode : uint8_t {
     /// The assignment being evaluated is the new committed one. Each custom
     /// node in the dirty cone gets `delta()` then `commit()`. This is what an
@@ -24,17 +26,17 @@ enum class DeltaMode : uint8_t {
     /// mean -- and it is the default, so every call site that predates #166
     /// keeps the behaviour it had.
     Commit,
-    /// A counterfactual the caller WILL undo. Each custom node in the cone gets
-    /// `delta()`, and its previous node value is stashed for the matching
-    /// `Rollback` call. No `commit()`.
+    /// A counterfactual the caller WILL undo. Every node in the cone has its
+    /// value stashed for the matching `Rollback` call; each custom node gets
+    /// `delta()` and no `commit()`.
     Probe,
     /// The caller has put back the assignment the `Probe` was measured from.
-    /// Each custom node with a probe pending gets `rollback()` and its stashed
-    /// value back, and is NOT re-evaluated; one without a pending probe is
-    /// treated as `Commit`, which is the honest reading of a caller that moved
-    /// the assignment without probing first.
+    /// The probe's stash is written back and nothing is re-evaluated; each
+    /// custom node with a probe pending also gets `rollback()`. With no probe
+    /// pending it is treated as `Commit`, which is the honest reading of a
+    /// caller that moved the assignment without probing first.
     ///
-    /// Must follow a `Probe` over the same changed-variable set, or the node
+    /// Must follow its `Probe` with no other evaluation in between, or the node
     /// values it restores are not the ones the caller thinks they are.
     Rollback,
 };
