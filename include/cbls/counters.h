@@ -142,24 +142,29 @@ struct SearchCounters {
     ///
     /// Filled in BOTH arms of the A/B -- `ParallelConfig::share_objective_bound`
     /// on or off -- because the control arm is where the opportunity is
-    /// measured: the global best is READ either way, and reading it is an atomic
-    /// load that nothing branches on unless sharing is enabled.
+    /// measured: the global best is READ either way, and with sharing off only
+    /// these counters depend on it, never the search's trajectory.
     ///
-    /// Times the global best, rather than the worker's own objective, set its
-    /// bound: at a batch boundary where the bound was looser, or capping the
-    /// bound of an own-best recorded behind the global one (which would otherwise
-    /// have loosened it). Always 0 with sharing off; nonzero is the mechanism
-    /// firing.
+    /// Times the global best MOVED this worker's bound: at a batch boundary where
+    /// the bound was looser, or in record_best when a peer improved since the
+    /// last boundary. Always 0 with sharing off; nonzero is the mechanism firing.
+    ///
+    /// "Global" is the pool's, so after a portfolio RESTART it includes this
+    /// worker's own earlier solve: a restarted `solve()` reopens the bound at +inf
+    /// and the first sync re-tightens it to what the previous solve found. That is
+    /// true of the other three fields too.
     int64_t shared_bound_tightenings = 0;
     /// New own-bests recorded while the portfolio already held a strictly better
-    /// feasible objective -- the "worker found something a peer had beaten"
-    /// event. Nonzero in both arms: sharing changes where the bound sits, not
-    /// which of the worker's own points count as its incumbent.
+    /// feasible objective -- the "worker found something a peer (or, after a
+    /// restart, its own earlier solve) had beaten" event. Nonzero in both arms: sharing changes
+    /// where the bound sits, not which of the worker's own points count as its incumbent.
     int64_t own_best_behind_global = 0;
     /// Batches that RAN with this worker's bound looser than the global best's.
-    /// With sharing on this stays near 0 -- the bound is tightened at the batch
-    /// boundary that would otherwise start one -- so it is the control arm's
-    /// measure of time spent searching for points a peer had already beaten.
+    /// With sharing on this is 0 by construction -- the bound is tightened at the
+    /// batch boundary that would otherwise start one, and a peer improving
+    /// MID-batch is not charged -- so it is the control arm's measure of time
+    /// spent searching for points a peer had already beaten. That includes a
+    /// worker's batches before its own first feasible point.
     int64_t bound_behind_global_batches = 0;
     /// The wall seconds those batches took. Same gate as `inner_solver_seconds`:
     /// 0.0 on a run with no wall-clock budget, where the batch count above is the

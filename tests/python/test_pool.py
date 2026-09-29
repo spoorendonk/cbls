@@ -771,7 +771,7 @@ def test_share_objective_bound_reaches_the_workers(share: bool) -> None:
     reports the batches it ran behind instead. No Python callable is handed to
     the workers, so there is no GIL to deadlock on and this runs in-process."""
     cfg = cbls.SearchConfig()
-    cfg.max_iterations = 20000
+    cfg.max_iterations = 5000
     par = cbls.ParallelConfig()
     par.n_threads = 4
     par.share_objective_bound = share

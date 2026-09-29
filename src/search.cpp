@@ -796,13 +796,15 @@ bool ViolationLSLoop::record_best() {
     }
     // Read before share() below, which would fold `obj` itself into it. +inf
     // without a pool, so the comparison is false on a single-threaded run.
-    if (obj > global_best()) {
+    const bool behind_global = obj > global_best();
+    if (behind_global) {
         ++counters_.own_best_behind_global;
     }
     have_feasible_ = true;
     note_first_feasible(obj);
     best_feasible_obj_ = obj;
     best_state_ = model_.copy_state();
+    bool bound_moved = true;  // no objective row: nothing to move, keep the old return
     // Wherever the search was told to explore from, it has now got somewhere
     // better, so the incumbent is the kick origin again (#158) and the adopted
     // one is released.
@@ -821,14 +823,32 @@ bool ViolationLSLoop::record_best() {
         // the finite x here, so those runs set exactly what they always did.
         const double own = objective_bound_below(obj);
         const double cap = shared_bound_cap();
-        if (cap < own) {
+        const double previous = model_.objective_bound();
+        // Counted only when the cap MOVED the bound -- a peer improved since
+        // this worker's last sync -- not when the sync had already put it there.
+        if (cap < own && cap < previous) {
             ++counters_.shared_bound_tightenings;
         }
-        model_.set_objective_bound(std::min(own, cap));
+        const double next = std::min(own, cap);
+        bound_moved = next < previous;
+        model_.set_objective_bound(next);
     }
     share(obj);
     emit_progress(/*new_best=*/true);
     trace_new_best(obj);
+    // With sharing on, an own best the portfolio had already beaten, recorded
+    // under a bound that did not move, is NOT an improvement to the loop. It is
+    // still this worker's incumbent -- recorded, shared and returned above --
+    // but returning true would buy what a new best buys in apply_batch_outcome:
+    // fresh GLS weights, a new rho, a disarmed escape probe and a zeroed
+    // stagnation count. The paper ties those to a new bound, and there is none
+    // here; the stagnation reset in particular would postpone the adoption kick
+    // that would move this worker onto the better region. With sharing off
+    // (the control arm) and without a pool this branch cannot be taken, so
+    // those runs return exactly what they did before #179.
+    if (behind_global && !bound_moved && coord_ != nullptr && coord_->share_objective_bound) {
+        return false;
+    }
     return true;
 }
 
@@ -864,11 +884,19 @@ void ViolationLSLoop::share(double objective) {
 //    bound` row, which is ViolationLS's normal state after any new best.
 //  - best_feasible_obj_ and best_state_ are unchanged: the worker did not find
 //    the peer's point, and finish() must return one it did. See record_best.
-//  - the GLS weights are KEPT -- fj_.resync(), not reset_weights(). Nothing about
-//    the landscape the weights encode changed except the one row, and a reset
-//    would hand every worker a fresh-weights restart each time any peer
+//  - the GLS weights are KEPT -- fj_.resync(), not reset_weights(). This is the
+//    one bound tightening that keeps them: an own new best resets them (the
+//    paper's "new best: fresh weights") and so does an adoption, which moves the
+//    assignment. Here nothing the weights encode changed except the one row, and
+//    a reset would hand every worker a fresh-weights restart each time any peer
 //    improved, which is a different mechanism from the one being measured.
-//    (An adoption resets them, because it moves the assignment.)
+//  - it reaches a worker with NO feasible point of its own too. Its bound is
+//    +inf (or #100's sentinel) until then, so the first peer to go feasible puts
+//    every other worker's objective row in play: a behaviour change against
+//    single-threaded ViolationLS, where the row is vacuous until the worker's own
+//    first feasible point. Deliberate -- it is what "share the bound" means, and
+//    CP-SAT's workers do the same -- and the A/B's feasibility count is what
+//    would show it costing feasibility.
 //  - the objective row's weight is never zeroed: solve() runs FJ single-phase
 //    (gfj.two_phase = false), so there is no phase mask for the row to fall
 //    under, and set_objective_bound's precondition is has_obj_, tested first.

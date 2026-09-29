@@ -1590,16 +1590,16 @@ point**; the kick and LNS destroy need the window above.
 
 While time and `max_iterations` remain, each pass:
 
-0. **Portfolio only: sync the shared bound** (#179). If the pool's best feasible
-   objective earns a tighter bound than this worker holds, tighten to it (see
-   [Parallel Search](#parallel-search), item 3). A no-op without a pool.
 1. **Pick the batch kind.** With probability `structural_batch_probability`,
    STRUCTURAL; else with probability `novelty_jump_probability` (only when
    `use_compound_moves`), NOVELTY JUMP; else FEASIBILITY JUMP. Structural and
    novelty batches mutate state outside FJ's bookkeeping, so they set a `resync`
    flag.
 2. **Run the batch.** `fj.batch(batch_iterations)`, `fj.apply_novelty_jump()`,
-   or `StructuralBatch::run(...)`. Every batch kind is bounded by the wall-clock
+   or `StructuralBatch::run(...)`. Just before it, **portfolio only**, sync the
+   shared bound (#179): if the pool's best feasible objective earns a tighter
+   bound than this worker holds, tighten to it (see
+   [Parallel Search](#parallel-search), item 3). A no-op without a pool. Every batch kind is bounded by the wall-clock
    deadline from *inside*, not just at the loop top: FJ strides a check through
    its GLS loop, and the structural sweep checks between generators (see
    [Deadline bound](#deadline-bound)), so a batch entered just before the
@@ -1612,7 +1612,8 @@ While time and `max_iterations` remain, each pass:
    feasible solutions whenever the polish left the feasible region.
 4. **`record_best()`** keeps the assignment if it strictly improves
    `best_feasible_obj`, snapshots the state, and tightens the objective bound to
-   `obj - eps` (`eps = 1e-3*(|obj|+1)`; the step doubles as the Newton step size
+   the min of `obj - eps` and, in a portfolio, the shared cap (#179)
+   (`eps = 1e-3*(|obj|+1)`; the step doubles as the Newton step size
    for hook-less continuous descent). For pure-feasibility models (no objective)
    the first feasible solution ends the search.
 5. **On a new best**, reset GLS weights to 1, resample `rho`, and **disarm the
@@ -1858,7 +1859,9 @@ batch, and `SearchResult::time_to_first_feasible` costs ONE read, at the first
 feasible point and latched thereafter (#149). Three of those are O(1) per run and
 the callback's is per batch; none of the four reaches the
 search trajectory. #169 adds two more, and neither reaches the trajectory
-either. `SearchCounters::inner_solver_seconds` is gated on `has_deadline_`
+either. (#179's `bound_behind_global_seconds` is a third of the same kind:
+two reads per behind batch, control arm of a portfolio only, gated the same
+way.) `SearchCounters::inner_solver_seconds` is gated on `has_deadline_`
 exactly as `last_improvement_` is, so a clockless run reads no clock for it and
 the field reads 0.0 — but the gate is the RUN's, not the caller's: a run that
 *has* a wall clock pays two reads per inner-solver call whether or not anybody
@@ -2610,20 +2613,31 @@ bit-identical to what it was before the parameter existed:
    -- tightens to it, then `vm.invalidate_cache()` and `fj.resync()`. Without it
    a worker behind a peer kept searching for points the portfolio had already
    beaten until it stagnated long enough to adopt. The rules:
-   - **never loosen.** The batch-boundary test is strict, and the other two
-     writers of the bound -- `record_best` and the adoption re-grounding -- take
-     the min with the shared cap. That matters for `record_best`: a worker
+   - **never loosen within a solve.** The batch-boundary test is strict, and
+     every other writer of the bound during a solve -- `record_best` and the
+     adoption re-grounding; the witness sentinel writes only over `+inf` --
+     takes the min with the shared cap. That matters for `record_best`: a worker
      behind the global best still records its own improvements (below), and
      `obj - eps` from one of them would otherwise raise a bound the pool had
-     tightened;
+     tightened. (`solve()` itself opens at `+inf`, so a portfolio restart
+     re-tightens at its first boundary.)
    - **the bound moves, nothing else does.** Not the assignment -- the worker
      is now violating a tighter row, ViolationLS's normal state after any new
      best. Not `best_feasible_obj` or `best_state`, since the worker did not
      find the peer's point and `finish()` must return one it did; so
      `record_best`'s strict-improvement test stays against the worker's OWN
      best, and a point between `G` and it is still recorded, shared and
-     returned. Not the GLS weights: `resync`, not `reset_weights`, because only
-     one row changed, and an adoption is what resets them;
+     returned. But with sharing on it is not an *improvement* to the loop unless
+     the bound moved: no weight reset and no stagnation reset, which would
+     otherwise postpone the adoption that moves a lagging worker onto the
+     better region. Not the GLS weights either: `resync`, not `reset_weights` --
+     the one bound tightening that keeps them, since an own new best and an
+     adoption both reset -- because only one row changed;
+   - **it reaches workers that are not feasible yet.** Their bound is `+inf`
+     (or #100's sentinel) until their own first feasible point, so the first
+     peer to go feasible puts every other worker's objective row in play, where
+     single-threaded ViolationLS keeps it vacuous until then. Deliberate, and
+     the A/B's feasibility count is what would show it costing feasibility;
    - **only feasible, finite objectives count** toward `G`. The pool also holds
      closest-approach states (usually *better* objectives, infeasible) and #100's
      `+inf` witness. `G` is the submitter's objective, not re-evaluated on the
@@ -2641,19 +2655,22 @@ bit-identical to what it was before the parameter existed:
    `own_best_behind_global` (an own best recorded while a peer held a better
    one), and `bound_behind_global_batches` / `_seconds` (batches run with a
    bound looser than the global best's -- the control arm's measure of the
-   opportunity; near zero with sharing on). A lone worker, whose pool holds only
-   its own incumbents, never fires it, and `--threads 1` passes no coordination
-   at all.
+   opportunity; 0 by construction with sharing on, which does not measure a
+   peer improving mid-batch). The `_seconds` cost two `steady_clock::now()` per
+   behind batch, only in the control arm and only on a run with a wall clock,
+   and nothing reads them back. A lone worker's single solve never fires any of
+   it; a portfolio restart does, because the pool then holds the worker's own
+   earlier solve, and the counters count that as the global best. `--threads 1`
+   passes no coordination at all.
 
-   One pathology to know about, found writing the tests: on a model whose
-   objective and constraint move by exactly equal amounts per unit step
-   (`min sum x^2` s.t. `sum x >= k`, integer), a large jump in the bound leaves
-   both rows violated on an exact tie that bumping both weights can never break,
-   and FJ stops moving. The worker then makes no progress until a kick, and the
-   kick returns it to the same plateau. That is a property of the tie, not of
-   sharing -- any sufficiently large bound step would do it -- but sharing is
-   what makes large steps routine. The tests use a linear covering model, where
-   it does not arise.
+   One pathology to know about, found writing the tests: on `min sum x^2` s.t.
+   `sum x >= k` over integers, where a step from 0 to 1 changes both rows by
+   exactly 1, a large jump in the bound left both rows violated on a tie that
+   bumping both weights did not break in the runs that found it, and FJ stopped
+   moving; kicks returned it to the same plateau. That is a property of the tie,
+   not of sharing -- any sufficiently large bound step would do it -- but sharing
+   is what makes large steps routine. The tests use a linear covering model,
+   where it does not arise.
 4. **No idle workers.** Each worker is a restart loop over the *shared*
    deadline, not a single `solve()`: a run that returns with budget left (an
    exhausted `SearchConfig::max_iterations`) is restarted on the time its

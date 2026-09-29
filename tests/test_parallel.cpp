@@ -1568,6 +1568,10 @@ struct SharedBoundRun {
 
 constexpr double kPeerObjective = 95.0;
 
+// Enough batches of 100 for the claims below, and no more: cover_model costs
+// ~0.25 ms per GLS iteration, so the budget sets these tests' wall time.
+constexpr int64_t kSharedBoundIterations = 5000;
+
 // Capacity one: the peer's entry, being the best, is the only thing a draw can
 // return, and its width is refused -- so every full-period kick falls through
 // to an ordinary one.
@@ -1580,7 +1584,7 @@ SharedBoundRun run_with_peer(bool share) {
     Model m = cover_model();
     PeerAtBatch peer(m, pool, peer_solution(kPeerObjective), /*submit_after=*/1);
     SearchConfig config;
-    config.max_iterations = 20000;
+    config.max_iterations = kSharedBoundIterations;
     config.batch_iterations = 100;
     config.tracer = &peer;
     SharedBoundRun run;
@@ -1649,6 +1653,7 @@ TEST_CASE("a worker's bound tightens after a peer submits a better solution",
     REQUIRE(on.bounds.size() > 5);
     // Before the peer, the worker's own first incumbent set a looser bound: the
     // peer really was ahead of it.
+    REQUIRE(std::isfinite(on.bounds[0]));
     REQUIRE(on.bounds[0] > cap);
     // From the batch after the submit onward the bound sits at or under the cap
     // the peer's objective earns, and it never steps back up.
@@ -1662,7 +1667,9 @@ TEST_CASE("a worker's bound tightens after a peer submits a better solution",
     }
     const SearchCounters& c = on.result.counters;
     REQUIRE(c.shared_bound_tightenings > 0);
-    // Nothing ran behind: the gap was closed at the boundary it opened on.
+    // Zero by construction with sharing on (the sync closes the gap at the
+    // boundary it would start a behind batch on); pinned so the counter's
+    // documented meaning cannot drift.
     REQUIRE(c.bound_behind_global_batches == 0);
     REQUIRE(c.bound_behind_global_seconds == 0.0);
 }
@@ -1703,7 +1710,7 @@ TEST_CASE("a shared bound is never loosened by the worker's own worse incumbent"
     PeerAtBatch sampler(m, pool, peer_solution(kPeerObjective),
                         /*submit_after=*/0);  // samples only; the hook is the peer
     SearchConfig config;
-    config.max_iterations = 20000;
+    config.max_iterations = kSharedBoundIterations;
     config.batch_iterations = 100;
     config.tracer = &sampler;
     const SearchResult r =
@@ -1740,7 +1747,7 @@ TEST_CASE("a lone worker's own incumbents leave its trajectory unchanged",
         coord.pool = &pool;
         coord.share_objective_bound = share;
         SearchConfig config;
-        config.max_iterations = 20000;
+        config.max_iterations = kSharedBoundIterations;
         config.batch_iterations = 100;
         config.perturbation_period = 2;  // adoption is exercised too
         Model m = cover_model();
@@ -1788,7 +1795,7 @@ TEST_CASE("a portfolio reports its shared-bound engagement", "[parallel][shared_
         pc.n_threads = 4;
         pc.share_objective_bound = share;
         SearchConfig config;
-        config.max_iterations = 20000;
+        config.max_iterations = kSharedBoundIterations;
         config.batch_iterations = 100;
         ParallelSearch ps(4);
         return ps.solve(cover_model, /*time_limit=*/0.0, /*seed=*/1, config, nullptr, nullptr,
@@ -1801,4 +1808,153 @@ TEST_CASE("a portfolio reports its shared-bound engagement", "[parallel][shared_
     REQUIRE(off.feasible);
     REQUIRE(off.counters.shared_bound_tightenings == 0);
     REQUIRE(off.counters.bound_behind_global_batches > 0);
+}
+
+namespace {
+
+// Drops one unit of the first column it can without leaving the feasible
+// region: a genuine own improvement on every feasible batch, which is how the
+// test below gets own bests recorded BEHIND a global best the bound already
+// sits at.
+class ImproveByOne : public InnerSolverHook {
+public:
+    void solve(Model& model, ViolationManager& /*vm*/,
+               const std::vector<int32_t>& /*last_changed_vars*/) override {
+        for (int32_t v = 0; v < static_cast<int32_t>(model.num_vars()); ++v) {
+            const double before = model.var(v).value;
+            if (before < 1.0) {
+                continue;
+            }
+            model.var_mut(v).value = before - 1.0;
+            full_evaluate(model);
+            const auto& cids = model.constraint_ids();
+            bool holds = true;
+            for (size_t c = 0; c < cids.size() && holds; ++c) {
+                holds = static_cast<int32_t>(c) == model.objective_constraint_idx() ||
+                        model.node_value(cids[c]) <= 1e-9;
+            }
+            if (holds) {
+                return;
+            }
+            model.var_mut(v).value = before;
+            full_evaluate(model);
+        }
+    }
+};
+
+// Per batch: the objectives record_best recorded, and whether the loop counted
+// the batch as an improvement.
+class BatchLedger : public PeerAtBatch {
+public:
+    using PeerAtBatch::PeerAtBatch;
+    void new_best(double objective, double /*seconds*/) override { pending_.push_back(objective); }
+    void batch_end(BatchKind kind, int64_t iterations, bool improved) override {
+        recorded.push_back(pending_);
+        pending_.clear();
+        improved_flags.push_back(improved);
+        PeerAtBatch::batch_end(kind, iterations, improved);
+    }
+    std::vector<std::vector<double>> recorded;
+    std::vector<bool> improved_flags;
+
+private:
+    std::vector<double> pending_;
+};
+
+// Samples the bound the moment an adoption has re-grounded it.
+class AdoptWatcher : public Tracer {
+public:
+    explicit AdoptWatcher(const Model& model) : model_(model) {}
+    void kick(KickKind kind) override {
+        if (kind == KickKind::Adopt) {
+            bounds.push_back(model_.objective_bound());
+        }
+    }
+    std::vector<double> bounds;
+
+private:
+    const Model& model_;
+};
+
+}  // namespace
+
+TEST_CASE("an own best behind the shared bound is not an improvement",
+          "[parallel][coord][shared_bound]") {
+    // With sharing on, a worker whose bound already sits at the peer's cap and
+    // records an own best worse than the peer is recording a point the portfolio
+    // had beaten, under a bound that did not move. It stays the incumbent, but
+    // the loop must not treat it as a new best -- that would reset the GLS
+    // weights and the stagnation count, postponing the adoption that would move
+    // this worker on. Return true from record_best there and the ledger below
+    // shows such a batch flagged `improved`.
+    //
+    // The peer claims 30, below anything this model reaches: at the realistic
+    // 95 the worker jumps straight under the peer at the first boundary and never
+    // records a behind point again, so there would be nothing to check. A peer
+    // this far ahead keeps every later own best behind it.
+    constexpr double kFarPeer = 30.0;
+    SolutionPool pool(1);
+    SearchCoordination coord;
+    coord.pool = &pool;
+    ImproveByOne hook;
+    Model m = cover_model();
+    BatchLedger ledger(m, pool, peer_solution(kFarPeer), /*submit_after=*/1);
+    SearchConfig config;
+    config.max_iterations = kSharedBoundIterations;
+    config.batch_iterations = 100;
+    config.tracer = &ledger;
+    const SearchResult r =
+        solve(m, /*time_limit=*/0.0, /*seed=*/5, true, &hook, nullptr, 3, nullptr, config, &coord);
+    REQUIRE(r.feasible);
+    int behind_batches = 0;
+    // From batch 2 on the bound is at the cap before the batch starts, so a
+    // batch whose every record is behind the peer moved nothing.
+    for (size_t i = 1; i < ledger.recorded.size(); ++i) {
+        const auto& objs = ledger.recorded[i];
+        if (objs.empty() ||
+            !std::all_of(objs.begin(), objs.end(), [](double o) { return o > kFarPeer; })) {
+            continue;
+        }
+        ++behind_batches;
+        INFO("batch " << i + 1 << " recorded only behind-global own bests");
+        REQUIRE_FALSE(ledger.improved_flags[i]);
+    }
+    REQUIRE(behind_batches > 0);  // the case happened, or this proves nothing
+}
+
+TEST_CASE("an adoption does not loosen a shared bound", "[parallel][coord][shared_bound]") {
+    // The re-grounding after an adoption derives the bound from the tighter of
+    // the adopted point and the worker's own best -- both behind the peer here.
+    // The peer's entry is a full-width, feasible state (every column at 10) whose
+    // submitted objective, 95, is far better than its true one on this model: the
+    // pool's G comes from the submitter, the re-grounding from this model's own
+    // evaluation, and the two disagree exactly where the cap matters. Drop the
+    // shared cap from reground_objective_bound_after_adoption and the bound
+    // sampled right after each adoption sits above it.
+    const double cap = bound_below(kPeerObjective);
+    Model donor = cover_model();
+    Solution peer = peer_solution(kPeerObjective);
+    peer.state = donor.copy_state();
+    std::fill(peer.state.values.begin(), peer.state.values.end(), 10.0);
+
+    SolutionPool pool(1);  // the peer stays the only entry, so every draw is it
+    pool.submit(peer);
+    SearchCoordination coord;
+    coord.pool = &pool;
+    Model m = cover_model();
+    AdoptWatcher watcher(m);
+    SearchConfig config;
+    config.max_iterations = kSharedBoundIterations;
+    config.batch_iterations = 100;
+    config.perturbation_period = 2;
+    config.lns_interval = 0;
+    config.tracer = &watcher;
+    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/5, true, nullptr, nullptr, 0,
+                                 nullptr, config, &coord);
+    REQUIRE(r.feasible);
+    REQUIRE_FALSE(watcher.bounds.empty());  // adoptions happened
+    for (double b : watcher.bounds) {
+        INFO("bound after adoption " << b << ", cap " << cap);
+        REQUIRE(b <= cap);
+    }
 }

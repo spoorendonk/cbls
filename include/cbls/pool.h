@@ -139,12 +139,16 @@ struct ParallelConfig {
 /// A COOPERATIVE portfolio: N workers, each owning its own `Model` and searching
 /// it on its own thread, sharing incumbents through one mutex-guarded
 /// `SolutionPool`. The search itself is still single-threaded per solve; what is
-/// parallel is the portfolio, and what is shared is solutions, never state.
+/// parallel is the portfolio, and what is shared is solutions (and the best
+/// objective among them), never search state.
 ///
-/// Three properties distinguish it from a set of independent runs:
+/// Four properties distinguish it from a set of independent runs:
 ///
 ///  - a worker SUBMITS every new incumbent the moment it records one, not once
 ///    at the end;
+///  - every worker's `obj <= bound` row follows the portfolio's best feasible
+///    objective, tightened at each batch boundary rather than only on an
+///    adoption (#179, `ParallelConfig::share_objective_bound`);
 ///  - a stalled worker RESTARTS from the pool (`get_restart_point`, i.e. the
 ///    better half) instead of only perturbing its own assignment;
 ///  - no worker idles while budget remains. A worker whose `solve()` returns
