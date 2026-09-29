@@ -98,6 +98,7 @@ void LinearJumpScorer::reset_built_rows() {
     }
     built_.clear();
     slope_at_.reset();
+    slope_len_ = 0;
     cached_slopes_ = 0;
 }
 
@@ -196,6 +197,7 @@ double* LinearJumpScorer::slope_table() {
     if (!slope_at_) {
         throw std::bad_alloc();
     }
+    slope_len_ = len;
     return slope_at_.get();
 }
 

@@ -846,6 +846,17 @@ bool ViolationLSLoop::record_best() {
     // that would move this worker onto the better region. With sharing off
     // (the control arm) and without a pool this branch cannot be taken, so
     // those runs return exactly what they did before #179.
+    //
+    // Two KNOWN ASYMMETRIES, both part of the treatment arm #179 measured and
+    // so left as they are (change either only with a re-measurement):
+    //  - a TIE, obj == global best, is not "behind", so it returns true and
+    //    buys the resets although the bound -- already at the cap -- does not
+    //    move. Pinned by "an own best that ties the shared bound still counts as
+    //    an improvement".
+    //  - a behind own best returns true exactly when bound_moved, i.e. a peer
+    //    improved mid-batch and the cap moved the bound here. That true is
+    //    load-bearing rather than incidental: apply_batch_outcome's
+    //    reset_weights is then the only FJ rebuild after the bound moved.
     const bool sharing = coord_ != nullptr && coord_->share_objective_bound;
     return !behind_global || bound_moved || !sharing;
 }

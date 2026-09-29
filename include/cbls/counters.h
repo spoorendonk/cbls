@@ -148,6 +148,8 @@ struct SearchCounters {
     /// Times the global best MOVED this worker's bound: at a batch boundary where
     /// the bound was looser, or in record_best when a peer improved since the
     /// last boundary. Always 0 with sharing off; nonzero is the mechanism firing.
+    /// NOT counted: the cap applied by an adoption's re-grounding, which can
+    /// also tighten the bound -- an adoption is its own event (`perturbations`).
     ///
     /// "Global" is the pool's, so after a portfolio RESTART it includes this
     /// worker's own earlier solve: a restarted `solve()` reopens the bound at +inf

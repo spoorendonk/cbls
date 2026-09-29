@@ -2016,3 +2016,86 @@ TEST_CASE("a shared bound reaches a worker before its first feasible point",
     REQUIRE(first_feasible(/*share=*/false) == 0.0);
     REQUIRE(first_feasible(/*share=*/true) < 0.0);
 }
+
+TEST_CASE("an own best that ties the shared bound still counts as an improvement",
+          "[parallel][coord][shared_bound]") {
+    // Pins a KNOWN ASYMMETRY of the measured treatment arm (#179), not a design
+    // goal. With sharing on, an own best EQUAL to the portfolio's best is not
+    // "behind" it, so record_best returns true -- weights and stagnation reset --
+    // although the bound, already at the peer's cap, does not move. A behind own
+    // best under an unmoved bound returns false ("an own best behind the shared
+    // bound is not an improvement"). The A/B was measured with this tie
+    // behaviour; change it deliberately, with a re-measurement, or not at all.
+    //
+    // The peer's 68 is an objective this worker records exactly, at seed 5, in
+    // a batch that starts with the bound already at the cap 68 earns.
+    constexpr double kTiePeer = 68.0;
+    SolutionPool pool(1);
+    SearchCoordination coord;
+    coord.pool = &pool;
+    Model m = cover_model();
+    BatchLedger ledger(m, pool, peer_solution(kTiePeer), /*submit_after=*/1);
+    SearchConfig config;
+    config.max_iterations = kSharedBoundIterations;
+    config.batch_iterations = 100;
+    config.tracer = &ledger;
+    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/5, true, nullptr, nullptr, 3,
+                                 nullptr, config, &coord);
+    REQUIRE(r.feasible);
+    int ties = 0;
+    for (size_t i = 1; i < ledger.recorded.size(); ++i) {
+        const auto& objs = ledger.recorded[i];
+        const bool tie = std::find(objs.begin(), objs.end(), kTiePeer) != objs.end();
+        if (!tie || ledger.bounds[i] != ledger.bounds[i - 1]) {
+            continue;  // no tie, or the bound moved in this batch
+        }
+        ++ties;
+        INFO("batch " << i + 1 << " recorded the tie under an unmoved bound");
+        REQUIRE(ledger.improved_flags[i]);
+    }
+    REQUIRE(ties > 0);  // the scenario happened, or this pins nothing
+}
+
+TEST_CASE("the control arm times the batches it runs behind the global bound",
+          "[parallel][coord][shared_bound]") {
+    // bound_behind_global_seconds is gated on a wall clock, so the clockless
+    // tests above see only its 0.0. With a deadline, a control-arm worker behind
+    // a pre-seeded peer runs behind batches, and every one of them is timed.
+    SolutionPool pool(1);
+    pool.submit(peer_solution(kPeerObjective));
+    SearchCoordination coord;
+    coord.pool = &pool;
+    coord.share_objective_bound = false;
+    Model m = cover_model();
+    SearchConfig config;
+    config.batch_iterations = 100;
+    const SearchResult r = solve(m, /*time_limit=*/0.3, /*seed=*/5, true, nullptr, nullptr, 3,
+                                 nullptr, config, &coord);
+    REQUIRE(r.counters.bound_behind_global_batches > 0);
+    REQUIRE(r.counters.bound_behind_global_seconds > 0.0);
+}
+
+TEST_CASE("a pure-feasibility model ignores a shared objective",
+          "[parallel][coord][shared_bound]") {
+    // No objective, so no `obj <= bound` row: set_objective_bound would throw.
+    // A pool holding a feasible finite objective -- which a caller-supplied
+    // factory handing out different models could produce -- must leave the
+    // search alone rather than end it with a logic_error.
+    Model m;
+    auto x = m.int_var(0, 10);
+    auto y = m.int_var(0, 10);
+    auto neg1 = m.constant(-1.0);
+    m.add_constraint(m.sum({m.constant(5.0), m.prod(neg1, x), m.prod(neg1, y)}));
+    m.close();
+    SolutionPool pool(1);
+    pool.submit(peer_solution(-50.0));
+    SearchCoordination coord;
+    coord.pool = &pool;
+    SearchConfig config;
+    config.max_iterations = 2000;
+    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/5, true, nullptr, nullptr, 3,
+                                 nullptr, config, &coord);
+    REQUIRE(r.feasible);
+    REQUIRE(r.termination == TerminationReason::Feasible);
+    REQUIRE(r.counters.shared_bound_tightenings == 0);
+}

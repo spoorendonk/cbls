@@ -675,6 +675,10 @@ TEST_CASE("a row demoted by its build counts no slopes and stays ineligible", "[
     REQUIRE_FALSE(sc.residual_partial_at(vid(x), 0, g));  // row 0 is x's first row
     REQUIRE(sc.residual_partial_at(vid(x), 1, g));
     REQUIRE(g == 1.0);
+    // Past the end of x's G_v: refused, never read out of the incidence array.
+    const size_t gv_size = m.constraints_of_var(vid(x)).size();
+    REQUIRE_FALSE(sc.residual_partial_at(vid(x), gv_size, g));
+    REQUIRE_FALSE(sc.residual_partial_at(vid(x), gv_size + 7, g));
 }
 
 TEST_CASE("slopes follow the G_v layout when the objective row is added (#176)",
@@ -695,6 +699,8 @@ TEST_CASE("slopes follow the G_v layout when the objective row is added (#176)",
         REQUIRE(check_scores(m, sc, w, rng, /*exact=*/true) > 50);  // every row built
         REQUIRE(check_partials(m, sc) > 20);
         const size_t built_before = sc.cached_slopes();
+        const size_t table_before = sc.slope_table_size();
+        REQUIRE(table_before == m.num_var_constraint_incidences());
 
         m.add_objective_soft_constraint();
         const size_t nc = m.constraint_ids().size();
@@ -714,5 +720,9 @@ TEST_CASE("slopes follow the G_v layout when the objective row is added (#176)",
             REQUIRE(check_partials(m, sc) > 20);
         }
         REQUIRE(sc.cached_slopes() > built_before);  // plus the objective row's
+        // The table was reallocated for the NEW layout, not kept: reusing the old
+        // block would write the grown layout's slopes past its end.
+        REQUIRE(sc.slope_table_size() == m.num_var_constraint_incidences());
+        REQUIRE(sc.slope_table_size() > table_before);
     }
 }

@@ -14,6 +14,7 @@
 //
 //   cbls_minlplib_portfolio INSTANCE.nl BUDGET_SECONDS SEED THREADS SHARE(0|1)
 
+#include <benchmarks/common/runner_args.h>
 #include <cbls/cbls.h>
 #include <cbls/io_nl.h>
 #include <cmath>
@@ -62,17 +63,19 @@ int run(int argc, char** argv) {
         return usage();
     }
     const std::string path = argv[1];
-    char* end = nullptr;
-    const double budget = std::strtod(argv[2], &end);
-    if (*end != '\0' || !(budget > 0.0)) {
+    // The shared reporting policy (benchmarks/common/runner_args.h): a bad double
+    // comes back NaN for the positivity guard, a bad integer reports and exits 2.
+    // Positional rather than ArgCursor flags because the driver is the only caller.
+    const double budget = cbls::bench::parse_double("BUDGET_SECONDS", argv[2]);
+    if (!(budget > 0.0)) {
         return usage();
     }
-    const uint64_t seed = std::strtoull(argv[3], &end, 10);
-    if (*end != '\0') {
-        return usage();
+    const int64_t seed = cbls::bench::parse_int64("SEED", argv[3]);
+    if (seed < 0) {
+        return usage();  // strtoull would have wrapped a leading '-' silently
     }
-    const long threads = std::strtol(argv[4], &end, 10);
-    if (*end != '\0' || threads < 1 || threads > 256) {
+    const int64_t threads = cbls::bench::parse_int64("THREADS", argv[4]);
+    if (threads < 1 || threads > 256) {
         return usage();
     }
     const std::string share = argv[5];
@@ -100,8 +103,8 @@ int run(int argc, char** argv) {
     };
     TraceRecorder recorder;
     cbls::ParallelSearch ps(pc.n_threads);
-    const cbls::SearchResult r =
-        ps.solve(built.model, budget, seed, cfg, hook_factory, lns_factory, &recorder, pc);
+    const cbls::SearchResult r = ps.solve(built.model, budget, static_cast<uint64_t>(seed), cfg,
+                                          hook_factory, lns_factory, &recorder, pc);
     const auto trace = recorder.take();
 
     std::printf(R"({"feasible": %s, "objective": )", r.feasible ? "true" : "false");

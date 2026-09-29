@@ -115,7 +115,7 @@ void print_usage() {
         "                    [--inf-clamp B] [--no-propagate-bounds]\n"
         "                    [--max-propagation-passes N]\n"
         "                    [--no-compound-moves] [--threads N]\n"
-        "                    [--no-share-bound]\n"
+        "                    [--share-bound | --no-share-bound]\n"
         "                    [--solution-dir DIR]\n"
         "                    [--commit SHA]\n");
 }

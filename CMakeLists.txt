@@ -354,6 +354,7 @@ if(CBLS_BUILD_BENCHMARKS)
     add_executable(cbls_minlplib_portfolio benchmarks/minlplib/portfolio_ab.cpp)
     target_link_libraries(cbls_minlplib_portfolio PRIVATE cbls_lib)
     cbls_enable_warnings(cbls_minlplib_portfolio)
+    target_include_directories(cbls_minlplib_portfolio PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
     add_executable(cbls_setcover benchmarks/setcover/setcover.cpp)
     target_link_libraries(cbls_setcover PRIVATE cbls_lib)

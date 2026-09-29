@@ -140,6 +140,11 @@ public:
     /// build counter, not a memory figure: the slope array costs 8 B per G_v
     /// incidence of the model however many rows are built.
     [[nodiscard]] size_t cached_slopes() const { return cached_slopes_; }
+    /// Elements in the slope table: 0 before the first build, and after a layout
+    /// change until the next one, then the model's G_v incidence count AT THAT
+    /// BUILD. Observability for tests -- a table kept across a layout change would
+    /// be the old, shorter length and overrun on the rebuild (#176).
+    [[nodiscard]] size_t slope_table_size() const { return slope_len_; }
 
 private:
     // slots_[ci]: kIneligible, kPending, or kFirstBuilt + index into built_.
@@ -202,6 +207,7 @@ private:
     // row is built (0 until then, and for a zero or cancelled slope). calloc'd,
     // hence the deleter; null until the first build.
     std::unique_ptr<double, FreeDeleter> slope_at_;
+    size_t slope_len_ = 0;  // elements in slope_at_, 0 while null
     size_t cached_slopes_ = 0;
     std::vector<Term> terms_;
     // build_row's scratch, kept so a build allocates only the row it keeps.
