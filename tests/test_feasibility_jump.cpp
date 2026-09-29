@@ -1275,3 +1275,138 @@ TEST_CASE("Novelty Jump hands back exact values and a V that agrees with them",
     }
     CHECK(incremental_sum_counters().incremental > 0);  // the legs really were incremental
 }
+
+namespace {
+
+// Gives the incremental Sum `sum` a recorded drift of `delta`, as a run of
+// inexact updates would, and moves the row above it to match -- without
+// re-summing anything. What a real run reaches only through many fractional
+// commits, set up directly so that a test can say which row drifts and by how
+// much.
+void inject_drift(Model& m, int32_t sum, int32_t row, double delta) {
+    m.set_node_value_unchecked(sum, m.node_value(sum) + delta);
+    m.set_node_value_unchecked(row,
+                               m.node_value(row) + delta);  // leq(sum, const): residual moves 1:1
+    IncrementalSumState& state = m.incremental_sums();
+    state.age[static_cast<size_t>(sum)] = 1 | IncrementalSumState::kListed;
+    state.drifted.push_back(sum);
+}
+
+// r1: 0.25*x + w + 0*z <= rhs1, x fixed at 0.5, w free in [-1, 1] at 0.
+// r2: z >= 1, z free in [0, 1] at 0: violated, and FJ fixes it by moving z --
+//     a commit whose cone includes r1's Sum (through the 0*z term), which is
+//     how a row gets on FJ's touched list in a real run.
+struct DriftRows {
+    Model m;
+    int32_t s1 = -1;
+    int32_t r1_node = -1;
+    int32_t r1 = -1;  // row index
+    int32_t w = -1;
+};
+
+DriftRows make_drift_rows(double rhs1, bool w_free) {
+    DriftRows d;
+    Model& m = d.m;
+    const int32_t x = m.float_var(0.5, 0.5);
+    d.w = w_free ? m.float_var(-1.0, 1.0) : m.float_var(0.0, 0.0);
+    const int32_t z = m.float_var(0.0, 1.0);
+    d.s1 = m.sum({m.prod(m.constant(0.25), x), d.w, m.prod(m.constant(0.0), z)});
+    d.r1_node = m.leq(d.s1, m.constant(rhs1));
+    m.add_constraint(d.r1_node);
+    m.add_constraint(m.geq(z, m.constant(1.0)));
+    m.minimize(m.sum({z}));
+    m.close();
+    m.var_mut(vid(d.w)).value = 0.0;
+    full_evaluate(m);
+    d.r1 = 0;
+    REQUIRE(m.constraint_ids()[0] == d.r1_node);
+    REQUIRE(m.node(d.s1).incremental_sum == 1);
+    return d;
+}
+
+}  // namespace
+
+TEST_CASE("a row violated only by its Sum's drift is dropped from V, not bumped",
+          "[fj][incremental_sum]") {
+    // r1 holds at equality exactly (0.125 <= 0.125); drift puts it 2e-9 over,
+    // above FJ's 1e-9 tolerance. At the local minimum that follows, the
+    // re-grounding of V's rows must find it satisfied: no weight is raised on a
+    // row whose exact residual is within tolerance. Red without it -- the row is
+    // bumped at every iteration of the batch.
+    DriftRows d = make_drift_rows(0.125, /*w_free=*/false);
+    Model& m = d.m;
+    m.var_mut(vid(d.w)).value = 0.0;
+    // Without r2's commit: x and w are fixed, z is the only mover and r2 is
+    // fixed first, so make r2 already satisfied.
+    const int32_t z = m.num_vars() - 1;
+    m.var_mut(z).value = 1.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+    RNG rng(1);
+    GFJConfig cfg;
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(false);
+    inject_drift(m, d.s1, d.r1_node, 2e-9);
+    fj.resync();
+    REQUIRE(fj.row_violated(d.r1));  // the phantom, as V sees it
+    CHECK(fj.batch(20));
+    CHECK(vm.weights[static_cast<size_t>(d.r1)] == 1.0);
+    CHECK_FALSE(fj.row_violated(d.r1));
+}
+
+TEST_CASE("a row satisfied only by drift is found at the end of the search, and fixed",
+          "[fj][incremental_sum]") {
+    // r1 is violated by 1.5e-9 exactly, but drift of -2e-9 hides it. FJ fixes r2
+    // and V is empty -- on drifted values. The exact check before "Feasible"
+    // re-grounds, finds r1, and puts w back in the scan set, so FJ moves w and
+    // fixes r1 with no weight ever bumped. Red if the re-grounding does not
+    // resettle r1's variables: w is then only found through a bump.
+    DriftRows d = make_drift_rows(0.125 - 1.5e-9, /*w_free=*/true);
+    Model& m = d.m;
+    ViolationManager vm(m);
+    RNG rng(1);
+    GFJConfig cfg;
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(false);
+    inject_drift(m, d.s1, d.r1_node, -2e-9);
+    fj.resync();
+    REQUIRE_FALSE(fj.row_violated(d.r1));  // hidden by the drift
+    CHECK(fj.batch(50));
+    CHECK(vm.weights[static_cast<size_t>(d.r1)] == 1.0);
+    CHECK(m.node_value(d.r1_node) <= 1e-9);
+}
+
+TEST_CASE("a batch that ends at its limit on drifted values does not report Feasible",
+          "[fj][incremental_sum]") {
+    // One iteration: FJ fixes r2 and the limit ends the batch with V empty. On
+    // exact values r1 is violated, so the batch has not found feasibility.
+    DriftRows d = make_drift_rows(0.125 - 1.5e-9, /*w_free=*/false);
+    Model& m = d.m;
+    ViolationManager vm(m);
+    RNG rng(1);
+    GFJConfig cfg;
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(false);
+    inject_drift(m, d.s1, d.r1_node, -2e-9);
+    fj.resync();
+    CHECK_FALSE(fj.batch(1));
+    CHECK(fj.row_violated(d.r1));
+}
+
+TEST_CASE("Novelty Jump does not report feasibility read off drifted values",
+          "[fj][incremental_sum]") {
+    // It fixes r2 by moving z, and V is empty on drifted values; r1 is violated
+    // exactly and nothing can fix it (w fixed), so there is no feasibility to
+    // report.
+    DriftRows d = make_drift_rows(0.125 - 1.5e-9, /*w_free=*/false);
+    Model& m = d.m;
+    ViolationManager vm(m);
+    RNG rng(1);
+    GFJConfig cfg;
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(false);
+    inject_drift(m, d.s1, d.r1_node, -2e-9);
+    fj.resync();
+    CHECK_FALSE(fj.apply_novelty_jump());
+    CHECK(fj.row_violated(d.r1));
+}

@@ -913,6 +913,66 @@ void FeasibilityJump::resettle_neighbours(int32_t row, int32_t skip_var) {
     }
 }
 
+// "Feasible", read off V, is exact only if no row outside V drifted below the
+// tolerance. So re-ground everything the batch drifted, and read V again: a row
+// that came back puts its variables in Q and the loop carries on (#177).
+bool FeasibilityJump::exact_feasible() {
+    reground_and_resettle();
+    return !any_active_violated();
+}
+
+// Re-sums the drifted Sums under the rows in V, and settles each row the
+// re-sum moved exactly as update_var settles a row its move changed. Returns
+// whether any row moved. O(the cones of V's rows) when anything has drifted --
+// the order of the bump that follows, which walks those rows' variables --
+// and O(1) otherwise.
+bool FeasibilityJump::reground_violated_rows() {
+    if (model_.incremental_sums().drifted.empty() || violated_rows_.empty()) {
+        return false;
+    }
+    const auto& cids = model_.constraint_ids();
+    regrounded_roots_.clear();
+    for (const int32_t c : violated_rows_) {
+        regrounded_roots_.push_back(cids[static_cast<size_t>(c)]);
+    }
+    if (!reground_incremental_sums_below(model_, regrounded_roots_, regrounded_)) {
+        return false;
+    }
+    if (row_of_node_.size() != cids.size()) {
+        row_of_node_.clear();
+        for (size_t c = 0; c < cids.size(); ++c) {
+            row_of_node_.emplace_back(cids[c], static_cast<int32_t>(c));
+        }
+        std::sort(row_of_node_.begin(), row_of_node_.end());
+    }
+    regrounded_roots_.clear();  // reused: the rows that moved
+    for (const auto& [nid, before] : regrounded_) {
+        const auto it = std::lower_bound(row_of_node_.begin(), row_of_node_.end(),
+                                         std::make_pair(nid, int32_t{-1}));
+        if (it == row_of_node_.end() || it->first != nid) {
+            continue;  // not a row
+        }
+        const int32_t c = it->second;
+        const double after = model_.node_values()[static_cast<size_t>(nid)];
+        uint64_t before_bits = 0;
+        uint64_t after_bits = 0;
+        std::memcpy(&before_bits, &before, sizeof before_bits);
+        std::memcpy(&after_bits, &after, sizeof after_bits);
+        if (before_bits == after_bits) {
+            continue;
+        }
+        if (c != objective_ci_ && active(c)) {
+            unweighted_violation_ += progress_residual(after) - progress_residual(before);
+        }
+        set_violated(c, is_violated(after));
+        regrounded_roots_.push_back(c);
+    }
+    for (const int32_t c : regrounded_roots_) {
+        resettle_neighbours(c, -1);
+    }
+    return !regrounded_roots_.empty();
+}
+
 // O(|rows|): one stamp test each, on rows the caller has just walked anyway.
 void FeasibilityJump::note_touched_rows(ConstSpan<int32_t> rows) {
     const size_t nc = model_.constraint_ids().size();
@@ -1283,19 +1343,12 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
     try {
         GFJStatus status = gls_loop_scaled(sample_size, batch_iter_limit);
         reground_and_resettle();
-        // "Feasible" was read off V as the batch's drifted values left it -- by
-        // the loop's own ending, or by batch_end_status at the batch limit or on
-        // a stall. The re-grounding can move a row sitting within rounding of its
-        // tolerance back into V, so re-read it. A batch is over either way and
-        // reports Unsolved; the caller's next batch goes on from the exact state.
-        // gls()/run() have no batch, only the run's budget, so they carry on.
-        while (status == GFJStatus::Feasible && any_active_violated()) {
-            if (batch_iter_limit > 0) {
-                status = GFJStatus::Unsolved;
-                break;
-            }
-            status = gls_loop_scaled(sample_size, batch_iter_limit);
-            reground_and_resettle();
+        // The loop's own "Feasible" is exact already (exact_feasible). What is
+        // not is batch_end_status at the batch limit or on a stall, which reads
+        // V as the batch's last commits left it: the re-grounding can put a row
+        // sitting within rounding of its tolerance back. Re-read it.
+        if (status == GFJStatus::Feasible && any_active_violated()) {
+            status = GFJStatus::Unsolved;
         }
         materialise_weights();
         return status;
@@ -1329,10 +1382,19 @@ GFJStatus FeasibilityJump::gls_loop_scaled(int sample_size, int64_t batch_iter_l
 
     while (true) {
         if (!apply_jump(sample_size)) {
-            if (!any_active_violated()) {
-                return GFJStatus::Feasible;
+            // A local minimum. Before any weight is bumped, the rows in V are
+            // re-summed exactly (#177): a row that is violated only by its Sums'
+            // drift leaves V here instead of having its weight raised, and a
+            // row that moved puts its variables back in Q, so sample again.
+            if (!reground_violated_rows()) {
+                if (!any_active_violated()) {
+                    if (exact_feasible()) {
+                        return GFJStatus::Feasible;
+                    }
+                } else {
+                    bump_weights_and_requeue();
+                }
             }
-            bump_weights_and_requeue();
         }
 
         ++iterations_;
@@ -1809,11 +1871,11 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
 // Its legs commit with old values, so they leave drift as update_var does, and
 // it ends with the same re-grounding as an FJ batch (#177).
 bool FeasibilityJump::apply_novelty_jump() {
+    // Its "reached feasibility" is already exact (exact_feasible); this settles
+    // what an unsuccessful search's backtracked legs left drifted.
     const bool feasible = novelty_rounds();
     reground_and_resettle();
-    // Read off V as the drifted legs left it; the re-grounding can put a row
-    // back, as at the end of an FJ batch.
-    return feasible && !any_active_violated();
+    return feasible;
 }
 
 bool FeasibilityJump::novelty_rounds() {
@@ -1842,8 +1904,8 @@ bool FeasibilityJump::novelty_rounds() {
         seed_novelty_scan_set();
         clear_stack();
         while (novelty_jump_search(0.0, b)) {
-            if (!any_active_violated()) {
-                return true;  // reached feasibility
+            if (exact_feasible()) {
+                return true;  // reached feasibility, on exact values
             }
             // Committed a compound move; start a fresh one from the new state
             // (reset budget per Algorithm 4 line 8, keep evolving W').

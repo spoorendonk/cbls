@@ -442,6 +442,8 @@ private:
     void note_touched_rows(ConstSpan<int32_t> rows);
     void reground_and_resettle();
     bool novelty_rounds();
+    bool exact_feasible();
+    bool reground_violated_rows();
     void resettle_neighbours(int32_t row, int32_t skip_var);
 
     [[nodiscard]] bool active(int32_t constraint_idx) const;  // weight > 0
@@ -605,6 +607,11 @@ private:
     std::vector<uint32_t> touch_stamp_;
     uint32_t touch_epoch_ = 1;
     std::vector<double> touched_before_;
+    // reground_violated_rows' scratch, and constraint node id -> row index
+    // (sorted, built on first use): 8 B per row.
+    std::vector<int32_t> regrounded_roots_;
+    std::vector<std::pair<int32_t, double>> regrounded_;
+    std::vector<std::pair<int32_t, int32_t>> row_of_node_;
     std::vector<uint8_t> is_linear_;  // per constraint
     // Closed-form scoring over linear comparison rows. Its per-row eligibility is
     // maintained wherever is_linear_ is: compute_linear_constraints (the

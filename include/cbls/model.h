@@ -73,13 +73,18 @@ inline int32_t handle_to_var_id(int32_t handle) {
 /// only inside a FeasibilityJump batch: every batch ends by re-summing the
 /// Sums it left drifted.
 struct IncrementalSumState {
-    /// node id -> term updates committed into the Sum since it was last
-    /// re-summed. Sized `num_nodes()` by `full_evaluate`, which re-sums every
-    /// node and so zeroes it; empty before the first one.
+    /// node id -> in the low seven bits (`kAgeMask`), the term updates committed
+    /// into the Sum since it was last re-summed; in the top bit (`kListed`),
+    /// whether it is on `drifted`. Sized `num_nodes()` by `full_evaluate`, which
+    /// re-sums every node and so zeroes it; empty before the first one.
     std::vector<uint8_t> age;
-    /// The Sums whose `age` went from 0 to 1, so that re-grounding them costs
-    /// their cones, not a sweep of the model. May repeat an id and may hold one
-    /// whose age is 0 again; the re-grounding skips those.
+    static constexpr uint8_t kAgeMask = 0x7F;
+    static constexpr uint8_t kListed = 0x80;
+    /// The Sums that have drifted since the last full re-grounding, each listed
+    /// once (`kListed`), so the list is bounded by the number of Sums however
+    /// long a run goes without a batch end, and re-grounding costs their cones,
+    /// not a sweep of the model. May hold one whose count is 0 again (re-summed
+    /// since); the re-grounding skips those.
     std::vector<int32_t> drifted;
     /// A `DeltaMode::Probe` walk's dirty nodes with the values they held before
     /// it, which the matching `Rollback` writes back bit for bit.
@@ -688,22 +693,18 @@ public:
     // `full_evaluate` and by nothing else. Unchecked: every id comes from a node
     // this model made, so the check could only ever pass -- the same argument
     // `set_node_value_unchecked` makes.
-    void custom_begin_probe(int32_t id, double saved_value) noexcept {
+    // The node's value is not kept here: a Probe walk stashes every value in its
+    // cone (`IncrementalSumState::probe_stash`), custom nodes included (#177).
+    void custom_begin_probe(int32_t id) noexcept {
         CustomInvariantSlot& slot = custom_invariants_[id];
         assert(!slot.probe_pending);  // one bracket at a time; see CustomInvariant
-        slot.probe_saved_value = saved_value;
         slot.probe_pending = true;
     }
     [[nodiscard]] bool custom_probe_pending(int32_t id) const noexcept {
         return custom_invariants_[id].probe_pending;
     }
-    /// Close the pending probe on `id` and hand back the node value it was
-    /// opened at, for the caller to write into the value array.
-    double custom_end_probe(int32_t id) noexcept {
-        CustomInvariantSlot& slot = custom_invariants_[id];
-        slot.probe_pending = false;
-        return slot.probe_saved_value;
-    }
+    /// Close the pending probe on `id`.
+    void custom_end_probe(int32_t id) noexcept { custom_invariants_[id].probe_pending = false; }
     /// Drop every pending probe. `full_evaluate` calls this because it is about
     /// to tell every invariant `evaluate()`, which is their reset point.
     void clear_custom_probes() noexcept {

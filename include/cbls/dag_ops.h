@@ -61,9 +61,10 @@ double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count
 /// and a re-sum costs its whole length once per this many updates. Chosen by
 /// the sweep recorded on #177; a parameter, not a derived constant.
 constexpr int kIncrementalSumPeriod = 64;
-// IncrementalSumState::age is a uint8_t and climbs to kIncrementalSumPeriod - 1.
-static_assert(kIncrementalSumPeriod >= 1 && kIncrementalSumPeriod <= 256,
-              "IncrementalSumState::age is a uint8_t");
+// IncrementalSumState::age counts in its low seven bits and climbs to
+// kIncrementalSumPeriod - 1.
+static_assert(kIncrementalSumPeriod >= 1 && kIncrementalSumPeriod <= 128,
+              "IncrementalSumState::age counts in seven bits");
 
 /// A `Commit` of one scalar variable whose previous value was `old_value` (the
 /// caller has already written the new one): `delta_evaluate(model, &var_id,
@@ -86,6 +87,15 @@ double probe_scalar_move(Model& model, int32_t var_id, double old_value);
 /// those cones, not the model. FeasibilityJump calls it at the end of every
 /// batch, which is what keeps drift inside a batch.
 bool reground_incremental_sums(Model& model);
+
+/// The same, for only the drifted Sums in the cones below `roots` (node ids),
+/// and what lies above those Sums. `rewritten` receives every node it
+/// re-evaluated, with the value the node held before, so that a caller keeping
+/// state derived from node values can settle what moved. FeasibilityJump calls
+/// it on the rows in V before a GLS weight bump, so that no row is bumped whose
+/// exact residual is within tolerance. Cost: those cones.
+bool reground_incremental_sums_below(Model& model, const std::vector<int32_t>& roots,
+                                     std::vector<std::pair<int32_t, double>>& rewritten);
 
 /// How often the dirty incremental `Sum`s were moved by their terms' changes
 /// rather than re-summed, on this thread, since the last reset. Diagnostics for

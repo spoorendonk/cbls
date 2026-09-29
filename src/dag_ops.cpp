@@ -257,14 +257,10 @@ double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
     // `custom_of` in src/dag.cpp keeps -- the three probe accessors below index the
     // slot vector unchecked, so -1 would be a heap read one entry before it.
     assert(slot >= 0);
-    if (mode == DeltaMode::Rollback && model.custom_probe_pending(slot)) {
-        // The engine restores the node's VALUE; the invariant discards only its
-        // own staged state. Its parents recompute from the restored value below,
-        // in topological order, so the whole cone lands back where the probe
-        // found it.
-        model.custom_invariant(slot).rollback();
-        return model.custom_end_probe(slot);
-    }
+    // No Rollback case here: a Rollback of a pending probe never walks -- it
+    // writes the probe's stash back (restore_probe_stash) and tells each custom
+    // node in it `rollback()`. A Rollback that does walk has no probe of its own,
+    // is treated as Commit, and a slot still pending by then is stale (below).
     // Whether this call's positional edits describe the change since the
     // invariant's committed state (#172). They do unless a probe is still open:
     // the invariant then never heard the commit or rollback that probe owed, so
@@ -280,7 +276,7 @@ double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
         // longer anything to roll back TO, and leaving it would let a later
         // `Rollback` restore a value from a different assignment. Defensive, with
         // no observable effect on any non-throwing path.
-        (void)model.custom_end_probe(slot);
+        model.custom_end_probe(slot);
     }
     collect_changed_inputs(model, node, changed_var_ids, count, dirty_flags, changed_scratch);
     CustomInvariant& inv = model.custom_invariant(slot);
@@ -292,9 +288,8 @@ double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
                       : InvariantInputs(model, model.children(node));
     const double value = inv.delta(inputs, changed);
     if (mode == DeltaMode::Probe) {
-        // Read BEFORE the caller writes `value`: this is still the value the
-        // probe is to be rolled back to.
-        model.custom_begin_probe(slot, model.node_values()[nid]);
+        // The node's value was stashed with the rest of the cone before the walk.
+        model.custom_begin_probe(slot);
     } else {
         inv.commit();
     }
@@ -435,17 +430,24 @@ private:
     // committed value it leaves behind is exactly as old as it was.
     double eval_incremental_sum(int32_t nid, const ExprNode& node) {
         uint8_t& age = state_.age[nid];
+        const int updates = age & IncrementalSumState::kAgeMask;
         const bool forced = dirty_flags_[nid] == kDirtyResum;
-        if (push_ && !forced && (mode_ == DeltaMode::Probe || age + 1 < kIncrementalSumPeriod)) {
+        if (push_ && !forced &&
+            (mode_ == DeltaMode::Probe || updates + 1 < kIncrementalSumPeriod)) {
             ++incremental_sum_counts.incremental;
-            if (mode_ == DeltaMode::Commit && age++ == 0) {
-                state_.drifted.push_back(nid);
+            if (mode_ == DeltaMode::Commit) {
+                // Listed once, however often it drifts before the next
+                // re-grounding: the list is bounded by the number of Sums.
+                if ((age & IncrementalSumState::kListed) == 0) {
+                    state_.drifted.push_back(nid);
+                }
+                age = static_cast<uint8_t>((updates + 1) | IncrementalSumState::kListed);
             }
             return model_.node_values()[nid];
         }
         ++incremental_sum_counts.resummed;
         if (mode_ == DeltaMode::Commit) {
-            age = 0;
+            age &= IncrementalSumState::kListed;  // exact again; still on the list if it was
         }
         return evaluate(node, model_);
     }
@@ -483,7 +485,7 @@ void restore_probe_stash(Model& model) {
         const ExprNode& node = nodes[nid];
         if (node.op == NodeOp::Custom && model.custom_probe_pending(node.lambda_func_id)) {
             model.custom_invariant(node.lambda_func_id).rollback();
-            (void)model.custom_end_probe(node.lambda_func_id);
+            model.custom_end_probe(node.lambda_func_id);
         }
         model.set_node_value_unchecked(nid, value);
     }
@@ -592,33 +594,24 @@ double probe_scalar_move(Model& model, int32_t var_id, double old_value) {
     return delta_walk(model, &var_id, 1, DeltaMode::Probe, nullptr, &old_value);
 }
 
-bool reground_incremental_sums(Model& model) {
-    IncrementalSumState& state = model.incremental_sums();
-    if (state.drifted.empty()) {
-        return false;
-    }
-    const EvaluationGuard guard("reground_incremental_sums");
-    const size_t num_nodes = model.num_nodes();
-    thread_local std::vector<uint8_t> dirty_flags;
-    thread_local std::vector<int32_t> dirty_list;
-    if (dirty_flags.size() < num_nodes) {
-        dirty_flags.resize(num_nodes, 0);
-    }
-    dirty_list.clear();
-    const DirtyFlagGuard flag_guard(dirty_flags, dirty_list);
-    for (const int32_t nid : state.drifted) {
-        if (state.age[nid] != 0 && dirty_flags[nid] == 0) {
-            dirty_flags[nid] = 1;
-            dirty_list.push_back(nid);
+namespace {
+
+// Re-sums the incremental Sums listed in `dirty_list` (flagged in `dirty_flags`)
+// and re-evaluates everything above them. When `rewritten` is non-null it
+// receives every re-evaluated node with the value it held before.
+void reground_listed(Model& model, std::vector<uint8_t>& dirty_flags,
+                     std::vector<int32_t>& dirty_list,
+                     std::vector<std::pair<int32_t, double>>* rewritten) {
+    close_dirty_cone(model, dirty_flags, dirty_list);
+    if (rewritten != nullptr) {
+        const std::vector<double>& values = model.node_values();
+        for (const int32_t nid : dirty_list) {
+            rewritten->emplace_back(nid, values[nid]);
         }
     }
-    state.drifted.clear();
-    if (dirty_list.empty()) {
-        return false;
-    }
-    close_dirty_cone(model, dirty_flags, dirty_list);
     // A plain Commit walk over the cone: every incremental Sum in it re-sums and
-    // its age returns to 0. Nothing is pushed, so nothing drifts anew.
+    // its update count returns to 0. Nothing is pushed, so nothing drifts anew.
+    const size_t num_nodes = model.num_nodes();
     IncrementalSumWalk sums(model, DeltaMode::Commit, false, dirty_flags);
     if (model.has_custom_nodes()) {
         thread_local std::vector<int32_t> changed_inputs;
@@ -634,6 +627,92 @@ bool reground_incremental_sums(Model& model) {
                              [&model](int32_t id) { return evaluate(model.nodes()[id], model); });
         });
     }
+}
+
+}  // namespace
+
+bool reground_incremental_sums(Model& model) {
+    IncrementalSumState& state = model.incremental_sums();
+    if (state.drifted.empty()) {
+        return false;
+    }
+    const EvaluationGuard guard("reground_incremental_sums");
+    thread_local std::vector<uint8_t> dirty_flags;
+    thread_local std::vector<int32_t> dirty_list;
+    if (dirty_flags.size() < model.num_nodes()) {
+        dirty_flags.resize(model.num_nodes(), 0);
+    }
+    dirty_list.clear();
+    const DirtyFlagGuard flag_guard(dirty_flags, dirty_list);
+    for (const int32_t nid : state.drifted) {
+        uint8_t& age = state.age[nid];
+        if ((age & IncrementalSumState::kAgeMask) != 0 && dirty_flags[nid] == 0) {
+            dirty_flags[nid] = 1;
+            dirty_list.push_back(nid);
+        }
+        age &= IncrementalSumState::kAgeMask;  // off the list, which is cleared below
+    }
+    state.drifted.clear();
+    if (dirty_list.empty()) {
+        return false;
+    }
+    reground_listed(model, dirty_flags, dirty_list, nullptr);
+    return true;
+}
+
+bool reground_incremental_sums_below(Model& model, const std::vector<int32_t>& roots,
+                                     std::vector<std::pair<int32_t, double>>& rewritten) {
+    rewritten.clear();
+    IncrementalSumState& state = model.incremental_sums();
+    if (state.drifted.empty() || state.age.size() != model.num_nodes()) {
+        return false;
+    }
+    const EvaluationGuard guard("reground_incremental_sums_below");
+    const size_t num_nodes = model.num_nodes();
+    thread_local std::vector<uint8_t> dirty_flags;
+    thread_local std::vector<int32_t> dirty_list;
+    thread_local std::vector<uint8_t> seen;
+    thread_local std::vector<int32_t> seen_list;
+    if (dirty_flags.size() < num_nodes) {
+        dirty_flags.resize(num_nodes, 0);
+    }
+    if (seen.size() < num_nodes) {
+        seen.resize(num_nodes, 0);
+    }
+    dirty_list.clear();
+    seen_list.clear();
+    const DirtyFlagGuard flag_guard(dirty_flags, dirty_list);
+    const DirtyFlagGuard seen_guard(seen, seen_list);
+    // Down the roots' cones: every node below them, once. A drifted Sum found on
+    // the way is a seed; its terms are still walked, since a Sum's terms are
+    // never Sums but may sit above one (prod(sum, x)).
+    for (const int32_t root : roots) {
+        if (seen[root] == 0) {
+            seen[root] = 1;
+            seen_list.push_back(root);
+        }
+    }
+    const std::vector<ExprNode>& nodes = model.nodes();
+    for (size_t i = 0; i < seen_list.size(); ++i) {
+        const int32_t nid = seen_list[i];
+        if (nodes[nid].incremental_sum != 0 &&
+            (state.age[nid] & IncrementalSumState::kAgeMask) != 0) {
+            dirty_flags[nid] = 1;
+            dirty_list.push_back(nid);
+        }
+        for (const ChildRef& c : model.children(nodes[nid])) {
+            if (!c.is_var && seen[c.id] == 0) {
+                seen[c.id] = 1;
+                seen_list.push_back(c.id);
+            }
+        }
+    }
+    if (dirty_list.empty()) {
+        return false;
+    }
+    // The seeds stay on the drift list with their count now 0; the next full
+    // re-grounding skips them.
+    reground_listed(model, dirty_flags, dirty_list, &rewritten);
     return true;
 }
 

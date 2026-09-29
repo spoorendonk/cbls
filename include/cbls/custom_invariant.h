@@ -394,9 +394,6 @@ struct CustomInvariantSlot {
     /// replica rather than given a table in the shared structure -- one short
     /// string per custom node, against a whole DAG the replicas already share.
     std::string name;
-    /// The node's cached value as it stood before the pending probe's
-    /// `delta()`, for `DeltaMode::Rollback` to put back.
-    double probe_saved_value = 0.0;
     /// A `delta()` is awaiting its `commit()` or `rollback()`.
     bool probe_pending = false;
 };
