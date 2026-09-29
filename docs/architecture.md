@@ -128,7 +128,8 @@ own `node_values()` array, read through `Model::node_value(id)` (#157). That is
 what lets the whole node array sit in the immutable structure portfolio replicas
 share — a `value` field there would be one worker's search state in storage every
 worker reads. `ExprNode` is 32 bytes as a result, and the per-worker cost of a
-node is the 8-byte value.
+node is the 8-byte value plus #177's 1-byte exact-Sum state (~4.3 MB on the
+4.30M-node neos-5114902-kasavu).
 
 **Supported operations:**
 
@@ -175,7 +176,35 @@ jump *candidate* is scored by a no-commit delta probe (see
 [`weighted_violation_delta`](#violation--gls-weights)) unless every weighted
 row of the variable's column is a linear comparison, where `LinearJumpScorer`
 (`include/cbls/linear_jump.h`) scores it in closed form instead. A committed
-jump always goes through `delta_evaluate`.
+jump goes through the same walk as `commit_scalar_move`, which is also told the
+variable's old value (below).
+
+**Exact incremental Sum** (#177). A committed FJ move changes one term of each
+row it touches, and re-summing a row costs its whole length -- 36% of swath3's
+run at `634001b`, where a committed dirty Sum averaged 1315 terms.
+`commit_scalar_move` therefore moves an eligible `Sum` by its changed terms'
+differences instead, and only where that is **exact**, so node values stay the
+re-sum's to the bit and nothing downstream -- probes, `LinearJumpScorer`, the
+violated-row bookkeeping, trajectories -- can tell:
+
+- *Eligible* (`ExprNode::kExactSum`, set at `close()`): every term is a Bool/Int
+  variable, an integral literal, or a `Neg`/`Prod` of those -- the shapes
+  `mps_to_model` writes for a row with integral coefficients -- none is a Sum,
+  and none appears twice.
+- *Exact* (`Model::sum_exact_state`, per model, 1 byte per node): the Sum was
+  last written by a checked re-sum or by checked updates, and every term is an
+  integer of magnitude at most 2^52 / (term count). Then every partial sum is
+  an integer below 2^52 and each addition is exact in any order. A term that
+  fails the check (fractional, too large, NaN, inf) makes the Sum re-sum at its
+  turn; `full_evaluate` clears the state.
+
+Only FJ's committed moves (`update_var`) pass old values; every other walk
+re-sums, checking eligible Sums as it goes. Fixed-iteration runs of `634001b`
+and the change end on identical assignments on neos-860300, swath3, rail01 and
+cbs-cta. Fractional rows are untouched, which is where most of swath3's and
+rail01's commit cost is; the drifting alternative that covered them was built,
+measured and reverted on #177 -- the guarantee that a row violated only by
+drift is never GLS-bumped cost it its gain -- and is tracked as a follow-up.
 
 ### Reverse-Mode Automatic Differentiation
 
@@ -909,7 +938,7 @@ same first-seen rule, same per-row differencing (#100); the scores agree with
 the probe to rounding, not to the bit -- so the chosen jump is guaranteed the
 probe's only on integral data, and an ulp can flip a near-tie on fractional
 data -- and a committed jump still goes
-through `delta_evaluate`. Any other weighted row, or a non-finite computed side,
+through the DAG walk (`commit_scalar_move`). Any other weighted row, or a non-finite computed side,
 takes the probe. On MIPfeas at a 20s budget, one thread, this raised FJ
 iterations 7–58× (gen-ip002 4,803 → 278,793; neos-860300 1,207 → 8,997;
 n2seq36q 19,504 → 256,589; mas76 142,065 → 1,426,857; binkar10_1 83,917 →
