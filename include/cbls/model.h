@@ -86,6 +86,9 @@ struct IncrementalSumState {
     /// not a sweep of the model. May hold one whose count is 0 again (re-summed
     /// since); the re-grounding skips those.
     std::vector<int32_t> drifted;
+    /// How many Sums carry at least one update since they were last re-summed:
+    /// lets a re-grounding that could find nothing return at once.
+    size_t live = 0;
     /// A `DeltaMode::Probe` walk's dirty nodes with the values they held before
     /// it, which the matching `Rollback` writes back bit for bit.
     std::vector<std::pair<int32_t, double>> probe_stash;

@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace cbls {

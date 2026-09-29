@@ -42,6 +42,7 @@ Model::Model(const Model& other)
     // violation (see the custom-invariant note below).
     incremental_sums_.age = other.incremental_sums_.age;
     incremental_sums_.drifted = other.incremental_sums_.drifted;
+    incremental_sums_.live = other.incremental_sums_.live;
     // probe_old_violation_ is deliberately left empty: it is resized and
     // overwritten before it is read on every call, so it carries no state.
     //

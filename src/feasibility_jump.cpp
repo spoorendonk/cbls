@@ -934,23 +934,37 @@ bool FeasibilityJump::settle_local_minimum() {
 // tolerance. So re-ground everything the batch drifted, and read V again: a row
 // that came back puts its variables in Q and the loop carries on (#177).
 bool FeasibilityJump::exact_feasible() {
+    if (any_active_violated()) {
+        return false;  // no verdict to make exact; the batch end re-grounds
+    }
     reground_and_resettle();
     return !any_active_violated();
 }
 
 // Re-sums the drifted Sums under the rows in V, and settles each row the
 // re-sum moved exactly as update_var settles a row its move changed. Returns
-// whether any row moved. O(the cones of V's rows) when anything has drifted --
-// the order of the bump that follows, which walks those rows' variables --
-// and O(1) otherwise.
+// whether any row moved.
+//
+// Cost: O(1) while no Sum carries an update since it was last re-summed
+// (`IncrementalSumState::live`). Otherwise a walk down the cones of V's rows --
+// ~2|row| nodes for a MIP row (Sum, Prod terms, their Consts), against the
+// |row| variables the bump that follows walks for each counted row, so about 3x
+// it -- plus the re-sum of the drifted Sums found and everything above them.
+// It loses to the bump alone on integral data, where every update counts as
+// drift but nothing ever moves; it pays for itself when a phantom row would
+// otherwise be bumped at every local minimum until the batch ends.
 bool FeasibilityJump::reground_violated_rows() {
-    if (model_.incremental_sums().drifted.empty() || violated_rows_.empty()) {
+    if (model_.incremental_sums().live == 0 || violated_rows_.empty()) {
         return false;
     }
     const auto& cids = model_.constraint_ids();
     regrounded_roots_.clear();
+    // Only rows the bump can raise: a masked row (weight 0) is never bumped, and
+    // its cone -- two-phase masks every nonlinear row -- is none of the bump's cost.
     for (const int32_t c : violated_rows_) {
-        regrounded_roots_.push_back(cids[static_cast<size_t>(c)]);
+        if (active(c)) {
+            regrounded_roots_.push_back(cids[static_cast<size_t>(c)]);
+        }
     }
     if (!reground_incremental_sums_below(model_, regrounded_roots_, regrounded_)) {
         return false;
@@ -964,12 +978,6 @@ bool FeasibilityJump::reground_violated_rows() {
     }
     regrounded_roots_.clear();  // reused: the rows that moved
     for (const auto& [nid, before] : regrounded_) {
-        const auto it = std::lower_bound(row_of_node_.begin(), row_of_node_.end(),
-                                         std::make_pair(nid, int32_t{-1}));
-        if (it == row_of_node_.end() || it->first != nid) {
-            continue;  // not a row
-        }
-        const int32_t c = it->second;
         const double after = model_.node_values()[static_cast<size_t>(nid)];
         uint64_t before_bits = 0;
         uint64_t after_bits = 0;
@@ -978,11 +986,18 @@ bool FeasibilityJump::reground_violated_rows() {
         if (before_bits == after_bits) {
             continue;
         }
-        if (c != objective_ci_ && active(c)) {
-            unweighted_violation_ += progress_residual(after) - progress_residual(before);
+        // Every row on this node: add_constraint does not deduplicate, so one
+        // node can be several rows, each with its own V entry.
+        for (auto it = std::lower_bound(row_of_node_.begin(), row_of_node_.end(),
+                                        std::make_pair(nid, int32_t{-1}));
+             it != row_of_node_.end() && it->first == nid; ++it) {
+            const int32_t c = it->second;
+            if (c != objective_ci_ && active(c)) {
+                unweighted_violation_ += progress_residual(after) - progress_residual(before);
+            }
+            set_violated(c, is_violated(after));
+            regrounded_roots_.push_back(c);
         }
-        set_violated(c, is_violated(after));
-        regrounded_roots_.push_back(c);
     }
     for (const int32_t c : regrounded_roots_) {
         resettle_neighbours(c, -1);
@@ -1911,6 +1926,18 @@ bool FeasibilityJump::novelty_rounds() {
         while (novelty_jump_search(0.0, b)) {
             if (exact_feasible()) {
                 return true;  // reached feasibility, on exact values
+            }
+            // A row the re-grounding brought back was broken by a leg, and drift
+            // hid it: Algorithm 4 gives a broken row its full weight in W', as
+            // novelty_jump_search does for a row it sees break. O(|V|).
+            for (const int32_t c : violated_rows_) {
+                const auto ci = static_cast<size_t>(c);
+                if (novelty_weights_[ci] != vm_.weights[ci]) {
+                    novelty_weights_[ci] = vm_.weights[ci];
+                    for (const int32_t vp : vars_of_constraint_[ci]) {
+                        nj_enqueue(vp);
+                    }
+                }
             }
             // Committed a compound move; start a fresh one from the new state
             // (reset budget per Algorithm 4 line 8, keep evolving W').

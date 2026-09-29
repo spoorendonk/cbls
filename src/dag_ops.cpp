@@ -120,6 +120,7 @@ double full_evaluate(Model& model) {
     IncrementalSumState& sums = model.incremental_sums();
     sums.age.assign(model.num_nodes(), 0);
     sums.drifted.clear();
+    sums.live = 0;
     sums.probe_stash.clear();
     sums.probe_pending = false;
     for (int32_t nid : model.topo_order()) {
@@ -271,11 +272,11 @@ double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
         positional_ok = false;
         // A `Commit` or `Probe` pass reached a slot that still owes a rollback,
         // which only an exception out of user code mid-probe can produce -- the two
-        // bracketed probes have nothing between their legs that can throw. Drop the
-        // stale stash: the assignment has moved on, so the value it holds is no
-        // longer anything to roll back TO, and leaving it would let a later
-        // `Rollback` restore a value from a different assignment. Defensive, with
-        // no observable effect on any non-throwing path.
+        // bracketed probes have nothing between their legs that can throw. Close
+        // the stale bracket: the assignment has moved on, and leaving the slot
+        // pending would have a later `restore_probe_stash` tell the invariant
+        // `rollback()` for a probe it was never asked to undo. Defensive, with no
+        // observable effect on any non-throwing path.
         model.custom_end_probe(slot);
     }
     collect_changed_inputs(model, node, changed_var_ids, count, dirty_flags, changed_scratch);
@@ -441,12 +442,18 @@ private:
                 if ((age & IncrementalSumState::kListed) == 0) {
                     state_.drifted.push_back(nid);
                 }
+                if (updates == 0) {
+                    ++state_.live;
+                }
                 age = static_cast<uint8_t>((updates + 1) | IncrementalSumState::kListed);
             }
             return model_.node_values()[nid];
         }
         ++incremental_sum_counts.resummed;
         if (mode_ == DeltaMode::Commit) {
+            if (updates != 0) {
+                --state_.live;
+            }
             age &= IncrementalSumState::kListed;  // exact again; still on the list if it was
         }
         return evaluate(node, model_);
@@ -512,7 +519,7 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
     }
     // Any other walk moves the assignment on, so a stash still pending -- only an
     // exception out of a probe can leave one -- no longer describes anything to
-    // roll back to; evaluate_dirty_node drops a custom slot's stash the same way.
+    // roll back to; evaluate_dirty_node closes a custom slot's stale bracket the same way.
     // A Probe re-arms it in prepare(). (An exception mid-Commit can also leave a
     // pushed Sum half-updated and unrecorded; every recovery path in the tree is
     // a full_evaluate, which the custom-invariant contract already requires.)
@@ -664,7 +671,7 @@ bool reground_incremental_sums_below(Model& model, const std::vector<int32_t>& r
                                      std::vector<std::pair<int32_t, double>>& rewritten) {
     rewritten.clear();
     IncrementalSumState& state = model.incremental_sums();
-    if (state.drifted.empty() || state.age.size() != model.num_nodes()) {
+    if (state.live == 0 || state.age.size() != model.num_nodes()) {
         return false;
     }
     const EvaluationGuard guard("reground_incremental_sums_below");

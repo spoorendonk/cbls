@@ -1290,6 +1290,7 @@ void inject_drift(Model& m, int32_t sum, int32_t row, double delta) {
     IncrementalSumState& state = m.incremental_sums();
     state.age[static_cast<size_t>(sum)] = 1 | IncrementalSumState::kListed;
     state.drifted.push_back(sum);
+    ++state.live;
 }
 
 // r1: 0.25*x + w + 0*z <= rhs1, x fixed at 0.5, w free in [-1, 1] at 0.
@@ -1304,7 +1305,7 @@ struct DriftRows {
     int32_t w = -1;
 };
 
-DriftRows make_drift_rows(double rhs1, bool w_free) {
+DriftRows make_drift_rows(double rhs1, bool w_free, bool r1_twice = false) {
     DriftRows d;
     Model& m = d.m;
     const int32_t x = m.float_var(0.5, 0.5);
@@ -1314,6 +1315,9 @@ DriftRows make_drift_rows(double rhs1, bool w_free) {
     d.r1_node = m.leq(d.s1, m.constant(rhs1));
     m.add_constraint(d.r1_node);
     m.add_constraint(m.geq(z, m.constant(1.0)));
+    if (r1_twice) {
+        m.add_constraint(d.r1_node);  // row 2: the same node again
+    }
     m.minimize(m.sum({z}));
     m.close();
     m.var_mut(vid(d.w)).value = 0.0;
@@ -1335,9 +1339,8 @@ TEST_CASE("a row violated only by its Sum's drift is dropped from V, not bumped"
     // bumped at every iteration of the batch.
     DriftRows d = make_drift_rows(0.125, /*w_free=*/false);
     Model& m = d.m;
-    m.var_mut(vid(d.w)).value = 0.0;
-    // Without r2's commit: x and w are fixed, z is the only mover and r2 is
-    // fixed first, so make r2 already satisfied.
+    // r2 is satisfied from the start (z = 1), so no move is committed and r1's
+    // phantom is the only violation.
     const auto z = static_cast<int32_t>(m.num_vars() - 1);
     m.var_mut(z).value = 1.0;
     full_evaluate(m);
@@ -1409,4 +1412,27 @@ TEST_CASE("Novelty Jump does not report feasibility read off drifted values",
     fj.resync();
     CHECK_FALSE(fj.apply_novelty_jump());
     CHECK(fj.row_violated(d.r1));
+}
+
+TEST_CASE("a node that is two rows has both dropped from V when its drift is removed",
+          "[fj][incremental_sum]") {
+    // add_constraint does not deduplicate, so one node can be two rows, each
+    // with its own place in V. Both are phantoms; neither may be bumped.
+    DriftRows d = make_drift_rows(0.125, /*w_free=*/false, /*r1_twice=*/true);
+    Model& m = d.m;
+    const auto z = static_cast<int32_t>(m.num_vars() - 1);
+    m.var_mut(z).value = 1.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+    RNG rng(1);
+    GFJConfig cfg;
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(false);
+    inject_drift(m, d.s1, d.r1_node, 2e-9);
+    fj.resync();
+    REQUIRE(fj.row_violated(0));
+    REQUIRE(fj.row_violated(2));
+    CHECK(fj.batch(20));
+    CHECK(vm.weights[0] == 1.0);
+    CHECK(vm.weights[2] == 1.0);
 }
