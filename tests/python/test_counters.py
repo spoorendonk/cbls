@@ -116,6 +116,16 @@ def test_a_single_solve_reports_no_portfolio_restarts() -> None:
     assert result.counters.portfolio_restarts == 0
 
 
+def test_a_single_solve_reports_no_shared_bound_engagement() -> None:
+    """#179's four counters are bound under their C++ names, and a single solve,
+    which has no pool and so no global best to be behind, reports none."""
+    counters = cbls.solve(_quadratic(), 0.0, 42, config=_config()).counters
+    assert counters.shared_bound_tightenings == 0
+    assert counters.own_best_behind_global == 0
+    assert counters.bound_behind_global_batches == 0
+    assert counters.bound_behind_global_seconds == 0.0
+
+
 def test_batch_kind_enum_is_bound() -> None:
     """The names a Python reader uses to talk about the buckets."""
     members = {

@@ -714,6 +714,78 @@ def test_parallel_config_pool_capacity_round_trips() -> None:
     assert par.pool_capacity == 4
 
 
+def test_parallel_config_share_objective_bound_round_trips() -> None:
+    """#179's A/B switch, on by default: off is the control arm."""
+    par = cbls.ParallelConfig()
+    assert par.share_objective_bound is True
+    par.share_objective_bound = False
+    assert par.share_objective_bound is False
+
+
+def test_pool_global_best_counts_only_feasible_finite_submissions() -> None:
+    """Round trip: Solutions built in Python, submitted to the C++ pool, and the
+    global best a worker would tighten towards read back. An infeasible entry
+    with a better objective -- a closest-approach state -- must not count."""
+    pool = cbls.SolutionPool(4)
+    assert pool.best_feasible_objective() == float("inf")
+    closest = cbls.Solution()
+    closest.objective = -100.0
+    closest.feasible = False
+    pool.submit(closest)
+    assert pool.best_feasible_objective() == float("inf")
+    found = cbls.Solution()
+    found.objective = 5.0
+    found.feasible = True
+    pool.submit(found)
+    assert pool.best_feasible_objective() == 5.0
+
+
+def _cover_model() -> "cbls.Model":
+    """A small covering MIP with a linear objective (tests/test_parallel.cpp's
+    cover_model, same fixed LCG), on which portfolio workers race."""
+    state = 12345
+
+    def draw(k: int) -> int:
+        nonlocal state
+        state = (state * 1664525 + 1013904223) % (1 << 32)
+        return (state >> 8) % k
+
+    m = cbls.Model()
+    xs = [m.int_var(0, 10) for _ in range(40)]
+    for _ in range(10):
+        row = [m.constant(60.0)]
+        for x in xs:
+            a = draw(4)
+            if a:
+                row.append(m.prod(m.constant(-float(a)), x))
+        m.add_constraint(m.sum(row))
+    m.minimize(m.sum([m.prod(m.constant(float(1 + draw(9))), x) for x in xs]))
+    m.close()
+    return m
+
+
+@pytest.mark.parametrize("share", [True, False])
+def test_share_objective_bound_reaches_the_workers(share: bool) -> None:
+    """Python config -> C++ portfolio -> counters back. With sharing on some
+    worker tightens to a peer's objective; off, none does, and the control arm
+    reports the batches it ran behind instead. No Python callable is handed to
+    the workers, so there is no GIL to deadlock on and this runs in-process."""
+    cfg = cbls.SearchConfig()
+    cfg.max_iterations = 20000
+    par = cbls.ParallelConfig()
+    par.n_threads = 4
+    par.share_objective_bound = share
+    r = cbls.ParallelSearch(4).solve_master(
+        _cover_model(), time_limit=0.0, seed=1, config=cfg, par_config=par
+    )
+    assert r.feasible
+    if share:
+        assert r.counters.shared_bound_tightenings > 0
+    else:
+        assert r.counters.shared_bound_tightenings == 0
+        assert r.counters.bound_behind_global_batches > 0
+
+
 def test_adjacent_base_seeds_do_not_share_worker_streams() -> None:
     """Bumping --seed must actually give a different portfolio.
 
