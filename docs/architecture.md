@@ -190,14 +190,14 @@ Novelty Jump's legs (`commit_scalar_move`) and the per-candidate probes
 (`probe_scalar_move`, inside `weighted_violation_delta` and
 `per_constraint_violation_delta`).
 
-That is floating point, so a Sum's value drifts from the re-sum by one rounding
+That is floating point, so a Sum's value drifts from the re-sum by a rounding
 per update; on integral data every partial sum is exact and nothing drifts, so
 MIP rows with integer coefficients over integer columns keep the re-summing
 engine's bits and trajectory. Drift is bounded and never leaves an FJ batch:
 
 | Mechanism | What it guarantees |
 |---|---|
-| A Commit re-sums a Sum on its `kIncrementalSumPeriod`-th (64) update | at most 64 roundings per Sum, on every path |
+| A Commit re-sums a Sum on its `kIncrementalSumPeriod`-th (64) update | at most 63 updates' roundings per Sum, on every path |
 | `reground_incremental_sums` at the end of every FJ batch and Novelty Jump batch | everything outside FJ -- the search's feasibility test and objective, the pool, LNS, the inner solver, the structural batch -- reads exact sums |
 | A non-finite value (the Sum's, or a term's old or new one) re-sums the Sum | no `inf - inf` |
 | `Probe` stashes the cone; `Rollback` writes it back | a probe leaves the committed state bit for bit, and a probe of the value a variable already holds scores exactly 0 |
@@ -212,7 +212,16 @@ nothing else re-reads, so `FeasibilityJump::reground_and_resettle` settles each
 row it moved exactly as `update_var` settles a changed row: the unweighted
 total, V and its counts, and the row's variables' cached jumps and scan-set
 membership. A batch that ended "Feasible" on drifted values and is no longer
-feasible after the re-grounding carries on.
+feasible after the re-grounding reports Unsolved, so the search's next batch
+carries on from the exact state; `gls()`/`run()`, which have no batches, carry
+on themselves. Novelty Jump re-reads its verdict the same way.
+
+The bound is on the number of roundings, not their size: each is at the scale
+of the largest value the Sum held since its last re-sum. A fractional big-M term
+switched on and off again leaves a row near O(1) carrying about ulp(1e9) ~ 1e-7,
+above FJ's 1e-9 violation threshold. Inside a batch such a row can read violated
+when it is not (and have its GLS weight bumped), or the reverse; the batch end
+puts the value right, not the weights.
 
 K was chosen from a sweep on three instances held out of the A/B (#177): K=16
 cost 2-11% of the throughput of K=64, K=255 was at most 2% ahead of it, and the
@@ -447,7 +456,9 @@ Bracketing them is a separate change.
 tested once per `delta_evaluate`/`full_evaluate` call, not per node, and the
 false branch is the pre-#166 loop verbatim, and the dispatch is a template rather
 than a `std::function` so that branch inlines the same `evaluate` call it always
-did — so bit-identical trajectories at one thread follow structurally.
+did — so bit-identical trajectories at one thread follow structurally. (Until
+#177, whose incremental Sum moves trajectories on fractional data; integral data
+keeps its bits. See **Incremental Sum**.)
 *Dated record of one run*, not a standing test: at the first #166 commit, two
 `cbls::solve()` runs at seed 12345 with `max_iterations = 4000` and no time limit
 — one mixed-integer/non-convex model, one `pair_lambda_sum` List model — produced

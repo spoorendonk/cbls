@@ -1191,13 +1191,14 @@ void require_bits_of_full_evaluate(const Model& m) {
 
 }  // namespace
 
-TEST_CASE("FJ's commits on integral rows are exact, so trajectories do not move",
+TEST_CASE("FJ batches on integral rows commit incrementally and hand back exact values",
           "[fj][incremental_sum]") {
-    // #177 moves a row by its one changed term. On integral data every partial
-    // sum is exact, so the node values are the re-sum's to the bit and the
-    // trajectory is the one the re-summing engine took -- checked here on the
-    // values after a real run, and on neos-860300 by the fixed-iteration A/B
-    // recorded on the issue.
+    // #177 moves a row by its one changed term. The claim that integral data
+    // keeps the re-summing engine's bits mid-batch is pinned at the DAG level
+    // ("commit_scalar_move moves a row by its changed term, exactly on integral
+    // data") and on real instances by the fixed-iteration comparison recorded on
+    // #177. This checks the FJ wiring: the commits really are incremental, and
+    // what a batch hands back is exact and probes to exactly 0 at identity.
     std::vector<int32_t> cols;
     Model m = make_mip_like(/*integral=*/true, cols);
     ViolationManager vm(m);
@@ -1206,7 +1207,10 @@ TEST_CASE("FJ's commits on integral rows are exact, so trajectories do not move"
     cfg.max_iterations = 5000;
     incremental_sum_counters() = IncrementalSumCounters{};
     FeasibilityJump fj(m, vm, rng, cfg);
-    (void)fj.run();
+    fj.begin(true);
+    for (int b = 0; b < 10; ++b) {
+        (void)fj.batch(500);
+    }
     CHECK(incremental_sum_counters().incremental > 1000);
     require_bits_of_full_evaluate(m);
     for (const int32_t x : cols) {
@@ -1243,4 +1247,31 @@ TEST_CASE("an FJ batch hands back exact values and a V that agrees with them",
         }
         CHECK(fj.unweighted_violation() == Catch::Approx(unweighted).epsilon(1e-9));
     }
+}
+
+TEST_CASE("Novelty Jump hands back exact values and a V that agrees with them",
+          "[fj][incremental_sum]") {
+    // Its legs commit incrementally like update_var, so it ends with the same
+    // re-grounding as an FJ batch -- and re-reads its verdict after it.
+    std::vector<int32_t> cols;
+    Model m = make_mip_like(/*integral=*/false, cols);
+    ViolationManager vm(m);
+    RNG rng(9);
+    GFJConfig cfg;
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(true);
+    incremental_sum_counters() = IncrementalSumCounters{};
+    for (int b = 0; b < 10; ++b) {
+        const bool feasible = fj.apply_novelty_jump();
+        require_bits_of_full_evaluate(m);
+        const auto& cids = m.constraint_ids();
+        bool any_violated = false;
+        for (size_t c = 0; c < cids.size(); ++c) {
+            const bool violated = !(m.node_value(cids[c]) <= 1e-9);
+            REQUIRE(fj.row_violated(static_cast<int32_t>(c)) == violated);
+            any_violated = any_violated || (violated && vm.weights[c] > 0.0);
+        }
+        CHECK_FALSE((feasible && any_violated));
+    }
+    CHECK(incremental_sum_counters().incremental > 0);  // the legs really were incremental
 }

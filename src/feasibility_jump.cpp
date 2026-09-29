@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -279,7 +280,7 @@ bool apply_random_structural_move(Model& model, int32_t var_id, RNG& rng) {
 // Integer jump candidates: exhaustive over a small domain, else a coarse grid
 // plus neighbours/endpoints. Each consider() costs O(|G_v|) when every weighted
 // row of G_v is a linear comparison (LinearJumpScorer), else one
-// weighted_violation_delta (two delta_evaluate passes); the JumpTable cache
+// weighted_violation_delta (one probe walk and a stash restore); the JumpTable cache
 // amortises either across the GLS loop. Scoring is still per candidate: a
 // closed-form ARGMIN over a linear column would pick from a different candidate
 // set, which is a different algorithm rather than a cheaper evaluation of this
@@ -868,8 +869,9 @@ void FeasibilityJump::update_var(int32_t var_id) {
     Variable& var = model_.var_mut(var_id);
     const double old_value = var.value;
     var.value = j;
-    // delta_evaluate's node values to the bit, with each integral row moved by
-    // its one changed term instead of re-summed (#177).
+    // Each incremental Sum in the cone moves by its one changed term instead of
+    // re-summing (#177): the re-sum's bits on integral data; otherwise drift,
+    // bounded by the period and removed at the batch's end.
     commit_scalar_move(model_, var_id, old_value);
     jumps_.invalidate(var_id);
 
@@ -934,7 +936,8 @@ void FeasibilityJump::note_touched_rows(ConstSpan<int32_t> rows) {
 // no committed move touched cannot have moved: a drifted Sum is only ever in
 // the cone of a variable some committed move changed.
 //
-// Nothing moves on integral data, and nothing is walked when nothing drifted.
+// Nothing moves on integral data, but every Sum a commit updated is still
+// re-summed here once: the ages count updates, not inexact ones.
 void FeasibilityJump::reground_and_resettle() {
     const auto& cids = model_.constraint_ids();
     touched_before_.clear();
@@ -947,7 +950,11 @@ void FeasibilityJump::reground_and_resettle() {
             const int32_t c = touched_rows_[k];
             const double before = touched_before_[k];
             const double after = model_.node_values()[cids[static_cast<size_t>(c)]];
-            if (std::memcmp(&before, &after, sizeof before) == 0) {
+            uint64_t before_bits = 0;
+            uint64_t after_bits = 0;
+            std::memcpy(&before_bits, &before, sizeof before_bits);
+            std::memcpy(&after_bits, &after, sizeof after_bits);
+            if (before_bits == after_bits) {
                 continue;
             }
             if (c != objective_ci_ && active(c)) {
@@ -1276,12 +1283,17 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
     try {
         GFJStatus status = gls_loop_scaled(sample_size, batch_iter_limit);
         reground_and_resettle();
-        // "Feasible" was read off V as the batch's drifted values left it. The
-        // re-grounding can move a row sitting within rounding of its tolerance
-        // back into V, so re-read it; the batch then goes on from the exact
-        // state. Only the loop's own ending can do this: every other ending
-        // already reports Unsolved.
+        // "Feasible" was read off V as the batch's drifted values left it -- by
+        // the loop's own ending, or by batch_end_status at the batch limit or on
+        // a stall. The re-grounding can move a row sitting within rounding of its
+        // tolerance back into V, so re-read it. A batch is over either way and
+        // reports Unsolved; the caller's next batch goes on from the exact state.
+        // gls()/run() have no batch, only the run's budget, so they carry on.
         while (status == GFJStatus::Feasible && any_active_violated()) {
+            if (batch_iter_limit > 0) {
+                status = GFJStatus::Unsolved;
+                break;
+            }
             status = gls_loop_scaled(sample_size, batch_iter_limit);
             reground_and_resettle();
         }
@@ -1799,7 +1811,9 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
 bool FeasibilityJump::apply_novelty_jump() {
     const bool feasible = novelty_rounds();
     reground_and_resettle();
-    return feasible;
+    // Read off V as the drifted legs left it; the re-grounding can put a row
+    // back, as at the end of an FJ batch.
+    return feasible && !any_active_violated();
 }
 
 bool FeasibilityJump::novelty_rounds() {

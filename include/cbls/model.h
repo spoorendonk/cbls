@@ -66,27 +66,6 @@ inline int32_t handle_to_var_id(int32_t handle) {
     return -(handle + 1);
 }
 
-/// Everything about a model that no search writes: the DAG's nodes and edges,
-/// the derived indices over them, the constraint list, the lambda tables and the
-/// variable sequences.
-///
-/// It is a type of its own so that a FROZEN model can hand it to every portfolio
-/// worker by reference instead of being deep-copied per worker (#157). On the
-/// largest MIPfeas instance that copy was the whole of the portfolio's memory
-/// growth: ~0.8 GiB per extra worker, which is what capped the thread count on
-/// ordinary hardware rather than the core count.
-///
-/// Reached only through `Model`'s accessors, and after `Model::freeze()` only
-/// through a `shared_ptr<const ModelStructure>` -- so a write to it from a search
-/// path does not compile rather than corrupting a peer's search.
-///
-/// What is deliberately NOT here: every node's current value (`Model::
-/// node_values_`), every variable (`Model::vars_` -- see `Variable`, kept whole
-/// and per worker), the objective bound and the delta probe's scratch. Those are
-/// what a search writes. The structural SCALARS -- `objective_id_`,
-/// `is_maximizing_`, the three objective-row node ids, `closed_` -- stay in
-/// `Model` too: they are immutable after `freeze()` as well, but twenty bytes per
-/// worker is not worth an indirection on the paths that read them.
 /// What the delta walks keep per model about #177's incremental `Sum`s -- the
 /// Sums whose `ExprNode::incremental_sum` is set. See `src/dag_ops.cpp` for the
 /// rules; in short, such a Sum's value may carry the rounding of up to
@@ -108,6 +87,27 @@ struct IncrementalSumState {
     bool probe_pending = false;
 };
 
+/// Everything about a model that no search writes: the DAG's nodes and edges,
+/// the derived indices over them, the constraint list, the lambda tables and the
+/// variable sequences.
+///
+/// It is a type of its own so that a FROZEN model can hand it to every portfolio
+/// worker by reference instead of being deep-copied per worker (#157). On the
+/// largest MIPfeas instance that copy was the whole of the portfolio's memory
+/// growth: ~0.8 GiB per extra worker, which is what capped the thread count on
+/// ordinary hardware rather than the core count.
+///
+/// Reached only through `Model`'s accessors, and after `Model::freeze()` only
+/// through a `shared_ptr<const ModelStructure>` -- so a write to it from a search
+/// path does not compile rather than corrupting a peer's search.
+///
+/// What is deliberately NOT here: every node's current value (`Model::
+/// node_values_`), every variable (`Model::vars_` -- see `Variable`, kept whole
+/// and per worker), the objective bound and the delta probe's scratch. Those are
+/// what a search writes. The structural SCALARS -- `objective_id_`,
+/// `is_maximizing_`, the three objective-row node ids, `closed_` -- stay in
+/// `Model` too: they are immutable after `freeze()` as well, but twenty bytes per
+/// worker is not worth an indirection on the paths that read them.
 struct ModelStructure {
     std::vector<ExprNode> nodes;
     // The DAG's edges, flat (#156). Per-node and per-variable vectors made model

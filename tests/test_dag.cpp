@@ -9,7 +9,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <utility>
@@ -1252,4 +1251,48 @@ TEST_CASE("a model copy carries the drift record with the node values", "[dag][i
     Model copy(r.m);
     REQUIRE(reground_incremental_sums(copy));
     require_matches_full_evaluate(copy);
+}
+
+TEST_CASE("a term going non-finite re-sums its Sum instead of differencing inf",
+          "[dag][incremental_sum]") {
+    // 1/y at y = 0 is +inf. Differenced, the row would become inf, then
+    // inf + (1 - inf) = NaN on the way back, and stay NaN until a re-grounding.
+    Model m;
+    const int32_t x = m.float_var(-5.0, 5.0);
+    const int32_t y = m.float_var(-5.0, 5.0);
+    const int32_t row = m.sum({x, m.div_expr(m.constant(1.0), y), m.prod(m.constant(0.3), x)});
+    m.add_constraint(m.leq(row, m.constant(4.0)));
+    m.minimize(m.sum({x, y}));
+    m.close();
+    REQUIRE(m.node(row).incremental_sum == 1);
+    commit(m, vid(y), 2.0);
+    commit(m, vid(x), 1.5);
+    commit(m, vid(y), 0.0);
+    REQUIRE(std::isinf(m.node_value(row)));
+    require_matches_full_evaluate(m);
+    ViolationManager vm(m);
+    const std::vector<double> before = m.node_values();
+    (void)vm.weighted_violation_delta(vid(y), 1.0);
+    require_same_bits(m.node_values(), before);
+    commit(m, vid(y), 1.0);
+    REQUIRE(std::isfinite(m.node_value(row)));
+    require_matches_full_evaluate(m);
+}
+
+TEST_CASE("a probe that never rolled back leaves nothing for a later Rollback to restore",
+          "[dag][incremental_sum]") {
+    // Only an exception out of a probe leaves one pending. Once the assignment
+    // has moved on, a Rollback with no Probe of its own is a Commit, as
+    // DeltaMode documents -- not a write-back of the abandoned probe's values.
+    Rows r = make_rows(10, 4, 6, /*integral=*/false, 1);
+    Model& m = r.m;
+    const int32_t v = vid(r.cols[2]);
+    const double old_value = m.var(v).value;
+    m.var_mut(v).value = 3.0;
+    probe_scalar_move(m, v, old_value);  // abandoned: no Rollback
+    commit(m, v, -4.0);                  // the assignment moves on
+    m.var_mut(v).value = 1.0;
+    delta_evaluate(m, &v, 1, DeltaMode::Rollback);  // no Probe of its own
+    (void)reground_incremental_sums(m);
+    require_matches_full_evaluate(m);
 }

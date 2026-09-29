@@ -508,6 +508,14 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
         restore_probe_stash(model);
         return objective_value(model);
     }
+    // Any other walk moves the assignment on, so a stash still pending -- only an
+    // exception out of a probe can leave one -- no longer describes anything to
+    // roll back to; evaluate_dirty_node drops a custom slot's stash the same way.
+    // A Probe re-arms it in prepare(). (An exception mid-Commit can also leave a
+    // pushed Sum half-updated and unrecorded; every recovery path in the tree is
+    // a full_evaluate, which the custom-invariant contract already requires.)
+    sums_state.probe_stash.clear();
+    sums_state.probe_pending = false;
     if (count == 0) {
         return objective_value(model);
     }
@@ -542,9 +550,9 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
     IncrementalSumWalk sums(model, mode, old_values != nullptr, dirty_flags);
     sums.prepare(dirty_list, changed_var_ids, count, old_values);
 
-    // One test per CALL, not per node: a model with no custom node takes the
-    // pre-#166 loop verbatim, which is what keeps criterion 4's bit-identical
-    // trajectories bit-identical (#166).
+    // One test per CALL, not per node: a model with no custom node never
+    // reaches the custom-aware evaluator (#166). Both branches apply the
+    // incremental-Sum rules (#177).
     if (model.has_custom_nodes()) {
         thread_local std::vector<int32_t> changed_inputs;
         evaluate_dirty_in_topo_order(model, dirty_list, dirty_flags, num_nodes, [&](int32_t nid) {

@@ -61,6 +61,9 @@ double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count
 /// and a re-sum costs its whole length once per this many updates. Chosen by
 /// the sweep recorded on #177; a parameter, not a derived constant.
 constexpr int kIncrementalSumPeriod = 64;
+// IncrementalSumState::age is a uint8_t and climbs to kIncrementalSumPeriod - 1.
+static_assert(kIncrementalSumPeriod >= 1 && kIncrementalSumPeriod <= 256,
+              "IncrementalSumState::age is a uint8_t");
 
 /// A `Commit` of one scalar variable whose previous value was `old_value` (the
 /// caller has already written the new one): `delta_evaluate(model, &var_id,

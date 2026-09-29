@@ -1131,7 +1131,8 @@ double Model::weighted_violation_delta(int32_t var_id, double j,
     // the engine rather than recomputed.
     //
     // NARROWED DELIBERATELY: THREE other sites score by applying and then putting
-    // back, and every leg of all three stays a plain `Commit` delta -- the
+    // back, and every leg of all three stays a `Commit` (Novelty Jump's through
+    // `commit_scalar_move`, #177) -- the
     // structural batch, the inner solver, and Novelty Jump's backtracking chain
     // (`novelty_jump_search`), which is on the same per-candidate path this probe
     // is. They are correct: each leg is a real assignment and the `changed` set
