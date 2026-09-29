@@ -274,21 +274,21 @@ Three conventions therefore rest on you rather than on a tool: branch only from 
 
 ### Fast vs. slow tests
 
-The C++ suite is **603 ctest tests**: 601 Catch2 ones over **600 `TEST_CASE`s**
-— 596 registered by `catch_discover_tests` plus **5 registered by hand**, the 4
+The C++ suite is **615 ctest tests**: 613 Catch2 ones over **612 `TEST_CASE`s**
+— 608 registered by `catch_discover_tests` plus **5 registered by hand**, the 4
 `[timing]` cases and `hang_guard_iteration_only_portfolio`, which is
 hand-registered *as well as* discovered (it needs a `TIMEOUT` to report a hang,
 but is cheap enough to belong in the fast set), so one `TEST_CASE` accounts for
 two ctest tests — plus **2 shell tests that are not Catch2 at all**,
 `clang_tidy_gate_probe` and `gate_lib_shell_test`, registered in the root
-`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 596,
+`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 608,
 **6 carry the
 Catch2 `[slow]` tag** — the CHPED and UC-CHPED benchmark solves, ~46s of
 aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~25s
 wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 594 tests, ~12s with `-j`. This is what **pre-commit** runs.
+- `ctest -LE slow` — the other 606 tests, ~12s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
 - `ctest -L timing` — 4 tests: `timing_structural_batch_deadline` plus the three
   `timing_throughput_*` floors added for #125. Each is registered by an explicit
@@ -315,7 +315,7 @@ agree:
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
 4. the comment above the `ctest` call in `.githooks/pre-commit`,
-5. the `.venv/bin/pytest` line in `README.md` for the Python side (862 tests, 208
+5. the `.venv/bin/pytest` line in `README.md` for the Python side (875 tests, 213
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`),
 6. the `-LE slow` guidance and the ~25s/~490s figures in `docs/profiling.md`.
@@ -323,7 +323,7 @@ agree:
    named commit**, not a current count — it says so inline. Leave it alone
    apart from the parenthetical restating the current fast-set size.
 7. the binding count in **`## Build & Test`** below, in the paragraph explaining
-   why the gated build turns `CBLS_BUILD_PYTHON` on ("208 binding tests silently
+   why the gated build turns `CBLS_BUILD_PYTHON` on ("213 binding tests silently
    unrun"). It is in this file, but not in this section, so a search that stops
    at the enumeration above misses it.
 
@@ -520,7 +520,7 @@ ctest --test-dir build --output-on-failure -j$(nproc) && (CBLS_REQUIRE_BINDINGS=
 **The gated build turns the Python bindings on, and the gated test run requires
 them.** `CBLS_BUILD_PYTHON` defaults to `OFF` and `tests/python/conftest.py`
 skips every test that imports `_cbls_core` when the module is missing, so a build
-without the flag would leave 208 binding tests silently unrun.
+without the flag would leave 213 binding tests silently unrun.
 `CBLS_REQUIRE_BINDINGS=1` turns that skip into a hard error. Bindings cost ~2.4s
 of build and ~6s of pytest against a suite that already spends ~25s in `ctest` —
 always build them. The cost argument is the weaker one: the reason is that
@@ -733,6 +733,7 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 | `cbls_uc_chped` | `benchmarks/uc-chped/` | UC-CHPED benchmark runner |
 | `cbls_mipfeas` | `benchmarks/mipfeas/` | MIPfeas runner (one instance per process) |
 | `cbls_minlplib` | `benchmarks/minlplib/` | MINLPLib benchmark runner |
+| `cbls_minlplib_portfolio` | `benchmarks/minlplib/portfolio_ab.cpp` | MINLPLib portfolio A/B harness (shared-bound on/off, #179) |
 | `cbls_setcover` | `benchmarks/setcover/` | OR-Library set-covering runner (`Set`-variable coverage check) |
 
 Examples, tests, benchmarks and bindings are each behind an option:
