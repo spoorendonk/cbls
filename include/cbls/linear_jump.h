@@ -41,7 +41,8 @@ class Model;
 /// Rows are classified by the OWNER (FeasibilityJump, which already derives
 /// per-node affineness) through `set_row_eligible`, and each row's slopes are
 /// built LAZILY, on the first prepare that reads the row: a short-lived FJ (the
-/// LNS repair builds one per call) pays only for the rows it touches.
+/// LNS repair builds one per call) sweeps only the rows it touches -- though its
+/// slope table may be zero-filled whole on allocation; see Storage.
 ///
 /// Storage: 4 bytes per row (a slot: ineligible, pending, or the index of its
 /// built record), a 12-byte record per row BUILT, and one slope per entry of the
@@ -64,7 +65,7 @@ class Model;
 /// the offsets. `resize_rows` is how a caller follows a row added to the model,
 /// so a strict growth drops every built row back to pending (the rows are
 /// structure: rebuilding one reproduces its slopes bit for bit), and `prepare`
-/// and `residual_partial` refuse to read while the row counts disagree. The
+/// and `residual_partial_at` refuse to read while the row counts disagree. The
 /// slopes are structure, but each portfolio worker's FJ builds its own; the build
 /// also sizes `dag_ops.cpp`'s thread_local adjoint scratch, which a pure MIP
 /// otherwise never allocated.
@@ -117,20 +118,15 @@ public:
     /// must be finite (and so must `j - x0`); see `prepare`.
     [[nodiscard]] double delta(double j) const;
 
-    /// d(residual of row ci)/d(var_id), bit-identical (up to the sign of a zero
-    /// on a satisfied Eq row) to
+    /// d(residual of row ci)/d(var_id) for ci = `constraints_of_var(var_id)[k]`
+    /// -- the row named by its position in G_v, which is how the Newton step
+    /// walks it, so the slope is read in O(1). Bit-identical (up to the sign of a
+    /// zero on a satisfied Eq row) to
     /// `compute_partial(model, constraint_ids()[ci], var_id)`, when the row's
     /// cached slope provably is (see the definition). False: call compute_partial
-    /// -- also when the model's row count is not this scorer's.
-    ///
-    /// `residual_partial_at` names the row as the k-th of `constraints_of_var(
-    /// var_id)`, which is how the Newton step walks it, and reads the slope in
-    /// O(1), and returns false for k past the end of G_v; `residual_partial`
-    /// searches G_v for ci first -- no engine path calls it; it is the (row,
-    /// variable) cross-check the tests use. Two names, not an
-    /// overload: (int, size_t) and (int, int) would resolve on a literal's type.
+    /// -- also when k is past the end of G_v, or the model's row count is not
+    /// this scorer's.
     bool residual_partial_at(int32_t var_id, size_t k, double& out);
-    bool residual_partial(int32_t ci, int32_t var_id, double& out);
 
     /// Prepares that took the closed form / fell back, and row partials served
     /// from the cache. Diagnostics, and the pins on the wiring in tests.
@@ -154,7 +150,7 @@ private:
     static constexpr uint32_t kQLiteral = 1U << 3U;
     static constexpr uint32_t kAbs = 1U << 4U;          // Eq: |p - q|
     static constexpr uint32_t kStrict = 1U << 5U;       // Lt/Gt: + the strictness epsilon
-    static constexpr uint32_t kNewtonExact = 1U << 6U;  // see residual_partial
+    static constexpr uint32_t kNewtonExact = 1U << 6U;  // see residual_partial_at
     // A built row: its two residual arguments; its slopes are in slope_at_.
     struct BuiltRow {
         int32_t p_id = -1;  // first argument of the residual
@@ -182,7 +178,7 @@ private:
     // row is (or becomes) ineligible.
     const BuiltRow* ready_row(int32_t ci);
     [[nodiscard]] double child_value(int32_t id, bool is_var) const;
-    // Row ci's partial from a built row and v's slope, as residual_partial reports it.
+    // Row ci's partial from a built row and v's slope, as residual_partial_at reports it.
     [[nodiscard]] double row_partial(const BuiltRow& row, double r) const;
     // Every built row back to pending and the slope array released.
     void reset_built_rows();

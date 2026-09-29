@@ -354,7 +354,7 @@ void int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
 //
 // `linear`, when given, supplies a violated row's partial from its cached slope
 // where that is bit-identical to compute_partial (LinearJumpScorer::
-// residual_partial), so the Newton candidates are exactly the ones the AD sweep
+// residual_partial_at), so the Newton candidates are exactly the ones the AD sweep
 // would produce, without the sweep.
 template <class Consider>
 bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, double x0,

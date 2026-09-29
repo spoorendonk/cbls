@@ -204,7 +204,7 @@ void LinearJumpScorer::write_slopes(int32_t ci) {
     // Each nonzero slope into its variable's slot for this row. A zero one is
     // left as the +0.0 the block was zeroed to, which is what the per-row pool
     // this replaced reported for a variable it did not hold -- keeping a -0.0
-    // out of residual_partial's result.
+    // out of residual_partial_at's result.
     for (const auto& e : merged_) {
         if (e.second == 0.0) {
             continue;
@@ -362,26 +362,6 @@ bool LinearJumpScorer::residual_partial_at(int32_t var_id, size_t k, double& out
         return false;
     }
     out = row_partial(*built, slope_at_.get()[model_.constraints_of_var_offset(var_id) + k]);
-    ++cached_partials_;
-    return true;
-}
-
-bool LinearJumpScorer::residual_partial(int32_t ci, int32_t var_id, double& out) {
-    if (ci < 0 || static_cast<size_t>(ci) >= slots_.size() ||
-        slots_.size() != model_.constraint_ids().size()) {
-        return false;  // unsized (a row added after resize_rows): compute_partial instead
-    }
-    const ConstSpan<int32_t> gv = model_.constraints_of_var(var_id);
-    const auto* it = std::lower_bound(gv.begin(), gv.end(), ci);
-    if (it != gv.end() && *it == ci) {
-        return residual_partial_at(var_id, static_cast<size_t>(it - gv.begin()), out);
-    }
-    // The row does not read var_id: its partial is zero, as the pool reported.
-    const BuiltRow* built = ready_row(ci);
-    if (built == nullptr || (built->flags & kNewtonExact) == 0) {
-        return false;
-    }
-    out = row_partial(*built, 0.0);
     ++cached_partials_;
     return true;
 }

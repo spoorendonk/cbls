@@ -3,6 +3,7 @@
 // slope-table upkeep.
 #include "test_helpers.h"
 
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cbls/custom_invariant.h>
@@ -236,9 +237,16 @@ int check_scores(Model& m, LinearJumpScorer& sc, const std::vector<double>& w, R
     return compared;
 }
 
-// Every (variable, G_v position) partial the scorer claims equals compute_partial,
-// and the (row, variable) form agrees with the positional one to the bit. Returns
-// how many were claimed.
+// Row ci's partial in v through the positional API; false when ci is not in G_v.
+bool partial_of_row(const Model& m, LinearJumpScorer& sc, int32_t ci, int32_t v, double& out) {
+    const ConstSpan<int32_t> gv = m.constraints_of_var(v);
+    const auto* it = std::lower_bound(gv.begin(), gv.end(), ci);
+    return it != gv.end() && *it == ci &&
+           sc.residual_partial_at(v, static_cast<size_t>(it - gv.begin()), out);
+}
+
+// Every (variable, G_v position) partial the scorer claims equals compute_partial.
+// Returns how many were claimed.
 int check_partials(Model& m, LinearJumpScorer& sc) {
     int claimed = 0;
     const auto& cids = m.constraint_ids();
@@ -251,10 +259,6 @@ int check_partials(Model& m, LinearJumpScorer& sc) {
             }
             ++claimed;
             REQUIRE(g == compute_partial(m, cids[static_cast<size_t>(gv[k])], v));
-            double by_row = 0.0;
-            REQUIRE(sc.residual_partial(gv[k], v, by_row));
-            REQUIRE(std::signbit(by_row) == std::signbit(g));
-            REQUIRE(by_row == g);
         }
     }
     return claimed;
@@ -356,7 +360,7 @@ TEST_CASE("cached row partials are bit-identical to compute_partial where claime
             for (int32_t c = 0; c < static_cast<int32_t>(cids.size()); ++c) {
                 for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
                     double g = 0.0;
-                    if (sc.residual_partial(c, v, g)) {
+                    if (partial_of_row(m, sc, c, v, g)) {
                         ++claimed;
                         REQUIRE(g == compute_partial(m, cids[static_cast<size_t>(c)], v));
                     } else {
@@ -698,7 +702,6 @@ TEST_CASE("slopes follow the G_v layout when the objective row is added (#176)",
         REQUIRE_THROWS_AS(sc.prepare(0, w), std::logic_error);
         double g = 0.0;
         REQUIRE_FALSE(sc.residual_partial_at(0, 0, g));
-        REQUIRE_FALSE(sc.residual_partial(0, 0, g));
 
         sc.resize_rows(nc);
         sc.set_row_eligible(static_cast<int32_t>(nc - 1), true);
