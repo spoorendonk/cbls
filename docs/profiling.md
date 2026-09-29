@@ -285,6 +285,17 @@ Read the numbers knowing what they are:
 - `gmon.out` lands in the *current* directory and is overwritten per run.
 - Instrumentation inhibits inlining decisions and adds per-call overhead, so
   attribution is directional, not a wall-clock model.
+- **The call graph splits a callee's time among its callers by call count, not
+  by time.** Any function reached from two callers with different per-call
+  costs is therefore misattributed. `cbls::evaluate` is the standing example. On
+  swath3 at `634001b`, gprof charged half of its time to `full_evaluate`, since
+  that path made half the calls. Timed directly, `full_evaluate` took 0.05s of
+  the 20s run. The expensive calls were the large-`Sum` re-sums reached from
+  `delta_evaluate`. When the question is "which caller pays", time the call
+  sites instead. A throwaway copy (`git archive HEAD`) that accumulates
+  `__rdtsc()` deltas in an RAII scope around each site costs a few ns per scope.
+  That is enough to separate commit, scoring and bookkeeping in a Release build.
+  #177 is where this was used.
 
 ### callgrind
 
