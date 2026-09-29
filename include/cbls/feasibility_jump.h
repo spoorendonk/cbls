@@ -443,6 +443,7 @@ private:
     void reground_and_resettle();
     bool novelty_rounds();
     bool exact_feasible();
+    bool settle_local_minimum();
     bool reground_violated_rows();
     void resettle_neighbours(int32_t row, int32_t skip_var);
 

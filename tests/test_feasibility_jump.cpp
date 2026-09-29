@@ -1338,7 +1338,7 @@ TEST_CASE("a row violated only by its Sum's drift is dropped from V, not bumped"
     m.var_mut(vid(d.w)).value = 0.0;
     // Without r2's commit: x and w are fixed, z is the only mover and r2 is
     // fixed first, so make r2 already satisfied.
-    const int32_t z = m.num_vars() - 1;
+    const auto z = static_cast<int32_t>(m.num_vars() - 1);
     m.var_mut(z).value = 1.0;
     full_evaluate(m);
     ViolationManager vm(m);

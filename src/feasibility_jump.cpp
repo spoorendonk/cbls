@@ -913,6 +913,23 @@ void FeasibilityJump::resettle_neighbours(int32_t row, int32_t skip_var) {
     }
 }
 
+// No jump improves. Returns true if that is because the model is feasible, on
+// exact values. Otherwise the rows in V are re-summed exactly before any weight
+// is bumped (#177): a row that is violated only by its Sums' drift leaves V here
+// instead of having its weight raised, and a row that moved -- here or in the
+// feasibility check -- puts its variables back in Q, so FJ samples again rather
+// than bumping.
+bool FeasibilityJump::settle_local_minimum() {
+    if (reground_violated_rows()) {
+        return false;
+    }
+    if (!any_active_violated()) {
+        return exact_feasible();
+    }
+    bump_weights_and_requeue();
+    return false;
+}
+
 // "Feasible", read off V, is exact only if no row outside V drifted below the
 // tolerance. So re-ground everything the batch drifted, and read V again: a row
 // that came back puts its variables in Q and the loop carries on (#177).
@@ -1381,20 +1398,8 @@ GFJStatus FeasibilityJump::gls_loop_scaled(int sample_size, int64_t batch_iter_l
         watch_progress_ && batch_iter_limit > 0 && config_.unproductive_iterations > 0;
 
     while (true) {
-        if (!apply_jump(sample_size)) {
-            // A local minimum. Before any weight is bumped, the rows in V are
-            // re-summed exactly (#177): a row that is violated only by its Sums'
-            // drift leaves V here instead of having its weight raised, and a
-            // row that moved puts its variables back in Q, so sample again.
-            if (!reground_violated_rows()) {
-                if (!any_active_violated()) {
-                    if (exact_feasible()) {
-                        return GFJStatus::Feasible;
-                    }
-                } else {
-                    bump_weights_and_requeue();
-                }
-            }
+        if (!apply_jump(sample_size) && settle_local_minimum()) {
+            return GFJStatus::Feasible;
         }
 
         ++iterations_;
