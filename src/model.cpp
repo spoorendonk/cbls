@@ -1077,9 +1077,10 @@ std::vector<std::pair<int32_t, double>> Model::per_constraint_violation_delta(in
         }
     }
 
-    // Restore exactly: same inputs through deterministic evaluate() roll node
-    // values back to where they were. `Rollback` is what makes that true for a
-    // custom node too -- see the note on weighted_violation_delta below.
+    // Restore exactly: `Rollback` writes back the values the `Probe` stashed,
+    // custom nodes included, rather than re-evaluating -- which would re-sum an
+    // incremental Sum and so snap its drift (#177). See the note on
+    // weighted_violation_delta below.
     var_mut(var_id).value = old_value;
     delta_evaluate(*this, &var_id, 1, DeltaMode::Rollback);
 
