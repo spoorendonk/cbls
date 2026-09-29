@@ -1126,26 +1126,32 @@ TEST_CASE("the unweighted-violation accumulator matches a fresh recomputation",
     REQUIRE(std::abs(fj.unweighted_violation() - fresh) <= 1e-12 * std::max(1.0, fresh));
 }
 
-TEST_CASE("FJ's commits leave integral rows exactly as a full evaluation would",
-          "[fj][exact_sum]") {
-    // #177: update_var moves an integral row by its one changed term. The claim
-    // that makes that safe is that the node values are the re-sum's to the bit,
-    // so the trajectory, the violated-row bookkeeping and the closed-form scorer
-    // see what they always saw. Checked here after a real FJ run on a MIP-shaped
-    // model with rows no assignment satisfies, so every iteration commits.
+namespace {
+
+// A MIP-shaped model FJ cannot satisfy, so that every iteration commits.
+// Integral: integer coefficients over Bool/Int columns. Otherwise fractional
+// coefficients over Float columns plus a big-M term per row, so that the
+// incremental Sums really drift.
+Model make_mip_like(bool integral, std::vector<int32_t>& cols) {
     Model m;
     RNG gen(17);
-    std::vector<int32_t> cols;
-    cols.reserve(60);
+    cols.clear();
+    cols.reserve(61);
     for (int j = 0; j < 60; ++j) {
-        cols.push_back(j % 3 == 0 ? m.int_var(-5, 5) : m.bool_var());
+        if (integral) {
+            cols.push_back(j % 3 == 0 ? m.int_var(-5, 5) : m.bool_var());
+        } else {
+            cols.push_back(m.float_var(-5.0, 5.0));
+        }
     }
+    const int32_t big = m.float_var(1.0, 1.0);
     for (int i = 0; i < 40; ++i) {
         std::vector<int32_t> terms;
-        terms.reserve(20);
+        terms.reserve(21);
         for (int k = 0; k < 20; ++k) {
             const int32_t x = cols[static_cast<size_t>(((i * 11) + k) % 60)];
-            const auto a = static_cast<double>(gen.integers(-4, 5));
+            const double a =
+                integral ? static_cast<double>(gen.integers(-4, 5)) : gen.uniform(-4.0, 4.0);
             if (a == 1.0) {
                 terms.push_back(x);
             } else if (a == -1.0) {
@@ -1154,23 +1160,20 @@ TEST_CASE("FJ's commits leave integral rows exactly as a full evaluation would",
                 terms.push_back(m.prod(m.constant(a), x));
             }
         }
+        if (!integral) {
+            terms.push_back(m.prod(m.constant(1e9), big));
+        }
         const int32_t row = m.sum(terms);
-        const auto rhs = static_cast<double>(gen.integers(-3, 4));
+        const auto rhs = static_cast<double>(gen.integers(-3, 4)) + (integral ? 0.0 : 1e9);
         m.add_constraint(i % 2 == 0 ? m.eq_expr(row, m.constant(rhs))
                                     : m.geq(row, m.constant(rhs)));
     }
     m.minimize(m.sum({cols[0], cols[1], cols[2]}));
     m.close();
+    return m;
+}
 
-    ViolationManager vm(m);
-    RNG rng(4);
-    GFJConfig cfg;
-    cfg.max_iterations = 5000;
-    exact_sum_counters() = ExactSumCounters{};
-    FeasibilityJump fj(m, vm, rng, cfg);
-    (void)fj.run();
-    CHECK(exact_sum_counters().incremental > 1000);
-
+void require_bits_of_full_evaluate(const Model& m) {
     Model fresh(m);
     full_evaluate(fresh);
     for (size_t i = 0; i < m.num_nodes(); ++i) {
@@ -1184,8 +1187,60 @@ TEST_CASE("FJ's commits leave integral rows exactly as a full evaluation would",
             FAIL("node " << i << " holds " << got << ", a full evaluation gives " << want);
         }
     }
-    // A move to the value a variable already holds changes nothing, exactly.
+}
+
+}  // namespace
+
+TEST_CASE("FJ's commits on integral rows are exact, so trajectories do not move",
+          "[fj][incremental_sum]") {
+    // #177 moves a row by its one changed term. On integral data every partial
+    // sum is exact, so the node values are the re-sum's to the bit and the
+    // trajectory is the one the re-summing engine took -- checked here on the
+    // values after a real run, and on neos-860300 by the fixed-iteration A/B
+    // recorded on the issue.
+    std::vector<int32_t> cols;
+    Model m = make_mip_like(/*integral=*/true, cols);
+    ViolationManager vm(m);
+    RNG rng(4);
+    GFJConfig cfg;
+    cfg.max_iterations = 5000;
+    incremental_sum_counters() = IncrementalSumCounters{};
+    FeasibilityJump fj(m, vm, rng, cfg);
+    (void)fj.run();
+    CHECK(incremental_sum_counters().incremental > 1000);
+    require_bits_of_full_evaluate(m);
     for (const int32_t x : cols) {
         REQUIRE(vm.weighted_violation_delta(vid(x), m.var(vid(x)).value) == 0.0);
+    }
+}
+
+TEST_CASE("an FJ batch hands back exact values and a V that agrees with them",
+          "[fj][incremental_sum]") {
+    // Inside a batch the fractional rows drift. Outside it nothing may: the
+    // search reads feasibility and the objective straight off the node values.
+    // So every batch ends by re-grounding, and by settling V, the unweighted
+    // total and the jump caches for each row the re-grounding moved.
+    std::vector<int32_t> cols;
+    Model m = make_mip_like(/*integral=*/false, cols);
+    ViolationManager vm(m);
+    RNG rng(4);
+    GFJConfig cfg;
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(true);
+    const auto& cids = m.constraint_ids();
+    for (int b = 0; b < 30; ++b) {
+        (void)fj.batch(500);
+        require_bits_of_full_evaluate(m);
+        double unweighted = 0.0;
+        for (size_t c = 0; c < cids.size(); ++c) {
+            const double residual = m.node_value(cids[c]);
+            const bool violated = !(residual <= 1e-9);
+            REQUIRE(fj.row_violated(static_cast<int32_t>(c)) == violated);
+            if (vm.weights[c] > 0.0 && violated && std::isfinite(residual) &&
+                static_cast<int32_t>(c) != m.objective_constraint_idx()) {
+                unweighted += residual;
+            }
+        }
+        CHECK(fj.unweighted_violation() == Catch::Approx(unweighted).epsilon(1e-9));
     }
 }

@@ -54,32 +54,42 @@ class EditJournal;
 double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count,
                       DeltaMode mode = DeltaMode::Commit, const EditJournal* journal = nullptr);
 
-/// `delta_evaluate(model, &var_id, 1)` -- a `Commit` of one scalar variable --
-/// for a caller that still knows the variable's previous value, which it has
-/// already overwritten with the new one (#177).
-///
-/// Leaves every node value bit-identical to what `delta_evaluate` would. What
-/// the old value buys is the cost: a `Sum` the model classified as integral
-/// (`Model::exact_sum_nodes`) and that currently holds its exact sum
-/// (`Model::sum_exact_state`) is moved by its terms' changes, O(1) per changed
-/// term, instead of being re-summed over all of them. On a MIP row with
-/// integral coefficients over Bool/Int columns that is the difference between
-/// O(|G_v|) and O(sum of |row| over G_v) per committed move. Where the values
-/// cannot be shown exact -- a fractional term, a term above 2^52 / (term count),
-/// a NaN or an infinity -- the Sum is re-summed as before, so the result is the
-/// re-sum's bits either way.
+/// How many term updates an incremental `Sum` may carry before a Commit
+/// re-sums it (#177). The drift a Sum can hold is at most this many roundings,
+/// and a re-sum costs its whole length once per this many updates. Chosen by
+/// the sweep recorded on #177; a parameter, not a derived constant.
+constexpr int kIncrementalSumPeriod = 64;
+
+/// A `Commit` of one scalar variable whose previous value was `old_value` (the
+/// caller has already written the new one): `delta_evaluate(model, &var_id,
+/// 1)`, except that every `ExprNode::incremental_sum` Sum in the cone is moved
+/// by its terms' changes, O(1) per changed term, instead of re-summed over all
+/// of them (#177). The price is drift -- floating-point rounding of at most
+/// `kIncrementalSumPeriod` updates per Sum, and none on integral data -- which
+/// `reground_incremental_sums` removes. The rules and the consistency argument
+/// are at the top of the incremental-Sum section of `src/dag_ops.cpp`.
 double commit_scalar_move(Model& model, int32_t var_id, double old_value);
 
-/// How often the dirty `Sum`s of exact-sum eligibility (`Model::exact_sum_nodes`)
-/// were updated by their terms' changes rather than re-summed, on this thread,
-/// since the last `reset`. Diagnostics for tests and profiling (#177); nothing
-/// in the engine reads them. Counted on the eligible Sums only, so the
-/// re-summing path of every other node pays nothing for them.
-struct ExactSumCounters {
+/// The `Probe` counterpart: the same updates, applied from the committed values
+/// and stashed for the matching `delta_evaluate(..., DeltaMode::Rollback)`,
+/// which writes the stash back bit for bit. A probe of the value the variable
+/// already holds therefore changes no node value at all.
+double probe_scalar_move(Model& model, int32_t var_id, double old_value);
+
+/// Re-sums every incremental `Sum` that has drifted since the last call, and
+/// re-evaluates their cones. Returns whether there was anything to do. Cost:
+/// those cones, not the model. FeasibilityJump calls it at the end of every
+/// batch, which is what keeps drift inside a batch.
+bool reground_incremental_sums(Model& model);
+
+/// How often the dirty incremental `Sum`s were moved by their terms' changes
+/// rather than re-summed, on this thread, since the last reset. Diagnostics for
+/// tests and profiling (#177); nothing in the engine reads them.
+struct IncrementalSumCounters {
     uint64_t incremental = 0;
     uint64_t resummed = 0;
 };
-ExactSumCounters& exact_sum_counters() noexcept;
+IncrementalSumCounters& incremental_sum_counters() noexcept;
 
 // Convenience overloads
 inline double delta_evaluate(Model& model, const std::vector<int32_t>& changed_var_ids,

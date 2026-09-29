@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 
@@ -883,6 +884,7 @@ void FeasibilityJump::update_var(int32_t var_id) {
         set_violated(c, is_violated(after));
     }
     unweighted_violation_ += violation_delta;
+    note_touched_rows(gv);
     // A vp sharing several rows with var_id is visited once per shared row. Not
     // deduplicated (#174 proposed a stamp): with the participation test now O(1),
     // a repeat visit costs an idempotent invalidate on a line the first visit
@@ -890,16 +892,76 @@ void FeasibilityJump::update_var(int32_t var_id) {
     // than a stamp check-and-set, which would also charge every FIRST visit and
     // 4 B per variable.
     for (int32_t c : gv) {
-        for (int32_t vp : vars_of_constraint_[c]) {
-            if (vp == var_id) {
-                continue;
-            }
-            jumps_.invalidate(vp);
-            if (in_queue_[vp] == 0 && participates_in_active_violated(vp)) {
-                enqueue(vp);
-            }
+        resettle_neighbours(c, var_id);
+    }
+}
+
+// Every variable of `row` but `skip_var` may have a stale cached jump now, and
+// may belong in the scan set. Called only once every changed row is settled in
+// V, so a variable sharing several of them sees all of them.
+void FeasibilityJump::resettle_neighbours(int32_t row, int32_t skip_var) {
+    for (int32_t vp : vars_of_constraint_[row]) {
+        if (vp == skip_var) {
+            continue;
+        }
+        jumps_.invalidate(vp);
+        if (in_queue_[vp] == 0 && participates_in_active_violated(vp)) {
+            enqueue(vp);
         }
     }
+}
+
+// O(|rows|): one stamp test each, on rows the caller has just walked anyway.
+void FeasibilityJump::note_touched_rows(ConstSpan<int32_t> rows) {
+    const size_t nc = model_.constraint_ids().size();
+    if (touch_stamp_.size() != nc) {
+        touch_stamp_.assign(nc, 0);
+    }
+    for (const int32_t c : rows) {
+        if (touch_stamp_[static_cast<size_t>(c)] != touch_epoch_) {
+            touch_stamp_[static_cast<size_t>(c)] = touch_epoch_;
+            touched_rows_.push_back(c);
+        }
+    }
+}
+
+// The end of every batch (#177). Re-sums the Sums the batch's committed moves
+// left drifted -- so nothing outside FJ ever reads a drifted value, which is
+// what makes the search's feasibility test and objective reading exact -- and
+// then settles each touched row whose value the re-sum moved exactly as
+// update_var settles a row its move changed: the unweighted total, V and its
+// counts, and the row's variables' cached jumps and scan-set membership. A row
+// no committed move touched cannot have moved: a drifted Sum is only ever in
+// the cone of a variable some committed move changed.
+//
+// Nothing moves on integral data, and nothing is walked when nothing drifted.
+void FeasibilityJump::reground_and_resettle() {
+    const auto& cids = model_.constraint_ids();
+    touched_before_.clear();
+    for (const int32_t c : touched_rows_) {
+        touched_before_.push_back(model_.node_values()[cids[static_cast<size_t>(c)]]);
+    }
+    if (reground_incremental_sums(model_)) {
+        size_t n_moved = 0;
+        for (size_t k = 0; k < touched_rows_.size(); ++k) {
+            const int32_t c = touched_rows_[k];
+            const double before = touched_before_[k];
+            const double after = model_.node_values()[cids[static_cast<size_t>(c)]];
+            if (std::memcmp(&before, &after, sizeof before) == 0) {
+                continue;
+            }
+            if (c != objective_ci_ && active(c)) {
+                unweighted_violation_ += progress_residual(after) - progress_residual(before);
+            }
+            set_violated(c, is_violated(after));
+            touched_rows_[n_moved++] = c;  // compacted: the rows that moved
+        }
+        for (size_t k = 0; k < n_moved; ++k) {
+            resettle_neighbours(touched_rows_[k], -1);
+        }
+    }
+    touched_rows_.clear();
+    ++touch_epoch_;
 }
 
 bool FeasibilityJump::apply_jump(int sample_size) {
@@ -1212,7 +1274,17 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
     // The lazy decay's scale is local to the loop: whatever way the loop is left,
     // vm_.weights are effective weights again afterwards (#175).
     try {
-        const GFJStatus status = gls_loop_scaled(sample_size, batch_iter_limit);
+        GFJStatus status = gls_loop_scaled(sample_size, batch_iter_limit);
+        reground_and_resettle();
+        // "Feasible" was read off V as the batch's drifted values left it. The
+        // re-grounding can move a row sitting within rounding of its tolerance
+        // back into V, so re-read it; the batch then goes on from the exact
+        // state. Only the loop's own ending can do this: every other ending
+        // already reports Unsolved.
+        while (status == GFJStatus::Feasible && any_active_violated()) {
+            status = gls_loop_scaled(sample_size, batch_iter_limit);
+            reground_and_resettle();
+        }
         materialise_weights();
         return status;
     } catch (...) {
@@ -1685,7 +1757,8 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         const int32_t v = pick.var;
         const double old_value = model_.var(v).value;
         model_.var_mut(v).value = pick.jump;
-        delta_evaluate(model_, &v, 1);
+        commit_scalar_move(model_, v, old_value);
+        note_touched_rows(model_.constraints_of_var(v));
         move_stack_.push_back({v, old_value});
         on_stack_[v] = 1;
         --nj_work_remaining_;  // bound total moves applied per apply_novelty_jump
@@ -1713,7 +1786,7 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         on_stack_[v] = 0;
         move_stack_.pop_back();
         model_.var_mut(v).value = old_value;
-        delta_evaluate(model_, &v, 1);
+        commit_scalar_move(model_, v, pick.jump);
         for (int32_t c : model_.constraints_of_var(v)) {
             set_violated(c, is_violated(model_.node_value(cids[c])));
         }
@@ -1721,7 +1794,15 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
     }
 }
 
+// Its legs commit with old values, so they leave drift as update_var does, and
+// it ends with the same re-grounding as an FJ batch (#177).
 bool FeasibilityJump::apply_novelty_jump() {
+    const bool feasible = novelty_rounds();
+    reground_and_resettle();
+    return feasible;
+}
+
+bool FeasibilityJump::novelty_rounds() {
     require_tables_in_step();
     const size_t nv = model_.num_vars();
     // Flags stay set only for entries of nj_queue_ / move_stack_, which
