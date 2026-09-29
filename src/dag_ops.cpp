@@ -368,6 +368,15 @@ double checked_resum(Model& model, const ExprNode& node, uint8_t& exact) {
 // Sum's value in place, ahead of its turn in the walk, while it is known exact;
 // otherwise the Sum is marked for a re-sum. `old_v` needs no test: it passed one
 // when it entered the Sum's value, or the Sum would not be known exact now.
+//
+// A throw out of the walk -- only user code can throw, and a custom node is
+// never a term -- cannot leave a pushed Sum wrong. A push happens exactly when
+// the term's own stored value changes: a variable is written before the call,
+// and a Neg/Prod pushes and is then written by the walk with nothing in
+// between. So a Sum known exact holds the exact sum of its terms' STORED
+// values, however far the walk got. The walk WITHOUT pushes is the exception:
+// there a term is rewritten and its Sum re-checked only at the Sum's own turn,
+// so `delta_walk` clears those Sums up front when a custom node could throw.
 inline void push_term(Model& model, std::vector<uint8_t>& exact, int32_t p, double new_v,
                       double old_v) {
     if (exact[p] == 0) {
@@ -379,28 +388,6 @@ inline void push_term(Model& model, std::vector<uint8_t>& exact, int32_t p, doub
     }
     model.set_node_value_unchecked(p, model.node_values()[p] + (new_v - old_v));
 }
-
-// Clears the exact state of every node in the walk if the walk throws: a push
-// may already have moved a Sum whose remaining terms never reported, and the
-// value is then no longer the exact sum the state claims.
-struct ExactStateGuard {
-    ExactStateGuard(std::vector<uint8_t>& e, const std::vector<int32_t>& l) : exact(e), list(l) {}
-    ExactStateGuard(const ExactStateGuard&) = delete;
-    ExactStateGuard& operator=(const ExactStateGuard&) = delete;
-    ExactStateGuard(ExactStateGuard&&) = delete;
-    ExactStateGuard& operator=(ExactStateGuard&&) = delete;
-    ~ExactStateGuard() {
-        if (!done) {
-            for (const int32_t nid : list) {
-                exact[nid] = 0;
-            }
-        }
-    }
-
-    std::vector<uint8_t>& exact;
-    const std::vector<int32_t>& list;
-    bool done = false;
-};
 
 // The one walk behind both entry points. `old_values`, when non-null, holds the
 // previous value of each of `changed_var_ids` and switches the term updates on;
@@ -459,8 +446,12 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
     std::vector<uint8_t>& exact = model.sum_exact_state();
     const bool tracked = eligible.size() == num_nodes && exact.size() == num_nodes;
     const bool push = tracked && old_values != nullptr;
-    ExactStateGuard exact_guard(exact, dirty_list);
 
+    if (tracked && !push && model.has_custom_nodes()) {
+        for (const int32_t nid : dirty_list) {
+            exact[nid] = 0;  // re-set by the checked re-sum at the node's turn
+        }
+    }
     if (push) {
         const std::vector<Variable>& vars = model.variables();
         for (size_t ci = 0; ci < count; ++ci) {
@@ -520,7 +511,6 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
                 nid, [&model](int32_t id) { return evaluate(model.nodes()[id], model); });
         });
     }
-    exact_guard.done = true;
 
     // The flags are cleared by `flag_guard` on the way out, which is also what
     // covers a throw from user code inside the walk.

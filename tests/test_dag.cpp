@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <utility>
@@ -1003,4 +1004,199 @@ TEST_CASE("a partial that throws does not poison later AD calls on the thread", 
     for (int32_t node = 0; node < static_cast<int32_t>(good.num_nodes()); ++node) {
         require_bit_identical_partials(good, node);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Exact incremental Sum on commit (#177)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Every node value of `m` against a from-scratch evaluation of a copy, to the bit.
+void require_matches_full_evaluate(const Model& m) {
+    Model fresh(m);
+    full_evaluate(fresh);
+    const std::vector<double>& got = m.node_values();
+    const std::vector<double>& want = fresh.node_values();
+    REQUIRE(got.size() == want.size());
+    for (size_t i = 0; i < got.size(); ++i) {
+        if (std::memcmp(&got[i], &want[i], sizeof(double)) != 0) {
+            FAIL("node " << i << " holds " << got[i] << ", a full evaluation gives " << want[i]);
+        }
+    }
+}
+
+// Rows in the three shapes mps_to_model writes -- `x`, `neg(x)`,
+// `prod(constant(a), x)` -- with integral coefficients over Int columns, each
+// row long and sharing columns with the others, as a MIP row does.
+struct IntegralRows {
+    Model m;
+    std::vector<int32_t> cols;  // variable handles
+    std::vector<int32_t> rows;  // the Sum nodes
+};
+
+IntegralRows make_integral_rows(int n_cols, int n_rows, int row_len, uint64_t seed) {
+    IntegralRows r;
+    RNG rng(seed);
+    for (int j = 0; j < n_cols; ++j) {
+        r.cols.push_back(r.m.int_var(-20, 20));
+    }
+    for (int i = 0; i < n_rows; ++i) {
+        std::vector<int32_t> terms;
+        for (int k = 0; k < row_len; ++k) {
+            const int32_t x = r.cols[static_cast<size_t>((i * 7 + k) % n_cols)];
+            const int64_t shape = rng.integers(0, 3);
+            if (shape == 0) {
+                terms.push_back(x);
+            } else if (shape == 1) {
+                terms.push_back(r.m.neg(x));
+            } else {
+                terms.push_back(
+                    r.m.prod(r.m.constant(static_cast<double>(rng.integers(-9, 10))), x));
+            }
+        }
+        const int32_t row = r.m.sum(terms);
+        r.rows.push_back(row);
+        r.m.add_constraint(r.m.leq(row, r.m.constant(static_cast<double>(rng.integers(-5, 6)))));
+    }
+    r.m.minimize(r.m.sum({r.cols[0], r.cols[1]}));
+    r.m.close();
+    return r;
+}
+
+}  // namespace
+
+TEST_CASE("commit_scalar_move updates integral rows by their changed terms", "[dag][exact_sum]") {
+    // The regression test: a committed move must not re-sum an integral row it
+    // touches once the row is known exact. Red on the pre-#177 walk, which
+    // re-summed every dirty Sum -- `incremental` stays 0 there.
+    IntegralRows r = make_integral_rows(40, 30, 25, 5);
+    Model& m = r.m;
+    for (const int32_t row : r.rows) {
+        REQUIRE(m.exact_sum_nodes()[static_cast<size_t>(row)] == 1);
+    }
+    RNG rng(11);
+    exact_sum_counters() = ExactSumCounters{};
+    for (int step = 0; step < 3000; ++step) {
+        const int32_t v = vid(r.cols[static_cast<size_t>(rng.integers(0, 40))]);
+        const double old_value = m.var(v).value;
+        m.var_mut(v).value = static_cast<double>(rng.integers(-20, 21));
+        commit_scalar_move(m, v, old_value);
+        if (step % 250 == 0) {
+            require_matches_full_evaluate(m);
+        }
+    }
+    require_matches_full_evaluate(m);
+    const ExactSumCounters counts = exact_sum_counters();
+    // Each eligible Sum -- the rows and the objective -- is re-summed once, on
+    // its first touch after close()'s full pass (which leaves no Sum known
+    // exact); every later touch is an update.
+    REQUIRE(counts.resummed <= r.rows.size() + 1);
+    REQUIRE(counts.incremental > 10 * counts.resummed);
+}
+
+TEST_CASE("commit_scalar_move falls back to the re-sum where it cannot be exact",
+          "[dag][exact_sum]") {
+    // Every value below is representable, and none may be updated by its
+    // change: the result must be the re-sum's bits whatever the values do.
+    Model m;
+    const int32_t a = m.int_var(-10, 10);
+    const int32_t b = m.int_var(-10, 10);
+    const int32_t c = m.int_var(-10, 10);
+    const int32_t f = m.float_var(-10.0, 10.0);
+    const int32_t exact_row = m.sum({a, m.neg(b), m.prod(m.constant(3.0), c)});
+    const int32_t fractional_coef = m.sum({a, m.prod(m.constant(0.1), b), c});
+    const int32_t float_term = m.sum({a, f});
+    const int32_t nested = m.sum({exact_row, c});
+    const int32_t repeated = m.sum({a, a, b});
+    for (const int32_t row : {exact_row, fractional_coef, float_term, nested, repeated}) {
+        m.add_constraint(m.leq(row, m.constant(0.0)));
+    }
+    m.minimize(m.sum({a, b}));
+    m.close();
+
+    SECTION("only the integral shape is eligible") {
+        const std::vector<uint8_t>& eligible = m.exact_sum_nodes();
+        CHECK(eligible[static_cast<size_t>(exact_row)] == 1);
+        CHECK(eligible[static_cast<size_t>(fractional_coef)] == 0);
+        CHECK(eligible[static_cast<size_t>(float_term)] == 0);
+        CHECK(eligible[static_cast<size_t>(nested)] == 0);    // a Sum term
+        CHECK(eligible[static_cast<size_t>(repeated)] == 0);  // a term named twice
+    }
+
+    SECTION("values outside the exact regime take the re-sum, and back again") {
+        const int32_t ai = vid(a);
+        const int32_t ci = vid(c);
+        // 2^52 / 3 terms is the bound; 3 * 2^51 on the Prod term is above it, and
+        // 0.5 and inf are not integers. Each is followed by a return to a small
+        // integer, which must re-establish the exact state from a re-sum.
+        const std::vector<std::pair<int32_t, double>> moves = {
+            {ai, 4.0},  {ci, 2251799813685248.0},
+            {ci, 1.0},  {ai, 0.5},
+            {ai, -3.0}, {ai, 1e300},
+            {ai, 2.0},  {ci, std::numeric_limits<double>::infinity()},
+            {ci, -2.0}, {ai, 7.0}};
+        for (const auto& [v, value] : moves) {
+            const double old_value = m.var(v).value;
+            m.var_mut(v).value = value;
+            commit_scalar_move(m, v, old_value);
+            require_matches_full_evaluate(m);
+        }
+    }
+}
+
+TEST_CASE("exact Sums stay exact across probes, plain deltas and full passes", "[dag][exact_sum]") {
+    // Every other writer of node values interleaved with the incremental commit.
+    // The probe legs re-sum; if the committed value were anything but the exact
+    // sum, a probe's forward leg would disagree with it, and an identity move
+    // would not score exactly 0.
+    IntegralRows r = make_integral_rows(30, 20, 18, 9);
+    Model& m = r.m;
+    ViolationManager vm(m);
+    RNG rng(3);
+    for (int step = 0; step < 2000; ++step) {
+        const int32_t v = vid(r.cols[static_cast<size_t>(rng.integers(0, 30))]);
+        const double value = static_cast<double>(rng.integers(-20, 21));
+        switch (rng.integers(0, 5)) {
+            case 0: {
+                const double before = m.var(v).value;
+                REQUIRE(vm.weighted_violation_delta(v, before) == 0.0);
+                (void)vm.weighted_violation_delta(v, value);
+                REQUIRE(m.var(v).value == before);
+                break;
+            }
+            case 1:
+                m.var_mut(v).value = value;
+                delta_evaluate(m, &v, 1);
+                break;
+            case 2:
+                if (step % 50 == 0) {
+                    full_evaluate(m);
+                }
+                break;
+            default: {
+                const double old_value = m.var(v).value;
+                m.var_mut(v).value = value;
+                commit_scalar_move(m, v, old_value);
+                break;
+            }
+        }
+        if (step % 100 == 0) {
+            require_matches_full_evaluate(m);
+        }
+    }
+    require_matches_full_evaluate(m);
+}
+
+TEST_CASE("a model copy carries the exact state with the node values", "[dag][exact_sum]") {
+    IntegralRows r = make_integral_rows(12, 6, 10, 2);
+    const int32_t v = vid(r.cols[3]);
+    r.m.var_mut(v).value = 5.0;
+    commit_scalar_move(r.m, v, -20.0);  // re-sums, and establishes the exact state
+    Model copy(r.m);
+    exact_sum_counters() = ExactSumCounters{};
+    copy.var_mut(v).value = -1.0;
+    commit_scalar_move(copy, v, 5.0);
+    CHECK(exact_sum_counters().resummed == 0);
+    require_matches_full_evaluate(copy);
 }

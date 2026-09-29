@@ -5,6 +5,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <vector>
 
@@ -1122,4 +1123,56 @@ TEST_CASE("the unweighted-violation accumulator matches a fresh recomputation",
     // from progress. A whole-sum measure including the 1e30 row would be off by
     // thirty orders here, not by an ulp.
     REQUIRE(std::abs(fj.unweighted_violation() - fresh) <= 1e-12 * std::max(1.0, fresh));
+}
+
+TEST_CASE("FJ's commits leave integral rows exactly as a full evaluation would",
+          "[fj][exact_sum]") {
+    // #177: update_var moves an integral row by its one changed term. The claim
+    // that makes that safe is that the node values are the re-sum's to the bit,
+    // so the trajectory, the violated-row bookkeeping and the closed-form scorer
+    // see what they always saw. Checked here after a real FJ run on a MIP-shaped
+    // model with rows no assignment satisfies, so every iteration commits.
+    Model m;
+    RNG gen(17);
+    std::vector<int32_t> cols;
+    for (int j = 0; j < 60; ++j) {
+        cols.push_back(j % 3 == 0 ? m.int_var(-5, 5) : m.bool_var());
+    }
+    for (int i = 0; i < 40; ++i) {
+        std::vector<int32_t> terms;
+        for (int k = 0; k < 20; ++k) {
+            const int32_t x = cols[static_cast<size_t>((i * 11 + k) % 60)];
+            const double a = static_cast<double>(gen.integers(-4, 5));
+            terms.push_back(a == 1.0 ? x : a == -1.0 ? m.neg(x) : m.prod(m.constant(a), x));
+        }
+        const int32_t row = m.sum(terms);
+        const double rhs = static_cast<double>(gen.integers(-3, 4));
+        m.add_constraint(i % 2 == 0 ? m.eq_expr(row, m.constant(rhs))
+                                    : m.geq(row, m.constant(rhs)));
+    }
+    m.minimize(m.sum({cols[0], cols[1], cols[2]}));
+    m.close();
+
+    ViolationManager vm(m);
+    RNG rng(4);
+    GFJConfig cfg;
+    cfg.max_iterations = 5000;
+    exact_sum_counters() = ExactSumCounters{};
+    FeasibilityJump fj(m, vm, rng, cfg);
+    (void)fj.run();
+    CHECK(exact_sum_counters().incremental > 1000);
+
+    Model fresh(m);
+    full_evaluate(fresh);
+    for (size_t i = 0; i < m.num_nodes(); ++i) {
+        const double got = m.node_values()[i];
+        const double want = fresh.node_values()[i];
+        if (std::memcmp(&got, &want, sizeof(double)) != 0) {
+            FAIL("node " << i << " holds " << got << ", a full evaluation gives " << want);
+        }
+    }
+    // A move to the value a variable already holds changes nothing, exactly.
+    for (const int32_t x : cols) {
+        REQUIRE(vm.weighted_violation_delta(vid(x), m.var(vid(x)).value) == 0.0);
+    }
 }
