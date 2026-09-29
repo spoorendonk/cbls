@@ -376,7 +376,8 @@ double checked_resum(Model& model, const ExprNode& node, uint8_t& exact) {
 // between. So a Sum known exact holds the exact sum of its terms' STORED
 // values, however far the walk got. The walk WITHOUT pushes is the exception:
 // there a term is rewritten and its Sum re-checked only at the Sum's own turn,
-// so `delta_walk` clears those Sums up front when a custom node could throw.
+// so `ExactSumWalk::prepare` clears those Sums up front when a custom node
+// could throw.
 inline void push_term(Model& model, std::vector<uint8_t>& exact, int32_t p, double new_v,
                       double old_v) {
     if (exact[p] == 0) {
@@ -387,6 +388,114 @@ inline void push_term(Model& model, std::vector<uint8_t>& exact, int32_t p, doub
         return;
     }
     model.set_node_value_unchecked(p, model.node_values()[p] + (new_v - old_v));
+}
+
+// The exact-Sum rules for one walk. Untracked -- an unclosed model, whose two
+// arrays the first full_evaluate has not sized yet -- every node goes straight
+// to the plain evaluator.
+class ExactSumWalk {
+public:
+    ExactSumWalk(Model& model, bool push)
+        : model_(model),
+          eligible_(model.exact_sum_nodes()),
+          exact_(model.sum_exact_state()),
+          tracked_(eligible_.size() == model.num_nodes() && exact_.size() == model.num_nodes()),
+          push_(tracked_ && push) {}
+
+    // Before the walk: push the changed variables' own moves into their eligible
+    // Sums, or -- on a walk without pushes over a model whose user code could
+    // throw -- clear the cone's Sums, which the checked re-sum re-sets at each
+    // Sum's turn.
+    void prepare(const std::vector<int32_t>& dirty_list, const int32_t* changed_var_ids,
+                 size_t count, const double* old_values) {
+        if (!tracked_) {
+            return;
+        }
+        if (!push_) {
+            if (model_.has_custom_nodes()) {
+                for (const int32_t nid : dirty_list) {
+                    exact_[nid] = 0;
+                }
+            }
+            return;
+        }
+        const std::vector<Variable>& vars = model_.variables();
+        for (size_t ci = 0; ci < count; ++ci) {
+            const int32_t v = changed_var_ids[ci];
+            for (const int32_t dep_id : model_.dependents(v)) {
+                if (eligible_[dep_id] != 0) {
+                    push_term(model_, exact_, dep_id, vars[v].value, old_values[ci]);
+                }
+            }
+        }
+    }
+
+    // One dirty node's new value. An eligible Sum is taken as it stands when its
+    // terms were pushed into it exactly, and re-summed with the check otherwise;
+    // a dirty Neg/Prod pushes its change into its eligible parents.
+    template <typename EvalOther>
+    double eval(int32_t nid, EvalOther&& eval_other) {
+        if (!tracked_) {
+            return eval_other(nid);
+        }
+        if (eligible_[nid] != 0) {
+            return eval_eligible_sum(nid);
+        }
+        const NodeOp op = model_.nodes()[nid].op;
+        if (!push_ || (op != NodeOp::Neg && op != NodeOp::Prod)) {
+            return eval_other(nid);
+        }
+        const double old_v = model_.node_values()[nid];
+        const double new_v = eval_other(nid);
+        for (const int32_t parent_id : model_.parents(nid)) {
+            if (eligible_[parent_id] != 0) {
+                push_term(model_, exact_, parent_id, new_v, old_v);
+            }
+        }
+        return new_v;
+    }
+
+private:
+    double eval_eligible_sum(int32_t nid) {
+        if (push_ && exact_[nid] != 0) {
+            ++exact_sum_counts.incremental;
+            return model_.node_values()[nid];
+        }
+        ++exact_sum_counts.resummed;
+        return checked_resum(model_, model_.nodes()[nid], exact_[nid]);
+    }
+
+    Model& model_;
+    const std::vector<uint8_t>& eligible_;
+    std::vector<uint8_t>& exact_;
+    bool tracked_;
+    bool push_;
+};
+
+// Marks the cone above `changed_var_ids` -- their dependents, then every
+// ancestor -- in `dirty_flags`, listing each node once in `dirty_list`.
+void collect_dirty_cone(const Model& model, const int32_t* changed_var_ids, size_t count,
+                        std::vector<uint8_t>& dirty_flags, std::vector<int32_t>& dirty_list) {
+    // Seed dirty set from changed variables' dependents
+    for (size_t ci = 0; ci < count; ++ci) {
+        for (const int32_t dep_id : model.dependents(changed_var_ids[ci])) {
+            if (dirty_flags[dep_id] == 0) {
+                dirty_flags[dep_id] = 1;
+                dirty_list.push_back(dep_id);
+            }
+        }
+    }
+
+    // BFS upward through parents
+    for (size_t i = 0; i < dirty_list.size(); ++i) {
+        int32_t nid = dirty_list[i];
+        for (const int32_t parent_id : model.parents(nid)) {
+            if (dirty_flags[parent_id] == 0) {
+                dirty_flags[parent_id] = 1;
+                dirty_list.push_back(parent_id);
+            }
+        }
+    }
 }
 
 // The one walk behind both entry points. `old_values`, when non-null, holds the
@@ -418,81 +527,10 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
     // Armed BEFORE the seeding loop, so it covers every flag this call sets --
     // including the ones set before an exception out of the walk below.
     const DirtyFlagGuard flag_guard(dirty_flags, dirty_list);
+    collect_dirty_cone(model, changed_var_ids, count, dirty_flags, dirty_list);
 
-    // Seed dirty set from changed variables' dependents
-    for (size_t ci = 0; ci < count; ++ci) {
-        for (const int32_t dep_id : model.dependents(changed_var_ids[ci])) {
-            if (dirty_flags[dep_id] == 0) {
-                dirty_flags[dep_id] = 1;
-                dirty_list.push_back(dep_id);
-            }
-        }
-    }
-
-    // BFS upward through parents
-    for (size_t i = 0; i < dirty_list.size(); ++i) {
-        int32_t nid = dirty_list[i];
-        for (const int32_t parent_id : model.parents(nid)) {
-            if (dirty_flags[parent_id] == 0) {
-                dirty_flags[parent_id] = 1;
-                dirty_list.push_back(parent_id);
-            }
-        }
-    }
-
-    // Both arrays are sized by the first full_evaluate, which every close runs;
-    // before that there is nothing to be exact about and the walk is the plain one.
-    const std::vector<uint8_t>& eligible = model.exact_sum_nodes();
-    std::vector<uint8_t>& exact = model.sum_exact_state();
-    const bool tracked = eligible.size() == num_nodes && exact.size() == num_nodes;
-    const bool push = tracked && old_values != nullptr;
-
-    if (tracked && !push && model.has_custom_nodes()) {
-        for (const int32_t nid : dirty_list) {
-            exact[nid] = 0;  // re-set by the checked re-sum at the node's turn
-        }
-    }
-    if (push) {
-        const std::vector<Variable>& vars = model.variables();
-        for (size_t ci = 0; ci < count; ++ci) {
-            const int32_t v = changed_var_ids[ci];
-            for (const int32_t dep_id : model.dependents(v)) {
-                if (eligible[dep_id] != 0) {
-                    push_term(model, exact, dep_id, vars[v].value, old_values[ci]);
-                }
-            }
-        }
-    }
-
-    // Wraps the per-node evaluator with the exact-Sum rules. An eligible Sum is
-    // taken as it stands when its terms were pushed into it exactly, and
-    // re-summed with the check otherwise; a dirty Neg/Prod pushes its change into
-    // its eligible parents. Untracked (an unclosed model), this is `eval_other`.
-    const auto with_exact_sums = [&](int32_t nid, auto&& eval_other) -> double {
-        if (!tracked) {
-            return eval_other(nid);
-        }
-        if (eligible[nid] != 0) {
-            if (push && exact[nid] != 0) {
-                ++exact_sum_counts.incremental;
-                return model.node_values()[nid];
-            }
-            ++exact_sum_counts.resummed;
-            return checked_resum(model, model.nodes()[nid], exact[nid]);
-        }
-        const NodeOp op = model.nodes()[nid].op;
-        if (!push || (op != NodeOp::Neg && op != NodeOp::Prod)) {
-            return eval_other(nid);
-        }
-        const double old_v = model.node_values()[nid];
-        const double new_v = eval_other(nid);
-        for (const int32_t parent_id : model.parents(nid)) {
-            if (eligible[parent_id] != 0) {
-                push_term(model, exact, parent_id, new_v, old_v);
-            }
-        }
-        return new_v;
-    };
+    ExactSumWalk sums(model, old_values != nullptr);
+    sums.prepare(dirty_list, changed_var_ids, count, old_values);
 
     // One test per CALL, not per node: a model with no custom node takes the
     // pre-#166 loop verbatim, which is what keeps criterion 4's bit-identical
@@ -500,15 +538,15 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
     if (model.has_custom_nodes()) {
         thread_local std::vector<int32_t> changed_inputs;
         evaluate_dirty_in_topo_order(model, dirty_list, dirty_flags, num_nodes, [&](int32_t nid) {
-            return with_exact_sums(nid, [&](int32_t id) {
+            return sums.eval(nid, [&](int32_t id) {
                 return evaluate_dirty_node(model, id, mode, changed_var_ids, count, dirty_flags,
                                            changed_inputs, journal);
             });
         });
     } else {
         evaluate_dirty_in_topo_order(model, dirty_list, dirty_flags, num_nodes, [&](int32_t nid) {
-            return with_exact_sums(
-                nid, [&model](int32_t id) { return evaluate(model.nodes()[id], model); });
+            return sums.eval(nid,
+                             [&model](int32_t id) { return evaluate(model.nodes()[id], model); });
         });
     }
 

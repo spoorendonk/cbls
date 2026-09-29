@@ -1020,7 +1020,7 @@ void require_matches_full_evaluate(const Model& m) {
     const std::vector<double>& want = fresh.node_values();
     REQUIRE(got.size() == want.size());
     for (size_t i = 0; i < got.size(); ++i) {
-        if (std::memcmp(&got[i], &want[i], sizeof(double)) != 0) {
+        if (bits_of(got[i]) != bits_of(want[i])) {
             FAIL("node " << i << " holds " << got[i] << ", a full evaluation gives " << want[i]);
         }
     }
@@ -1044,7 +1044,7 @@ IntegralRows make_integral_rows(int n_cols, int n_rows, int row_len, uint64_t se
     for (int i = 0; i < n_rows; ++i) {
         std::vector<int32_t> terms;
         for (int k = 0; k < row_len; ++k) {
-            const int32_t x = r.cols[static_cast<size_t>((i * 7 + k) % n_cols)];
+            const int32_t x = r.cols[static_cast<size_t>(((i * 7) + k) % n_cols)];
             const int64_t shape = rng.integers(0, 3);
             if (shape == 0) {
                 terms.push_back(x);
@@ -1156,7 +1156,7 @@ TEST_CASE("exact Sums stay exact across probes, plain deltas and full passes", "
     RNG rng(3);
     for (int step = 0; step < 2000; ++step) {
         const int32_t v = vid(r.cols[static_cast<size_t>(rng.integers(0, 30))]);
-        const double value = static_cast<double>(rng.integers(-20, 21));
+        const auto value = static_cast<double>(rng.integers(-20, 21));
         switch (rng.integers(0, 5)) {
             case 0: {
                 const double before = m.var(v).value;

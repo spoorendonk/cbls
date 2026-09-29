@@ -5,6 +5,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <vector>
@@ -1135,18 +1136,26 @@ TEST_CASE("FJ's commits leave integral rows exactly as a full evaluation would",
     Model m;
     RNG gen(17);
     std::vector<int32_t> cols;
+    cols.reserve(60);
     for (int j = 0; j < 60; ++j) {
         cols.push_back(j % 3 == 0 ? m.int_var(-5, 5) : m.bool_var());
     }
     for (int i = 0; i < 40; ++i) {
         std::vector<int32_t> terms;
+        terms.reserve(20);
         for (int k = 0; k < 20; ++k) {
-            const int32_t x = cols[static_cast<size_t>((i * 11 + k) % 60)];
-            const double a = static_cast<double>(gen.integers(-4, 5));
-            terms.push_back(a == 1.0 ? x : a == -1.0 ? m.neg(x) : m.prod(m.constant(a), x));
+            const int32_t x = cols[static_cast<size_t>(((i * 11) + k) % 60)];
+            const auto a = static_cast<double>(gen.integers(-4, 5));
+            if (a == 1.0) {
+                terms.push_back(x);
+            } else if (a == -1.0) {
+                terms.push_back(m.neg(x));
+            } else {
+                terms.push_back(m.prod(m.constant(a), x));
+            }
         }
         const int32_t row = m.sum(terms);
-        const double rhs = static_cast<double>(gen.integers(-3, 4));
+        const auto rhs = static_cast<double>(gen.integers(-3, 4));
         m.add_constraint(i % 2 == 0 ? m.eq_expr(row, m.constant(rhs))
                                     : m.geq(row, m.constant(rhs)));
     }
@@ -1167,7 +1176,11 @@ TEST_CASE("FJ's commits leave integral rows exactly as a full evaluation would",
     for (size_t i = 0; i < m.num_nodes(); ++i) {
         const double got = m.node_values()[i];
         const double want = fresh.node_values()[i];
-        if (std::memcmp(&got, &want, sizeof(double)) != 0) {
+        uint64_t got_bits = 0;
+        uint64_t want_bits = 0;
+        std::memcpy(&got_bits, &got, sizeof got_bits);
+        std::memcpy(&want_bits, &want, sizeof want_bits);
+        if (got_bits != want_bits) {
             FAIL("node " << i << " holds " << got << ", a full evaluation gives " << want);
         }
     }
