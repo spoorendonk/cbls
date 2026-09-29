@@ -7,7 +7,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <limits>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -68,6 +70,10 @@ double eq_sign(double diff) {
 
 }  // namespace
 
+void LinearJumpScorer::FreeDeleter::operator()(double* p) const {
+    std::free(p);  // paired with build_row's calloc
+}
+
 LinearJumpScorer::LinearJumpScorer(const Model& model) : model_(model) {}
 
 void LinearJumpScorer::resize_rows(size_t n) {
@@ -76,7 +82,24 @@ void LinearJumpScorer::resize_rows(size_t n) {
                                std::to_string(slots_.size()) + " to " + std::to_string(n) +
                                " rows; a closed model's rows are never removed");
     }
+    if (n > slots_.size()) {
+        // The model gained a row, and with it a rebuilt G_v layout: every slope
+        // written so far may sit at a stale position.
+        reset_built_rows();
+    }
     slots_.resize(n, kIneligible);
+}
+
+void LinearJumpScorer::reset_built_rows() {
+    for (uint32_t& slot : slots_) {
+        if (slot >= kFirstBuilt) {
+            slot = kPending;  // built means it was eligible; a rebuild gives the same slopes
+        }
+    }
+    built_.clear();
+    slope_at_.reset();
+    slope_len_ = 0;
+    cached_slopes_ = 0;
 }
 
 void LinearJumpScorer::set_row_eligible(int32_t ci, bool eligible) {
@@ -143,23 +166,46 @@ const LinearJumpScorer::BuiltRow* LinearJumpScorer::build_row(int32_t ci) {
         n += e.second != 0.0 ? 1 : 0;
     }
 
-    if (pool_vars_.size() + n > std::numeric_limits<uint32_t>::max() ||
-        built_.size() + kFirstBuilt > std::numeric_limits<uint32_t>::max()) {
-        throw std::length_error("LinearJumpScorer: more than 2^32 - 1 cached slopes");
+    if (built_.size() + kFirstBuilt > std::numeric_limits<uint32_t>::max()) {
+        throw std::length_error("LinearJumpScorer: more than 2^32 - 2 built rows");
+    }
+    if (!slope_at_) {
+        // calloc, not a zero-filled vector: a large block comes back as fresh
+        // zero pages the kernel maps on first touch, so the slots of rows never
+        // built cost address space only. At least one element, so that a model
+        // with no incidences still gets a non-null block.
+        slope_len_ = model_.num_var_constraint_incidences();
+        slope_at_.reset(
+            static_cast<double*>(std::calloc(std::max<size_t>(slope_len_, 1), sizeof(double))));
+        if (!slope_at_) {
+            slope_len_ = 0;
+            throw std::bad_alloc();
+        }
     }
     row.flags = static_cast<uint8_t>((p.is_var ? kPIsVar : 0U) | (q.is_var ? kQIsVar : 0U) |
                                      (p_literal ? kPLiteral : 0U) | (q_literal ? kQLiteral : 0U) |
                                      (is_abs ? kAbs : 0U) |
                                      (nd.op == NodeOp::Lt || nd.op == NodeOp::Gt ? kStrict : 0U) |
                                      (newton_exact ? kNewtonExact : 0U));
-    row.begin = static_cast<uint32_t>(pool_vars_.size());
-    row.count = static_cast<uint32_t>(n);
+    // Each nonzero slope into its variable's slot for this row. A zero one is
+    // left as the +0.0 the block was zeroed to, which is what the per-row pool
+    // this replaced reported for a variable it did not hold -- keeping a -0.0
+    // out of residual_partial's result.
     for (const auto& e : merged_) {
-        if (e.second != 0.0) {
-            pool_vars_.push_back(e.first);
-            pool_slopes_.push_back(e.second);
+        if (e.second == 0.0) {
+            continue;
         }
+        const ConstSpan<int32_t> gv = model_.constraints_of_var(e.first);
+        const auto* it = std::lower_bound(gv.begin(), gv.end(), ci);
+        if (it == gv.end() || *it != ci) {
+            throw std::logic_error("LinearJumpScorer: row " + std::to_string(ci) +
+                                   " has a slope for variable " + std::to_string(e.first) +
+                                   " but is not in its G_v");
+        }
+        slope_at_[model_.constraints_of_var_offset(e.first) +
+                  static_cast<size_t>(it - gv.begin())] = e.second;
     }
+    cached_slopes_ += n;
     slots_[static_cast<size_t>(ci)] = kFirstBuilt + static_cast<uint32_t>(built_.size());
     built_.push_back(row);
     return &built_.back();
@@ -171,16 +217,6 @@ const LinearJumpScorer::BuiltRow* LinearJumpScorer::ready_row(int32_t ci) {
         return &built_[slot - kFirstBuilt];
     }
     return slot == kPending ? build_row(ci) : nullptr;
-}
-
-double LinearJumpScorer::slope_of(const BuiltRow& row, int32_t var_id) const {
-    const auto first = pool_vars_.begin() + static_cast<std::ptrdiff_t>(row.begin);
-    const auto last = first + static_cast<std::ptrdiff_t>(row.count);
-    const auto it = std::lower_bound(first, last, var_id);
-    if (it == last || *it != var_id) {
-        return 0.0;
-    }
-    return pool_slopes_[static_cast<size_t>(it - pool_vars_.begin())];
 }
 
 double LinearJumpScorer::child_value(int32_t id, bool is_var) const {
@@ -200,6 +236,7 @@ bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weight
     terms_.clear();
     x0_ = model_.var(var_id).value;
     const ConstSpan<int32_t> gv = model_.constraints_of_var(var_id);
+    const size_t base = model_.constraints_of_var_offset(var_id);
     // w * (new - old) with both clamped, hence finite, is exactly 0 at w == 0, so
     // such a row cannot change the sum whatever its shape.
     //
@@ -245,7 +282,7 @@ bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weight
             ok = false;
             break;
         }
-        const double r = slope_of(row, var_id);
+        const double r = slope_at_[base + k];  // row built above, so the array exists
         if (r == 0.0) {
             // Cancelled, or through a zero constant factor, with finite sides: the
             // DAG re-evaluates this row to the value it has, so its difference is
@@ -290,24 +327,48 @@ double LinearJumpScorer::delta(double j) const {
     return sum;
 }
 
-bool LinearJumpScorer::residual_partial(int32_t ci, int32_t var_id, double& out) {
-    if (ci < 0 || static_cast<size_t>(ci) >= slots_.size()) {
-        return false;  // unsized (a row added after resize_rows): compute_partial instead
-    }
-    const BuiltRow* built = ready_row(ci);
-    if (built == nullptr || (built->flags & kNewtonExact) == 0) {
-        return false;
-    }
-    const BuiltRow& row = *built;
-    const double r = slope_of(row, var_id);
+double LinearJumpScorer::row_partial(const BuiltRow& row, double r) const {
     if ((row.flags & kAbs) != 0) {
         // Read live: the sign follows the assignment, only r is structure.
         const double diff = child_value(row.p_id, (row.flags & kPIsVar) != 0) -
                             child_value(row.q_id, (row.flags & kQIsVar) != 0);
-        out = eq_sign(diff) * r;
-    } else {
-        out = r;
+        return eq_sign(diff) * r;
     }
+    return r;
+}
+
+bool LinearJumpScorer::residual_partial(int32_t var_id, size_t k, double& out) {
+    // A row added to the model and not followed by resize_rows has moved G_v's
+    // layout under the slope array, so nothing is read until it is.
+    if (slots_.size() != model_.constraint_ids().size()) {
+        return false;
+    }
+    const ConstSpan<int32_t> gv = model_.constraints_of_var(var_id);
+    const BuiltRow* built = ready_row(gv[k]);
+    if (built == nullptr || (built->flags & kNewtonExact) == 0) {
+        return false;
+    }
+    out = row_partial(*built, slope_at_[model_.constraints_of_var_offset(var_id) + k]);
+    ++cached_partials_;
+    return true;
+}
+
+bool LinearJumpScorer::residual_partial(int32_t ci, int32_t var_id, double& out) {
+    if (ci < 0 || static_cast<size_t>(ci) >= slots_.size() ||
+        slots_.size() != model_.constraint_ids().size()) {
+        return false;  // unsized (a row added after resize_rows): compute_partial instead
+    }
+    const ConstSpan<int32_t> gv = model_.constraints_of_var(var_id);
+    const auto* it = std::lower_bound(gv.begin(), gv.end(), ci);
+    if (it != gv.end() && *it == ci) {
+        return residual_partial(var_id, static_cast<size_t>(it - gv.begin()), out);
+    }
+    // The row does not read var_id: its partial is zero, as the pool reported.
+    const BuiltRow* built = ready_row(ci);
+    if (built == nullptr || (built->flags & kNewtonExact) == 0) {
+        return false;
+    }
+    out = row_partial(*built, 0.0);
     ++cached_partials_;
     return true;
 }

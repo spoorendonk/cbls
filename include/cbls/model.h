@@ -444,6 +444,21 @@ public:
         return {st.var_constraint_ids.data() + begin,
                 st.var_constraint_offsets[var_id + 1] - begin};
     }
+    // Where `constraints_of_var(var_id)` starts in the flat incidence array of
+    // every G_v (length `num_var_constraint_incidences()`), for a per-incidence
+    // table kept parallel to it. Same range check. The layout is rebuilt, and
+    // every later offset moves, whenever G_v is (close(),
+    // add_objective_soft_constraint()).
+    [[nodiscard]] uint32_t constraints_of_var_offset(int32_t var_id) const {
+        const ModelStructure& st = s();
+        if (var_id < 0 || static_cast<size_t>(var_id) + 1 >= st.var_constraint_offsets.size()) {
+            throw std::out_of_range("var id out of range");
+        }
+        return st.var_constraint_offsets[var_id];
+    }
+    [[nodiscard]] size_t num_var_constraint_incidences() const {
+        return s().var_constraint_ids.size();
+    }
 
     // Sparse per-constraint violation deltas if var_id <- j, WITHOUT committing.
     // Returns (constraint_index, delta) pairs for affected constraints whose

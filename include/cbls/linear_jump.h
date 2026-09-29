@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -43,11 +44,25 @@ class Model;
 /// LNS repair builds one per call) pays only for the rows it touches.
 ///
 /// Storage: 4 bytes per row (a slot: ineligible, pending, or the index of its
-/// built record), plus, for each row BUILT, a 20-byte record and 12 bytes per
-/// nonzero in one pooled CSR (ascending variable ids, parallel slopes). A row is
-/// classified once, before it is built, and never rebuilt. The slopes are
-/// structure, but each portfolio worker's FJ builds its own; the build also
-/// sizes `dag_ops.cpp`'s thread_local adjoint scratch, which a pure MIP
+/// built record), a 12-byte record per row BUILT, and one slope per entry of the
+/// model's G_v incidence array -- 8 bytes per (variable, row) incidence, laid out
+/// parallel to `Model::constraints_of_var`, so `prepare` reads the slope of the
+/// k-th row of G_v at a fixed position instead of searching the row for the
+/// variable (#176: that search was up to 49% of the MIPfeas runner's CPU). The
+/// array is allocated on the first build, zeroed by `calloc` so its untouched
+/// pages are never faulted in: a short-lived FJ that builds a few rows pays for
+/// the pages those rows' columns land on, not for the whole array. A build writes
+/// the row's nonzero slopes into its variables' slots, O(row log |G_v|) once.
+///
+/// A row is classified once, before it is built, and its slopes never change.
+/// The one thing that can move them is the model's incidence layout: the objective
+/// row, appended by `add_objective_soft_constraint`, rebuilds every G_v and shifts
+/// the offsets. `resize_rows` is how a caller follows a row added to the model,
+/// so a strict growth drops every built row back to pending (the rows are
+/// structure: rebuilding one reproduces its slopes bit for bit), and `prepare`
+/// and `residual_partial` refuse to read while the row counts disagree. The
+/// slopes are structure, but each portfolio worker's FJ builds its own; the build
+/// also sizes `dag_ops.cpp`'s thread_local adjoint scratch, which a pure MIP
 /// otherwise never allocated.
 ///
 /// **Selection is unchanged to the bit only on integral data.** Scores there are
@@ -66,9 +81,10 @@ public:
     explicit LinearJumpScorer(const Model& model);
 
     /// Size the per-row table to `n` rows. New rows start ineligible. Grow-only:
-    /// a shrink throws `std::logic_error`, for the reason `set_row_eligible`
-    /// refuses a built row -- a dropped row's built record and pool entries
-    /// would be orphaned, and a closed model's rows are never removed.
+    /// a shrink throws `std::logic_error` -- a closed model's rows are never
+    /// removed. A strict growth means the model gained a row, which rebuilt its
+    /// G_v layout, so every built row returns to pending and is rebuilt on its
+    /// next read (its classification is kept).
     void resize_rows(size_t n);
     [[nodiscard]] size_t num_rows() const { return slots_.size(); }
 
@@ -100,7 +116,13 @@ public:
     /// d(residual of row ci)/d(var_id), bit-identical (up to the sign of a zero
     /// on a satisfied Eq row) to
     /// `compute_partial(model, constraint_ids()[ci], var_id)`, when the row's
-    /// cached slope provably is (see the definition). False: call compute_partial.
+    /// cached slope provably is (see the definition). False: call compute_partial
+    /// -- also when the model's row count is not this scorer's.
+    ///
+    /// The positional form names the row as the k-th of `constraints_of_var(
+    /// var_id)`, which is how the Newton step walks it, and reads the slope in
+    /// O(1); the (ci, var_id) form searches G_v for ci first.
+    bool residual_partial(int32_t var_id, size_t k, double& out);
     bool residual_partial(int32_t ci, int32_t var_id, double& out);
 
     /// Prepares that took the closed form / fell back, and row partials served
@@ -108,8 +130,10 @@ public:
     [[nodiscard]] int64_t fast_prepares() const { return fast_prepares_; }
     [[nodiscard]] int64_t fallback_prepares() const { return fallback_prepares_; }
     [[nodiscard]] int64_t cached_partials() const { return cached_partials_; }
-    /// Slopes held in the pool: what the cache costs, 12 B each.
-    [[nodiscard]] size_t pooled_slopes() const { return pool_vars_.size(); }
+    /// Nonzero slopes written by the builds since the last layout reset -- a
+    /// build counter, not a memory figure: the slope array costs 8 B per G_v
+    /// incidence of the model however many rows are built.
+    [[nodiscard]] size_t cached_slopes() const { return cached_slopes_; }
 
 private:
     // slots_[ci]: kIneligible, kPending, or kFirstBuilt + index into built_.
@@ -124,10 +148,8 @@ private:
     static constexpr uint32_t kAbs = 1U << 4U;          // Eq: |p - q|
     static constexpr uint32_t kStrict = 1U << 5U;       // Lt/Gt: + the strictness epsilon
     static constexpr uint32_t kNewtonExact = 1U << 6U;  // see residual_partial
-    // A built row: its slice of the pool and its two residual arguments.
+    // A built row: its two residual arguments; its slopes are in slope_at_.
     struct BuiltRow {
-        uint32_t begin = 0;  // into pool_vars_ / pool_slopes_
-        uint32_t count = 0;
         int32_t p_id = -1;  // first argument of the residual
         int32_t q_id = -1;  // second argument
         uint8_t flags = 0;
@@ -153,13 +175,25 @@ private:
     // row is (or becomes) ineligible.
     const BuiltRow* ready_row(int32_t ci);
     [[nodiscard]] double child_value(int32_t id, bool is_var) const;
-    [[nodiscard]] double slope_of(const BuiltRow& row, int32_t var_id) const;
+    // Row ci's partial from a built row and v's slope, as residual_partial reports it.
+    [[nodiscard]] double row_partial(const BuiltRow& row, double r) const;
+    // Every built row back to pending and the slope array released.
+    void reset_built_rows();
+
+    struct FreeDeleter {
+        void operator()(double* p) const;
+    };
 
     const Model& model_;
     std::vector<uint32_t> slots_;  // per row
     std::vector<BuiltRow> built_;  // one record per built row
-    std::vector<int32_t> pool_vars_;
-    std::vector<double> pool_slopes_;
+    // Parallel to the model's flat G_v incidence array: slope_at_[
+    // constraints_of_var_offset(v) + k] is d(residual of row G_v[k])/dv, once that
+    // row is built (0 until then, and for a zero or cancelled slope). calloc'd,
+    // hence the deleter; null until the first build. slope_len_ is its length.
+    std::unique_ptr<double[], FreeDeleter> slope_at_;
+    size_t slope_len_ = 0;
+    size_t cached_slopes_ = 0;
     std::vector<Term> terms_;
     // build_row's scratch, kept so a build allocates only the row it keeps.
     std::vector<std::pair<int32_t, double>> merged_;

@@ -366,17 +366,19 @@ bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
     int budget = 4;
     bool any_newton = false;
     bool saw_violated = false;
-    for (int32_t c : model.constraints_of_var(var_id)) {
+    const ConstSpan<int32_t> gv = model.constraints_of_var(var_id);
+    for (size_t k = 0; k < gv.size(); ++k) {
         if (budget <= 0) {
             break;
         }
+        const int32_t c = gv[k];
         double residual = model.node_value(cids[c]);
         if (residual <= kTol) {
             continue;  // satisfied: no root to chase
         }
         saw_violated = true;
         double grad = 0.0;
-        if (linear == nullptr || !linear->residual_partial(c, var_id, grad)) {
+        if (linear == nullptr || !linear->residual_partial(var_id, k, grad)) {
             grad = compute_partial(model, cids[c], var_id);
         }
         if (std::abs(grad) > 1e-12) {

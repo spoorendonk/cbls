@@ -1,6 +1,6 @@
 // The closed-form linear jump scorer (include/cbls/linear_jump.h): its scores
 // against Model::weighted_violation_delta, its fallback conditions, and its
-// slope-pool upkeep.
+// slope-table upkeep.
 #include "test_helpers.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -343,8 +343,8 @@ TEST_CASE("cached row partials are bit-identical to compute_partial where claime
 
 TEST_CASE("a built row is never reclassified", "[fj][linear_jump]") {
     // A closed model's rows do not change, so a row's slopes are built once and
-    // kept: the pool holds no stale entries. Reclassifying a built row would
-    // orphan its record and pool entries, so it is refused instead; an unbuilt
+    // kept. Reclassifying a built row would leave its slopes in the table, so
+    // it is refused instead; an unbuilt
     // row can still be (re)classified.
     RandomLinearModel r;
     build_random_linear(r, 31, /*integral=*/true);
@@ -355,12 +355,12 @@ TEST_CASE("a built row is never reclassified", "[fj][linear_jump]") {
     randomise_assignment(m, rng);
     const std::vector<double> w(m.constraint_ids().size(), 1.0);
     REQUIRE(check_scores(m, sc, w, rng, /*exact=*/true) > 50);
-    const size_t pooled = sc.pooled_slopes();  // every row built once
-    REQUIRE(pooled > 0);
+    const size_t cached = sc.cached_slopes();  // every row built once
+    REQUIRE(cached > 0);
     REQUIRE_THROWS_AS(sc.set_row_eligible(0, false), std::logic_error);
     REQUIRE(sc.row_eligible(0));
     REQUIRE(check_scores(m, sc, w, rng, /*exact=*/true) > 50);
-    REQUIRE(sc.pooled_slopes() == pooled);  // scoring again builds nothing new
+    REQUIRE(sc.cached_slopes() == cached);  // scoring again builds nothing new
 
     LinearJumpScorer fresh(m);
     fresh.resize_rows(m.constraint_ids().size());
