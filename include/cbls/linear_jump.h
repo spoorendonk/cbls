@@ -119,10 +119,11 @@ public:
     /// cached slope provably is (see the definition). False: call compute_partial
     /// -- also when the model's row count is not this scorer's.
     ///
-    /// The positional form names the row as the k-th of `constraints_of_var(
+    /// `residual_partial_at` names the row as the k-th of `constraints_of_var(
     /// var_id)`, which is how the Newton step walks it, and reads the slope in
-    /// O(1); the (ci, var_id) form searches G_v for ci first.
-    bool residual_partial(int32_t var_id, size_t k, double& out);
+    /// O(1); `residual_partial` searches G_v for ci first. Two names, not an
+    /// overload: (int, size_t) and (int, int) would resolve on a literal's type.
+    bool residual_partial_at(int32_t var_id, size_t k, double& out);
     bool residual_partial(int32_t ci, int32_t var_id, double& out);
 
     /// Prepares that took the closed form / fell back, and row partials served

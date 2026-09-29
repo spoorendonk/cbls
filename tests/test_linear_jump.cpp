@@ -85,7 +85,9 @@ struct RandomLinearModel {
 // rows with a variable on BOTH sides. `integral` keeps every coefficient,
 // constant and domain integral, so the arithmetic is exact and scores must match
 // to the bit.
-void build_random_linear(RandomLinearModel& r, uint64_t seed, bool integral) {
+// `objective_row` false leaves the objective row for the caller to add later.
+void build_random_linear(RandomLinearModel& r, uint64_t seed, bool integral,
+                         bool objective_row = true) {
     RNG rng(seed);
     Model& m = r.m;
     const int nv = 9;
@@ -162,7 +164,9 @@ void build_random_linear(RandomLinearModel& r, uint64_t seed, bool integral) {
     }
     m.minimize(m.sum(obj_terms));
     m.close();
-    m.add_objective_soft_constraint();  // obj <= bound, as solve() folds it in
+    if (objective_row) {
+        m.add_objective_soft_constraint();  // obj <= bound, as solve() folds it in
+    }
 }
 
 void randomise_assignment(Model& m, RNG& rng) {
@@ -229,6 +233,30 @@ int check_scores(Model& m, LinearJumpScorer& sc, const std::vector<double>& w, R
         }
     }
     return compared;
+}
+
+// Every (variable, G_v position) partial the scorer claims equals compute_partial,
+// and the (row, variable) form agrees with the positional one to the bit. Returns
+// how many were claimed.
+int check_partials(Model& m, LinearJumpScorer& sc) {
+    int claimed = 0;
+    const auto& cids = m.constraint_ids();
+    for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
+        const ConstSpan<int32_t> gv = m.constraints_of_var(v);
+        for (size_t k = 0; k < gv.size(); ++k) {
+            double g = 0.0;
+            if (!sc.residual_partial_at(v, k, g)) {
+                continue;
+            }
+            ++claimed;
+            REQUIRE(g == compute_partial(m, cids[static_cast<size_t>(gv[k])], v));
+            double by_row = 0.0;
+            REQUIRE(sc.residual_partial(gv[k], v, by_row));
+            REQUIRE(std::signbit(by_row) == std::signbit(g));
+            REQUIRE(by_row == g);
+        }
+    }
+    return claimed;
 }
 
 void mark_all_rows(const Model& m, LinearJumpScorer& sc) {
@@ -574,4 +602,113 @@ TEST_CASE("a scorer out of step with the model refuses to prepare", "[fj][linear
     LinearJumpScorer sc(m);  // never sized
     const std::vector<double> w = {1.0};
     REQUIRE_THROWS_AS(sc.prepare(vid(x), w), std::logic_error);
+}
+
+TEST_CASE("slopes are right whichever variable or path first builds a row (#176)",
+          "[fj][linear_jump]") {
+    // The slope table is written per row, into every variable's G_v slot, by
+    // whichever read builds the row first: another variable's prepare, a Newton
+    // step's residual_partial, or this variable's own prepare. Reads in a random
+    // order across all three, then the exact checks.
+    for (uint64_t seed = 401; seed <= 410; ++seed) {
+        RandomLinearModel r;
+        build_random_linear(r, seed, /*integral=*/true);
+        Model& m = r.m;
+        LinearJumpScorer sc(m);
+        mark_all_rows(m, sc);
+        RNG rng(seed);
+        randomise_assignment(m, rng);
+        std::vector<std::pair<int32_t, size_t>> reads;
+        for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
+            for (size_t k = 0; k < m.constraints_of_var(v).size(); ++k) {
+                reads.emplace_back(v, k);
+            }
+        }
+        for (size_t i = reads.size(); i > 1; --i) {
+            std::swap(reads[i - 1],
+                      reads[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(i)))]);
+        }
+        const size_t half = reads.size() / 2;  // the rest are built by check_scores
+        for (size_t i = 0; i < half; ++i) {
+            const auto [v, k] = reads[i];
+            if (rng.integers(0, 2) == 0) {
+                double g = 0.0;
+                (void)sc.residual_partial_at(v, k, g);
+            } else {
+                (void)sc.prepare(v, random_weights(m.constraint_ids().size(), rng));
+            }
+        }
+        const std::vector<double> w = random_weights(m.constraint_ids().size(), rng);
+        REQUIRE(check_scores(m, sc, w, rng, /*exact=*/true) > 50);
+        REQUIRE(check_partials(m, sc) > 20);
+    }
+}
+
+TEST_CASE("a row demoted by its build writes no slopes", "[fj][linear_jump]") {
+    const double inf = std::numeric_limits<double>::infinity();
+    Model m;
+    const int32_t x = m.int_var(0, 3);
+    const int32_t y = m.int_var(0, 3);
+    // Row 0: inf * x + y <= 0 -- an infinite slope, demoted at build. Row 1: x + y <= 1.
+    m.add_constraint(m.leq(m.sum({m.prod(m.constant(inf), x), y}), m.constant(0.0)));
+    m.add_constraint(m.leq(m.sum({x, y}), m.constant(1.0)));
+    m.close();
+    m.var_mut(vid(x)).value = 1.0;
+    m.var_mut(vid(y)).value = 2.0;
+    full_evaluate(m);
+    LinearJumpScorer sc(m);
+    mark_all_rows(m, sc);
+    const std::vector<double> w = {1.0, 1.0};
+    REQUIRE_FALSE(sc.prepare(vid(y), w));  // builds row 0, which demotes
+    REQUIRE_FALSE(sc.row_eligible(0));
+    REQUIRE(sc.cached_slopes() == 0);
+    const std::vector<double> masked = {0.0, 1.0};
+    REQUIRE(sc.prepare(vid(y), masked));
+    REQUIRE(sc.cached_slopes() == 2);  // row 1's two, and nothing of row 0's
+    REQUIRE(sc.delta(0.0) == m.weighted_violation_delta(vid(y), 0.0, masked));
+    double g = 0.0;
+    REQUIRE_FALSE(sc.residual_partial_at(vid(x), 0, g));  // row 0 is x's first row
+    REQUIRE(sc.residual_partial_at(vid(x), 1, g));
+    REQUIRE(g == 1.0);
+}
+
+TEST_CASE("slopes follow the G_v layout when the objective row is added (#176)",
+          "[fj][linear_jump]") {
+    // add_objective_soft_constraint rebuilds every G_v: the objective's variables
+    // gain a row, and every later variable's offset in the incidence array moves.
+    // Slopes written before that sit at stale positions, so the scorer must not
+    // read them -- and after resize_rows it must rebuild, not reuse, them.
+    for (uint64_t seed = 501; seed <= 506; ++seed) {
+        RandomLinearModel r;
+        build_random_linear(r, seed, /*integral=*/true, /*objective_row=*/false);
+        Model& m = r.m;
+        LinearJumpScorer sc(m);
+        mark_all_rows(m, sc);
+        RNG rng(seed);
+        randomise_assignment(m, rng);
+        std::vector<double> w(m.constraint_ids().size(), 1.0);
+        REQUIRE(check_scores(m, sc, w, rng, /*exact=*/true) > 50);  // every row built
+        REQUIRE(check_partials(m, sc) > 20);
+        const size_t built_before = sc.cached_slopes();
+
+        m.add_objective_soft_constraint();
+        const size_t nc = m.constraint_ids().size();
+        w.assign(nc, 1.0);
+        REQUIRE_THROWS_AS(sc.prepare(0, w), std::logic_error);
+        double g = 0.0;
+        REQUIRE_FALSE(sc.residual_partial_at(0, 0, g));
+        REQUIRE_FALSE(sc.residual_partial(0, 0, g));
+
+        sc.resize_rows(nc);
+        sc.set_row_eligible(static_cast<int32_t>(nc - 1), true);
+        REQUIRE(sc.cached_slopes() == 0);  // the layout moved: everything is rebuilt
+        for (int round = 0; round < 2; ++round) {
+            randomise_assignment(m, rng);
+            m.set_objective_bound(round == 0 ? std::numeric_limits<double>::infinity()
+                                             : static_cast<double>(rng.integers(-20, 20)));
+            REQUIRE(check_scores(m, sc, w, rng, /*exact=*/true) > 50);
+            REQUIRE(check_partials(m, sc) > 20);
+        }
+        REQUIRE(sc.cached_slopes() > built_before);  // plus the objective row's
+    }
 }

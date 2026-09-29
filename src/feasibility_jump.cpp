@@ -378,7 +378,7 @@ bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
         }
         saw_violated = true;
         double grad = 0.0;
-        if (linear == nullptr || !linear->residual_partial(var_id, k, grad)) {
+        if (linear == nullptr || !linear->residual_partial_at(var_id, k, grad)) {
             grad = compute_partial(model, cids[c], var_id);
         }
         if (std::abs(grad) > 1e-12) {

@@ -337,7 +337,7 @@ double LinearJumpScorer::row_partial(const BuiltRow& row, double r) const {
     return r;
 }
 
-bool LinearJumpScorer::residual_partial(int32_t var_id, size_t k, double& out) {
+bool LinearJumpScorer::residual_partial_at(int32_t var_id, size_t k, double& out) {
     // A row added to the model and not followed by resize_rows has moved G_v's
     // layout under the slope array, so nothing is read until it is.
     if (slots_.size() != model_.constraint_ids().size()) {
@@ -361,7 +361,7 @@ bool LinearJumpScorer::residual_partial(int32_t ci, int32_t var_id, double& out)
     const ConstSpan<int32_t> gv = model_.constraints_of_var(var_id);
     const auto* it = std::lower_bound(gv.begin(), gv.end(), ci);
     if (it != gv.end() && *it == ci) {
-        return residual_partial(var_id, static_cast<size_t>(it - gv.begin()), out);
+        return residual_partial_at(var_id, static_cast<size_t>(it - gv.begin()), out);
     }
     // The row does not read var_id: its partial is zero, as the pool reported.
     const BuiltRow* built = ready_row(ci);
