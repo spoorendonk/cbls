@@ -856,55 +856,87 @@ void Model::rebuild_back_references() {
 // Being classified only makes a Sum ELIGIBLE. The values themselves are checked
 // on every update, since an Int variable holding 2.5 or 1e17 is representable,
 // and exactness is a property of the numbers, not of the types.
-void Model::classify_exact_sums() {
-    ModelStructure& st = mut();
-    const size_t n_nodes = st.nodes.size();
-    std::vector<uint8_t> integral_term(n_nodes, 0);
-    const auto integral_ref = [&](const ChildRef& ref) {
+namespace {
+
+// The per-node rules of classify_exact_sums, kept as one pass over the nodes in
+// topological order: `integral_term[n]` for a Const/Neg/Prod, and the flags a
+// qualifying Sum sets on itself and its node terms.
+class ExactSumClassifier {
+public:
+    ExactSumClassifier(std::vector<ExprNode>& nodes, const std::vector<Variable>& vars,
+                       int32_t objective_bound_node)
+        : nodes_(nodes),
+          vars_(vars),
+          objective_bound_node_(objective_bound_node),
+          integral_term_(nodes.size(), 0),
+          node_stamp_(nodes.size(), -1),
+          var_stamp_(vars.size(), -1) {}
+
+    // An if-chain, not a switch: the ops this does not name are simply "not a
+    // qualifying term", and a `default:` in a NodeOp switch is what would hide
+    // a missed case from -Wswitch everywhere else.
+    void visit(int32_t nid, ConstSpan<ChildRef> kids) {
+        const ExprNode& nd = nodes_[nid];
+        if (nd.op == NodeOp::Const) {
+            integral_term_[nid] = static_cast<uint8_t>(
+                nid != objective_bound_node_ && std::isfinite(nd.const_value) &&
+                nd.const_value == std::trunc(nd.const_value));
+        } else if (nd.op == NodeOp::Neg || nd.op == NodeOp::Prod) {
+            integral_term_[nid] = static_cast<uint8_t>(std::all_of(
+                kids.begin(), kids.end(), [this](const ChildRef& r) { return integral_ref(r); }));
+        } else if (nd.op == NodeOp::Sum && qualifies(nid, kids)) {
+            nodes_[nid].exact_sum_flags = ExprNode::kExactSum;
+            for (const ChildRef& ref : kids) {
+                if (!ref.is_var) {
+                    nodes_[ref.id].exact_sum_flags |= ExprNode::kFeedsExactSum;
+                }
+            }
+        }
+    }
+
+private:
+    [[nodiscard]] bool integral_ref(const ChildRef& ref) const {
         if (ref.is_var) {
             const VarType t = vars_[ref.id].type;
             return t == VarType::Bool || t == VarType::Int;
         }
-        return integral_term[ref.id] != 0;
-    };
+        return integral_term_[ref.id] != 0;
+    }
+
+    // Every term integral, none a Sum, none named twice.
+    bool qualifies(int32_t nid, ConstSpan<ChildRef> kids) {
+        if (kids.empty()) {
+            return false;
+        }
+        for (const ChildRef& ref : kids) {
+            int32_t& stamp = ref.is_var ? var_stamp_[ref.id] : node_stamp_[ref.id];
+            const bool term = ref.is_var || nodes_[ref.id].op != NodeOp::Sum;
+            if (!term || stamp == nid || !integral_ref(ref)) {
+                return false;
+            }
+            stamp = nid;
+        }
+        return true;
+    }
+
+    std::vector<ExprNode>& nodes_;
+    const std::vector<Variable>& vars_;
+    int32_t objective_bound_node_;
+    std::vector<uint8_t> integral_term_;
+    std::vector<int32_t> node_stamp_;
+    std::vector<int32_t> var_stamp_;
+};
+
+}  // namespace
+
+void Model::classify_exact_sums() {
+    ModelStructure& st = mut();
     for (ExprNode& nd : st.nodes) {
         nd.exact_sum_flags = 0;
     }
-    std::vector<int32_t> node_stamp(n_nodes, -1);
-    std::vector<int32_t> var_stamp(vars_.size(), -1);
+    ExactSumClassifier classifier(st.nodes, vars_, objective_bound_node_);
     for (const int32_t nid : st.topo_order) {
-        const ExprNode& nd = st.nodes[nid];
-        const ConstSpan<ChildRef> kids = children(nd);
-        // An if-chain, not a switch: the ops this does not name are simply "not
-        // a qualifying term", and a `default:` in a NodeOp switch is what would
-        // hide a missed case from -Wswitch everywhere else.
-        if (nd.op == NodeOp::Const) {
-            integral_term[nid] = static_cast<uint8_t>(nid != objective_bound_node_ &&
-                                                      std::isfinite(nd.const_value) &&
-                                                      nd.const_value == std::trunc(nd.const_value));
-        } else if (nd.op == NodeOp::Neg || nd.op == NodeOp::Prod) {
-            integral_term[nid] =
-                static_cast<uint8_t>(std::all_of(kids.begin(), kids.end(), integral_ref));
-        } else if (nd.op == NodeOp::Sum) {
-            bool ok = !kids.empty();
-            for (const ChildRef& ref : kids) {
-                int32_t& stamp = ref.is_var ? var_stamp[ref.id] : node_stamp[ref.id];
-                const bool term = ref.is_var || st.nodes[ref.id].op != NodeOp::Sum;
-                if (!term || stamp == nid || !integral_ref(ref)) {
-                    ok = false;
-                    break;
-                }
-                stamp = nid;
-            }
-            if (ok) {
-                st.nodes[nid].exact_sum_flags = ExprNode::kExactSum;
-                for (const ChildRef& ref : kids) {
-                    if (!ref.is_var) {
-                        st.nodes[ref.id].exact_sum_flags |= ExprNode::kFeedsExactSum;
-                    }
-                }
-            }
-        }
+        classifier.visit(nid, children(st.nodes[nid]));
     }
 }
 
