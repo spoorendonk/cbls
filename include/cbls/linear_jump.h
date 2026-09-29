@@ -49,9 +49,13 @@ class Model;
 /// parallel to `Model::constraints_of_var`, so `prepare` reads the slope of the
 /// k-th row of G_v at a fixed position instead of searching the row for the
 /// variable (#176: that search was up to 49% of the MIPfeas runner's CPU). The
-/// array is allocated on the first build, zeroed by `calloc` so its untouched
-/// pages are never faulted in: a short-lived FJ that builds a few rows pays for
-/// the pages those rows' columns land on, not for the whole array. A build writes
+/// array is allocated on the first build by `calloc`. A block the allocator maps
+/// fresh (glibc: above its dynamic mmap threshold, which tops out at 32 MiB)
+/// comes back as untouched zero pages, so a short-lived FJ that builds a few rows
+/// makes resident only the pages those rows' columns land on; a smaller block
+/// reused from the heap is zero-filled, O(incidences) -- the same order as the
+/// FJ constructor's own per-row tables, which the LNS repair already pays per
+/// call. A build writes
 /// the row's nonzero slopes into its variables' slots, O(row log |G_v|) once.
 ///
 /// A row is classified once, before it is built, and its slopes never change.
@@ -121,7 +125,9 @@ public:
     ///
     /// `residual_partial_at` names the row as the k-th of `constraints_of_var(
     /// var_id)`, which is how the Newton step walks it, and reads the slope in
-    /// O(1); `residual_partial` searches G_v for ci first. Two names, not an
+    /// O(1), and returns false for k past the end of G_v; `residual_partial`
+    /// searches G_v for ci first -- no engine path calls it; it is the (row,
+    /// variable) cross-check the tests use. Two names, not an
     /// overload: (int, size_t) and (int, int) would resolve on a literal's type.
     bool residual_partial_at(int32_t var_id, size_t k, double& out);
     bool residual_partial(int32_t ci, int32_t var_id, double& out);

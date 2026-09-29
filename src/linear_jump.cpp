@@ -153,8 +153,8 @@ const LinearJumpScorer::BuiltRow* LinearJumpScorer::build_row(int32_t ci) {
         merge_sides(side0_, side1_, merged_);
         newton_exact = p_literal || q_literal;
     } else {
+        // Unsorted: write_slopes finds each variable's slot through its G_v.
         compute_partials_sparse(model_, nid, merged_);
-        std::sort(merged_.begin(), merged_.end());
     }
     size_t n = 0;
     for (const auto& e : merged_) {
@@ -174,9 +174,11 @@ const LinearJumpScorer::BuiltRow* LinearJumpScorer::build_row(int32_t ci) {
                                      (nd.op == NodeOp::Lt || nd.op == NodeOp::Gt ? kStrict : 0U) |
                                      (newton_exact ? kNewtonExact : 0U));
     write_slopes(ci);
-    cached_slopes_ += n;
-    slots_[static_cast<size_t>(ci)] = kFirstBuilt + static_cast<uint32_t>(built_.size());
+    // Append before publishing the slot: a throwing push_back must not leave the
+    // slot naming a record that does not exist.
     built_.push_back(row);
+    cached_slopes_ += n;
+    slots_[static_cast<size_t>(ci)] = kFirstBuilt + static_cast<uint32_t>(built_.size() - 1);
     return &built_.back();
 }
 
@@ -184,10 +186,11 @@ double* LinearJumpScorer::slope_table() {
     if (slope_at_) {
         return slope_at_.get();
     }
-    // calloc, not a zero-filled vector: a large block comes back as fresh
-    // zero pages the kernel maps on first touch, so the slots of rows never
-    // built cost address space only. At least one element, so that a model
-    // with no incidences still gets a non-null block.
+    // calloc, not a zero-filled vector: a block large enough to be mapped fresh
+    // comes back as zero pages the kernel maps on first touch, so the slots of
+    // rows never built cost address space only (a smaller one may be memset;
+    // see the header). At least one element, so that a model with no
+    // incidences still gets a non-null block.
     const size_t len = std::max<size_t>(model_.num_var_constraint_incidences(), 1);
     slope_at_.reset(static_cast<double*>(std::calloc(len, sizeof(double))));
     if (!slope_at_) {
@@ -351,6 +354,9 @@ bool LinearJumpScorer::residual_partial_at(int32_t var_id, size_t k, double& out
         return false;
     }
     const ConstSpan<int32_t> gv = model_.constraints_of_var(var_id);
+    if (k >= gv.size()) {
+        return false;
+    }
     const BuiltRow* built = ready_row(gv[k]);
     if (built == nullptr || (built->flags & kNewtonExact) == 0) {
         return false;

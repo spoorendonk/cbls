@@ -645,7 +645,7 @@ TEST_CASE("slopes are right whichever variable or path first builds a row (#176)
     }
 }
 
-TEST_CASE("a row demoted by its build writes no slopes", "[fj][linear_jump]") {
+TEST_CASE("a row demoted by its build counts no slopes and stays ineligible", "[fj][linear_jump]") {
     const double inf = std::numeric_limits<double>::infinity();
     Model m;
     const int32_t x = m.int_var(0, 3);
