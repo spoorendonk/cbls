@@ -2636,8 +2636,11 @@ bit-identical to what it was before the parameter existed:
    - **it reaches workers that are not feasible yet.** Their bound is `+inf`
      (or #100's sentinel) until their own first feasible point, so the first
      peer to go feasible puts every other worker's objective row in play, where
-     single-threaded ViolationLS keeps it vacuous until then. Deliberate, and
-     the A/B's feasibility count is what would show it costing feasibility;
+     single-threaded ViolationLS keeps it vacuous until then. Deliberate. Its
+     cost cannot show as lost *portfolio* feasibility -- `G` exists only once
+     some worker is feasible, and that worker's point is the portfolio's -- so a
+     feasibility count cannot falsify it; only the Primal Integral and the gap
+     can, through the workers it diverts;
    - **only feasible, finite objectives count** toward `G`. The pool also holds
      closest-approach states (usually *better* objectives, infeasible) and #100's
      `+inf` witness. `G` is the submitter's objective, not re-evaluated on the
@@ -2663,6 +2666,19 @@ bit-identical to what it was before the parameter existed:
    earlier solve, and the counters count that as the global best. `--threads 1`
    passes no coordination at all.
 
+   **Measured** (#179, engine `802b287`, 4 threads, serial paired runs; each
+   roster is 10 instances admitted by a pre-registered control-only pilot as
+   ones where the control arm runs behind the portfolio's best bound, so this is
+   the mechanism where it has something to act on, not a roster average). The
+   instance level is the one to read: seeds are nested in instances, so a paired
+   t over all runs overstates precision.
+   - **MIPfeas** (30 s, 6 seeds): primal-integral instance mean -0.016, t_9 95%
+     CI [-0.045, +0.013], 6 instances better and 4 worse. **Not separable** at
+     the instance level. The 60-pair interval only just excludes zero.
+   - **MINLPLib** (20 s, 4 seeds, through
+     `benchmarks/minlplib/portfolio_ab.py`): -0.083, CI [-0.156, -0.010], 10 of
+     10 better (sign test p = 0.002).
+
    One pathology to know about, found writing the tests: on `min sum x^2` s.t.
    `sum x >= k` over integers, where a step from 0 to 1 changes both rows by
    exactly 1, a large jump in the bound left both rows violated on a tie that
@@ -2670,7 +2686,10 @@ bit-identical to what it was before the parameter existed:
    moving; kicks returned it to the same plateau. That is a property of the tie,
    not of sharing -- any sufficiently large bound step would do it -- but sharing
    is what makes large steps routine. The tests use a linear covering model,
-   where it does not arise.
+   where it does not arise. **How often it happens on real instances is
+   unmeasured**: no test reproduces it through the portfolio and no counter
+   reports it (a stalled worker shows only as batches with no new best, which
+   stagnation already counts for every other reason).
 4. **No idle workers.** Each worker is a restart loop over the *shared*
    deadline, not a single `solve()`: a run that returns with budget left (an
    exhausted `SearchConfig::max_iterations`) is restarted on the time its

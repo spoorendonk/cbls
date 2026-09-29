@@ -1570,7 +1570,7 @@ constexpr double kPeerObjective = 95.0;
 
 // Enough batches of 100 for the claims below, and no more: cover_model costs
 // ~0.25 ms per GLS iteration, so the budget sets these tests' wall time.
-constexpr int64_t kSharedBoundIterations = 5000;
+constexpr int64_t kSharedBoundIterations = 2500;
 
 // Capacity one: the peer's entry, being the best, is the only thing a draw can
 // return, and its width is refused -- so every full-period kick falls through
@@ -1645,7 +1645,7 @@ private:
 
 }  // namespace
 
-TEST_CASE("a worker's bound tightens after a peer submits a better solution",
+TEST_CASE("a worker's bound follows a peer's better solution and stays under it",
           "[parallel][coord][shared_bound]") {
     const double cap = bound_below(kPeerObjective);
     const SharedBoundRun on = run_with_peer(/*share=*/true);
@@ -1718,6 +1718,13 @@ TEST_CASE("a shared bound is never loosened by the worker's own worse incumbent"
     REQUIRE(r.feasible);
     // The event happened -- otherwise this proves nothing.
     REQUIRE(r.counters.own_best_behind_global > 0);
+    // And it was record_best's cap that MOVED the bound, exactly once: the peer
+    // landed between the two record_best calls of one batch, so the second call
+    // took the bound from the worker's own objective to the cap, and every
+    // later boundary found it already there (the worker then passes the peer).
+    // The batch-boundary sync therefore never counts here; only record_best's
+    // own tally can make this 1.
+    REQUIRE(r.counters.shared_bound_tightenings == 1);
     // Every sample from the first feasible batch on: the bound never sits above
     // the cap, and never steps back up.
     size_t first = 0;
@@ -1961,4 +1968,51 @@ TEST_CASE("an adoption does not loosen a shared bound", "[parallel][coord][share
         INFO("bound after adoption " << b << ", cap " << cap);
         REQUIRE(b <= cap);
     }
+}
+
+TEST_CASE("a shared bound reaches a worker before its first feasible point",
+          "[parallel][coord][shared_bound]") {
+    // The case the batch-boundary sync exists for, and the one where the FJ
+    // rebuild after it is load-bearing. The worker's own bound is +inf until it
+    // is feasible, so the objective row is SATISFIED and out of FJ's violated
+    // set; the peer's tighter bound makes it violated. Feasibility here needs
+    // only `y`, which the objective does not read, so a search blind to the
+    // row repairs `y`, never touches `x`, and reports its first feasible point
+    // at objective 0.
+    //
+    // Delete the sync_shared_bound() call, or only the fj_.resync() after the
+    // tightening, and the first feasible objective is 0 -- the control arm's
+    // value, asserted below so the test cannot pass by the model alone.
+    auto build = []() {
+        Model m;
+        auto y1 = m.int_var(0, 10);
+        auto y2 = m.int_var(0, 10);
+        auto neg1 = m.constant(-1.0);
+        m.add_constraint(m.sum({m.constant(5.0), m.prod(neg1, y1), m.prod(neg1, y2)}));
+        std::vector<int32_t> cost;
+        cost.reserve(10);
+        for (int j = 0; j < 10; ++j) {
+            cost.push_back(m.prod(neg1, m.int_var(0, 10)));  // minimise -sum x
+        }
+        m.minimize(m.sum(cost));
+        m.close();
+        return m;
+    };
+    auto first_feasible = [&build](bool share) {
+        SolutionPool pool(1);
+        pool.submit(peer_solution(-50.0));  // already ahead before the first batch
+        SearchCoordination coord;
+        coord.pool = &pool;
+        coord.share_objective_bound = share;
+        SearchConfig config;
+        config.max_iterations = 2000;
+        config.batch_iterations = 100;
+        Model m = build();
+        const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/5, true, nullptr, nullptr, 3,
+                                     nullptr, config, &coord);
+        REQUIRE(r.feasible);
+        return r.first_feasible_objective;
+    };
+    REQUIRE(first_feasible(/*share=*/false) == 0.0);
+    REQUIRE(first_feasible(/*share=*/true) < 0.0);
 }

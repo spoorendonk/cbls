@@ -130,6 +130,22 @@ CONFIG_KEYS = (
 )
 
 
+def config_string(result: dict[str, object]) -> str:
+    """The `config` cell: every CONFIG_KEYS entry the result carries.
+
+    One key is back-filled. `share_objective_bound` (#179) did not exist before
+    the shared bound, and at one thread it names no behaviour at all -- a single
+    `solve()` has no pool -- so a pre-#179 single-threaded row IS the default
+    configuration and is read as such. A pre-#179 PORTFOLIO row is left without
+    it, so the uniformity check keeps refusing to average it with post-#179
+    portfolio rows: which arm it matches is exactly what the key records.
+    """
+    cells = dict(result)
+    if "share_objective_bound" not in cells and cells.get("threads") == 1:
+        cells["share_objective_bound"] = True
+    return ";".join(f"{k}={cells[k]}" for k in CONFIG_KEYS if k in cells)
+
+
 class Verification(NamedTuple):
     """One row's independent verdict, as `verify_solution.py` recorded it."""
 
@@ -582,7 +598,7 @@ def score_instance(
         n_bounds_tightened=int(tightened) if isinstance(tightened, int) else None,
         n_free_cons=int(free_cons) if isinstance(free_cons, int) else None,
         message=str(result.get("message", "")),
-        config=";".join(f"{k}={result[k]}" for k in CONFIG_KEYS if k in result),
+        config=config_string(result),
         trace_source=str(result.get("trace_source", "")),
         trace_points=trace_points,
         solver_status=str(result.get("cpsat_status", "")),

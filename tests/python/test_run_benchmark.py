@@ -874,6 +874,49 @@ def test_the_runner_publishes_how_many_workers_completed(tmp_path: Path, threads
     assert scored.status == "feasible"
 
 
+@pytest.mark.parametrize("share", [True, False], ids=["shared-bound", "no-share-bound"])
+def test_the_runner_publishes_the_shared_bound_arm_and_counters(
+    tmp_path: Path, share: bool
+) -> None:
+    """Every row says which #179 arm it ran and how often the mechanism engaged.
+
+    The arm is a scorer config key, so a table cannot mix the two; the four
+    counters are what tell a null result apart from a mechanism that never
+    fired. Their values are the engine's business (tests/test_parallel.cpp);
+    this pins that the runner publishes them, under these names, as numbers.
+    """
+    pytest.importorskip("pyscipopt", reason="pyscipopt is in the 'benchmarks' extra, not 'dev'")
+    from test_verify_solution import TINY_MPS
+
+    inst_dir, _ = _instance_dir(tmp_path, "tiny", TINY_MPS.encode(), 9.0)
+    out_dir = tmp_path / "cbls"
+    completed = subprocess.run(
+        [
+            str(_binary()),
+            *("--instance", "tiny", "--inst-dir", str(inst_dir), "--out-dir", str(out_dir)),
+            *("--budget", "0.5", "--threads", "2"),
+            *([] if share else ["--no-share-bound"]),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    row = json.loads((out_dir / "tiny.json").read_text())
+    assert row["share_objective_bound"] is share
+    for key in (
+        "shared_bound_tightenings",
+        "own_best_behind_global",
+        "bound_behind_global_batches",
+    ):
+        assert isinstance(row[key], int), key
+        assert row[key] >= 0, key
+    assert isinstance(row["bound_behind_global_seconds"], float)
+    if not share:
+        assert row["shared_bound_tightenings"] == 0
+    scored = score_instance("tiny", "cbls", 9.0, "opt", tmp_path, 0.5, require_verification=False)
+    assert f"share_objective_bound={share}" in scored.config
+
+
 # --- Preconditions: the bytes are what the pins say ---------------------------
 #
 # A corrupted or substituted instance measures a different program under a

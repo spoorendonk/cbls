@@ -322,6 +322,45 @@ def test_scoring_refuses_a_table_that_mixes_two_claims(
             check_uniform_configuration(rows)
 
 
+@pytest.mark.parametrize(
+    ("old", "new", "match"),
+    [
+        # One thread: no pool, so a pre-#179 row IS the default arm.
+        ({"threads": 1}, {"threads": 1, "share_objective_bound": True}, None),
+        # A portfolio: which arm the old row matches is what the key records, so
+        # the mix is refused rather than guessed.
+        ({"threads": 4}, {"threads": 4, "share_objective_bound": True}, "span 2 configurations"),
+        # And the two arms themselves never share a table.
+        (
+            {"threads": 4, "share_objective_bound": False},
+            {"threads": 4, "share_objective_bound": True},
+            "span 2 configurations",
+        ),
+    ],
+    ids=["one-thread-back-filled", "portfolio-refused", "two-arms-refused"],
+)
+def test_a_row_without_the_shared_bound_key_scores_only_where_it_is_equivalent(
+    tmp_path: Path, old: dict[str, object], new: dict[str, object], match: str | None
+) -> None:
+    """#179 added `share_objective_bound` to the config key. A results directory
+    holding rows from before it must still score at one thread, and must not at
+    a portfolio, where the old row's arm is not recorded."""
+    for instance, extra in (("a", old), ("b", new)):
+        _write_result(
+            tmp_path,
+            "cbls",
+            instance,
+            {"status": "feasible", "objective": 100.0, **extra},
+            trace=[(1.0, 100.0)],
+        )
+    rows = [_score(tmp_path, name) for name in ("a", "b")]
+    if match is None:
+        check_uniform_configuration(rows)  # must not raise
+    else:
+        with pytest.raises(ValueError, match=match):
+            check_uniform_configuration(rows)
+
+
 def test_summarize_excludes_not_run_instances_from_the_aggregates(tmp_path: Path) -> None:
     _write_result(
         tmp_path, "cbls", "solved", {"status": "feasible", "objective": 100.0}, trace=[(0.0, 100.0)]

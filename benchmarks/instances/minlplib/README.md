@@ -1112,3 +1112,30 @@ worst-violated NL row and its sense.
   the CBLS DAG's op set, and the NL reader additionally rejects `V`/`S`/`F`/`d`
   segments. SCIP has no such restriction and would run the excluded instances.
   This is therefore a comparison on CBLS's expressible domain, not on MINLPLib.
+
+## Portfolio A/B: the shared objective bound (#179)
+
+`cbls_minlplib` is single-threaded, so a portfolio comparison runs through
+`cbls_minlplib_portfolio` (`benchmarks/minlplib/portfolio_ab.cpp`). It builds the
+model exactly as the runner does and runs `ParallelSearch` with the runner's
+per-worker hook and LNS. `benchmarks/minlplib/portfolio_ab.py` pairs the arms and
+scores them:
+
+```
+python3 benchmarks/minlplib/portfolio_ab.py run --instances nvs22 eq6_1 ... \
+    --seeds 1001 1002 1003 1004 --budget 20 --threads 4 --out ab.jsonl \
+    --lock ~/.cache/cbls-bench.lock
+python3 benchmarks/minlplib/portfolio_ab.py analyze ab.jsonl
+```
+
+The first campaign ran at engine `802b287`, through a scratch build of the same
+harness that was later committed unchanged in behaviour. Setup: 4 threads, 20 s,
+seeds 1001-1004. The roster was 10 instances admitted by a pre-registered
+control-only pilot, which selected instances where the control arm runs behind
+the portfolio's best bound. The results therefore say how the mechanism does
+where it has something to act on; they are not a roster average.
+
+The primal integral improved on all 10 instances (sign test p = 0.002, instance
+mean -0.083, t_9 95% CI [-0.156, -0.010]). The final gap improved on 8, got worse
+on 1 and was flat on 1 (p = 0.039; CI [-0.183, +0.003]). All 40 runs were
+feasible in both arms. The protocol and the MIPfeas half are on #179.

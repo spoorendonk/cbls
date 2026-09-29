@@ -350,6 +350,10 @@ if(CBLS_BUILD_BENCHMARKS)
     target_link_libraries(cbls_minlplib PRIVATE cbls_lib)
     cbls_enable_warnings(cbls_minlplib)
     target_include_directories(cbls_minlplib PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    # #179's portfolio A/B harness: cbls_minlplib is single-threaded.
+    add_executable(cbls_minlplib_portfolio benchmarks/minlplib/portfolio_ab.cpp)
+    target_link_libraries(cbls_minlplib_portfolio PRIVATE cbls_lib)
+    cbls_enable_warnings(cbls_minlplib_portfolio)
 
     add_executable(cbls_setcover benchmarks/setcover/setcover.cpp)
     target_link_libraries(cbls_setcover PRIVATE cbls_lib)

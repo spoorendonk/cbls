@@ -846,10 +846,8 @@ bool ViolationLSLoop::record_best() {
     // that would move this worker onto the better region. With sharing off
     // (the control arm) and without a pool this branch cannot be taken, so
     // those runs return exactly what they did before #179.
-    if (behind_global && !bound_moved && coord_ != nullptr && coord_->share_objective_bound) {
-        return false;
-    }
-    return true;
+    const bool sharing = coord_ != nullptr && coord_->share_objective_bound;
+    return !behind_global || bound_moved || !sharing;
 }
 
 // Requirement: submit when found, not at the end. The cost is ONE Model::State
@@ -895,8 +893,10 @@ void ViolationLSLoop::share(double objective) {
 //    every other worker's objective row in play: a behaviour change against
 //    single-threaded ViolationLS, where the row is vacuous until the worker's own
 //    first feasible point. Deliberate -- it is what "share the bound" means, and
-//    CP-SAT's workers do the same -- and the A/B's feasibility count is what
-//    would show it costing feasibility.
+//    CP-SAT's workers do the same. Its cost cannot show as lost PORTFOLIO
+//    feasibility: G exists only once some worker is feasible, and that worker's
+//    incumbent is the portfolio's. It can only show as a worse Primal Integral
+//    or gap, from the workers it diverts; the per-worker effect is unmeasured.
 //  - the objective row's weight is never zeroed: solve() runs FJ single-phase
 //    (gfj.two_phase = false), so there is no phase mask for the row to fall
 //    under, and set_objective_bound's precondition is has_obj_, tested first.
@@ -918,10 +918,16 @@ void ViolationLSLoop::sync_shared_bound() {
     }
     if (coord_->share_objective_bound) {
         model_.set_objective_bound(target);
-        // set_objective_bound rewrites the row's node value in place; the
-        // violation manager's cached total and FJ's violated set and jump table
-        // were computed against the old one.
-        vm_.invalidate_cache();
+        // set_objective_bound rewrites the row's node value in place, and FJ's
+        // violated set and jump table were computed against the old one. That
+        // matters most where the row was SATISFIED before -- a worker with no
+        // feasible point of its own, bound +inf: without the rebuild the row
+        // stays out of V until a move happens to touch an objective variable,
+        // and FJ can declare the batch feasible with the new bound ignored.
+        //
+        // No vm_.invalidate_cache(): ViolationManager::total_violation() diffs
+        // every row against the node values on each call, so its cache cannot
+        // be stale in value, and nothing in the loop reads it before then.
         fj_.resync();
         ++counters_.shared_bound_tightenings;
         return;
