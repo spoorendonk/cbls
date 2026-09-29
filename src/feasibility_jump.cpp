@@ -7,8 +7,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstdint>
-#include <cstring>
 #include <limits>
 #include <stdexcept>
 
@@ -280,7 +278,7 @@ bool apply_random_structural_move(Model& model, int32_t var_id, RNG& rng) {
 // Integer jump candidates: exhaustive over a small domain, else a coarse grid
 // plus neighbours/endpoints. Each consider() costs O(|G_v|) when every weighted
 // row of G_v is a linear comparison (LinearJumpScorer), else one
-// weighted_violation_delta (one probe walk and a stash restore); the JumpTable cache
+// weighted_violation_delta (two delta_evaluate passes); the JumpTable cache
 // amortises either across the GLS loop. Scoring is still per candidate: a
 // closed-form ARGMIN over a linear column would pick from a different candidate
 // set, which is a different algorithm rather than a cheaper evaluation of this
@@ -869,9 +867,8 @@ void FeasibilityJump::update_var(int32_t var_id) {
     Variable& var = model_.var_mut(var_id);
     const double old_value = var.value;
     var.value = j;
-    // Each incremental Sum in the cone moves by its one changed term instead of
-    // re-summing (#177): the re-sum's bits on integral data; otherwise drift,
-    // bounded by the period and removed at the batch's end.
+    // delta_evaluate's node values to the bit, with each integral row moved by
+    // its one changed term instead of re-summed (#177).
     commit_scalar_move(model_, var_id, old_value);
     jumps_.invalidate(var_id);
 
@@ -886,7 +883,6 @@ void FeasibilityJump::update_var(int32_t var_id) {
         set_violated(c, is_violated(after));
     }
     unweighted_violation_ += violation_delta;
-    note_touched_rows(gv);
     // A vp sharing several rows with var_id is visited once per shared row. Not
     // deduplicated (#174 proposed a stamp): with the participation test now O(1),
     // a repeat visit costs an idempotent invalidate on a line the first visit
@@ -894,173 +890,16 @@ void FeasibilityJump::update_var(int32_t var_id) {
     // than a stamp check-and-set, which would also charge every FIRST visit and
     // 4 B per variable.
     for (int32_t c : gv) {
-        resettle_neighbours(c, var_id);
-    }
-}
-
-// Every variable of `row` but `skip_var` may have a stale cached jump now, and
-// may belong in the scan set. Called only once every changed row is settled in
-// V, so a variable sharing several of them sees all of them.
-void FeasibilityJump::resettle_neighbours(int32_t row, int32_t skip_var) {
-    for (int32_t vp : vars_of_constraint_[row]) {
-        if (vp == skip_var) {
-            continue;
-        }
-        jumps_.invalidate(vp);
-        if (in_queue_[vp] == 0 && participates_in_active_violated(vp)) {
-            enqueue(vp);
-        }
-    }
-}
-
-// No jump improves. Returns true if that is because the model is feasible, on
-// exact values. Otherwise the rows in V are re-summed exactly before any weight
-// is bumped (#177): a row that is violated only by its Sums' drift leaves V here
-// instead of having its weight raised, and a row that moved -- here or in the
-// feasibility check -- puts its variables back in Q, so FJ samples again rather
-// than bumping.
-bool FeasibilityJump::settle_local_minimum() {
-    if (reground_violated_rows()) {
-        return false;
-    }
-    if (!any_active_violated()) {
-        return exact_feasible();
-    }
-    bump_weights_and_requeue();
-    return false;
-}
-
-// "Feasible", read off V, is exact only if no row outside V drifted below the
-// tolerance. So re-ground everything the batch drifted, and read V again: a row
-// that came back puts its variables in Q and the loop carries on (#177).
-bool FeasibilityJump::exact_feasible() {
-    if (any_active_violated()) {
-        return false;  // no verdict to make exact; the batch end re-grounds
-    }
-    reground_and_resettle();
-    return !any_active_violated();
-}
-
-// Re-sums the drifted Sums under the rows in V, and settles each row the
-// re-sum moved exactly as update_var settles a row its move changed. Returns
-// whether any row moved.
-//
-// Cost: O(1) while no Sum carries an update since it was last re-summed
-// (`IncrementalSumState::live`). Otherwise a walk down the cones of V's rows --
-// ~2|row| nodes for a MIP row (Sum, Prod terms, their Consts), against the
-// |row| variables the bump that follows walks for each counted row, so about 3x
-// it -- plus the re-sum of the drifted Sums found and everything above them.
-// It loses to the bump alone on integral data, where every update counts as
-// drift but nothing ever moves; it pays for itself when a phantom row would
-// otherwise be bumped at every local minimum until the batch ends.
-bool FeasibilityJump::reground_violated_rows() {
-    if (model_.incremental_sums().live == 0 || violated_rows_.empty()) {
-        return false;
-    }
-    const auto& cids = model_.constraint_ids();
-    regrounded_roots_.clear();
-    // Only rows the bump can raise: a masked row (weight 0) is never bumped, and
-    // its cone -- two-phase masks every nonlinear row -- is none of the bump's cost.
-    for (const int32_t c : violated_rows_) {
-        if (active(c)) {
-            regrounded_roots_.push_back(cids[static_cast<size_t>(c)]);
-        }
-    }
-    if (!reground_incremental_sums_below(model_, regrounded_roots_, regrounded_)) {
-        return false;
-    }
-    if (row_of_node_.size() != cids.size()) {
-        row_of_node_.clear();
-        for (size_t c = 0; c < cids.size(); ++c) {
-            row_of_node_.emplace_back(cids[c], static_cast<int32_t>(c));
-        }
-        std::sort(row_of_node_.begin(), row_of_node_.end());
-    }
-    regrounded_roots_.clear();  // reused: the rows that moved
-    for (const auto& [nid, before] : regrounded_) {
-        const double after = model_.node_values()[static_cast<size_t>(nid)];
-        uint64_t before_bits = 0;
-        uint64_t after_bits = 0;
-        std::memcpy(&before_bits, &before, sizeof before_bits);
-        std::memcpy(&after_bits, &after, sizeof after_bits);
-        if (before_bits == after_bits) {
-            continue;
-        }
-        // Every row on this node: add_constraint does not deduplicate, so one
-        // node can be several rows, each with its own V entry.
-        for (auto it = std::lower_bound(row_of_node_.begin(), row_of_node_.end(),
-                                        std::make_pair(nid, int32_t{-1}));
-             it != row_of_node_.end() && it->first == nid; ++it) {
-            const int32_t c = it->second;
-            if (c != objective_ci_ && active(c)) {
-                unweighted_violation_ += progress_residual(after) - progress_residual(before);
-            }
-            set_violated(c, is_violated(after));
-            regrounded_roots_.push_back(c);
-        }
-    }
-    for (const int32_t c : regrounded_roots_) {
-        resettle_neighbours(c, -1);
-    }
-    return !regrounded_roots_.empty();
-}
-
-// O(|rows|): one stamp test each, on rows the caller has just walked anyway.
-void FeasibilityJump::note_touched_rows(ConstSpan<int32_t> rows) {
-    const size_t nc = model_.constraint_ids().size();
-    if (touch_stamp_.size() != nc) {
-        touch_stamp_.assign(nc, 0);
-    }
-    for (const int32_t c : rows) {
-        if (touch_stamp_[static_cast<size_t>(c)] != touch_epoch_) {
-            touch_stamp_[static_cast<size_t>(c)] = touch_epoch_;
-            touched_rows_.push_back(c);
-        }
-    }
-}
-
-// The end of every batch (#177). Re-sums the Sums the batch's committed moves
-// left drifted -- so nothing outside FJ ever reads a drifted value, which is
-// what makes the search's feasibility test and objective reading exact -- and
-// then settles each touched row whose value the re-sum moved exactly as
-// update_var settles a row its move changed: the unweighted total, V and its
-// counts, and the row's variables' cached jumps and scan-set membership. A row
-// no committed move touched cannot have moved: a drifted Sum is only ever in
-// the cone of a variable some committed move changed.
-//
-// Nothing moves on integral data, but every Sum a commit updated is still
-// re-summed here once: the ages count updates, not inexact ones.
-void FeasibilityJump::reground_and_resettle() {
-    const auto& cids = model_.constraint_ids();
-    touched_before_.clear();
-    for (const int32_t c : touched_rows_) {
-        touched_before_.push_back(model_.node_values()[cids[static_cast<size_t>(c)]]);
-    }
-    if (reground_incremental_sums(model_)) {
-        size_t n_moved = 0;
-        for (size_t k = 0; k < touched_rows_.size(); ++k) {
-            const int32_t c = touched_rows_[k];
-            const double before = touched_before_[k];
-            const double after = model_.node_values()[cids[static_cast<size_t>(c)]];
-            uint64_t before_bits = 0;
-            uint64_t after_bits = 0;
-            std::memcpy(&before_bits, &before, sizeof before_bits);
-            std::memcpy(&after_bits, &after, sizeof after_bits);
-            if (before_bits == after_bits) {
+        for (int32_t vp : vars_of_constraint_[c]) {
+            if (vp == var_id) {
                 continue;
             }
-            if (c != objective_ci_ && active(c)) {
-                unweighted_violation_ += progress_residual(after) - progress_residual(before);
+            jumps_.invalidate(vp);
+            if (in_queue_[vp] == 0 && participates_in_active_violated(vp)) {
+                enqueue(vp);
             }
-            set_violated(c, is_violated(after));
-            touched_rows_[n_moved++] = c;  // compacted: the rows that moved
-        }
-        for (size_t k = 0; k < n_moved; ++k) {
-            resettle_neighbours(touched_rows_[k], -1);
         }
     }
-    touched_rows_.clear();
-    ++touch_epoch_;
 }
 
 bool FeasibilityJump::apply_jump(int sample_size) {
@@ -1373,15 +1212,7 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
     // The lazy decay's scale is local to the loop: whatever way the loop is left,
     // vm_.weights are effective weights again afterwards (#175).
     try {
-        GFJStatus status = gls_loop_scaled(sample_size, batch_iter_limit);
-        reground_and_resettle();
-        // The loop's own "Feasible" is exact already (exact_feasible). What is
-        // not is batch_end_status at the batch limit or on a stall, which reads
-        // V as the batch's last commits left it: the re-grounding can put a row
-        // sitting within rounding of its tolerance back. Re-read it.
-        if (status == GFJStatus::Feasible && any_active_violated()) {
-            status = GFJStatus::Unsolved;
-        }
+        const GFJStatus status = gls_loop_scaled(sample_size, batch_iter_limit);
         materialise_weights();
         return status;
     } catch (...) {
@@ -1413,8 +1244,11 @@ GFJStatus FeasibilityJump::gls_loop_scaled(int sample_size, int64_t batch_iter_l
         watch_progress_ && batch_iter_limit > 0 && config_.unproductive_iterations > 0;
 
     while (true) {
-        if (!apply_jump(sample_size) && settle_local_minimum()) {
-            return GFJStatus::Feasible;
+        if (!apply_jump(sample_size)) {
+            if (!any_active_violated()) {
+                return GFJStatus::Feasible;
+            }
+            bump_weights_and_requeue();
         }
 
         ++iterations_;
@@ -1851,8 +1685,7 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         const int32_t v = pick.var;
         const double old_value = model_.var(v).value;
         model_.var_mut(v).value = pick.jump;
-        commit_scalar_move(model_, v, old_value);
-        note_touched_rows(model_.constraints_of_var(v));
+        delta_evaluate(model_, &v, 1);
         move_stack_.push_back({v, old_value});
         on_stack_[v] = 1;
         --nj_work_remaining_;  // bound total moves applied per apply_novelty_jump
@@ -1880,7 +1713,7 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         on_stack_[v] = 0;
         move_stack_.pop_back();
         model_.var_mut(v).value = old_value;
-        commit_scalar_move(model_, v, pick.jump);
+        delta_evaluate(model_, &v, 1);
         for (int32_t c : model_.constraints_of_var(v)) {
             set_violated(c, is_violated(model_.node_value(cids[c])));
         }
@@ -1888,17 +1721,7 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
     }
 }
 
-// Its legs commit with old values, so they leave drift as update_var does, and
-// it ends with the same re-grounding as an FJ batch (#177).
 bool FeasibilityJump::apply_novelty_jump() {
-    // Its "reached feasibility" is already exact (exact_feasible); this settles
-    // what an unsuccessful search's backtracked legs left drifted.
-    const bool feasible = novelty_rounds();
-    reground_and_resettle();
-    return feasible;
-}
-
-bool FeasibilityJump::novelty_rounds() {
     require_tables_in_step();
     const size_t nv = model_.num_vars();
     // Flags stay set only for entries of nj_queue_ / move_stack_, which
@@ -1924,20 +1747,8 @@ bool FeasibilityJump::novelty_rounds() {
         seed_novelty_scan_set();
         clear_stack();
         while (novelty_jump_search(0.0, b)) {
-            if (exact_feasible()) {
-                return true;  // reached feasibility, on exact values
-            }
-            // A row the re-grounding brought back was broken by a leg, and drift
-            // hid it: Algorithm 4 gives a broken row its full weight in W', as
-            // novelty_jump_search does for a row it sees break. O(|V|).
-            for (const int32_t c : violated_rows_) {
-                const auto ci = static_cast<size_t>(c);
-                if (novelty_weights_[ci] != vm_.weights[ci]) {
-                    novelty_weights_[ci] = vm_.weights[ci];
-                    for (const int32_t vp : vars_of_constraint_[ci]) {
-                        nj_enqueue(vp);
-                    }
-                }
+            if (!any_active_violated()) {
+                return true;  // reached feasibility
             }
             // Committed a compound move; start a fresh one from the new state
             // (reset budget per Algorithm 4 line 8, keep evolving W').

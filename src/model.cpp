@@ -30,6 +30,7 @@ Model::Model() {
 Model::Model(const Model& other)
     : vars_(other.vars_),
       node_values_(other.node_values_),
+      sum_exact_(other.sum_exact_),
       objective_id_(other.objective_id_),
       is_maximizing_(other.is_maximizing_),
       objective_bound_node_(other.objective_bound_node_),
@@ -37,12 +38,6 @@ Model::Model(const Model& other)
       objective_constraint_idx_(other.objective_constraint_idx_),
       objective_bound_(other.objective_bound_),
       closed_(other.closed_) {
-    // The ages and the drift list describe `node_values_`, which were just
-    // copied. The probe stash is left empty: copying mid-probe is a contract
-    // violation (see the custom-invariant note below).
-    incremental_sums_.age = other.incremental_sums_.age;
-    incremental_sums_.drifted = other.incremental_sums_.drifted;
-    incremental_sums_.live = other.incremental_sums_.live;
     // probe_old_violation_ is deliberately left empty: it is resized and
     // overwritten before it is read on every call, so it carries no state.
     //
@@ -846,33 +841,61 @@ void Model::rebuild_back_references() {
     st.dependent_offsets.front() = 0;
 }
 
-// Which Sums a delta walk may move by their terms' changes (#177). A term's
-// old value has to be in hand when its change is applied: a variable's is
-// passed in by the caller, and a node's is read just before the walk writes
-// the new one. A Sum term is the exception -- its own value is moved in place
-// by pushes from below before its turn, so its old value is gone by then --
-// hence no Sum may be a term. A term named twice would report its change once
-// (the back-references are deduplicated) and be counted twice.
-void Model::classify_incremental_sums() {
+// Which Sums `commit_scalar_move` may update by their terms' changes (#177).
+// A term qualifies when its value is an integer whatever the assignment: a
+// Bool/Int variable, a finite integral literal, or a `Neg`/`Prod` of such terms
+// -- the shapes `mps_to_model` writes for a row with integral coefficients
+// (`x`, `neg(x)`, `prod(constant(a), x)`). A nested `Sum` does not qualify, so
+// a qualifying Sum is never a term of another and its own change need not be
+// pushed further. The objective bound is excluded although it is a Const: its
+// value is per-model search state, set by `set_objective_bound`.
+//
+// A Sum naming a term twice is excluded as well: the back-references are
+// deduplicated, so the term would report its change once and be counted once.
+//
+// Being classified only makes a Sum ELIGIBLE. The values themselves are checked
+// on every update, since an Int variable holding 2.5 or 1e17 is representable,
+// and exactness is a property of the numbers, not of the types.
+void Model::classify_exact_sums() {
     ModelStructure& st = mut();
-    std::vector<int32_t> node_stamp(st.nodes.size(), -1);
+    const size_t n_nodes = st.nodes.size();
+    std::vector<uint8_t> integral_term(n_nodes, 0);
+    const auto integral_ref = [&](const ChildRef& ref) {
+        if (ref.is_var) {
+            const VarType t = vars_[ref.id].type;
+            return t == VarType::Bool || t == VarType::Int;
+        }
+        return integral_term[ref.id] != 0;
+    };
+    st.exact_sum.assign(n_nodes, 0);
+    std::vector<int32_t> node_stamp(n_nodes, -1);
     std::vector<int32_t> var_stamp(vars_.size(), -1);
-    for (ExprNode& nd : st.nodes) {
-        nd.incremental_sum = 0;
-        if (nd.op != NodeOp::Sum) {
-            continue;
-        }
-        const int32_t nid = nd.id;
-        bool ok = nd.child_count > 0;
-        for (const ChildRef& ref : children(nd)) {
-            int32_t& stamp = ref.is_var ? var_stamp[ref.id] : node_stamp[ref.id];
-            if (stamp == nid || (!ref.is_var && st.nodes[ref.id].op == NodeOp::Sum)) {
-                ok = false;
-                break;
+    for (const int32_t nid : st.topo_order) {
+        const ExprNode& nd = st.nodes[nid];
+        const ConstSpan<ChildRef> kids = children(nd);
+        // An if-chain, not a switch: the ops this does not name are simply "not
+        // a qualifying term", and a `default:` in a NodeOp switch is what would
+        // hide a missed case from -Wswitch everywhere else.
+        if (nd.op == NodeOp::Const) {
+            integral_term[nid] = static_cast<uint8_t>(nid != objective_bound_node_ &&
+                                                      std::isfinite(nd.const_value) &&
+                                                      nd.const_value == std::trunc(nd.const_value));
+        } else if (nd.op == NodeOp::Neg || nd.op == NodeOp::Prod) {
+            integral_term[nid] =
+                static_cast<uint8_t>(std::all_of(kids.begin(), kids.end(), integral_ref));
+        } else if (nd.op == NodeOp::Sum) {
+            bool ok = !kids.empty();
+            for (const ChildRef& ref : kids) {
+                int32_t& stamp = ref.is_var ? var_stamp[ref.id] : node_stamp[ref.id];
+                const bool term = ref.is_var || st.nodes[ref.id].op != NodeOp::Sum;
+                if (!term || stamp == nid || !integral_ref(ref)) {
+                    ok = false;
+                    break;
+                }
+                stamp = nid;
             }
-            stamp = nid;
+            st.exact_sum[nid] = static_cast<uint8_t>(ok);
         }
-        nd.incremental_sum = static_cast<uint8_t>(ok);
     }
 }
 
@@ -882,7 +905,7 @@ void Model::close() {
     rebuild_back_references();
     st.topo_order = detail::compute_topo_order(*this);
     rebuild_topo_positions();
-    classify_incremental_sums();
+    classify_exact_sums();
     build_var_constraints();
     full_evaluate(*this);
     closed_ = true;
@@ -936,7 +959,7 @@ void Model::add_objective_soft_constraint() {
     rebuild_back_references();
     st.topo_order = detail::compute_topo_order(*this);
     rebuild_topo_positions();
-    classify_incremental_sums();
+    classify_exact_sums();
     build_var_constraints();
     full_evaluate(*this);
     // The rebuild above is exactly close()'s, so say so: on a model solve()
@@ -1068,7 +1091,7 @@ std::vector<std::pair<int32_t, double>> Model::per_constraint_violation_delta(in
     // Probe: set candidate, recompute only the affected dirty cone.
     const double old_value = v.value;
     var_mut(var_id).value = j;
-    probe_scalar_move(*this, var_id, old_value);
+    delta_evaluate(*this, &var_id, 1, DeltaMode::Probe);
 
     for (size_t k = 0; k < affected.size(); ++k) {
         double new_viol = clamped_node_violation(node_values_[cids[affected[k]]]);
@@ -1078,10 +1101,9 @@ std::vector<std::pair<int32_t, double>> Model::per_constraint_violation_delta(in
         }
     }
 
-    // Restore exactly: `Rollback` writes back the values the `Probe` stashed,
-    // custom nodes included, rather than re-evaluating -- which would re-sum an
-    // incremental Sum and so snap its drift (#177). See the note on
-    // weighted_violation_delta below.
+    // Restore exactly: same inputs through deterministic evaluate() roll node
+    // values back to where they were. `Rollback` is what makes that true for a
+    // custom node too -- see the note on weighted_violation_delta below.
     var_mut(var_id).value = old_value;
     delta_evaluate(*this, &var_id, 1, DeltaMode::Rollback);
 
@@ -1132,8 +1154,7 @@ double Model::weighted_violation_delta(int32_t var_id, double j,
     // the engine rather than recomputed.
     //
     // NARROWED DELIBERATELY: THREE other sites score by applying and then putting
-    // back, and every leg of all three stays a `Commit` (Novelty Jump's through
-    // `commit_scalar_move`, #177) -- the
+    // back, and every leg of all three stays a plain `Commit` delta -- the
     // structural batch, the inner solver, and Novelty Jump's backtracking chain
     // (`novelty_jump_search`), which is on the same per-candidate path this probe
     // is. They are correct: each leg is a real assignment and the `changed` set
@@ -1145,7 +1166,7 @@ double Model::weighted_violation_delta(int32_t var_id, double j,
     // `src/feasibility_jump.cpp`.
     const double old_value = v.value;
     var_mut(var_id).value = j;
-    probe_scalar_move(*this, var_id, old_value);
+    delta_evaluate(*this, &var_id, 1, DeltaMode::Probe);
 
     double delta = 0.0;
     for (size_t k = 0; k < affected.size(); ++k) {

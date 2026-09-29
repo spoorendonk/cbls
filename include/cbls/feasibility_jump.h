@@ -7,7 +7,6 @@
 
 #include <chrono>
 #include <cstdint>
-#include <utility>
 #include <vector>
 
 namespace cbls {
@@ -436,17 +435,6 @@ private:
     // UpdateVar (Algorithm 1): commit X[v] <- jump, refresh V, invalidate
     // neighbour jumps, replenish Q.
     void update_var(int32_t var_id);
-    // #177: a committed move leaves the incremental Sums in its cone carrying
-    // drift. The batch's committed moves record their rows here, and the end of
-    // every batch re-grounds the drifted Sums and resettles each recorded row
-    // whose value that moved: the same bookkeeping update_var does for a move.
-    void note_touched_rows(ConstSpan<int32_t> rows);
-    void reground_and_resettle();
-    bool novelty_rounds();
-    bool exact_feasible();
-    bool settle_local_minimum();
-    bool reground_violated_rows();
-    void resettle_neighbours(int32_t row, int32_t skip_var);
 
     [[nodiscard]] bool active(int32_t constraint_idx) const;  // weight > 0
     [[nodiscard]] bool jumpable(int32_t var_id) const;        // scalar var
@@ -601,19 +589,7 @@ private:
     std::vector<int32_t> active_violated_of_var_;  // per var: counted rows listing it
     std::vector<uint8_t> in_queue_;                // per var: in Q
     std::vector<int32_t> queue_;                   // scan set Q (vars with possibly-positive score)
-    std::vector<int32_t> examined_;  // scratch: distinct vars sampled in one apply_jump
-    // Rows a pushing commit touched since the last reground_and_resettle, each
-    // once (stamped with touch_epoch_), and the scratch that holds their values
-    // across the re-grounding. See note_touched_rows.
-    std::vector<int32_t> touched_rows_;
-    std::vector<uint32_t> touch_stamp_;
-    uint32_t touch_epoch_ = 1;
-    std::vector<double> touched_before_;
-    // reground_violated_rows' scratch, and constraint node id -> row index
-    // (sorted, built on first use): 8 B per row.
-    std::vector<int32_t> regrounded_roots_;
-    std::vector<std::pair<int32_t, double>> regrounded_;
-    std::vector<std::pair<int32_t, int32_t>> row_of_node_;
+    std::vector<int32_t> examined_;   // scratch: distinct vars sampled in one apply_jump
     std::vector<uint8_t> is_linear_;  // per constraint
     // Closed-form scoring over linear comparison rows. Its per-row eligibility is
     // maintained wherever is_linear_ is: compute_linear_constraints (the

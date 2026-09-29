@@ -29,11 +29,8 @@ class Model;
 /// **Exact in the arithmetic, not bit-identical.** `p + r D` is not the row the
 /// DAG would re-sum, so a score can differ from `weighted_violation_delta` in its
 /// last bits (the equivalence tests pin a tight relative tolerance). Nothing
-/// accumulates here: every prepare reads the node values fresh, and a committed
-/// jump updates them through the DAG (`commit_scalar_move`). Those values may
-/// carry an incremental `Sum`'s drift within an FJ batch (#177); the scorer and
-/// the probe both difference against that same committed state, so they agree
-/// with each other, and the batch's end re-grounds it.
+/// accumulates: a committed jump still goes through `delta_evaluate`, so node
+/// values stay exactly the DAG's and every prepare reads them fresh.
 ///
 /// What is NOT changed: the candidate set, the selection rule and its first-seen
 /// tie-breaking (`compute_var_jump`), and the per-constraint differencing of

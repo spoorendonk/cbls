@@ -128,10 +128,7 @@ own `node_values()` array, read through `Model::node_value(id)` (#157). That is
 what lets the whole node array sit in the immutable structure portfolio replicas
 share — a `value` field there would be one worker's search state in storage every
 worker reads. `ExprNode` is 32 bytes as a result, and the per-worker cost of a
-node is the 8-byte value plus the 1-byte incremental-Sum age (#177; ~4.3 MB on
-the 4.30M-node neos-5114902-kasavu). Each worker thread also holds #177's
-cone-walk scratch, 1 byte per node for the downward walk beside the delta walk's
-dirty flags.
+node is the 8-byte value.
 
 **Supported operations:**
 
@@ -178,83 +175,7 @@ jump *candidate* is scored by a no-commit delta probe (see
 [`weighted_violation_delta`](#violation--gls-weights)) unless every weighted
 row of the variable's column is a linear comparison, where `LinearJumpScorer`
 (`include/cbls/linear_jump.h`) scores it in closed form instead. A committed
-jump goes through the same walk, as `commit_scalar_move`, which is told the
-variable's old value (below).
-
-**Incremental Sum** (#177). A committed FJ move changes one term of each row it
-touches, and re-summing a row costs its whole length -- 36% of swath3's run at
-`634001b`, where a committed dirty Sum averaged 1315 terms. So a walk that knows
-the changed variables' old values moves each eligible `Sum` by its terms'
-changes instead: a variable term's from the old value passed in, a node term's
-from the value it held just before the walk rewrote it. A Sum is eligible
-(`ExprNode::incremental_sum`, set at `close()`) unless one of its terms is a
-Sum or appears twice. The walks that pass old values are FJ's committed moves,
-Novelty Jump's legs (`commit_scalar_move`) and the per-candidate probes
-(`probe_scalar_move`, inside `weighted_violation_delta` and
-`per_constraint_violation_delta`).
-
-That is floating point, so a Sum's value drifts from the re-sum by a rounding
-per update; on integral data every partial sum is exact and nothing drifts, so
-MIP rows with integer coefficients over integer columns keep the re-summing
-engine's bits and trajectory. Drift is bounded and never leaves an FJ batch:
-
-| Mechanism | What it guarantees |
-|---|---|
-| A Commit re-sums a Sum on its `kIncrementalSumPeriod`-th (64) update | at most 63 updates' roundings per Sum, on every path |
-| `reground_incremental_sums` at the end of every FJ batch and Novelty Jump batch | everything outside FJ -- the search's feasibility test and objective, the pool, LNS, the inner solver, the structural batch -- reads exact sums |
-| A non-finite value (the Sum's, or a term's old or new one) re-sums the Sum | no `inf - inf` |
-| `Probe` stashes the cone; `Rollback` writes it back | a probe leaves the committed state bit for bit, and a probe of the value a variable already holds scores exactly 0 |
-
-What is kept consistent is the state derived from node values, not bit-identity
-to a re-sum. A walk that is not told old values (the structural batch, the
-inner solver, `full_evaluate`) re-sums -- snaps -- the Sums in its cone, but a
-snap only ever touches the cone of the variables that walk moved, which are the
-rows its caller already re-reads. The periodic re-sum happens inside a commit,
-whose rows `update_var` settles anyway. The batch-end re-grounding moves rows
-nothing else re-reads, so `FeasibilityJump::reground_and_resettle` settles each
-row it moved exactly as `update_var` settles a changed row: the unweighted
-total, V and its counts, and the row's variables' cached jumps and scan-set
-membership. A batch that ended "Feasible" on drifted values and is no longer
-feasible after the re-grounding reports Unsolved, so the search's next batch
-carries on from the exact state; `gls()`/`run()`, which have no batches, carry
-on themselves. Novelty Jump re-reads its verdict the same way.
-
-The bound is on the number of roundings, not their size: each is at the scale
-of the largest value the Sum held since its last re-sum. A fractional big-M term
-switched on and off again leaves a row near O(1) carrying about ulp(1e9) ~ 1e-7,
-above FJ's 1e-9 violation threshold. Inside a batch such a row can read violated
-when it is not, or the reverse, so two decisions are taken on exact values only:
-
-- **A GLS weight bump.** At a local minimum, before any row is bumped,
-  `reground_violated_rows` re-sums the drifted Sums in the cones of the rows in
-  V (`reground_incremental_sums_below`) and settles each row that moved. A row
-  violated only by drift leaves V instead of having its weight raised; a row
-  that moved puts its variables back in the scan set, and FJ samples again
-  rather than bumping. Guarantee: no row whose exact residual is within
-  tolerance is ever bumped. Cost: nothing while no Sum carries an update since
-  its last re-sum; otherwise a walk down the active V rows' cones (~2|row| nodes
-  for a MIP row, against the |row| variables the bump walks per counted row) plus
-  the re-sum of the drifted Sums found and everything above them. That is pure
-  overhead on integral data, where every update counts but none moves a bit;
-  it is what stops a phantom row being bumped at every local minimum until the
-  batch ends.
-- **"Feasible".** V empty is re-read after a full re-grounding
-  (`exact_feasible`, which re-grounds only when V is empty), in FJ's loop and in
-  Novelty Jump; a row that was hidden by drift comes back into V with its
-  variables re-queued (and, in Novelty Jump, its full weight in W'), and the
-  search carries on. A batch ended by its iteration limit or a stall with V empty is re-read
-  the same way after the batch-end re-grounding.
-
-Between those points a drifted row can still steer a move (it is scored against
-the drifted value), which is the price of not re-summing on every commit.
-
-`IncrementalSumState::drifted` lists each Sum at most once (a flag in the top
-bit of its age byte), so it is bounded by the number of Sums however long a
-`gls()`/`run()` goes without a batch end.
-
-K was chosen from a sweep on three instances held out of the A/B (#177): K=16
-cost 2-11% of the throughput of K=64, K=255 was at most 2% ahead of it, and the
-drift re-grounded at batch end was the same at every K.
+jump always goes through `delta_evaluate`.
 
 ### Reverse-Mode Automatic Differentiation
 
@@ -485,9 +406,7 @@ Bracketing them is a separate change.
 tested once per `delta_evaluate`/`full_evaluate` call, not per node, and the
 false branch is the pre-#166 loop verbatim, and the dispatch is a template rather
 than a `std::function` so that branch inlines the same `evaluate` call it always
-did — so bit-identical trajectories at one thread follow structurally. (Until
-#177, whose incremental Sum moves trajectories on fractional data; integral data
-keeps its bits. See **Incremental Sum**.)
+did — so bit-identical trajectories at one thread follow structurally.
 *Dated record of one run*, not a standing test: at the first #166 commit, two
 `cbls::solve()` runs at seed 12345 with `max_iterations = 4000` and no time limit
 — one mixed-integer/non-convex model, one `pair_lambda_sum` List model — produced
@@ -990,7 +909,7 @@ same first-seen rule, same per-row differencing (#100); the scores agree with
 the probe to rounding, not to the bit -- so the chosen jump is guaranteed the
 probe's only on integral data, and an ulp can flip a near-tie on fractional
 data -- and a committed jump still goes
-through the DAG (`commit_scalar_move`). Any other weighted row, or a non-finite computed side,
+through `delta_evaluate`. Any other weighted row, or a non-finite computed side,
 takes the probe. On MIPfeas at a 20s budget, one thread, this raised FJ
 iterations 7–58× (gen-ip002 4,803 → 278,793; neos-860300 1,207 → 8,997;
 n2seq36q 19,504 → 256,589; mas76 142,065 → 1,426,857; binkar10_1 83,917 →
@@ -2606,10 +2525,6 @@ per thread count, `peak_rss_kib` and `iterations` from the runner's own record.
 | 8 | 6.04 GiB | 3.15 GiB | 419 | 437 |
 
 The marginal cost of a worker falls from **~0.75-0.86 GiB** to **~0.34-0.39 GiB**.
-(#177 later added, per worker, a 1-byte age and a 1-byte cone-walk flag per
-node, ~8.6 MB here, a second 1-byte dirty-flag array for re-grounding, ~4.3 MB,
-8 B per row for FJ's node-to-row index, and a probe stash sized by the largest
-probed cone; none is in these figures.)
 The iteration column is the throughput answer for the *large*-model regime, where
 splitting `ExprNode` from its values could plausibly have cost locality (138 MB of
 nodes plus 34 MB of values, far past any L3): at one thread it is identical, 257

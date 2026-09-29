@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <utility>
@@ -1006,7 +1007,7 @@ TEST_CASE("a partial that throws does not poison later AD calls on the thread", 
 }
 
 // ---------------------------------------------------------------------------
-// Incremental Sum on commit (#177)
+// Exact incremental Sum on commit (#177)
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -1025,35 +1026,23 @@ void require_matches_full_evaluate(const Model& m) {
     }
 }
 
-void require_same_bits(const std::vector<double>& got, const std::vector<double>& want) {
-    REQUIRE(got.size() == want.size());
-    for (size_t i = 0; i < got.size(); ++i) {
-        if (bits_of(got[i]) != bits_of(want[i])) {
-            FAIL("node " << i << " holds " << got[i] << ", expected " << want[i]);
-        }
-    }
-}
-
-// A MIP-shaped model: rows in the three shapes mps_to_model writes -- `x`,
-// `neg(x)`, `prod(constant(a), x)` -- each long and sharing columns with the
-// others. Integral coefficients over Int columns, or fractional ones over
-// Float columns plus one big-M term per row, which is where drift lives.
-struct Rows {
+// Rows in the three shapes mps_to_model writes -- `x`, `neg(x)`,
+// `prod(constant(a), x)` -- with integral coefficients over Int columns, each
+// row long and sharing columns with the others, as a MIP row does.
+struct IntegralRows {
     Model m;
     std::vector<int32_t> cols;  // variable handles
     std::vector<int32_t> rows;  // the Sum nodes
 };
 
-Rows make_rows(int n_cols, int n_rows, int row_len, bool integral, uint64_t seed) {
-    Rows r;
+IntegralRows make_integral_rows(int n_cols, int n_rows, int row_len, uint64_t seed) {
+    IntegralRows r;
     RNG rng(seed);
     for (int j = 0; j < n_cols; ++j) {
-        r.cols.push_back(integral ? r.m.int_var(-20, 20) : r.m.float_var(-20.0, 20.0));
+        r.cols.push_back(r.m.int_var(-20, 20));
     }
-    const int32_t big = integral ? r.m.int_var(0, 1) : r.m.float_var(0.0, 1.0);
     for (int i = 0; i < n_rows; ++i) {
         std::vector<int32_t> terms;
-        terms.reserve(static_cast<size_t>(row_len) + 1);
         for (int k = 0; k < row_len; ++k) {
             const int32_t x = r.cols[static_cast<size_t>(((i * 7) + k) % n_cols)];
             const int64_t shape = rng.integers(0, 3);
@@ -1062,13 +1051,9 @@ Rows make_rows(int n_cols, int n_rows, int row_len, bool integral, uint64_t seed
             } else if (shape == 1) {
                 terms.push_back(r.m.neg(x));
             } else {
-                const double a =
-                    integral ? static_cast<double>(rng.integers(-9, 10)) : rng.uniform(-9.0, 9.0);
-                terms.push_back(r.m.prod(r.m.constant(a), x));
+                terms.push_back(
+                    r.m.prod(r.m.constant(static_cast<double>(rng.integers(-9, 10))), x));
             }
-        }
-        if (!integral) {
-            terms.push_back(r.m.prod(r.m.constant(1e9 + rng.uniform(0.0, 1.0)), big));
         }
         const int32_t row = r.m.sum(terms);
         r.rows.push_back(row);
@@ -1076,223 +1061,142 @@ Rows make_rows(int n_cols, int n_rows, int row_len, bool integral, uint64_t seed
     }
     r.m.minimize(r.m.sum({r.cols[0], r.cols[1]}));
     r.m.close();
-    if (!integral) {
-        r.m.var_mut(vid(big)).value = 1.0;
-        full_evaluate(r.m);
-    }
     return r;
-}
-
-double random_value(RNG& rng, bool integral) {
-    return integral ? static_cast<double>(rng.integers(-20, 21)) : rng.uniform(-20.0, 20.0);
-}
-
-void commit(Model& m, int32_t v, double value) {
-    const double old_value = m.var(v).value;
-    m.var_mut(v).value = value;
-    commit_scalar_move(m, v, old_value);
-}
-
-// |row - its terms summed exactly|, the latter in long double from the terms'
-// stored values (a term is a variable or a Neg/Prod, never itself drifted).
-double row_drift(const Model& m, int32_t row) {
-    long double exact = 0.0L;
-    for (const ChildRef& c : m.children(m.node(row))) {
-        exact += c.is_var ? m.var(c.id).value : m.node_values()[static_cast<size_t>(c.id)];
-    }
-    return static_cast<double>(std::fabs(static_cast<long double>(m.node_value(row)) - exact));
 }
 
 }  // namespace
 
-TEST_CASE("commit_scalar_move moves a row by its changed term, exactly on integral data",
-          "[dag][incremental_sum]") {
-    // The regression test for the cost: once a row has been re-summed, a commit
-    // must not re-sum it again until the period runs out. Red on the pre-#177
-    // walk, which re-summed every dirty Sum -- `incremental` stays 0 there. And
-    // on integral data every partial sum is exact, so the values are the
-    // re-sum's to the bit however many updates they carry.
-    Rows r = make_rows(40, 30, 25, /*integral=*/true, 5);
+TEST_CASE("commit_scalar_move updates integral rows by their changed terms", "[dag][exact_sum]") {
+    // The regression test: a committed move must not re-sum an integral row it
+    // touches once the row is known exact. Red on the pre-#177 walk, which
+    // re-summed every dirty Sum -- `incremental` stays 0 there.
+    IntegralRows r = make_integral_rows(40, 30, 25, 5);
     Model& m = r.m;
     for (const int32_t row : r.rows) {
-        REQUIRE(m.node(row).incremental_sum == 1);
+        REQUIRE(m.exact_sum_nodes()[static_cast<size_t>(row)] == 1);
     }
     RNG rng(11);
-    incremental_sum_counters() = IncrementalSumCounters{};
+    exact_sum_counters() = ExactSumCounters{};
     for (int step = 0; step < 3000; ++step) {
-        commit(m, vid(r.cols[static_cast<size_t>(rng.integers(0, 40))]), random_value(rng, true));
+        const int32_t v = vid(r.cols[static_cast<size_t>(rng.integers(0, 40))]);
+        const double old_value = m.var(v).value;
+        m.var_mut(v).value = static_cast<double>(rng.integers(-20, 21));
+        commit_scalar_move(m, v, old_value);
         if (step % 250 == 0) {
             require_matches_full_evaluate(m);
         }
     }
     require_matches_full_evaluate(m);
-    const IncrementalSumCounters counts = incremental_sum_counters();
-    CHECK(counts.incremental > 10 * counts.resummed);
+    const ExactSumCounters counts = exact_sum_counters();
+    // Each eligible Sum -- the rows and the objective -- is re-summed once, on
+    // its first touch after close()'s full pass (which leaves no Sum known
+    // exact); every later touch is an update.
+    REQUIRE(counts.resummed <= r.rows.size() + 1);
+    REQUIRE(counts.incremental > 10 * counts.resummed);
 }
 
-TEST_CASE("only a Sum with no Sum term and no repeated term is incremental",
-          "[dag][incremental_sum]") {
+TEST_CASE("commit_scalar_move falls back to the re-sum where it cannot be exact",
+          "[dag][exact_sum]") {
+    // Every value below is representable, and none may be updated by its
+    // change: the result must be the re-sum's bits whatever the values do.
     Model m;
     const int32_t a = m.int_var(-10, 10);
     const int32_t b = m.int_var(-10, 10);
+    const int32_t c = m.int_var(-10, 10);
     const int32_t f = m.float_var(-10.0, 10.0);
-    const int32_t plain = m.sum({a, m.neg(b), m.prod(m.constant(0.3), f), m.sin_expr(f)});
-    const int32_t nested = m.sum({plain, b});
+    const int32_t exact_row = m.sum({a, m.neg(b), m.prod(m.constant(3.0), c)});
+    const int32_t fractional_coef = m.sum({a, m.prod(m.constant(0.1), b), c});
+    const int32_t float_term = m.sum({a, f});
+    const int32_t nested = m.sum({exact_row, c});
     const int32_t repeated = m.sum({a, a, b});
-    for (const int32_t row : {plain, nested, repeated}) {
+    for (const int32_t row : {exact_row, fractional_coef, float_term, nested, repeated}) {
         m.add_constraint(m.leq(row, m.constant(0.0)));
     }
     m.minimize(m.sum({a, b}));
     m.close();
-    CHECK(m.node(plain).incremental_sum == 1);
-    CHECK(m.node(nested).incremental_sum == 0);
-    CHECK(m.node(repeated).incremental_sum == 0);
-}
 
-TEST_CASE("drift stays within the period's bound, and re-grounding removes it",
-          "[dag][incremental_sum]") {
-    // A big-M term keeps each row near 1e9, where one rounding is ~6e-8, and the
-    // fractional terms keep every update inexact. Without the periodic re-sum
-    // the error is a random walk over the whole run; with it, a row carries at
-    // most kIncrementalSumPeriod roundings of a value this size.
-    Rows r = make_rows(20, 8, 12, /*integral=*/false, 3);
-    Model& m = r.m;
-    // Every row stays in [2^29, 2^30), where one ulp is 2^-23 and one rounding at
-    // most half that; a term's own difference rounds at a far smaller scale. So
-    // a whole ulp per update is a safe per-update bound.
-    const double ulp = std::ldexp(1.0, -23);
-    const double bound = kIncrementalSumPeriod * ulp;
-    RNG rng(8);
-    double worst = 0.0;
-    for (int step = 0; step < 1600000; ++step) {
-        const int32_t v = vid(r.cols[static_cast<size_t>(rng.integers(0, 20))]);
-        commit(m, v, random_value(rng, false));
-        if (step % 64 == 0) {
-            for (const int32_t row : r.rows) {
-                REQUIRE(m.node_value(row) >= 536870912.0);  // 2^29
-                REQUIRE(m.node_value(row) < 1073741824.0);  // 2^30
-                worst = std::max(worst, row_drift(m, row));
-            }
-        }
+    SECTION("only the integral shape is eligible") {
+        const std::vector<uint8_t>& eligible = m.exact_sum_nodes();
+        CHECK(eligible[static_cast<size_t>(exact_row)] == 1);
+        CHECK(eligible[static_cast<size_t>(fractional_coef)] == 0);
+        CHECK(eligible[static_cast<size_t>(float_term)] == 0);
+        CHECK(eligible[static_cast<size_t>(nested)] == 0);    // a Sum term
+        CHECK(eligible[static_cast<size_t>(repeated)] == 0);  // a term named twice
     }
-    INFO("worst drift " << worst << " against a bound of " << bound);
-    CHECK(worst > 0.0);  // the data really does drift, or this proves nothing
-    CHECK(worst <= bound);
-    REQUIRE(reground_incremental_sums(m));
-    require_matches_full_evaluate(m);
-    CHECK_FALSE(reground_incremental_sums(m));  // nothing left to do
-}
 
-TEST_CASE("a probe on a drifted state: identity scores 0, and Rollback restores every bit",
-          "[dag][incremental_sum]") {
-    Rows r = make_rows(20, 8, 12, /*integral=*/false, 4);
-    Model& m = r.m;
-    RNG rng(2);
-    for (int step = 0; step < 2000; ++step) {
-        commit(m, vid(r.cols[static_cast<size_t>(rng.integers(0, 20))]), random_value(rng, false));
-    }
-    double drift = 0.0;
-    for (const int32_t row : r.rows) {
-        drift = std::max(drift, row_drift(m, row));
-    }
-    REQUIRE(drift > 0.0);  // a drifted state, which is the case that matters
-
-    ViolationManager vm(m);
-    const std::vector<double> before = m.node_values();
-    for (const int32_t x : r.cols) {
-        const int32_t v = vid(x);
-        // The value it already holds: nothing moves, so exactly 0. A probe that
-        // re-summed would compare the exact sum against the drifted one.
-        REQUIRE(vm.weighted_violation_delta(v, m.var(v).value) == 0.0);
-        (void)vm.weighted_violation_delta(v, random_value(rng, false));
-        // Re-evaluating on the way back would re-sum the probed rows, snapping
-        // their drift: the state would no longer be the one the caller had.
-        require_same_bits(m.node_values(), before);
-    }
-}
-
-TEST_CASE("every other writer interleaves with incremental commits consistently",
-          "[dag][incremental_sum]") {
-    // Plain deltas snap their cone, full passes snap everything, probes leave
-    // nothing behind. After a re-grounding, whatever the interleaving, the
-    // values are a full evaluation's.
-    Rows r = make_rows(30, 20, 18, /*integral=*/false, 9);
-    Model& m = r.m;
-    ViolationManager vm(m);
-    RNG rng(3);
-    for (int step = 0; step < 3000; ++step) {
-        const int32_t v = vid(r.cols[static_cast<size_t>(rng.integers(0, 30))]);
-        const double value = random_value(rng, false);
-        const int64_t what = rng.integers(0, 6);
-        if (what == 0) {
-            (void)vm.weighted_violation_delta(v, value);
-        } else if (what == 1) {
+    SECTION("values outside the exact regime take the re-sum, and back again") {
+        const int32_t ai = vid(a);
+        const int32_t ci = vid(c);
+        // 2^52 / 3 terms is the bound; 3 * 2^51 on the Prod term is above it, and
+        // 0.5 and inf are not integers. Each is followed by a return to a small
+        // integer, which must re-establish the exact state from a re-sum.
+        const std::vector<std::pair<int32_t, double>> moves = {
+            {ai, 4.0},  {ci, 2251799813685248.0},
+            {ci, 1.0},  {ai, 0.5},
+            {ai, -3.0}, {ai, 1e300},
+            {ai, 2.0},  {ci, std::numeric_limits<double>::infinity()},
+            {ci, -2.0}, {ai, 7.0}};
+        for (const auto& [v, value] : moves) {
+            const double old_value = m.var(v).value;
             m.var_mut(v).value = value;
-            delta_evaluate(m, &v, 1);
-        } else if (what == 2 && step % 50 == 0) {
-            full_evaluate(m);
-        } else {
-            commit(m, v, value);
-        }
-        if (step % 100 == 0) {
-            (void)reground_incremental_sums(m);
+            commit_scalar_move(m, v, old_value);
             require_matches_full_evaluate(m);
         }
     }
 }
 
-TEST_CASE("a model copy carries the drift record with the node values", "[dag][incremental_sum]") {
-    Rows r = make_rows(12, 6, 10, /*integral=*/false, 2);
-    RNG rng(6);
-    for (int step = 0; step < 200; ++step) {
-        commit(r.m, vid(r.cols[static_cast<size_t>(rng.integers(0, 12))]),
-               random_value(rng, false));
-    }
-    Model copy(r.m);
-    REQUIRE(reground_incremental_sums(copy));
-    require_matches_full_evaluate(copy);
-}
-
-TEST_CASE("a term going non-finite re-sums its Sum instead of differencing inf",
-          "[dag][incremental_sum]") {
-    // 1/y at y = 0 is +inf. Differenced, the row would become inf, then
-    // inf + (1 - inf) = NaN on the way back, and stay NaN until a re-grounding.
-    Model m;
-    const int32_t x = m.float_var(-5.0, 5.0);
-    const int32_t y = m.float_var(-5.0, 5.0);
-    const int32_t row = m.sum({x, m.div_expr(m.constant(1.0), y), m.prod(m.constant(0.3), x)});
-    m.add_constraint(m.leq(row, m.constant(4.0)));
-    m.minimize(m.sum({x, y}));
-    m.close();
-    REQUIRE(m.node(row).incremental_sum == 1);
-    commit(m, vid(y), 2.0);
-    commit(m, vid(x), 1.5);
-    commit(m, vid(y), 0.0);
-    REQUIRE(std::isinf(m.node_value(row)));
-    require_matches_full_evaluate(m);
-    ViolationManager vm(m);
-    const std::vector<double> before = m.node_values();
-    (void)vm.weighted_violation_delta(vid(y), 1.0);
-    require_same_bits(m.node_values(), before);
-    commit(m, vid(y), 1.0);
-    REQUIRE(std::isfinite(m.node_value(row)));
-    require_matches_full_evaluate(m);
-}
-
-TEST_CASE("a probe that never rolled back leaves nothing for a later Rollback to restore",
-          "[dag][incremental_sum]") {
-    // Only an exception out of a probe leaves one pending. Once the assignment
-    // has moved on, a Rollback with no Probe of its own is a Commit, as
-    // DeltaMode documents -- not a write-back of the abandoned probe's values.
-    Rows r = make_rows(10, 4, 6, /*integral=*/false, 1);
+TEST_CASE("exact Sums stay exact across probes, plain deltas and full passes", "[dag][exact_sum]") {
+    // Every other writer of node values interleaved with the incremental commit.
+    // The probe legs re-sum; if the committed value were anything but the exact
+    // sum, a probe's forward leg would disagree with it, and an identity move
+    // would not score exactly 0.
+    IntegralRows r = make_integral_rows(30, 20, 18, 9);
     Model& m = r.m;
-    const int32_t v = vid(r.cols[2]);
-    const double old_value = m.var(v).value;
-    m.var_mut(v).value = 3.0;
-    probe_scalar_move(m, v, old_value);  // abandoned: no Rollback
-    commit(m, v, -4.0);                  // the assignment moves on
-    m.var_mut(v).value = 1.0;
-    delta_evaluate(m, &v, 1, DeltaMode::Rollback);  // no Probe of its own
-    (void)reground_incremental_sums(m);
+    ViolationManager vm(m);
+    RNG rng(3);
+    for (int step = 0; step < 2000; ++step) {
+        const int32_t v = vid(r.cols[static_cast<size_t>(rng.integers(0, 30))]);
+        const auto value = static_cast<double>(rng.integers(-20, 21));
+        switch (rng.integers(0, 5)) {
+            case 0: {
+                const double before = m.var(v).value;
+                REQUIRE(vm.weighted_violation_delta(v, before) == 0.0);
+                (void)vm.weighted_violation_delta(v, value);
+                REQUIRE(m.var(v).value == before);
+                break;
+            }
+            case 1:
+                m.var_mut(v).value = value;
+                delta_evaluate(m, &v, 1);
+                break;
+            case 2:
+                if (step % 50 == 0) {
+                    full_evaluate(m);
+                }
+                break;
+            default: {
+                const double old_value = m.var(v).value;
+                m.var_mut(v).value = value;
+                commit_scalar_move(m, v, old_value);
+                break;
+            }
+        }
+        if (step % 100 == 0) {
+            require_matches_full_evaluate(m);
+        }
+    }
     require_matches_full_evaluate(m);
+}
+
+TEST_CASE("a model copy carries the exact state with the node values", "[dag][exact_sum]") {
+    IntegralRows r = make_integral_rows(12, 6, 10, 2);
+    const int32_t v = vid(r.cols[3]);
+    r.m.var_mut(v).value = 5.0;
+    commit_scalar_move(r.m, v, -20.0);  // re-sums, and establishes the exact state
+    Model copy(r.m);
+    exact_sum_counters() = ExactSumCounters{};
+    copy.var_mut(v).value = -1.0;
+    commit_scalar_move(copy, v, 5.0);
+    CHECK(exact_sum_counters().resummed == 0);
+    require_matches_full_evaluate(copy);
 }

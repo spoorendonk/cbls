@@ -1126,32 +1126,26 @@ TEST_CASE("the unweighted-violation accumulator matches a fresh recomputation",
     REQUIRE(std::abs(fj.unweighted_violation() - fresh) <= 1e-12 * std::max(1.0, fresh));
 }
 
-namespace {
-
-// A MIP-shaped model FJ cannot satisfy, so that every iteration commits.
-// Integral: integer coefficients over Bool/Int columns. Otherwise fractional
-// coefficients over Float columns plus a big-M term per row, so that the
-// incremental Sums really drift.
-Model make_mip_like(bool integral, std::vector<int32_t>& cols) {
+TEST_CASE("FJ's commits leave integral rows exactly as a full evaluation would",
+          "[fj][exact_sum]") {
+    // #177: update_var moves an integral row by its one changed term. The claim
+    // that makes that safe is that the node values are the re-sum's to the bit,
+    // so the trajectory, the violated-row bookkeeping and the closed-form scorer
+    // see what they always saw. Checked here after a real FJ run on a MIP-shaped
+    // model with rows no assignment satisfies, so every iteration commits.
     Model m;
     RNG gen(17);
-    cols.clear();
-    cols.reserve(61);
+    std::vector<int32_t> cols;
+    cols.reserve(60);
     for (int j = 0; j < 60; ++j) {
-        if (integral) {
-            cols.push_back(j % 3 == 0 ? m.int_var(-5, 5) : m.bool_var());
-        } else {
-            cols.push_back(m.float_var(-5.0, 5.0));
-        }
+        cols.push_back(j % 3 == 0 ? m.int_var(-5, 5) : m.bool_var());
     }
-    const int32_t big = m.float_var(1.0, 1.0);
     for (int i = 0; i < 40; ++i) {
         std::vector<int32_t> terms;
-        terms.reserve(21);
+        terms.reserve(20);
         for (int k = 0; k < 20; ++k) {
             const int32_t x = cols[static_cast<size_t>(((i * 11) + k) % 60)];
-            const double a =
-                integral ? static_cast<double>(gen.integers(-4, 5)) : gen.uniform(-4.0, 4.0);
+            const auto a = static_cast<double>(gen.integers(-4, 5));
             if (a == 1.0) {
                 terms.push_back(x);
             } else if (a == -1.0) {
@@ -1160,20 +1154,23 @@ Model make_mip_like(bool integral, std::vector<int32_t>& cols) {
                 terms.push_back(m.prod(m.constant(a), x));
             }
         }
-        if (!integral) {
-            terms.push_back(m.prod(m.constant(1e9), big));
-        }
         const int32_t row = m.sum(terms);
-        const auto rhs = static_cast<double>(gen.integers(-3, 4)) + (integral ? 0.0 : 1e9);
+        const auto rhs = static_cast<double>(gen.integers(-3, 4));
         m.add_constraint(i % 2 == 0 ? m.eq_expr(row, m.constant(rhs))
                                     : m.geq(row, m.constant(rhs)));
     }
     m.minimize(m.sum({cols[0], cols[1], cols[2]}));
     m.close();
-    return m;
-}
 
-void require_bits_of_full_evaluate(const Model& m) {
+    ViolationManager vm(m);
+    RNG rng(4);
+    GFJConfig cfg;
+    cfg.max_iterations = 5000;
+    exact_sum_counters() = ExactSumCounters{};
+    FeasibilityJump fj(m, vm, rng, cfg);
+    (void)fj.run();
+    CHECK(exact_sum_counters().incremental > 1000);
+
     Model fresh(m);
     full_evaluate(fresh);
     for (size_t i = 0; i < m.num_nodes(); ++i) {
@@ -1187,252 +1184,8 @@ void require_bits_of_full_evaluate(const Model& m) {
             FAIL("node " << i << " holds " << got << ", a full evaluation gives " << want);
         }
     }
-}
-
-}  // namespace
-
-TEST_CASE("FJ batches on integral rows commit incrementally and hand back exact values",
-          "[fj][incremental_sum]") {
-    // #177 moves a row by its one changed term. The claim that integral data
-    // keeps the re-summing engine's bits mid-batch is pinned at the DAG level
-    // ("commit_scalar_move moves a row by its changed term, exactly on integral
-    // data") and on real instances by the fixed-iteration comparison recorded on
-    // #177. This checks the FJ wiring: the commits really are incremental, and
-    // what a batch hands back is exact and probes to exactly 0 at identity.
-    std::vector<int32_t> cols;
-    Model m = make_mip_like(/*integral=*/true, cols);
-    ViolationManager vm(m);
-    RNG rng(4);
-    GFJConfig cfg;
-    cfg.max_iterations = 5000;
-    incremental_sum_counters() = IncrementalSumCounters{};
-    FeasibilityJump fj(m, vm, rng, cfg);
-    fj.begin(true);
-    for (int b = 0; b < 10; ++b) {
-        (void)fj.batch(500);
-    }
-    CHECK(incremental_sum_counters().incremental > 1000);
-    require_bits_of_full_evaluate(m);
+    // A move to the value a variable already holds changes nothing, exactly.
     for (const int32_t x : cols) {
         REQUIRE(vm.weighted_violation_delta(vid(x), m.var(vid(x)).value) == 0.0);
     }
-}
-
-TEST_CASE("an FJ batch hands back exact values and a V that agrees with them",
-          "[fj][incremental_sum]") {
-    // Inside a batch the fractional rows drift. Outside it nothing may: the
-    // search reads feasibility and the objective straight off the node values.
-    // So every batch ends by re-grounding, and by settling V, the unweighted
-    // total and the jump caches for each row the re-grounding moved.
-    std::vector<int32_t> cols;
-    Model m = make_mip_like(/*integral=*/false, cols);
-    ViolationManager vm(m);
-    RNG rng(4);
-    GFJConfig cfg;
-    FeasibilityJump fj(m, vm, rng, cfg);
-    fj.begin(true);
-    const auto& cids = m.constraint_ids();
-    for (int b = 0; b < 30; ++b) {
-        (void)fj.batch(500);
-        require_bits_of_full_evaluate(m);
-        double unweighted = 0.0;
-        for (size_t c = 0; c < cids.size(); ++c) {
-            const double residual = m.node_value(cids[c]);
-            const bool violated = !(residual <= 1e-9);
-            REQUIRE(fj.row_violated(static_cast<int32_t>(c)) == violated);
-            if (vm.weights[c] > 0.0 && violated && std::isfinite(residual) &&
-                static_cast<int32_t>(c) != m.objective_constraint_idx()) {
-                unweighted += residual;
-            }
-        }
-        CHECK(fj.unweighted_violation() == Catch::Approx(unweighted).epsilon(1e-9));
-    }
-}
-
-TEST_CASE("Novelty Jump hands back exact values and a V that agrees with them",
-          "[fj][incremental_sum]") {
-    // Its legs commit incrementally like update_var, so it ends with the same
-    // re-grounding as an FJ batch -- and re-reads its verdict after it.
-    std::vector<int32_t> cols;
-    Model m = make_mip_like(/*integral=*/false, cols);
-    ViolationManager vm(m);
-    RNG rng(9);
-    GFJConfig cfg;
-    FeasibilityJump fj(m, vm, rng, cfg);
-    fj.begin(true);
-    incremental_sum_counters() = IncrementalSumCounters{};
-    for (int b = 0; b < 10; ++b) {
-        const bool feasible = fj.apply_novelty_jump();
-        require_bits_of_full_evaluate(m);
-        const auto& cids = m.constraint_ids();
-        bool any_violated = false;
-        for (size_t c = 0; c < cids.size(); ++c) {
-            const bool violated = !(m.node_value(cids[c]) <= 1e-9);
-            REQUIRE(fj.row_violated(static_cast<int32_t>(c)) == violated);
-            any_violated = any_violated || (violated && vm.weights[c] > 0.0);
-        }
-        CHECK_FALSE((feasible && any_violated));
-    }
-    CHECK(incremental_sum_counters().incremental > 0);  // the legs really were incremental
-}
-
-namespace {
-
-// Gives the incremental Sum `sum` a recorded drift of `delta`, as a run of
-// inexact updates would, and moves the row above it to match -- without
-// re-summing anything. What a real run reaches only through many fractional
-// commits, set up directly so that a test can say which row drifts and by how
-// much.
-void inject_drift(Model& m, int32_t sum, int32_t row, double delta) {
-    m.set_node_value_unchecked(sum, m.node_value(sum) + delta);
-    m.set_node_value_unchecked(row,
-                               m.node_value(row) + delta);  // leq(sum, const): residual moves 1:1
-    IncrementalSumState& state = m.incremental_sums();
-    state.age[static_cast<size_t>(sum)] = 1 | IncrementalSumState::kListed;
-    state.drifted.push_back(sum);
-    ++state.live;
-}
-
-// r1: 0.25*x + w + 0*z <= rhs1, x fixed at 0.5, w free in [-1, 1] at 0.
-// r2: z >= 1, z free in [0, 1] at 0: violated, and FJ fixes it by moving z --
-//     a commit whose cone includes r1's Sum (through the 0*z term), which is
-//     how a row gets on FJ's touched list in a real run.
-struct DriftRows {
-    Model m;
-    int32_t s1 = -1;
-    int32_t r1_node = -1;
-    int32_t r1 = -1;  // row index
-    int32_t w = -1;
-};
-
-DriftRows make_drift_rows(double rhs1, bool w_free, bool r1_twice = false) {
-    DriftRows d;
-    Model& m = d.m;
-    const int32_t x = m.float_var(0.5, 0.5);
-    d.w = w_free ? m.float_var(-1.0, 1.0) : m.float_var(0.0, 0.0);
-    const int32_t z = m.float_var(0.0, 1.0);
-    d.s1 = m.sum({m.prod(m.constant(0.25), x), d.w, m.prod(m.constant(0.0), z)});
-    d.r1_node = m.leq(d.s1, m.constant(rhs1));
-    m.add_constraint(d.r1_node);
-    m.add_constraint(m.geq(z, m.constant(1.0)));
-    if (r1_twice) {
-        m.add_constraint(d.r1_node);  // row 2: the same node again
-    }
-    m.minimize(m.sum({z}));
-    m.close();
-    m.var_mut(vid(d.w)).value = 0.0;
-    full_evaluate(m);
-    d.r1 = 0;
-    REQUIRE(m.constraint_ids()[0] == d.r1_node);
-    REQUIRE(m.node(d.s1).incremental_sum == 1);
-    return d;
-}
-
-}  // namespace
-
-TEST_CASE("a row violated only by its Sum's drift is dropped from V, not bumped",
-          "[fj][incremental_sum]") {
-    // r1 holds at equality exactly (0.125 <= 0.125); drift puts it 2e-9 over,
-    // above FJ's 1e-9 tolerance. At the local minimum that follows, the
-    // re-grounding of V's rows must find it satisfied: no weight is raised on a
-    // row whose exact residual is within tolerance. Red without it -- the row is
-    // bumped at every iteration of the batch.
-    DriftRows d = make_drift_rows(0.125, /*w_free=*/false);
-    Model& m = d.m;
-    // r2 is satisfied from the start (z = 1), so no move is committed and r1's
-    // phantom is the only violation.
-    const auto z = static_cast<int32_t>(m.num_vars() - 1);
-    m.var_mut(z).value = 1.0;
-    full_evaluate(m);
-    ViolationManager vm(m);
-    RNG rng(1);
-    GFJConfig cfg;
-    FeasibilityJump fj(m, vm, rng, cfg);
-    fj.begin(false);
-    inject_drift(m, d.s1, d.r1_node, 2e-9);
-    fj.resync();
-    REQUIRE(fj.row_violated(d.r1));  // the phantom, as V sees it
-    CHECK(fj.batch(20));
-    CHECK(vm.weights[static_cast<size_t>(d.r1)] == 1.0);
-    CHECK_FALSE(fj.row_violated(d.r1));
-}
-
-TEST_CASE("a row satisfied only by drift is found at the end of the search, and fixed",
-          "[fj][incremental_sum]") {
-    // r1 is violated by 1.5e-9 exactly, but drift of -2e-9 hides it. FJ fixes r2
-    // and V is empty -- on drifted values. The exact check before "Feasible"
-    // re-grounds, finds r1, and puts w back in the scan set, so FJ moves w and
-    // fixes r1 with no weight ever bumped. Red if the re-grounding does not
-    // resettle r1's variables: w is then only found through a bump.
-    DriftRows d = make_drift_rows(0.125 - 1.5e-9, /*w_free=*/true);
-    Model& m = d.m;
-    ViolationManager vm(m);
-    RNG rng(1);
-    GFJConfig cfg;
-    FeasibilityJump fj(m, vm, rng, cfg);
-    fj.begin(false);
-    inject_drift(m, d.s1, d.r1_node, -2e-9);
-    fj.resync();
-    REQUIRE_FALSE(fj.row_violated(d.r1));  // hidden by the drift
-    CHECK(fj.batch(50));
-    CHECK(vm.weights[static_cast<size_t>(d.r1)] == 1.0);
-    CHECK(m.node_value(d.r1_node) <= 1e-9);
-}
-
-TEST_CASE("a batch that ends at its limit on drifted values does not report Feasible",
-          "[fj][incremental_sum]") {
-    // One iteration: FJ fixes r2 and the limit ends the batch with V empty. On
-    // exact values r1 is violated, so the batch has not found feasibility.
-    DriftRows d = make_drift_rows(0.125 - 1.5e-9, /*w_free=*/false);
-    Model& m = d.m;
-    ViolationManager vm(m);
-    RNG rng(1);
-    GFJConfig cfg;
-    FeasibilityJump fj(m, vm, rng, cfg);
-    fj.begin(false);
-    inject_drift(m, d.s1, d.r1_node, -2e-9);
-    fj.resync();
-    CHECK_FALSE(fj.batch(1));
-    CHECK(fj.row_violated(d.r1));
-}
-
-TEST_CASE("Novelty Jump does not report feasibility read off drifted values",
-          "[fj][incremental_sum]") {
-    // It fixes r2 by moving z, and V is empty on drifted values; r1 is violated
-    // exactly and nothing can fix it (w fixed), so there is no feasibility to
-    // report.
-    DriftRows d = make_drift_rows(0.125 - 1.5e-9, /*w_free=*/false);
-    Model& m = d.m;
-    ViolationManager vm(m);
-    RNG rng(1);
-    GFJConfig cfg;
-    FeasibilityJump fj(m, vm, rng, cfg);
-    fj.begin(false);
-    inject_drift(m, d.s1, d.r1_node, -2e-9);
-    fj.resync();
-    CHECK_FALSE(fj.apply_novelty_jump());
-    CHECK(fj.row_violated(d.r1));
-}
-
-TEST_CASE("a node that is two rows has both dropped from V when its drift is removed",
-          "[fj][incremental_sum]") {
-    // add_constraint does not deduplicate, so one node can be two rows, each
-    // with its own place in V. Both are phantoms; neither may be bumped.
-    DriftRows d = make_drift_rows(0.125, /*w_free=*/false, /*r1_twice=*/true);
-    Model& m = d.m;
-    const auto z = static_cast<int32_t>(m.num_vars() - 1);
-    m.var_mut(z).value = 1.0;
-    full_evaluate(m);
-    ViolationManager vm(m);
-    RNG rng(1);
-    GFJConfig cfg;
-    FeasibilityJump fj(m, vm, rng, cfg);
-    fj.begin(false);
-    inject_drift(m, d.s1, d.r1_node, 2e-9);
-    fj.resync();
-    REQUIRE(fj.row_violated(0));
-    REQUIRE(fj.row_violated(2));
-    CHECK(fj.batch(20));
-    CHECK(vm.weights[0] == 1.0);
-    CHECK(vm.weights[2] == 1.0);
 }

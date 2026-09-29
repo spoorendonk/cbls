@@ -182,12 +182,6 @@ struct ChildRef {
 struct ExprNode {
     int32_t id = -1;
     NodeOp op = NodeOp::Const;
-    /// 1 on a `Sum` that a delta walk given the changed variables' old values may
-    /// move by its terms' changes instead of re-summing (#177): no term is itself
-    /// a Sum, and no term appears twice. Set by `Model::close()`. It sits in what
-    /// was padding after `op`, so it costs no memory, and it is read from the node
-    /// the walk has already loaded, so it costs no cache miss either.
-    uint8_t incremental_sum = 0;
     double const_value = 0.0;
     uint32_t child_begin = 0;
     uint32_t child_count = 0;

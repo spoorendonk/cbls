@@ -11,14 +11,12 @@ namespace cbls {
 
 double full_evaluate(Model& model);
 
-/// What a `delta_evaluate` call means for a `CustomInvariant` (#166), and for
-/// the node values themselves (#177).
+/// What a `delta_evaluate` call means for a `CustomInvariant` (#166).
 ///
-/// A built-in op recomputes from the assignment in front of it under `Commit`
-/// and `Probe` alike. What differs is the way back: `Probe` stashes every dirty
-/// node's value, and the matching `Rollback` writes the stash back rather than
-/// re-evaluating, so the committed state -- including an incremental `Sum`'s
-/// drift, see `commit_scalar_move` -- comes back bit for bit.
+/// Built-in ops are identical under all three -- they recompute from the
+/// assignment in front of them, whatever the caller intends to do next -- so a
+/// model with no custom node evaluates the same way it always did whichever of
+/// these is passed. Only a custom node reads the mode.
 enum class DeltaMode : uint8_t {
     /// The assignment being evaluated is the new committed one. Each custom
     /// node in the dirty cone gets `delta()` then `commit()`. This is what an
@@ -26,17 +24,17 @@ enum class DeltaMode : uint8_t {
     /// mean -- and it is the default, so every call site that predates #166
     /// keeps the behaviour it had.
     Commit,
-    /// A counterfactual the caller WILL undo. Every node in the cone has its
-    /// value stashed for the matching `Rollback` call; each custom node gets
-    /// `delta()` and no `commit()`.
+    /// A counterfactual the caller WILL undo. Each custom node in the cone gets
+    /// `delta()`, and its previous node value is stashed for the matching
+    /// `Rollback` call. No `commit()`.
     Probe,
     /// The caller has put back the assignment the `Probe` was measured from.
-    /// The probe's stash is written back and nothing is re-evaluated; each
-    /// custom node with a probe pending also gets `rollback()`. With no probe
-    /// pending it is treated as `Commit`, which is the honest reading of a
-    /// caller that moved the assignment without probing first.
+    /// Each custom node with a probe pending gets `rollback()` and its stashed
+    /// value back, and is NOT re-evaluated; one without a pending probe is
+    /// treated as `Commit`, which is the honest reading of a caller that moved
+    /// the assignment without probing first.
     ///
-    /// Must follow its `Probe` with no other evaluation in between, or the node
+    /// Must follow a `Probe` over the same changed-variable set, or the node
     /// values it restores are not the ones the caller thinks they are.
     Rollback,
 };
@@ -56,55 +54,32 @@ class EditJournal;
 double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count,
                       DeltaMode mode = DeltaMode::Commit, const EditJournal* journal = nullptr);
 
-/// How many term updates an incremental `Sum` may carry before a Commit
-/// re-sums it (#177). The drift a Sum can hold is at most this many roundings,
-/// and a re-sum costs its whole length once per this many updates. Chosen by
-/// the sweep recorded on #177; a parameter, not a derived constant.
-constexpr int kIncrementalSumPeriod = 64;
-// IncrementalSumState::age counts in its low seven bits and climbs to
-// kIncrementalSumPeriod - 1.
-static_assert(kIncrementalSumPeriod >= 1 && kIncrementalSumPeriod <= 128,
-              "IncrementalSumState::age counts in seven bits");
-
-/// A `Commit` of one scalar variable whose previous value was `old_value` (the
-/// caller has already written the new one): `delta_evaluate(model, &var_id,
-/// 1)`, except that every `ExprNode::incremental_sum` Sum in the cone is moved
-/// by its terms' changes, O(1) per changed term, instead of re-summed over all
-/// of them (#177). The price is drift -- floating-point rounding of at most
-/// `kIncrementalSumPeriod` updates per Sum, and none on integral data -- which
-/// `reground_incremental_sums` removes. The rules and the consistency argument
-/// are at the top of the incremental-Sum section of `src/dag_ops.cpp`.
+/// `delta_evaluate(model, &var_id, 1)` -- a `Commit` of one scalar variable --
+/// for a caller that still knows the variable's previous value, which it has
+/// already overwritten with the new one (#177).
+///
+/// Leaves every node value bit-identical to what `delta_evaluate` would. What
+/// the old value buys is the cost: a `Sum` the model classified as integral
+/// (`Model::exact_sum_nodes`) and that currently holds its exact sum
+/// (`Model::sum_exact_state`) is moved by its terms' changes, O(1) per changed
+/// term, instead of being re-summed over all of them. On a MIP row with
+/// integral coefficients over Bool/Int columns that is the difference between
+/// O(|G_v|) and O(sum of |row| over G_v) per committed move. Where the values
+/// cannot be shown exact -- a fractional term, a term above 2^52 / (term count),
+/// a NaN or an infinity -- the Sum is re-summed as before, so the result is the
+/// re-sum's bits either way.
 double commit_scalar_move(Model& model, int32_t var_id, double old_value);
 
-/// The `Probe` counterpart: the same updates, applied from the committed values
-/// and stashed for the matching `delta_evaluate(..., DeltaMode::Rollback)`,
-/// which writes the stash back bit for bit. A probe of the value the variable
-/// already holds therefore changes no node value at all.
-double probe_scalar_move(Model& model, int32_t var_id, double old_value);
-
-/// Re-sums every incremental `Sum` that has drifted since the last call, and
-/// re-evaluates their cones. Returns whether there was anything to do. Cost:
-/// those cones, not the model. FeasibilityJump calls it at the end of every
-/// batch, which is what keeps drift inside a batch.
-bool reground_incremental_sums(Model& model);
-
-/// The same, for only the drifted Sums in the cones below `roots` (node ids),
-/// and what lies above those Sums. `rewritten` receives every node it
-/// re-evaluated, with the value the node held before, so that a caller keeping
-/// state derived from node values can settle what moved. FeasibilityJump calls
-/// it on the rows in V before a GLS weight bump, so that no row is bumped whose
-/// exact residual is within tolerance. Cost: those cones.
-bool reground_incremental_sums_below(Model& model, const std::vector<int32_t>& roots,
-                                     std::vector<std::pair<int32_t, double>>& rewritten);
-
-/// How often the dirty incremental `Sum`s were moved by their terms' changes
-/// rather than re-summed, on this thread, since the last reset. Diagnostics for
-/// tests and profiling (#177); nothing in the engine reads them.
-struct IncrementalSumCounters {
+/// How often the dirty `Sum`s of exact-sum eligibility (`Model::exact_sum_nodes`)
+/// were updated by their terms' changes rather than re-summed, on this thread,
+/// since the last `reset`. Diagnostics for tests and profiling (#177); nothing
+/// in the engine reads them. Counted on the eligible Sums only, so the
+/// re-summing path of every other node pays nothing for them.
+struct ExactSumCounters {
     uint64_t incremental = 0;
     uint64_t resummed = 0;
 };
-IncrementalSumCounters& incremental_sum_counters() noexcept;
+ExactSumCounters& exact_sum_counters() noexcept;
 
 // Convenience overloads
 inline double delta_evaluate(Model& model, const std::vector<int32_t>& changed_var_ids,
