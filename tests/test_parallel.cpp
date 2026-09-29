@@ -1926,14 +1926,18 @@ TEST_CASE("an adoption does not loosen a shared bound", "[parallel][coord][share
     // The re-grounding after an adoption derives the bound from the tighter of
     // the adopted point and the worker's own best -- both behind the peer here.
     // The peer's entry is a full-width, feasible state (every column at 10) whose
-    // submitted objective, 95, is far better than its true one on this model: the
-    // pool's G comes from the submitter, the re-grounding from this model's own
+    // submitted objective, 30, is far better than its true one on this model --
+    // and than anything this model reaches, so the worker's own best stays
+    // behind it too (at 95 the worker passes the peer early, and its own best
+    // alone would then keep the re-grounded bound under the cap). The pool's G
+    // comes from the submitter, the re-grounding from this model's own
     // evaluation, and the two disagree exactly where the cap matters. Drop the
     // shared cap from reground_objective_bound_after_adoption and the bound
     // sampled right after each adoption sits above it.
-    const double cap = bound_below(kPeerObjective);
+    constexpr double kFarPeer = 30.0;
+    const double cap = bound_below(kFarPeer);
     Model donor = cover_model();
-    Solution peer = peer_solution(kPeerObjective);
+    Solution peer = peer_solution(kFarPeer);
     peer.state = donor.copy_state();
     std::fill(peer.state.values.begin(), peer.state.values.end(), 10.0);
 
