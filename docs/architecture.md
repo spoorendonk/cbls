@@ -2610,7 +2610,7 @@ bit-identical to what it was before the parameter existed:
    finite objective `G` in an atomic, written under the mutex by `submit` and
    read without it. At each **batch boundary** a worker whose bound is looser
    than `G - eps(G)` -- the same `eps = 1e-3*(|obj|+1)` rule `record_best` uses
-   -- tightens to it, then `vm.invalidate_cache()` and `fj.resync()`. Without it
+   -- tightens to it, then `fj.resync()`. Without it
    a worker behind a peer kept searching for points the portfolio had already
    beaten until it stagnated long enough to adopt. The rules:
    - **never loosen within a solve.** The batch-boundary test is strict, and
