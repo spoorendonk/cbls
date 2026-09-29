@@ -84,10 +84,9 @@ struct RandomLinearModel {
 // a variable directly as a comparison child, a variable twice in one row, and
 // rows with a variable on BOTH sides. `integral` keeps every coefficient,
 // constant and domain integral, so the arithmetic is exact and scores must match
-// to the bit.
-// `objective_row` false leaves the objective row for the caller to add later.
-void build_random_linear(RandomLinearModel& r, uint64_t seed, bool integral,
-                         bool objective_row = true) {
+// to the bit. Closed, but without the objective row -- build_random_linear adds
+// it; a test that adds it later calls this.
+void build_random_linear_no_objective_row(RandomLinearModel& r, uint64_t seed, bool integral) {
     RNG rng(seed);
     Model& m = r.m;
     const int nv = 9;
@@ -164,9 +163,11 @@ void build_random_linear(RandomLinearModel& r, uint64_t seed, bool integral,
     }
     m.minimize(m.sum(obj_terms));
     m.close();
-    if (objective_row) {
-        m.add_objective_soft_constraint();  // obj <= bound, as solve() folds it in
-    }
+}
+
+void build_random_linear(RandomLinearModel& r, uint64_t seed, bool integral) {
+    build_random_linear_no_objective_row(r, seed, integral);
+    r.m.add_objective_soft_constraint();  // obj <= bound, as solve() folds it in
 }
 
 void randomise_assignment(Model& m, RNG& rng) {
@@ -680,7 +681,7 @@ TEST_CASE("slopes follow the G_v layout when the objective row is added (#176)",
     // read them -- and after resize_rows it must rebuild, not reuse, them.
     for (uint64_t seed = 501; seed <= 506; ++seed) {
         RandomLinearModel r;
-        build_random_linear(r, seed, /*integral=*/true, /*objective_row=*/false);
+        build_random_linear_no_objective_row(r, seed, /*integral=*/true);
         Model& m = r.m;
         LinearJumpScorer sc(m);
         mark_all_rows(m, sc);

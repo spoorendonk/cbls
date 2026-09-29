@@ -98,7 +98,6 @@ void LinearJumpScorer::reset_built_rows() {
     }
     built_.clear();
     slope_at_.reset();
-    slope_len_ = 0;
     cached_slopes_ = 0;
 }
 
@@ -169,24 +168,36 @@ const LinearJumpScorer::BuiltRow* LinearJumpScorer::build_row(int32_t ci) {
     if (built_.size() + kFirstBuilt > std::numeric_limits<uint32_t>::max()) {
         throw std::length_error("LinearJumpScorer: more than 2^32 - 2 built rows");
     }
-    if (!slope_at_) {
-        // calloc, not a zero-filled vector: a large block comes back as fresh
-        // zero pages the kernel maps on first touch, so the slots of rows never
-        // built cost address space only. At least one element, so that a model
-        // with no incidences still gets a non-null block.
-        slope_len_ = model_.num_var_constraint_incidences();
-        slope_at_.reset(
-            static_cast<double*>(std::calloc(std::max<size_t>(slope_len_, 1), sizeof(double))));
-        if (!slope_at_) {
-            slope_len_ = 0;
-            throw std::bad_alloc();
-        }
-    }
     row.flags = static_cast<uint8_t>((p.is_var ? kPIsVar : 0U) | (q.is_var ? kQIsVar : 0U) |
                                      (p_literal ? kPLiteral : 0U) | (q_literal ? kQLiteral : 0U) |
                                      (is_abs ? kAbs : 0U) |
                                      (nd.op == NodeOp::Lt || nd.op == NodeOp::Gt ? kStrict : 0U) |
                                      (newton_exact ? kNewtonExact : 0U));
+    write_slopes(ci);
+    cached_slopes_ += n;
+    slots_[static_cast<size_t>(ci)] = kFirstBuilt + static_cast<uint32_t>(built_.size());
+    built_.push_back(row);
+    return &built_.back();
+}
+
+double* LinearJumpScorer::slope_table() {
+    if (slope_at_) {
+        return slope_at_.get();
+    }
+    // calloc, not a zero-filled vector: a large block comes back as fresh
+    // zero pages the kernel maps on first touch, so the slots of rows never
+    // built cost address space only. At least one element, so that a model
+    // with no incidences still gets a non-null block.
+    const size_t len = std::max<size_t>(model_.num_var_constraint_incidences(), 1);
+    slope_at_.reset(static_cast<double*>(std::calloc(len, sizeof(double))));
+    if (!slope_at_) {
+        throw std::bad_alloc();
+    }
+    return slope_at_.get();
+}
+
+void LinearJumpScorer::write_slopes(int32_t ci) {
+    double* const slopes = slope_table();
     // Each nonzero slope into its variable's slot for this row. A zero one is
     // left as the +0.0 the block was zeroed to, which is what the per-row pool
     // this replaced reported for a variable it did not hold -- keeping a -0.0
@@ -202,13 +213,9 @@ const LinearJumpScorer::BuiltRow* LinearJumpScorer::build_row(int32_t ci) {
                                    " has a slope for variable " + std::to_string(e.first) +
                                    " but is not in its G_v");
         }
-        slope_at_[model_.constraints_of_var_offset(e.first) +
-                  static_cast<size_t>(it - gv.begin())] = e.second;
+        slopes[model_.constraints_of_var_offset(e.first) + static_cast<size_t>(it - gv.begin())] =
+            e.second;
     }
-    cached_slopes_ += n;
-    slots_[static_cast<size_t>(ci)] = kFirstBuilt + static_cast<uint32_t>(built_.size());
-    built_.push_back(row);
-    return &built_.back();
 }
 
 const LinearJumpScorer::BuiltRow* LinearJumpScorer::ready_row(int32_t ci) {
@@ -282,7 +289,7 @@ bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weight
             ok = false;
             break;
         }
-        const double r = slope_at_[base + k];  // row built above, so the array exists
+        const double r = slope_at_.get()[base + k];  // row built above, so the array exists
         if (r == 0.0) {
             // Cancelled, or through a zero constant factor, with finite sides: the
             // DAG re-evaluates this row to the value it has, so its difference is
@@ -348,7 +355,7 @@ bool LinearJumpScorer::residual_partial_at(int32_t var_id, size_t k, double& out
     if (built == nullptr || (built->flags & kNewtonExact) == 0) {
         return false;
     }
-    out = row_partial(*built, slope_at_[model_.constraints_of_var_offset(var_id) + k]);
+    out = row_partial(*built, slope_at_.get()[model_.constraints_of_var_offset(var_id) + k]);
     ++cached_partials_;
     return true;
 }

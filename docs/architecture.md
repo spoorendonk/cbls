@@ -895,8 +895,13 @@ Each candidate is scored with one `weighted_violation_delta` probe — or, when
 every weighted row of `G_v` is a comparison (`Leq`/`Geq`/`Lt`/`Gt`/`Eq`) whose
 two children are affine, in closed form by `LinearJumpScorer`
 (`include/cbls/linear_jump.h`): each such row has a constant slope
-`r = ∂(p − q)/∂v`, cached lazily per row from `compute_partials_sparse`, and the
-candidate costs `Σ_c w_c·(clamped(cmp(p + rΔ, q)) − clamped(old))` — O(|G_v|)
+`r = ∂(p − q)/∂v`, cached lazily per row from `compute_partials_sparse` into a
+table laid out parallel to `G_v` (a row's build writes each of its variables'
+slot, so `prepare` reads the k-th row's slope at a fixed position -- #176
+replaced a per-row binary search that was up to 49% of the runner's CPU on
+dense rows; GLS iterations in 20s at one thread went neos-860300 15,380 -> ~23,990,
+swath3 ~577k -> ~724k, cbs-cta ~690k -> ~820k, two runs per arm, `896b683` ->
+`6198ca0`), and the candidate costs `Σ_c w_c·(clamped(cmp(p + rΔ, q)) − clamped(old))` — O(|G_v|)
 instead of two `delta_evaluate`s over every row in the column. Same candidates,
 same first-seen rule, same per-row differencing (#100); the scores agree with
 the probe to rounding, not to the bit -- so the chosen jump is guaranteed the
@@ -2532,14 +2537,20 @@ What remains per worker is genuinely per-worker: the variables whole (104 B x 71
 snapshots (~23 MB each — a `vector<vector<int32_t>>` sized `num_vars` is 17 MB of
 empty headers alone), FJ's per-variable and per-constraint tables,
 `ViolationManager`'s two per-constraint vectors, FJ's `LinearJumpScorer` (4 B
-per row, plus 20 B and 12 B per nonzero for every row it has built -- the slopes
-are structure, but each worker builds its own), and `dag_ops.cpp`'s
+per row, 12 B per row it has built, and a slope table of 8 B per `G_v`
+incidence, `calloc`'d on the first build so only the pages the built rows'
+columns land on are resident -- the slopes are structure, but each worker builds
+its own), and `dag_ops.cpp`'s
 `thread_local` adjoint scratch (~44 MB here), which that scorer's slope build
 allocates on a pure MIP too, not only once the Newton paths run. The scorer and
 the scratch together moved kasavu's peak RSS (30s, Release, 12-core box) from
 820 MB to 923 MB at one worker and from 3.16 to 3.93 GiB at eight -- about
 +95 MB per worker, nearly all of it the scratch and the built slopes -- measured
-at `53e0587` against `cf9da09`; the table above predates them. The shared pool's
+at `53e0587` against `cf9da09`; the table above predates them. #176 replaced
+the scorer's per-row pool (12 B per built nonzero, searched by binary search) with
+the `G_v`-parallel table and left the footprint where it was: kasavu at 20s,
+one worker, 902.0 -> 902.7 MiB (`896b683` -> `6198ca0`), eight workers 3.75 ->
+3.69 GiB, one run each, serial on an idle 12-core box. The shared pool's
 `max(10, 2N)` `Solution`s grow with N too. So the criterion to hold this to is
 "1-worker + N x a measured per-worker constant", not "1-worker + a small
 constant" — and treat that constant as a **floor**: its largest term scales with

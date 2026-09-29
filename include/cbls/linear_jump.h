@@ -180,6 +180,10 @@ private:
     [[nodiscard]] double row_partial(const BuiltRow& row, double r) const;
     // Every built row back to pending and the slope array released.
     void reset_built_rows();
+    // The slope array, allocated on first use.
+    double* slope_table();
+    // Row ci's nonzero slopes (in merged_) into its variables' slots.
+    void write_slopes(int32_t ci);
 
     struct FreeDeleter {
         void operator()(double* p) const;
@@ -191,9 +195,8 @@ private:
     // Parallel to the model's flat G_v incidence array: slope_at_[
     // constraints_of_var_offset(v) + k] is d(residual of row G_v[k])/dv, once that
     // row is built (0 until then, and for a zero or cancelled slope). calloc'd,
-    // hence the deleter; null until the first build. slope_len_ is its length.
-    std::unique_ptr<double[], FreeDeleter> slope_at_;
-    size_t slope_len_ = 0;
+    // hence the deleter; null until the first build.
+    std::unique_ptr<double, FreeDeleter> slope_at_;
     size_t cached_slopes_ = 0;
     std::vector<Term> terms_;
     // build_row's scratch, kept so a build allocates only the row it keeps.
