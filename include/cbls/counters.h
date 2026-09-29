@@ -136,6 +136,36 @@ struct SearchCounters {
     /// succeeded has run one solve, not one solve and a restart.
     int64_t portfolio_restarts = 0;
 
+    /// Engagement of the shared objective bound (#179). All four are 0 for a
+    /// single `cbls::solve()`, which has no pool and so no global best to be
+    /// behind; under `ParallelSearch` they are summed over workers.
+    ///
+    /// Filled in BOTH arms of the A/B -- `ParallelConfig::share_objective_bound`
+    /// on or off -- because the control arm is where the opportunity is
+    /// measured: the global best is READ either way, and reading it is an atomic
+    /// load that nothing branches on unless sharing is enabled.
+    ///
+    /// Times the global best, rather than the worker's own objective, set its
+    /// bound: at a batch boundary where the bound was looser, or capping the
+    /// bound of an own-best recorded behind the global one (which would otherwise
+    /// have loosened it). Always 0 with sharing off; nonzero is the mechanism
+    /// firing.
+    int64_t shared_bound_tightenings = 0;
+    /// New own-bests recorded while the portfolio already held a strictly better
+    /// feasible objective -- the "worker found something a peer had beaten"
+    /// event. Nonzero in both arms: sharing changes where the bound sits, not
+    /// which of the worker's own points count as its incumbent.
+    int64_t own_best_behind_global = 0;
+    /// Batches that RAN with this worker's bound looser than the global best's.
+    /// With sharing on this stays near 0 -- the bound is tightened at the batch
+    /// boundary that would otherwise start one -- so it is the control arm's
+    /// measure of time spent searching for points a peer had already beaten.
+    int64_t bound_behind_global_batches = 0;
+    /// The wall seconds those batches took. Same gate as `inner_solver_seconds`:
+    /// 0.0 on a run with no wall-clock budget, where the batch count above is the
+    /// whole answer.
+    double bound_behind_global_seconds = 0.0;
+
     /// Add `other` into this, as `ParallelSearch` sums `perturbations`: every
     /// scalar adds, and `by_generator` merges by NAME (an entry whose name is
     /// already present adds into it, a new name is appended). Used in both

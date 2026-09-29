@@ -711,7 +711,12 @@ NB_MODULE(_cbls_core, m) {
         // 0.0 on a run with no wall-clock budget, by design -- see
         // include/cbls/counters.h. The call count above is always filled.
         .def_ro("inner_solver_seconds", &SearchCounters::inner_solver_seconds)
-        .def_ro("portfolio_restarts", &SearchCounters::portfolio_restarts);
+        .def_ro("portfolio_restarts", &SearchCounters::portfolio_restarts)
+        // The shared objective bound's engagement (#179); 0 on a single solve.
+        .def_ro("shared_bound_tightenings", &SearchCounters::shared_bound_tightenings)
+        .def_ro("own_best_behind_global", &SearchCounters::own_best_behind_global)
+        .def_ro("bound_behind_global_batches", &SearchCounters::bound_behind_global_batches)
+        .def_ro("bound_behind_global_seconds", &SearchCounters::bound_behind_global_seconds);
 
     // One portfolio worker that did not complete (#170). Registered before
     // SearchResult, whose `worker_failures` converts to a list of these.
@@ -1263,7 +1268,9 @@ NB_MODULE(_cbls_core, m) {
         .def("submit", &SolutionPool::submit)
         .def("best", &SolutionPool::best)
         .def("top_k", &SolutionPool::top_k)
-        .def("size", &SolutionPool::size);
+        .def("size", &SolutionPool::size)
+        // #179's global best: finite feasible submissions only, +inf when none.
+        .def("best_feasible_objective", &SolutionPool::best_feasible_objective);
 
     // ParallelConfig
     nb::class_<ParallelConfig>(m, "ParallelConfig")
@@ -1271,6 +1278,9 @@ NB_MODULE(_cbls_core, m) {
         .def_rw("n_threads", &ParallelConfig::n_threads)
         // 0 = auto (max(10, 2 * workers that run); see include/cbls/pool.h.
         .def_rw("pool_capacity", &ParallelConfig::pool_capacity)
+        // #179: tighten every worker's objective bound to the portfolio's best at
+        // each batch boundary. False is the A/B control arm.
+        .def_rw("share_objective_bound", &ParallelConfig::share_objective_bound)
         // Same non-owning-view rule, and the same keep_alive, as
         // SearchConfig.stop below. OR-ed with that one rather than replacing it.
         .def_prop_rw(

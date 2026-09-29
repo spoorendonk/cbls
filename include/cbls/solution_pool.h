@@ -127,9 +127,38 @@ public:
     std::optional<Solution> get_restart_point(RNG& rng) const;
     size_t size() const;
 
+    /// The best FINITE objective of any solution ever submitted as feasible, or
+    /// +inf when there is none (#179). What a worker tightens its objective bound
+    /// towards at a batch boundary; see `SearchCoordination::share_objective_bound`.
+    ///
+    /// Lock-free: written under the mutex by `submit`, read without it. Relaxed
+    /// ordering is enough, because the value guards no data -- a reader wants a
+    /// number, never the state behind it -- and the only cost of reading it a
+    /// batch late is one batch spent under a looser bound.
+    ///
+    /// Monotone non-increasing, and NOT the same thing as `best()->objective`,
+    /// which can be an infeasible entry's when nothing feasible was submitted:
+    ///  - only `feasible` submissions count. The pool also receives the
+    ///    closest-approach states of runs that never reached feasibility, whose
+    ///    objective is typically BETTER than any feasible one; a bound derived
+    ///    from one would be unreachable.
+    ///  - only finite objectives count. #100's witness is shared as +inf, and
+    ///    `bound = objective - eps` is not defined on it.
+    ///
+    /// The objective is the SUBMITTER's: nothing re-evaluates it on the reader's
+    /// model, unlike an adoption, which does. For the portfolio's own workers the
+    /// two are the same model by construction; a factory that hands out different
+    /// models gets a bound computed on the other one, which misdirects the
+    /// objective row's pressure but cannot corrupt an incumbent -- a worker still
+    /// records only points its own model found feasible.
+    [[nodiscard]] double best_feasible_objective() const {
+        return best_feasible_objective_.load(std::memory_order_relaxed);
+    }
+
 private:
     int capacity_;
     std::vector<Solution> solutions_;
+    std::atomic<double> best_feasible_objective_{std::numeric_limits<double>::infinity()};
     mutable std::mutex mutex_;
 };
 
@@ -147,6 +176,15 @@ struct SearchCoordination {
     /// -- so the rest stop within a batch instead of running the clock out on a
     /// question already answered.
     std::atomic<bool>* stop = nullptr;
+    /// Whether a worker tightens its objective bound to the portfolio's global
+    /// best at each batch boundary (#179). Read only when `pool` is set -- the
+    /// global best lives there -- so it cannot touch a single-threaded solve.
+    ///
+    /// False is the A/B control arm, and is otherwise the pre-#179 portfolio: a
+    /// worker's bound then moved only on its own incumbents and on an adoption.
+    /// The engagement counters on `SearchCounters` are filled in BOTH arms, so the
+    /// control measures the opportunity this mechanism takes.
+    bool share_objective_bound = true;
 };
 
 }  // namespace cbls

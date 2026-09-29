@@ -95,6 +95,12 @@ struct Args {
     // implementation gap. Recorded per result, and a config key in the scorer,
     // so a table cannot mix the two.
     int threads = 1;
+    // #179's shared objective bound, on by default like the engine. Off is the
+    // A/B control arm (the pre-#179 portfolio), so it is recorded per result and
+    // is a config key in the scorer: a table cannot mix the two arms. Meaningless
+    // at --threads 1, which has no pool, but recorded there too so every row
+    // carries the same keys.
+    bool share_objective_bound = true;
     // Where to write the solution vector of a feasible run, for independent
     // verification against the original instance file (#138). Empty means "do
     // not write one" -- the driver passes it, a bare invocation need not.
@@ -109,6 +115,7 @@ void print_usage() {
         "                    [--inf-clamp B] [--no-propagate-bounds]\n"
         "                    [--max-propagation-passes N]\n"
         "                    [--no-compound-moves] [--threads N]\n"
+        "                    [--no-share-bound]\n"
         "                    [--solution-dir DIR]\n"
         "                    [--commit SHA]\n");
 }
@@ -184,6 +191,10 @@ Args parse_args(int argc, char** argv) {
             a.compound_moves = true;
         } else if (s == "--no-compound-moves") {
             a.compound_moves = false;
+        } else if (s == "--share-bound") {
+            a.share_objective_bound = true;
+        } else if (s == "--no-share-bound") {
+            a.share_objective_bound = false;
         } else if (c.value_flag("--threads", v)) {
             a.threads = parse_thread_count(v);
         } else if (c.value_flag("--solution-dir", v)) {
@@ -393,6 +404,7 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     j["propagate_bounds"] = args.propagate_bounds;
     j["max_propagation_passes"] = args.max_propagation_passes;
     j["threads"] = args.threads;
+    j["share_objective_bound"] = args.share_objective_bound;
     j["commit_sha"] = args.commit_sha;
 
     // Write-then-rename: a job killed mid-write must leave either the previous
@@ -544,6 +556,7 @@ cbls::SearchResult solve_portfolio(const Args& args, cbls::MpsToModelResult& bui
     };
     cbls::ParallelConfig par_config;
     par_config.n_threads = args.threads;
+    par_config.share_objective_bound = args.share_objective_bound;
     cbls::ParallelSearch ps(args.threads);
     // The FACTORY overload, deliberately, not the master one: the replicas are
     // pre-built so that their cost lands in `setup_seconds` rather than in the
@@ -795,6 +808,15 @@ int run_benchmark(int argc, char** argv) {
         {"perturbations", result.perturbations},
         {"lns_repairs", result.lns_repairs},
         {"lns_repairs_accepted", result.lns_repairs_accepted},
+        // The shared objective bound's engagement (#179), summed over workers,
+        // so a null A/B result can be told apart from a mechanism that never
+        // fired. All zero at --threads 1. Published in both arms: with sharing
+        // off, the `bound_behind_global_*` pair is the opportunity it would take.
+        {"portfolio_restarts", result.counters.portfolio_restarts},
+        {"shared_bound_tightenings", result.counters.shared_bound_tightenings},
+        {"own_best_behind_global", result.counters.own_best_behind_global},
+        {"bound_behind_global_batches", result.counters.bound_behind_global_batches},
+        {"bound_behind_global_seconds", result.counters.bound_behind_global_seconds},
         // NaN when the run never reached feasibility, which JSON cannot carry --
         // null says "not recorded" rather than inventing a zero that reads as
         // "arrived instantly".

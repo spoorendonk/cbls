@@ -29,6 +29,10 @@ void SearchCounters::merge(const SearchCounters& other) {
     inner_solver_calls += other.inner_solver_calls;
     inner_solver_seconds += other.inner_solver_seconds;
     portfolio_restarts += other.portfolio_restarts;
+    shared_bound_tightenings += other.shared_bound_tightenings;
+    own_best_behind_global += other.own_best_behind_global;
+    bound_behind_global_batches += other.bound_behind_global_batches;
+    bound_behind_global_seconds += other.bound_behind_global_seconds;
 
     // Positionally when the two describe the SAME generator set, by name
     // otherwise.

@@ -119,6 +119,7 @@ MAX_WORKER_LOSS_ATTEMPTS = 2
 CONFIG_KEYS = (
     "seed",
     "threads",
+    "share_objective_bound",
     "feasibility_tolerance",
     "compound_moves",
     "inf_clamp",

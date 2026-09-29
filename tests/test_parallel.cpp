@@ -236,6 +236,11 @@ TEST_CASE("a stalled search adopts a peer's solution from the pool", "[parallel]
 
     SearchCoordination coord;
     coord.pool = &pool;
+    // Adoption in isolation. With the shared bound on, the gift's objective
+    // tightens the bound from the first batch (#179), which moves the whole
+    // trajectory and with it the parity-dependent probe latch asserted below;
+    // that mechanism has its own tests further down.
+    coord.share_objective_bound = false;
 
     Model m = build();
     const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/3, true, nullptr, nullptr, 3,
@@ -503,6 +508,11 @@ TEST_CASE("an LNS-due kick stands adoption down entirely", "[parallel][coord]") 
     pool.submit(gift);
     SearchCoordination coord;
     coord.pool = &pool;
+    // Off, because the claim is bit-identity with the pool-less run: the shared
+    // bound (#179) would tighten to the gift's objective at the first batch
+    // boundary without adoption ever being consulted, which is a different
+    // mechanism from the one this pins.
+    coord.share_objective_bound = false;
 
     LNS lns_b(0.3);
     Model b = quadratic_model();
@@ -1453,4 +1463,342 @@ TEST_CASE("a portfolio cancelled before it starts still accounts for its workers
     REQUIRE(r.workers_launched == kThreads);
     REQUIRE(r.workers_completed == kThreads);
     REQUIRE(r.worker_failures.empty());
+}
+
+// ---------------------------------------------------------------------------
+// The shared objective bound (#179)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The bound a feasible objective earns; search.cpp's objective_bound_below.
+double bound_below(double obj) {
+    return obj - (1e-3 * (std::abs(obj) + 1.0));
+}
+
+// A small covering MIP with a LINEAR objective: 40 integer columns in [0, 10],
+// ten rows `sum a_ij x_j >= 60` with a_ij in {0..3}, minimise `sum c_j x_j` with
+// c_j in {1..9}. Coefficients from a fixed LCG, so the model is the same on
+// every platform.
+//
+// Linear on purpose. The balanced sum-of-squares models above are a trap for
+// this mechanism specifically: there, raising a column by one costs the
+// objective row exactly what it saves the covering row, so once a shared bound
+// leaves both rows violated FJ sits on an exact tie that bumping both weights
+// can never break, and the worker stops moving. That is a property of the
+// unit-coefficient model, not of the bound; it does not arise here.
+//
+// Iteration-budgeted, the single-threaded search reaches 95 at seed 5 on this
+// model, from a first incumbent near 177.
+Model cover_model() {
+    constexpr int kCols = 40;
+    constexpr int kRows = 10;
+    uint32_t state = 12345;
+    auto draw = [&state](int k) {
+        state = (state * 1664525U) + 1013904223U;
+        return static_cast<int>((state >> 8U) % static_cast<uint32_t>(k));
+    };
+    Model m;
+    std::vector<int32_t> xs;
+    xs.reserve(kCols);
+    for (int j = 0; j < kCols; ++j) {
+        xs.push_back(m.int_var(0, 10));
+    }
+    for (int i = 0; i < kRows; ++i) {
+        std::vector<int32_t> row{m.constant(60.0)};
+        for (int j = 0; j < kCols; ++j) {
+            const int a = draw(4);
+            if (a != 0) {
+                row.push_back(m.prod(m.constant(-static_cast<double>(a)), xs[j]));
+            }
+        }
+        m.add_constraint(m.sum(row));  // 60 - sum a_ij x_j <= 0
+    }
+    std::vector<int32_t> cost;
+    cost.reserve(kCols);
+    for (int j = 0; j < kCols; ++j) {
+        cost.push_back(m.prod(m.constant(static_cast<double>(1 + draw(9))), xs[j]));
+    }
+    m.minimize(m.sum(cost));
+    m.close();
+    return m;
+}
+
+// A peer's submission, by objective. No adoptable state -- an empty one, which
+// adopt_from_pool's width guard refuses -- so the pool can reach the bound only
+// through the mechanism under test, never through a restart onto the point.
+Solution peer_solution(double objective) {
+    Solution s;
+    s.objective = objective;
+    s.feasible = true;
+    s.violation = 0.0;
+    return s;
+}
+
+// A peer, played by the tracer: after batch `submit_after` it submits `gift`,
+// exactly as a portfolio worker's record_best would. Every batch_end also
+// samples the search's live objective bound. batch_end fires after
+// record_best, so sample i is the bound batch i + 1 starts from, before any
+// shared tightening at that boundary.
+class PeerAtBatch : public Tracer {
+public:
+    PeerAtBatch(const Model& model, SolutionPool& pool, Solution gift, size_t submit_after)
+        : model_(model), pool_(pool), gift_(std::move(gift)), submit_after_(submit_after) {}
+
+    void batch_end(BatchKind /*kind*/, int64_t /*iterations*/, bool /*improved*/) override {
+        bounds.push_back(model_.objective_bound());
+        if (bounds.size() == submit_after_) {
+            pool_.submit(gift_);
+        }
+    }
+
+    std::vector<double> bounds;
+
+private:
+    const Model& model_;
+    SolutionPool& pool_;
+    Solution gift_;
+    size_t submit_after_;
+};
+
+struct SharedBoundRun {
+    SearchResult result;
+    std::vector<double> bounds;
+};
+
+constexpr double kPeerObjective = 95.0;
+
+// Capacity one: the peer's entry, being the best, is the only thing a draw can
+// return, and its width is refused -- so every full-period kick falls through
+// to an ordinary one.
+SharedBoundRun run_with_peer(bool share) {
+    SolutionPool pool(1);
+    SearchCoordination coord;
+    coord.pool = &pool;
+    coord.share_objective_bound = share;
+
+    Model m = cover_model();
+    PeerAtBatch peer(m, pool, peer_solution(kPeerObjective), /*submit_after=*/1);
+    SearchConfig config;
+    config.max_iterations = 20000;
+    config.batch_iterations = 100;
+    config.tracer = &peer;
+    SharedBoundRun run;
+    run.result = solve(m, /*time_limit=*/0.0, /*seed=*/5, true, nullptr, nullptr, 3, nullptr,
+                       config, &coord);
+    run.bounds = peer.bounds;
+    return run;
+}
+
+// Plays a peer from INSIDE record_best's window: polish_and_record calls
+// record_best, then the hook, then record_best again. On its first call this
+// submits the peer's objective and then makes a genuine improvement -- drops one
+// unit of the first column it can without leaving the feasible region -- so the
+// second record_best records an own best that is still WORSE than the peer's.
+// That is the event whose bound must not loosen the shared one.
+class PeerThenImprove : public InnerSolverHook {
+public:
+    PeerThenImprove(SolutionPool& pool, double peer_objective)
+        : pool_(pool), peer_objective_(peer_objective) {}
+
+    void solve(Model& model, ViolationManager& /*vm*/,
+               const std::vector<int32_t>& /*last_changed_vars*/) override {
+        if (!submitted_) {
+            pool_.submit(peer_solution(peer_objective_));
+            submitted_ = true;
+        }
+        for (int32_t v = 0; v < static_cast<int32_t>(model.num_vars()); ++v) {
+            const double before = model.var(v).value;
+            if (before < 1.0) {
+                continue;
+            }
+            model.var_mut(v).value = before - 1.0;
+            full_evaluate(model);
+            if (real_rows_hold(model)) {
+                return;
+            }
+            model.var_mut(v).value = before;
+            full_evaluate(model);
+        }
+    }
+
+private:
+    static bool real_rows_hold(const Model& model) {
+        const auto& cids = model.constraint_ids();
+        for (size_t c = 0; c < cids.size(); ++c) {
+            if (static_cast<int32_t>(c) != model.objective_constraint_idx() &&
+                model.node_value(cids[c]) > 1e-9) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    SolutionPool& pool_;
+    double peer_objective_;
+    bool submitted_ = false;
+};
+
+}  // namespace
+
+TEST_CASE("a worker's bound tightens after a peer submits a better solution",
+          "[parallel][coord][shared_bound]") {
+    const double cap = bound_below(kPeerObjective);
+    const SharedBoundRun on = run_with_peer(/*share=*/true);
+    REQUIRE(on.result.feasible);
+    REQUIRE(on.bounds.size() > 5);
+    // Before the peer, the worker's own first incumbent set a looser bound: the
+    // peer really was ahead of it.
+    REQUIRE(on.bounds[0] > cap);
+    // From the batch after the submit onward the bound sits at or under the cap
+    // the peer's objective earns, and it never steps back up.
+    for (size_t i = 1; i < on.bounds.size(); ++i) {
+        INFO("after batch " << i + 1 << ": bound " << on.bounds[i] << ", cap " << cap
+                            << ", previous " << on.bounds[i - 1]);
+        REQUIRE(on.bounds[i] <= cap);
+        if (i > 1) {
+            REQUIRE(on.bounds[i] <= on.bounds[i - 1]);
+        }
+    }
+    const SearchCounters& c = on.result.counters;
+    REQUIRE(c.shared_bound_tightenings > 0);
+    // Nothing ran behind: the gap was closed at the boundary it opened on.
+    REQUIRE(c.bound_behind_global_batches == 0);
+    REQUIRE(c.bound_behind_global_seconds == 0.0);
+}
+
+TEST_CASE("with sharing off a worker runs behind the global bound",
+          "[parallel][coord][shared_bound]") {
+    // The control arm, and the switch the A/B rests on: same run, sharing off.
+    // The bound follows the worker's own incumbents alone, so right after the
+    // submit it is still above the peer's cap, and the engagement counters
+    // measure the opportunity the mechanism would have taken.
+    const double cap = bound_below(kPeerObjective);
+    const SharedBoundRun off = run_with_peer(/*share=*/false);
+    REQUIRE(off.result.feasible);
+    REQUIRE(off.bounds.size() > 2);
+    REQUIRE(off.bounds[1] > cap);
+    const SearchCounters& c = off.result.counters;
+    REQUIRE(c.shared_bound_tightenings == 0);
+    REQUIRE(c.own_best_behind_global > 0);
+    REQUIRE(c.bound_behind_global_batches > 0);
+    // Clockless run: the seconds are gated off, like inner_solver_seconds.
+    REQUIRE(c.bound_behind_global_seconds == 0.0);
+}
+
+TEST_CASE("a shared bound is never loosened by the worker's own worse incumbent",
+          "[parallel][coord][shared_bound]") {
+    // record_best derives `obj - eps` from each new OWN best. The peer's
+    // objective lands between the two record_best calls of the first feasible
+    // batch, and the hook's improvement is still worse than it, so the second
+    // call records an own best behind the global one. Without the shared cap in
+    // record_best that call sets the bound from its own, worse objective, and
+    // the first sample below is above the cap.
+    const double cap = bound_below(kPeerObjective);
+    SolutionPool pool(1);
+    SearchCoordination coord;
+    coord.pool = &pool;
+    PeerThenImprove hook(pool, kPeerObjective);
+    Model m = cover_model();
+    PeerAtBatch sampler(m, pool, peer_solution(kPeerObjective),
+                        /*submit_after=*/0);  // samples only; the hook is the peer
+    SearchConfig config;
+    config.max_iterations = 20000;
+    config.batch_iterations = 100;
+    config.tracer = &sampler;
+    const SearchResult r =
+        solve(m, /*time_limit=*/0.0, /*seed=*/5, true, &hook, nullptr, 3, nullptr, config, &coord);
+    REQUIRE(r.feasible);
+    // The event happened -- otherwise this proves nothing.
+    REQUIRE(r.counters.own_best_behind_global > 0);
+    // Every sample from the first feasible batch on: the bound never sits above
+    // the cap, and never steps back up.
+    size_t first = 0;
+    while (first < sampler.bounds.size() && !std::isfinite(sampler.bounds[first])) {
+        ++first;
+    }
+    REQUIRE(first < sampler.bounds.size());
+    for (size_t i = first; i < sampler.bounds.size(); ++i) {
+        INFO("after batch " << i + 1 << ": bound " << sampler.bounds[i] << ", cap " << cap);
+        REQUIRE(sampler.bounds[i] <= cap);
+        if (i > first) {
+            REQUIRE(sampler.bounds[i] <= sampler.bounds[i - 1]);
+        }
+    }
+}
+
+TEST_CASE("a lone worker's own incumbents leave its trajectory unchanged",
+          "[parallel][coord][shared_bound]") {
+    // With only this worker submitting, the global best IS its own best, so the
+    // shared cap never binds and the sync never fires: sharing on and off must be
+    // bit-identical. Together with "a null SearchCoordination leaves the search
+    // bit-identical" above, this is what keeps --threads 1 -- which passes no
+    // coordination at all -- on its old trajectory.
+    auto run = [](bool share) {
+        SolutionPool pool(10);
+        SearchCoordination coord;
+        coord.pool = &pool;
+        coord.share_objective_bound = share;
+        SearchConfig config;
+        config.max_iterations = 20000;
+        config.batch_iterations = 100;
+        config.perturbation_period = 2;  // adoption is exercised too
+        Model m = cover_model();
+        return solve(m, /*time_limit=*/0.0, /*seed=*/17, true, nullptr, nullptr, 3, nullptr, config,
+                     &coord);
+    };
+    const SearchResult on = run(true);
+    const SearchResult off = run(false);
+    REQUIRE(on.feasible);
+    REQUIRE(on.perturbations > 0);
+    REQUIRE(on.iterations == off.iterations);
+    REQUIRE(on.objective == off.objective);
+    REQUIRE(on.best_state.values == off.best_state.values);
+    REQUIRE(on.perturbations == off.perturbations);
+    REQUIRE(on.counters.shared_bound_tightenings == 0);
+    REQUIRE(on.counters.own_best_behind_global == 0);
+    REQUIRE(on.counters.bound_behind_global_batches == 0);
+}
+
+TEST_CASE("the pool's global best counts only feasible finite objectives", "[pool][shared_bound]") {
+    SolutionPool pool(2);
+    REQUIRE(std::isinf(pool.best_feasible_objective()));
+    Solution closest;  // a closest-approach state: infeasible, better objective
+    closest.objective = -100.0;
+    closest.feasible = false;
+    pool.submit(closest);
+    REQUIRE(std::isinf(pool.best_feasible_objective()));
+    Solution witness;  // #100's witness is shared as +inf
+    witness.objective = std::numeric_limits<double>::infinity();
+    witness.feasible = true;
+    pool.submit(witness);
+    REQUIRE(std::isinf(pool.best_feasible_objective()));
+    pool.submit(peer_solution(5.0));
+    REQUIRE(pool.best_feasible_objective() == 5.0);
+    pool.submit(peer_solution(7.0));
+    REQUIRE(pool.best_feasible_objective() == 5.0);  // never gets worse
+}
+
+TEST_CASE("a portfolio reports its shared-bound engagement", "[parallel][shared_bound]") {
+    // End to end through ParallelSearch and the counters' merge, both arms. The
+    // workers race on this model, so one of four is behind a peer at some
+    // boundary in any run; which one, and how often, is nondeterministic.
+    auto run = [](bool share) {
+        ParallelConfig pc;
+        pc.n_threads = 4;
+        pc.share_objective_bound = share;
+        SearchConfig config;
+        config.max_iterations = 20000;
+        config.batch_iterations = 100;
+        ParallelSearch ps(4);
+        return ps.solve(cover_model, /*time_limit=*/0.0, /*seed=*/1, config, nullptr, nullptr,
+                        nullptr, pc);
+    };
+    const SearchResult on = run(true);
+    REQUIRE(on.feasible);
+    REQUIRE(on.counters.shared_bound_tightenings > 0);
+    const SearchResult off = run(false);
+    REQUIRE(off.feasible);
+    REQUIRE(off.counters.shared_bound_tightenings == 0);
+    REQUIRE(off.counters.bound_behind_global_batches > 0);
 }

@@ -23,6 +23,12 @@ SolutionPool::SolutionPool(int capacity) : capacity_(std::max(1, capacity)) {}
 
 bool SolutionPool::submit(Solution sol) {
     std::scoped_lock lock(mutex_);
+    // Under the mutex so two submitters cannot interleave a load and a store and
+    // lose the better value; see best_feasible_objective().
+    if (sol.feasible && std::isfinite(sol.objective) &&
+        sol.objective < best_feasible_objective_.load(std::memory_order_relaxed)) {
+        best_feasible_objective_.store(sol.objective, std::memory_order_relaxed);
+    }
     solutions_.push_back(std::move(sol));
     std::sort(solutions_.begin(), solutions_.end(), [](const Solution& a, const Solution& b) {
         if (a.feasible != b.feasible) {
@@ -820,7 +826,7 @@ SearchResult ParallelSearch::solve_portfolio(
     // explicitly is still honoured -- see effective_pool_capacity.
     SolutionPool pool(effective_pool_capacity(par_config.pool_capacity, n_workers));
     std::atomic<bool> stop{false};
-    SearchCoordination coord{&pool, &stop};
+    SearchCoordination coord{&pool, &stop, par_config.share_objective_bound};
 
     const bool has_deadline = time_limit > 0.0;
     const auto portfolio_start = std::chrono::steady_clock::now();

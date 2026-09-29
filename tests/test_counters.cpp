@@ -226,6 +226,10 @@ TEST_CASE("no inner solver means no inner-solver calls", "[counters]") {
     REQUIRE(c.inner_solver_calls == 0);
     REQUIRE(c.inner_solver_seconds == 0.0);
     REQUIRE(c.portfolio_restarts == 0);  // a single solve cannot restart itself
+    // No pool, so no global best to be behind (#179).
+    REQUIRE(c.shared_bound_tightenings == 0);
+    REQUIRE(c.own_best_behind_global == 0);
+    REQUIRE(c.bound_behind_global_batches == 0);
 }
 
 TEST_CASE("merge sums scalars and merges generator rows by name", "[counters]") {
@@ -241,6 +245,10 @@ TEST_CASE("merge sums scalars and merges generator rows by name", "[counters]") 
     a.inner_solver_calls = 1;
     a.inner_solver_seconds = 0.25;
     a.portfolio_restarts = 1;
+    a.shared_bound_tightenings = 4;
+    a.own_best_behind_global = 2;
+    a.bound_behind_global_batches = 10;
+    a.bound_behind_global_seconds = 1.5;
     a.by_generator.push_back({"list:0", 10, 2});
     a.by_generator.push_back({"set:1", 5, 1});
 
@@ -252,6 +260,10 @@ TEST_CASE("merge sums scalars and merges generator rows by name", "[counters]") 
     b.inner_solver_calls = 2;
     b.inner_solver_seconds = 0.5;
     b.portfolio_restarts = 2;
+    b.shared_bound_tightenings = 1;
+    b.own_best_behind_global = 3;
+    b.bound_behind_global_batches = 5;
+    b.bound_behind_global_seconds = 0.25;
     // Deliberately in the other order, and with one name `a` does not have.
     b.by_generator.push_back({"set:1", 7, 3});
     b.by_generator.push_back({"list:9", 1, 1});
@@ -265,6 +277,10 @@ TEST_CASE("merge sums scalars and merges generator rows by name", "[counters]") 
     REQUIRE(a.inner_solver_calls == 3);
     REQUIRE(a.inner_solver_seconds == 0.75);
     REQUIRE(a.portfolio_restarts == 3);
+    REQUIRE(a.shared_bound_tightenings == 5);
+    REQUIRE(a.own_best_behind_global == 5);
+    REQUIRE(a.bound_behind_global_batches == 15);
+    REQUIRE(a.bound_behind_global_seconds == 1.75);
     // The totals are summed as scalars rather than re-derived from the rows below,
     // which is what keeps them consistent with a `by_generator` merge that appends
     // a name the other side did not have.

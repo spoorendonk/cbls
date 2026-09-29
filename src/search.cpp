@@ -273,6 +273,16 @@ constexpr double kEscapeArmFraction = 0.25;
 // the shortening is whatever perturbation_period happens to be, not 20x.
 constexpr int kUnproductiveArmDivisor = 20;
 
+// The objective bound a feasible objective `obj` earns: strictly below it, by a
+// step relative to its magnitude. One rule for every writer -- record_best, an
+// adoption's re-grounding and the shared bound (#179) -- because "never loosen"
+// across them rests on it: `obj - 1e-3 * (|obj| + 1)` is strictly increasing in
+// `obj` (slope 1 +- 1e-3), so a better objective always gives a tighter bound,
+// whichever of the three writers derived it.
+double objective_bound_below(double obj) {
+    return obj - (1e-3 * (std::abs(obj) + 1.0));
+}
+
 // The ViolationLS outer loop: its state, and the steps of one pass over it. Every
 // member below was a local of solve(), most of them closed over by one of its
 // lambdas -- which is why the complexity metric charged the whole loop for each
@@ -369,6 +379,29 @@ private:
     // Hand a new incumbent to the shared pool, if there is one. No-op for a
     // single-threaded solve. Called from both of record_best's recording arms.
     void share(double objective);
+    // The portfolio's best feasible finite objective, or +inf when there is no
+    // pool or nothing feasible in it yet (#179). Read in both A/B arms.
+    [[nodiscard]] double global_best() const {
+        return coord_ != nullptr && coord_->pool != nullptr
+                   ? coord_->pool->best_feasible_objective()
+                   : std::numeric_limits<double>::infinity();
+    }
+    // The tightest bound the shared global best entitles this worker to, or +inf
+    // when sharing is off or there is nothing to share. Every writer of the bound
+    // takes the min with it, which is what keeps a shared tightening from being
+    // undone by the worker's own later, worse incumbent (see record_best).
+    [[nodiscard]] double shared_bound_cap() const {
+        const double global = global_best();
+        return coord_ != nullptr && coord_->share_objective_bound && std::isfinite(global)
+                   ? objective_bound_below(global)
+                   : std::numeric_limits<double>::infinity();
+    }
+    // At a batch boundary: tighten the bound to the shared cap if it is looser,
+    // or -- sharing off -- note that the coming batch runs behind (#179).
+    void sync_shared_bound();
+    // After the batch: charge it to the behind-the-global counters if
+    // sync_shared_bound said it ran behind.
+    void account_behind_batch();
     // Restart from another worker's incumbent instead of perturbing our own.
     // Returns false -- leaving the assignment untouched -- when there is no
     // pool, the pool is empty, the drawn solution does not fit this model, or
@@ -539,6 +572,13 @@ private:
     // because `budget_exhausted()` branches on it -- this one must not be
     // reachable from control flow at all.
     SearchCounters counters_;
+    // Set by sync_shared_bound when the batch about to run has a bound looser
+    // than the portfolio's best -- only ever with sharing off, since sharing
+    // closes the gap at the same boundary -- and consumed by
+    // account_behind_batch. The start time is read only then, and only on a run
+    // with a wall clock, so neither arm of a clockless run reads one (#179).
+    bool batch_behind_global_ = false;
+    std::chrono::steady_clock::time_point behind_batch_start_;
     std::chrono::steady_clock::time_point last_callback_;
     std::chrono::steady_clock::time_point last_improvement_;
     // Which budget ends the run. Assigned at every loop exit so it always
@@ -742,9 +782,22 @@ bool ViolationLSLoop::record_best() {
     // isfinite(best_feasible_obj) guards the case where the incumbent is the
     // +inf witness above: the relative-improvement test would compute
     // `inf - inf` = NaN and decide by NaN comparison.
+    //
+    // The test is against this worker's OWN best, not against the shared bound
+    // (#179), deliberately. best_feasible_obj_ is the objective of best_state_,
+    // which is what finish() returns, and a peer's better objective is not a
+    // point this worker holds -- so it does not move when the bound is tightened
+    // from the pool. A feasible point between the global best and our own is
+    // therefore still recorded: it IS our new best, and returning it is correct.
+    // What it must not do is loosen the bound, which is the min below.
     if (have_feasible_ && std::isfinite(best_feasible_obj_) &&
         obj >= best_feasible_obj_ - (1e-12 * (std::abs(best_feasible_obj_) + 1.0))) {
         return false;
+    }
+    // Read before share() below, which would fold `obj` itself into it. +inf
+    // without a pool, so the comparison is false on a single-threaded run.
+    if (obj > global_best()) {
+        ++counters_.own_best_behind_global;
     }
     have_feasible_ = true;
     note_first_feasible(obj);
@@ -759,8 +812,19 @@ bool ViolationLSLoop::record_best() {
         // The bound step doubles as the Newton step size toward the objective
         // (the float jump chases obj <= bound), so it must be non-trivial for
         // hook-less continuous descent.
-        double eps = 1e-3 * (std::abs(obj) + 1.0);
-        model_.set_objective_bound(obj - eps);
+        //
+        // Capped by the shared bound (#179). Without the cap a worker behind the
+        // portfolio would RAISE a bound the pool had tightened, every time it
+        // recorded an own-best worse than the global one -- the loosening
+        // reground_objective_bound_after_adoption's comment rules out. The cap
+        // is +inf without a pool or with sharing off, and min(x, +inf) is x for
+        // the finite x here, so those runs set exactly what they always did.
+        const double own = objective_bound_below(obj);
+        const double cap = shared_bound_cap();
+        if (cap < own) {
+            ++counters_.shared_bound_tightenings;
+        }
+        model_.set_objective_bound(std::min(own, cap));
     }
     share(obj);
     emit_progress(/*new_best=*/true);
@@ -789,6 +853,67 @@ void ViolationLSLoop::share(double objective) {
     // residual of the state being shared.
     sol.violation = max_real_violation();
     coord_->pool->submit(std::move(sol));
+}
+
+// #179. At a BATCH boundary, not per iteration: the load is one relaxed atomic,
+// but a tightening costs a violated-set and jump-table rebuild, and a batch is
+// already the granularity at which every other change to the bound lands.
+//
+// What a tightening does and does not touch:
+//  - the ASSIGNMENT is unchanged. The worker now violates a tighter `obj <=
+//    bound` row, which is ViolationLS's normal state after any new best.
+//  - best_feasible_obj_ and best_state_ are unchanged: the worker did not find
+//    the peer's point, and finish() must return one it did. See record_best.
+//  - the GLS weights are KEPT -- fj_.resync(), not reset_weights(). Nothing about
+//    the landscape the weights encode changed except the one row, and a reset
+//    would hand every worker a fresh-weights restart each time any peer
+//    improved, which is a different mechanism from the one being measured.
+//    (An adoption resets them, because it moves the assignment.)
+//  - the objective row's weight is never zeroed: solve() runs FJ single-phase
+//    (gfj.two_phase = false), so there is no phase mask for the row to fall
+//    under, and set_objective_bound's precondition is has_obj_, tested first.
+//
+// Never loosens: the test is `target < bound`, strictly, and every other writer
+// of the bound takes the min with shared_bound_cap().
+void ViolationLSLoop::sync_shared_bound() {
+    batch_behind_global_ = false;
+    if (!has_obj_) {
+        return;
+    }
+    const double global = global_best();
+    if (!std::isfinite(global)) {
+        return;  // no pool, or nothing feasible in it yet
+    }
+    const double target = objective_bound_below(global);
+    if (!(target < model_.objective_bound())) {
+        return;  // already at least as tight: our own best, or an earlier sync
+    }
+    if (coord_->share_objective_bound) {
+        model_.set_objective_bound(target);
+        // set_objective_bound rewrites the row's node value in place; the
+        // violation manager's cached total and FJ's violated set and jump table
+        // were computed against the old one.
+        vm_.invalidate_cache();
+        fj_.resync();
+        ++counters_.shared_bound_tightenings;
+        return;
+    }
+    batch_behind_global_ = true;
+    if (has_deadline_) {
+        behind_batch_start_ = std::chrono::steady_clock::now();
+    }
+}
+
+void ViolationLSLoop::account_behind_batch() {
+    if (!batch_behind_global_) {
+        return;
+    }
+    ++counters_.bound_behind_global_batches;
+    if (has_deadline_) {
+        counters_.bound_behind_global_seconds +=
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - behind_batch_start_)
+                .count();
+    }
 }
 
 // Requirement: restart a stalled worker from the SHARED pool rather than only
@@ -835,8 +960,14 @@ void ViolationLSLoop::reground_objective_bound_after_adoption(bool feasible_here
     if (have_feasible_ && std::isfinite(best_feasible_obj_)) {
         target = std::min(target, best_feasible_obj_);
     }
-    if (std::isfinite(target)) {
-        model_.set_objective_bound(target - (1e-3 * (std::abs(target) + 1.0)));
+    // The shared cap (#179), for the same reason record_best takes it: `target`
+    // is this worker's view, and a bound the pool had tightened past it must not
+    // be loosened by re-grounding on it. +inf with sharing off.
+    const double bound = std::min(std::isfinite(target) ? objective_bound_below(target)
+                                                        : std::numeric_limits<double>::infinity(),
+                                  shared_bound_cap());
+    if (std::isfinite(bound)) {
+        model_.set_objective_bound(bound);
     } else if (!std::isfinite(model_.objective_bound())) {
         // No usable objective anywhere yet -- an infeasible or non-finite
         // adopted point with no incumbent of our own. Install the finite
@@ -1548,7 +1679,12 @@ SearchResult ViolationLSLoop::run() {
         // is that the kick drops its LNS half once a feasible solution exists.
         fj_.set_watch_progress(stagnation_ >= unproductive_arm_stagnation_);
 
+        // A no-op without a pool, so a single-threaded solve is untouched. After
+        // pick_batch_kind so the kind is drawn from the RNG exactly as before
+        // either way -- the sync itself draws nothing.
+        sync_shared_bound();
         bool resync = run_batch(kind);
+        account_behind_batch();
         ++batches_;
         count_batch(kind);
 

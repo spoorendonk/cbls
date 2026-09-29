@@ -30,6 +30,13 @@ struct ParallelConfig {
     /// stops the capacity itself from being the binding constraint.
     int pool_capacity = 0;
 
+    /// Share the portfolio's best objective as every worker's bound (#179): at
+    /// each batch boundary a worker whose `obj <= bound` row is looser than the
+    /// global best's tightens it, instead of waiting for stagnation to adopt a
+    /// peer's point. See `SearchCoordination::share_objective_bound`. False is the
+    /// A/B control arm.
+    bool share_objective_bound = true;
+
     /// The HOST's cancellation channel for the whole portfolio (#169).
     ///
     /// OR-ed with `SearchConfig::stop`, not a replacement for it: a caller may
