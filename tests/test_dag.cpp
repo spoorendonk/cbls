@@ -1073,7 +1073,7 @@ TEST_CASE("commit_scalar_move updates integral rows by their changed terms", "[d
     IntegralRows r = make_integral_rows(40, 30, 25, 5);
     Model& m = r.m;
     for (const int32_t row : r.rows) {
-        REQUIRE(m.exact_sum_nodes()[static_cast<size_t>(row)] == 1);
+        REQUIRE(m.node(row).exact_sum_flags == ExprNode::kExactSum);
     }
     RNG rng(11);
     exact_sum_counters() = ExactSumCounters{};
@@ -1116,12 +1116,14 @@ TEST_CASE("commit_scalar_move falls back to the re-sum where it cannot be exact"
     m.close();
 
     SECTION("only the integral shape is eligible") {
-        const std::vector<uint8_t>& eligible = m.exact_sum_nodes();
-        CHECK(eligible[static_cast<size_t>(exact_row)] == 1);
-        CHECK(eligible[static_cast<size_t>(fractional_coef)] == 0);
-        CHECK(eligible[static_cast<size_t>(float_term)] == 0);
-        CHECK(eligible[static_cast<size_t>(nested)] == 0);    // a Sum term
-        CHECK(eligible[static_cast<size_t>(repeated)] == 0);  // a term named twice
+        const auto eligible = [&m](int32_t id) {
+            return (m.node(id).exact_sum_flags & ExprNode::kExactSum) != 0;
+        };
+        CHECK(eligible(exact_row));
+        CHECK_FALSE(eligible(fractional_coef));
+        CHECK_FALSE(eligible(float_term));
+        CHECK_FALSE(eligible(nested));    // a Sum term
+        CHECK_FALSE(eligible(repeated));  // a term named twice
     }
 
     SECTION("values outside the exact regime take the re-sum, and back again") {

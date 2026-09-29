@@ -124,13 +124,6 @@ struct ModelStructure {
     // constraints_of_var's range check meaningful before close().
     std::vector<uint32_t> var_constraint_offsets;
     std::vector<int32_t> var_constraint_ids;
-    // node id -> 1 if the node is a `Sum` that `commit_scalar_move` may update
-    // by its terms' changes instead of re-summing it (#177): every term is a
-    // Bool/Int variable, an integral literal, or a `Neg`/`Prod` of those, and no
-    // term appears twice. Structure, so shared; rebuilt with the back-references.
-    // Whether the update is actually exact is decided per model and per call --
-    // see `Model::sum_exact_state`.
-    std::vector<uint8_t> exact_sum;
     // Shared, and therefore invoked by every worker CONCURRENTLY once a model is
     // frozen and replicated. A callable carrying mutable state of its own is a
     // race: a NEW one where that state is captured by value, since each replica
@@ -527,13 +520,8 @@ public:
     /// Deliberately NOT bound to Python: an index supplied from there would be
     /// an unguarded heap write (#156). `node_value` is the checked reader.
     void set_node_value_unchecked(int32_t id, double value) noexcept { node_values_[id] = value; }
-    /// The structural half of #177's exact incremental `Sum`: node id -> 1 for a
-    /// `Sum` whose terms are integral by construction. Sized `num_nodes()` once
-    /// the model is closed, empty before. Unchecked reads, like `node_values()`.
-    [[nodiscard]] const std::vector<uint8_t>& exact_sum_nodes() const noexcept {
-        return s().exact_sum;
-    }
-    /// The per-model half: node id -> 1 while an `exact_sum_nodes()` Sum is known
+    /// #177's per-model state: node id -> 1 while a `Sum` with
+    /// `ExprNode::kExactSum` is known
     /// to hold the EXACT sum of its terms, each an integer of magnitude at most
     /// 2^52 / (term count). Under that bound every partial sum is an integer below
     /// 2^52, so every addition is exact in any order, and updating the Sum by its

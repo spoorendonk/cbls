@@ -182,6 +182,18 @@ struct ChildRef {
 struct ExprNode {
     int32_t id = -1;
     NodeOp op = NodeOp::Const;
+    /// #177's exact incremental Sum, set by `Model::close()`: `kExactSum` on a
+    /// `Sum` that `commit_scalar_move` may update by its terms' changes (every
+    /// term a Bool/Int variable, an integral literal or a `Neg`/`Prod` of those,
+    /// none twice); `kFeedsExactSum` on a `Neg`/`Prod` that is a term of one.
+    /// Whether an update is actually exact is decided per model and per call --
+    /// see `Model::sum_exact_state`. In what was padding after `op`, so it costs
+    /// no memory, and read from the node the walk has already loaded, so it costs
+    /// no cache miss: a separate per-node array cost 9.5% on a model with no
+    /// eligible Sum at all (cbs-cta, measured at `20a6baa`).
+    uint8_t exact_sum_flags = 0;
+    static constexpr uint8_t kExactSum = 1;
+    static constexpr uint8_t kFeedsExactSum = 2;
     double const_value = 0.0;
     uint32_t child_begin = 0;
     uint32_t child_count = 0;

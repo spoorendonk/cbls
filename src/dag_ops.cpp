@@ -397,9 +397,9 @@ class ExactSumWalk {
 public:
     ExactSumWalk(Model& model, bool push)
         : model_(model),
-          eligible_(model.exact_sum_nodes()),
+          nodes_(model.nodes()),
           exact_(model.sum_exact_state()),
-          tracked_(eligible_.size() == model.num_nodes() && exact_.size() == model.num_nodes()),
+          tracked_(exact_.size() == model.num_nodes()),
           push_(tracked_ && push) {}
 
     // Before the walk: push the changed variables' own moves into their eligible
@@ -423,7 +423,7 @@ public:
         for (size_t ci = 0; ci < count; ++ci) {
             const int32_t v = changed_var_ids[ci];
             for (const int32_t dep_id : model_.dependents(v)) {
-                if (eligible_[dep_id] != 0) {
+                if ((nodes_[dep_id].exact_sum_flags & ExprNode::kExactSum) != 0) {
                     push_term(model_, exact_, dep_id, vars[v].value, old_values[ci]);
                 }
             }
@@ -435,20 +435,20 @@ public:
     // a dirty Neg/Prod pushes its change into its eligible parents.
     template <typename EvalOther>
     double eval(int32_t nid, EvalOther&& eval_other) {
-        if (!tracked_) {
+        const uint8_t flags = nodes_[nid].exact_sum_flags;
+        if (!tracked_ || flags == 0) {
             return eval_other(nid);
         }
-        if (eligible_[nid] != 0) {
+        if ((flags & ExprNode::kExactSum) != 0) {
             return eval_eligible_sum(nid);
         }
-        const NodeOp op = model_.nodes()[nid].op;
-        if (!push_ || (op != NodeOp::Neg && op != NodeOp::Prod)) {
-            return eval_other(nid);
+        if (!push_) {
+            return eval_other(nid);  // kFeedsExactSum: a term, re-read at its Sum's turn
         }
         const double old_v = model_.node_values()[nid];
         const double new_v = eval_other(nid);
         for (const int32_t parent_id : model_.parents(nid)) {
-            if (eligible_[parent_id] != 0) {
+            if ((nodes_[parent_id].exact_sum_flags & ExprNode::kExactSum) != 0) {
                 push_term(model_, exact_, parent_id, new_v, old_v);
             }
         }
@@ -466,7 +466,7 @@ private:
     }
 
     Model& model_;
-    const std::vector<uint8_t>& eligible_;
+    const std::vector<ExprNode>& nodes_;
     std::vector<uint8_t>& exact_;
     bool tracked_;
     bool push_;

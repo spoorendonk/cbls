@@ -60,7 +60,7 @@ double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count
 ///
 /// Leaves every node value bit-identical to what `delta_evaluate` would. What
 /// the old value buys is the cost: a `Sum` the model classified as integral
-/// (`Model::exact_sum_nodes`) and that currently holds its exact sum
+/// (`ExprNode::kExactSum`) and that currently holds its exact sum
 /// (`Model::sum_exact_state`) is moved by its terms' changes, O(1) per changed
 /// term, instead of being re-summed over all of them. On a MIP row with
 /// integral coefficients over Bool/Int columns that is the difference between
@@ -70,7 +70,7 @@ double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count
 /// re-sum's bits either way.
 double commit_scalar_move(Model& model, int32_t var_id, double old_value);
 
-/// How often the dirty `Sum`s of exact-sum eligibility (`Model::exact_sum_nodes`)
+/// How often the dirty `Sum`s of exact-sum eligibility (`ExprNode::kExactSum`)
 /// were updated by their terms' changes rather than re-summed, on this thread,
 /// since the last `reset`. Diagnostics for tests and profiling (#177); nothing
 /// in the engine reads them. Counted on the eligible Sums only, so the

@@ -867,7 +867,9 @@ void Model::classify_exact_sums() {
         }
         return integral_term[ref.id] != 0;
     };
-    st.exact_sum.assign(n_nodes, 0);
+    for (ExprNode& nd : st.nodes) {
+        nd.exact_sum_flags = 0;
+    }
     std::vector<int32_t> node_stamp(n_nodes, -1);
     std::vector<int32_t> var_stamp(vars_.size(), -1);
     for (const int32_t nid : st.topo_order) {
@@ -894,7 +896,14 @@ void Model::classify_exact_sums() {
                 }
                 stamp = nid;
             }
-            st.exact_sum[nid] = static_cast<uint8_t>(ok);
+            if (ok) {
+                st.nodes[nid].exact_sum_flags = ExprNode::kExactSum;
+                for (const ChildRef& ref : kids) {
+                    if (!ref.is_var) {
+                        st.nodes[ref.id].exact_sum_flags |= ExprNode::kFeedsExactSum;
+                    }
+                }
+            }
         }
     }
 }
