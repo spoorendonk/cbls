@@ -68,11 +68,17 @@ double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count
 /// cannot be shown exact -- a fractional term, a term above 2^52 / (term count),
 /// a NaN or an infinity -- the Sum is re-summed as before, so the result is the
 /// re-sum's bits either way.
+///
+/// Precondition, stronger than `delta_evaluate`'s: every node value must
+/// describe the assignment apart from `var_id`'s change. A variable written
+/// without a walk (`restore_state` with no `full_evaluate`, say) leaves a Sum
+/// marked exact on a stale base, which this would update rather than repair.
 double commit_scalar_move(Model& model, int32_t var_id, double old_value);
 
 /// How often the dirty `Sum`s of exact-sum eligibility (`ExprNode::kExactSum`)
 /// were updated by their terms' changes rather than re-summed, on this thread,
-/// since the last `reset`. Diagnostics for tests and profiling (#177); nothing
+/// since the caller last assigned it `ExactSumCounters{}`. Diagnostics for
+/// tests and profiling (#177); nothing
 /// in the engine reads them. Counted on the eligible Sums only, so the
 /// re-summing path of every other node pays nothing for them.
 struct ExactSumCounters {

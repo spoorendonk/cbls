@@ -327,9 +327,13 @@ double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
 // integrality and magnitude test each when it is also checked. The update
 // costs one test and one add per CHANGED term, paid by the term, plus a
 // parents scan for each dirty `Neg`/`Prod`. It wins when rows are long and a
-// move touches one term of each, which is the MIP regime. It loses nothing
-// measurable when rows are short. It is never used where terms are fractional:
-// such Sums are not eligible, so their re-sum pays no checks.
+// move touches one term of each, which is the MIP regime. It loses where an
+// eligible Sum is mostly re-summed by walks that are not FJ commits -- Novelty
+// Jump's legs, the structural batch, a probe of a column with a non-linear row
+// -- which pay the n checks and never collect, and on short rows, where the
+// checks and the parents scan are a larger share of a small re-sum. It is never
+// used where coefficients are fractional: such Sums are not eligible, so their
+// re-sum pays no checks.
 namespace {
 
 // 2^52: every term at most 2^52 / n in magnitude keeps every partial sum of n
@@ -377,7 +381,10 @@ double checked_resum(Model& model, const ExprNode& node, uint8_t& exact) {
 // values, however far the walk got. The walk WITHOUT pushes is the exception:
 // there a term is rewritten and its Sum re-checked only at the Sum's own turn,
 // so `ExactSumWalk::prepare` clears those Sums up front when a custom node
-// could throw.
+// could throw. That clearing is defensive, not complete: a `lambda_sum` functor
+// can throw too and is not covered. After any throw out of a walk the model's
+// contract already requires a `full_evaluate` (see `CustomInvariant`), which
+// clears every Sum's state -- that is what the invariant rests on.
 inline void push_term(Model& model, std::vector<uint8_t>& exact, int32_t p, double new_v,
                       double old_v) {
     if (exact[p] == 0) {
@@ -414,7 +421,9 @@ public:
         if (!push_) {
             if (model_.has_custom_nodes()) {
                 for (const int32_t nid : dirty_list) {
-                    exact_[nid] = 0;
+                    if ((nodes_[nid].exact_sum_flags & ExprNode::kExactSum) != 0) {
+                        exact_[nid] = 0;
+                    }
                 }
             }
             return;

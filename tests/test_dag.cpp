@@ -1068,8 +1068,9 @@ IntegralRows make_integral_rows(int n_cols, int n_rows, int row_len, uint64_t se
 
 TEST_CASE("commit_scalar_move updates integral rows by their changed terms", "[dag][exact_sum]") {
     // The regression test: a committed move must not re-sum an integral row it
-    // touches once the row is known exact. Red on the pre-#177 walk, which
-    // re-summed every dirty Sum -- `incremental` stays 0 there.
+    // touches once the row is known exact. Red with commit_scalar_move forwarding
+    // to delta_evaluate -- the pre-#177 walk, which re-summed every dirty Sum --
+    // where `incremental` stays 0.
     IntegralRows r = make_integral_rows(40, 30, 25, 5);
     Model& m = r.m;
     for (const int32_t row : r.rows) {
@@ -1200,5 +1201,29 @@ TEST_CASE("a model copy carries the exact state with the node values", "[dag][ex
     copy.var_mut(v).value = -1.0;
     commit_scalar_move(copy, v, 5.0);
     CHECK(exact_sum_counters().resummed == 0);
+    CHECK(exact_sum_counters().incremental > 0);  // the state came with the copy
     require_matches_full_evaluate(copy);
+}
+
+TEST_CASE("the exact-Sum bound excludes integers whose partial sums round", "[dag][exact_sum]") {
+    // Sum{x, y}: the per-term bound is 2^51. With x = 2^53, y 0 -> 1 rounds
+    // 2^53 + 1 to 2^53 (ties to even); then x -> 2^53 + 2 would update to
+    // 2^53 + 2 while the re-sum rounds 2^53 + 3 to 2^53 + 4. A check of
+    // integrality alone takes the update and differs from the re-sum in the last
+    // bit; the magnitude bound sends it to the re-sum.
+    Model m;
+    const int32_t x = m.int_var(-10, 10);
+    const int32_t y = m.int_var(-10, 10);
+    const int32_t row = m.sum({x, y});
+    m.add_constraint(m.leq(row, m.constant(0.0)));
+    m.minimize(m.sum({x, y}));
+    m.close();
+    const std::vector<std::pair<int32_t, double>> moves = {
+        {vid(y), 0.0}, {vid(x), 9007199254740992.0}, {vid(y), 1.0}, {vid(x), 9007199254740994.0}};
+    for (const auto& [v, value] : moves) {
+        const double old_value = m.var(v).value;
+        m.var_mut(v).value = value;
+        commit_scalar_move(m, v, old_value);
+        require_matches_full_evaluate(m);
+    }
 }

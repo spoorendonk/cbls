@@ -189,8 +189,9 @@ struct ExprNode {
     /// Whether an update is actually exact is decided per model and per call --
     /// see `Model::sum_exact_state`. In what was padding after `op`, so it costs
     /// no memory, and read from the node the walk has already loaded, so it costs
-    /// no cache miss: a separate per-node array cost 9.5% on a model with no
-    /// eligible Sum at all (cbs-cta, measured at `20a6baa`).
+    /// no extra load per dirty node. (A separate per-node array measured 9.5%
+    /// slower on cbs-cta at `20a6baa`, but that was code alignment -- it vanishes
+    /// under `-falign-functions=64` -- so it is no evidence either way.)
     uint8_t exact_sum_flags = 0;
     static constexpr uint8_t kExactSum = 1;
     static constexpr uint8_t kFeedsExactSum = 2;

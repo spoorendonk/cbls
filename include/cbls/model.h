@@ -520,11 +520,11 @@ public:
     /// Deliberately NOT bound to Python: an index supplied from there would be
     /// an unguarded heap write (#156). `node_value` is the checked reader.
     void set_node_value_unchecked(int32_t id, double value) noexcept { node_values_[id] = value; }
-    /// #177's per-model state: node id -> 1 while a `Sum` with
-    /// `ExprNode::kExactSum` is known
-    /// to hold the EXACT sum of its terms, each an integer of magnitude at most
-    /// 2^52 / (term count). Under that bound every partial sum is an integer below
-    /// 2^52, so every addition is exact in any order, and updating the Sum by its
+    /// #177's per-model state: node id -> 1 while a `Sum` with `kExactSum` (see
+    /// `ExprNode`) is known to hold the EXACT sum of its terms, each an integer of
+    /// magnitude at most 2^52 / (term count). Under that bound every partial sum is
+    /// an integer of magnitude at most 2^52, so every addition is exact in any
+    /// order, and updating the Sum by its
     /// terms' changes gives the same bits as re-summing it. `delta_evaluate` and
     /// `commit_scalar_move` maintain it on every write to such a Sum;
     /// `full_evaluate` clears it, since it re-sums without checking. Empty until
@@ -708,9 +708,10 @@ public:
     /// Writes the VARIABLES only. Every node value -- and every `CustomInvariant`'s
     /// committed state (#166) -- still describes the assignment this replaces, so a
     /// `full_evaluate` is MANDATORY before anything reads a node value or calls
-    /// `delta_evaluate`. For a built-in op, skipping it merely recomputes late; for
-    /// a custom node it is wrong values, because the next `delta()` is measured
-    /// against a baseline that is no longer there.
+    /// `delta_evaluate`. For a built-in op, skipping it merely recomputes late --
+    /// except a Sum in #177's exact state, which `commit_scalar_move` would update
+    /// from its stale value; for a custom node it is wrong values, because the
+    /// next `delta()` is measured against a baseline that is no longer there.
     ///
     /// Every C++ caller in the tree pairs the two -- `src/lns.cpp`, `src/search.cpp`
     /// (three sites, one of them by way of `FeasibilityJump::perturb`'s trailing

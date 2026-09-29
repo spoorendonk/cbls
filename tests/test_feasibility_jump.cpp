@@ -1132,7 +1132,8 @@ TEST_CASE("FJ's commits leave integral rows exactly as a full evaluation would",
     // that makes that safe is that the node values are the re-sum's to the bit,
     // so the trajectory, the violated-row bookkeeping and the closed-form scorer
     // see what they always saw. Checked here after a real FJ run on a MIP-shaped
-    // model with rows no assignment satisfies, so every iteration commits.
+    // model whose rows FJ does not satisfy within the budget, so it keeps
+    // committing (the counter below checks that it did).
     Model m;
     RNG gen(17);
     std::vector<int32_t> cols;

@@ -176,7 +176,7 @@ jump *candidate* is scored by a no-commit delta probe (see
 [`weighted_violation_delta`](#violation--gls-weights)) unless every weighted
 row of the variable's column is a linear comparison, where `LinearJumpScorer`
 (`include/cbls/linear_jump.h`) scores it in closed form instead. A committed
-jump goes through the same walk as `commit_scalar_move`, which is also told the
+jump goes through `commit_scalar_move` -- `delta_evaluate`'s walk, also told the
 variable's old value (below).
 
 **Exact incremental Sum** (#177). A committed FJ move changes one term of each
@@ -204,7 +204,7 @@ and the change end on identical assignments on neos-860300, swath3, rail01 and
 cbs-cta. Fractional rows are untouched, which is where most of swath3's and
 rail01's commit cost is; the drifting alternative that covered them was built,
 measured and reverted on #177 -- the guarantee that a row violated only by
-drift is never GLS-bumped cost it its gain -- and is tracked as a follow-up.
+drift is never GLS-bumped cost it its gain -- and is tracked in #188.
 
 ### Reverse-Mode Automatic Differentiation
 
