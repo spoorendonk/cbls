@@ -128,7 +128,8 @@ own `node_values()` array, read through `Model::node_value(id)` (#157). That is
 what lets the whole node array sit in the immutable structure portfolio replicas
 share — a `value` field there would be one worker's search state in storage every
 worker reads. `ExprNode` is 32 bytes as a result, and the per-worker cost of a
-node is the 8-byte value.
+node is the 8-byte value plus the 1-byte incremental-Sum age (#177; ~4.3 MB on
+the 4.30M-node neos-5114902-kasavu).
 
 **Supported operations:**
 
@@ -220,8 +221,28 @@ The bound is on the number of roundings, not their size: each is at the scale
 of the largest value the Sum held since its last re-sum. A fractional big-M term
 switched on and off again leaves a row near O(1) carrying about ulp(1e9) ~ 1e-7,
 above FJ's 1e-9 violation threshold. Inside a batch such a row can read violated
-when it is not (and have its GLS weight bumped), or the reverse; the batch end
-puts the value right, not the weights.
+when it is not, or the reverse, so two decisions are taken on exact values only:
+
+- **A GLS weight bump.** At a local minimum, before any row is bumped,
+  `reground_violated_rows` re-sums the drifted Sums in the cones of the rows in
+  V (`reground_incremental_sums_below`) and settles each row that moved. A row
+  violated only by drift leaves V instead of having its weight raised; a row
+  that moved puts its variables back in the scan set, and FJ samples again
+  rather than bumping. Cost: the cones of V's rows, the same order as the bump,
+  which walks their variables. Guarantee: no row whose exact residual is within
+  tolerance is ever bumped.
+- **"Feasible".** V empty is re-read after a full re-grounding
+  (`exact_feasible`), in FJ's loop and in Novelty Jump; a row that was hidden by
+  drift comes back into V with its variables re-queued, and the search carries
+  on. A batch ended by its iteration limit or a stall with V empty is re-read
+  the same way after the batch-end re-grounding.
+
+Between those points a drifted row can still steer a move (it is scored against
+the drifted value), which is the price of not re-summing on every commit.
+
+`IncrementalSumState::drifted` lists each Sum at most once (a flag in the top
+bit of its age byte), so it is bounded by the number of Sums however long a
+`gls()`/`run()` goes without a batch end.
 
 K was chosen from a sweep on three instances held out of the A/B (#177): K=16
 cost 2-11% of the throughput of K=64, K=255 was at most 2% ahead of it, and the
@@ -2577,6 +2598,8 @@ per thread count, `peak_rss_kib` and `iterations` from the runner's own record.
 | 8 | 6.04 GiB | 3.15 GiB | 419 | 437 |
 
 The marginal cost of a worker falls from **~0.75-0.86 GiB** to **~0.34-0.39 GiB**.
+(#177 later added a 1-byte age per node per worker, ~4.3 MB here, and a
+probe stash sized by the largest probed cone; neither is in these figures.)
 The iteration column is the throughput answer for the *large*-model regime, where
 splitting `ExprNode` from its values could plausibly have cost locality (138 MB of
 nodes plus 34 MB of values, far past any L3): at one thread it is identical, 257
