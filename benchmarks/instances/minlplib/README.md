@@ -1122,14 +1122,19 @@ per-worker hook and LNS. `benchmarks/minlplib/portfolio_ab.py` pairs the arms an
 scores them:
 
 ```
-python3 benchmarks/minlplib/portfolio_ab.py run --instances nvs22 eq6_1 ... \
+.venv/bin/python3 benchmarks/minlplib/portfolio_ab.py run --instances nvs22 eq6_1 ... \
     --seeds 1001 1002 1003 1004 --budget 20 --threads 4 --out ab.jsonl \
     --lock ~/.cache/cbls-bench.lock
-python3 benchmarks/minlplib/portfolio_ab.py analyze ab.jsonl
+.venv/bin/python3 benchmarks/minlplib/portfolio_ab.py analyze ab.jsonl
 ```
 
-The first campaign ran at engine `802b287`, through a scratch build of the same
-harness that was later committed unchanged in behaviour. Setup: 4 threads, 20 s,
+The first campaign ran through a scratch build of the same harness, which was
+later committed unchanged in behaviour. The engine was a pre-rebase commit whose
+on-main equivalent is `321d896`. Production code on main differs from that binary
+in two places:
+- #176's slope lookup, which gives bit-identical scores;
+- the shared-bound sync's dropped `vm_.invalidate_cache()` (`bfd578d`), which is
+  value-correct but not bit-neutral. Setup: 4 threads, 20 s,
 seeds 1001-1004. The roster was 10 instances admitted by a pre-registered
 control-only pilot, which selected instances where the control arm runs behind
 the portfolio's best bound. The results therefore say how the mechanism does
@@ -1139,3 +1144,14 @@ The primal integral improved on all 10 instances (sign test p = 0.002, instance
 mean -0.083, t_9 95% CI [-0.156, -0.010]). The final gap improved on 8, got worse
 on 1 and was flat on 1 (p = 0.039; CI [-0.183, +0.003]). All 40 runs were
 feasible in both arms. The protocol and the MIPfeas half are on #179.
+
+The MIPfeas half of the same A/B was run without a committed driver. Each arm pair
+is two direct `cbls_mipfeas` invocations:
+`--instance I --inst-dir benchmarks/instances/mipfeas --out-dir D --budget 30
+--seed S --threads 4 --commit <sha>`, the control arm adding `--no-share-bound`.
+The runs used seeds 1001-1006 over the 10 pilot-admitted instances. They ran
+serially, with both arms of a pair back to back under the machine lock and the
+arm order alternating with seed parity. Each run was scored with
+`primal_integral.primal_integral` against the roster optimum over [0, 30 s].
+`portfolio_ab.py analyze` accepts the resulting rows (`instance`, `seed`,
+`share`, `pi`, `gap`).

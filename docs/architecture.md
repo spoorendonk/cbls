@@ -2666,7 +2666,13 @@ bit-identical to what it was before the parameter existed:
    earlier solve, and the counters count that as the global best. `--threads 1`
    passes no coordination at all.
 
-   **Measured** (#179, engine `802b287`, 4 threads, serial paired runs; each
+   **Measured** (#179, 4 threads, serial paired runs. The binary was built at a
+   pre-rebase commit whose on-main equivalent is `321d896`; production code on
+   main differs from it in two places. #176's slope lookup gives bit-identical
+   scores. The shared-bound sync no longer calls `vm_.invalidate_cache()`
+   (`bfd578d`), which is value-correct but not bit-neutral: `recompute_cache`
+   also reset the incremental-update counter and its float drift, so later
+   totals can differ in the last bits. Each
    roster is 10 instances admitted by a pre-registered control-only pilot as
    ones where the control arm runs behind the portfolio's best bound, so this is
    the mechanism where it has something to act on, not a roster average). The

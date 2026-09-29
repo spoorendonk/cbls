@@ -675,10 +675,12 @@ TEST_CASE("a row demoted by its build counts no slopes and stays ineligible", "[
     REQUIRE_FALSE(sc.residual_partial_at(vid(x), 0, g));  // row 0 is x's first row
     REQUIRE(sc.residual_partial_at(vid(x), 1, g));
     REQUIRE(g == 1.0);
-    // Past the end of x's G_v: refused, never read out of the incidence array.
+    // Past the end of x's G_v: refused. The incidence array is flat, so without
+    // the guard k = |G_x| + 1 lands on y's SECOND row -- row 1, built and exact --
+    // and would be answered with y's slope as though it were x's.
     const size_t gv_size = m.constraints_of_var(vid(x)).size();
     REQUIRE_FALSE(sc.residual_partial_at(vid(x), gv_size, g));
-    REQUIRE_FALSE(sc.residual_partial_at(vid(x), gv_size + 7, g));
+    REQUIRE_FALSE(sc.residual_partial_at(vid(x), gv_size + 1, g));
 }
 
 TEST_CASE("slopes follow the G_v layout when the objective row is added (#176)",

@@ -7,8 +7,19 @@ optional machine-wide lock across the pair, arm order alternating with the
 seed's parity. Each run appends one JSON line to `--out`, keyed on
 (instance, seed, share), so an interrupted campaign resumes where it stopped.
 
+The protections every benchmark driver shares (benchmarks/common): a build
+directory that is not an optimised, uninstrumented build of this checkout is
+refused (`build_dir_problems`); every row is stamped with the engine commit
+(`commit_sha`), and a file written at another commit, budget or thread count is
+refused rather than resumed into; each invocation appends a machine record to
+`<out>.machine.jsonl`; and a torn final line left by a kill is dropped before
+resuming (`repair_torn_tail`). The row schema is listed in
+benchmarks/common/records.py.
+
 `analyze` scores a campaign file -- this driver's, or any file of rows with
-`instance`, `seed`, `share`, `pi` and `gap` -- at two levels:
+`instance`, `seed`, `share`, `pi` and `gap` -- at two levels. A pair in which
+either arm lost a portfolio worker (`workers_completed < threads`, #170) is
+excluded and counted, since that arm ran a smaller portfolio:
 
 - pairs: the mean paired difference (share on minus off; negative is better)
   with a paired-t interval over all pairs;
@@ -18,9 +29,9 @@ seed's parity. Each run appends one JSON line to `--out`, keyed on
 Seeds are nested in instances, so the pair level overstates precision whenever
 instances differ in their response; the instance level is the one to read.
 
-    python3 benchmarks/minlplib/portfolio_ab.py run --instances nvs22 eq6_1 \\
+    .venv/bin/python3 benchmarks/minlplib/portfolio_ab.py run --instances nvs22 eq6_1 \\
         --seeds 1001 1002 --out ab.jsonl --lock ~/.cache/cbls-bench.lock
-    python3 benchmarks/minlplib/portfolio_ab.py analyze ab.jsonl
+    .venv/bin/python3 benchmarks/minlplib/portfolio_ab.py analyze ab.jsonl
 """
 
 from __future__ import annotations
@@ -41,13 +52,21 @@ from typing import TYPE_CHECKING
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from benchmarks.common.provenance import (  # noqa: E402
+    build_dir_problems,
+    cmake_cache,
+    commit_sha,
+    machine_record,
+)
+from benchmarks.common.records import repair_torn_tail  # noqa: E402
 from benchmarks.mipfeas.primal_integral import primal_gap, primal_integral  # noqa: E402
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
 REPO = Path(__file__).resolve().parents[2]
-DEFAULT_BINARY = REPO / "build" / "cbls_minlplib_portfolio"
+DEFAULT_BUILD_DIR = REPO / "build"
+BINARY_NAME = "cbls_minlplib_portfolio"
 DEFAULT_INST_DIR = REPO / "benchmarks" / "instances" / "minlplib"
 
 #: Two-sided 97.5% t quantiles by degrees of freedom; beyond the table, 1.96.
@@ -133,7 +152,46 @@ def run_one(
     return row
 
 
+def resume_refusal(out: Path, stamp: dict[str, object]) -> str | None:
+    """Why `out` cannot be resumed into under `stamp`, or None when it can.
+
+    Resume keys on a row being there, which says nothing about what produced it:
+    a row from another engine commit, budget or thread count would be paired as
+    though it were this campaign's.
+    """
+    if not out.exists():
+        return None
+    for number, line in enumerate(out.read_text().splitlines(), 1):
+        rec = json.loads(line)
+        for key, want in stamp.items():
+            if rec.get(key) != want:
+                return (
+                    f"{out}:{number} has {key}={rec.get(key)!r}, this run {want!r}; "
+                    f"write to a new --out rather than mixing two campaigns"
+                )
+    return None
+
+
 def run_campaign(args: argparse.Namespace) -> int:
+    cache = cmake_cache(args.build_dir)
+    problems = build_dir_problems(args.build_dir, cache)
+    if problems:
+        print("\n".join(f"refusing: {p}" for p in problems), file=sys.stderr)
+        return 2
+    binary = args.build_dir / BINARY_NAME
+    stamp: dict[str, object] = {
+        "commit_sha": commit_sha(),
+        "budget": args.budget,
+        "threads": args.threads,
+    }
+    if repair_torn_tail(args.out):
+        print(f"{args.out}: dropped a torn final line", file=sys.stderr)
+    refusal = resume_refusal(args.out, stamp)
+    if refusal is not None:
+        print(f"refusing: {refusal}", file=sys.stderr)
+        return 2
+    with open(Path(f"{args.out}.machine.jsonl"), "a") as fh:
+        fh.write(json.dumps({**stamp, "argv": sys.argv, "machine": machine_record()}) + "\n")
     refs = references(args.inst_dir)
     done: set[tuple[str, int, bool]] = set()
     if args.out.exists():
@@ -154,7 +212,7 @@ def run_campaign(args: argparse.Namespace) -> int:
                     load = load_average()
                     for share in order:
                         row = run_one(
-                            args.binary,
+                            binary,
                             args.inst_dir / f"{instance}.nl",
                             args.budget,
                             seed,
@@ -162,10 +220,19 @@ def run_campaign(args: argparse.Namespace) -> int:
                             share,
                             refs[instance],
                         )
+                        row.update(stamp)
                         row.update(instance=instance, seed=seed, share=share, load_average=load)
                         out.write(json.dumps(row) + "\n")
                         out.flush()
     return 0
+
+
+def _lost_worker(rec: dict[str, object]) -> bool:
+    """Whether a row ran fewer workers than it asked for (#170). A row with no
+    `threads` -- written before the driver stamped it -- cannot be judged."""
+    threads = rec.get("threads")
+    completed = rec.get("workers_completed")
+    return isinstance(threads, int) and isinstance(completed, int) and completed < threads
 
 
 def _num(value: object) -> float:
@@ -191,6 +258,14 @@ def analyze(path: Path) -> list[str]:
             continue
         pairs[(rec["instance"], rec["seed"])][rec["share"]] = rec
     lines: list[str] = []
+    lost = sorted(key for key, arms in pairs.items() if any(_lost_worker(r) for r in arms.values()))
+    for key in lost:
+        del pairs[key]
+    if lost:
+        lines.append(
+            f"excluded {len(lost)} pair(s) where an arm lost a portfolio worker: "
+            + ", ".join(f"{i}/{s}" for i, s in lost)
+        )
     for metric in ("pi", "gap"):
         by_instance: dict[str, list[float]] = defaultdict(list)
         for (instance, _seed), arms in sorted(pairs.items()):
@@ -232,7 +307,12 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--budget", type=float, default=20.0)
     run.add_argument("--threads", type=int, default=4)
     run.add_argument("--out", type=Path, required=True)
-    run.add_argument("--binary", type=Path, default=DEFAULT_BINARY)
+    run.add_argument(
+        "--build-dir",
+        type=Path,
+        default=DEFAULT_BUILD_DIR,
+        help=f"a Release build of this checkout holding {BINARY_NAME}",
+    )
     run.add_argument("--inst-dir", type=Path, default=DEFAULT_INST_DIR)
     run.add_argument("--lock", type=Path, default=None, help="flock this file around each arm pair")
     ana = sub.add_parser("analyze", help="score a campaign file")
