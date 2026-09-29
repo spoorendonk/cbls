@@ -56,7 +56,10 @@ class Model;
 /// makes resident only the pages those rows' columns land on; a smaller block
 /// reused from the heap is zero-filled, O(incidences) -- the same order as the
 /// FJ constructor's own per-row tables, which the LNS repair already pays per
-/// call. A build writes
+/// call. Measured, worst case (threshold raised, every call memset): calloc +
+/// free of neos-860300's 3.1 MB table costs 0.04 ms warm and a 32 MB one 2.2 ms
+/// (~15 GB/s, so ~0.2 ms for 3.1 MB cold); that instance runs 10 repairs in 20s,
+/// under 0.01% of the budget. A build writes
 /// the row's nonzero slopes into its variables' slots, O(row log |G_v|) once.
 ///
 /// A row is classified once, before it is built, and its slopes never change.

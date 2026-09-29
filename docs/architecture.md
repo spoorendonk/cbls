@@ -899,9 +899,10 @@ two children are affine, in closed form by `LinearJumpScorer`
 table laid out parallel to `G_v` (a row's build writes each of its variables'
 slots, so `prepare` reads the k-th row's slope at a fixed position -- #176
 replaced a per-row binary search that was up to 49% of the runner's CPU on
-dense rows; GLS iterations in 20s at one thread went neos-860300 15,380 -> ~23,990,
-swath3 ~577k -> ~724k, cbs-cta ~690k -> ~820k, two runs per arm, `896b683` ->
-`6198ca0`), and the candidate costs `Σ_c w_c·(clamped(cmp(p + rΔ, q)) − clamped(old))` — O(|G_v|)
+dense rows; GLS iterations in 20s at one thread went neos-860300 15,340 -> 24,019
+(1.57x), swath3 574,556 -> 723,186 (1.26x), cbs-cta 686,607 -> 818,264 (1.19x),
+means of two runs per arm, `896b683` -> `38a8543` as recorded in each run's
+`commit_sha`), and the candidate costs `Σ_c w_c·(clamped(cmp(p + rΔ, q)) − clamped(old))` — O(|G_v|)
 instead of two `delta_evaluate`s over every row in the column. Same candidates,
 same first-seen rule, same per-row differencing (#100); the scores agree with
 the probe to rounding, not to the bit -- so the chosen jump is guaranteed the
@@ -2550,10 +2551,10 @@ the scratch together moved kasavu's peak RSS (30s, Release, 12-core box) from
 at `53e0587` against `cf9da09`; the table above predates them. #176 replaced
 the scorer's per-row pool (12 B per built nonzero, searched by binary search) with
 the `G_v`-parallel table and left the footprint where it was: kasavu at 20s,
-one worker, 923,692 -> 924,400 KiB (`896b683` -> `6198ca0`), eight workers
-3,931,036 -> 3,866,148 KiB (`peak_rss_kib`; kasavu ran no LNS repair here),
-one run each, serial under a machine-wide lock on a 12-core box (load 1.8 at the
-start, 4.4 at the end, after the eight-worker run). The shared pool's
+one worker, 923,620 -> 924,376 KiB (`896b683` -> `38a8543`, the records'
+`commit_sha`), eight workers 3,888,820 -> 3,866,060 KiB (`peak_rss_kib`; kasavu
+ran no LNS repair here), one run each, serial under a machine-wide lock on a
+12-core box (load 4.3-4.4 throughout, another job's tail). The shared pool's
 `max(10, 2N)` `Solution`s grow with N too. So the criterion to hold this to is
 "1-worker + N x a measured per-worker constant", not "1-worker + a small
 constant" — and treat that constant as a **floor**: its largest term scales with
