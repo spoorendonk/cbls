@@ -864,8 +864,12 @@ void FeasibilityJump::update_var(int32_t var_id) {
     }
 
     const double j = jumps_.jump_value(var_id);
-    model_.var_mut(var_id).value = j;
-    delta_evaluate(model_, &var_id, 1);
+    Variable& var = model_.var_mut(var_id);
+    const double old_value = var.value;
+    var.value = j;
+    // delta_evaluate's node values to the bit, with each integral row moved by
+    // its one changed term instead of re-summed (#177).
+    commit_scalar_move(model_, var_id, old_value);
     jumps_.invalidate(var_id);
 
     // Every row of gv is settled (in V or not, counted or not) before any

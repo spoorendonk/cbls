@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <stdexcept>
 #include <string>
@@ -113,6 +114,10 @@ double full_evaluate(Model& model) {
     if (model.has_custom_nodes()) {
         model.clear_custom_probes();
     }
+    // Re-sums without checking the terms, so no Sum is known exact afterwards
+    // (#177). Also what sizes the state: every close and every structural
+    // rebuild ends in a full pass.
+    model.sum_exact_state().assign(model.num_nodes(), 0);
     for (int32_t nid : model.topo_order()) {
         model.set_node_value_unchecked(nid, evaluate(model.nodes()[nid], model));
     }
@@ -294,8 +299,115 @@ double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
 
 }  // namespace
 
-double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count, DeltaMode mode,
-                      const EditJournal* journal) {
+// ---------------------------------------------------------------------------
+// Exact incremental Sum (#177)
+// ---------------------------------------------------------------------------
+//
+// A committed FJ move changes one term of each row it touches, and re-summing a
+// row costs its whole length: on swath3 a committed dirty Sum averaged 1315
+// terms, of which about one had changed, and the re-sum was 36% of the run.
+//
+// The update is restricted to where it is EXACT, so that it changes no bits:
+// the Sum's terms are integers of magnitude at most 2^52 / n (n terms). Then
+// every partial sum -- the re-sum's, in child order, and the update's, in any
+// order -- is an integer of magnitude at most 2^52, every addition is exact,
+// and `old + sum(new_i - old_i)` equals the re-sum. A floating-point update
+// outside that regime would drift from the re-sum, and every probe leg
+// re-sums: a row within tolerance of its bound could then read violated on one
+// side of a probe and satisfied on the other. Keeping the bits identical keeps
+// the probes, `LinearJumpScorer`'s reads of node values, and every trajectory
+// exactly what they were.
+//
+// Per Sum, per model, `sum_exact_state()` says whether the value currently
+// held is known exact. It is set by a checked re-sum and kept by each checked
+// term update; a term failing the check clears it, and the Sum is re-summed at
+// its turn in the walk. `full_evaluate` clears it for every node.
+//
+// The cost model. Re-summing an eligible Sum costs its n terms, plus one
+// integrality and magnitude test each when it is also checked. The update
+// costs one test and one add per CHANGED term, paid by the term, plus a
+// parents scan for each dirty `Neg`/`Prod`. It wins when rows are long and a
+// move touches one term of each, which is the MIP regime. It loses nothing
+// measurable when rows are short. It is never used where terms are fractional:
+// such Sums are not eligible, so their re-sum pays no checks.
+namespace {
+
+// 2^52: every term at most 2^52 / n in magnitude keeps every partial sum of n
+// of them, and every difference of two, exactly representable.
+constexpr double kExactSumBound = 4503599627370496.0;
+
+thread_local ExactSumCounters exact_sum_counts;
+
+// Is `v` an integer of magnitude at most `limit`? False for NaN and +-inf.
+inline bool exact_term(double v, double limit) {
+    return std::fabs(v) <= limit && v == std::trunc(v);
+}
+
+inline double exact_term_limit(const ExprNode& sum) {
+    return kExactSumBound / static_cast<double>(sum.child_count);
+}
+
+// The Sum case of `evaluate()`, verbatim -- same start, same child order, so the
+// same bits -- plus the check that decides whether the result is known exact.
+double checked_resum(Model& model, const ExprNode& node, uint8_t& exact) {
+    const double limit = exact_term_limit(node);
+    const std::vector<double>& values = model.node_values();
+    const std::vector<Variable>& vars = model.variables();
+    double s = 0.0;
+    bool ok = true;
+    for (const ChildRef& c : model.children(node)) {
+        const double v = c.is_var ? vars[c.id].value : values[c.id];
+        s += v;
+        ok = ok && exact_term(v, limit);
+    }
+    exact = static_cast<uint8_t>(ok);
+    return s;
+}
+
+// One term of the eligible Sum `p` moved from `old_v` to `new_v`. Applied to the
+// Sum's value in place, ahead of its turn in the walk, while it is known exact;
+// otherwise the Sum is marked for a re-sum. `old_v` needs no test: it passed one
+// when it entered the Sum's value, or the Sum would not be known exact now.
+inline void push_term(Model& model, std::vector<uint8_t>& exact, int32_t p, double new_v,
+                      double old_v) {
+    if (exact[p] == 0) {
+        return;
+    }
+    if (!exact_term(new_v, exact_term_limit(model.nodes()[p]))) {
+        exact[p] = 0;
+        return;
+    }
+    model.set_node_value_unchecked(p, model.node_values()[p] + (new_v - old_v));
+}
+
+// Clears the exact state of every node in the walk if the walk throws: a push
+// may already have moved a Sum whose remaining terms never reported, and the
+// value is then no longer the exact sum the state claims.
+struct ExactStateGuard {
+    ExactStateGuard(std::vector<uint8_t>& e, const std::vector<int32_t>& l) : exact(e), list(l) {}
+    ExactStateGuard(const ExactStateGuard&) = delete;
+    ExactStateGuard& operator=(const ExactStateGuard&) = delete;
+    ExactStateGuard(ExactStateGuard&&) = delete;
+    ExactStateGuard& operator=(ExactStateGuard&&) = delete;
+    ~ExactStateGuard() {
+        if (!done) {
+            for (const int32_t nid : list) {
+                exact[nid] = 0;
+            }
+        }
+    }
+
+    std::vector<uint8_t>& exact;
+    const std::vector<int32_t>& list;
+    bool done = false;
+};
+
+// The one walk behind both entry points. `old_values`, when non-null, holds the
+// previous value of each of `changed_var_ids` and switches the term updates on;
+// null re-sums every dirty Sum (checked, where eligible), as `delta_evaluate`
+// always did.
+double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, DeltaMode mode,
+                  const EditJournal* journal, const double* old_values) {
     const EvaluationGuard guard("delta_evaluate");
     if (count == 0) {
         if (model.objective_id() >= 0) {
@@ -341,20 +453,74 @@ double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count
         }
     }
 
+    // Both arrays are sized by the first full_evaluate, which every close runs;
+    // before that there is nothing to be exact about and the walk is the plain one.
+    const std::vector<uint8_t>& eligible = model.exact_sum_nodes();
+    std::vector<uint8_t>& exact = model.sum_exact_state();
+    const bool tracked = eligible.size() == num_nodes && exact.size() == num_nodes;
+    const bool push = tracked && old_values != nullptr;
+    ExactStateGuard exact_guard(exact, dirty_list);
+
+    if (push) {
+        const std::vector<Variable>& vars = model.variables();
+        for (size_t ci = 0; ci < count; ++ci) {
+            const int32_t v = changed_var_ids[ci];
+            for (const int32_t dep_id : model.dependents(v)) {
+                if (eligible[dep_id] != 0) {
+                    push_term(model, exact, dep_id, vars[v].value, old_values[ci]);
+                }
+            }
+        }
+    }
+
+    // Wraps the per-node evaluator with the exact-Sum rules. An eligible Sum is
+    // taken as it stands when its terms were pushed into it exactly, and
+    // re-summed with the check otherwise; a dirty Neg/Prod pushes its change into
+    // its eligible parents. Untracked (an unclosed model), this is `eval_other`.
+    const auto with_exact_sums = [&](int32_t nid, auto&& eval_other) -> double {
+        if (!tracked) {
+            return eval_other(nid);
+        }
+        if (eligible[nid] != 0) {
+            if (push && exact[nid] != 0) {
+                ++exact_sum_counts.incremental;
+                return model.node_values()[nid];
+            }
+            ++exact_sum_counts.resummed;
+            return checked_resum(model, model.nodes()[nid], exact[nid]);
+        }
+        const NodeOp op = model.nodes()[nid].op;
+        if (!push || (op != NodeOp::Neg && op != NodeOp::Prod)) {
+            return eval_other(nid);
+        }
+        const double old_v = model.node_values()[nid];
+        const double new_v = eval_other(nid);
+        for (const int32_t parent_id : model.parents(nid)) {
+            if (eligible[parent_id] != 0) {
+                push_term(model, exact, parent_id, new_v, old_v);
+            }
+        }
+        return new_v;
+    };
+
     // One test per CALL, not per node: a model with no custom node takes the
     // pre-#166 loop verbatim, which is what keeps criterion 4's bit-identical
     // trajectories bit-identical (#166).
     if (model.has_custom_nodes()) {
         thread_local std::vector<int32_t> changed_inputs;
         evaluate_dirty_in_topo_order(model, dirty_list, dirty_flags, num_nodes, [&](int32_t nid) {
-            return evaluate_dirty_node(model, nid, mode, changed_var_ids, count, dirty_flags,
-                                       changed_inputs, journal);
+            return with_exact_sums(nid, [&](int32_t id) {
+                return evaluate_dirty_node(model, id, mode, changed_var_ids, count, dirty_flags,
+                                           changed_inputs, journal);
+            });
         });
     } else {
-        evaluate_dirty_in_topo_order(
-            model, dirty_list, dirty_flags, num_nodes,
-            [&model](int32_t nid) { return evaluate(model.nodes()[nid], model); });
+        evaluate_dirty_in_topo_order(model, dirty_list, dirty_flags, num_nodes, [&](int32_t nid) {
+            return with_exact_sums(
+                nid, [&model](int32_t id) { return evaluate(model.nodes()[id], model); });
+        });
     }
+    exact_guard.done = true;
 
     // The flags are cleared by `flag_guard` on the way out, which is also what
     // covers a throw from user code inside the walk.
@@ -362,6 +528,21 @@ double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count
         return model.node_values()[model.objective_id()];
     }
     return 0.0;
+}
+
+}  // namespace
+
+ExactSumCounters& exact_sum_counters() noexcept {
+    return exact_sum_counts;
+}
+
+double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count, DeltaMode mode,
+                      const EditJournal* journal) {
+    return delta_walk(model, changed_var_ids, count, mode, journal, nullptr);
+}
+
+double commit_scalar_move(Model& model, int32_t var_id, double old_value) {
+    return delta_walk(model, &var_id, 1, DeltaMode::Commit, nullptr, &old_value);
 }
 
 namespace {

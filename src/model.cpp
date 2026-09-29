@@ -30,6 +30,7 @@ Model::Model() {
 Model::Model(const Model& other)
     : vars_(other.vars_),
       node_values_(other.node_values_),
+      sum_exact_(other.sum_exact_),
       objective_id_(other.objective_id_),
       is_maximizing_(other.is_maximizing_),
       objective_bound_node_(other.objective_bound_node_),
@@ -840,12 +841,71 @@ void Model::rebuild_back_references() {
     st.dependent_offsets.front() = 0;
 }
 
+// Which Sums `commit_scalar_move` may update by their terms' changes (#177).
+// A term qualifies when its value is an integer whatever the assignment: a
+// Bool/Int variable, a finite integral literal, or a `Neg`/`Prod` of such terms
+// -- the shapes `mps_to_model` writes for a row with integral coefficients
+// (`x`, `neg(x)`, `prod(constant(a), x)`). A nested `Sum` does not qualify, so
+// a qualifying Sum is never a term of another and its own change need not be
+// pushed further. The objective bound is excluded although it is a Const: its
+// value is per-model search state, set by `set_objective_bound`.
+//
+// A Sum naming a term twice is excluded as well: the back-references are
+// deduplicated, so the term would report its change once and be counted once.
+//
+// Being classified only makes a Sum ELIGIBLE. The values themselves are checked
+// on every update, since an Int variable holding 2.5 or 1e17 is representable,
+// and exactness is a property of the numbers, not of the types.
+void Model::classify_exact_sums() {
+    ModelStructure& st = mut();
+    const size_t n_nodes = st.nodes.size();
+    std::vector<uint8_t> integral_term(n_nodes, 0);
+    const auto integral_ref = [&](const ChildRef& ref) {
+        if (ref.is_var) {
+            const VarType t = vars_[ref.id].type;
+            return t == VarType::Bool || t == VarType::Int;
+        }
+        return integral_term[ref.id] != 0;
+    };
+    st.exact_sum.assign(n_nodes, 0);
+    std::vector<int32_t> node_stamp(n_nodes, -1);
+    std::vector<int32_t> var_stamp(vars_.size(), -1);
+    for (const int32_t nid : st.topo_order) {
+        const ExprNode& nd = st.nodes[nid];
+        const ConstSpan<ChildRef> kids = children(nd);
+        // An if-chain, not a switch: the ops this does not name are simply "not
+        // a qualifying term", and a `default:` in a NodeOp switch is what would
+        // hide a missed case from -Wswitch everywhere else.
+        if (nd.op == NodeOp::Const) {
+            integral_term[nid] = static_cast<uint8_t>(nid != objective_bound_node_ &&
+                                                      std::isfinite(nd.const_value) &&
+                                                      nd.const_value == std::trunc(nd.const_value));
+        } else if (nd.op == NodeOp::Neg || nd.op == NodeOp::Prod) {
+            integral_term[nid] =
+                static_cast<uint8_t>(std::all_of(kids.begin(), kids.end(), integral_ref));
+        } else if (nd.op == NodeOp::Sum) {
+            bool ok = !kids.empty();
+            for (const ChildRef& ref : kids) {
+                int32_t& stamp = ref.is_var ? var_stamp[ref.id] : node_stamp[ref.id];
+                const bool term = ref.is_var || st.nodes[ref.id].op != NodeOp::Sum;
+                if (!term || stamp == nid || !integral_ref(ref)) {
+                    ok = false;
+                    break;
+                }
+                stamp = nid;
+            }
+            st.exact_sum[nid] = static_cast<uint8_t>(ok);
+        }
+    }
+}
+
 void Model::close() {
     require_open("close");
     ModelStructure& st = mut();
     rebuild_back_references();
     st.topo_order = detail::compute_topo_order(*this);
     rebuild_topo_positions();
+    classify_exact_sums();
     build_var_constraints();
     full_evaluate(*this);
     closed_ = true;
@@ -899,6 +959,7 @@ void Model::add_objective_soft_constraint() {
     rebuild_back_references();
     st.topo_order = detail::compute_topo_order(*this);
     rebuild_topo_positions();
+    classify_exact_sums();
     build_var_constraints();
     full_evaluate(*this);
     // The rebuild above is exactly close()'s, so say so: on a model solve()
