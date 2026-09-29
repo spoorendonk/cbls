@@ -578,7 +578,8 @@ once (idempotent). This:
 `set_objective_bound(bound)` records the bound in the model and recomputes the
 constraint residual in place. It does **not** write the constant node's
 `const_value`: the bound is per-worker mutable state, each worker tightening its
-own on its own incumbents, so it lives beside the node values and `evaluate()`'s
+own on its own incumbents (and, in a portfolio, on the pool's best objective --
+see [Parallel Search](#parallel-search), item 3), so it lives beside the node values and `evaluate()`'s
 `Const` arm reads it back for the one node `objective_bound_node()` names
 (#157). That branch is leaf-only — a `Const` is never in a `delta_evaluate`
 dirty cone — and it is needed rather than tidy: `full_evaluate` runs after every
@@ -1589,6 +1590,9 @@ point**; the kick and LNS destroy need the window above.
 
 While time and `max_iterations` remain, each pass:
 
+0. **Portfolio only: sync the shared bound** (#179). If the pool's best feasible
+   objective earns a tighter bound than this worker holds, tighten to it (see
+   [Parallel Search](#parallel-search), item 3). A no-op without a pool.
 1. **Pick the batch kind.** With probability `structural_batch_probability`,
    STRUCTURAL; else with probability `novelty_jump_probability` (only when
    `use_compound_moves`), NOVELTY JUMP; else FEASIBILITY JUMP. Structural and
@@ -2560,7 +2564,7 @@ ran no LNS repair here), one run each, serial under a machine-wide lock on a
 constant" — and treat that constant as a **floor**: its largest term scales with
 the column count, and this roster's `supportcase19` has 2x kasavu's.
 
-Three things make it cooperative rather than N independent runs, and all three
+Four things make it cooperative rather than N independent runs, and all four
 are reached through one parameter -- `cbls::solve()`'s trailing
 `SearchCoordination*`, which is null at every call site outside this class
 (three of the four benchmark runners always, and `mipfeas` at its default
@@ -2599,7 +2603,58 @@ bit-identical to what it was before the parameter existed:
    unproductive-batch route, which fires on an iteration count and can recur
    every batch -- an adoption is a full re-grounding and belongs on the slow
    route.
-3. **No idle workers.** Each worker is a restart loop over the *shared*
+3. **Share the objective bound** (#179). The pool keeps its best feasible,
+   finite objective `G` in an atomic, written under the mutex by `submit` and
+   read without it. At each **batch boundary** a worker whose bound is looser
+   than `G - eps(G)` -- the same `eps = 1e-3*(|obj|+1)` rule `record_best` uses
+   -- tightens to it, then `vm.invalidate_cache()` and `fj.resync()`. Without it
+   a worker behind a peer kept searching for points the portfolio had already
+   beaten until it stagnated long enough to adopt. The rules:
+   - **never loosen.** The batch-boundary test is strict, and the other two
+     writers of the bound -- `record_best` and the adoption re-grounding -- take
+     the min with the shared cap. That matters for `record_best`: a worker
+     behind the global best still records its own improvements (below), and
+     `obj - eps` from one of them would otherwise raise a bound the pool had
+     tightened;
+   - **the bound moves, nothing else does.** Not the assignment -- the worker
+     is now violating a tighter row, ViolationLS's normal state after any new
+     best. Not `best_feasible_obj` or `best_state`, since the worker did not
+     find the peer's point and `finish()` must return one it did; so
+     `record_best`'s strict-improvement test stays against the worker's OWN
+     best, and a point between `G` and it is still recorded, shared and
+     returned. Not the GLS weights: `resync`, not `reset_weights`, because only
+     one row changed, and an adoption is what resets them;
+   - **only feasible, finite objectives count** toward `G`. The pool also holds
+     closest-approach states (usually *better* objectives, infeasible) and #100's
+     `+inf` witness. `G` is the submitter's objective, not re-evaluated on the
+     reader's model -- the workers' models are one model by construction; a
+     factory that returns different ones misdirects the row's pressure but cannot
+     corrupt an incumbent;
+   - **the row's weight is never masked.** FJ's two-phase linear-first mode
+     would zero it, but `solve()` runs FJ single-phase, and the bound is only
+     written when the model has an objective row.
+
+   `ParallelConfig::share_objective_bound` (default on; `cbls_mipfeas
+   --no-share-bound`) switches it off, which is the A/B control and otherwise
+   the pre-#179 portfolio. `SearchCounters` reports its engagement in both arms:
+   `shared_bound_tightenings` (the global best set the bound),
+   `own_best_behind_global` (an own best recorded while a peer held a better
+   one), and `bound_behind_global_batches` / `_seconds` (batches run with a
+   bound looser than the global best's -- the control arm's measure of the
+   opportunity; near zero with sharing on). A lone worker, whose pool holds only
+   its own incumbents, never fires it, and `--threads 1` passes no coordination
+   at all.
+
+   One pathology to know about, found writing the tests: on a model whose
+   objective and constraint move by exactly equal amounts per unit step
+   (`min sum x^2` s.t. `sum x >= k`, integer), a large jump in the bound leaves
+   both rows violated on an exact tie that bumping both weights can never break,
+   and FJ stops moving. The worker then makes no progress until a kick, and the
+   kick returns it to the same plateau. That is a property of the tie, not of
+   sharing -- any sufficiently large bound step would do it -- but sharing is
+   what makes large steps routine. The tests use a linear covering model, where
+   it does not arise.
+4. **No idle workers.** Each worker is a restart loop over the *shared*
    deadline, not a single `solve()`: a run that returns with budget left (an
    exhausted `SearchConfig::max_iterations`) is restarted on the time its
    predecessor left, with `skip_init = true` so it keeps the assignment it
