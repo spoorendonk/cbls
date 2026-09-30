@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
@@ -560,39 +561,73 @@ ChildRef Model::wrap_scalar(int32_t handle, const char* what) const {
 
 namespace {
 
-// How many distinct values an Element table may have and still offer one
-// representative index per value (#186); above it, the argmin and the argmax.
-// A representative is a jump candidate `compute_var_jump` offers for an index
-// whose table is too large to enumerate, so it is the index set that reaches
-// every VALUE the table holds -- which is what an index is chosen for. 32 is
-// the Int grid's point count (`kJumpGridPoints` in src/feasibility_jump.cpp):
-// the same per-variable probe budget the grid already spends.
-constexpr size_t kElementDistinctValues = 32;
+// How many representative indices one line of an Element table (#186) offers:
+// its distinct values when there are at most this many, else this many picked at
+// evenly spaced ranks of the sorted distinct values, the smallest and the largest
+// always among them. A representative is a jump candidate `compute_var_jump`
+// offers for an index whose table is too large to enumerate: the index set that
+// reaches the VALUES the line holds, which is what an index is chosen for. 32 is
+// the Int grid's point count (`kJumpGridPoints` in src/feasibility_jump.cpp), the
+// probe budget the grid already spends.
+constexpr size_t kElementRepresentatives = 32;
 
-void add_unique(std::vector<int32_t>& out, int32_t v) {
-    if (std::find(out.begin(), out.end(), v) == out.end()) {
-        out.push_back(v);
+// The representatives of one line: `line[i]` is the value at index i. Sorting
+// (value, index) pairs puts each distinct value's FIRST index at the head of its
+// run, so the first index of every distinct value falls out of one sort, with no
+// search per value. O(m log m) for a line of m.
+std::vector<int32_t> line_representatives(const std::vector<double>& line) {
+    std::vector<std::pair<double, int32_t>> cells;
+    cells.reserve(line.size());
+    for (size_t i = 0; i < line.size(); ++i) {
+        cells.emplace_back(line[i], static_cast<int32_t>(i));
     }
+    std::sort(cells.begin(), cells.end());
+    std::vector<int32_t> first_of_value;  // in ascending value
+    for (size_t i = 0; i < cells.size(); ++i) {
+        if (i == 0 || cells[i].first != cells[i - 1].first) {
+            first_of_value.push_back(cells[i].second);
+        }
+    }
+    const size_t d = first_of_value.size();
+    if (d <= kElementRepresentatives) {
+        return first_of_value;
+    }
+    std::vector<int32_t> reps;
+    reps.reserve(kElementRepresentatives);
+    for (size_t r = 0; r < kElementRepresentatives; ++r) {
+        const size_t rank =
+            static_cast<size_t>(std::llround(static_cast<double>(r) * static_cast<double>(d - 1) /
+                                             static_cast<double>(kElementRepresentatives - 1)));
+        reps.push_back(first_of_value[rank]);
+    }
+    return reps;
 }
 
-// Fill `tbl.row_reps` / `tbl.col_reps`: for each distinct value (or, past the
-// cap, for the smallest and the largest), the row and the column of its first
-// cell in row-major order. O(n log n) once, at build.
-void compute_representatives(ElementTable& tbl) {
-    std::vector<double> distinct = tbl.values;
-    std::sort(distinct.begin(), distinct.end());
-    distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
-    std::vector<double> wanted;
-    if (distinct.size() <= kElementDistinctValues) {
-        wanted = distinct;
-    } else {
-        wanted = {distinct.front(), distinct.back()};
+// Fill `tbl.row_reps_by_col` (the representatives of every column, as rows) and,
+// for a two-index table, `tbl.col_reps_by_row`. Once, at build: O(R C log R +
+// R C log C) for an R x C table, and at most 32 (R + C) stored indices -- the
+// price of offering, per call, the representatives of the line the OTHER index
+// currently selects rather than of the whole table.
+void compute_representatives(ElementTable& tbl, bool two_index) {
+    const auto rows = static_cast<size_t>(tbl.rows);
+    const auto cols = static_cast<size_t>(tbl.cols);
+    std::vector<double> line;
+    tbl.row_reps_by_col.resize(cols);
+    for (size_t c = 0; c < cols; ++c) {
+        line.clear();
+        for (size_t r = 0; r < rows; ++r) {
+            line.push_back(tbl.values[(r * cols) + c]);
+        }
+        tbl.row_reps_by_col[c] = line_representatives(line);
     }
-    for (const double w : wanted) {
-        const auto it = std::find(tbl.values.begin(), tbl.values.end(), w);
-        const auto cell = static_cast<int32_t>(it - tbl.values.begin());
-        add_unique(tbl.row_reps, cell / tbl.cols);
-        add_unique(tbl.col_reps, cell % tbl.cols);
+    if (!two_index) {
+        return;
+    }
+    tbl.col_reps_by_row.resize(rows);
+    for (size_t r = 0; r < rows; ++r) {
+        line.assign(tbl.values.begin() + static_cast<std::ptrdiff_t>(r * cols),
+                    tbl.values.begin() + static_cast<std::ptrdiff_t>((r + 1) * cols));
+        tbl.col_reps_by_row[r] = line_representatives(line);
     }
 }
 
@@ -612,7 +647,7 @@ void require_finite_table(const std::vector<double>& values) {
 int32_t Model::push_element(ElementTable tbl, const std::vector<ChildRef>& kids) {
     ModelStructure& st = mut();
     require_finite_table(tbl.values);
-    compute_representatives(tbl);
+    compute_representatives(tbl, kids.size() == 2);
     st.element_tables.push_back(std::move(tbl));
     const auto table_id = static_cast<int32_t>(st.element_tables.size() - 1);
     int32_t nid = -1;
@@ -980,6 +1015,56 @@ void Model::rebuild_topo_positions() {
     st.topo_pos.assign(st.nodes.size(), 0);
     for (size_t i = 0; i < st.topo_order.size(); ++i) {
         st.topo_pos[st.topo_order[i]] = static_cast<int32_t>(i);
+    }
+    // Derived from the same order, at the same two sites (close() and the
+    // objective row), so it cannot go stale against it either.
+    classify_breakpoint_reach();
+}
+
+// `ModelStructure::breakpoint_flags` (#186). One reverse-topological pass: a node
+// reaches a breakpoint op if it is one, or if it carries a slope and a parent
+// reaches one. Then, on the reaching Sums only, a last-writer stamp finds a child
+// named twice. O(nodes + parent edges + the children of reaching Sums), and
+// nothing at all -- the vector stays empty -- on a model without a breakpoint
+// node.
+void Model::classify_breakpoint_reach() {
+    ModelStructure& st = mut();
+    if (!st.has_breakpoint_nodes) {
+        st.breakpoint_flags.clear();
+        return;
+    }
+    std::vector<uint8_t>& flags = st.breakpoint_flags;
+    flags.assign(st.nodes.size(), 0);
+    for (auto it = st.topo_order.rbegin(); it != st.topo_order.rend(); ++it) {
+        const int32_t nid = *it;
+        const NodeOp op = st.nodes[static_cast<size_t>(nid)].op;
+        bool reaches = is_breakpoint_op(op);
+        if (!reaches && carries_slope(op)) {
+            const ConstSpan<int32_t> ps = parents(nid);
+            reaches = std::any_of(ps.begin(), ps.end(), [&flags](int32_t p) {
+                return (flags[static_cast<size_t>(p)] & ModelStructure::kReachesBreakpoint) != 0;
+            });
+        }
+        if (reaches) {
+            flags[static_cast<size_t>(nid)] = ModelStructure::kReachesBreakpoint;
+        }
+    }
+    std::vector<int32_t> var_stamp(vars_.size(), -1);
+    std::vector<int32_t> node_stamp(st.nodes.size(), -1);
+    for (size_t nid = 0; nid < st.nodes.size(); ++nid) {
+        const ExprNode& nd = st.nodes[nid];
+        if (nd.op != NodeOp::Sum || flags[nid] == 0) {
+            continue;
+        }
+        for (const ChildRef& c : children(nd)) {
+            int32_t& stamp = c.is_var ? var_stamp[static_cast<size_t>(c.id)]
+                                      : node_stamp[static_cast<size_t>(c.id)];
+            if (stamp == static_cast<int32_t>(nid)) {
+                flags[nid] |= ModelStructure::kRepeatedChild;
+                break;
+            }
+            stamp = static_cast<int32_t>(nid);
+        }
     }
 }
 

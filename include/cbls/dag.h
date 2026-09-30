@@ -165,9 +165,10 @@ enum class NodeOp : uint8_t {
     // derivative is 0 and none of them is affine. What FJ uses instead of a
     // gradient is in `compute_var_jump` (src/feasibility_jump.cpp): the plateau
     // edges of Ceil/Floor/Round and the index values of Element, reached from a
-    // variable through affine ops, are offered as jump candidates.
-    /// `table[i]` or `table[i][j]` over a numeric table, with the indices read
-    /// from Int expressions -- 1 or 2 children, every one an index. The table
+    // variable through ops that carry a slope (`carries_slope`), are offered as
+    // jump candidates.
+    /// `table[i]` or `table[i][j]` over a numeric table, each index any scalar,
+    /// truncated toward zero -- 1 or 2 children, every one an index. The table
     /// is `ModelStructure::element_tables[lambda_func_id]`. See
     /// `Model::element` for the index rule.
     Element,
@@ -335,5 +336,15 @@ class Model;
 
 double evaluate(const ExprNode& node, const Model& model);
 double local_derivative(const ExprNode& node, int child_idx, const Model& model);
+
+/// Element, Ceil, Floor, Round: the piecewise-constant ops whose plateaus FJ
+/// offers as jump candidates (#186).
+bool is_breakpoint_op(NodeOp op) noexcept;
+
+/// Whether the breakpoint walk (#186) carries a slope through `op`: every op
+/// with a meaningful `local_derivative`, i.e. all but the structural ops, user
+/// code, the breakpoint ops themselves and Const. A default-free switch in
+/// src/dag.cpp, so a new op must choose.
+bool carries_slope(NodeOp op) noexcept;
 
 }  // namespace cbls

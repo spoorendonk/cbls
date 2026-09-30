@@ -927,12 +927,16 @@ namespace {
 // Probes one `compute_var_jump` of `t` makes. Each probe is two delta walks, and
 // the model's `t + 0 <= 5000` row is an exact-eligible Sum that a non-commit walk
 // re-sums once, so the probe count is half the re-sum count.
+//
+// The tables are 30 long: under the Element cap, so each node offers every index
+// and no grid -- the grid is a budget shared across nodes, so with it in play a
+// second node would change WHICH candidates are offered, not just repeat them.
 int64_t element_jump_probes(bool both_rows, JumpResult& out) {
-    constexpr int kN = 200;
+    constexpr int kN = 30;
     std::vector<double> cost(kN, 5.0);
     std::vector<double> cap(kN, 0.0);
-    cost[137] = 1.0;
-    cap[137] = 10.0;
+    cost[17] = 1.0;
+    cap[17] = 10.0;
     Model m;
     auto t = m.Int(0, 1000, "t");
     m.add_constraint(element(cap, t) >= 5.0);
@@ -953,17 +957,19 @@ int64_t element_jump_probes(bool both_rows, JumpResult& out) {
 
 TEST_CASE("FJ offers each breakpoint candidate once however many nodes propose it",
           "[fj][element]") {
-    // cost[t] and cap[t] both propose every index 0..199, and the Int path has
-    // already offered some of them (its grid over [0, 1000] and 998/1000): each
-    // value is probed once. The second row must add no probe at all.
+    // cost[t] and cap[t] both propose every index 0..29, and the Int path has
+    // already offered one of them (0, its window's low end): each value is probed
+    // once, so the second row adds no probe at all.
     JumpResult one;
     JumpResult two;
     const int64_t probes_one = element_jump_probes(false, one);
     const int64_t probes_two = element_jump_probes(true, two);
     REQUIRE(probes_two == probes_one);
-    // Every distinct value, at most: the Int path's 34 plus the 200 indices.
-    REQUIRE(probes_two <= 34 + 200);
-    REQUIRE(two.jump_value == 137.0);
+    // The Int path's 35 probes (0, 1000, 998, 1000 again, and its 31-point grid)
+    // plus the 29 indices it did not already offer; without the deduplication
+    // the two rows would add 60.
+    REQUIRE(probes_two == 35 + 29);
+    REQUIRE(two.jump_value == 17.0);
     REQUIRE(two.score == 5.0);
 }
 

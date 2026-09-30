@@ -668,4 +668,55 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
     return 0.0;
 }
 
+bool is_breakpoint_op(NodeOp op) noexcept {
+    return op == NodeOp::Element || op == NodeOp::Ceil || op == NodeOp::Floor ||
+           op == NodeOp::Round;
+}
+
+bool carries_slope(NodeOp op) noexcept {
+    switch (op) {
+        case NodeOp::Neg:
+        case NodeOp::Sum:
+        case NodeOp::Prod:
+        case NodeOp::Div:
+        case NodeOp::Pow:
+        case NodeOp::Min:
+        case NodeOp::Max:
+        case NodeOp::Abs:
+        case NodeOp::Sin:
+        case NodeOp::Cos:
+        case NodeOp::Tan:
+        case NodeOp::Exp:
+        case NodeOp::Log:
+        case NodeOp::Sqrt:
+        case NodeOp::SignPower:
+        case NodeOp::Tanh:
+        case NodeOp::If:
+        case NodeOp::Leq:
+        case NodeOp::Eq:
+        case NodeOp::Geq:
+        case NodeOp::Neq:
+        case NodeOp::Lt:
+        case NodeOp::Gt:
+            return true;
+        // No children to carry from, list/set structure rather than a value,
+        // user code whose partial would cost a virtual call per walk, and the
+        // breakpoint ops: piecewise constant, so a slope above one is 0.
+        case NodeOp::Const:
+        case NodeOp::At:
+        case NodeOp::Count:
+        case NodeOp::Lambda:
+        case NodeOp::PairLambda:
+        case NodeOp::Custom:
+        case NodeOp::LambdaExtra:
+        case NodeOp::PairLambdaExtra:
+        case NodeOp::Element:
+        case NodeOp::Ceil:
+        case NodeOp::Floor:
+        case NodeOp::Round:
+            return false;
+    }
+    return false;
+}
+
 }  // namespace cbls

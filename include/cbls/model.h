@@ -74,13 +74,16 @@ struct ElementTable {
     int32_t rows = 0;
     int32_t cols = 0;
     std::vector<double> values;
-    /// Representative row and column indices, computed once at build: for each
-    /// distinct value in the table (up to 32 of them; past that, only the
-    /// smallest and the largest), the row and column of its first cell. They
-    /// are the index candidates `compute_var_jump` offers when a table is too
-    /// large to offer every index.
-    std::vector<int32_t> row_reps;
-    std::vector<int32_t> col_reps;
+    /// Representative indices, computed once at build: the index candidates
+    /// `compute_var_jump` offers when a table is too large to offer every index
+    /// (#186). `row_reps_by_col[c]` are rows of column `c` -- the candidates for
+    /// the row index while the column index reads `c` -- and `col_reps_by_row[r]`
+    /// the columns of row `r`; a one-index table has one column and no
+    /// `col_reps_by_row`. Each list holds, for up to 32 of the line's distinct
+    /// values picked at evenly spaced ranks (the smallest and the largest
+    /// always among them), the first index holding that value.
+    std::vector<std::vector<int32_t>> row_reps_by_col;
+    std::vector<std::vector<int32_t>> col_reps_by_row;
 };
 
 /// Convert variable handle (negative, from int_var/float_var/etc.)
@@ -171,6 +174,16 @@ struct ModelStructure {
     /// model without one takes the candidate generation it always did, with no
     /// per-variable walk to find out that there is nothing to add.
     bool has_breakpoint_nodes = false;
+    /// Per node, rebuilt with the topological order when `has_breakpoint_nodes`
+    /// (empty otherwise): `kReachesBreakpoint` on a breakpoint node and on every
+    /// node that reaches one through ops that carry a slope (`carries_slope`),
+    /// and `kRepeatedChild` on such a Sum that names a child more than once. The
+    /// first gates FJ's breakpoint walk per variable and prunes it; the second
+    /// is what lets the walk count `x + x` as slope 2 without scanning every
+    /// Sum's children.
+    std::vector<uint8_t> breakpoint_flags;
+    static constexpr uint8_t kReachesBreakpoint = 1;
+    static constexpr uint8_t kRepeatedChild = 2;
     std::vector<VarSequence> var_sequences;
     std::vector<std::pair<int, int>> var_to_seq;  // var_id -> (seq_idx, pos), resized lazily
     std::vector<ListPartition> list_partitions;
@@ -765,6 +778,11 @@ public:
     }
     /// See `ModelStructure::has_breakpoint_nodes`.
     [[nodiscard]] bool has_breakpoint_nodes() const noexcept { return s().has_breakpoint_nodes; }
+    /// See `ModelStructure::breakpoint_flags`. Sized `num_nodes()` on a closed
+    /// model that has a breakpoint node; empty otherwise.
+    [[nodiscard]] const std::vector<uint8_t>& breakpoint_flags() const noexcept {
+        return s().breakpoint_flags;
+    }
 
     /// Whether this model has any custom node at all (#166).
     ///
@@ -947,6 +965,7 @@ private:
                                                               const char* what) const;
     int32_t alloc_node_over_refs(NodeOp op, const std::vector<ChildRef>& kids);
     int32_t push_element(ElementTable tbl, const std::vector<ChildRef>& kids);
+    void classify_breakpoint_reach();
 };
 
 }  // namespace cbls
