@@ -92,3 +92,25 @@ over the six runs:
 fires here: 10-17 gated minima out of 592-955 on thor50dday, at most 1 of ~240
 on neos-873061, none of ~44,000-48,000 on neos-4763324-toguru. The batch-end
 re-grounding re-sums 15,700-157,000 Sums per run.
+
+## Branch note (appended before the roster A/B)
+
+The sweep above ran on branch `worktree-agent-abbee2e52063f74b1`, kept as a
+record; its commits were then cherry-picked onto main `bf4979f` as branch
+`feat/188-bounded-drift-sum`. Matched by `git patch-id --stable`:
+
+| old branch | new branch | commit |
+|---|---|---|
+| `d9b2f34` | `5997147` | perf(dag): bounded-drift incremental Sum (conflicts resolved against #186's final `model.h` and `test_element_rounding.cpp`, so its patch-id differs) |
+| `2c56754` | `2fcf994` | refactor(fj): gate counters |
+| `3899dd6` | `a4b5eca` | test(dag): rounding of `new - old` |
+| `a6503b1` | `090c931` | refactor(model): split the classifier |
+| `a50af3c` | `94f019b` | perf(dag): plain re-sum on walks without old values (the sweep's arms) |
+| `8f8ed78` | `721485a` | this file |
+| `eb5f167` | `7bb0201` | the sweep result |
+
+The roster A/B's new arm is `7bb0201`; later commits on the branch change only
+docs. Before it runs, fixed-iteration runs of `bf4979f` and `7bb0201` end on
+identical final-assignment hashes on neos-860300 (5,000 iterations) and rail01
+(20,630 iterations, of which the objective row's Sum took 4,561 inexact
+updates).
