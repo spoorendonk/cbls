@@ -1088,20 +1088,26 @@ TEST_CASE("FJ reaches the auxiliary-Int reference's optimum through the breakpoi
 
 TEST_CASE("FJ breakpoint candidates survive a free Float's NaN box midpoint", "[fj][rounding]") {
     // x in (-inf, inf): the Float path's box midpoint 0.5 * (lb + ub) is NaN.
-    // The dedup set must not take it, or its sort is undefined and a lookup
-    // can report a real breakpoint as already offered. ceil(x) == 2 is reached
-    // only through the edges near the current argument.
+    // The dedup set must not take it: sorting a range holding NaN is undefined,
+    // and in practice the NaN lands mid-array, where `binary_search` reads it as
+    // "equal" to whatever it is asked about. The two linear rows put two Newton
+    // candidates (0.3, 0.5) ahead of it, which is what leaves the NaN at the
+    // midpoint the search probes first: every breakpoint candidate above 0.5 then
+    // reads as already offered. ceil(x) == 2 is reached only through the edges
+    // near the current argument, at x in (1, 2].
     Model m;
     const double inf = std::numeric_limits<double>::infinity();
     auto x = m.Float(-inf, inf, "x");
     m.add_constraint(ceil(x) >= 2.0);
     m.add_constraint(ceil(x) <= 2.0);
+    m.add_constraint(x >= 0.3);
+    m.add_constraint(x >= 0.5);
     m.close();
     m.var_mut(x.var_id()).value = 0.0;
     full_evaluate(m);
     ViolationManager vm(m);
     const JumpResult r = compute_var_jump(m, vm.weights, x.var_id());
-    REQUIRE(r.score == 2.0);
+    REQUIRE(std::abs(r.score - 2.8) < 1e-12);
     REQUIRE(r.jump_value > 1.0);
     REQUIRE(r.jump_value <= 2.0);
 }
