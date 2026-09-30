@@ -421,8 +421,9 @@ double checked_resum(const Model& model, const ExprNode& node, IncSumState& st) 
     return s;
 }
 
-// The incremental-Sum rules for one walk. `Plain` is an unclosed model, whose
-// state no full_evaluate has sized: every node goes to the plain evaluator.
+// The incremental-Sum rules for one walk. `Plain` is a model with no incremental
+// Sum, or an unclosed one whose state no full_evaluate has sized: every node goes
+// to the plain evaluator.
 class IncSumWalk {
 public:
     IncSumWalk(Model& model, DeltaMode mode, bool push, std::vector<uint8_t>& dirty_flags)
@@ -527,7 +528,10 @@ private:
     enum class Rule : uint8_t { Plain, Commit, Probe, Restore };
 
     static Rule rule_for(const Model& model, DeltaMode mode) {
-        if (model.inc_sums().slots.size() != model.inc_sum_nodes().size()) {
+        // A model with no incremental Sum -- most MINLPLib instances -- takes
+        // the plain walk, stash bookkeeping and all left out.
+        if (model.inc_sum_nodes().empty() ||
+            model.inc_sums().slots.size() != model.inc_sum_nodes().size()) {
             return Rule::Plain;
         }
         if (mode == DeltaMode::Probe) {
