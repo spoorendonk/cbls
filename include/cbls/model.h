@@ -184,10 +184,56 @@ struct ModelStructure {
     std::vector<uint8_t> breakpoint_flags;
     static constexpr uint8_t kReachesBreakpoint = 1;
     static constexpr uint8_t kRepeatedChild = 2;
+    /// Slot -> node id of every incremental Sum (`ExprNode::kIncSum`, #188), in
+    /// topological order. A Sum's slot is its `lambda_func_id`.
+    std::vector<int32_t> inc_sum_nodes;
     std::vector<VarSequence> var_sequences;
     std::vector<std::pair<int, int>> var_to_seq;  // var_id -> (seq_idx, pos), resized lazily
     std::vector<ListPartition> list_partitions;
     std::vector<int32_t> var_to_partition;  // var_id -> partition index (-1), resized lazily
+};
+
+/// One incremental Sum's per-model state (#188; see `ExprNode::kIncSum` and
+/// the incremental-Sum section of `src/dag_ops.cpp`).
+struct IncSumState {
+    /// An upper bound on |the Sum's node value - the real sum of its stored
+    /// terms|: the exact rounding errors of its last checked re-sum plus those
+    /// of every inexact update since, rounded up. 0 when every one of them was
+    /// exact -- always, on integral data whose partial sums stay within 2^53.
+    double drift_bound = 0.0;
+    /// Inexact updates since the last checked re-sum: what `kIncSumPeriod`
+    /// counts.
+    uint32_t inexact = 0;
+    /// 1 once a checked re-sum has set `drift_bound`. `full_evaluate` re-sums
+    /// without the check and clears it, so a Sum's first commit after one
+    /// re-sums instead of updating.
+    uint8_t tracked = 0;
+    /// 1 while the value may differ from a re-sum of the current terms: it was
+    /// updated since the last re-sum and `drift_bound` is not 0. Not only after
+    /// an inexact update -- a re-sum's own rounding, carried through exact
+    /// updates, is no longer the rounding a re-sum of the new terms would make.
+    /// A Sum not drifting is exact (bound 0) or a fresh re-sum.
+    uint8_t drifting = 0;
+    /// On `IncSums::drifted`.
+    uint8_t listed = 0;
+};
+
+/// The per-model side of every incremental Sum (#188). Per model because it
+/// describes `node_values_`.
+struct IncSums {
+    /// Indexed by slot (the `lambda_func_id` of a `kIncSum` Sum).
+    std::vector<IncSumState> slots;
+    /// Slots that started drifting since `reground_drifted_sums` last emptied
+    /// the list, each once. Some may have been re-summed since.
+    std::vector<int32_t> drifted;
+    /// A `Probe` walk's values of the incremental Sums in its cone, written back
+    /// by the matching `Rollback` so the committed value -- drift included --
+    /// comes back to the bit. (node id, value).
+    std::vector<std::pair<int32_t, double>> probe_stash;
+    bool probe_pending = false;
+    /// Inexact updates committed on this model, ever. Diagnostics: a caller can
+    /// tell whether a walk added drift by reading it on both sides.
+    uint64_t inexact_updates = 0;
 };
 
 class Model {
@@ -632,17 +678,15 @@ public:
     /// Deliberately NOT bound to Python: an index supplied from there would be
     /// an unguarded heap write (#156). `node_value` is the checked reader.
     void set_node_value_unchecked(int32_t id, double value) noexcept { node_values_[id] = value; }
-    /// #177's per-model state: node id -> 1 while a `Sum` with `kExactSum` (see
-    /// `ExprNode`) is known to hold the EXACT sum of its terms, each an integer of
-    /// magnitude at most 2^52 / (term count). Under that bound every partial sum is
-    /// an integer of magnitude at most 2^52, so every addition is exact in any
-    /// order, and updating the Sum by its terms' changes gives the same bits as
-    /// re-summing it. `delta_evaluate` and `commit_scalar_move` maintain it on
-    /// every write to such a Sum; `full_evaluate` clears it, since it re-sums
-    /// without checking. Empty until the first `full_evaluate` sizes it. Not
-    /// bound to Python (#156): the walks index it by node id unchecked, and a
-    /// wrong 1 written from outside would let an inexact update through.
-    [[nodiscard]] std::vector<uint8_t>& sum_exact_state() noexcept { return sum_exact_; }
+    /// The incremental Sums' per-model state (#188): see `IncSums`. Sized and
+    /// reset by every `full_evaluate`; empty before the first. Not bound to
+    /// Python (#156): the walks index it by slot unchecked.
+    [[nodiscard]] IncSums& inc_sums() noexcept { return inc_sums_; }
+    [[nodiscard]] const IncSums& inc_sums() const noexcept { return inc_sums_; }
+    /// Slot -> node id of every incremental Sum; see `ModelStructure`.
+    [[nodiscard]] const std::vector<int32_t>& inc_sum_nodes() const noexcept {
+        return s().inc_sum_nodes;
+    }
     /// `node`'s children, in the order they were given when it was created.
     /// Valid from creation, not only after `close()`: a node's children are
     /// written once, when it is made, and never change.
@@ -859,7 +903,7 @@ public:
     /// committed state (#166) -- still describes the assignment this replaces, so a
     /// `full_evaluate` is MANDATORY before anything reads a node value or calls
     /// `delta_evaluate`. For a built-in op, skipping it merely recomputes late --
-    /// except a Sum in #177's exact state, which `commit_scalar_move` would update
+    /// except an incremental Sum (#188), which `commit_scalar_move` would update
     /// from its stale value; for a custom node it is wrong values, because the
     /// next `delta()` is measured against a baseline that is no longer there.
     ///
@@ -900,8 +944,8 @@ private:
     /// node array holds nothing a search writes (#157). Kept exactly as long as
     /// `s().nodes` by `push_node`, the one place a node is made.
     std::vector<double> node_values_;
-    /// See `sum_exact_state()`. Per model because it describes `node_values_`.
-    std::vector<uint8_t> sum_exact_;
+    /// See `inc_sums()`.
+    IncSums inc_sums_;
     /// The immutable side (#157). Both handles point at the same object while the
     /// model is open; `freeze()` drops `open_structure_`, after which `mut()`
     /// throws and the only handle left is a const one. Two pointers rather than
@@ -948,7 +992,7 @@ private:
     void build_var_constraints();
     void rebuild_back_references();
     void rebuild_topo_positions();
-    void classify_exact_sums();
+    void classify_incremental_sums();
     int32_t alloc_var(VarType type, double lb, double ub, const std::string& name);
     /// `constant`'s body without its closed-model refusal, for the objective row.
     int32_t push_constant(double val);

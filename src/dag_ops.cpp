@@ -114,10 +114,15 @@ double full_evaluate(Model& model) {
     if (model.has_custom_nodes()) {
         model.clear_custom_probes();
     }
-    // Re-sums without checking the terms, so no Sum is known exact afterwards
-    // (#177). Also what sizes the state: every close and every structural
+    // Re-sums without the rounding check, so no incremental Sum is tracked
+    // afterwards and none carries drift (#188); its first commit re-sums it,
+    // checked. Also what sizes the state: every close and every structural
     // rebuild ends in a full pass.
-    model.sum_exact_state().assign(model.num_nodes(), 0);
+    IncSums& sums = model.inc_sums();
+    sums.slots.assign(model.inc_sum_nodes().size(), IncSumState{});
+    sums.drifted.clear();
+    sums.probe_stash.clear();
+    sums.probe_pending = false;
     for (int32_t nid : model.topo_order()) {
         model.set_node_value_unchecked(nid, evaluate(model.nodes()[nid], model));
     }
@@ -300,184 +305,343 @@ double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// Exact incremental Sum (#177)
+// Incremental Sum (#177, #188)
 // ---------------------------------------------------------------------------
 //
 // A committed FJ move changes one term of each row it touches, and re-summing a
 // row costs its whole length: on swath3 a committed dirty Sum averaged 1315
 // terms, of which about one had changed, and the re-sum was 36% of the run.
+// So `commit_scalar_move` moves each incremental Sum (`ExprNode::kIncSum`, see
+// `Model::classify_incremental_sums`) by its terms' changes instead: a variable
+// term's from the old value the caller passes, a node term's from the value it
+// held just before the walk rewrote it. The update is applied to the Sum's
+// value in place, ahead of the Sum's own turn in topological order, where it is
+// then taken as it stands.
 //
-// The update is restricted to where it is EXACT, so that it changes no bits:
-// the Sum's terms are integers of magnitude at most 2^52 / n (n terms). Then
-// every partial sum -- the re-sum's, in child order, and the update's, in any
-// order -- is an integer of magnitude at most 2^52, every addition is exact,
-// and `old + sum(new_i - old_i)` equals the re-sum. A floating-point update
-// outside that regime would drift from the re-sum, and every probe leg
-// re-sums: a row within tolerance of its bound could then read violated on one
-// side of a probe and satisfied on the other. Keeping the bits identical keeps
-// the probes, `LinearJumpScorer`'s reads of node values, and every trajectory
-// exactly what they were.
+// THE UPDATE IS FLOATING POINT, AND EACH ONE IS TESTED. `new - old` and
+// `value + (new - old)` are each checked with TwoSum, which computes the
+// rounding error of an addition exactly. Both errors 0 means the update is
+// exact: it adds no drift, and on integral data within 2^53 every update is,
+// so there the values are the re-sum's to the bit, exactly as #177's
+// exact-only rule had them. Otherwise the Sum's `IncSumState::drift_bound`
+// grows by the two errors' magnitudes, so that it bounds |value - the real sum
+// of the stored terms| at all times:
 //
-// Per Sum, per model, `sum_exact_state()` says whether the value currently
-// held is known exact. It is set by a checked re-sum and kept by each checked
-// term update; a term failing the check clears it, and the Sum is re-summed at
-// its turn in the walk. `full_evaluate` clears it for every node.
+//   - a checked re-sum (`checked_resum`) sets it to the sum of the magnitudes
+//     of its own n - 1 rounding errors, again computed exactly by TwoSum --
+//     which is 0 when the re-sum was exact and never more than the textbook
+//     bound gamma_{n-1} * sum(|t_i|);
+//   - each inexact update adds |error of new - old| + |error of the add|,
+//     each at most half an ulp of its result;
+//   - every addition of the bound itself is rounded up (`round_bound_up`), so
+//     rounding the bound can never make it an underestimate.
 //
-// The cost model. Re-summing an eligible Sum costs its n terms, plus one
-// integrality and magnitude test each when it is also checked. The update
-// costs one test and one add per CHANGED term, paid by the term, plus a
-// parents scan for each dirty `Neg`/`Prod`. It wins when rows are long and a
-// move touches one term of each, which is the MIP regime. It loses where an
-// eligible Sum is mostly re-summed by walks that are not FJ commits -- Novelty
-// Jump's legs, the structural batch, a probe of a column with a non-linear row
-// -- which pay the n checks and never collect, and on short rows, where the
-// checks and the parents scan are a larger share of a small re-sum. It is never
-// used where coefficients are fractional: such Sums are not eligible, so their
-// re-sum pays no checks.
+// Drift is contained three ways. A Sum re-sums, checked, on what would be its
+// kIncSumPeriod-th inexact update since the last re-sum. `reground_inc_sum`
+// re-sums one Sum on demand -- FeasibilityJump's local-minimum gate uses it on
+// a row whose verdict the bound cannot decide -- and `reground_drifted_sums`
+// every drifted one, which FeasibilityJump does at the end of every batch, so
+// drift never leaves a batch: the search, the pool, LNS and the inner solver
+// see only re-summed values. A non-finite value -- the Sum's, or a term's old
+// or new one -- makes the Sum re-sum at its turn, since `inf - inf` is no
+// update.
+//
+// Every other walk keeps the values consistent with a drifted Sum:
+//
+//   - a plain `Commit` (`delta_evaluate`) re-sums, checked, every incremental
+//     Sum in its cone -- a snap, but only of rows the caller moved and so
+//     re-reads;
+//   - a `Probe` stashes every incremental Sum in its cone, and, when it knows
+//     the old value (`probe_scalar_move`), applies the same updates the commit
+//     would, so it scores exactly what the commit would produce -- including 0
+//     for an identity move on a drifted state;
+//   - the matching `Rollback` writes the stash back rather than re-summing,
+//     which would snap the committed value, and change the violated-row
+//     bookkeeping under FeasibilityJump's feet.
+//
+// The cost model. The update costs two TwoSums and a store per changed term,
+// paid by the term, plus a parents scan for each dirty node term. It wins when
+// rows are long and a move touches one term of each, which is the MIP regime.
+// It loses on short rows, where the checks are a larger share of a small
+// re-sum, and where a Sum is mostly re-summed by walks that are not FJ
+// commits -- Novelty Jump's legs, the structural batch, the inner solver --
+// which pay the checked re-sum's TwoSum per term and never collect.
 namespace {
 
-// 2^52: every term at most 2^52 / n in magnitude keeps every partial sum of n
-// of them, and every difference of two, exactly representable.
-constexpr double kExactSumBound = 4503599627370496.0;
+thread_local IncrementalSumCounters inc_sum_counts;
 
-thread_local ExactSumCounters exact_sum_counts;
+// dirty_flags values beyond 1 ("in the cone"): an incremental Sum that must be
+// re-summed at its turn rather than taken as its updates left it, and one a
+// Rollback has already written back from the probe's stash.
+constexpr uint8_t kDirtyResum = 2;
+constexpr uint8_t kDirtyRestored = 3;
 
-// Is `v` an integer of magnitude at most `limit`? False for NaN and +-inf.
-inline bool exact_term(double v, double limit) {
-    return std::fabs(v) <= limit && v == std::trunc(v);
+// The rounding error of `s = fl(a + b)`, exactly: a + b == s + err in real
+// arithmetic (Knuth's TwoSum; valid for any finite a, b whose sum does not
+// overflow). Fast2Sum would need |a| >= |b|, which neither use can promise.
+inline double two_sum_err(double a, double b, double s) {
+    const double b_virtual = s - a;
+    const double a_virtual = s - b_virtual;
+    return (a - a_virtual) + (b - b_virtual);
 }
 
-inline double exact_term_limit(const ExprNode& sum) {
-    return kExactSumBound / static_cast<double>(sum.child_count);
+// `x` -- the rounded sum of non-negative values -- nudged up past what one or
+// two roundings to nearest can have taken off it: fl(a + b) >= (a + b)(1 - u),
+// and x(1 + 2^-51), rounded, is still >= x(1 + 2^-52) > x / (1 - u)^2.
+inline double round_bound_up(double x) {
+    return x + (x * 0x1p-51);
 }
 
-// The Sum case of `evaluate()`, verbatim -- same start, same child order, so the
-// same bits -- plus the check that decides whether the result is known exact.
-double checked_resum(Model& model, const ExprNode& node, uint8_t& exact) {
-    const double limit = exact_term_limit(node);
+// The Sum case of `evaluate()`, verbatim -- same start, same child order, so
+// the same bits -- plus the exact rounding error of every addition, whose
+// magnitudes it sums into the drift bound. The n - 1 additions of that sum
+// round too; (1 + n 2^-52) covers them.
+double checked_resum(const Model& model, const ExprNode& node, IncSumState& st) {
     const std::vector<double>& values = model.node_values();
     const std::vector<Variable>& vars = model.variables();
     double s = 0.0;
-    bool ok = true;
+    double err = 0.0;
     for (const ChildRef& c : model.children(node)) {
         const double v = c.is_var ? vars[c.id].value : values[c.id];
-        s += v;
-        ok = ok && exact_term(v, limit);
+        const double t = s + v;
+        err += std::fabs(two_sum_err(s, v, t));
+        s = t;
     }
-    exact = static_cast<uint8_t>(ok);
+    st.tracked = 1;
+    st.inexact = 0;
+    st.drifting = 0;
+    // A finite result means no partial sum overflowed, so every error is
+    // finite. A non-finite one carries no drift to bound: an update onto it is
+    // refused, and it re-sums at its next turn.
+    st.drift_bound =
+        std::isfinite(s) ? err + (err * (static_cast<double>(node.child_count) * 0x1p-52)) : 0.0;
     return s;
 }
 
-// One term of the eligible Sum `p` moved from `old_v` to `new_v`. Applied to the
-// Sum's value in place, ahead of its turn in the walk, while it is known exact;
-// otherwise the Sum is marked for a re-sum. `old_v` needs no test: it passed one
-// when it entered the Sum's value, or the Sum would not be known exact now.
-//
-// A throw out of the walk -- only user code can throw, and a custom node is
-// never a term -- cannot leave a pushed Sum wrong. A push happens exactly when
-// the term's own stored value changes: a variable is written before the call,
-// and a Neg/Prod pushes and is then written by the walk with nothing in
-// between. So a Sum known exact holds the exact sum of its terms' STORED
-// values, however far the walk got. The walk WITHOUT pushes is the exception:
-// there a term is rewritten and its Sum re-checked only at the Sum's own turn,
-// so `ExactSumWalk::prepare` clears those Sums up front when a custom node
-// could throw. That clearing is defensive, not complete: a `lambda_sum` functor
-// can throw too and is not covered. After any throw out of a walk the model's
-// contract already requires a `full_evaluate` (see `CustomInvariant`), which
-// clears every Sum's state -- that is what the invariant rests on.
-inline void push_term(Model& model, std::vector<uint8_t>& exact, int32_t p, double new_v,
-                      double old_v) {
-    if (exact[p] == 0) {
-        return;
-    }
-    if (!exact_term(new_v, exact_term_limit(model.nodes()[p]))) {
-        exact[p] = 0;
-        return;
-    }
-    model.set_node_value_unchecked(p, model.node_values()[p] + (new_v - old_v));
-}
-
-// The exact-Sum rules for one walk. Untracked -- an unclosed model, whose two
-// arrays the first full_evaluate has not sized yet -- every node goes straight
-// to the plain evaluator.
-class ExactSumWalk {
+// The incremental-Sum rules for one walk. `Plain` is an unclosed model, whose
+// state no full_evaluate has sized: every node goes to the plain evaluator.
+class IncSumWalk {
 public:
-    ExactSumWalk(Model& model, bool push)
+    IncSumWalk(Model& model, DeltaMode mode, bool push, std::vector<uint8_t>& dirty_flags)
         : model_(model),
           nodes_(model.nodes()),
-          exact_(model.sum_exact_state()),
-          tracked_(exact_.size() == model.num_nodes()),
-          push_(tracked_ && push) {}
+          sums_(model.inc_sums()),
+          dirty_(dirty_flags),
+          rule_(rule_for(model, mode)),
+          push_(push && (rule_ == Rule::Commit || rule_ == Rule::Probe)) {
+        if (rule_ != Rule::Restore) {
+            // Any walk but the Rollback it belongs to moves the assignment on,
+            // so a stash still pending -- only an exception out of a probe can
+            // leave one -- no longer describes anything to roll back to. A
+            // Probe re-arms it in prepare().
+            sums_.probe_stash.clear();
+            sums_.probe_pending = false;
+        }
+    }
 
-    // Before the walk: push the changed variables' own moves into their eligible
-    // Sums, or -- on a walk without pushes over a model whose user code could
-    // throw -- clear the cone's Sums, which the checked re-sum re-sets at each
-    // Sum's turn.
+    // Before the walk: a Rollback writes its probe's stash back; a Probe
+    // stashes its cone's Sums; then the changed variables' own moves are pushed
+    // into the Sums they are terms of.
     void prepare(const std::vector<int32_t>& dirty_list, const int32_t* changed_var_ids,
                  size_t count, const double* old_values) {
-        if (!tracked_) {
-            return;
-        }
-        if (!push_) {
-            if (model_.has_custom_nodes()) {
-                for (const int32_t nid : dirty_list) {
-                    if ((nodes_[nid].exact_sum_flags & ExprNode::kExactSum) != 0) {
-                        exact_[nid] = 0;
+        switch (rule_) {
+            case Rule::Plain:
+                return;
+            case Rule::Restore:
+                restore_stash();
+                return;
+            case Rule::Probe:
+                stash(dirty_list);
+                break;
+            case Rule::Commit:
+                if (!push_ && model_.has_custom_nodes()) {
+                    // A walk without pushes re-reads a term only at its Sum's
+                    // turn, so user code throwing before that turn would leave
+                    // the Sum stale while its state says it is tracked; the next
+                    // commit would update the stale value. Untracked, it
+                    // re-sums instead. Defensive: after a throw the contract
+                    // already asks for a full_evaluate, which resets them all.
+                    for (const int32_t nid : dirty_list) {
+                        if ((nodes_[nid].inc_sum_flags & ExprNode::kIncSum) != 0) {
+                            sums_.slots[slot_of(nid)].tracked = 0;
+                        }
                     }
                 }
-            }
+                break;
+        }
+        if (!push_) {
             return;
         }
         const std::vector<Variable>& vars = model_.variables();
         for (size_t ci = 0; ci < count; ++ci) {
             const int32_t v = changed_var_ids[ci];
             for (const int32_t dep_id : model_.dependents(v)) {
-                if ((nodes_[dep_id].exact_sum_flags & ExprNode::kExactSum) != 0) {
-                    push_term(model_, exact_, dep_id, vars[v].value, old_values[ci]);
+                if ((nodes_[dep_id].inc_sum_flags & ExprNode::kIncSum) != 0) {
+                    push(dep_id, vars[v].value, old_values[ci]);
                 }
             }
         }
     }
 
-    // One dirty node's new value. An eligible Sum is taken as it stands when its
-    // terms were pushed into it exactly, and re-summed with the check otherwise;
-    // a dirty Neg/Prod pushes its change into its eligible parents.
+    // One dirty node's new value. An incremental Sum is taken as its updates
+    // left it, or re-summed; a dirty term node pushes its change into its
+    // incremental parents.
     template <typename EvalOther>
     double eval(int32_t nid, EvalOther&& eval_other) {
-        const uint8_t flags = nodes_[nid].exact_sum_flags;
-        if (!tracked_ || flags == 0) {
+        const uint8_t flags = nodes_[nid].inc_sum_flags;
+        if (rule_ == Rule::Plain || flags == 0) {
             return eval_other(nid);
         }
-        if ((flags & ExprNode::kExactSum) != 0) {
-            return eval_eligible_sum(nid);
+        if ((flags & ExprNode::kIncSum) != 0) {
+            return eval_sum(nid);
         }
         if (!push_) {
-            return eval_other(nid);  // kFeedsExactSum: a term, re-read at its Sum's turn
+            return eval_other(nid);  // kFeedsIncSum: re-read at its Sum's turn
         }
         const double old_v = model_.node_values()[nid];
         const double new_v = eval_other(nid);
         for (const int32_t parent_id : model_.parents(nid)) {
-            if ((nodes_[parent_id].exact_sum_flags & ExprNode::kExactSum) != 0) {
-                push_term(model_, exact_, parent_id, new_v, old_v);
+            if ((nodes_[parent_id].inc_sum_flags & ExprNode::kIncSum) != 0) {
+                push(parent_id, new_v, old_v);
             }
         }
         return new_v;
     }
 
 private:
-    double eval_eligible_sum(int32_t nid) {
-        if (push_ && exact_[nid] != 0) {
-            ++exact_sum_counts.incremental;
-            return model_.node_values()[nid];
+    enum class Rule : uint8_t { Plain, Commit, Probe, Restore };
+
+    static Rule rule_for(const Model& model, DeltaMode mode) {
+        if (model.inc_sums().slots.size() != model.inc_sum_nodes().size()) {
+            return Rule::Plain;
         }
-        ++exact_sum_counts.resummed;
-        return checked_resum(model_, model_.nodes()[nid], exact_[nid]);
+        if (mode == DeltaMode::Probe) {
+            return Rule::Probe;
+        }
+        // A Rollback with no probe pending is a Commit, as it is for a custom
+        // node (see DeltaMode).
+        if (mode == DeltaMode::Rollback && model.inc_sums().probe_pending) {
+            return Rule::Restore;
+        }
+        return Rule::Commit;
+    }
+
+    [[nodiscard]] int32_t slot_of(int32_t nid) const { return nodes_[nid].lambda_func_id; }
+
+    void stash(const std::vector<int32_t>& dirty_list) {
+        const std::vector<double>& values = model_.node_values();
+        for (const int32_t nid : dirty_list) {
+            if ((nodes_[nid].inc_sum_flags & ExprNode::kIncSum) != 0) {
+                sums_.probe_stash.emplace_back(nid, values[nid]);
+            }
+        }
+        sums_.probe_pending = true;
+    }
+
+    // Only a node in this walk's cone is flagged: the guard clears the flags
+    // of the cone and nothing else, so flagging a stranger would leak.
+    void restore_stash() {
+        for (const auto& [nid, value] : sums_.probe_stash) {
+            model_.set_node_value_unchecked(nid, value);
+            if (dirty_[nid] != 0) {
+                dirty_[nid] = kDirtyRestored;
+            }
+        }
+        sums_.probe_stash.clear();
+        sums_.probe_pending = false;
+    }
+
+    // One term of the incremental Sum `p` moved from `old_v` to `new_v`.
+    void push(int32_t p, double new_v, double old_v) {
+        uint8_t& flag = dirty_[p];
+        if (flag == kDirtyResum) {
+            return;  // re-summed at its turn whatever else arrives
+        }
+        const double cur = model_.node_values()[p];
+        const double d = new_v - old_v;
+        const double s = cur + d;
+        if (rule_ == Rule::Probe) {
+            // No drift state moves under a probe: it is rolled back.
+            if (!std::isfinite(s) || !std::isfinite(d)) {
+                flag = kDirtyResum;
+                return;
+            }
+            ++inc_sum_counts.probe_pushes;
+            model_.set_node_value_unchecked(p, s);
+            return;
+        }
+        IncSumState& st = sums_.slots[slot_of(p)];
+        if (st.tracked == 0 || !std::isfinite(s) || !std::isfinite(d)) {
+            force_resum(flag, st);
+            return;
+        }
+        const double err_d = two_sum_err(new_v, -old_v, d);
+        const double err_s = two_sum_err(cur, d, s);
+        if (err_d != 0.0 || err_s != 0.0) {
+            if (kIncSumPeriod != 0 && st.inexact + 1 >= kIncSumPeriod) {
+                force_resum(flag, st);
+                return;
+            }
+            st.drift_bound = round_bound_up(st.drift_bound + (std::fabs(err_d) + std::fabs(err_s)));
+            ++st.inexact;
+            ++sums_.inexact_updates;
+            ++inc_sum_counts.inexact;
+        }
+        // Exact or not, the value is no longer a re-sum of the current terms
+        // unless it is the exact sum -- and a zero bound says it is.
+        if (st.drift_bound != 0.0) {
+            st.drifting = 1;
+            if (st.listed == 0) {
+                st.listed = 1;
+                sums_.drifted.push_back(slot_of(p));
+            }
+        }
+        model_.set_node_value_unchecked(p, s);
+    }
+
+    // Untracked as well as flagged: were user code to throw before the Sum's
+    // turn, the flag would be cleared on the way out and the Sum -- which has
+    // not taken this term's change -- must not be updated again from there.
+    static void force_resum(uint8_t& flag, IncSumState& st) {
+        flag = kDirtyResum;
+        st.tracked = 0;
+    }
+
+    double eval_sum(int32_t nid) {
+        const ExprNode& node = nodes_[nid];
+        const uint8_t flag = dirty_[nid];
+        switch (rule_) {
+            case Rule::Plain:
+                return evaluate(node, model_);
+            case Rule::Restore:
+                if (flag == kDirtyRestored) {
+                    return model_.node_values()[nid];
+                }
+                break;  // not in the probe's cone: the caller broke the pairing
+            case Rule::Probe:
+                if (push_ && flag != kDirtyResum) {
+                    return model_.node_values()[nid];
+                }
+                return evaluate(node, model_);  // no drift state moves under a probe
+            case Rule::Commit: {
+                IncSumState& st = sums_.slots[slot_of(nid)];
+                if (push_ && flag != kDirtyResum && st.tracked != 0) {
+                    ++inc_sum_counts.incremental;
+                    return model_.node_values()[nid];
+                }
+                ++inc_sum_counts.resummed;
+                return checked_resum(model_, node, st);
+            }
+        }
+        ++inc_sum_counts.resummed;
+        return checked_resum(model_, node, sums_.slots[slot_of(nid)]);
     }
 
     Model& model_;
     const std::vector<ExprNode>& nodes_;
-    std::vector<uint8_t>& exact_;
-    bool tracked_;
+    IncSums& sums_;
+    std::vector<uint8_t>& dirty_;
+    Rule rule_;
     bool push_;
 };
 
@@ -507,20 +671,19 @@ void collect_dirty_cone(const Model& model, const int32_t* changed_var_ids, size
     }
 }
 
-// The one walk behind both entry points. `old_values`, when non-null, holds the
+double objective_value(const Model& model) {
+    if (model.objective_id() >= 0) {
+        return model.node_values()[model.objective_id()];
+    }
+    return 0.0;
+}
+
+// The one walk behind every entry point. `old_values`, when non-null, holds the
 // previous value of each of `changed_var_ids` and switches the term updates on;
-// null re-sums every dirty Sum (checked, where eligible), as `delta_evaluate`
-// always did.
+// null re-sums every dirty incremental Sum, as `delta_evaluate` always did.
 double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, DeltaMode mode,
                   const EditJournal* journal, const double* old_values) {
     const EvaluationGuard guard("delta_evaluate");
-    if (count == 0) {
-        if (model.objective_id() >= 0) {
-            return model.node_values()[model.objective_id()];
-        }
-        return 0.0;
-    }
-
     const size_t num_nodes = model.num_nodes();
 
     // Flat dirty flags + dirty list for O(dirty) cleanup
@@ -533,12 +696,16 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
     }
     dirty_list.clear();
 
+    // Before the early return: it is what drops a stale probe stash.
+    IncSumWalk sums(model, mode, old_values != nullptr, dirty_flags);
+    if (count == 0) {
+        return objective_value(model);
+    }
+
     // Armed BEFORE the seeding loop, so it covers every flag this call sets --
     // including the ones set before an exception out of the walk below.
     const DirtyFlagGuard flag_guard(dirty_flags, dirty_list);
     collect_dirty_cone(model, changed_var_ids, count, dirty_flags, dirty_list);
-
-    ExactSumWalk sums(model, old_values != nullptr);
     sums.prepare(dirty_list, changed_var_ids, count, old_values);
 
     // One test per CALL, not per node: a model with no custom node takes the
@@ -561,16 +728,13 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
 
     // The flags are cleared by `flag_guard` on the way out, which is also what
     // covers a throw from user code inside the walk.
-    if (model.objective_id() >= 0) {
-        return model.node_values()[model.objective_id()];
-    }
-    return 0.0;
+    return objective_value(model);
 }
 
 }  // namespace
 
-ExactSumCounters& exact_sum_counters() noexcept {
-    return exact_sum_counts;
+IncrementalSumCounters& incremental_sum_counters() noexcept {
+    return inc_sum_counts;
 }
 
 double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count, DeltaMode mode,
@@ -580,6 +744,41 @@ double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count
 
 double commit_scalar_move(Model& model, int32_t var_id, double old_value) {
     return delta_walk(model, &var_id, 1, DeltaMode::Commit, nullptr, &old_value);
+}
+
+double probe_scalar_move(Model& model, int32_t var_id, double old_value) {
+    return delta_walk(model, &var_id, 1, DeltaMode::Probe, nullptr, &old_value);
+}
+
+void reground_inc_sum(Model& model, int32_t slot) {
+    const EvaluationGuard guard("reground_inc_sum");
+    IncSums& sums = model.inc_sums();
+    // A write between a probe and its rollback would be undone by the stash.
+    sums.probe_stash.clear();
+    sums.probe_pending = false;
+    const int32_t nid = model.inc_sum_nodes()[static_cast<size_t>(slot)];
+    const std::vector<ExprNode>& nodes = model.nodes();
+    model.set_node_value_unchecked(
+        nid, checked_resum(model, nodes[nid], sums.slots[static_cast<size_t>(slot)]));
+    // Its readers are top-level comparisons (classify_incremental_sums), so
+    // they are all there is above it.
+    for (const int32_t p : model.parents(nid)) {
+        model.set_node_value_unchecked(p, evaluate(nodes[p], model));
+    }
+    ++inc_sum_counts.regrounded;
+}
+
+void reground_drifted_sums(Model& model, std::vector<int32_t>& regrounded) {
+    IncSums& sums = model.inc_sums();
+    for (const int32_t slot : sums.drifted) {
+        IncSumState& st = sums.slots[static_cast<size_t>(slot)];
+        st.listed = 0;
+        if (st.drifting != 0) {
+            reground_inc_sum(model, slot);
+            regrounded.push_back(slot);
+        }
+    }
+    sums.drifted.clear();
 }
 
 namespace {

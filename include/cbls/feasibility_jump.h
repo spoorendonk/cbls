@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace cbls {
@@ -364,6 +365,25 @@ public:
     [[nodiscard]] LinearJumpScorer& linear_scorer() { return linear_; }
     [[nodiscard]] int64_t structural_kick_stride() const { return kick_stride_; }
 
+    /// What the incremental Sums' drift cost this object (#188), since
+    /// construction. Diagnostics: nothing reads them.
+    struct DriftStats {
+        /// GLS iterations that found no improving jump (local minima).
+        int64_t local_minima = 0;
+        /// Of those, the ones where some row's verdict was undecided by its
+        /// Sum's drift bound, so its Sum was re-summed before any decision.
+        int64_t gated_minima = 0;
+        /// Sums re-summed by that gate.
+        int64_t gate_resums = 0;
+        /// Of the gated minima, the ones where a re-sum moved a row into or out
+        /// of V, so the iteration re-sampled instead of bumping or stopping.
+        int64_t gate_flips = 0;
+        /// Sums re-summed at the end of a batch (or of a Novelty Jump, or before
+        /// a Feasible verdict), because they drifted during it.
+        int64_t batch_end_resums = 0;
+    };
+    [[nodiscard]] const DriftStats& drift_stats() const { return drift_stats_; }
+
     // Novelty Jump (paper Algorithms 4-5): a bounded-backtracking compound-move
     // search that escapes local optima single-variable FJ cannot (chained-
     // invariant fixes). Commits the improving compound move(s) it finds (left
@@ -388,10 +408,42 @@ private:
     [[nodiscard]] bool any_active_violated() const;
     // How a batch reports its own end when it ran out of budget rather than out
     // of work: Feasible only if nothing active is still violated. Used at every
-    // budget exit of gls_loop so they cannot drift apart.
-    [[nodiscard]] GFJStatus batch_end_status() const {
+    // budget exit of gls_loop so they cannot drift apart. Re-grounds first, so
+    // the verdict is read off re-summed rows (#188).
+    [[nodiscard]] GFJStatus batch_end_status() {
+        reground_drifted_rows();
         return any_active_violated() ? GFJStatus::Unsolved : GFJStatus::Feasible;
     }
+    // ---- The incremental Sums' drift (#188) ----
+    //
+    // Is row c's verdict undecided by its Sum's drift? Only a row that reads an
+    // incremental Sum directly (row_slot_) can be, and only while that Sum
+    // is drifting (IncSumState::drifting): then its real residual
+    // lies within drift_bound (plus the rounding of the comparison itself) of
+    // `residual`, and the question is whether that interval straddles kTol.
+    [[nodiscard]] bool verdict_undecided(int32_t c, double residual) const;
+    // Put row c on uncertain_rows_ if its verdict is undecided now. Called
+    // wherever a row's value or its Sum's drift changes inside a batch --
+    // update_var's rows -- so the list holds every undecided row.
+    void note_row_certainty(int32_t c, double residual);
+    // The local-minimum gate. Re-sums the Sum under every row on
+    // uncertain_rows_ that is still undecided, and settles the rows that moved.
+    // Returns true when a row entered or left V: the "no improving jump"
+    // conclusion was reached on values that are no longer the model's, so the
+    // caller re-samples instead of bumping or declaring feasibility.
+    bool settle_undecided_rows();
+    // Re-sums every Sum that drifted since the last call and settles the rows
+    // that moved. Returns true when a row entered or left V. The end of every
+    // batch, the start of Novelty Jump, and every Feasible verdict call it.
+    bool reground_drifted_rows();
+    // After reground_inc_sum(s) of slot_scratch_: settle each of their rows
+    // whose value moved as update_var settles a row -- the unweighted total, V,
+    // and its variables' cached jumps and scan-set membership -- from the
+    // "before" values captured in row_before_. Returns true if V changed.
+    bool settle_regrounded_rows();
+    // Snapshot the rows of `slot` into row_before_ ahead of its re-sum.
+    void capture_rows_of_slot(int32_t slot);
+    void build_row_slots();
     // No improving jump exists anywhere in the scan set: bump the GLS weights of
     // the violated constraints and re-queue their variables, so the next
     // iteration scores them against the new penalty landscape.
@@ -589,7 +641,23 @@ private:
     std::vector<int32_t> active_violated_of_var_;  // per var: counted rows listing it
     std::vector<uint8_t> in_queue_;                // per var: in Q
     std::vector<int32_t> queue_;                   // scan set Q (vars with possibly-positive score)
-    std::vector<int32_t> examined_;   // scratch: distinct vars sampled in one apply_jump
+    std::vector<int32_t> examined_;  // scratch: distinct vars sampled in one apply_jump
+    // ---- The incremental Sums' drift (#188) ----
+    // Row -> the slot of the incremental Sum it reads directly, or -1; and the
+    // inverse, slot -> its rows, as CSR (an MPS range row is two rows over one
+    // Sum). Built once, in the constructor: 4 B per row and per slot.
+    std::vector<int32_t> row_slot_;
+    std::vector<uint32_t> slot_rows_begin_;
+    std::vector<int32_t> slot_rows_;
+    // Rows whose verdict was undecided by drift when last evaluated, each once
+    // (in_uncertain_). Emptied by settle_undecided_rows and the re-groundings.
+    std::vector<int32_t> uncertain_rows_;
+    std::vector<uint8_t> in_uncertain_;
+    // Scratch: the slots a gate or a re-grounding re-summed, and (row, value
+    // before) for each of their rows.
+    std::vector<int32_t> slot_scratch_;
+    std::vector<std::pair<int32_t, double>> row_before_;
+    DriftStats drift_stats_;
     std::vector<uint8_t> is_linear_;  // per constraint
     // Closed-form scoring over linear comparison rows. Its per-row eligibility is
     // maintained wherever is_linear_ is: compute_linear_constraints (the

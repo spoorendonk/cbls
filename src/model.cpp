@@ -31,7 +31,7 @@ Model::Model() {
 Model::Model(const Model& other)
     : vars_(other.vars_),
       node_values_(other.node_values_),
-      sum_exact_(other.sum_exact_),
+      inc_sums_(other.inc_sums_),
       objective_id_(other.objective_id_),
       is_maximizing_(other.is_maximizing_),
       objective_bound_node_(other.objective_bound_node_),
@@ -1150,102 +1150,97 @@ void Model::rebuild_back_references() {
     st.dependent_offsets.front() = 0;
 }
 
-// Which Sums `commit_scalar_move` may update by their terms' changes (#177).
-// A term qualifies when its value is an integer whatever the assignment: a
-// Bool/Int variable, a finite integral literal, or a `Neg`/`Prod` of such terms
-// -- the shapes `mps_to_model` writes for a row with integral coefficients
-// (`x`, `neg(x)`, `prod(constant(a), x)`). A nested `Sum` does not qualify, so
-// a qualifying Sum is never a term of another and its own change need not be
-// pushed further. The objective bound is excluded although it is a Const: its
-// value is per-model search state, set by `set_objective_bound`.
+// Which Sums `commit_scalar_move` moves by their terms' changes (#177, #188).
 //
-// A Sum naming a term twice is excluded as well: the back-references are
-// deduplicated, so the term would report its change once and be counted once.
+// A Sum qualifies when:
 //
-// Being classified only makes a Sum ELIGIBLE. The values themselves are checked
-// on every update, since an Int variable holding 2.5 or 1e17 is representable,
-// and exactness is a property of the numbers, not of the types.
+//  - it has a term, no term is a Sum, and none is named twice. A Sum term
+//    would have to push its own change further up; a term named twice is one
+//    back-reference, so its change would be counted once.
+//  - no term is the objective bound. It is a Const whose value is per-model
+//    search state, written by `set_objective_bound` without a walk, so it
+//    would change without pushing.
+//  - it is read, and only by top-level comparisons (`Leq`/`Geq`/`Lt`/`Gt`/`Eq`
+//    with no parent) whose other side is a variable or a Const. That is every
+//    MPS row and the objective row, and it is what keeps drift where
+//    FeasibilityJump can see it: a row reads the Sum DIRECTLY, so the row's
+//    residual is off by at most the Sum's drift bound, and a verdict the bound
+//    cannot decide is resolved by re-summing that one Sum. A Sum under any
+//    other node -- `sqr(sum)`, a Sum of Sums, a comparison inside an
+//    expression -- keeps the plain re-sum, which is what "take the re-sum
+//    unless the bound is propagated" means with no propagation.
+//
+// Terms may be anything else: every node term is flagged `kFeedsIncSum`, and a
+// dirty one pushes its change into the Sum. Whether an update is exact is a
+// property of the numbers, decided per update (see src/dag_ops.cpp).
 namespace {
 
-// The per-node rules of classify_exact_sums, kept as one pass over the nodes in
-// topological order: `integral_term[n]` for a Const/Neg/Prod, and the flags a
-// qualifying Sum sets on itself and its node terms.
-class ExactSumClassifier {
-public:
-    ExactSumClassifier(std::vector<ExprNode>& nodes, const std::vector<Variable>& vars)
-        : nodes_(nodes),
-          vars_(vars),
-          integral_term_(nodes.size(), 0),
-          node_stamp_(nodes.size(), -1),
-          var_stamp_(vars.size(), -1) {}
+bool is_row_comparison(NodeOp op) {
+    return op == NodeOp::Leq || op == NodeOp::Geq || op == NodeOp::Lt || op == NodeOp::Gt ||
+           op == NodeOp::Eq;
+}
 
-    // An if-chain, not a switch: the ops this does not name are simply "not a
-    // qualifying term", and a `default:` in a NodeOp switch is what would hide
-    // a missed case from -Wswitch everywhere else.
-    void visit(int32_t nid, ConstSpan<ChildRef> kids) {
-        const ExprNode& nd = nodes_[nid];
-        if (nd.op == NodeOp::Const) {
-            // The objective bound is a Const too, but it never qualifies: its
-            // `const_value` stays the +inf it was made with (the live bound is
-            // per-model state), which isfinite rejects.
-            integral_term_[nid] = static_cast<uint8_t>(
-                std::isfinite(nd.const_value) && nd.const_value == std::trunc(nd.const_value));
-        } else if (nd.op == NodeOp::Neg || nd.op == NodeOp::Prod) {
-            integral_term_[nid] = static_cast<uint8_t>(std::all_of(
-                kids.begin(), kids.end(), [this](const ChildRef& r) { return integral_ref(r); }));
-        } else if (nd.op == NodeOp::Sum && qualifies(nid, kids)) {
-            nodes_[nid].exact_sum_flags = ExprNode::kExactSum;
-            for (const ChildRef& ref : kids) {
-                if (!ref.is_var) {
-                    nodes_[ref.id].exact_sum_flags |= ExprNode::kFeedsExactSum;
-                }
-            }
+}  // namespace
+
+// Not monotone, unlike the exact-only rule it replaced: a Sum that gained a
+// reader of another kind no longer qualifies. So every flag and slot is
+// recomputed from scratch. Both callers, close() and
+// add_objective_soft_constraint, follow it with the full_evaluate that sizes
+// the per-model state to the new slots.
+void Model::classify_incremental_sums() {
+    ModelStructure& st = mut();
+    std::vector<ExprNode>& nodes = st.nodes;
+    for (ExprNode& nd : nodes) {
+        if ((nd.inc_sum_flags & ExprNode::kIncSum) != 0) {
+            nd.lambda_func_id = -1;
         }
+        nd.inc_sum_flags = 0;
     }
-
-private:
-    [[nodiscard]] bool integral_ref(const ChildRef& ref) const {
-        if (ref.is_var) {
-            const VarType t = vars_[ref.id].type;
-            return t == VarType::Bool || t == VarType::Int;
-        }
-        return integral_term_[ref.id] != 0;
-    }
-
-    // Every term integral, none named twice. That also rules out a Sum term:
-    // a Sum is never an integral term (`visit` sets that only for Const, Neg
-    // and Prod).
-    bool qualifies(int32_t nid, ConstSpan<ChildRef> kids) {
+    st.inc_sum_nodes.clear();
+    std::vector<int32_t> node_stamp(nodes.size(), -1);
+    std::vector<int32_t> var_stamp(vars_.size(), -1);
+    const auto qualifies = [&](int32_t nid) {
+        const ConstSpan<ChildRef> kids = children(nodes[nid]);
         if (kids.empty()) {
             return false;
         }
         for (const ChildRef& ref : kids) {
-            int32_t& stamp = ref.is_var ? var_stamp_[ref.id] : node_stamp_[ref.id];
-            if (stamp == nid || !integral_ref(ref)) {
-                return false;
+            int32_t& stamp = ref.is_var ? var_stamp[ref.id] : node_stamp[ref.id];
+            if (stamp == nid) {
+                return false;  // named twice
             }
             stamp = nid;
+            if (!ref.is_var &&
+                (nodes[ref.id].op == NodeOp::Sum || ref.id == objective_bound_node_)) {
+                return false;
+            }
         }
-        return true;
-    }
-
-    std::vector<ExprNode>& nodes_;
-    const std::vector<Variable>& vars_;
-    std::vector<uint8_t> integral_term_;
-    std::vector<int32_t> node_stamp_;
-    std::vector<int32_t> var_stamp_;
-};
-
-}  // namespace
-
-// Only ever sets flags. The structure is append-only after close() and the
-// variable types never change, so a node that qualified still qualifies when
-// add_objective_soft_constraint re-runs this, and a new node starts at 0.
-void Model::classify_exact_sums() {
-    ModelStructure& st = mut();
-    ExactSumClassifier classifier(st.nodes, vars_);
+        const ConstSpan<int32_t> readers = parents(nid);
+        if (readers.empty()) {
+            return false;
+        }
+        return std::all_of(readers.begin(), readers.end(), [&](int32_t p) {
+            const ExprNode& cmp = nodes[p];
+            if (!is_row_comparison(cmp.op) || !parents(p).empty()) {
+                return false;
+            }
+            const ConstSpan<ChildRef> sides = children(cmp);
+            const ChildRef& other = (!sides[0].is_var && sides[0].id == nid) ? sides[1] : sides[0];
+            return other.is_var || nodes[other.id].op == NodeOp::Const;
+        });
+    };
     for (const int32_t nid : st.topo_order) {
-        classifier.visit(nid, children(st.nodes[nid]));
+        if (nodes[nid].op != NodeOp::Sum || !qualifies(nid)) {
+            continue;
+        }
+        nodes[nid].inc_sum_flags = ExprNode::kIncSum;
+        nodes[nid].lambda_func_id = static_cast<int32_t>(st.inc_sum_nodes.size());
+        st.inc_sum_nodes.push_back(nid);
+        for (const ChildRef& ref : children(nodes[nid])) {
+            if (!ref.is_var) {
+                nodes[ref.id].inc_sum_flags |= ExprNode::kFeedsIncSum;
+            }
+        }
     }
 }
 
@@ -1255,7 +1250,7 @@ void Model::close() {
     rebuild_back_references();
     st.topo_order = detail::compute_topo_order(*this);
     rebuild_topo_positions();
-    classify_exact_sums();
+    classify_incremental_sums();
     build_var_constraints();
     full_evaluate(*this);
     closed_ = true;
@@ -1309,7 +1304,7 @@ void Model::add_objective_soft_constraint() {
     rebuild_back_references();
     st.topo_order = detail::compute_topo_order(*this);
     rebuild_topo_positions();
-    classify_exact_sums();
+    classify_incremental_sums();
     build_var_constraints();
     full_evaluate(*this);
     // The rebuild above is exactly close()'s, so say so: on a model solve()
@@ -1441,7 +1436,7 @@ std::vector<std::pair<int32_t, double>> Model::per_constraint_violation_delta(in
     // Probe: set candidate, recompute only the affected dirty cone.
     const double old_value = v.value;
     var_mut(var_id).value = j;
-    delta_evaluate(*this, &var_id, 1, DeltaMode::Probe);
+    probe_scalar_move(*this, var_id, old_value);
 
     for (size_t k = 0; k < affected.size(); ++k) {
         double new_viol = clamped_node_violation(node_values_[cids[affected[k]]]);
@@ -1453,7 +1448,8 @@ std::vector<std::pair<int32_t, double>> Model::per_constraint_violation_delta(in
 
     // Restore exactly: same inputs through deterministic evaluate() roll node
     // values back to where they were. `Rollback` is what makes that true for a
-    // custom node too -- see the note on weighted_violation_delta below.
+    // custom node, and for an incremental Sum carrying drift, too -- see the
+    // notes on weighted_violation_delta below.
     var_mut(var_id).value = old_value;
     delta_evaluate(*this, &var_id, 1, DeltaMode::Rollback);
 
@@ -1514,9 +1510,15 @@ double Model::weighted_violation_delta(int32_t var_id, double j,
     // List's prefix sums rebuilds it on both legs. Bracketing them is a separate
     // change to `src/structural_batch.cpp`, `src/inner_solver.cpp` and
     // `src/feasibility_jump.cpp`.
+    //
+    // The old value is what lets the probe move each incremental Sum in the
+    // cone by its term's change, as the commit would (#188): the score is then
+    // measured against the committed value, drift included, rather than against
+    // a re-sum of it, and the Rollback writes the Sums back from the probe's
+    // stash, so a drifted committed state comes back to the bit.
     const double old_value = v.value;
     var_mut(var_id).value = j;
-    delta_evaluate(*this, &var_id, 1, DeltaMode::Probe);
+    probe_scalar_move(*this, var_id, old_value);
 
     double delta = 0.0;
     for (size_t k = 0; k < affected.size(); ++k) {

@@ -210,19 +210,22 @@ struct ChildRef {
 struct ExprNode {
     int32_t id = -1;
     NodeOp op = NodeOp::Const;
-    /// #177's exact incremental Sum, set by `Model::close()`: `kExactSum` on a
-    /// `Sum` that `commit_scalar_move` may update by its terms' changes (every
-    /// term a Bool/Int variable, an integral literal or a `Neg`/`Prod` of those,
-    /// none twice); `kFeedsExactSum` on a `Neg`/`Prod` that is a term of one.
-    /// Whether an update is actually exact is decided per model and per call --
-    /// see `Model::sum_exact_state`. In what was padding after `op`, so it costs
-    /// no memory, and read from the node the walk has already loaded, so it costs
-    /// no extra load per dirty node. (A separate per-node array measured 9.5%
-    /// slower on cbs-cta at `bd0e5ab`, but that was code alignment -- it vanishes
-    /// under `-falign-functions=64` -- so it is no evidence either way.)
-    uint8_t exact_sum_flags = 0;
-    static constexpr uint8_t kExactSum = 1;
-    static constexpr uint8_t kFeedsExactSum = 2;
+    /// The incremental Sum (#177, #188), set by `Model::close()`: `kIncSum` on a
+    /// `Sum` that `commit_scalar_move` moves by its terms' changes instead of
+    /// re-summing it, `kFeedsIncSum` on a node that is a term of one. A Sum
+    /// qualifies when no term is a Sum or named twice and every reader is a
+    /// top-level comparison against a variable or a constant -- see
+    /// `Model::classify_incremental_sums` for why each rule is there. Its
+    /// per-model state (`Model::inc_sum_state`) is found through
+    /// `lambda_func_id`, which holds the Sum's slot. In what was padding after
+    /// `op`, so it costs no memory, and read from the node the walk has already
+    /// loaded, so it costs no extra load per dirty node. (A separate per-node
+    /// array measured 9.5% slower on cbs-cta at `bd0e5ab`, but that was code
+    /// alignment -- it vanishes under `-falign-functions=64` -- so it is no
+    /// evidence either way.)
+    uint8_t inc_sum_flags = 0;
+    static constexpr uint8_t kIncSum = 1;
+    static constexpr uint8_t kFeedsIncSum = 2;
     double const_value = 0.0;
     uint32_t child_begin = 0;
     uint32_t child_count = 0;
@@ -235,6 +238,8 @@ struct ExprNode {
     ///  - `Element`: `ModelStructure::element_tables` (#186)
     ///  - `LambdaExtra`: `lambda_extra_funcs`; `PairLambdaExtra`:
     ///    `pair_lambda_extra_funcs` and the parallel `pair_lambda_extra_modes`
+    ///  - a `Sum` with `kIncSum`: its slot in `Model::inc_sum_state()` and
+    ///    `ModelStructure::inc_sum_nodes` (#188)
     ///
     /// One field for all of them rather than one per op, because no node is more
     /// than one of them and `ExprNode` is the array a 4.3M-node model is built
@@ -242,9 +247,9 @@ struct ExprNode {
     int32_t lambda_func_id = -1;
 };
 
-// `exact_sum_flags` sits in padding: pinned so a field added later cannot grow
+// `inc_sum_flags` sits in padding: pinned so a field added later cannot grow
 // every node of a 4.3M-node model without someone deciding to (#177).
-static_assert(sizeof(ExprNode) == 32, "ExprNode grew; see exact_sum_flags");
+static_assert(sizeof(ExprNode) == 32, "ExprNode grew; see inc_sum_flags");
 
 /// How a `PairLambda` node closes its chain of consecutive pairs.
 enum class PairMode : uint8_t {

@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 
@@ -1173,6 +1175,7 @@ FeasibilityJump::FeasibilityJump(Model& model, ViolationManager& vm, RNG& rng, G
     objective_ci_ = model_.objective_constraint_idx();
 
     compute_linear_constraints();
+    build_row_slots();
 
     for (int32_t v = 0; v < static_cast<int32_t>(model_.num_vars()); ++v) {
         if (!jumpable(v)) {
@@ -1456,8 +1459,14 @@ void FeasibilityJump::refresh_unweighted_violation() {
 void FeasibilityJump::rebuild_violated_and_scan_set() {
     const auto& cids = model_.constraint_ids();
     const size_t nc = cids.size();
+    for (const int32_t c : uncertain_rows_) {
+        in_uncertain_[static_cast<size_t>(c)] = 0;
+    }
+    uncertain_rows_.clear();
     for (size_t c = 0; c < nc; ++c) {
-        violated_[c] = is_violated(model_.node_value(cids[c])) ? kInV : 0;
+        const double residual = model_.node_value(cids[c]);
+        violated_[c] = is_violated(residual) ? kInV : 0;
+        note_row_certainty(static_cast<int32_t>(c), residual);
     }
     rebuild_violated_index();
     refresh_unweighted_violation();
@@ -1493,20 +1502,25 @@ void FeasibilityJump::update_var(int32_t var_id) {
     Variable& var = model_.var_mut(var_id);
     const double old_value = var.value;
     var.value = j;
-    // delta_evaluate's node values to the bit, with each integral row moved by
-    // its one changed term instead of re-summed (#177).
+    // Each incremental Sum in the cone moves by its one changed term instead of
+    // re-summing (#177, #188): the re-sum's bits wherever the update is exact,
+    // and otherwise a drift its bound accounts for.
     commit_scalar_move(model_, var_id, old_value);
     jumps_.invalidate(var_id);
 
     // Every row of gv is settled (in V or not, counted or not) before any
     // neighbour is tested below, so a neighbour sharing several rows with var_id
-    // sees all of them -- as the O(|G_vp|) rescan this count replaced did.
+    // sees all of them -- as the O(|G_vp|) rescan this count replaced did. A
+    // row whose verdict its Sum's drift now leaves undecided is noted for the
+    // local-minimum gate (#188): one slot load per row, and nothing more while
+    // the Sum carries no inexact update.
     for (int32_t c : gv) {
         const double after = model_.node_value(cids[c]);
         if (c != objective_ci_ && active(c)) {
             violation_delta += progress_residual(after);
         }
         set_violated(c, is_violated(after));
+        note_row_certainty(c, after);
     }
     unweighted_violation_ += violation_delta;
     // A vp sharing several rows with var_id is visited once per shared row. Not
@@ -1524,6 +1538,197 @@ void FeasibilityJump::update_var(int32_t var_id) {
             if (in_queue_[vp] == 0 && participates_in_active_violated(vp)) {
                 enqueue(vp);
             }
+        }
+    }
+}
+
+// ---- The incremental Sums' drift (#188) ----
+//
+// A committed move updates each incremental Sum in its cone by its term's
+// change (commit_scalar_move), and an inexact update leaves the Sum off the
+// real sum of its terms by at most its drift bound. A row reads its Sum
+// directly (classify_incremental_sums), so the row's residual is off by at most
+// that bound too. FJ acts on residuals in three places, and each must not act
+// on drift:
+//
+//   - the GLS bump at a local minimum raises the weight of every row in V. A
+//     row in V only by drift would get a weight the reference algorithm never
+//     gives it -- and weights persist across batches, so the bias would too.
+//     The mirror case is a row really violated but out of V by drift, which the
+//     bump would skip.
+//   - "Feasible", read off an empty V.
+//   - the batch end, and anything that reads the model after it.
+//
+// The gate (settle_undecided_rows) handles the first two at O(1) in the common
+// case: update_var notes every row whose verdict -- residual against kTol --
+// the bound leaves undecided, in either direction, and at a local minimum only
+// those rows' Sums are re-summed. A row whose residual clears kTol by more
+// than its bound has the same verdict on the real sum; on integral data no
+// update is inexact, no row is ever noted, and the gate costs one empty-list
+// test. The re-groundings (reground_drifted_rows) re-sum every drifted Sum
+// before a Feasible verdict and at the end of every batch, so the verdict is
+// the re-sums' own and nothing outside a batch sees drift.
+
+bool FeasibilityJump::verdict_undecided(int32_t c, double residual) const {
+    const int32_t slot = row_slot_[static_cast<size_t>(c)];
+    if (slot < 0) {
+        return false;
+    }
+    const IncSumState& st = model_.inc_sums().slots[static_cast<size_t>(slot)];
+    if (st.drifting == 0 || !std::isfinite(residual)) {
+        return false;
+    }
+    // The row computes fl(S - q) (or |S - q|, or S - q plus the strict margin,
+    // rounded once more) where the real sum T would give T - q: they differ by
+    // |S - T| <= drift_bound plus at most two half-ulps of the residual, which
+    // 2^-51 |residual| covers.
+    const double margin = st.drift_bound + (std::fabs(residual) * 0x1p-51);
+    return residual - margin <= kTol && residual + margin > kTol;
+}
+
+void FeasibilityJump::note_row_certainty(int32_t c, double residual) {
+    const auto ci = static_cast<size_t>(c);
+    if (in_uncertain_[ci] == 0 && verdict_undecided(c, residual)) {
+        in_uncertain_[ci] = 1;
+        uncertain_rows_.push_back(c);
+    }
+}
+
+void FeasibilityJump::capture_rows_of_slot(int32_t slot) {
+    const auto& cids = model_.constraint_ids();
+    const auto s = static_cast<size_t>(slot);
+    for (uint32_t k = slot_rows_begin_[s]; k < slot_rows_begin_[s + 1]; ++k) {
+        const int32_t c = slot_rows_[k];
+        row_before_.emplace_back(c, model_.node_values()[cids[static_cast<size_t>(c)]]);
+    }
+}
+
+// O(|uncertain_rows_|) plus, per Sum it re-sums, that Sum's length and its
+// rows' variables. Where it loses: a model whose rows sit within their drift
+// bound of kTol at most local minima -- big-M rows at equality, whose bound is
+// ulps of M -- pays a re-sum per such row per minimum, which is what the
+// exact-only commit paid per commit touching it.
+bool FeasibilityJump::settle_undecided_rows() {
+    ++drift_stats_.local_minima;
+    if (uncertain_rows_.empty()) {
+        return false;
+    }
+    const auto& cids = model_.constraint_ids();
+    slot_scratch_.clear();
+    row_before_.clear();
+    for (const int32_t c : uncertain_rows_) {
+        in_uncertain_[static_cast<size_t>(c)] = 0;
+        // Re-checked: a later commit may have decided it -- or re-summed its Sum,
+        // which a second row over the same Sum finds here no longer drifting.
+        if (!verdict_undecided(c, model_.node_values()[cids[static_cast<size_t>(c)]])) {
+            continue;
+        }
+        const int32_t slot = row_slot_[static_cast<size_t>(c)];
+        capture_rows_of_slot(slot);
+        reground_inc_sum(model_, slot);
+        slot_scratch_.push_back(slot);
+    }
+    uncertain_rows_.clear();
+    if (slot_scratch_.empty()) {
+        return false;
+    }
+    ++drift_stats_.gated_minima;
+    drift_stats_.gate_resums += static_cast<int64_t>(slot_scratch_.size());
+    const bool flipped = settle_regrounded_rows();
+    if (flipped) {
+        ++drift_stats_.gate_flips;
+    }
+    return flipped;
+}
+
+bool FeasibilityJump::reground_drifted_rows() {
+    for (const int32_t c : uncertain_rows_) {
+        in_uncertain_[static_cast<size_t>(c)] = 0;
+    }
+    uncertain_rows_.clear();
+    IncSums& sums = model_.inc_sums();
+    if (sums.drifted.empty()) {
+        return false;
+    }
+    slot_scratch_.clear();
+    row_before_.clear();
+    // Exactly the slots reground_drifted_sums re-sums: listed and still drifting.
+    for (const int32_t slot : sums.drifted) {
+        if (sums.slots[static_cast<size_t>(slot)].drifting != 0) {
+            capture_rows_of_slot(slot);
+        }
+    }
+    reground_drifted_sums(model_, slot_scratch_);
+    drift_stats_.batch_end_resums += static_cast<int64_t>(slot_scratch_.size());
+    return settle_regrounded_rows();
+}
+
+bool FeasibilityJump::settle_regrounded_rows() {
+    const auto& cids = model_.constraint_ids();
+    bool flipped = false;
+    size_t n_moved = 0;
+    for (size_t k = 0; k < row_before_.size(); ++k) {
+        const auto [c, before] = row_before_[k];
+        const auto ci = static_cast<size_t>(c);
+        const double after = model_.node_values()[cids[ci]];
+        uint64_t before_bits = 0;
+        uint64_t after_bits = 0;
+        std::memcpy(&before_bits, &before, sizeof before_bits);
+        std::memcpy(&after_bits, &after, sizeof after_bits);
+        if (before_bits == after_bits) {
+            continue;
+        }
+        if (c != objective_ci_ && active(c)) {
+            unweighted_violation_ += progress_residual(after) - progress_residual(before);
+        }
+        const bool was = (violated_[ci] & kInV) != 0;
+        const bool now = is_violated(after);
+        set_violated(c, now);
+        flipped = flipped || was != now;
+        row_before_[n_moved++].first = c;
+    }
+    // As in update_var: every moved row is settled in V before any neighbour
+    // is tested, so a neighbour sharing several of them sees all of them.
+    for (size_t k = 0; k < n_moved; ++k) {
+        const int32_t c = row_before_[k].first;
+        for (const int32_t vp : vars_of_constraint_[static_cast<size_t>(c)]) {
+            jumps_.invalidate(vp);
+            if (in_queue_[vp] == 0 && participates_in_active_violated(vp)) {
+                enqueue(vp);
+            }
+        }
+    }
+    row_before_.clear();
+    return flipped;
+}
+
+void FeasibilityJump::build_row_slots() {
+    const auto& cids = model_.constraint_ids();
+    const auto& nodes = model_.nodes();
+    const size_t nc = cids.size();
+    const size_t ns = model_.inc_sum_nodes().size();
+    row_slot_.assign(nc, -1);
+    in_uncertain_.assign(nc, 0);
+    uncertain_rows_.clear();
+    slot_rows_begin_.assign(ns + 1, 0);
+    for (size_t c = 0; c < nc; ++c) {
+        for (const ChildRef& ref : model_.children(nodes[cids[c]])) {
+            if (!ref.is_var && (nodes[ref.id].inc_sum_flags & ExprNode::kIncSum) != 0) {
+                const int32_t slot = nodes[ref.id].lambda_func_id;
+                row_slot_[c] = slot;
+                ++slot_rows_begin_[static_cast<size_t>(slot) + 1];
+                break;  // a row reads at most one: its other side is a var or a Const
+            }
+        }
+    }
+    for (size_t s = 0; s < ns; ++s) {
+        slot_rows_begin_[s + 1] += slot_rows_begin_[s];
+    }
+    slot_rows_.assign(slot_rows_begin_[ns], 0);
+    std::vector<uint32_t> cursor(slot_rows_begin_.begin(), slot_rows_begin_.end() - 1);
+    for (size_t c = 0; c < nc; ++c) {
+        if (row_slot_[c] >= 0) {
+            slot_rows_[cursor[static_cast<size_t>(row_slot_[c])]++] = static_cast<int32_t>(c);
         }
     }
 }
@@ -1839,6 +2044,11 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
     // vm_.weights are effective weights again afterwards (#175).
     try {
         const GFJStatus status = gls_loop_scaled(sample_size, batch_iter_limit);
+        // No drift leaves a batch (#188): the search, the pool, LNS and the
+        // inner solver read re-summed rows. A no-op where the exit already
+        // re-grounded (Feasible, and batch_end_status); the deadline and the
+        // iteration budget return Unsolved, which re-grounding cannot change.
+        reground_drifted_rows();
         materialise_weights();
         return status;
     } catch (...) {
@@ -1870,11 +2080,22 @@ GFJStatus FeasibilityJump::gls_loop_scaled(int sample_size, int64_t batch_iter_l
         watch_progress_ && batch_iter_limit > 0 && config_.unproductive_iterations > 0;
 
     while (true) {
-        if (!apply_jump(sample_size)) {
+        // At a local minimum, every row whose verdict drift could have flipped
+        // is re-summed before the verdicts are acted on (#188): a row violated
+        // only by drift leaves V rather than being bumped, and one satisfied
+        // only by drift enters it. If that moved a row across, the minimum was
+        // found on stale values, so the loop samples again instead.
+        if (!apply_jump(sample_size) && !settle_undecided_rows()) {
             if (!any_active_violated()) {
-                return GFJStatus::Feasible;
+                // The gate settled every undecided row; the re-grounding makes
+                // the verdict the re-sums' own, as it would be with no drift.
+                reground_drifted_rows();
+                if (!any_active_violated()) {
+                    return GFJStatus::Feasible;
+                }
+            } else {
+                bump_weights_and_requeue();
             }
-            bump_weights_and_requeue();
         }
 
         ++iterations_;
@@ -2349,6 +2570,11 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
 
 bool FeasibilityJump::apply_novelty_jump() {
     require_tables_in_step();
+    // Its legs are plain commits, which add no drift, so once whatever an
+    // earlier batch left is re-grounded -- nothing, after a batch that ended
+    // normally -- every "reached feasibility" below is read off re-summed rows
+    // (#188).
+    reground_drifted_rows();
     const size_t nv = model_.num_vars();
     // Flags stay set only for entries of nj_queue_ / move_stack_, which
     // seed_novelty_scan_set and clear_stack clear through below -- also across

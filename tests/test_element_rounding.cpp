@@ -924,9 +924,9 @@ TEST_CASE("FJ offers both sides of an Int edge the map lands exactly on", "[fj][
 
 namespace {
 
-// Probes one `compute_var_jump` of `t` makes. Each probe is two delta walks, and
-// the model's `t + 0 <= 5000` row is an exact-eligible Sum that a non-commit walk
-// re-sums once, so the probe count is half the re-sum count.
+// Probes one `compute_var_jump` of `t` makes. The model's `t + 0 <= 5000` row is
+// an incremental Sum (#188), and each probe of `t` applies its change to it
+// once, so the probe count is the probe-push count.
 //
 // The tables are 30 long: under the Element cap, so each node offers every index
 // and no grid -- the grid is a budget shared across nodes, so with it in play a
@@ -948,9 +948,9 @@ int64_t element_jump_probes(bool both_rows, JumpResult& out) {
     m.var_mut(t.var_id()).value = 999;
     full_evaluate(m);
     ViolationManager vm(m);
-    exact_sum_counters() = ExactSumCounters{};
+    incremental_sum_counters() = IncrementalSumCounters{};
     out = compute_var_jump(m, vm.weights, t.var_id());
-    return static_cast<int64_t>(exact_sum_counters().resummed) / 2;
+    return static_cast<int64_t>(incremental_sum_counters().probe_pushes);
 }
 
 }  // namespace

@@ -1126,8 +1126,7 @@ TEST_CASE("the unweighted-violation accumulator matches a fresh recomputation",
     REQUIRE(std::abs(fj.unweighted_violation() - fresh) <= 1e-12 * std::max(1.0, fresh));
 }
 
-TEST_CASE("FJ's commits leave integral rows exactly as a full evaluation would",
-          "[fj][exact_sum]") {
+TEST_CASE("FJ's commits leave integral rows exactly as a full evaluation would", "[fj][inc_sum]") {
     // #177: update_var moves an integral row by its one changed term. The claim
     // that makes that safe is that the node values are the re-sum's to the bit,
     // so the trajectory, the violated-row bookkeeping and the closed-form scorer
@@ -1167,10 +1166,11 @@ TEST_CASE("FJ's commits leave integral rows exactly as a full evaluation would",
     RNG rng(4);
     GFJConfig cfg;
     cfg.max_iterations = 5000;
-    exact_sum_counters() = ExactSumCounters{};
+    incremental_sum_counters() = IncrementalSumCounters{};
     FeasibilityJump fj(m, vm, rng, cfg);
     (void)fj.run();
-    CHECK(exact_sum_counters().incremental > 1000);
+    CHECK(incremental_sum_counters().incremental > 1000);
+    CHECK(incremental_sum_counters().inexact == 0);  // integral: no update ever rounds
 
     Model fresh(m);
     full_evaluate(fresh);
@@ -1189,4 +1189,186 @@ TEST_CASE("FJ's commits leave integral rows exactly as a full evaluation would",
     for (const int32_t x : cols) {
         REQUIRE(vm.weighted_violation_delta(vid(x), m.var(vid(x)).value) == 0.0);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Drift and the verdicts FJ acts on (#188)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// One row over `2^40 * b + 0.1 * x`, with b and x pinned by their domains at 0
+// and 3, so FJ can never move them. `drift()` moves b to 1 and back outside
+// FJ: the first commit re-sums 2^40 + 0.3, rounding it to a multiple of 2^-12,
+// and the second subtracts 2^40 exactly, so the Sum is left holding 0.3
+// rounded to 2^-12 -- about 5e-5 off the real sum of its terms.
+//
+//  - `Phantom`: the row is `== 0.3`. Satisfied at equality on the real sum,
+//    violated by the drift.
+//  - `Mirror`: the row is `>= drifted` or `<= drifted`, whichever the rounding
+//    makes true of the drifted value and false of the real one: really
+//    violated by ~5e-5, satisfied by the drift.
+//
+// Two optional companions: `fixable` adds `z >= 3` over z in [0, 5] at 0, a
+// row FJ repairs with one move; `pinned` adds `w == 1` over w in [0, 0], a row
+// always violated that FJ can do nothing about.
+enum class DriftCase : uint8_t { Phantom, Mirror };
+
+struct DriftRig {
+    Model m;
+    int32_t b = -1;
+    int32_t row_ci = -1;
+    int32_t fixable_ci = -1;
+    int32_t pinned_ci = -1;
+
+    DriftRig(DriftCase kind, bool fixable, bool pinned) {
+        constexpr double kBigM = 1099511627776.0;  // 2^40
+        const double real = 0.1 * 3.0;
+        const double drifted = (kBigM + real) - kBigM;
+        REQUIRE(std::fabs(drifted - real) > 1e-6);
+        b = m.int_var(0, 0);
+        const int32_t x = m.int_var(3, 3);
+        const int32_t row = m.sum({m.prod(m.constant(kBigM), b), m.prod(m.constant(0.1), x)});
+        row_ci = static_cast<int32_t>(m.constraint_ids().size());
+        if (kind == DriftCase::Phantom) {
+            m.add_constraint(m.eq_expr(row, m.constant(real)));
+        } else if (drifted > real) {
+            m.add_constraint(m.geq(row, m.constant(drifted)));
+        } else {
+            m.add_constraint(m.leq(row, m.constant(drifted)));
+        }
+        int32_t z = -1;
+        if (fixable) {
+            z = m.int_var(0, 5);
+            fixable_ci = static_cast<int32_t>(m.constraint_ids().size());
+            m.add_constraint(m.geq(z, m.constant(3.0)));
+        }
+        int32_t w = -1;
+        if (pinned) {
+            w = m.int_var(0, 0);
+            pinned_ci = static_cast<int32_t>(m.constraint_ids().size());
+            m.add_constraint(m.eq_expr(w, m.constant(1.0)));
+        }
+        m.close();
+        m.var_mut(vid(b)).value = 0.0;
+        m.var_mut(vid(x)).value = 3.0;
+        if (fixable) {
+            m.var_mut(vid(z)).value = 0.0;
+        }
+        if (pinned) {
+            m.var_mut(vid(w)).value = 0.0;
+        }
+        full_evaluate(m);
+    }
+
+    void drift() {
+        const int32_t bi = vid(b);
+        m.var_mut(bi).value = 1.0;
+        commit_scalar_move(m, bi, 0.0);
+        m.var_mut(bi).value = 0.0;
+        commit_scalar_move(m, bi, 1.0);
+        REQUIRE(m.inc_sums().slots.size() == 1);
+        REQUIRE(m.inc_sums().slots[0].drifting == 1);
+    }
+
+    [[nodiscard]] bool reads_violated() const {
+        return m.node_value(m.constraint_ids()[static_cast<size_t>(row_ci)]) > 1e-9;
+    }
+};
+
+struct DriftFj {
+    ViolationManager vm;
+    RNG rng{1};
+    FeasibilityJump fj;
+    explicit DriftFj(Model& m) : vm(m), fj(m, vm, rng, GFJConfig{}) {}
+};
+
+}  // namespace
+
+TEST_CASE("a row violated only by drift is never GLS-bumped", "[fj][inc_sum]") {
+    // #188's first criterion. The row sits at equality on the real sum of its
+    // terms; drift makes it read violated, so it enters V. FJ can move nothing,
+    // so the first iteration is a local minimum -- and without the gate that
+    // minimum bumps the row's weight: one the reference algorithm never gives
+    // it, and weights persist across batches.
+    DriftRig rig(DriftCase::Phantom, false, false);
+    DriftFj f(rig.m);
+    rig.drift();
+    REQUIRE(rig.reads_violated());
+    f.fj.resync();
+    REQUIRE(f.fj.row_violated(rig.row_ci));
+    CHECK(f.fj.batch(20));  // feasible on the real sums, and reported so
+    CHECK(f.vm.weights[static_cast<size_t>(rig.row_ci)] == 1.0);
+    CHECK_FALSE(f.fj.row_violated(rig.row_ci));
+    CHECK(f.fj.drift_stats().gated_minima == 1);
+    CHECK(f.fj.drift_stats().gate_flips == 1);
+}
+
+TEST_CASE("a row satisfied only by drift is bumped with the rest of V", "[fj][inc_sum]") {
+    // The mirror case: the row is really violated but reads satisfied, so it is
+    // outside V, and a bump of V would skip it. The pinned row keeps V
+    // non-empty, so every minimum bumps. The gate re-sums the drifted row into
+    // V at the first minimum, which then re-samples instead of bumping; every
+    // minimum after it bumps both rows alike. Without the gate the drifted row
+    // stays out of V -- and unbumped -- until the batch's end re-grounds it.
+    DriftRig rig(DriftCase::Mirror, false, true);
+    DriftFj f(rig.m);
+    rig.drift();
+    REQUIRE_FALSE(rig.reads_violated());
+    f.fj.resync();
+    REQUIRE_FALSE(f.fj.row_violated(rig.row_ci));
+    CHECK_FALSE(f.fj.batch(5));
+    CHECK(f.fj.row_violated(rig.row_ci));
+    const double w_row = f.vm.weights[static_cast<size_t>(rig.row_ci)];
+    CHECK(w_row > 1.0);
+    CHECK(w_row == f.vm.weights[static_cast<size_t>(rig.pinned_ci)]);
+    CHECK(f.fj.drift_stats().gate_flips == 1);
+}
+
+TEST_CASE("FJ's local-minimum Feasible verdict is exact under drift", "[fj][inc_sum]") {
+    // FJ repairs the fixable row, and then finds no move: V is empty, but only
+    // because the drifted row reads satisfied. "Feasible" here would be a
+    // verdict drift made. Red with both of the loop's guards removed -- the
+    // gate and the re-grounding before the verdict -- either one alone
+    // catches this row.
+    DriftRig rig(DriftCase::Mirror, true, false);
+    DriftFj f(rig.m);
+    rig.drift();
+    f.fj.resync();
+    REQUIRE(f.fj.row_violated(rig.fixable_ci));
+    REQUIRE_FALSE(f.fj.row_violated(rig.row_ci));
+    CHECK_FALSE(f.fj.batch(50));
+    CHECK_FALSE(f.fj.row_violated(rig.fixable_ci));
+    CHECK(f.fj.row_violated(rig.row_ci));
+}
+
+TEST_CASE("a batch ended at its limit reports Feasible only on exact rows", "[fj][inc_sum]") {
+    // One iteration: FJ repairs the fixable row and the batch hits its limit
+    // before any local minimum, so neither the gate nor the loop's own verdict
+    // runs. What decides is the batch-end status, which must re-ground first:
+    // read off V as the commits left it, it is Feasible. Red without the
+    // re-grounding in batch_end_status.
+    DriftRig rig(DriftCase::Mirror, true, false);
+    DriftFj f(rig.m);
+    rig.drift();
+    f.fj.resync();
+    CHECK_FALSE(f.fj.batch(1));
+    CHECK_FALSE(f.fj.row_violated(rig.fixable_ci));
+    CHECK(f.fj.row_violated(rig.row_ci));
+    CHECK(rig.m.inc_sums().slots[0].drifting == 0);  // no drift leaves a batch
+}
+
+TEST_CASE("Novelty Jump reports feasibility only on exact rows", "[fj][inc_sum]") {
+    // Entered on a drifted state -- which a batch never leaves behind, but a
+    // caller can -- its compound move repairs the fixable row, after which V
+    // reads empty. Red without the re-grounding at its entry: it then reports
+    // having reached feasibility.
+    DriftRig rig(DriftCase::Mirror, true, false);
+    DriftFj f(rig.m);
+    rig.drift();
+    f.fj.resync();
+    CHECK_FALSE(f.fj.apply_novelty_jump());
+    f.fj.resync();
+    CHECK_FALSE(f.fj.row_violated(rig.fixable_ci));
+    CHECK(f.fj.row_violated(rig.row_ci));
 }

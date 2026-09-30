@@ -13,10 +13,12 @@ double full_evaluate(Model& model);
 
 /// What a `delta_evaluate` call means for a `CustomInvariant` (#166).
 ///
-/// Built-in ops are identical under all three -- they recompute from the
-/// assignment in front of them, whatever the caller intends to do next -- so a
-/// model with no custom node evaluates the same way it always did whichever of
-/// these is passed. Only a custom node reads the mode.
+/// Built-in ops recompute from the assignment in front of them under all three,
+/// whatever the caller intends to do next, with one exception: an incremental
+/// `Sum` (#188) in the cone is stashed by a `Probe` and written back from the
+/// stash by the matching `Rollback`, so that a committed value carrying drift
+/// comes back to the bit instead of being re-summed. Otherwise only a custom
+/// node reads the mode.
 enum class DeltaMode : uint8_t {
     /// The assignment being evaluated is the new committed one. Each custom
     /// node in the dirty cone gets `delta()` then `commit()`. This is what an
@@ -54,38 +56,69 @@ class EditJournal;
 double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count,
                       DeltaMode mode = DeltaMode::Commit, const EditJournal* journal = nullptr);
 
-/// `delta_evaluate(model, &var_id, 1)` -- a `Commit` of one scalar variable --
-/// for a caller that still knows the variable's previous value, which it has
-/// already overwritten with the new one (#177).
+/// How many INEXACT updates an incremental `Sum` may carry before a commit
+/// re-sums it instead (#188). An exact update -- every one on integral data --
+/// does not count. A parameter, chosen on held-out instances; see
+/// `docs/prereg-188.md`. 0 means never: the drift is then bounded only by the
+/// batch-end re-grounding and the local-minimum gate.
+constexpr uint32_t kIncSumPeriod = 64;
+
+/// A `Commit` of one scalar variable whose previous value was `old_value` (the
+/// caller has already written the new one): `delta_evaluate(model, &var_id, 1)`,
+/// except that every incremental `Sum` in the cone (`ExprNode::kIncSum`) is moved
+/// by its terms' changes, O(1) per changed term, instead of being re-summed over
+/// all of them (#177, #188). On a MIP row that is the difference between
+/// O(|G_v|) and O(sum of |row| over G_v) per committed move.
 ///
-/// Leaves every node value bit-identical to what `delta_evaluate` would. What
-/// the old value buys is the cost: a `Sum` the model classified as integral
-/// (`ExprNode::kExactSum`) and that currently holds its exact sum
-/// (`Model::sum_exact_state`) is moved by its terms' changes, O(1) per changed
-/// term, instead of being re-summed over all of them. On a MIP row with
-/// integral coefficients over Bool/Int columns that is the difference between
-/// O(|G_v|) and O(sum of |row| over G_v) per committed move. Where the values
-/// cannot be shown exact -- a fractional term, a term above 2^52 / (term count),
-/// a NaN or an infinity -- the Sum is re-summed as before, so the result is the
-/// re-sum's bits either way.
+/// Each update is tested for exactness (TwoSum on `new - old` and on the add).
+/// An exact one changes no bits relative to the re-sum's arithmetic and adds no
+/// drift. An inexact one leaves the Sum up to one rounding of each away from the
+/// real sum of its stored terms, and adds those roundings -- exactly, as TwoSum
+/// computes them -- to the Sum's `IncSumState::drift_bound`. After
+/// `kIncSumPeriod` inexact updates the Sum is re-summed instead, as it is where
+/// a value is not finite, and on its first commit after a `full_evaluate`.
 ///
 /// Precondition, stronger than `delta_evaluate`'s: every node value must
 /// describe the assignment apart from `var_id`'s change. A variable written
-/// without a walk (`restore_state` with no `full_evaluate`, say) leaves a Sum
-/// marked exact on a stale base, which this would update rather than repair.
+/// without a walk (`restore_state` with no `full_evaluate`, say) leaves an
+/// incremental Sum on a stale base, which this would update rather than repair.
 double commit_scalar_move(Model& model, int32_t var_id, double old_value);
 
-/// How often the dirty `Sum`s of exact-sum eligibility (`ExprNode::kExactSum`)
-/// were updated by their terms' changes rather than re-summed, on this thread,
-/// since the caller last assigned it `ExactSumCounters{}`. Diagnostics for
-/// tests and profiling (#177); nothing
-/// in the engine reads them. Counted on the eligible Sums only, so the
-/// re-summing path of every other node pays nothing for them.
-struct ExactSumCounters {
+/// The `Probe` counterpart: the same updates, from the committed values, so a
+/// probe scores exactly the value the commit would produce. The Sums in the
+/// cone are stashed first and the matching `delta_evaluate(..., Rollback)`
+/// writes them back, so a drifted committed state comes back to the bit. No
+/// Sum's drift state changes.
+double probe_scalar_move(Model& model, int32_t var_id, double old_value);
+
+/// Re-sums, checked, the incremental Sum in `slot` and re-evaluates the rows
+/// that read it -- by construction nothing else does. Afterwards the Sum
+/// is a fresh re-sum (`IncSumState::drifting` is 0). O(|terms| + |readers|).
+void reground_inc_sum(Model& model, int32_t slot);
+
+/// `reground_inc_sum` for every Sum still drifting on `IncSums::drifted`,
+/// appending each one's slot to `regrounded`, and empties the list. O(1) when
+/// nothing drifted since the last call. FeasibilityJump calls it at the end of
+/// every batch, which is what keeps drift inside one.
+void reground_drifted_sums(Model& model, std::vector<int32_t>& regrounded);
+
+/// Diagnostics for tests and profiling (#177, #188), on this thread since the
+/// caller last assigned it `IncrementalSumCounters{}`; nothing in the engine
+/// reads them.
+struct IncrementalSumCounters {
+    /// Commits that took an incremental Sum as its terms' updates left it.
     uint64_t incremental = 0;
+    /// Commit-mode walks that re-summed one instead.
     uint64_t resummed = 0;
+    /// Of the updates behind `incremental`, the inexact ones.
+    uint64_t inexact = 0;
+    /// Term updates a Probe applied to an incremental Sum: one per probe of a
+    /// variable that is a term of it.
+    uint64_t probe_pushes = 0;
+    /// Sums re-summed by `reground_inc_sum`, from any caller.
+    uint64_t regrounded = 0;
 };
-ExactSumCounters& exact_sum_counters() noexcept;
+IncrementalSumCounters& incremental_sum_counters() noexcept;
 
 // Convenience overloads
 inline double delta_evaluate(Model& model, const std::vector<int32_t>& changed_var_ids,
