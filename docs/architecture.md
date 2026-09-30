@@ -200,8 +200,16 @@ violated-row bookkeeping, trajectories -- can tell:
 
 Only FJ's committed moves (`update_var`) pass old values; every other walk
 re-sums, checking eligible Sums as it goes. Fixed-iteration runs of `634001b`
-and the change end on identical assignments on neos-860300, swath3, rail01 and
-cbs-cta. Fractional rows are untouched, which is where most of swath3's and
+and `fa74e39` end on identical assignments on neos-860300, swath3, rail01 and
+cbs-cta. Measured at 20 s, one thread, seeds 1 and 2, on #177's pre-registered
+44-instance MIPfeas roster (`634001b` -> `fa74e39`, serial): GLS iterations
+1.045x per instance (95% CI [1.019, 1.071], 33 of 44 up), 1.073x on the
+instances whose commit cost is mostly integral rows and 1.026x on the rest,
+up to 1.47x (n3div36) and 1.24x (neos-860300); feasibility unchanged (31/88
+runs); MINLPLib unchanged within single-seed noise. cbs-cta's 0.93x is code
+alignment, not this change: `bump_weights_and_requeue`, 63% of its run, moved
+off a 64-byte boundary, and under `-falign-functions=64` the two arms time the
+same. Fractional rows are untouched, which is where most of swath3's and
 rail01's commit cost is; the drifting alternative that covered them was built,
 measured and reverted on #177 -- the guarantee that a row violated only by
 drift is never GLS-bumped cost it its gain -- and is tracked in #188.
