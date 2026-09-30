@@ -113,8 +113,9 @@ static double element_value(const ExprNode& node, ConstSpan<ChildRef> children,
 }
 
 // The `extra` values of a LambdaExtra/PairLambdaExtra node, children[1..], read
-// into `buf` for the functor. A few inline slots cover the "a few scalars" the
-// op is for without a heap allocation per evaluation; more spill to a vector.
+// once per evaluation and handed to every functor call as one span. Eight inline
+// slots cover the "few scalars" the op is for without a heap allocation per
+// evaluation; more spill to a vector.
 class ExtraValues {
 public:
     ExtraValues(ConstSpan<ChildRef> children, const Model& model) : n_(children.size() - 1) {
