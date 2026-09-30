@@ -1,0 +1,419 @@
+diff --git a/benchmarks/uc-chped/uc_twophase_178.cpp b/benchmarks/uc-chped/uc_twophase_178.cpp
+new file mode 100644
+index 0000000..f334c16
+--- /dev/null
++++ b/benchmarks/uc-chped/uc_twophase_178.cpp
+@@ -0,0 +1,53 @@
++// #178 supplementary harness (ships only inside the #178 patch): the uc-chped model under
++// FeasibilityJump::run() with the default GFJConfig (two_phase = true), so the
++// linear phase masks the nonlinear objective row at weight 0 and the Float
++// dispatch columns can take the closed form. Iteration-bounded, no wall clock:
++// the result is deterministic per (instance, horizon, seed, arm).
++//
++// Usage: uc_twophase <file.jsonl> <horizon> <seed> <max_iterations>
++// Prints one line: status iterations max_violation; counters go to CBLS_PP_OUT.
++#include "benchmarks/uc-chped/data.h"
++#include "benchmarks/uc-chped/uc_model.h"
++
++#include <cbls/cbls.h>
++#include <cbls/feasibility_jump.h>
++#include <cbls/linear_jump.h>
++
++#include <cstdio>
++#include <cstdlib>
++#include <limits>
++
++int main(int argc, char** argv) {
++    if (argc != 5) {
++        std::fprintf(stderr, "usage: uc_twophase file horizon seed max_iterations\n");
++        return 2;
++    }
++    const auto base = cbls::uc_chped::load_jsonl(argv[1]);
++    const int horizon = std::atoi(argv[2]);
++    const auto seed = static_cast<uint64_t>(std::atoll(argv[3]));
++    const auto max_it = static_cast<int64_t>(std::atoll(argv[4]));
++    const auto inst =
++        horizon < base.n_periods ? cbls::uc_chped::make_subinstance(base, horizon) : base;
++    auto ucm = cbls::uc_chped::build_uc_model(inst);
++    cbls::Model& m = ucm.model;
++    // As solve() does: the objective becomes a row `obj <= bound`, opened at +inf.
++    m.add_objective_soft_constraint();
++    m.set_objective_bound(std::numeric_limits<double>::infinity());
++    cbls::ViolationManager vm(m);
++    cbls::RNG rng(seed);
++    cbls::GFJConfig cfg;  // defaults: two_phase = true, set_initial_x = true
++    cfg.max_iterations = max_it;
++    cbls::FeasibilityJump fj(m, vm, rng, cfg);
++    const cbls::GFJStatus st = fj.run();
++    double maxv = 0.0;
++    for (const int32_t cid : m.constraint_ids()) {
++        const double v = m.node_value(cid);
++        if (v > maxv) {
++            maxv = v;
++        }
++    }
++    std::printf("%s %lld %.17g\n", st == cbls::GFJStatus::Feasible ? "feasible" : "unsolved",
++                static_cast<long long>(fj.iterations()), maxv);
++    cbls::pp178::dump("twophase");
++    return 0;
++}
+diff --git a/include/cbls/feasibility_jump.h b/include/cbls/feasibility_jump.h
+index f746c19..0f3d0b5 100644
+--- a/include/cbls/feasibility_jump.h
++++ b/include/cbls/feasibility_jump.h
+@@ -618,6 +618,15 @@ private:
+     int64_t kick_moves_ = 0;      // structural moves the last kick applied
+     bool has_deadline_ = false;
+     int64_t iterations_ = 0;
++    // ---- #178 instrumentation (uncommitted) ----
++    void pp_record_accept(int32_t v, double s);
++    [[nodiscard]] double pp_exact_unweighted() const;
++    const Model* pp_model_ = nullptr;
++    std::vector<double> pp_last_from_;
++    std::vector<double> pp_last_to_;
++    std::vector<int64_t> pp_last_batch_;
++    std::vector<int64_t> pp_last_bump_;
++    std::vector<uint8_t> pp_last_tiny_;
+     // Armed by the search loop once it is stuck: after `perturbation_period`
+     // batches without improvement, or -- with a wall clock -- after a quarter of
+     // the budget with no new best (#117). Cleared on every new best. Gates the Float escape probe
+diff --git a/include/cbls/linear_jump.h b/include/cbls/linear_jump.h
+index 9f547f7..b41c53c 100644
+--- a/include/cbls/linear_jump.h
++++ b/include/cbls/linear_jump.h
+@@ -8,6 +8,44 @@
+ 
+ namespace cbls {
+ 
++// ---- #178 ping-pong instrumentation (UNCOMMITTED measurement patch) ----
++namespace pp178 {
++struct Stats {
++    // Batch accounting (gls_loop). "api" = the batch API (batch_iter_limit > 0),
++    // i.e. solve()'s FJ batches; "run" = gls()/run() (init polish, LNS repair).
++    int64_t api_batches = 0;          // with >= 1 iteration
++    int64_t api_nobump = 0;           // ... and no weight bump
++    int64_t api_flat_nobump = 0;      // ... and unweighted violation unchanged (PRIMARY)
++    int64_t api_flat_nobump_pos = 0;  // ... of those, U0 > 0
++    int64_t api_pos_batches = 0;      // api batches (>= 1 iteration) with U0 > 0
++    int64_t api_iters = 0;
++    int64_t run_loops = 0;
++    int64_t run_nobump = 0;
++    int64_t run_flat_nobump = 0;
++    int64_t run_iters = 0;
++    int64_t bumps = 0;
++    // Accepted jumps (apply_jump).
++    int64_t accepted = 0;
++    int64_t accepted_float = 0;
++    int64_t accepted_float_cf = 0;  // Float, column closed-form eligible under current weights
++    int64_t tiny = 0;               // 0 < score <= 1e-12 * scale
++    int64_t tiny_float = 0;
++    int64_t tiny_float_cf = 0;
++    int64_t rev_float = 0;              // Float A->B->A inside one batch
++    int64_t rev_float_nobump = 0;       // ... with no bump in between
++    int64_t rev_float_nobump_tiny = 0;  // ... and both accepted scores tiny (DIRECT PING-PONG)
++    // Scorer engagement (LinearJumpScorer::prepare on Float vars).
++    int64_t float_prepare = 0;
++    int64_t float_prepare_fast = 0;
++    // Epochs.
++    int64_t batch_epoch = 0;
++    int64_t bump_epoch = 0;
++    ~Stats();
++};
++Stats& stats();
++void dump(const char* tag);
++}  // namespace pp178
++
+ class Model;
+ 
+ /// Closed-form scoring of a scalar jump over LINEAR comparison rows.
+diff --git a/src/feasibility_jump.cpp b/src/feasibility_jump.cpp
+index 7a4cf29..57a2c54 100644
+--- a/src/feasibility_jump.cpp
++++ b/src/feasibility_jump.cpp
+@@ -942,10 +942,88 @@ bool FeasibilityJump::apply_jump(int sample_size) {
+     if (best_v < 0) {
+         return false;
+     }
++    pp_record_accept(best_v, best_score);
+     update_var(best_v);
+     return true;
+ }
+ 
++// ---- #178 instrumentation: reads only, never writes search state ----
++void FeasibilityJump::pp_record_accept(int32_t v, double s) {
++    pp178::Stats& st = pp178::stats();
++    ++st.accepted;
++    const auto& cids = model_.constraint_ids();
++    const auto& nodes = model_.nodes();
++    const ConstSpan<int32_t> gv = model_.constraints_of_var(v);
++    const Variable& var = model_.var(v);
++    const bool is_float = var.type == VarType::Float;
++    bool cf = std::isfinite(var.value);
++    double scale = 0.0;
++    for (const int32_t c : gv) {
++        const double w = vm_.weights[static_cast<size_t>(c)];
++        if (w == 0.0) {
++            continue;
++        }
++        cf = cf && linear_.row_eligible(c);
++        const ExprNode& nd = nodes[static_cast<size_t>(cids[static_cast<size_t>(c)])];
++        double mag = 0.0;
++        for (const ChildRef& ch : model_.children(nd)) {
++            const double val = ch.is_var ? model_.var(ch.id).value : model_.node_value(ch.id);
++            if (std::isfinite(val)) {
++                mag += std::abs(val);
++            }
++        }
++        scale += std::abs(w) * std::max(1.0, mag);
++    }
++    const bool tiny = s > 0.0 && s <= 1e-12 * scale;
++    st.tiny += tiny ? 1 : 0;
++    if (!is_float) {
++        return;
++    }
++    ++st.accepted_float;
++    st.accepted_float_cf += cf ? 1 : 0;
++    st.tiny_float += tiny ? 1 : 0;
++    st.tiny_float_cf += (tiny && cf) ? 1 : 0;
++    const auto n = static_cast<size_t>(model_.num_vars());
++    if (pp_model_ != &model_ || pp_last_from_.size() != n) {
++        pp_model_ = &model_;
++        pp_last_from_.assign(n, 0.0);
++        pp_last_to_.assign(n, 0.0);
++        pp_last_batch_.assign(n, -1);
++        pp_last_bump_.assign(n, -1);
++        pp_last_tiny_.assign(n, 0);
++    }
++    const auto i = static_cast<size_t>(v);
++    const double from = var.value;
++    const double to = jumps_.jump_value(v);
++    if (pp_last_batch_[i] == st.batch_epoch && from == pp_last_to_[i] && to == pp_last_from_[i]) {
++        ++st.rev_float;
++        if (pp_last_bump_[i] == st.bump_epoch) {
++            ++st.rev_float_nobump;
++            if (tiny && pp_last_tiny_[i] != 0) {
++                ++st.rev_float_nobump_tiny;
++            }
++        }
++    }
++    pp_last_from_[i] = from;
++    pp_last_to_[i] = to;
++    pp_last_batch_[i] = st.batch_epoch;
++    pp_last_bump_[i] = st.bump_epoch;
++    pp_last_tiny_[i] = tiny ? 1 : 0;
++}
++
++double FeasibilityJump::pp_exact_unweighted() const {
++    const auto& cids = model_.constraint_ids();
++    double total = 0.0;
++    for (size_t c = 0; c < cids.size(); ++c) {
++        const auto ci = static_cast<int32_t>(c);
++        if (ci == objective_ci_ || !active(ci)) {
++            continue;
++        }
++        total += progress_residual(model_.node_value(cids[c]));
++    }
++    return total;
++}
++
+ // O(|V|) over the violated list, reading each row's weight live -- so it answers
+ // correctly even for a weight changed since the row was last evaluated, which the
+ // counted bits would only catch at the next reconcile.
+@@ -1071,6 +1149,8 @@ void FeasibilityJump::arm_deadline() {
+ // the loop, and a caller that mutates the assignment outside FJ must resync() before the next batch
+ // (solve() does). A stale V now mis-weights rows, not just mis-queues them.
+ void FeasibilityJump::bump_weights_and_requeue() {
++    ++pp178::stats().bumps;
++    ++pp178::stats().bump_epoch;
+     const double folded = weight_decay_.decay(vm_.weights, config_.rho);
+     if (folded != 1.0) {
+         // Cached scores live in the scaled space too, and this rescale is
+@@ -1212,7 +1292,35 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
+     // The lazy decay's scale is local to the loop: whatever way the loop is left,
+     // vm_.weights are effective weights again afterwards (#175).
+     try {
++        pp178::Stats& st = pp178::stats();
++        ++st.batch_epoch;
++        const int64_t pp_bumps0 = st.bumps;
++        const int64_t pp_iters0 = iterations_;
++        const double pp_u0 = pp_exact_unweighted();
+         const GFJStatus status = gls_loop_scaled(sample_size, batch_iter_limit);
++        {
++            const double pp_u1 = pp_exact_unweighted();
++            const int64_t iters = iterations_ - pp_iters0;
++            const bool nobump = pp178::stats().bumps == pp_bumps0;
++            const bool flat =
++                std::abs(pp_u1 - pp_u0) <= kProgressRelEps * std::max(1.0, pp_u0);
++            pp178::Stats& s2 = pp178::stats();
++            if (iters > 0) {
++                if (batch_iter_limit > 0) {
++                    ++s2.api_batches;
++                    s2.api_iters += iters;
++                    s2.api_pos_batches += pp_u0 > 0.0 ? 1 : 0;
++                    s2.api_nobump += nobump ? 1 : 0;
++                    s2.api_flat_nobump += (nobump && flat) ? 1 : 0;
++                    s2.api_flat_nobump_pos += (nobump && flat && pp_u0 > 0.0) ? 1 : 0;
++                } else {
++                    ++s2.run_loops;
++                    s2.run_iters += iters;
++                    s2.run_nobump += nobump ? 1 : 0;
++                    s2.run_flat_nobump += (nobump && flat) ? 1 : 0;
++                }
++            }
++        }
+         materialise_weights();
+         return status;
+     } catch (...) {
+diff --git a/src/linear_jump.cpp b/src/linear_jump.cpp
+index a03cb6f..325e640 100644
+--- a/src/linear_jump.cpp
++++ b/src/linear_jump.cpp
+@@ -6,6 +6,8 @@
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <cstdio>
++#include <cstring>
+ #include <cstddef>
+ #include <cstdlib>
+ #include <limits>
+@@ -16,6 +18,35 @@
+ 
+ namespace cbls {
+ 
++namespace pp178 {
++namespace {
++Stats g_stats;
++int g_dump_index = 0;
++}  // namespace
++Stats& stats() { return g_stats; }
++void dump(const char* tag) {
++    const char* path = std::getenv("CBLS_PP_OUT");
++    if (path != nullptr) {
++        std::FILE* f = std::fopen(path, "a");
++        if (f != nullptr) {
++            const Stats& s = g_stats;
++            std::fprintf(f, "{\"tag\":\"%s\",\"index\":%d,\"api_batches\":%lld,\"api_nobump\":%lld,\"api_flat_nobump\":%lld,\"api_flat_nobump_pos\":%lld,\"api_pos_batches\":%lld,\"api_iters\":%lld,\"run_loops\":%lld,\"run_nobump\":%lld,\"run_flat_nobump\":%lld,\"run_iters\":%lld,\"bumps\":%lld,\"accepted\":%lld,\"accepted_float\":%lld,\"accepted_float_cf\":%lld,\"tiny\":%lld,\"tiny_float\":%lld,\"tiny_float_cf\":%lld,\"rev_float\":%lld,\"rev_float_nobump\":%lld,\"rev_float_nobump_tiny\":%lld,\"float_prepare\":%lld,\"float_prepare_fast\":%lld}\n", tag, g_dump_index, (long long)s.api_batches, (long long)s.api_nobump, (long long)s.api_flat_nobump, (long long)s.api_flat_nobump_pos, (long long)s.api_pos_batches, (long long)s.api_iters, (long long)s.run_loops, (long long)s.run_nobump, (long long)s.run_flat_nobump, (long long)s.run_iters, (long long)s.bumps, (long long)s.accepted, (long long)s.accepted_float, (long long)s.accepted_float_cf, (long long)s.tiny, (long long)s.tiny_float, (long long)s.tiny_float_cf, (long long)s.rev_float, (long long)s.rev_float_nobump, (long long)s.rev_float_nobump_tiny, (long long)s.float_prepare, (long long)s.float_prepare_fast);
++            std::fclose(f);
++        }
++    }
++    ++g_dump_index;
++    Stats fresh;  // its destructor dumps nothing: it is not g_stats
++    fresh.batch_epoch = g_stats.batch_epoch;
++    fresh.bump_epoch = g_stats.bump_epoch;
++    g_stats = fresh;
++}
++Stats::~Stats() {
++    if (this == &g_stats && (accepted != 0 || api_batches != 0 || run_loops != 0)) {
++        dump("exit");
++    }
++}
++}  // namespace pp178
++
+ namespace {
+ 
+ bool is_literal(const Model& model, const ChildRef& ref) {
+@@ -245,6 +276,17 @@ bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weight
+             "LinearJumpScorer::prepare: the model has a different row count than this scorer; "
+             "a row added to the model must be followed by resize_rows and set_row_eligible on it");
+     }
++    const bool pp_is_float = model_.var(var_id).type == VarType::Float;
++    if (pp_is_float) {
++        ++pp178::stats().float_prepare;
++    }
++#ifdef CBLS_PP_CONTROL
++    if (pp_is_float) {
++        terms_.clear();
++        ++fallback_prepares_;
++        return false;
++    }
++#endif
+     terms_.clear();
+     x0_ = model_.var(var_id).value;
+     const ConstSpan<int32_t> gv = model_.constraints_of_var(var_id);
+@@ -311,6 +353,9 @@ bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weight
+         return false;
+     }
+     ++fast_prepares_;
++    if (pp_is_float) {
++        ++pp178::stats().float_prepare_fast;
++    }
+     return true;
+ }
+ 
+diff --git a/src/search.cpp b/src/search.cpp
+index f644a2f..1787cf3 100644
+--- a/src/search.cpp
++++ b/src/search.cpp
+@@ -1,4 +1,5 @@
+ #include "cbls/search.h"
++#include "cbls/linear_jump.h"
+ 
+ #include "cbls/dag_ops.h"
+ #include "cbls/feasibility_jump.h"
+@@ -11,6 +12,9 @@
+ #include "cbls/solution_pool.h"
+ 
+ #include <algorithm>
++#include <cstring>
++#include <cstdlib>
++#include <cstdio>
+ #include <atomic>
+ #include <chrono>
+ #include <cmath>
+@@ -1782,6 +1786,43 @@ SearchResult ViolationLSLoop::run() {
+ // the bound is tightened on each new (real-)feasible solution. On stagnation the
+ // assignment is perturbed (or diversified via LNS). The InnerSolverHook polishes
+ // continuous variables (objective descent) on each feasible solution.
++
++namespace {
++void hash178_dump(const Model& model, const SearchResult& r) {
++    const char* path = std::getenv("CBLS_HASH_OUT");
++    if (path == nullptr) {
++        return;
++    }
++    uint64_t h = 1469598103934665603ULL;
++    auto mix = [&h](uint64_t x) {
++        for (int i = 0; i < 8; ++i) {
++            h ^= (x >> (8 * i)) & 0xffU;
++            h *= 1099511628211ULL;
++        }
++    };
++    auto mixd = [&mix](double d) {
++        uint64_t b = 0;
++        std::memcpy(&b, &d, sizeof b);
++        mix(b);
++    };
++    for (size_t v = 0; v < model.num_vars(); ++v) {
++        const Variable& var = model.var(static_cast<int32_t>(v));
++        mixd(var.value);
++        for (const auto e : var.elements) {
++            mix(static_cast<uint64_t>(e));
++        }
++    }
++    mix(static_cast<uint64_t>(r.iterations));
++    mixd(r.objective);
++    std::FILE* f = std::fopen(path, "a");
++    if (f != nullptr) {
++        std::fprintf(f, "%016llx %lld\n", static_cast<unsigned long long>(h),
++                     static_cast<long long>(r.iterations));
++        std::fclose(f);
++    }
++}
++}  // namespace
++
+ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
+                    InnerSolverHook* hook, LNS* lns, int lns_interval, SolveCallback* callback,
+                    const SearchConfig& config, SearchCoordination* coord) {
+@@ -1844,7 +1885,10 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
+ 
+     ViolationLSLoop loop(model, vm, rng, fj, config, budget, hook, lns, lns_interval, callback,
+                          coord);
+-    return loop.run();
++    SearchResult pp_result = loop.run();
++    pp178::dump("solve");
++    hash178_dump(model, pp_result);
++    return pp_result;
+ }
+ 
+ }  // namespace cbls
