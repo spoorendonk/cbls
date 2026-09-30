@@ -22,15 +22,32 @@ constexpr double kInf = std::numeric_limits<double>::infinity();
 // grid plus a few local values; the breakpoint candidates (#186) take the same
 // grid, and enumerate whole only up to `kExhaustiveBreakpoints`.
 //
-// Why the breakpoint cap is the grid's size and not the Int width: measured on
-// a Float under one ceil node plus five linear rows (Release, idle box, three
-// runs agreeing within 1.5%; scratch harness, engine at 9c587f1), a probe costs
-// 0.38 us and an edge two probes, so enumerating 32 / 64 / 128 / 256 edges cost
-// 27.4 / 53.1 / 104.6 / 208.1 us per compute_var_jump, while the capped path
-// (nearest edges + grid) cost 29-31 us at 257, 4096 and 10^6 edges. The Int grid
-// baseline, with no breakpoint node, was 12.4 us. So at 256 the exhaustive
-// regime cost ~7x the capped one; at 32 the two cost the same, which is the one
-// point where enumerating whole never costs more than the fallback it replaces.
+// Why the breakpoint cap is the grid's size and not the Int width. Measured
+// with a scratch harness timing compute_var_jump of one variable that sits
+// under the op(s) and in five linear rows `i*x + y <= i*W`, the op's row
+// violated so every candidate is probed; Release, AMD Ryzen 5 5600H (12
+// threads, simon-Legion-5-Pro-16ACH6H), load < 1.5 under an exclusive bench
+// lock, three runs agreeing within ~5%, engine at af0213a. Microseconds per
+// call:
+//
+//   Float under one ceil, edges in domain   32: 38   33 (capped): 38.7
+//                                            64: 41  256: 42  10^6: 43
+//   Int (domain 10^5) under ceil(x / s)      32: 42   33 (capped): 43
+//                                           256: 44  4096: 44
+//   Int index, Element table of n            32: 26   68: 41   69 (capped): 35
+//                                         1000: 40  10^4: 28
+//   K ceil nodes on one Float (shared grid)  K=1: 47  2: 57  4: 78  8: 141
+//   baselines: Int grid, no breakpoint node 12.4; Float reaching no breakpoint
+//   op in a model with one 1.10, same Float in a model without 1.09
+//
+// Every capped path costs ~35-45 us whatever the range, and enumerating 32
+// edges (up to three probes each) costs about the same, so 32 is where
+// enumerating whole stops being free. The earlier two-probes-per-edge form
+// measured 208 us at 256 edges (engine 9c587f1), ~7x the capped path. An
+// Element's own cap (enumerate while the indices are no more than its capped
+// path would offer) sits at the same crossover: 41 us at 68 against 35 capped.
+// K nodes cost ~13 us each beyond the first -- their near edges, which stay
+// per node -- with the grid shared, so no per-variable limit is needed on top.
 // The Int width stays 256 so that no existing model's trajectory moves.
 constexpr double kExhaustiveJumpWidth = 256.0;
 constexpr int kJumpGridPoints = 32;
