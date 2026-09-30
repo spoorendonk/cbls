@@ -164,6 +164,12 @@ Against this, the treatment ran a median +8% more FJ iterations on MINLPLib and
 2.6-29× more on MIPfeas. Those are iteration counts across trajectories that
 diverge, not a controlled throughput A/B.
 
+D does not require the two jumps to be adjacent: other variables may move
+between A→B and B→A. So D is not a pure count of ulp ping-pong. The control, which
+cannot ping-pong by rounding, shows a background of up to 0.3% of iterations
+(0.08-0.30% on `neos-3754480-nidda`). The treatment's D is therefore an upper
+bound on the ulp ping-pong.
+
 No arm lost feasibility on any instance, and no objective loss is measurable. P
 rose from 0 to 0.012 on `alkylation`, under the pre-registered 0.05 bar, and
 stayed at ≈ 0 everywhere else.
@@ -171,8 +177,9 @@ stayed at ≈ 0 everywhere else.
 ### Where the cycle can run, and for how long (from the code)
 
 A tiny-score reversal can only be the winning jump where no other sampled
-variable has a positive score, which is at a local minimum of the weighted
-violation. There it is **absorbing**. After A→B→A the assignment is bit-for-bit
+variable has a higher score, which is at a local minimum of the weighted
+violation. There an *adjacent* A→B→A cycle, one with no other move in between,
+is **absorbing**. After A→B→A the assignment is bit-for-bit
 the one before. Every jump value, Newton targets included, is a pure function of
 the assignment and the weights, and the weights move only on a bump. The
 detector requires an exact return to A. All 75 flat no-bump MINLPLib batches had
@@ -189,9 +196,10 @@ row.
   `batch_iter_limit > 0`, which only the batch API passes, so the loop ends only
   on feasibility, `max_iterations` or `time_limit`. A cycle entered there can
   consume the caller's whole cap:
-  - the 2 000 iterations of the LNS repair, `fj_nl_initialize(model, vm, 2000,
-    …)` in `src/lns.cpp`;
-  - Python's `fj_nl_initialize`, 10 000 by default;
+  - the LNS repair, capped at 2 000 iterations or its repair time limit:
+    `fj_nl_initialize(model, vm, 2000, …, repair_time_limit)` in
+    `src/lns.cpp`;
+  - Python's `fj_nl_initialize`, capped at 10 000 iterations or 2 s by default;
   - `FeasibilityJump::run()` with a default `GFJConfig`, where `max_iterations`
     and `time_limit` are both 0. That path is genuinely unbounded.
 
@@ -200,8 +208,9 @@ row.
 
 **The hazard is fractional coefficients, not the Float type.** An Int column in a
 row with fractional coefficients goes through the same `p + r·Δ` arithmetic and
-has the same asymmetry. D counts Float reversals only, so Int columns were not
-measured.
+has the same asymmetry. Int reversals were not counted: D counts Float
+reversals only. Tiny Int accepts were counted, and were 0-64 per run in both
+arms (see the MIPfeas campaign).
 
 ### Zero trajectory change from the instrumentation
 
@@ -256,8 +265,8 @@ The table gives per-seed values for seeds 1, 2 and 3, treatment / control:
 |---|---|---|---|---|---|---|---|
 | alkylation | 27991, 6776, 28586 | 0, 0, 0 | .012, .004, .014 | 0, 0, 0 | 2.4%, 0.6%, 2.7% | .0004, .0003, .047 | .051, .077, .079 |
 | kall_ellipsoids_tc02b | 0, 0, 0 | 0, 0, 0 | 0, 0, 0 | 0, 0, 0 | 0 | 48.2, 37.2, 156.1 | 71.2, 67.5, 139.0 |
-| minlphi | 368, 7, 288 | 0, 3, 1 | .005, 0, 0 | 0, 0, 0 | ≤ 0.08% | 0, 0, 0 | 0, 0, 0 |
-| process | 3, 5, 197 | 3, 5, 0 | 0, 0, 0 | 0, 0, 0 | ≤ 0.01% | .014, .040, .018 | .014, .040, .044 |
+| minlphi | 368, 7, 288 | 0, 3, 1 | .005, 0, 0 | 0, 0, 0 | ≤ 0.09% | 0, 0, 0 | 0, 0, 0 |
+| process | 3, 5, 197 | 3, 5, 0 | 0, 0, 0 | 0, 0, 0 | ≤ 0.02% | .014, .040, .018 | .014, .040, .044 |
 
 The instances fall under the rule as follows:
 
@@ -279,8 +288,10 @@ Totals over the 12 runs per arm:
 - Tiny no-bump reversals: 64,221 in the treatment against 12 in the control.
 
 The control's small counts cannot be rounding asymmetry, because the probe is
-exactly antisymmetric. They were not traced further; the likely source is a
-candidate set that changes between the two jumps.
+exactly antisymmetric. D does not require adjacency: other variables may move
+between A→B and B→A and change the candidate set. That background, up to 0.3% of
+iterations on MIPfeas, was not traced further. It makes the treatment's D an
+upper bound on the ulp ping-pong.
 
 ### Campaign: MIPfeas (post-hoc extension, 10 s, seeds 1-3, 24 pairs)
 
@@ -314,6 +325,13 @@ Over all 24 runs per arm there was exactly 1 flat no-bump batch in each.
 - **Objective:** on `binkar10_1` and `neos-3754480-nidda` the treatment's
   objective is better in all three seeds. As on `alkylation`, that is
   descriptive only, at 3-12× the control's iterations.
+
+**`tiny`, over all variable types** (pre-registered in the addendum):
+
+- non-Float tiny accepts were 0-64 per run in both arms, ≤ 0.02% of accepts;
+- the pooled tiny/accepted rate is 2.9% (treatment) against 3.0% (control) on
+  MIPfeas, and 3.3% against 2.8% on MINLPLib, where every accepted jump was a
+  Float.
 
 The threshold-free `rev_float_nobump` is 2.2-52× the control's on the engaged
 instances. Since the treatment also runs 2.6-29× more iterations, it scales
@@ -364,14 +382,15 @@ cannot make a linear row eligible when that row is not a comparison node.
     is closed-form, re-score that one candidate with `weighted_violation_delta`
     and treat a probe score ≤ 0 as non-improving. This would make the
     accept/reject decision for those moves exactly the probe's, which is the
-    reference semantics, and it costs one probe per tiny winner (2.9-3.3% of
-    accepted jumps here). It needs its own tiny threshold, and it does not
+    reference semantics. It costs one probe per tiny winner: 2.9-3.3% of accepted
+    jumps pooled, up to ~13% in a single run, and 2.1-2.9% pooled on
+    closed-form columns. It needs its own tiny threshold, and it does not
     reproduce the probe's choice *among* candidates in a near tie. It is not
     needed on this evidence.
 - **What was not measured:**
   - the unbounded or cap-bounded `gls()`/`run()` paths, split out from the batch
     API;
-  - Int columns in fractional rows;
+  - Int reversals in fractional rows (tiny Int accepts were 0-64 per run);
   - budgets beyond 10 s;
   - rosters beyond the admitted ones.
 
@@ -409,9 +428,13 @@ The harness is built outside CMake, against each arm's library:
 ```
 c++ -O3 -DNDEBUG -std=gnu++17 -I<patched> -I<patched>/include \
   -I build-<arm>/_deps/json-src/include \
-  <patched>/benchmarks/uc-chped/uc_twophase_178.cpp build-<arm>/libcbls.a -lz \
+  <patched>/benchmarks/uc-chped/uc_twophase_178.cpp build-<arm>/libcbls.a -lz -lpthread \
   -o build-<arm>/uc_twophase
 ```
+
+The instrumentation costs time in both arms, so every timed number here, iteration
+counts included, comes from instrumented binaries and is not an unpatched
+engine's throughput.
 
 **Environment.** `CBLS_PP_OUT=<file>` appends one JSON line of counters per
 `solve()` call, and one at process exit if any counts remain.
@@ -443,7 +466,7 @@ c++ -O3 -DNDEBUG -std=gnu++17 -I<patched> -I<patched>/include \
 
 **Protocol.** A pair is the control run and the treatment run of one
 (instance, seed). Each pair holds an exclusive machine lock
-(`flock -x ~/.cache/cbls-bench.lock`). It waits inside the lock until the
+(`flock -x <lockfile>`). It waits inside the lock until the
 1-minute load average is below 1.5, polling every 10 s. It records that load and
 then runs both arms back to back. The lock is released between pairs.
 

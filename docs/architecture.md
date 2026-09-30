@@ -1018,7 +1018,7 @@ constraint `obj <= bound`, when that constraint is violated its Newton candidate
 pulls the objective *down* — this is how a hook-less continuous model still
 descends the objective.
 
-The probe is exactly antisymmetric and this scorer is not. On a plateau that is
+The probe is exactly antisymmetric and `LinearJumpScorer` is not. On a plateau that is
 balanced over fractional coefficients, a move and its reverse can both score
 +1 ulp, and FJ can bounce between the two. #178 measured this at `c09a8ca`, and
 the ping-pong does occur. On MINLPLib `alkylation`, tiny-score A→B→A reversals
