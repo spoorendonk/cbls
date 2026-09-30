@@ -538,20 +538,42 @@ BreakpointRange breakpoint_range(const Model& model, const ExprNode& nd, size_t 
     const double u_lo = std::min(ua, ub);
     const double u_hi = std::max(ua, ub);
     BreakpointRange r;
-    if (nd.op == NodeOp::Round) {
-        r.offset = 0.5;
-    } else if (nd.op == NodeOp::Element && var.type != VarType::Int) {
+    if (nd.op == NodeOp::Round || (nd.op == NodeOp::Element && var.type != VarType::Int)) {
         r.offset = 0.5;
     }
     r.k_min = std::ceil(u_lo - r.offset);
     r.k_max = std::floor(u_hi - r.offset);
     if (nd.op == NodeOp::Element) {
         const ElementTable& tbl = model.element_table(nd.lambda_func_id);
-        const double n = static_cast<double>(child_idx == 0 ? tbl.rows : tbl.cols);
+        const auto n = static_cast<double>(child_idx == 0 ? tbl.rows : tbl.cols);
         r.k_min = std::max(r.k_min, 0.0);
         r.k_max = std::min(r.k_max, n - 1.0);
     }
     return r;
+}
+
+// Candidates for `var_id` from one breakpoint node `nd`: one breakpoint set per
+// argument the variable reaches, each placed by that argument's slope.
+template <class Consider>
+void node_breakpoints(Model& model, const ExprNode& nd, int32_t var_id, const Variable& var,
+                      double x0, Consider&& consider) {
+    const ConstSpan<ChildRef> kids = model.children(nd);
+    for (size_t c = 0; c < kids.size(); ++c) {
+        const ChildRef& kid = kids[c];
+        double slope = 0.0;
+        double u0 = x0;
+        if (!kid.is_var) {
+            slope = compute_partial(model, kid.id, var_id);
+            u0 = model.node_values()[static_cast<size_t>(kid.id)];
+        } else if (kid.id == var_id) {
+            slope = 1.0;
+        }
+        if (!(std::abs(slope) > 1e-12) || !std::isfinite(slope) || !std::isfinite(u0)) {
+            continue;  // this argument does not move with the variable
+        }
+        const BreakpointRange range = breakpoint_range(model, nd, c, var, x0, u0, slope);
+        argument_breakpoints(var, x0, u0, slope, range, nd.op != NodeOp::Element, consider);
+    }
 }
 
 // Candidates for `var_id` from every breakpoint node its affine cone reaches.
@@ -574,42 +596,27 @@ void breakpoint_jump_candidates(Model& model, int32_t var_id, const Variable& va
         epoch = 1;
     }
     queue.clear();
-    auto visit = [&](int32_t nid) {
-        if (stamp[static_cast<size_t>(nid)] != epoch) {
-            stamp[static_cast<size_t>(nid)] = epoch;
-            queue.push_back(nid);
-        }
-    };
     for (const int32_t dep : model.dependents(var_id)) {
-        visit(dep);
+        if (stamp[static_cast<size_t>(dep)] != epoch) {
+            stamp[static_cast<size_t>(dep)] = epoch;
+            queue.push_back(dep);
+        }
     }
     // `queue` grows while it is walked, so it is indexed rather than iterated.
     for (size_t head = 0; head < queue.size(); ++head) {
         const ExprNode& nd = model.nodes()[static_cast<size_t>(queue[head])];
         if (is_breakpoint_op(nd.op)) {
-            const ConstSpan<ChildRef> kids = model.children(nd);
-            for (size_t c = 0; c < kids.size(); ++c) {
-                double slope = 0.0;
-                double u0 = x0;
-                if (kids[c].is_var) {
-                    slope = kids[c].id == var_id ? 1.0 : 0.0;
-                } else {
-                    slope = compute_partial(model, kids[c].id, var_id);
-                    u0 = model.node_values()[static_cast<size_t>(kids[c].id)];
-                }
-                if (!(std::abs(slope) > 1e-12) || !std::isfinite(slope) || !std::isfinite(u0)) {
-                    continue;
-                }
-                const BreakpointRange range = breakpoint_range(model, nd, c, var, x0, u0, slope);
-                argument_breakpoints(var, x0, u0, slope, range, nd.op != NodeOp::Element, consider);
-            }
+            node_breakpoints(model, nd, var_id, var, x0, consider);
             continue;  // piecewise constant above here: nothing affine to follow
         }
         if (!affine_passthrough(model, nd)) {
             continue;
         }
         for (const int32_t parent : model.parents(nd.id)) {
-            visit(parent);
+            if (stamp[static_cast<size_t>(parent)] != epoch) {
+                stamp[static_cast<size_t>(parent)] = epoch;
+                queue.push_back(parent);
+            }
         }
     }
 }
@@ -945,16 +952,11 @@ bool node_is_affine(NodeOp op, ConstSpan<ChildRef> children, const std::vector<u
         case NodeOp::Lt:
         case NodeOp::Gt:  // residual lhs-rhs is affine if both sides affine
             return child_affine(children[0]) && child_affine(children[1]);
-        case NodeOp::Element:
-        case NodeOp::Ceil:
-        case NodeOp::Floor:
-        case NodeOp::Round:
-        case NodeOp::LambdaExtra:
-        case NodeOp::PairLambdaExtra:
-            // #186's ops, named so the choice reads as one: piecewise constant
-            // (or opaque user code), never affine, so a row over one is never
-            // scored in closed form by LinearJumpScorer and takes the probe.
-            return false;
+        // #186's Element/Ceil/Floor/Round (piecewise constant) and LambdaExtra/
+        // PairLambdaExtra (user code) land here DELIBERATELY: never affine, so a
+        // row over one is never scored in closed form by LinearJumpScorer and
+        // takes the probe. Pinned by "a row over a piecewise-constant op is not
+        // scored in closed form" (tests/test_element_rounding.cpp).
         default:  // Eq (abs), Neq (step), Pow, Min, Max, trig, etc.
             return false;
     }

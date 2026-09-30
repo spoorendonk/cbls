@@ -436,6 +436,39 @@ PairLambdaExtraFunc adapt_extra(ExtraCallable2 f) {
     };
 }
 
+// The two extra-lambda bindings, kept out of NB_MODULE's body. The null test is
+// the binding's: `adapt_extra` wraps an empty callable into a non-empty one, so
+// the builder's own test could not see it. nanobind refuses a Python `None`
+// before it gets here; this covers anything it would pass as empty.
+int32_t lambda_sum_extra(Model& model, int32_t list_var, ExtraCallable1 func,
+                         const std::vector<int32_t>& extra) {
+    refuse_if_solving(model, "Model.lambda_sum");
+    if (!func) {
+        throw std::invalid_argument("Model.lambda_sum: func must not be None");
+    }
+    return model.lambda_sum(list_var, adapt_extra(std::move(func)), extra);
+}
+
+int32_t pair_lambda_sum_extra(Model& model, int32_t list_var, ExtraCallable2 func,
+                              const std::vector<int32_t>& extra, bool cyclic) {
+    refuse_if_solving(model, "Model.pair_lambda_sum");
+    if (!func) {
+        throw std::invalid_argument("Model.pair_lambda_sum: func must not be None");
+    }
+    const PairMode mode = cyclic ? PairMode::Cyclic : PairMode::Open;
+    return model.pair_lambda_sum(list_var, adapt_extra(std::move(func)), mode, extra);
+}
+
+// `round(x)`. `round(x, n)` asks for decimal places, which the op does not
+// have, so it is refused rather than silently rounded to an integer.
+nb::object round_dunder(const Expr& a, std::optional<int> ndigits) {
+    if (ndigits.has_value()) {
+        throw std::invalid_argument(
+            "Expr.__round__: ndigits is not supported; round(x) rounds to an integer");
+    }
+    return build_expr(a, "Expr.__round__", [&] { return cbls::round(a); });
+}
+
 // `None` detaches; a token attaches a NON-OWNING view of it. The keep_alive on
 // each setter is what keeps the token alive for as long as the config naming it,
 // so this cannot hand the engine a dangling view (the #156 hazard class).
@@ -896,17 +929,8 @@ NB_MODULE(_cbls_core, m) {
                 return model.lambda_sum(list_var, std::move(func));
             },
             nb::arg("list_var"), nb::arg("func"), kLambdaSumDoc)
-        .def(
-            "lambda_sum",
-            [](Model& model, int32_t list_var, ExtraCallable1 func,
-               const std::vector<int32_t>& extra) {
-                refuse_if_solving(model, "Model.lambda_sum");
-                if (!func) {
-                    throw std::invalid_argument("Model.lambda_sum: func must not be None");
-                }
-                return model.lambda_sum(list_var, adapt_extra(std::move(func)), extra);
-            },
-            nb::arg("list_var"), nb::arg("func"), nb::arg("extra"), kLambdaExtraDoc)
+        .def("lambda_sum", &lambda_sum_extra, nb::arg("list_var"), nb::arg("func"),
+             nb::arg("extra"), kLambdaExtraDoc)
         .def(
             "lambda_table_sum",
             [](Model& model, int32_t list_var, const Table1D& table) {
@@ -938,19 +962,8 @@ NB_MODULE(_cbls_core, m) {
             },
             nb::arg("list_var"), nb::arg("func"), nb::arg("cyclic") = false,
             nb::arg("head") = nb::none(), nb::arg("tail") = nb::none(), kPairLambdaSumDoc)
-        .def(
-            "pair_lambda_sum",
-            [](Model& model, int32_t list_var, ExtraCallable2 func,
-               const std::vector<int32_t>& extra, bool cyclic) {
-                refuse_if_solving(model, "Model.pair_lambda_sum");
-                if (!func) {
-                    throw std::invalid_argument("Model.pair_lambda_sum: func must not be None");
-                }
-                return model.pair_lambda_sum(list_var, adapt_extra(std::move(func)),
-                                             cyclic ? PairMode::Cyclic : PairMode::Open, extra);
-            },
-            nb::arg("list_var"), nb::arg("func"), nb::kw_only(), nb::arg("extra"),
-            nb::arg("cyclic") = false, kPairLambdaExtraDoc)
+        .def("pair_lambda_sum", &pair_lambda_sum_extra, nb::arg("list_var"), nb::arg("func"),
+             nb::kw_only(), nb::arg("extra"), nb::arg("cyclic") = false, kPairLambdaExtraDoc)
         .def(
             "pair_table_sum",
             [](Model& model, int32_t list_var, const Table2D& dist, bool cyclic,
@@ -1167,18 +1180,7 @@ NB_MODULE(_cbls_core, m) {
              [](const Expr& a) {
                  return build_expr(a, "Expr.__floor__", [&] { return cbls::floor(a); });
              })
-        .def(
-            "__round__",
-            [](const Expr& a, std::optional<int> ndigits) {
-                // round(x, n) asks for decimal places, which the op does not
-                // have; refused rather than silently rounding to an integer.
-                if (ndigits.has_value()) {
-                    throw std::invalid_argument(
-                        "Expr.__round__: ndigits is not supported; round(x) rounds to an integer");
-                }
-                return build_expr(a, "Expr.__round__", [&] { return cbls::round(a); });
-            },
-            nb::arg("ndigits") = nb::none())
+        .def("__round__", &round_dunder, nb::arg("ndigits") = nb::none())
         .def("__abs__",
              [](const Expr& a) {
                  return build_expr(a, "Expr.__abs__", [&] { return cbls::abs(a); });

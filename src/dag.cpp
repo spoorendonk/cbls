@@ -84,7 +84,7 @@ static int list_size(const ChildRef& ref, const Model& model) {
 // "outside" rather than the undefined behaviour `static_cast<int>` would be.
 static int32_t element_index(double v, int32_t n) {
     const double t = std::trunc(v);
-    if (!(t >= 0.0 && t < static_cast<double>(n))) {
+    if (std::isnan(t) || t < 0.0 || t >= static_cast<double>(n)) {
         return -1;
     }
     return static_cast<int32_t>(t);
@@ -656,13 +656,13 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
         case NodeOp::Ceil:
         case NodeOp::Floor:
         case NodeOp::Round:
-            // Piecewise constant (#186): 0 on every plateau, undefined on an
-            // edge. FJ reads the edges as jump candidates instead of a slope.
-            return 0.0;
-
         case NodeOp::LambdaExtra:
         case NodeOp::PairLambdaExtra:
-            return 0.0;  // discrete in the list, and opaque in the extras
+            // #186's ops. The first four are piecewise constant -- 0 on every
+            // plateau, undefined on an edge -- and FJ reads their edges as jump
+            // candidates instead of a slope. The two lambdas are discrete in the
+            // list, as Lambda is, and opaque in the extras.
+            return 0.0;
     }
     return 0.0;
 }
