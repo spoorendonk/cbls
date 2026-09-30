@@ -199,17 +199,27 @@ violated-row bookkeeping, trajectories -- can tell:
   turn; `full_evaluate` clears the state.
 
 Only FJ's committed moves (`update_var`) pass old values; every other walk
-re-sums, checking eligible Sums as it goes. Fixed-iteration runs of `634001b`
-and `fa74e39` end on identical assignments on neos-860300, swath3, rail01 and
-cbs-cta. Measured at 20 s, one thread, seeds 1 and 2, on #177's pre-registered
-44-instance MIPfeas roster (`634001b` -> `fa74e39`, serial): GLS iterations
-1.045x per instance (95% CI [1.019, 1.071], 33 of 44 up), 1.073x on the
-instances whose commit cost is mostly integral rows and 1.026x on the rest,
-up to 1.47x (n3div36) and 1.24x (neos-860300); feasibility unchanged (31/88
-runs); MINLPLib unchanged within single-seed noise. cbs-cta's 0.93x is code
-alignment, not this change: `bump_weights_and_requeue`, 63% of its run, moved
-off a 64-byte boundary, and under `-falign-functions=64` the two arms time the
-same. Fractional rows are untouched, which is where most of swath3's and
+re-sums, checking eligible Sums as it goes. Fixed-iteration runs of `634001b`,
+of main at `ca7ef76` (which adds #176 and #179) and of the change end on
+identical assignments on neos-860300, swath3, rail01, cbs-cta, eilA101-2,
+supportcase33 and neos-957323. Measured at 20 s, one thread, seeds 1 and 2, on
+#177's pre-registered 44-instance MIPfeas roster (`634001b` -> `e0cbcbf`,
+built before the branch was rebased onto main, serial): GLS iterations 1.045x
+per instance (95% CI [1.019, 1.071], 33 of 44 up), 1.073x on the instances
+whose commit cost is mostly integral rows and 1.026x on the rest, up to 1.47x
+(n3div36) and 1.24x (neos-860300); feasibility unchanged (31/88 runs);
+MINLPLib unchanged within single-seed noise.
+
+The instances that lose -- cbs-cta 0.93x, eilA101-2 0.94x, supportcase33
+0.94x, neos-957323 0.95x in that A/B -- lose to code layout, not to this
+change's work. Timed at a fixed iteration count against main (`ca7ef76` ->
+`489c1f3`, median of three, default Release build): 0.918x, 0.874x, 0.937x,
+0.931x. Built with `-falign-functions=64`, the same pairs time 1.001x, 1.037x,
+1.021x, 1.009x, while neos-860300's gain holds either way (1.070x / 1.073x).
+The change grows `update_var` by a few bytes, which moves the functions after
+it in `feasibility_jump.cpp` -- `bump_weights_and_requeue`, 63% of cbs-cta's
+run, goes from a 64-byte boundary to +16. The build does not set that flag,
+so the shipped binary carries the layout loss. Fractional rows are untouched, which is where most of swath3's and
 rail01's commit cost is; the drifting alternative that covered them was built,
 measured and reverted on #177 -- the guarantee that a row violated only by
 drift is never GLS-bumped cost it its gain -- and is tracked in #188.
