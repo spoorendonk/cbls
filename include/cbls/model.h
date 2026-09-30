@@ -524,12 +524,12 @@ public:
     /// `ExprNode`) is known to hold the EXACT sum of its terms, each an integer of
     /// magnitude at most 2^52 / (term count). Under that bound every partial sum is
     /// an integer of magnitude at most 2^52, so every addition is exact in any
-    /// order, and updating the Sum by its
-    /// terms' changes gives the same bits as re-summing it. `delta_evaluate` and
-    /// `commit_scalar_move` maintain it on every write to such a Sum;
-    /// `full_evaluate` clears it, since it re-sums without checking. Empty until
-    /// the first `full_evaluate` sizes it. Not bound to Python (#156): an
-    /// unchecked index, and a wrong 1 would let an inexact update through.
+    /// order, and updating the Sum by its terms' changes gives the same bits as
+    /// re-summing it. `delta_evaluate` and `commit_scalar_move` maintain it on
+    /// every write to such a Sum; `full_evaluate` clears it, since it re-sums
+    /// without checking. Empty until the first `full_evaluate` sizes it. Not
+    /// bound to Python (#156): the walks index it by node id unchecked, and a
+    /// wrong 1 written from outside would let an inexact update through.
     [[nodiscard]] std::vector<uint8_t>& sum_exact_state() noexcept { return sum_exact_; }
     /// `node`'s children, in the order they were given when it was created.
     /// Valid from creation, not only after `close()`: a node's children are

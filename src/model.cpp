@@ -863,11 +863,9 @@ namespace {
 // qualifying Sum sets on itself and its node terms.
 class ExactSumClassifier {
 public:
-    ExactSumClassifier(std::vector<ExprNode>& nodes, const std::vector<Variable>& vars,
-                       int32_t objective_bound_node)
+    ExactSumClassifier(std::vector<ExprNode>& nodes, const std::vector<Variable>& vars)
         : nodes_(nodes),
           vars_(vars),
-          objective_bound_node_(objective_bound_node),
           integral_term_(nodes.size(), 0),
           node_stamp_(nodes.size(), -1),
           var_stamp_(vars.size(), -1) {}
@@ -878,9 +876,11 @@ public:
     void visit(int32_t nid, ConstSpan<ChildRef> kids) {
         const ExprNode& nd = nodes_[nid];
         if (nd.op == NodeOp::Const) {
+            // The objective bound is a Const too, but it never qualifies: its
+            // `const_value` stays the +inf it was made with (the live bound is
+            // per-model state), which isfinite rejects.
             integral_term_[nid] = static_cast<uint8_t>(
-                nid != objective_bound_node_ && std::isfinite(nd.const_value) &&
-                nd.const_value == std::trunc(nd.const_value));
+                std::isfinite(nd.const_value) && nd.const_value == std::trunc(nd.const_value));
         } else if (nd.op == NodeOp::Neg || nd.op == NodeOp::Prod) {
             integral_term_[nid] = static_cast<uint8_t>(std::all_of(
                 kids.begin(), kids.end(), [this](const ChildRef& r) { return integral_ref(r); }));
@@ -903,15 +903,16 @@ private:
         return integral_term_[ref.id] != 0;
     }
 
-    // Every term integral, none a Sum, none named twice.
+    // Every term integral, none named twice. That also rules out a Sum term:
+    // a Sum is never an integral term (`visit` sets that only for Const, Neg
+    // and Prod).
     bool qualifies(int32_t nid, ConstSpan<ChildRef> kids) {
         if (kids.empty()) {
             return false;
         }
         for (const ChildRef& ref : kids) {
             int32_t& stamp = ref.is_var ? var_stamp_[ref.id] : node_stamp_[ref.id];
-            const bool term = ref.is_var || nodes_[ref.id].op != NodeOp::Sum;
-            if (!term || stamp == nid || !integral_ref(ref)) {
+            if (stamp == nid || !integral_ref(ref)) {
                 return false;
             }
             stamp = nid;
@@ -921,7 +922,6 @@ private:
 
     std::vector<ExprNode>& nodes_;
     const std::vector<Variable>& vars_;
-    int32_t objective_bound_node_;
     std::vector<uint8_t> integral_term_;
     std::vector<int32_t> node_stamp_;
     std::vector<int32_t> var_stamp_;
@@ -929,12 +929,12 @@ private:
 
 }  // namespace
 
+// Only ever sets flags. The structure is append-only after close() and the
+// variable types never change, so a node that qualified still qualifies when
+// add_objective_soft_constraint re-runs this, and a new node starts at 0.
 void Model::classify_exact_sums() {
     ModelStructure& st = mut();
-    for (ExprNode& nd : st.nodes) {
-        nd.exact_sum_flags = 0;
-    }
-    ExactSumClassifier classifier(st.nodes, vars_, objective_bound_node_);
+    ExactSumClassifier classifier(st.nodes, vars_);
     for (const int32_t nid : st.topo_order) {
         classifier.visit(nid, children(st.nodes[nid]));
     }

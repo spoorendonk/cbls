@@ -190,7 +190,7 @@ struct ExprNode {
     /// see `Model::sum_exact_state`. In what was padding after `op`, so it costs
     /// no memory, and read from the node the walk has already loaded, so it costs
     /// no extra load per dirty node. (A separate per-node array measured 9.5%
-    /// slower on cbs-cta at `20a6baa`, but that was code alignment -- it vanishes
+    /// slower on cbs-cta at `bd0e5ab`, but that was code alignment -- it vanishes
     /// under `-falign-functions=64` -- so it is no evidence either way.)
     uint8_t exact_sum_flags = 0;
     static constexpr uint8_t kExactSum = 1;
@@ -210,6 +210,10 @@ struct ExprNode {
     /// out of. -1 for every other op.
     int32_t lambda_func_id = -1;
 };
+
+// `exact_sum_flags` sits in padding: pinned so a field added later cannot grow
+// every node of a 4.3M-node model without someone deciding to (#177).
+static_assert(sizeof(ExprNode) == 32, "ExprNode grew; see exact_sum_flags");
 
 /// How a `PairLambda` node closes its chain of consecutive pairs.
 enum class PairMode : uint8_t {

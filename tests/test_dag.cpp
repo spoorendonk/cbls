@@ -1227,3 +1227,84 @@ TEST_CASE("the exact-Sum bound excludes integers whose partial sums round", "[da
         require_matches_full_evaluate(m);
     }
 }
+
+TEST_CASE("full_evaluate leaves no Sum in the exact state", "[dag][exact_sum]") {
+    // restore_state writes variables with no walk, and full_evaluate re-sums
+    // without checking: 2^53 + 1 rounds to 2^53. Were the state kept, the next
+    // commit would update that rounded value by its term's change (1 -> 0) to
+    // 2^53 - 1, where the re-sum gives 2^53.
+    Model m;
+    const int32_t x = m.int_var(-10, 10);
+    const int32_t y = m.int_var(-10, 10);
+    const int32_t row = m.sum({x, y});
+    m.add_constraint(m.leq(row, m.constant(0.0)));
+    m.minimize(m.sum({x, y}));
+    m.close();
+    m.var_mut(vid(y)).value = 1.0;
+    commit_scalar_move(m, vid(y), 0.0);  // the Sum is now in the exact state
+    REQUIRE(m.sum_exact_state()[static_cast<size_t>(row)] == 1);
+
+    Model::State state = m.copy_state();
+    state.values[static_cast<size_t>(vid(x))] = 9007199254740992.0;  // 2^53
+    m.restore_state(state);
+    full_evaluate(m);
+    m.var_mut(vid(y)).value = 0.0;
+    commit_scalar_move(m, vid(y), 1.0);
+    require_matches_full_evaluate(m);
+}
+
+namespace {
+
+// Doubles its input, and throws from delta() while armed.
+class ThrowingDouble : public CustomInvariant {
+public:
+    explicit ThrowingDouble(std::shared_ptr<int> armed) : armed_(std::move(armed)) {}
+    double evaluate(const InvariantInputs& in) override { return in.value(0) * 2.0; }
+    double delta(const InvariantInputs& in, ConstSpan<int32_t> /*changed*/) override {
+        if (*armed_ > 0) {
+            --*armed_;
+            throw std::runtime_error("invariant refused");
+        }
+        return evaluate(in);
+    }
+    [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
+        return std::make_unique<ThrowingDouble>(*this);
+    }
+
+private:
+    std::shared_ptr<int> armed_;
+};
+
+}  // namespace
+
+TEST_CASE("a walk a custom node throws out of leaves no stale Sum marked exact",
+          "[dag][exact_sum]") {
+    // The custom node sits before the Sum in topological order. A plain walk
+    // over x throws there, so x holds its new value while the Sum -- never
+    // reached -- still holds the old sum. Unless that walk cleared the Sum's
+    // exact state up front, a later commit of y would update the stale value
+    // instead of re-summing it. (The contract asks for a full_evaluate after a
+    // throw; this pins the defensive clearing for a caller that skips it.)
+    auto armed = std::make_shared<int>(0);
+    Model m;
+    const int32_t x = m.int_var(-10, 10);
+    const int32_t y = m.int_var(-10, 10);
+    const int32_t c = m.custom({x}, std::make_unique<ThrowingDouble>(armed), "throws");
+    const int32_t row = m.sum({x, y});
+    m.add_constraint(m.leq(row, m.constant(0.0)));
+    m.add_constraint(m.leq(c, m.constant(100.0)));
+    m.minimize(m.sum({x, y}));
+    m.close();
+    REQUIRE(m.topo_position(c) < m.topo_position(row));
+    m.var_mut(vid(y)).value = 1.0;
+    commit_scalar_move(m, vid(y), 0.0);
+    REQUIRE(m.sum_exact_state()[static_cast<size_t>(row)] == 1);
+
+    *armed = 1;
+    const int32_t xi = vid(x);
+    m.var_mut(xi).value = 5.0;
+    REQUIRE_THROWS_AS(delta_evaluate(m, &xi, 1), std::runtime_error);
+    m.var_mut(vid(y)).value = 2.0;
+    commit_scalar_move(m, vid(y), 1.0);
+    CHECK(m.node_value(row) == 7.0);  // 5 + 2, re-summed from the stored terms
+}
