@@ -213,8 +213,12 @@ differences of its changed terms instead of re-summing it.
   covers inexact updates, and also a re-sum's rounding carried forward by
   exact ones, which a re-sum of the new terms would not make.
 - *Containment*.
-  - A Sum re-sums after `kIncSumPeriod` = 64 inexact updates. The period was
-    chosen on held-out instances (`docs/benchmarks/incremental-sum-drift.md`).
+  - A Sum carries at most `kIncSumPeriod - 1` = 63 inexact updates; the next
+    one re-sums it instead. The period is a safety cap on how far the bound
+    can grow between re-groundings, not a value shown to be better than the
+    alternatives: a pre-registered rule picked it on held-out instances, where
+    it cost 0.67% of throughput against never re-summing
+    (`docs/benchmarks/incremental-sum-drift.md`).
   - A walk that does not know the old values (Novelty Jump's legs, the inner
     solver, the structural batch) re-sums plainly and leaves the Sum
     untracked. So does `full_evaluate`. The next commit then re-sums it,
@@ -238,6 +242,23 @@ FeasibilityJump acts on no verdict that drift could have flipped:
   rows.
 - On integral data nothing is ever noted, so the gate costs one empty-list
   test.
+
+**What "exact" means here.** A verdict on a drifting Sum is decided against
+the real sum of its stored terms, within the bound. A Sum just re-summed, with
+a nonzero bound, is decided on the re-sum's value. That is exactly how the
+pre-#177 engine decided every row, and it is the baseline the A/B below
+measures against. So "no phantom bump" and "every Feasible verdict exact"
+hold relative to a re-sum, not relative to exact real arithmetic. The re-sum's
+own rounding is still there, as it always was.
+
+**Deviations from #188's proposal.**
+
+- The re-sum bound is the re-sum's exact rounding errors, not
+  gamma_{n-1} * sum(|t_i|). It is tighter, and it is 0 when the re-sum is
+  exact; the issue's form is never 0, which would have made every re-summed
+  row count as drifting.
+- There is no margin factor. The bound and the gate's comparison are
+  rounded up, so the bound is rigorous as computed.
 
 **What was measured.**
 
@@ -266,10 +287,21 @@ FeasibilityJump acts on no verdict that drift could have flipped:
   (sign p = 0.79). Feasible runs 31 -> 32.
 - *MINLPLib*, 50 instances, 20 s, seed 42: feasible 48 -> 48, objective 1
   better, 2 worse, 47 the same.
+- *MINLPLib re-check* (review round 1, fresh seed 43, head `301ac22`, stated
+  criterion):
+  - Quality passed: 48 feasible in both arms, objective 2 better and 3 worse
+    (p = 1).
+  - The fixed-iteration timing check **failed**. The geomean time ratio
+    passed at 1.008, but two instances exceeded the pre-registered 1.10 cap.
+    eg_all_s is about 14% slower per iteration (86.4 s against 98.7 s at
+    10,000 iterations). ex8_4_5 is 1.13x, one step of a ~0.1 s timing grid
+    both arms land on.
+  - The MINLPLib no-regression check is therefore not met.
+  - Record: `docs/benchmarks/incremental-sum-drift.md`.
 
-An earlier head of the same design, which a MINLPLib per-iteration slowdown
-cost 7 worse objectives there, is recorded with its fixes in
-`docs/benchmarks/incremental-sum-drift.md`.
+An earlier head of the same design lost 7 MINLPLib objectives to a
+per-iteration slowdown. It is recorded with its fixes, and with a fresh-seed
+MINLPLib re-check, in `docs/benchmarks/incremental-sum-drift.md`.
 
 The instances that lost in #177's exact-only A/B (cbs-cta, eilA101-2,
 supportcase33, neos-957323) lost to code layout, not to that change's work.

@@ -312,3 +312,47 @@ pass. If either fails, the result is reported and nothing is iterated.
 
   Shorter runs are reported but not held to the 1.10 cap, because process
   start and model build dominate them.
+
+### MINLPLib re-check result (appended after the run): Part 1 passes, Part 2 FAILS
+
+The re-check ran on 2026-09-30, 16:28-17:19, at a 1-minute load of 0.52-1.14
+(median 1.00). `cbls_minlplib` sha256 prefixes: `d4e71580` for `bf4979f` and
+`55e96f6e` for `301ac22`. Both builds are Release with `CBLS_SANITIZE` empty.
+
+**Part 1, fresh seed 43: PASS.**
+
+- Feasible: 48 against 48.
+- Objective: new better on 2 (ex8_6_1, nvs05), worse on 3 (maxmin,
+  nvs01, shiporig), the same on 45. Sign test p = 1.
+
+**Part 2, fixed-iteration timing (10,000 iterations, 3 repeats per arm): FAIL.**
+
+- All 50 instances end on the same objective in both arms.
+- Geomean ratio new/base: 1.0078, which is within the 1.02 limit.
+- Distribution: min 0.672, first quartile 0.996, median 1.000, third
+  quartile 1.003, max 1.498.
+- Two of the 18 instances with a base median of at least 0.5 s exceed the
+  1.10 cap. That fails the rule.
+
+| instance | base median | new median | ratio | verdict |
+|---|---|---|---|---|
+| eg_all_s | 86.40 s | 98.70 s | 1.142 | fails the 1.10 cap |
+| ex8_4_5 | 0.809 s | 0.911 s | 1.126 | fails the 1.10 cap |
+| maxmin | 1.211 s | 1.312 s | 1.083 | under the cap |
+| nvs01 | 2.612 s | 2.812 s | 1.077 | under the cap |
+| gear4 | 0.207 s | 0.311 s | 1.498 | below 0.5 s, not capped |
+| ex14_2_4 | 0.311 s | 0.409 s | 1.318 | below 0.5 s, not capped |
+
+What these numbers show:
+
+- **eg_all_s is a real per-iteration regression of about 14%.** Its six runs
+  are tight within each arm: 85.5-87.0 s against 98.3-99.3 s.
+- **The sub-second ratios are mostly one quantization step.** Every short run
+  in both arms lands on a grid of about 0.1 s: 0.207/0.310, 0.809/0.910,
+  1.211/1.312, 2.612/2.812. The ex8_4_5, maxmin, nvs01, gear4 and ex14_2_4
+  differences are each one or two steps of that grid. Where the grid comes
+  from was not identified. The pre-registered rule does not exempt it, so the
+  verdict stands as measured.
+
+Per the pre-registration, nothing is iterated on this result. The MINLPLib
+no-regression check is **not met** at `301ac22`.
