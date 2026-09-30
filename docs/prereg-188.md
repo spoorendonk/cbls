@@ -114,3 +114,34 @@ docs. Before it runs, fixed-iteration runs of `bf4979f` and `7bb0201` end on
 identical final-assignment hashes on neos-860300 (5,000 iterations) and rail01
 (20,630 iterations, of which the objective row's Sum took 4,561 inexact
 updates).
+
+## First roster A/B, and why it is re-run (appended before the re-run)
+
+The pre-registered A/B ran with `bf4979f` against `7bb0201` (2026-09-30,
+12:13-13:47, load 0.94-1.48 per pair, median 1.01). MIPfeas, per instance:
+all 44 1.078x [1.034, 1.124], fractional 26 1.116x [1.044, 1.193], integral
+18 1.026x [1.004, 1.048]. Quality 8 better and 6 worse (p = 0.79). Feasible
+runs went from 31 to 32. It met the landing rule.
+
+MINLPLib failed the no-regression check. Feasible 48 against 48, but the
+objective was worse on 7 instances and better on none (sign p = 0.016). At a
+fixed iteration count the two arms end on the same objective, so the loss is
+speed, not trajectory. `7bb0201` was 4-11% slower per iteration on
+nvs14/nvs02/shiporig and 19-23% on gear4. The cause was located by gprof and
+by elimination on throwaway builds:
+
+- the incremental-Sum wrapper was no longer inlined per dirty node;
+- every probe stashed by scanning its whole cone;
+- models with no incremental Sum at all (gear4, nvs14, chain50) still built
+  the rules on every walk;
+- the new per-model state sat among `Model`'s hot members.
+
+Commits `0a9fa86`, `9dc5047` and `bfe9826` fix these. No parameter changed
+and no trajectory moved: fixed-iteration final hashes still match `bf4979f` on
+neos-860300 and rail01, and the MINLPLib objectives match at fixed iterations.
+The fixed-iteration wall times of `bfe9826` against `bf4979f`: gear4
+8.02-8.31 s against 7.96-8.05 s, nvs14 11.41 against 11.79-11.90, nvs02 11.36-11.38
+against 11.75-11.85, shiporig and eq6_1 within noise.
+
+The whole pre-registered A/B is therefore re-run, unchanged, with `bf4979f`
+against `bfe9826`. That run decides the landing rule. Both runs are reported.
