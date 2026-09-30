@@ -533,7 +533,10 @@ constexpr const char* kLambdaExtraDoc =
     "\n"
     "A change to any extra, or any edit to the list, re-sums the list. The\n"
     "node cannot be written to a .cbls file: save_model refuses the model.\n"
-    "Every call re-acquires the GIL, as a plain lambda_sum's does.";
+    "Every call re-acquires the GIL, as a plain lambda_sum's does.\n"
+    "\n"
+    "`extra` is keyword-only, here and in pair_lambda_sum, whose third\n"
+    "positional parameter is already `cyclic`.";
 
 constexpr const char* kPairLambdaExtraDoc =
     "Sum `func(e_k, e_{k+1}, x)` over consecutive pairs, `x` as in the extra\n"
@@ -541,9 +544,10 @@ constexpr const char* kPairLambdaExtraDoc =
     "are no head/tail terms in this form. `extra` is keyword-only.";
 
 constexpr const char* kElementDoc =
-    "table[index]: a table looked up by an Int expression. The index is\n"
-    "truncated toward zero, as `at` reads its index, and an index outside\n"
-    "[0, len(table)) reads 0.0. The table is copied into the model.";
+    "table[index]: a table looked up by an Int expression. The index may be\n"
+    "any scalar; its value is truncated toward zero, as `at` reads its index,\n"
+    "and an index outside [0, len(table)) reads 0.0. The table is copied into\n"
+    "the model, and its entries must be finite.";
 
 constexpr const char* kPairTableSumDoc =
     "pair_lambda_sum with the function given as a distance matrix.\n"
@@ -612,6 +616,7 @@ NB_MODULE(_cbls_core, m) {
         .value("At", NodeOp::At)
         .value("Count", NodeOp::Count)
         .value("Lambda", NodeOp::Lambda)
+        .value("PairLambda", NodeOp::PairLambda)
         .value("Leq", NodeOp::Leq)
         .value("Eq", NodeOp::Eq)
         .value("Tan", NodeOp::Tan)
@@ -629,7 +634,8 @@ NB_MODULE(_cbls_core, m) {
         .value("Floor", NodeOp::Floor)
         .value("Round", NodeOp::Round)
         .value("LambdaExtra", NodeOp::LambdaExtra)
-        .value("PairLambdaExtra", NodeOp::PairLambdaExtra);
+        .value("PairLambdaExtra", NodeOp::PairLambdaExtra)
+        .value("Custom", NodeOp::Custom);
 
     // Variable (read-only access)
     //
@@ -930,7 +936,7 @@ NB_MODULE(_cbls_core, m) {
             },
             nb::arg("list_var"), nb::arg("func"), kLambdaSumDoc)
         .def("lambda_sum", &lambda_sum_extra, nb::arg("list_var"), nb::arg("func"),
-             nb::arg("extra"), kLambdaExtraDoc)
+             nb::kw_only(), nb::arg("extra"), kLambdaExtraDoc)
         .def(
             "lambda_table_sum",
             [](Model& model, int32_t list_var, const Table1D& table) {

@@ -495,9 +495,10 @@ breaking either is a wrong answer rather than an exception.
 
 **Not exposed to Python.** A Python-subclassable invariant needs the trampoline
 and GIL machinery of #132, so nothing here is bound: `Model::custom` is not
-exposed, and without it no Python caller can make such a node. (`NodeOp::Custom`
-is also absent from the binding enum — but so is `PairLambda`, so absence there is
-not by itself the signal.)
+exposed, and without it no Python caller can make such a node. `NodeOp::Custom`
+is in the binding enum (since #186, which also added the missing `PairLambda`)
+only so that every op a node can carry has a Python name; its presence there
+does not mean a custom node can be built from Python.
 
 ³ **Element, rounding, and lambdas that read other decisions (#186).** Three
 modelling needs of route-network models (#182) that used to take a workaround:
@@ -511,11 +512,24 @@ modelling needs of route-network models (#182) that used to take a workaround:
 
 The `extra` handles are children of the node, so a change to one re-evaluates it;
 any list edit does too. Both re-sum the list, exactly what a plain `Lambda` does
-on an edit. The two lambda forms cannot be written to `.cbls` — the functor takes
+on an edit.
+
+**Deviation from #186: a list edit is O(|list|), not O(edits).** #186 asked for
+an edit to stay O(edits) (#172). It does not, for any lambda node: plain
+`Lambda`/`PairLambda` never were O(edits) either — only a `CustomInvariant` is
+handed #172's positional-edit journal — and an incremental floating-point sum
+reopens the drift problem #177 was built to avoid (a running sum no longer
+matches a re-sum bit for bit, so a probe's two legs can disagree near a row's
+bound). Making all four lambda forms incremental is its own issue, not this
+one's.
+
+The two lambda forms cannot be written to `.cbls` — the functor takes
 continuous values and has no finite table — so `save_model` refuses a model
 holding one before it opens the stream, the same refusal a custom node gets. The
-builders refuse a List/Set handle where a scalar is read (an index, an extra),
-and an empty or ragged table.
+builders refuse a List/Set handle where a scalar is read (an index, an extra, a
+rounding argument), and an empty, ragged or non-finite table. In Python `extra`
+is keyword-only in both forms, because `pair_lambda_sum`'s third positional
+parameter is already `cyclic`.
 
 All six have local derivative 0 and are not affine, so a row over one is never
 scored by `LinearJumpScorer`. What FJ gets instead is their breakpoints — see
@@ -970,7 +984,7 @@ candidate set, plus its score:
 | Int (window width <= 256) | every integer in the sampling window — `domain_window(var)`, which is `[lb, ub]` verbatim whenever both bounds are finite and the width does not overflow (a domain as wide as `[-DBL_MAX, DBL_MAX]` is narrowed to the clamp). Taken only when both endpoints are within ±2^53; past that `v += 1.0` does not advance and the enumeration would not terminate |
 | Int (otherwise) | window endpoints, neighbours `x±1` (clamped to the *declared* bounds, so a value that has drifted outside the window keeps a local move), and a 32-point rounded grid across the window |
 | Float | Newton step toward the root of each violated constraint containing `v` (`x - residual/grad`, gradient via reverse-mode AD; up to 4), then midpoint and endpoints. Once the search has stagnated, a Float at a *stationary* point of every violated constraint containing it additionally gets a two-sided local probe at `x ± {1e-6, 1e-2}·(|x|+1)` — see below |
-| Int (otherwise) and Float, on a model with an `Element`/`Ceil`/`Floor`/`Round` node | additionally, the **breakpoints** (#186) of every such node reached from `v` through affine ops (Neg, Sum, Prod or Div by a literal Const): the argument values where `Ceil`/`Floor` change (the integers) and `Round` changes (the half-integers), and every index value of an `Element`, mapped back to `v` through the argument's slope. An Int gets the floor and ceil of each mapped value; a Float gets a point a hair (1e-9 relative, in the argument) either side of each edge, or the middle of each `Element` index's plateau. `Element` offers every index in range; the rounding ops offer every edge when there are at most 256 in `v`'s domain, else the two either side of the current argument plus a 31-point grid. Candidates are only proposals — each is scored exactly like any other — so a non-affine second path to `v` misplaces candidates but never misscores one. After the Float's Newton candidates, so those still win a tie. A model without such a node, and an Int whose domain was enumerated whole, get exactly the candidates above |
+| Int (otherwise) and Float, on a model with an `Element`/`Ceil`/`Floor`/`Round` node | additionally, the **breakpoints** (#186) of every such node reached from `v` through Neg, Sum, Prod and Div (either operand, whatever the other is): the argument values where `Ceil`/`Floor` change (the integers) and `Round` changes (the half-integers), and the index values of an `Element`, mapped back to `v`. The map is the argument's slope, carried forward along the walk once per call — exact for a single-variable jump whenever the argument is a sum of `c·v` terms with `c` fixed — or, when the argument is itself `N / D` with `v` in `D` only (the epic's `ceil(cycle / headway)`), the exact reciprocal. **Limitation:** any other nonlinearity on the path (a Div by `v` with more on top of it, `v` on both sides of a Prod) is linearised at the current point, so its candidates can miss the edge they aim at; they are still scored exactly. An Int gets the floor of the lower and the ceil of the upper of the two values of `v` landing just either side of each edge (plus the edge itself when it maps to an integer); a Float gets those two values stepped by `nextafter` until strictly on their own side; an `Element` index gets `k` itself (Int) or the middle of its plateau (Float). Every breakpoint is offered while there are at most 32 in `v`'s domain; above that, the two either side of the current argument, a 31-point grid and, for an `Element`, one index per distinct table value (argmin and argmax past 32 distinct values) — **a deviation** from #186's "all index values", for cost: 32 edges cost what the capped path costs (measured, see `kExhaustiveBreakpoints`), 256 cost 7x. Candidates are deduplicated across nodes and against the Int/Float path's. After the Float's Newton candidates, so those still win a tie. A model without such a node, and an Int whose domain was enumerated whole, get exactly the candidates above |
 
 Each candidate is scored with one `weighted_violation_delta` probe — or, when
 every weighted row of `G_v` is a comparison (`Leq`/`Geq`/`Lt`/`Gt`/`Eq`) whose

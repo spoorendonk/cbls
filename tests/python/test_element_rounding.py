@@ -164,7 +164,7 @@ def test_lambda_sum_hands_the_functor_the_extras_current_values() -> None:
         seen.append(list(x))
         return STOP_COST[i][int(x[0])]
 
-    node = m.lambda_sum(route, stop_cost, [vtype])
+    node = m.lambda_sum(route, stop_cost, extra=[vtype])
     assert m.node(node).op == cbls.NodeOp.LambdaExtra
     m.var_mut(vid(route)).elements = [3, 1]
     assert _value_at(m, node, {vid(vtype): 2}) == 60.0 + 7.0
@@ -194,6 +194,24 @@ def test_pair_lambda_sum_takes_extra_by_keyword_and_closes_the_cycle() -> None:
     cbls.full_evaluate(m)
     assert m.node_value(open_node) == (20.0 + 1.0) / 2
     assert m.node_value(cyclic_node) == (20.0 + 1.0 + 12.0) / 2
+
+
+def test_extra_is_keyword_only_in_both_lambda_forms() -> None:
+    m = cbls.Model()
+    route = m.list_var(3)
+    t = m.int_var(0, 2)
+    with pytest.raises(TypeError):
+        m.lambda_sum(route, lambda i, x: float(i), [t])
+    with pytest.raises(TypeError):
+        m.pair_lambda_sum(route, lambda a, b, x: float(a), [t])
+
+
+def test_the_node_op_enum_names_every_op_including_pair_lambda_and_custom() -> None:
+    m = cbls.Model()
+    route = m.list_var(3)
+    pair = m.pair_lambda_sum(route, lambda a, b: 0.0)
+    assert m.node(pair).op == cbls.NodeOp.PairLambda
+    assert cbls.NodeOp.Custom.name == "Custom"
 
 
 def test_the_plain_lambda_forms_are_unchanged_by_the_extra_overloads() -> None:
@@ -245,6 +263,9 @@ def _scenario_bad_element() -> None:
         _expect(IndexError, partial(m.element, [1.0, 2.0], bad), f"handle {bad}")
         _expect(IndexError, partial(m.element, [[1.0]], t, bad), f"col handle {bad}")
     _expect(IndexError, lambda: m.ceil_expr(100_000), "ceil handle")
+    _expect(ValueError, lambda: m.ceil_expr(lst), "ceil of a List")
+    _expect(ValueError, lambda: m.element([1.0, math.inf], t), "infinite entry")
+    _expect(ValueError, lambda: m.element([[math.nan]], t, t), "NaN entry")
     e = m.element([1.0, 2.0, 3.0, 4.0], t)
     m.minimize(e)
     m.close()
@@ -266,15 +287,15 @@ def _scenario_bad_lambda_extra() -> None:
     def f2(a: int, b: int, x: list[float]) -> float:
         return (a + b) * x[0]
 
-    _expect(ValueError, lambda: m.lambda_sum(t, f1, [t]), "scalar as list")
-    _expect(ValueError, lambda: m.lambda_sum(m.constant(1.0), f1, [t]), "node as list")
-    _expect(ValueError, lambda: m.lambda_sum(lst, f1, [other]), "List as extra")
+    _expect(ValueError, lambda: m.lambda_sum(t, f1, extra=[t]), "scalar as list")
+    _expect(ValueError, lambda: m.lambda_sum(m.constant(1.0), f1, extra=[t]), "node as list")
+    _expect(ValueError, lambda: m.lambda_sum(lst, f1, extra=[other]), "List as extra")
     _expect(ValueError, lambda: m.pair_lambda_sum(lst, f2, extra=[other]), "pair List extra")
     for bad in (5, 100_000, -100_000):
-        _expect(IndexError, partial(m.lambda_sum, lst, f1, [bad]), f"extra {bad}")
+        _expect(IndexError, partial(m.lambda_sum, lst, f1, extra=[bad]), f"extra {bad}")
         _expect(IndexError, partial(m.pair_lambda_sum, lst, f2, extra=[bad]), f"pair {bad}")
-    _expect(TypeError, lambda: m.lambda_sum(lst, None, [t]), "None functor")
-    node = m.lambda_sum(lst, f1, [t])
+    _expect(TypeError, lambda: m.lambda_sum(lst, None, extra=[t]), "None functor")
+    node = m.lambda_sum(lst, f1, extra=[t])
     m.minimize(node)
     m.close()
     m.var_mut(vid(t)).value = 2
