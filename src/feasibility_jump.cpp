@@ -592,7 +592,10 @@ private:
                 const NodeOp op = model.nodes()[static_cast<size_t>(parent)].op;
                 if (stamp_[static_cast<size_t>(parent)] != epoch_ &&
                     (slope_passthrough(op) || is_breakpoint_op(op))) {
-                    mark(parent);
+                    // `mark`, spelled out: the growth of `cone_` is visible here.
+                    stamp_[static_cast<size_t>(parent)] = epoch_;
+                    slope_[static_cast<size_t>(parent)] = 0.0;
+                    cone_.push_back(parent);
                 }
             }
         }
@@ -855,6 +858,9 @@ void breakpoint_jump_candidates(const Model& model, int32_t var_id, const Variab
                                 std::vector<double>& out) {
     if (!(var.lb < var.ub)) {
         return;  // pinned: no jump exists
+    }
+    if (model.topo_order().size() != model.num_nodes()) {
+        return;  // not closed: no topological position to order the cone by
     }
     thread_local ConeSlopes cone;
     cone.build(model, var_id);
