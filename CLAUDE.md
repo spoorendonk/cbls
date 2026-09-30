@@ -931,6 +931,15 @@ moves maintain. That is **new capability, not new evidence**: no benchmark uses
 a `List` variable, the paragraph above still stands unchanged, and nothing in the
 tree may claim otherwise.
 
+**Epic #182 (compact route-network models: CVRP, transit line planning) is the
+one open item for List work, and it is parked.** Its sub-issues — the CVRP
+benchmark #183, guided List search #184, expensive-invariant screening #185,
+repeated List elements #187 and O(edits) lambda deltas #189 — were closed as not
+planned in the 2026-09-30 triage, because each was speculative with no benchmark
+to measure it against. Don't reopen them or start List engine work on your own;
+when the direction resumes, the user decides, and new sub-issues are filed from
+#182 with the benchmark first.
+
 ### Benchmark workflow
 
 Each benchmark session must follow these steps in order:

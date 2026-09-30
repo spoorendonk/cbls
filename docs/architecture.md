@@ -614,7 +614,8 @@ reopens the drift problem #177 was built to avoid (a running sum no longer
 matches a re-sum bit for bit, so a probe's two legs can disagree near a row's
 bound). #188 contains that drift for a `Sum` that a row reads directly, with a
 per-Sum bound and a local-minimum gate, and none of that machinery covers a
-lambda node. Making all four lambda forms incremental is its own issue, #189.
+lambda node. Making all four lambda forms incremental was filed as #189 and
+closed as not planned until a List benchmark exists (epic #182).
 
 The two lambda forms cannot be written to `.cbls` — the functor takes
 continuous values and has no finite table — so `save_model` refuses a model
