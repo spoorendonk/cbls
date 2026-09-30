@@ -214,7 +214,7 @@ differences of its changed terms instead of re-summing it.
   exact ones, which a re-sum of the new terms would not make.
 - *Containment*.
   - A Sum re-sums after `kIncSumPeriod` = 64 inexact updates. The period was
-    chosen on held-out instances (`docs/prereg-188.md`).
+    chosen on held-out instances (`docs/benchmarks/incremental-sum-drift.md`).
   - A walk that does not know the old values (Novelty Jump's legs, the inner
     solver, the structural batch) re-sums plainly and leaves the Sum
     untracked. So does `full_evaluate`. The next commit then re-sums it,
@@ -269,7 +269,7 @@ FeasibilityJump acts on no verdict that drift could have flipped:
 
 An earlier head of the same design, which a MINLPLib per-iteration slowdown
 cost 7 worse objectives there, is recorded with its fixes in
-`docs/prereg-188.md`.
+`docs/benchmarks/incremental-sum-drift.md`.
 
 The instances that lost in #177's exact-only A/B (cbs-cta, eilA101-2,
 supportcase33, neos-957323) lost to code layout, not to that change's work.
