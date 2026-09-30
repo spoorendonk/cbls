@@ -571,6 +571,9 @@ const std::vector<double> kDemand = {60.0, 90.0, 50.0, 110.0};  // riders/hour p
 // Stop 3 is a narrow street: the largest type pays heavily to call there.
 const std::vector<std::vector<double>> kStopCost = {{5, 6, 8}, {4, 5, 7}, {6, 7, 9}, {3, 6, 60}};
 
+constexpr double kMinFreq = 0.5;
+constexpr double kMaxFreq = 6.0;
+
 double travel(int a, int b) {
     return kTravel[a][b];
 }
@@ -605,7 +608,9 @@ void build_line_model(LineModel& lm, bool new_ops) {
         LineVars v;
         v.route = m.list_var(kStops, 2, kStops, ListInit::Random, "route" + std::to_string(l));
         v.type = m.int_var(0, kTypes - 1, "type" + std::to_string(l));
-        v.freq = m.int_var(1, 6, "freq" + std::to_string(l));
+        // A Float frequency under the ceil, so the fleet's plateau edges are
+        // reachable only through the breakpoint candidates, not by enumeration.
+        v.freq = m.float_var(kMinFreq, kMaxFreq, "freq" + std::to_string(l));
         const int32_t cycle = m.pair_lambda_sum(v.route, travel, PairMode::Cyclic);
         const int32_t veh_minutes = m.prod(cycle, v.freq);
         const int32_t demand =
@@ -658,10 +663,13 @@ void build_line_model(LineModel& lm, bool new_ops) {
     m.close();
 }
 
-// The cost of one line at a given route/type/freq, straight from the data --
-// the brute-force reference both encodings are held to. +inf when the
-// capacity row fails.
-double line_cost(const std::vector<int32_t>& route, int type, int freq) {
+// The least cost of one line at a given route and type, straight from the data
+// -- the brute-force reference both encodings are held to. The cost grows with
+// the frequency only through the fleet, so the least frequency the capacity row
+// allows is optimal; +inf when even the highest one fails it. `edge_gap`
+// receives how far the optimal fleet's argument sits from an integer, which the
+// test requires to be clear of rounding (see there).
+double line_cost(const std::vector<int32_t>& route, int type, double* edge_gap = nullptr) {
     double cycle = 0.0;
     double demand = 0.0;
     double stops = 0.0;
@@ -670,11 +678,15 @@ double line_cost(const std::vector<int32_t>& route, int type, int freq) {
         demand += kDemand[route[k]];
         stops += kStopCost[route[k]][type];
     }
-    if (kCapacity[type] * freq < demand) {
+    const double freq = std::max(kMinFreq, demand / kCapacity[type]);
+    if (freq > kMaxFreq) {
         return std::numeric_limits<double>::infinity();
     }
-    const double fleet = std::ceil(cycle * freq / 60.0);
-    return (fleet * kVehicleCost[type]) + stops;
+    const double arg = cycle * freq / 60.0;
+    if (edge_gap != nullptr) {
+        *edge_gap = std::abs(arg - std::round(arg));
+    }
+    return (std::ceil(arg) * kVehicleCost[type]) + stops;
 }
 
 // Every ordered route of 2..4 distinct stops.
@@ -704,9 +716,7 @@ double brute_force_optimum() {
     std::vector<double> best(routes.size(), std::numeric_limits<double>::infinity());
     for (size_t r = 0; r < routes.size(); ++r) {
         for (int type = 0; type < kTypes; ++type) {
-            for (int freq = 1; freq <= 6; ++freq) {
-                best[r] = std::min(best[r], line_cost(routes[r], type, freq));
-            }
+            best[r] = std::min(best[r], line_cost(routes[r], type));
         }
     }
     double opt = std::numeric_limits<double>::infinity();
@@ -772,6 +782,19 @@ TEST_CASE("line planning: both encodings solve to the brute-force optimum",
           "[search][element][rounding][lambda_extra][line_planning]") {
     const double optimum = brute_force_optimum();
     REQUIRE(std::isfinite(optimum));
+    // The search lands the frequency within the feasibility tolerance of the
+    // least one the capacity row allows, not on it. That changes no fleet as
+    // long as no optimal fleet's argument sits within rounding of an integer --
+    // a property of the data, pinned here so an edit to it cannot make the
+    // assertion below flaky instead of wrong.
+    for (const auto& route : all_routes()) {
+        for (int type = 0; type < kTypes; ++type) {
+            double gap = 1.0;
+            if (std::isfinite(line_cost(route, type, &gap))) {
+                REQUIRE(gap > 1e-4);
+            }
+        }
+    }
     for (bool new_ops : {true, false}) {
         for (uint64_t seed : {186U, 7U, 2026U}) {
             LineModel lm;
@@ -780,6 +803,273 @@ TEST_CASE("line planning: both encodings solve to the brute-force optimum",
             const SearchResult r = solve_deterministic(lm.m, 60000, seed);
             REQUIRE(r.feasible);
             REQUIRE(r.objective == optimum);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Review round 1 (#186): delta per rounding op, the builders' refusals, and FJ
+// candidates where only the breakpoints reach the answer
+// ---------------------------------------------------------------------------
+
+TEST_CASE("ceil floor and round follow their argument under delta evaluation", "[dag][rounding]") {
+    Model m;
+    auto x = m.Float(-10, 10, "x");
+    auto c = ceil(x / 2.0);
+    auto f = floor(x / 2.0);
+    auto r = round(x / 2.0);
+    m.minimize(c + f + r);
+    m.close();
+    m.var_mut(x.var_id()).value = 1.0;
+    full_evaluate(m);
+    for (double v : {3.0, 5.0, -3.0, 4.2, -7.0, 0.0}) {
+        INFO("x = " << v);
+        m.var_mut(x.var_id()).value = v;
+        delta_evaluate(m, {x.var_id()});
+        REQUIRE(m.node_value(c.handle) == std::ceil(v / 2.0));
+        REQUIRE(m.node_value(f.handle) == std::floor(v / 2.0));
+        REQUIRE(m.node_value(r.handle) == std::round(v / 2.0));
+    }
+}
+
+TEST_CASE("element refuses a non-finite table entry and the rounding ops a List",
+          "[dag][element][rounding]") {
+    Model m;
+    const int32_t t = m.int_var(0, 3, "t");
+    const int32_t lv = m.list_var(3, "l");
+    const double inf = std::numeric_limits<double>::infinity();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    REQUIRE_THROWS_AS(m.element({1.0, inf}, t), std::invalid_argument);
+    REQUIRE_THROWS_AS(m.element({nan, 1.0}, t), std::invalid_argument);
+    REQUIRE_THROWS_AS(m.element(std::vector<std::vector<double>>{{1.0}, {-inf}}, t, t),
+                      std::invalid_argument);
+    REQUIRE_THROWS_AS(m.ceil_expr(lv), std::invalid_argument);
+    REQUIRE_THROWS_AS(m.floor_expr(lv), std::invalid_argument);
+    REQUIRE_THROWS_AS(m.round_expr(lv), std::invalid_argument);
+}
+
+TEST_CASE("FJ reaches a ceil through a product with a non-literal factor", "[fj][rounding]") {
+    // ceil(cycle * f / 60) with cycle a NODE (not a literal Const) -- the line
+    // planning fleet. For a single-variable jump cycle is fixed, so the
+    // argument is linear in f, and fleet == 3 needs f in (2.4, 3.6].
+    Model m;
+    auto f = m.Float(0, 20, "f");
+    Expr cycle{&m, m.sum({m.constant(20.0), m.constant(30.0)})};
+    auto fleet = ceil(cycle * f / 60.0);
+    m.add_constraint(fleet >= 3.0);
+    m.add_constraint(fleet <= 3.0);
+    m.close();
+    m.var_mut(f.var_id()).value = 0.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+    const JumpResult r = compute_var_jump(m, vm.weights, f.var_id());
+    REQUIRE(r.score == 3.0);
+    REQUIRE(r.jump_value > 2.4);
+    REQUIRE(r.jump_value <= 3.6);
+}
+
+TEST_CASE("FJ inverts a ceil of a quotient whose denominator is the decision", "[fj][rounding]") {
+    // The epic's fleet = ceil(cycle / headway) with headway the decision:
+    // fleet == 3 needs 100 / h in (2, 3], i.e. h in [33.4, 50). From h = 1
+    // (fleet 100) the box candidates reach fleet 4 or 2 at best.
+    Model m;
+    auto h = m.Float(1, 60, "h");
+    auto fleet = ceil(100.0 / h);
+    m.add_constraint(fleet >= 3.0);
+    m.add_constraint(fleet <= 3.0);
+    m.close();
+    m.var_mut(h.var_id()).value = 1.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+    const JumpResult r = compute_var_jump(m, vm.weights, h.var_id());
+    REQUIRE(r.score == 97.0);
+    REQUIRE(r.jump_value >= 100.0 / 3.0);
+    REQUIRE(r.jump_value < 50.0);
+}
+
+TEST_CASE("FJ offers both sides of an Int edge the map lands exactly on", "[fj][rounding]") {
+    SECTION("ceil(x / 60) >= 3 with x <= 121: only 121 is feasible") {
+        // The edge of plateau 3 maps to x = 120 exactly, which is still in
+        // plateau 2. The integer past the edge is the one to offer.
+        Model m;
+        auto x = m.Int(0, 1000, "x");
+        m.add_constraint(ceil(x / 60.0) >= 3.0);
+        m.add_constraint(x <= 121.0);
+        m.close();
+        m.var_mut(x.var_id()).value = 0.0;
+        full_evaluate(m);
+        ViolationManager vm(m);
+        const JumpResult r = compute_var_jump(m, vm.weights, x.var_id());
+        REQUIRE(r.jump_value == 121.0);
+        REQUIRE(r.score == 3.0);
+    }
+    SECTION("ceil(0.1 * x) <= 3 with x >= 29: float error puts 30 in plateau 4") {
+        // 0.1 * 30 evaluates to 3.0000000000000004, so the edge integer 30 is
+        // on the wrong side, and only 29 is feasible.
+        Model m;
+        auto x = m.Int(0, 1000, "x");
+        m.add_constraint(ceil(0.1 * x) <= 3.0);
+        m.add_constraint(x >= 29.0);
+        m.close();
+        m.var_mut(x.var_id()).value = 0.0;
+        full_evaluate(m);
+        ViolationManager vm(m);
+        const JumpResult r = compute_var_jump(m, vm.weights, x.var_id());
+        REQUIRE(r.jump_value == 29.0);
+        REQUIRE(r.score == 29.0);
+    }
+}
+
+namespace {
+
+// Probes one `compute_var_jump` of `t` makes. Each probe is two delta walks, and
+// the model's `t + 0 <= 5000` row is an exact-eligible Sum that a non-commit walk
+// re-sums once, so the probe count is half the re-sum count.
+int64_t element_jump_probes(bool both_rows, JumpResult& out) {
+    constexpr int kN = 200;
+    std::vector<double> cost(kN, 5.0);
+    std::vector<double> cap(kN, 0.0);
+    cost[137] = 1.0;
+    cap[137] = 10.0;
+    Model m;
+    auto t = m.Int(0, 1000, "t");
+    m.add_constraint(element(cap, t) >= 5.0);
+    if (both_rows) {
+        m.add_constraint(element(cost, t) <= 1.0);
+    }
+    m.add_constraint(t + 0.0 <= 5000.0);
+    m.close();
+    m.var_mut(t.var_id()).value = 999;
+    full_evaluate(m);
+    ViolationManager vm(m);
+    exact_sum_counters() = ExactSumCounters{};
+    out = compute_var_jump(m, vm.weights, t.var_id());
+    return static_cast<int64_t>(exact_sum_counters().resummed) / 2;
+}
+
+}  // namespace
+
+TEST_CASE("FJ offers each breakpoint candidate once however many nodes propose it",
+          "[fj][element]") {
+    // cost[t] and cap[t] both propose every index 0..199, and the Int path has
+    // already offered some of them (its grid over [0, 1000] and 998/1000): each
+    // value is probed once. The second row must add no probe at all.
+    JumpResult one;
+    JumpResult two;
+    const int64_t probes_one = element_jump_probes(false, one);
+    const int64_t probes_two = element_jump_probes(true, two);
+    REQUIRE(probes_two == probes_one);
+    // Every distinct value, at most: the Int path's 34 plus the 200 indices.
+    REQUIRE(probes_two <= 34 + 200);
+    REQUIRE(two.jump_value == 137.0);
+    REQUIRE(two.score == 5.0);
+}
+
+// ---------------------------------------------------------------------------
+// FJ against the auxiliary-Int reference, where only the breakpoints reach the
+// optimum: a Float decision under the op (or an Int index wider than the Int
+// path enumerates), so neither Newton nor the Int grid can place it.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Each case builds its model in one of two encodings, both with the same known
+// optimum; `solve_deterministic` must reach it in each.
+struct RefCase {
+    const char* name;
+    double optimum;
+    std::function<void(Model&, bool)> build;
+};
+
+std::vector<RefCase> reference_cases() {
+    std::vector<RefCase> cases;
+    // ceil: fleet = ceil(50 f / 60), minimise 100 fleet - 10 f with f >= 3.1.
+    // Fleet 3 is the least allowed; within it f runs up to the edge 3.6, so the
+    // optimum is 300 - 36 = 264 and sits ON the plateau edge.
+    cases.push_back({"ceil", 264.0, [](Model& m, bool new_ops) {
+                         auto f = m.Float(0.5, 20, "f");
+                         m.add_constraint(f >= 3.1);
+                         Expr fleet{&m, 0};
+                         if (new_ops) {
+                             fleet = ceil(50.0 * f / 60.0);
+                         } else {
+                             fleet = m.Int(0, 40, "fleet");
+                             m.add_constraint(60.0 * fleet >= 50.0 * f);
+                         }
+                         m.minimize(100.0 * fleet - 10.0 * f);
+                     }});
+    // floor: minimise x with floor(x / 7) >= 5, i.e. x >= 35.
+    cases.push_back({"floor", 35.0, [](Model& m, bool new_ops) {
+                         auto x = m.Float(0, 100, "x");
+                         if (new_ops) {
+                             m.add_constraint(floor(x / 7.0) >= 5.0);
+                         } else {
+                             auto n = m.Int(0, 20, "n");
+                             m.add_constraint(7.0 * n <= x);
+                             m.add_constraint(n >= 5.0);
+                         }
+                         m.minimize(1.0 * x);
+                     }});
+    // round: minimise x with round(x / 13) >= 200, i.e. x / 13 >= 199.5.
+    cases.push_back({"round", 2593.5, [](Model& m, bool new_ops) {
+                         auto x = m.Float(0, 5000, "x");
+                         if (new_ops) {
+                             m.add_constraint(round(x / 13.0) >= 200.0);
+                         } else {
+                             auto r = m.Int(0, 500, "r");
+                             m.add_constraint(13.0 * r - 6.5 <= x);
+                             m.add_constraint(r >= 200.0);
+                         }
+                         m.minimize(1.0 * x);
+                     }});
+    // element: minimise cost[t] with cap[t] >= 50 over 1000 indices (wider than
+    // the Int path enumerates). Every index costs 50 except two; the cheaper
+    // one (900) has no capacity, so the optimum is 10, at 517 alone. The
+    // reference is the one-hot encoding an element replaces.
+    cases.push_back({"element", 10.0, [](Model& m, bool new_ops) {
+                         constexpr int kN = 1000;
+                         std::vector<double> cost(kN, 50.0);
+                         std::vector<double> cap(kN, 100.0);
+                         cost[517] = 10.0;
+                         cost[900] = 5.0;
+                         cap[900] = 0.0;
+                         if (new_ops) {
+                             auto t = m.Int(0, kN - 1, "t");
+                             m.add_constraint(element(cap, t) >= 50.0);
+                             m.minimize(element(cost, t));
+                             return;
+                         }
+                         std::vector<int32_t> pick;
+                         std::vector<int32_t> cost_terms;
+                         std::vector<int32_t> cap_terms;
+                         for (int k = 0; k < kN; ++k) {
+                             const int32_t b = m.bool_var();
+                             pick.push_back(b);
+                             cost_terms.push_back(m.prod(m.constant(cost[k]), b));
+                             cap_terms.push_back(m.prod(m.constant(cap[k]), b));
+                         }
+                         m.add_constraint(m.eq_expr(m.sum(pick), m.constant(1.0)));
+                         m.add_constraint(m.geq(m.sum(cap_terms), m.constant(50.0)));
+                         m.minimize(m.sum(cost_terms));
+                     }});
+    return cases;
+}
+
+}  // namespace
+
+TEST_CASE("FJ reaches the auxiliary-Int reference's optimum through the breakpoints",
+          "[search][fj][element][rounding]") {
+    for (const RefCase& c : reference_cases()) {
+        for (bool new_ops : {false, true}) {
+            for (uint64_t seed : {186U, 7U}) {
+                Model m;
+                c.build(m, new_ops);
+                m.close();
+                INFO(c.name << ": new_ops = " << new_ops << ", seed " << seed);
+                const SearchResult r = solve_deterministic(m, 20000, seed);
+                REQUIRE(r.feasible);
+                REQUIRE(std::abs(r.objective - c.optimum) < 1e-6);
+            }
         }
     }
 }
