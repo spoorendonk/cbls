@@ -429,10 +429,13 @@ bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
 //  - Float variable, Element: the middle of each index's plateau, t = k + 0.5.
 //    An Int variable lands on t = k, the index value itself.
 //
-// How many: every breakpoint in the variable's domain when there are at most
-// 256, else the two either side of the current argument plus a 31-point grid
-// across the range -- the shape `int_jump_candidates` gives a wide Int domain,
-// for the same reason: a candidate costs one probe.
+// How many. For Element, every index value the variable can reach, whatever the
+// table's size: those ARE the candidates #186 specifies, and the table bounds
+// them. For Ceil/Floor/Round, every breakpoint in the variable's domain when
+// there are at most 256, else the two either side of the current argument plus
+// a 31-point grid across the range -- the shape `int_jump_candidates` gives a
+// wide Int domain, for the same reason: a candidate costs one probe, and the
+// breakpoints of `ceil(x)` over an unbounded Float are not a finite set.
 //
 // Cost when it runs: the walk visits the affine cone above `v` (for a MIP-shaped
 // column, its rows' Sums, stopping at their comparisons), plus one AD sweep per
@@ -483,8 +486,11 @@ void argument_breakpoints(const Variable& var, double x0, double u0, double slop
     auto offer = [&](double t) {
         if (is_int) {
             const double v = x0 + ((t - u0) / slope);
-            consider(clamp_to_domain(var, std::floor(v)));
-            consider(clamp_to_domain(var, std::ceil(v)));
+            const double lo = std::floor(v);
+            consider(clamp_to_domain(var, lo));
+            if (std::ceil(v) != lo) {
+                consider(clamp_to_domain(var, std::ceil(v)));
+            }
             return;
         }
         if (!edge) {
@@ -500,7 +506,7 @@ void argument_breakpoints(const Variable& var, double x0, double u0, double slop
         return;
     }
     constexpr double kExhaustive = 256.0;
-    if (count <= kExhaustive) {
+    if (count <= kExhaustive || !edge) {
         const auto n = static_cast<int>(count);
         for (int i = 0; i < n; ++i) {
             offer(range.k_min + static_cast<double>(i) + range.offset);
