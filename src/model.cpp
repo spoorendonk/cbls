@@ -1524,10 +1524,12 @@ double Model::weighted_violation_delta(int32_t var_id, double j,
     // `src/feasibility_jump.cpp`.
     //
     // The old value is what lets the probe move each incremental Sum in the
-    // cone by its term's change, as the commit would (#188): the score is then
-    // measured against the committed value, drift included, rather than against
-    // a re-sum of it, and the Rollback writes the Sums back from the probe's
-    // stash, so a drifted committed state comes back to the bit.
+    // cone by its term's change, as the commit's update does (#188): the score
+    // is then measured against the committed value, drift included, rather than
+    // against a re-sum of it, and the Rollback writes the Sums back from the
+    // probe's stash, so a drifted committed state comes back to the bit. Where
+    // the commit would re-sum instead, the two can differ by the Sum's drift
+    // bound; see `probe_scalar_move`.
     const double old_value = v.value;
     var_mut(var_id).value = j;
     probe_scalar_move(*this, var_id, old_value);

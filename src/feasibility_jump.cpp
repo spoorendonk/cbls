@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -1512,8 +1513,9 @@ void FeasibilityJump::update_var(int32_t var_id) {
     // neighbour is tested below, so a neighbour sharing several rows with var_id
     // sees all of them -- as the O(|G_vp|) rescan this count replaced did. A
     // row whose verdict its Sum's drift now leaves undecided is noted for the
-    // local-minimum gate (#188): one slot load per row, and nothing more while
-    // the Sum carries no inexact update.
+    // local-minimum gate (#188): one row-to-slot load per row, and for a row
+    // over an incremental Sum one load of its state, which ends the test while
+    // the Sum is not drifting.
     for (int32_t c : gv) {
         const double after = model_.node_value(cids[c]);
         if (c != objective_ci_ && active(c)) {
@@ -1580,10 +1582,16 @@ bool FeasibilityJump::verdict_undecided(int32_t c, double residual) const {
     }
     // The row computes fl(S - q) (or |S - q|, or S - q plus the strict margin,
     // rounded once more) where the real sum T would give T - q: they differ by
-    // |S - T| <= drift_bound plus at most two half-ulps of the residual, which
-    // 2^-51 |residual| covers.
-    const double margin = st.drift_bound + (std::fabs(residual) * 0x1p-51);
-    return residual - margin <= kTol && residual + margin > kTol;
+    // at most M = drift_bound + 2^-51 |residual| (two half-ulps of the
+    // residual). The verdict is decided when |residual - kTol| > M in real
+    // arithmetic. Both sides are computed in floating point: the difference
+    // rounds by at most a factor (1 + u), and M's one add by as much again, so
+    // the margin is nudged up the way the drift bound is (see
+    // `round_bound_up` in src/dag_ops.cpp), to at least M (1 + u) -- then a
+    // computed "decided" is decided exactly.
+    const double m = st.drift_bound + (std::fabs(residual) * 0x1p-51);
+    const double margin = m + (m * 0x1p-51);
+    return std::fabs(residual - kTol) <= margin;
 }
 
 void FeasibilityJump::note_row_certainty(int32_t c, double residual) {
@@ -1709,6 +1717,9 @@ void FeasibilityJump::build_row_slots() {
     const auto& nodes = model_.nodes();
     const size_t nc = cids.size();
     const size_t ns = model_.inc_sum_nodes().size();
+    // A closed model's state is sized to its slots by the full_evaluate that
+    // ends every close; verdict_undecided indexes it by slot unchecked.
+    assert(model_.inc_sums().slots.size() == ns);
     row_slot_.assign(nc, -1);
     in_uncertain_.assign(nc, 0);
     uncertain_rows_.clear();
@@ -2048,8 +2059,10 @@ GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
         const GFJStatus status = gls_loop_scaled(sample_size, batch_iter_limit);
         // No drift leaves a batch (#188): the search, the pool, LNS and the
         // inner solver read re-summed rows. A no-op where the exit already
-        // re-grounded (Feasible, and batch_end_status); the deadline and the
-        // iteration budget return Unsolved, which re-grounding cannot change.
+        // re-grounded (Feasible, and batch_end_status). The deadline and the
+        // iteration budget return Unsolved without looking at V, and that
+        // status stands: the re-grounding settles V for the caller, and the
+        // caller reads feasibility off the re-summed rows, not off this status.
         reground_drifted_rows();
         materialise_weights();
         return status;

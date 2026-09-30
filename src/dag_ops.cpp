@@ -5,12 +5,25 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cfloat>
 #include <cmath>
 #include <cstddef>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
+
+// The incremental Sum's drift bound (#188) rests on TwoSum computing each
+// addition's rounding error exactly, which needs IEEE double arithmetic
+// evaluated as written. -ffast-math (or -ffinite-math-only) lets the compiler
+// fold `(a - (s - (s - a))) + ...` to 0, which would zero every error, make
+// every inexact update read as exact, and silently switch the phantom-row gate
+// off. Refused here rather than trusted to the build.
+#if defined(__FAST_MATH__) || defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__
+#error "src/dag_ops.cpp needs IEEE arithmetic: do not build it with -ffast-math"
+#endif
+static_assert(FLT_EVAL_METHOD == 0,
+              "TwoSum needs double operations evaluated in double (FLT_EVAL_METHOD 0)");
 
 namespace cbls {
 
@@ -353,9 +366,13 @@ double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
 //     moved and so re-reads; the next FJ commit to update the Sum re-sums it
 //     again, checked, first;
 //   - a `Probe` stashes every incremental Sum in its cone, and, when it knows
-//     the old value (`probe_scalar_move`), applies the same updates the commit
-//     would, so it scores exactly what the commit would produce -- including 0
-//     for an identity move on a drifted state;
+//     the old value (`probe_scalar_move`), applies the commit's update to the
+//     committed value, so an identity move on a drifted state scores exactly 0.
+//     Where the commit would re-sum instead (an untracked Sum, the period
+//     reached, a non-finite value) the probe still updates, and its score
+//     differs from the commit's by at most the Sum's drift bound plus the
+//     re-sum's rounding. That is a scoring difference at the ulp level; FJ
+//     makes no feasibility or bump decision on a probe's value;
 //   - the matching `Rollback` writes the stash back rather than re-summing,
 //     which would snap the committed value, and change the violated-row
 //     bookkeeping under FeasibilityJump's feet.
@@ -388,9 +405,12 @@ inline double two_sum_err(double a, double b, double s) {
     return (a - a_virtual) + (b - b_virtual);
 }
 
-// `x` -- the rounded sum of non-negative values -- nudged up past what one or
-// two roundings to nearest can have taken off it: fl(a + b) >= (a + b)(1 - u),
-// and x(1 + 2^-51), rounded, is still >= x(1 + 2^-52) > x / (1 - u)^2.
+// `x` -- the result of at most two rounded additions of non-negative values,
+// so the real y it stands for is at most x(1 + u)^2, u = 2^-53 -- nudged up past
+// y. x * 2^-51 is exact (a power of two), and the one rounding of the add gives
+// fl(x + x 2^-51) >= x(1 + 2^-51) / (1 + u), which is >= x(1 + u)^2 because
+// (1 + 2^-51) = 1 + 4u >= (1 + u)^3. (Subnormal x is ignored: its absolute
+// error, below 2^-1074, is nowhere near any tolerance the bound is read against.)
 inline double round_bound_up(double x) {
     return x + (x * 0x1p-51);
 }
@@ -398,7 +418,10 @@ inline double round_bound_up(double x) {
 // The Sum case of `evaluate()`, verbatim -- same start, same child order, so
 // the same bits -- plus the exact rounding error of every addition, whose
 // magnitudes it sums into the drift bound. The n - 1 additions of that sum
-// round too; (1 + n 2^-52) covers them.
+// round too, so the real sum of the magnitudes is at most err (1 + u)^(n-1),
+// and the multiply and add below round once each: err + err n 2^-52, rounded,
+// is at least err (1 + 2nu)(1 - u)^2, which covers (1 + u)^(n+1) for any n
+// below 2^40.
 double checked_resum(const Model& model, const ExprNode& node, IncSumState& st) {
     const std::vector<double>& values = model.node_values();
     const std::vector<Variable>& vars = model.variables();
@@ -621,6 +644,9 @@ private:
     // Untracked as well as flagged: were user code to throw before the Sum's
     // turn, the flag would be cleared on the way out and the Sum -- which has
     // not taken this term's change -- must not be updated again from there.
+    // (A throw mid-commit can also leave other Sums pushed but their readers
+    // not yet re-evaluated; that state is what CustomInvariant's contract already
+    // requires a full_evaluate after, which resets every Sum.)
     static void force_resum(uint8_t& flag, IncSumState& st) {
         flag |= kDirtyResum;
         st.tracked = 0;
@@ -636,7 +662,10 @@ private:
                 if ((flag & kDirtyRestored) != 0) {
                     return model_.node_values()[nid];
                 }
-                break;  // not in the probe's cone: the caller broke the pairing
+                // Not in the probe's cone: the caller broke the pairing. The
+                // honest reading is a commit of the current terms.
+                ++inc_sum_counts.resummed;
+                return checked_resum(model_, node, sums_.slots[slot_of(nid)]);
             case Rule::Probe:
                 stash_once(nid, flag);  // before the walk writes its new value
                 if (push_ && (flag & kDirtyResum) == 0) {

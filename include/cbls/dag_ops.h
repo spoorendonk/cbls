@@ -56,11 +56,14 @@ class EditJournal;
 double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count,
                       DeltaMode mode = DeltaMode::Commit, const EditJournal* journal = nullptr);
 
-/// How many INEXACT updates an incremental `Sum` may carry before a commit
-/// re-sums it instead (#188). An exact update -- every one on integral data --
-/// does not count. A parameter, chosen on held-out instances; see
-/// `docs/prereg-188.md`. 0 means never: the drift is then bounded only by the
-/// batch-end re-grounding and the local-minimum gate.
+/// The inexact update that would be an incremental `Sum`'s kIncSumPeriod-th
+/// since its last re-sum re-sums it instead (#188), so a Sum carries at most
+/// kIncSumPeriod - 1 = 63. An exact update -- every one on integral data -- does
+/// not count. A safety cap on how far the drift bound can grow between
+/// re-groundings, not a tuned optimum: chosen by a pre-registered rule on
+/// held-out instances, where it cost under 1% of throughput against never
+/// re-summing (`docs/benchmarks/incremental-sum-drift.md`). 0 means never: the
+/// drift is then bounded only by the batch-end re-grounding and the gate.
 constexpr uint32_t kIncSumPeriod = 64;
 
 /// A `Commit` of one scalar variable whose previous value was `old_value` (the
@@ -75,9 +78,10 @@ constexpr uint32_t kIncSumPeriod = 64;
 /// drift. An inexact one leaves the Sum up to one rounding of each away from the
 /// real sum of its stored terms, and adds those roundings -- exactly, as TwoSum
 /// computes them -- to the Sum's `IncSumState::drift_bound`. After
-/// `kIncSumPeriod` inexact updates the Sum is re-summed instead, as it is where
-/// a value is not finite, and on its first commit after a `full_evaluate` or a
-/// plain `delta_evaluate` over it -- both re-sum without the check.
+/// `kIncSumPeriod - 1` inexact updates carried (at most 63), the next inexact
+/// one re-sums the Sum instead. So does a non-finite value, and so does the
+/// Sum's first commit after a `full_evaluate` or a plain `delta_evaluate` over
+/// it, both of which re-sum without the check.
 ///
 /// Precondition, stronger than `delta_evaluate`'s: every node value must
 /// describe the assignment apart from `var_id`'s change. A variable written
@@ -85,11 +89,14 @@ constexpr uint32_t kIncSumPeriod = 64;
 /// incremental Sum on a stale base, which this would update rather than repair.
 double commit_scalar_move(Model& model, int32_t var_id, double old_value);
 
-/// The `Probe` counterpart: the same updates, from the committed values, so a
-/// probe scores exactly the value the commit would produce. The Sums in the
-/// cone are stashed first and the matching `delta_evaluate(..., Rollback)`
-/// writes them back, so a drifted committed state comes back to the bit. No
-/// Sum's drift state changes.
+/// The `Probe` counterpart: the commit's updates, applied from the committed
+/// values, so an identity move on a drifted state scores exactly 0. Where the
+/// commit would re-sum instead (an untracked Sum, `kIncSumPeriod` reached, a
+/// non-finite value) the probe still updates, so its score can differ from the
+/// commit's by up to the Sum's drift bound plus the re-sum's rounding. The Sums
+/// in the cone are stashed as the probe first writes each, and the matching
+/// `delta_evaluate(..., Rollback)` writes them back, so a drifted committed
+/// state comes back to the bit. No Sum's drift state changes.
 double probe_scalar_move(Model& model, int32_t var_id, double old_value);
 
 /// Re-sums, checked, the incremental Sum in `slot` and re-evaluates the rows

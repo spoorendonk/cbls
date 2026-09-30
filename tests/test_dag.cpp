@@ -1403,6 +1403,122 @@ TEST_CASE("the rounding of a term's change is drift too", "[dag][inc_sum]") {
     CHECK(st.drift_bound >= 0x1p-60);
 }
 
+namespace {
+
+// Every node value, bit for bit.
+void require_same_bits(const std::vector<double>& before, const std::vector<double>& after) {
+    REQUIRE(before.size() == after.size());
+    for (size_t i = 0; i < before.size(); ++i) {
+        if (bits_of(before[i]) != bits_of(after[i])) {
+            FAIL("node " << i << " was " << before[i] << ", is " << after[i]);
+        }
+    }
+}
+
+}  // namespace
+
+TEST_CASE("non-finite values take the re-sum, and the way back is bounded drift",
+          "[dag][inc_sum]") {
+    // Sum{x, 0.5 y} at y = 3. x -> inf, x -> 1e300: an update by difference
+    // would be inf - inf (NaN), so each must re-sum -- the re-sum's bits.
+    // x -> 2 from 1e300 is finite and updates: 1e300 swallowed the 1.5, so the
+    // value lands at 0 where the real sum is 3.5, and the bound (the re-sum's
+    // own 1.5 plus the update's 2) must cover it. Identity probes score 0 and
+    // their Rollback restores every bit, on the non-finite state and on the
+    // drifted one. Red with the isfinite tests in IncSumWalk::push removed:
+    // x -> 1e300 then computes inf + (-inf) and stores NaN.
+    Model m;
+    const int32_t x = m.float_var(-1.0e308, 1.0e308);
+    const int32_t y = m.float_var(-10.0, 10.0);
+    const int32_t row = m.sum({x, m.prod(m.constant(0.5), y)});
+    m.add_constraint(m.leq(row, m.constant(100.0)));
+    m.close();
+    const int32_t xi = vid(x);
+    m.var_mut(xi).value = 1.0;
+    m.var_mut(vid(y)).value = 3.0;
+    full_evaluate(m);
+    commit_scalar_move(m, xi, 1.0);  // untracked after full_evaluate: re-sums, checked
+    const IncSumState& st = m.inc_sums().slots[static_cast<size_t>(m.node(row).lambda_func_id)];
+    REQUIRE(st.tracked == 1);
+    ViolationManager vm(m);
+    const auto identity_probe_restores = [&]() {
+        const std::vector<double> before(m.node_values().begin(), m.node_values().end());
+        CHECK(vm.weighted_violation_delta(xi, m.var(xi).value) == 0.0);
+        require_same_bits(before, m.node_values());
+    };
+
+    for (const double value : {std::numeric_limits<double>::infinity(), 1.0e300}) {
+        const double old_value = m.var(xi).value;
+        m.var_mut(xi).value = value;
+        commit_scalar_move(m, xi, old_value);
+        require_matches_full_evaluate(m);
+        identity_probe_restores();
+    }
+
+    m.var_mut(xi).value = 2.0;
+    commit_scalar_move(m, xi, 1.0e300);
+    const double real = 3.5;  // 2 + 0.5 * 3, exactly
+    CHECK(m.node_value(row) != real);
+    CHECK(st.drifting == 1);
+    CHECK(std::fabs(m.node_value(row) - real) <= st.drift_bound);
+    identity_probe_restores();
+    reground_inc_sum(m, m.node(row).lambda_func_id);
+    require_matches_full_evaluate(m);
+}
+
+TEST_CASE("a breakpoint op as a term of an incremental Sum", "[dag][inc_sum][element]") {
+    // #186's Round as a term: its change is pushed like any node term's. FJ
+    // runs over the model; then commits drive it by hand to a drifted state,
+    // where the value must lie within the bound of the real sum, an identity
+    // probe must score 0, and a probe's Rollback must restore every bit.
+    Model m;
+    const int32_t x = m.int_var(0, 40);
+    const int32_t y = m.int_var(-20, 20);
+    const int32_t z = m.bool_var();
+    const int32_t rounded = m.round_expr(m.prod(m.constant(0.5), x));
+    const int32_t row =
+        m.sum({rounded, m.prod(m.constant(0.1), y), m.prod(m.constant(1099511627776.0), z)});
+    m.add_constraint(m.leq(row, m.constant(3.3)));
+    m.add_constraint(m.geq(row, m.constant(2.9)));
+    m.close();
+    REQUIRE(m.node(row).inc_sum_flags == ExprNode::kIncSum);
+    REQUIRE((m.node(rounded).inc_sum_flags & ExprNode::kFeedsIncSum) != 0);
+
+    {
+        ViolationManager vm(m);
+        RNG rng(8);
+        GFJConfig cfg;
+        cfg.max_iterations = 2000;
+        FeasibilityJump fj(m, vm, rng, cfg);
+        (void)fj.run();
+        require_matches_full_evaluate(m);  // no drift leaves a batch
+    }
+
+    // x and y by hand, with z = 1 in between so 2^40 swallows the fraction.
+    const std::vector<std::pair<int32_t, double>> moves = {
+        {vid(x), 7.0}, {vid(y), 3.0}, {vid(z), 1.0}, {vid(y), -4.0}, {vid(x), 12.0}, {vid(z), 0.0}};
+    for (const auto& [v, value] : moves) {
+        const double old_value = m.var(v).value;
+        m.var_mut(v).value = value;
+        commit_scalar_move(m, v, old_value);
+    }
+    const IncSumState& st = m.inc_sums().slots[static_cast<size_t>(m.node(row).lambda_func_id)];
+    CHECK(st.drifting == 1);  // 2^40 swallowed the fraction on the way through
+    Model fresh(m);
+    full_evaluate(fresh);
+    // The bound covers the real sum; the fresh re-sum is within its own
+    // rounding of that.
+    CHECK(std::fabs(m.node_value(row) - fresh.node_value(row)) <=
+          st.drift_bound + (std::fabs(fresh.node_value(row)) * 0x1p-50));
+    ViolationManager vm(m);
+    for (const int32_t v : {vid(x), vid(y), vid(z)}) {
+        const std::vector<double> before(m.node_values().begin(), m.node_values().end());
+        CHECK(vm.weighted_violation_delta(v, m.var(v).value) == 0.0);
+        (void)vm.weighted_violation_delta(v, m.var(v).type == VarType::Bool ? 1.0 : 5.0);
+        require_same_bits(before, m.node_values());
+    }
+}
+
 TEST_CASE("full_evaluate leaves every incremental Sum untracked", "[dag][inc_sum]") {
     // restore_state writes variables with no walk, and full_evaluate re-sums
     // without the rounding check. The state must not survive it: the next commit
