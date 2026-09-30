@@ -17,14 +17,24 @@ namespace {
 constexpr double kTol = 1e-9;
 constexpr double kInf = std::numeric_limits<double>::infinity();
 
-// The jump-candidate budget of one variable, shared by `int_jump_candidates`
-// and the breakpoint candidates (#186) so that a variable costs the same number
-// of probes whichever of the two reaches it: every value while there are at
-// most `kExhaustiveJumpWidth` of them, else a `kJumpGridPoints`-point grid plus
-// a few local ones. The measurement behind keeping 256 is at
-// `breakpoint_ks`.
+// The jump-candidate budgets. `int_jump_candidates` enumerates an Int domain
+// whole up to `kExhaustiveJumpWidth` and otherwise offers a `kJumpGridPoints`
+// grid plus a few local values; the breakpoint candidates (#186) take the same
+// grid, and enumerate whole only up to `kExhaustiveBreakpoints`.
+//
+// Why the breakpoint cap is the grid's size and not the Int width: measured on
+// a Float under one ceil node plus five linear rows (Release, idle box, three
+// runs agreeing within 1.5%; scratch harness, engine at 9c587f1), a probe costs
+// 0.38 us and an edge two probes, so enumerating 32 / 64 / 128 / 256 edges cost
+// 27.4 / 53.1 / 104.6 / 208.1 us per compute_var_jump, while the capped path
+// (nearest edges + grid) cost 29-31 us at 257, 4096 and 10^6 edges. The Int grid
+// baseline, with no breakpoint node, was 12.4 us. So at 256 the exhaustive
+// regime cost ~7x the capped one; at 32 the two cost the same, which is the one
+// point where enumerating whole never costs more than the fallback it replaces.
+// The Int width stays 256 so that no existing model's trajectory moves.
 constexpr double kExhaustiveJumpWidth = 256.0;
 constexpr int kJumpGridPoints = 32;
+constexpr double kExhaustiveBreakpoints = kJumpGridPoints;
 
 // A constraint is violated if its residual exceeds the tolerance. Written so
 // that non-finite residuals (NaN from inf-inf, or +inf) count as violated:
@@ -455,14 +465,19 @@ bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
 //    v), and the middle of the index's plateau, t = k + 0.5, for a Float.
 //
 // HOW MANY, per argument: every breakpoint in the variable's domain window
-// while there are at most `kExhaustiveJumpWidth`, the width to which
-// `int_jump_candidates` enumerates a domain; above it, the two either side of
-// the current argument, a `kJumpGridPoints` grid across the range and, for an
-// Element, the table's representative indices (one per distinct value, see
-// `ElementTable::row_reps`). The same two constants as the Int path, so a
-// variable costs the same number of probes whichever way it is reached.
-// Candidates are then deduplicated across every node the walk reached and
-// against the ones the Int/Float path already offered.
+// while the range is at most `kExhaustiveBreakpoints` wide (the measurement
+// that sets it is at the constant); above it, the two either side of the
+// current argument, a `kJumpGridPoints` grid across the range -- the Int path's
+// grid -- and, for an Element, the table's representative indices (one per
+// distinct value, see `ElementTable::row_reps`). Candidates are then
+// deduplicated across every node the walk reached and against the ones the
+// Int/Float path already offered.
+//
+// That makes an Element over a table wider than the cap a DEVIATION from #186's
+// "the candidates are the index values": an index holding a value no
+// representative, grid point or near neighbour names is reachable only by the
+// search's other moves. The reason is cost -- every index of a 10^4 table was
+// 2x10^4 probes per jump-table refresh of that variable.
 //
 // COST when it runs: the cone walk and its sort, O(c log c) for a cone of c
 // nodes, plus the parent edges of the cone -- one pass, where the previous form
@@ -718,8 +733,8 @@ void breakpoint_ks(const BreakpointRange& range, double u0, const std::vector<in
     if (!(count >= 1.0)) {
         return;
     }
-    // `count - 1` is the range's width, the quantity the Int rule caps.
-    if (count - 1.0 <= kExhaustiveJumpWidth) {
+    // `count - 1` is the range's width, the quantity the Int rule caps too.
+    if (count - 1.0 <= kExhaustiveBreakpoints) {
         const auto n = static_cast<int>(count);
         for (int i = 0; i < n; ++i) {
             ks.push_back(range.k_min + static_cast<double>(i));

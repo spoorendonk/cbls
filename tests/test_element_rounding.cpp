@@ -429,11 +429,12 @@ TEST_CASE("save_model refuses an extra-lambda node before writing anything", "[i
 // FJ: breakpoint and index-value candidates
 // ---------------------------------------------------------------------------
 
-TEST_CASE("FJ offers every index value of an element as the index's jump candidates",
-          "[fj][element]") {
+TEST_CASE("FJ offers the index of each distinct table value as a jump candidate", "[fj][element]") {
     // A wide Int domain (1000 values), so `int_jump_candidates` gives only its
     // coarse grid and x +/- 1 -- neither of which contains 517, the one index
-    // whose entry satisfies the row. The zero derivative offers nothing either.
+    // whose entry satisfies the row. The zero derivative offers nothing either,
+    // and the table is wider than the breakpoint cap, so it is the table's
+    // representative indices (one per distinct value) that reach 517.
     constexpr int kN = 1000;
     std::vector<double> table(kN, 0.0);
     table[517] = 10.0;
@@ -489,19 +490,20 @@ TEST_CASE("FJ offers a floor's edges and a round's half-way points as candidates
         REQUIRE(r.jump_value < 4.0);
     }
     SECTION("round over an Int past the grid's reach") {
-        // round(x / 7) == 150 holds for x in 1047..1053; the Int grid over
-        // [0, 1500] steps by ~47 and misses all seven.
+        // round(x / 60) >= 3 means x >= 150 (half-way, away from zero), and
+        // x <= 150 leaves 150 alone. The Int grid over [0, 1800] steps by
+        // ~56 (113, 169, ...) and misses it; the half-way edge lands on it.
         Model m;
-        auto x = m.Int(0, 1500, "x");
-        m.add_constraint(round(x / 7.0).eq(Expr{&m, m.constant(150.0)}));
+        auto x = m.Int(0, 1800, "x");
+        m.add_constraint(round(x / 60.0) >= 3.0);
+        m.add_constraint(x <= 150.0);
         m.close();
         m.var_mut(x.var_id()).value = 0.0;
         full_evaluate(m);
         ViolationManager vm(m);
         const JumpResult r = compute_var_jump(m, vm.weights, x.var_id());
-        REQUIRE(r.score == 150.0);
-        REQUIRE(r.jump_value >= 1047.0);
-        REQUIRE(r.jump_value <= 1053.0);
+        REQUIRE(r.score == 3.0);
+        REQUIRE(r.jump_value == 150.0);
     }
 }
 
@@ -870,19 +872,19 @@ TEST_CASE("FJ reaches a ceil through a product with a non-literal factor", "[fj]
 
 TEST_CASE("FJ inverts a ceil of a quotient whose denominator is the decision", "[fj][rounding]") {
     // The epic's fleet = ceil(cycle / headway) with headway the decision:
-    // fleet == 3 needs 100 / h in (2, 3], i.e. h in [33.4, 50). From h = 1
-    // (fleet 100) the box candidates reach fleet 4 or 2 at best.
+    // fleet == 3 needs 100 / h in (2, 3], i.e. h in [33.4, 50). From h = 5
+    // (fleet 20) the box candidates reach fleet 4 or 2 at best.
     Model m;
-    auto h = m.Float(1, 60, "h");
+    auto h = m.Float(5, 60, "h");
     auto fleet = ceil(100.0 / h);
     m.add_constraint(fleet >= 3.0);
     m.add_constraint(fleet <= 3.0);
     m.close();
-    m.var_mut(h.var_id()).value = 1.0;
+    m.var_mut(h.var_id()).value = 5.0;
     full_evaluate(m);
     ViolationManager vm(m);
     const JumpResult r = compute_var_jump(m, vm.weights, h.var_id());
-    REQUIRE(r.score == 97.0);
+    REQUIRE(r.score == 17.0);
     REQUIRE(r.jump_value >= 100.0 / 3.0);
     REQUIRE(r.jump_value < 50.0);
 }
