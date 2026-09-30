@@ -372,11 +372,12 @@ namespace {
 
 thread_local IncrementalSumCounters inc_sum_counts;
 
-// dirty_flags values beyond 1 ("in the cone"): an incremental Sum that must be
-// re-summed at its turn rather than taken as its updates left it, and one a
-// Rollback has already written back from the probe's stash.
+// dirty_flags bits beyond 1 ("in the cone"), on an incremental Sum: re-sum it
+// at its turn rather than take it as its updates left it; a Probe has stashed
+// its value; a Rollback has written it back from the stash.
 constexpr uint8_t kDirtyResum = 2;
-constexpr uint8_t kDirtyRestored = 3;
+constexpr uint8_t kDirtyStashed = 4;
+constexpr uint8_t kDirtyRestored = 8;
 
 // The rounding error of `s = fl(a + b)`, exactly: a + b == s + err in real
 // arithmetic (Knuth's TwoSum; valid for any finite a, b whose sum does not
@@ -441,8 +442,8 @@ public:
         }
     }
 
-    // Before the walk: a Rollback writes its probe's stash back; a Probe
-    // stashes its cone's Sums; then the changed variables' own moves are pushed
+    // Before the walk: a Rollback writes its probe's stash back; a Probe arms
+    // one; then the changed variables' own moves are pushed
     // into the Sums they are terms of.
     void prepare(const std::vector<int32_t>& dirty_list, const int32_t* changed_var_ids,
                  size_t count, const double* old_values) {
@@ -453,7 +454,9 @@ public:
                 restore_stash();
                 return;
             case Rule::Probe:
-                stash(dirty_list);
+                // The Sums are stashed as the walk first touches each one
+                // (stash_once): O(incremental Sums in the cone), not O(cone).
+                sums_.probe_pending = true;
                 break;
             case Rule::Commit:
                 if (!push_ && model_.has_custom_nodes()) {
@@ -488,12 +491,23 @@ public:
     // One dirty node's new value. An incremental Sum is taken as its updates
     // left it, or re-summed; a dirty term node pushes its change into its
     // incremental parents.
+    //
+    // Split in two so that this, the part every dirty node runs, stays small
+    // enough to inline into the walk's loop: on a probe-bound model most dirty
+    // nodes are neither a Sum nor a term of one, and a call per node there cost
+    // nvs14 ~8% of its run (gprof, #188).
     template <typename EvalOther>
     double eval(int32_t nid, EvalOther&& eval_other) {
         const uint8_t flags = nodes_[nid].inc_sum_flags;
-        if (rule_ == Rule::Plain || flags == 0) {
+        if (flags == 0 || rule_ == Rule::Plain) {
             return eval_other(nid);
         }
+        return eval_flagged(nid, flags, eval_other);
+    }
+
+private:
+    template <typename EvalOther>
+    double eval_flagged(int32_t nid, uint8_t flags, EvalOther& eval_other) {
         if ((flags & ExprNode::kIncSum) != 0) {
             return eval_sum(nid);
         }
@@ -510,7 +524,6 @@ public:
         return new_v;
     }
 
-private:
     enum class Rule : uint8_t { Plain, Commit, Probe, Restore };
 
     static Rule rule_for(const Model& model, DeltaMode mode) {
@@ -530,14 +543,13 @@ private:
 
     [[nodiscard]] int32_t slot_of(int32_t nid) const { return nodes_[nid].lambda_func_id; }
 
-    void stash(const std::vector<int32_t>& dirty_list) {
-        const std::vector<double>& values = model_.node_values();
-        for (const int32_t nid : dirty_list) {
-            if ((nodes_[nid].inc_sum_flags & ExprNode::kIncSum) != 0) {
-                sums_.probe_stash.emplace_back(nid, values[nid]);
-            }
+    // Called before a Probe first writes an incremental Sum -- a push, or its
+    // turn in the walk -- so the value stashed is the committed one.
+    void stash_once(int32_t nid, uint8_t& flag) {
+        if ((flag & kDirtyStashed) == 0) {
+            flag |= kDirtyStashed;
+            sums_.probe_stash.emplace_back(nid, model_.node_values()[nid]);
         }
-        sums_.probe_pending = true;
     }
 
     // Only a node in this walk's cone is flagged: the guard clears the flags
@@ -546,7 +558,7 @@ private:
         for (const auto& [nid, value] : sums_.probe_stash) {
             model_.set_node_value_unchecked(nid, value);
             if (dirty_[nid] != 0) {
-                dirty_[nid] = kDirtyRestored;
+                dirty_[nid] |= kDirtyRestored;
             }
         }
         sums_.probe_stash.clear();
@@ -556,7 +568,7 @@ private:
     // One term of the incremental Sum `p` moved from `old_v` to `new_v`.
     void push(int32_t p, double new_v, double old_v) {
         uint8_t& flag = dirty_[p];
-        if (flag == kDirtyResum) {
+        if ((flag & kDirtyResum) != 0) {
             return;  // re-summed at its turn whatever else arrives
         }
         const double cur = model_.node_values()[p];
@@ -564,8 +576,9 @@ private:
         const double s = cur + d;
         if (rule_ == Rule::Probe) {
             // No drift state moves under a probe: it is rolled back.
+            stash_once(p, flag);
             if (!std::isfinite(s) || !std::isfinite(d)) {
-                flag = kDirtyResum;
+                flag |= kDirtyResum;
                 return;
             }
             ++inc_sum_counts.probe_pushes;
@@ -605,29 +618,30 @@ private:
     // turn, the flag would be cleared on the way out and the Sum -- which has
     // not taken this term's change -- must not be updated again from there.
     static void force_resum(uint8_t& flag, IncSumState& st) {
-        flag = kDirtyResum;
+        flag |= kDirtyResum;
         st.tracked = 0;
     }
 
     double eval_sum(int32_t nid) {
         const ExprNode& node = nodes_[nid];
-        const uint8_t flag = dirty_[nid];
+        uint8_t& flag = dirty_[nid];
         switch (rule_) {
             case Rule::Plain:
                 return evaluate(node, model_);
             case Rule::Restore:
-                if (flag == kDirtyRestored) {
+                if ((flag & kDirtyRestored) != 0) {
                     return model_.node_values()[nid];
                 }
                 break;  // not in the probe's cone: the caller broke the pairing
             case Rule::Probe:
-                if (push_ && flag != kDirtyResum) {
+                stash_once(nid, flag);  // before the walk writes its new value
+                if (push_ && (flag & kDirtyResum) == 0) {
                     return model_.node_values()[nid];
                 }
                 return evaluate(node, model_);  // no drift state moves under a probe
             case Rule::Commit: {
                 IncSumState& st = sums_.slots[slot_of(nid)];
-                if (push_ && flag != kDirtyResum && st.tracked != 0) {
+                if (push_ && (flag & kDirtyResum) == 0 && st.tracked != 0) {
                     ++inc_sum_counts.incremental;
                     return model_.node_values()[nid];
                 }
