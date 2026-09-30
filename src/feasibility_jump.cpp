@@ -15,6 +15,16 @@ namespace cbls {
 namespace {
 
 constexpr double kTol = 1e-9;
+constexpr double kInf = std::numeric_limits<double>::infinity();
+
+// The jump-candidate budget of one variable, shared by `int_jump_candidates`
+// and the breakpoint candidates (#186) so that a variable costs the same number
+// of probes whichever of the two reaches it: every value while there are at
+// most `kExhaustiveJumpWidth` of them, else a `kJumpGridPoints`-point grid plus
+// a few local ones. The measurement behind keeping 256 is at
+// `breakpoint_ks`.
+constexpr double kExhaustiveJumpWidth = 256.0;
+constexpr int kJumpGridPoints = 32;
 
 // A constraint is violated if its residual exceeds the tolerance. Written so
 // that non-finite residuals (NaN from inf-inf, or +inf) count as violated:
@@ -315,7 +325,7 @@ bool int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
     // Enumerate only where `v += 1.0` actually advances. At 1e18 the ulp is 128,
     // so a width-<=256 loop over such endpoints would never terminate.
     const bool steppable = std::abs(lo) < kExactIntMagnitude && std::abs(hi) < kExactIntMagnitude;
-    if (steppable && hi - lo <= 256.0) {
+    if (steppable && hi - lo <= kExhaustiveJumpWidth) {
         // The counter IS the candidate, and `steppable` is exactly the
         // precondition that makes `+= 1.0` exact and the loop finite.
         // NOLINTNEXTLINE(bugprone-float-loop-counter)
@@ -330,9 +340,8 @@ bool int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
     // drifted outside the window keeps its local moves.
     consider(clamp_to_domain(var, x0 - 1));
     consider(clamp_to_domain(var, x0 + 1));
-    const int grid = 32;
-    for (int k = 1; k < grid; ++k) {
-        const double frac = static_cast<double>(k) / grid;
+    for (int k = 1; k < kJumpGridPoints; ++k) {
+        const double frac = static_cast<double>(k) / kJumpGridPoints;
         consider(std::round(lo + (frac * (hi - lo))));
     }
     return false;
@@ -404,65 +413,70 @@ bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
 //
 // Ceil, Floor, Round and Element are piecewise constant, so their local
 // derivative is 0 and neither a Newton step nor the Int grid knows where their
-// value changes. What does know is the op itself: its value changes at a fixed
-// set of argument values -- the integers for Ceil and Floor, the half-integers
-// for Round -- and an Element index takes the values 0..n-1. When the argument
-// is affine in the variable, u(v) = u0 + a (v - x0), each of those is one value
+// value changes. The op itself does: Ceil and Floor change at the integers,
+// Round at the half-integers, and an Element index takes the values 0..n-1.
+// Mapped back through the argument u(v), each of those values of u is a value
 // of v, and those are this variable's candidates.
 //
 // A candidate is only a PROPOSAL: `consider` scores every one exactly, by the
-// same weighted violation delta as any other. So "affine" decides where the
-// candidates land, never whether a jump is scored right. The upward walk below
-// passes only through ops that are affine in the child it arrived from, and
-// takes the slope from reverse-mode AD at the current point, which for an
-// affine argument is the exact slope. An argument that also reaches `v` through
-// a non-affine path elsewhere gets candidates from its local linearisation.
+// same weighted violation delta as any other. The map decides where candidates
+// land, never whether a jump is scored right.
 //
-// Which candidates, per breakpoint t (a value of u where the op changes):
+// THE MAP. The walk collects the cone above v through Neg, Sum, Prod and Div --
+// through EITHER operand of a Prod or Div, whatever the other is -- and carries
+// du/dv forward along it (`ConeSlopes`), once per call. For a single-variable
+// jump every other variable is fixed, so an argument that is a sum of terms
+// `c * v` with c any fixed value (a literal, another variable, a node that does
+// not read v) is linear in v and the carried slope is exact. Two named cases
+// are not linear, and are handled as follows:
 //
-//  - Int variable: floor and ceil of the v that lands on t. Either side of an
-//    edge is then a candidate whether or not t itself is reachable.
-//  - Float variable, Ceil/Floor/Round: the two values of v that land a hair
-//    either side of t (1e-9 relative, in u). The edge itself is where ceil and
-//    floor are one ulp from the next plateau, so the candidate is placed
-//    unambiguously on each side instead.
-//  - Float variable, Element: the middle of each index's plateau, t = k + 0.5.
-//    An Int variable lands on t = k, the index value itself.
+//  - `u = N / D` with v in D only -- the epic's `ceil(cycle / headway)` with
+//    headway the decision -- is inverted exactly, v = x0 + (N/t - D0) / D',
+//    when that Div IS the breakpoint node's argument and D is affine in v.
+//  - Anything else nonlinear on the path (a Div by v with more on top of it,
+//    v on both sides of a Prod) is LINEARISED at the current point. Its
+//    candidates can land off the edge they aim at. That is a named limitation,
+//    not a silent one: the candidate is still scored exactly, so the cost is a
+//    wasted probe.
 //
-// How many. For Element, every index value the variable can reach, whatever the
-// table's size: those ARE the candidates #186 specifies, and the table bounds
-// them. For Ceil/Floor/Round, every breakpoint in the variable's domain when
-// there are at most 256, else the two either side of the current argument plus
-// a 31-point grid across the range -- the shape `int_jump_candidates` gives a
-// wide Int domain, for the same reason: a candidate costs one probe, and the
-// breakpoints of `ceil(x)` over an unbounded Float are not a finite set.
+// One further approximation: a Sum that names the same child twice counts it
+// once, because the walk follows back-references, which list a parent once.
 //
-// Cost when it runs: the walk visits the affine cone above `v` (for a MIP-shaped
-// column, its rows' Sums, stopping at their comparisons), plus one AD sweep per
-// breakpoint node reached. It runs only on a model that HAS such a node
+// WHICH CANDIDATES, per breakpoint t (a value of u where the op changes), with
+// du a small step in u (absolute, at least 4 ulp of t, at most 1/4):
+//
+//  - Ceil/Floor/Round, Int variable: floor of the lower and ceil of the upper of
+//    the two values of v that land at t -+ du, plus the v at t itself when that
+//    is an integer. So both sides of the edge are offered even where float
+//    error puts the edge integer on the wrong one.
+//  - Ceil/Floor/Round, Float variable: those two values of v, each stepped by
+//    nextafter until the map puts it strictly on its own side of t.
+//  - Element: the index value t = k itself for an Int (floor and ceil of its
+//    v), and the middle of the index's plateau, t = k + 0.5, for a Float.
+//
+// HOW MANY, per argument: every breakpoint in the variable's domain window
+// while there are at most `kExhaustiveJumpWidth`, the width to which
+// `int_jump_candidates` enumerates a domain; above it, the two either side of
+// the current argument, a `kJumpGridPoints` grid across the range and, for an
+// Element, the table's representative indices (one per distinct value, see
+// `ElementTable::row_reps`). The same two constants as the Int path, so a
+// variable costs the same number of probes whichever way it is reached.
+// Candidates are then deduplicated across every node the walk reached and
+// against the ones the Int/Float path already offered.
+//
+// COST when it runs: the cone walk and its sort, O(c log c) for a cone of c
+// nodes, plus the parent edges of the cone -- one pass, where the previous form
+// ran one reverse AD sweep per breakpoint node, which made `ceil(sum a_i x_i)`
+// cost O(n) per variable and O(n^2) per jump-table refresh; it is now O(1) per
+// variable there. It loses to the sweep only where a cone is wide and holds a
+// single breakpoint node. It runs only on a model that HAS such a node
 // (`Model::has_breakpoint_nodes`), and for an Int only when the domain was not
 // already enumerated whole, so every other model's candidates are unchanged.
 
-// Does the walk continue above `nd`? Only through an op that is affine in the
-// child it arrived from, with a LITERAL constant for any coefficient: Neg, Sum,
-// a Prod with a Const factor, a Div by a Const. The literal test is narrower
-// than FJ's own affine classification (which accepts any constant subtree) and
-// needs no per-model table; it is what the model builders emit for `2 * x`.
-bool affine_passthrough(const Model& model, const ExprNode& nd) {
-    const ConstSpan<ChildRef> kids = model.children(nd);
-    auto literal = [&model](const ChildRef& c) {
-        return !c.is_var && model.nodes()[static_cast<size_t>(c.id)].op == NodeOp::Const;
-    };
-    if (nd.op == NodeOp::Neg || nd.op == NodeOp::Sum) {
-        return true;
-    }
-    if (nd.op == NodeOp::Prod) {
-        return literal(kids[0]) || literal(kids[1]);
-    }
-    if (nd.op == NodeOp::Div) {
-        return literal(kids[1]);
-    }
-    return false;
+// Does the walk continue above `op`? The four ops whose value moves through the
+// operand the walk arrived by.
+bool slope_passthrough(NodeOp op) {
+    return op == NodeOp::Neg || op == NodeOp::Sum || op == NodeOp::Prod || op == NodeOp::Div;
 }
 
 bool is_breakpoint_op(NodeOp op) {
@@ -470,153 +484,398 @@ bool is_breakpoint_op(NodeOp op) {
            op == NodeOp::Element;
 }
 
-// The breakpoints of one argument u = u0 + a (v - x0) of a breakpoint node, as
-// integers k with t_k = k + offset, restricted to [k_min, k_max].
+// d(parent)/d(child) for one edge of a passthrough op, summed over the operands
+// naming `child` (x * x has two).
+double edge_derivative(const Model& model, const ExprNode& parent, const ChildRef& child) {
+    if (parent.op == NodeOp::Sum) {
+        return 1.0;
+    }
+    if (parent.op == NodeOp::Neg) {
+        return -1.0;
+    }
+    const ConstSpan<ChildRef> kids = model.children(parent);
+    auto value = [&model](const ChildRef& r) {
+        return r.is_var ? model.variables()[static_cast<size_t>(r.id)].value
+                        : model.node_values()[static_cast<size_t>(r.id)];
+    };
+    auto same = [&child](const ChildRef& r) {
+        return r.is_var == child.is_var && r.id == child.id;
+    };
+    double d = 0.0;
+    if (parent.op == NodeOp::Prod) {
+        d += same(kids[0]) ? value(kids[1]) : 0.0;
+        d += same(kids[1]) ? value(kids[0]) : 0.0;
+        return d;
+    }
+    // Div: d(n/q)/dn = 1/q, d(n/q)/dq = -n/q^2; 0 where `evaluate` saturates.
+    const double q = value(kids[1]);
+    if (std::abs(q) < 1e-15) {
+        return 0.0;
+    }
+    d += same(kids[0]) ? 1.0 / q : 0.0;
+    d += same(kids[1]) ? -value(kids[0]) / (q * q) : 0.0;
+    return d;
+}
+
+// The cone above one variable and du/dv on it, forward mode. Per thread, grown
+// to the largest model walked; entries are valid only under the current epoch,
+// so a call costs its own cone and never a clear of the arrays.
+class ConeSlopes {
+public:
+    // Collect the cone above `var_id` and carry the slope through it.
+    void build(const Model& model, int32_t var_id) {
+        if (stamp_.size() < model.num_nodes()) {
+            stamp_.resize(model.num_nodes(), 0);
+            slope_.resize(model.num_nodes(), 0.0);
+        }
+        if (++epoch_ == 0) {
+            std::fill(stamp_.begin(), stamp_.end(), 0);
+            epoch_ = 1;
+        }
+        var_id_ = var_id;
+        cone_.clear();
+        collect(model);
+        // Topological order, so a node's slope is complete before it is pushed.
+        std::sort(cone_.begin(), cone_.end(), [&model](int32_t a, int32_t b) {
+            return model.topo_position(a) < model.topo_position(b);
+        });
+        propagate(model);
+    }
+
+    [[nodiscard]] const std::vector<int32_t>& cone() const { return cone_; }
+
+    // du/dv for one operand: 1 for the variable itself, the carried slope for a
+    // node in the cone, and 0 for anything that does not move with v.
+    [[nodiscard]] double of(const ChildRef& r) const {
+        if (r.is_var) {
+            return r.id == var_id_ ? 1.0 : 0.0;
+        }
+        return stamp_[static_cast<size_t>(r.id)] == epoch_ ? slope_[static_cast<size_t>(r.id)]
+                                                           : 0.0;
+    }
+
+private:
+    void mark(int32_t nid) {
+        stamp_[static_cast<size_t>(nid)] = epoch_;
+        slope_[static_cast<size_t>(nid)] = 0.0;
+        cone_.push_back(nid);
+    }
+
+    void collect(const Model& model) {
+        for (const int32_t dep : model.dependents(var_id_)) {
+            const NodeOp op = model.nodes()[static_cast<size_t>(dep)].op;
+            if (slope_passthrough(op) || is_breakpoint_op(op)) {
+                mark(dep);
+            }
+        }
+        // `cone_` grows while it is walked, so it is indexed rather than iterated.
+        for (size_t head = 0; head < cone_.size(); ++head) {
+            if (!slope_passthrough(model.nodes()[static_cast<size_t>(cone_[head])].op)) {
+                continue;  // a breakpoint node: piecewise constant above here
+            }
+            for (const int32_t parent : model.parents(cone_[head])) {
+                const NodeOp op = model.nodes()[static_cast<size_t>(parent)].op;
+                if (stamp_[static_cast<size_t>(parent)] != epoch_ &&
+                    (slope_passthrough(op) || is_breakpoint_op(op))) {
+                    mark(parent);
+                }
+            }
+        }
+    }
+
+    void propagate(const Model& model) {
+        const ChildRef var_ref{var_id_, true};
+        for (const int32_t dep : model.dependents(var_id_)) {
+            const ExprNode& nd = model.nodes()[static_cast<size_t>(dep)];
+            if (slope_passthrough(nd.op)) {
+                slope_[static_cast<size_t>(dep)] += edge_derivative(model, nd, var_ref);
+            }
+        }
+        for (const int32_t nid : cone_) {
+            const double s = slope_[static_cast<size_t>(nid)];
+            if (s == 0.0 || !slope_passthrough(model.nodes()[static_cast<size_t>(nid)].op)) {
+                continue;
+            }
+            const ChildRef ref{nid, false};
+            for (const int32_t parent : model.parents(nid)) {
+                const ExprNode& pn = model.nodes()[static_cast<size_t>(parent)];
+                if (stamp_[static_cast<size_t>(parent)] == epoch_ && slope_passthrough(pn.op)) {
+                    slope_[static_cast<size_t>(parent)] += edge_derivative(model, pn, ref) * s;
+                }
+            }
+        }
+    }
+
+    std::vector<uint32_t> stamp_;
+    std::vector<double> slope_;
+    std::vector<int32_t> cone_;
+    uint32_t epoch_ = 0;
+    int32_t var_id_ = -1;
+};
+
+double operand_value(const Model& model, const ChildRef& r) {
+    return r.is_var ? model.variables()[static_cast<size_t>(r.id)].value
+                    : model.node_values()[static_cast<size_t>(r.id)];
+}
+
+// u as a function of v, and its inverse, for one argument of a breakpoint node:
+// linear, u = u0 + a (v - x0), or the exact reciprocal u = N / (D0 + D' (v - x0)).
+struct ArgMap {
+    bool inverse = false;
+    double x0 = 0.0;
+    double u0 = 0.0;
+    double slope = 0.0;
+    double num = 0.0;
+    double d0 = 0.0;
+    double d_slope = 0.0;
+
+    [[nodiscard]] double to_v(double t) const {
+        if (inverse) {
+            return x0 + (((num / t) - d0) / d_slope);
+        }
+        return x0 + ((t - u0) / slope);
+    }
+    [[nodiscard]] double to_u(double v) const {
+        if (inverse) {
+            return num / (d0 + (d_slope * (v - x0)));
+        }
+        return u0 + (slope * (v - x0));
+    }
+    // Whether u grows with v. For the reciprocal, du/dv = -N D' / D^2.
+    [[nodiscard]] bool increasing() const { return inverse ? num * d_slope < 0.0 : slope > 0.0; }
+};
+
+// The map for argument `kid` of a breakpoint node, or false when the argument
+// does not move with v (or moves by a non-finite amount).
+bool argument_map(const Model& model, const ConeSlopes& cone, const ChildRef& kid, double x0,
+                  ArgMap& map) {
+    map.x0 = x0;
+    map.u0 = operand_value(model, kid);
+    if (!kid.is_var) {
+        const ExprNode& arg = model.nodes()[static_cast<size_t>(kid.id)];
+        if (arg.op == NodeOp::Div) {
+            const ConstSpan<ChildRef> nd = model.children(arg);
+            const double d_slope = cone.of(nd[1]);
+            if (cone.of(nd[0]) == 0.0 && d_slope != 0.0 && std::isfinite(d_slope)) {
+                map.inverse = true;
+                map.num = operand_value(model, nd[0]);
+                map.d0 = operand_value(model, nd[1]);
+                map.d_slope = d_slope;
+                return std::isfinite(map.num) && map.num != 0.0 && std::isfinite(map.d0);
+            }
+        }
+    }
+    map.slope = cone.of(kid);
+    return std::abs(map.slope) > 1e-12 && std::isfinite(map.slope) && std::isfinite(map.u0);
+}
+
+// The breakpoints of one argument, as integers k with t_k = k + offset, over the
+// values u takes as v sweeps its domain window. Empty (k_max < k_min) when the
+// reciprocal's denominator can reach zero inside the window.
 struct BreakpointRange {
     double offset = 0.0;
     double k_min = 0.0;
-    double k_max = -1.0;  // empty
+    double k_max = -1.0;
 };
 
-// Candidates for `var` from one argument of one breakpoint node.
-template <class Consider>
-void argument_breakpoints(const Variable& var, double x0, double u0, double slope,
-                          const BreakpointRange& range, bool edge, Consider&& consider) {
-    const bool is_int = var.type == VarType::Int;
-    auto offer = [&](double t) {
-        if (is_int) {
-            const double v = x0 + ((t - u0) / slope);
-            const double lo = std::floor(v);
-            consider(clamp_to_domain(var, lo));
-            if (std::ceil(v) != lo) {
-                consider(clamp_to_domain(var, std::ceil(v)));
-            }
-            return;
-        }
-        if (!edge) {
-            consider(clamp_to_domain(var, x0 + ((t - u0) / slope)));
-            return;
-        }
-        const double du = 1e-9 * std::max(1.0, std::abs(t));
-        consider(clamp_to_domain(var, x0 + ((t - du - u0) / slope)));
-        consider(clamp_to_domain(var, x0 + ((t + du - u0) / slope)));
-    };
-    const double count = range.k_max - range.k_min + 1.0;
-    if (!(count >= 1.0)) {
-        return;
-    }
-    constexpr double kExhaustive = 256.0;
-    if (count <= kExhaustive || !edge) {
-        const auto n = static_cast<int>(count);
-        for (int i = 0; i < n; ++i) {
-            offer(range.k_min + static_cast<double>(i) + range.offset);
-        }
-        return;
-    }
-    // The two breakpoints either side of the current argument, then a grid.
-    const double kc = std::floor(u0 - range.offset);
-    for (int dk = -1; dk <= 2; ++dk) {
-        const double k = kc + static_cast<double>(dk);
-        if (k >= range.k_min && k <= range.k_max) {
-            offer(k + range.offset);
-        }
-    }
-    constexpr int kGrid = 32;
-    for (int g = 1; g < kGrid; ++g) {
-        const double frac = static_cast<double>(g) / kGrid;
-        offer(std::round(range.k_min + (frac * (range.k_max - range.k_min))) + range.offset);
-    }
-}
-
-// The breakpoint range of argument `child_idx` of `nd`, over the values the
-// argument takes as `var` sweeps its domain window.
 BreakpointRange breakpoint_range(const Model& model, const ExprNode& nd, size_t child_idx,
-                                 const Variable& var, double x0, double u0, double slope) {
+                                 const Variable& var, const ArgMap& map) {
     const DomainWindow w = domain_window(var);
-    const double ua = u0 + (slope * (w.lo - x0));
-    const double ub = u0 + (slope * (w.hi - x0));
-    const double u_lo = std::min(ua, ub);
-    const double u_hi = std::max(ua, ub);
     BreakpointRange r;
+    if (map.inverse) {
+        const double d_lo = map.d0 + (map.d_slope * (w.lo - map.x0));
+        const double d_hi = map.d0 + (map.d_slope * (w.hi - map.x0));
+        if (!(d_lo * d_hi > 0.0)) {
+            return r;
+        }
+    }
+    const double ua = map.to_u(w.lo);
+    const double ub = map.to_u(w.hi);
     if (nd.op == NodeOp::Round || (nd.op == NodeOp::Element && var.type != VarType::Int)) {
         r.offset = 0.5;
     }
-    r.k_min = std::ceil(u_lo - r.offset);
-    r.k_max = std::floor(u_hi - r.offset);
+    r.k_min = std::ceil(std::min(ua, ub) - r.offset);
+    r.k_max = std::floor(std::max(ua, ub) - r.offset);
     if (nd.op == NodeOp::Element) {
         const ElementTable& tbl = model.element_table(nd.lambda_func_id);
         const auto n = static_cast<double>(child_idx == 0 ? tbl.rows : tbl.cols);
         r.k_min = std::max(r.k_min, 0.0);
         r.k_max = std::min(r.k_max, n - 1.0);
     }
+    if (!std::isfinite(r.k_min) || !std::isfinite(r.k_max)) {
+        r.k_max = r.k_min - 1.0;
+    }
     return r;
 }
 
-// Candidates for `var_id` from one breakpoint node `nd`: one breakpoint set per
-// argument the variable reaches, each placed by that argument's slope.
-template <class Consider>
-void node_breakpoints(Model& model, const ExprNode& nd, int32_t var_id, const Variable& var,
-                      double x0, Consider&& consider) {
-    const ConstSpan<ChildRef> kids = model.children(nd);
-    for (size_t c = 0; c < kids.size(); ++c) {
-        const ChildRef& kid = kids[c];
-        double slope = 0.0;
-        double u0 = x0;
-        if (!kid.is_var) {
-            slope = compute_partial(model, kid.id, var_id);
-            u0 = model.node_values()[static_cast<size_t>(kid.id)];
-        } else if (kid.id == var_id) {
-            slope = 1.0;
+// The k values to offer from one range: all of them up to the cap, else the two
+// breakpoints either side of the current argument, a grid, and the Element
+// table's representatives.
+void breakpoint_ks(const BreakpointRange& range, double u0, const std::vector<int32_t>* reps,
+                   std::vector<double>& ks) {
+    ks.clear();
+    const double count = range.k_max - range.k_min + 1.0;
+    if (!(count >= 1.0)) {
+        return;
+    }
+    // `count - 1` is the range's width, the quantity the Int rule caps.
+    if (count - 1.0 <= kExhaustiveJumpWidth) {
+        const auto n = static_cast<int>(count);
+        for (int i = 0; i < n; ++i) {
+            ks.push_back(range.k_min + static_cast<double>(i));
         }
-        if (!(std::abs(slope) > 1e-12) || !std::isfinite(slope) || !std::isfinite(u0)) {
-            continue;  // this argument does not move with the variable
+        return;
+    }
+    // Strictly below the current argument: ceil(x) - 1, ceil(x) - 2; strictly
+    // above: floor(x) + 1, floor(x) + 2; and x itself when it is a breakpoint.
+    const double x = u0 - range.offset;
+    if (std::isfinite(x)) {
+        const double first = std::ceil(x) - 2.0;
+        const double last = std::floor(x) + 2.0;
+        for (int dk = 0; dk <= 4; ++dk) {
+            const double k = first + static_cast<double>(dk);
+            if (k <= last && k >= range.k_min && k <= range.k_max) {
+                ks.push_back(k);
+            }
         }
-        const BreakpointRange range = breakpoint_range(model, nd, c, var, x0, u0, slope);
-        argument_breakpoints(var, x0, u0, slope, range, nd.op != NodeOp::Element, consider);
+    }
+    for (int g = 1; g < kJumpGridPoints; ++g) {
+        const double frac = static_cast<double>(g) / kJumpGridPoints;
+        ks.push_back(std::round(range.k_min + (frac * (range.k_max - range.k_min))));
+    }
+    if (reps != nullptr) {
+        for (const int32_t k : *reps) {
+            if (k >= range.k_min && k <= range.k_max) {
+                ks.push_back(static_cast<double>(k));
+            }
+        }
     }
 }
 
-// Candidates for `var_id` from every breakpoint node its affine cone reaches.
-template <class Consider>
-void breakpoint_jump_candidates(Model& model, int32_t var_id, const Variable& var, double x0,
-                                Consider&& consider) {
+// Step `v` by ulps toward `dir` until the map puts it on the wanted side of t.
+// Bounded: the map is monotone, so a few steps suffice unless it is flat at
+// double precision, where nothing will.
+double step_off_edge(const ArgMap& map, double v, double t, bool want_below, double dir) {
+    for (int i = 0; i < 8; ++i) {
+        const double u = map.to_u(v);
+        if (want_below ? u < t : u > t) {
+            break;
+        }
+        v = std::nextafter(v, dir);
+    }
+    return v;
+}
+
+// The values of v one breakpoint t proposes, appended to `out` (see the section
+// comment for which).
+void offer_breakpoint(const ArgMap& map, const Variable& var, double t, bool edge,
+                      std::vector<double>& out) {
+    const bool is_int = var.type == VarType::Int;
+    const double vm = map.to_v(t);
+    if (!std::isfinite(vm)) {
+        return;
+    }
+    if (!edge) {
+        if (is_int) {
+            out.push_back(clamp_to_domain(var, std::floor(vm)));
+            out.push_back(clamp_to_domain(var, std::ceil(vm)));
+        } else {
+            out.push_back(clamp_to_domain(var, vm));
+        }
+        return;
+    }
+    const double at = std::abs(t);
+    const double du = std::min(std::max(1e-9, 4.0 * (std::nextafter(at, kInf) - at)), 0.25);
+    double lo = map.to_v(t - du);
+    double hi = map.to_v(t + du);
+    if (!std::isfinite(lo) || !std::isfinite(hi)) {
+        return;
+    }
+    if (lo > hi) {
+        std::swap(lo, hi);
+    }
+    if (is_int) {
+        out.push_back(clamp_to_domain(var, std::floor(lo)));
+        out.push_back(clamp_to_domain(var, std::ceil(hi)));
+        if (std::abs(vm - std::round(vm)) <= 1e-9 * std::max(1.0, std::abs(vm))) {
+            out.push_back(clamp_to_domain(var, std::round(vm)));
+        }
+        return;
+    }
+    // The lower v lands below t when u grows with v, above it otherwise.
+    const bool up = map.increasing();
+    lo = step_off_edge(map, std::min(lo, std::nextafter(vm, -kInf)), t, up, -kInf);
+    hi = step_off_edge(map, std::max(hi, std::nextafter(vm, kInf)), t, !up, kInf);
+    out.push_back(clamp_to_domain(var, lo));
+    out.push_back(clamp_to_domain(var, hi));
+}
+
+// Candidates for `var` from one breakpoint node, appended to `out`.
+void node_breakpoints(const Model& model, const ConeSlopes& cone, const ExprNode& nd,
+                      const Variable& var, double x0, std::vector<double>& out) {
+    thread_local std::vector<double> ks;
+    const ConstSpan<ChildRef> kids = model.children(nd);
+    const bool edge = nd.op != NodeOp::Element;
+    for (size_t c = 0; c < kids.size(); ++c) {
+        ArgMap map;
+        if (!argument_map(model, cone, kids[c], x0, map)) {
+            continue;  // this argument does not move with the variable
+        }
+        const BreakpointRange range = breakpoint_range(model, nd, c, var, map);
+        const std::vector<int32_t>* reps = nullptr;
+        if (!edge) {
+            const ElementTable& tbl = model.element_table(nd.lambda_func_id);
+            reps = c == 0 ? &tbl.row_reps : &tbl.col_reps;
+        }
+        breakpoint_ks(range, map.u0, reps, ks);
+        for (const double k : ks) {
+            offer_breakpoint(map, var, k + range.offset, edge, out);
+        }
+    }
+}
+
+// Every breakpoint candidate for `var_id`, in the order the cone reaches them,
+// appended to `out` (not yet deduplicated).
+void breakpoint_jump_candidates(const Model& model, int32_t var_id, const Variable& var, double x0,
+                                std::vector<double>& out) {
     if (!(var.lb < var.ub)) {
         return;  // pinned: no jump exists
     }
-    // Visited marks by epoch, so a walk costs its own size and never a clear of
-    // the whole array. Grown to the largest model this thread has walked.
-    thread_local std::vector<uint32_t> stamp;
-    thread_local uint32_t epoch = 0;
-    thread_local std::vector<int32_t> queue;
-    if (stamp.size() < model.num_nodes()) {
-        stamp.resize(model.num_nodes(), 0);
-    }
-    if (++epoch == 0) {
-        std::fill(stamp.begin(), stamp.end(), 0);
-        epoch = 1;
-    }
-    queue.clear();
-    for (const int32_t dep : model.dependents(var_id)) {
-        if (stamp[static_cast<size_t>(dep)] != epoch) {
-            stamp[static_cast<size_t>(dep)] = epoch;
-            queue.push_back(dep);
-        }
-    }
-    // `queue` grows while it is walked, so it is indexed rather than iterated.
-    for (size_t head = 0; head < queue.size(); ++head) {
-        const ExprNode& nd = model.nodes()[static_cast<size_t>(queue[head])];
+    thread_local ConeSlopes cone;
+    cone.build(model, var_id);
+    for (const int32_t nid : cone.cone()) {
+        const ExprNode& nd = model.nodes()[static_cast<size_t>(nid)];
         if (is_breakpoint_op(nd.op)) {
-            node_breakpoints(model, nd, var_id, var, x0, consider);
-            continue;  // piecewise constant above here: nothing affine to follow
+            node_breakpoints(model, cone, nd, var, x0, out);
         }
-        if (!affine_passthrough(model, nd)) {
-            continue;
-        }
-        for (const int32_t parent : model.parents(nd.id)) {
-            if (stamp[static_cast<size_t>(parent)] != epoch) {
-                stamp[static_cast<size_t>(parent)] = epoch;
-                queue.push_back(parent);
-            }
+    }
+}
+
+// Offer `cands` to `consider` in their order, skipping any value offered earlier
+// in this list or already in `seen` (the Int/Float path's candidates). Sorting
+// copies rather than stamping values: a double has no index to stamp, and the
+// lists are a few hundred long at most.
+template <class Consider>
+void consider_unique(std::vector<double>& cands, std::vector<double>& seen, Consider&& consider) {
+    thread_local std::vector<size_t> order;
+    thread_local std::vector<uint8_t> keep;
+    std::sort(seen.begin(), seen.end());
+    order.resize(cands.size());
+    for (size_t i = 0; i < order.size(); ++i) {
+        order[i] = i;
+    }
+    std::stable_sort(order.begin(), order.end(),
+                     [&cands](size_t a, size_t b) { return cands[a] < cands[b]; });
+    keep.assign(cands.size(), 0);
+    for (size_t i = 0; i < order.size(); ++i) {
+        const double v = cands[order[i]];
+        const bool first = i == 0 || cands[order[i - 1]] != v;
+        keep[order[i]] =
+            static_cast<uint8_t>(first && !std::binary_search(seen.begin(), seen.end(), v));
+    }
+    for (size_t i = 0; i < cands.size(); ++i) {
+        if (keep[i] != 0) {
+            consider(cands[i]);
         }
     }
 }
@@ -691,13 +950,28 @@ JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, in
             best_j = j;
         }
     };
+    // A model with a breakpoint node (#186) records what the Int/Float path
+    // offered, so its breakpoint candidates can skip those values; every other
+    // model pays one predictable branch per candidate and records nothing.
+    const bool breakpoints = model.has_breakpoint_nodes();
+    thread_local std::vector<double> seen;
+    thread_local std::vector<double> extra;
+    seen.clear();
+    extra.clear();
+    auto consider_seen = [&](double j) {
+        if (breakpoints) {
+            seen.push_back(j);
+        }
+        consider(j);
+    };
 
     if (var.type == VarType::Bool) {
         consider(1.0 - x0);
     } else if (var.type == VarType::Int) {
-        const bool complete = int_jump_candidates(var, x0, consider);
-        if (!complete && model.has_breakpoint_nodes()) {
-            breakpoint_jump_candidates(model, var_id, var, x0, consider);
+        const bool complete = int_jump_candidates(var, x0, consider_seen);
+        if (!complete && breakpoints) {
+            breakpoint_jump_candidates(model, var_id, var, x0, extra);
+            consider_unique(extra, seen, consider);
         }
     } else if (var.type == VarType::Float) {
         // The probe is a LAST RESORT and must stay one. Firing it whenever a
@@ -707,10 +981,11 @@ JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, in
         // diversification never fires. Hence `allow_escape_probe`, which the
         // search loop arms only once it is genuinely stuck.
         const bool gradient_usable =
-            float_jump_candidates(model, var_id, var, x0, linear, consider);
+            float_jump_candidates(model, var_id, var, x0, linear, consider_seen);
         // After the Newton candidates, so those keep winning a tie (#186).
-        if (model.has_breakpoint_nodes()) {
-            breakpoint_jump_candidates(model, var_id, var, x0, consider);
+        if (breakpoints) {
+            breakpoint_jump_candidates(model, var_id, var, x0, extra);
+            consider_unique(extra, seen, consider);
         }
         if (allow_escape_probe && !gradient_usable && best_f >= 0.0) {
             float_escape_candidates(var, x0, consider);

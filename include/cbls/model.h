@@ -74,6 +74,13 @@ struct ElementTable {
     int32_t rows = 0;
     int32_t cols = 0;
     std::vector<double> values;
+    /// Representative row and column indices, computed once at build: for each
+    /// distinct value in the table (up to 32 of them; past that, only the
+    /// smallest and the largest), the row and column of its first cell. They
+    /// are the index candidates `compute_var_jump` offers when a table is too
+    /// large to offer every index.
+    std::vector<int32_t> row_reps;
+    std::vector<int32_t> col_reps;
 };
 
 /// Convert variable handle (negative, from int_var/float_var/etc.)
@@ -322,19 +329,19 @@ public:
     /// `table[index]`: a numeric table looked up by a decision (#186), e.g. a
     /// cost by vehicle type where the type is an Int variable.
     ///
-    /// The index is read the way `at()` reads its index: the child's value
-    /// truncated toward zero. An index outside `[0, table.size())` -- or a
-    /// non-finite one -- reads 0.0, which is also `at()`'s rule for a position
-    /// past the List. A model that must never read outside the table bounds
-    /// its index variable to `[0, n-1]`.
+    /// The index may be any scalar expression; its value is truncated toward
+    /// zero, which is how `at()` reads its index. An index outside
+    /// `[0, table.size())` -- or a non-finite one -- reads 0.0, which is also
+    /// `at()`'s rule for a position past the List. A model that must never read
+    /// outside the table bounds its index variable to `[0, n-1]`.
     ///
     /// The table is COPIED into the model. It is ordinary data, so the node is
     /// serialisable (`.cbls` writes the table). Local derivative 0 for the
-    /// index; FJ offers the index values as the index variable's jump
-    /// candidates instead (see `compute_var_jump`).
+    /// index; FJ offers index values as the index variable's jump candidates
+    /// instead (see `compute_var_jump`).
     ///
-    /// Throws `std::invalid_argument` on an empty table or a List/Set index,
-    /// and `std::out_of_range` on a handle naming nothing.
+    /// Throws `std::invalid_argument` on an empty table, a non-finite entry or
+    /// a List/Set index, and `std::out_of_range` on a handle naming nothing.
     int32_t element(const std::vector<double>& table, int32_t index);
     /// `table[row][col]`, with both indices read as in the one-index form and
     /// 0.0 when EITHER is out of range. `table` must be rectangular and
@@ -349,8 +356,8 @@ public:
     /// NaN stays NaN).
     ///
     /// Local derivative 0, so a Newton step sees nothing through them. FJ
-    /// offers the plateau edges instead when the argument is affine in the
-    /// variable (see `compute_var_jump`).
+    /// offers the plateau edges instead (see `compute_var_jump`). Throws
+    /// `std::invalid_argument` on a List/Set argument.
     int32_t ceil_expr(int32_t x);
     int32_t floor_expr(int32_t x);
     int32_t round_expr(int32_t x);
@@ -939,6 +946,7 @@ private:
                                                               const std::vector<int32_t>& extra,
                                                               const char* what) const;
     int32_t alloc_node_over_refs(NodeOp op, const std::vector<ChildRef>& kids);
+    int32_t push_element(ElementTable tbl, const std::vector<ChildRef>& kids);
 };
 
 }  // namespace cbls

@@ -558,9 +558,77 @@ ChildRef Model::wrap_scalar(int32_t handle, const char* what) const {
     return ref;
 }
 
+namespace {
+
+// How many distinct values an Element table may have and still offer one
+// representative index per value (#186); above it, the argmin and the argmax.
+// A representative is a jump candidate `compute_var_jump` offers for an index
+// whose table is too large to enumerate, so it is the index set that reaches
+// every VALUE the table holds -- which is what an index is chosen for. 32 is
+// the Int grid's point count (`kJumpGridPoints` in src/feasibility_jump.cpp):
+// the same per-variable probe budget the grid already spends.
+constexpr size_t kElementDistinctValues = 32;
+
+void add_unique(std::vector<int32_t>& out, int32_t v) {
+    if (std::find(out.begin(), out.end(), v) == out.end()) {
+        out.push_back(v);
+    }
+}
+
+// Fill `tbl.row_reps` / `tbl.col_reps`: for each distinct value (or, past the
+// cap, for the smallest and the largest), the row and the column of its first
+// cell in row-major order. O(n log n) once, at build.
+void compute_representatives(ElementTable& tbl) {
+    std::vector<double> distinct = tbl.values;
+    std::sort(distinct.begin(), distinct.end());
+    distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
+    std::vector<double> wanted;
+    if (distinct.size() <= kElementDistinctValues) {
+        wanted = distinct;
+    } else {
+        wanted = {distinct.front(), distinct.back()};
+    }
+    for (const double w : wanted) {
+        const auto it = std::find(tbl.values.begin(), tbl.values.end(), w);
+        const auto cell = static_cast<int32_t>(it - tbl.values.begin());
+        add_unique(tbl.row_reps, cell / tbl.cols);
+        add_unique(tbl.col_reps, cell % tbl.cols);
+    }
+}
+
+void require_finite_table(const std::vector<double>& values) {
+    // A non-finite entry makes every delta through it inf - inf somewhere, and
+    // `.cbls` writes it as null, which the reader then refuses.
+    if (!std::all_of(values.begin(), values.end(), [](double v) { return std::isfinite(v); })) {
+        throw std::invalid_argument("element: table entries must be finite");
+    }
+}
+
+}  // namespace
+
+// Register `tbl` and make the Element node over `kids`. The table goes into the
+// side table first so the node never names a missing one, and comes back out if
+// the node cannot be made, so a failed call leaves no orphan behind.
+int32_t Model::push_element(ElementTable tbl, const std::vector<ChildRef>& kids) {
+    ModelStructure& st = mut();
+    require_finite_table(tbl.values);
+    compute_representatives(tbl);
+    st.element_tables.push_back(std::move(tbl));
+    const auto table_id = static_cast<int32_t>(st.element_tables.size() - 1);
+    int32_t nid = -1;
+    try {
+        nid = alloc_node_over_refs(NodeOp::Element, kids);
+    } catch (...) {
+        st.element_tables.pop_back();
+        throw;
+    }
+    st.nodes[nid].lambda_func_id = table_id;
+    st.has_breakpoint_nodes = true;
+    return nid;
+}
+
 int32_t Model::element(const std::vector<double>& table, int32_t index) {
     require_buildable("element");
-    ModelStructure& st = mut();
     if (table.empty()) {
         throw std::invalid_argument("element: table must not be empty");
     }
@@ -572,17 +640,11 @@ int32_t Model::element(const std::vector<double>& table, int32_t index) {
     tbl.rows = static_cast<int32_t>(table.size());
     tbl.cols = 1;
     tbl.values = table;
-    st.element_tables.push_back(std::move(tbl));
-    const auto table_id = static_cast<int32_t>(st.element_tables.size() - 1);
-    const int32_t nid = alloc_node(NodeOp::Element, {idx});
-    st.nodes[nid].lambda_func_id = table_id;
-    st.has_breakpoint_nodes = true;
-    return nid;
+    return push_element(std::move(tbl), {idx});
 }
 
 int32_t Model::element(const std::vector<std::vector<double>>& table, int32_t row, int32_t col) {
     require_buildable("element");
-    ModelStructure& st = mut();
     if (table.empty() || table.front().empty()) {
         throw std::invalid_argument("element: table must be non-empty in both dimensions");
     }
@@ -605,31 +667,26 @@ int32_t Model::element(const std::vector<std::vector<double>>& table, int32_t ro
     for (const auto& rw : table) {
         tbl.values.insert(tbl.values.end(), rw.begin(), rw.end());
     }
-    st.element_tables.push_back(std::move(tbl));
-    const auto table_id = static_cast<int32_t>(st.element_tables.size() - 1);
-    const int32_t nid = alloc_node(NodeOp::Element, {r, c});
-    st.nodes[nid].lambda_func_id = table_id;
-    st.has_breakpoint_nodes = true;
-    return nid;
+    return push_element(std::move(tbl), {r, c});
 }
 
 int32_t Model::ceil_expr(int32_t x) {
     require_buildable("ceil_expr");
-    const int32_t nid = alloc_node(NodeOp::Ceil, {wrap(x)});
+    const int32_t nid = alloc_node(NodeOp::Ceil, {wrap_scalar(x, "ceil_expr")});
     mut().has_breakpoint_nodes = true;
     return nid;
 }
 
 int32_t Model::floor_expr(int32_t x) {
     require_buildable("floor_expr");
-    const int32_t nid = alloc_node(NodeOp::Floor, {wrap(x)});
+    const int32_t nid = alloc_node(NodeOp::Floor, {wrap_scalar(x, "floor_expr")});
     mut().has_breakpoint_nodes = true;
     return nid;
 }
 
 int32_t Model::round_expr(int32_t x) {
     require_buildable("round_expr");
-    const int32_t nid = alloc_node(NodeOp::Round, {wrap(x)});
+    const int32_t nid = alloc_node(NodeOp::Round, {wrap_scalar(x, "round_expr")});
     mut().has_breakpoint_nodes = true;
     return nid;
 }
@@ -667,9 +724,17 @@ int32_t Model::lambda_sum(int32_t list_var_id, LambdaExtraFunc func,
         throw std::invalid_argument("lambda_sum: func must not be empty");
     }
     const std::vector<ChildRef> kids = lambda_extra_children(list_var_id, extra, "lambda_sum");
+    // Registered before the node, and popped if the node cannot be made, as
+    // `push_element` does.
     st.lambda_extra_funcs.push_back(std::move(func));
     const auto func_id = static_cast<int32_t>(st.lambda_extra_funcs.size() - 1);
-    const int32_t nid = alloc_node_over_refs(NodeOp::LambdaExtra, kids);
+    int32_t nid = -1;
+    try {
+        nid = alloc_node_over_refs(NodeOp::LambdaExtra, kids);
+    } catch (...) {
+        st.lambda_extra_funcs.pop_back();
+        throw;
+    }
     st.nodes[nid].lambda_func_id = func_id;
     return nid;
 }
@@ -688,7 +753,14 @@ int32_t Model::pair_lambda_sum(int32_t list_var_id, PairLambdaExtraFunc func, Pa
     st.pair_lambda_extra_funcs.push_back(std::move(func));
     st.pair_lambda_extra_modes.push_back(mode);
     const auto func_id = static_cast<int32_t>(st.pair_lambda_extra_funcs.size() - 1);
-    const int32_t nid = alloc_node_over_refs(NodeOp::PairLambdaExtra, kids);
+    int32_t nid = -1;
+    try {
+        nid = alloc_node_over_refs(NodeOp::PairLambdaExtra, kids);
+    } catch (...) {
+        st.pair_lambda_extra_funcs.pop_back();
+        st.pair_lambda_extra_modes.pop_back();
+        throw;
+    }
     st.nodes[nid].lambda_func_id = func_id;
     return nid;
 }
