@@ -348,9 +348,10 @@ double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
 //
 // Every other walk keeps the values consistent with a drifted Sum:
 //
-//   - a plain `Commit` (`delta_evaluate`) re-sums, checked, every incremental
-//     Sum in its cone -- a snap, but only of rows the caller moved and so
-//     re-reads;
+//   - a plain `Commit` (`delta_evaluate`) re-sums every incremental Sum in
+//     its cone and leaves it untracked -- a snap, but only of rows the caller
+//     moved and so re-reads; the next FJ commit to update the Sum re-sums it
+//     again, checked, first;
 //   - a `Probe` stashes every incremental Sum in its cone, and, when it knows
 //     the old value (`probe_scalar_move`), applies the same updates the commit
 //     would, so it scores exactly what the commit would produce -- including 0
@@ -363,9 +364,10 @@ double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
 // paid by the term, plus a parents scan for each dirty node term. It wins when
 // rows are long and a move touches one term of each, which is the MIP regime.
 // It loses on short rows, where the checks are a larger share of a small
-// re-sum, and where a Sum is mostly re-summed by walks that are not FJ
-// commits -- Novelty Jump's legs, the structural batch, the inner solver --
-// which pay the checked re-sum's TwoSum per term and never collect.
+// re-sum, and where walks that are not FJ commits -- Novelty Jump's legs, the
+// structural batch, the inner solver -- alternate with FJ commits on the same
+// Sum: each such walk leaves it untracked, so the next commit pays a checked
+// re-sum (a TwoSum per term) where the plain walk paid a plain one.
 namespace {
 
 thread_local IncrementalSumCounters inc_sum_counts;
@@ -630,7 +632,17 @@ private:
                     return model_.node_values()[nid];
                 }
                 ++inc_sum_counts.resummed;
-                return checked_resum(model_, node, st);
+                if (push_) {
+                    return checked_resum(model_, node, st);
+                }
+                // A walk without pushes -- Novelty Jump's legs, the inner
+                // solver, the structural batch -- re-sums plainly and leaves
+                // the Sum untracked, as full_evaluate does: the rounding check
+                // is paid only by the FJ commit that next updates the Sum, and
+                // never by a regime that re-sums on every walk.
+                st.tracked = 0;
+                st.drifting = 0;
+                return evaluate(node, model_);
             }
         }
         ++inc_sum_counts.resummed;

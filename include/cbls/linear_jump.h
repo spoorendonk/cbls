@@ -29,10 +29,12 @@ class Model;
 /// **Exact in the arithmetic, not bit-identical.** `p + r D` is not the row the
 /// DAG would re-sum, so a score can differ from `weighted_violation_delta` in its
 /// last bits (the equivalence tests pin a tight relative tolerance). Nothing
-/// accumulates: a committed jump still goes through the DAG walk
-/// (`commit_scalar_move`, whose incremental Sums are exact by construction,
-/// #177), so node values stay exactly the DAG's and every prepare reads them
-/// fresh.
+/// accumulates here: a committed jump still goes through the DAG walk
+/// (`commit_scalar_move`), and every prepare reads the node values fresh. Those
+/// values are the DAG's own, which since #188 means an incremental Sum's: moved
+/// by its terms' changes and, on fractional data, up to its drift bound off the
+/// real sum until the batch's end re-sums it. The scorer reads them as they
+/// are, which is what the commit it is scoring would move.
 ///
 /// What is NOT changed: the candidate set, the selection rule and its first-seen
 /// tie-breaking (`compute_var_jump`), and the per-constraint differencing of

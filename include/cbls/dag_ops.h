@@ -76,7 +76,8 @@ constexpr uint32_t kIncSumPeriod = 64;
 /// real sum of its stored terms, and adds those roundings -- exactly, as TwoSum
 /// computes them -- to the Sum's `IncSumState::drift_bound`. After
 /// `kIncSumPeriod` inexact updates the Sum is re-summed instead, as it is where
-/// a value is not finite, and on its first commit after a `full_evaluate`.
+/// a value is not finite, and on its first commit after a `full_evaluate` or a
+/// plain `delta_evaluate` over it -- both re-sum without the check.
 ///
 /// Precondition, stronger than `delta_evaluate`'s: every node value must
 /// describe the assignment apart from `var_id`'s change. A variable written
