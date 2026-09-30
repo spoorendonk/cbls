@@ -145,3 +145,31 @@ against 11.75-11.85, shiporig and eq6_1 within noise.
 
 The whole pre-registered A/B is therefore re-run, unchanged, with `bf4979f`
 against `bfe9826`. That run decides the landing rule. Both runs are reported.
+
+## The deciding A/B: `bf4979f` -> `bfe9826`
+
+Run 2026-09-30, 14:23-16:00. Pairs started at a 1-minute load of 0.81-1.52
+(median 1.02); a pair waits for a load below 1.5, and the second run of a pair
+may start just above it. Binary sha256 prefixes:
+
+| binary | `bf4979f` | `bfe9826` |
+|---|---|---|
+| `cbls_mipfeas` | `b793a538` | `9f435c21` |
+| `cbls_minlplib` | `d4e71580` | `1c1ccaf7` |
+
+MIPfeas, per instance (the mean of seeds 1 and 2):
+
+| subset | n | iterations, geomean | 95% CI | up / down (sign p) | quality better / worse / tied (sign p) |
+|---|---|---|---|---|---|
+| all | 44 | 1.082x | [1.038, 1.127] | 31 / 12 (0.005) | 8 / 6 / 30 (0.79) |
+| fractional | 26 | 1.124x | [1.053, 1.199] | 23 / 3 (9e-5) | 8 / 4 / 14 (0.39) |
+| integral | 18 | 1.024x | [1.004, 1.044] | 8 / 9 (1.0) | 0 / 2 / 16 (0.50) |
+
+Feasible runs went from 31 to 32: neos-4300652-rahue at seed 1.
+
+MINLPLib, 50 instances: feasible 48 -> 48. The objective was better on 1,
+worse on 2 and the same on 47 (sign p = 1).
+
+**Landing rule met.** The fractional interval lies above 1. The integral
+interval reaches 1; it lies above it, in fact. Neither quality sign test is
+significantly worse, and MINLPLib shows no regression.

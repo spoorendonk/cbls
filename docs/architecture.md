@@ -128,8 +128,8 @@ own `node_values()` array, read through `Model::node_value(id)` (#157). That is
 what lets the whole node array sit in the immutable structure portfolio replicas
 share — a `value` field there would be one worker's search state in storage every
 worker reads. `ExprNode` is 32 bytes as a result, and the per-worker cost of a
-node is the 8-byte value plus #177's 1-byte exact-Sum state (~4.3 MB on the
-4.30M-node neos-5114902-kasavu).
+node is its 8-byte value. Each incremental Sum (#188, below) adds 16 bytes
+of per-model state, which is roughly one per row on a MIP.
 
 **Supported operations:**
 
@@ -184,50 +184,97 @@ row of the variable's column is a linear comparison, where `LinearJumpScorer`
 jump goes through `commit_scalar_move` -- `delta_evaluate`'s walk, also told the
 variable's old value (below).
 
-**Exact incremental Sum** (#177). A committed FJ move changes one term of each
-row it touches, and re-summing a row costs its whole length -- 36% of swath3's
+**Incremental Sum** (#177, #188). A committed FJ move changes one term of each
+row it touches, and re-summing a row costs its whole length: 36% of swath3's
 run at `634001b`, where a committed dirty Sum averaged 1315 terms.
-`commit_scalar_move` therefore moves an eligible `Sum` by its changed terms'
-differences instead, and only where that is **exact**, so node values stay the
-re-sum's to the bit and nothing downstream -- probes, `LinearJumpScorer`, the
-violated-row bookkeeping, trajectories -- can tell:
+`commit_scalar_move` therefore moves each *incremental* `Sum` by the
+differences of its changed terms instead of re-summing it.
 
-- *Eligible* (`ExprNode::kExactSum`, set at `close()`): every term is a Bool/Int
-  variable, an integral literal, or a `Neg`/`Prod` of those -- the shapes
-  `mps_to_model` writes for a row with integral coefficients -- none is a Sum,
-  and none appears twice.
-- *Exact* (`Model::sum_exact_state`, per model, 1 byte per node): the Sum was
-  last written by a checked re-sum or by checked updates, and every term is an
-  integer of magnitude at most 2^52 / (term count). Then every partial sum is
-  an integer below 2^52 and each addition is exact in any order. A term that
-  fails the check (fractional, too large, NaN, inf) makes the Sum re-sum at its
-  turn; `full_evaluate` clears the state.
+- *Incremental* (`ExprNode::kIncSum`, set at `close()` by
+  `Model::classify_incremental_sums`). No term is a Sum, no term appears
+  twice, and the Sum is read only by top-level comparisons
+  (`Leq`/`Geq`/`Lt`/`Gt`/`Eq` with no parent) against a variable or a Const.
+  That covers every MPS row and the objective row. Because a row reads its
+  Sum directly, FJ can bound what drift does to the row. A Sum under any other
+  node keeps the plain re-sum. Each Sum's per-model state (`IncSumState`,
+  16 bytes) is found through its slot in `lambda_func_id`.
+- *Exactness, per update*. TwoSum checks `new - old` and the add.
+  - An exact update adds no drift. On integral data within 2^53 every update
+    is exact, so the values are the re-sum's to the bit, as under #177's
+    exact-only rule.
+  - An inexact update adds its two rounding errors, computed exactly, to the
+    Sum's `drift_bound`.
+  - A checked re-sum sets the bound to its own rounding errors, again
+    computed exactly. That is 0 when the re-sum was exact and never more than
+    gamma_{n-1} * sum(|t_i|).
 
-Only FJ's committed moves (`update_var`) pass old values; every other walk
-re-sums, checking eligible Sums as it goes. Fixed-iteration runs of `634001b`,
-of main at `ca7ef76` (which adds #176 and #179) and of the change end on
-identical assignments on neos-860300, swath3, rail01, cbs-cta, eilA101-2,
-supportcase33 and neos-957323. Measured at 20 s, one thread, seeds 1 and 2, on
-#177's pre-registered 44-instance MIPfeas roster (`634001b` -> `e0cbcbf`,
-built before the branch was rebased onto main, serial): GLS iterations 1.045x
-per instance (95% CI [1.019, 1.071], 33 of 44 up), 1.073x on the instances
-whose commit cost is mostly integral rows and 1.026x on the rest, up to 1.47x
-(n3div36) and 1.24x (neos-860300); feasibility unchanged (31/88 runs);
-MINLPLib unchanged within single-seed noise.
+  The bound therefore always bounds |value - real sum of the stored terms|.
+  A Sum is *drifting* once it has been updated with a nonzero bound. That
+  covers inexact updates, and also a re-sum's rounding carried forward by
+  exact ones, which a re-sum of the new terms would not make.
+- *Containment*.
+  - A Sum re-sums after `kIncSumPeriod` = 64 inexact updates. The period was
+    chosen on held-out instances (`docs/prereg-188.md`).
+  - A walk that does not know the old values (Novelty Jump's legs, the inner
+    solver, the structural batch) re-sums plainly and leaves the Sum
+    untracked. So does `full_evaluate`. The next commit then re-sums it,
+    checked.
+  - A Probe applies the commit's own updates and stashes each Sum as it first
+    writes it. The Rollback restores the stashed values to the bit.
+  - A model with no incremental Sum and no custom node takes the pre-#177
+    walk verbatim.
 
-The instances that lose -- cbs-cta 0.93x, eilA101-2 0.94x, supportcase33
-0.94x, neos-957323 0.95x in that A/B -- lose to code layout, not to this
-change's work. Timed at a fixed iteration count against main (`ca7ef76` ->
-`489c1f3`, median of three, default Release build): 0.918x, 0.874x, 0.937x,
-0.931x. Built with `-falign-functions=64`, the same pairs time 1.001x, 1.037x,
-1.021x, 1.009x, while neos-860300's gain holds either way (1.070x / 1.073x).
-The change grows `update_var` by a few bytes, which moves the functions after
-it in `feasibility_jump.cpp` -- `bump_weights_and_requeue`, 63% of cbs-cta's
-run, goes from a 64-byte boundary to +16. The build does not set that flag,
-so the shipped binary carries the layout loss. Fractional rows are untouched, which is where most of swath3's and
-rail01's commit cost is; the drifting alternative that covered them was built,
-measured and reverted on #177 -- the guarantee that a row violated only by
-drift is never GLS-bumped cost it its gain -- and is tracked in #188.
+FeasibilityJump acts on no verdict that drift could have flipped:
+
+- `update_var` notes any row whose residual lies within its Sum's bound, plus
+  the comparison's own rounding, of kTol, on either side.
+- At a local minimum only the noted rows' Sums are re-summed, before any GLS
+  bump or Feasible verdict. A row violated only by drift leaves V instead of
+  being bumped. A row satisfied only by drift enters V and is bumped with the
+  rest. If either happened, the iteration samples again.
+- Every Feasible verdict (the loop's, the batch limit's, Novelty Jump's) and
+  every batch end first re-ground all drifted Sums (`reground_drifted_rows`).
+  No drift leaves a batch, and every Feasible verdict is read off re-summed
+  rows.
+- On integral data nothing is ever noted, so the gate costs one empty-list
+  test.
+
+**What was measured.**
+
+- *Trajectories.* At a fixed iteration count, main `bf4979f` and `bfe9826` end
+  on identical final assignments on neos-860300 and rail01. rail01's
+  objective took 4,561 inexact updates in that run.
+- *How often the gate fires.* Across #177's 44-instance roster (50,000 fixed
+  iterations, seed 1), 1,600 of 576,711 local minima were gated (0.28%), on 12
+  instances. The highest share is swath3, 1,111 of 6,714. Its big-M rows sit
+  at equality, and it still runs 1.32x the iterations below.
+- *Iterations.* 20 s, one thread, seeds 1 and 2, serial, one pair per instance
+  and seed, 1-minute load 0.81-1.52 (median 1.02). #177's pre-registered
+  roster, `bf4979f` -> `bfe9826`, per instance:
+
+| subset | instances | GLS iterations, geomean | 95% CI | up / down |
+|---|---|---|---|---|
+| all | 44 | 1.082x | [1.038, 1.127] | 31 / 12 |
+| fractional | 26 | 1.124x | [1.053, 1.199] | 23 / 3 |
+| integral | 18 | 1.024x | [1.004, 1.044] | 8 / 9 |
+
+- *Largest gains:* b1c1s1 1.67x, rmatr200-p5 1.53x, savsched1 1.36x, swath3
+  1.32x, s100 and turama 1.27x, cost266-UUE 1.26x.
+- *Losses:* neos-4300652-rahue 0.70x (at seed 1 it now reaches feasibility and
+  spends the run in objective search), mushroom-best 0.90x, ns1116954 0.95x.
+- *Quality*, by #177's per-instance rule: 8 better, 6 worse, 30 tied
+  (sign p = 0.79). Feasible runs 31 -> 32.
+- *MINLPLib*, 50 instances, 20 s, seed 42: feasible 48 -> 48, objective 1
+  better, 2 worse, 47 the same.
+
+An earlier head of the same design, which a MINLPLib per-iteration slowdown
+cost 7 worse objectives there, is recorded with its fixes in
+`docs/prereg-188.md`.
+
+The instances that lost in #177's exact-only A/B (cbs-cta, eilA101-2,
+supportcase33, neos-957323) lost to code layout, not to that change's work.
+Timed at a fixed iteration count under `-falign-functions=64`, the losses
+disappeared while neos-860300's gain held. The build does not set that flag.
 
 ### Reverse-Mode Automatic Differentiation
 
@@ -520,7 +567,9 @@ an edit to stay O(edits) (#172). It does not, for any lambda node: plain
 handed #172's positional-edit journal — and an incremental floating-point sum
 reopens the drift problem #177 was built to avoid (a running sum no longer
 matches a re-sum bit for bit, so a probe's two legs can disagree near a row's
-bound). Making all four lambda forms incremental is its own issue, #189.
+bound). #188 contains that drift for a `Sum` that a row reads directly, with a
+per-Sum bound and a local-minimum gate, and none of that machinery covers a
+lambda node. Making all four lambda forms incremental is its own issue, #189.
 
 The two lambda forms cannot be written to `.cbls` — the functor takes
 continuous values and has no finite table — so `save_model` refuses a model
