@@ -39,7 +39,7 @@ m.close();
 ## Features
 
 - **Variable types**: Bool, Int, Float, List (a permutation, or an ordered subset of a universe with a length window, optionally partitioned across several Lists), Set
-- **Nonlinear expressions**: arithmetic, trig, exp/log, comparisons, lambda functions
+- **Nonlinear expressions**: arithmetic, trig, exp/log, comparisons, ceil/floor/round, table lookup by an Int expression (`element`), lambda functions — including ones that read other decisions (`lambda_sum(list, f, extra)`)
 - **ViolationLS** guided local search (Davies et al. CPAIOR 2024): single-variable Feasibility Jump + compound-move Novelty Jump, GLS weight dynamics, objective-as-soft-constraint
 - **Feasibility Jump** construction heuristic (greedy violation reduction)
 - **Gradient-based intensification**: Newton steps and backtracking line search on continuous variables

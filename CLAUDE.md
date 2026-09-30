@@ -189,7 +189,7 @@ The hooks live in **`.githooks/`, tracked in this repo** — that directory is t
   exemptions. That grep prints **six** lines, not five: one is `mps_reader.cpp`
   naming the directive in prose in a comment, not applying it. Count the
   directives, not the matches. Four are `readability-function-cognitive-complexity`: on
-  `src/dag.cpp`'s two 29-case `NodeOp` dispatch tables, where the score counts a
+  `src/dag.cpp`'s two 35-case `NodeOp` dispatch tables, where the score counts a
   table a human reads as one unit and any split would have to stay inlinable on
   the delta-evaluation and reverse-mode-AD hot paths; and on the two
   `src/io/mps_reader.cpp` functions that the vendored port-the-diff-upstream
@@ -632,7 +632,7 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 
 1. **Model building** (`include/cbls/model.h`, `include/cbls/expr.h`) — Declare typed variables (Bool, Int, Float, List, Set), build expressions via operator overloading, add constraints, set objective, call `close()` which topologically sorts the DAG.
 
-2. **Expression DAG** (`include/cbls/dag.h`, `src/dag.cpp`, `src/dag_ops.cpp`) — Variables use negative handles `-(id+1)`, nodes use non-negative `id`. 29 `NodeOp` operation types. Two evaluation modes:
+2. **Expression DAG** (`include/cbls/dag.h`, `src/dag.cpp`, `src/dag_ops.cpp`) — Variables use negative handles `-(id+1)`, nodes use non-negative `id`. 35 `NodeOp` operation types. Two evaluation modes:
    - `full_evaluate`: evaluate all nodes in topo order (initialization)
    - `delta_evaluate`: BFS dirty-marking from changed variables, recompute only affected nodes (moves)
    - Reverse-mode AD via `compute_all_partials` for the continuous (Newton) jump-value engine
@@ -874,7 +874,7 @@ nothing:
    entry regardless of its derivative. Its comment says the whitelist is
    intentional.
 2. `local_derivative` (`src/dag.cpp`) returns `0.0` for *every* structural op —
-   `At`, `Count`, `Lambda`, `PairLambda` — so there is no AD signal to build a
+   `At`, `Count`, `Lambda`, `PairLambda`, `LambdaExtra`, `PairLambdaExtra` — so there is no AD signal to build a
    jump value from either. (`setcover`'s `Set` model reads through `Lambda`.)
 
 What is left is `set_moves`/`list_moves` drawing uniformly at random, where the

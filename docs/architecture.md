@@ -140,9 +140,14 @@ node is the 8-byte value plus #177's 1-byte exact-Sum state (~4.3 MB on the
 | Trigonometric| Sin, Cos, Tan                                        |
 | Exponential  | Exp, Log, Sqrt                                       |
 | Conditional  | If                                                   |
-| Collection   | At (indexing), Count, Lambda, PairLambda (functional aggregation¹) |
+| Rounding     | Ceil, Floor, Round (#186³)                           |
+| Table lookup | Element: `table[i]` or `table[i][j]`, indices Int expressions (#186³) |
+| Collection   | At (indexing), Count, Lambda, PairLambda (functional aggregation¹), LambdaExtra, PairLambdaExtra (the same, with a functor that also reads scalar `extra` children, #186³) |
 | Comparison   | Leq, Eq, Geq, Neq, Lt, Gt                           |
 | User code    | Custom (a `CustomInvariant`², #166)                  |
+
+35 enumerators in all. The six #186 ones are appended after `Custom`, so every
+older enumerator keeps its value.
 
 Comparison nodes evaluate to a **violation measure** (0 when satisfied,
 positive when violated):
@@ -245,7 +250,10 @@ only the nonzero ones, as `(var_id, partial)` pairs:
    `CustomInvariant::partial`; the nested call throws `std::logic_error`.
 
 `local_derivative` computes per-operation partial derivatives (chain rule
-components). Discrete operations (At, Count, Lambda, PairLambda) return 0. A
+components). Discrete operations (At, Count, Lambda, PairLambda, LambdaExtra,
+PairLambdaExtra) and the piecewise-constant ones (Element, Ceil, Floor, Round)
+return 0 — FJ gets the latter's plateaus from their breakpoints instead (see
+[`compute_var_jump`](#compute_var_jump)). A
 `Custom` node asks its invariant's `partial`, whose NaN *or infinity* ("unknown")
 reads as 0 here — the same answer, so a custom node with no derivative is exactly
 as differentiable as a structural op. An infinity has to be folded too, not just
@@ -491,6 +499,28 @@ exposed, and without it no Python caller can make such a node. (`NodeOp::Custom`
 is also absent from the binding enum — but so is `PairLambda`, so absence there is
 not by itself the signal.)
 
+³ **Element, rounding, and lambdas that read other decisions (#186).** Three
+modelling needs of route-network models (#182) that used to take a workaround:
+
+| Op | Builder | Semantics | Workaround it replaces |
+|----|---------|-----------|------------------------|
+| `Element` | `element(table, i)`, `element(table2d, i, j)` | `table[trunc(i)]`; 0.0 when an index is outside the table or non-finite — `At`'s rule for a position past its List. The table is copied into `ModelStructure::element_tables` and written to `.cbls` as data | an if-chain over every index value |
+| `Ceil`/`Floor`/`Round` | `ceil_expr`, `floor_expr`, `round_expr` (`ceil`/`floor`/`round` on `Expr`, and `math.ceil`/`math.floor`/`round` in Python) | `std::ceil`/`std::floor`/`std::round`; `round` takes a half-way value away from zero. No tolerance | an auxiliary Int `n` and a row such as `headway * n >= cycle` |
+| `LambdaExtra` | `lambda_sum(list, f, extra)` | `sum_{e in list} f(e, [value(x) for x in extra])` | one lambda per value of the decision, behind a selector |
+| `PairLambdaExtra` | `pair_lambda_sum(list, f, mode, extra)` | the plain pair sum's open or cyclic chain, `f(a, b, extras)`; no head/tail terms | as above |
+
+The `extra` handles are children of the node, so a change to one re-evaluates it;
+any list edit does too. Both re-sum the list, exactly what a plain `Lambda` does
+on an edit. The two lambda forms cannot be written to `.cbls` — the functor takes
+continuous values and has no finite table — so `save_model` refuses a model
+holding one before it opens the stream, the same refusal a custom node gets. The
+builders refuse a List/Set handle where a scalar is read (an index, an extra),
+and an empty or ragged table.
+
+All six have local derivative 0 and are not affine, so a row over one is never
+scored by `LinearJumpScorer`. What FJ gets instead is their breakpoints — see
+[`compute_var_jump`](#compute_var_jump).
+
 ---
 
 ## Model
@@ -525,8 +555,10 @@ row — see [Structural Batch](#structural-batch).
 
 **Expression creation**: arithmetic (`sum`, `prod`, `div_expr`, `pow_expr`,
 `neg`, `abs`), trigonometric (`sin_`, `cos_`, `tan_`), other (`exp_`, `log_`,
-`sqrt_`), conditional (`if_then_else`), collection (`at`, `count`,
-`lambda_sum`, `pair_lambda_sum`), and comparisons (`leq`, `eq_expr`, `geq`,
+`sqrt_`), conditional (`if_then_else`), rounding (`ceil_expr`, `floor_expr`,
+`round_expr`), table lookup (`element`), collection (`at`, `count`,
+`lambda_sum`, `pair_lambda_sum`, each also with an `extra` form — see footnote
+³ above), and comparisons (`leq`, `eq_expr`, `geq`,
 `neq`, `lt`, `gt`). Each returns a non-negative node handle.
 
 `pair_lambda_sum` sums a function over a List's consecutive pairs and takes a
@@ -938,6 +970,7 @@ candidate set, plus its score:
 | Int (window width <= 256) | every integer in the sampling window — `domain_window(var)`, which is `[lb, ub]` verbatim whenever both bounds are finite and the width does not overflow (a domain as wide as `[-DBL_MAX, DBL_MAX]` is narrowed to the clamp). Taken only when both endpoints are within ±2^53; past that `v += 1.0` does not advance and the enumeration would not terminate |
 | Int (otherwise) | window endpoints, neighbours `x±1` (clamped to the *declared* bounds, so a value that has drifted outside the window keeps a local move), and a 32-point rounded grid across the window |
 | Float | Newton step toward the root of each violated constraint containing `v` (`x - residual/grad`, gradient via reverse-mode AD; up to 4), then midpoint and endpoints. Once the search has stagnated, a Float at a *stationary* point of every violated constraint containing it additionally gets a two-sided local probe at `x ± {1e-6, 1e-2}·(|x|+1)` — see below |
+| Int (otherwise) and Float, on a model with an `Element`/`Ceil`/`Floor`/`Round` node | additionally, the **breakpoints** (#186) of every such node reached from `v` through affine ops (Neg, Sum, Prod or Div by a literal Const): the argument values where `Ceil`/`Floor` change (the integers) and `Round` changes (the half-integers), and every index value of an `Element`, mapped back to `v` through the argument's slope. An Int gets the floor and ceil of each mapped value; a Float gets a point a hair (1e-9 relative, in the argument) either side of each edge, or the middle of each `Element` index's plateau. `Element` offers every index in range; the rounding ops offer every edge when there are at most 256 in `v`'s domain, else the two either side of the current argument plus a 31-point grid. Candidates are only proposals — each is scored exactly like any other — so a non-affine second path to `v` misplaces candidates but never misscores one. After the Float's Newton candidates, so those still win a tie. A model without such a node, and an Int whose domain was enumerated whole, get exactly the candidates above |
 
 Each candidate is scored with one `weighted_violation_delta` probe — or, when
 every weighted row of `G_v` is a comparison (`Leq`/`Geq`/`Lt`/`Gt`/`Eq`) whose
