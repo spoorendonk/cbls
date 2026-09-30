@@ -532,7 +532,8 @@ constexpr const char* kLambdaExtraDoc =
     "route's vehicle type: `func=lambda i, x: c[i][int(x[0])]`.\n"
     "\n"
     "A change to any extra, or any edit to the list, re-sums the list. The\n"
-    "node cannot be written to a .cbls file: save_model refuses the model.\n"
+    "node cannot be written to a .cbls file: the C++ save_model (not bound in\n"
+    "Python) refuses the model.\n"
     "Every call re-acquires the GIL, as a plain lambda_sum's does.\n"
     "\n"
     "`extra` is keyword-only, here and in pair_lambda_sum, whose third\n"
@@ -544,7 +545,7 @@ constexpr const char* kPairLambdaExtraDoc =
     "are no head/tail terms in this form. `extra` is keyword-only.";
 
 constexpr const char* kElementDoc =
-    "table[index]: a table looked up by an Int expression. The index may be\n"
+    "table[index]: a table looked up by a decision. The index may be\n"
     "any scalar; its value is truncated toward zero, as `at` reads its index,\n"
     "and an index outside [0, len(table)) reads 0.0. The table is copied into\n"
     "the model, and its entries must be finite.";

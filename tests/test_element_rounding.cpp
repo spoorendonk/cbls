@@ -1,6 +1,6 @@
-// #186: `element` (a table looked up by Int expressions), `ceil`/`floor`/`round`,
-// and the `lambda_sum`/`pair_lambda_sum` forms whose functor also reads other
-// decisions (`extra`).
+// #186: `element` (a table looked up by indices that are any scalar, truncated toward zero),
+// `ceil`/`floor`/`round`, and the `lambda_sum`/`pair_lambda_sum` forms whose functor also reads
+// other decisions (`extra`).
 //
 // Pinned here, per op: the VALUE against a hand computation (edge cases
 // included -- out-of-range indices, half-way rounding, non-finite input), the
