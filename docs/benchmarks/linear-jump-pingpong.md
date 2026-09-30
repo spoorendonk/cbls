@@ -116,3 +116,129 @@ The other outcomes are:
 - (2) holds nowhere: **absent**.
 - No instance is engaged: **uninformative** for that benchmark. The
   fixed-iteration auxiliary and the supplementary are then its answer.
+
+## Results
+
+Run on 2026-09-30, engine `c09a8ca`, on an AMD Ryzen 5 5600H (12 threads) under
+Linux 7.0.0. The instrumentation patch, drivers and raw per-run records were
+kept outside the tree and are not committed.
+
+**Verdict: present but immaterial, so not real in the issue's sense.** The
+closed form does produce the ping-pong the header predicts, and it has been
+observed directly on MINLPLib `alkylation`. It never reaches the pre-registered
+materiality bar, it costs no feasibility, and on `alkylation` the treatment's
+objective is *better* than the control's in all three seeds. uc-chped cannot be
+affected at all, because none of its rows is closed-form eligible.
+
+### Zero trajectory change from the instrumentation
+
+Every model was fingerprinted at the end of each `solve()`. The fingerprint is
+an FNV-1a hash of every variable's value bits, the iteration count and the
+objective, and the identical snippet was added to both the unpatched and the
+patched tree. The runs used `--no-time-limit --max-iterations 20000 --seed 1`
+on 49 MINLPLib instances and on uc-chped `ucp13` and `ucp40` at all five
+horizons each. They used 300 iterations on `eg_all_s`, whose 20 000 did not
+finish in 120 s. Unpatched main and the instrumented treatment agree on every
+fingerprint, every result row, and every new-best trace row: 52 of 52 units.
+Only the wall-clock-paced liveness ticks, the trace rows with `new_best = 0`,
+differ in count.
+
+The timed campaign ran on binaries built before the fingerprint snippet was
+added. That snippet is the only difference between those binaries and the
+checked ones.
+
+### Pilot and admission
+
+Only 4 of the 50 MINLPLib instances were admitted: `alkylation`,
+`kall_ellipsoids_tc02b`, `minlphi` and `process`. On every other instance,
+no accepted Float jump in the control pilot had a closed-form-eligible column.
+Each such column has a nonlinear or otherwise ineligible row with a nonzero
+weight, which forces the probe in both arms.
+
+No uc-chped file was admitted: `accepted_float_cf = 0` on all 8. This is
+structural. Every uc-chped row is posted as `add_constraint(sum(...))`, a bare
+`Sum` read as `expr <= 0`, and not as a `Leq`/`Geq`/`Lt`/`Gt`/`Eq` node.
+`comparison_of_affine_children` therefore classifies every row as ineligible,
+and `LinearJumpScorer` never scores a uc-chped column in closed form, whether
+the column is Float, Bool, masked or unmasked. The fixed-iteration check agrees:
+treatment and control fingerprints are identical on `ucp13` and `ucp40` at all
+horizons.
+
+### Campaign (MINLPLib, 10 s, seeds 1-3, 12 pairs)
+
+The pairs ran at 10:18-10:27. The 1-minute load at pair start was 0.79-1.45
+(median 1.19). The arm order alternated per pair, but with an even roster it
+stayed fixed per instance: `alkylation` and `minlphi` ran control first,
+`kall_ellipsoids_tc02b` and `process` treatment first. All 24 runs were
+feasible.
+
+The table gives per-seed values for seeds 1, 2 and 3, treatment / control:
+
+- **D**: tiny no-bump Float reversals.
+- **P**: flat, no-bump FJ batches as a fraction of all FJ batches.
+- **Share**: D divided by FJ iterations. Each reversal is paired with its
+  forward jump, so ping-pong occupies about twice this fraction of the run.
+- **Gap**: gap to BKS, in %.
+
+| Instance | D (treat) | D (control) | P (treat) | P (control) | Share (treat) | Gap (treat) | Gap (control) |
+|---|---|---|---|---|---|---|---|
+| alkylation | 27991, 6776, 28586 | 0, 0, 0 | .012, .004, .014 | 0, 0, 0 | 2.4%, 0.6%, 2.7% | .0004, .0003, .047 | .051, .077, .079 |
+| kall_ellipsoids_tc02b | 0, 0, 0 | 0, 0, 0 | 0, 0, 0 | 0, 0, 0 | 0 | 48.2, 37.2, 156.1 | 71.2, 67.5, 139.0 |
+| minlphi | 368, 7, 288 | 0, 3, 1 | .005, 0, 0 | 0, 0, 0 | <0.1% | 0, 0, 0 | 0, 0, 0 |
+| process | 3, 5, 197 | 3, 5, 0 | 0, 0, 0 | 0, 0, 0 | <0.1% | .014, .040, .018 | .014, .040, .044 |
+
+The closed form engaged on all four instances, with `float_prepare_fast` between
+0.33M and 0.82M per treatment run. The treatment also ran more FJ iterations in the
+same 10 s in 11 of 12 pairs: from -7% to +25%, median +8%.
+
+The instances fall under the rule as follows:
+
+- **`alkylation`** meets engagement (1) and direct evidence (2): up to 28.6k tiny
+  reversals per run, against 0 in the control. It fails materiality (3): the
+  median ΔP is +0.012, against a bar of 0.05, and there is no feasibility loss.
+  This is the one instance classified **present but immaterial**.
+- **`minlphi`** and **`process`** fail (2), because the control also records
+  reversals.
+- **`kall_ellipsoids_tc02b`** records none.
+
+Totals over the 12 runs of each arm:
+
+- Flat no-bump batches: 75 of 21,696 in the treatment and 0 of 19,853 in the
+  control.
+- Tiny no-bump reversals: 64,221 in the treatment against 12 in the control.
+
+The control's small counts cannot be rounding asymmetry, because the probe is
+exactly antisymmetric. They were not traced further; the likely source is a
+candidate set that changes between the two jumps.
+
+### Supplementary: uc-chped under two-phase `FeasibilityJump::run()`
+
+The pre-registered 200 000-iteration runs took too long on the 48- and
+168-period instances. They completed 77 of the 120 (file, horizon, seed) pairs:
+`ucp13`, `ucp40` and `ucp100` at every horizon, plus 2 seeds of `ucp100-48p`.
+In every one of those pairs, both arms returned the same status and iteration
+count, with `float_prepare_fast = 0` and D = 0. All 120 pairs were then re-run at
+2 000 iterations, which is a deviation from the pre-registration; the result is
+given here. In all 120 pairs, both arms gave an identical status, iteration
+count and maximum violation, with `float_prepare_fast = 0` and D = 0. The zero follows from the
+`Sum`-row structure described above: masking the nonlinear objective row does
+not make the linear rows eligible, because none of them is a comparison node.
+The two-phase path is therefore as unaffected as `solve()`.
+
+## What this settles, and what it does not
+
+- #178's question is answered for both benchmarks at `c09a8ca`. On MINLPLib the
+  hazard is real in mechanism, but it does not move feasibility, the batch
+  metric, or the objective. On uc-chped it is unreachable.
+- None of the issue's three options is needed on this evidence. Option 1, the
+  Bool/Int-only restriction, would give up the closed form on exactly the
+  columns where it bought the treatment's extra iterations. Option 2, a relative score tolerance, changes
+  the selection rule, and nothing measured here asks for it.
+- The roster is small: four engaged instances, three seeds, 10 s. A model whose
+  Float columns sit on large balanced linear plateaus, where MINLPLib has only
+  `alkylation`, could still find the effect material. The counters above are the
+  way to check such a model.
+- A side finding outside #178's scope: every row `uc_model.h` posts is a `Sum`
+  or a bare expression, and never a comparison node. By the eligibility rule, its
+  Bool columns therefore never get the closed form either and are always scored
+  by the DAG probe. This was read from the code, not measured.

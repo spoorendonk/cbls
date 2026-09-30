@@ -1003,7 +1003,13 @@ the probe to rounding, not to the bit -- so the chosen jump is guaranteed the
 probe's only on integral data, and an ulp can flip a near-tie on fractional
 data -- and a committed jump still goes
 through the DAG walk (`commit_scalar_move`). Any other weighted row, or a non-finite computed side,
-takes the probe. On MIPfeas at a 20s budget, one thread, this raised FJ
+takes the probe. The probe is exactly antisymmetric and this scorer is not: on
+a balanced Float plateau, a move and its reverse can both score +1 ulp. #178
+measured that at `c09a8ca`. The ping-pong does occur. On MINLPLib `alkylation`
+up to ~5% of FJ iterations went to tiny-score A→B→A reversals. It moved neither
+feasibility nor the objective. uc-chped cannot reach it, because its rows are
+`Sum` nodes and no uc-chped row is eligible. See
+`docs/benchmarks/linear-jump-pingpong.md`. On MIPfeas at a 20s budget, one thread, this raised FJ
 iterations 7–58× (gen-ip002 4,803 → 278,793; neos-860300 1,207 → 8,997;
 n2seq36q 19,504 → 256,589; mas76 142,065 → 1,426,857; binkar10_1 83,917 →
 924,596; swath3 12,152 → 307,857), measured serially, Release, on a 12-core box
