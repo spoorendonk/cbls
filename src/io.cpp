@@ -305,6 +305,17 @@ int32_t build_element(Model& m, const json& j, const std::vector<int32_t>& child
                                 ": Element node requires one or two index children");
 }
 
+// The one child of a rounding record (#186). A second child would otherwise be
+// dropped without a word, so a malformed file is refused rather than read as a
+// different model.
+int32_t only_child(const std::vector<int32_t>& children, const char* op_name, int line_num) {
+    if (children.size() != 1) {
+        throw std::invalid_argument("line " + std::to_string(line_num) + ": " + op_name +
+                                    " node requires exactly one child");
+    }
+    return children[0];
+}
+
 // Rebuild one non-Const node from its op and its already-resolved children.
 // Kept apart from the record-level plumbing above it precisely because it is a
 // wide table: one line per NodeOp, no shared state between the lines.
@@ -391,11 +402,11 @@ int32_t build_node(Model& m, NodeOp op, const json& j, const std::vector<int32_t
         case NodeOp::Element:
             return build_element(m, j, children, line_num);
         case NodeOp::Ceil:
-            return m.ceil_expr(children.at(0));
+            return m.ceil_expr(only_child(children, "Ceil", line_num));
         case NodeOp::Floor:
-            return m.floor_expr(children.at(0));
+            return m.floor_expr(only_child(children, "Floor", line_num));
         case NodeOp::Round:
-            return m.round_expr(children.at(0));
+            return m.round_expr(only_child(children, "Round", line_num));
         case NodeOp::LambdaExtra:
         case NodeOp::PairLambdaExtra:
             // Unreachable for the reason Custom's is: `string_to_op` has no

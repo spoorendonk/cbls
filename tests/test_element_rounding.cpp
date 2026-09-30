@@ -1081,3 +1081,124 @@ TEST_CASE("FJ reaches the auxiliary-Int reference's optimum through the breakpoi
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Review round 2 (#186)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("FJ breakpoint candidates survive a free Float's NaN box midpoint", "[fj][rounding]") {
+    // x in (-inf, inf): the Float path's box midpoint 0.5 * (lb + ub) is NaN.
+    // The dedup set must not take it, or its sort is undefined and a lookup
+    // can report a real breakpoint as already offered. ceil(x) == 2 is reached
+    // only through the edges near the current argument.
+    Model m;
+    const double inf = std::numeric_limits<double>::infinity();
+    auto x = m.Float(-inf, inf, "x");
+    m.add_constraint(ceil(x) >= 2.0);
+    m.add_constraint(ceil(x) <= 2.0);
+    m.close();
+    m.var_mut(x.var_id()).value = 0.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+    const JumpResult r = compute_var_jump(m, vm.weights, x.var_id());
+    REQUIRE(r.score == 2.0);
+    REQUIRE(r.jump_value > 1.0);
+    REQUIRE(r.jump_value <= 2.0);
+}
+
+TEST_CASE("FJ counts a Sum's repeated child in the breakpoint slope", "[fj][rounding]") {
+    // sum({x, x, x}) names x three times: slope 3. ceil(3x) == 5 needs x in
+    // (4/3, 5/3]. Read as slope 1, the edges land at integers +- a hair, where
+    // ceil(3x) is 3j or 3j + 1 -- never 5.
+    Model m;
+    const int32_t x = m.float_var(0, 20, "x");
+    const int32_t fleet = m.ceil_expr(m.sum({x, x, x}));
+    m.add_constraint(m.geq(fleet, m.constant(5.0)));
+    m.add_constraint(m.leq(fleet, m.constant(5.0)));
+    m.close();
+    m.var_mut(vid(x)).value = 0.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+    const JumpResult r = compute_var_jump(m, vm.weights, vid(x));
+    REQUIRE(r.score == 5.0);
+    REQUIRE(r.jump_value > 4.0 / 3.0);
+    REQUIRE(r.jump_value <= 5.0 / 3.0);
+}
+
+TEST_CASE("FJ walks to a breakpoint through a nonlinear op", "[fj][rounding]") {
+    // ceil(exp(x)) == 3 needs x in (ln 2, ln 3]. From x = 0 the argument is 1;
+    // linearised there (slope exp(0) = 1) the edge at 2 maps to x = 1 + a hair,
+    // where ceil(e) = 3. A walk limited to Neg/Sum/Prod/Div never reached the
+    // ceil at all, and the box candidates (2.5, 5) overshoot.
+    Model m;
+    auto x = m.Float(0, 5, "x");
+    auto fleet = ceil(exp(x));
+    m.add_constraint(fleet >= 3.0);
+    m.add_constraint(fleet <= 3.0);
+    m.close();
+    m.var_mut(x.var_id()).value = 0.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+    const JumpResult r = compute_var_jump(m, vm.weights, x.var_id());
+    REQUIRE(r.score == 2.0);
+    REQUIRE(r.jump_value > std::log(2.0));
+    REQUIRE(r.jump_value <= std::log(3.0));
+}
+
+TEST_CASE("an element index reaches a middle-ranked value past 32 distinct values",
+          "[fj][element]") {
+    // 1000 distinct values (table[k] = k): past the representative cap, so the
+    // representatives are 32 evenly spaced ranks. Rank 16 of 32 is value 516,
+    // which neither the argmin nor the argmax, the Int grid (500, 531) nor the
+    // near breakpoints (0..2) name.
+    constexpr int kN = 1000;
+    std::vector<double> table(kN);
+    for (int k = 0; k < kN; ++k) {
+        table[k] = k;
+    }
+    Model m;
+    auto t = m.Int(0, kN - 1, "t");
+    m.add_constraint(element(table, t).eq(Expr{&m, m.constant(516.0)}));
+    m.close();
+    m.var_mut(t.var_id()).value = 0.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+    const JumpResult r = compute_var_jump(m, vm.weights, t.var_id());
+    REQUIRE(r.jump_value == 516.0);
+    REQUIRE(r.score == 516.0);
+}
+
+TEST_CASE("a two-index element offers the rows of the column currently selected", "[fj][element]") {
+    // 300 x 3. Column 1 holds its minimum, 5, at row 217 alone; the other two
+    // columns hold small values at other rows. With the column pinned to 1, the
+    // row index's representatives must come from column 1: from the whole
+    // table they would name row 0 (the global minimum) instead.
+    constexpr int kRows = 300;
+    std::vector<std::vector<double>> table(kRows, std::vector<double>(3));
+    for (int r = 0; r < kRows; ++r) {
+        table[r][0] = r;
+        table[r][1] = 1000.0 + r;
+        table[r][2] = 2000.0 + r;
+    }
+    table[217][1] = 5.0;
+    Model m;
+    auto row = m.Int(0, kRows - 1, "row");
+    auto col = m.Int(1, 1, "col");
+    m.add_constraint(element(table, row, col) <= 5.0);
+    m.close();
+    m.var_mut(row.var_id()).value = 0.0;
+    m.var_mut(col.var_id()).value = 1.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+    const JumpResult r = compute_var_jump(m, vm.weights, row.var_id());
+    REQUIRE(r.jump_value == 217.0);
+    REQUIRE(r.score == 995.0);
+}
+
+TEST_CASE("a rounding record with more than one child is refused on load", "[io][rounding]") {
+    std::istringstream in(R"({"var":"x","type":"Float","lb":0.0,"ub":1.0}
+{"node":"n0","op":"Ceil","children":["x","x"]}
+{"minimize":"n0"}
+)");
+    REQUIRE_THROWS_AS(load_model(in), std::invalid_argument);
+}

@@ -196,6 +196,25 @@ def test_pair_lambda_sum_takes_extra_by_keyword_and_closes_the_cycle() -> None:
     assert m.node_value(cyclic_node) == (20.0 + 1.0 + 12.0) / 2
 
 
+def test_an_empty_extra_hands_the_functor_an_empty_list() -> None:
+    m = cbls.Model()
+    route = m.list_var(3)
+    seen: list[list[float]] = []
+
+    def cost(i: int, x: list[float]) -> float:
+        seen.append(list(x))
+        return float(i)
+
+    node = m.lambda_sum(route, cost, extra=[])
+    pair = m.pair_lambda_sum(route, lambda a, b, x: float(len(x)), extra=[], cyclic=True)
+    m.minimize(m.sum([node, pair]))
+    m.close()
+    cbls.full_evaluate(m)
+    assert m.node_value(node) == 0.0 + 1.0 + 2.0
+    assert m.node_value(pair) == 0.0
+    assert seen and all(x == [] for x in seen)
+
+
 def test_extra_is_keyword_only_in_both_lambda_forms() -> None:
     m = cbls.Model()
     route = m.list_var(3)
