@@ -117,6 +117,33 @@ The other outcomes are:
 - No instance is engaged: **uninformative** for that benchmark. The
   fixed-iteration auxiliary and the supplementary are then its answer.
 
+### Addendum: MIPfeas extension (post hoc, requested by review)
+
+Written and committed after the MINLPLib and uc-chped results above, and before
+any MIPfeas run of either arm. The issue's claim that MIPfeas is unaffected
+rests on a #106 throughput probe that had no reversal counter.
+Pure-feasibility models with continuous columns in fractional rows are the
+regime most exposed to this hazard.
+
+**Roster.** The five instances #106 names: `cbs-cta`, `neos-662469`,
+`neos-860300`, `swath3` and `uccase12`. Three more MIPfeas-roster instances were
+added for having many fractional coefficients on continuous columns, as counted
+by a scan of the MPS `COLUMNS` section: `binkar10_1`, `app1-1` and
+`neos-3754480-nidda`. That scan found no fractional continuous coefficients on
+`cbs-cta`, `neos-662469` or `neos-860300`. They stay in the roster because
+#106 named them.
+
+**Protocol.** The same two arms, counters and verdict rule (1)-(3) as above,
+with no admission pilot: every instance runs. `cbls_mipfeas` runs at
+`--budget 10 --threads 1` with seeds 1, 2 and 3. Pairs run serially under the
+exclusive lock, with the same load gate. Feasibility is the runner's verdict.
+
+**Also reported, outside the rule.** `rev_float_nobump`, the reversal count with
+no tiny-score threshold, and `tiny`, the tiny accepted scores over all variable
+types. The hazard comes from fractional coefficients, not from the Float type,
+so Int columns in fractional rows can also produce it; D counts only Float
+reversals.
+
 ## Results
 
 Run on 2026-09-30, engine `c09a8ca`, on an AMD Ryzen 5 5600H (12 threads) under
