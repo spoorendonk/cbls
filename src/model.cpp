@@ -1180,6 +1180,47 @@ bool is_row_comparison(NodeOp op) {
            op == NodeOp::Eq;
 }
 
+// The terms rule: at least one term, none a Sum or the objective bound, none
+// named twice. `node_stamp`/`var_stamp` hold the last Sum that named each
+// node/variable, so the repeat test is O(1) per term across the whole pass.
+bool terms_qualify(const Model& m, int32_t nid, std::vector<int32_t>& node_stamp,
+                   std::vector<int32_t>& var_stamp) {
+    const ConstSpan<ChildRef> kids = m.children(m.nodes()[nid]);
+    if (kids.empty()) {
+        return false;
+    }
+    for (const ChildRef& ref : kids) {
+        int32_t& stamp = ref.is_var ? var_stamp[ref.id] : node_stamp[ref.id];
+        if (stamp == nid) {
+            return false;  // named twice
+        }
+        stamp = nid;
+        if (!ref.is_var &&
+            (m.nodes()[ref.id].op == NodeOp::Sum || ref.id == m.objective_bound_node())) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// The readers rule: read, and only by top-level comparisons against a
+// variable or a Const.
+bool readers_qualify(const Model& m, int32_t nid) {
+    const ConstSpan<int32_t> readers = m.parents(nid);
+    if (readers.empty()) {
+        return false;
+    }
+    return std::all_of(readers.begin(), readers.end(), [&m, nid](int32_t p) {
+        const ExprNode& cmp = m.nodes()[p];
+        if (!is_row_comparison(cmp.op) || !m.parents(p).empty()) {
+            return false;
+        }
+        const ConstSpan<ChildRef> sides = m.children(cmp);
+        const ChildRef& other = (!sides[0].is_var && sides[0].id == nid) ? sides[1] : sides[0];
+        return other.is_var || m.nodes()[other.id].op == NodeOp::Const;
+    });
+}
+
 }  // namespace
 
 // Not monotone, unlike the exact-only rule it replaced: a Sum that gained a
@@ -1199,38 +1240,9 @@ void Model::classify_incremental_sums() {
     st.inc_sum_nodes.clear();
     std::vector<int32_t> node_stamp(nodes.size(), -1);
     std::vector<int32_t> var_stamp(vars_.size(), -1);
-    const auto qualifies = [&](int32_t nid) {
-        const ConstSpan<ChildRef> kids = children(nodes[nid]);
-        if (kids.empty()) {
-            return false;
-        }
-        for (const ChildRef& ref : kids) {
-            int32_t& stamp = ref.is_var ? var_stamp[ref.id] : node_stamp[ref.id];
-            if (stamp == nid) {
-                return false;  // named twice
-            }
-            stamp = nid;
-            if (!ref.is_var &&
-                (nodes[ref.id].op == NodeOp::Sum || ref.id == objective_bound_node_)) {
-                return false;
-            }
-        }
-        const ConstSpan<int32_t> readers = parents(nid);
-        if (readers.empty()) {
-            return false;
-        }
-        return std::all_of(readers.begin(), readers.end(), [&](int32_t p) {
-            const ExprNode& cmp = nodes[p];
-            if (!is_row_comparison(cmp.op) || !parents(p).empty()) {
-                return false;
-            }
-            const ConstSpan<ChildRef> sides = children(cmp);
-            const ChildRef& other = (!sides[0].is_var && sides[0].id == nid) ? sides[1] : sides[0];
-            return other.is_var || nodes[other.id].op == NodeOp::Const;
-        });
-    };
     for (const int32_t nid : st.topo_order) {
-        if (nodes[nid].op != NodeOp::Sum || !qualifies(nid)) {
+        if (nodes[nid].op != NodeOp::Sum || !terms_qualify(*this, nid, node_stamp, var_stamp) ||
+            !readers_qualify(*this, nid)) {
             continue;
         }
         nodes[nid].inc_sum_flags = ExprNode::kIncSum;

@@ -1668,8 +1668,9 @@ bool FeasibilityJump::settle_regrounded_rows() {
     const auto& cids = model_.constraint_ids();
     bool flipped = false;
     size_t n_moved = 0;
-    for (size_t k = 0; k < row_before_.size(); ++k) {
-        const auto [c, before] = row_before_[k];
+    // Compacted in place to the rows that moved: the write index never passes
+    // the read one.
+    for (const auto& [c, before] : row_before_) {
         const auto ci = static_cast<size_t>(c);
         const double after = model_.node_values()[cids[ci]];
         uint64_t before_bits = 0;

@@ -1289,8 +1289,8 @@ TEST_CASE("a probe on a drifted state scores against it and restores it to the b
     const std::vector<double> before = m.node_values();
     const std::vector<IncSumState> states = m.inc_sums().slots;
     ViolationManager vm(m);
-    for (size_t k = 0; k < r.cols.size(); ++k) {
-        const int32_t v = vid(r.cols[k]);
+    for (const int32_t col : r.cols) {
+        const int32_t v = vid(col);
         const double x = m.var(v).value;
         REQUIRE(vm.weighted_violation_delta(v, x) == 0.0);
         (void)vm.weighted_violation_delta(v, m.var(v).type == VarType::Bool ? 1.0 - x : x + 7.0);
