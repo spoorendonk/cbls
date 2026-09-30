@@ -71,3 +71,24 @@ often, and one below 1 would be unsound.
   reaches 1 (no significant loss) -- with neither subset's quality sign test
   significantly worse (p < 0.05). Otherwise the negative result is reported
   as measured. Nothing is re-tuned on this roster.
+
+## Sweep result (appended after the sweep)
+
+Run 2026-09-30, load 0.80-1.27 per run (machine-wide lock, 12 cores). Arms were
+built from branch commit `a50af3c` with only `kIncSumPeriod` patched, on the
+pre-rebase base `7f8c5a2` (#186 before its last review round, which touched only
+breakpoint code these instances do not use). Geometric mean of GLS iterations
+over the six runs:
+
+| period | geomean | vs best |
+|---|---|---|
+| 16 | 105,591 | -1.95% |
+| 64 | 106,975 | -0.67% |
+| 256 | 107,140 | -0.51% |
+| 0 (never) | 107,694 | best |
+
+64 and 256 are within 1% of the best; the rule takes the smallest nonzero:
+**`kIncSumPeriod = 64`**, the value the code already carries. The gate barely
+fires here: 10-17 gated minima out of 592-955 on thor50dday, at most 1 of ~240
+on neos-873061, none of ~44,000-48,000 on neos-4763324-toguru. The batch-end
+re-grounding re-sums 15,700-157,000 Sums per run.
