@@ -157,7 +157,34 @@ enum class NodeOp : uint8_t {
     /// chain, and not `node_is_affine` in `src/feasibility_jump.cpp`, whose
     /// deliberate `default:` classes a new op as non-affine without a word --
     /// so `grep -rn 'NodeOp::' src/ include/ python/` for the rest.
-    Custom
+    Custom,
+    // The six below are #186's, appended after `Custom` for the same reason
+    // `Custom` was appended last: every existing enumerator keeps its value.
+    //
+    // All six are piecewise constant in their scalar children, so their local
+    // derivative is 0 and none of them is affine. What FJ uses instead of a
+    // gradient is in `compute_var_jump` (src/feasibility_jump.cpp): the plateau
+    // edges of Ceil/Floor/Round and the index values of Element, reached from a
+    // variable through affine ops, are offered as jump candidates.
+    /// `table[i]` or `table[i][j]` over a numeric table, with the indices read
+    /// from Int expressions -- 1 or 2 children, every one an index. The table
+    /// is `ModelStructure::element_tables[lambda_func_id]`. See
+    /// `Model::element` for the index rule.
+    Element,
+    /// `std::ceil` of its one child.
+    Ceil,
+    /// `std::floor` of its one child.
+    Floor,
+    /// `std::round` of its one child: half-way cases away from zero.
+    Round,
+    /// `lambda_sum` whose functor also reads scalar children: children[0] is
+    /// the List/Set variable, children[1..] the `extra` scalars, whose current
+    /// values the functor receives. `lambda_extra_funcs[lambda_func_id]`.
+    LambdaExtra,
+    /// `pair_lambda_sum` whose functor also reads scalar children, laid out as
+    /// `LambdaExtra`. `pair_lambda_extra_funcs[lambda_func_id]`, closing rule
+    /// in `pair_lambda_extra_modes` at the same index.
+    PairLambdaExtra
 };
 
 struct ChildRef {
@@ -204,8 +231,11 @@ struct ExprNode {
     ///  - `PairLambda`: `pair_lambda_funcs` and the parallel `pair_lambda_specs`
     ///  - `Custom`: `Model::custom_invariant(id)`, which is PER-MODEL rather
     ///    than shared (#166) -- the index is structure, the instance is not.
+    ///  - `Element`: `ModelStructure::element_tables` (#186)
+    ///  - `LambdaExtra`: `lambda_extra_funcs`; `PairLambdaExtra`:
+    ///    `pair_lambda_extra_funcs` and the parallel `pair_lambda_extra_modes`
     ///
-    /// One field for all three rather than one per op, because no node is more
+    /// One field for all of them rather than one per op, because no node is more
     /// than one of them and `ExprNode` is the array a 4.3M-node model is built
     /// out of. -1 for every other op.
     int32_t lambda_func_id = -1;
@@ -226,7 +256,7 @@ enum class PairMode : uint8_t {
 ///
 /// It is a SIDE TABLE in `ModelStructure`, parallel to `pair_lambda_funcs` and
 /// keyed by the same `ExprNode::lambda_func_id`, rather than three more
-/// `NodeOp` enumerators. `src/dag.cpp`'s two dispatch tables are 29 cases wide
+/// `NodeOp` enumerators. `src/dag.cpp`'s two dispatch tables are 35 cases wide
 /// and already carry a cognitive-complexity suppression each; one variant per
 /// closing rule crossed with head/tail presence would be six more cases in both
 /// of them for no gain, since every variant evaluates through the same loop.

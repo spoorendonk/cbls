@@ -175,4 +175,24 @@ Expr if_then_else(const Expr& cond, const Expr& then_, const Expr& else_) {
     return {cond.model, cond.model->if_then_else(cond.handle, then_.handle, else_.handle)};
 }
 
+Expr ceil(const Expr& x) {
+    return {x.model, x.model->ceil_expr(x.handle)};
+}
+
+Expr floor(const Expr& x) {
+    return {x.model, x.model->floor_expr(x.handle)};
+}
+
+Expr round(const Expr& x) {
+    return {x.model, x.model->round_expr(x.handle)};
+}
+
+Expr element(const std::vector<double>& table, const Expr& index) {
+    return {index.model, index.model->element(table, index.handle)};
+}
+
+Expr element(const std::vector<std::vector<double>>& table, const Expr& row, const Expr& col) {
+    return {row.model, row.model->element(table, row.handle, col.handle)};
+}
+
 }  // namespace cbls

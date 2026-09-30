@@ -60,6 +60,22 @@ struct ListPartition {
     int32_t universe_size = 0;  ///< the universe every member shares
 };
 
+/// The functor of a `lambda_sum` / `pair_lambda_sum` that reads other decisions
+/// (#186): the element (or pair) first, then the CURRENT values of the node's
+/// `extra` children, in the order they were given. The span is valid for the
+/// duration of the call only.
+using LambdaExtraFunc = std::function<double(int, ConstSpan<double>)>;
+using PairLambdaExtraFunc = std::function<double(int, int, ConstSpan<double>)>;
+
+/// The data of one `Element` node (#186): a `rows x cols` table, row-major. A
+/// one-index node has `cols == 1` and reads `values[i]`; a two-index node reads
+/// `values[i * cols + j]`. Which of the two a node is, is its child count.
+struct ElementTable {
+    int32_t rows = 0;
+    int32_t cols = 0;
+    std::vector<double> values;
+};
+
 /// Convert variable handle (negative, from int_var/float_var/etc.)
 /// to var ID (non-negative, for model.var()/model.var_mut()).
 inline int32_t handle_to_var_id(int32_t handle) {
@@ -136,6 +152,18 @@ struct ModelStructure {
     // `lambda_func_id` is i. See `PairLambdaSpec` in dag.h for why this is a
     // side table rather than more `NodeOp` enumerators.
     std::vector<PairLambdaSpec> pair_lambda_specs;
+    // #186. Shared exactly as `lambda_funcs` above is, with the same warning
+    // about a callable that carries mutable state. The mode table is parallel to
+    // `pair_lambda_extra_funcs` and kept the same length.
+    std::vector<LambdaExtraFunc> lambda_extra_funcs;
+    std::vector<PairLambdaExtraFunc> pair_lambda_extra_funcs;
+    std::vector<PairMode> pair_lambda_extra_modes;
+    std::vector<ElementTable> element_tables;
+    /// Whether any node is an `Element`, `Ceil`, `Floor` or `Round` -- the ops
+    /// whose plateaus `compute_var_jump` offers as jump candidates (#186). A
+    /// model without one takes the candidate generation it always did, with no
+    /// per-variable walk to find out that there is nothing to add.
+    bool has_breakpoint_nodes = false;
     std::vector<VarSequence> var_sequences;
     std::vector<std::pair<int, int>> var_to_seq;  // var_id -> (seq_idx, pos), resized lazily
     std::vector<ListPartition> list_partitions;
@@ -290,6 +318,70 @@ public:
     /// on a handle naming nothing, and `std::logic_error` once frozen.
     int32_t custom(const std::vector<int32_t>& inputs, std::unique_ptr<CustomInvariant> inv,
                    const std::string& name = "");
+
+    /// `table[index]`: a numeric table looked up by a decision (#186), e.g. a
+    /// cost by vehicle type where the type is an Int variable.
+    ///
+    /// The index is read the way `at()` reads its index: the child's value
+    /// truncated toward zero. An index outside `[0, table.size())` -- or a
+    /// non-finite one -- reads 0.0, which is also `at()`'s rule for a position
+    /// past the List. A model that must never read outside the table bounds
+    /// its index variable to `[0, n-1]`.
+    ///
+    /// The table is COPIED into the model. It is ordinary data, so the node is
+    /// serialisable (`.cbls` writes the table). Local derivative 0 for the
+    /// index; FJ offers the index values as the index variable's jump
+    /// candidates instead (see `compute_var_jump`).
+    ///
+    /// Throws `std::invalid_argument` on an empty table or a List/Set index,
+    /// and `std::out_of_range` on a handle naming nothing.
+    int32_t element(const std::vector<double>& table, int32_t index);
+    /// `table[row][col]`, with both indices read as in the one-index form and
+    /// 0.0 when EITHER is out of range. `table` must be rectangular and
+    /// non-empty in both dimensions.
+    int32_t element(const std::vector<std::vector<double>>& table, int32_t row, int32_t col);
+
+    /// `std::ceil`, `std::floor` and `std::round` of `x` (#186). `round` takes
+    /// a half-way value AWAY from zero (`round(2.5) == 3`, `round(-2.5) ==
+    /// -3`), which is `std::round`'s rule. No tolerance is applied: `ceil` of
+    /// a quotient that lands one ulp above an integer is the next integer, as
+    /// in plain C++. Each is exact on non-finite input (`ceil(inf) == inf`,
+    /// NaN stays NaN).
+    ///
+    /// Local derivative 0, so a Newton step sees nothing through them. FJ
+    /// offers the plateau edges instead when the argument is affine in the
+    /// variable (see `compute_var_jump`).
+    int32_t ceil_expr(int32_t x);
+    int32_t floor_expr(int32_t x);
+    int32_t round_expr(int32_t x);
+
+    /// `lambda_sum` whose functor also reads other decisions (#186):
+    ///
+    ///     sum_{e in list} func(e, [value(extra_0), value(extra_1), ...])
+    ///
+    /// e.g. a stop cost that depends on the route's vehicle type,
+    /// `sum_{i in route} c[i][type_r]`, as `func = (i, x) -> c[i][int(x[0])]`.
+    ///
+    /// `extra` are scalar handles -- variables or nodes, any number, in the
+    /// order `func` receives them. They become children of the node, so a
+    /// change to one re-evaluates it; so does any edit to the list. Both
+    /// re-sum the list, which is what a plain `lambda_sum` does on an edit.
+    ///
+    /// Not serialisable: `func` is a function of continuous values and cannot
+    /// be tabulated the way a plain `lambda_sum` is, so `save_model` refuses a
+    /// model holding one, before it writes anything -- as it refuses a custom
+    /// node. Shared by every portfolio worker, on the terms `freeze()` states.
+    ///
+    /// Throws `std::invalid_argument` unless `list_var_id` names a List or Set
+    /// variable, `func` is non-empty and no `extra` handle names a List or Set
+    /// variable; `std::out_of_range` on a handle naming nothing.
+    int32_t lambda_sum(int32_t list_var_id, LambdaExtraFunc func,
+                       const std::vector<int32_t>& extra);
+    /// `pair_lambda_sum(list, f, mode)` with `f` also reading `extra`, on the
+    /// terms `lambda_sum`'s extra form states. The pair and `mode` contract is
+    /// the plain form's; there is no head/tail term in this form.
+    int32_t pair_lambda_sum(int32_t list_var_id, PairLambdaExtraFunc func, PairMode mode,
+                            const std::vector<int32_t>& extra);
 
     void add_constraint(int32_t expr_id);
     void minimize(int32_t expr_id);
@@ -634,6 +726,39 @@ public:
         return s().pair_lambda_specs[idx];
     }
 
+    // #186's tables, range-checked like the lambda tables above.
+    [[nodiscard]] const LambdaExtraFunc& lambda_extra_func(int32_t idx) const {
+        if (idx < 0 || idx >= static_cast<int32_t>(s().lambda_extra_funcs.size())) {
+            throw std::out_of_range("lambda extra func index out of range");
+        }
+        return s().lambda_extra_funcs[idx];
+    }
+    [[nodiscard]] const PairLambdaExtraFunc& pair_lambda_extra_func(int32_t idx) const {
+        if (idx < 0 || idx >= static_cast<int32_t>(s().pair_lambda_extra_funcs.size())) {
+            throw std::out_of_range("pair lambda extra func index out of range");
+        }
+        return s().pair_lambda_extra_funcs[idx];
+    }
+    [[nodiscard]] PairMode pair_lambda_extra_mode(int32_t idx) const {
+        if (idx < 0 || idx >= static_cast<int32_t>(s().pair_lambda_extra_modes.size())) {
+            throw std::out_of_range("pair lambda extra mode index out of range");
+        }
+        return s().pair_lambda_extra_modes[idx];
+    }
+    [[nodiscard]] const ElementTable& element_table(int32_t idx) const {
+        if (idx < 0 || idx >= static_cast<int32_t>(s().element_tables.size())) {
+            throw std::out_of_range("element table index out of range");
+        }
+        return s().element_tables[idx];
+    }
+    /// Whether any extra-lambda node exists: the O(1) test `save_model`'s
+    /// refusal starts from, as `has_custom_nodes` is for custom nodes.
+    [[nodiscard]] bool has_lambda_extra_nodes() const noexcept {
+        return !s().lambda_extra_funcs.empty() || !s().pair_lambda_extra_funcs.empty();
+    }
+    /// See `ModelStructure::has_breakpoint_nodes`.
+    [[nodiscard]] bool has_breakpoint_nodes() const noexcept { return s().has_breakpoint_nodes; }
+
     /// Whether this model has any custom node at all (#166).
     ///
     /// Checked ONCE per `delta_evaluate`/`full_evaluate` call, not per node:
@@ -808,6 +933,12 @@ private:
     // Decode a var or node handle, throwing std::out_of_range if it names
     // nothing this model has made yet.
     [[nodiscard]] ChildRef wrap(int32_t handle) const;
+    // `wrap`, refusing a List or Set variable: for an input read as a scalar.
+    [[nodiscard]] ChildRef wrap_scalar(int32_t handle, const char* what) const;
+    [[nodiscard]] std::vector<ChildRef> lambda_extra_children(int32_t list_var_id,
+                                                              const std::vector<int32_t>& extra,
+                                                              const char* what) const;
+    int32_t alloc_node_over_refs(NodeOp op, const std::vector<ChildRef>& kids);
 };
 
 }  // namespace cbls

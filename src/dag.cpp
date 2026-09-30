@@ -4,9 +4,11 @@
 #include "cbls/model.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <limits>
+#include <vector>
 
 namespace cbls {
 
@@ -76,7 +78,98 @@ static int list_size(const ChildRef& ref, const Model& model) {
     return 0;
 }
 
-// A flat dispatch table over NodeOp's 29 cases, suppressed deliberately rather
+// An Element index (#186): the child's value truncated toward zero, which is how
+// `At` reads its index, or -1 when that falls outside [0, n). Tested as a double
+// BEFORE any conversion, so a NaN, an infinity or a value past int range is
+// "outside" rather than the undefined behaviour `static_cast<int>` would be.
+static int32_t element_index(double v, int32_t n) {
+    const double t = std::trunc(v);
+    if (!(t >= 0.0 && t < static_cast<double>(n))) {
+        return -1;
+    }
+    return static_cast<int32_t>(t);
+}
+
+// The Element case of `evaluate`: one or two indices into the node's table, and
+// 0.0 when any of them is out of range -- `At`'s rule for a position past its
+// List. Kept out of the dispatch table, as `custom_of` is, to keep the case to
+// one line.
+static double element_value(const ExprNode& node, ConstSpan<ChildRef> children,
+                            const Model& model) {
+    const ElementTable& tbl = model.element_table(node.lambda_func_id);
+    const int32_t i = element_index(child_val(children[0], model), tbl.rows);
+    if (i < 0) {
+        return 0.0;
+    }
+    if (children.size() == 1) {
+        return tbl.values[static_cast<size_t>(i)];
+    }
+    const int32_t j = element_index(child_val(children[1], model), tbl.cols);
+    if (j < 0) {
+        return 0.0;
+    }
+    return tbl
+        .values[(static_cast<size_t>(i) * static_cast<size_t>(tbl.cols)) + static_cast<size_t>(j)];
+}
+
+// The `extra` values of a LambdaExtra/PairLambdaExtra node, children[1..], read
+// into `buf` for the functor. A few inline slots cover the "a few scalars" the
+// op is for without a heap allocation per evaluation; more spill to a vector.
+class ExtraValues {
+public:
+    ExtraValues(ConstSpan<ChildRef> children, const Model& model) : n_(children.size() - 1) {
+        if (n_ > inline_.size()) {
+            heap_.resize(n_);
+        }
+        double* out = n_ > inline_.size() ? heap_.data() : inline_.data();
+        for (size_t k = 0; k < n_; ++k) {
+            out[k] = child_val(children[k + 1], model);
+        }
+    }
+    [[nodiscard]] ConstSpan<double> span() const {
+        return {n_ > inline_.size() ? heap_.data() : inline_.data(), n_};
+    }
+
+private:
+    size_t n_;
+    std::array<double, 8> inline_{};
+    std::vector<double> heap_;
+};
+
+// The LambdaExtra case of `evaluate`: `Lambda`'s sum, with the extra values
+// handed to every call. Re-sums the whole list, as `Lambda` does.
+static double lambda_extra_value(const ExprNode& node, ConstSpan<ChildRef> children,
+                                 const Model& model) {
+    const LambdaExtraFunc& func = model.lambda_extra_func(node.lambda_func_id);
+    const ExtraValues extra(children, model);
+    const ConstSpan<double> x = extra.span();
+    double s = 0.0;
+    for (const int32_t e : model.var(children[0].id).elements) {
+        s += func(e, x);
+    }
+    return s;
+}
+
+// The PairLambdaExtra case: `PairLambda`'s open or cyclic chain (no endpoint
+// terms), with the extra values handed to every call.
+static double pair_lambda_extra_value(const ExprNode& node, ConstSpan<ChildRef> children,
+                                      const Model& model) {
+    const PairLambdaExtraFunc& func = model.pair_lambda_extra_func(node.lambda_func_id);
+    const PairMode mode = model.pair_lambda_extra_mode(node.lambda_func_id);
+    const ExtraValues extra(children, model);
+    const ConstSpan<double> x = extra.span();
+    const std::vector<int32_t>& el = model.var(children[0].id).elements;
+    double s = 0.0;
+    for (size_t k = 0; k + 1 < el.size(); ++k) {
+        s += func(el[k], el[k + 1], x);
+    }
+    if (mode == PairMode::Cyclic && el.size() >= 2) {
+        s += func(el.back(), el.front(), x);
+    }
+    return s;
+}
+
+// A flat dispatch table over NodeOp's 35 cases, suppressed deliberately rather
 // than split. What the score measures here is not compounded logic: it is the
 // eighteen small guards the individual cases carry -- a loop over a variadic
 // node's children, a divide-by-zero test, an overflow test -- each charged
@@ -325,12 +418,30 @@ double evaluate(const ExprNode& node, const Model& model) {
             // From scratch, which is what this entry point means: the
             // incremental path is delta_evaluate's, and it never reaches here.
             return custom_of(node, model).evaluate(InvariantInputs(model, children));
+
+        case NodeOp::Element:
+            return element_value(node, children, model);
+
+        case NodeOp::Ceil:
+            return std::ceil(child_val(children[0], model));
+
+        case NodeOp::Floor:
+            return std::floor(child_val(children[0], model));
+
+        case NodeOp::Round:
+            return std::round(child_val(children[0], model));
+
+        case NodeOp::LambdaExtra:
+            return lambda_extra_value(node, children, model);
+
+        case NodeOp::PairLambdaExtra:
+            return pair_lambda_extra_value(node, children, model);
     }
     return 0.0;
 }
 
 // The AD peer of evaluate() above, and suppressed for the same reason and by the
-// same argument: one flat `default:`-free dispatch table over the same 29 NodeOp
+// same argument: one flat `default:`-free dispatch table over the same 35 NodeOp
 // cases, where the score is the sum of each case's own guards against a
 // non-finite or non-differentiable point rather than any nesting between them.
 // It scores higher than evaluate() only because a derivative needs more such
@@ -540,6 +651,18 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
                     .partial(InvariantInputs(model, children), static_cast<int32_t>(child_idx));
             return std::isfinite(p) ? p : 0.0;
         }
+
+        case NodeOp::Element:
+        case NodeOp::Ceil:
+        case NodeOp::Floor:
+        case NodeOp::Round:
+            // Piecewise constant (#186): 0 on every plateau, undefined on an
+            // edge. FJ reads the edges as jump candidates instead of a slope.
+            return 0.0;
+
+        case NodeOp::LambdaExtra:
+        case NodeOp::PairLambdaExtra:
+            return 0.0;  // discrete in the list, and opaque in the extras
     }
     return 0.0;
 }

@@ -541,6 +541,158 @@ int32_t Model::custom(const std::vector<int32_t>& inputs, std::unique_ptr<Custom
     return nid;
 }
 
+// ---------------------------------------------------------------------------
+// #186: Element, Ceil/Floor/Round, and the lambdas that read other decisions.
+// ---------------------------------------------------------------------------
+
+// A handle the op reads as a SCALAR. A List or Set variable carries its content
+// in `elements` and a `value` of 0.0 that no move ever changes, so reading one as
+// an index or an extra would silently freeze that input; refused instead. The
+// handle itself is validated by `wrap` here, before anything is registered.
+ChildRef Model::wrap_scalar(int32_t handle, const char* what) const {
+    const ChildRef ref = wrap(handle);
+    if (ref.is_var && is_structured(vars_[ref.id].type)) {
+        throw std::invalid_argument(std::string(what) +
+                                    ": expected a scalar handle, got a List or Set variable");
+    }
+    return ref;
+}
+
+int32_t Model::element(const std::vector<double>& table, int32_t index) {
+    require_buildable("element");
+    ModelStructure& st = mut();
+    if (table.empty()) {
+        throw std::invalid_argument("element: table must not be empty");
+    }
+    if (table.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
+        throw std::invalid_argument("element: table too large");
+    }
+    const ChildRef idx = wrap_scalar(index, "element");
+    ElementTable tbl;
+    tbl.rows = static_cast<int32_t>(table.size());
+    tbl.cols = 1;
+    tbl.values = table;
+    st.element_tables.push_back(std::move(tbl));
+    const auto table_id = static_cast<int32_t>(st.element_tables.size() - 1);
+    const int32_t nid = alloc_node(NodeOp::Element, {idx});
+    st.nodes[nid].lambda_func_id = table_id;
+    st.has_breakpoint_nodes = true;
+    return nid;
+}
+
+int32_t Model::element(const std::vector<std::vector<double>>& table, int32_t row, int32_t col) {
+    require_buildable("element");
+    ModelStructure& st = mut();
+    if (table.empty() || table.front().empty()) {
+        throw std::invalid_argument("element: table must be non-empty in both dimensions");
+    }
+    const size_t cols = table.front().size();
+    for (const auto& r : table) {
+        if (r.size() != cols) {
+            throw std::invalid_argument("element: table must be rectangular");
+        }
+    }
+    constexpr auto kMax = static_cast<size_t>(std::numeric_limits<int32_t>::max());
+    if (table.size() > kMax || cols > kMax / table.size()) {
+        throw std::invalid_argument("element: table too large");
+    }
+    const ChildRef r = wrap_scalar(row, "element");
+    const ChildRef c = wrap_scalar(col, "element");
+    ElementTable tbl;
+    tbl.rows = static_cast<int32_t>(table.size());
+    tbl.cols = static_cast<int32_t>(cols);
+    tbl.values.reserve(table.size() * cols);
+    for (const auto& rw : table) {
+        tbl.values.insert(tbl.values.end(), rw.begin(), rw.end());
+    }
+    st.element_tables.push_back(std::move(tbl));
+    const auto table_id = static_cast<int32_t>(st.element_tables.size() - 1);
+    const int32_t nid = alloc_node(NodeOp::Element, {r, c});
+    st.nodes[nid].lambda_func_id = table_id;
+    st.has_breakpoint_nodes = true;
+    return nid;
+}
+
+int32_t Model::ceil_expr(int32_t x) {
+    require_buildable("ceil_expr");
+    const int32_t nid = alloc_node(NodeOp::Ceil, {wrap(x)});
+    mut().has_breakpoint_nodes = true;
+    return nid;
+}
+
+int32_t Model::floor_expr(int32_t x) {
+    require_buildable("floor_expr");
+    const int32_t nid = alloc_node(NodeOp::Floor, {wrap(x)});
+    mut().has_breakpoint_nodes = true;
+    return nid;
+}
+
+int32_t Model::round_expr(int32_t x) {
+    require_buildable("round_expr");
+    const int32_t nid = alloc_node(NodeOp::Round, {wrap(x)});
+    mut().has_breakpoint_nodes = true;
+    return nid;
+}
+
+// The children of an extra-lambda node: the List/Set, then every extra. Built in
+// full -- every handle validated -- before the caller registers anything.
+std::vector<ChildRef> Model::lambda_extra_children(int32_t list_var_id,
+                                                   const std::vector<int32_t>& extra,
+                                                   const char* what) const {
+    const ChildRef list = wrap(list_var_id);
+    if (!list.is_var || !is_structured(vars_[list.id].type)) {
+        throw std::invalid_argument(std::string(what) + ": expected a List or Set variable handle");
+    }
+    std::vector<ChildRef> kids;
+    kids.reserve(extra.size() + 1);
+    kids.push_back(list);
+    for (const int32_t h : extra) {
+        kids.push_back(wrap_scalar(h, what));
+    }
+    return kids;
+}
+
+int32_t Model::alloc_node_over_refs(NodeOp op, const std::vector<ChildRef>& kids) {
+    ModelStructure& st = mut();
+    const size_t begin = st.child_refs.size();
+    st.child_refs.insert(st.child_refs.end(), kids.begin(), kids.end());
+    return push_node(op, begin);
+}
+
+int32_t Model::lambda_sum(int32_t list_var_id, LambdaExtraFunc func,
+                          const std::vector<int32_t>& extra) {
+    require_buildable("lambda_sum");
+    ModelStructure& st = mut();
+    if (!func) {
+        throw std::invalid_argument("lambda_sum: func must not be empty");
+    }
+    const std::vector<ChildRef> kids = lambda_extra_children(list_var_id, extra, "lambda_sum");
+    st.lambda_extra_funcs.push_back(std::move(func));
+    const auto func_id = static_cast<int32_t>(st.lambda_extra_funcs.size() - 1);
+    const int32_t nid = alloc_node_over_refs(NodeOp::LambdaExtra, kids);
+    st.nodes[nid].lambda_func_id = func_id;
+    return nid;
+}
+
+int32_t Model::pair_lambda_sum(int32_t list_var_id, PairLambdaExtraFunc func, PairMode mode,
+                               const std::vector<int32_t>& extra) {
+    require_buildable("pair_lambda_sum");
+    ModelStructure& st = mut();
+    if (!func) {
+        throw std::invalid_argument("pair_lambda_sum: func must not be empty");
+    }
+    const std::vector<ChildRef> kids = lambda_extra_children(list_var_id, extra, "pair_lambda_sum");
+    // Reserved first for the reason the plain form gives: the two tables share
+    // one id, so the second push must not be able to throw after the first.
+    st.pair_lambda_extra_modes.reserve(st.pair_lambda_extra_funcs.size() + 1);
+    st.pair_lambda_extra_funcs.push_back(std::move(func));
+    st.pair_lambda_extra_modes.push_back(mode);
+    const auto func_id = static_cast<int32_t>(st.pair_lambda_extra_funcs.size() - 1);
+    const int32_t nid = alloc_node_over_refs(NodeOp::PairLambdaExtra, kids);
+    st.nodes[nid].lambda_func_id = func_id;
+    return nid;
+}
+
 // Expr-returning variable creation
 Expr Model::Bool(const std::string& name) {
     return {this, bool_var(name)};

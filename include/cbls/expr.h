@@ -72,5 +72,12 @@ Expr pow(const Expr& base, const Expr& exp);
 Expr min(const std::vector<Expr>& args);
 Expr max(const std::vector<Expr>& args);
 Expr if_then_else(const Expr& cond, const Expr& then_, const Expr& else_);
+// #186: piecewise-constant rounding, and a table looked up by a decision. The
+// contracts are `Model::ceil_expr` and `Model::element`'s.
+Expr ceil(const Expr& x);
+Expr floor(const Expr& x);
+Expr round(const Expr& x);
+Expr element(const std::vector<double>& table, const Expr& index);
+Expr element(const std::vector<std::vector<double>>& table, const Expr& row, const Expr& col);
 
 }  // namespace cbls

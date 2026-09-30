@@ -418,6 +418,24 @@ std::function<double(int, int)> matrix_lookup(std::vector<double> tbl, int32_t n
     };
 }
 
+// The extra-reading lambdas (#186) take their extras as a Python list. The
+// engine hands a view that is valid for the call only, so it is copied into the
+// list the Python callable receives -- a few doubles, next to a GIL acquire.
+using ExtraCallable1 = std::function<double(int, const std::vector<double>&)>;
+using ExtraCallable2 = std::function<double(int, int, const std::vector<double>&)>;
+
+LambdaExtraFunc adapt_extra(ExtraCallable1 f) {
+    return [f = std::move(f)](int e, ConstSpan<double> x) {
+        return f(e, std::vector<double>(x.begin(), x.end()));
+    };
+}
+
+PairLambdaExtraFunc adapt_extra(ExtraCallable2 f) {
+    return [f = std::move(f)](int a, int b, ConstSpan<double> x) {
+        return f(a, b, std::vector<double>(x.begin(), x.end()));
+    };
+}
+
 // `None` detaches; a token attaches a NON-OWNING view of it. The keep_alive on
 // each setter is what keeps the token alive for as long as the config naming it,
 // so this cannot hand the engine a dangling view (the #156 hazard class).
@@ -473,6 +491,26 @@ constexpr const char* kPairLambdaSumDoc =
     "\n"
     "Every call re-acquires the GIL, so a Python func is a serialisation point\n"
     "for a portfolio. Use pair_table_sum where the function is a matrix.";
+
+constexpr const char* kLambdaExtraDoc =
+    "Sum `func(e, x)` over the elements of a List or Set variable, where `x`\n"
+    "is the list of the CURRENT values of the `extra` handles, in order -- a\n"
+    "per-element term that depends on other decisions, e.g. a stop cost by the\n"
+    "route's vehicle type: `func=lambda i, x: c[i][int(x[0])]`.\n"
+    "\n"
+    "A change to any extra, or any edit to the list, re-sums the list. The\n"
+    "node cannot be written to a .cbls file: save_model refuses the model.\n"
+    "Every call re-acquires the GIL, as a plain lambda_sum's does.";
+
+constexpr const char* kPairLambdaExtraDoc =
+    "Sum `func(e_k, e_{k+1}, x)` over consecutive pairs, `x` as in the extra\n"
+    "form of lambda_sum. cyclic=True adds the closing pair when n >= 2. There\n"
+    "are no head/tail terms in this form. `extra` is keyword-only.";
+
+constexpr const char* kElementDoc =
+    "table[index]: a table looked up by an Int expression. The index is\n"
+    "truncated toward zero, as `at` reads its index, and an index outside\n"
+    "[0, len(table)) reads 0.0. The table is copied into the model.";
 
 constexpr const char* kPairTableSumDoc =
     "pair_lambda_sum with the function given as a distance matrix.\n"
@@ -552,7 +590,13 @@ NB_MODULE(_cbls_core, m) {
         .value("Geq", NodeOp::Geq)
         .value("Neq", NodeOp::Neq)
         .value("Lt", NodeOp::Lt)
-        .value("Gt", NodeOp::Gt);
+        .value("Gt", NodeOp::Gt)
+        .value("Element", NodeOp::Element)
+        .value("Ceil", NodeOp::Ceil)
+        .value("Floor", NodeOp::Floor)
+        .value("Round", NodeOp::Round)
+        .value("LambdaExtra", NodeOp::LambdaExtra)
+        .value("PairLambdaExtra", NodeOp::PairLambdaExtra);
 
     // Variable (read-only access)
     //
@@ -815,6 +859,24 @@ NB_MODULE(_cbls_core, m) {
         .def("if_then_else", guarded(&Model::if_then_else, "Model.if_then_else"))
         .def("at", guarded(&Model::at, "Model.at"))
         .def("count", guarded(&Model::count, "Model.count"))
+        // #186. The C++ builders validate everything a Python caller can get
+        // wrong -- an empty or ragged table, a bogus handle, a List/Set where a
+        // scalar is read -- before a node exists, so nothing reaches the engine
+        // that it would index past. The table is copied into the model.
+        .def("element",
+             guarded(nb::overload_cast<const std::vector<double>&, int32_t>(&Model::element),
+                     "Model.element"),
+             nb::arg("table"), nb::arg("index"), kElementDoc)
+        .def("element",
+             guarded(nb::overload_cast<const std::vector<std::vector<double>>&, int32_t, int32_t>(
+                         &Model::element),
+                     "Model.element"),
+             nb::arg("table"), nb::arg("row"), nb::arg("col"),
+             "table[row][col] over a rectangular table; 0.0 when either index is out of range.")
+        .def("ceil_expr", guarded(&Model::ceil_expr, "Model.ceil_expr"), nb::arg("x"))
+        .def("floor_expr", guarded(&Model::floor_expr, "Model.floor_expr"), nb::arg("x"))
+        .def("round_expr", guarded(&Model::round_expr, "Model.round_expr"), nb::arg("x"),
+             "round half away from zero, as C's round().")
         .def("leq", guarded(&Model::leq, "Model.leq"))
         .def("eq_expr", guarded(&Model::eq_expr, "Model.eq_expr"))
         .def("geq", guarded(&Model::geq, "Model.geq"))
@@ -834,6 +896,17 @@ NB_MODULE(_cbls_core, m) {
                 return model.lambda_sum(list_var, std::move(func));
             },
             nb::arg("list_var"), nb::arg("func"), kLambdaSumDoc)
+        .def(
+            "lambda_sum",
+            [](Model& model, int32_t list_var, ExtraCallable1 func,
+               const std::vector<int32_t>& extra) {
+                refuse_if_solving(model, "Model.lambda_sum");
+                if (!func) {
+                    throw std::invalid_argument("Model.lambda_sum: func must not be None");
+                }
+                return model.lambda_sum(list_var, adapt_extra(std::move(func)), extra);
+            },
+            nb::arg("list_var"), nb::arg("func"), nb::arg("extra"), kLambdaExtraDoc)
         .def(
             "lambda_table_sum",
             [](Model& model, int32_t list_var, const Table1D& table) {
@@ -865,6 +938,19 @@ NB_MODULE(_cbls_core, m) {
             },
             nb::arg("list_var"), nb::arg("func"), nb::arg("cyclic") = false,
             nb::arg("head") = nb::none(), nb::arg("tail") = nb::none(), kPairLambdaSumDoc)
+        .def(
+            "pair_lambda_sum",
+            [](Model& model, int32_t list_var, ExtraCallable2 func,
+               const std::vector<int32_t>& extra, bool cyclic) {
+                refuse_if_solving(model, "Model.pair_lambda_sum");
+                if (!func) {
+                    throw std::invalid_argument("Model.pair_lambda_sum: func must not be None");
+                }
+                return model.pair_lambda_sum(list_var, adapt_extra(std::move(func)),
+                                             cyclic ? PairMode::Cyclic : PairMode::Open, extra);
+            },
+            nb::arg("list_var"), nb::arg("func"), nb::kw_only(), nb::arg("extra"),
+            nb::arg("cyclic") = false, kPairLambdaExtraDoc)
         .def(
             "pair_table_sum",
             [](Model& model, int32_t list_var, const Table2D& dist, bool cyclic,
@@ -1073,6 +1159,26 @@ NB_MODULE(_cbls_core, m) {
              })
         .def("__gt__", [](const Expr& a,
                           double b) { return build_expr(a, "Expr.__gt__", [&] { return a > b; }); })
+        .def("__ceil__",
+             [](const Expr& a) {
+                 return build_expr(a, "Expr.__ceil__", [&] { return cbls::ceil(a); });
+             })
+        .def("__floor__",
+             [](const Expr& a) {
+                 return build_expr(a, "Expr.__floor__", [&] { return cbls::floor(a); });
+             })
+        .def(
+            "__round__",
+            [](const Expr& a, std::optional<int> ndigits) {
+                // round(x, n) asks for decimal places, which the op does not
+                // have; refused rather than silently rounding to an integer.
+                if (ndigits.has_value()) {
+                    throw std::invalid_argument(
+                        "Expr.__round__: ndigits is not supported; round(x) rounds to an integer");
+                }
+                return build_expr(a, "Expr.__round__", [&] { return cbls::round(a); });
+            },
+            nb::arg("ndigits") = nb::none())
         .def("__abs__",
              [](const Expr& a) {
                  return build_expr(a, "Expr.__abs__", [&] { return cbls::abs(a); });
@@ -1116,6 +1222,27 @@ NB_MODULE(_cbls_core, m) {
         return build_expr(cond, "cbls.if_then_else",
                           [&] { return cbls::if_then_else(cond, then_, else_); });
     });
+    m.def("ceil",
+          [](const Expr& x) { return build_expr(x, "cbls.ceil", [&] { return cbls::ceil(x); }); });
+    m.def("floor", [](const Expr& x) {
+        return build_expr(x, "cbls.floor", [&] { return cbls::floor(x); });
+    });
+    m.def("round", [](const Expr& x) {
+        return build_expr(x, "cbls.round", [&] { return cbls::round(x); });
+    });
+    m.def(
+        "element",
+        [](const std::vector<double>& table, const Expr& index) {
+            return build_expr(index, "cbls.element", [&] { return cbls::element(table, index); });
+        },
+        nb::arg("table"), nb::arg("index"), kElementDoc);
+    m.def(
+        "element",
+        [](const std::vector<std::vector<double>>& table, const Expr& row, const Expr& col) {
+            refuse_if_solving(*col.model, "cbls.element");
+            return build_expr(row, "cbls.element", [&] { return cbls::element(table, row, col); });
+        },
+        nb::arg("table"), nb::arg("row"), nb::arg("col"));
 
     // Model::State
     nb::class_<Model::State>(m, "ModelState")

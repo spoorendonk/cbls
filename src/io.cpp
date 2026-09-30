@@ -1,5 +1,6 @@
 #include "cbls/io.h"
 
+#include <cstddef>
 #include <fstream>
 #include <functional>
 #include <nlohmann/json.hpp>
@@ -7,6 +8,7 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace cbls {
 
@@ -82,26 +84,41 @@ static std::string op_to_string(NodeOp op) {
             // deleting this case is reported by both). See the note on
             // evaluate() in src/dag.cpp.
             return "Custom";
+        case NodeOp::Element:
+            return "Element";
+        case NodeOp::Ceil:
+            return "Ceil";
+        case NodeOp::Floor:
+            return "Floor";
+        case NodeOp::Round:
+            return "Round";
+        case NodeOp::LambdaExtra:
+            // Never written, like Custom: `save_model` refuses the model first.
+            return "LambdaExtra";
+        case NodeOp::PairLambdaExtra:
+            return "PairLambdaExtra";
     }
     return "Unknown";
 }
 
 static NodeOp string_to_op(const std::string& s) {
     static const std::unordered_map<std::string, NodeOp> kMap = {
-        {"Const", NodeOp::Const},   {"Neg", NodeOp::Neg},
-        {"Sum", NodeOp::Sum},       {"Prod", NodeOp::Prod},
-        {"Div", NodeOp::Div},       {"Pow", NodeOp::Pow},
-        {"Min", NodeOp::Min},       {"Max", NodeOp::Max},
-        {"Abs", NodeOp::Abs},       {"Sin", NodeOp::Sin},
-        {"Cos", NodeOp::Cos},       {"Tan", NodeOp::Tan},
-        {"Exp", NodeOp::Exp},       {"Log", NodeOp::Log},
-        {"Sqrt", NodeOp::Sqrt},     {"SignPower", NodeOp::SignPower},
-        {"Tanh", NodeOp::Tanh},     {"If", NodeOp::If},
-        {"At", NodeOp::At},         {"Count", NodeOp::Count},
-        {"Lambda", NodeOp::Lambda}, {"PairLambda", NodeOp::PairLambda},
-        {"Leq", NodeOp::Leq},       {"Eq", NodeOp::Eq},
-        {"Geq", NodeOp::Geq},       {"Neq", NodeOp::Neq},
-        {"Lt", NodeOp::Lt},         {"Gt", NodeOp::Gt},
+        {"Const", NodeOp::Const},     {"Neg", NodeOp::Neg},
+        {"Sum", NodeOp::Sum},         {"Prod", NodeOp::Prod},
+        {"Div", NodeOp::Div},         {"Pow", NodeOp::Pow},
+        {"Min", NodeOp::Min},         {"Max", NodeOp::Max},
+        {"Abs", NodeOp::Abs},         {"Sin", NodeOp::Sin},
+        {"Cos", NodeOp::Cos},         {"Tan", NodeOp::Tan},
+        {"Exp", NodeOp::Exp},         {"Log", NodeOp::Log},
+        {"Sqrt", NodeOp::Sqrt},       {"SignPower", NodeOp::SignPower},
+        {"Tanh", NodeOp::Tanh},       {"If", NodeOp::If},
+        {"At", NodeOp::At},           {"Count", NodeOp::Count},
+        {"Lambda", NodeOp::Lambda},   {"PairLambda", NodeOp::PairLambda},
+        {"Leq", NodeOp::Leq},         {"Eq", NodeOp::Eq},
+        {"Geq", NodeOp::Geq},         {"Neq", NodeOp::Neq},
+        {"Lt", NodeOp::Lt},           {"Gt", NodeOp::Gt},
+        {"Element", NodeOp::Element}, {"Ceil", NodeOp::Ceil},
+        {"Floor", NodeOp::Floor},     {"Round", NodeOp::Round},
     };
     auto it = kMap.find(s);
     if (it == kMap.end()) {
@@ -273,6 +290,21 @@ std::function<double(int)> endpoint_func(const json& j, const char* field) {
     return [table = std::move(table)](int e) -> double { return table.at(e); };
 }
 
+// An Element record (#186): `"table"` is a flat array for one index child and an
+// array of equal-length rows for two. The model builder checks the shape; this
+// only picks which of its two forms the child count asks for.
+int32_t build_element(Model& m, const json& j, const std::vector<int32_t>& children, int line_num) {
+    const json& table = require_table(j, "Element", line_num);
+    if (children.size() == 1) {
+        return m.element(table.get<std::vector<double>>(), children[0]);
+    }
+    if (children.size() == 2) {
+        return m.element(table.get<std::vector<std::vector<double>>>(), children[0], children[1]);
+    }
+    throw std::invalid_argument("line " + std::to_string(line_num) +
+                                ": Element node requires one or two index children");
+}
+
 // Rebuild one non-Const node from its op and its already-resolved children.
 // Kept apart from the record-level plumbing above it precisely because it is a
 // wide table: one line per NodeOp, no shared state between the lines.
@@ -356,6 +388,21 @@ int32_t build_node(Model& m, NodeOp op, const json& j, const std::vector<int32_t
             // future reader-side entry cannot silently return -1.
             throw std::invalid_argument("line " + std::to_string(line_num) +
                                         ": Custom nodes hold user code and cannot be loaded");
+        case NodeOp::Element:
+            return build_element(m, j, children, line_num);
+        case NodeOp::Ceil:
+            return m.ceil_expr(children.at(0));
+        case NodeOp::Floor:
+            return m.floor_expr(children.at(0));
+        case NodeOp::Round:
+            return m.round_expr(children.at(0));
+        case NodeOp::LambdaExtra:
+        case NodeOp::PairLambdaExtra:
+            // Unreachable for the reason Custom's is: `string_to_op` has no
+            // entry for either, and the writer refuses a model holding one.
+            throw std::invalid_argument("line " + std::to_string(line_num) +
+                                        ": lambdas over extra decisions hold user code and "
+                                        "cannot be loaded");
     }
     return -1;
 }
@@ -655,6 +702,20 @@ json node_record(const Model& model, const ExprNode& node, NameTable& var_names,
         j["children"].push_back(child_name(model.children(node)[0], var_names, node_names));
         return j;
     }
+    if (node.op == NodeOp::Element) {
+        // The table is data, written as the builder took it: a flat array for
+        // one index, rows for two.
+        const ElementTable& tbl = model.element_table(node.lambda_func_id);
+        if (model.children(node).size() == 1) {
+            j["table"] = tbl.values;
+        } else {
+            j["table"] = json::array();
+            for (int32_t r = 0; r < tbl.rows; ++r) {
+                const auto first = tbl.values.begin() + (static_cast<std::ptrdiff_t>(r) * tbl.cols);
+                j["table"].push_back(std::vector<double>(first, first + tbl.cols));
+            }
+        }
+    }
     j["children"] = json::array();
     for (const ChildRef& ch : model.children(node)) {
         j["children"].push_back(child_name(ch, var_names, node_names));
@@ -682,14 +743,25 @@ json objective_record(const Model& model, NameTable& var_names, NameTable& node_
 // throwing partway through would replace an existing file with a prefix of a
 // model -- the same failure the benchmark runners guard against for published
 // tables, and for the same reason: it looks like a file.
-void refuse_custom_nodes(const Model& model) {
-    // O(1) for every model that has no custom node, which is every model any
-    // in-tree caller writes today -- and it is what makes calling this twice on
-    // the `path` overload free, rather than two walks of a 4.3M-node array.
-    if (!model.has_custom_nodes()) {
+//
+// A `lambda_sum` / `pair_lambda_sum` over extra decisions (#186) is refused on
+// the same terms: its functor takes continuous values, so there is no finite
+// table to write where a plain `Lambda` has one.
+void refuse_user_code_nodes(const Model& model) {
+    // O(1) for every model that has neither kind of node, which is every model
+    // any in-tree caller writes today -- and it is what makes calling this
+    // twice on the `path` overload free, rather than two walks of a 4.3M-node
+    // array.
+    if (!model.has_custom_nodes() && !model.has_lambda_extra_nodes()) {
         return;
     }
     for (const auto& node : model.nodes()) {
+        if (node.op == NodeOp::LambdaExtra || node.op == NodeOp::PairLambdaExtra) {
+            throw std::runtime_error("cannot serialise model: node n" + std::to_string(node.id) +
+                                     " (" + op_to_string(node.op) +
+                                     ") holds a functor over extra decisions, which the .cbls "
+                                     "format cannot tabulate");
+        }
         if (node.op != NodeOp::Custom) {
             continue;
         }
@@ -704,7 +776,7 @@ void refuse_custom_nodes(const Model& model) {
 }  // namespace
 
 void save_model(const Model& model, std::ostream& out) {
-    refuse_custom_nodes(model);
+    refuse_user_code_nodes(model);
     NameTable var_names;
     NameTable node_names;
     build_name_tables(model, var_names, node_names);
@@ -748,10 +820,10 @@ void save_model(const Model& model, std::ostream& out) {
 }
 
 void save_model(const Model& model, const std::string& path) {
-    // Before the stream is opened, for the reason refuse_custom_nodes gives:
+    // Before the stream is opened, for the reason refuse_user_code_nodes gives:
     // opening truncates, so a refusal after that point destroys whatever file
     // was there.
-    refuse_custom_nodes(model);
+    refuse_user_code_nodes(model);
     std::ofstream file(path);
     if (!file.is_open()) {
         throw std::invalid_argument("cannot open file for writing: " + path);
