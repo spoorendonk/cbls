@@ -370,3 +370,74 @@ rail01. Part 1's fresh-seed result therefore carries over unchanged.
 
 Each run's CPU time (`/usr/bin/time`, user seconds) is recorded next to its
 wall time as context only. The verdict stays on wall time.
+
+### Round 2 result (appended after the run): Part 2 PASSES
+
+**Cause of the round-1 failure: code shape, not work.** In an uninstrumented
+Release build of `301ac22`:
+
+- eg_all_s used 7.09-7.11 s of CPU at 7,600 fixed iterations, against
+  6.19-6.27 s for `bf4979f`, on the same trajectory.
+- An instrumented copy of `301ac22` timed every walk with rdtsc and ran in
+  6.21-6.33 s. The same walks cost the same cycles in both arms: for the
+  probe walks, 9.4-10.1 G cycles on `bf4979f` against 9.4-9.7 G on
+  `301ac22`.
+- Its hot evaluation loop is byte-for-byte the same size and at the same
+  alignment in the slow build and in the fast instrumented one.
+- `-falign-functions=64 -falign-loops=64 -falign-jumps=16` did not recover
+  it.
+
+What did recover it was keeping the incremental-Sum rules' cold paths
+(`prepare`, `eval_flagged`, `restore_stash`) out of line, so they no longer
+grow `delta_walk` (`eadd414`).
+
+At 7,600 iterations that commit's eg_all_s uses 6.05-6.13 s against
+6.19-6.27 s. At 10,000 iterations, CPU time for the other four:
+
+| instance | `eadd414` | `bf4979f` |
+|---|---|---|
+| maxmin | 1.12 s | 1.16-1.17 s |
+| nvs01 | 2.53-2.58 s | 2.59 s |
+| nvs14 | 5.75-5.77 s | 6.12-6.13 s |
+| ex8_4_5 | 0.78-0.80 s | 0.78-0.79 s |
+
+**Trajectories unchanged.**
+
+- At a fixed iteration count `eadd414` ends on the same final-assignment
+  hash as `301ac22` on all 50 MINLPLib instances (5,000 iterations, seed 1).
+- It does the same on swath3 `19a449839aabd5e9`, cbs-cta
+  `edf75d3e239255f9`, sp150x300d `5badc498de1cd0c1`, neos-860300
+  `db36cea8e3f52e39` and rail01 `055ddb905574bf51`.
+- Part 1's fresh-seed result therefore stands for `eadd414`.
+
+**The run.** 2026-09-30, 17:55-18:11, load 0.57-1.13 (median 0.99).
+`cbls_minlplib` sha256 prefixes: `d4e71580` (`bf4979f`) and `d2a315ee`
+(`eadd414`). Both builds are Release with `CBLS_SANITIZE` empty.
+
+- All 50 instances end on the same objective in both arms.
+- Wall-time ratio new/base: geomean **0.9746**, which is within the 1.02
+  limit. Min 0.670, first quartile 0.996, median 0.999, third quartile 1.001,
+  max 1.009.
+- None of the 18 instances with a base median of at least 0.5 s exceeds 1.10.
+- **Verdict: PASS.**
+
+| instance | wall, `bf4979f` -> `eadd414` | ratio | CPU (context) | ratio |
+|---|---|---|---|---|
+| eg_all_s | 86.79 -> 82.89 s | 0.955 | 86.70 -> 82.80 s | 0.955 |
+| nvs14 | 6.117 -> 5.917 s | 0.967 | 6.07 -> 5.80 s | 0.956 |
+| nvs01 | 2.612 -> 2.613 s | 1.001 | 2.59 -> 2.51 s | 0.969 |
+| maxmin | 1.211 -> 1.212 s | 1.000 | 1.16 -> 1.12 s | 0.966 |
+| ex8_4_5 | 0.810 -> 0.812 s | 1.003 | 0.79 -> 0.79 s | 1.000 |
+| gear4 | 0.311 -> 0.208 s | 0.670 | 0.20 -> 0.19 s | 0.950 |
+
+**Grid-free context.** CPU time, over the 38 instances whose base uses at
+least 0.05 s: geomean 0.9747, min 0.923, median 0.969, max 1.083.
+
+**The ~0.1 s wall-clock grid is the `timeout` wrapper, not the engine.**
+- The same gear4 run, measured back to back:
+  - under `timeout 600`: 0.311, 0.209 and 0.208 s;
+  - without `timeout`: 0.208, 0.204 and 0.204 s.
+- `/usr/bin/time` of the `timeout` process reads 0.30 and 0.20 s.
+- The wrapper sometimes adds about 100 ms on exit. Every short-run
+  "regression" in the round-1 table was one such step, in whichever arm drew
+  it. In round 2 it lands on base's gear4 median, hence the 0.670.

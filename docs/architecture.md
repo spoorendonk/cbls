@@ -296,7 +296,16 @@ own rounding is still there, as it always was.
     eg_all_s is about 14% slower per iteration (86.4 s against 98.7 s at
     10,000 iterations). ex8_4_5 is 1.13x, one step of a ~0.1 s timing grid
     both arms land on.
-  - The MINLPLib no-regression check is therefore not met.
+  - At `301ac22` the MINLPLib no-regression check was therefore not met.
+  - Round 2 re-checked the same rule at `eadd414`. That commit keeps the
+    incremental-Sum rules' cold paths out of line, because inlined they had
+    slowed `delta_walk` on the same trajectory.
+  - Round 2 **passed**: geomean wall ratio 0.975, max 1.009, no capped
+    instance over 1.10, all 50 on the same objective. eg_all_s went from
+    86.8 s to 82.9 s. `eadd414` ends on the same final-assignment hashes as
+    `301ac22` on all 50 instances, so the fresh-seed quality result stands.
+  - The ~0.1 s grid came from the `timeout` wrapper, which sometimes adds
+    ~100 ms on exit.
   - Record: `docs/benchmarks/incremental-sum-drift.md`.
 
 An earlier head of the same design lost 7 MINLPLib objectives to a
