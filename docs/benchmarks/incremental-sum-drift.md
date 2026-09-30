@@ -356,3 +356,17 @@ What these numbers show:
 
 Per the pre-registration, nothing is iterated on this result. The MINLPLib
 no-regression check is **not met** at `301ac22`.
+
+### Round 2 (appended before its run)
+
+Round 2 re-checks Part 2 after an overhead fix. It uses the same rule and
+thresholds, all 50 instances, 10,000 iterations and 3 repeats, with
+`bf4979f` against `eadd414`. Nothing about the rule changes.
+
+Part 1 is not re-run. At a fixed iteration count `eadd414` ends on the same
+final-assignment hash as `301ac22` on all 50 MINLPLib instances (5,000
+iterations, seed 1) and on swath3, cbs-cta, sp150x300d, neos-860300 and
+rail01. Part 1's fresh-seed result therefore carries over unchanged.
+
+Each run's CPU time (`/usr/bin/time`, user seconds) is recorded next to its
+wall time as context only. The verdict stays on wall time.
