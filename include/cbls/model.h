@@ -944,8 +944,6 @@ private:
     /// node array holds nothing a search writes (#157). Kept exactly as long as
     /// `s().nodes` by `push_node`, the one place a node is made.
     std::vector<double> node_values_;
-    /// See `inc_sums()`.
-    IncSums inc_sums_;
     /// The immutable side (#157). Both handles point at the same object while the
     /// model is open; `freeze()` drops `open_structure_`, after which `mut()`
     /// throws and the only handle left is a const one. Two pointers rather than
@@ -971,6 +969,10 @@ private:
     /// exactly the guarantee `lambda_funcs` cannot make. The copy constructor
     /// clones them one by one; see the note there.
     std::vector<CustomInvariantSlot> custom_invariants_;
+    /// See `inc_sums()`. Last, after the members every walk reads: placed
+    /// among them it pushed those onto more cache lines, which cost a
+    /// probe-bound model ~5% (#188).
+    IncSums inc_sums_;
 
     /// Throws if the model is frozen. `mut()` is the backstop for anything that
     /// writes the structure; this is for the public mutators that would otherwise

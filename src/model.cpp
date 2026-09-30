@@ -31,14 +31,14 @@ Model::Model() {
 Model::Model(const Model& other)
     : vars_(other.vars_),
       node_values_(other.node_values_),
-      inc_sums_(other.inc_sums_),
       objective_id_(other.objective_id_),
       is_maximizing_(other.is_maximizing_),
       objective_bound_node_(other.objective_bound_node_),
       objective_constraint_node_(other.objective_constraint_node_),
       objective_constraint_idx_(other.objective_constraint_idx_),
       objective_bound_(other.objective_bound_),
-      closed_(other.closed_) {
+      closed_(other.closed_),
+      inc_sums_(other.inc_sums_) {
     // probe_old_violation_ is deliberately left empty: it is resized and
     // overwritten before it is read on every call, so it carries no state.
     //

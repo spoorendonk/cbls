@@ -726,6 +726,21 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
     }
     dirty_list.clear();
 
+    // A model with neither an incremental Sum nor a custom node -- most of
+    // MINLPLib -- takes the pre-#177 walk verbatim. Measured, not guessed: on
+    // gear4, whose probe cones are a handful of nodes, merely constructing the
+    // incremental-Sum rules per walk cost ~10% of the run (#188).
+    if (model.inc_sum_nodes().empty() && !model.has_custom_nodes()) {
+        if (count == 0) {
+            return objective_value(model);
+        }
+        const DirtyFlagGuard plain_guard(dirty_flags, dirty_list);
+        collect_dirty_cone(model, changed_var_ids, count, dirty_flags, dirty_list);
+        evaluate_dirty_in_topo_order(
+            model, dirty_list, dirty_flags, num_nodes,
+            [&model](int32_t id) { return evaluate(model.nodes()[id], model); });
+        return objective_value(model);
+    }
     // Before the early return: it is what drops a stale probe stash.
     IncSumWalk sums(model, mode, old_values != nullptr, dirty_flags);
     if (count == 0) {
