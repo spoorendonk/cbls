@@ -1378,6 +1378,31 @@ TEST_CASE("an update that rounds is drift, never taken as exact", "[dag][inc_sum
     CHECK(st.drift_bound >= 1.0);
 }
 
+TEST_CASE("the rounding of a term's change is drift too", "[dag][inc_sum]") {
+    // Sum{x, y} at x = 2^-60, y = -2^-60 holds 0, exactly. x -> 1 changes the
+    // term by 1 - 2^-60, which rounds to 1; the add 0 + 1 is then exact. The
+    // Sum holds 1 where the real sum is 1 - 2^-60, and only the error of
+    // `new - old` accounts for it. Red if the bound leaves that error out.
+    Model m;
+    const int32_t x = m.float_var(-2.0, 2.0);
+    const int32_t y = m.float_var(-2.0, 2.0);
+    const int32_t row = m.sum({x, y});
+    m.add_constraint(m.leq(row, m.constant(5.0)));
+    m.close();
+    m.var_mut(vid(x)).value = 0x1p-60;
+    m.var_mut(vid(y)).value = -0x1p-60;
+    full_evaluate(m);
+    commit_scalar_move(m, vid(y), -0x1p-60);  // untracked: re-sums, checked -- exactly 0
+    const IncSumState& st = m.inc_sums().slots[static_cast<size_t>(m.node(row).lambda_func_id)];
+    REQUIRE(st.tracked == 1);
+    REQUIRE(st.drift_bound == 0.0);
+    m.var_mut(vid(x)).value = 1.0;
+    commit_scalar_move(m, vid(x), 0x1p-60);
+    CHECK(m.node_value(row) == 1.0);  // the real sum is 1 - 2^-60
+    CHECK(st.drifting == 1);
+    CHECK(st.drift_bound >= 0x1p-60);
+}
+
 TEST_CASE("full_evaluate leaves every incremental Sum untracked", "[dag][inc_sum]") {
     // restore_state writes variables with no walk, and full_evaluate re-sums
     // without the rounding check. The state must not survive it: the next commit
