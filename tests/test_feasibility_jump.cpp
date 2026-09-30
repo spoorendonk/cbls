@@ -1293,6 +1293,7 @@ TEST_CASE("a row violated only by drift is never GLS-bumped", "[fj][inc_sum]") {
     // it, and weights persist across batches.
     DriftRig rig(DriftCase::Phantom, false, false);
     DriftFj f(rig.m);
+    incremental_sum_counters() = IncrementalSumCounters{};
     rig.drift();
     REQUIRE(rig.reads_violated());
     f.fj.resync();
@@ -1300,8 +1301,8 @@ TEST_CASE("a row violated only by drift is never GLS-bumped", "[fj][inc_sum]") {
     CHECK(f.fj.batch(20));  // feasible on the real sums, and reported so
     CHECK(f.vm.weights[static_cast<size_t>(rig.row_ci)] == 1.0);
     CHECK_FALSE(f.fj.row_violated(rig.row_ci));
-    CHECK(f.fj.drift_stats().gated_minima == 1);
-    CHECK(f.fj.drift_stats().gate_flips == 1);
+    CHECK(incremental_sum_counters().gated_minima == 1);
+    CHECK(incremental_sum_counters().gate_flips == 1);
 }
 
 TEST_CASE("a row satisfied only by drift is bumped with the rest of V", "[fj][inc_sum]") {
@@ -1313,6 +1314,7 @@ TEST_CASE("a row satisfied only by drift is bumped with the rest of V", "[fj][in
     // stays out of V -- and unbumped -- until the batch's end re-grounds it.
     DriftRig rig(DriftCase::Mirror, false, true);
     DriftFj f(rig.m);
+    incremental_sum_counters() = IncrementalSumCounters{};
     rig.drift();
     REQUIRE_FALSE(rig.reads_violated());
     f.fj.resync();
@@ -1322,7 +1324,7 @@ TEST_CASE("a row satisfied only by drift is bumped with the rest of V", "[fj][in
     const double w_row = f.vm.weights[static_cast<size_t>(rig.row_ci)];
     CHECK(w_row > 1.0);
     CHECK(w_row == f.vm.weights[static_cast<size_t>(rig.pinned_ci)]);
-    CHECK(f.fj.drift_stats().gate_flips == 1);
+    CHECK(incremental_sum_counters().gate_flips == 1);
 }
 
 TEST_CASE("FJ's local-minimum Feasible verdict is exact under drift", "[fj][inc_sum]") {
@@ -1333,6 +1335,7 @@ TEST_CASE("FJ's local-minimum Feasible verdict is exact under drift", "[fj][inc_
     // catches this row.
     DriftRig rig(DriftCase::Mirror, true, false);
     DriftFj f(rig.m);
+    incremental_sum_counters() = IncrementalSumCounters{};
     rig.drift();
     f.fj.resync();
     REQUIRE(f.fj.row_violated(rig.fixable_ci));
@@ -1350,6 +1353,7 @@ TEST_CASE("a batch ended at its limit reports Feasible only on exact rows", "[fj
     // re-grounding in batch_end_status.
     DriftRig rig(DriftCase::Mirror, true, false);
     DriftFj f(rig.m);
+    incremental_sum_counters() = IncrementalSumCounters{};
     rig.drift();
     f.fj.resync();
     CHECK_FALSE(f.fj.batch(1));
@@ -1365,6 +1369,7 @@ TEST_CASE("Novelty Jump reports feasibility only on exact rows", "[fj][inc_sum]"
     // having reached feasibility.
     DriftRig rig(DriftCase::Mirror, true, false);
     DriftFj f(rig.m);
+    incremental_sum_counters() = IncrementalSumCounters{};
     rig.drift();
     f.fj.resync();
     CHECK_FALSE(f.fj.apply_novelty_jump());

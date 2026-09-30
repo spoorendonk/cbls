@@ -365,25 +365,6 @@ public:
     [[nodiscard]] LinearJumpScorer& linear_scorer() { return linear_; }
     [[nodiscard]] int64_t structural_kick_stride() const { return kick_stride_; }
 
-    /// What the incremental Sums' drift cost this object (#188), since
-    /// construction. Diagnostics: nothing reads them.
-    struct DriftStats {
-        /// GLS iterations that found no improving jump (local minima).
-        int64_t local_minima = 0;
-        /// Of those, the ones where some row's verdict was undecided by its
-        /// Sum's drift bound, so its Sum was re-summed before any decision.
-        int64_t gated_minima = 0;
-        /// Sums re-summed by that gate.
-        int64_t gate_resums = 0;
-        /// Of the gated minima, the ones where a re-sum moved a row into or out
-        /// of V, so the iteration re-sampled instead of bumping or stopping.
-        int64_t gate_flips = 0;
-        /// Sums re-summed at the end of a batch (or of a Novelty Jump, or before
-        /// a Feasible verdict), because they drifted during it.
-        int64_t batch_end_resums = 0;
-    };
-    [[nodiscard]] const DriftStats& drift_stats() const { return drift_stats_; }
-
     // Novelty Jump (paper Algorithms 4-5): a bounded-backtracking compound-move
     // search that escapes local optima single-variable FJ cannot (chained-
     // invariant fixes). Commits the improving compound move(s) it finds (left
@@ -657,7 +638,6 @@ private:
     // before) for each of their rows.
     std::vector<int32_t> slot_scratch_;
     std::vector<std::pair<int32_t, double>> row_before_;
-    DriftStats drift_stats_;
     std::vector<uint8_t> is_linear_;  // per constraint
     // Closed-form scoring over linear comparison rows. Its per-row eligibility is
     // maintained wherever is_linear_ is: compute_linear_constraints (the
