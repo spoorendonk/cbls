@@ -493,12 +493,12 @@ public:
                 break;
             case Rule::Commit:
                 if (!push_ && model_.has_custom_nodes()) {
-                    // A walk without pushes re-reads a term only at its Sum's
-                    // turn, so user code throwing before that turn would leave
-                    // the Sum stale while its state says it is tracked; the next
-                    // commit would update the stale value. Untracked, it
-                    // re-sums instead. Defensive: after a throw the contract
-                    // already asks for a full_evaluate, which resets them all.
+                    // Custom nodes only; #186's extra lambdas are not covered
+                    // (a follow-up tracks it). A walk without pushes re-reads
+                    // a term only at its Sum's turn, so user code throwing before that turn would
+                    // leave the Sum stale while its state says it is tracked; the next commit would
+                    // update the stale value. Untracked, it re-sums instead. Defensive: after a
+                    // throw the contract already asks for a full_evaluate, which resets them all.
                     for (const int32_t nid : dirty_list) {
                         if ((nodes_[nid].inc_sum_flags & ExprNode::kIncSum) != 0) {
                             sums_.slots[slot_of(nid)].tracked = 0;

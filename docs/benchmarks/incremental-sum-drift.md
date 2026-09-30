@@ -119,7 +119,7 @@ incremental Sum they touched.
 
 In response, the design was changed before any pre-registered run: walks that
 do not know the old values re-sum plainly and leave the Sum untracked. That
-change was first committed as `a50af3c` and is `94f019b` on this branch.
+change is `94f019b` on main (first built as a branch commit that is not retained).
 
 The roster was therefore not untouched when the design was fixed. Nothing was
 tuned on it, but one design choice was made after seeing it.
@@ -159,7 +159,7 @@ The batch-end re-grounding re-sums 15,700-157,000 Sums per run.
 
 ## Integral trajectories and the identity hashes
 
-At a fixed iteration count, main `bf4979f` and this branch end on the same
+At a fixed iteration count, `bf4979f` and the landed #188 commits end on the same
 final-assignment hashes. The same hashes were recorded on the heads
 `7bb0201`, `bfe9826` and `301ac22`.
 
@@ -359,6 +359,14 @@ no-regression check is **not met** at `301ac22`.
 
 ### Round 2 (appended before its run)
 
+**Deviation from this pre-registration.** The re-check above said "nothing is
+iterated". Round 2 iterates once anyway, at the orchestrator's direction, as the
+second and last review fix round. It is still informative because the fix is a
+parameter-free code-shape change that leaves all 50 MINLPLib trajectories
+hash-identical, and the rule and thresholds are unchanged. It is not independent
+evidence, though: the cause was diagnosed on eg_all_s, and eg_all_s is what it
+then passed on.
+
 Round 2 re-checks Part 2 after an overhead fix. It uses the same rule and
 thresholds, all 50 instances, 10,000 iterations and 3 repeats, with
 `bf4979f` against `eadd414`. Nothing about the rule changes.
@@ -441,3 +449,26 @@ least 0.05 s: geomean 0.9747, min 0.923, median 0.969, max 1.083.
 - The wrapper sometimes adds about 100 ms on exit. Every short-run
   "regression" in the round-1 table was one such step, in whichever arm drew
   it. In round 2 it lands on base's gear4 median, hence the 0.670.
+
+## Throughput of the landed head on MIPfeas (appended at the final review)
+
+The MIPfeas A/B above measured `bfe9826`. The later engine commits `301ac22`
+(gate-margin rounding) and `eadd414` (cold paths out of line) were checked
+against it at a fixed iteration count: 20,000 iterations, seed 42, 3 repeats
+alternating arm order, CPU user time, exclusive lock, 1-minute load 0.24-0.85.
+The final-assignment hashes are identical on all six instances. Median CPU
+seconds, `bfe9826` against `eadd414`:
+
+| instance | `bfe9826` | `eadd414` |
+|---|---|---|
+| swath3 | 0.39 | 0.39 |
+| b1c1s1 | 0.70 | 0.72 |
+| rail01 | 0.55 | 0.55 |
+| ns1116954 | 1.91 | 1.93 |
+| cbs-cta | 0.17 | 0.17 |
+| neos-860300 | 11.99 | 12.06 |
+
+The differences are within the 10 ms resolution of `/usr/bin/time` on the short
+runs, and 0.6% on neos-860300. The 1.082x / 1.124x figures therefore carry over
+to the landed head within about 1%. This is a CPU-time check at fixed
+iterations, not a fresh 20 s A/B.

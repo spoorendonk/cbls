@@ -580,14 +580,14 @@ for a timing comparison either check `CMAKE_BUILD_TYPE` and `CBLS_SANITIZE` in
 `build/CMakeCache.txt` or configure a fresh directory. The measurement recipes —
 heap attribution, CPU profiling, sanitizers — are in `docs/profiling.md`.
 
-**Don't wall-time sub-second runs through `timeout`.** It intermittently adds
-~100 ms on exit, in whichever arm draws it: #188's first MINLPLib timing check
-read gear4 as 1.50x from that alone (`docs/benchmarks/incremental-sum-drift.md`).
+**Read sub-second runs on CPU time, not wall time.** #188's MINLPLib timing
+check saw short runs land on a ~0.1 s wall-clock grid, attributed on one
+reproduction to the `timeout` wrapper. The grid turns small differences into
+whole steps (gear4 read as 1.50x) (`docs/benchmarks/incremental-sum-drift.md`).
 Take CPU time (`/usr/bin/time`) alongside wall, or drop the wrapper for short
 runs. And a per-iteration regression with unchanged work can be code shape, not
-cost: #188's walk lost 14% on eg_all_s to inlining and got it back with
-`[[gnu::noinline]]`, which gprof could not see (under `-pg` the slow arm was the
-faster one).
+cost: #188's walk lost 14% on eg_all_s with the same per-walk cycle counts, and
+got it back by keeping cold paths out of line with `[[gnu::noinline]]`.
 
 **A runner that writes a published table must not truncate it before it has
 results.** `std::ofstream out(path)` truncates on open, so a run started from
@@ -643,7 +643,7 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 
 2. **Expression DAG** (`include/cbls/dag.h`, `src/dag.cpp`, `src/dag_ops.cpp`) — Variables use negative handles `-(id+1)`, nodes use non-negative `id`. 35 `NodeOp` operation types. Two evaluation modes:
    - `full_evaluate`: evaluate all nodes in topo order (initialization)
-   - `delta_evaluate`: BFS dirty-marking from changed variables, recompute only affected nodes (moves)
+   - `delta_evaluate`: BFS dirty-marking from changed variables, recompute only affected nodes (moves). On an FJ commit an incremental Sum (#188, a row read only by top-level comparisons) is moved by its changed terms instead of re-summed, so inside a batch its value may sit within a tracked drift bound of a re-sum; every verdict re-grounds first. A bit-exact delta-vs-full test must allow for that on fractional data. Details in `docs/architecture.md`
    - Reverse-mode AD via `compute_all_partials` for the continuous (Newton) jump-value engine
 
 3. **Search** (`src/search.cpp`) — ViolationLS batch outer loop (Davies et al. CPAIOR 2024, Algorithm 6). The objective is folded into the constraints as `obj <= bound`; each batch is a Feasibility Jump, Novelty Jump, or STRUCTURAL batch (selected by config probabilities). The objective bound is tightened on each new real-feasible solution; on stagnation the assignment is perturbed or diversified via LNS.

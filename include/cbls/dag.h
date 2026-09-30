@@ -161,8 +161,9 @@ enum class NodeOp : uint8_t {
     // The six below are #186's, appended after `Custom` for the same reason
     // `Custom` was appended last: every existing enumerator keeps its value.
     //
-    // All six are piecewise constant in their scalar children, so their local
-    // derivative is 0 and none of them is affine. What FJ uses instead of a
+    // Element/Ceil/Floor/Round are piecewise constant in their scalar children,
+    // and the two extra lambdas are opaque functors, so all six report a local
+    // derivative of 0 and none of them is affine. What FJ uses instead of a
     // gradient is in `compute_var_jump` (src/feasibility_jump.cpp): the plateau
     // edges of Ceil/Floor/Round and the index values of Element, reached from a
     // variable through ops that carry a slope (`carries_slope`), are offered as
