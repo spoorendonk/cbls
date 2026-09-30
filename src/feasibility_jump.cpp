@@ -763,7 +763,7 @@ const std::vector<int32_t>* element_reps(const Model& model, const ExprNode& nd,
     const ElementTable& tbl = model.element_table(nd.lambda_func_id);
     const ConstSpan<ChildRef> kids = model.children(nd);
     if (kids.size() == 1) {
-        return &tbl.row_reps_by_col[0];
+        return &tbl.row_reps_by_col.front();
     }
     const size_t other = 1 - c;
     const int32_t line =

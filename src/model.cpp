@@ -595,7 +595,7 @@ std::vector<int32_t> line_representatives(const std::vector<double>& line) {
     std::vector<int32_t> reps;
     reps.reserve(kElementRepresentatives);
     for (size_t r = 0; r < kElementRepresentatives; ++r) {
-        const size_t rank =
+        const auto rank =
             static_cast<size_t>(std::llround(static_cast<double>(r) * static_cast<double>(d - 1) /
                                              static_cast<double>(kElementRepresentatives - 1)));
         reps.push_back(first_of_value[rank]);
