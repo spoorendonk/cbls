@@ -469,8 +469,17 @@ public:
     // Before the walk: a Rollback writes its probe's stash back; a Probe arms
     // one; then the changed variables' own moves are pushed
     // into the Sums they are terms of.
-    void prepare(const std::vector<int32_t>& dirty_list, const int32_t* changed_var_ids,
-                 size_t count, const double* old_values) {
+    //
+    // This, `eval_flagged` and `restore_stash` are kept out of line
+    // deliberately. Inlined, they grew `delta_walk` and made the probe-bound
+    // MINLPLib walks 5-14% slower per iteration at a fixed iteration count
+    // (eg_all_s 7.09 s against 6.20 s for the pre-#188 engine; maxmin, nvs01,
+    // nvs14 likewise), on the same trajectory. Out of line, every one of them
+    // timed at or below the pre-#188 engine (#188, review round 2). The cost is
+    // one call per walk, and one per flagged node, which is a Sum or its term.
+    [[gnu::noinline]] void prepare(const std::vector<int32_t>& dirty_list,
+                                   const int32_t* changed_var_ids, size_t count,
+                                   const double* old_values) {
         switch (rule_) {
             case Rule::Plain:
                 return;
@@ -531,7 +540,7 @@ public:
 
 private:
     template <typename EvalOther>
-    double eval_flagged(int32_t nid, uint8_t flags, EvalOther& eval_other) {
+    [[gnu::noinline]] double eval_flagged(int32_t nid, uint8_t flags, EvalOther& eval_other) {
         if ((flags & ExprNode::kIncSum) != 0) {
             return eval_sum(nid);
         }
@@ -581,7 +590,7 @@ private:
 
     // Only a node in this walk's cone is flagged: the guard clears the flags
     // of the cone and nothing else, so flagging a stranger would leak.
-    void restore_stash() {
+    [[gnu::noinline]] void restore_stash() {
         for (const auto& [nid, value] : sums_.probe_stash) {
             model_.set_node_value_unchecked(nid, value);
             if (dirty_[nid] != 0) {
