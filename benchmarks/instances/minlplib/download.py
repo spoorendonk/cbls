@@ -113,7 +113,8 @@ HELDOUT_DIRNAME = "heldout"
 # tests/python/test_minlplib_heldout.py).
 POOL_FILENAME = "pool.csv"
 # Instances a fetch walk skipped because MINLPLib served them as something other
-# than text NL, per walk. Needed to replay a walk offline: `walk()` drops these.
+# than text NL, per walk. Needed to replay a walk offline: `walk()` (published)
+# and `quota_walk()` (held-out) pass over these.
 UNFETCHABLE_FILENAME = "unfetchable.csv"
 POOL_COLUMNS: tuple[str, ...] = (
     "name",
@@ -382,10 +383,10 @@ def quota_walk(
 def walk(candidates: list[Instance], limit: int, unavailable: set[str]) -> list[Instance]:
     """The first `limit` candidates not in `unavailable` -- the fetch walk, offline.
 
-    `fetch_published` and `_fetch_heldout` fetch in candidate order and skip an
-    instance whose body is not a text NL file; given the set of skipped names,
-    this reproduces their result without the network, which is what lets the
-    tests pin both rosters.
+    `fetch_published` fetches in candidate order and skips an instance whose
+    body is not a text NL file; given the set of skipped names, this reproduces
+    its result without the network, which is what lets the tests pin the
+    published roster. The held-out draw replays through `quota_walk` instead.
     """
     return [inst for inst in candidates if inst.name not in unavailable][:limit]
 
