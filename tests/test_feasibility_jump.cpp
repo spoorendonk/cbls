@@ -1378,7 +1378,7 @@ TEST_CASE("Novelty Jump reports feasibility only on exact rows", "[fj][inc_sum]"
     CHECK(f.fj.row_violated(rig.row_ci));
 }
 
-TEST_CASE("a Sum that is itself a row is not incremental, so its row never drifts",
+TEST_CASE("a Sum that is itself a row is not incremental and its row never drifts",
           "[fj][inc_sum]") {
     // #192. `add_constraint` takes any node. S = 2^40 * b + 1e-5 * x is a row
     // of its own (violated while S > 0) AND is read by `S <= 100`, which alone

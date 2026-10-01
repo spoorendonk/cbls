@@ -1667,7 +1667,8 @@ TEST_CASE("a walk an extra lambda throws out of leaves no stale Sum tracked", "[
     // #192: the custom-node case above, with #186's extra lambda as the user
     // code. It reads x, so it is in x's cone, and sits before the Sum in
     // topological order. Red with the plain-commit untracking keyed on custom
-    // nodes alone: the commit of y then updates the stale Sum to 1 + 1 = 2.
+    // nodes alone: the commit of y then updates the stale Sum, which still
+    // holds x's old value, and reads -8 (x starts at its lower bound, -10).
     auto armed = std::make_shared<int>(0);
     Model m;
     const int32_t x = m.int_var(-10, 10);

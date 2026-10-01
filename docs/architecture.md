@@ -194,6 +194,8 @@ differences of its changed terms instead of re-summing it.
   `Model::classify_incremental_sums`). No term is a Sum, no term appears
   twice, and the Sum is read only by top-level comparisons
   (`Leq`/`Geq`/`Lt`/`Gt`/`Eq` with no parent) against a variable or a Const.
+  It is not itself a constraint root (#192): FJ finds a row's Sum through the
+  row's children, so a Sum that is its own row would drift ungated.
   That covers every MPS row and the objective row. Because a row reads its
   Sum directly, FJ can bound what drift does to the row. A Sum under any other
   node keeps the plain re-sum. Each Sum's per-model state (`IncSumState`,
