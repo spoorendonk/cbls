@@ -474,6 +474,9 @@ def _fetch_text_nl(name: str) -> tuple[bytes | None, str | None]:
     outage as "unfetchable", because that would change the committed membership.
     """
     data = fetch_bytes(NL_URL_TEMPLATE.format(name=name))
+    if _looks_like_html(data):
+        # An error page served with 200 is an outage, not a binary-NL instance.
+        raise OSError("server returned HTML instead of an NL file")
     err = validate_nl(data)
     return (None, err) if err is not None else (data, None)
 
@@ -508,7 +511,7 @@ def _recheck_published_skips(candidates: list[Instance], roster: list[str]) -> l
 
 
 def _fetch_heldout(
-    order: list[Instance], out_dir: Path, limit: int, force: bool
+    order: list[Instance], out_dir: Path, limit: int
 ) -> tuple[list[Instance], list[Skip]] | None:
     """Walk `order` fetching text NL into `out_dir` until `limit` are in hand.
 
@@ -574,7 +577,7 @@ def build_heldout(here: Path, rows: list[dict[str, str]], limit: int, force: boo
     if published_skips is None:
         return 1
     exclude = set(roster) | {name for name, _, _ in published_skips}
-    walked = _fetch_heldout(select_heldout(rows, exclude, HELDOUT_SEED), out_dir, limit, force)
+    walked = _fetch_heldout(select_heldout(rows, exclude, HELDOUT_SEED), out_dir, limit)
     if walked is None:
         return 1
     fetched, heldout_skips = walked

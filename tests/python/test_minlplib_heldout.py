@@ -170,9 +170,12 @@ def test_roster_walk_skips_refuses_a_roster_the_catalogue_cannot_rebuild(
 
 
 def _fake_minlplib(
-    monkeypatch: pytest.MonkeyPatch, binary: set[str], down: set[str] | None = None
+    monkeypatch: pytest.MonkeyPatch,
+    binary: set[str],
+    down: set[str] | None = None,
+    html: set[str] | None = None,
 ) -> list[str]:
-    """Serve text NL for every instance except `binary` (binary NL) and `down` (outage)."""
+    """Text NL for every instance except `binary` (binary NL), `down` (outage), `html`."""
     fetched: list[str] = []
 
     def fake_fetch(url: str, timeout: int = 120) -> bytes:
@@ -180,6 +183,8 @@ def _fake_minlplib(
         fetched.append(name)
         if down and name in down:
             raise urllib.error.URLError("simulated outage")
+        if html and name in html:
+            return b"<!doctype html><title>Service Unavailable</title>"
         return b"b3 0 1 0\n" if name in binary else f"g3 1 1 0 # {name}\n".encode()
 
     monkeypatch.setattr(download, "fetch_bytes", fake_fetch)
@@ -234,6 +239,20 @@ def test_build_heldout_aborts_on_a_network_failure_without_writing(
     _fake_minlplib(monkeypatch, set().union(*skipped.values()), down={first})
     assert build_heldout(tmp_path, rows, DEFAULT_ROSTER, force=False) == 1
     assert not (tmp_path / HELDOUT_DIRNAME / "bounds.csv").exists()
+    assert not (tmp_path / HELDOUT_DIRNAME / UNFETCHABLE_FILENAME).exists()
+
+
+def test_build_heldout_treats_an_html_error_page_as_an_outage(
+    rows: list[dict[str, str]],
+    skipped: dict[str, set[str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A soft-error page served with 200 must abort, not become a recorded skip.
+    shutil.copy(INST_DIR / "bounds.csv", tmp_path / "bounds.csv")
+    first = read_bounds_names(HELDOUT_DIR / "bounds.csv")[0]
+    _fake_minlplib(monkeypatch, set().union(*skipped.values()), html={first})
+    assert build_heldout(tmp_path, rows, DEFAULT_ROSTER, force=False) == 1
     assert not (tmp_path / HELDOUT_DIRNAME / UNFETCHABLE_FILENAME).exists()
 
 

@@ -200,6 +200,9 @@ published roster fixed.
   family behave alike, so the effective sample is smaller than fifty. A
   count-of-wins statement should be reported per class, and a family should be
   treated as one cluster rather than as nine independent votes.
+- **`nvars + ncons` misses expression size.** `eg_disc2_s` counts as size 36
+  but its `.nl` is 925 KB, 81% of the held-out bytes. Treat it as an outlier
+  in any size-covariate analysis.
 - **Pre-registered handling of unloadable instances.** These instances were
   admitted on catalogue metadata alone and have never been through the NL
   reader. An instance the runner reports as `skipped(unsupported)` **stays in
@@ -226,8 +229,8 @@ the targeting needed:
 
 Output must go to a scratch path outside `benchmarks/instances/`, because the
 drivers treat anything under it as published. Always pass `--out`: a
-whole-roster `cbls_minlplib .../heldout` run at default flags writes
-`heldout/comparison.csv`. `heldout/` has no
+whole-roster `cbls_minlplib .../heldout` run at default flags with `--commit`
+writes `heldout/comparison.csv`. `heldout/` has no
 `comparison.csv`, `scip_baseline.csv` or `analysis_notes.csv`, and the runner
 does not need them. `run_ablation.py`'s arm set is fixed in its `ARMS` table,
 so a three-point grid around the shipped `--unproductive-iters 300` needs those
