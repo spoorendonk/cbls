@@ -60,10 +60,12 @@ RUNNER_COLUMNS: tuple[str, ...] = (
 TRACE_COLUMNS: tuple[str, ...] = ("instance", "time_seconds", "objective", "new_best")
 
 #: Instances whose rows are published as documented failures and are excluded
-#: from every aggregate and every quality claim, per issue #87 ("Do not publish
-#: `elec` rows until #110 lands and #116's criterion can actually be checked").
-#: They stay *in* the roster: #123 asks for 50 instances, the roster of record is
-#: `bounds.csv`, and dropping the rows would make the table disagree with it.
+#: from every quality aggregate and every quality claim, per issue #87 ("Do not
+#: publish `elec` rows until #110 lands and #116's criterion can actually be
+#: checked"). They stay *in* the roster: #123 asks for 50 instances, the roster
+#: of record is `bounds.csv`, and dropping the rows would make the table disagree
+#: with it -- so roster counts include them. `campaign_report.AGGREGATION_RULE`
+#: states which aggregates are which (#142).
 CLAIM_EXCLUDED = ("elec25", "elec50")
 
 #: Prefix `run_ablation.failed_row` puts in a row's `note` when the runner
