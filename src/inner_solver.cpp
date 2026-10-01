@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 namespace cbls {
@@ -167,9 +168,10 @@ bool multi_var_newton_step(Model& model, ViolationManager& vm, int32_t cid) {
     return false;
 }
 
-}  // namespace
+// How one half of a sweep ended.
+enum class PassOutcome : std::uint8_t { Improved, Unchanged, Stopped };
 
-// The stop poll (#191). Without it the calls ran rahue (12k Float columns, 77k
+// The stop poll (#191). Without it the hook ran rahue (12k Float columns, 77k
 // rows) ~10 s past a 20 s budget: each Float variable costs at least one
 // O(rows) violated-row scan, and a sweep visits every one of them.
 //
@@ -182,44 +184,66 @@ bool multi_var_newton_step(Model& model, ViolationManager& vm, int32_t cid) {
 //
 // The polls never change what the descent does, only whether it continues, so
 // with `stop` never raised the trajectory is exactly what it was without them.
+constexpr int kStopStride = 16;
+
+// The coordinate half of a sweep: one descent step per Float variable.
+// `until_poll` is the stride countdown, carried across sweeps.
+PassOutcome coordinate_pass(Model& model, ViolationManager& vm, double initial_step,
+                            int max_line_search_steps, StopRef stop, int& until_poll) {
+    bool improved = false;
+    for (const auto& var : model.variables()) {
+        if (var.type != VarType::Float) {
+            continue;
+        }
+        if (until_poll == 0) {
+            if (stop.requested()) {
+                return PassOutcome::Stopped;
+            }
+            until_poll = kStopStride;
+        }
+        --until_poll;
+        if (descend_float_var(model, vm, var, initial_step, max_line_search_steps)) {
+            improved = true;
+        }
+    }
+    return improved ? PassOutcome::Improved : PassOutcome::Unchanged;
+}
+
+// The multi-variable half: a minimum-norm Newton step on each of the first
+// `max_constraints` violated rows, re-reading the violated set before each.
+PassOutcome multi_var_pass(Model& model, ViolationManager& vm, int max_constraints, StopRef stop) {
+    bool improved = false;
+    for (int ci = 0; ci < max_constraints; ++ci) {
+        auto violated = vm.violated_constraints();
+        if (ci >= static_cast<int>(violated.size())) {
+            break;
+        }
+        if (stop.requested()) {
+            return PassOutcome::Stopped;
+        }
+        if (multi_var_newton_step(model, vm, model.constraint_ids()[violated[ci]])) {
+            improved = true;
+        }
+    }
+    return improved ? PassOutcome::Improved : PassOutcome::Unchanged;
+}
+
+}  // namespace
+
 void FloatIntensifyHook::solve(Model& model, ViolationManager& vm,
                                const std::vector<int32_t>& /*last_changed_vars*/, StopRef stop) {
-    constexpr int kStopStride = 16;
     int until_poll = 0;
     for (int sweep = 0; sweep < max_sweeps; ++sweep) {
-        bool improved = false;
-
-        for (const auto& var : model.variables()) {
-            if (var.type != VarType::Float) {
-                continue;
-            }
-            if (until_poll == 0) {
-                if (stop.requested()) {
-                    return;
-                }
-                until_poll = kStopStride;
-            }
-            --until_poll;
-            if (descend_float_var(model, vm, var, initial_step_size, max_line_search_steps)) {
-                improved = true;
-            }
+        const PassOutcome coordinate =
+            coordinate_pass(model, vm, initial_step_size, max_line_search_steps, stop, until_poll);
+        if (coordinate == PassOutcome::Stopped) {
+            return;
         }
-
-        // Multi-var Newton: minimum-norm step on violated constraints
-        for (int ci = 0; ci < max_multi_var_constraints; ++ci) {
-            auto violated = vm.violated_constraints();
-            if (ci >= static_cast<int>(violated.size())) {
-                break;
-            }
-            if (stop.requested()) {
-                return;
-            }
-            if (multi_var_newton_step(model, vm, model.constraint_ids()[violated[ci]])) {
-                improved = true;
-            }
+        const PassOutcome multi = multi_var_pass(model, vm, max_multi_var_constraints, stop);
+        if (multi == PassOutcome::Stopped) {
+            return;
         }
-
-        if (!improved) {
+        if (coordinate != PassOutcome::Improved && multi != PassOutcome::Improved) {
             break;
         }
     }

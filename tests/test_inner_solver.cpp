@@ -217,6 +217,7 @@ constexpr int kClimbSweeps = 200;
 
 std::vector<double> float_values(const Model& m) {
     std::vector<double> values;
+    values.reserve(m.num_vars());
     for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
         values.push_back(m.var(v).value);
     }

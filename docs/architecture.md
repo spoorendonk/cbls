@@ -1899,7 +1899,7 @@ before the deadline could overrun it. Five can, and each is bounded separately:
 | # | Sub-step | Bound | Where |
 |---|----------|-------|-------|
 | 1 | Feasibility Jump batch | handed the same absolute deadline, checked inside the GLS loop on a stride bounded two ways: at most 64 iterations, and at most 1/64 of the *remaining* budget in predicted time (#113) | `gfj.time_limit = budget_seconds` |
-| 2 | `InnerSolverHook` | not *started* when the budget is spent — a hook is arbitrary user code, so its running time is unknowable | `if (hook && !past_deadline())` |
+| 2 | `InnerSolverHook` | not *started* when the budget is spent, and handed the loop's own `past_deadline()` as `solve()`'s `StopRef stop` (#191); `FloatIntensifyHook` polls it every 16 Float variables and before every multi-variable Newton step. A custom hook that ignores `stop` is still unbounded — the call is synchronous | `if (hook && !past_deadline())`, `LoopStop` |
 | 3 | LNS repair | handed `min(2.0, remaining())`, not its own independent 2s | `diversify()` |
 | 4 | STRUCTURAL sweep | checked between generators, one per structured variable by default; the overrun is one generator's candidates, which the built-ins cap at 5 and a registered generator does not (#105, #165) | `StructuralBatch::run` |
 | 5 | diversification kick, structural half | checked between structural *moves*, on a stride bounded the same two ways as row 1: at most 64 moves, and at most 1/64 of the *remaining* budget in predicted time (#115) | `perturb_structural` |
@@ -2597,7 +2597,13 @@ with non-negligible gradients; accepted only if `augmented_objective` improves,
 else fully rolled back.
 
 Sweeps repeat up to `max_sweeps` times, stopping early when a sweep makes no
-improvement.
+improvement, or when the search's `stop` is raised (#191: the deadline, a peer
+worker's stop or a host cancel). Before that poll existed the hook ran MIPfeas
+`neos-4300652-rahue` (12k Float columns, 77k rows; every Float variable costs an
+O(rows) violated-row scan) 9.8s past a 20s budget at seed 1 (engine `7291a2c`,
+`--threads 1`, Release, one run per arm on an idle machine); with it the same
+run ends at 20.1s with the same objective. The poll changes only whether the descent continues, so a pass
+that finishes within budget is bit-identical to before.
 
 ### Parameters
 
