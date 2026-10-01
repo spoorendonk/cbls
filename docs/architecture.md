@@ -1086,8 +1086,9 @@ Each candidate is scored with one `weighted_violation_delta` probe — or, when
 every weighted row of `G_v` is a comparison (`Leq`/`Geq`/`Lt`/`Gt`/`Eq`) whose
 two children are affine, or a bare affine body (`add_constraint(expr)`, read as
 `expr <= 0`, scored as the residual `expr − 0` with a literal 0, which equals the
-engine's `clamped(expr)` for every value, non-finite included — #190), in closed
-form by `LinearJumpScorer`
+engine's `clamped(expr)` for every value, non-finite included — #190; a
+comparison nested anywhere below the row disqualifies it, since its sentinel
+residual is not affine), in closed form by `LinearJumpScorer`
 (`include/cbls/linear_jump.h`): each such row has a constant slope
 `r = ∂(p − q)/∂v`, cached lazily per row from `compute_partials_sparse` into a
 table laid out parallel to `G_v` (a row's build writes each of its variables'
