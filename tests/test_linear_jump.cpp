@@ -87,7 +87,8 @@ struct RandomLinearModel {
 // constant and domain integral, so the arithmetic is exact and scores must match
 // to the bit. Closed, but without the objective row -- build_random_linear adds
 // it; a test that adds it later calls this.
-void build_random_linear_no_objective_row(RandomLinearModel& r, uint64_t seed, bool integral) {
+void build_random_linear_no_objective_row(RandomLinearModel& r, uint64_t seed, bool integral,
+                                          bool bare = false) {
     RNG rng(seed);
     Model& m = r.m;
     const int nv = 9;
@@ -157,6 +158,17 @@ void build_random_linear_no_objective_row(RandomLinearModel& r, uint64_t seed, b
     }
     // Reverse the operand order on one Eq, so a literal on the LEFT is covered.
     m.add_constraint(m.eq_expr(m.constant(1.0), side()));
+    if (bare) {
+        // Bare bodies, read as `body <= 0` (#190): every affine node kind as the
+        // row's own node, a constant term, and a variable on both signs.
+        for (int row = 0; row < 3; ++row) {
+            m.add_constraint(m.sum({side(), m.neg(rhs_const())}));
+            m.add_constraint(m.neg(side()));
+            m.add_constraint(m.prod(m.constant(pick_coef()), side()));
+            m.add_constraint(m.div_expr(side(), m.constant(integral ? 2.0 : 0.3)));
+            m.add_constraint(m.sum({side(), m.neg(side()), rhs_const()}));
+        }
+    }
     std::vector<int32_t> obj_terms;
     obj_terms.reserve(r.handles.size());
     for (const int32_t h : r.handles) {
@@ -166,8 +178,8 @@ void build_random_linear_no_objective_row(RandomLinearModel& r, uint64_t seed, b
     m.close();
 }
 
-void build_random_linear(RandomLinearModel& r, uint64_t seed, bool integral) {
-    build_random_linear_no_objective_row(r, seed, integral);
+void build_random_linear(RandomLinearModel& r, uint64_t seed, bool integral, bool bare = false) {
+    build_random_linear_no_objective_row(r, seed, integral, bare);
     r.m.add_objective_soft_constraint();  // obj <= bound, as solve() folds it in
 }
 
@@ -727,4 +739,238 @@ TEST_CASE("slopes follow the G_v layout when the objective row is added (#176)",
         REQUIRE(sc.slope_table_size() == m.num_var_constraint_incidences());
         REQUIRE(sc.slope_table_size() > table_before);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Bare constraint bodies (#190): `add_constraint(expr)` means expr <= 0.
+
+TEST_CASE("a bare body's violation is comparison_residual(body, 0) for every value",
+          "[fj][linear_jump]") {
+    // The scorer reads a bare body as the residual `body - 0` with a literal 0;
+    // the engine reads it as clamped(body). They must agree on every input the
+    // DAG can produce, non-finite included.
+    const double inf = std::numeric_limits<double>::infinity();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const std::vector<double> values = {0.0,    -0.0,     1.0,  -1.0, 0.1,  -2.5,
+                                        1e-300, 4.9e-324, 1e29, 1e30, 1e31, -1e40,
+                                        1e300,  -1e300,   inf,  -inf, nan,  -nan};
+    for (const double v : values) {
+        INFO("v = " << v);
+        for (const bool p_literal : {false, true}) {
+            const double residual = comparison_residual(v, 0.0, p_literal, true);
+            const double a = clamped_node_violation(v);
+            const double b = clamped_node_violation(residual);
+            REQUIRE(((a == b) || (std::isnan(a) && std::isnan(b))));
+            // Not just after the clamp: the residual is the value itself.
+            REQUIRE(((residual == v) || (std::isnan(residual) && std::isnan(v))));
+        }
+    }
+
+    // And through the model: a bare row's violation, for a body that is finite,
+    // +inf, -inf and NaN, against the same row posted as `body <= 0`.
+    Model m;
+    const int32_t y = m.float_var(-inf, inf);
+    const int32_t x = m.float_var(-inf, inf);
+    const int32_t body = m.sum({x, y});
+    m.add_constraint(body);
+    m.add_constraint(m.leq(body, m.constant(0.0)));
+    m.close();
+    for (const auto& [xv, yv] : std::vector<std::pair<double, double>>{
+             {1.5, -0.25}, {inf, 0.0}, {-inf, 0.0}, {inf, -inf}, {nan, 1.0}, {-3.0, 3.0}}) {
+        m.var_mut(vid(x)).value = xv;
+        m.var_mut(vid(y)).value = yv;
+        full_evaluate(m);
+        ViolationManager vm(m);
+        INFO("x = " << xv << ", y = " << yv);
+        REQUIRE(vm.constraint_violation(0) == vm.constraint_violation(1));
+    }
+}
+
+TEST_CASE("bare affine bodies are closed-form eligible, non-affine ones are not",
+          "[fj][linear_jump]") {
+    Model m;
+    const int32_t x = m.float_var(-2.0, 2.0);
+    const int32_t y = m.float_var(-2.0, 2.0);
+    const int32_t u = m.int_var(0, 3);
+    m.add_constraint(m.sum({x, m.prod(m.constant(2.0), y), m.constant(-1.0)}));  // 0: Sum
+    m.add_constraint(m.neg(x));                                                  // 1: Neg
+    m.add_constraint(m.prod(m.constant(0.5), m.sum({x, u})));                    // 2: Prod by const
+    m.add_constraint(m.div_expr(m.sum({x, y}), m.constant(4.0)));                // 3: Div by const
+    m.add_constraint(m.sum({x, m.prod(x, y)}));                                  // 4: bilinear term
+    m.add_constraint(m.prod(x, y));                                              // 5: bilinear
+    m.add_constraint(m.abs_expr(x));                                             // 6: Abs
+    m.add_constraint(m.neq(u, m.constant(2.0)));                                 // 7: Neq, a step
+    m.add_constraint(m.custom({u}, std::make_unique<InputSum>(), "c"));          // 8: Custom
+    m.add_constraint(m.sum({m.custom({u}, std::make_unique<InputSum>(), "d"), y}));  // 9
+    m.close();
+    ViolationManager vm(m);
+    RNG rng(1);
+    FeasibilityJump fj(m, vm, rng);
+    const LinearJumpScorer& sc = fj.linear_scorer();
+    for (int32_t c = 0; c <= 3; ++c) {
+        INFO("row " << c);
+        REQUIRE(sc.row_eligible(c));
+    }
+    for (int32_t c = 4; c <= 9; ++c) {
+        INFO("row " << c);
+        REQUIRE_FALSE(sc.row_eligible(c));
+    }
+}
+
+TEST_CASE("bare-body scores equal the probe's exactly on integral rows", "[fj][linear_jump]") {
+    for (uint64_t seed = 601; seed <= 612; ++seed) {
+        RandomLinearModel r;
+        build_random_linear(r, seed, /*integral=*/true, /*bare=*/true);
+        Model& m = r.m;
+        ViolationManager vm(m);
+        RNG fj_rng(seed);
+        FeasibilityJump fj(m, vm, fj_rng);
+        // Every row, bare or comparison, through the owner's own classification.
+        for (size_t c = 0; c < m.constraint_ids().size(); ++c) {
+            REQUIRE(fj.linear_scorer().row_eligible(static_cast<int32_t>(c)));
+        }
+        LinearJumpScorer& sc = fj.linear_scorer();
+        RNG rng(seed * 31);
+        for (int round = 0; round < 3; ++round) {
+            randomise_assignment(m, rng);
+            const std::vector<double> w = random_weights(m.constraint_ids().size(), rng);
+            REQUIRE(check_scores(m, sc, w, rng, /*exact=*/true) > 50);
+            for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
+                const JumpResult a = compute_var_jump(m, w, v);
+                const JumpResult b = compute_var_jump(m, w, v, false, &sc);
+                REQUIRE(a.jump_value == b.jump_value);
+                REQUIRE(a.score == b.score);
+            }
+        }
+        REQUIRE(check_partials(m, sc) > 20);
+    }
+}
+
+TEST_CASE("bare-body scores match the probe to rounding on fractional rows", "[fj][linear_jump]") {
+    for (uint64_t seed = 701; seed <= 712; ++seed) {
+        RandomLinearModel r;
+        build_random_linear(r, seed, /*integral=*/false, /*bare=*/true);
+        Model& m = r.m;
+        ViolationManager vm(m);
+        RNG fj_rng(seed);
+        FeasibilityJump fj(m, vm, fj_rng);
+        LinearJumpScorer& sc = fj.linear_scorer();
+        RNG rng(seed * 104729);
+        for (int round = 0; round < 3; ++round) {
+            randomise_assignment(m, rng);
+            const std::vector<double> w = random_weights(m.constraint_ids().size(), rng);
+            REQUIRE(check_scores(m, sc, w, rng, /*exact=*/false) > 50);
+        }
+    }
+}
+
+TEST_CASE("FeasibilityJump scores a bare-body model in closed form", "[fj][linear_jump]") {
+    RandomLinearModel r;
+    build_random_linear(r, 9, /*integral=*/true, /*bare=*/true);
+    Model& m = r.m;
+    ViolationManager vm(m);
+    RNG rng(9);
+    FeasibilityJump fj(m, vm, rng);
+    fj.begin(true);
+    (void)fj.batch(200);
+    REQUIRE(fj.linear_scorer().fast_prepares() > 0);
+    REQUIRE(fj.linear_scorer().fallback_prepares() == 0);
+}
+
+TEST_CASE("a non-finite bare body falls back to the probe", "[fj][linear_jump]") {
+    const double inf = std::numeric_limits<double>::infinity();
+    SECTION("an infinite variable in the body") {
+        Model m;
+        const int32_t z = m.float_var(-2.0, 2.0);
+        const int32_t s = m.float_var(-inf, inf);
+        m.add_constraint(m.sum({s, z}));  // s + z <= 0
+        m.add_constraint(m.sum({z, m.constant(-1.0)}));
+        m.close();
+        m.var_mut(vid(z)).value = 0.5;
+        m.var_mut(vid(s)).value = inf;
+        full_evaluate(m);
+        ViolationManager vm(m);
+        RNG rng(1);
+        FeasibilityJump fj(m, vm, rng);
+        LinearJumpScorer& sc = fj.linear_scorer();
+        REQUIRE(sc.row_eligible(0));
+        const std::vector<double> w = {1.0, 1.0};
+        REQUIRE_FALSE(sc.prepare(vid(z), w));
+        REQUIRE_FALSE(sc.prepare(vid(s), w));
+        for (const int32_t v : {vid(z), vid(s)}) {
+            const JumpResult probe = compute_var_jump(m, w, v);
+            const JumpResult fast = compute_var_jump(m, w, v, false, &sc);
+            REQUIRE(fast.jump_value == probe.jump_value);
+            REQUIRE(fast.score == probe.score);
+        }
+        // Back to finite: the same rows take the closed form, and agree.
+        m.var_mut(vid(s)).value = -1.0;
+        full_evaluate(m);
+        REQUIRE(sc.prepare(vid(z), w));
+        REQUIRE(sc.delta(-2.0) == m.weighted_violation_delta(vid(z), -2.0, w));
+    }
+    SECTION("a zero slope through Div by a near-zero constant") {
+        // Affine by rule, local derivative 0, but +inf for y >= 0 and -inf for
+        // y < 0: moving y flips the row from maximal violation to satisfied.
+        Model m;
+        const int32_t x = m.int_var(0, 2);
+        const int32_t y = m.int_var(-1, 1);
+        m.add_constraint(m.sum({x, m.div_expr(y, m.constant(0.0)), m.constant(-1.0)}));
+        m.close();
+        m.var_mut(vid(x)).value = 0.0;
+        m.var_mut(vid(y)).value = 1.0;
+        full_evaluate(m);
+        ViolationManager vm(m);
+        RNG rng(1);
+        FeasibilityJump fj(m, vm, rng);
+        LinearJumpScorer& sc = fj.linear_scorer();
+        REQUIRE(sc.row_eligible(0));
+        const std::vector<double> w = {1.0};
+        REQUIRE(m.weighted_violation_delta(vid(y), -1.0, w) == -kInfPenalty);
+        REQUIRE_FALSE(sc.prepare(vid(y), w));
+        REQUIRE(compute_var_jump(m, w, vid(y), false, &sc).score == kInfPenalty);
+    }
+    SECTION("a NaN body") {
+        Model m;
+        const int32_t z = m.float_var(-2.0, 2.0);
+        const int32_t s = m.float_var(-inf, inf);
+        const int32_t t = m.float_var(-inf, inf);
+        m.add_constraint(m.sum({s, t, z}));  // inf + -inf: NaN, maximally violated
+        m.close();
+        m.var_mut(vid(z)).value = 0.0;
+        m.var_mut(vid(s)).value = inf;
+        m.var_mut(vid(t)).value = -inf;
+        full_evaluate(m);
+        ViolationManager vm(m);
+        REQUIRE(vm.constraint_violation(0) == kInfPenalty);
+        RNG rng(1);
+        FeasibilityJump fj(m, vm, rng);
+        LinearJumpScorer& sc = fj.linear_scorer();
+        const std::vector<double> w = {1.0};
+        REQUIRE_FALSE(sc.prepare(vid(z), w));
+        const JumpResult probe = compute_var_jump(m, w, vid(z));
+        const JumpResult fast = compute_var_jump(m, w, vid(z), false, &sc);
+        REQUIRE(fast.jump_value == probe.jump_value);
+        REQUIRE(fast.score == probe.score);
+    }
+}
+
+TEST_CASE("a bare body's Newton step reads the cached row partial", "[fj][linear_jump]") {
+    Model m;
+    const int32_t x = m.float_var(-10.0, 10.0);
+    // Row 0 satisfied with another slope; row 1 is 2x - 3 <= 0, a bare body.
+    m.add_constraint(m.sum({m.prod(m.constant(3.0), x), m.constant(-100.0)}));
+    m.add_constraint(m.sum({m.prod(m.constant(2.0), x), m.constant(-3.0)}));
+    m.close();
+    m.var_mut(vid(x)).value = 5.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+    RNG rng(1);
+    FeasibilityJump fj(m, vm, rng);
+    LinearJumpScorer& sc = fj.linear_scorer();
+    const std::vector<double> w = {1.0, 1.0};
+    const JumpResult r = compute_var_jump(m, w, vid(x), false, &sc);
+    REQUIRE(r.jump_value == 1.5);
+    REQUIRE(sc.cached_partials() == 1);
+    REQUIRE(sc.fast_prepares() == 1);
 }

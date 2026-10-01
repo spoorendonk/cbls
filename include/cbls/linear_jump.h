@@ -9,6 +9,13 @@
 namespace cbls {
 
 class Model;
+enum class NodeOp : uint8_t;
+
+/// Whether a row whose constraint node has this op is scored as a COMPARISON
+/// (`Leq`/`Geq`/`Lt`/`Gt`/`Eq`: residual of its two children) rather than as a
+/// bare body (`add_constraint(expr)`, read as `expr <= 0`). The scorer's build
+/// and its owner's classification must split rows the same way.
+[[nodiscard]] bool is_comparison_op(NodeOp op);
 
 /// Closed-form scoring of a scalar jump over LINEAR comparison rows.
 ///
@@ -25,6 +32,16 @@ class Model;
 /// residual (`p = child0, q = child1` for Leq/Lt/Eq, the swap for Geq/Gt). So
 /// moving v by D moves the residual from cmp(p, q) to cmp(p + r D, q) -- no DAG
 /// walk, O(1) per row, O(|G_v|) per candidate.
+///
+/// A BARE body, `add_constraint(expr)` with an affine non-comparison node, means
+/// `expr <= 0` (#190): the engine's violation is `clamped(value)`. It is built
+/// as the residual `p - q` with p = the row's own node and q = a literal 0, read
+/// through `comparison_residual(p, 0, p_literal, true)`. That is the node value
+/// itself for EVERY input, non-finite included: the sentinel branch needs
+/// `p == q` with q infinite, and 0 never is, and `v - 0.0` is `v` (NaN stays
+/// NaN, +/-inf stays itself, -0.0 stays -0.0). The slope is the node's own
+/// partial, the same sweep `compute_partial(row, v)` runs, so its Newton
+/// partial is exact like a Leq row's.
 ///
 /// **Exact in the arithmetic, not bit-identical.** `p + r D` is not the row the
 /// DAG would re-sum, so a score can differ from `weighted_violation_delta` in its
@@ -163,10 +180,11 @@ private:
     static constexpr uint32_t kAbs = 1U << 4U;          // Eq: |p - q|
     static constexpr uint32_t kStrict = 1U << 5U;       // Lt/Gt: + the strictness epsilon
     static constexpr uint32_t kNewtonExact = 1U << 6U;  // see residual_partial_at
+    static constexpr uint32_t kQZero = 1U << 7U;        // bare body: q is a literal 0, no node
     // A built row: its two residual arguments; its slopes are in slope_at_.
     struct BuiltRow {
         int32_t p_id = -1;  // first argument of the residual
-        int32_t q_id = -1;  // second argument
+        int32_t q_id = -1;  // second argument; -1 for a bare body's literal 0 (kQZero)
         uint8_t flags = 0;
     };
     // One row of G_v with a nonzero weight and slope, as prepare snapshots it.
@@ -190,6 +208,8 @@ private:
     // row is (or becomes) ineligible.
     const BuiltRow* ready_row(int32_t ci);
     [[nodiscard]] double child_value(int32_t id, bool is_var) const;
+    // The row's q argument: its node or variable, or the literal 0 of a bare body.
+    [[nodiscard]] double q_value(const BuiltRow& row) const;
     // Row ci's partial from a built row and v's slope, as residual_partial_at reports it.
     [[nodiscard]] double row_partial(const BuiltRow& row, double r) const;
     // Every built row back to pending and the slope array released.

@@ -70,6 +70,11 @@ double eq_sign(double diff) {
 
 }  // namespace
 
+bool is_comparison_op(NodeOp op) {
+    return op == NodeOp::Leq || op == NodeOp::Geq || op == NodeOp::Lt || op == NodeOp::Gt ||
+           op == NodeOp::Eq;
+}
+
 void LinearJumpScorer::FreeDeleter::operator()(double* p) const {
     std::free(p);  // paired with build_row's calloc
 }
@@ -128,6 +133,10 @@ bool LinearJumpScorer::row_eligible(int32_t ci) const {
 // no variable's adjoint mixes paths from both sides. Otherwise the Newton step
 // keeps calling compute_partial for this row; the jump SCORE still uses r.
 //
+// Bare body (#190, any non-comparison op its owner classified affine): the
+// residual is `body - 0`, so r is again the node's own partial and the row is
+// built like Leq's with q the literal zero.
+//
 // Every slope must be finite, or the row goes back to ineligible: an affine cone
 // through Prod by an infinite constant has no linear model. (Div by a constant
 // below 1e-15 is the opposite case -- local derivative 0, value +/-inf -- and is
@@ -135,15 +144,22 @@ bool LinearJumpScorer::row_eligible(int32_t ci) const {
 const LinearJumpScorer::BuiltRow* LinearJumpScorer::build_row(int32_t ci) {
     const int32_t nid = model_.constraint_ids()[static_cast<size_t>(ci)];
     const ExprNode& nd = model_.nodes()[static_cast<size_t>(nid)];
-    const ConstSpan<ChildRef> children = model_.children(nd);
-    const bool swap = nd.op == NodeOp::Geq || nd.op == NodeOp::Gt;
-    const ChildRef p = children[swap ? 1 : 0];
-    const ChildRef q = children[swap ? 0 : 1];
+    const bool bare = !is_comparison_op(nd.op);
+    // A bare body is the residual `body - 0`: p is the row's own node, q the
+    // literal zero, which has no node and is never read from the DAG.
+    ChildRef p{nid, false};
+    ChildRef q{-1, false};
+    if (!bare) {
+        const ConstSpan<ChildRef> children = model_.children(nd);
+        const bool swap = nd.op == NodeOp::Geq || nd.op == NodeOp::Gt;
+        p = children[swap ? 1 : 0];
+        q = children[swap ? 0 : 1];
+    }
     BuiltRow row;
     row.p_id = p.id;
     row.q_id = q.id;
     const bool p_literal = is_literal(model_, p);
-    const bool q_literal = is_literal(model_, q);
+    const bool q_literal = bare || is_literal(model_, q);
     const bool is_abs = nd.op == NodeOp::Eq;
     bool newton_exact = true;
 
@@ -173,7 +189,7 @@ const LinearJumpScorer::BuiltRow* LinearJumpScorer::build_row(int32_t ci) {
                                      (p_literal ? kPLiteral : 0U) | (q_literal ? kQLiteral : 0U) |
                                      (is_abs ? kAbs : 0U) |
                                      (nd.op == NodeOp::Lt || nd.op == NodeOp::Gt ? kStrict : 0U) |
-                                     (newton_exact ? kNewtonExact : 0U));
+                                     (newton_exact ? kNewtonExact : 0U) | (bare ? kQZero : 0U));
     write_slopes(ci);
     // Append before publishing the slot: a throwing push_back must not leave the
     // slot naming a record that does not exist.
@@ -231,6 +247,11 @@ const LinearJumpScorer::BuiltRow* LinearJumpScorer::ready_row(int32_t ci) {
     return slot == kPending ? build_row(ci) : nullptr;
 }
 
+double LinearJumpScorer::q_value(const BuiltRow& row) const {
+    // The literal zero of a bare body has no node to read.
+    return (row.flags & kQZero) != 0 ? 0.0 : child_value(row.q_id, (row.flags & kQIsVar) != 0);
+}
+
 double LinearJumpScorer::child_value(int32_t id, bool is_var) const {
     if (is_var) {
         return model_.variables()[static_cast<size_t>(id)].value;
@@ -275,7 +296,7 @@ bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weight
         const bool p_literal = (row.flags & kPLiteral) != 0;
         const bool q_literal = (row.flags & kQLiteral) != 0;
         const double p = child_value(row.p_id, (row.flags & kPIsVar) != 0);
-        const double q = child_value(row.q_id, (row.flags & kQIsVar) != 0);
+        const double q = q_value(row);
         // A computed side must be finite for `p + r D` to be the DAG's value; a
         // literal side may be the +/-inf bound sentinel (the objective row's
         // bound opens at +inf) but not NaN.
@@ -342,8 +363,7 @@ double LinearJumpScorer::delta(double j) const {
 double LinearJumpScorer::row_partial(const BuiltRow& row, double r) const {
     if ((row.flags & kAbs) != 0) {
         // Read live: the sign follows the assignment, only r is structure.
-        const double diff = child_value(row.p_id, (row.flags & kPIsVar) != 0) -
-                            child_value(row.q_id, (row.flags & kQIsVar) != 0);
+        const double diff = child_value(row.p_id, (row.flags & kPIsVar) != 0) - q_value(row);
         return eq_sign(diff) * r;
     }
     return r;

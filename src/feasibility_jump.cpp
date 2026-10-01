@@ -1352,23 +1352,25 @@ bool node_is_affine(NodeOp op, ConstSpan<ChildRef> children, const std::vector<u
     }
 }
 
-// Can LinearJumpScorer score this row in closed form: a comparison whose two
-// children are both affine in the variables? Asked of the CHILDREN, not of the
-// row's own affineness, because Eq is |lhs - rhs| -- not affine, yet exactly
-// computable from two affine sides. Neq (a step) and Custom never qualify.
-bool comparison_of_affine_children(const ExprNode& nd, ConstSpan<ChildRef> children,
-                                   const std::vector<uint8_t>& is_affine) {
-    switch (nd.op) {
-        case NodeOp::Leq:
-        case NodeOp::Geq:
-        case NodeOp::Lt:
-        case NodeOp::Gt:
-        case NodeOp::Eq:
-            return std::all_of(children.begin(), children.end(),
-                               [&](const ChildRef& c) { return c.is_var || is_affine[c.id] != 0; });
-        default:
-            return false;
+// Can LinearJumpScorer score this row in closed form? Two shapes qualify.
+//
+// A comparison whose two children are both affine in the variables. Asked of the
+// CHILDREN, not of the row's own affineness, because Eq is |lhs - rhs| -- not
+// affine, yet exactly computable from two affine sides.
+//
+// A bare body (`add_constraint(expr)`, read as expr <= 0) that is itself affine
+// (#190): the scorer models it as the residual `expr - 0`, which is the node
+// value for every input (linear_jump.h). Asked of the row's own affineness,
+// which is node_is_affine's verdict: Sum/Neg/Prod-by-constant/Div-by-constant
+// over affine children. Neq (a step), Custom, and every nonlinear op never
+// qualify either way.
+bool closed_form_row(const ExprNode& nd, int32_t nid, ConstSpan<ChildRef> children,
+                     const std::vector<uint8_t>& is_affine) {
+    if (!is_comparison_op(nd.op)) {
+        return is_affine[nid] != 0;
     }
+    return std::all_of(children.begin(), children.end(),
+                       [&](const ChildRef& c) { return c.is_var || is_affine[c.id] != 0; });
 }
 
 }  // namespace
@@ -1396,7 +1398,7 @@ void FeasibilityJump::compute_linear_constraints() {
         is_linear_[c] = is_affine[cids[c]];
         const ExprNode& nd = nodes[cids[c]];
         linear_.set_row_eligible(static_cast<int32_t>(c),
-                                 comparison_of_affine_children(nd, model_.children(nd), is_affine));
+                                 closed_form_row(nd, cids[c], model_.children(nd), is_affine));
     }
 }
 
