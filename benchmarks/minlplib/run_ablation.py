@@ -75,7 +75,7 @@ from typing import TYPE_CHECKING
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from benchmarks.common.jobs import run_process  # noqa: E402
+from benchmarks.common.jobs import LockHeldError, run_process, wallclock_lock  # noqa: E402
 from benchmarks.common.provenance import REPO_ROOT, commit_sha  # noqa: E402
 from benchmarks.common.records import (  # noqa: E402
     append_csv_row,
@@ -1115,10 +1115,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     print(f"roster {len(roster)} instance(s) from {args.inst_dir / 'bounds.csv'}", file=sys.stderr)
     print(f"out-dir {out_dir}", file=sys.stderr)
-    with campaign_lock(out_dir):
-        if args.build:
-            subprocess.run(runner_contract.build_command(args.build_dir, 4), check=True)
-        return execute(args, sha, roster, out_dir)
+    return run_locked(args, sha, roster, out_dir)
+
+
+def run_locked(args: argparse.Namespace, sha: str, roster: Sequence[str], out_dir: Path) -> int:
+    """Build and run the campaign under both locks, or refuse with exit 2.
+
+    The machine-wide `wallclock_lock` is the one `run_benchmark.py` also takes:
+    two timed MINLPLib drivers must never share the machine, whichever two they
+    are. `campaign_lock` additionally guards this out-dir's records.
+    """
+    try:
+        with wallclock_lock("run_ablation.py"), campaign_lock(out_dir):
+            if args.build:
+                subprocess.run(runner_contract.build_command(args.build_dir, 4), check=True)
+            return execute(args, sha, roster, out_dir)
+    except LockHeldError as exc:
+        print(f"refusing to run: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

@@ -20,8 +20,17 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from benchmarks.common import jobs
+from benchmarks.common.jobs import wallclock_lock
 from benchmarks.common.provenance import REPO_ROOT
-from benchmarks.minlplib.campaign_report import AGGREGATION_RULE, SEEDS_TABLE_NAME, verdict_of
+from benchmarks.minlplib import run_benchmark
+from benchmarks.minlplib.campaign_report import (
+    AGGREGATION_RULE,
+    SEEDS_TABLE_NAME,
+    file_sha256,
+    seed_block_hashes,
+    verdict_of,
+)
 from benchmarks.minlplib.run_benchmark import (
     ASSEMBLED_TABLE,
     ASSEMBLED_TRACE,
@@ -31,7 +40,6 @@ from benchmarks.minlplib.run_benchmark import (
     common_preflight,
     default_staging_root,
     describe_plan,
-    driver_lock,
     execute,
     merge_command,
     preflight,
@@ -68,8 +76,9 @@ TRACE_HEADER = ",".join(TRACE_COLUMNS)
 
 @pytest.fixture(autouse=True)
 def _state_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Point the default staging root into the test's tmp dir, never the real home."""
+    """Point the staging root and the wall-clock lock into the test's tmp dir, never home."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(jobs, "WALLCLOCK_LOCK", tmp_path / "lock" / "wallclock.lock")
 
 
 def make_args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
@@ -132,7 +141,8 @@ def test_paths_default_to_the_published_tables_and_a_persistent_staging_dir(
     assert paths.out == tmp_path / "inst" / "comparison.csv"
     assert paths.out == paths.published_out
     assert paths.trace_out == tmp_path / "inst" / "anytime_trace.csv"
-    assert paths.stage == tmp_path / "state" / "cbls" / "minlplib-rerun" / "abc1234" / "seed1"
+    root = tmp_path / "state" / "cbls" / "minlplib-rerun"
+    assert paths.stage == root / "abc1234" / "60s" / "seed1"
     assert paths.seeds_out == tmp_path / "inst" / SEEDS_TABLE_NAME
 
 
@@ -327,6 +337,12 @@ def test_preflight(
             {"out": "scratch.csv", "trace_out": "inst/anytime_trace.csv"},
             ("--trace-out names the published",),
         ),
+        # A non-default budget may not publish: a smoke run replaced seed 2's 60s
+        # block in comparison_seeds.csv, and seed 1's comparison.csv likewise.
+        ({"time_limit": 5.0}, ("--time-limit 5", "comparison.csv")),
+        ({"seed": 2, "time_limit": 5.0}, ("--time-limit 5", "comparison_seeds.csv")),
+        ({"time_limit": 5.0, "out": "s.csv", "trace_out": "t.csv"}, None),
+        ({"seed": 2, "time_limit": 5.0, "out": "s.csv"}, None),
         ({"time_limit": 0.0}, ("--time-limit",)),
         ({"build_jobs": 0}, ("--build-jobs",)),
     ],
@@ -353,6 +369,10 @@ def test_preflight(
         "run-record-over-the-published-record",
         "table-over-comparison-all",
         "scratch-table-naming-the-published-trace",
+        "smoke-budget-onto-the-published-table",
+        "smoke-budget-onto-the-per-seed-table",
+        "smoke-budget-to-scratch",
+        "smoke-budget-another-seed-to-scratch",
         "nonpositive-budget",
         "nonpositive-build-jobs",
     ],
@@ -773,9 +793,12 @@ def test_seeds_accumulate_and_only_the_preregistered_seed_is_published(
     single = json.loads((inst / "comparison.run.json").read_text())
     assert (single["seed"], single["budget_seconds"], single["commit"]) == (1, 60.0, "abc1234")
     assert single["resumed"] == 0
+    assert "cpu_model" in single["machine"]
+    assert single["table_sha256"] == file_sha256(inst / "comparison.csv")
     assert single["machine"]["host"] == socket.gethostname()
     assert single["concurrency"]["parallel_solves"] == 1
     seeds = json.loads((inst / "comparison_seeds.run.json").read_text())["seeds"]
+    assert seeds["2"]["table_sha256"] == seed_block_hashes(table)[2]
     assert sorted(seeds) == ["1", "2", "3"]
     assert all("memory_total_kib" in record["machine"] for record in seeds.values())
     stage2 = resolve_paths(make_args(tmp_path, seed=2), "abc1234").stage
@@ -828,16 +851,77 @@ def test_a_resumed_run_says_its_record_did_not_see_the_resumed_rows(
     assert "2 of 2 row(s) were staged by an earlier invocation" in capsys.readouterr().err
 
 
-def test_a_second_driver_on_the_machine_is_refused(tmp_path: Path) -> None:
-    """Two seeds in two terminals would share the machine and race on the per-seed table."""
-    with (
-        driver_lock(),
-        pytest.raises(RuntimeError, match="another run_benchmark.py holds"),
-        driver_lock(),
-    ):
-        pass
-    with driver_lock():
-        pass  # released on exit
+def test_a_second_driver_on_the_machine_is_refused_with_exit_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Two seeds in two terminals would share the machine and race on the per-seed table.
+
+    `main` must refuse in one line and exit 2, not raise a traceback.
+    """
+    inst = make_inst_dir(tmp_path, ["a"])
+    build = make_build_dir(tmp_path)
+    (build / RUNNER_TARGET).write_text("")
+    monkeypatch.setattr(run_benchmark, "commit_sha", lambda: "abc1234")
+    monkeypatch.setattr(subprocess, "run", seeded_runner())
+    argv = ["--inst-dir", str(inst), "--build-dir", str(build), "--no-build", "--no-merge"]
+    with wallclock_lock("another driver"):
+        assert run_benchmark.main(argv) == 2
+    err = capsys.readouterr().err
+    assert "refusing to run: another wall-clock benchmark holds" in err
+    assert "another driver" in err
+    assert not (inst / "comparison.csv").exists()
+
+
+def test_the_ablation_driver_takes_the_same_machine_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """It runs serial timed MINLPLib solves too, so it must not run beside this driver."""
+    from benchmarks.minlplib import run_ablation
+
+    inst = make_inst_dir(tmp_path, ["a"])
+    build = make_build_dir(tmp_path)
+    (build / RUNNER_TARGET).write_text("")
+    monkeypatch.setattr(run_ablation, "commit_sha", lambda: "abc1234")
+    monkeypatch.setattr(run_ablation, "execute", lambda *a, **k: 0)
+    argv = [
+        "--out-dir",
+        str(tmp_path / "abl"),
+        "--inst-dir",
+        str(inst),
+        "--build-dir",
+        str(build),
+        "--no-build",
+        "--allow-busy",
+    ]
+    with wallclock_lock("run_benchmark.py"):
+        assert run_ablation.main(argv) == 2
+    assert "refusing to run: another wall-clock benchmark holds" in capsys.readouterr().err
+    assert run_ablation.main(argv) == 0
+
+
+def test_a_changed_roster_is_a_stamp_conflict(tmp_path: Path) -> None:
+    """The staging root is shared: rows staged for one bounds.csv must not resume into another."""
+    inst = make_inst_dir(tmp_path, ["a", "b"])
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    assert staging_stamp_conflict(stage, make_args(tmp_path), "abc1234") is None
+    assert staging_stamp_conflict(stage, make_args(tmp_path), "abc1234") is None
+    (inst / "bounds.csv").write_text((inst / "bounds.csv").read_text().replace("1.0,1.0", "2,2"))
+    conflict = staging_stamp_conflict(stage, make_args(tmp_path), "abc1234")
+    assert conflict is not None and "roster=" in conflict
+
+
+def test_preflight_refuses_a_per_seed_row_it_could_not_upsert(tmp_path: Path) -> None:
+    """`publish_seed_rows` sorts by int(seed): a bad cell would raise after the solves."""
+    make_inst_dir(tmp_path, ["process"])
+    make_build_dir(tmp_path)
+    table = tmp_path / "inst" / SEEDS_TABLE_NAME
+    good = ",".join(["1", "process", *["0"] * (len(SEEDS_TABLE_COLUMNS) - 2)])
+    table.write_text(",".join(SEEDS_TABLE_COLUMNS) + "\n" + good + "\n")
+    assert preflight(make_args(tmp_path), "abc1234", ["process"]) == []
+    table.write_text(table.read_text() + good.replace("1,", "x,", 1) + "\n")
+    problems = preflight(make_args(tmp_path), "abc1234", ["process"])
+    assert any("line 3 is not a per-seed row" in p for p in problems), problems
 
 
 def test_the_ablation_drivers_preflight_still_runs(tmp_path: Path) -> None:

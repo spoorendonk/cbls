@@ -80,16 +80,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import contextlib
 import csv
-import fcntl
 import hashlib
 import io
 import os
 import socket
 import subprocess
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -100,7 +98,7 @@ from typing import TYPE_CHECKING
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from benchmarks.common.jobs import run_process  # noqa: E402
+from benchmarks.common.jobs import LockHeldError, run_process, wallclock_lock  # noqa: E402
 from benchmarks.common.provenance import (  # noqa: E402
     REPO_ROOT,
     build_dir_problems,
@@ -129,7 +127,7 @@ from benchmarks.minlplib.runner import (  # noqa: E402
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Sequence
 
 DEFAULT_INST_DIR = REPO_ROOT / "benchmarks" / "instances" / "minlplib"
 DEFAULT_BUILD_DIR = REPO_ROOT / "build"
@@ -211,12 +209,14 @@ def resolve_paths(args: argparse.Namespace, sha: str) -> Paths:
     table. A whole-roster run onto the default paths -- at any seed -- also
     publishes its rows into the per-seed table.
 
-    The default staging directory is keyed by commit as well as seed: it
+    The default staging directory is keyed by commit and budget as well as seed: it
     outlives every campaign now, and keyed by seed alone the first run after any
     new commit would hit the stamp's refusal instead of starting fresh.
     """
     published_out = args.inst_dir / "comparison.csv"
-    stage = args.staging_dir or default_staging_root() / sha / f"seed{args.seed}"
+    stage = args.staging_dir or (
+        default_staging_root() / sha / f"{args.time_limit:g}s" / f"seed{args.seed}"
+    )
     preregistered = args.seed == DEFAULT_SEED
     out = args.out or (published_out if preregistered else stage / ASSEMBLED_TABLE)
     trace_out = args.trace_out or (
@@ -317,11 +317,29 @@ def _seeds_table_problems(args: argparse.Namespace) -> list[str]:
                 "them. Move it aside (the old campaign stays in the repository's history) and "
                 "re-run"
             )
+        else:
+            problems += _seeds_row_problems(seeds_out)
     try:
         campaign_report.load_seed_run_records(seeds_out)
     except ValueError as exc:
         problems.append(str(exc))
     return problems
+
+
+def _seeds_row_problems(seeds_out: Path) -> list[str]:
+    """Rows `publish_seed_rows` would choke on after the solves: a short row or a bad seed."""
+    with seeds_out.open(newline="") as fh:
+        reader = csv.reader(fh)
+        next(reader, None)
+        for line, row in enumerate(reader, start=2):
+            if not row:
+                continue
+            if len(row) != len(SEEDS_TABLE_COLUMNS) or not row[0].lstrip("-").isdigit():
+                return [
+                    f"{seeds_out} line {line} is not a per-seed row (an integer seed and "
+                    f"{len(runner.RUNNER_COLUMNS)} runner cells); repair or move the table aside"
+                ]
+    return []
 
 
 def common_preflight(args: argparse.Namespace, sha: str, roster: Sequence[str]) -> list[str]:
@@ -348,7 +366,9 @@ def usage_error(args: argparse.Namespace, published_out: Path) -> str | None:
         return f"--time-limit must be > 0 (got {args.time_limit})"
     if args.build_jobs < 1:
         return f"--build-jobs must be >= 1 (got {args.build_jobs})"
-    seed_refusal = seed_policy_error(args, published_out)
+    seed_refusal = seed_policy_error(args, published_out) or budget_policy_error(
+        args, published_out
+    )
     if seed_refusal:
         return seed_refusal
     if args.instances:
@@ -468,6 +488,27 @@ def _misdirected_output(args: argparse.Namespace, published_out: Path) -> str | 
                 f"{flag} resolves to the published {protected[path.resolve()]}; a scratch "
                 "output must not overwrite a published file"
             )
+    return None
+
+
+def budget_policy_error(args: argparse.Namespace, published_out: Path) -> str | None:
+    """Refuse a non-default budget writing any published table (#141's review).
+
+    A whole-roster run onto the default paths publishes -- `comparison.csv` at
+    seed 1, its seed's block of `comparison_seeds.csv` at any seed -- so a
+    five-second smoke run there replaced that seed's 60s block. Same rule as the
+    runners' "a non-default arm may never write a published table": a budget
+    other than `DEFAULT_TIME_LIMIT` must name a scratch `--out`.
+    """
+    if args.time_limit == DEFAULT_TIME_LIMIT or args.instances:
+        return None
+    if args.out is None or args.out.resolve() == published_out.resolve():
+        return (
+            f"--time-limit {args.time_limit:g} is not the published protocol's "
+            f"{DEFAULT_TIME_LIMIT:g}s, and this run would publish into "
+            f"{published_out.name if args.seed == DEFAULT_SEED else SEEDS_TABLE_NAME}; pass a "
+            "scratch --out (and --trace-out) for a run at another budget"
+        )
     return None
 
 
@@ -681,6 +722,9 @@ def run_record(
         roster=len(roster),
         resumed=resumed,
         published_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        # Pinned to the table's bytes when it is written (`write_run_record`,
+        # `publish_seed_rows`); nothing is published with this placeholder.
+        table_sha256="",
         machine=machine,
         concurrency={
             "parallel_solves": PARALLEL_SOLVES,
@@ -691,17 +735,19 @@ def run_record(
 
 
 def write_run_record(table: Path, record: RunRecord) -> None:
-    """The single-seed table's record, `<table stem>.run.json` beside it."""
-    write_json(run_record_path(table), {"schema": RUN_RECORD_SCHEMA, **asdict(record)})
+    """The single-seed table's record, `<table stem>.run.json` beside it, pinned to its bytes."""
+    pinned = replace(record, table_sha256=campaign_report.file_sha256(table))
+    write_json(run_record_path(table), {"schema": RUN_RECORD_SCHEMA, **asdict(pinned)})
 
 
-def publish_seed_rows(seeds_out: Path, seed: int, table: Path) -> None:
+def publish_seed_rows(seeds_out: Path, seed: int, table: Path) -> str:
     """Replace `seed`'s rows in the per-seed table with `table`'s, keeping every other seed.
 
     Upsert, not append: a re-run of one seed replaces that seed's block and
     leaves the others' rows intact, so seeds published one invocation at a time
     accumulate without one clobbering another. Rows are ordered by seed, each
-    seed's block in `table`'s (roster) order. Written atomically.
+    seed's block in `table`'s (roster) order. Written atomically. Returns the
+    block's `campaign_report.seed_block_sha256`, for its run record.
     """
     with table.open(newline="") as fh:
         reader = csv.reader(fh)
@@ -723,6 +769,7 @@ def publish_seed_rows(seeds_out: Path, seed: int, table: Path) -> None:
     buffer = io.StringIO()
     csv.writer(buffer, lineterminator="\n").writerows([list(SEEDS_TABLE_COLUMNS), *rows])
     atomic_write(seeds_out, buffer.getvalue())
+    return campaign_report.seed_block_sha256(new_rows)
 
 
 def publish_seed_record(seeds_out: Path, record: RunRecord) -> None:
@@ -818,6 +865,7 @@ def print_seeds_summary(
             campaign_report.load_seed_run_records(seeds_out),
             commit=commit,
             budget=budget,
+            block_hashes=campaign_report.seed_block_hashes(seeds_out),
             host=host,
         )
         print(campaign_report.render_seeds_text(summary))
@@ -877,8 +925,8 @@ def publish(
     write_run_record(paths.out, record)
     print(f"wrote {run_record_path(paths.out)}")
     if paths.seeds_out is not None:
-        publish_seed_rows(paths.seeds_out, args.seed, paths.out)
-        publish_seed_record(paths.seeds_out, record)
+        block = publish_seed_rows(paths.seeds_out, args.seed, paths.out)
+        publish_seed_record(paths.seeds_out, replace(record, table_sha256=block))
         print(f"wrote seed {args.seed} into {paths.seeds_out}")
     merge_failed = False
     if args.merge:
@@ -917,7 +965,7 @@ def execute(args: argparse.Namespace, sha: str, roster: Sequence[str], paths: Pa
     run's own build.
     """
     machine = machine_record()
-    with driver_lock():
+    with wallclock_lock("run_benchmark.py"):
         if args.build:
             subprocess.run(build_command(args), check=True)
         paths.stage.mkdir(parents=True, exist_ok=True)
@@ -933,42 +981,6 @@ def execute(args: argparse.Namespace, sha: str, roster: Sequence[str], paths: Pa
                 file=sys.stderr,
             )
         return publish(args, roster, paths, run_record(args, sha, roster, machine, resumed))
-
-
-#: Held by every invocation for its whole run, in the shared staging root.
-DRIVER_LOCK_NAME = "driver.lock"
-
-
-@contextlib.contextmanager
-def driver_lock() -> Iterator[None]:
-    """One driver invocation at a time on this machine, or refuse.
-
-    This is what makes the run record's `parallel_solves: 1` true rather than
-    asserted, and what serialises the per-seed table's read-modify-write: two
-    seeds started in two terminals would otherwise halve each other's iteration
-    counts and could each publish over the other's block. In the default staging
-    root whatever `--staging-dir` says, so a custom staging dir is not a way
-    around it. `flock` is dropped by the kernel when the holder exits, so a lock
-    file left by a crash is not stale.
-    """
-    root = default_staging_root()
-    root.mkdir(parents=True, exist_ok=True)
-    path = root / DRIVER_LOCK_NAME
-    with path.open("a+") as handle:
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            handle.seek(0)
-            holder = handle.read().strip() or "pid unknown"
-            raise RuntimeError(
-                f"another run_benchmark.py holds {path} ({holder}); wall-clock-budgeted solves "
-                "must not share the machine. Wait for it to finish."
-            ) from exc
-        handle.seek(0)
-        handle.truncate()
-        handle.write(f"pid={os.getpid()}\n")
-        handle.flush()
-        yield
 
 
 def describe_plan(
@@ -1097,7 +1109,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if args.dry_run:
         return describe_plan(args, sha, roster, paths, problems)
-    return execute(args, sha, roster, paths)
+    try:
+        return execute(args, sha, roster, paths)
+    except LockHeldError as exc:
+        print(f"refusing to run: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -42,6 +42,7 @@ from benchmarks.minlplib.campaign_report import (
     build_report,
     cbls_ahead_of_scip,
     feasibility_profile,
+    file_sha256,
     free_variable_instances,
     free_variable_split,
     gap_buckets,
@@ -61,6 +62,8 @@ from benchmarks.minlplib.campaign_report import (
     render_markdown,
     render_seeds_text,
     run_record_path,
+    seed_block_hashes,
+    seeds_report,
     single_band_false_ties,
     stale_readme_blocks,
     summarize_results,
@@ -988,12 +991,16 @@ def _record(seed: int = 1, *, commit: str = "abc1234", budget: float = 60.0) -> 
         roster=2,
         resumed=0,
         published_at=f"2026-10-01T00:00:0{seed % 10}+00:00",
+        table_sha256="",
         machine=dict(MACHINE),
         concurrency=dict(CONCURRENCY),
     )
 
 
 def _write_record(table: Path, record: RunRecord) -> None:
+    """`record`, pinned to `table`'s bytes unless the test set a hash of its own."""
+    if not record.table_sha256:
+        record = replace(record, table_sha256=file_sha256(table))
     run_record_path(table).write_text(
         json.dumps({"schema": RUN_RECORD_SCHEMA, **asdict(record)}) + "\n"
     )
@@ -1087,6 +1094,10 @@ def _write_seeds(directory: Path, rows: list[str], records: list[RunRecord]) -> 
     )
     table = directory / SEEDS_TABLE_NAME
     table.write_text(SEEDS_HEADER + "\n" + "\n".join(rows) + "\n")
+    hashes = seed_block_hashes(table)
+    records = [
+        r if r.table_sha256 else replace(r, table_sha256=hashes.get(r.seed, "")) for r in records
+    ]
     run_record_path(table).write_text(
         json.dumps(
             {"schema": RUN_RECORD_SCHEMA, "seeds": {str(r.seed): asdict(r) for r in records}}
@@ -1119,7 +1130,9 @@ def test_the_seed_spread_is_summarize_results_per_seed(tmp_path: Path) -> None:
     bounds = load_bounds_index(tmp_path / "bounds.csv")
     by_seed = load_seed_results(table, bounds)
     records = load_seed_run_records(table)
-    summary = summarize_seeds(by_seed, records, commit="abc1234", budget=60.0)
+    summary = summarize_seeds(
+        by_seed, records, block_hashes=seed_block_hashes(table), commit="abc1234", budget=60.0
+    )
     assert summary.seeds == [1, 2, 3]
     assert summary.rule == AGGREGATION_RULE
     for seed, rows in by_seed.items():
@@ -1135,7 +1148,13 @@ def test_the_seed_spread_is_summarize_results_per_seed(tmp_path: Path) -> None:
 def test_an_infeasible_seed_counts_as_worse_than_any_gap(tmp_path: Path) -> None:
     table = _three_seeds(tmp_path)
     by_seed = load_seed_results(table, load_bounds_index(tmp_path / "bounds.csv"))
-    summary = summarize_seeds(by_seed, load_seed_run_records(table), commit="abc1234", budget=60.0)
+    summary = summarize_seeds(
+        by_seed,
+        load_seed_run_records(table),
+        block_hashes=seed_block_hashes(table),
+        commit="abc1234",
+        budget=60.0,
+    )
     spreads = {s.instance: s for s in summary.per_instance}
     a, b, elec = spreads["a"], spreads["b"], spreads[ELEC]
     assert (a.gap_median_pct, a.gap_min_pct, a.gap_max_pct) == (20.0, 10.0, 30.0)
@@ -1178,7 +1197,12 @@ def test_seeds_from_another_commit_or_budget_or_without_a_record_are_left_out(
     table = _write_seeds(tmp_path, rows, [*records, other_host])
     by_seed = load_seed_results(table, load_bounds_index(tmp_path / "bounds.csv"))
     summary = summarize_seeds(
-        by_seed, load_seed_run_records(table), commit="abc1234", budget=60.0, host="box"
+        by_seed,
+        load_seed_run_records(table),
+        block_hashes=seed_block_hashes(table),
+        commit="abc1234",
+        budget=60.0,
+        host="box",
     )
     assert summary.seeds == [1]
     assert summary.left_out == {
@@ -1199,9 +1223,21 @@ def test_seeds_that_disagree_about_the_roster_are_refused(tmp_path: Path) -> Non
     table = _write_seeds(tmp_path, rows, [_record(1), _record(2)])
     by_seed = load_seed_results(table, load_bounds_index(tmp_path / "bounds.csv"))
     with pytest.raises(ValueError, match="do not share the roster"):
-        summarize_seeds(by_seed, load_seed_run_records(table), commit="abc1234", budget=60.0)
+        summarize_seeds(
+            by_seed,
+            load_seed_run_records(table),
+            block_hashes=seed_block_hashes(table),
+            commit="abc1234",
+            budget=60.0,
+        )
     with pytest.raises(ValueError, match="no seed in the per-seed table"):
-        summarize_seeds(by_seed, load_seed_run_records(table), commit="zzz", budget=60.0)
+        summarize_seeds(
+            by_seed,
+            load_seed_run_records(table),
+            block_hashes=seed_block_hashes(table),
+            commit="zzz",
+            budget=60.0,
+        )
 
 
 def test_a_duplicate_instance_is_refused_within_a_seed_not_across_seeds(tmp_path: Path) -> None:
@@ -1253,3 +1289,50 @@ def test_a_seed_with_no_search_is_marked_not_just_infeasible() -> None:
     spread = instance_spread([row("a", gap=1.0), gap, row("a", gap=2.0)])
     assert spread.not_built_seeds == 1
     assert spread.gap_median_pct == 2.0
+
+
+def test_a_table_changed_after_its_record_was_written_is_refused(tmp_path: Path) -> None:
+    """The record is pinned to the table's sha256: a rewrite under it is caught."""
+    _write_campaign(tmp_path)
+    _write_record(tmp_path / "comparison.csv", _record())
+    build_report(tmp_path, budget=None, seed=None, machine=None, feas_tol=None)
+    table = tmp_path / "comparison.csv"
+    table.write_text(table.read_text().replace("matches-bks", "feasible", 1))
+    with pytest.raises(ValueError, match="the table changed after its record was written"):
+        build_report(tmp_path, budget=None, seed=None, machine=None, feas_tol=None)
+
+
+def test_a_seed_whose_rows_changed_after_its_record_is_left_out(tmp_path: Path) -> None:
+    table = _three_seeds(tmp_path)
+    table.write_text(table.read_text().replace("2,a,1,1,1,30", "2,a,1,1,1,3"))
+    by_seed = load_seed_results(table, load_bounds_index(tmp_path / "bounds.csv"))
+    summary = summarize_seeds(
+        by_seed,
+        load_seed_run_records(table),
+        block_hashes=seed_block_hashes(table),
+        commit="abc1234",
+        budget=60.0,
+    )
+    assert summary.seeds == [1, 3]
+    assert summary.left_out == {
+        2: "its rows changed after its run record was written (sha256 mismatch)"
+    }
+
+
+def test_the_seed_summary_follows_the_configuration_most_seeds_share(tmp_path: Path) -> None:
+    """One later seed at another budget must not flip the summary onto itself.
+
+    Keyed on the latest record, a seed published afterwards at 5s turned a
+    three-seed 60s spread into a one-seed 5s "spread".
+    """
+    rows = (
+        _seed_rows(1, "10", True)
+        + _seed_rows(2, "30", False)
+        + _seed_rows(3, "20", False)
+        + _seed_rows(4, "20", True)
+    )
+    late = replace(_record(4, budget=5.0), published_at="2026-10-02T00:00:00+00:00")
+    _write_seeds(tmp_path, rows, [_record(1), _record(2), _record(3), late])
+    summary = seeds_report(tmp_path, None)
+    assert (summary.seeds, summary.budget_seconds) == ([1, 2, 3], 60.0)
+    assert summary.left_out == {4: "budget 5s, not 60s"}

@@ -11,20 +11,70 @@ What they share is the mechanics, here:
   caller can forget to record it.
 * `run_jobs` -- a plan run `workers` at a time with a serial tail, in plan
   order.
+* `wallclock_lock` -- the one lock every serial wall-clock-budgeted driver
+  holds for its whole run, so two of them never share the machine.
 """
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
+import os
 import signal
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Sequence
-    from pathlib import Path
+
+#: The lock `wallclock_lock` takes. ONE fixed path, resolved once at import:
+#: deliberately not `$XDG_STATE_HOME`, which two shells can set differently and
+#: which would then hand them two locks. Per user -- another user's run on the
+#: same machine is not excluded by it (the ablation driver's load-average gate
+#: is what notices that). Tests point it elsewhere by patching this name.
+WALLCLOCK_LOCK = Path.home() / ".local" / "state" / "cbls" / "wallclock.lock"
+
+
+class LockHeldError(RuntimeError):
+    """`wallclock_lock` is held by another process; the message names it."""
+
+
+@contextlib.contextmanager
+def wallclock_lock(owner: str) -> Iterator[None]:
+    """Hold the machine's wall-clock lock for the whole run, or raise `LockHeldError`.
+
+    Every driver that runs wall-clock-budgeted solves serially and publishes or
+    compares their numbers takes it (`minlplib/run_benchmark.py`,
+    `minlplib/run_ablation.py`): two such runs sharing the machine halve each
+    other's iteration counts with nothing in either record saying so, which is
+    what makes a run record's "one solve at a time" true rather than asserted.
+    Non-blocking: a second driver refuses rather than waiting. `flock` is held on
+    the inode and dropped by the kernel when the holder exits, so a lock file a
+    crash left behind is not stale -- never delete it to get past a refusal.
+    `owner` is written into the file so the refusal can name who holds it.
+    """
+    path = WALLCLOCK_LOCK
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # "a+", not "w": truncating before the flock fails would wipe the holder's line.
+    with path.open("a+") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            handle.seek(0)
+            holder = handle.read().strip() or "holder unknown"
+            raise LockHeldError(
+                f"another wall-clock benchmark holds {path} ({holder}); timed solves must not "
+                "share the machine. Wait for it to finish."
+            ) from exc
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"pid={os.getpid()} {owner}\n")
+        handle.flush()
+        yield
 
 
 def with_memory_limit(command: Sequence[str], limit_gb: float | None) -> list[str]:

@@ -313,6 +313,8 @@ What the driver refuses, and why each refusal matters:
 | build dir configured with `CBLS_SANITIZE` or `CBLS_PROFILE` | a sanitizer or profiling build measures a different engine, and both are sticky cache entries a later flag-less `cmake -B build` keeps |
 | a staging directory stamped with another commit, budget, seed or host | resuming it would mix two configurations into one table |
 | a `--seed` other than 1 naming `comparison.csv` or `anytime_trace.csv` | the published table is the pre-registered seed alone; another seed written there would make the published seed whichever ran last (#141) |
+| a `--time-limit` other than 60 onto the default paths | it would publish into `comparison.csv` or `comparison_seeds.csv`, replacing a 60s table or seed block with a smoke run; a non-default budget needs a scratch `--out` |
+| another timed driver (`run_benchmark.py` or `run_ablation.py`) holding the wall-clock lock | two timed runs sharing the machine halve each other's iteration counts with nothing in either record saying so |
 | `--trace-out` naming `anytime_trace.csv` while `--out` is scratch | the published trace would describe a run the published table does not |
 | a `comparison_seeds.csv` with another runner's columns, or an unreadable `comparison_seeds.run.json` | this run's seed could not be added beside them, found only after the solves |
 | missing `scip_baseline.csv` (unless `--no-merge`) | the merge would publish `comparison_all.csv` without SCIP rows |
@@ -323,8 +325,8 @@ is about to be labelled with. `--dry-run` prints the plan and exits non-zero if
 any refusal applies, so it works as a precheck.
 
 **Resumable.** Each instance is solved in its own process into
-`$XDG_STATE_HOME/cbls/minlplib-rerun/<commit>/seed<N>/<instance>.csv` — by
-default `~/.local/state/cbls/minlplib-rerun/<commit>/seed1/...` (plus `.trace.csv` and a `.log` holding
+`$XDG_STATE_HOME/cbls/minlplib-rerun/<commit>/<budget>s/seed<N>/<instance>.csv`
+— by default `~/.local/state/cbls/minlplib-rerun/<commit>/60s/seed1/...` (plus `.trace.csv` and a `.log` holding
 that instance's runner output and tally). A re-invocation skips instances that
 already have a *complete* staged row. Incomplete means any of: a header-only
 file (what a killed job leaves behind), a torn last line, a row stamped with a
@@ -343,14 +345,17 @@ to `build/minlplib-rerun/`, which pre-push's clean step (`rm -rf build`) deletes
 log. A gitignored directory inside the checkout would not do either: the
 worktree workflow deletes whole checkouts after a merge. XDG's *state*
 directory is the one meant for data that must survive a restart (its *cache*
-directory may be emptied at any time). It is keyed by commit, so a new engine
-commit starts a fresh directory rather than tripping the stamp; old ones
-accumulate there and are safe to delete once their run is published.
-`--staging-dir` still overrides it. **One driver runs at a time on the
-machine**: every invocation holds an exclusive lock (`driver.lock` in the
-staging root, whatever `--staging-dir` says) and a second one is refused, so
-two seeds started in two terminals cannot share the machine or race on the
-per-seed table.
+directory may be emptied at any time). It is keyed by commit and budget, so a
+new engine commit starts a fresh directory rather than tripping the stamp; old
+ones accumulate there and are safe to delete once their run is published.
+`--staging-dir` still overrides it. **One timed driver runs at a time on the
+machine**: this driver and the ablation driver (`run_ablation.py`) both hold
+`benchmarks/common/jobs.py`'s `wallclock_lock` — one fixed file,
+`~/.local/state/cbls/wallclock.lock`, whatever `--staging-dir` or
+`$XDG_STATE_HOME` say — for the whole run, and a second one refuses with
+"refusing to run" and exit 2. So two seeds started in two terminals cannot share
+the machine or race on the per-seed table. The lock is per user; another user's
+run on the same box is not excluded by it.
 
 `comparison.csv` and `anytime_trace.csv` are only replaced at the end, by an
 atomic rename of a fully-assembled file, so an interrupted run leaves them
@@ -388,9 +393,10 @@ gap? by anytime score?), so there is none.
 **Every seed is published beside it, in `comparison_seeds.csv`** — the runner's
 columns with `seed` prepended, one block per seed. Every whole-roster run onto
 the default paths adds its seed's rows there, seed 1's included, replacing that
-seed's earlier block and leaving the others' rows intact — whatever budget it
-ran at, so a smoke run at `--time-limit 5` onto the default paths replaces
-that seed's 60s block. The driver runs one seed per invocation:
+seed's earlier block and leaving the others' rows intact. **Only the published
+protocol's 60s budget may publish**, into either table: a `--time-limit` other
+than 60 onto the default paths is refused (pass a scratch `--out`), so a smoke
+run cannot replace a seed's 60s block. The driver runs one seed per invocation:
 
     for SEED in 1 2 3; do
         .venv/bin/python3 benchmarks/minlplib/run_benchmark.py --seed "$SEED" || break
@@ -407,16 +413,17 @@ run record would — is refused at every seed.
 **Three seeds is the floor** for quoting a spread — no power calculation
 supports a larger number, and the ablation campaign on this roster settled on
 three as well; more are welcome but not a blocker. After each publish the
-summary prints, across the per-seed table's seeds at this run's commit and
-budget, the feasible count's min / median / max, each instance's `gap_to_bks%`
+summary prints, across the per-seed table's seeds at this run's commit, budget
+and host, the feasible count's min / median / max, each instance's `gap_to_bks%`
 median and range, and any seed left out and why (another commit, another
-budget, another host, no run record, or a record for another commit than its
-rows). The definitions are `campaign_report.py`'s, applied per
+budget, another host, no run record, a record for another commit than its
+rows, or rows changed since their record was written). The definitions are `campaign_report.py`'s, applied per
 seed (`summarize_seeds`, rule `SEED_AGGREGATION_RULE`): a seed that did not
 reach feasibility counts as worse than any gap rather than being dropped, and
 `elec25`/`elec50` count in the feasible spread and stay out of quality claims as
 everywhere else. `campaign_report.py --seeds` prints the same summary from the
-committed files. **Report medians and ranges in prose**, beside the published
+committed files, at the (commit, budget, host) the most seeds share — ties to
+the most recently published — not merely at the latest record's. **Report medians and ranges in prose**, beside the published
 table; never substitute one for it.
 
 **Every published set carries a run record**: `comparison.run.json` beside
@@ -425,8 +432,13 @@ table; never substitute one for it.
 machine — host, CPU model, CPU count and usable cores, memory, load average at
 the start of the publishing invocation (`benchmarks/common/provenance.py`'s
 `machine_record()`) — the concurrency (one solve at a time, one thread each,
-held true by the driver lock), and `resumed`: how many rows were staged by an
-earlier invocation, whose machine and load the record did not see. A scratch `--out` gets one too, beside it. `campaign_report.py` reads the
+held true by the wall-clock lock), `resumed`: how many rows were staged by an
+earlier invocation, whose machine and load the record did not see, and
+`table_sha256`: the hash of the table's bytes (of the seed's block, in the
+per-seed record). A reader refuses a single-seed record whose hash no longer
+matches its table, and leaves out a seed whose block does not match — a table
+rewritten after its record, or a kill between the two writes. A scratch `--out`
+gets a record too, beside it. `campaign_report.py` reads the
 budget, seed and machine from `comparison.run.json` when it exists, so
 `--budget`/`--seed`/`--machine` are needed only for a table published before
 it — as the committed one was, which is why its provenance still says "not

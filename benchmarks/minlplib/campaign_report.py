@@ -55,6 +55,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
+import io
 import json
 import math
 import re
@@ -649,7 +651,7 @@ class ResultsSummary:
 
 
 def summarize_results(rows: Sequence[Row], feas_tol: float = DEFAULT_FEAS_TOL) -> ResultsSummary:
-    """The per-table entry point: call once per results table (per seed, for #141)."""
+    """The per-table entry point: call once per results table (`summarize_seeds` does, per seed)."""
     return ResultsSummary(
         rule=AGGREGATION_RULE,
         commit_shas=sorted({r.commit_sha for r in rows}),
@@ -665,7 +667,8 @@ def summarize_results(rows: Sequence[Row], feas_tol: float = DEFAULT_FEAS_TOL) -
 
 
 # --------------------------------------------------------------------------
-# Trace-derived aggregates (one trace; #141 calls `summarize_trace` per seed).
+# Trace-derived aggregates (one trace; not aggregated across seeds -- #141 publishes
+# per-seed rows only, and each seed's trace stays in its staging directory).
 # --------------------------------------------------------------------------
 
 
@@ -918,7 +921,9 @@ class TraceSummary:
 def summarize_trace(
     rows: Sequence[Row], trace: Mapping[str, Sequence[TracePoint]], budget: float
 ) -> TraceSummary:
-    """The per-trace entry point: call once per seed's trace (for #141).
+    """The per-trace entry point: call once per trace.
+
+    Not called per seed: #141 publishes per-seed rows, not per-seed traces.
 
     Cross-checks the trace against the table first (`check_trace_matches_table`).
     """
@@ -1221,11 +1226,46 @@ class RunRecord:
     #: Rows staged by an EARLIER invocation and reused: `machine` did not see them.
     resumed: int
     published_at: str
+    #: sha256 of what this record describes: the whole single-seed table's bytes
+    #: (`file_sha256`), or the seed's block of the per-seed table
+    #: (`seed_block_sha256`). A reader refuses, or leaves out, a record whose hash
+    #: no longer matches -- a table rewritten after its record, or a kill between
+    #: the driver's table and record writes.
+    table_sha256: str
     #: `benchmarks.common.provenance.machine_record()` at the start of the
     #: invocation that published.
     machine: dict[str, object]
     #: How many solves shared the machine, and with how many threads each.
     concurrency: dict[str, object]
+
+
+def file_sha256(path: Path) -> str:
+    """sha256 of a file's bytes: what a single-seed table's run record is pinned to."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def seed_block_sha256(rows: Sequence[Sequence[str]]) -> str:
+    """sha256 of one seed's rows of the per-seed table, `seed` cell included.
+
+    Over the rows as `csv.reader` parses them, re-rendered one way, so the hash
+    is the same whether computed by the driver before it writes the block or by
+    a reader after it -- whatever quoting the file happens to use.
+    """
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\n").writerows(rows)
+    return hashlib.sha256(buffer.getvalue().encode()).hexdigest()
+
+
+def seed_block_hashes(seeds_table: Path) -> dict[int, str]:
+    """`seed_block_sha256` of every seed's block of the per-seed table."""
+    blocks: dict[str, list[list[str]]] = defaultdict(list)
+    with seeds_table.open(newline="") as fh:
+        reader = csv.reader(fh)
+        next(reader, None)
+        for row in reader:
+            if row:
+                blocks[row[0]].append(row)
+    return {int(seed): seed_block_sha256(rows) for seed, rows in blocks.items()}
 
 
 def run_record_path(table: Path) -> Path:
@@ -1274,6 +1314,7 @@ def parse_run_record(obj: Mapping[str, object], where: str) -> RunRecord:
         roster=_record_int(obj, "roster", where),
         resumed=_record_int(obj, "resumed", where),
         published_at=_record_str(obj, "published_at", where),
+        table_sha256=_record_str(obj, "table_sha256", where),
         machine=_record_dict(obj, "machine", where),
         concurrency=_record_dict(obj, "concurrency", where),
     )
@@ -1379,6 +1420,7 @@ def comparable_seeds(
     *,
     commit: str,
     budget: float,
+    block_hashes: Mapping[int, str],
     host: str | None = None,
 ) -> tuple[dict[int, list[Row]], dict[int, str]]:
     """Split the per-seed table into the seeds to aggregate and the ones left out, with why.
@@ -1387,8 +1429,10 @@ def comparable_seeds(
     run record is for that commit, at `budget`, on `host` (when given). A seed
     with no run record is left out: the table does not carry the budget, so
     nothing says its rows are comparable. A record for another commit than its
-    rows is what a kill between the driver's two writes leaves behind. Another
-    host would mix machine variance into a seed spread.
+    rows, or one whose hash is not its block's (`block_hashes`, from
+    `seed_block_hashes`), is what a kill between the driver's two writes -- or a
+    hand edit -- leaves behind. Another host would mix machine variance into a
+    seed spread.
     """
     kept: dict[int, list[Row]] = {}
     left_out: dict[int, str] = {}
@@ -1402,6 +1446,8 @@ def comparable_seeds(
             left_out[seed] = "no run record, so its budget is unknown"
         elif record.commit != commit:
             left_out[seed] = f"its run record is for commit {record.commit}, not its rows' {commit}"
+        elif record.table_sha256 != block_hashes.get(seed):
+            left_out[seed] = "its rows changed after its run record was written (sha256 mismatch)"
         elif record.budget_seconds != budget:
             left_out[seed] = f"budget {record.budget_seconds:g}s, not {budget:g}s"
         elif host is not None and record.machine.get("host") != host:
@@ -1495,6 +1541,7 @@ def summarize_seeds(
     *,
     commit: str,
     budget: float,
+    block_hashes: Mapping[int, str],
     host: str | None = None,
     feas_tol: float = DEFAULT_FEAS_TOL,
 ) -> SeedsSummary:
@@ -1504,7 +1551,9 @@ def summarize_seeds(
     about the roster -- an instance missing from one seed would otherwise move
     every count spread by a row nobody ran.
     """
-    kept, left_out = comparable_seeds(by_seed, records, commit=commit, budget=budget, host=host)
+    kept, left_out = comparable_seeds(
+        by_seed, records, commit=commit, budget=budget, block_hashes=block_hashes, host=host
+    )
     if not kept:
         raise ValueError(
             f"no seed in the per-seed table ran at commit {commit} and {budget:g}s"
@@ -1650,7 +1699,8 @@ NOT_REGENERATED: tuple[str, ...] = (
     "one scip_baseline.csv row, not an aggregate.",
     "SCIP's CPU/wall ratio (~1.0), its clock type and its version string as quoted "
     "in prose: measured or read from SCIP, not from the tables' aggregates.",
-    "Machine descriptions (the SCIP run's hardware): no table records a machine.",
+    "Machine descriptions of runs with no run record (the SCIP run's hardware, and "
+    "the committed CBLS table, which predates comparison.run.json).",
     "Published bounds quoted in prose (e.g. st_e40's BKS): reference values from "
     "bounds.csv, not run-derived.",
     "Single cells quoted inside the root-cause prose (nvs01's published residual): "
@@ -1757,6 +1807,12 @@ def _stated(
             f"{name} is for commit {record.commit} but the table's rows name "
             f"{', '.join(commit_shas) or 'none'}: the record is not this table's. Re-run "
             "the publish, or move the record aside and state --budget/--seed by hand"
+        )
+    if record.table_sha256 != file_sha256(table):
+        raise ValueError(
+            f"{name} records sha256 {record.table_sha256[:12]} but {table.name} hashes to "
+            f"{file_sha256(table)[:12]}: the table changed after its record was written. "
+            "Re-run the publish, or move the record aside and state --budget/--seed by hand"
         )
     return _Stated(
         budget=record.budget_seconds,
@@ -2823,23 +2879,46 @@ def _host(record: RunRecord) -> str | None:
 
 
 def seeds_report(inst_dir: Path, feas_tol: float | None) -> SeedsSummary:
-    """`summarize_seeds` over the per-seed table at the latest-published seed's configuration.
+    """`summarize_seeds` over the per-seed table at its best-supported configuration.
 
-    The commit, budget and host to aggregate at are those of the run record published
-    most recently, so a table holding a stale campaign's seeds aggregates the
-    current one and names the rest as left out.
+    The (commit, budget, host) to aggregate at is the one the most seeds are
+    comparable under, ties broken by the most recently published. NOT simply
+    the latest record's: one seed published later at another configuration
+    would otherwise flip the summary onto a single-seed "spread" and leave the
+    campaign's seeds out.
     """
     table = inst_dir / SEEDS_TABLE_NAME
     records = load_seed_run_records(table)
     if not records:
         raise ValueError(f"{run_record_path(table)} not found: no seed has been published")
-    latest = max(records.values(), key=lambda r: r.published_at)
+    by_seed = load_seed_results(table, load_bounds_index(inst_dir / "bounds.csv"))
+    hashes = seed_block_hashes(table)
+
+    def support(record: RunRecord) -> tuple[int, str]:
+        kept, _ = comparable_seeds(
+            by_seed,
+            records,
+            commit=record.commit,
+            budget=record.budget_seconds,
+            block_hashes=hashes,
+            host=_host(record),
+        )
+        latest = max(
+            r.published_at
+            for r in records.values()
+            if (r.commit, r.budget_seconds, _host(r))
+            == (record.commit, record.budget_seconds, _host(record))
+        )
+        return len(kept), latest
+
+    best = max(records.values(), key=support)
     return summarize_seeds(
-        load_seed_results(table, load_bounds_index(inst_dir / "bounds.csv")),
+        by_seed,
         records,
-        commit=latest.commit,
-        budget=latest.budget_seconds,
-        host=_host(latest),
+        commit=best.commit,
+        budget=best.budget_seconds,
+        block_hashes=hashes,
+        host=_host(best),
         feas_tol=DEFAULT_FEAS_TOL if feas_tol is None else feas_tol,
     )
 

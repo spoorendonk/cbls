@@ -1377,7 +1377,7 @@
     "Per-seed and multi-commit measurements (nvs01's eight seeds, the #102 probe, the portfolio A/B, the replication spreads quoted in Results, the st_e40/nvs01 re-checks): separate campaigns, not the committed tables.",
     "The ex6_2_6 'stale catalogue row' note under SCIP baseline: a prose reading of one scip_baseline.csv row, not an aggregate.",
     "SCIP's CPU/wall ratio (~1.0), its clock type and its version string as quoted in prose: measured or read from SCIP, not from the tables' aggregates.",
-    "Machine descriptions (the SCIP run's hardware): no table records a machine.",
+    "Machine descriptions of runs with no run record (the SCIP run's hardware, and the committed CBLS table, which predates comparison.run.json).",
     "Published bounds quoted in prose (e.g. st_e40's BKS): reference values from bounds.csv, not run-derived.",
     "Single cells quoted inside the root-cause prose (nvs01's published residual): the table's own text, not an aggregate."
   ]
