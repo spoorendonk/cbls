@@ -1464,9 +1464,9 @@ bool ViolationLSLoop::polish_and_record(double batch_violation, bool& resync) {
                                                 : std::chrono::steady_clock::time_point{};
         // The hook gets the loop's own stop condition (#191): before it had none,
         // and FloatIntensifyHook on a 12k-Float model ran a 20s solve ~10s over
-        // budget. past_deadline() reads no clock on a run
-        // without one, so an iteration-budgeted run stays bit-reproducible, and
-        // a hook that finishes within budget sees nothing but unraised polls.
+        // budget. past_deadline() reads no clock on a run without one, so an
+        // iteration-budgeted run stays bit-reproducible, and a hook that
+        // finishes within budget sees nothing but unraised polls.
         const LoopStop stop{this};
         // continuous-objective polish (mutates floats)
         hook_->solve(model_, vm_, {}, StopRef(stop));
