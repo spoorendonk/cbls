@@ -60,6 +60,7 @@ from typing import TYPE_CHECKING
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from benchmarks.common.records import read_json_object  # noqa: E402
 from benchmarks.minlplib.reference_solve import (  # noqa: E402
     SAFE_GAP_ABSOLUTE_BELOW,
     Bound,
@@ -274,30 +275,35 @@ def load_results(path: Path, bounds: Mapping[str, Bound]) -> list[Row]:
     seen: set[str] = set()
     with path.open(newline="") as fh:
         for raw in csv.DictReader(fh):
-            name = raw["instance"]
-            _refuse_duplicate(path, seen, name)
-            if name not in bounds:
-                raise ValueError(f"{path}: instance {name!r} is not in bounds.csv")
-            bound = bounds[name]
-            n_int = _float(raw.get("n_int_vars"))
-            rows.append(
-                Row(
-                    instance=name,
-                    objective=_float(raw["objective"]),
-                    primal_bks=_float(raw["primal_bks"]),
-                    gap_pct=_float(raw["gap_to_bks%"]),
-                    wall_seconds=_float(raw["wall_seconds"]),
-                    feasible=raw["feasible"] == "true",
-                    note=raw["note"],
-                    commit_sha=raw.get("commit_sha", ""),
-                    n_int_vars=-1 if math.isnan(n_int) else int(n_int),
-                    maximizing=bound.maximizing,
-                    n_disc_vars_bks=bound.n_disc_vars_bks,
-                    search_config=raw.get("search_config", "") or "",
-                    catalogue_bks=bound.primal_bks,
-                )
-            )
+            rows.append(_row_from_cells(path, raw, bounds, seen))
     return rows
+
+
+def _row_from_cells(
+    path: Path, raw: Mapping[str, str], bounds: Mapping[str, Bound], seen: set[str]
+) -> Row:
+    """One results-table row, read by `load_results` and `load_seed_results` alike."""
+    name = raw["instance"]
+    _refuse_duplicate(path, seen, name)
+    if name not in bounds:
+        raise ValueError(f"{path}: instance {name!r} is not in bounds.csv")
+    bound = bounds[name]
+    n_int = _float(raw.get("n_int_vars"))
+    return Row(
+        instance=name,
+        objective=_float(raw["objective"]),
+        primal_bks=_float(raw["primal_bks"]),
+        gap_pct=_float(raw["gap_to_bks%"]),
+        wall_seconds=_float(raw["wall_seconds"]),
+        feasible=raw["feasible"] == "true",
+        note=raw["note"],
+        commit_sha=raw.get("commit_sha", ""),
+        n_int_vars=-1 if math.isnan(n_int) else int(n_int),
+        maximizing=bound.maximizing,
+        n_disc_vars_bks=bound.n_disc_vars_bks,
+        search_config=raw.get("search_config", "") or "",
+        catalogue_bks=bound.primal_bks,
+    )
 
 
 @dataclass(frozen=True)
@@ -1154,6 +1160,395 @@ def free_variable_split(rows: Sequence[Row], free: Mapping[str, bool]) -> FreeVa
 
 
 # --------------------------------------------------------------------------
+# Run records and the per-seed table (#141).
+# --------------------------------------------------------------------------
+
+#: The run record `run_benchmark.py` writes beside every results table it
+#: publishes, named after the table: `comparison.csv` -> `comparison.run.json`.
+#: A wall-clock-budgeted table that does not say what machine produced it, at
+#: what budget and seed, is an anecdote; this is where it says so.
+RUN_RECORD_SUFFIX = ".run.json"
+
+#: Bumped when a record's shape changes, so a reader refuses one it does not know.
+RUN_RECORD_SCHEMA = 1
+
+#: The per-seed table, beside `comparison.csv`: every seed's rows of the
+#: published protocol, one block per seed, `seed` first and then the runner's
+#: own columns. The pre-registered seed's rows are in it too, so it is the
+#: whole record; `comparison.csv` stays the single pre-registered seed (#141).
+SEEDS_TABLE_NAME = "comparison_seeds.csv"
+SEED_COLUMN = "seed"
+
+#: Below this many aggregated seeds a spread is printed with a note that it is
+#: under the floor (#141: three seeds is the defensible minimum, not five).
+MIN_SEEDS_FOR_SPREAD = 3
+
+#: How the per-seed table is aggregated. Stated once, printed beside every
+#: multi-seed summary, and layered ON `AGGREGATION_RULE` rather than beside it.
+SEED_AGGREGATION_RULE = (
+    "Each seed's table is summarized on its own under the aggregation rule, and "
+    "a count's spread is the min / median / max of those per-seed counts. Per "
+    "instance, the median and range are of gap_to_bks% over EVERY aggregated "
+    "seed, a seed that did not reach feasibility counting as +inf (worse than any "
+    "gap) rather than being dropped -- so a median is finite only when more than "
+    "half the seeds are feasible, and a range's upper end is inf when any seed is "
+    "not. A zero-BKS instance's cells are absolute residuals, not percentages, "
+    "and are marked; a documented failure is listed, marked excluded, and stays "
+    "out of every quality claim. Only seeds run at one commit and one budget are "
+    "aggregated; any other seed in the table is named with the reason it was "
+    "left out. The published comparison.csv is the pre-registered seed alone and "
+    "is never replaced by an aggregate."
+)
+
+
+@dataclass(frozen=True)
+class RunRecord:
+    """What produced one seed's results, as the driver recorded it at publish time."""
+
+    commit: str
+    budget_seconds: float
+    seed: int
+    roster: int
+    published_at: str
+    #: `benchmarks.common.provenance.machine_record()` at the start of the
+    #: invocation that published.
+    machine: dict[str, object]
+    #: How many solves shared the machine, and with how many threads each.
+    concurrency: dict[str, object]
+
+
+def run_record_path(table: Path) -> Path:
+    """Where the run record of the results table at `table` lives."""
+    return table.with_name(table.stem + RUN_RECORD_SUFFIX)
+
+
+def _record_field(obj: Mapping[str, object], key: str, where: str) -> object:
+    if key not in obj:
+        raise ValueError(f"{where}: run record has no {key!r}")
+    return obj[key]
+
+
+def _record_str(obj: Mapping[str, object], key: str, where: str) -> str:
+    value = _record_field(obj, key, where)
+    if not isinstance(value, str):
+        raise ValueError(f"{where}: run record's {key!r} is not a string")
+    return value
+
+
+def _record_int(obj: Mapping[str, object], key: str, where: str) -> int:
+    value = _record_field(obj, key, where)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{where}: run record's {key!r} is not an integer")
+    return value
+
+
+def _record_dict(obj: Mapping[str, object], key: str, where: str) -> dict[str, object]:
+    value = _record_field(obj, key, where)
+    if not isinstance(value, dict):
+        raise ValueError(f"{where}: run record's {key!r} is not an object")
+    return {str(k): v for k, v in value.items()}
+
+
+def parse_run_record(obj: Mapping[str, object], where: str) -> RunRecord:
+    """A `RunRecord` from its JSON object; refuses a malformed one rather than guessing."""
+    budget = _record_field(obj, "budget_seconds", where)
+    if isinstance(budget, bool) or not isinstance(budget, int | float):
+        raise ValueError(f"{where}: run record's 'budget_seconds' is not a number")
+    if not (math.isfinite(budget) and budget > 0):
+        raise ValueError(f"{where}: run record's budget {budget} is not positive and finite")
+    return RunRecord(
+        commit=_record_str(obj, "commit", where),
+        budget_seconds=float(budget),
+        seed=_record_int(obj, "seed", where),
+        roster=_record_int(obj, "roster", where),
+        published_at=_record_str(obj, "published_at", where),
+        machine=_record_dict(obj, "machine", where),
+        concurrency=_record_dict(obj, "concurrency", where),
+    )
+
+
+def _read_record_file(path: Path) -> dict[str, object] | None:
+    """The record file's object, None when absent; a present but unreadable one is refused.
+
+    Absent is the honest state of every table published before #141 and reads
+    as "not recorded". A file that exists and does not parse is damage, and
+    reading it as absent would quietly turn a recorded machine into an
+    unrecorded one.
+    """
+    if not path.exists():
+        return None
+    obj = read_json_object(path)
+    if obj is None:
+        raise ValueError(f"{path} exists but is not a readable JSON object")
+    schema = obj.get("schema")
+    if schema != RUN_RECORD_SCHEMA:
+        raise ValueError(f"{path}: run record schema {schema!r}, expected {RUN_RECORD_SCHEMA}")
+    return obj
+
+
+def load_run_record(table: Path) -> RunRecord | None:
+    """The run record beside a single-seed results table, or None if it has none."""
+    path = run_record_path(table)
+    obj = _read_record_file(path)
+    return None if obj is None else parse_run_record(obj, str(path))
+
+
+def load_seed_run_records(seeds_table: Path) -> dict[int, RunRecord]:
+    """The per-seed table's run records, by seed; empty when it has none."""
+    path = run_record_path(seeds_table)
+    obj = _read_record_file(path)
+    if obj is None:
+        return {}
+    seeds = obj.get("seeds")
+    if not isinstance(seeds, dict):
+        raise ValueError(f"{path}: has no 'seeds' object")
+    records: dict[int, RunRecord] = {}
+    for key, value in seeds.items():
+        if not isinstance(value, dict):
+            raise ValueError(f"{path}: seed {key!r} is not an object")
+        record = parse_run_record({str(k): v for k, v in value.items()}, f"{path} seed {key}")
+        if str(record.seed) != str(key):
+            raise ValueError(f"{path}: the record under seed {key!r} is seed {record.seed}")
+        records[record.seed] = record
+    return records
+
+
+def describe_machine(record: RunRecord) -> str:
+    """One line naming the machine and the concurrency a run was measured under."""
+    m, c = record.machine, record.concurrency
+
+    def known(value: object) -> str:
+        return "?" if value is None else str(value)
+
+    memory = m.get("memory_total_kib")
+    memory_text = (
+        f"{memory / 1024**2:.1f} GiB RAM"
+        if isinstance(memory, int | float) and not isinstance(memory, bool)
+        else "RAM ?"
+    )
+    load = m.get("load_average")
+    load_text = (
+        f"load {load[0]:.2f} at start"
+        if isinstance(load, list) and load and isinstance(load[0], int | float)
+        else "load ?"
+    )
+    return (
+        f"{known(m.get('host'))}, {known(m.get('cpu_count'))} CPUs "
+        f"({known(m.get('cpu_affinity'))} usable), {memory_text}, {load_text}; "
+        f"{known(c.get('parallel_solves'))} solve(s) at a time, "
+        f"{known(c.get('threads_per_solve'))} thread(s) each"
+    )
+
+
+def load_seed_results(path: Path, bounds: Mapping[str, Bound]) -> dict[int, list[Row]]:
+    """Read the per-seed table: each seed's rows, in file order, by seed.
+
+    The same row reader as `load_results`, so a seed's rows are exactly what that
+    seed's single-seed table would read as; a duplicate instance is refused
+    within a seed, not across seeds.
+    """
+    by_seed: dict[int, list[Row]] = {}
+    seen: dict[int, set[str]] = defaultdict(set)
+    with path.open(newline="") as fh:
+        for raw in csv.DictReader(fh):
+            try:
+                seed = int(raw[SEED_COLUMN])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"{path}: a row without an integer {SEED_COLUMN!r}") from exc
+            by_seed.setdefault(seed, []).append(_row_from_cells(path, raw, bounds, seen[seed]))
+    return by_seed
+
+
+def comparable_seeds(
+    by_seed: Mapping[int, Sequence[Row]],
+    records: Mapping[int, RunRecord],
+    *,
+    commit: str,
+    budget: float,
+) -> tuple[dict[int, list[Row]], dict[int, str]]:
+    """Split the per-seed table into the seeds to aggregate and the ones left out, with why.
+
+    A seed is aggregated only when every one of its rows names `commit` and its
+    run record says it ran at `budget`. A seed with no run record is left out:
+    the table does not carry the budget, so nothing says its rows are comparable.
+    """
+    kept: dict[int, list[Row]] = {}
+    left_out: dict[int, str] = {}
+    for seed in sorted(by_seed):
+        rows = list(by_seed[seed])
+        shas = sorted({r.commit_sha for r in rows})
+        record = records.get(seed)
+        if shas != [commit]:
+            left_out[seed] = f"commit {', '.join(shas)}, not {commit}"
+        elif record is None:
+            left_out[seed] = "no run record, so its budget is unknown"
+        elif record.budget_seconds != budget:
+            left_out[seed] = f"budget {record.budget_seconds:g}s, not {budget:g}s"
+        else:
+            kept[seed] = rows
+    return kept, left_out
+
+
+@dataclass
+class CountSpread:
+    """One roster or quality count, per seed and its spread across seeds."""
+
+    per_seed: dict[int, int]
+    min: int
+    median: float
+    max: int
+
+
+def _spread(per_seed: Mapping[int, int]) -> CountSpread:
+    values = list(per_seed.values())
+    return CountSpread(
+        per_seed=dict(per_seed),
+        min=min(values),
+        median=float(statistics.median(values)),
+        max=max(values),
+    )
+
+
+@dataclass
+class InstanceSpread:
+    """One instance's gap across the aggregated seeds (`SEED_AGGREGATION_RULE`)."""
+
+    instance: str
+    excluded: bool
+    zero_bks: bool
+    feasible_seeds: int
+    seeds: int
+    gap_median_pct: float
+    gap_min_pct: float
+    gap_max_pct: float
+
+
+def instance_spread(rows: Sequence[Row]) -> InstanceSpread:
+    """One instance's gap median and range over `rows` (one per seed), infeasible as +inf.
+
+    NaN throughout when a feasible seed has no gap (no published bound): there is
+    no ordering to take a median over.
+    """
+    values = [r.gap_pct if r.feasible else math.inf for r in rows]
+    defined = not any(math.isnan(v) for v in values)
+    return InstanceSpread(
+        instance=rows[0].instance,
+        excluded=rows[0].excluded,
+        zero_bks=any(r.zero_bks for r in rows),
+        feasible_seeds=sum(1 for r in rows if r.feasible),
+        seeds=len(rows),
+        gap_median_pct=float(statistics.median(values)) if defined else math.nan,
+        gap_min_pct=min(values) if defined else math.nan,
+        gap_max_pct=max(values) if defined else math.nan,
+    )
+
+
+@dataclass
+class SeedsSummary:
+    """Every multi-seed aggregate, computed from per-seed `summarize_results`."""
+
+    rule: str
+    seed_rule: str
+    seeds: list[int]
+    commit: str
+    budget_seconds: float
+    #: Roster count: feasible rows per seed, documented failures included.
+    feasible: CountSpread
+    #: Quality count: matches-bks among the feasible claim-set rows per seed.
+    matches_bks: CountSpread
+    per_instance: list[InstanceSpread]
+    #: Seeds in the table that are not aggregated, and why.
+    left_out: dict[int, str]
+    #: Each aggregated seed's machine and concurrency, from its run record.
+    machines: dict[int, str]
+
+
+def summarize_seeds(
+    by_seed: Mapping[int, Sequence[Row]],
+    records: Mapping[int, RunRecord],
+    *,
+    commit: str,
+    budget: float,
+    feas_tol: float = DEFAULT_FEAS_TOL,
+) -> SeedsSummary:
+    """The multi-seed entry point: `summarize_results` per seed, then the spread.
+
+    Refuses when no seed is comparable, and when the comparable seeds disagree
+    about the roster -- an instance missing from one seed would otherwise move
+    every count spread by a row nobody ran.
+    """
+    kept, left_out = comparable_seeds(by_seed, records, commit=commit, budget=budget)
+    if not kept:
+        raise ValueError(
+            f"no seed in the per-seed table ran at commit {commit} and {budget:g}s"
+            + "".join(f"; seed {s}: {why}" for s, why in left_out.items())
+        )
+    seeds = sorted(kept)
+    roster = [r.instance for r in kept[seeds[0]]]
+    differing = [s for s in seeds if sorted(r.instance for r in kept[s]) != sorted(roster)]
+    if differing:
+        raise ValueError(f"seeds {differing} do not share the roster of seed {seeds[0]}")
+    summaries = {seed: summarize_results(kept[seed], feas_tol) for seed in seeds}
+    by_instance: dict[str, list[Row]] = defaultdict(list)
+    for seed in seeds:
+        for r in kept[seed]:
+            by_instance[r.instance].append(r)
+    return SeedsSummary(
+        rule=AGGREGATION_RULE,
+        seed_rule=SEED_AGGREGATION_RULE,
+        seeds=seeds,
+        commit=commit,
+        budget_seconds=budget,
+        feasible=_spread({s: summaries[s].counts.feasible for s in seeds}),
+        matches_bks=_spread({s: summaries[s].verdicts.matches_bks for s in seeds}),
+        per_instance=[instance_spread(by_instance[name]) for name in roster],
+        left_out=left_out,
+        machines={s: describe_machine(records[s]) for s in seeds},
+    )
+
+
+def _gap_cell(value: float) -> str:
+    if math.isnan(value):
+        return "n/a"
+    return "infeasible" if math.isinf(value) else f"{value:.4g}"
+
+
+def render_seeds_text(summary: SeedsSummary) -> str:
+    """The multi-seed summary as plain text, for the driver and `--seeds`."""
+    f, m = summary.feasible, summary.matches_bks
+
+    def per_seed(spread: CountSpread) -> str:
+        return ", ".join(f"seed {s}: {n}" for s, n in spread.per_seed.items())
+
+    lines = [
+        f"rule: {summary.rule}",
+        f"seed rule: {summary.seed_rule}",
+        f"seeds aggregated: {', '.join(map(str, summary.seeds))} "
+        f"(commit {summary.commit}, {summary.budget_seconds:g}s per instance)",
+    ]
+    if len(summary.seeds) < MIN_SEEDS_FOR_SPREAD:
+        lines.append(
+            f"NOTE: {len(summary.seeds)} seed(s) aggregated; {MIN_SEEDS_FOR_SPREAD} is the "
+            "floor before a spread is worth quoting"
+        )
+    lines += [f"left out: seed {s} ({why})" for s, why in summary.left_out.items()]
+    lines += [f"machine, seed {s}: {text}" for s, text in summary.machines.items()]
+    lines += [
+        f"feasible (roster count): min {f.min}, median {f.median:g}, max {f.max} [{per_seed(f)}]",
+        f"matches-bks (claim set): min {m.min}, median {m.median:g}, max {m.max} [{per_seed(m)}]",
+        "per instance: gap_to_bks% median [min, max], feasible seeds",
+    ]
+    for s in summary.per_instance:
+        marks = [mark for mark, on in (("excluded", s.excluded), ("zero-BKS", s.zero_bks)) if on]
+        lines.append(
+            f"  {s.instance}: {_gap_cell(s.gap_median_pct)} "
+            f"[{_gap_cell(s.gap_min_pct)}, {_gap_cell(s.gap_max_pct)}], "
+            f"{s.feasible_seeds}/{s.seeds}" + (f" ({', '.join(marks)})" if marks else "")
+        )
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
 # The whole report.
 # --------------------------------------------------------------------------
 
@@ -1182,6 +1577,8 @@ class Provenance:
     scip_machine: str
     #: Disagreements between `--budget` and the evidence in the tables.
     warnings: list[str] = field(default_factory=list)
+    #: The run record the budget, seed and machine were read from, if any (#141).
+    run_record: str | None = None
 
 
 @dataclass
@@ -1264,10 +1661,84 @@ def _budget_warnings(budget: float, cbls_median: float, scip_budget: float | Non
     return out
 
 
+@dataclass(frozen=True)
+class _Stated:
+    """The budget, seed and machine, each with where it came from (`build_report`)."""
+
+    budget: float
+    budget_source: str
+    seed: int | None
+    seed_source: str
+    machine: str | None
+    machine_source: str
+    run_record: str | None
+    warnings: list[str]
+
+
+def _stated(
+    table: Path,
+    record: RunRecord | None,
+    *,
+    budget: float | None,
+    seed: int | None,
+    machine: str | None,
+    commit_shas: Sequence[str],
+) -> _Stated:
+    """Read the budget, seed and machine from the table's run record, else from the caller.
+
+    The record is read, the caller's values are typed, so the record wins: a
+    caller value that disagrees with it is a warning, not an override. Without a
+    record -- every table published before #141 -- the caller's values are used
+    and labelled as stated, exactly as before.
+    """
+    if record is None:
+        if budget is None:
+            raise ValueError(
+                f"{run_record_path(table).name} not found beside {table}; pass the budget"
+            )
+        return _Stated(
+            budget=budget,
+            budget_source="--budget (comparison.csv does not record the budget)",
+            seed=seed,
+            seed_source="--seed (comparison.csv does not record the seed)"
+            if seed is not None
+            else NOT_RECORDED,
+            machine=machine,
+            machine_source="--machine (comparison.csv does not record the machine)"
+            if machine
+            else NOT_RECORDED,
+            run_record=None,
+            warnings=[],
+        )
+    name = run_record_path(table).name
+    warnings: list[str] = []
+    if budget is not None and budget != record.budget_seconds:
+        warnings.append(f"--budget {budget:g}s but {name} records {record.budget_seconds:g}s")
+    if seed is not None and seed != record.seed:
+        warnings.append(f"--seed {seed} but {name} records seed {record.seed}")
+    if machine:
+        warnings.append(f"--machine is ignored: {name} records the machine")
+    if list(commit_shas) != [record.commit]:
+        warnings.append(
+            f"{name} is for commit {record.commit} but the table's rows name "
+            f"{', '.join(commit_shas) or 'none'}: the record is not this table's"
+        )
+    return _Stated(
+        budget=record.budget_seconds,
+        budget_source=name,
+        seed=record.seed,
+        seed_source=name,
+        machine=describe_machine(record),
+        machine_source=name,
+        run_record=name,
+        warnings=warnings,
+    )
+
+
 def build_report(
     inst_dir: Path,
     *,
-    budget: float,
+    budget: float | None,
     seed: int | None,
     machine: str | None,
     feas_tol: float | None,
@@ -1278,13 +1749,26 @@ def build_report(
 ) -> CampaignReport:
     """The whole report. Each input file defaults to its published name in
     `inst_dir`; pass one seed's table and trace to report on that seed (#141).
-    `inst_dir` is still where the `.nl` files are read from."""
-    if not (math.isfinite(budget) and budget > 0):
+    `inst_dir` is still where the `.nl` files are read from. `budget`, `seed` and
+    `machine` are read from the run record beside the results table when there is
+    one (#141); otherwise `budget` is required.
+    """
+    if budget is not None and not (math.isfinite(budget) and budget > 0):
         raise ValueError("budget must be positive and finite")
     if feas_tol is not None and not (math.isfinite(feas_tol) and feas_tol > 0):
         raise ValueError("feas_tol must be positive and finite")
+    table = results_csv or inst_dir / "comparison.csv"
     bounds = load_bounds_index(bounds_csv or inst_dir / "bounds.csv")
-    rows = load_results(results_csv or inst_dir / "comparison.csv", bounds)
+    rows = load_results(table, bounds)
+    stated = _stated(
+        table,
+        load_run_record(table),
+        budget=budget,
+        seed=seed,
+        machine=machine,
+        commit_shas=sorted({r.commit_sha for r in rows}),
+    )
+    budget = stated.budget
     trace = load_trace(trace_csv or inst_dir / "anytime_trace.csv")
     scip = load_scip(scip_csv or inst_dir / "scip_baseline.csv")
     tol = DEFAULT_FEAS_TOL if feas_tol is None else feas_tol
@@ -1299,15 +1783,11 @@ def build_report(
         engine_commit=_one_or_flag(results.commit_shas),
         search_config=_one_or_flag(results.search_configs),
         budget_seconds=budget,
-        budget_source="--budget (comparison.csv does not record the budget)",
-        seed=seed,
-        seed_source="--seed (comparison.csv does not record the seed)"
-        if seed is not None
-        else NOT_RECORDED,
-        machine=machine,
-        machine_source="--machine (comparison.csv does not record the machine)"
-        if machine
-        else NOT_RECORDED,
+        budget_source=stated.budget_source,
+        seed=stated.seed,
+        seed_source=stated.seed_source,
+        machine=stated.machine,
+        machine_source=stated.machine_source,
         feas_tol=tol,
         feas_tol_source="--feas-tol"
         if feas_tol is not None
@@ -1316,7 +1796,8 @@ def build_report(
         scip_configuration=scip_configuration,
         scip_budget_seconds=scip_budget,
         scip_machine="not in scip_baseline.csv (the README's SCIP 'Hardware' note names one)",
-        warnings=_budget_warnings(budget, cbls_median, scip_budget),
+        warnings=stated.warnings + _budget_warnings(budget, cbls_median, scip_budget),
+        run_record=stated.run_record,
     )
     anytime = {a.instance: a for a in trace_summary.anytime.per_instance}
     timing = trace_summary.improvement
@@ -1700,11 +2181,16 @@ def _readme_provenance(r: CampaignReport) -> str:
     p = r.provenance
     seed = f"seed {p.seed}" if p.seed is not None else "seed not recorded"
     machine = p.machine if p.machine else "not recorded"
+    where = (
+        f"the budget, the seed and the machine are read from `{p.run_record}`, which the "
+        "driver writes at publish time"
+        if p.run_record
+        else "the budget and the seed are recorded in no table and are stated to the generator"
+    )
     return (
         f"Latest run: **{p.budget_seconds:g}s per instance, {seed}, feasibility tolerance "
         f"{_plain(p.feas_tol)}**, engine commit `{p.engine_commit}` (recorded per row in "
-        "`comparison.csv`; the budget and the seed are recorded in no table and are "
-        "stated to the generator; machine: "
+        f"`comparison.csv`; {where}; machine: "
         f"{machine})."
     )
 
@@ -2216,14 +2702,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--budget",
         type=float,
-        required=True,
-        help="per-instance budget in seconds the campaign ran at (no table records it)",
+        default=None,
+        help="per-instance budget in seconds the campaign ran at; required when no "
+        "comparison.run.json records it (every table published before #141)",
     )
     parser.add_argument("--seed", type=int, default=None, help="the campaign's seed, if known")
     parser.add_argument("--machine", default=None, help="the campaign's machine, if known")
     parser.add_argument("--feas-tol", type=float, default=None)
     parser.add_argument("--json", type=Path, default=None, help="write the summary JSON here")
     parser.add_argument("--markdown", type=Path, default=None, help="write the report here")
+    parser.add_argument(
+        "--seeds",
+        action="store_true",
+        help=f"print the multi-seed summary of {SEEDS_TABLE_NAME} instead (#141)",
+    )
     readme = parser.add_mutually_exclusive_group()
     readme.add_argument(
         "--write-readme",
@@ -2290,14 +2782,55 @@ def _readme_action(args: argparse.Namespace, report: CampaignReport) -> int | No
     return None
 
 
+def seeds_report(inst_dir: Path, feas_tol: float | None) -> SeedsSummary:
+    """`summarize_seeds` over the per-seed table at the latest-published seed's configuration.
+
+    The commit and budget to aggregate at are those of the run record published
+    most recently, so a table holding a stale campaign's seeds aggregates the
+    current one and names the rest as left out.
+    """
+    table = inst_dir / SEEDS_TABLE_NAME
+    records = load_seed_run_records(table)
+    if not records:
+        raise ValueError(f"{run_record_path(table)} not found: no seed has been published")
+    latest = max(records.values(), key=lambda r: r.published_at)
+    return summarize_seeds(
+        load_seed_results(table, load_bounds_index(inst_dir / "bounds.csv")),
+        records,
+        commit=latest.commit,
+        budget=latest.budget_seconds,
+        feas_tol=DEFAULT_FEAS_TOL if feas_tol is None else feas_tol,
+    )
+
+
+def _usage_error(args: argparse.Namespace) -> str | None:
+    if args.budget is not None and not (math.isfinite(args.budget) and args.budget > 0):
+        return "--budget must be positive and finite"
+    if args.feas_tol is not None and not (math.isfinite(args.feas_tol) and args.feas_tol > 0):
+        return "--feas-tol must be positive and finite"
+    record = run_record_path(args.inst_dir / "comparison.csv")
+    if not args.seeds and args.budget is None and not record.exists():
+        return f"--budget is required: {record} does not exist to record the budget"
+    return None
+
+
+def _seeds_main(args: argparse.Namespace) -> int:
+    try:
+        print(render_seeds_text(seeds_report(args.inst_dir, args.feas_tol)))
+    except (ValueError, OSError) as exc:
+        print(f"no multi-seed summary: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    if not (math.isfinite(args.budget) and args.budget > 0):
-        print("--budget must be positive and finite", file=sys.stderr)
+    error = _usage_error(args)
+    if error:
+        print(error, file=sys.stderr)
         return 2
-    if args.feas_tol is not None and not (math.isfinite(args.feas_tol) and args.feas_tol > 0):
-        print("--feas-tol must be positive and finite", file=sys.stderr)
-        return 2
+    if args.seeds:
+        return _seeds_main(args)
     report = build_report(
         args.inst_dir,
         budget=args.budget,

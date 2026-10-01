@@ -14,7 +14,8 @@
     "scip_configuration": "SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0",
     "scip_budget_seconds": 60.0,
     "scip_machine": "not in scip_baseline.csv (the README's SCIP 'Hardware' note names one)",
-    "warnings": []
+    "warnings": [],
+    "run_record": null
   },
   "results": {
     "rule": "Documented-failure instances (elec25, elec50) are INCLUDED in roster counts (roster, built, mixed-integer, feasible, infeasible and the infeasible list, coverage gaps, errors, non-finite, integrality mismatches, verification failures, wall-clock totals, the cumulative-feasibility profile and its late-feasible list, the SCIP head-to-head counts and the disjoint-failure list) and EXCLUDED from quality aggregates (verdict-vs-BKS breakdown, gap buckets and the zero-BKS split, the earlier-margin and single-band examples, improvement timing, anytime scores, both-solved quality buckets, the CBLS-ahead-of-SCIP list, and the eligible and within-10% columns of the free-variable split), per #87. Their per-instance rows are still listed, marked excluded.",
