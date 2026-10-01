@@ -1179,7 +1179,12 @@ void Model::rebuild_back_references() {
 //    rows over it are `obj <= bound` and the like, which read it directly and
 //    so are gated. Its value outside a batch is re-grounded with every other
 //    Sum, and refusing it would put every MPS objective row back on the
-//    re-sum.
+//    re-sum. That relies on the objective's value being read RAW only between
+//    batches: every such reader -- the search's incumbent and bound
+//    tightening, LNS's state key, the inner solver, the pool -- runs after
+//    the GLS loop, whose end re-grounds every drifted Sum
+//    (reground_drifted_rows), and a throw out of a batch is followed by
+//    solve()'s full_evaluate. A raw reader inside a batch would break this.
 //
 // Terms may be anything else: every node term is flagged `kFeedsIncSum`, and a
 // dirty one pushes its change into the Sum. Whether an update is exact is a

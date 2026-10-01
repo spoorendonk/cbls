@@ -492,14 +492,24 @@ public:
                 sums_.probe_pending = true;
                 break;
             case Rule::Commit:
-                if (!push_ && (model_.has_custom_nodes() || model_.has_lambda_extra_nodes())) {
-                    // Every node that runs user code: a custom node, and #186's
-                    // extra lambdas, which read scalars and so sit in a scalar
-                    // variable's cone (#192). A walk without pushes re-reads
-                    // a term only at its Sum's turn, so user code throwing before that turn would
-                    // leave the Sum stale while its state says it is tracked; the next commit would
-                    // update the stale value. Untracked, it re-sums instead. Defensive: after a
-                    // throw the contract already asks for a full_evaluate, which resets them all.
+                if (!push_) {
+                    // A walk without pushes re-reads a term only at its Sum's
+                    // turn, so anything throwing before that turn -- a custom
+                    // node, a plain or extra lambda (Python binds them as raw
+                    // callables), or anything else -- would leave the Sum stale
+                    // while its state says it is tracked; the next commit would
+                    // update the stale value. Untracked, it re-sums instead.
+                    // Defensive: after a throw the contract already asks for a
+                    // full_evaluate, which resets them all.
+                    //
+                    // Unconditional (#192): keying it on the node kinds that run
+                    // user code missed the plain lambdas once already. It changes
+                    // no value -- every Sum in the cone is untracked at its own
+                    // turn anyway (eval_sum, Rule::Commit without pushes), this
+                    // only does it before the walk can throw. The cost is one
+                    // pass over the dirty list per plain commit, a walk that
+                    // already visits every node on that list; FJ's commits push
+                    // and never take it.
                     for (const int32_t nid : dirty_list) {
                         if ((nodes_[nid].inc_sum_flags & ExprNode::kIncSum) != 0) {
                             sums_.slots[slot_of(nid)].tracked = 0;
