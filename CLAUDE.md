@@ -274,31 +274,33 @@ Three conventions therefore rest on you rather than on a tool: branch only from 
 
 ### Fast vs. slow tests
 
-The C++ suite is **668 ctest tests**: 666 Catch2 ones over **665 `TEST_CASE`s**
-— 661 registered by `catch_discover_tests` plus **5 registered by hand**, the 4
+The C++ suite is **685 ctest tests**: 683 Catch2 ones over **682 `TEST_CASE`s**
+— 677 registered by `catch_discover_tests` plus **6 registered by hand**, the 5
 `[timing]` cases and `hang_guard_iteration_only_portfolio`, which is
 hand-registered *as well as* discovered (it needs a `TIMEOUT` to report a hang,
 but is cheap enough to belong in the fast set), so one `TEST_CASE` accounts for
 two ctest tests — plus **2 shell tests that are not Catch2 at all**,
 `clang_tidy_gate_probe` and `gate_lib_shell_test`, registered in the root
-`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 661,
+`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 677,
 **6 carry the
 Catch2 `[slow]` tag** — the CHPED and UC-CHPED benchmark solves, ~46s of
 aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~25s
 wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 659 tests, ~12s with `-j`. This is what **pre-commit** runs.
+- `ctest -LE slow` — the other 675 tests, ~12s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
-- `ctest -L timing` — 4 tests: `timing_structural_batch_deadline` plus the three
-  `timing_throughput_*` floors added for #125. Each is registered by an explicit
+- `ctest -L timing` — 5 tests: `timing_structural_batch_deadline`, the three
+  `timing_throughput_*` floors added for #125, and
+  `timing_inner_solver_hook_deadline` (#191's budget contract). Each is registered by an explicit
   `add_test` (naming its Catch2 test case) so it can carry a `TIMEOUT` and be
   quarantined individually. Don't add tests to this class without a concrete
   reason.
 
 **The Catch2 `[slow]` tag and the ctest `slow` label are not the same set here**,
-and both numbers appear above: 6 tests carry the *tag*, 9 carry the *label*
-(`ctest -N -L slow` says 9). The three throughput floors are tagged `[timing]`
+and both numbers appear above: 6 tests carry the *tag*, 10 carry the *label*
+(`ctest -N -L slow` says 10). The three throughput floors and #191's hook
+deadline test are tagged `[timing]`
 — which is what keeps them out of both `catch_discover_tests` calls, since the
 second spec is `[slow]~[timing]`; retagging one `[slow]` *instead of* `[timing]`
 would get it discovered *and* hand-registered, i.e. run twice (adding `[slow]`

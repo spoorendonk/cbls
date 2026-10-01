@@ -2607,9 +2607,13 @@ with the 1-minute load below 1.5:
 | seed | engine | wall (s) | objective |
 |------|--------|----------|-----------|
 | 1 | `7291a2c` (before #191) | 29.76 | 19.7683 |
-| 1 | `c4b4861` (#191) | 20.13 | 19.7683 |
+| 1 | `752e18a` (#191) | 20.13 | 19.7683 |
 | 2 | `7291a2c` (before #191) | 22.48 | 18.3416 |
-| 2 | `c4b4861` (#191) | 20.13 | 18.3416 |
+| 2 | `752e18a` (#191) | 20.13 | 18.3416 |
+
+`752e18a` is the measured commit `c4b4861` replayed onto #190 when it landed
+(same patch-id); the stride was later resized by node count, which leaves
+rahue's stride at 1, so these runs still describe the landed code.
 
 The poll changes only whether the descent continues, so a pass that finishes
 within budget is bit-identical to before: fixed-iteration final-assignment hashes

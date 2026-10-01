@@ -98,11 +98,11 @@ TESTS_FAILED=0
 
 # Only run C++ tests if C++ files were staged
 if [ -n "$CPP_FILES" ] && [ -d "build" ] && command -v ctest &>/dev/null; then
-	# -LE slow deliberately: this is the fast inner loop, 659 of the 668
-	# tests. The 9 tests it skips are the 6 [slow]-tagged CHPED and UC-CHPED
+	# -LE slow deliberately: this is the fast inner loop, 675 of the 685
+	# tests. The 10 tests it skips are the 6 [slow]-tagged CHPED and UC-CHPED
 	# solves, worth ~46s of the suite's aggregate (summed per-test) time --
 	# ~25s of wall clock with -j at Release -- plus the 3 #125 throughput
-	# floors, which are labelled slow (though not [slow]-tagged) so their
+	# floors and #191's hook-deadline test, which are labelled slow (though not [slow]-tagged) so their
 	# wall-clock budgets stay out of this loop. pre-push runs the whole suite
 	# from a clean tree anyway. The margin is much narrower than it was at
 	# -O0 (25s vs 12s, not 490s vs 7s), so the split now buys an inner loop

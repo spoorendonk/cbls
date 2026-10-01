@@ -61,7 +61,7 @@ include(Catch)
 #
 # Measured at Release: the 6 [slow]-tagged tests account for ~46s of the suite's
 # aggregate (summed per-test) time; with `-j$(nproc)` the full run is ~25s of
-# wall clock. The remaining 659 (655 discovered, plus the
+# wall clock. The remaining 675 (671 discovered, plus the
 # four hand-registered tests that carry no slow label --
 # timing_structural_batch_deadline and hang_guard_iteration_only_portfolio
 # here, and the two shell gate tests clang_tidy_gate_probe and
@@ -77,12 +77,12 @@ include(Catch)
 # the tag -- "measure both ways before tagging" applies to KEEPING a tag as
 # much as to adding one.
 #
-# The roster is therefore 668 ctest tests: 661 discovered here, the 5
+# The roster is therefore 685 ctest tests: 677 discovered here, the 6
 # hand-registered ones below, and the 2 non-Catch2 shell gate tests the root
-# CMakeLists.txt registers. The 666 Catch2 ones are one more than the 665
+# CMakeLists.txt registers. The 683 Catch2 ones are one more than the 682
 # TEST_CASEs in tests/*.cpp, because hang_guard_iteration_only_portfolio is both discovered
-# and hand-registered -- see its note below. `ctest -N -L slow` reports 9, not 6 --
-# the three #125 throughput floors carry the slow LABEL without the Catch2
+# and hand-registered -- see its note below. `ctest -N -L slow` reports 10, not 6 --
+# the three #125 throughput floors and #191's hook deadline carry the slow LABEL without the Catch2
 # [slow] TAG. Re-derive with `ctest -N`, never by incrementing.
 #
 # SKIP_RETURN_CODE 4 maps Catch2's SKIP() onto ctest's "Skipped" rather than a
