@@ -478,3 +478,51 @@ above:
 - engagement is `float_prepare_fast`.
 
 Counters are summed over the `solve()` lines of a run.
+
+## Addendum: uc-chped after #190 (bare affine bodies eligible)
+
+At `c09a8ca` uc-chped was unreachable because its rows are bare `Sum` bodies.
+#190 (engine `9292371`) makes an affine bare body closed-form eligible, read as
+the residual `body − 0` with a literal 0. The record above asked for the counters
+to be re-run once that happened; this is that re-run.
+
+**Protocol.** As pre-registered above, with the arms rebuilt on `9292371`:
+the same counters patch ported by hand (the `gls_loop` hunk now sits around
+#188's `reground_drifted_rows()`, and U1 is read after it), plus two counters,
+`prepare_all` and `prepare_all_fast`, that count prepares of every variable type.
+Treatment: the engine as is. Control: `-DCBLS_PP_CONTROL`. All 8 instance files,
+every rostered horizon, seeds 1-3, `--time-limit 10` per horizon, one runner
+process per (arm, file, seed), serial under the exclusive lock, arm order
+alternating per pair. Run 2026-10-01 10:19-10:47 on the Ryzen 5 5600H, 1-minute
+load at run start 0.97-1.20. Builds Release, `CBLS_SANITIZE` empty.
+
+**Verdict: absent.** No engaged instance meets the Direct condition (2).
+
+- **Engagement.** Treatment `float_prepare_fast > 0` in every seed on
+  `ucp40`, `ucp100`, `ucp200` (their 24-period horizon only), `ucp100-48p`,
+  `ucp200-48p`, `ucp100-168p` and `ucp200-168p`: 10-983 closed-form Float
+  prepares per solve. `ucp13` is not engaged. The control is 0 by construction.
+- **Direct.** D is identical, run for run, in both arms on every (file, horizon,
+  seed): 0 on every engaged horizon, and the few nonzero values (`ucp13` and
+  `ucp40` at 1-6 periods, at most 4) are the control's own background, in
+  solves where the treatment took no closed-form prepare at all.
+- **Material.** P is identical in both arms to the fourth decimal, at most
+  0.0063. Feasibility is identical in every run.
+
+**Why so little engages.** The batch API never takes the closed form on
+uc-chped: every `y` and `p` column also reads the objective row `obj <= bound`,
+whose fuel-cost body (`sin`, `abs`, `pow`, `y·F(p)`) is nonlinear, and that row
+always carries a nonzero weight in `solve()`. Over all 72 treatment solves,
+the 38 with no `gls()`/`run()` loop took 0 closed-form prepares of any type.
+What engages is the `run()` path only — the runner's 200-iteration
+`fj_nl_initialize` warm start and the LNS repair. In the 34 solves that ran such
+a loop, closed-form prepares (all types) were 0.18% of all prepares pooled,
+median 0.27% per solve, at most 49% on `ucp100`'s 24-period solve, which ran
+only ~4.7k prepares in all.
+The #190 premise that FJ on uc-chped would gain the closed form for its
+columns therefore does not hold while the objective row is weighted.
+
+**Fixed-iteration identity.** `ab_uc` (a throwaway driver that reproduces the
+runner's `solve_instance`, no clock) at 20,000 iterations, seed 1: `723799c` and
+`9292371` give the same final-assignment hash, iteration count and objective bits
+on all 24 (file, horizon) pairs.

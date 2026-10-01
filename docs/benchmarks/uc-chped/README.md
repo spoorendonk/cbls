@@ -161,6 +161,35 @@ The CBLS model (`uc_model.h`) maps the mathematical formulation to the solver's 
 
 See [`benchmarks/uc-chped/uc_model.h`](../../../benchmarks/uc-chped/uc_model.h) for the full implementation.
 
+### Closed-form jump scoring does not reach the search (#190)
+
+Every row here is a bare affine body (`add_constraint(sum(...))`, read as
+`expr <= 0`). Since #190 (`9292371`) such a row is eligible for FJ's closed-form
+`LinearJumpScorer`, but a column takes the closed form only when *every*
+weighted row it reads is eligible, and every `y` and `p` column also reads the
+objective row `obj <= bound`, whose fuel-cost body is nonlinear and always
+weighted in `solve()`. So the batch API scores every uc-chped candidate with the
+DAG probe exactly as before; only the `run()` path — the runner's 200-iteration
+warm start and the LNS repair — takes the closed form, on a small share of its
+prepares (`docs/benchmarks/linear-jump-pingpong.md`, #190 addendum).
+
+Measured, `723799c` (before) against `9292371` (after), Release, serial under an
+exclusive lock on an AMD Ryzen 5 5600H (12 threads), 1-minute load 1.00-1.42 at
+each run's start, 2026-10-01:
+
+- **Fixed iterations, no clock:** the final assignment, iteration count and
+  objective are bit-identical on all 24 (file, horizon) pairs at 20,000
+  iterations, seed 1.
+- **Iterations at `--time-limit 10` per horizon, seeds 1-3:** after/before ratio
+  0.96-1.12, median about 1.03; the 1-period rows gain most (1.06-1.12). This is
+  not the closed form — the batch API never takes it. At a fixed iteration count
+  the after build used 1-5% less CPU time on 1-period rows (ucp13 6.11 → 5.99 s,
+  ucp40 7.98 → 7.72 s, ucp200 8.79 → 8.39 s, means of 3; ucp13 at 24 periods
+  8.67 → 8.66 s) with the same trajectory, so the difference is code shape.
+- **Feasibility and gap at 10 s:** feasibility identical in every run; the gap
+  identical on every feasible row with a bound, except `ucp13` 3-period seeds 1
+  and 2 (1.13 → 1.03%, 2.72 → 2.62%).
+
 ## Reference Solver
 
 The reference solver (`benchmarks/chped/reference_solve.py --uc`) uses PySCIPOpt to solve a MIP formulation:
