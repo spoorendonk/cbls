@@ -296,6 +296,7 @@ def test_build_heldout_treats_an_html_error_page_as_an_outage(
     first = read_bounds_names(HELDOUT_DIR / "bounds.csv")[0]
     _fake_minlplib(monkeypatch, set().union(*skipped.values()), html={first})
     assert build_heldout(tmp_path, rows, DEFAULT_ROSTER, force=False) == 1
+    assert not (tmp_path / HELDOUT_DIRNAME / "bounds.csv").exists()
     assert not (tmp_path / HELDOUT_DIRNAME / UNFETCHABLE_FILENAME).exists()
 
 
@@ -338,3 +339,40 @@ def test_build_heldout_refuses_on_a_network_failure_in_the_published_recheck(
     _fake_minlplib(monkeypatch, skipped["published"], down={down})
     assert build_heldout(tmp_path, rows, DEFAULT_ROSTER, force=False) == 1
     assert not (tmp_path / HELDOUT_DIRNAME).exists()
+
+
+@pytest.mark.parametrize(
+    "planted", [b"", b"g3 1 1", b"b3 0 1 0\n"], ids=["empty", "short", "binary"]
+)
+def test_build_heldout_refetches_an_existing_nl_only_when_it_does_not_validate(
+    rows: list[dict[str, str]],
+    skipped: dict[str, set[str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    planted: bytes,
+) -> None:
+    # A planted bad file must not be trusted as pinned bytes. ("short" starts with
+    # "g", so it validates and is kept: validation is a header check, and the
+    # atomic write is what prevents truncation in the first place.)
+    shutil.copy(INST_DIR / "bounds.csv", tmp_path / "bounds.csv")
+    first = read_bounds_names(HELDOUT_DIR / "bounds.csv")[0]
+    (tmp_path / HELDOUT_DIRNAME).mkdir()
+    (tmp_path / HELDOUT_DIRNAME / f"{first}.nl").write_bytes(planted)
+    fetched = _fake_minlplib(monkeypatch, set().union(*skipped.values()))
+    assert build_heldout(tmp_path, rows, DEFAULT_ROSTER, force=False) == 0
+    body = (tmp_path / HELDOUT_DIRNAME / f"{first}.nl").read_bytes()
+    if planted.startswith(b"g"):
+        assert first not in fetched
+        assert body == planted
+    else:
+        assert first in fetched
+        assert body.startswith(b"g3")
+
+
+def test_heldout_mode_rejects_a_non_default_limit() -> None:
+    # Like the flagless seed: `--heldout --limit 10 --force`, the documented
+    # re-run plus one flag, would otherwise re-draw a different set.
+    with pytest.raises(SystemExit):
+        download._parse_args(["--heldout", "--limit", "10"])
+    assert download._parse_args(["--heldout"]).limit == DEFAULT_ROSTER
+    assert download._parse_args(["--limit", "10"]).limit == 10

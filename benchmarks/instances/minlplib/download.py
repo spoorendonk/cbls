@@ -288,7 +288,8 @@ def select(rows: list[dict[str, str]]) -> list[Instance]:
 
     The caller walks this order and stops once enough instances have been
     *fetched successfully*, so that instances the catalogue advertises as ``nl``
-    but serves as binary NL (the ``kriging_peaks-*`` family) are replaced rather
+    but serves as binary NL (the ``kriging_peaks-red*`` subfamily; ``-full*`` is
+    text) are replaced rather
     than silently shrinking the roster.
 
     This order defines the published roster: bounds.csv is its first
@@ -710,13 +711,14 @@ def fetch_published(here: Path, candidates: list[Instance], limit: int, force: b
     return 0 if len(fetched) >= min(limit, len(candidates)) else 1
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--force",
         action="store_true",
         help="re-download even if the file exists; with --heldout, only allow replacing "
-        "a committed held-out roster (existing .nl files are kept)",
+        "a committed held-out roster (existing .nl files are kept, and .nl files of "
+        "instances no longer in a changed membership are not removed)",
     )
     parser.add_argument(
         "--limit",
@@ -741,9 +743,13 @@ def _parse_args() -> argparse.Namespace:
         help=f"read the metadata CSV from this file instead of {CSV_URL} "
         f"(e.g. benchmarks/instances/minlplib/{HELDOUT_DIRNAME}/{POOL_FILENAME})",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.heldout and args.select_only:
         parser.error("--heldout and --select-only are exclusive")
+    if args.heldout and args.limit != DEFAULT_ROSTER:
+        # The membership is fixed at DEFAULT_ROSTER, as the seed is fixed with no
+        # flag: a different --limit would re-draw a different set.
+        parser.error(f"--heldout draws exactly {DEFAULT_ROSTER}; --limit cannot change it")
     return args
 
 

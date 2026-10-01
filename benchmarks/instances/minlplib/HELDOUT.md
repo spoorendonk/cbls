@@ -51,8 +51,8 @@ operators, `nvars <= 150`, `ncons <= 150` and a finite primal bound.
   1633 rows, sha256 `0ec2cb1e766f6ee04b5d7e1aa8deee91c5eaab5b2eeb9c7fbaa45bc28dcc8283`.
 - **Pool size: 397.** Of these, 347 lie outside the published roster. 8 of
   those 347 are known to be served only as binary NL (the published walk's
-  skips), which leaves **339 drawable**. The other 339 were not each fetched;
-  the held-out walk fetched only the instances it took.
+  skips), which leaves **339 drawable**. Those 339 were not all fetched to
+  check them; the held-out walk fetched only the instances it took.
 - This catalogue still rebuilds the published `bounds.csv` byte for byte (pinned
   by the test below). The 8 instances that roster's walk skipped (`ex8_1_2` and
   seven `kriging_peaks-red*`) are all still served as binary NL. Each was
@@ -107,7 +107,7 @@ choice is which way to differ from it (next section).
 3. Give each class still present in the remainder a quota proportional to the
    published roster's count in that class. The published counts in the three
    shared classes are 15 mixed-integer, 14 other and 6 transcendental (35 in
-   all). Scaled to 50 they are exactly 21.43, 20 and 8.57. Largest remainder,
+   all). Scaled to 50 they are 150/7 ≈ 21.43, 20 and 60/7 ≈ 8.57. Largest remainder,
    computed in exact fractions with ties broken by class name, gives
    **21 / 20 / 9**.
 4. Fill the quotas from each class's hash order, interleaving the classes in
@@ -197,7 +197,7 @@ set's size tertiles, before anything is run:
 and class are confounded, as the table shows: the small band has no
 mixed-integer instance and the medium band no transcendental one. So no single
 band-or-class reading isolates size, and a trend in one view should be checked
-against the other. With five or so instances per class-band cell, a null trend
+against the other. With 0 to 11 instances per class-band cell (two cells empty), a null trend
 makes a size explanation less likely but does not rule it out.
 
 So #144's acceptance criterion, "both halves have comparable size and
@@ -289,7 +289,8 @@ test also checks the quota rule on the pool independently, checks that the two
 sets are disjoint and that the draw depends on the seed, and checks that every
 held-out row has its text-NL file. Fake-server tests cover the live draw's
 refusals: a published skip that is text NL today, a network failure, and an
-HTML error page each abort the run without writing anything.
+HTML error page each abort the run without writing the roster files. (A
+outage mid-walk can leave `.nl` files already fetched.)
 
 To re-run the draw itself (it refuses to replace a committed roster without
 `--force`). It keeps the committed `.nl` files rather than re-fetching them, but
