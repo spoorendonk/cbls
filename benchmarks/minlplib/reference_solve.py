@@ -97,6 +97,20 @@ def safe_gap(obj: float, ref: float, maximizing: bool) -> float:
     return 100.0 * diff / abs(ref)
 
 
+def tie_band(bks: float) -> float:
+    """The purely relative band inside which an objective MATCHES the bound.
+
+    `classify_vs_bks`'s tie test, named so the campaign report can apply the
+    same band without restating it (#142).
+    """
+    return 1e-6 * (abs(bks) + 1.0)
+
+
+def claim_band(bks: float, feas_tol: float) -> float:
+    """The margin an objective must clear before an improvement is CLAIMED."""
+    return max(tie_band(bks), 10.0 * feas_tol)
+
+
 def classify_vs_bks(obj: float, bks: float, maximizing: bool, feas_tol: float) -> str:
     """Label a feasible objective against the published primal bound.
 
@@ -110,13 +124,11 @@ def classify_vs_bks(obj: float, bks: float, maximizing: bool, feas_tol: float) -
     """
     if math.isnan(bks):
         return "feasible"
-    win_slack = max(1e-6 * (abs(bks) + 1.0), 10.0 * feas_tol)
-    tie_band = 1e-6 * (abs(bks) + 1.0)
     diff = obj - bks
     improvement = diff if maximizing else -diff
-    if improvement > win_slack:
+    if improvement > claim_band(bks, feas_tol):
         return "better-than-bks"
-    if abs(diff) <= tie_band:
+    if abs(diff) <= tie_band(bks):
         return "matches-bks"
     if improvement > 0.0:
         return "within-tolerance-of-bks"

@@ -81,9 +81,8 @@ from benchmarks.common.provenance import (  # noqa: E402
     commit_sha,
 )
 from benchmarks.common.records import atomic_write, stamp_refusal  # noqa: E402
-from benchmarks.minlplib import runner  # noqa: E402
+from benchmarks.minlplib import campaign_report, runner  # noqa: E402
 from benchmarks.minlplib.runner import (  # noqa: E402
-    CLAIM_EXCLUDED,
     RUNNER_EXIT_ERRORED,
     RUNNER_TARGET,
     stageable_note,
@@ -409,42 +408,46 @@ def assemble(stage: Path, roster: Sequence[str], out: Path, suffix: str) -> None
     atomic_write(out, "\n".join([header, *body]) + "\n")
 
 
-def verdict_of(note: str) -> str:
-    """The runner's own verdict word, with its appended annotations stripped.
+def summarize(out: Path, bounds_csv: Path) -> str:
+    """The written table's tally, under `campaign_report`'s aggregate definitions.
 
-    The runner glues `analysis_notes.csv`'s curated root cause onto the note with
-    ` | `, and an integrality remark with `; `. Without stripping them, one
-    annotated row becomes its own histogram bucket.
+    Deliberately thin, and deliberately NOT its own definitions: until #142 this
+    function held `elec` out of every count while the README's tally counted the
+    whole roster, so a reader could not tell which denominator a number used. Both
+    now come from `campaign_report.summarize_results`, which states the rule it
+    applies (`campaign_report.AGGREGATION_RULE`) -- documented failures count in
+    the roster counts and are held out of the quality aggregates -- and this
+    prints that rule beside the numbers. The full report, anytime scores and SCIP
+    head-to-head included, is `campaign_report.py`.
     """
-    return note.split("(")[0].split(" | ")[0].split(";")[0].strip()
-
-
-def summarize(out: Path) -> str:
-    """A tally derived from the written table, not recomputed from the solutions.
-
-    Deliberately thin: the runner's own tally applies the tie and improvement
-    bands and is captured per instance in the staging logs. This only counts the
-    verdicts the table already carries, and holds `elec` apart because its rows
-    are published as documented failures rather than as results (issue #87).
-    Note that the README's Results tally counts over the *whole* roster, so take
-    `rows written` — not `counted` — as its `roster` figure.
-    """
-    with out.open(newline="") as fh:
-        rows = list(csv.DictReader(fh))
-    counted = [r for r in rows if r["instance"] not in CLAIM_EXCLUDED]
-    excluded = [r for r in rows if r["instance"] in CLAIM_EXCLUDED]
-    verdicts: dict[str, int] = {}
-    for row in counted:
-        verdict = verdict_of(row["note"])
-        verdicts[verdict] = verdicts.get(verdict, 0) + 1
+    rows = campaign_report.load_results(out, campaign_report.load_bounds_index(bounds_csv))
+    summary = campaign_report.summarize_results(rows)
+    counts, verdicts = summary.counts, summary.verdicts
     lines = [
-        f"rows written:         {len(rows)}",
-        f"counted (excl. elec): {len(counted)}",
-        f"feasible:             {sum(1 for r in counted if r['feasible'] == 'true')}",
+        f"rule: {summary.rule}",
+        "roster counts (every row):",
+        f"  roster:               {counts.roster}",
+        f"  built:                {counts.built}",
+        f"  feasible:             {counts.feasible}",
+        f"  infeasible:           {counts.infeasible}",
+        f"  coverage gaps:        {counts.coverage_gaps}",
+        f"  errors:               {counts.errors}",
+        f"quality aggregates ({verdicts.denominator} feasible claim-set rows):",
+        f"  matches-bks:          {verdicts.matches_bks}",
+        f"  within-tolerance:     {verdicts.within_tolerance}",
+        f"  worse than BKS:       {verdicts.worse}",
+        f"  better than BKS:      {verdicts.better}",
     ]
-    lines += [f"  {note:<20}{count}" for note, count in sorted(verdicts.items())]
-    for row in excluded:
-        lines.append(f"excluded from claims: {row['instance']} -> {verdict_of(row['note'])}")
+    by_name = {r.instance: r for r in rows}
+    lines += [
+        f"excluded from quality aggregates: {name} -> {by_name[name].verdict}"
+        for name in counts.documented_failures
+    ]
+    lines += [
+        f"WARNING: documented failure {name} came back FEASIBLE -- check #110/#116 "
+        "before publishing anything about it"
+        for name in counts.documented_failures_feasible
+    ]
     return "\n".join(lines)
 
 
@@ -496,7 +499,7 @@ def publish(args: argparse.Namespace, roster: Sequence[str], paths: Paths) -> in
                 file=sys.stderr,
             )
     print("\n=== Summary (derived from the written table) ===")
-    print(summarize(paths.out))
+    print(summarize(paths.out, args.inst_dir / "bounds.csv"))
     return 1 if merge_failed else 0
 
 

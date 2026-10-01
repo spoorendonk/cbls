@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from benchmarks.common.provenance import REPO_ROOT
+from benchmarks.minlplib.campaign_report import AGGREGATION_RULE, verdict_of
 from benchmarks.minlplib.run_benchmark import (
     STAMP_NAME,
     assemble,
@@ -34,7 +35,6 @@ from benchmarks.minlplib.run_benchmark import (
     staging_stamp_conflict,
     summarize,
     usage_error,
-    verdict_of,
 )
 from benchmarks.minlplib.runner import (
     CLAIM_EXCLUDED,
@@ -592,21 +592,54 @@ def test_a_verdict_drops_the_analysis_note_the_runner_glued_on() -> None:
     assert verdict_of("matches-bks; int-mismatch") == "matches-bks"
 
 
-def test_summary_holds_elec_out_of_the_counted_rows(tmp_path: Path) -> None:
+def _summary_inputs(tmp_path: Path, excluded_row: str) -> tuple[Path, Path]:
     out = tmp_path / "comparison.csv"
     rows = [
         HEADER,
         "a,1,1,1,0,0,60,true,matches-bks,abc1234,0,0",
-        "b,1,1,1,0,0,60,true,feasible | bug: x,abc1234,0,0",
-        f"{CLAIM_EXCLUDED[0]},NaN,1,1,NaN,NaN,60,false,infeasible(residual=1),abc1234,1,0",
+        "b,2,1,1,100,100,60,true,feasible | bug: x,abc1234,0,0",
+        excluded_row,
     ]
     out.write_text("\n".join(rows) + "\n")
-    text = summarize(out)
-    assert "rows written:         3" in text
-    assert "counted (excl. elec): 2" in text
-    assert "feasible:             2" in text
-    assert "  feasible            1" in text
-    assert f"excluded from claims: {CLAIM_EXCLUDED[0]} -> infeasible" in text
+    bounds = tmp_path / "bounds.csv"
+    bounds.write_text(
+        "instance,structure,nvars,ncons,objsense,primal_bks,dual_bound,n_disc_vars_bks\n"
+        + "".join(f"{n},other,1,1,min,1,1,0\n" for n in ("a", "b", CLAIM_EXCLUDED[0]))
+    )
+    return out, bounds
+
+
+def test_summary_counts_elec_in_the_roster_and_out_of_the_quality_aggregates(
+    tmp_path: Path,
+) -> None:
+    """#142: one rule for both denominators, and the summary states it.
+
+    Before #142 the driver dropped `elec` from every line while the README's tally
+    counted the whole roster. Now the roster counts include it and only the
+    quality aggregates hold it out, under `campaign_report.AGGREGATION_RULE`.
+    """
+    excluded = f"{CLAIM_EXCLUDED[0]},NaN,1,1,NaN,NaN,60,false,infeasible(residual=1),abc1234,1,0"
+    out, bounds = _summary_inputs(tmp_path, excluded)
+    text = summarize(out, bounds)
+    assert f"rule: {AGGREGATION_RULE}" in text
+    assert "  roster:               3" in text
+    assert "  feasible:             2" in text
+    assert "  infeasible:           1" in text
+    assert "quality aggregates (2 feasible claim-set rows):" in text
+    assert "  matches-bks:          1" in text
+    assert "  worse than BKS:       1" in text
+    assert f"excluded from quality aggregates: {CLAIM_EXCLUDED[0]} -> infeasible" in text
+    assert "WARNING" not in text
+
+
+def test_summary_warns_when_a_documented_failure_comes_back_feasible(tmp_path: Path) -> None:
+    """README: a feasible `elec` row is a result to check, not a table refresh."""
+    excluded = f"{CLAIM_EXCLUDED[0]},1,1,1,0,0,60,true,matches-bks,abc1234,0,0"
+    out, bounds = _summary_inputs(tmp_path, excluded)
+    text = summarize(out, bounds)
+    assert "  feasible:             3" in text
+    assert "quality aggregates (2 feasible claim-set rows):" in text
+    assert f"WARNING: documented failure {CLAIM_EXCLUDED[0]} came back FEASIBLE" in text
 
 
 # --- the runner contract, pinned against minlplib.cpp ---------------------------
