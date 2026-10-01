@@ -140,6 +140,14 @@ def test_heldout_is_not_the_size_ordered_next_fifty(
     heldout = heldout_walk(rows, skipped)
     assert {i.name for i in heldout} != {i.name for i in next_fifty}
 
+    # And it has the property the doc chose it for: a size spread the narrow
+    # next-fifty band lacks (216 against 92 on the committed pool).
+    def spread(xs: list[Instance]) -> int:
+        sizes = [i.nvars + i.ncons for i in xs]
+        return max(sizes) - min(sizes)
+
+    assert spread(heldout) > 2 * spread(next_fifty)
+
 
 def test_every_heldout_instance_has_a_text_nl_file() -> None:
     for name in read_bounds_names(HELDOUT_DIR / "bounds.csv"):
@@ -227,3 +235,15 @@ def test_build_heldout_aborts_on_a_network_failure_without_writing(
     assert build_heldout(tmp_path, rows, DEFAULT_ROSTER, force=False) == 1
     assert not (tmp_path / HELDOUT_DIRNAME / "bounds.csv").exists()
     assert not (tmp_path / HELDOUT_DIRNAME / UNFETCHABLE_FILENAME).exists()
+
+
+def test_build_heldout_refuses_a_short_published_roster(
+    rows: list[dict[str, str]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A `--limit 10` main-mode run leaves a 10-row bounds.csv; a draw against it
+    # would exclude only those 10 and could admit the other 40 published instances.
+    lines = (INST_DIR / "bounds.csv").read_bytes().splitlines(keepends=True)
+    (tmp_path / "bounds.csv").write_bytes(b"".join(lines[:11]))
+    fetched = _fake_minlplib(monkeypatch, set())
+    assert build_heldout(tmp_path, rows, DEFAULT_ROSTER, force=True) == 2
+    assert not fetched

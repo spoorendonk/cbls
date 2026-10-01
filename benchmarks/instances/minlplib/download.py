@@ -512,7 +512,7 @@ def _fetch_heldout(
 ) -> tuple[list[Instance], list[Skip]] | None:
     """Walk `order` fetching text NL into `out_dir` until `limit` are in hand.
 
-    An existing non-empty .nl is always reused, even under --force: the committed
+    An existing .nl that validates as text NL is always reused, even under --force: the committed
     files are the pinned bytes #145 runs on, and --force only lifts the
     membership refusal. To re-fetch one, delete it first.
 
@@ -526,7 +526,7 @@ def _fetch_heldout(
         if len(fetched) >= limit:
             break
         dest = out_dir / f"{inst.name}.nl"
-        if dest.exists() and dest.stat().st_size > 0:
+        if dest.exists() and validate_nl(dest.read_bytes()) is None:
             fetched.append(inst)
             continue
         try:
@@ -538,7 +538,9 @@ def _fetch_heldout(
             print(f"[skip]  {inst.name} (held-out walk): {reason}")
             skips.append((inst.name, "heldout", str(reason)))
             continue
-        dest.write_bytes(body)
+        tmp = dest.with_name(dest.name + ".tmp")
+        tmp.write_bytes(body)
+        tmp.replace(dest)  # a kill mid-write must not leave a truncated file to reuse
         digest = hashlib.sha256(body).hexdigest()
         print(f"        -> {dest.name} ({len(body)} bytes, sha256 {digest[:12]}...)")
         fetched.append(inst)
@@ -562,6 +564,11 @@ def build_heldout(here: Path, rows: list[dict[str, str]], limit: int, force: boo
         return 2
 
     roster = read_bounds_names(here / "bounds.csv")
+    if len(roster) != DEFAULT_ROSTER:
+        # A `--limit 10` main-mode run rewrites bounds.csv; drawing against that
+        # would exclude 10 published instances and admit the other 40.
+        print(f"[refuse] bounds.csv has {len(roster)} rows, not the published {DEFAULT_ROSTER}")
+        return 2
     candidates = select(rows)
     published_skips = _recheck_published_skips(candidates, roster)
     if published_skips is None:

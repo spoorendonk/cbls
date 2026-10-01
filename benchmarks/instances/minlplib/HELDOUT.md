@@ -25,7 +25,7 @@ the fifty names appeared anywhere else in the repository.
 | File | What it is |
 |---|---|
 | `heldout/bounds.csv` | The held-out roster, in draw order, in `../bounds.csv`'s schema. It is the roster of record for this set. |
-| `heldout/*.nl` | The fifty text-NL files, committed (1.2 MB, about the size of the published roster's 1.3 MB). |
+| `heldout/*.nl` | The fifty text-NL files, committed (1.1 MB, about the size of the published roster's 1.2 MB). |
 | `heldout/pool.csv` | Snapshot of the catalogue rows the filter admits (all 397), limited to the columns the filter reads. Both rosters are re-derivable from it offline. |
 | `heldout/unfetchable.csv` | The instances each fetch walk skipped because MINLPLib serves them as binary NL. A walk can only be replayed offline with this list. |
 
@@ -156,10 +156,12 @@ size difference. It trades a small size difference for a useful property:
 - **The seeded draw is a sample of the remainder's own size distribution.**
   Sizes run from 4 to 220 overall, with a wide spread inside each class
   (mixed-integer 36-196, other 6-220, transcendental 4-210). That lets #145 ask
-  whether an arm's effect *varies with size within the held-out set*. If it
-  does not, a failure to transfer is not a size effect. If it does, the size
-  dependence is itself the finding: the shipped value was fitted to the small
-  end of the pool.
+  whether an arm's effect *varies with size within the held-out set*. If no
+  size trend is visible, a size explanation becomes less likely. It is not
+  ruled out: there are only fifty instances, and size is partly confounded with
+  class (every mixed-integer instance is size 36 or more). If a trend is
+  visible, the size dependence is itself the finding: the shipped value was
+  fitted to the small end of the pool.
 
 So #144's acceptance criterion, "both halves have comparable size and
 structure-class composition", is **not met and cannot be met** while the
@@ -192,6 +194,12 @@ published roster fixed.
   evidence of over-fitting. If any cross-set comparison is wanted, use the
   published roster's 35 instances in the three shared classes, and still treat
   size as a covariate.
+- **Families cluster.** The held-out set holds 9 `graphpart_*` instances (9 of
+  its 17 mixed-integer ones) and 9 `ex8_*` instances (7 of them
+  transcendental). That is proportional to the pool, but instances in one
+  family behave alike, so the effective sample is smaller than fifty. A
+  count-of-wins statement should be reported per class, and a family should be
+  treated as one cluster rather than as nine independent votes.
 - **Pre-registered handling of unloadable instances.** These instances were
   admitted on catalogue metadata alone and have never been through the NL
   reader. An instance the runner reports as `skipped(unsupported)` **stays in
