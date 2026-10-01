@@ -335,6 +335,11 @@ def test_preflight(
         # The run's own inputs are not scratch space either.
         ({"out": "inst/bounds.csv", "trace_out": "t.csv"}, ("--out resolves", "bounds.csv")),
         (
+            {"out": "s.csv", "trace_out": "inst/analysis_notes.csv"},
+            ("--trace-out resolves", "analysis_notes.csv"),
+        ),
+        ({"out": "s.csv", "trace_out": "s.run.json"}, ("--out's run record",)),
+        (
             {"out": "s.csv", "trace_out": "inst/scip_baseline.csv"},
             ("--trace-out resolves", "scip_baseline.csv"),
         ),
@@ -375,6 +380,8 @@ def test_preflight(
         "run-record-over-the-published-record",
         "table-over-comparison-all",
         "table-over-bounds",
+        "trace-over-analysis-notes",
+        "trace-over-the-out-run-record",
         "trace-over-scip-baseline",
         "scratch-table-naming-the-published-trace",
         "smoke-budget-onto-the-published-table",
@@ -1300,3 +1307,55 @@ def test_a_coverage_gap_is_not_an_error_and_the_runner_still_exits_zero(
     assert notes["ok"] in COMPLETED_VERDICTS
     assert notes["exotic"].startswith("unsupported")
     assert notes["absent"] == "not-found"
+
+
+# --- the held-out roster (#144) ------------------------------------------------
+
+HELDOUT_DIR = REPO_ROOT / "benchmarks" / "instances" / "minlplib" / "heldout"
+PUBLISHED_DIR = REPO_ROOT / "benchmarks" / "instances" / "minlplib"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{}, {"merge": False}, {"seed": 2}, {"out": "s.csv", "trace_out": "t.csv"}],
+    ids=["default-paths", "no-merge", "another-seed", "scratch-out-defaulted-staging"],
+)
+def test_the_heldout_roster_publishes_nothing(tmp_path: Path, overrides: dict[str, object]) -> None:
+    """HELDOUT.md: every output of a held-out run goes outside benchmarks/instances/."""
+    paths = {k: tmp_path / v for k, v in overrides.items() if isinstance(v, str)}
+    args = make_args(tmp_path, **{"inst_dir": HELDOUT_DIR, **overrides, **paths})
+    message = usage_error(args, HELDOUT_DIR / "comparison.csv")
+    assert message is not None and "--inst-dir" in message, message
+
+
+def test_a_heldout_run_onto_scratch_paths_is_allowed(tmp_path: Path) -> None:
+    args = make_args(
+        tmp_path,
+        inst_dir=HELDOUT_DIR,
+        out=tmp_path / "s.csv",
+        trace_out=tmp_path / "t.csv",
+        staging_dir=tmp_path / "stage",
+    )
+    assert usage_error(args, HELDOUT_DIR / "comparison.csv") is None
+
+
+@pytest.mark.parametrize(
+    ("inst_dir", "out"),
+    [
+        (HELDOUT_DIR, PUBLISHED_DIR / "comparison.csv"),
+        (PUBLISHED_DIR, HELDOUT_DIR / "bounds.csv"),
+    ],
+    ids=["heldout-run-over-the-published-table", "published-run-over-the-heldout-roster"],
+)
+def test_a_scratch_output_may_not_reach_another_roster_directory(
+    tmp_path: Path, inst_dir: Path, out: Path
+) -> None:
+    args = make_args(
+        tmp_path,
+        inst_dir=inst_dir,
+        out=out,
+        trace_out=tmp_path / "t.csv",
+        staging_dir=tmp_path / "stage",
+    )
+    message = usage_error(args, inst_dir / "comparison.csv")
+    assert message is not None and "--out" in message, message

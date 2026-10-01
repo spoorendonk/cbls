@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from benchmarks.common import jobs
+from benchmarks.common.jobs import wallclock_lock
 from benchmarks.common.provenance import REPO_ROOT
 from benchmarks.minlplib.ablation_report import (
     CONTROL_ARM,
@@ -50,6 +52,7 @@ from benchmarks.minlplib.run_ablation import (
     probe_plan,
     read_runner_row,
     recorded_keys,
+    run_locked,
     runner_command,
     scratch_refusal,
     stamp_conflict,
@@ -881,3 +884,15 @@ def test_the_sign_test_needs_more_than_a_bare_majority() -> None:
     assert sign_test_p(2, 1) > 0.05
     assert sign_test_p(10, 0) < 0.01
     assert sign_test_p(5, 5) == pytest.approx(1.0)
+
+
+def test_a_held_wallclock_lock_refuses_the_campaign_before_it_touches_the_out_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`run_benchmark.py` and this driver share one machine-wide lock; the loser exits 2."""
+    monkeypatch.setattr(jobs, "WALLCLOCK_LOCK", tmp_path / "lock" / "wallclock.lock")
+    out_dir = tmp_path / "out"
+    with wallclock_lock("run_benchmark.py"):
+        assert run_locked(argparse.Namespace(build=False), "abc1234", ["a"], out_dir) == 2
+    assert "run_benchmark.py" in capsys.readouterr().err
+    assert not out_dir.exists()

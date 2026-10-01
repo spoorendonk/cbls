@@ -1336,3 +1336,38 @@ def test_the_seed_summary_follows_the_configuration_most_seeds_share(tmp_path: P
     summary = seeds_report(tmp_path, None)
     assert (summary.seeds, summary.budget_seconds) == ([1, 2, 3], 60.0)
     assert summary.left_out == {4: "budget 5s, not 60s"}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<!-- campaign_report:begin a -->\nhand-written prose\n"
+        "<!-- campaign_report:begin a -->\nold\n<!-- campaign_report:end a -->\n",
+        "<!-- campaign_report:begin a -->\nold\n<!-- campaign_report:end a -->\n"
+        "<!-- campaign_report:end a -->\n",
+    ],
+    ids=["stray-begin", "stray-end"],
+)
+def test_a_stray_readme_marker_is_refused_not_swallowed(text: str) -> None:
+    """A stray begin pairs with the real block's end, so a rewrite would delete the prose."""
+    with pytest.raises(ValueError, match="duplicated \\['a'\\]"):
+        apply_readme_blocks(text, {"a": "x"})
+
+
+def test_check_readme_refuses_output_flags_it_would_not_honour(tmp_path: Path) -> None:
+    _write_campaign(tmp_path)
+    summary = tmp_path / "summary.json"
+    args = ["--inst-dir", str(tmp_path), "--budget", "60", "--json", str(summary)]
+    assert main([*args, "--check-readme", str(tmp_path / "README.md")]) == 2
+    assert not summary.exists()
+
+
+def test_a_roster_directory_without_a_campaign_reports_no_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """heldout/ carries bounds.csv but no comparison.csv until #145 runs."""
+    (tmp_path / "bounds.csv").write_text(
+        "instance,structure,nvars,ncons,objsense,primal_bks,dual_bound,n_disc_vars_bks\n"
+    )
+    assert main(["--inst-dir", str(tmp_path), "--budget", "60"]) == 2
+    assert "no report:" in capsys.readouterr().err

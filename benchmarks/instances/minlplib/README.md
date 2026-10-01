@@ -314,6 +314,7 @@ What the driver refuses, and why each refusal matters:
 | a staging directory stamped with another commit, budget, seed or host | resuming it would mix two configurations into one table |
 | a `--seed` other than 1 naming `comparison.csv` or `anytime_trace.csv` | the published table is the pre-registered seed alone; another seed written there would make the published seed whichever ran last (#141) |
 | a `--time-limit` other than 60 onto the default paths | it would publish into `comparison.csv` or `comparison_seeds.csv`, replacing a 60s table or seed block with a smoke run; a non-default budget needs a scratch `--out` |
+| `--inst-dir` naming a roster directory under `benchmarks/instances/` other than this one (e.g. `heldout/`) without scratch `--out` and `--staging-dir`, or any scratch output landing under `benchmarks/instances/` | the held-out roster publishes nothing (HELDOUT.md), and another roster's scratch output must not reach this directory's tables (#144) |
 | another timed driver (`run_benchmark.py` or `run_ablation.py`) holding the wall-clock lock | two timed runs sharing the machine halve each other's iteration counts with nothing in either record saying so |
 | `--trace-out` naming `anytime_trace.csv` while `--out` is scratch | the published trace would describe a run the published table does not |
 | a `comparison_seeds.csv` with another runner's columns, or an unreadable `comparison_seeds.run.json` | this run's seed could not be added beside them, found only after the solves |

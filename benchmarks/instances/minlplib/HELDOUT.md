@@ -268,7 +268,10 @@ the targeting needed:
         --inst-dir benchmarks/instances/minlplib/heldout ...
 
 Output must go to a scratch path outside `benchmarks/instances/`, because the
-drivers treat anything under it as published. Always pass `--out`: a
+drivers treat anything under it as published: `run_ablation.py` refuses an
+`--out-dir` there, and `run_benchmark.py --inst-dir .../heldout` refuses to run
+without scratch `--out`, `--trace-out` (or `--no-trace`) and `--staging-dir`.
+Always pass `--out`: a
 whole-roster `cbls_minlplib .../heldout` run at default flags with `--commit`
 writes `heldout/comparison.csv`. `heldout/` has no
 `comparison.csv`, `scip_baseline.csv` or `analysis_notes.csv`, and the runner
@@ -285,7 +288,7 @@ That test re-derives both rosters from `heldout/pool.csv` and
 byte against the two committed `bounds.csv` files. That comparison is
 circular by construction: the committed files were written by the same code. It
 pins the rosters against later changes to that code, not the method itself. The
-test also checks the quota rule on the pool independently, checks that the two
+test also pins the quota rule's 21/20/9 against hard-coded values, checks that the two
 sets are disjoint and that the draw depends on the seed, and checks that every
 held-out row has its text-NL file. Fake-server tests cover the live draw's
 refusals: a published skip that is text NL today, a network failure, and an

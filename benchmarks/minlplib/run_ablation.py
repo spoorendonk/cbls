@@ -34,7 +34,8 @@ trust, hours after the mistake:
   refuses those files independently (#136), and neither guard is load-bearing
   alone: the runner's guard would let the *control* arm through, since control
   is by definition the default configuration.
-* **Sharing the machine.** An exclusive lock on `<out-dir>/campaign.lock` for
+* **Sharing the machine.** The machine-wide `jobs.wallclock_lock` (shared with
+  `run_benchmark.py`) and an exclusive lock on `<out-dir>/campaign.lock` for
   the whole run, plus a load-average check before the first solve. The budget
   is wall-clock, so a concurrent solve produces numbers comparable neither to
   the other arms nor to anything published.
@@ -211,9 +212,9 @@ GATE_MIN_READABLE_FRACTION = 0.9
 #: running campaign holds the one-minute average at about 1.00 and oscillates
 #: either side of it: a threshold of 1.0 would let a second campaign start
 #: roughly half the time it was tried, and every timing in both would then be
-#: invalid with nothing in either record saying so. The lock below is per
-#: out-dir, so two campaigns writing to different directories are not otherwise
-#: mutually excluded and this check is the only thing between them.
+#: invalid with nothing in either record saying so. `jobs.wallclock_lock`
+#: excludes a second timed driver by this user on this host; this check is what
+#: notices anything else -- another user's run, or any other load.
 #:
 #: Overridable with `--allow-busy`, which is there for the case this cannot
 #: distinguish -- the average still decaying from the campaign that just died.

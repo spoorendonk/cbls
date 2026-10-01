@@ -141,7 +141,7 @@ def cpu_model(cpuinfo: Path = Path("/proc/cpuinfo")) -> str | None:
             key, sep, value = line.partition(":")
             if sep and key.strip() == "model name":
                 return value.strip()
-    except OSError:
+    except (OSError, ValueError):  # ValueError: a non-UTF-8 file (UnicodeDecodeError)
         return None
     return None
 

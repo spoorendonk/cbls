@@ -61,7 +61,7 @@ Guards, because this file's output is published:
   exit 0 while reporting a scratch table, and the converse publishes
   `comparison.csv` at this engine beside a trace from the previous one (#149);
 * refuses to resume a staging directory written by a different commit, budget,
-  seed or host, and re-solves any individual staged row whose `commit_sha`
+  seed, host or roster, and re-solves any individual staged row whose `commit_sha`
   disagrees;
 * refuses a seed other than `DEFAULT_SEED` writing either published artifact,
   by default or by name, and any scratch output (or its run record) resolving
@@ -131,6 +131,10 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 DEFAULT_INST_DIR = REPO_ROOT / "benchmarks" / "instances" / "minlplib"
+#: Every published table and roster in the repository lives under here. A scratch
+#: output must land outside it, and the only roster directory under it this
+#: driver publishes into is `DEFAULT_INST_DIR` (#144: `heldout/` publishes nothing).
+INSTANCES_ROOT = REPO_ROOT / "benchmarks" / "instances"
 DEFAULT_BUILD_DIR = REPO_ROOT / "build"
 REFERENCE_SOLVE = Path(__file__).resolve().parent / "reference_solve.py"
 
@@ -372,8 +376,10 @@ def usage_error(args: argparse.Namespace, published_out: Path) -> str | None:
         return f"--time-limit must be > 0 (got {args.time_limit})"
     if args.build_jobs < 1:
         return f"--build-jobs must be >= 1 (got {args.build_jobs})"
-    seed_refusal = seed_policy_error(args, published_out) or budget_policy_error(
-        args, published_out
+    seed_refusal = (
+        roster_dir_error(args, published_out)
+        or seed_policy_error(args, published_out)
+        or budget_policy_error(args, published_out)
     )
     if seed_refusal:
         return seed_refusal
@@ -464,8 +470,15 @@ PUBLISHED_NAMES: tuple[str, ...] = (
 )
 
 
-#: The instance directory's inputs: a scratch output must not land on them either.
-PROTECTED_INPUTS: tuple[str, ...] = ("bounds.csv", "scip_baseline.csv")
+#: The instance directory's inputs -- and the report generator's committed
+#: summary -- a scratch output must not land on them either. `analysis_notes.csv`
+#: is read by the runner itself, so overwriting it changes every later row's note.
+PROTECTED_INPUTS: tuple[str, ...] = (
+    "bounds.csv",
+    "scip_baseline.csv",
+    "analysis_notes.csv",
+    campaign_report.SUMMARY_JSON_NAME,
+)
 
 
 def _published_files(inst_dir: Path) -> dict[Path, str]:
@@ -494,12 +507,46 @@ def _misdirected_output(args: argparse.Namespace, published_out: Path) -> str | 
         and args.trace_out.resolve() != published_trace.resolve()
     ):
         written.append(("--trace-out", args.trace_out))
+        if args.out is not None and (
+            args.trace_out.resolve() == run_record_path(args.out).resolve()
+        ):
+            return "--trace-out resolves to --out's run record, which the publish writes"
     for flag, path in written:
         if path.resolve() in protected:
             return (
                 f"{flag} resolves to the published {protected[path.resolve()]}; a scratch "
                 "output must not overwrite a published file or an instance-directory input"
             )
+        # Another roster directory's tables are as published as this one's: with
+        # --inst-dir heldout/, a scratch --out must not reach ../comparison.csv.
+        if path.resolve().is_relative_to(INSTANCES_ROOT.resolve()):
+            return (
+                f"{flag} {path} is under {INSTANCES_ROOT}, which holds every published table "
+                "and roster; a scratch output goes outside it"
+            )
+    return None
+
+
+def roster_dir_error(args: argparse.Namespace, published_out: Path) -> str | None:
+    """Refuse publishing into a roster directory under `INSTANCES_ROOT` other than the default.
+
+    `heldout/` (#144) is a roster no result is published against: HELDOUT.md
+    requires every output to go outside `benchmarks/instances/`. A default-path
+    run there would create `heldout/comparison.csv` and its per-seed table.
+    """
+    inst = args.inst_dir.resolve()
+    if inst == DEFAULT_INST_DIR.resolve() or not inst.is_relative_to(INSTANCES_ROOT.resolve()):
+        return None
+    if (
+        args.out is None
+        or args.out.resolve() == published_out.resolve()
+        or args.staging_dir is None
+    ):
+        return (
+            f"--inst-dir {args.inst_dir} is not the published roster directory; pass scratch "
+            "--out, --trace-out (or --no-trace) and --staging-dir outside "
+            f"{INSTANCES_ROOT}"
+        )
     return None
 
 

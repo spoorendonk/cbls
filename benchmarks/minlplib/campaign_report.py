@@ -660,7 +660,13 @@ def summarize_results(rows: Sequence[Row], feas_tol: float = DEFAULT_FEAS_TOL) -
         verdicts=bks_verdicts(rows),
         gap_buckets=gap_buckets(rows),
         gap_buckets_strict=gap_buckets(rows, keep_exact_zero=False),
-        zero_bks_instances=[r.instance for r in rows if r.zero_bks],
+        # The zero-BKS split is a quality aggregate (`AGGREGATION_RULE`): the
+        # same rows `gap_buckets` partitions, so the list and its split agree.
+        zero_bks_instances=[
+            r.instance
+            for r in rows
+            if r.zero_bks and r.feasible and not r.excluded and not math.isnan(r.gap_pct)
+        ],
         legacy_margin_ties=legacy_margin_ties(rows),
         single_band_false_ties=single_band_false_ties(rows, feas_tol),
     )
@@ -2211,6 +2217,10 @@ _README_BLOCK = re.compile(
     r"<!-- campaign_report:end (?P=name) -->",
     re.DOTALL,
 )
+#: Any single marker, paired or not: `_README_BLOCK` pairs a begin with the NEXT
+#: end of its name, so a stray or repeated marker would otherwise be swallowed
+#: into a block body -- and `--write-readme` would delete the text after it.
+_README_MARKER = re.compile(r"<!-- campaign_report:(?:begin|end) (?P<name>[a-z0-9-]+) -->")
 
 _WORDS = [
     "zero",
@@ -2754,7 +2764,8 @@ def apply_readme_blocks(text: str, blocks: Mapping[str, str]) -> str:
     module does not render: each would let a derived number escape the check.
     """
     found = [m.group("name") for m in _README_BLOCK.finditer(text)]
-    duplicates = sorted({n for n in found if found.count(n) > 1})
+    markers = [m.group("name") for m in _README_MARKER.finditer(text)]
+    duplicates = sorted({n for n in markers if markers.count(n) != 2 or found.count(n) != 1})
     unknown = sorted(set(found) - set(blocks))
     missing = sorted(set(blocks) - set(found))
     if duplicates or unknown or missing:
@@ -2946,6 +2957,9 @@ def _usage_error(args: argparse.Namespace) -> str | None:
             return (
                 f"--seeds prints the multi-seed summary only; {', '.join(ignored)} would be ignored"
             )
+    if args.check_readme is not None and (args.json is not None or args.markdown is not None):
+        # `_readme_action` returns the check's status before anything is written.
+        return "--check-readme only checks; --json/--markdown would not be written"
     record = run_record_path(args.inst_dir / "comparison.csv")
     if not args.seeds and args.budget is None and not record.exists():
         return f"--budget is required: {record} does not exist to record the budget"
@@ -2969,13 +2983,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     if args.seeds:
         return _seeds_main(args)
-    report = build_report(
-        args.inst_dir,
-        budget=args.budget,
-        seed=args.seed,
-        machine=args.machine,
-        feas_tol=args.feas_tol,
-    )
+    try:
+        report = build_report(
+            args.inst_dir,
+            budget=args.budget,
+            seed=args.seed,
+            machine=args.machine,
+            feas_tol=args.feas_tol,
+        )
+    except OSError as exc:
+        # A roster directory without a campaign's tables (heldout/, before #145).
+        print(f"no report: {exc}", file=sys.stderr)
+        return 2
     _print_warnings(report)
     status = _readme_action(args, report)
     if status is not None:
