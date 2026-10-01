@@ -175,9 +175,7 @@ TEST_CASE("solve with FloatIntensifyHook improves mixed problem", "[inner_solver
 namespace {
 
 // min sum x_i^2 over n Floats in [1, 10], each with a row x_i - 20 <= 0 that
-// always holds. Feasible from the first batch, so the hook is called at once;
-// every Float costs FloatIntensifyHook an O(rows) violated-row scan, and the
-// descent toward the lower bounds keeps improving for many sweeps.
+// always holds.
 Model many_float_model(int n) {
     Model m;
     std::vector<int32_t> squares;
@@ -194,6 +192,29 @@ Model many_float_model(int n) {
     return m;
 }
 
+// min sum -x_i over n Floats in [0, 1e9], each with a row x_i - 2e9 <= 0 that
+// always holds. Feasible from the first batch, so the search calls the hook at
+// once, and every FloatIntensifyHook sweep improves the objective -- the line
+// search climbs each x_i by its full initial step -- so a pass runs every one
+// of the sweeps it is allowed.
+Model climbing_model(int n) {
+    Model m;
+    std::vector<int32_t> negated;
+    negated.reserve(n);
+    const auto minus1 = m.constant(-1.0);
+    const auto minus_cap = m.constant(-2.0e9);
+    for (int i = 0; i < n; ++i) {
+        const auto x = m.float_var(0.0, 1.0e9);
+        m.add_constraint(m.sum({x, minus_cap}));
+        negated.push_back(m.prod(minus1, x));
+    }
+    m.minimize(m.sum(negated));
+    m.close();
+    return m;
+}
+constexpr int kClimbVars = 1000;
+constexpr int kClimbSweeps = 200;
+
 std::vector<double> float_values(const Model& m) {
     std::vector<double> values;
     for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
@@ -207,10 +228,10 @@ std::vector<double> float_values(const Model& m) {
 TEST_CASE("solve returns within its budget when an intensification pass would outlast it",
           "[inner_solver]") {
     // Red before #191: the hook got no stop, so the solve returned only when
-    // the descent converged, seconds past the budget.
-    Model m = many_float_model(3000);
+    // the pass had run all its sweeps, seconds past the budget.
+    Model m = climbing_model(kClimbVars);
     FloatIntensifyHook hook;
-    hook.max_sweeps = 1'000'000;  // the descent, not the sweep cap, ends a pass
+    hook.max_sweeps = kClimbSweeps;
 
     constexpr double kBudget = 0.5;
     const auto started = std::chrono::steady_clock::now();
