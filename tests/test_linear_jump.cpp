@@ -9,6 +9,7 @@
 #include <cbls/custom_invariant.h>
 #include <cbls/linear_jump.h>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -71,6 +72,24 @@ void add_random_comparison(Model& m, RNG& rng, int32_t lhs, int32_t rhs) {
             m.add_constraint(m.geq(lhs, m.constant(-2.0)));
             m.add_constraint(m.leq(lhs, m.constant(3.0)));
             break;
+    }
+}
+
+// Bare bodies, read as `body <= 0` (#190): every affine node kind as the row's
+// own node, a constant term, and a variable on both signs. None unless `bare`,
+// so a model built without them draws the same random stream as before.
+void add_bare_rows(Model& m, bool bare, const std::function<int32_t()>& side,
+                   const std::function<double()>& pick_coef,
+                   const std::function<int32_t()>& rhs_const, bool integral) {
+    if (!bare) {
+        return;
+    }
+    for (int row = 0; row < 3; ++row) {
+        m.add_constraint(m.sum({side(), m.neg(rhs_const())}));
+        m.add_constraint(m.neg(side()));
+        m.add_constraint(m.prod(m.constant(pick_coef()), side()));
+        m.add_constraint(m.div_expr(side(), m.constant(integral ? 2.0 : 0.3)));
+        m.add_constraint(m.sum({side(), m.neg(side()), rhs_const()}));
     }
 }
 
@@ -158,17 +177,7 @@ void build_random_linear_no_objective_row(RandomLinearModel& r, uint64_t seed, b
     }
     // Reverse the operand order on one Eq, so a literal on the LEFT is covered.
     m.add_constraint(m.eq_expr(m.constant(1.0), side()));
-    if (bare) {
-        // Bare bodies, read as `body <= 0` (#190): every affine node kind as the
-        // row's own node, a constant term, and a variable on both signs.
-        for (int row = 0; row < 3; ++row) {
-            m.add_constraint(m.sum({side(), m.neg(rhs_const())}));
-            m.add_constraint(m.neg(side()));
-            m.add_constraint(m.prod(m.constant(pick_coef()), side()));
-            m.add_constraint(m.div_expr(side(), m.constant(integral ? 2.0 : 0.3)));
-            m.add_constraint(m.sum({side(), m.neg(side()), rhs_const()}));
-        }
-    }
+    add_bare_rows(m, bare, side, pick_coef, rhs_const, integral);
     std::vector<int32_t> obj_terms;
     obj_terms.reserve(r.handles.size());
     for (const int32_t h : r.handles) {
