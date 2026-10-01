@@ -23,7 +23,8 @@ or paragraph sits between `<!-- campaign_report:begin NAME -->` / `end` markers,
 them and `--check-readme` (and the test suite) fails on a stale one.
 
 With neither output flag the Markdown report goes to stdout. `--budget` is
-required because no committed table records it: it is the horizon the anytime
+required unless `comparison.run.json` records it (#141; the committed table
+predates the record): it is the horizon the anytime
 score integrates over, and the output says it was supplied rather than read. It
 is checked against the evidence the tables do carry (the CBLS wall times and the
 budget in SCIP's configuration cell) and a disagreement is printed as a warning.
@@ -41,6 +42,13 @@ anytime trace (cumulative feasibility, improvement timing, anytime scores).
 `load_results` and `load_trace` read them at any path. Every definition they
 apply is a named constant or function here, so a per-seed median is a median of
 the same quantity this report publishes.
+
+#141 built on those: `summarize_seeds` runs `summarize_results` once per seed of
+the per-seed table (`SEEDS_TABLE_NAME`, read by `load_seed_results`) and takes
+the spread, under `SEED_AGGREGATION_RULE`; `--seeds` prints it. The driver also
+writes a run record beside every table it publishes (`RunRecord`,
+`run_record_path`), and when `comparison.csv` has one the budget, seed and
+machine are read from it rather than stated -- `--budget` is then optional.
 """
 
 from __future__ import annotations
@@ -1332,8 +1340,10 @@ def describe_machine(record: RunRecord) -> str:
         if isinstance(load, list) and load and isinstance(load[0], int | float)
         else "load ?"
     )
+    model = m.get("cpu_model")
     return (
-        f"{known(m.get('host'))}, {known(m.get('cpu_count'))} CPUs "
+        f"{known(m.get('host'))}{f' ({model})' if model else ''}, "
+        f"{known(m.get('cpu_count'))} CPUs "
         f"({known(m.get('cpu_affinity'))} usable), {memory_text}, {load_text}; "
         f"{known(c.get('parallel_solves'))} solve(s) at a time, "
         f"{known(c.get('threads_per_solve'))} thread(s) each"

@@ -660,8 +660,8 @@ def test_free_variable_split_groups_and_filters() -> None:
 README = DEFAULT_INST_DIR / "README.md"
 
 #: The command `README.md`'s "After the run" step 2 documents. Change both together.
-README_BUDGET = 60.0
-README_SEED = 1
+README_BUDGET: float | None = 60.0
+README_SEED: int | None = 1
 README_MACHINE: str | None = None
 SUMMARY_JSON = DEFAULT_INST_DIR / SUMMARY_JSON_NAME
 
@@ -971,6 +971,7 @@ def test_percentage_cells_never_print_a_bare_decimal_point(value: float, cell: s
 
 MACHINE = {
     "host": "box",
+    "cpu_model": "Ryzen",
     "cpu_count": 16,
     "cpu_affinity": 8,
     "memory_total_kib": 32 * 1024**2,
@@ -1005,7 +1006,7 @@ def test_a_run_record_supplies_the_budget_seed_and_machine(tmp_path: Path) -> No
     p = report.provenance
     assert (p.budget_seconds, p.seed) == (60.0, 3)
     assert p.budget_source == p.seed_source == p.machine_source == "comparison.run.json"
-    assert p.machine is not None and "box, 16 CPUs (8 usable), 32.0 GiB RAM" in p.machine
+    assert p.machine is not None and "box (Ryzen), 16 CPUs (8 usable), 32.0 GiB RAM" in p.machine
     assert "1 solve(s) at a time" in p.machine
     assert p.warnings == []
     block = readme_blocks(report)["provenance"]
@@ -1135,7 +1136,7 @@ def test_an_infeasible_seed_counts_as_worse_than_any_gap(tmp_path: Path) -> None
     assert "  a: 20 [10, 30], 3/3" in text
     assert "  b: infeasible [0, infeasible], 1/3" in text
     assert f"  {ELEC}: 0 [0, 0], 3/3 (excluded)" in text
-    assert "box, 16 CPUs" in text
+    assert "box (Ryzen), 16 CPUs" in text
     assert "NOTE" not in text
 
 

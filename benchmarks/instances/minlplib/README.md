@@ -151,6 +151,14 @@ documents. No published Yuck numbers exist for these instances.
   `(instance, method)` with `method` in `published-bks` / `cbls` / `scip`. Also
   written by `reference_solve.py`, by joining the two CSVs above with
   `bounds.csv`.
+- `comparison_seeds.csv` — every seed's CBLS rows, `seed` first and then
+  `comparison.csv`'s columns, written by `run_benchmark.py` (#141).
+  `comparison.csv` stays the single pre-registered seed 1. Not committed yet:
+  the first re-run creates it. See "Seeds, and what each publish records".
+- `comparison.run.json`, `comparison_seeds.run.json` — the run record beside
+  each published table (commit, budget, seed, machine, concurrency), written by
+  `run_benchmark.py` at publish time. The committed `comparison.csv` predates
+  them and has none.
 - `*.nl` — fetched text NL instance files.
 - `../../minlplib/run_benchmark.py` — the CBLS re-run driver. See
   "Re-running the CBLS rows" below; that is the supported way to regenerate
@@ -303,7 +311,10 @@ What the driver refuses, and why each refusal matters:
 | `--instances` with `--out` resolving to `comparison.csv` | same, via a relative path the explicit-`--out` guard would otherwise wave through |
 | a whole-roster run writing exactly one of the two published artifacts | `--out` moved off `comparison.csv` with `--trace-out` left at its default would replace the published anytime trace at exit 0 while reporting a scratch table; the converse republishes `comparison.csv` at this engine beside a trace from the previous one. Refused in both directions (#149) |
 | build dir configured with `CBLS_SANITIZE` or `CBLS_PROFILE` | a sanitizer or profiling build measures a different engine, and both are sticky cache entries a later flag-less `cmake -B build` keeps |
-| a staging directory stamped with another commit, budget or seed | resuming it would mix two configurations into one table |
+| a staging directory stamped with another commit, budget, seed or host | resuming it would mix two configurations into one table |
+| a `--seed` other than 1 naming `comparison.csv` or `anytime_trace.csv` | the published table is the pre-registered seed alone; another seed written there would make the published seed whichever ran last (#141) |
+| `--trace-out` naming `anytime_trace.csv` while `--out` is scratch | the published trace would describe a run the published table does not |
+| a `comparison_seeds.csv` with another runner's columns, or an unreadable `comparison_seeds.run.json` | this run's seed could not be added beside them, found only after the solves |
 | missing `scip_baseline.csv` (unless `--no-merge`) | the merge would publish `comparison_all.csv` without SCIP rows |
 | a roster instance whose read, build or solve **throws** (runner exit 3) | its row carries `read-error`/`build-error`/`solve-error` and measures nothing, so publishing it would put a non-result in the table. The staged row is *structurally* complete, so the resume check refuses it by name (#153) and a re-run hits the same throw rather than skipping past it. A coverage gap — `unsupported`, or a missing `.nl` — exits 0 and does **not** trip this |
 
@@ -312,7 +323,8 @@ is about to be labelled with. `--dry-run` prints the plan and exits non-zero if
 any refusal applies, so it works as a precheck.
 
 **Resumable.** Each instance is solved in its own process into
-`build/minlplib-rerun/<instance>.csv` (plus `.trace.csv` and a `.log` holding
+`$XDG_STATE_HOME/cbls/minlplib-rerun/seed<N>/<instance>.csv` — by default
+`~/.local/state/cbls/minlplib-rerun/seed1/...` (plus `.trace.csv` and a `.log` holding
 that instance's runner output and tally). A re-invocation skips instances that
 already have a *complete* staged row. Incomplete means any of: a header-only
 file (what a killed job leaves behind), a torn last line, a row stamped with a
@@ -321,9 +333,19 @@ runner **threw** (`read-error`/`build-error`/`solve-error`) — all are re-solve
 The last is there because such a row is whole in every other respect: the run
 that produced it aborted the driver, and without this the next resume would skip
 the instance and publish a row that measured nothing.
-`build/minlplib-rerun/stamp.txt` records the commit, budget and seed the
-directory's rows belong to, and a resume against a different one is refused
-outright rather than silently mixed. `--no-resume` forces a full re-solve.
+The directory's `stamp.txt` records the commit, budget, seed and host its rows
+belong to, and a resume against a different one is refused outright rather than
+silently mixed. `--no-resume` forces a full re-solve.
+
+**The staging directory lives outside the checkout** (#141). It used to default
+to `build/minlplib-rerun/`, which pre-push's clean step (`rm -rf build`) deletes
+— a push in the middle of a campaign threw away every staged instance and its
+log. A gitignored directory inside the checkout would not do either: the
+worktree workflow deletes whole checkouts after a merge. XDG's *state*
+directory is the one meant for data that must survive a restart (its *cache*
+directory may be emptied at any time). Two checkouts can share it safely,
+because the stamp refuses another commit's rows; `--staging-dir` still
+overrides it.
 
 `comparison.csv` and `anytime_trace.csv` are only replaced at the end, by an
 atomic rename of a fully-assembled file, so an interrupted run leaves them
@@ -347,11 +369,64 @@ denominators). **If an `elec` row comes back
 feasible with a finite objective, stop and check #110/#116 before publishing
 anything about it** — that would be a result, not a routine table refresh.
 
+### Seeds, and what each publish records
+
+**`comparison.csv` is one pre-registered seed, seed 1, and only seed 1 may write
+it** (#141). Its job is an A/B against the previous table in which only the
+engine differs, so the seed is fixed before the run by the driver itself: a
+`--seed` other than 1 is refused if it names `comparison.csv` or
+`anytime_trace.csv` by `--out`/`--trace-out`, and by default writes neither. A
+median-of-N table would change the selection rule along with the engine, and
+"median" is not even defined for a whole table (by feasible count? by aggregate
+gap? by anytime score?), so there is none.
+
+**Every seed is published beside it, in `comparison_seeds.csv`** — the runner's
+columns with `seed` prepended, one block per seed. Every whole-roster run onto
+the default paths adds its seed's rows there, seed 1's included, replacing that
+seed's earlier block and leaving the others' rows intact; run the seeds one
+invocation at a time:
+
+    for SEED in 1 2 3; do
+        .venv/bin/python3 benchmarks/minlplib/run_benchmark.py --seed "$SEED" || break
+    done
+
+A seed other than 1 also skips the `comparison_all.csv` merge, and assembles its
+own table and trace inside its staging directory
+(`comparison.assembled.csv`, `anytime_trace.assembled.csv`).
+
+**Three seeds is the floor** for quoting a spread — no power calculation
+supports a larger number, and the ablation campaign on this roster settled on
+three as well; more are welcome but not a blocker. After each publish the
+summary prints, across the per-seed table's seeds at this run's commit and
+budget, the feasible count's min / median / max, each instance's `gap_to_bks%`
+median and range, and any seed left out and why (another commit, another
+budget, no run record). The definitions are `campaign_report.py`'s, applied per
+seed (`summarize_seeds`, rule `SEED_AGGREGATION_RULE`): a seed that did not
+reach feasibility counts as worse than any gap rather than being dropped, and
+`elec25`/`elec50` count in the feasible spread and stay out of quality claims as
+everywhere else. `campaign_report.py --seeds` prints the same summary from the
+committed files. **Report medians and ranges in prose**, beside the published
+table; never substitute one for it.
+
+**Every published set carries a run record**: `comparison.run.json` beside
+`comparison.csv`, and `comparison_seeds.run.json` beside the per-seed table
+(one entry per seed). Each names the commit, budget, seed and roster size, the
+machine — host, CPU count and usable cores, memory, load average at the start
+of the publishing invocation (`benchmarks/common/provenance.py`'s
+`machine_record()`) — and the concurrency (one solve at a time, one thread
+each). A scratch `--out` gets one too, beside it. `campaign_report.py` reads the
+budget, seed and machine from `comparison.run.json` when it exists, so
+`--budget`/`--seed`/`--machine` are needed only for a table published before
+it — as the committed one was, which is why its provenance still says "not
+recorded".
+
 ### After the run
 
 1. `git diff benchmarks/instances/minlplib/` — expect changes confined to
-   `comparison.csv`, `anytime_trace.csv` and the `cbls` rows of
-   `comparison_all.csv`. The `published-bks` and `scip` rows are engine-independent
+   `comparison.csv`, `anytime_trace.csv`, the `cbls` rows of
+   `comparison_all.csv`, `comparison.run.json`, and seed 1's block of
+   `comparison_seeds.csv` with its `comparison_seeds.run.json` entry (plus each
+   further seed's, once run). The `published-bks` and `scip` rows are engine-independent
    and must be byte-identical; if they moved, something re-solved SCIP and the
    run must be redone.
 2. Regenerate every run-derived number below. Nobody transcribes them: every
@@ -360,23 +435,28 @@ anything about it** — that would be a result, not a routine table refresh.
    generator rewrites those blocks from the committed tables and solves
    nothing:
 
-       .venv/bin/python3 benchmarks/minlplib/campaign_report.py --budget 60 --seed 1 \
-           --machine "<CPU model, core count>" \
+       .venv/bin/python3 benchmarks/minlplib/campaign_report.py \
            --write-readme benchmarks/instances/minlplib/README.md \
            --json benchmarks/instances/minlplib/campaign_summary.json
 
-   Review the diff. `--budget` is required because no table records it (it is
-   also the anytime score's horizon); `--seed` and `--machine` are stated by
-   you, and the output says so. The rewrite is refused, not warned about, when
-   a documented failure came back feasible or when the tables contradict
-   `--budget`. `--check-readme` instead of `--write-readme`
+   Review the diff. The budget (also the anytime score's horizon), the seed and
+   the machine are read from `comparison.run.json`, which the driver writes at
+   publish time (#141). Pass no `--budget`, `--seed` or `--machine` then: a
+   stated value the record contradicts, and any `--machine` at all, is a
+   provenance warning, and the rewrite is refused, not warned about, on any
+   provenance warning or when a documented failure came back feasible. The
+   committed table predates the record, so it was rendered with
+   `--budget 60 --seed 1` stated by hand (`README_BUDGET`/`README_SEED`/
+   `README_MACHINE` in the test), and the output says which values were stated.
+   `--check-readme` instead of `--write-readme`
    exits 1 naming any stale block, and
    `test_the_committed_readme_blocks_are_the_generators_rendering` fails the same
    way, so a hand edit inside a block, or a regenerated table without a
    regenerated README, is caught; `test_the_committed_summary_json_is_the_generators`
-   does the same for `campaign_summary.json`. If the budget, seed or machine in
-   that command changes, change `README_BUDGET` / `README_SEED` /
-   `README_MACHINE` in that test file too. Prose outside the blocks interprets the numbers
+   does the same for `campaign_summary.json`. Once the published table carries a
+   `comparison.run.json`, set `README_BUDGET` / `README_SEED` /
+   `README_MACHINE` in that test file to `None` so it renders from the record,
+   as the command above does. Prose outside the blocks interprets the numbers
    rather than restating them; anything numeric left there is a separate
    measurement or a reference value, of a kind the generator's "Not
    regenerated" list names. Re-read that prose against the new blocks — which
@@ -419,10 +499,14 @@ anything about it** — that would be a result, not a routine table refresh.
    `.venv/bin/python -c 'import csv,sys;print(sorted({r["commit_sha"] for r in csv.DictReader(open("comparison.csv"))}))'` must print exactly one
    SHA, and that SHA must be the checkout you built. Two SHAs mean a resumed run
    spanned a commit; discard the staging directory and re-run.
-7. Record the machine by passing `--machine` (CPU model and core count) in
-   step 2's command, so the generated provenance block states it. The
-   "Hardware" note in the SCIP baseline section below asks for this on the next
-   re-run of either side, and this is it.
+7. Check the machine in `comparison.run.json` — host, CPU model, cores,
+   memory, and a start-of-run load average near zero. Nothing to transcribe:
+   step 2's provenance block reads it from there (`--machine` exists only for a
+   table with no record). If the load average says the box was not quiet, the
+   run is not publishable. Then run the other seeds
+   ("Seeds, and what each publish records"; at least two more), and write each
+   instance's median and range from the printed spread into the prose of
+   **Results** — beside the published table, never in place of it.
 8. Run the Python suite:
    `.venv/bin/pytest tests/python/test_minlplib_scip_baseline.py tests/python/test_minlplib_campaign_report.py`.
    The second goes red on any regenerated table until step 2's README blocks
@@ -468,8 +552,11 @@ independent replication moved two gap values materially (`nvs05` 453%→477%).
 The spread is wider than that on some rows: re-running the *unmodified* binary
 at the same seed and budget moved `kall_ellipsoids_tc02b` from 55.1% to 78.2%,
 and `eq6_1` spans 7.6–28.7% across four seeds. Treat any single row as one draw,
-not a measurement. Reporting a median over
-several seeds is the fix; it is not done here. A deterministic budget IS
+not a measurement. The driver now publishes every seed it is run at into
+`comparison_seeds.csv` and prints each instance's median and range and the
+feasible-count spread (#141; see "Seeds, and what each publish records"), but
+this table stays the single pre-registered seed, and no multi-seed campaign has
+been run on it yet. A deterministic budget IS
 available now: `--no-time-limit --max-iterations N` disables the wall clock and
 bounds the run by GLS iterations alone, so a given seed reproduces bit for bit
 (#136). It is not what the published rows above were measured under — they are
@@ -861,9 +948,12 @@ is never published as a proof. Rows with no dual bound therefore read `NaN` in
 `scip_dual_bound` and `scip_gap%`, the same spelling the CBLS rows use.
 
 **Hardware.** The SCIP run was executed on an AMD Ryzen 5 5600H (12 logical
-cores, Linux 7.0), one core in use. **The CBLS run's hardware is not recorded** —
-`comparison.csv` has no machine column and that run predates this one. Recording
-the machine per row is worth doing on the next re-run of either side.
+cores, Linux 7.0), one core in use. **The committed CBLS run's hardware is not
+recorded** — that run predates the run record. Every CBLS re-run now writes
+`comparison.run.json` beside the table it publishes (host, cores, memory,
+concurrency; see "Seeds, and what each publish records" above), so the next
+regeneration closes this on the CBLS side; the SCIP side still names its machine
+only here.
 
 That gap matters less than it first appears, and it bites the opposite way round
 from the obvious guess. Both sides run a fixed 60s per instance, so:

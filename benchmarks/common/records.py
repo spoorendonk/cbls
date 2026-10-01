@@ -29,6 +29,12 @@ minlplib runner row    `minlplib.runner.RUNNER_COLUMNS`,  --
                        pinned against `minlplib.cpp`
 minlplib staged row    one runner row per                 `run_benchmark.staged_complete`
                        `<stage>/<instance>.csv`           under a matching `stamp.txt`
+minlplib per-seed row  `run_benchmark.SEEDS_TABLE_COLUMNS none: `publish_seed_rows`
+(#141)                 (`seed` + the runner row), in      replaces the run's seed block
+                       `comparison_seeds.csv`             and keeps every other seed's
+minlplib run record    `campaign_report.RunRecord`, at    none: rewritten at each publish
+(#141)                 `campaign_report.run_record_path`  (per seed, in the per-seed
+                       beside each published table        table's record)
 ablation campaign row  `run_ablation.RESULT_COLUMNS`      `(instance, arm, seed)` in
                        (provenance + the runner row)      `results.csv`, less the trailing
                                                           partial block, under a matching

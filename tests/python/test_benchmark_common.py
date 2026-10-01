@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from benchmarks.common.jobs import run_jobs, run_process, with_memory_limit
-from benchmarks.common.provenance import build_dir_problems, cmake_cache, commit_sha
+from benchmarks.common.provenance import build_dir_problems, cmake_cache, commit_sha, cpu_model
 from benchmarks.common.records import (
     atomic_write,
     csv_number,
@@ -291,3 +291,16 @@ def test_a_build_dir_is_refused_for_what_it_is(
     build = tmp_path / "build" if entries is None else _cache(tmp_path, entries)
     problems = build_dir_problems(build, cmake_cache(build), tmp_path / "checkout")
     assert any(refusal in p for p in problems)
+
+
+def test_the_cpu_model_is_read_from_cpuinfo_and_absent_off_linux(tmp_path: Path) -> None:
+    """`platform.processor()` is just the architecture on Linux; the model is what's wanted."""
+    cpuinfo = tmp_path / "cpuinfo"
+    cpuinfo.write_text(
+        "processor\t: 0\nvendor_id\t: AuthenticAMD\n"
+        "model name\t: AMD Ryzen 5 5600H with Radeon Graphics\nprocessor\t: 1\n"
+    )
+    assert cpu_model(cpuinfo) == "AMD Ryzen 5 5600H with Radeon Graphics"
+    assert cpu_model(tmp_path / "absent") is None
+    cpuinfo.write_text("processor\t: 0\n")
+    assert cpu_model(cpuinfo) is None

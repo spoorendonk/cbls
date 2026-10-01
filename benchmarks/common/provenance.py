@@ -128,6 +128,22 @@ def memory_total_kib() -> int | None:
     return None
 
 
+def cpu_model(cpuinfo: Path = Path("/proc/cpuinfo")) -> str | None:
+    """The CPU's marketing name, or None off Linux.
+
+    `platform.processor()` is usually just the architecture on Linux, which says
+    nothing about how fast a wall-clock-budgeted run could go.
+    """
+    try:
+        for line in cpuinfo.read_text().splitlines():
+            key, sep, value = line.partition(":")
+            if sep and key.strip() == "model name":
+                return value.strip()
+    except OSError:
+        return None
+    return None
+
+
 def machine_record() -> dict[str, object]:
     """What produced a wall-clock-limited result, beyond the code that ran.
 
@@ -141,6 +157,7 @@ def machine_record() -> dict[str, object]:
         "platform": platform.platform(),
         "machine": platform.machine(),
         "processor": platform.processor(),
+        "cpu_model": cpu_model(),
         "cpu_count": os.cpu_count(),
         "cpu_affinity": len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
         "memory_total_kib": memory_total_kib(),
