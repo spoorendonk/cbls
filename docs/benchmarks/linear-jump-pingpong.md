@@ -525,4 +525,8 @@ columns therefore does not hold while the objective row is weighted.
 **Fixed-iteration identity.** `ab_uc` (a throwaway driver that reproduces the
 runner's `solve_instance`, no clock) at 20,000 iterations, seed 1: `723799c` and
 `9292371` give the same final-assignment hash, iteration count and objective bits
-on all 24 (file, horizon) pairs.
+on all 24 (file, horizon) pairs. Those runs were not instrumented; the counted
+10 s runs above show the `run()` path taking closed-form prepares at 12 periods
+and up (e.g. `ucp40` at 12 periods, 8,000 per solve, in both arms since they
+are Bool), so the identity holds with the closed form engaged there, not because
+it was unreached.

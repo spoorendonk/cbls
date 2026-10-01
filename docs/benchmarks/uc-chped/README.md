@@ -179,13 +179,21 @@ each run's start, 2026-10-01:
 
 - **Fixed iterations, no clock:** the final assignment, iteration count and
   objective are bit-identical on all 24 (file, horizon) pairs at 20,000
-  iterations, seed 1.
+  iterations, seed 1. That is not because the closed form went unused: these
+  runs were not instrumented, but in the counted 10 s runs below the `run()`
+  path did take closed-form prepares at 12 periods and up (e.g. `ucp40` at 12
+  periods, 8,000 per solve). Every row coefficient and right-hand side here is
+  an integer (checked in all 8 files), but the dispatch values are fractional,
+  so the identity is observed rather than guaranteed.
 - **Iterations at `--time-limit 10` per horizon, seeds 1-3:** after/before ratio
-  0.96-1.12, median 1.02 over 72 rows; the 1-period rows gain most (1.06-1.12). This is
-  not the closed form — the batch API never takes it. At a fixed iteration count
-  the after build used 1-5% less CPU time on 1-period rows (ucp13 6.11 → 5.99 s,
-  ucp40 7.98 → 7.72 s, ucp200 8.79 → 8.39 s, means of 3; ucp13 at 24 periods
-  8.67 → 8.66 s) with the same trajectory, so the difference is code shape.
+  0.96-1.12, median 1.02 over 72 rows; the 1-period rows gain most (1.06-1.12).
+  This is not the closed form: in the counted runs (the #178 counters, below)
+  every 1-period solve took 0 closed-form prepares of any type. At a fixed
+  iteration count the after build used 1-5% less CPU time on 1-period rows
+  (ucp13 6.11 → 5.99 s, ucp40 7.98 → 7.72 s, ucp200 8.79 → 8.39 s, means of 3;
+  ucp13 at 24 periods 8.67 → 8.66 s) with the same trajectory. That CPU A/B was
+  not instrumented, so reading it as code shape rests on the counted 10 s runs'
+  zero at 1 period.
 - **Feasibility and gap at 10 s:** feasibility identical in every run; the gap
   identical on every feasible row with a bound, except `ucp13` 3-period seeds 1
   and 2 (1.13 → 1.03%, 2.72 → 2.62%).
