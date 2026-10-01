@@ -123,21 +123,13 @@ struct IncrementalSumCounters {
     /// Term updates a Probe applied to an incremental Sum: one per probe of a
     /// variable that is a term of it.
     uint64_t probe_pushes = 0;
-    /// Sums re-summed by `reground_inc_sum`, from any caller.
-    uint64_t regrounded = 0;
-    /// FeasibilityJump's side. GLS iterations that found no improving jump.
-    uint64_t local_minima = 0;
-    /// Of those, the ones where some row's verdict was undecided by its Sum's
+    /// FeasibilityJump's side. Local minima -- GLS iterations that found no
+    /// improving jump -- where some row's verdict was undecided by its Sum's
     /// drift bound, so the Sum was re-summed before any decision (the gate).
     uint64_t gated_minima = 0;
-    /// Sums the gate re-summed.
-    uint64_t gate_resums = 0;
     /// Gated minima where a re-sum moved a row into or out of V, so the
     /// iteration sampled again instead of bumping or stopping.
     uint64_t gate_flips = 0;
-    /// Sums re-summed at the end of a batch, at the start of a Novelty Jump or
-    /// before a Feasible verdict, because they drifted.
-    uint64_t batch_end_resums = 0;
 };
 IncrementalSumCounters& incremental_sum_counters() noexcept;
 

@@ -1662,3 +1662,42 @@ TEST_CASE("a walk a custom node throws out of leaves no stale Sum tracked", "[da
     commit_scalar_move(m, vid(y), 1.0);
     CHECK(m.node_value(row) == 7.0);  // 5 + 2, re-summed from the stored terms
 }
+
+TEST_CASE("a walk an extra lambda throws out of leaves no stale Sum tracked", "[dag][inc_sum]") {
+    // #192: the custom-node case above, with #186's extra lambda as the user
+    // code. It reads x, so it is in x's cone, and sits before the Sum in
+    // topological order. Red with the plain-commit untracking keyed on custom
+    // nodes alone: the commit of y then updates the stale Sum to 1 + 1 = 2.
+    auto armed = std::make_shared<int>(0);
+    Model m;
+    const int32_t x = m.int_var(-10, 10);
+    const int32_t y = m.int_var(-10, 10);
+    const int32_t lst = m.list_var(2);
+    const int32_t lam = m.lambda_sum(lst,
+                                     [armed](int e, ConstSpan<double> extra) {
+                                         if (*armed > 0) {
+                                             --*armed;
+                                             throw std::runtime_error("lambda refused");
+                                         }
+                                         return static_cast<double>(e) * extra[0];
+                                     },
+                                     {x});
+    const int32_t row = m.sum({x, y});
+    m.add_constraint(m.leq(row, m.constant(0.0)));
+    m.add_constraint(m.leq(lam, m.constant(100.0)));
+    m.close();
+    REQUIRE_FALSE(m.has_custom_nodes());
+    REQUIRE(m.has_lambda_extra_nodes());
+    REQUIRE(m.topo_position(lam) < m.topo_position(row));
+    m.var_mut(vid(y)).value = 1.0;
+    commit_scalar_move(m, vid(y), 0.0);
+    REQUIRE(m.inc_sums().slots[static_cast<size_t>(m.node(row).lambda_func_id)].tracked == 1);
+
+    *armed = 1;
+    const int32_t xi = vid(x);
+    m.var_mut(xi).value = 5.0;
+    REQUIRE_THROWS_AS(delta_evaluate(m, &xi, 1), std::runtime_error);
+    m.var_mut(vid(y)).value = 2.0;
+    commit_scalar_move(m, vid(y), 1.0);
+    CHECK(m.node_value(row) == 7.0);  // 5 + 2, re-summed from the stored terms
+}

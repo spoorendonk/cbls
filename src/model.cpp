@@ -1169,6 +1169,17 @@ void Model::rebuild_back_references() {
 //    other node -- `sqr(sum)`, a Sum of Sums, a comparison inside an
 //    expression -- keeps the plain re-sum, which is what "take the re-sum
 //    unless the bound is propagated" means with no propagation.
+//  - it is not itself a constraint root (#192). `add_constraint` takes any
+//    node, and being a row is not a parent edge, so the readers rule alone
+//    would admit a Sum that is a row AND is read by a comparison. Its own row
+//    would then carry drift that FeasibilityJump cannot see: a row's slot is
+//    found through its children, and this row's children are the terms, so
+//    the gate never checks it and a re-grounding never re-settles it.
+//    The objective node is NOT refused on the same grounds. It is no row: the
+//    rows over it are `obj <= bound` and the like, which read it directly and
+//    so are gated. Its value outside a batch is re-grounded with every other
+//    Sum, and refusing it would put every MPS objective row back on the
+//    re-sum.
 //
 // Terms may be anything else: every node term is flagged `kFeedsIncSum`, and a
 // dirty one pushes its change into the Sum. Whether an update is exact is a
@@ -1240,9 +1251,13 @@ void Model::classify_incremental_sums() {
     st.inc_sum_nodes.clear();
     std::vector<int32_t> node_stamp(nodes.size(), -1);
     std::vector<int32_t> var_stamp(vars_.size(), -1);
+    std::vector<uint8_t> is_row(nodes.size(), 0);
+    for (const int32_t cid : st.constraint_ids) {
+        is_row[static_cast<size_t>(cid)] = 1;
+    }
     for (const int32_t nid : st.topo_order) {
-        if (nodes[nid].op != NodeOp::Sum || !terms_qualify(*this, nid, node_stamp, var_stamp) ||
-            !readers_qualify(*this, nid)) {
+        if (nodes[nid].op != NodeOp::Sum || is_row[static_cast<size_t>(nid)] != 0 ||
+            !terms_qualify(*this, nid, node_stamp, var_stamp) || !readers_qualify(*this, nid)) {
             continue;
         }
         nodes[nid].inc_sum_flags = ExprNode::kIncSum;

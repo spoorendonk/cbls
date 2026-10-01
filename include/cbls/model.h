@@ -231,9 +231,6 @@ struct IncSums {
     /// comes back to the bit. (node id, value).
     std::vector<std::pair<int32_t, double>> probe_stash;
     bool probe_pending = false;
-    /// Inexact updates committed on this model, ever. Diagnostics: a caller can
-    /// tell whether a walk added drift by reading it on both sides.
-    uint64_t inexact_updates = 0;
 };
 
 class Model {

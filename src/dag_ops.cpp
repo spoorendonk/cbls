@@ -492,9 +492,10 @@ public:
                 sums_.probe_pending = true;
                 break;
             case Rule::Commit:
-                if (!push_ && model_.has_custom_nodes()) {
-                    // Custom nodes only; #186's extra lambdas are not covered
-                    // (a follow-up tracks it). A walk without pushes re-reads
+                if (!push_ && (model_.has_custom_nodes() || model_.has_lambda_extra_nodes())) {
+                    // Every node that runs user code: a custom node, and #186's
+                    // extra lambdas, which read scalars and so sit in a scalar
+                    // variable's cone (#192). A walk without pushes re-reads
                     // a term only at its Sum's turn, so user code throwing before that turn would
                     // leave the Sum stale while its state says it is tracked; the next commit would
                     // update the stale value. Untracked, it re-sums instead. Defensive: after a
@@ -635,7 +636,6 @@ private:
             }
             st.drift_bound = round_bound_up(st.drift_bound + (std::fabs(err_d) + std::fabs(err_s)));
             ++st.inexact;
-            ++sums_.inexact_updates;
             ++inc_sum_counts.inexact;
         }
         // Exact or not, the value is no longer a re-sum of the current terms
@@ -848,7 +848,6 @@ void reground_inc_sum(Model& model, int32_t slot) {
     for (const int32_t p : model.parents(nid)) {
         model.set_node_value_unchecked(p, evaluate(nodes[p], model));
     }
-    ++inc_sum_counts.regrounded;
 }
 
 void reground_drifted_sums(Model& model, std::vector<int32_t>& regrounded) {

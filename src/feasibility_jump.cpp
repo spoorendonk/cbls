@@ -1617,7 +1617,6 @@ void FeasibilityJump::capture_rows_of_slot(int32_t slot) {
 // ulps of M -- pays a re-sum per such row per minimum, which is what the
 // exact-only commit paid per commit touching it.
 bool FeasibilityJump::settle_undecided_rows() {
-    ++incremental_sum_counters().local_minima;
     if (uncertain_rows_.empty()) {
         return false;
     }
@@ -1642,7 +1641,6 @@ bool FeasibilityJump::settle_undecided_rows() {
     }
     IncrementalSumCounters& counts = incremental_sum_counters();
     ++counts.gated_minima;
-    counts.gate_resums += slot_scratch_.size();
     const bool flipped = settle_regrounded_rows();
     if (flipped) {
         ++counts.gate_flips;
@@ -1668,7 +1666,6 @@ bool FeasibilityJump::reground_drifted_rows() {
         }
     }
     reground_drifted_sums(model_, slot_scratch_);
-    incremental_sum_counters().batch_end_resums += slot_scratch_.size();
     return settle_regrounded_rows();
 }
 

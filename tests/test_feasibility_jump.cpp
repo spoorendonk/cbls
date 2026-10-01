@@ -1377,3 +1377,51 @@ TEST_CASE("Novelty Jump reports feasibility only on exact rows", "[fj][inc_sum]"
     CHECK_FALSE(f.fj.row_violated(rig.fixable_ci));
     CHECK(f.fj.row_violated(rig.row_ci));
 }
+
+TEST_CASE("a Sum that is itself a row is not incremental, so its row never drifts",
+          "[fj][inc_sum]") {
+    // #192. `add_constraint` takes any node. S = 2^40 * b + 1e-5 * x is a row
+    // of its own (violated while S > 0) AND is read by `S <= 100`, which alone
+    // would make it incremental. FJ's gate finds a row's Sum through the row's
+    // children -- for S's own row, the terms -- so that row would carry drift
+    // no gate checks and no re-grounding re-settles. Moving b to 1 and back
+    // outside FJ drifts S to 0 (1e-5 is below half an ulp of 2^40), so its row
+    // reads satisfied while really violated by 1e-5; FJ, which can move
+    // nothing, then reports Feasible. Red with the classifier's row test
+    // removed.
+    constexpr double kBigM = 1099511627776.0;  // 2^40
+    auto build = [](Model& m, bool own_row) {
+        const int32_t b = m.int_var(0, 0);
+        const int32_t x = m.int_var(1, 1);
+        const int32_t s = m.sum({m.prod(m.constant(kBigM), b), m.prod(m.constant(1e-5), x)});
+        if (own_row) {
+            m.add_constraint(s);
+        }
+        m.add_constraint(m.leq(s, m.constant(100.0)));
+        m.close();
+        m.var_mut(vid(b)).value = 0.0;
+        m.var_mut(vid(x)).value = 1.0;
+        full_evaluate(m);
+        return b;
+    };
+    {
+        // The control: with only the comparison reading it, S does qualify --
+        // so the case below is refused by the row test, not by another rule.
+        Model m;
+        build(m, false);
+        REQUIRE(m.inc_sum_nodes().size() == 1);
+    }
+    Model m;
+    const int32_t bi = vid(build(m, true));
+    CHECK(m.inc_sum_nodes().empty());
+    m.var_mut(bi).value = 1.0;
+    commit_scalar_move(m, bi, 0.0);
+    m.var_mut(bi).value = 0.0;
+    commit_scalar_move(m, bi, 1.0);
+    CHECK(m.node_value(m.constraint_ids()[0]) == 1e-5);  // the real sum, not the drifted 0
+    DriftFj f(m);
+    f.fj.resync();
+    CHECK(f.fj.row_violated(0));
+    CHECK_FALSE(f.fj.batch(20));  // nothing FJ may move repairs the row
+    CHECK(f.fj.row_violated(0));
+}
