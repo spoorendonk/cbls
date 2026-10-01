@@ -86,8 +86,9 @@ struct JumpResult {
 // behaviour — see the comment on the probe in feasibility_jump.cpp.
 //
 // `linear`, when given, scores the candidates in closed form wherever every
-// weighted row of G_v is a linear comparison (see linear_jump.h), and falls
-// back to `Model::weighted_violation_delta` otherwise. Same candidates and the
+// weighted row of G_v is linear -- an affine comparison or an affine bare body
+// (see linear_jump.h) -- and falls back to `Model::weighted_violation_delta`
+// otherwise. Same candidates and the
 // same first-seen-minimum rule; the scores agree to rounding, not to the bit, so
 // the selected jump is guaranteed identical only on integral data (where both
 // are exact) -- on fractional data an ulp can flip a near-tie.
@@ -639,9 +640,9 @@ private:
     std::vector<int32_t> slot_scratch_;
     std::vector<std::pair<int32_t, double>> row_before_;
     std::vector<uint8_t> is_linear_;  // per constraint
-    // Closed-form scoring over linear comparison rows. Its per-row eligibility is
-    // maintained wherever is_linear_ is: compute_linear_constraints (the
-    // constructor).
+    // Closed-form scoring over linear rows (affine comparisons and affine bare
+    // bodies). Its per-row eligibility is maintained wherever is_linear_ is:
+    // compute_linear_constraints (the constructor).
     LinearJumpScorer linear_;
     std::vector<std::vector<int32_t>> vars_of_constraint_;  // constraint idx -> jumpable vars (G_c)
     // Arm/disarm the deadline and reset the stride tuner (both entry points).

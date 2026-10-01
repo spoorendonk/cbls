@@ -317,8 +317,8 @@ bool apply_random_structural_move(Model& model, int32_t var_id, RNG& rng) {
 
 // Integer jump candidates: exhaustive over a small domain, else a coarse grid
 // plus neighbours/endpoints. Each consider() costs O(|G_v|) when every weighted
-// row of G_v is a linear comparison (LinearJumpScorer), else one
-// weighted_violation_delta (two delta_evaluate passes); the JumpTable cache
+// row of G_v is linear (LinearJumpScorer: an affine comparison or bare body),
+// else one weighted_violation_delta (two delta_evaluate passes); the JumpTable cache
 // amortises either across the GLS loop. Scoring is still per candidate: a
 // closed-form ARGMIN over a linear column would pick from a different candidate
 // set, which is a different algorithm rather than a cheaper evaluation of this
