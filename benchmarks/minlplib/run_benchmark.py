@@ -459,6 +459,23 @@ def summarize(out: Path, bounds_csv: Path) -> str:
     return "\n".join(lines)
 
 
+def print_summary(out: Path, bounds_csv: Path) -> None:
+    """Print `summarize`, or say why it could not be derived -- never raise.
+
+    It runs after the table has been atomically written, so a refusal in the
+    summary (an instance `bounds.csv` does not know, a duplicate row) must not
+    turn a successful publish into a traceback that reads as a failed one.
+    """
+    try:
+        print(summarize(out, bounds_csv))
+    except (ValueError, KeyError, OSError) as exc:
+        print(
+            f"WARNING: {out} is written, but its summary could not be derived: {exc}. "
+            "Run benchmarks/minlplib/campaign_report.py over it to see the full report.",
+            file=sys.stderr,
+        )
+
+
 def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage: Path) -> None:
     """Solve every roster instance serially, skipping the ones already staged."""
     for index, name in enumerate(roster, start=1):
@@ -507,7 +524,7 @@ def publish(args: argparse.Namespace, roster: Sequence[str], paths: Paths) -> in
                 file=sys.stderr,
             )
     print("\n=== Summary (derived from the written table) ===")
-    print(summarize(paths.out, args.inst_dir / "bounds.csv"))
+    print_summary(paths.out, args.inst_dir / "bounds.csv")
     return 1 if merge_failed else 0
 
 

@@ -153,7 +153,9 @@ documents. No published Yuck numbers exist for these instances.
 - `../../minlplib/campaign_report.py` — regenerates every run-derived number in
   **Results** and **SCIP baseline** below from the four tables above (and the
   `.nl` bounds, for #107's free-variable split), plus anytime scores, as Markdown
-  and as a JSON summary (#142). It solves nothing. See "After the run" step 2.
+  and as a JSON summary (#142), and rewrites this README's
+  `campaign_report` blocks (`--write-readme`). It solves nothing. See "After the
+  run" step 2.
 - `../../minlplib/first_feasible_report.py` — scores issue #149's question
   (does the first feasible point determine the final objective?) from the
   `first_feasible_objective` column of a multi-seed run. Reads CSVs and writes
@@ -347,39 +349,33 @@ anything about it** — that would be a result, not a routine table refresh.
    `comparison_all.csv`. The `published-bks` and `scip` rows are engine-independent
    and must be byte-identical; if they moved, something re-solved SCIP and the
    run must be redone.
-2. Regenerate every run-derived number below with the report generator, which
-   reads only the committed tables and solves nothing:
+2. Regenerate every run-derived number below. Nobody transcribes them: every
+   derived table and paragraph in this README sits between
+   `<!-- campaign_report:begin NAME -->` / `end` markers, and the report
+   generator rewrites those blocks from the committed tables and solves
+   nothing:
 
        .venv/bin/python3 benchmarks/minlplib/campaign_report.py --budget 60 --seed 1 \
-           --json /scratch/minlplib-summary.json
+           --write-readme benchmarks/instances/minlplib/README.md
 
-   `--budget` is required because no table records it (it is also the anytime
-   score's horizon); `--seed` and `--machine` are stated by you, and the output
-   says so — the tables record neither, and the report prints "not recorded"
-   rather than guess. Copy its numbers into **Results** (tally, gap buckets,
-   zero-BKS paragraph, the two-band worked examples, anytime score), **Why 60s**
-   (cumulative-feasibility table, late-feasible instances, the improvement split,
-   the most-stepped instance), the infeasible-instance list, and **SCIP
-   baseline** (head-to-head, disjoint failures, quality buckets, the rows CBLS
-   leads, #107's *after* column) — plus the same numbers wherever prose restates
-   them: the SCIP **Hardware** paragraph (wall totals, proved-optimal count, the
-   2x arithmetic), the **Caveats** bullet (proved / hit-limit counts),
-   **Integrality**'s mismatch count, and the counts written as words ("41
-   solved instead of 46", "five instances", "all four", "Five instances go the
-   other way"). Then update
-   `test_the_committed_tables_reproduce_the_readme` in
-   `tests/python/test_minlplib_campaign_report.py` to the same numbers **in the
-   same commit**: it pins the README's figures against the committed tables, so
-   it goes red on a regenerated table by design. What the generator does not
-   regenerate — #107's *before* column, and the per-seed and probe measurements
-   that are separate campaigns — it lists under "Not regenerated"; the prose
-   readings of the numbers (which instances moved and why) are still yours.
-   - **The four instances the published run left infeasible**: the heading
-     count and the table, if the report's infeasible list changed. `st_e40` is
-     expected to leave it on this re-run (#102); drop its row here and in
-     `analysis_notes.csv` together, and fix the heading count, only once the
-     regenerated `comparison.csv` actually shows it feasible.
-   - The SCIP side of all of the above is engine-independent and must not move.
+   Review the diff. `--budget` is required because no table records it (it is
+   also the anytime score's horizon); `--seed` and `--machine` are stated by
+   you, and the output says so. `--check-readme` instead of `--write-readme`
+   exits 1 naming any stale block, and
+   `test_the_committed_readme_blocks_are_the_generators_rendering` fails the same
+   way, so a hand edit inside a block, or a regenerated table without a
+   regenerated README, is caught. If the budget or seed in that command changes,
+   change it in the test too. Prose outside the blocks interprets the numbers
+   rather than restating them; anything numeric left there is a separate
+   measurement or a reference value, of a kind the generator's "Not
+   regenerated" list names. Re-read that prose against the new blocks — which
+   instances moved, and why, is still yours to write.
+   - **The instances the published run left infeasible**: the root-cause
+     table, if the generated list above it changed. `st_e40` is expected to
+     leave it on this re-run (#102); drop its row here and in
+     `analysis_notes.csv` together, only once the regenerated `comparison.csv`
+     actually shows it feasible.
+   - The SCIP side of the blocks is engine-independent and must not move.
 3. Delete the "**The table predates #120**" staleness paragraph below once the
    numbers are the new run's.
 4. **Attribute any material movement to the engine changes, not to an
@@ -417,8 +413,9 @@ anything about it** — that would be a result, not a routine table refresh.
    next re-run of either side, and this is it.
 8. Run the Python suite:
    `.venv/bin/pytest tests/python/test_minlplib_scip_baseline.py tests/python/test_minlplib_campaign_report.py`.
-   The second goes red on any regenerated table until step 2's README numbers
-   and test expectations are updated.
+   The second goes red on any regenerated table until step 2's README blocks
+   are rewritten and `test_the_committed_tables_reproduce_the_readme`'s pinned
+   numbers are updated to match them.
    `test_safe_gap_reproduces_the_cpp_runners_published_gap_column` reads the
    regenerated `comparison.csv` and requires at least 20 rows with enough
    resolution to cross-check, so a new table can legitimately turn it red. Then
@@ -426,8 +423,11 @@ anything about it** — that would be a result, not a routine table refresh.
 
 ## Results
 
-Latest run: **60s per instance, seed 1, feasibility tolerance 1e-6**, commit
-recorded per row in `comparison.csv`. The tally below, the gap buckets and the
+<!-- campaign_report:begin provenance -->
+Latest run: **60s per instance, seed 1, feasibility tolerance 1e-6**, engine commit `21086c2+107` (recorded per row in `comparison.csv`; the budget and the seed are recorded in no table and are stated to the generator; machine: not recorded).
+<!-- campaign_report:end provenance -->
+
+The tally below, the gap buckets and the
 anytime profile all come from that **one** run; its incumbent trace is committed
 as `anytime_trace.csv`, so every number in this section is reproducible from the
 checkout it was measured at, which each row's `commit_sha` names.
@@ -437,7 +437,7 @@ checkout it was measured at, which each row's `commit_sha` names.
 branch `issue-102-ex8_6_1` it reaches its BKS of 30.4142135 at both 10s and 60s,
 seed 42, where this table records it infeasible. #123 is the re-run that will
 move it (and whatever else the trajectory change moved); until then the tally,
-the gap buckets and the "four instances" section below all describe the
+the gap buckets and the infeasible-instance section below all describe the
 **published run**, not the engine. The `.nl`
 adapter now derives implied variable bounds from the purely linear rows instead
 of substituting `inf_clamp`/`int_inf_clamp` for an infinite one, and it is on by
@@ -464,6 +464,7 @@ bounds the run by GLS iterations alone, so a given seed reproduces bit for bit
 wall-clock runs at 60s — so an iteration-budgeted re-run is a different
 measurement, not a replication of this table.
 
+<!-- campaign_report:begin tally -->
 | | count |
 |---|---|
 | roster | 50 |
@@ -478,100 +479,74 @@ measurement, not a replication of this table.
 | unsupported / read errors / non-finite | 0 |
 | integrality mismatches vs catalogue | 0 |
 | verification failures | 0 |
+<!-- campaign_report:end tally -->
 
 These are the counts of the **published run**, not of the current engine. The
-`infeasible` row is 4 because `st_e40` was infeasible at the commit the table
+`infeasible` row counts `st_e40`, which was infeasible at the commit the table
 was measured at; it is not at engine commit `b7f8a50` (see below). Re-derive the
 tally from a regenerated `comparison.csv` on #123 rather than editing it here —
 a hand-adjusted count would no longer match the table it is a summary of.
 
-Every number in this section and in **SCIP baseline** that is derived from the
-committed tables is regenerated by `benchmarks/minlplib/campaign_report.py` and
-pinned against them by `tests/python/test_minlplib_campaign_report.py`; what it
-deliberately leaves out (replication and multi-seed figures, #107's *before*
-column, the `ex6_2_6` catalogue note) it lists under "Not regenerated".
-Denominators follow its `AGGREGATION_RULE`, which the report prints: `elec25`
-and `elec50` count in roster counts and are held out of quality aggregates. In
-this run both are infeasible, so the two readings agree on every number above.
+Every number inside a `campaign_report` block in this README is generated by
+`benchmarks/minlplib/campaign_report.py` from the committed tables, and
+`tests/python/test_minlplib_campaign_report.py` fails if a block differs from
+what the generator renders. Numbers outside the blocks are separate measurements
+(other seeds, other commits, probes), reference values or historical tables; the
+generator's "Not regenerated" list names each kind. Denominators follow its
+`AGGREGATION_RULE`, which the report prints: `elec25` and `elec50` count in
+roster counts and are held out of quality aggregates.
 
-Gap distribution over the feasible instances: **21 within 0.01% of BKS, 22
-within 1%, 26 within 10%.**
+<!-- campaign_report:begin gap-buckets -->
+Gap distribution over 43 of the 46 feasible instances: **21 within 0.01% of BKS, 22 within 1%, 26 within 10%.**
 
-Five rows have a numerically zero BKS (`|BKS| < 1e-12`), for which the runner
-writes an *absolute* residual into the `gap_to_bks%` column rather than a
-meaningless percentage against zero: `mathopt1`, `prob09`, `least`, `ex14_2_4`
-and `ex14_2_5`. Those values are not percentages. The buckets above exclude the
-first three, whose residual is non-zero, and retain `ex14_2_4`/`ex14_2_5`, where
-objective and BKS are both exactly 0 and so are exact matches at any threshold.
-Excluding all five instead gives 19 / 20 / 24 over 41 rows. Counting the
-excluded three *as* percentages would have put `mathopt1` — objective 1.0
-against a BKS of 3.3e-18 — inside the "within 1%" bucket.
+Five rows have a numerically zero BKS (`|BKS| < 1e-12`), for which the runner writes an *absolute* residual into the `gap_to_bks%` column rather than a meaningless percentage against zero: `ex14_2_5`, `ex14_2_4`, `mathopt1`, `least` and `prob09`. Those values are not percentages. The buckets above exclude `mathopt1`, `least` and `prob09`, whose residual is non-zero, and retain `ex14_2_5` and `ex14_2_4`, where objective and BKS are both exactly 0 and so are exact matches at any threshold. Excluding all of them instead gives 19 / 20 / 24 over 41 rows. Counting the excluded rows *as* percentages would have put `mathopt1` (gap cell 1) and `prob09` (gap cell 0.04593) inside the "within 1%" bucket.
+<!-- campaign_report:end gap-buckets -->
 
-**Anytime score.** The MIPfeas Primal Integral (`benchmarks/mipfeas/primal_integral.py`)
-of the committed trace against BKS over the 60s budget — 0 is "at BKS from the
-first instant", 2 is "never feasible" — over the 48 instances outside the
-documented failures: **mean 0.473, median 0.331, shifted geometric mean
-0.0793**. A maximize row's trace is negated, so its reference is −BKS. BKS is
-not a proven optimum, so an incumbent past it scores a positive gap; and the
-three zero-BKS rows left out of the gap buckets (`mathopt1`, `least`, `prob09`)
-are *in* this score, at 1.0 from their first incumbent (~1e-5s), because
-the scorer's own zero test is 1e-6 absolute. The per-instance scores are in the
-report; with one seed, each is one draw (see the spread caveat above).
+<!-- campaign_report:begin anytime -->
+**Anytime score.** The MIPfeas Primal Integral (`benchmarks/mipfeas/primal_integral.py`) of the committed trace against BKS over the 60s budget — 0 is "at BKS from the first instant", 2 is "never feasible" — over the 48 instances outside the documented failures (`elec25` and `elec50`): **mean 0.473, median 0.331, shifted geometric mean 0.0793**. A maximize row's trace is negated, so its reference is −BKS (at catalogue precision, from `bounds.csv`). BKS is not a proven optimum, so an incumbent past it scores a positive gap; and the zero-BKS rows left out of the gap buckets (`mathopt1`, `least` and `prob09`) are *in* this score, because the scorer's own zero test is 1e-6 absolute. The per-instance scores are in the report; with one seed, each is one draw.
+<!-- campaign_report:end anytime -->
 
-Nothing in this roster beats a published bound. Under the runner's earlier
-margin rule — which compared a *percentage* against 1e-6, i.e. 1e-8 relative —
-two rows of this run would have been flagged `better-than-bks`: `ex6_2_6` at
-8.3e-5 percent and `prob06` at 3.2e-4 percent. Those are ties, not improvements.
+<!-- campaign_report:begin two-band -->
+Nothing in this roster beats a published bound. Under the runner's earlier margin rule — which compared a *percentage* against 1e-6, i.e. 1e-8 relative — two rows of this run would have been flagged `better-than-bks`: `ex6_2_6` at 8.3e-5 percent and `prob06` at 3.2e-4 percent. Those are ties, not improvements.
 
-Two bands are used, deliberately different. An improvement is only *claimed*
-when it exceeds `max(1e-6·(|BKS|+1), 10·feas_tol)`: we accept solutions
-violating a constraint by up to `feas_tol`, and that slack itself buys a small
-objective gain. A *tie* requires the much tighter, purely relative
-`1e-6·(|BKS|+1)` — using one band for both would have published `ex8_4_5`
-(BKS 3.07e-4) as matching BKS when it was 1.20% worse, because the absolute
-floor dwarfs an objective that small. A row that improves on BKS by more than
-the tie band but less than the claim threshold falls between the two and is
-labelled `within-tolerance-of-bks` rather than being miscounted as worse.
+Two bands are used, deliberately different. An improvement is only *claimed* when it exceeds `max(1e-6·(|BKS|+1), 10·feas_tol)`: we accept solutions violating a constraint by up to `feas_tol`, and that slack itself buys a small objective gain. A *tie* requires the much tighter, purely relative `1e-6·(|BKS|+1)` — using one band for both would have published `ex8_4_5` (BKS 3.07e-4) as matching BKS when it was 1.20% worse, because the absolute floor dwarfs an objective that small. A row that improves on BKS by more than the tie band but less than the claim threshold falls between the two and is labelled `within-tolerance-of-bks` rather than being miscounted as worse.
+<!-- campaign_report:end two-band -->
 
 ### Why 60s
 
-Measured from the committed trace, not assumed. Cumulative instances with a
-feasible solution by time t (of 50):
+<!-- campaign_report:begin feasibility -->
+Measured from the committed trace, not assumed. Cumulative instances with a feasible solution by time t (of 50):
 
 | by | 1s | 5s | 10s | 20s | 30s | 45s | 60s |
-|----|----|----|-----|-----|-----|-----|-----|
+|----|----|----|----|----|----|----|----|
 | feasible | 41 | 41 | 41 | 42 | 44 | 46 | 46 |
 
-**This is the load-bearing argument.** Five instances reach feasibility only
-long after 5s — `chain50` (17.6s), `ex8_4_5` (24.9s), `tln2` (26.9s), `spring`
-(31.4s), `minlphi` (36.8s) — so a 5s budget would publish all five as
-infeasible, 41 solved instead of 46. Which five varies between draws; that
-several exist does not.
+**This is the load-bearing argument.** Five instances reach feasibility only long after 5s — `chain50` (17.6s), `ex8_4_5` (24.9s), `tln2` (26.9s), `spring` (31.4s), `minlphi` (36.8s) — so a 5s budget would publish all five as infeasible, 41 solved instead of 46. Which five varies between draws; that several exist does not.
+<!-- campaign_report:end feasibility -->
 
-Solution *quality* over time is a weaker argument than it first appears, and is
-recorded here with that caveat. Of the 46 instances that become feasible, 46%
-stop improving within the first second while 22% are still improving in the
-final 15 seconds (an improvement is a strict decrease of the trace's recorded,
-six-significant-digit objective; the `new_best` flag also fires on improvements
-the trace's precision cannot show). But the incumbent trace cannot be read as pure search
-progress: `record_best` tightens the objective bound by `1e-3·(|obj|+1)` per
-accepted solution, so improvements are *floored* at roughly 0.1% steps. The
-measured median consecutive-incumbent ratio on `eg_all_s` is 0.9989993 — exactly
-`1 - 1e-3` — and it takes 15930 such steps (15931 incumbents) to walk from 1e9
-down to 8.46. That
-instance is therefore evidence about the bound-tightening step size, not about
+<!-- campaign_report:begin improvement -->
+Solution *quality* over time is a weaker argument than it first appears, and is recorded here with that caveat. Of the 46 instances that become feasible, 46% stop improving within the first second while 22% are still improving in the final 15 seconds — reading an improvement as a strict decrease of the trace's *printed*, six-significant-digit objective. Read off the engine's own `new_best` flag instead, the split is 39% / 26%. The two part because 1266 of the trace's `new_best` rows print the same objective as the row before: improvements below the trace's print resolution, which the printed reading cannot see and the flag counts.
+
+But the incumbent trace cannot be read as pure search progress: `record_best` tightens the objective bound by `1e-3·(|obj|+1)` per accepted solution, so improvements are *floored* at roughly 0.1% steps. The measured median consecutive-incumbent ratio on `eg_all_s` (the instance with the most improvements) is 0.9989993 — 1 − 0.001001, against the bound step's 1 − 1e-3 — and it takes 15930 such steps (15931 incumbents) to walk from 1e9 down to 8.46.
+<!-- campaign_report:end improvement -->
+
+That instance is therefore evidence about the bound-tightening step size, not about
 how long the search needs. Read the quality column as a lower bound on what a
 larger step (or a direct objective descent) might achieve sooner.
 
-### The four instances the published run left infeasible
+### The instances the published run left infeasible
+
+<!-- campaign_report:begin infeasible -->
+Left infeasible in this table: `nvs01`, `elec25`, `st_e40` and `elec50` (4 of 50).
+<!-- campaign_report:end infeasible -->
 
 Every one is root-caused, and the verdict is recorded per row in
-`comparison.csv` (merged from `analysis_notes.csv`). **Two of the four —
+`comparison.csv` (merged from `analysis_notes.csv`). **Two of them —
 `st_e40` and `nvs01` — are no longer infeasible.** That was first measured at
 engine commit `b7f8a50`, then on the branch `issue-102-ex8_6_1`; #102 has since
 merged, and `nvs01` was re-checked at `1559786` on main with the same result.
 Both rows stay in this table, with their verdicts updated, until #123
-regenerates them. The `infeasible = 4` tally above is the published run's, not
+regenerates them. The `infeasible` tally above is the published run's, not
 the current engine's.
 
 **Re-confirmed at `eb9e1a5`** (2026-09-11), eight seeds at the 60s budget on an
@@ -837,7 +812,11 @@ published dual on all three. Verification is also asymmetric: the C++ runner
 re-checks its assignment against the model it built, whereas the SCIP side uses
 `Model.checkSol(original=True)`, i.e. SCIP validating its own solution against
 the pre-presolve problem. A solution SCIP cannot re-validate is not published as
-feasible; zero rows in this run failed that check.
+feasible.
+
+<!-- campaign_report:begin scip-verification -->
+Zero rows in this run failed that check.
+<!-- campaign_report:end scip-verification -->
 
 Run at **SCIP 10.0.2 / PySCIPOpt 6.2.1**, 60s per instance, with every parameter
 other than `limits/time` and `randomization/randomseedshift` at its shipped
@@ -851,10 +830,13 @@ column, so a re-run at a different budget cannot be mistaken for this one.
 Three properties of the budget were measured rather than assumed:
 `timing/clocktype` defaults to 2 (wall clock), so `limits/time` is the same kind
 of budget the CBLS runner imposes; instance reading falls outside it on both
-sides (SCIP's `.nl` reads total well under a second across the roster, recorded
-per row as `read_seconds`); and the solve stays single-threaded (CPU/wall
-measured at ~1.0). Like the CBLS run this is a wall-clock budget, so these are
-single-sample numbers.
+sides (recorded per row as `read_seconds`; the total is below); and the solve
+stays single-threaded (CPU/wall measured at ~1.0). Like the CBLS run this is a
+wall-clock budget, so these are single-sample numbers.
+
+<!-- campaign_report:begin scip-read -->
+SCIP's `.nl` reads total 0.076s across the roster (`read_seconds`).
+<!-- campaign_report:end scip-read -->
 
 Where SCIP proved no dual bound it reports its `1e20` infinity sentinel, which is
 a *finite* float; the runner folds that to `NaN` at capture, so an unproved bound
@@ -869,16 +851,15 @@ the machine per row is worth doing on the next re-run of either side.
 That gap matters less than it first appears, and it bites the opposite way round
 from the obvious guess. Both sides run a fixed 60s per instance, so:
 
-- The **wall-clock totals are the robust number.** CBLS never terminates early —
-  its 3001s is 50 × 60s by construction, and is therefore independent of the
-  machine entirely. SCIP's 1011s is dominated by proving optimality on 34
-  instances and stopping, not by clock rate; even a 2x hardware advantage would
-  leave 505s against 3001s.
+<!-- campaign_report:begin hardware -->
+- The **wall-clock totals are the robust number.** CBLS never terminates early — its 3001s is 50 × 60s by construction, and is therefore independent of the machine entirely. SCIP's 1011s is dominated by proving optimality on 34 instances and stopping, not by clock rate; even a 2x hardware advantage would leave 505s against 3001s.
 - The **counts are what a hardware difference would actually move.** Both
-  "feasible within 60s" and "proved optimal within 60s" scale with machine speed,
-  so those are the numbers a faster or slower box would change — in either
-  direction, for either solver.
+  "feasible within the budget" and "proved optimal within the budget" scale with
+  machine speed, so those are the numbers a faster or slower box would change — in
+  either direction, for either solver.
+<!-- campaign_report:end hardware -->
 
+<!-- campaign_report:begin head-to-head -->
 | | CBLS | SCIP |
 |---|---|---|
 | feasible | 46 / 50 | **49 / 50** |
@@ -887,42 +868,65 @@ from the obvious guess. Both sides run a fixed 60s per instance, so:
 | total wall over the roster | 3001s | 1011s (median 0.28s; 31 instances under 1s) |
 | integrality mismatches vs catalogue | 0 | 0 |
 | verification failures | 0 | 0 |
+<!-- campaign_report:end head-to-head -->
 
-**The failures are almost disjoint, and that is the useful part.** SCIP reaches
-a feasible solution on all four instances CBLS did not solve in this run — two
-of them proved optimal in under a quarter of a second. (`st_e40` is no longer
-one of CBLS's failures at engine commit `b7f8a50`; it is kept in the table
-because the CBLS column is this run's, and #123 regenerates it.)
+<!-- campaign_report:begin disjoint -->
+**The failures are almost disjoint, and that is the useful part.** SCIP reaches a feasible solution on all four instances CBLS did not solve in this run — two of them proved optimal in under a quarter of a second. One row goes the other way: CBLS feasible where SCIP found no feasible solution in 60s.
 
-| Instance | CBLS | SCIP | What it settles |
-|---|---|---|---|
-| `nvs01` | infeasible in this table → **feasible on 4/4 seeds** at engine commit `b7f8a50` | optimal in 0.11s | The instance is not hard. It was read as an engine gap (single-variable jumps cannot move a product term pinned at zero); #102 reaches feasibility without compound moves, so that account is incomplete — see the root-cause row above. The `infeasible` reading is this run's, measured before the fix. |
-| `st_e40` | infeasible in this table → **BKS 30.4142135** at engine commit `b7f8a50` | optimal in 0.22s | Was an engine gap, now closed (#102): the outer loop only diversified once per 100 000 GLS iterations, so a limit cycle established after ~20 iterations ran essentially unchallenged. The `infeasible` reading is this table's, measured before the fix; see the root-cause row above for the mechanism and the measurement. |
-| `elec25` | infeasible | 243.859 vs BKS 243.813 (0.02%) | Confirms an engine gap, not hardness: a feasible point of near-BKS quality is easy to reach. Originally attributed to #100; that is fixed, and the remaining cause is the undamped Newton jump ([#110](https://github.com/spoorendonk/cbls/issues/110), see the root-cause table above). |
-| `elec50` | infeasible | 1422.3 vs BKS 1055.2 (34.8%) | Same mechanism at 50 points; SCIP does not close it either, but it does reach the feasible region. |
-| `st_e36` | −147 (BKS −246) | **no feasible solution in 60s** | The one row the other way. SCIP spends the full budget and returns only a dual bound of −304.5. |
+| Instance | CBLS | SCIP |
+|---|---|---|
+| `st_e36` | -147 (40.24% from BKS) | **no feasible solution in 60s** (timelimit); dual bound -304.5 |
+| `nvs01` | infeasible | 12.4697 (0.00% from BKS), proved optimal in 0.11s |
+| `elec25` | infeasible | 243.859 (0.02% from BKS), timelimit in 60.00s |
+| `st_e40` | infeasible | 30.4142 (0.00% from BKS), proved optimal in 0.22s |
+| `elec50` | infeasible | 1422.33 (34.79% from BKS), timelimit in 60.00s |
+<!-- campaign_report:end disjoint -->
 
-**Solution quality where both are feasible.** Buckets over the 38 instances that
-both solve and whose `|BKS| >= 1e-4` (below that a percentage against the bound
-is not informative — see the zero-BKS discussion above):
+What each row settles — the numbers are in the block above:
+
+- `nvs01` — the instance is not hard. It was read as an engine gap
+  (single-variable jumps cannot move a product term pinned at zero); #102 reaches
+  feasibility without compound moves (feasible on 4/4 seeds at engine commit
+  `b7f8a50`), so that account is incomplete — see the root-cause row above. The
+  `infeasible` reading is this run's, measured before the fix.
+- `st_e40` — was an engine gap, now closed (#102; it reaches its BKS at engine
+  commit `b7f8a50`): the outer loop only diversified once per 100 000 GLS
+  iterations, so a limit cycle established after ~20 iterations ran essentially
+  unchallenged. The `infeasible` reading is this table's, measured before the
+  fix; see the root-cause row above for the mechanism and the measurement.
+- `elec25` — confirms an engine gap, not hardness: a feasible point of near-BKS
+  quality is easy to reach. Originally attributed to #100; that is fixed, and the
+  remaining cause is the undamped Newton jump
+  ([#110](https://github.com/spoorendonk/cbls/issues/110), see the root-cause
+  table above).
+- `elec50` — same mechanism at 50 points; SCIP does not close it either, but it
+  does reach the feasible region.
+- `st_e36` — the row the other way: SCIP spends the full budget and returns only
+  a dual bound.
+
+<!-- campaign_report:begin quality -->
+**Solution quality where both are feasible.** Buckets over the 38 instances that both solve and whose `|BKS| >= 0.0001` (below that a percentage against the bound is not informative — see the zero-BKS discussion above), outside the documented failures:
 
 | | ≤0.01% | ≤1% | ≤10% |
 |---|---|---|---|
 | CBLS | 17 | 18 | 22 |
 | SCIP | 32 | 32 | 33 |
+<!-- campaign_report:end quality -->
 
 SCIP is clearly ahead on quality, as expected of a mature global solver on a
-roster capped at 150 variables and 150 constraints. Five instances go the other
-way by a margin far larger than any rounding effect, and every one is a row
-where SCIP exhausted the 60s budget:
+roster capped at 150 variables and 150 constraints.
 
-| Instance | CBLS gap | SCIP gap |
-|---|---|---|
-| `eg_all_s` | 10.5% | 2324% |
-| `ex8_1_5` | **matches BKS** | 100% |
-| `ex8_6_1` | 49.1% | 99.6% |
-| `eq6_1` | 20.4% | 27.0% |
-| `maxmin` | 0.07% | 2.18% |
+<!-- campaign_report:begin cbls-ahead -->
+Five instances go the other way by a margin larger than both the claim band and the table's six-significant-digit resolution, and every one is a row where SCIP exhausted the 60s budget:
+
+| Instance | CBLS gap | SCIP gap | SCIP status |
+|---|---|---|---|
+| `eg_all_s` | 10.5% | 2324% | timelimit |
+| `ex8_1_5` | **matches BKS** | 100.% | timelimit |
+| `ex8_6_1` | 49.1% | 99.6% | timelimit |
+| `eq6_1` | 20.4% | 27.0% | timelimit |
+| `maxmin` | 0.0678% | 2.18% | timelimit |
+<!-- campaign_report:end cbls-ahead -->
 
 `ex8_1_5` is the sharpest of these: SCIP cannot make progress on it at all (its
 two variables are unbounded, so the dual bound diverges), while CBLS now reaches
@@ -1048,19 +1052,26 @@ roster belongs.
 
 #107 was found by noticing that instances with at least one **free (unbounded)**
 variable did far worse, and asked how much of that gap the fix actually explains.
-Measured before and after, over the rows each group solves whose `|BKS| >= 1e-4`:
+Measured after, from the committed tables and the `.nl` files' variable bounds,
+over the rows each group solves whose `|BKS| >= 1e-4`:
 
-| | instances | eligible | within 10% before | after |
-|---|---|---|---|---|
-| ≥1 free variable | 16 | 12 | 1 | **3** |
-| no free variables | 34 | 27 | 20 | 19 |
+<!-- campaign_report:begin free-variables -->
+| | instances | eligible | within 10% |
+|---|---|---|---|
+| ≥1 free variable | 16 | 12 | 3 |
+| no free variables | 34 | 27 | 19 |
 
-So it explains **2 of the 11** free-variable misses — `ex8_1_5` and `shiporig`
-join `maxmin`. A real but minority share: the correlation that motivated the
-issue is only partly this bug, and the rest is still open. The no-free group's
-−1 is `eq6_1` crossing the 10% line, which an A/B shows is *not* attributable to
-the change (it is bit-identical between arms; that instance spans 20.5–36.9%
-across seeds at one budget).
+Within 10% with at least one free variable: `shiporig`, `ex8_1_5` and `maxmin`.
+<!-- campaign_report:end free-variables -->
+
+**Before #107** — a table that is not committed, so these figures are not
+regenerated — the within-10% counts were 1 (`maxmin` only) and 20. So it
+explains **2 of the 11** free-variable misses — `ex8_1_5` and `shiporig` join
+`maxmin`. A real but minority share: the correlation that motivated the issue is
+only partly this bug, and the rest is still open. The no-free group's −1 is
+`eq6_1` crossing the 10% line, which an A/B shows is *not* attributable to the
+change (it is bit-identical between arms; that instance spans 20.5–36.9% across
+seeds at one budget).
 
 No finer-grained win/loss tally is published: `comparison.csv` writes objectives
 at six significant digits, which is below the tie band on several rows, so a
@@ -1103,8 +1114,8 @@ miscount but would not catch a correctly-sized set placed at the wrong offset:
   the count the header declares;
 - the runner compares the recovered count against MINLPLib's own
   `nbinvars + nintvars` (the `n_disc_vars_bks` column) per instance and reports
-  `integrality mismatch` in the tally. The published run has **zero mismatches
-  across the roster**.
+  `integrality mismatch` in the tally; the published run's count is the
+  Results tally's "integrality mismatches" row.
 
 The positions themselves are pinned by the unit tests in `tests/test_minlplib.cpp`
 ("NL reader recovers discrete-variable count and positions"), which assert the
@@ -1139,9 +1150,9 @@ worst-violated NL row and its sense.
 - The roster is reproducible from the CSV but will drift as MINLPLib updates its
   catalogue; re-run `download.py` to refresh.
 - Both runs are single samples on a wall-clock budget. The SCIP side is the more
-  stable of the two — 34 of its 50 rows terminate with a proof rather than at
-  the limit — but the 16 that hit the limit are as draw-dependent as the CBLS
-  numbers.
+  stable of the two — most of its rows terminate with a proof rather than at the
+  limit (the head-to-head table has the counts) — but the rows that hit the limit
+  are as draw-dependent as the CBLS numbers.
 - The roster's size budget (`nvars <= 150`, `ncons <= 150`) is set by what the
   NL reader and the selection filter admit, not chosen to favour either solver.
   It does mean the baseline runs SCIP on instances well inside its comfortable

@@ -26,9 +26,12 @@ from benchmarks.minlplib.campaign_report import (
     AGGREGATION_RULE,
     DEFAULT_INST_DIR,
     NOT_RECORDED,
+    README_RENDERERS,
+    CampaignReport,
     Row,
     TracePoint,
     anytime_scores,
+    apply_readme_blocks,
     build_report,
     cbls_ahead_of_scip,
     feasibility_profile,
@@ -37,16 +40,21 @@ from benchmarks.minlplib.campaign_report import (
     gap_buckets,
     improvement_times,
     improvement_timing,
+    legacy_margin_ties,
     load_bounds_index,
     load_results,
     load_scip,
     load_trace,
     main,
+    readme_blocks,
     render_markdown,
+    single_band_false_ties,
+    stale_readme_blocks,
     summarize_results,
     summarize_trace,
     to_json,
 )
+from benchmarks.minlplib.run_benchmark import print_summary
 from benchmarks.minlplib.runner import CLAIM_EXCLUDED
 
 if TYPE_CHECKING:
@@ -111,11 +119,13 @@ def infeasible(instance: str) -> Row:
 def test_the_committed_tables_reproduce_the_readme() -> None:
     """Every run-derived number `benchmarks/instances/minlplib/README.md` states.
 
-    Section by section, in README order. Two README numbers were found to have
-    drifted from the committed tables when this test was written, and the README
-    was corrected rather than this test: `ex8_4_5` is 1.20% worse than BKS, not
-    the 1.38% the two-band paragraph said, and `eg_all_s` walks 15930 steps
-    between 15931 incumbents, not "15931 steps".
+    Section by section, in README order: these literals pin the GENERATOR, and
+    `test_the_committed_readme_blocks_are_the_generators_rendering` pins the
+    README to the generator, so the two together pin the README. When this was
+    first written three README numbers had drifted from the committed tables and
+    the README was corrected, not this test: `ex8_4_5` is 1.20% worse than BKS
+    (not 1.38%), `eg_all_s` walks 15930 steps between 15931 incumbents (not
+    "15931 steps"), and the "within 1%" sentence missed `prob09`.
     """
     report = build_report(DEFAULT_INST_DIR, budget=60.0, seed=1, machine=None, feas_tol=None)
     res = report.results
@@ -178,6 +188,8 @@ def test_the_committed_tables_reproduce_the_readme() -> None:
     it = report.trace.improvement
     assert it.denominator == 46
     assert (it.stopped_early, it.still_improving) == (21, 10)
+    assert (it.new_best_stopped_early, it.new_best_still_improving) == (18, 12)
+    assert it.sub_resolution_new_best_rows == 1266
     assert round(100 * it.stopped_early / it.denominator) == 46
     assert round(100 * it.still_improving / it.denominator) == 22
     assert it.most_steps_instance == "eg_all_s"
@@ -631,46 +643,212 @@ def test_free_variable_split_groups_and_filters() -> None:
     assert split.without_free_within_10pct == 1
 
 
-# --- the README states what the generator says -----------------------------------
+# --- the README's derived blocks are the generator's ------------------------------
 
 README = DEFAULT_INST_DIR / "README.md"
 
+#: The command `README.md`'s "After the run" step 2 documents. Change both together.
+README_BUDGET = 60.0
+README_SEED = 1
 
-def test_the_readme_states_the_generators_numbers() -> None:
-    """Read the README itself, so a README edit without a regenerate goes red too.
 
-    `test_the_committed_tables_reproduce_the_readme` pins the generator against
-    literals; this pins the README's own text against the generator, on the
-    sentences and table rows that carry the headline numbers.
+def _committed_report() -> CampaignReport:
+    return build_report(
+        DEFAULT_INST_DIR, budget=README_BUDGET, seed=README_SEED, machine=None, feas_tol=None
+    )
+
+
+def test_the_committed_readme_blocks_are_the_generators_rendering() -> None:
+    """Every `campaign_report` block in the README, byte for byte (#142).
+
+    A hand edit inside a block, or a regenerated table without a regenerated
+    README, names the stale block here. Fix with the README's "After the run"
+    step 2 (`campaign_report.py ... --write-readme`), never by editing a block.
     """
-    text = " ".join(README.read_text().split())
-    report = build_report(DEFAULT_INST_DIR, budget=60.0, seed=1, machine=None, feas_tol=None)
-    res, ts, h = report.results, report.trace, report.head_to_head
-    c, v, gb, gs = res.counts, res.verdicts, res.gap_buckets, res.gap_buckets_strict
-    expected = [
-        f"| roster | {c.roster} |",
-        f"| of which mixed-integer (integrality enforced) | {c.mixed_integer} |",
-        f"| **feasible** | **{c.feasible}** |",
-        f"| — matching BKS (within the tie band) | {v.matches_bks} |",
-        f"| — worse than BKS | {v.worse} |",
-        f"| infeasible | {c.infeasible} |",
-        f"**{gb.counts[0]} within 0.01% of BKS, {gb.counts[1]} within 1%, "
-        f"{gb.counts[2]} within 10%.**",
-        f"{gs.counts[0]} / {gs.counts[1]} / {gs.counts[2]} over {gs.denominator} rows",
-        "| feasible | " + " | ".join(str(n) for n in ts.feasibility.counts) + " |",
-        f"**mean {ts.anytime.mean:.3f}, median {ts.anytime.median:.3f}, shifted geometric "
-        f"mean {ts.anytime.shifted_geometric_mean:.3g}**",
-        f"| feasible | {h.cbls.feasible} / {h.cbls.roster} | **{h.scip.feasible} / "
-        f"{h.scip.roster}** |",
-        f"| hit the 60s limit | {h.cbls.hit_limit} | {h.scip.hit_limit} |",
-        f"| total wall over the roster | {h.cbls.total_wall_seconds:.0f}s | "
-        f"{h.scip.total_wall_seconds:.0f}s (median {h.scip.median_wall_seconds:.2f}s; "
-        f"{h.scip.under_one_second} instances under 1s) |",
-        "| CBLS | " + " | ".join(str(n) for n in h.cbls_quality) + " |",
-        "| SCIP | " + " | ".join(str(n) for n in h.scip_quality) + " |",
-        f"Buckets over the {h.quality_denominator} instances",
-        f"{ts.improvement.most_steps_incumbents - 1} such steps "
-        f"({ts.improvement.most_steps_incumbents} incumbents)",
+    text = README.read_text()
+    blocks = readme_blocks(_committed_report())
+    assert stale_readme_blocks(text, blocks) == []
+    assert apply_readme_blocks(text, blocks) == text
+
+
+@pytest.mark.parametrize(
+    ("block", "old", "new"),
+    [
+        ("improvement", "46% stop improving", "52% stop improving"),
+        (
+            "tally",
+            "| — better than BKS, but inside the tolerance slack | 1 |",
+            "| — better than BKS, but inside the tolerance slack | 2 |",
+        ),
+        ("two-band", "1.20% worse", "1.38% worse"),
+        ("cbls-ahead", "| `eq6_1` | 20.4%", "| `eq6_1` | 25.4%"),
+        (
+            "free-variables",
+            "| ≥1 free variable | 16 | 12 | 3 |",
+            "| ≥1 free variable | 16 | 12 | 4 |",
+        ),
+        ("feasibility", "41 solved instead of 46", "40 solved instead of 46"),
+        (
+            "head-to-head",
+            "| proved optimal | n/a (primal heuristic) | 34 / 50 |",
+            "| proved optimal | n/a (primal heuristic) | 35 / 50 |",
+        ),
+        ("hardware", "proving optimality on 34 instances", "proving optimality on 35 instances"),
+    ],
+)
+def test_editing_a_readme_number_makes_its_block_stale(block: str, old: str, new: str) -> None:
+    """The cold review's edits, each of which every earlier test let through."""
+    text = README.read_text()
+    assert text.count(old) == 1, old
+    blocks = readme_blocks(_committed_report())
+    assert stale_readme_blocks(text.replace(old, new), blocks) == [block]
+
+
+def test_a_readme_missing_or_inventing_a_block_is_refused() -> None:
+    blocks = {"a": "x"}
+    with pytest.raises(ValueError, match="missing \\['a'\\]"):
+        apply_readme_blocks("no blocks here\n", blocks)
+    invented = (
+        "<!-- campaign_report:begin a -->\nx\n<!-- campaign_report:end a -->\n"
+        "<!-- campaign_report:begin b -->\ny\n<!-- campaign_report:end b -->\n"
+    )
+    with pytest.raises(ValueError, match="unknown \\['b'\\]"):
+        apply_readme_blocks(invented, blocks)
+
+
+def test_the_cli_checks_and_writes_a_readme(tmp_path: Path) -> None:
+    _write_campaign(tmp_path)
+    readme = tmp_path / "README.md"
+    readme.write_text(
+        "intro\n"
+        + "".join(
+            f"<!-- campaign_report:begin {name} -->\n<!-- campaign_report:end {name} -->\n"
+            for name in README_RENDERERS
+        )
+    )
+    args = ["--inst-dir", str(tmp_path), "--budget", "60"]
+    assert main([*args, "--check-readme", str(readme)]) == 1
+    assert main([*args, "--write-readme", str(readme)]) == 0
+    assert main([*args, "--check-readme", str(readme)]) == 0
+    assert readme.read_text().startswith("intro\n")
+
+
+# --- the aggregation rule, with a FEASIBLE documented failure ---------------------
+
+
+def _feasible_elec_rows() -> list[Row]:
+    """A claim-set row and a feasible documented failure that would move every aggregate."""
+    return [
+        row("a", objective=10.0, bks=10.0, gap=0.0),
+        row(
+            ELEC,
+            objective=3.0004,
+            bks=3.0,
+            gap=0.0133,
+            note="feasible",
+        ),
     ]
-    missing = [e for e in expected if e not in text]
-    assert not missing, f"README does not state the generator's numbers: {missing}"
+
+
+def test_a_feasible_documented_failure_counts_in_the_feasibility_profile() -> None:
+    """A roster count: elec counts here even though it is out of every quality aggregate."""
+    rows = _feasible_elec_rows()
+    trace = {"a": [TracePoint(0.5, 10.0)], ELEC: [TracePoint(0.5, 3.0004)]}
+    profile = feasibility_profile(rows, trace, budget=60.0)
+    assert profile.counts[-1] == 2
+
+
+def test_a_feasible_documented_failure_is_not_ahead_of_scip(tmp_path: Path) -> None:
+    csv_path = tmp_path / "scip.csv"
+    _scip_csv(
+        csv_path,
+        [
+            f"a,20,10,10,100,100,60,true,feasible,9,NaN,timelimit,0,0,0,{SCIP_VERSION}",
+            f"{ELEC},9,3,3,200,200,60,true,feasible,2,NaN,timelimit,0,0,0,{SCIP_VERSION}",
+        ],
+    )
+    ahead = cbls_ahead_of_scip(_feasible_elec_rows(), load_scip(csv_path), feas_tol=1e-6)
+    assert [a.instance for a in ahead] == ["a"]
+
+
+def test_a_feasible_documented_failure_is_not_eligible_in_the_free_variable_split() -> None:
+    split = free_variable_split(_feasible_elec_rows(), {"a": False, ELEC: True})
+    assert (split.with_free, split.with_free_eligible, split.with_free_within_10pct) == (1, 0, 0)
+    assert split.without_free_eligible == 1
+
+
+def test_a_feasible_documented_failure_is_not_a_band_example() -> None:
+    rows = [
+        row(ELEC, objective=1.0, bks=1.000002, gap=-2e-4, note="matches-bks"),
+        row(ELEC + "x", objective=1.0, bks=1.000002, gap=-2e-4, note="matches-bks"),
+    ]
+    assert [e.instance for e in legacy_margin_ties(rows)] == [ELEC + "x"]
+    worse = [
+        row(ELEC, objective=3.04e-4, bks=3e-4, gap=1.33, note="feasible"),
+        row("b", objective=3.04e-4, bks=3e-4, gap=1.33, note="feasible"),
+    ]
+    assert [e.instance for e in single_band_false_ties(worse, 1e-6)] == ["b"]
+
+
+# --- anytime details ----------------------------------------------------------------
+
+
+def test_the_final_primal_gap_is_the_last_incumbents() -> None:
+    rows = [row("a", objective=10.0, bks=10.0)]
+    trace = {"a": [TracePoint(1.0, 20.0), TracePoint(2.0, 10.0)]}
+    [a] = anytime_scores(rows, trace, budget=60.0).per_instance
+    assert a.final_primal_gap == 0.0
+    # 2 for 1s, 0.5 for 1s, 0 for 58s.
+    assert a.primal_integral == pytest.approx((2.0 + 0.5) / 60.0)
+
+
+def test_each_anytime_row_carries_its_reference_and_source() -> None:
+    rows = [
+        Row(
+            instance="m",
+            objective=600.0,
+            primal_bks=1800.0,
+            gap_pct=66.7,
+            wall_seconds=60.0,
+            feasible=True,
+            note="feasible",
+            commit_sha="abc",
+            n_int_vars=0,
+            maximizing=True,
+            n_disc_vars_bks=0,
+            catalogue_bks=1800.123456,
+        )
+    ]
+    [m] = anytime_scores(rows, {"m": [TracePoint(0.0, -600.0)]}, budget=60.0).per_instance
+    assert m.reference == -1800.123456
+    assert "bounds.csv" in m.reference_source
+    assert "maximize" in m.reference_source
+
+
+def test_the_new_best_reading_is_reported_beside_the_printed_one() -> None:
+    rows = [row("a")]
+    trace = {
+        "a": [
+            TracePoint(0.2, 3.0, True),
+            TracePoint(50.0, 3.0, True),  # flagged, but prints the same objective
+        ]
+    }
+    timing = improvement_timing(rows, trace, budget=60.0)
+    assert (timing.stopped_early, timing.still_improving) == (1, 0)
+    assert (timing.new_best_stopped_early, timing.new_best_still_improving) == (0, 1)
+    assert timing.sub_resolution_new_best_rows == 1
+
+
+# --- the driver's summary never turns a publish into a traceback ------------------
+
+
+def test_the_driver_summary_warns_instead_of_raising(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_campaign(tmp_path)
+    bounds = tmp_path / "bounds.csv"
+    bounds.write_text(f"{BOUNDS_HEADER}\na,other,1,0,min,1.0,1.0,0\n")  # elec missing
+    print_summary(tmp_path / "comparison.csv", bounds)
+    err = capsys.readouterr().err
+    assert "is written, but its summary could not be derived" in err
+    assert "not in bounds.csv" in err

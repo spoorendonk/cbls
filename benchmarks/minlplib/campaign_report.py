@@ -14,7 +14,13 @@ them from the campaign's own committed outputs and nothing else:
 It solves nothing. Usage, from the repository root:
 
     .venv/bin/python3 benchmarks/minlplib/campaign_report.py --budget 60 --seed 1 \\
-        [--machine "..."] [--json summary.json] [--markdown report.md]
+        [--machine "..."] [--json summary.json] [--markdown report.md] \\
+        [--write-readme README.md | --check-readme README.md]
+
+THE README IS GENERATOR-OWNED where it states a derived number: each such table
+or paragraph sits between `<!-- campaign_report:begin NAME -->` / `end` markers,
+`README_RENDERERS` renders every block's whole body, `--write-readme` rewrites
+them and `--check-readme` (and the test suite) fails on a stale one.
 
 With neither output flag the Markdown report goes to stdout. `--budget` is
 required because no committed table records it: it is the horizon the anytime
@@ -74,7 +80,7 @@ from benchmarks.mipfeas.primal_integral import (  # noqa: E402
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
 
 DEFAULT_INST_DIR = Path(__file__).resolve().parents[1] / "instances" / "minlplib"
 
@@ -84,12 +90,16 @@ DEFAULT_INST_DIR = Path(__file__).resolve().parents[1] / "instances" / "minlplib
 
 AGGREGATION_RULE = (
     "Documented-failure instances ({excluded}) are INCLUDED in roster counts "
-    "(roster, built, mixed-integer, feasible, infeasible, coverage gaps, errors, "
-    "integrality mismatches, verification failures, wall-clock totals, the "
-    "cumulative-feasibility profile and the SCIP head-to-head counts) and EXCLUDED "
-    "from quality aggregates (verdict-vs-BKS breakdown, gap buckets, improvement "
-    "timing, anytime scores, both-solved quality buckets), per #87. Their "
-    "per-instance rows are still listed, marked excluded."
+    "(roster, built, mixed-integer, feasible, infeasible and the infeasible list, "
+    "coverage gaps, errors, non-finite, integrality mismatches, verification "
+    "failures, wall-clock totals, the cumulative-feasibility profile and its "
+    "late-feasible list, the SCIP head-to-head counts and the disjoint-failure "
+    "list) and EXCLUDED from quality aggregates (verdict-vs-BKS breakdown, gap "
+    "buckets and the zero-BKS split, the earlier-margin and single-band examples, "
+    "improvement timing, anytime scores, both-solved quality buckets, the "
+    "CBLS-ahead-of-SCIP list, and the eligible and within-10% columns of the "
+    "free-variable split), per #87. Their per-instance rows are still listed, "
+    "marked excluded."
 ).format(excluded=", ".join(CLAIM_EXCLUDED))
 
 #: Gap-bucket thresholds, in percent. A row is in a bucket when its signed
@@ -124,11 +134,13 @@ LATE_FEASIBLE_AFTER = 5.0
 
 #: Improvement timing. An IMPROVEMENT is a strict decrease of the recorded
 #: (internally minimised) trace objective; the first incumbent counts as one.
-#: The trace's `new_best` flag is NOT used: the engine sets it on any
-#: improvement over 1e-12 relative (`record_best` in `src/search.cpp`), but the
-#: trace writes six significant digits, so a flagged row can print the SAME
-#: objective as the row before it -- an improvement the committed trace cannot
-#: show and the tie band would not count. An instance "stopped improving early"
+#: That is the PRINTED-OBJECTIVE reading, and it depends on the trace's print
+#: precision (six significant digits). The report also gives the NEW-BEST
+#: reading -- the engine's own `new_best` flag, which `record_best` in
+#: `src/search.cpp` sets on any improvement over 1e-12 relative -- and counts the
+#: flagged rows that print the same objective as the row before (improvements
+#: below the print resolution), which is exactly where the two readings part.
+#: An instance "stopped improving early"
 #: when its last improvement is at or before EARLY_STOP_SECONDS, and is "still
 #: improving" when its last improvement falls inside the final
 #: LATE_WINDOW_SECONDS of the budget -- a window that never reaches back into
@@ -203,6 +215,9 @@ class Row:
     maximizing: bool
     n_disc_vars_bks: int
     search_config: str = ""
+    #: `bounds.csv`'s primal bound at catalogue precision; `primal_bks` is the
+    #: runner's six-significant-digit cell of the same value.
+    catalogue_bks: float = math.nan
 
     @property
     def verdict(self) -> str:
@@ -275,6 +290,7 @@ def load_results(path: Path, bounds: Mapping[str, Bound]) -> list[Row]:
                     maximizing=bound.maximizing,
                     n_disc_vars_bks=bound.n_disc_vars_bks,
                     search_config=raw.get("search_config", "") or "",
+                    catalogue_bks=bound.primal_bks,
                 )
             )
     return rows
@@ -292,6 +308,7 @@ class ScipRow:
     dual_bound: float
     n_int_vars: int
     version: str
+    read_seconds: float = math.nan
 
 
 def load_scip(path: Path) -> dict[str, ScipRow]:
@@ -312,6 +329,7 @@ def load_scip(path: Path) -> dict[str, ScipRow]:
                 dual_bound=_float(raw.get("scip_dual_bound")),
                 n_int_vars=-1 if math.isnan(n_int) else int(n_int),
                 version=raw.get("scip_version", ""),
+                read_seconds=_float(raw.get("read_seconds")),
             )
     return rows
 
@@ -321,6 +339,8 @@ class TracePoint:
     time_seconds: float
     #: The engine's internally MINIMISED objective: negated on a maximize row.
     objective: float
+    #: The engine's own `new_best` flag for this row.
+    new_best: bool = True
 
 
 def load_trace(path: Path) -> dict[str, list[TracePoint]]:
@@ -334,7 +354,11 @@ def load_trace(path: Path) -> dict[str, list[TracePoint]]:
     trace: dict[str, list[TracePoint]] = defaultdict(list)
     with path.open(newline="") as fh:
         for raw in csv.DictReader(fh):
-            point = TracePoint(float(raw["time_seconds"]), float(raw["objective"]))
+            point = TracePoint(
+                float(raw["time_seconds"]),
+                float(raw["objective"]),
+                raw.get("new_best", "1").strip() in ("1", "true"),
+            )
             if not (math.isfinite(point.time_seconds) and math.isfinite(point.objective)):
                 raise ValueError(f"{path}: non-finite trace entry for {raw['instance']!r}")
             trace[raw["instance"]].append(point)
@@ -695,8 +719,15 @@ class ImprovementTiming:
     """When feasible claim-set instances last improved (a quality aggregate)."""
 
     denominator: int
+    #: The printed-objective reading (see `EARLY_STOP_SECONDS`).
     stopped_early: int
     still_improving: int
+    #: The new-best reading: the same split off the engine's `new_best` flag.
+    new_best_stopped_early: int
+    new_best_still_improving: int
+    #: `new_best` rows that print the same objective as the row before them --
+    #: improvements below the trace's print resolution, where the readings part.
+    sub_resolution_new_best_rows: int
     first_feasible: dict[str, float]
     last_improvement: dict[str, float]
     #: The instance with the most improvements, and its consecutive-incumbent ratio:
@@ -715,17 +746,28 @@ def improvement_timing(
     late_start = max(budget - LATE_WINDOW_SECONDS, EARLY_STOP_SECONDS)
     first: dict[str, float] = {}
     last: dict[str, float] = {}
+    last_flagged: dict[str, float] = {}
+    sub_resolution = 0
     longest: tuple[Row, list[TracePoint]] | None = None
     for r in sorted((r for r in rows if r.feasible and not r.excluded), key=lambda r: r.instance):
-        steps = improvement_steps(_trace_of(r, trace))
+        points = _trace_of(r, trace)
+        steps = improvement_steps(points)
         if not steps:
             continue
         first[r.instance] = steps[0].time_seconds
         last[r.instance] = steps[-1].time_seconds
+        # The arrival counts in both readings; after it, only flagged rows.
+        flagged = [points[0].time_seconds] + [p.time_seconds for p in points if p.new_best]
+        last_flagged[r.instance] = max(flagged)
+        sub_resolution += sum(
+            1
+            for prev, p in zip(points, points[1:], strict=False)
+            if p.new_best and p.objective >= prev.objective
+        )
         if longest is None or len(steps) > len(longest[1]):
             longest = (r, steps)
     if longest is None:
-        return ImprovementTiming(0, 0, 0, {}, {}, None, 0, math.nan, math.nan, math.nan)
+        return ImprovementTiming(0, 0, 0, 0, 0, 0, {}, {}, None, 0, math.nan, math.nan, math.nan)
     row, steps = longest
     values = [p.objective for p in steps]
     ratios = [b / a for a, b in zip(values, values[1:], strict=False) if a != 0.0]
@@ -734,6 +776,9 @@ def improvement_timing(
         denominator=len(last),
         stopped_early=sum(1 for t in last.values() if t <= EARLY_STOP_SECONDS),
         still_improving=sum(1 for t in last.values() if t > late_start),
+        new_best_stopped_early=sum(1 for t in last_flagged.values() if t <= EARLY_STOP_SECONDS),
+        new_best_still_improving=sum(1 for t in last_flagged.values() if t > late_start),
+        sub_resolution_new_best_rows=sub_resolution,
         first_feasible=first,
         last_improvement=last,
         most_steps_instance=row.instance,
@@ -752,6 +797,10 @@ class AnytimeInstance:
     primal_integral: float
     #: MIPfeas primal gap of the final incumbent (2.0 when none); NaN when unscored.
     final_primal_gap: float
+    #: The reference the trace was scored against, in the trace's minimised sense.
+    reference: float = math.nan
+    #: Where `reference` came from, and at what precision.
+    reference_source: str = ""
 
 
 @dataclass
@@ -783,6 +832,16 @@ class AnytimeScores:
     shifted_geometric_mean: float
 
 
+def _reference_source(r: Row) -> str:
+    """Where a row's anytime reference came from, and at what precision."""
+    source = (
+        "bounds.csv primal_bks (catalogue precision)"
+        if math.isfinite(r.catalogue_bks)
+        else "comparison.csv primal_bks (6 significant digits)"
+    )
+    return f"-1 x {source}; maximize row" if r.maximizing else source
+
+
 def anytime_scores(
     rows: Sequence[Row], trace: Mapping[str, Sequence[TracePoint]], budget: float
 ) -> AnytimeScores:
@@ -794,12 +853,18 @@ def anytime_scores(
             if not r.excluded:
                 unscored.append(r.instance)
             continue
-        reference = -r.primal_bks if r.maximizing else r.primal_bks
+        bks = r.catalogue_bks if math.isfinite(r.catalogue_bks) else r.primal_bks
+        reference = -bks if r.maximizing else bks
         points = [(p.time_seconds, p.objective) for p in _trace_of(r, trace)]
         final = primal_gap(points[-1][1], reference) if points else NO_SOLUTION_GAP
         per.append(
             AnytimeInstance(
-                r.instance, r.excluded, primal_integral(points, reference, budget), final
+                r.instance,
+                r.excluded,
+                primal_integral(points, reference, budget),
+                final,
+                reference,
+                _reference_source(r),
             )
         )
     scored = [a.primal_integral for a in per if not a.excluded and math.isfinite(a.primal_integral)]
@@ -862,6 +927,8 @@ class SolverCounts:
     under_one_second: int
     integrality_mismatches: int
     verification_failures: int
+    #: Instance read time summed over the roster (SCIP only; NaN for CBLS).
+    total_read_seconds: float = math.nan
 
 
 @dataclass
@@ -881,6 +948,7 @@ class DisjointFailure:
 @dataclass
 class AheadRow:
     instance: str
+    cbls_verdict: str
     cbls_gap_pct: float
     scip_gap_pct: float
     scip_status: str
@@ -953,7 +1021,7 @@ def cbls_ahead_of_scip(
             claim_band(r.primal_bks, feas_tol), CELL_RELATIVE_RESOLUTION * abs(r.objective)
         )
         if _better_by(r.objective, s.objective, r.maximizing, margin):
-            out.append(AheadRow(r.instance, r.gap_pct, s.gap_pct, s.status))
+            out.append(AheadRow(r.instance, r.verdict, r.gap_pct, s.gap_pct, s.status))
     return out
 
 
@@ -989,6 +1057,17 @@ def head_to_head(
         if "integrality mismatch" in s.note
         or (bounds_disc[s.instance] >= 0 and s.n_int_vars not in (-1, bounds_disc[s.instance]))
     )
+    scip_counts = _solver_counts(
+        [s.wall_seconds for s in scip_rows],
+        sum(1 for s in scip_rows if s.feasible),
+        sum(1 for s in scip_rows if s.status == "optimal"),
+        budget,
+        scip_mismatches,
+        sum(1 for s in scip_rows if "CHECK-FAILED" in s.note),
+    )
+    scip_counts.total_read_seconds = math.fsum(
+        s.read_seconds for s in scip_rows if math.isfinite(s.read_seconds)
+    )
     return HeadToHead(
         cbls=_solver_counts(
             [r.wall_seconds for r in rows],
@@ -998,14 +1077,7 @@ def head_to_head(
             counts.integrality_mismatches,
             counts.verification_failures,
         ),
-        scip=_solver_counts(
-            [s.wall_seconds for s in scip_rows],
-            sum(1 for s in scip_rows if s.feasible),
-            sum(1 for s in scip_rows if s.status == "optimal"),
-            budget,
-            scip_mismatches,
-            sum(1 for s in scip_rows if "CHECK-FAILED" in s.note),
-        ),
+        scip=scip_counts,
         disjoint_failures=disjoint,
         quality_denominator=len(both),
         quality_thresholds_pct=list(GAP_THRESHOLDS_PCT),
@@ -1033,6 +1105,8 @@ class FreeVariableSplit:
     without_free_eligible: int
     without_free_within_10pct: int
     free_instances: list[str] = field(default_factory=list)
+    #: The free-variable instances within 10% of BKS, by name.
+    with_free_within_10pct_instances: list[str] = field(default_factory=list)
 
 
 def free_variable_split(rows: Sequence[Row], free: Mapping[str, bool]) -> FreeVariableSplit:
@@ -1053,6 +1127,7 @@ def free_variable_split(rows: Sequence[Row], free: Mapping[str, bool]) -> FreeVa
         without_free_eligible=len(elig[False]),
         without_free_within_10pct=within[False],
         free_instances=[r.instance for r in groups[True]],
+        with_free_within_10pct_instances=[r.instance for r in elig[True] if r.gap_pct <= 10.0],
     )
 
 
@@ -1116,13 +1191,21 @@ class CampaignReport:
 #: and why. Printed in every output so a reader can tell "not derived" from
 #: "derived and agreeing".
 NOT_REGENERATED: tuple[str, ...] = (
-    "#107 'within 10% before' column (and the '2 of the 11' read off it): measured on "
-    "a pre-#107 table that is not committed.",
+    "#107's BEFORE column and everything read off it (the '2 of the 11', which "
+    "instances 'join maxmin', the no-free group's -1): measured on a pre-#107 table "
+    "that is not committed.",
     "Per-seed and multi-commit measurements (nvs01's eight seeds, the #102 probe, the "
-    "portfolio A/B, the replication spreads quoted in Results): separate campaigns, "
-    "not the committed tables.",
+    "portfolio A/B, the replication spreads quoted in Results, the st_e40/nvs01 "
+    "re-checks): separate campaigns, not the committed tables.",
     "The ex6_2_6 'stale catalogue row' note under SCIP baseline: a prose reading of "
     "one scip_baseline.csv row, not an aggregate.",
+    "SCIP's CPU/wall ratio (~1.0), its clock type and its version string as quoted "
+    "in prose: measured or read from SCIP, not from the tables' aggregates.",
+    "Machine descriptions (the SCIP run's hardware): no table records a machine.",
+    "Published bounds quoted in prose (e.g. st_e40's BKS): reference values from "
+    "bounds.csv, not run-derived.",
+    "Single cells quoted inside the root-cause prose (nvs01's published residual): "
+    "the table's own text, not an aggregate.",
 )
 
 _SCIP_BUDGET = re.compile(r"/\s*([0-9.]+)s\s*/")
@@ -1330,7 +1413,7 @@ def _results_lines(res: ResultsSummary) -> list[str]:
         "",
         "## Gap distribution",
         "",
-        f"Over {gb.denominator} feasible rows: "
+        f"Over {gb.denominator} of the {res.verdicts.denominator} feasible claim-set rows: "
         + ", ".join(
             f"**{n} within {t:g}%**" for n, t in zip(gb.counts, gb.thresholds_pct, strict=True)
         )
@@ -1383,7 +1466,12 @@ def _trace_lines(ts: TraceSummary) -> list[str]:
         f"({_pct(it.stopped_early, it.denominator)}) last improved within "
         f"{EARLY_STOP_SECONDS:g}s and {it.still_improving} "
         f"({_pct(it.still_improving, it.denominator)}) were still improving in the final "
-        f"{LATE_WINDOW_SECONDS:g}s.",
+        f"{LATE_WINDOW_SECONDS:g}s (printed-objective reading). Off the engine's "
+        f"`new_best` flag: {it.new_best_stopped_early} "
+        f"({_pct(it.new_best_stopped_early, it.denominator)}) and "
+        f"{it.new_best_still_improving} ({_pct(it.new_best_still_improving, it.denominator)}); "
+        f"{it.sub_resolution_new_best_rows} `new_best` rows print the same objective as "
+        "the row before.",
     ]
     if it.most_steps_instance is not None:
         out.append(
@@ -1507,6 +1595,523 @@ def render_markdown(report: CampaignReport) -> str:
 
 
 # --------------------------------------------------------------------------
+# README blocks: the README's derived text, owned by this module.
+# --------------------------------------------------------------------------
+
+#: Every derived number in the benchmark README lives between a pair of these
+#: markers, and `readme_blocks` renders each block's whole body. A README edit
+#: inside a block that this module would not have written makes
+#: `check_readme` fail; a number left outside the blocks must be one of the
+#: kinds `NOT_REGENERATED` names.
+README_BEGIN = "<!-- campaign_report:begin {name} -->"
+README_END = "<!-- campaign_report:end {name} -->"
+_README_BLOCK = re.compile(
+    r"<!-- campaign_report:begin (?P<name>[a-z0-9-]+) -->\n(?P<body>.*?)"
+    r"<!-- campaign_report:end (?P=name) -->",
+    re.DOTALL,
+)
+
+_WORDS = [
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+]
+
+
+def _word(n: int, *, capital: bool = False) -> str:
+    """A small count spelled out, as the README's prose writes it."""
+    text = _WORDS[n] if 0 <= n < len(_WORDS) else str(n)
+    return text.capitalize() if capital else text
+
+
+def _sci(value: float, digits: int = 2) -> str:
+    """Scientific notation without exponent padding: 8.3e-5, 3.07e-4."""
+    mantissa, exponent = f"{value:.{digits - 1}e}".split("e")
+    return f"{mantissa}e{int(exponent)}"
+
+
+def _plain(value: float) -> str:
+    """`:g` without the exponent padding: 1e-6, 1e9, 8.46."""
+    return re.sub(
+        r"e([+-])0*(\d)", lambda m: "e" + ("-" if m[1] == "-" else "") + m[2], f"{value:g}"
+    )
+
+
+def _pct_cell(value: float) -> str:
+    if abs(value) >= 100:
+        return f"{value:.0f}%"
+    if abs(value) >= 0.01:
+        return f"{value:#.3g}%"
+    return f"{_sci(value)}%"
+
+
+def _and_list(items: Sequence[str]) -> str:
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _tick(names: Iterable[str]) -> list[str]:
+    return [f"`{n}`" for n in names]
+
+
+def _readme_provenance(r: CampaignReport) -> str:
+    p = r.provenance
+    seed = f"seed {p.seed}" if p.seed is not None else "seed not recorded"
+    machine = p.machine if p.machine else "not recorded"
+    return (
+        f"Latest run: **{p.budget_seconds:g}s per instance, {seed}, feasibility tolerance "
+        f"{_plain(p.feas_tol)}**, engine commit `{p.engine_commit}` (recorded per row in "
+        "`comparison.csv`; the budget and the seed are recorded in no table and are "
+        "stated to the generator; machine: "
+        f"{machine})."
+    )
+
+
+def _readme_tally(r: CampaignReport) -> str:
+    c, v = r.results.counts, r.results.verdicts
+    return "\n".join(
+        [
+            "| | count |",
+            "|---|---|",
+            f"| roster | {c.roster} |",
+            f"| parsed and built (closed-model rate) | {c.built} ({c.built_pct:.0f}%) |",
+            f"| of which mixed-integer (integrality enforced) | {c.mixed_integer} |",
+            f"| **feasible** | **{c.feasible}** |",
+            f"| — matching BKS (within the tie band) | {v.matches_bks} |",
+            f"| — better than BKS, but inside the tolerance slack | {v.within_tolerance} |",
+            f"| — worse than BKS | {v.worse} |",
+            f"| — better than BKS | {v.better} |",
+            f"| infeasible | {c.infeasible} |",
+            f"| unsupported / read errors / non-finite | "
+            f"{c.coverage_gaps + c.errors + c.non_finite} |",
+            f"| integrality mismatches vs catalogue | {c.integrality_mismatches} |",
+            f"| verification failures | {c.verification_failures} |",
+        ]
+    )
+
+
+def _readme_gap_buckets(r: CampaignReport) -> str:
+    res = r.results
+    gb, gs = res.gap_buckets, res.gap_buckets_strict
+    buckets = ", ".join(
+        f"{n} within {t:g}%{' of BKS' if i == 0 else ''}"
+        for i, (n, t) in enumerate(zip(gb.counts, gb.thresholds_pct, strict=True))
+    )
+    zero = _tick(res.zero_bks_instances)
+    excluded = _tick(gb.excluded_zero_bks)
+    retained = _tick(gb.retained_zero_bks)
+    by_name = {f.instance: f for f in r.per_instance}
+    one_pct = gb.thresholds_pct.index(1.0) if 1.0 in gb.thresholds_pct else None
+    inside = [
+        f"`{n}` (gap cell {_g(by_name[n].gap_pct, 4)})"
+        for n in gb.excluded_zero_bks
+        if one_pct is not None and by_name[n].gap_pct <= 1.0
+    ]
+    lines = [
+        f"Gap distribution over {gb.denominator} of the {res.verdicts.denominator} feasible "
+        f"instances: **{buckets}.**",
+        "",
+        f"{_word(len(zero), capital=True)} rows have a numerically zero BKS "
+        f"(`|BKS| < {_plain(ZERO_BKS)}`), for which the runner writes an *absolute* residual into "
+        "the `gap_to_bks%` column rather than a meaningless percentage against zero: "
+        f"{_and_list(zero)}. Those values are not percentages. The buckets above exclude "
+        f"{_and_list(excluded) or 'none of them'}, whose residual is non-zero, and retain "
+        f"{_and_list(retained) or 'none'}, where objective and BKS are both exactly 0 and "
+        "so are exact matches at any threshold. Excluding all of them instead gives "
+        f"{' / '.join(str(n) for n in gs.counts)} over {gs.denominator} rows.",
+    ]
+    if inside:
+        lines[-1] += (
+            " Counting the excluded rows *as* percentages would have put "
+            f'{_and_list(inside)} inside the "within 1%" bucket.'
+        )
+    return "\n".join(lines)
+
+
+def _readme_two_band(r: CampaignReport) -> str:
+    res = r.results
+    v = res.verdicts
+    if v.better == 0:
+        opening = "Nothing in this roster beats a published bound."
+    else:
+        opening = f"{_word(v.better, capital=True)} rows beat a published bound."
+    ties = sorted(res.legacy_margin_ties, key=lambda e: -e.gap_pct)
+    if ties:
+        listed = _and_list([f"`{e.instance}` at {_sci(-e.gap_pct)} percent" for e in ties])
+        legacy = (
+            " Under the runner's earlier margin rule — which compared a *percentage* "
+            f"against {_plain(LEGACY_MARGIN_PCT)}, i.e. 1e-8 relative — {_word(len(ties))} "
+            f"rows of this run would have been flagged `better-than-bks`: {listed}. "
+            "Those are ties, not improvements."
+        )
+    else:
+        legacy = ""
+    false_ties = res.single_band_false_ties
+    if false_ties:
+        example = _and_list(
+            [
+                f"`{e.instance}` (BKS {_sci(e.primal_bks, 3)}) as matching BKS when it was "
+                f"{e.gap_pct:.2f}% worse"
+                for e in false_ties
+            ]
+        )
+    else:
+        example = "a small-objective row worse than BKS as matching it"
+    return "\n".join(
+        [
+            opening + legacy,
+            "",
+            "Two bands are used, deliberately different. An improvement is only *claimed* "
+            "when it exceeds `max(1e-6·(|BKS|+1), 10·feas_tol)`: we accept solutions "
+            "violating a constraint by up to `feas_tol`, and that slack itself buys a small "
+            "objective gain. A *tie* requires the much tighter, purely relative "
+            f"`1e-6·(|BKS|+1)` — using one band for both would have published {example}, "
+            "because the absolute floor dwarfs an objective that small. A row that improves "
+            "on BKS by more than the tie band but less than the claim threshold falls between "
+            "the two and is labelled `within-tolerance-of-bks` rather than being miscounted "
+            "as worse.",
+        ]
+    )
+
+
+def _readme_anytime(r: CampaignReport) -> str:
+    at = r.trace.anytime
+    zero_in = [
+        n
+        for n in r.results.gap_buckets.excluded_zero_bks
+        if any(a.instance == n and math.isfinite(a.primal_integral) for a in at.per_instance)
+    ]
+    excluded = _and_list(_tick(r.results.counts.documented_failures)) or "none"
+    text = (
+        "**Anytime score.** The MIPfeas Primal Integral "
+        "(`benchmarks/mipfeas/primal_integral.py`) of the committed trace against BKS over "
+        f'the {at.budget_seconds:g}s budget — 0 is "at BKS from the first instant", '
+        f'{NO_SOLUTION_GAP:g} is "never feasible" — over the {at.denominator} instances '
+        f"outside the documented failures ({excluded}): **mean {at.mean:.3f}, median "
+        f"{at.median:.3f}, shifted geometric mean {at.shifted_geometric_mean:.3g}**. A "
+        "maximize row's trace is negated, so its reference is −BKS (at catalogue "
+        "precision, from `bounds.csv`). BKS is not a proven optimum, so an incumbent "
+        "past it scores a positive gap"
+    )
+    if zero_in:
+        text += (
+            f"; and the zero-BKS rows left out of the gap buckets ({_and_list(_tick(zero_in))}) "
+            "are *in* this score, because the scorer's own zero test is 1e-6 absolute"
+        )
+    if at.unscored:
+        text += f". Unscored: {_and_list(_tick(at.unscored))}"
+    return text + ". The per-instance scores are in the report; with one seed, each is one draw."
+
+
+def _readme_feasibility(r: CampaignReport) -> str:
+    fp = r.trace.feasibility
+    late = list(fp.late_feasible.items())
+    at_late = (
+        fp.counts[fp.checkpoints.index(LATE_FEASIBLE_AFTER)]
+        if LATE_FEASIBLE_AFTER in fp.checkpoints
+        else None
+    )
+    lines = [
+        "Measured from the committed trace, not assumed. Cumulative instances with a "
+        f"feasible solution by time t (of {fp.roster}):",
+        "",
+        "| by | " + " | ".join(f"{t:g}s" for t in fp.checkpoints) + " |",
+        "|----|" + "|".join("----" for _ in fp.checkpoints) + "|",
+        "| feasible | " + " | ".join(str(n) for n in fp.counts) + " |",
+        "",
+    ]
+    if late and at_late is not None:
+        names = ", ".join(f"`{k}` ({t:.1f}s)" for k, t in late)
+        n = _word(len(late))
+        lines.append(
+            f"**This is the load-bearing argument.** {_word(len(late), capital=True)} "
+            f"instances reach feasibility only long after {LATE_FEASIBLE_AFTER:g}s — "
+            f"{names} — so a {LATE_FEASIBLE_AFTER:g}s budget would publish all {n} as "
+            f"infeasible, {at_late} solved instead of {fp.counts[-1]}. Which {n} varies "
+            "between draws; that several exist does not."
+        )
+    else:
+        lines.append(f"No instance reaches feasibility after {LATE_FEASIBLE_AFTER:g}s in this run.")
+    return "\n".join(lines)
+
+
+def _readme_improvement(r: CampaignReport) -> str:
+    it = r.trace.improvement
+    d = it.denominator
+    text = (
+        "Solution *quality* over time is a weaker argument than it first appears, and is "
+        f"recorded here with that caveat. Of the {d} instances that become feasible, "
+        f"{_pct(it.stopped_early, d)} stop improving within the first "
+        f"{'second' if EARLY_STOP_SECONDS == 1.0 else f'{EARLY_STOP_SECONDS:g}s'} while "
+        f"{_pct(it.still_improving, d)} are still improving in the final "
+        f"{LATE_WINDOW_SECONDS:g} seconds — reading an improvement as a strict decrease of "
+        "the trace's *printed*, six-significant-digit objective. Read off the engine's own "
+        f"`new_best` flag instead, the split is {_pct(it.new_best_stopped_early, d)} / "
+        f"{_pct(it.new_best_still_improving, d)}. The two part because "
+        f"{it.sub_resolution_new_best_rows} of the trace's `new_best` rows print the same "
+        "objective as the row before: improvements below the trace's print resolution, "
+        "which the printed reading cannot see and the flag counts."
+    )
+    if it.most_steps_instance is not None:
+        text += (
+            "\n\nBut the incumbent trace cannot be read as pure search progress: "
+            "`record_best` tightens the objective bound by `1e-3·(|obj|+1)` per accepted "
+            "solution, so improvements are *floored* at roughly 0.1% steps. The measured "
+            f"median consecutive-incumbent ratio on `{it.most_steps_instance}` (the instance "
+            f"with the most improvements) is {it.most_steps_median_ratio:.7f} — "
+            f"1 − {1 - it.most_steps_median_ratio:.4g}, against the bound step's 1 − 1e-3 — "
+            f"and it takes {it.most_steps_incumbents - 1} such steps "
+            f"({it.most_steps_incumbents} incumbents) to walk from "
+            f"{_plain(float(f'{it.most_steps_first:.3g}'))} down to "
+            f"{_plain(float(f'{it.most_steps_last:.3g}'))}."
+        )
+    return text
+
+
+def _readme_infeasible(r: CampaignReport) -> str:
+    c = r.results.counts
+    return (
+        f"Left infeasible in this table: {_and_list(_tick(c.infeasible_instances)) or 'none'} "
+        f"({c.infeasible} of {c.roster})."
+    )
+
+
+def _readme_scip_verification(r: CampaignReport) -> str:
+    n = r.head_to_head.scip.verification_failures
+    return f"{_word(n, capital=True)} rows in this run failed that check."
+
+
+def _readme_scip_read(r: CampaignReport) -> str:
+    return (
+        "SCIP's `.nl` reads total "
+        f"{r.head_to_head.scip.total_read_seconds:.3f}s across the roster (`read_seconds`)."
+    )
+
+
+def _readme_hardware(r: CampaignReport) -> str:
+    cb, sc = r.head_to_head.cbls, r.head_to_head.scip
+    budget = r.provenance.budget_seconds
+    if cb.hit_limit == cb.roster:
+        cbls = (
+            f"CBLS never terminates early — its {cb.total_wall_seconds:.0f}s is "
+            f"{cb.roster} × {budget:g}s by construction, and is therefore independent of "
+            "the machine entirely."
+        )
+    else:
+        cbls = (
+            f"CBLS stopped before its budget on {cb.roster - cb.hit_limit} instances; its "
+            f"total is {cb.total_wall_seconds:.0f}s."
+        )
+    return "\n".join(
+        [
+            f"- The **wall-clock totals are the robust number.** {cbls} SCIP's "
+            f"{sc.total_wall_seconds:.0f}s is dominated by proving optimality on "
+            f"{sc.proved_optimal} instances and stopping, not by clock rate; even a 2x "
+            f"hardware advantage would leave {sc.total_wall_seconds / 2:.0f}s against "
+            f"{cb.total_wall_seconds:.0f}s.",
+            "- The **counts are what a hardware difference would actually move.** Both",
+            '  "feasible within the budget" and "proved optimal within the budget" scale with',
+            "  machine speed, so those are the numbers a faster or slower box would change — in",
+            "  either direction, for either solver.",
+        ]
+    )
+
+
+def _readme_head_to_head(r: CampaignReport) -> str:
+    cb, sc = r.head_to_head.cbls, r.head_to_head.scip
+    budget = r.provenance.budget_seconds
+    return "\n".join(
+        [
+            "| | CBLS | SCIP |",
+            "|---|---|---|",
+            f"| feasible | {cb.feasible} / {cb.roster} | **{sc.feasible} / {sc.roster}** |",
+            f"| proved optimal | n/a (primal heuristic) | {sc.proved_optimal} / {sc.roster} |",
+            f"| hit the {budget:g}s limit | {cb.hit_limit} | {sc.hit_limit} |",
+            f"| total wall over the roster | {cb.total_wall_seconds:.0f}s | "
+            f"{sc.total_wall_seconds:.0f}s (median {sc.median_wall_seconds:.2f}s; "
+            f"{sc.under_one_second} instances under 1s) |",
+            f"| integrality mismatches vs catalogue | {cb.integrality_mismatches} | "
+            f"{sc.integrality_mismatches} |",
+            f"| verification failures | {cb.verification_failures} | {sc.verification_failures} |",
+        ]
+    )
+
+
+def _readme_disjoint(r: CampaignReport) -> str:
+    h = r.head_to_head
+    budget = r.provenance.budget_seconds
+    cbls_failed = h.cbls.roster - h.cbls.feasible
+    scip_rescues = [d for d in h.disjoint_failures if d.scip_feasible]
+    quick = [d for d in scip_rescues if d.scip_status == "optimal" and d.scip_wall_seconds < 0.25]
+    other_way = [d for d in h.disjoint_failures if d.cbls_feasible]
+    howmany = (
+        f"all {_word(cbls_failed)}"
+        if len(scip_rescues) == cbls_failed
+        else f"{_word(len(scip_rescues))} of the {_word(cbls_failed)}"
+    )
+    lead = (
+        "**The failures are almost disjoint, and that is the useful part.** SCIP reaches a "
+        f"feasible solution on {howmany} instances CBLS did not solve in this run"
+    )
+    if quick:
+        lead += f" — {_word(len(quick))} of them proved optimal in under a quarter of a second"
+    lead += "."
+    if other_way:
+        lead += (
+            f" {_word(len(other_way), capital=True)} row{'s go' if len(other_way) > 1 else ' goes'}"
+            " the other way: CBLS feasible where SCIP found no feasible solution in "
+            f"{budget:g}s."
+        )
+    rows = ["| Instance | CBLS | SCIP |", "|---|---|---|"]
+    for d in h.disjoint_failures:
+        cbls_cell = (
+            f"{_g(d.cbls_objective, 6)} ({d.cbls_gap_pct:.2f}% from BKS)"
+            if d.cbls_feasible
+            else "infeasible"
+        )
+        if d.scip_feasible:
+            status = "proved optimal" if d.scip_status == "optimal" else d.scip_status
+            scip_cell = (
+                f"{_g(d.scip_objective, 6)} ({d.scip_gap_pct:.2f}% from BKS), {status} in "
+                f"{d.scip_wall_seconds:.2f}s"
+            )
+        else:
+            scip_cell = (
+                f"**no feasible solution in {budget:g}s** ({d.scip_status}); dual bound "
+                f"{_g(d.scip_dual_bound, 4)}"
+            )
+        rows.append(f"| `{d.instance}` | {cbls_cell} | {scip_cell} |")
+    return "\n".join([lead, "", *rows])
+
+
+def _readme_quality(r: CampaignReport) -> str:
+    h = r.head_to_head
+    return "\n".join(
+        [
+            "**Solution quality where both are feasible.** Buckets over the "
+            f"{h.quality_denominator} instances that both solve and whose "
+            f"`|BKS| >= {_plain(HEAD_TO_HEAD_MIN_ABS_BKS)}` (below that a percentage against the "
+            "bound is not informative — see the zero-BKS discussion above), outside the "
+            "documented failures:",
+            "",
+            "| | " + " | ".join(_thresholds(h.quality_thresholds_pct)) + " |",
+            "|---|" + "|".join("---" for _ in h.quality_thresholds_pct) + "|",
+            "| CBLS | " + " | ".join(str(n) for n in h.cbls_quality) + " |",
+            "| SCIP | " + " | ".join(str(n) for n in h.scip_quality) + " |",
+        ]
+    )
+
+
+def _readme_cbls_ahead(r: CampaignReport) -> str:
+    ahead = r.head_to_head.cbls_ahead
+    budget = r.provenance.budget_seconds
+    if not ahead:
+        return "No instance goes the other way by more than the claim band and the cell resolution."
+    lead = (
+        f"{_word(len(ahead), capital=True)} instances go the other way by a margin larger "
+        "than both the claim band and the table's six-significant-digit resolution"
+    )
+    if all(a.scip_status == "timelimit" for a in ahead):
+        lead += f", and every one is a row where SCIP exhausted the {budget:g}s budget"
+    rows = ["| Instance | CBLS gap | SCIP gap | SCIP status |", "|---|---|---|---|"]
+    for a in sorted(ahead, key=lambda a: -a.scip_gap_pct):
+        cbls = "**matches BKS**" if a.cbls_verdict == "matches-bks" else _pct_cell(a.cbls_gap_pct)
+        rows.append(f"| `{a.instance}` | {cbls} | {_pct_cell(a.scip_gap_pct)} | {a.scip_status} |")
+    return "\n".join([lead + ":", "", *rows])
+
+
+def _readme_free_variables(r: CampaignReport) -> str:
+    fv = r.free_variables
+    if fv is None:
+        return "Not derivable: a roster `.nl` file is missing."
+    return "\n".join(
+        [
+            "| | instances | eligible | within 10% |",
+            "|---|---|---|---|",
+            f"| ≥1 free variable | {fv.with_free} | {fv.with_free_eligible} | "
+            f"{fv.with_free_within_10pct} |",
+            f"| no free variables | {fv.without_free} | {fv.without_free_eligible} | "
+            f"{fv.without_free_within_10pct} |",
+            "",
+            "Within 10% with at least one free variable: "
+            f"{_and_list(_tick(fv.with_free_within_10pct_instances)) or 'none'}.",
+        ]
+    )
+
+
+#: Block name -> renderer, in README order.
+README_RENDERERS: dict[str, Callable[[CampaignReport], str]] = {
+    "provenance": _readme_provenance,
+    "tally": _readme_tally,
+    "gap-buckets": _readme_gap_buckets,
+    "two-band": _readme_two_band,
+    "anytime": _readme_anytime,
+    "feasibility": _readme_feasibility,
+    "improvement": _readme_improvement,
+    "infeasible": _readme_infeasible,
+    "scip-verification": _readme_scip_verification,
+    "scip-read": _readme_scip_read,
+    "hardware": _readme_hardware,
+    "head-to-head": _readme_head_to_head,
+    "disjoint": _readme_disjoint,
+    "quality": _readme_quality,
+    "cbls-ahead": _readme_cbls_ahead,
+    "free-variables": _readme_free_variables,
+}
+
+
+def readme_blocks(report: CampaignReport) -> dict[str, str]:
+    """Every README block's body, rendered from the report."""
+    return {name: render(report) for name, render in README_RENDERERS.items()}
+
+
+def apply_readme_blocks(text: str, blocks: Mapping[str, str]) -> str:
+    """`text` with every block's body replaced by its rendering.
+
+    Refuses a README missing a block, carrying a block twice, or carrying one this
+    module does not render: each would let a derived number escape the check.
+    """
+    found = [m.group("name") for m in _README_BLOCK.finditer(text)]
+    duplicates = sorted({n for n in found if found.count(n) > 1})
+    unknown = sorted(set(found) - set(blocks))
+    missing = sorted(set(blocks) - set(found))
+    if duplicates or unknown or missing:
+        raise ValueError(
+            f"README blocks: duplicated {duplicates}, unknown {unknown}, missing {missing}"
+        )
+
+    def body(match: re.Match[str]) -> str:
+        name = match.group("name")
+        return (
+            README_BEGIN.format(name=name)
+            + "\n"
+            + blocks[name]
+            + "\n"
+            + README_END.format(name=name)
+        )
+
+    return _README_BLOCK.sub(body, text)
+
+
+def stale_readme_blocks(text: str, blocks: Mapping[str, str]) -> list[str]:
+    """The names of the blocks whose committed body differs from the rendering."""
+    current = {m.group("name"): m.group("body") for m in _README_BLOCK.finditer(text)}
+    apply_readme_blocks(text, blocks)  # the structural refusals
+    return [name for name in blocks if current[name] != blocks[name] + "\n"]
+
+
+# --------------------------------------------------------------------------
 # CLI.
 # --------------------------------------------------------------------------
 
@@ -1525,6 +2130,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--feas-tol", type=float, default=None)
     parser.add_argument("--json", type=Path, default=None, help="write the summary JSON here")
     parser.add_argument("--markdown", type=Path, default=None, help="write the report here")
+    readme = parser.add_mutually_exclusive_group()
+    readme.add_argument(
+        "--write-readme",
+        type=Path,
+        default=None,
+        help="rewrite this README's campaign_report blocks from the tables",
+    )
+    readme.add_argument(
+        "--check-readme",
+        type=Path,
+        default=None,
+        help="exit 1 naming every campaign_report block in this README that is stale",
+    )
     return parser.parse_args(argv)
 
 
@@ -1543,15 +2161,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         machine=args.machine,
         feas_tol=args.feas_tol,
     )
+    for warning in report.provenance.warnings:
+        print(f"WARNING: {warning}", file=sys.stderr)
+    blocks = readme_blocks(report)
+    if args.check_readme is not None:
+        stale = stale_readme_blocks(args.check_readme.read_text(), blocks)
+        if stale:
+            print(f"stale README blocks: {', '.join(stale)}", file=sys.stderr)
+            return 1
+        print("README blocks are current")
+        return 0
+    if args.write_readme is not None:
+        text = args.write_readme.read_text()
+        args.write_readme.write_text(apply_readme_blocks(text, blocks))
+        print(f"rewrote {len(blocks)} blocks in {args.write_readme}")
     markdown = render_markdown(report)
     if args.json is not None:
         args.json.write_text(to_json(report))
     if args.markdown is not None:
         args.markdown.write_text(markdown)
-    if args.json is None and args.markdown is None:
+    if args.json is None and args.markdown is None and args.write_readme is None:
         sys.stdout.write(markdown)
-    for warning in report.provenance.warnings:
-        print(f"WARNING: {warning}", file=sys.stderr)
     return 0
 
 
