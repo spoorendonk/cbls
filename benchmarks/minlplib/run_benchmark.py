@@ -84,6 +84,7 @@ import csv
 import hashlib
 import io
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -326,6 +327,11 @@ def _seeds_table_problems(args: argparse.Namespace) -> list[str]:
     return problems
 
 
+#: A seed cell `int()` reads back exactly: ASCII digits only, so `--1` or `²` is
+#: refused at preflight rather than after the solves.
+SEED_CELL = re.compile(r"-?[0-9]+")
+
+
 def _seeds_row_problems(seeds_out: Path) -> list[str]:
     """Rows `publish_seed_rows` would choke on after the solves: a short row or a bad seed."""
     with seeds_out.open(newline="") as fh:
@@ -334,7 +340,7 @@ def _seeds_row_problems(seeds_out: Path) -> list[str]:
         for line, row in enumerate(reader, start=2):
             if not row:
                 continue
-            if len(row) != len(SEEDS_TABLE_COLUMNS) or not row[0].lstrip("-").isdigit():
+            if len(row) != len(SEEDS_TABLE_COLUMNS) or not SEED_CELL.fullmatch(row[0]):
                 return [
                     f"{seeds_out} line {line} is not a per-seed row (an integer seed and "
                     f"{len(runner.RUNNER_COLUMNS)} runner cells); repair or move the table aside"
@@ -458,9 +464,15 @@ PUBLISHED_NAMES: tuple[str, ...] = (
 )
 
 
+#: The instance directory's inputs: a scratch output must not land on them either.
+PROTECTED_INPUTS: tuple[str, ...] = ("bounds.csv", "scip_baseline.csv")
+
+
 def _published_files(inst_dir: Path) -> dict[Path, str]:
     tables = [inst_dir / name for name in PUBLISHED_NAMES]
-    return {f.resolve(): f.name for t in tables for f in (t, run_record_path(t))}
+    owned = {f.resolve(): f.name for t in tables for f in (t, run_record_path(t))}
+    owned.update({(inst_dir / name).resolve(): name for name in PROTECTED_INPUTS})
+    return owned
 
 
 def _misdirected_output(args: argparse.Namespace, published_out: Path) -> str | None:
@@ -486,7 +498,7 @@ def _misdirected_output(args: argparse.Namespace, published_out: Path) -> str | 
         if path.resolve() in protected:
             return (
                 f"{flag} resolves to the published {protected[path.resolve()]}; a scratch "
-                "output must not overwrite a published file"
+                "output must not overwrite a published file or an instance-directory input"
             )
     return None
 
@@ -764,7 +776,8 @@ def publish_seed_rows(seeds_out: Path, seed: int, table: Path) -> str:
                 raise RuntimeError(
                     f"{seeds_out} has columns {existing}, not {list(SEEDS_TABLE_COLUMNS)}"
                 )
-            kept = [row for row in reader if row and row[0] != str(seed)]
+            # Compared as integers: a hand-written "01" is seed 1's block too.
+            kept = [row for row in reader if row and int(row[0]) != seed]
     rows = sorted([*kept, *new_rows], key=lambda row: int(row[0]))
     buffer = io.StringIO()
     csv.writer(buffer, lineterminator="\n").writerows([list(SEEDS_TABLE_COLUMNS), *rows])
@@ -1038,7 +1051,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--staging-dir",
         type=Path,
         default=None,
-        help="default $XDG_STATE_HOME/cbls/minlplib-rerun/<commit>/seed<N> (~/.local/state/...)",
+        help=(
+            "default $XDG_STATE_HOME/cbls/minlplib-rerun/<commit>/<budget>s/seed<N> "
+            "(~/.local/state/...)"
+        ),
     )
     parser.add_argument(
         "--no-trace", dest="trace", action="store_false", help="skip the anytime trace"

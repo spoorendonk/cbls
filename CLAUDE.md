@@ -317,7 +317,7 @@ agree:
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
 4. the comment above the `ctest` call in `.githooks/pre-commit`,
-5. the `.venv/bin/pytest` line in `README.md` for the Python side (899 tests, 234
+5. the `.venv/bin/pytest` line in `README.md` for the Python side (1051 tests, 234
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`),
 6. the `-LE slow` guidance and the ~25s/~490s figures in `docs/profiling.md`.
@@ -607,9 +607,12 @@ Search-trajectory changes silently invalidate published tables, and without the
 commit the next reader cannot tell drift from a bug. `minlplib`'s table carries a
 per-row `commit_sha` column; a header comment naming the commit does the job too.
 
-**Nothing checks this.** `tests/python/test_minlplib_scip_baseline.py` is the
-only test that reads a `comparison.csv` at all, so every other committed table
-drifts silently and is caught only when someone re-measures. Prefer stating
+**Nothing checks this outside MINLPLib.** Only MINLPLib's tables are read by
+tests: `tests/python/test_minlplib_scip_baseline.py`, and
+`tests/python/test_minlplib_campaign_report.py`, which pins the README's
+generator-owned blocks and `campaign_summary.json` to the committed tables
+(#142). Every other committed table drifts silently and is caught only when
+someone re-measures. Prefer stating
 results in a benchmark README with the engine commit named in the text — the
 shape `benchmarks/instances/setcover/README.md` uses — unless a test is actually
 going to read the table.

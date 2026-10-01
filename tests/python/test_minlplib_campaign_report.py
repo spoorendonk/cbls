@@ -1258,7 +1258,7 @@ def test_a_seed_record_filed_under_another_seed_is_refused(tmp_path: Path) -> No
         load_seed_run_records(table)
 
 
-def test_the_cli_prints_the_seed_spread_at_the_latest_published_configuration(
+def test_the_cli_prints_the_seed_spread_at_the_configuration_most_seeds_share(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     rows = _seed_rows(1, "10", True, sha="old0000") + _seed_rows(2, "30", True)

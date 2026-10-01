@@ -332,6 +332,12 @@ def test_preflight(
             ("--out's run record resolves to the published comparison.run.json",),
         ),
         ({"out": "inst/comparison_all.csv", "trace_out": "t.csv"}, ("comparison_all.csv",)),
+        # The run's own inputs are not scratch space either.
+        ({"out": "inst/bounds.csv", "trace_out": "t.csv"}, ("--out resolves", "bounds.csv")),
+        (
+            {"out": "s.csv", "trace_out": "inst/scip_baseline.csv"},
+            ("--trace-out resolves", "scip_baseline.csv"),
+        ),
         # The explicit spelling of the #149 hazard, at the published seed.
         (
             {"out": "scratch.csv", "trace_out": "inst/anytime_trace.csv"},
@@ -368,6 +374,8 @@ def test_preflight(
         "table-over-the-per-seed-table",
         "run-record-over-the-published-record",
         "table-over-comparison-all",
+        "table-over-bounds",
+        "trace-over-scip-baseline",
         "scratch-table-naming-the-published-trace",
         "smoke-budget-onto-the-published-table",
         "smoke-budget-onto-the-per-seed-table",
@@ -922,6 +930,46 @@ def test_preflight_refuses_a_per_seed_row_it_could_not_upsert(tmp_path: Path) ->
     table.write_text(table.read_text() + good.replace("1,", "x,", 1) + "\n")
     problems = preflight(make_args(tmp_path), "abc1234", ["process"])
     assert any("line 3 is not a per-seed row" in p for p in problems), problems
+
+
+@pytest.mark.parametrize("cell", ["--1", "\u00b2", "1.0", " 1"])
+def test_preflight_refuses_a_seed_cell_int_would_not_read_back(tmp_path: Path, cell: str) -> None:
+    """`isdigit` admits `²` and a stripped `--1`; the upsert would raise after the solves."""
+    make_inst_dir(tmp_path, ["process"])
+    make_build_dir(tmp_path)
+    table = tmp_path / "inst" / SEEDS_TABLE_NAME
+    row = ",".join([cell, "process", *["0"] * (len(SEEDS_TABLE_COLUMNS) - 2)])
+    table.write_text(",".join(SEEDS_TABLE_COLUMNS) + "\n" + row + "\n")
+    problems = preflight(make_args(tmp_path), "abc1234", ["process"])
+    assert any("line 2 is not a per-seed row" in p for p in problems), problems
+
+
+def test_the_upsert_replaces_a_seed_written_with_a_leading_zero(tmp_path: Path) -> None:
+    """Seeds compare as integers: a hand-written `01` block is seed 1's, not a second one."""
+    table = tmp_path / SEEDS_TABLE_NAME
+    cells = ["0"] * (len(SEEDS_TABLE_COLUMNS) - 2)
+    table.write_text(",".join(SEEDS_TABLE_COLUMNS) + "\n" + ",".join(["01", "a", *cells]) + "\n")
+    out = tmp_path / "comparison.csv"
+    out.write_text(f"{HEADER}\na,1,1,1,0,0,60,true,feasible,abc1234,0,0,0,0,1,0.5,{DEFAULT_ARM}\n")
+    publish_seed_rows(table, 1, out)
+    assert [r[0] for r in csv.reader(table.open(newline=""))][1:] == ["1"]
+
+
+def test_a_failed_merge_makes_the_publish_exit_nonzero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The table is written but comparison_all.csv still holds the previous rows: not a success."""
+    make_inst_dir(tmp_path, ["a", "b"])
+    runner = seeded_runner()
+
+    def run(cmd: Sequence[str], **kwargs: object) -> object:
+        if "--merge-only" in cmd:
+            return FakeCompleted(2)
+        return runner(cmd, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    args = make_args(tmp_path, build=False, merge=True)
+    assert execute(args, "abc1234", ["a", "b"], resolve_paths(args, "abc1234")) == 1
 
 
 def test_the_ablation_drivers_preflight_still_runs(tmp_path: Path) -> None:

@@ -7,6 +7,7 @@ records. These pin the mechanics every driver runs through, once.
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -315,7 +316,10 @@ def test_the_cpu_model_is_read_from_cpuinfo_and_absent_off_linux(tmp_path: Path)
 
 def test_the_wallclock_lock_is_one_fixed_path_not_xdg_state_home() -> None:
     """Two shells with different $XDG_STATE_HOME must still find one lock."""
-    assert Path.home() / ".local" / "state" / "cbls" / "wallclock.lock" == jobs.WALLCLOCK_LOCK
+    assert (
+        Path.home() / ".local" / "state" / "cbls" / f"wallclock-{socket.gethostname()}.lock"
+        == jobs.WALLCLOCK_LOCK
+    )
 
 
 def test_the_wallclock_lock_refuses_a_second_holder_and_ignores_xdg(

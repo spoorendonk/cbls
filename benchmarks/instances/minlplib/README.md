@@ -351,11 +351,13 @@ ones accumulate there and are safe to delete once their run is published.
 `--staging-dir` still overrides it. **One timed driver runs at a time on the
 machine**: this driver and the ablation driver (`run_ablation.py`) both hold
 `benchmarks/common/jobs.py`'s `wallclock_lock` — one fixed file,
-`~/.local/state/cbls/wallclock.lock`, whatever `--staging-dir` or
+`~/.local/state/cbls/wallclock-<host>.lock`, whatever `--staging-dir` or
 `$XDG_STATE_HOME` say — for the whole run, and a second one refuses with
 "refusing to run" and exit 2. So two seeds started in two terminals cannot share
 the machine or race on the per-seed table. The lock is per user; another user's
-run on the same box is not excluded by it.
+run on the same box is not excluded by it, and the host in the name keeps a
+home directory shared between machines from making one machine's run refuse
+another's.
 
 `comparison.csv` and `anytime_trace.csv` are only replaced at the end, by an
 atomic rename of a fully-assembled file, so an interrupted run leaves them

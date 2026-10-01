@@ -21,6 +21,7 @@ import contextlib
 import fcntl
 import os
 import signal
+import socket
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -35,8 +36,12 @@ if TYPE_CHECKING:
 #: deliberately not `$XDG_STATE_HOME`, which two shells can set differently and
 #: which would then hand them two locks. Per user -- another user's run on the
 #: same machine is not excluded by it (the ablation driver's load-average gate
-#: is what notices that). Tests point it elsewhere by patching this name.
-WALLCLOCK_LOCK = Path.home() / ".local" / "state" / "cbls" / "wallclock.lock"
+#: is what notices that). Named by host, so a home directory shared between
+#: machines (NFS, where flock is enforced across clients) does not make one
+#: machine's run refuse another's. Tests point it elsewhere by patching this name.
+WALLCLOCK_LOCK = (
+    Path.home() / ".local" / "state" / "cbls" / f"wallclock-{socket.gethostname()}.lock"
+)
 
 
 class LockHeldError(RuntimeError):
