@@ -1,0 +1,1383 @@
+{
+  "provenance": {
+    "engine_commit": "21086c2+107",
+    "search_config": "not recorded",
+    "budget_seconds": 60.0,
+    "budget_source": "--budget (comparison.csv does not record the budget)",
+    "seed": 1,
+    "seed_source": "--seed (comparison.csv does not record the seed)",
+    "machine": null,
+    "machine_source": "not recorded",
+    "feas_tol": 1e-06,
+    "feas_tol_source": "runner default (comparison.csv does not record it)",
+    "observed_median_cbls_wall_seconds": 60.00065,
+    "scip_configuration": "SCIP 10.0.2 / PySCIPOpt 6.2.1 / 60s / seed 0",
+    "scip_budget_seconds": 60.0,
+    "scip_machine": "not in scip_baseline.csv (the README's SCIP 'Hardware' note names one)",
+    "warnings": []
+  },
+  "results": {
+    "rule": "Documented-failure instances (elec25, elec50) are INCLUDED in roster counts (roster, built, mixed-integer, feasible, infeasible and the infeasible list, coverage gaps, errors, non-finite, integrality mismatches, verification failures, wall-clock totals, the cumulative-feasibility profile and its late-feasible list, the SCIP head-to-head counts and the disjoint-failure list) and EXCLUDED from quality aggregates (verdict-vs-BKS breakdown, gap buckets and the zero-BKS split, the earlier-margin and single-band examples, improvement timing, anytime scores, both-solved quality buckets, the CBLS-ahead-of-SCIP list, and the eligible and within-10% columns of the free-variable split), per #87. Their per-instance rows are still listed, marked excluded.",
+    "commit_shas": [
+      "21086c2+107"
+    ],
+    "search_configs": [],
+    "counts": {
+      "roster": 50,
+      "built": 50,
+      "built_pct": 100.0,
+      "mixed_integer": 15,
+      "feasible": 46,
+      "infeasible": 4,
+      "infeasible_instances": [
+        "nvs01",
+        "elec25",
+        "st_e40",
+        "elec50"
+      ],
+      "coverage_gaps": 0,
+      "errors": 0,
+      "error_instances": [],
+      "non_finite": 0,
+      "integrality_mismatches": 0,
+      "verification_failures": 0,
+      "documented_failures": [
+        "elec25",
+        "elec50"
+      ],
+      "documented_failures_feasible": [],
+      "total_wall_seconds": 3001.3445
+    },
+    "verdicts": {
+      "denominator": 46,
+      "matches_bks": 18,
+      "within_tolerance": 1,
+      "worse": 27,
+      "better": 0,
+      "no_bks": 0,
+      "unclassified": []
+    },
+    "gap_buckets": {
+      "thresholds_pct": [
+        0.01,
+        1.0,
+        10.0
+      ],
+      "counts": [
+        21,
+        22,
+        26
+      ],
+      "denominator": 43,
+      "excluded_zero_bks": [
+        "mathopt1",
+        "least",
+        "prob09"
+      ],
+      "retained_zero_bks": [
+        "ex14_2_5",
+        "ex14_2_4"
+      ]
+    },
+    "gap_buckets_strict": {
+      "thresholds_pct": [
+        0.01,
+        1.0,
+        10.0
+      ],
+      "counts": [
+        19,
+        20,
+        24
+      ],
+      "denominator": 41,
+      "excluded_zero_bks": [
+        "ex14_2_5",
+        "ex14_2_4",
+        "mathopt1",
+        "least",
+        "prob09"
+      ],
+      "retained_zero_bks": []
+    },
+    "zero_bks_instances": [
+      "ex14_2_5",
+      "ex14_2_4",
+      "mathopt1",
+      "least",
+      "prob09"
+    ],
+    "legacy_margin_ties": [
+      {
+        "instance": "prob06",
+        "gap_pct": -0.00031886,
+        "primal_bks": 1.17712
+      },
+      {
+        "instance": "ex6_2_6",
+        "gap_pct": -8.29689e-05,
+        "primal_bks": -2.60253e-06
+      }
+    ],
+    "single_band_false_ties": [
+      {
+        "instance": "ex8_4_5",
+        "gap_pct": 1.19526,
+        "primal_bks": 0.000307486
+      }
+    ]
+  },
+  "trace": {
+    "feasibility": {
+      "roster": 50,
+      "checkpoints": [
+        1.0,
+        5.0,
+        10.0,
+        20.0,
+        30.0,
+        45.0,
+        60.0
+      ],
+      "counts": [
+        41,
+        41,
+        41,
+        42,
+        44,
+        46,
+        46
+      ],
+      "late_feasible": {
+        "chain50": 17.6228,
+        "ex8_4_5": 24.9485,
+        "tln2": 26.9402,
+        "spring": 31.3741,
+        "minlphi": 36.7611
+      }
+    },
+    "improvement": {
+      "denominator": 46,
+      "stopped_early": 21,
+      "still_improving": 10,
+      "new_best_stopped_early": 18,
+      "new_best_still_improving": 12,
+      "sub_resolution_new_best_rows": 1266,
+      "sub_resolution_by_instance": {
+        "chain50": 1,
+        "ex4_1_1": 2,
+        "ex4_1_3": 3,
+        "ex4_1_8": 1,
+        "ex6_2_11": 4,
+        "ex6_2_6": 3,
+        "ex6_2_8": 2,
+        "ex8_1_1": 17,
+        "ex8_1_5": 1,
+        "ex8_1_6": 2,
+        "least": 1209,
+        "mathopt5_3": 3,
+        "mathopt5_7": 8,
+        "minlphi": 1,
+        "prob06": 5,
+        "shiporig": 1,
+        "spring": 1,
+        "st_e08": 1,
+        "st_e09": 1
+      },
+      "first_feasible": {
+        "alkylation": 0.00433044,
+        "chain50": 17.6228,
+        "eg_all_s": 0.350661,
+        "eq6_1": 0.00544783,
+        "ex14_2_4": 0.000390971,
+        "ex14_2_5": 8.4927e-05,
+        "ex4_1_1": 7.263e-06,
+        "ex4_1_2": 1.0616e-05,
+        "ex4_1_3": 7.124e-06,
+        "ex4_1_7": 6.984e-06,
+        "ex4_1_8": 1.327e-05,
+        "ex4_1_9": 7.613e-06,
+        "ex6_2_11": 5.0984e-05,
+        "ex6_2_6": 5.3429e-05,
+        "ex6_2_8": 6.3695e-05,
+        "ex8_1_1": 6.705e-06,
+        "ex8_1_5": 6.774e-06,
+        "ex8_1_6": 7.752e-06,
+        "ex8_4_5": 24.9485,
+        "ex8_6_1": 0.00665105,
+        "gear4": 7.2845e-05,
+        "kall_ellipsoids_tc02b": 0.943773,
+        "least": 8.032e-06,
+        "mathopt1": 9.499e-06,
+        "mathopt5_3": 6.705e-06,
+        "mathopt5_7": 7.124e-06,
+        "maxmin": 3.1918e-05,
+        "minlphi": 36.7611,
+        "nvs02": 0.00379001,
+        "nvs05": 0.00223646,
+        "nvs08": 0.000419327,
+        "nvs14": 0.00360444,
+        "nvs21": 7.264e-06,
+        "nvs22": 0.00531387,
+        "prob06": 3.052e-05,
+        "prob09": 1.4807e-05,
+        "process": 0.000469333,
+        "shiporig": 0.000419886,
+        "spring": 31.3741,
+        "st_e01": 7.054e-06,
+        "st_e08": 1.8718e-05,
+        "st_e09": 8.451e-06,
+        "st_e36": 5.1123e-05,
+        "st_e38": 0.000225866,
+        "tln2": 26.9402,
+        "windfac": 0.00136358
+      },
+      "last_improvement": {
+        "alkylation": 59.9282,
+        "chain50": 59.1525,
+        "eg_all_s": 44.4966,
+        "eq6_1": 41.2445,
+        "ex14_2_4": 11.3235,
+        "ex14_2_5": 0.0758871,
+        "ex4_1_1": 4.19627,
+        "ex4_1_2": 21.9353,
+        "ex4_1_3": 0.00217542,
+        "ex4_1_7": 2.3327e-05,
+        "ex4_1_8": 0.00576609,
+        "ex4_1_9": 0.0250412,
+        "ex6_2_11": 51.7143,
+        "ex6_2_6": 0.696621,
+        "ex6_2_8": 7.96026,
+        "ex8_1_1": 0.635903,
+        "ex8_1_5": 0.201145,
+        "ex8_1_6": 0.00633006,
+        "ex8_4_5": 53.769,
+        "ex8_6_1": 60.0161,
+        "gear4": 15.3337,
+        "kall_ellipsoids_tc02b": 59.5754,
+        "least": 17.7645,
+        "mathopt1": 9.499e-06,
+        "mathopt5_3": 0.00146373,
+        "mathopt5_7": 0.00710726,
+        "maxmin": 39.2412,
+        "minlphi": 36.7611,
+        "nvs02": 0.324464,
+        "nvs05": 58.3081,
+        "nvs08": 0.264702,
+        "nvs14": 0.27238,
+        "nvs21": 7.264e-06,
+        "nvs22": 44.5739,
+        "prob06": 0.000443771,
+        "prob09": 8.16318,
+        "process": 59.5027,
+        "shiporig": 57.6256,
+        "spring": 47.2439,
+        "st_e01": 0.542453,
+        "st_e08": 1.84424,
+        "st_e09": 0.840853,
+        "st_e36": 5.1123e-05,
+        "st_e38": 39.3008,
+        "tln2": 26.9404,
+        "windfac": 0.00136358
+      },
+      "most_steps_instance": "eg_all_s",
+      "most_steps_incumbents": 15931,
+      "most_steps_median_ratio": 0.9989993112122224,
+      "most_steps_first": 1000000000.0,
+      "most_steps_last": 8.46273
+    },
+    "anytime": {
+      "budget_seconds": 60.0,
+      "per_instance": [
+        {
+          "instance": "process",
+          "excluded": false,
+          "primal_integral": 0.5563290329171292,
+          "final_primal_gap": 0.10347267260246053,
+          "reference": -1161.336602,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "st_e36",
+          "excluded": false,
+          "primal_integral": 0.40244038559207324,
+          "final_primal_gap": 0.4024390243902439,
+          "reference": -246.0,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "ex4_1_1",
+          "excluded": false,
+          "primal_integral": 0.06508125120351715,
+          "final_primal_gap": 3.1586768188503713e-07,
+          "reference": -7.487312365,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "ex8_1_6",
+          "excluded": false,
+          "primal_integral": 0.49777649506239346,
+          "final_primal_gap": 0.4977752085402724,
+          "reference": -10.0860015,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "alkylation",
+          "excluded": false,
+          "primal_integral": 0.7916761421494836,
+          "final_primal_gap": 0.6605666914368842,
+          "reference": -1768.806964,
+          "reference_source": "-1 x bounds.csv primal_bks (catalogue precision); maximize row"
+        },
+        {
+          "instance": "nvs21",
+          "excluded": false,
+          "primal_integral": 1.0000001210666667,
+          "final_primal_gap": 1.0,
+          "reference": -5.6847825,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "ex4_1_2",
+          "excluded": false,
+          "primal_integral": 2.0532956575002862e-05,
+          "final_primal_gap": 3.1599091103416815e-06,
+          "reference": -663.5000966,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "ex14_2_5",
+          "excluded": false,
+          "primal_integral": 0.00126620045,
+          "final_primal_gap": 0.0,
+          "reference": 0.0,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "mathopt5_3",
+          "excluded": false,
+          "primal_integral": 3.6304161880887054e-06,
+          "final_primal_gap": 3.0487032924987493e-06,
+          "reference": -1.616424928,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "ex8_4_5",
+          "excluded": false,
+          "primal_integral": 0.8586428413661067,
+          "final_primal_gap": 0.01181064529295136,
+          "reference": 0.0003074859878,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "nvs01",
+          "excluded": false,
+          "primal_integral": 2.0,
+          "final_primal_gap": 2.0,
+          "reference": 12.46966882,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "ex4_1_3",
+          "excluded": false,
+          "primal_integral": 1.373425975177165e-06,
+          "final_primal_gap": 6.655817811463701e-07,
+          "reference": -443.6717047,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "ex14_2_4",
+          "excluded": false,
+          "primal_integral": 0.1887315161833333,
+          "final_primal_gap": 0.0,
+          "reference": 0.0,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "ex8_1_1",
+          "excluded": false,
+          "primal_integral": 0.005347474707408541,
+          "final_primal_gap": 1.5911485251938846e-06,
+          "reference": -2.021806783,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "shiporig",
+          "excluded": false,
+          "primal_integral": 0.3214793694647533,
+          "final_primal_gap": 0.01864015366195787,
+          "reference": 5.54091471,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "nvs08",
+          "excluded": false,
+          "primal_integral": 0.015933687864759696,
+          "final_primal_gap": 0.015875132197414786,
+          "reference": 23.44972735,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "ex4_1_7",
+          "excluded": false,
+          "primal_integral": 5.051833333333333e-07,
+          "final_primal_gap": 0.0,
+          "reference": -7.5,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "eq6_1",
+          "excluded": false,
+          "primal_integral": 0.19735417376601622,
+          "final_primal_gap": 0.16956611968406837,
+          "reference": 670.6941104,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "minlphi",
+          "excluded": false,
+          "primal_integral": 1.2253700944612091,
+          "final_primal_gap": 2.438872988797473e-07,
+          "reference": 582.236142,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "gear4",
+          "excluded": false,
+          "primal_integral": 0.9999499830524168,
+          "final_primal_gap": 0.999939466780826,
+          "reference": 1.643428474,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "mathopt5_7",
+          "excluded": false,
+          "primal_integral": 2.0862251366289556e-06,
+          "final_primal_gap": 3.746002122840113e-07,
+          "reference": -4.436728338,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "elec25",
+          "excluded": true,
+          "primal_integral": 2.0,
+          "final_primal_gap": 2.0,
+          "reference": 243.8127603,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "st_e38",
+          "excluded": false,
+          "primal_integral": 0.021272227690235988,
+          "final_primal_gap": 0.010393169969147437,
+          "reference": 7197.727149,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "ex8_1_5",
+          "excluded": false,
+          "primal_integral": 0.00329303101012365,
+          "final_primal_gap": 1.4995686438952546e-06,
+          "reference": -1.031628453,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "maxmin",
+          "excluded": false,
+          "primal_integral": 0.3406485253696095,
+          "final_primal_gap": 0.0006774389635060665,
+          "reference": -0.3660960077,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "nvs02",
+          "excluded": false,
+          "primal_integral": 0.2607669930919891,
+          "final_primal_gap": 0.26057442279105925,
+          "reference": 5.964184523,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "ex4_1_8",
+          "excluded": false,
+          "primal_integral": 1.7581747009804795e-06,
+          "final_primal_gap": 4.074341802273659e-07,
+          "reference": -16.73889318,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "ex8_6_1",
+          "excluded": false,
+          "primal_integral": 0.5865953610270497,
+          "final_primal_gap": 0.4914105451286029,
+          "reference": -28.42253189,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "nvs14",
+          "excluded": false,
+          "primal_integral": 0.5341683923416697,
+          "final_primal_gap": 0.5339454911357435,
+          "reference": -40358.15477,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "st_e01",
+          "excluded": false,
+          "primal_integral": 0.0022964680174504238,
+          "final_primal_gap": 4.999497499576503e-07,
+          "reference": -6.666666667,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "chain50",
+          "excluded": false,
+          "primal_integral": 0.6986261197091157,
+          "final_primal_gap": 0.12613809924161246,
+          "reference": 5.072261494,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "st_e40",
+          "excluded": false,
+          "primal_integral": 2.0,
+          "final_primal_gap": 2.0,
+          "reference": 30.4142135,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "st_e09",
+          "excluded": false,
+          "primal_integral": 0.013844988859897713,
+          "final_primal_gap": 2.000000165080742e-10,
+          "reference": -0.5000000001,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "elec50",
+          "excluded": true,
+          "primal_integral": 2.0,
+          "final_primal_gap": 2.0,
+          "reference": 1055.182315,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "nvs05",
+          "excluded": false,
+          "primal_integral": 0.853953689279315,
+          "final_primal_gap": 0.8191343034718963,
+          "reference": 5.470934108,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "ex4_1_9",
+          "excluded": false,
+          "primal_integral": 8.980215020808663e-05,
+          "final_primal_gap": 8.592408491323112e-05,
+          "reference": -5.508013271,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "kall_ellipsoids_tc02b",
+          "excluded": false,
+          "primal_integral": 0.5848302964293505,
+          "final_primal_gap": 0.3517834956875597,
+          "reference": 32.4,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "nvs22",
+          "excluded": false,
+          "primal_integral": 0.8534186040085795,
+          "final_primal_gap": 0.780359214571611,
+          "reference": 6.05822,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "mathopt1",
+          "excluded": false,
+          "primal_integral": 1.0000001583166667,
+          "final_primal_gap": 1.0,
+          "reference": 3.289428863e-18,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "least",
+          "excluded": false,
+          "primal_integral": 1.0000001338666666,
+          "final_primal_gap": 1.0,
+          "reference": 0.0,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "tln2",
+          "excluded": false,
+          "primal_integral": 0.8980085246792042,
+          "final_primal_gap": 0.0,
+          "reference": 5.3,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "prob06",
+          "excluded": false,
+          "primal_integral": 7.383406356139504e-06,
+          "final_primal_gap": 3.6903493010726492e-06,
+          "reference": 1.177124344,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "ex6_2_11",
+          "excluded": false,
+          "primal_integral": 0.25704130090642835,
+          "final_primal_gap": 8.374463498713745e-07,
+          "reference": -2.672407762e-06,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "spring",
+          "excluded": false,
+          "primal_integral": 1.2531660273946554,
+          "final_primal_gap": 0.28434201248234625,
+          "reference": 0.8462441005,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "prob09",
+          "excluded": false,
+          "primal_integral": 1.0000002467833335,
+          "final_primal_gap": 1.0,
+          "reference": -1.002562255e-13,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "ex6_2_6",
+          "excluded": false,
+          "primal_integral": 0.003424829412744371,
+          "final_primal_gap": 1.1246748356928224e-06,
+          "reference": -2.602527073e-06,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "windfac",
+          "excluded": false,
+          "primal_integral": 0.6607140400175603,
+          "final_primal_gap": 0.6606836022666667,
+          "reference": 0.2544872983,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "st_e08",
+          "excluded": false,
+          "primal_integral": 0.009434092976016625,
+          "final_primal_gap": 2.752553303877335e-06,
+          "reference": 0.7417819582,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "ex6_2_8",
+          "excluded": false,
+          "primal_integral": 0.00021497783487140634,
+          "final_primal_gap": 1.8084636426970638e-06,
+          "reference": -0.02700634884,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        },
+        {
+          "instance": "eg_all_s",
+          "excluded": false,
+          "primal_integral": 0.7564444427022146,
+          "final_primal_gap": 0.09512035796959142,
+          "reference": 7.657752093,
+          "reference_source": "bounds.csv primal_bks (catalogue precision)"
+        }
+      ],
+      "denominator": 48,
+      "unscored": [],
+      "mean": 0.4733264440202185,
+      "median": 0.33106394741718137,
+      "shifted_geometric_mean": 0.07930996788559758
+    }
+  },
+  "head_to_head": {
+    "cbls": {
+      "roster": 50,
+      "feasible": 46,
+      "proved_optimal": null,
+      "hit_limit": 50,
+      "total_wall_seconds": 3001.3445,
+      "median_wall_seconds": 60.00065,
+      "under_one_second": 0,
+      "integrality_mismatches": 0,
+      "verification_failures": 0,
+      "total_read_seconds": null
+    },
+    "scip": {
+      "roster": 50,
+      "feasible": 49,
+      "proved_optimal": 34,
+      "hit_limit": 16,
+      "total_wall_seconds": 1010.5898708471213,
+      "median_wall_seconds": 0.2769316520134453,
+      "under_one_second": 31,
+      "integrality_mismatches": 0,
+      "verification_failures": 0,
+      "total_read_seconds": 0.07607209781417623
+    },
+    "disjoint_failures": [
+      {
+        "instance": "st_e36",
+        "cbls_feasible": true,
+        "scip_feasible": false,
+        "cbls_objective": -147.0,
+        "cbls_gap_pct": 40.2439,
+        "scip_objective": null,
+        "scip_gap_pct": null,
+        "scip_status": "timelimit",
+        "scip_wall_seconds": 60.000059746031184,
+        "scip_dual_bound": -304.49902433484135
+      },
+      {
+        "instance": "nvs01",
+        "cbls_feasible": false,
+        "scip_feasible": true,
+        "cbls_objective": null,
+        "cbls_gap_pct": null,
+        "scip_objective": 12.469668821568206,
+        "scip_gap_pct": 1.2576156944929741e-08,
+        "scip_status": "optimal",
+        "scip_wall_seconds": 0.10582752601476386,
+        "scip_dual_bound": 12.469668821568206
+      },
+      {
+        "instance": "elec25",
+        "cbls_feasible": false,
+        "scip_feasible": true,
+        "cbls_objective": null,
+        "cbls_gap_pct": null,
+        "scip_objective": 243.85933535370322,
+        "scip_gap_pct": 0.01910279578718502,
+        "scip_status": "timelimit",
+        "scip_wall_seconds": 60.000320104009006,
+        "scip_dual_bound": 149.90556433876827
+      },
+      {
+        "instance": "st_e40",
+        "cbls_feasible": false,
+        "scip_feasible": true,
+        "cbls_objective": null,
+        "cbls_gap_pct": null,
+        "scip_objective": 30.4142135,
+        "scip_gap_pct": 0.0,
+        "scip_status": "optimal",
+        "scip_wall_seconds": 0.21742156095569953,
+        "scip_dual_bound": 30.4142135
+      },
+      {
+        "instance": "elec50",
+        "cbls_feasible": false,
+        "scip_feasible": true,
+        "cbls_objective": null,
+        "cbls_gap_pct": null,
+        "scip_objective": 1422.3265266110725,
+        "scip_gap_pct": 34.79438637209082,
+        "scip_status": "timelimit",
+        "scip_wall_seconds": 60.0035130350152,
+        "scip_dual_bound": 567.9879185502193
+      }
+    ],
+    "quality_denominator": 38,
+    "quality_thresholds_pct": [
+      0.01,
+      1.0,
+      10.0
+    ],
+    "cbls_quality": [
+      17,
+      18,
+      22
+    ],
+    "scip_quality": [
+      32,
+      32,
+      33
+    ],
+    "cbls_ahead": [
+      {
+        "instance": "eq6_1",
+        "cbls_verdict": "feasible",
+        "cbls_gap_pct": 20.4189,
+        "scip_gap_pct": 26.989855132129264,
+        "scip_status": "timelimit"
+      },
+      {
+        "instance": "ex8_1_5",
+        "cbls_verdict": "matches-bks",
+        "cbls_gap_pct": -4.7456e-08,
+        "scip_gap_pct": 99.99999903162812,
+        "scip_status": "timelimit"
+      },
+      {
+        "instance": "maxmin",
+        "cbls_verdict": "feasible",
+        "cbls_gap_pct": 0.067821,
+        "scip_gap_pct": 2.181648069987942,
+        "scip_status": "timelimit"
+      },
+      {
+        "instance": "ex8_6_1",
+        "cbls_verdict": "feasible",
+        "cbls_gap_pct": 49.1412,
+        "scip_gap_pct": 99.57865346304918,
+        "scip_status": "timelimit"
+      },
+      {
+        "instance": "eg_all_s",
+        "cbls_verdict": "feasible",
+        "cbls_gap_pct": 10.512,
+        "scip_gap_pct": 2324.1018474552043,
+        "scip_status": "timelimit"
+      }
+    ]
+  },
+  "free_variables": {
+    "with_free": 16,
+    "with_free_eligible": 12,
+    "with_free_within_10pct": 3,
+    "without_free": 34,
+    "without_free_eligible": 27,
+    "without_free_within_10pct": 19,
+    "free_instances": [
+      "ex8_1_6",
+      "shiporig",
+      "elec25",
+      "ex8_1_5",
+      "maxmin",
+      "ex8_6_1",
+      "chain50",
+      "st_e40",
+      "elec50",
+      "nvs05",
+      "kall_ellipsoids_tc02b",
+      "nvs22",
+      "least",
+      "spring",
+      "windfac",
+      "eg_all_s"
+    ],
+    "with_free_within_10pct_instances": [
+      "shiporig",
+      "ex8_1_5",
+      "maxmin"
+    ]
+  },
+  "per_instance": [
+    {
+      "instance": "process",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 10.3471,
+      "first_feasible_seconds": 0.000469333,
+      "last_improvement_seconds": 59.5027,
+      "primal_integral": 0.5563290329171292,
+      "final_primal_gap": 0.10347267260246053
+    },
+    {
+      "instance": "st_e36",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 40.2439,
+      "first_feasible_seconds": 5.1123e-05,
+      "last_improvement_seconds": 5.1123e-05,
+      "primal_integral": 0.40244038559207324,
+      "final_primal_gap": 0.4024390243902439
+    },
+    {
+      "instance": "ex4_1_1",
+      "excluded": false,
+      "verdict": "matches-bks",
+      "gap_pct": 1.30403e-09,
+      "first_feasible_seconds": 7.263e-06,
+      "last_improvement_seconds": 4.19627,
+      "primal_integral": 0.06508125120351715,
+      "final_primal_gap": 3.1586768188503713e-07
+    },
+    {
+      "instance": "ex8_1_6",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 49.7775,
+      "first_feasible_seconds": 7.752e-06,
+      "last_improvement_seconds": 0.00633006,
+      "primal_integral": 0.49777649506239346,
+      "final_primal_gap": 0.4977752085402724
+    },
+    {
+      "instance": "alkylation",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 66.0567,
+      "first_feasible_seconds": 0.00433044,
+      "last_improvement_seconds": 59.9282,
+      "primal_integral": 0.7916761421494836,
+      "final_primal_gap": 0.6605666914368842
+    },
+    {
+      "instance": "nvs21",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 100.0,
+      "first_feasible_seconds": 7.264e-06,
+      "last_improvement_seconds": 7.264e-06,
+      "primal_integral": 1.0000001210666667,
+      "final_primal_gap": 1.0
+    },
+    {
+      "instance": "ex4_1_2",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 0.000351255,
+      "first_feasible_seconds": 1.0616e-05,
+      "last_improvement_seconds": 21.9353,
+      "primal_integral": 2.0532956575002862e-05,
+      "final_primal_gap": 3.1599091103416815e-06
+    },
+    {
+      "instance": "ex14_2_5",
+      "excluded": false,
+      "verdict": "matches-bks",
+      "gap_pct": 0.0,
+      "first_feasible_seconds": 8.4927e-05,
+      "last_improvement_seconds": 0.0758871,
+      "primal_integral": 0.00126620045,
+      "final_primal_gap": 0.0
+    },
+    {
+      "instance": "mathopt5_3",
+      "excluded": false,
+      "verdict": "matches-bks",
+      "gap_pct": -1.80525e-08,
+      "first_feasible_seconds": 6.705e-06,
+      "last_improvement_seconds": 0.00146373,
+      "primal_integral": 3.6304161880887054e-06,
+      "final_primal_gap": 3.0487032924987493e-06
+    },
+    {
+      "instance": "ex8_4_5",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 1.19526,
+      "first_feasible_seconds": 24.9485,
+      "last_improvement_seconds": 53.769,
+      "primal_integral": 0.8586428413661067,
+      "final_primal_gap": 0.01181064529295136
+    },
+    {
+      "instance": "nvs01",
+      "excluded": false,
+      "verdict": "infeasible",
+      "gap_pct": null,
+      "first_feasible_seconds": null,
+      "last_improvement_seconds": null,
+      "primal_integral": 2.0,
+      "final_primal_gap": 2.0
+    },
+    {
+      "instance": "ex4_1_3",
+      "excluded": false,
+      "verdict": "matches-bks",
+      "gap_pct": -9.2614e-09,
+      "first_feasible_seconds": 7.124e-06,
+      "last_improvement_seconds": 0.00217542,
+      "primal_integral": 1.373425975177165e-06,
+      "final_primal_gap": 6.655817811463701e-07
+    },
+    {
+      "instance": "ex14_2_4",
+      "excluded": false,
+      "verdict": "matches-bks",
+      "gap_pct": 0.0,
+      "first_feasible_seconds": 0.000390971,
+      "last_improvement_seconds": 11.3235,
+      "primal_integral": 0.1887315161833333,
+      "final_primal_gap": 0.0
+    },
+    {
+      "instance": "ex8_1_1",
+      "excluded": false,
+      "verdict": "matches-bks",
+      "gap_pct": -1.77623e-08,
+      "first_feasible_seconds": 6.705e-06,
+      "last_improvement_seconds": 0.635903,
+      "primal_integral": 0.005347474707408541,
+      "final_primal_gap": 1.5911485251938846e-06
+    },
+    {
+      "instance": "shiporig",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 1.89943,
+      "first_feasible_seconds": 0.000419886,
+      "last_improvement_seconds": 57.6256,
+      "primal_integral": 0.3214793694647533,
+      "final_primal_gap": 0.01864015366195787
+    },
+    {
+      "instance": "nvs08",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 1.61303,
+      "first_feasible_seconds": 0.000419327,
+      "last_improvement_seconds": 0.264702,
+      "primal_integral": 0.015933687864759696,
+      "final_primal_gap": 0.015875132197414786
+    },
+    {
+      "instance": "ex4_1_7",
+      "excluded": false,
+      "verdict": "matches-bks",
+      "gap_pct": 0.0,
+      "first_feasible_seconds": 6.984e-06,
+      "last_improvement_seconds": 2.3327e-05,
+      "primal_integral": 5.051833333333333e-07,
+      "final_primal_gap": 0.0
+    },
+    {
+      "instance": "eq6_1",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 20.4189,
+      "first_feasible_seconds": 0.00544783,
+      "last_improvement_seconds": 41.2445,
+      "primal_integral": 0.19735417376601622,
+      "final_primal_gap": 0.16956611968406837
+    },
+    {
+      "instance": "minlphi",
+      "excluded": false,
+      "verdict": "matches-bks",
+      "gap_pct": -7.96629e-07,
+      "first_feasible_seconds": 36.7611,
+      "last_improvement_seconds": 36.7611,
+      "primal_integral": 1.2253700944612091,
+      "final_primal_gap": 2.438872988797473e-07
+    },
+    {
+      "instance": "gear4",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 1651890.0,
+      "first_feasible_seconds": 7.2845e-05,
+      "last_improvement_seconds": 15.3337,
+      "primal_integral": 0.9999499830524168,
+      "final_primal_gap": 0.999939466780826
+    },
+    {
+      "instance": "mathopt5_7",
+      "excluded": false,
+      "verdict": "matches-bks",
+      "gap_pct": -1.01207e-08,
+      "first_feasible_seconds": 7.124e-06,
+      "last_improvement_seconds": 0.00710726,
+      "primal_integral": 2.0862251366289556e-06,
+      "final_primal_gap": 3.746002122840113e-07
+    },
+    {
+      "instance": "elec25",
+      "excluded": true,
+      "verdict": "infeasible",
+      "gap_pct": null,
+      "first_feasible_seconds": null,
+      "last_improvement_seconds": null,
+      "primal_integral": 2.0,
+      "final_primal_gap": 2.0
+    },
+    {
+      "instance": "st_e38",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 1.05022,
+      "first_feasible_seconds": 0.000225866,
+      "last_improvement_seconds": 39.3008,
+      "primal_integral": 0.021272227690235988,
+      "final_primal_gap": 0.010393169969147437
+    },
+    {
+      "instance": "ex8_1_5",
+      "excluded": false,
+      "verdict": "matches-bks",
+      "gap_pct": -4.7456e-08,
+      "first_feasible_seconds": 6.774e-06,
+      "last_improvement_seconds": 0.201145,
+      "primal_integral": 0.00329303101012365,
+      "final_primal_gap": 1.4995686438952546e-06
+    },
+    {
+      "instance": "maxmin",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 0.067821,
+      "first_feasible_seconds": 3.1918e-05,
+      "last_improvement_seconds": 39.2412,
+      "primal_integral": 0.3406485253696095,
+      "final_primal_gap": 0.0006774389635060665
+    },
+    {
+      "instance": "nvs02",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 35.24,
+      "first_feasible_seconds": 0.00379001,
+      "last_improvement_seconds": 0.324464,
+      "primal_integral": 0.2607669930919891,
+      "final_primal_gap": 0.26057442279105925
+    },
+    {
+      "instance": "ex4_1_8",
+      "excluded": false,
+      "verdict": "matches-bks",
+      "gap_pct": 3.40048e-08,
+      "first_feasible_seconds": 1.327e-05,
+      "last_improvement_seconds": 0.00576609,
+      "primal_integral": 1.7581747009804795e-06,
+      "final_primal_gap": 4.074341802273659e-07
+    },
+    {
+      "instance": "ex8_6_1",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 49.1412,
+      "first_feasible_seconds": 0.00665105,
+      "last_improvement_seconds": 60.0161,
+      "primal_integral": 0.5865953610270497,
+      "final_primal_gap": 0.4914105451286029
+    },
+    {
+      "instance": "nvs14",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 53.3946,
+      "first_feasible_seconds": 0.00360444,
+      "last_improvement_seconds": 0.27238,
+      "primal_integral": 0.5341683923416697,
+      "final_primal_gap": 0.5339454911357435
+    },
+    {
+      "instance": "st_e01",
+      "excluded": false,
+      "verdict": "matches-bks",
+      "gap_pct": 5e-09,
+      "first_feasible_seconds": 7.054e-06,
+      "last_improvement_seconds": 0.542453,
+      "primal_integral": 0.0022964680174504238,
+      "final_primal_gap": 4.999497499576503e-07
+    },
+    {
+      "instance": "chain50",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 14.4346,
+      "first_feasible_seconds": 17.6228,
+      "last_improvement_seconds": 59.1525,
+      "primal_integral": 0.6986261197091157,
+      "final_primal_gap": 0.12613809924161246
+    },
+    {
+      "instance": "st_e40",
+      "excluded": false,
+      "verdict": "infeasible",
+      "gap_pct": null,
+      "first_feasible_seconds": null,
+      "last_improvement_seconds": null,
+      "primal_integral": 2.0,
+      "final_primal_gap": 2.0
+    },
+    {
+      "instance": "st_e09",
+      "excluded": false,
+      "verdict": "matches-bks",
+      "gap_pct": 2e-08,
+      "first_feasible_seconds": 8.451e-06,
+      "last_improvement_seconds": 0.840853,
+      "primal_integral": 0.013844988859897713,
+      "final_primal_gap": 2.000000165080742e-10
+    },
+    {
+      "instance": "elec50",
+      "excluded": true,
+      "verdict": "infeasible",
+      "gap_pct": null,
+      "first_feasible_seconds": null,
+      "last_improvement_seconds": null,
+      "primal_integral": 2.0,
+      "final_primal_gap": 2.0
+    },
+    {
+      "instance": "nvs05",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 452.897,
+      "first_feasible_seconds": 0.00223646,
+      "last_improvement_seconds": 58.3081,
+      "primal_integral": 0.853953689279315,
+      "final_primal_gap": 0.8191343034718963
+    },
+    {
+      "instance": "ex4_1_9",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 0.00859538,
+      "first_feasible_seconds": 7.613e-06,
+      "last_improvement_seconds": 0.0250412,
+      "primal_integral": 8.980215020808663e-05,
+      "final_primal_gap": 8.592408491323112e-05
+    },
+    {
+      "instance": "kall_ellipsoids_tc02b",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 54.2694,
+      "first_feasible_seconds": 0.943773,
+      "last_improvement_seconds": 59.5754,
+      "primal_integral": 0.5848302964293505,
+      "final_primal_gap": 0.3517834956875597
+    },
+    {
+      "instance": "nvs22",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 355.289,
+      "first_feasible_seconds": 0.00531387,
+      "last_improvement_seconds": 44.5739,
+      "primal_integral": 0.8534186040085795,
+      "final_primal_gap": 0.780359214571611
+    },
+    {
+      "instance": "mathopt1",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 1.0,
+      "first_feasible_seconds": 9.499e-06,
+      "last_improvement_seconds": 9.499e-06,
+      "primal_integral": 1.0000001583166667,
+      "final_primal_gap": 1.0
+    },
+    {
+      "instance": "least",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 23349.2,
+      "first_feasible_seconds": 8.032e-06,
+      "last_improvement_seconds": 17.7645,
+      "primal_integral": 1.0000001338666666,
+      "final_primal_gap": 1.0
+    },
+    {
+      "instance": "tln2",
+      "excluded": false,
+      "verdict": "matches-bks",
+      "gap_pct": 0.0,
+      "first_feasible_seconds": 26.9402,
+      "last_improvement_seconds": 26.9404,
+      "primal_integral": 0.8980085246792042,
+      "final_primal_gap": 0.0
+    },
+    {
+      "instance": "prob06",
+      "excluded": false,
+      "verdict": "within-tolerance-of-bks",
+      "gap_pct": -0.00031886,
+      "first_feasible_seconds": 3.052e-05,
+      "last_improvement_seconds": 0.000443771,
+      "primal_integral": 7.383406356139504e-06,
+      "final_primal_gap": 3.6903493010726492e-06
+    },
+    {
+      "instance": "ex6_2_11",
+      "excluded": false,
+      "verdict": "matches-bks",
+      "gap_pct": 9.54835e-06,
+      "first_feasible_seconds": 5.0984e-05,
+      "last_improvement_seconds": 51.7143,
+      "primal_integral": 0.25704130090642835,
+      "final_primal_gap": 8.374463498713745e-07
+    },
+    {
+      "instance": "spring",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 39.731,
+      "first_feasible_seconds": 31.3741,
+      "last_improvement_seconds": 47.2439,
+      "primal_integral": 1.2531660273946554,
+      "final_primal_gap": 0.28434201248234625
+    },
+    {
+      "instance": "prob09",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 0.04593,
+      "first_feasible_seconds": 1.4807e-05,
+      "last_improvement_seconds": 8.16318,
+      "primal_integral": 1.0000002467833335,
+      "final_primal_gap": 1.0
+    },
+    {
+      "instance": "ex6_2_6",
+      "excluded": false,
+      "verdict": "matches-bks",
+      "gap_pct": -8.29689e-05,
+      "first_feasible_seconds": 5.3429e-05,
+      "last_improvement_seconds": 0.696621,
+      "primal_integral": 0.003424829412744371,
+      "final_primal_gap": 1.1246748356928224e-06
+    },
+    {
+      "instance": "windfac",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 194.71,
+      "first_feasible_seconds": 0.00136358,
+      "last_improvement_seconds": 0.00136358,
+      "primal_integral": 0.6607140400175603,
+      "final_primal_gap": 0.6606836022666667
+    },
+    {
+      "instance": "st_e08",
+      "excluded": false,
+      "verdict": "matches-bks",
+      "gap_pct": 0.000216581,
+      "first_feasible_seconds": 1.8718e-05,
+      "last_improvement_seconds": 1.84424,
+      "primal_integral": 0.009434092976016625,
+      "final_primal_gap": 2.752553303877335e-06
+    },
+    {
+      "instance": "ex6_2_8",
+      "excluded": false,
+      "verdict": "matches-bks",
+      "gap_pct": 7.61862e-05,
+      "first_feasible_seconds": 6.3695e-05,
+      "last_improvement_seconds": 7.96026,
+      "primal_integral": 0.00021497783487140634,
+      "final_primal_gap": 1.8084636426970638e-06
+    },
+    {
+      "instance": "eg_all_s",
+      "excluded": false,
+      "verdict": "feasible",
+      "gap_pct": 10.512,
+      "first_feasible_seconds": 0.350661,
+      "last_improvement_seconds": 44.4966,
+      "primal_integral": 0.7564444427022146,
+      "final_primal_gap": 0.09512035796959142
+    }
+  ],
+  "not_regenerated": [
+    "#107's BEFORE column itself: a pre-#107 table that is not committed, held as the FREE_VARIABLES_BEFORE_* / NO_FREE_VARIABLES_BEFORE_* constants (the differences from the generated AFTER column are rendered).",
+    "Per-seed and multi-commit measurements (nvs01's eight seeds, the #102 probe, the portfolio A/B, the replication spreads quoted in Results, the st_e40/nvs01 re-checks): separate campaigns, not the committed tables.",
+    "The ex6_2_6 'stale catalogue row' note under SCIP baseline: a prose reading of one scip_baseline.csv row, not an aggregate.",
+    "SCIP's CPU/wall ratio (~1.0), its clock type and its version string as quoted in prose: measured or read from SCIP, not from the tables' aggregates.",
+    "Machine descriptions (the SCIP run's hardware): no table records a machine.",
+    "Published bounds quoted in prose (e.g. st_e40's BKS): reference values from bounds.csv, not run-derived.",
+    "Single cells quoted inside the root-cause prose (nvs01's published residual): the table's own text, not an aggregate."
+  ]
+}

@@ -27,9 +27,12 @@ from benchmarks.minlplib.campaign_report import (
     DEFAULT_INST_DIR,
     NOT_RECORDED,
     README_RENDERERS,
+    SUMMARY_JSON_NAME,
     CampaignReport,
     Row,
     TracePoint,
+    _pct_cell,
+    _readme_tally,
     anytime_scores,
     apply_readme_blocks,
     build_report,
@@ -47,6 +50,7 @@ from benchmarks.minlplib.campaign_report import (
     load_trace,
     main,
     readme_blocks,
+    readme_write_refusal,
     render_markdown,
     single_band_false_ties,
     stale_readme_blocks,
@@ -134,7 +138,6 @@ def test_the_committed_tables_reproduce_the_readme() -> None:
     # Provenance: what the tables record, and "not recorded" for what they do not.
     assert report.provenance.engine_commit == "21086c2+107"
     assert report.provenance.machine is None
-    assert report.provenance.seed == 1
     assert report.provenance.warnings == []
     assert report.provenance.scip_configuration == SCIP_VERSION
 
@@ -166,7 +169,6 @@ def test_the_committed_tables_reproduce_the_readme() -> None:
 
     # Results: the anytime score.
     at = report.trace.anytime
-    assert at.budget_seconds == 60.0
     assert at.denominator == 48
     assert round(at.mean, 3) == 0.473
     assert round(at.median, 3) == 0.331
@@ -650,12 +652,23 @@ README = DEFAULT_INST_DIR / "README.md"
 #: The command `README.md`'s "After the run" step 2 documents. Change both together.
 README_BUDGET = 60.0
 README_SEED = 1
+README_MACHINE: str | None = None
+SUMMARY_JSON = DEFAULT_INST_DIR / SUMMARY_JSON_NAME
 
 
 def _committed_report() -> CampaignReport:
     return build_report(
-        DEFAULT_INST_DIR, budget=README_BUDGET, seed=README_SEED, machine=None, feas_tol=None
+        DEFAULT_INST_DIR,
+        budget=README_BUDGET,
+        seed=README_SEED,
+        machine=README_MACHINE,
+        feas_tol=None,
     )
+
+
+def test_the_committed_summary_json_is_the_generators() -> None:
+    """`campaign_summary.json`, byte for byte: the in-tree machine-readable summary."""
+    assert SUMMARY_JSON.read_text() == to_json(_committed_report())
 
 
 def test_the_committed_readme_blocks_are_the_generators_rendering() -> None:
@@ -852,3 +865,93 @@ def test_the_driver_summary_warns_instead_of_raising(
     err = capsys.readouterr().err
     assert "is written, but its summary could not be derived" in err
     assert "not in bounds.csv" in err
+
+
+# --- fix round 2: a documented failure that comes back feasible -------------------
+
+
+def _write_feasible_elec_campaign(directory: Path) -> None:
+    _write_campaign(directory)
+    (directory / "comparison.csv").write_text(
+        f"{RESULTS_HEADER}\n"
+        "a,1,1,1,0,0,60,true,matches-bks,abc1234,0,0\n"
+        f"{ELEC},2,2,1,0,0,60,true,matches-bks,abc1234,0,0\n"
+    )
+    (directory / "anytime_trace.csv").write_text(
+        f"instance,time_seconds,objective,new_best\na,0.5,1,1\n{ELEC},0.5,2,1\n"
+    )
+
+
+def test_a_feasible_documented_failure_refuses_write_readme(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_feasible_elec_campaign(tmp_path)
+    readme = tmp_path / "README.md"
+    readme.write_text("untouched\n")
+    code = main(["--inst-dir", str(tmp_path), "--budget", "60", "--write-readme", str(readme)])
+    assert code == 2
+    assert readme.read_text() == "untouched\n"
+    assert "refusing --write-readme" in capsys.readouterr().err
+
+
+def test_a_feasible_documented_failure_is_reported_in_every_other_mode(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_feasible_elec_campaign(tmp_path)
+    assert main(["--inst-dir", str(tmp_path), "--budget", "60"]) == 0
+    assert f"documented failure {ELEC} came back FEASIBLE" in capsys.readouterr().err
+
+
+def test_the_tally_states_its_claim_set_when_a_documented_failure_is_feasible(
+    tmp_path: Path,
+) -> None:
+    _write_feasible_elec_campaign(tmp_path)
+    report = build_report(tmp_path, budget=60.0, seed=None, machine=None, feas_tol=None)
+    tally = _readme_tally(report)
+    assert "| **feasible** | **2** |" in tally
+    assert "over the 1 feasible claim-set rows" in tally
+    assert f"`{ELEC}` came back feasible" in tally
+
+
+def test_a_budget_the_tables_contradict_refuses_write_readme(tmp_path: Path) -> None:
+    _write_campaign(tmp_path)
+    readme = tmp_path / "README.md"
+    readme.write_text("untouched\n")
+    code = main(["--inst-dir", str(tmp_path), "--budget", "30", "--write-readme", str(readme)])
+    assert code == 2
+    assert readme.read_text() == "untouched\n"
+    report = build_report(tmp_path, budget=60.0, seed=None, machine=None, feas_tol=None)
+    assert readme_write_refusal(report) is None
+
+
+def test_build_report_reads_one_seeds_files_from_any_path(tmp_path: Path) -> None:
+    """#141 calls `build_report` per seed: the table and the trace need not be published."""
+    _write_campaign(tmp_path)
+    seed_dir = tmp_path / "seed7"
+    seed_dir.mkdir()
+    (tmp_path / "comparison.csv").rename(seed_dir / "results.csv")
+    (tmp_path / "anytime_trace.csv").rename(seed_dir / "trace.csv")
+    report = build_report(
+        tmp_path,
+        budget=60.0,
+        seed=7,
+        machine=None,
+        feas_tol=None,
+        results_csv=seed_dir / "results.csv",
+        trace_csv=seed_dir / "trace.csv",
+    )
+    assert report.results.counts.roster == 2
+
+
+@pytest.mark.parametrize(
+    ("value", "cell"),
+    [
+        (99.99999, "100%"),
+        (99.578, "99.6%"),
+        (2324.1, "2324%"),
+        (27.0, "27.0%"),
+        (0.0678, "0.0678%"),
+    ],
+)
+def test_percentage_cells_never_print_a_bare_decimal_point(value: float, cell: str) -> None:
+    assert _pct_cell(value) == cell

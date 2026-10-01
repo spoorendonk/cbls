@@ -166,6 +166,10 @@ BUDGET_EVIDENCE_TOLERANCE = 0.05
 
 NOT_RECORDED = "not recorded"
 
+#: The committed machine-readable summary of the published campaign, beside the
+#: tables it summarises. README step 2 writes it with `--json`.
+SUMMARY_JSON_NAME = "campaign_summary.json"
+
 
 def verdict_of(note: str) -> str:
     """The runner's own verdict word, with its appended annotations stripped.
@@ -728,6 +732,8 @@ class ImprovementTiming:
     #: `new_best` rows that print the same objective as the row before them --
     #: improvements below the trace's print resolution, where the readings part.
     sub_resolution_new_best_rows: int
+    #: The same count per instance (instances with none are omitted).
+    sub_resolution_by_instance: dict[str, int]
     first_feasible: dict[str, float]
     last_improvement: dict[str, float]
     #: The instance with the most improvements, and its consecutive-incumbent ratio:
@@ -748,6 +754,7 @@ def improvement_timing(
     last: dict[str, float] = {}
     last_flagged: dict[str, float] = {}
     sub_resolution = 0
+    sub_resolution_by_instance: dict[str, int] = {}
     longest: tuple[Row, list[TracePoint]] | None = None
     for r in sorted((r for r in rows if r.feasible and not r.excluded), key=lambda r: r.instance):
         points = _trace_of(r, trace)
@@ -759,15 +766,20 @@ def improvement_timing(
         # The arrival counts in both readings; after it, only flagged rows.
         flagged = [points[0].time_seconds] + [p.time_seconds for p in points if p.new_best]
         last_flagged[r.instance] = max(flagged)
-        sub_resolution += sum(
+        unseen = sum(
             1
             for prev, p in zip(points, points[1:], strict=False)
             if p.new_best and p.objective >= prev.objective
         )
+        sub_resolution += unseen
+        if unseen:
+            sub_resolution_by_instance[r.instance] = unseen
         if longest is None or len(steps) > len(longest[1]):
             longest = (r, steps)
     if longest is None:
-        return ImprovementTiming(0, 0, 0, 0, 0, 0, {}, {}, None, 0, math.nan, math.nan, math.nan)
+        return ImprovementTiming(
+            0, 0, 0, 0, 0, 0, {}, {}, {}, None, 0, math.nan, math.nan, math.nan
+        )
     row, steps = longest
     values = [p.objective for p in steps]
     ratios = [b / a for a, b in zip(values, values[1:], strict=False) if a != 0.0]
@@ -779,6 +791,7 @@ def improvement_timing(
         new_best_stopped_early=sum(1 for t in last_flagged.values() if t <= EARLY_STOP_SECONDS),
         new_best_still_improving=sum(1 for t in last_flagged.values() if t > late_start),
         sub_resolution_new_best_rows=sub_resolution,
+        sub_resolution_by_instance=sub_resolution_by_instance,
         first_feasible=first,
         last_improvement=last,
         most_steps_instance=row.instance,
@@ -1089,6 +1102,15 @@ def head_to_head(
     )
 
 
+#: #107's BEFORE column, from the pre-#107 run, which is not committed: the
+#: within-10% count of each group and the free-variable instances it named. Fixed
+#: constants (the run cannot be regenerated); the README's AFTER - BEFORE
+#: sentences are rendered from these and the generated AFTER column.
+FREE_VARIABLES_BEFORE_WITHIN_10PCT = 1
+NO_FREE_VARIABLES_BEFORE_WITHIN_10PCT = 20
+FREE_VARIABLES_BEFORE_WITHIN_10PCT_INSTANCES: tuple[str, ...] = ("maxmin",)
+
+
 @dataclass
 class FreeVariableSplit:
     """#107's table, AFTER column only: within 10% of BKS by free-variable group.
@@ -1191,9 +1213,9 @@ class CampaignReport:
 #: and why. Printed in every output so a reader can tell "not derived" from
 #: "derived and agreeing".
 NOT_REGENERATED: tuple[str, ...] = (
-    "#107's BEFORE column and everything read off it (the '2 of the 11', which "
-    "instances 'join maxmin', the no-free group's -1): measured on a pre-#107 table "
-    "that is not committed.",
+    "#107's BEFORE column itself: a pre-#107 table that is not committed, held as "
+    "the FREE_VARIABLES_BEFORE_* / NO_FREE_VARIABLES_BEFORE_* constants (the "
+    "differences from the generated AFTER column are rendered).",
     "Per-seed and multi-commit measurements (nvs01's eight seeds, the #102 probe, the "
     "portfolio A/B, the replication spreads quoted in Results, the st_e40/nvs01 "
     "re-checks): separate campaigns, not the committed tables.",
@@ -1249,15 +1271,22 @@ def build_report(
     seed: int | None,
     machine: str | None,
     feas_tol: float | None,
+    results_csv: Path | None = None,
+    trace_csv: Path | None = None,
+    scip_csv: Path | None = None,
+    bounds_csv: Path | None = None,
 ) -> CampaignReport:
+    """The whole report. Each input file defaults to its published name in
+    `inst_dir`; pass one seed's table and trace to report on that seed (#141).
+    `inst_dir` is still where the `.nl` files are read from."""
     if not (math.isfinite(budget) and budget > 0):
         raise ValueError("budget must be positive and finite")
     if feas_tol is not None and not (math.isfinite(feas_tol) and feas_tol > 0):
         raise ValueError("feas_tol must be positive and finite")
-    bounds = load_bounds_index(inst_dir / "bounds.csv")
-    rows = load_results(inst_dir / "comparison.csv", bounds)
-    trace = load_trace(inst_dir / "anytime_trace.csv")
-    scip = load_scip(inst_dir / "scip_baseline.csv")
+    bounds = load_bounds_index(bounds_csv or inst_dir / "bounds.csv")
+    rows = load_results(results_csv or inst_dir / "comparison.csv", bounds)
+    trace = load_trace(trace_csv or inst_dir / "anytime_trace.csv")
+    scip = load_scip(scip_csv or inst_dir / "scip_baseline.csv")
     tol = DEFAULT_FEAS_TOL if feas_tol is None else feas_tol
     results = summarize_results(rows, tol)
     trace_summary = summarize_trace(rows, trace, budget)
@@ -1648,7 +1677,9 @@ def _plain(value: float) -> str:
 
 
 def _pct_cell(value: float) -> str:
-    if abs(value) >= 100:
+    # Decided on the ROUNDED value: 99.96 at three significant digits is 100, and
+    # `:#.3g` would print it as "100.".
+    if abs(float(f"{value:.3g}")) >= 100:
         return f"{value:.0f}%"
     if abs(value) >= 0.01:
         return f"{value:#.3g}%"
@@ -1697,8 +1728,35 @@ def _readme_tally(r: CampaignReport) -> str:
             f"{c.coverage_gaps + c.errors + c.non_finite} |",
             f"| integrality mismatches vs catalogue | {c.integrality_mismatches} |",
             f"| verification failures | {c.verification_failures} |",
+            "",
+            _claim_set_sentence(r),
         ]
     )
+
+
+def _claim_set_sentence(r: CampaignReport) -> str:
+    c, v = r.results.counts, r.results.verdicts
+    text = (
+        f"The four verdict rows are over the {v.denominator} feasible claim-set rows; "
+        f"{_and_list(_tick(c.documented_failures)) or 'no instance'} "
+        "are excluded from them per the aggregation rule below"
+    )
+    if c.documented_failures_feasible:
+        text += (
+            f", and {_and_list(_tick(c.documented_failures_feasible))} came back feasible, "
+            "so the feasible row counts it and the verdict rows do not"
+        )
+    if v.no_bks:
+        text += f". {v.no_bks} feasible rows have no published bound"
+    if v.unclassified:
+        text += f". Unclassified verdicts: {_and_list(_tick(v.unclassified))}"
+    if c.errors:
+        text += f". No search completed on: {_and_list(_tick(c.error_instances))}"
+    return text + "."
+
+
+def _readme_rule(r: CampaignReport) -> str:
+    return f"**Aggregation rule.** {r.results.rule}"
 
 
 def _readme_gap_buckets(r: CampaignReport) -> str:
@@ -1720,7 +1778,7 @@ def _readme_gap_buckets(r: CampaignReport) -> str:
     ]
     lines = [
         f"Gap distribution over {gb.denominator} of the {res.verdicts.denominator} feasible "
-        f"instances: **{buckets}.**",
+        f"claim-set instances: **{buckets}.**",
         "",
         f"{_word(len(zero), capital=True)} rows have a numerically zero BKS "
         f"(`|BKS| < {_plain(ZERO_BKS)}`), for which the runner writes an *absolute* residual into "
@@ -1811,7 +1869,10 @@ def _readme_anytime(r: CampaignReport) -> str:
         )
     if at.unscored:
         text += f". Unscored: {_and_list(_tick(at.unscored))}"
-    return text + ". The per-instance scores are in the report; with one seed, each is one draw."
+    return text + (
+        ". The per-instance scores, with the reference each was scored against, are in "
+        f"`{SUMMARY_JSON_NAME}`; with one seed, each is one draw."
+    )
 
 
 def _readme_feasibility(r: CampaignReport) -> str:
@@ -1851,7 +1912,8 @@ def _readme_improvement(r: CampaignReport) -> str:
     d = it.denominator
     text = (
         "Solution *quality* over time is a weaker argument than it first appears, and is "
-        f"recorded here with that caveat. Of the {d} instances that become feasible, "
+        f"recorded here with that caveat. Of the {d} claim-set instances that become "
+        "feasible, "
         f"{_pct(it.stopped_early, d)} stop improving within the first "
         f"{'second' if EARLY_STOP_SECONDS == 1.0 else f'{EARLY_STOP_SECONDS:g}s'} while "
         f"{_pct(it.still_improving, d)} are still improving in the final "
@@ -1863,6 +1925,9 @@ def _readme_improvement(r: CampaignReport) -> str:
         "objective as the row before: improvements below the trace's print resolution, "
         "which the printed reading cannot see and the flag counts."
     )
+    if it.sub_resolution_by_instance:
+        top, count = max(it.sub_resolution_by_instance.items(), key=lambda kv: (kv[1], kv[0]))
+        text += f" {count} of the {it.sub_resolution_new_best_rows} are on `{top}`."
     if it.most_steps_instance is not None:
         text += (
             "\n\nBut the incumbent trace cannot be read as pure search progress: "
@@ -2046,7 +2111,35 @@ def _readme_free_variables(r: CampaignReport) -> str:
             "",
             "Within 10% with at least one free variable: "
             f"{_and_list(_tick(fv.with_free_within_10pct_instances)) or 'none'}.",
+            "",
+            _free_variable_delta(fv),
         ]
+    )
+
+
+def _signed(n: int) -> str:
+    return f"+{n}" if n > 0 else ("−" + str(-n) if n < 0 else "±0")
+
+
+def _free_variable_delta(fv: FreeVariableSplit) -> str:
+    """#107's effect: the generated AFTER column minus the fixed BEFORE constants."""
+    misses = fv.with_free_eligible - FREE_VARIABLES_BEFORE_WITHIN_10PCT
+    explained = fv.with_free_within_10pct - FREE_VARIABLES_BEFORE_WITHIN_10PCT
+    joined = [
+        n
+        for n in fv.with_free_within_10pct_instances
+        if n not in FREE_VARIABLES_BEFORE_WITHIN_10PCT_INSTANCES
+    ]
+    no_free = fv.without_free_within_10pct - NO_FREE_VARIABLES_BEFORE_WITHIN_10PCT
+    before = _and_list(_tick(FREE_VARIABLES_BEFORE_WITHIN_10PCT_INSTANCES))
+    return (
+        "**Before #107** — a table that is not committed, so these two counts are fixed "
+        "constants in `campaign_report.py` — the within-10% counts were "
+        f"{FREE_VARIABLES_BEFORE_WITHIN_10PCT} ({before} only) and "
+        f"{NO_FREE_VARIABLES_BEFORE_WITHIN_10PCT}. So #107 explains **{explained} of the "
+        f"{misses}** free-variable misses — {_and_list(_tick(joined)) or 'none'} "
+        f"join{'s' if len(joined) == 1 else ''} {before}. The no-free group's change is "
+        f"{_signed(no_free)}."
     )
 
 
@@ -2054,6 +2147,7 @@ def _readme_free_variables(r: CampaignReport) -> str:
 README_RENDERERS: dict[str, Callable[[CampaignReport], str]] = {
     "provenance": _readme_provenance,
     "tally": _readme_tally,
+    "rule": _readme_rule,
     "gap-buckets": _readme_gap_buckets,
     "two-band": _readme_two_band,
     "anytime": _readme_anytime,
@@ -2146,6 +2240,56 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def readme_write_refusal(report: CampaignReport) -> str | None:
+    """Why the README may not be rewritten from this report, or None.
+
+    A documented failure that came back feasible is a result to check (#110,
+    #116), not a table refresh; and a budget the tables contradict would publish
+    blocks computed over the wrong horizon. Both are refused, not warned about.
+    """
+    feasible = report.results.counts.documented_failures_feasible
+    if feasible:
+        return (
+            f"documented failure(s) {', '.join(feasible)} came back FEASIBLE; check "
+            "#110/#116 before publishing anything about them"
+        )
+    if report.provenance.warnings:
+        return "; ".join(report.provenance.warnings)
+    return None
+
+
+def _print_warnings(report: CampaignReport) -> None:
+    for warning in report.provenance.warnings:
+        print(f"WARNING: {warning}", file=sys.stderr)
+    for name in report.results.counts.documented_failures_feasible:
+        print(
+            f"WARNING: documented failure {name} came back FEASIBLE; check #110/#116 "
+            "before publishing anything about it",
+            file=sys.stderr,
+        )
+
+
+def _readme_action(args: argparse.Namespace, report: CampaignReport) -> int | None:
+    """Run --check-readme / --write-readme; an exit status ends `main`, None continues."""
+    blocks = readme_blocks(report)
+    if args.check_readme is not None:
+        stale = stale_readme_blocks(args.check_readme.read_text(), blocks)
+        if stale:
+            print(f"stale README blocks: {', '.join(stale)}", file=sys.stderr)
+            return 1
+        print("README blocks are current")
+        return 0
+    if args.write_readme is not None:
+        refusal = readme_write_refusal(report)
+        if refusal:
+            print(f"refusing --write-readme: {refusal}", file=sys.stderr)
+            return 2
+        text = args.write_readme.read_text()
+        args.write_readme.write_text(apply_readme_blocks(text, blocks))
+        print(f"rewrote {len(blocks)} blocks in {args.write_readme}")
+    return None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     if not (math.isfinite(args.budget) and args.budget > 0):
@@ -2161,20 +2305,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         machine=args.machine,
         feas_tol=args.feas_tol,
     )
-    for warning in report.provenance.warnings:
-        print(f"WARNING: {warning}", file=sys.stderr)
-    blocks = readme_blocks(report)
-    if args.check_readme is not None:
-        stale = stale_readme_blocks(args.check_readme.read_text(), blocks)
-        if stale:
-            print(f"stale README blocks: {', '.join(stale)}", file=sys.stderr)
-            return 1
-        print("README blocks are current")
-        return 0
-    if args.write_readme is not None:
-        text = args.write_readme.read_text()
-        args.write_readme.write_text(apply_readme_blocks(text, blocks))
-        print(f"rewrote {len(blocks)} blocks in {args.write_readme}")
+    _print_warnings(report)
+    status = _readme_action(args, report)
+    if status is not None:
+        return status
     markdown = render_markdown(report)
     if args.json is not None:
         args.json.write_text(to_json(report))

@@ -138,6 +138,11 @@ documents. No published Yuck numbers exist for these instances.
   run (`instance,time_seconds,objective,new_best`), written by `--trace`. The
   `objective` column is the internally *minimised* value, so a maximize instance
   appears negated relative to `comparison.csv`.
+- `campaign_summary.json` — the published campaign's machine-readable summary,
+  written by `../../minlplib/campaign_report.py --json` (README step 2): every
+  aggregate under the stated aggregation rule, the provenance, and the
+  per-instance figures including each anytime score and its reference. A test
+  requires it to equal a fresh rendering of the committed tables.
 - `scip_baseline.csv` — written by `../../minlplib/reference_solve.py`: the SCIP
   baseline's objective, gaps against the same published bounds, feasibility,
   wall time, plus the dual bound, gap and status only a complete solver
@@ -356,16 +361,22 @@ anything about it** — that would be a result, not a routine table refresh.
    nothing:
 
        .venv/bin/python3 benchmarks/minlplib/campaign_report.py --budget 60 --seed 1 \
-           --write-readme benchmarks/instances/minlplib/README.md
+           --machine "<CPU model, core count>" \
+           --write-readme benchmarks/instances/minlplib/README.md \
+           --json benchmarks/instances/minlplib/campaign_summary.json
 
    Review the diff. `--budget` is required because no table records it (it is
    also the anytime score's horizon); `--seed` and `--machine` are stated by
-   you, and the output says so. `--check-readme` instead of `--write-readme`
+   you, and the output says so. The rewrite is refused, not warned about, when
+   a documented failure came back feasible or when the tables contradict
+   `--budget`. `--check-readme` instead of `--write-readme`
    exits 1 naming any stale block, and
    `test_the_committed_readme_blocks_are_the_generators_rendering` fails the same
    way, so a hand edit inside a block, or a regenerated table without a
-   regenerated README, is caught. If the budget or seed in that command changes,
-   change it in the test too. Prose outside the blocks interprets the numbers
+   regenerated README, is caught; `test_the_committed_summary_json_is_the_generators`
+   does the same for `campaign_summary.json`. If the budget, seed or machine in
+   that command changes, change `README_BUDGET` / `README_SEED` /
+   `README_MACHINE` in that test file too. Prose outside the blocks interprets the numbers
    rather than restating them; anything numeric left there is a separate
    measurement or a reference value, of a kind the generator's "Not
    regenerated" list names. Re-read that prose against the new blocks — which
@@ -408,9 +419,10 @@ anything about it** — that would be a result, not a routine table refresh.
    `.venv/bin/python -c 'import csv,sys;print(sorted({r["commit_sha"] for r in csv.DictReader(open("comparison.csv"))}))'` must print exactly one
    SHA, and that SHA must be the checkout you built. Two SHAs mean a resumed run
    spanned a commit; discard the staging directory and re-run.
-7. Record the machine in the **Results** preamble — CPU model and core count.
-   The "Hardware" note in the SCIP baseline section below asks for this on the
-   next re-run of either side, and this is it.
+7. Record the machine by passing `--machine` (CPU model and core count) in
+   step 2's command, so the generated provenance block states it. The
+   "Hardware" note in the SCIP baseline section below asks for this on the next
+   re-run of either side, and this is it.
 8. Run the Python suite:
    `.venv/bin/pytest tests/python/test_minlplib_scip_baseline.py tests/python/test_minlplib_campaign_report.py`.
    The second goes red on any regenerated table until step 2's README blocks
@@ -479,7 +491,13 @@ measurement, not a replication of this table.
 | unsupported / read errors / non-finite | 0 |
 | integrality mismatches vs catalogue | 0 |
 | verification failures | 0 |
+
+The four verdict rows are over the 46 feasible claim-set rows; `elec25` and `elec50` are excluded from them per the aggregation rule below.
 <!-- campaign_report:end tally -->
+
+<!-- campaign_report:begin rule -->
+**Aggregation rule.** Documented-failure instances (elec25, elec50) are INCLUDED in roster counts (roster, built, mixed-integer, feasible, infeasible and the infeasible list, coverage gaps, errors, non-finite, integrality mismatches, verification failures, wall-clock totals, the cumulative-feasibility profile and its late-feasible list, the SCIP head-to-head counts and the disjoint-failure list) and EXCLUDED from quality aggregates (verdict-vs-BKS breakdown, gap buckets and the zero-BKS split, the earlier-margin and single-band examples, improvement timing, anytime scores, both-solved quality buckets, the CBLS-ahead-of-SCIP list, and the eligible and within-10% columns of the free-variable split), per #87. Their per-instance rows are still listed, marked excluded.
+<!-- campaign_report:end rule -->
 
 These are the counts of the **published run**, not of the current engine. The
 `infeasible` row counts `st_e40`, which was infeasible at the commit the table
@@ -492,18 +510,17 @@ Every number inside a `campaign_report` block in this README is generated by
 `tests/python/test_minlplib_campaign_report.py` fails if a block differs from
 what the generator renders. Numbers outside the blocks are separate measurements
 (other seeds, other commits, probes), reference values or historical tables; the
-generator's "Not regenerated" list names each kind. Denominators follow its
-`AGGREGATION_RULE`, which the report prints: `elec25` and `elec50` count in
-roster counts and are held out of quality aggregates.
+generator's "Not regenerated" list names each kind. Denominators follow the
+aggregation rule stated above.
 
 <!-- campaign_report:begin gap-buckets -->
-Gap distribution over 43 of the 46 feasible instances: **21 within 0.01% of BKS, 22 within 1%, 26 within 10%.**
+Gap distribution over 43 of the 46 feasible claim-set instances: **21 within 0.01% of BKS, 22 within 1%, 26 within 10%.**
 
 Five rows have a numerically zero BKS (`|BKS| < 1e-12`), for which the runner writes an *absolute* residual into the `gap_to_bks%` column rather than a meaningless percentage against zero: `ex14_2_5`, `ex14_2_4`, `mathopt1`, `least` and `prob09`. Those values are not percentages. The buckets above exclude `mathopt1`, `least` and `prob09`, whose residual is non-zero, and retain `ex14_2_5` and `ex14_2_4`, where objective and BKS are both exactly 0 and so are exact matches at any threshold. Excluding all of them instead gives 19 / 20 / 24 over 41 rows. Counting the excluded rows *as* percentages would have put `mathopt1` (gap cell 1) and `prob09` (gap cell 0.04593) inside the "within 1%" bucket.
 <!-- campaign_report:end gap-buckets -->
 
 <!-- campaign_report:begin anytime -->
-**Anytime score.** The MIPfeas Primal Integral (`benchmarks/mipfeas/primal_integral.py`) of the committed trace against BKS over the 60s budget — 0 is "at BKS from the first instant", 2 is "never feasible" — over the 48 instances outside the documented failures (`elec25` and `elec50`): **mean 0.473, median 0.331, shifted geometric mean 0.0793**. A maximize row's trace is negated, so its reference is −BKS (at catalogue precision, from `bounds.csv`). BKS is not a proven optimum, so an incumbent past it scores a positive gap; and the zero-BKS rows left out of the gap buckets (`mathopt1`, `least` and `prob09`) are *in* this score, because the scorer's own zero test is 1e-6 absolute. The per-instance scores are in the report; with one seed, each is one draw.
+**Anytime score.** The MIPfeas Primal Integral (`benchmarks/mipfeas/primal_integral.py`) of the committed trace against BKS over the 60s budget — 0 is "at BKS from the first instant", 2 is "never feasible" — over the 48 instances outside the documented failures (`elec25` and `elec50`): **mean 0.473, median 0.331, shifted geometric mean 0.0793**. A maximize row's trace is negated, so its reference is −BKS (at catalogue precision, from `bounds.csv`). BKS is not a proven optimum, so an incumbent past it scores a positive gap; and the zero-BKS rows left out of the gap buckets (`mathopt1`, `least` and `prob09`) are *in* this score, because the scorer's own zero test is 1e-6 absolute. The per-instance scores, with the reference each was scored against, are in `campaign_summary.json`; with one seed, each is one draw.
 <!-- campaign_report:end anytime -->
 
 <!-- campaign_report:begin two-band -->
@@ -525,7 +542,7 @@ Measured from the committed trace, not assumed. Cumulative instances with a feas
 <!-- campaign_report:end feasibility -->
 
 <!-- campaign_report:begin improvement -->
-Solution *quality* over time is a weaker argument than it first appears, and is recorded here with that caveat. Of the 46 instances that become feasible, 46% stop improving within the first second while 22% are still improving in the final 15 seconds — reading an improvement as a strict decrease of the trace's *printed*, six-significant-digit objective. Read off the engine's own `new_best` flag instead, the split is 39% / 26%. The two part because 1266 of the trace's `new_best` rows print the same objective as the row before: improvements below the trace's print resolution, which the printed reading cannot see and the flag counts.
+Solution *quality* over time is a weaker argument than it first appears, and is recorded here with that caveat. Of the 46 claim-set instances that become feasible, 46% stop improving within the first second while 22% are still improving in the final 15 seconds — reading an improvement as a strict decrease of the trace's *printed*, six-significant-digit objective. Read off the engine's own `new_best` flag instead, the split is 39% / 26%. The two part because 1266 of the trace's `new_best` rows print the same objective as the row before: improvements below the trace's print resolution, which the printed reading cannot see and the flag counts. 1209 of the 1266 are on `least`.
 
 But the incumbent trace cannot be read as pure search progress: `record_best` tightens the objective bound by `1e-3·(|obj|+1)` per accepted solution, so improvements are *floored* at roughly 0.1% steps. The measured median consecutive-incumbent ratio on `eg_all_s` (the instance with the most improvements) is 0.9989993 — 1 − 0.001001, against the bound step's 1 − 1e-3 — and it takes 15930 such steps (15931 incumbents) to walk from 1e9 down to 8.46.
 <!-- campaign_report:end improvement -->
@@ -922,7 +939,7 @@ Five instances go the other way by a margin larger than both the claim band and 
 | Instance | CBLS gap | SCIP gap | SCIP status |
 |---|---|---|---|
 | `eg_all_s` | 10.5% | 2324% | timelimit |
-| `ex8_1_5` | **matches BKS** | 100.% | timelimit |
+| `ex8_1_5` | **matches BKS** | 100% | timelimit |
 | `ex8_6_1` | 49.1% | 99.6% | timelimit |
 | `eq6_1` | 20.4% | 27.0% | timelimit |
 | `maxmin` | 0.0678% | 2.18% | timelimit |
@@ -1062,13 +1079,12 @@ over the rows each group solves whose `|BKS| >= 1e-4`:
 | no free variables | 34 | 27 | 19 |
 
 Within 10% with at least one free variable: `shiporig`, `ex8_1_5` and `maxmin`.
+
+**Before #107** — a table that is not committed, so these two counts are fixed constants in `campaign_report.py` — the within-10% counts were 1 (`maxmin` only) and 20. So #107 explains **2 of the 11** free-variable misses — `shiporig` and `ex8_1_5` join `maxmin`. The no-free group's change is −1.
 <!-- campaign_report:end free-variables -->
 
-**Before #107** — a table that is not committed, so these figures are not
-regenerated — the within-10% counts were 1 (`maxmin` only) and 20. So it
-explains **2 of the 11** free-variable misses — `ex8_1_5` and `shiporig` join
-`maxmin`. A real but minority share: the correlation that motivated the issue is
-only partly this bug, and the rest is still open. The no-free group's −1 is
+A real but minority share: the correlation that motivated the issue is only
+partly this bug, and the rest is still open. The no-free group's change is
 `eq6_1` crossing the 10% line, which an A/B shows is *not* attributable to the
 change (it is bit-identical between arms; that instance spans 20.5–36.9% across
 seeds at one budget).
