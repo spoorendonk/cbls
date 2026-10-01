@@ -179,7 +179,8 @@ recomputes only dirty nodes in topological order. This is the hot path during
 GFJ — each jump changes one variable and touches a small subgraph, and each
 jump *candidate* is scored by a no-commit delta probe (see
 [`weighted_violation_delta`](#violation--gls-weights)) unless every weighted
-row of the variable's column is a linear comparison, where `LinearJumpScorer`
+row of the variable's column is linear (an affine comparison or, since #190,
+an affine bare body), where `LinearJumpScorer`
 (`include/cbls/linear_jump.h`) scores it in closed form instead. A committed
 jump goes through `commit_scalar_move` -- `delta_evaluate`'s walk, also told the
 variable's old value (below).
@@ -1087,7 +1088,7 @@ every weighted row of `G_v` is a comparison (`Leq`/`Geq`/`Lt`/`Gt`/`Eq`) whose
 two children are affine, or a bare affine body (`add_constraint(expr)`, read as
 `expr <= 0`, scored as the residual `expr − 0` with a literal 0, which equals the
 engine's `clamped(expr)` for every value, non-finite included — #190; a
-comparison nested anywhere below the row disqualifies it, since its sentinel
+non-constant comparison nested anywhere below the row disqualifies it, since its sentinel
 residual is not affine), in closed form by `LinearJumpScorer`
 (`include/cbls/linear_jump.h`): each such row has a constant slope
 `r = ∂(p − q)/∂v`, cached lazily per row from `compute_partials_sparse` into a
@@ -2093,11 +2094,14 @@ was also deliberately converted to be deterministic (iteration-bounded,
 
 So bounds 1–3 are covered **without any assertion on elapsed time** (issue
 #104). Each test observes its own bound directly: work done for 1 (one batch
-cannot have run to completion), the call count of a test `InnerSolverHook` for
-2, and the argument handed to a test `LNS` for 3. Bound 4 has no such seam —
-its symptom really is duration — so its test is the suite's single
-wall-clock-duration assertion, quarantined behind the `[timing]` tag and
-registered as its own labelled ctest entry with an explicit timeout.
+cannot have run to completion), the call count of a test `InnerSolverHook` and,
+since #191, the exact poll sequence of `FloatIntensifyHook` under a counting stop
+for 2, and the argument handed to a test `LNS` for 3. Bound 4 has no such seam —
+its symptom really is duration — so its test asserts on wall-clock duration,
+quarantined behind the `[timing]` tag and registered as its own labelled ctest
+entry with an explicit timeout. Bound 2 has one such test too,
+`timing_inner_solver_hook_deadline` (#191), as the end-to-end regression for a
+user-facing budget overrun; its deterministic discriminators are the tests above.
 
 Every one of these tests also asserts `SearchResult::termination`. That is what
 stops a test going quietly inert: a small time budget proves nothing if the
@@ -2611,9 +2615,12 @@ with the 1-minute load below 1.5:
 | 2 | `7291a2c` (before #191) | 22.48 | 18.3416 |
 | 2 | `752e18a` (#191) | 20.13 | 18.3416 |
 
-`752e18a` is the measured commit `c4b4861` replayed onto #190 when it landed
-(same patch-id); the stride was later resized by node count, which leaves
-rahue's stride at 1, so these runs still describe the landed code.
+Measured 2026-10-01 on an AMD Ryzen 5 5600H at `c4b4861`: #191 on `7291a2c`,
+before #192 and #190, landing as `752e18a` (same patch-id). Neither of those
+reaches rahue: its MPS rows are comparisons over Sums, so it has no Sum posted
+as a row (#192), no bare constraint body and no nested comparison (#190). The
+stride was later resized by node count, which leaves rahue's stride at 1. So
+these runs still describe the landed code.
 
 The poll changes only whether the descent continues, so a pass that finishes
 within budget is bit-identical to before: fixed-iteration final-assignment hashes

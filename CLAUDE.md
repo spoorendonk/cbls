@@ -292,8 +292,8 @@ wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
 - `ctest` — everything. This is what **pre-push** and CI run.
 - `ctest -L timing` — 5 tests: `timing_structural_batch_deadline`, the three
   `timing_throughput_*` floors added for #125, and
-  `timing_inner_solver_hook_deadline` (#191's budget contract). Each is registered by an explicit
-  `add_test` (naming its Catch2 test case) so it can carry a `TIMEOUT` and be
+  `timing_inner_solver_hook_deadline` (#191's budget contract). Each is
+  registered by an explicit `add_test` (naming its Catch2 test case) so it can carry a `TIMEOUT` and be
   quarantined individually. Don't add tests to this class without a concrete
   reason.
 
@@ -650,7 +650,7 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 
 3. **Search** (`src/search.cpp`) — ViolationLS batch outer loop (Davies et al. CPAIOR 2024, Algorithm 6). The objective is folded into the constraints as `obj <= bound`; each batch is a Feasibility Jump, Novelty Jump, or STRUCTURAL batch (selected by config probabilities). The objective bound is tightened on each new real-feasible solution; on stagnation the assignment is perturbed or diversified via LNS.
 
-4. **Feasibility Jump** (`src/feasibility_jump.cpp`) — Generalised Feasibility Jump: a `JumpTable` of cached per-variable best jumps (score = `-W·δ_G`), best-of-N scan-set sampling, GLS weight dynamics (bump violated + ρ-decay), and Novelty Jump compound moves (Algorithms 4–5). Float jump values come from Newton-toward-violated-root candidates via reverse-mode AD. A candidate over rows that are all linear comparisons is scored in closed form by `LinearJumpScorer` (`src/linear_jump.cpp`) rather than by a DAG probe; any other column falls back to `weighted_violation_delta`. A variable that reaches a `Ceil`/`Floor`/`Round`/`Element` node additionally gets that node's breakpoints — plateau edges and index values, mapped back through the argument's slope — as candidates (#186), since those ops' derivative is 0.
+4. **Feasibility Jump** (`src/feasibility_jump.cpp`) — Generalised Feasibility Jump: a `JumpTable` of cached per-variable best jumps (score = `-W·δ_G`), best-of-N scan-set sampling, GLS weight dynamics (bump violated + ρ-decay), and Novelty Jump compound moves (Algorithms 4–5). Float jump values come from Newton-toward-violated-root candidates via reverse-mode AD. A candidate over rows that are all linear (affine comparisons, or affine bare bodies `expr <= 0` since #190) is scored in closed form by `LinearJumpScorer` (`src/linear_jump.cpp`) rather than by a DAG probe; any other column falls back to `weighted_violation_delta`. A variable that reaches a `Ceil`/`Floor`/`Round`/`Element` node additionally gets that node's breakpoints — plateau edges and index values, mapped back through the argument's slope — as candidates (#186), since those ops' derivative is 0.
 
 5. **Moves** (`src/moves.cpp`) — typed move generators by variable type (bool flip, int ±1/rand, float perturb, list swap/2opt/relocate/or-opt/insert/exchange/remove, set add/remove/swap), plus the inter-list moves of a `ListPartition` (relocate/swap/2-opt\*, and insert/remove under `Cover::AtMostOnce`). Scalar moves are subsumed by FJ's jump values; the list/set moves feed the STRUCTURAL batch. A structured change is a **positional `ElementEdit`** on the variable's `elements`, not the whole vector — the batch restores the sample's starting assignment before each candidate so an edit lands where it was built.
 

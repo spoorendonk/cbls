@@ -175,7 +175,9 @@ prepares (`docs/benchmarks/linear-jump-pingpong.md`, #190 addendum).
 
 Measured, `723799c` (before) against `9292371` (after), Release, serial under an
 exclusive lock on an AMD Ryzen 5 5600H (12 threads), 1-minute load 1.00-1.42 at
-each run's start, 2026-10-01:
+each run's start, 2026-10-01. The later nested-comparison exclusion (`5650dc6`)
+does not reach uc-chped, whose rows nest no comparison; the 24-pair
+fixed-iteration hashes were re-checked identical after it.
 
 - **Fixed iterations, no clock:** the final assignment, iteration count and
   objective are bit-identical on all 24 (file, horizon) pairs at 20,000

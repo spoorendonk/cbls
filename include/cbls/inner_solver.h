@@ -27,7 +27,9 @@ public:
     // existed FloatIntensifyHook ran a 20s MIPfeas solve ~10s over budget.
     // On a run with no wall clock it reads no clock, so an iteration-budgeted
     // run stays bit-reproducible. The default is never requested, which is what
-    // a direct call outside a search gets.
+    // a direct call outside a search gets. `stop` refers to the caller's state and
+    // is valid only until solve() returns; it may be polled from the hook's own
+    // threads during the call, but must not be kept beyond it.
     //
     // Added as a parameter of the one virtual rather than as a second virtual
     // beside it, deliberately: with two, a subclass of FloatIntensifyHook that

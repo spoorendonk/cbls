@@ -10,7 +10,8 @@
 // assertion on the iterations completed within it.
 //
 // They are FLOORS ON WORK, not ceilings on time. `timing_structural_batch_deadline`
-// in test_search.cpp remains the suite's only assertion on wall-clock *duration*;
+// in test_search.cpp and `timing_inner_solver_hook_deadline` (#191) are the
+// suite's hand-registered assertions on wall-clock *duration*;
 // these assert on a count, with the clock as the budget rather than the subject.
 //
 // The floors sit 5-10x below the measured rate on purpose. The target is an

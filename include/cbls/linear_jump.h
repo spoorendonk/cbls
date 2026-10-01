@@ -35,7 +35,10 @@ class Model;
 /// `p == q` with q infinite, and 0 never is, and `v - 0.0` is `v` (NaN stays
 /// NaN, +/-inf stays itself, -0.0 stays -0.0). The slope is the node's own
 /// partial, the same sweep `compute_partial(row, v)` runs, so its Newton
-/// partial is exact like a Leq row's.
+/// partial is exact like a Leq row's. Reading the row's own node as p is
+/// drift-free only because `classify_incremental_sums` (src/model.cpp, #192)
+/// refuses incremental status to a Sum that is itself a row; relax that rule
+/// and a bare Sum row would be scored on a drifted value with no gate.
 ///
 /// **Exact in the arithmetic, not bit-identical.** `p + r D` is not the row the
 /// DAG would re-sum, so a score can differ from `weighted_violation_delta` in its

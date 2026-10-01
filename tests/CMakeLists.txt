@@ -82,8 +82,8 @@ include(Catch)
 # CMakeLists.txt registers. The 683 Catch2 ones are one more than the 682
 # TEST_CASEs in tests/*.cpp, because hang_guard_iteration_only_portfolio is both discovered
 # and hand-registered -- see its note below. `ctest -N -L slow` reports 10, not 6 --
-# the three #125 throughput floors and #191's hook deadline carry the slow LABEL without the Catch2
-# [slow] TAG. Re-derive with `ctest -N`, never by incrementing.
+# the three #125 throughput floors and #191's hook deadline carry the slow
+# LABEL without the Catch2 [slow] TAG. Re-derive with `ctest -N`, never by incrementing.
 #
 # SKIP_RETURN_CODE 4 maps Catch2's SKIP() onto ctest's "Skipped" rather than a
 # failure. No test uses SKIP() today -- the data-gated ROADEF tests that needed

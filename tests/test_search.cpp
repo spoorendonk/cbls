@@ -727,8 +727,9 @@ TEST_CASE("termination reason covers the non-budget exits", "[search]") {
 // NONE OF THE TESTS BELOW ASSERTS ON ELAPSED TIME. The suite was deliberately
 // converted to be deterministic — iteration-bounded, time_limit = 0 — and a
 // duration assertion reintroduces machine-speed coupling. The STRUCTURAL test is
-// the single grandfathered exception and is quarantined behind [timing]. Each
-// test here instead observes its bound directly:
+// the grandfathered exception here, quarantined behind [timing] (#191's
+// timing_inner_solver_hook_deadline in test_inner_solver.cpp is the other
+// hand-registered one). Each test here instead observes its bound directly:
 //
 //   1. work done: one batch cannot have run to completion;
 //   2. the call count of a test InnerSolverHook: was it started at all?
@@ -1169,8 +1170,9 @@ TEST_CASE("solve disarms the escape probe on a new best", "[search][escape]") {
 // first batch is the one under test and the assertion does not depend on which
 // batch kind the RNG happened to pick.
 //
-// [timing] MARKS THE EXCEPTION (issue #104): this is still the suite's only
-// assertion on wall-clock DURATION. Everything else asserts on iteration counts
+// [timing] MARKS THE EXCEPTION (issue #104): this and #191's
+// timing_inner_solver_hook_deadline are the suite's only hand-registered
+// assertions on wall-clock DURATION. Everything else asserts on iteration counts
 // or values -- the three throughput floors added under #125 share the [timing]
 // tag but assert a floor on work completed inside a budget, which is a count.
 // Run this one with `cbls_tests "structural batch respects the wall-clock
