@@ -12,10 +12,13 @@ these counts pin.
 
 from __future__ import annotations
 
+import shutil
+import urllib.error
 from pathlib import Path
 
 import pytest
 
+from benchmarks.instances.minlplib import download
 from benchmarks.instances.minlplib.download import (
     DEFAULT_ROSTER,
     HELDOUT_DIRNAME,
@@ -24,6 +27,7 @@ from benchmarks.instances.minlplib.download import (
     UNFETCHABLE_FILENAME,
     Instance,
     bounds_text,
+    build_heldout,
     class_counts,
     parse_csv,
     read_bounds_names,
@@ -144,3 +148,82 @@ def test_every_heldout_instance_has_a_text_nl_file() -> None:
         assert path.read_bytes()[:1] == b"g", f"{name} is not a text NL file"
     on_disk = {p.stem for p in HELDOUT_DIR.glob("*.nl")}
     assert on_disk == set(read_bounds_names(HELDOUT_DIR / "bounds.csv"))
+
+
+def test_roster_walk_skips_refuses_a_roster_the_catalogue_cannot_rebuild(
+    rows: list[dict[str, str]],
+) -> None:
+    candidates = select(rows)
+    roster = read_bounds_names(INST_DIR / "bounds.csv")
+    with pytest.raises(ValueError, match="no longer pass the filter"):
+        roster_walk_skips(candidates, [*roster, "not-an-instance"])
+    with pytest.raises(ValueError, match="order"):
+        roster_walk_skips(candidates, [roster[1], roster[0], *roster[2:]])
+
+
+def _fake_minlplib(
+    monkeypatch: pytest.MonkeyPatch, binary: set[str], down: set[str] | None = None
+) -> list[str]:
+    """Serve text NL for every instance except `binary` (binary NL) and `down` (outage)."""
+    fetched: list[str] = []
+
+    def fake_fetch(url: str, timeout: int = 120) -> bytes:
+        name = url.rsplit("/", 1)[-1].removesuffix(".nl")
+        fetched.append(name)
+        if down and name in down:
+            raise urllib.error.URLError("simulated outage")
+        return b"b3 0 1 0\n" if name in binary else f"g3 1 1 0 # {name}\n".encode()
+
+    monkeypatch.setattr(download, "fetch_bytes", fake_fetch)
+    return fetched
+
+
+def test_build_heldout_writes_the_committed_roster_and_then_refuses(
+    rows: list[dict[str, str]],
+    skipped: dict[str, set[str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The live walk, against a fake server that serves binary NL exactly where the
+    # committed record says, must write the committed files: this is what ties the
+    # offline replay (`walk`) above to the code that actually fetched.
+    shutil.copy(INST_DIR / "bounds.csv", tmp_path / "bounds.csv")
+    _fake_minlplib(monkeypatch, set().union(*skipped.values()))
+    assert build_heldout(tmp_path, rows, DEFAULT_ROSTER, force=False) == 0
+    for name in ("bounds.csv", POOL_FILENAME, UNFETCHABLE_FILENAME):
+        assert (tmp_path / HELDOUT_DIRNAME / name).read_bytes() == (
+            HELDOUT_DIR / name
+        ).read_bytes(), name
+    # A committed membership is not replaced without --force.
+    assert build_heldout(tmp_path, rows, DEFAULT_ROSTER, force=False) == 2
+
+
+def test_build_heldout_force_keeps_existing_nl_files(
+    rows: list[dict[str, str]],
+    skipped: dict[str, set[str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shutil.copy(INST_DIR / "bounds.csv", tmp_path / "bounds.csv")
+    _fake_minlplib(monkeypatch, set().union(*skipped.values()))
+    assert build_heldout(tmp_path, rows, DEFAULT_ROSTER, force=False) == 0
+    fetched = _fake_minlplib(monkeypatch, set().union(*skipped.values()))
+    assert build_heldout(tmp_path, rows, DEFAULT_ROSTER, force=True) == 0
+    # Only the published walk's skips are re-checked; no held-out .nl is re-fetched.
+    assert set(fetched) == skipped["published"]
+
+
+def test_build_heldout_aborts_on_a_network_failure_without_writing(
+    rows: list[dict[str, str]],
+    skipped: dict[str, set[str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An outage must not be recorded as "unfetchable": that would change the
+    # membership. The first held-out candidate is down.
+    shutil.copy(INST_DIR / "bounds.csv", tmp_path / "bounds.csv")
+    first = read_bounds_names(HELDOUT_DIR / "bounds.csv")[0]
+    _fake_minlplib(monkeypatch, set().union(*skipped.values()), down={first})
+    assert build_heldout(tmp_path, rows, DEFAULT_ROSTER, force=False) == 1
+    assert not (tmp_path / HELDOUT_DIRNAME / "bounds.csv").exists()
+    assert not (tmp_path / HELDOUT_DIRNAME / UNFETCHABLE_FILENAME).exists()

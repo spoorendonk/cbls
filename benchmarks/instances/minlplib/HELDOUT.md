@@ -10,7 +10,14 @@ engine was fitted to these fifty instances".
 
 The membership and the seed were committed before any run on the set:
 `HELDOUT_SEED = 144` landed in the commit "feat(minlplib): add a seeded held-out
-draw to the selection tooling", and the membership in the commit after it. Nothing has been solved on these instances. When this was written, none of
+draw to the selection tooling", and the membership in the commit after it.
+That second commit also settled one rule of the draw: the instances the
+published walk found unfetchable are removed before the round-robin rather than
+skipped during the walk, so a binary-NL instance does not cost its class a turn.
+Under the earlier rule the set differs by one instance (`graphpart_3g-0333-0333`
+in place of `ex14_2_7`, giving 18/17/15 instead of 17/17/16). No solver had been
+run on either set when the rule changed. Nothing has been solved on these
+instances. When this was written, none of
 the fifty names appeared anywhere else in the repository.
 
 ## Files
@@ -36,7 +43,9 @@ operators, `nvars <= 150`, `ncons <= 150` and a finite primal bound.
 - Catalogue: `https://www.minlplib.org/instancedata.csv`, fetched 2026-10-01,
   1633 rows, sha256 `0ec2cb1e766f6ee04b5d7e1aa8deee91c5eaab5b2eeb9c7fbaa45bc28dcc8283`.
 - **Pool size: 397.** Of these, 347 lie outside the published roster. 8 of
-  those 347 are served only as binary NL, which leaves **339 drawable**.
+  those 347 are known to be served only as binary NL (the published walk's
+  skips), which leaves **339 drawable**. The other 339 were not each fetched;
+  the held-out walk fetched only the instances it took.
 - This catalogue still rebuilds the published `bounds.csv` byte for byte (pinned
   by the test below). The 8 instances that roster's walk skipped (`ex8_1_2` and
   seven `kriging_peaks-red*`) are all still served as binary NL. Each was
@@ -130,22 +139,32 @@ next fifty survivors. It was **rejected**. Within each class, that order is
 smallest first, so the next fifty are by construction the next-largest
 instances in every class. Measured on this pool, they form a narrow band just
 above the published roster: "other" sizes 4-6, "transcendental" 4-9,
-mixed-integer 36-96. That causes two problems:
+mixed-integer 36-96.
 
-- **The size confound remains.** Every next-fifty member is at least as large
-  as the published members of its class. If the parameter failed to transfer,
-  nothing could tell over-fitting apart from a size effect. Telling those two
-  apart is the one question the held-out set exists to answer.
-- **Nothing in the set could diagnose the confound.** The band is so narrow
-  that there is no spread of sizes inside it. A size effect would show up as a
-  shift of the whole set, and that shift looks exactly like over-fitting.
+Be clear about what that rejection does and does not buy. With the published
+roster fixed, **every** set disjoint from it is larger than it (previous
+section), and the seeded draw is further from it in size than the next fifty
+would be: whole-set median 56.5, against 7.0 for the next fifty and 6.5 for the
+published roster. So the "systematically harder" objection in #144 applies to
+the chosen set even more strongly. Choosing the seeded draw does not remove the
+size difference. It trades a small size difference for a useful property:
 
-The seeded draw does differ from the published roster, and the tables above say
-by how much. But it is a sample of the remainder's own size distribution, with
-sizes from 4 to 220 in every class. That gives #145 a choice the next fifty
-cannot: it can ask whether an arm's effect *varies with size within the
-held-out set*. If it does not, a failure to transfer is not a size effect. If it
-does, then the size dependence is the finding.
+- **The next fifty has no size spread to diagnose with.** The band is so
+  narrow that a size effect would show up as a shift of the whole set, and
+  that shift looks exactly like over-fitting. Nothing inside the set could tell
+  them apart.
+- **The seeded draw is a sample of the remainder's own size distribution.**
+  Sizes run from 4 to 220 overall, with a wide spread inside each class
+  (mixed-integer 36-196, other 6-220, transcendental 4-210). That lets #145 ask
+  whether an arm's effect *varies with size within the held-out set*. If it
+  does not, a failure to transfer is not a size effect. If it does, the size
+  dependence is itself the finding: the shipped value was fitted to the small
+  end of the pool.
+
+So #144's acceptance criterion, "both halves have comparable size and
+structure-class composition", is **not met and cannot be met** while the
+published roster stays fixed. This document records that as the precondition
+finding, rather than presenting the draw as comparable.
 
 `test_heldout_is_not_the_size_ordered_next_fifty` pins that the committed set is
 not that construction.
@@ -198,7 +217,9 @@ the targeting needed:
         --inst-dir benchmarks/instances/minlplib/heldout ...
 
 Output must go to a scratch path outside `benchmarks/instances/`, because the
-drivers treat anything under it as published. `heldout/` has no
+drivers treat anything under it as published. Always pass `--out`: a
+whole-roster `cbls_minlplib .../heldout` run at default flags writes
+`heldout/comparison.csv`. `heldout/` has no
 `comparison.csv`, `scip_baseline.csv` or `analysis_notes.csv`, and the runner
 does not need them. `run_ablation.py`'s arm set is fixed in its `ARMS` table,
 so a three-point grid around the shipped `--unproductive-iters 300` needs those
@@ -215,7 +236,8 @@ counts above, checks that the two sets are disjoint, checks that the draw
 depends on the seed, and checks that every held-out row has its text-NL file.
 
 To re-run the draw itself (it refuses to replace a committed roster without
-`--force`):
+`--force`). It keeps the committed `.nl` files rather than re-fetching them, but
+it does fetch the published walk's eight skips again to re-check them:
 
     .venv/bin/python3 benchmarks/instances/minlplib/download.py --heldout \
         --catalogue benchmarks/instances/minlplib/heldout/pool.csv --force

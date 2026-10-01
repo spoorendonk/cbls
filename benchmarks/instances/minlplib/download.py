@@ -18,6 +18,12 @@ failed fetch is visible. Run with the project venv:
     .venv/bin/python3 benchmarks/instances/minlplib/download.py
     .venv/bin/python3 benchmarks/instances/minlplib/download.py --force
     .venv/bin/python3 benchmarks/instances/minlplib/download.py --limit 10
+
+The held-out roster (#144, HELDOUT.md) is drawn with ``--heldout``; ``--catalogue``
+reads the metadata CSV from a local file instead of the network:
+
+    .venv/bin/python3 benchmarks/instances/minlplib/download.py --heldout \
+        --catalogue benchmarks/instances/minlplib/heldout/pool.csv --force
 """
 
 from __future__ import annotations
@@ -321,9 +327,10 @@ def select_heldout(rows: list[dict[str, str]], exclude: set[str], seed: int) -> 
 def walk(candidates: list[Instance], limit: int, unavailable: set[str]) -> list[Instance]:
     """The first `limit` candidates not in `unavailable` -- the fetch walk, offline.
 
-    `main` fetches in candidate order and skips an instance whose body is not a
-    text NL file; given the set of skipped names, this reproduces its result
-    without the network, which is what lets the tests pin both rosters.
+    `fetch_published` and `_fetch_heldout` fetch in candidate order and skip an
+    instance whose body is not a text NL file; given the set of skipped names,
+    this reproduces their result without the network, which is what lets the
+    tests pin both rosters.
     """
     return [inst for inst in candidates if inst.name not in unavailable][:limit]
 
@@ -505,6 +512,10 @@ def _fetch_heldout(
 ) -> tuple[list[Instance], list[Skip]] | None:
     """Walk `order` fetching text NL into `out_dir` until `limit` are in hand.
 
+    An existing non-empty .nl is always reused, even under --force: the committed
+    files are the pinned bytes #145 runs on, and --force only lifts the
+    membership refusal. To re-fetch one, delete it first.
+
     Unlike the published walk, a network failure aborts instead of skipping: a
     transient outage recorded as a skip would change the committed membership.
     """
@@ -515,7 +526,7 @@ def _fetch_heldout(
         if len(fetched) >= limit:
             break
         dest = out_dir / f"{inst.name}.nl"
-        if dest.exists() and not force and dest.stat().st_size > 0:
+        if dest.exists() and dest.stat().st_size > 0:
             fetched.append(inst)
             continue
         try:
@@ -626,7 +637,12 @@ def fetch_published(here: Path, candidates: list[Instance], limit: int, force: b
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--force", action="store_true", help="re-download even if the file exists")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="re-download even if the file exists; with --heldout, only allow replacing "
+        "a committed held-out roster (existing .nl files are kept)",
+    )
     parser.add_argument(
         "--limit",
         type=int,
@@ -648,7 +664,7 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help=f"read the metadata CSV from this file instead of {CSV_URL} "
-        f"(e.g. {HELDOUT_DIRNAME}/{POOL_FILENAME})",
+        f"(e.g. benchmarks/instances/minlplib/{HELDOUT_DIRNAME}/{POOL_FILENAME})",
     )
     args = parser.parse_args()
     if args.heldout and args.select_only:
