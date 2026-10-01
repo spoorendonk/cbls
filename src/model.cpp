@@ -1191,11 +1191,6 @@ void Model::rebuild_back_references() {
 // property of the numbers, decided per update (see src/dag_ops.cpp).
 namespace {
 
-bool is_row_comparison(NodeOp op) {
-    return op == NodeOp::Leq || op == NodeOp::Geq || op == NodeOp::Lt || op == NodeOp::Gt ||
-           op == NodeOp::Eq;
-}
-
 // The terms rule: at least one term, none a Sum or the objective bound, none
 // named twice. `node_stamp`/`var_stamp` hold the last Sum that named each
 // node/variable, so the repeat test is O(1) per term across the whole pass.
@@ -1228,7 +1223,7 @@ bool readers_qualify(const Model& m, int32_t nid) {
     }
     return std::all_of(readers.begin(), readers.end(), [&m, nid](int32_t p) {
         const ExprNode& cmp = m.nodes()[p];
-        if (!is_row_comparison(cmp.op) || !m.parents(p).empty()) {
+        if (!is_comparison_op(cmp.op) || !m.parents(p).empty()) {
             return false;
         }
         const ConstSpan<ChildRef> sides = m.children(cmp);

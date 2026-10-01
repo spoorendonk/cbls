@@ -9,15 +9,9 @@
 namespace cbls {
 
 class Model;
-enum class NodeOp : uint8_t;
 
-/// Whether a row whose constraint node has this op is scored as a COMPARISON
-/// (`Leq`/`Geq`/`Lt`/`Gt`/`Eq`: residual of its two children) rather than as a
-/// bare body (`add_constraint(expr)`, read as `expr <= 0`). The scorer's build
-/// and its owner's classification must split rows the same way.
-[[nodiscard]] bool is_comparison_op(NodeOp op);
-
-/// Closed-form scoring of a scalar jump over LINEAR comparison rows.
+/// Closed-form scoring of a scalar jump over LINEAR rows: affine comparisons and
+/// affine bare bodies.
 ///
 /// `Model::weighted_violation_delta` scores a candidate value by setting the
 /// variable and running a Probe `delta_evaluate` and a Rollback one. A dirty

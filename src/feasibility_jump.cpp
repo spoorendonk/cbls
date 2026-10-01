@@ -1360,17 +1360,22 @@ bool node_is_affine(NodeOp op, ConstSpan<ChildRef> children, const std::vector<u
 //
 // A bare body (`add_constraint(expr)`, read as expr <= 0) that is itself affine
 // (#190): the scorer models it as the residual `expr - 0`, which is the node
-// value for every input (linear_jump.h). Asked of the row's own affineness,
-// which is node_is_affine's verdict: Sum/Neg/Prod-by-constant/Div-by-constant
-// over affine children. Neq (a step), Custom, and every nonlinear op never
-// qualify either way.
+// value for every input (linear_jump.h). Asked of the row's own affineness:
+// Sum/Neg/Prod-by-constant/Div-by-constant over affine children. Neq (a step),
+// Custom, and every nonlinear op never qualify either way.
+//
+// Both shapes read `cf_affine`, not node_is_affine's verdict: a comparison
+// NESTED below the row is not affine for scoring, because its value is a
+// residual that reads a literal +/-inf bound as a sentinel (0, whatever moves
+// the other side) -- `p + r D` would move the row while the DAG keeps it. A
+// constant subtree stays affine: it cannot move.
 bool closed_form_row(const ExprNode& nd, int32_t nid, ConstSpan<ChildRef> children,
-                     const std::vector<uint8_t>& is_affine) {
+                     const std::vector<uint8_t>& cf_affine) {
     if (!is_comparison_op(nd.op)) {
-        return is_affine[nid] != 0;
+        return cf_affine[nid] != 0;
     }
     return std::all_of(children.begin(), children.end(),
-                       [&](const ChildRef& c) { return c.is_var || is_affine[c.id] != 0; });
+                       [&](const ChildRef& c) { return c.is_var || cf_affine[c.id] != 0; });
 }
 
 }  // namespace
@@ -1380,6 +1385,10 @@ void FeasibilityJump::compute_linear_constraints() {
     const size_t nn = nodes.size();
     std::vector<uint8_t> is_const(nn, 0);
     std::vector<uint8_t> is_affine(nn, 0);
+    // As is_affine, except that a non-constant comparison node is not affine:
+    // the closed form's notion (closed_form_row). is_affine keeps comparisons,
+    // since is_linear_ (two-phase GLS's mask) classifies a ROW by its own node.
+    std::vector<uint8_t> cf_affine(nn, 0);
 
     // topo_order has children before parents.
     for (int32_t nid : model_.topo_order()) {
@@ -1391,6 +1400,9 @@ void FeasibilityJump::compute_linear_constraints() {
         // node_is_affine from indexing the children of a childless leaf.
         is_affine[nid] =
             static_cast<uint8_t>(all_const || node_is_affine(nd.op, children, is_const, is_affine));
+        cf_affine[nid] = static_cast<uint8_t>(
+            all_const ||
+            (!is_comparison_op(nd.op) && node_is_affine(nd.op, children, is_const, cf_affine)));
     }
 
     const auto& cids = model_.constraint_ids();
@@ -1398,7 +1410,7 @@ void FeasibilityJump::compute_linear_constraints() {
         is_linear_[c] = is_affine[cids[c]];
         const ExprNode& nd = nodes[cids[c]];
         linear_.set_row_eligible(static_cast<int32_t>(c),
-                                 closed_form_row(nd, cids[c], model_.children(nd), is_affine));
+                                 closed_form_row(nd, cids[c], model_.children(nd), cf_affine));
     }
 }
 

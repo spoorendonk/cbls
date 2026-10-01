@@ -811,6 +811,8 @@ TEST_CASE("bare affine bodies are closed-form eligible, non-affine ones are not"
     m.add_constraint(m.neq(u, m.constant(2.0)));                                 // 7: Neq, a step
     m.add_constraint(m.custom({u}, std::make_unique<InputSum>(), "c"));          // 8: Custom
     m.add_constraint(m.sum({m.custom({u}, std::make_unique<InputSum>(), "d"), y}));  // 9
+    m.add_constraint(m.sum({m.leq(x, y), u}));                     // 10: nested comparison
+    m.add_constraint(m.sum({m.constant(1.0), m.constant(-2.0)}));  // 11: constant only
     m.close();
     ViolationManager vm(m);
     RNG rng(1);
@@ -820,10 +822,11 @@ TEST_CASE("bare affine bodies are closed-form eligible, non-affine ones are not"
         INFO("row " << c);
         REQUIRE(sc.row_eligible(c));
     }
-    for (int32_t c = 4; c <= 9; ++c) {
+    for (int32_t c = 4; c <= 10; ++c) {
         INFO("row " << c);
         REQUIRE_FALSE(sc.row_eligible(c));
     }
+    REQUIRE(sc.row_eligible(11));  // constant, so affine; in no variable's G_v
 }
 
 TEST_CASE("bare-body scores equal the probe's exactly on integral rows", "[fj][linear_jump]") {
@@ -982,4 +985,45 @@ TEST_CASE("a bare body's Newton step reads the cached row partial", "[fj][linear
     REQUIRE(r.jump_value == 1.5);
     REQUIRE(sc.cached_partials() == 1);
     REQUIRE(sc.fast_prepares() == 1);
+}
+
+TEST_CASE("a comparison nested inside a row is never closed-form eligible", "[fj][linear_jump]") {
+    // A comparison's value is not affine in its inputs: its residual reads a
+    // literal +inf bound as a sentinel and returns 0. Nested inside a Sum, the
+    // closed form would move the outer row by r*D while the DAG keeps the inner
+    // comparison at 0. Both row shapes: a bare body and a comparison's child.
+    const double inf = std::numeric_limits<double>::infinity();
+    Model m;
+    const int32_t x = m.float_var(-inf, inf);
+    const int32_t z = m.float_var(-2.0, 2.0);
+    const int32_t y = m.float_var(-2.0, 2.0);
+    const int32_t inner = m.leq(m.sum({x, z}), m.constant(inf));
+    m.add_constraint(m.sum({inner, y}));                           // 0: bare
+    m.add_constraint(m.leq(m.sum({inner, y}), m.constant(-1.0)));  // 1: comparison
+    m.add_constraint(m.sum({m.constant(2.0), m.constant(-3.0)}));  // 2: const-only bare
+    m.close();
+    m.var_mut(vid(x)).value = inf;
+    m.var_mut(vid(z)).value = 0.0;
+    m.var_mut(vid(y)).value = 0.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+    RNG rng(1);
+    FeasibilityJump fj(m, vm, rng);
+    LinearJumpScorer& sc = fj.linear_scorer();
+    CHECK_FALSE(sc.row_eligible(0));
+    CHECK_FALSE(sc.row_eligible(1));
+    CHECK(sc.row_eligible(2));  // constant: affine, and in no G_v
+    CHECK(m.constraints_of_var(vid(z)).size() == 2);
+    for (const std::vector<double>& w :
+         {std::vector<double>{1.0, 0.0, 1.0}, std::vector<double>{0.0, 1.0, 1.0}}) {
+        // The DAG keeps the inner comparison at 0 whatever z does.
+        REQUIRE(m.weighted_violation_delta(vid(z), 1.0, w) == 0.0);
+        const JumpResult probe = compute_var_jump(m, w, vid(z));
+        const JumpResult fast = compute_var_jump(m, w, vid(z), false, &sc);
+        CHECK(fast.jump_value == probe.jump_value);
+        CHECK(fast.score == probe.score);
+        if (sc.prepare(vid(z), w)) {
+            CHECK(sc.delta(1.0) == 0.0);
+        }
+    }
 }

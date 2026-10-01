@@ -70,11 +70,6 @@ double eq_sign(double diff) {
 
 }  // namespace
 
-bool is_comparison_op(NodeOp op) {
-    return op == NodeOp::Leq || op == NodeOp::Geq || op == NodeOp::Lt || op == NodeOp::Gt ||
-           op == NodeOp::Eq;
-}
-
 void LinearJumpScorer::FreeDeleter::operator()(double* p) const {
     std::free(p);  // paired with build_row's calloc
 }

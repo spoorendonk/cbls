@@ -331,6 +331,16 @@ inline double comparison_residual(double a, double b, bool a_is_const, bool b_is
     return a - b;
 }
 
+/// Whether a node of this op is a comparison row (`Leq`/`Geq`/`Lt`/`Gt`/`Eq`):
+/// its value is a residual of its two children, not an expression in them. A
+/// constraint whose node is anything else is a bare body, read as `expr <= 0`.
+/// One predicate for every place that splits rows that way (#192's incremental
+/// Sum gate, #190's closed-form scorer and its classification).
+inline bool is_comparison_op(NodeOp op) {
+    return op == NodeOp::Leq || op == NodeOp::Geq || op == NodeOp::Lt || op == NodeOp::Gt ||
+           op == NodeOp::Eq;
+}
+
 /// The strictness margin `Lt`/`Gt` add on top of `comparison_residual`: a strict
 /// row reads as violated by this much at equality (see above). One constant for
 /// `evaluate` and for FJ's closed-form linear scorer (`linear_jump.h`), which
