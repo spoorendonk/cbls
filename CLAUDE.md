@@ -710,7 +710,7 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 
 ### Key extension points
 
-- **`InnerSolverHook`** — subclass to provide domain-specific continuous optimization. The reference implementation is the built-in `FloatIntensifyHook` (`include/cbls/inner_solver.h`, `src/inner_solver.cpp`); no benchmark currently ships a custom one.
+- **`InnerSolverHook`** — subclass to provide domain-specific continuous optimization. The reference implementation is the built-in `FloatIntensifyHook` (`include/cbls/inner_solver.h`, `src/inner_solver.cpp`); no benchmark currently ships a custom one. `solve()` is handed a `StopRef stop` (#191) that turns true at the search's deadline, a peer's stop or a host cancel: the call is synchronous and cannot be pre-empted, so a hook whose work can outlast the budget **must** poll `stop` and return promptly, leaving the model consistent — an unpolled hook runs the solve past its budget.
 - **New operations** — add to `NodeOp` enum in `dag.h`, implement `evaluate()` in `dag.cpp`, `local_derivative()` for AD, `delta_evaluate` support in `dag_ops.cpp`
 - **`CustomInvariant`** (`include/cbls/custom_invariant.h`, #166) — user code
   *inside* the DAG, for the cases that do not deserve a core op: a black-box or

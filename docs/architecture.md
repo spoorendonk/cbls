@@ -1899,8 +1899,8 @@ before the deadline could overrun it. Five can, and each is bounded separately:
 | # | Sub-step | Bound | Where |
 |---|----------|-------|-------|
 | 1 | Feasibility Jump batch | handed the same absolute deadline, checked inside the GLS loop on a stride bounded two ways: at most 64 iterations, and at most 1/64 of the *remaining* budget in predicted time (#113) | `gfj.time_limit = budget_seconds` |
-| 2 | `InnerSolverHook` | not *started* when the budget is spent, and handed the loop's own `past_deadline()` as `solve()`'s `StopRef stop` (#191); `FloatIntensifyHook` polls it every 16 Float variables and before every multi-variable Newton step. A custom hook that ignores `stop` is still unbounded — the call is synchronous | `if (hook && !past_deadline())`, `LoopStop` |
-| 3 | LNS repair | handed `min(2.0, remaining())`, not its own independent 2s | `diversify()` |
+| 2 | `InnerSolverHook` | not *started* when the budget is spent, and handed the loop's own `past_deadline()` as `solve()`'s `StopRef stop` (#191); `FloatIntensifyHook` polls it every `vars_per_poll()` Float variables (65 536 / rows, clamped to [1, 256]: a row-count proxy for a variable's cost, argued in `src/inner_solver.cpp`) and before every multi-variable Newton step. A custom hook that ignores `stop` is still unbounded — the call is synchronous | `if (hook && !past_deadline())`, `LoopStop` |
+| 3 | LNS repair | handed `min(2.0, remaining())`, not its own independent 2s. Clock only: the repair does not see a peer worker's stop or a host cancel, so either can wait up to 2s for it | `diversify()` |
 | 4 | STRUCTURAL sweep | checked between generators, one per structured variable by default; the overrun is one generator's candidates, which the built-ins cap at 5 and a registered generator does not (#105, #165) | `StructuralBatch::run` |
 | 5 | diversification kick, structural half | checked between structural *moves*, on a stride bounded the same two ways as row 1: at most 64 moves, and at most 1/64 of the *remaining* budget in predicted time (#115) | `perturb_structural` |
 
@@ -2600,10 +2600,20 @@ Sweeps repeat up to `max_sweeps` times, stopping early when a sweep makes no
 improvement, or when the search's `stop` is raised (#191: the deadline, a peer
 worker's stop or a host cancel). Before that poll existed the hook ran MIPfeas
 `neos-4300652-rahue` (12k Float columns, 77k rows; every Float variable costs an
-O(rows) violated-row scan) 9.8s past a 20s budget at seed 1 (engine `7291a2c`,
-`--threads 1`, Release, one run per arm on an idle machine); with it the same
-run ends at 20.1s with the same objective. The poll changes only whether the descent continues, so a pass
-that finishes within budget is bit-identical to before.
+O(rows) violated-row scan) past its budget once the run turned feasible. Measured
+at `--threads 1 --budget 20`, Release, one run per arm under an exclusive lock
+with the 1-minute load below 1.5:
+
+| seed | engine | wall (s) | objective |
+|------|--------|----------|-----------|
+| 1 | `7291a2c` (before #191) | 29.76 | 19.7683 |
+| 1 | `c4b4861` (#191) | 20.13 | 19.7683 |
+| 2 | `7291a2c` (before #191) | 22.48 | 18.3416 |
+| 2 | `c4b4861` (#191) | 20.13 | 18.3416 |
+
+The poll changes only whether the descent continues, so a pass that finishes
+within budget is bit-identical to before: fixed-iteration final-assignment hashes
+match the pre-#191 engine on 50v-10, aflow30a, alkylation and chain50 (seeds 1-2).
 
 ### Parameters
 
