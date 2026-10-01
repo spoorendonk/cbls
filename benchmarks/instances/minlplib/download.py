@@ -310,7 +310,9 @@ def select_heldout(rows: list[dict[str, str]], exclude: set[str], seed: int) -> 
     stratified by the same rule as the published roster; the only change is that
     within a class the order is `heldout_key` instead of smallest first.
     `exclude` is the published roster -- the instances the shipped defaults were
-    fitted on.
+    fitted on -- plus the instances its walk already found unfetchable. Dropping
+    those before the round-robin rather than skipping them during the walk keeps
+    a known-binary instance from costing its class a turn.
     """
     pool = [inst for inst in survivors(rows) if inst.name not in exclude]
     return _round_robin(pool, lambda i: (heldout_key(seed, i.name),))
@@ -553,7 +555,8 @@ def build_heldout(here: Path, rows: list[dict[str, str]], limit: int, force: boo
     published_skips = _recheck_published_skips(candidates, roster)
     if published_skips is None:
         return 1
-    walked = _fetch_heldout(select_heldout(rows, set(roster), HELDOUT_SEED), out_dir, limit, force)
+    exclude = set(roster) | {name for name, _, _ in published_skips}
+    walked = _fetch_heldout(select_heldout(rows, exclude, HELDOUT_SEED), out_dir, limit, force)
     if walked is None:
         return 1
     fetched, heldout_skips = walked
