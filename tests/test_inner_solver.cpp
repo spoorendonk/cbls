@@ -3,7 +3,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cbls/cbls.h>
+#include <chrono>
 #include <cmath>
+#include <vector>
 
 using namespace cbls;
 
@@ -164,4 +166,175 @@ TEST_CASE("solve with FloatIntensifyHook improves mixed problem", "[inner_solver
     REQUIRE(result.feasible);
     // With hook, should find good solution (x=2 when b=1, or x=3 when b=0)
     REQUIRE(result.objective <= 3.5);
+}
+
+// ---------------------------------------------------------------------------
+// #191: the hook runs inside the search's wall-clock budget.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// min sum x_i^2 over n Floats in [1, 10], each with a row x_i - 20 <= 0 that
+// always holds. Feasible from the first batch, so the hook is called at once;
+// every Float costs FloatIntensifyHook an O(rows) violated-row scan, and the
+// descent toward the lower bounds keeps improving for many sweeps.
+Model many_float_model(int n) {
+    Model m;
+    std::vector<int32_t> squares;
+    squares.reserve(n);
+    const auto two = m.constant(2.0);
+    const auto minus20 = m.constant(-20.0);
+    for (int i = 0; i < n; ++i) {
+        const auto x = m.float_var(1.0, 10.0);
+        m.add_constraint(m.sum({x, minus20}));
+        squares.push_back(m.pow_expr(x, two));
+    }
+    m.minimize(m.sum(squares));
+    m.close();
+    return m;
+}
+
+std::vector<double> float_values(const Model& m) {
+    std::vector<double> values;
+    for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
+        values.push_back(m.var(v).value);
+    }
+    return values;
+}
+
+}  // namespace
+
+TEST_CASE("solve returns within its budget when an intensification pass would outlast it",
+          "[inner_solver]") {
+    // Red before #191: the hook got no stop, so the solve returned only when
+    // the descent converged, seconds past the budget.
+    Model m = many_float_model(3000);
+    FloatIntensifyHook hook;
+    hook.max_sweeps = 1'000'000;  // the descent, not the sweep cap, ends a pass
+
+    constexpr double kBudget = 0.5;
+    const auto started = std::chrono::steady_clock::now();
+    const SearchResult result = solve(m, kBudget, 42, true, &hook);
+    const double wall =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+
+    REQUIRE(result.feasible);
+    REQUIRE(result.counters.inner_solver_calls >= 1);
+    // The tolerance covers setup, finish() and a loaded ctest -j, not the
+    // hook: the poll stride bounds the hook's own overrun at 16 variables.
+    CHECK(result.time_seconds < kBudget + 0.5);
+    CHECK(wall < kBudget + 0.5);
+}
+
+TEST_CASE("FloatIntensifyHook returns before any work on a raised stop", "[inner_solver]") {
+    Model m = many_float_model(50);
+    for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
+        m.var_mut(v).value = 5.0;
+    }
+    full_evaluate(m);
+    ViolationManager vm(m);
+
+    StopToken token;
+    token.request();
+    FloatIntensifyHook hook;
+    hook.solve(m, vm, {}, token);
+    REQUIRE(float_values(m) == std::vector<double>(m.num_vars(), 5.0));
+}
+
+TEST_CASE("FloatIntensifyHook under an unraised stop matches the stop-less call",
+          "[inner_solver]") {
+    // The polls decide only whether the descent continues, never what it does.
+    auto run = [](bool with_stop) {
+        Model m = many_float_model(50);
+        for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
+            m.var_mut(v).value = 2.0 + (0.1 * v);
+        }
+        full_evaluate(m);
+        const std::vector<double> start = float_values(m);
+        ViolationManager vm(m);
+        FloatIntensifyHook hook;
+        hook.max_sweeps = 20;
+        const StopToken token;  // attached, never raised
+        if (with_stop) {
+            hook.solve(m, vm, {}, token);
+        } else {
+            hook.solve(m, vm);
+        }
+        std::vector<double> end = float_values(m);
+        REQUIRE(end != start);  // the comparison below is about real work
+        return end;
+    };
+    REQUIRE(run(true) == run(false));
+}
+
+namespace {
+
+// Spins until the search's stop is raised, with a cap so a search that never
+// raises it fails the test rather than hanging it.
+struct WaitForStopHook : InnerSolverHook {
+    int calls = 0;
+    int stopped_calls = 0;
+    void solve(Model& /*model*/, ViolationManager& /*vm*/,
+               const std::vector<int32_t>& /*last_changed_vars*/, StopRef stop) override {
+        ++calls;
+        const auto cap = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (std::chrono::steady_clock::now() < cap) {
+            if (stop.requested()) {
+                ++stopped_calls;
+                return;
+            }
+        }
+    }
+};
+
+// Raises the host's token from inside the hook, then reports whether the stop
+// the search handed it saw that.
+struct CancelInsideHook : InnerSolverHook {
+    explicit CancelInsideHook(StopToken& t) : token(t) {}
+    StopToken& token;
+    int calls = 0;
+    int raised_on_entry = 0;
+    int stopped_calls = 0;
+    void solve(Model& /*model*/, ViolationManager& /*vm*/,
+               const std::vector<int32_t>& /*last_changed_vars*/, StopRef stop) override {
+        ++calls;
+        if (stop.requested()) {
+            ++raised_on_entry;
+            return;
+        }
+        token.request();
+        if (stop.requested()) {
+            ++stopped_calls;
+        }
+    }
+};
+
+}  // namespace
+
+TEST_CASE("search hands a custom hook a stop raised at its deadline", "[inner_solver]") {
+    Model m = many_float_model(5);
+    WaitForStopHook hook;
+    constexpr double kBudget = 0.3;
+    const SearchResult result = solve(m, kBudget, 42, true, &hook);
+    REQUIRE(hook.calls >= 1);
+    REQUIRE(hook.stopped_calls == hook.calls);
+    CHECK(result.time_seconds < kBudget + 0.5);
+}
+
+TEST_CASE("search hands a custom hook a stop raised by a host cancel", "[inner_solver]") {
+    // No wall clock: an iteration-budgeted run, whose stop reads no clock. The
+    // hook raises the host's token itself, so the only route by which it can
+    // see stop.requested() is the search's own cancel check -- the route a
+    // host cancelling from another thread mid-hook relies on.
+    Model m = many_float_model(5);
+    StopToken token;
+    CancelInsideHook hook(token);
+    SearchConfig cfg;
+    cfg.max_iterations = 100000;
+    cfg.stop = token;
+    const SearchResult result = solve(m, 0.0, 42, true, &hook, nullptr, 3, nullptr, cfg);
+    REQUIRE(hook.calls == 1);
+    REQUIRE(hook.raised_on_entry == 0);
+    REQUIRE(hook.stopped_calls == 1);
+    REQUIRE(result.termination == TerminationReason::Cancelled);
 }
