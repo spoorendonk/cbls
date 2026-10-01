@@ -547,7 +547,7 @@ namespace {
 class FeasibleVisitCounter : public InnerSolverHook {
 public:
     void solve(Model& /*model*/, ViolationManager& /*vm*/,
-               const std::vector<int32_t>& /*last_changed_vars*/) override {
+               const std::vector<int32_t>& /*last_changed_vars*/, StopRef /*stop*/) override {
         ++visits;
     }
 

@@ -169,8 +169,23 @@ bool multi_var_newton_step(Model& model, ViolationManager& vm, int32_t cid) {
 
 }  // namespace
 
+// The stop poll (#191). Without it the calls ran rahue (12k Float columns, 77k
+// rows) ~10 s past a 20 s budget: each Float variable costs at least one
+// O(rows) violated-row scan, and a sweep visits every one of them.
+//
+// Polled every kStopStride Float variables rather than every one: a poll is an
+// indirect call plus, on a timed run, one steady_clock read (~20-30 ns), and a
+// variable's descent is at least a row scan and a reverse-mode partial, so the
+// stride keeps the poll's share negligible on small models while bounding the
+// overrun at kStopStride variables' work. Each multi-variable Newton step costs
+// a whole reverse pass, so every one of those is polled.
+//
+// The polls never change what the descent does, only whether it continues, so
+// with `stop` never raised the trajectory is exactly what it was without them.
 void FloatIntensifyHook::solve(Model& model, ViolationManager& vm,
-                               const std::vector<int32_t>& /*last_changed_vars*/) {
+                               const std::vector<int32_t>& /*last_changed_vars*/, StopRef stop) {
+    constexpr int kStopStride = 16;
+    int until_poll = 0;
     for (int sweep = 0; sweep < max_sweeps; ++sweep) {
         bool improved = false;
 
@@ -178,6 +193,13 @@ void FloatIntensifyHook::solve(Model& model, ViolationManager& vm,
             if (var.type != VarType::Float) {
                 continue;
             }
+            if (until_poll == 0) {
+                if (stop.requested()) {
+                    return;
+                }
+                until_poll = kStopStride;
+            }
+            --until_poll;
             if (descend_float_var(model, vm, var, initial_step_size, max_line_search_steps)) {
                 improved = true;
             }
@@ -188,6 +210,9 @@ void FloatIntensifyHook::solve(Model& model, ViolationManager& vm,
             auto violated = vm.violated_constraints();
             if (ci >= static_cast<int>(violated.size())) {
                 break;
+            }
+            if (stop.requested()) {
+                return;
             }
             if (multi_var_newton_step(model, vm, model.constraint_ids()[violated[ci]])) {
                 improved = true;

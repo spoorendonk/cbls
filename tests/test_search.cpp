@@ -486,9 +486,9 @@ TEST_CASE("ParallelSearch with hook and LNS factories", "[pool]") {
         CountingHook(std::atomic<int>& d, std::atomic<int>& c) : destroyed(d), calls(c) {}
         ~CountingHook() override { destroyed.fetch_add(1); }
         void solve(Model& model, ViolationManager& vm,
-                   const std::vector<int32_t>& last_changed_vars = {}) override {
+                   const std::vector<int32_t>& last_changed_vars = {}, StopRef stop = {}) override {
             calls.fetch_add(1);
-            FloatIntensifyHook::solve(model, vm, last_changed_vars);
+            FloatIntensifyHook::solve(model, vm, last_changed_vars, stop);
         }
         std::atomic<int>& destroyed;
         std::atomic<int>& calls;
@@ -766,7 +766,7 @@ class CountingHook : public InnerSolverHook {
 public:
     int calls = 0;
     void solve(Model& /*model*/, ViolationManager& /*vm*/,
-               const std::vector<int32_t>& /*last_changed_vars*/) override {
+               const std::vector<int32_t>& /*last_changed_vars*/, StopRef /*stop*/) override {
         ++calls;
     }
 };

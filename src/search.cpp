@@ -338,6 +338,12 @@ private:
     [[nodiscard]] bool past_deadline() const {
         return cancel_requested() || peer_stopped() || clock_expired();
     }
+    // past_deadline() in the shape StopRef adapts, handed to the inner-solver
+    // hook so it stops on exactly what stops this loop (#191).
+    struct LoopStop {
+        const ViolationLSLoop* loop;
+        [[nodiscard]] bool requested() const { return loop->past_deadline(); }
+    };
     [[nodiscard]] double remaining() const {
         if (!has_deadline_) {
             return 0.0;  // unbounded: sub-steps use their own iteration budgets
@@ -1456,7 +1462,14 @@ bool ViolationLSLoop::polish_and_record(double batch_violation, bool& resync) {
         const bool time_the_hook = has_deadline_ || tracer_ != nullptr;
         const auto hook_started = time_the_hook ? std::chrono::steady_clock::now()
                                                 : std::chrono::steady_clock::time_point{};
-        hook_->solve(model_, vm_, {});  // continuous-objective polish (mutates floats)
+        // The hook gets the loop's own stop condition (#191): before it had none,
+        // and FloatIntensifyHook on a 12k-Float model ran a 20s solve ~10s over
+        // budget. past_deadline() reads no clock on a run
+        // without one, so an iteration-budgeted run stays bit-reproducible, and
+        // a hook that finishes within budget sees nothing but unraised polls.
+        const LoopStop stop{this};
+        // continuous-objective polish (mutates floats)
+        hook_->solve(model_, vm_, {}, StopRef(stop));
         if (time_the_hook) {
             const double hook_seconds =
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - hook_started)

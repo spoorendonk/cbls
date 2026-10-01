@@ -586,7 +586,8 @@ TEST_CASE("a worker that throws after sharing still propagates", "[parallel]") {
     // returns a dead worker's mid-run snapshot as a result instead of throwing.
     struct ThrowingHook : InnerSolverHook {
         void solve(Model& /*model*/, ViolationManager& /*vm*/,
-                   const std::vector<int32_t>& /*last_changed_vars*/ = {}) override {
+                   const std::vector<int32_t>& /*last_changed_vars*/ = {},
+                   StopRef /*stop*/ = {}) override {
             throw std::runtime_error("hook failed");
         }
     };
@@ -768,7 +769,8 @@ namespace {
 struct FlakyHook : InnerSolverHook {
     explicit FlakyHook(int fail_times) : remaining_failures(fail_times) {}
     void solve(Model& /*model*/, ViolationManager& /*vm*/,
-               const std::vector<int32_t>& /*last_changed_vars*/ = {}) override {
+               const std::vector<int32_t>& /*last_changed_vars*/ = {},
+               StopRef /*stop*/ = {}) override {
         if (remaining_failures > 0) {
             --remaining_failures;
             throw std::runtime_error("transient hook failure");
@@ -834,7 +836,8 @@ TEST_CASE("a completed attempt resets a worker's consecutive-failure count", "[p
 
     struct Scripted : InnerSolverHook {
         void solve(Model& /*model*/, ViolationManager& /*vm*/,
-                   const std::vector<int32_t>& /*last_changed_vars*/ = {}) override {
+                   const std::vector<int32_t>& /*last_changed_vars*/ = {},
+                   StopRef /*stop*/ = {}) override {
             const int call = calls++;
             if (call < kEarlyThrows || call == kLateThrowCall) {
                 late_thrown = late_thrown || call == kLateThrowCall;
@@ -885,7 +888,8 @@ namespace {
 // the one place a test can watch a value the SearchResult does not carry.
 struct BoundWatcher : InnerSolverHook {
     void solve(Model& model, ViolationManager& /*vm*/,
-               const std::vector<int32_t>& /*last_changed_vars*/ = {}) override {
+               const std::vector<int32_t>& /*last_changed_vars*/ = {},
+               StopRef /*stop*/ = {}) override {
         bounds.push_back(model.objective_bound());
     }
     std::vector<double> bounds;
@@ -1606,7 +1610,7 @@ public:
         : pool_(pool), peer_objective_(peer_objective) {}
 
     void solve(Model& model, ViolationManager& /*vm*/,
-               const std::vector<int32_t>& /*last_changed_vars*/) override {
+               const std::vector<int32_t>& /*last_changed_vars*/, StopRef /*stop*/) override {
         if (!submitted_) {
             pool_.submit(peer_solution(peer_objective_));
             submitted_ = true;
@@ -1826,7 +1830,7 @@ namespace {
 class ImproveByOne : public InnerSolverHook {
 public:
     void solve(Model& model, ViolationManager& /*vm*/,
-               const std::vector<int32_t>& /*last_changed_vars*/) override {
+               const std::vector<int32_t>& /*last_changed_vars*/, StopRef /*stop*/) override {
         for (int32_t v = 0; v < static_cast<int32_t>(model.num_vars()); ++v) {
             const double before = model.var(v).value;
             if (before < 1.0) {
