@@ -64,7 +64,10 @@ Guards, because this file's output is published:
   seed or host, and re-solves any individual staged row whose `commit_sha`
   disagrees;
 * refuses a seed other than `DEFAULT_SEED` writing either published artifact,
-  by default or by name (#141).
+  by default or by name, and any scratch output (or its run record) resolving
+  to a published file (#141);
+* holds a machine-wide lock for the whole run, so two invocations never share
+  the machine or race on the per-seed table.
 
 Usage:
     .venv/bin/python3 benchmarks/minlplib/run_benchmark.py --dry-run
@@ -77,7 +80,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
+import fcntl
+import hashlib
 import io
 import os
 import socket
@@ -123,7 +129,7 @@ from benchmarks.minlplib.runner import (  # noqa: E402
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterator, Sequence
 
 DEFAULT_INST_DIR = REPO_ROOT / "benchmarks" / "instances" / "minlplib"
 DEFAULT_BUILD_DIR = REPO_ROOT / "build"
@@ -196,7 +202,7 @@ class Paths:
     seeds_out: Path | None
 
 
-def resolve_paths(args: argparse.Namespace) -> Paths:
+def resolve_paths(args: argparse.Namespace, sha: str) -> Paths:
     """Every path, with the seed policy applied (#141).
 
     The pre-registered seed defaults to the published `comparison.csv` and
@@ -204,9 +210,13 @@ def resolve_paths(args: argparse.Namespace) -> Paths:
     so leaving `--out` off can never publish a second seed into the published
     table. A whole-roster run onto the default paths -- at any seed -- also
     publishes its rows into the per-seed table.
+
+    The default staging directory is keyed by commit as well as seed: it
+    outlives every campaign now, and keyed by seed alone the first run after any
+    new commit would hit the stamp's refusal instead of starting fresh.
     """
     published_out = args.inst_dir / "comparison.csv"
-    stage = args.staging_dir or default_staging_root() / f"seed{args.seed}"
+    stage = args.staging_dir or default_staging_root() / sha / f"seed{args.seed}"
     preregistered = args.seed == DEFAULT_SEED
     out = args.out or (published_out if preregistered else stage / ASSEMBLED_TABLE)
     trace_out = args.trace_out or (
@@ -294,7 +304,7 @@ def _seeds_table_problems(args: argparse.Namespace) -> list[str]:
     the roster has been solved: a table whose header is not this runner's, or a
     run record that does not parse, would otherwise cost fifty minutes to find.
     """
-    seeds_out = resolve_paths(args).seeds_out
+    seeds_out = resolve_paths(args, "").seeds_out
     if seeds_out is None:
         return []
     problems: list[str] = []
@@ -314,13 +324,22 @@ def _seeds_table_problems(args: argparse.Namespace) -> list[str]:
     return problems
 
 
+def common_preflight(args: argparse.Namespace, sha: str, roster: Sequence[str]) -> list[str]:
+    """The refusals shared with `run_ablation.py`: the binary, the SHA and the roster.
+
+    Kept apart from `preflight` because the ablation driver's namespace has no
+    `--out`/`--seed`/`--staging-dir`, which the per-seed-table check needs.
+    """
+    return _build_problems(args, sha) + _data_problems(args, roster)
+
+
 def preflight(args: argparse.Namespace, sha: str, roster: Sequence[str]) -> list[str]:
     """Every reason to refuse this invocation, checked before anything is spent.
 
     All of them are cheap and all of them would otherwise surface as a wrong or
     half-written published table — some of them 50 minutes in.
     """
-    return _build_problems(args, sha) + _data_problems(args, roster) + _seeds_table_problems(args)
+    return common_preflight(args, sha, roster) + _seeds_table_problems(args)
 
 
 def usage_error(args: argparse.Namespace, published_out: Path) -> str | None:
@@ -410,6 +429,48 @@ def _subset_error(args: argparse.Namespace, published_out: Path) -> str | None:
     return None
 
 
+#: Every table a publish owns. Each one's run record (`run_record_path`) is owned too.
+PUBLISHED_NAMES: tuple[str, ...] = (
+    "comparison.csv",
+    "anytime_trace.csv",
+    "comparison_all.csv",
+    SEEDS_TABLE_NAME,
+)
+
+
+def _published_files(inst_dir: Path) -> dict[Path, str]:
+    tables = [inst_dir / name for name in PUBLISHED_NAMES]
+    return {f.resolve(): f.name for t in tables for f in (t, run_record_path(t))}
+
+
+def _misdirected_output(args: argparse.Namespace, published_out: Path) -> str | None:
+    """A scratch `--out`/`--trace-out` -- or `--out`'s run record -- landing on a published file.
+
+    `seed_policy_error` handles the two names that ARE the published pair; this is
+    every other spelling: the trace over `comparison.csv`, a table over the
+    per-seed table (whose record would then replace every seed's), a `--out` whose
+    stem makes its run record `comparison.run.json`, and so on.
+    """
+    published_trace = args.inst_dir / "anytime_trace.csv"
+    protected = _published_files(args.inst_dir)
+    written: list[tuple[str, Path]] = []
+    if args.out is not None and args.out.resolve() != published_out.resolve():
+        written += [("--out", args.out), ("--out's run record", run_record_path(args.out))]
+    if (
+        args.trace
+        and args.trace_out is not None
+        and args.trace_out.resolve() != published_trace.resolve()
+    ):
+        written.append(("--trace-out", args.trace_out))
+    for flag, path in written:
+        if path.resolve() in protected:
+            return (
+                f"{flag} resolves to the published {protected[path.resolve()]}; a scratch "
+                "output must not overwrite a published file"
+            )
+    return None
+
+
 def seed_policy_error(args: argparse.Namespace, published_out: Path) -> str | None:
     """Refuse any route by which a seed other than `DEFAULT_SEED` reaches a published file.
 
@@ -420,6 +481,9 @@ def seed_policy_error(args: argparse.Namespace, published_out: Path) -> str | No
     a `--trace-out` naming the published trace while `--out` is scratch, the
     explicit spelling of the hazard `usage_error`'s defaulted-trace guard covers.
     """
+    misdirected = _misdirected_output(args, published_out)
+    if misdirected:
+        return misdirected
     published_trace = args.inst_dir / "anytime_trace.csv"
     out_published = args.out is not None and args.out.resolve() == published_out.resolve()
     trace_published = (
@@ -445,14 +509,25 @@ def seed_policy_error(args: argparse.Namespace, published_out: Path) -> str | No
 def staging_stamp(args: argparse.Namespace, sha: str) -> str:
     """The configuration a staging directory's rows belong to, one field per line.
 
-    The host is part of it since #141 moved the default staging directory out of
+    The host and the roster are part of it since #141 moved the default staging directory out of
     the build tree: a home directory can be shared between machines, and a
     campaign resumed on another one would publish one table measured on two.
     """
     return (
         f"commit={sha}\ntime-limit={args.time_limit:g}\nseed={args.seed}\n"
-        f"host={socket.gethostname()}\n"
+        f"host={socket.gethostname()}\nroster={roster_fingerprint(args.inst_dir)}\n"
     )
+
+
+def roster_fingerprint(inst_dir: Path) -> str:
+    """A short hash of `bounds.csv`, so a staging dir is resumed only for its own roster.
+
+    The default staging root is shared by every checkout and every `--inst-dir`;
+    without this, a run over another roster directory at the same commit, budget
+    and seed would resume rows staged for this one.
+    """
+    bounds = inst_dir / "bounds.csv"
+    return hashlib.sha256(bounds.read_bytes()).hexdigest()[:16] if bounds.exists() else "none"
 
 
 def staging_stamp_conflict(stage: Path, args: argparse.Namespace, sha: str) -> str | None:
@@ -592,7 +667,11 @@ def assemble(stage: Path, roster: Sequence[str], out: Path, suffix: str) -> None
 
 
 def run_record(
-    args: argparse.Namespace, sha: str, roster: Sequence[str], machine: dict[str, object]
+    args: argparse.Namespace,
+    sha: str,
+    roster: Sequence[str],
+    machine: dict[str, object],
+    resumed: int = 0,
 ) -> RunRecord:
     """What produced this run's results: written beside every table it publishes (#141)."""
     return RunRecord(
@@ -600,6 +679,7 @@ def run_record(
         budget_seconds=args.time_limit,
         seed=args.seed,
         roster=len(roster),
+        resumed=resumed,
         published_at=datetime.now(UTC).isoformat(timespec="seconds"),
         machine=machine,
         concurrency={
@@ -726,7 +806,9 @@ def print_summary(out: Path, bounds_csv: Path) -> None:
         )
 
 
-def print_seeds_summary(seeds_out: Path, bounds_csv: Path, *, commit: str, budget: float) -> None:
+def print_seeds_summary(
+    seeds_out: Path, bounds_csv: Path, *, commit: str, budget: float, host: str | None
+) -> None:
     """Print the multi-seed summary of the per-seed table -- never raise (see `print_summary`)."""
     try:
         summary = campaign_report.summarize_seeds(
@@ -736,6 +818,7 @@ def print_seeds_summary(seeds_out: Path, bounds_csv: Path, *, commit: str, budge
             campaign_report.load_seed_run_records(seeds_out),
             commit=commit,
             budget=budget,
+            host=host,
         )
         print(campaign_report.render_seeds_text(summary))
     except (ValueError, KeyError, OSError) as exc:
@@ -746,11 +829,17 @@ def print_seeds_summary(seeds_out: Path, bounds_csv: Path, *, commit: str, budge
         )
 
 
-def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage: Path) -> None:
-    """Solve every roster instance serially, skipping the ones already staged."""
+def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage: Path) -> int:
+    """Solve every roster instance serially, skipping the ones already staged.
+
+    Returns how many were skipped: their rows were solved by an EARLIER
+    invocation, whose machine and load this one's run record did not see.
+    """
+    resumed = 0
     for index, name in enumerate(roster, start=1):
         if args.resume and staged_complete(args, sha, name, stage):
             print(f"[{index}/{len(roster)}] {name}: staged already, skipping")
+            resumed += 1
             continue
         cmd = runner_command(args, sha, name, stage)
         print(f"[{index}/{len(roster)}] {name}: {' '.join(cmd)}", flush=True)
@@ -769,6 +858,7 @@ def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage:
             raise RuntimeError(
                 f"{name} failed (exit {completed.returncode}); see {log}. {what_next}"
             )
+    return resumed
 
 
 def publish(
@@ -814,6 +904,7 @@ def publish(
             args.inst_dir / "bounds.csv",
             commit=record.commit,
             budget=record.budget_seconds,
+            host=socket.gethostname(),
         )
     return 1 if merge_failed else 0
 
@@ -826,15 +917,58 @@ def execute(args: argparse.Namespace, sha: str, roster: Sequence[str], paths: Pa
     run's own build.
     """
     machine = machine_record()
-    if args.build:
-        subprocess.run(build_command(args), check=True)
-    paths.stage.mkdir(parents=True, exist_ok=True)
-    conflict = staging_stamp_conflict(paths.stage, args, sha)
-    if conflict:
-        print(conflict, file=sys.stderr)
-        return 2
-    run_roster(args, sha, roster, paths.stage)
-    return publish(args, roster, paths, run_record(args, sha, roster, machine))
+    with driver_lock():
+        if args.build:
+            subprocess.run(build_command(args), check=True)
+        paths.stage.mkdir(parents=True, exist_ok=True)
+        conflict = staging_stamp_conflict(paths.stage, args, sha)
+        if conflict:
+            print(conflict, file=sys.stderr)
+            return 2
+        resumed = run_roster(args, sha, roster, paths.stage)
+        if resumed:
+            print(
+                f"note: {resumed} of {len(roster)} row(s) were staged by an earlier invocation; "
+                "the run record's machine and load are this invocation's, not theirs",
+                file=sys.stderr,
+            )
+        return publish(args, roster, paths, run_record(args, sha, roster, machine, resumed))
+
+
+#: Held by every invocation for its whole run, in the shared staging root.
+DRIVER_LOCK_NAME = "driver.lock"
+
+
+@contextlib.contextmanager
+def driver_lock() -> Iterator[None]:
+    """One driver invocation at a time on this machine, or refuse.
+
+    This is what makes the run record's `parallel_solves: 1` true rather than
+    asserted, and what serialises the per-seed table's read-modify-write: two
+    seeds started in two terminals would otherwise halve each other's iteration
+    counts and could each publish over the other's block. In the default staging
+    root whatever `--staging-dir` says, so a custom staging dir is not a way
+    around it. `flock` is dropped by the kernel when the holder exits, so a lock
+    file left by a crash is not stale.
+    """
+    root = default_staging_root()
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / DRIVER_LOCK_NAME
+    with path.open("a+") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            handle.seek(0)
+            holder = handle.read().strip() or "pid unknown"
+            raise RuntimeError(
+                f"another run_benchmark.py holds {path} ({holder}); wall-clock-budgeted solves "
+                "must not share the machine. Wait for it to finish."
+            ) from exc
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"pid={os.getpid()}\n")
+        handle.flush()
+        yield
 
 
 def describe_plan(
@@ -892,7 +1026,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--staging-dir",
         type=Path,
         default=None,
-        help="default $XDG_STATE_HOME/cbls/minlplib-rerun/seed<N> (~/.local/state/...)",
+        help="default $XDG_STATE_HOME/cbls/minlplib-rerun/<commit>/seed<N> (~/.local/state/...)",
     )
     parser.add_argument(
         "--no-trace", dest="trace", action="store_false", help="skip the anytime trace"
@@ -923,11 +1057,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    paths = resolve_paths(args)
-    refusal = usage_error(args, paths.published_out)
+    refusal = usage_error(args, args.inst_dir / "comparison.csv")
     if refusal:
         print(refusal, file=sys.stderr)
         return 2
+    sha = commit_sha()
+    paths = resolve_paths(args, sha)
     # The merge reads and rewrites the published comparison_all.csv from the
     # published comparison.csv, so it is meaningless — and destructive — when
     # this run's rows went somewhere else. Resolved paths, so a relative --out
@@ -935,7 +1070,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     skipping_merge = args.merge and paths.out.resolve() != paths.published_out.resolve()
     args.merge = args.merge and not skipping_merge
 
-    sha = commit_sha()
     roster = args.instances or roster_from_bounds(args.inst_dir / "bounds.csv")
     problems = preflight(args, sha, roster)
     if problems and not args.dry_run:
@@ -951,10 +1085,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"trace {paths.trace_out}")
     if paths.seeds_out is not None:
         print(f"per-seed table {paths.seeds_out}")
+    if skipping_merge:
+        why = (
+            f"--out is not {paths.published_out}"
+            if args.out is not None
+            else f"seed {args.seed} is not the published seed {DEFAULT_SEED}"
+        )
+        print(
+            f"note: {why}; skipping the comparison_all.csv merge and leaving the published "
+            "tables alone"
+        )
     if args.dry_run:
         return describe_plan(args, sha, roster, paths, problems)
-    if skipping_merge:
-        print(f"note: --out is not {paths.published_out}; skipping the comparison_all.csv merge")
     return execute(args, sha, roster, paths)
 
 

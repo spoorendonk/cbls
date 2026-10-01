@@ -1202,7 +1202,8 @@ SEED_AGGREGATION_RULE = (
     "half the seeds are feasible, and a range's upper end is inf when any seed is "
     "not. A zero-BKS instance's cells are absolute residuals, not percentages, "
     "and are marked; a documented failure is listed, marked excluded, and stays "
-    "out of every quality claim. Only seeds run at one commit and one budget are "
+    "out of every quality claim. Only seeds run at one commit, one budget and on "
+    "one host are "
     "aggregated; any other seed in the table is named with the reason it was "
     "left out. The published comparison.csv is the pre-registered seed alone and "
     "is never replaced by an aggregate."
@@ -1217,6 +1218,8 @@ class RunRecord:
     budget_seconds: float
     seed: int
     roster: int
+    #: Rows staged by an EARLIER invocation and reused: `machine` did not see them.
+    resumed: int
     published_at: str
     #: `benchmarks.common.provenance.machine_record()` at the start of the
     #: invocation that published.
@@ -1269,6 +1272,7 @@ def parse_run_record(obj: Mapping[str, object], where: str) -> RunRecord:
         budget_seconds=float(budget),
         seed=_record_int(obj, "seed", where),
         roster=_record_int(obj, "roster", where),
+        resumed=_record_int(obj, "resumed", where),
         published_at=_record_str(obj, "published_at", where),
         machine=_record_dict(obj, "machine", where),
         concurrency=_record_dict(obj, "concurrency", where),
@@ -1375,12 +1379,16 @@ def comparable_seeds(
     *,
     commit: str,
     budget: float,
+    host: str | None = None,
 ) -> tuple[dict[int, list[Row]], dict[int, str]]:
     """Split the per-seed table into the seeds to aggregate and the ones left out, with why.
 
     A seed is aggregated only when every one of its rows names `commit` and its
-    run record says it ran at `budget`. A seed with no run record is left out:
-    the table does not carry the budget, so nothing says its rows are comparable.
+    run record is for that commit, at `budget`, on `host` (when given). A seed
+    with no run record is left out: the table does not carry the budget, so
+    nothing says its rows are comparable. A record for another commit than its
+    rows is what a kill between the driver's two writes leaves behind. Another
+    host would mix machine variance into a seed spread.
     """
     kept: dict[int, list[Row]] = {}
     left_out: dict[int, str] = {}
@@ -1392,8 +1400,12 @@ def comparable_seeds(
             left_out[seed] = f"commit {', '.join(shas)}, not {commit}"
         elif record is None:
             left_out[seed] = "no run record, so its budget is unknown"
+        elif record.commit != commit:
+            left_out[seed] = f"its run record is for commit {record.commit}, not its rows' {commit}"
         elif record.budget_seconds != budget:
             left_out[seed] = f"budget {record.budget_seconds:g}s, not {budget:g}s"
+        elif host is not None and record.machine.get("host") != host:
+            left_out[seed] = f"host {record.machine.get('host')}, not {host}"
         else:
             kept[seed] = rows
     return kept, left_out
@@ -1428,6 +1440,9 @@ class InstanceSpread:
     zero_bks: bool
     feasible_seeds: int
     seeds: int
+    #: Seeds on which no search completed (a coverage gap or an error): counted
+    #: as +inf like an infeasible seed, but marked, since nothing was searched.
+    not_built_seeds: int
     gap_median_pct: float
     gap_min_pct: float
     gap_max_pct: float
@@ -1447,6 +1462,7 @@ def instance_spread(rows: Sequence[Row]) -> InstanceSpread:
         zero_bks=any(r.zero_bks for r in rows),
         feasible_seeds=sum(1 for r in rows if r.feasible),
         seeds=len(rows),
+        not_built_seeds=sum(1 for r in rows if not r.built),
         gap_median_pct=float(statistics.median(values)) if defined else math.nan,
         gap_min_pct=min(values) if defined else math.nan,
         gap_max_pct=max(values) if defined else math.nan,
@@ -1479,6 +1495,7 @@ def summarize_seeds(
     *,
     commit: str,
     budget: float,
+    host: str | None = None,
     feas_tol: float = DEFAULT_FEAS_TOL,
 ) -> SeedsSummary:
     """The multi-seed entry point: `summarize_results` per seed, then the spread.
@@ -1487,10 +1504,11 @@ def summarize_seeds(
     about the roster -- an instance missing from one seed would otherwise move
     every count spread by a row nobody ran.
     """
-    kept, left_out = comparable_seeds(by_seed, records, commit=commit, budget=budget)
+    kept, left_out = comparable_seeds(by_seed, records, commit=commit, budget=budget, host=host)
     if not kept:
         raise ValueError(
             f"no seed in the per-seed table ran at commit {commit} and {budget:g}s"
+            + (f" on {host}" if host else "")
             + "".join(f"; seed {s}: {why}" for s, why in left_out.items())
         )
     seeds = sorted(kept)
@@ -1550,6 +1568,8 @@ def render_seeds_text(summary: SeedsSummary) -> str:
     ]
     for s in summary.per_instance:
         marks = [mark for mark, on in (("excluded", s.excluded), ("zero-BKS", s.zero_bks)) if on]
+        if s.not_built_seeds:
+            marks.append(f"no search on {s.not_built_seeds}")
         lines.append(
             f"  {s.instance}: {_gap_cell(s.gap_median_pct)} "
             f"[{_gap_cell(s.gap_min_pct)}, {_gap_cell(s.gap_max_pct)}], "
@@ -1729,9 +1749,14 @@ def _stated(
     if machine:
         warnings.append(f"--machine is ignored: {name} records the machine")
     if list(commit_shas) != [record.commit]:
-        warnings.append(
+        # Refused, not warned: the record would otherwise supply the budget (the
+        # anytime horizon), the seed and the machine of ANOTHER run, and
+        # `--write-readme` would publish them as read. A kill between the
+        # driver's table and record writes leaves exactly this.
+        raise ValueError(
             f"{name} is for commit {record.commit} but the table's rows name "
-            f"{', '.join(commit_shas) or 'none'}: the record is not this table's"
+            f"{', '.join(commit_shas) or 'none'}: the record is not this table's. Re-run "
+            "the publish, or move the record aside and state --budget/--seed by hand"
         )
     return _Stated(
         budget=record.budget_seconds,
@@ -2792,10 +2817,15 @@ def _readme_action(args: argparse.Namespace, report: CampaignReport) -> int | No
     return None
 
 
+def _host(record: RunRecord) -> str | None:
+    host = record.machine.get("host")
+    return host if isinstance(host, str) else None
+
+
 def seeds_report(inst_dir: Path, feas_tol: float | None) -> SeedsSummary:
     """`summarize_seeds` over the per-seed table at the latest-published seed's configuration.
 
-    The commit and budget to aggregate at are those of the run record published
+    The commit, budget and host to aggregate at are those of the run record published
     most recently, so a table holding a stale campaign's seeds aggregates the
     current one and names the rest as left out.
     """
@@ -2809,6 +2839,7 @@ def seeds_report(inst_dir: Path, feas_tol: float | None) -> SeedsSummary:
         records,
         commit=latest.commit,
         budget=latest.budget_seconds,
+        host=_host(latest),
         feas_tol=DEFAULT_FEAS_TOL if feas_tol is None else feas_tol,
     )
 
@@ -2818,6 +2849,24 @@ def _usage_error(args: argparse.Namespace) -> str | None:
         return "--budget must be positive and finite"
     if args.feas_tol is not None and not (math.isfinite(args.feas_tol) and args.feas_tol > 0):
         return "--feas-tol must be positive and finite"
+    if args.seeds:
+        ignored = [
+            flag
+            for flag, value in (
+                ("--budget", args.budget),
+                ("--seed", args.seed),
+                ("--machine", args.machine),
+                ("--json", args.json),
+                ("--markdown", args.markdown),
+                ("--write-readme", args.write_readme),
+                ("--check-readme", args.check_readme),
+            )
+            if value is not None
+        ]
+        if ignored:
+            return (
+                f"--seeds prints the multi-seed summary only; {', '.join(ignored)} would be ignored"
+            )
     record = run_record_path(args.inst_dir / "comparison.csv")
     if not args.seeds and args.budget is None and not record.exists():
         return f"--budget is required: {record} does not exist to record the budget"
@@ -2827,7 +2876,7 @@ def _usage_error(args: argparse.Namespace) -> str | None:
 def _seeds_main(args: argparse.Namespace) -> int:
     try:
         print(render_seeds_text(seeds_report(args.inst_dir, args.feas_tol)))
-    except (ValueError, OSError) as exc:
+    except (ValueError, KeyError, OSError) as exc:
         print(f"no multi-seed summary: {exc}", file=sys.stderr)
         return 2
     return 0

@@ -28,8 +28,10 @@ from benchmarks.minlplib.run_benchmark import (
     SEEDS_TABLE_COLUMNS,
     STAMP_NAME,
     assemble,
+    common_preflight,
     default_staging_root,
     describe_plan,
+    driver_lock,
     execute,
     merge_command,
     preflight,
@@ -126,11 +128,11 @@ def test_roster_comes_from_bounds_csv_in_file_order(tmp_path: Path) -> None:
 def test_paths_default_to_the_published_tables_and_a_persistent_staging_dir(
     tmp_path: Path,
 ) -> None:
-    paths = resolve_paths(make_args(tmp_path))
+    paths = resolve_paths(make_args(tmp_path), "abc1234")
     assert paths.out == tmp_path / "inst" / "comparison.csv"
     assert paths.out == paths.published_out
     assert paths.trace_out == tmp_path / "inst" / "anytime_trace.csv"
-    assert paths.stage == tmp_path / "state" / "cbls" / "minlplib-rerun" / "seed1"
+    assert paths.stage == tmp_path / "state" / "cbls" / "minlplib-rerun" / "abc1234" / "seed1"
     assert paths.seeds_out == tmp_path / "inst" / SEEDS_TABLE_NAME
 
 
@@ -142,7 +144,7 @@ def test_the_default_staging_dir_survives_the_pre_push_clean(
     The default is outside the checkout altogether -- not just outside `build/`,
     since the worktree workflow deletes whole checkouts after a merge.
     """
-    stage = resolve_paths(make_args(tmp_path, build_dir=REPO_ROOT / "build")).stage
+    stage = resolve_paths(make_args(tmp_path, build_dir=REPO_ROOT / "build"), "abc1234").stage
     assert not stage.is_relative_to(REPO_ROOT)
     monkeypatch.delenv("XDG_STATE_HOME")
     assert default_staging_root() == Path.home() / ".local" / "state" / "cbls" / "minlplib-rerun"
@@ -155,15 +157,18 @@ def test_each_seed_stages_apart_and_only_seed_1_defaults_to_the_published_table(
     tmp_path: Path,
 ) -> None:
     """Two seeds' rows accumulate in two staging dirs; neither stamp refuses the other."""
-    one, two = resolve_paths(make_args(tmp_path)), resolve_paths(make_args(tmp_path, seed=2))
+    one, two = (
+        resolve_paths(make_args(tmp_path), "abc1234"),
+        resolve_paths(make_args(tmp_path, seed=2), "abc1234"),
+    )
     assert one.stage != two.stage
     assert two.out == two.stage / ASSEMBLED_TABLE
     assert two.trace_out == two.stage / ASSEMBLED_TRACE
     assert two.seeds_out == one.seeds_out == tmp_path / "inst" / SEEDS_TABLE_NAME
     # Scratch and subset runs publish nothing.
-    assert resolve_paths(make_args(tmp_path, out=tmp_path / "s.csv")).seeds_out is None
+    assert resolve_paths(make_args(tmp_path, out=tmp_path / "s.csv"), "abc1234").seeds_out is None
     subset = make_args(tmp_path, instances=["a"], out=tmp_path / "s.csv")
-    assert resolve_paths(subset).seeds_out is None
+    assert resolve_paths(subset, "abc1234").seeds_out is None
 
 
 def test_the_staging_stamp_names_the_host(tmp_path: Path) -> None:
@@ -299,6 +304,24 @@ def test_preflight(
             },
             ("--seed 2",),
         ),
+        # Any other spelling that lands a scratch output on a published file: the
+        # trace over the table, a table over the trace, the per-seed table (its
+        # record would replace every seed's), and an --out whose run record is
+        # the published comparison.run.json.
+        (
+            {"seed": 2, "out": "s.csv", "trace_out": "inst/comparison.csv"},
+            ("--trace-out resolves to the published comparison.csv",),
+        ),
+        ({"seed": 2, "out": "inst/anytime_trace.csv", "trace": False}, ("anytime_trace.csv",)),
+        (
+            {"out": "inst/comparison_seeds.csv", "trace_out": "t.csv"},
+            ("--out resolves to the published comparison_seeds.csv",),
+        ),
+        (
+            {"seed": 2, "out": "inst/comparison.tsv", "trace": False},
+            ("--out's run record resolves to the published comparison.run.json",),
+        ),
+        ({"out": "inst/comparison_all.csv", "trace_out": "t.csv"}, ("comparison_all.csv",)),
         # The explicit spelling of the #149 hazard, at the published seed.
         (
             {"out": "scratch.csv", "trace_out": "inst/anytime_trace.csv"},
@@ -324,6 +347,11 @@ def test_preflight(
         "another-seed-naming-the-published-table",
         "another-seed-naming-the-published-trace",
         "another-seed-subset-naming-the-published-table",
+        "trace-over-the-published-table",
+        "table-over-the-published-trace",
+        "table-over-the-per-seed-table",
+        "run-record-over-the-published-record",
+        "table-over-comparison-all",
         "scratch-table-naming-the-published-trace",
         "nonpositive-budget",
         "nonpositive-build-jobs",
@@ -501,7 +529,9 @@ def test_a_dry_run_over_an_empty_roster_reports_rather_than_crashes(
 ) -> None:
     make_build_dir(tmp_path)
     args = make_args(tmp_path)
-    rc = describe_plan(args, "abc1234", [], resolve_paths(args), ["bounds.csv is missing"])
+    rc = describe_plan(
+        args, "abc1234", [], resolve_paths(args, "abc1234"), ["bounds.csv is missing"]
+    )
     assert rc == 2
     assert "WOULD REFUSE" in capsys.readouterr().out
 
@@ -510,7 +540,7 @@ def test_a_clean_dry_run_prints_the_solve_command_and_exits_zero(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     args = make_args(tmp_path)
-    rc = describe_plan(args, "abc1234", ["nvs01"], resolve_paths(args), [])
+    rc = describe_plan(args, "abc1234", ["nvs01"], resolve_paths(args, "abc1234"), [])
     assert rc == 0
     out = capsys.readouterr().out
     assert "--instance nvs01" in out
@@ -703,7 +733,7 @@ def _seeds_in(table: Path) -> list[tuple[str, str, str]]:
 
 def _execute(tmp_path: Path, seed: int) -> int:
     args = make_args(tmp_path, seed=seed, build=False, merge=False)
-    return execute(args, "abc1234", ["a", "b"], resolve_paths(args))
+    return execute(args, "abc1234", ["a", "b"], resolve_paths(args, "abc1234"))
 
 
 def test_seeds_accumulate_and_only_the_preregistered_seed_is_published(
@@ -742,12 +772,13 @@ def test_seeds_accumulate_and_only_the_preregistered_seed_is_published(
 
     single = json.loads((inst / "comparison.run.json").read_text())
     assert (single["seed"], single["budget_seconds"], single["commit"]) == (1, 60.0, "abc1234")
+    assert single["resumed"] == 0
     assert single["machine"]["host"] == socket.gethostname()
     assert single["concurrency"]["parallel_solves"] == 1
     seeds = json.loads((inst / "comparison_seeds.run.json").read_text())["seeds"]
     assert sorted(seeds) == ["1", "2", "3"]
     assert all("memory_total_kib" in record["machine"] for record in seeds.values())
-    stage2 = resolve_paths(make_args(tmp_path, seed=2)).stage
+    stage2 = resolve_paths(make_args(tmp_path, seed=2), "abc1234").stage
     assert (stage2 / ASSEMBLED_TABLE).exists() and (stage2 / ASSEMBLED_TRACE).exists()
     assert (stage2 / "comparison.assembled.run.json").exists()
 
@@ -766,7 +797,7 @@ def test_rerunning_a_seed_replaces_its_rows_and_keeps_the_others(
     assert _execute(tmp_path, 2) == 0
     monkeypatch.setattr(subprocess, "run", seeded_runner(offset=5.0))
     args = make_args(tmp_path, seed=2, build=False, merge=False, resume=False)
-    assert execute(args, "abc1234", ["a", "b"], resolve_paths(args)) == 0
+    assert execute(args, "abc1234", ["a", "b"], resolve_paths(args, "abc1234")) == 0
     assert _seeds_in(inst / SEEDS_TABLE_NAME) == [
         ("1", "a", "10"),
         ("1", "b", "0"),
@@ -776,16 +807,56 @@ def test_rerunning_a_seed_replaces_its_rows_and_keeps_the_others(
 
 
 def test_a_seeds_table_of_another_shape_is_refused_and_left_alone(tmp_path: Path) -> None:
-    stage = _stage_two(tmp_path)
     table = tmp_path / SEEDS_TABLE_NAME
     table.write_text("seed,instance,objective\n7,a,1\n")
     out = tmp_path / "comparison.csv"
     full = f"{HEADER}\na,1,1,1,0,0,60,true,feasible,abc1234,0,0,0,0,1,0.5,{DEFAULT_ARM}\n"
-    (stage / "a.csv").write_text(full)
     out.write_text(full)
     with pytest.raises(RuntimeError, match="has columns"):
         publish_seed_rows(table, 1, out)
     assert table.read_text() == "seed,instance,objective\n7,a,1\n"
+
+
+def test_a_resumed_run_says_its_record_did_not_see_the_resumed_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    inst = make_inst_dir(tmp_path, ["a", "b"])
+    monkeypatch.setattr(subprocess, "run", seeded_runner())
+    assert _execute(tmp_path, 1) == 0
+    assert _execute(tmp_path, 1) == 0
+    assert json.loads((inst / "comparison.run.json").read_text())["resumed"] == 2
+    assert "2 of 2 row(s) were staged by an earlier invocation" in capsys.readouterr().err
+
+
+def test_a_second_driver_on_the_machine_is_refused(tmp_path: Path) -> None:
+    """Two seeds in two terminals would share the machine and race on the per-seed table."""
+    with (
+        driver_lock(),
+        pytest.raises(RuntimeError, match="another run_benchmark.py holds"),
+        driver_lock(),
+    ):
+        pass
+    with driver_lock():
+        pass  # released on exit
+
+
+def test_the_ablation_drivers_preflight_still_runs(tmp_path: Path) -> None:
+    """`run_ablation.py` shares the common preflight with a namespace that has no --seed."""
+    from benchmarks.minlplib import run_ablation
+
+    make_inst_dir(tmp_path, ["process"])
+    args = run_ablation.parse_args(
+        [
+            "--out-dir",
+            str(tmp_path / "abl"),
+            "--inst-dir",
+            str(tmp_path / "inst"),
+            "--build-dir",
+            str(tmp_path / "nobuild"),
+        ]
+    )
+    problems = common_preflight(args, "abc1234", ["process"])
+    assert any("CMakeCache.txt not found" in p for p in problems)
 
 
 def test_preflight_refuses_a_seeds_table_the_run_could_not_join(tmp_path: Path) -> None:

@@ -129,7 +129,9 @@ def memory_total_kib() -> int | None:
 
 
 def cpu_model(cpuinfo: Path = Path("/proc/cpuinfo")) -> str | None:
-    """The CPU's marketing name, or None off Linux.
+    """The CPU's marketing name, or None where /proc/cpuinfo has no "model name" line.
+
+    That is off Linux, and on many ARM kernels too.
 
     `platform.processor()` is usually just the architecture on Linux, which says
     nothing about how fast a wall-clock-budgeted run could go.

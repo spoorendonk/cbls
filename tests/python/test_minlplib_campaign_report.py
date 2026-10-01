@@ -986,6 +986,7 @@ def _record(seed: int = 1, *, commit: str = "abc1234", budget: float = 60.0) -> 
         budget_seconds=budget,
         seed=seed,
         roster=2,
+        resumed=0,
         published_at=f"2026-10-01T00:00:0{seed % 10}+00:00",
         machine=dict(MACHINE),
         concurrency=dict(CONCURRENCY),
@@ -1018,7 +1019,7 @@ def test_a_stated_value_the_record_contradicts_is_warned_and_the_record_wins(
     tmp_path: Path,
 ) -> None:
     _write_campaign(tmp_path)
-    _write_record(tmp_path / "comparison.csv", _record(seed=3, commit="fff0000"))
+    _write_record(tmp_path / "comparison.csv", _record(seed=3))
     report = build_report(tmp_path, budget=30.0, seed=1, machine="mine", feas_tol=None)
     p = report.provenance
     assert (p.budget_seconds, p.seed) == (60.0, 3)
@@ -1026,7 +1027,18 @@ def test_a_stated_value_the_record_contradicts_is_warned_and_the_record_wins(
     assert "--budget 30s but comparison.run.json records 60s" in joined
     assert "--seed 1 but comparison.run.json records seed 3" in joined
     assert "--machine is ignored" in joined
-    assert "the record is not this table's" in joined
+
+
+def test_a_record_for_another_commit_than_the_table_is_refused(tmp_path: Path) -> None:
+    """What a kill between the driver's table and record writes leaves behind.
+
+    Read, it would supply another run's budget (the anytime horizon), seed and
+    machine, and `--write-readme` would publish them as read from the record.
+    """
+    _write_campaign(tmp_path)
+    _write_record(tmp_path / "comparison.csv", _record(commit="fff0000"))
+    with pytest.raises(ValueError, match="the record is not this table's"):
+        build_report(tmp_path, budget=None, seed=None, machine=None, feas_tol=None)
 
 
 def test_without_a_record_the_budget_is_still_required(tmp_path: Path) -> None:
@@ -1157,15 +1169,25 @@ def test_seeds_from_another_commit_or_budget_or_without_a_record_are_left_out(
         + _seed_rows(2, "30", True, sha="old0000")
         + _seed_rows(3, "20", True)
         + _seed_rows(4, "20", True)
+        + _seed_rows(5, "20", True)
+        + _seed_rows(6, "20", True)
     )
-    table = _write_seeds(tmp_path, rows, [_record(1), _record(2), _record(3, budget=10.0)])
+    other_host = _record(6)
+    other_host.machine["host"] = "elsewhere"
+    records = [_record(1), _record(2), _record(3, budget=10.0), _record(5, commit="old0000")]
+    table = _write_seeds(tmp_path, rows, [*records, other_host])
     by_seed = load_seed_results(table, load_bounds_index(tmp_path / "bounds.csv"))
-    summary = summarize_seeds(by_seed, load_seed_run_records(table), commit="abc1234", budget=60.0)
+    summary = summarize_seeds(
+        by_seed, load_seed_run_records(table), commit="abc1234", budget=60.0, host="box"
+    )
     assert summary.seeds == [1]
     assert summary.left_out == {
         2: "commit old0000, not abc1234",
         3: "budget 10s, not 60s",
         4: "no run record, so its budget is unknown",
+        # The rows were republished, the record was not: a kill between the two writes.
+        5: "its run record is for commit old0000, not its rows' abc1234",
+        6: "host elsewhere, not box",
     }
     text = render_seeds_text(summary)
     assert "NOTE: 1 seed(s) aggregated; 3 is the floor" in text
@@ -1212,3 +1234,22 @@ def test_the_cli_prints_the_seed_spread_at_the_latest_published_configuration(
     (tmp_path / SEEDS_TABLE_NAME).unlink()
     run_record_path(tmp_path / SEEDS_TABLE_NAME).unlink()
     assert main(["--inst-dir", str(tmp_path), "--seeds"]) == 2
+
+
+@pytest.mark.parametrize(
+    "flag", [["--check-readme", "x"], ["--json", "x"], ["--budget", "60"], ["--write-readme", "x"]]
+)
+def test_seeds_refuses_the_flags_it_would_ignore(
+    tmp_path: Path, flag: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--seeds --check-readme` exiting 0 would read as a passing gate that checked nothing."""
+    _three_seeds(tmp_path)
+    assert main(["--inst-dir", str(tmp_path), "--seeds", *flag]) == 2
+    assert f"{flag[0]} would be ignored" in capsys.readouterr().err
+
+
+def test_a_seed_with_no_search_is_marked_not_just_infeasible() -> None:
+    gap = row("a", note="unsupported: op 42", feasible=False, gap=math.nan)
+    spread = instance_spread([row("a", gap=1.0), gap, row("a", gap=2.0)])
+    assert spread.not_built_seeds == 1
+    assert spread.gap_median_pct == 2.0

@@ -41,7 +41,7 @@ trust, hours after the mistake:
 * **Resuming into a different configuration.** A stamp file records the commit,
   budget, seeds and arm set; a mismatch is refused rather than merged, because
   an ablation assembled from two engines measures the engines, not the arms.
-* Everything `run_benchmark.preflight` already refuses -- a dirty tree, a
+* Everything `run_benchmark.common_preflight` already refuses -- a dirty tree, a
   non-Release or sanitizer build directory, a build configured from another
   checkout, a roster with missing `.nl` files.
 
@@ -95,7 +95,7 @@ from benchmarks.minlplib.run_benchmark import (  # noqa: E402
     DEFAULT_BUILD_DIR,
     DEFAULT_INST_DIR,
     DEFAULT_TIME_LIMIT,
-    preflight,
+    common_preflight,
     roster_from_bounds,
 )
 from benchmarks.minlplib.runner import (  # noqa: E402
@@ -1055,7 +1055,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--report-only", action="store_true", help="score an existing results.csv and stop"
     )
-    # `preflight` is shared with run_benchmark.py, whose `_data_problems` asks
+    # `common_preflight` is shared with run_benchmark.py, whose `_data_problems` asks
     # whether the comparison_all.csv merge would drop the SCIP rows. This
     # campaign never merges anything, so the answer is fixed here rather than
     # exposed as a flag nobody should touch.
@@ -1099,7 +1099,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     sha = commit_sha()
     roster = args.instances or roster_from_bounds(args.inst_dir / "bounds.csv")
-    problems = preflight(args, sha, roster)
+    problems = common_preflight(args, sha, roster)
     busy = load_refusal(args.allow_busy)
     if busy and not args.dry_run:
         problems = [*problems, busy]

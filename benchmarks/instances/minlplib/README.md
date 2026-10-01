@@ -323,8 +323,8 @@ is about to be labelled with. `--dry-run` prints the plan and exits non-zero if
 any refusal applies, so it works as a precheck.
 
 **Resumable.** Each instance is solved in its own process into
-`$XDG_STATE_HOME/cbls/minlplib-rerun/seed<N>/<instance>.csv` — by default
-`~/.local/state/cbls/minlplib-rerun/seed1/...` (plus `.trace.csv` and a `.log` holding
+`$XDG_STATE_HOME/cbls/minlplib-rerun/<commit>/seed<N>/<instance>.csv` — by
+default `~/.local/state/cbls/minlplib-rerun/<commit>/seed1/...` (plus `.trace.csv` and a `.log` holding
 that instance's runner output and tally). A re-invocation skips instances that
 already have a *complete* staged row. Incomplete means any of: a header-only
 file (what a killed job leaves behind), a torn last line, a row stamped with a
@@ -333,8 +333,8 @@ runner **threw** (`read-error`/`build-error`/`solve-error`) — all are re-solve
 The last is there because such a row is whole in every other respect: the run
 that produced it aborted the driver, and without this the next resume would skip
 the instance and publish a row that measured nothing.
-The directory's `stamp.txt` records the commit, budget, seed and host its rows
-belong to, and a resume against a different one is refused outright rather than
+The directory's `stamp.txt` records the commit, budget, seed, host and a hash
+of `bounds.csv` (the roster) its rows belong to, and a resume against a different one is refused outright rather than
 silently mixed. `--no-resume` forces a full re-solve.
 
 **The staging directory lives outside the checkout** (#141). It used to default
@@ -343,9 +343,14 @@ to `build/minlplib-rerun/`, which pre-push's clean step (`rm -rf build`) deletes
 log. A gitignored directory inside the checkout would not do either: the
 worktree workflow deletes whole checkouts after a merge. XDG's *state*
 directory is the one meant for data that must survive a restart (its *cache*
-directory may be emptied at any time). Two checkouts can share it safely,
-because the stamp refuses another commit's rows; `--staging-dir` still
-overrides it.
+directory may be emptied at any time). It is keyed by commit, so a new engine
+commit starts a fresh directory rather than tripping the stamp; old ones
+accumulate there and are safe to delete once their run is published.
+`--staging-dir` still overrides it. **One driver runs at a time on the
+machine**: every invocation holds an exclusive lock (`driver.lock` in the
+staging root, whatever `--staging-dir` says) and a second one is refused, so
+two seeds started in two terminals cannot share the machine or race on the
+per-seed table.
 
 `comparison.csv` and `anytime_trace.csv` are only replaced at the end, by an
 atomic rename of a fully-assembled file, so an interrupted run leaves them
@@ -383,8 +388,9 @@ gap? by anytime score?), so there is none.
 **Every seed is published beside it, in `comparison_seeds.csv`** — the runner's
 columns with `seed` prepended, one block per seed. Every whole-roster run onto
 the default paths adds its seed's rows there, seed 1's included, replacing that
-seed's earlier block and leaving the others' rows intact; run the seeds one
-invocation at a time:
+seed's earlier block and leaving the others' rows intact — whatever budget it
+ran at, so a smoke run at `--time-limit 5` onto the default paths replaces
+that seed's 60s block. The driver runs one seed per invocation:
 
     for SEED in 1 2 3; do
         .venv/bin/python3 benchmarks/minlplib/run_benchmark.py --seed "$SEED" || break
@@ -392,7 +398,11 @@ invocation at a time:
 
 A seed other than 1 also skips the `comparison_all.csv` merge, and assembles its
 own table and trace inside its staging directory
-(`comparison.assembled.csv`, `anytime_trace.assembled.csv`).
+(`comparison.assembled.csv`, `anytime_trace.assembled.csv`). **Only rows are
+published per seed**, not traces: the per-seed anytime traces stay in the
+staging directory, and nothing aggregates anytime scores across seeds yet. A
+scratch `--out` or `--trace-out` that resolves to any published file — or whose
+run record would — is refused at every seed.
 
 **Three seeds is the floor** for quoting a spread — no power calculation
 supports a larger number, and the ablation campaign on this roster settled on
@@ -400,7 +410,8 @@ three as well; more are welcome but not a blocker. After each publish the
 summary prints, across the per-seed table's seeds at this run's commit and
 budget, the feasible count's min / median / max, each instance's `gap_to_bks%`
 median and range, and any seed left out and why (another commit, another
-budget, no run record). The definitions are `campaign_report.py`'s, applied per
+budget, another host, no run record, or a record for another commit than its
+rows). The definitions are `campaign_report.py`'s, applied per
 seed (`summarize_seeds`, rule `SEED_AGGREGATION_RULE`): a seed that did not
 reach feasibility counts as worse than any gap rather than being dropped, and
 `elec25`/`elec50` count in the feasible spread and stay out of quality claims as
@@ -411,10 +422,11 @@ table; never substitute one for it.
 **Every published set carries a run record**: `comparison.run.json` beside
 `comparison.csv`, and `comparison_seeds.run.json` beside the per-seed table
 (one entry per seed). Each names the commit, budget, seed and roster size, the
-machine — host, CPU count and usable cores, memory, load average at the start
-of the publishing invocation (`benchmarks/common/provenance.py`'s
-`machine_record()`) — and the concurrency (one solve at a time, one thread
-each). A scratch `--out` gets one too, beside it. `campaign_report.py` reads the
+machine — host, CPU model, CPU count and usable cores, memory, load average at
+the start of the publishing invocation (`benchmarks/common/provenance.py`'s
+`machine_record()`) — the concurrency (one solve at a time, one thread each,
+held true by the driver lock), and `resumed`: how many rows were staged by an
+earlier invocation, whose machine and load the record did not see. A scratch `--out` gets one too, beside it. `campaign_report.py` reads the
 budget, seed and machine from `comparison.run.json` when it exists, so
 `--budget`/`--seed`/`--machine` are needed only for a table published before
 it — as the committed one was, which is why its provenance still says "not
@@ -429,7 +441,8 @@ recorded".
    further seed's, once run). The `published-bks` and `scip` rows are engine-independent
    and must be byte-identical; if they moved, something re-solved SCIP and the
    run must be redone.
-2. Regenerate every run-derived number below. Nobody transcribes them: every
+2. Regenerate every run-derived number below. Nobody transcribes them (the
+   one exception is the multi-seed spread, which step 7 writes into prose): every
    derived table and paragraph in this README sits between
    `<!-- campaign_report:begin NAME -->` / `end` markers, and the report
    generator rewrites those blocks from the committed tables and solves
@@ -443,9 +456,10 @@ recorded".
    the machine are read from `comparison.run.json`, which the driver writes at
    publish time (#141). Pass no `--budget`, `--seed` or `--machine` then: a
    stated value the record contradicts, and any `--machine` at all, is a
-   provenance warning, and the rewrite is refused, not warned about, on any
-   provenance warning or when a documented failure came back feasible. The
-   committed table predates the record, so it was rendered with
+   provenance warning; the record wins, and the rewrite is refused, not warned
+   about, on any provenance warning or when a documented failure came back
+   feasible. A record for another commit than the table's rows is refused
+   outright. The committed table predates the record, so it was rendered with
    `--budget 60 --seed 1` stated by hand (`README_BUDGET`/`README_SEED`/
    `README_MACHINE` in the test), and the output says which values were stated.
    `--check-readme` instead of `--write-readme`
@@ -503,7 +517,8 @@ recorded".
    memory, and a start-of-run load average near zero. Nothing to transcribe:
    step 2's provenance block reads it from there (`--machine` exists only for a
    table with no record). If the load average says the box was not quiet, the
-   run is not publishable. Then run the other seeds
+   run is not publishable; a nonzero `resumed` means earlier invocations solved
+   some rows, and their load is not in the record. Then run the other seeds
    ("Seeds, and what each publish records"; at least two more), and write each
    instance's median and range from the printed spread into the prose of
    **Results** — beside the published table, never in place of it.
