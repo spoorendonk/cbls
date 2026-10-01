@@ -108,11 +108,13 @@ catch_discover_tests(cbls_tests
 # discovered *and* hand-registered, i.e. run twice.
 #
 # Issue #104: timing_structural_batch_deadline and (#191)
-# timing_inner_solver_hook_deadline are the suite's ONLY wall-clock-duration
-# assertions — everything else asserts on iteration counts, poll counts or
-# values. Don't add another without a reason as concrete as #105's or #191's
-# (each pins a user-facing budget contract that a run once broke, and each
-# sits beside a deterministic discriminator of the mechanism).
+# timing_inner_solver_hook_deadline are the suite's only HAND-REGISTERED
+# wall-clock-duration assertions. Discovered tests bound durations too -- two
+# stop-flag tests in test_parallel.cpp assert elapsed seconds as a "did the stop
+# arrive at all" detector, with generous slack. Don't
+# add another without a reason as concrete as #105's or #191's (each pins a
+# user-facing budget contract that a run once broke, and each sits beside a
+# deterministic discriminator of the mechanism).
 add_test(NAME timing_structural_batch_deadline
     COMMAND cbls_tests "structural batch respects the wall-clock deadline"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})

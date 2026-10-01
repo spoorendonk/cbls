@@ -62,7 +62,7 @@ public:
                const std::vector<int32_t>& last_changed_vars = {}, StopRef stop = {}) override;
 
     // Float variables descended between two polls of `stop` on this model:
-    // sized by row count (src/inner_solver.cpp carries the argument), between 1
+    // 65536 / max(rows, nodes) (src/inner_solver.cpp carries the argument), between 1
     // and 256. Public so a test can predict the poll sequence exactly.
     static int vars_per_poll(const Model& model);
 };

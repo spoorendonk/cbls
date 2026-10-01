@@ -219,41 +219,54 @@ PassOutcome multi_var_pass(Model& model, ViolationManager& vm, int max_constrain
 // How often the coordinate pass polls (#191). Without any poll the hook ran
 // MIPfeas rahue (12k Float columns, 77k rows) ~10 s past a 20 s budget.
 //
-// The stride is sized by the model's row count, as a machine-independent proxy
-// for a variable's cost: each variable's descent reads every row's value once in
-// its violated-row scan (newton_candidates), before any partial or probe. So
-// between two polls lie at least kPollRowReads row reads, unless the
-// kMaxVarsPerPoll cap binds.
+// The stride is sized by the model's size, as a machine-independent proxy for a
+// variable's cost: kPollUnits / max(rows, nodes), clamped to [1, 256]. A
+// variable's descent reads every row's value once in its violated-row scan
+// (newton_candidates), and on a model with an objective it also runs
+// compute_partial on the objective -- a reverse sweep over the objective's
+// whole cone -- before any probe. Rows alone undercounted the second term: a
+// least-squares MINLP with ~10k Floats, a handful of rows and a 1M-node
+// objective got the 256 cap at milliseconds per descent, a 1-2 s overrun per
+// hook call. Nodes bound both terms from above (every row and every cone node
+// is a node), so max(rows, nodes) -- in practice the node count -- only ever
+// polls MORE often than a rows-only stride would.
 //
 // What a poll costs is the clock read inside the search's past_deadline():
 // ~20-25 ns through the vDSO on a tsc clocksource, but 1408 ns on this project's
-// reference machine (hpet; measured for #113, docs/architecture.md). The two
+// reference machine (hpet; measured for #113, docs/architecture.md). The
 // regimes, and where each constant loses:
-//  - Many rows (>= kPollRowReads): one variable per poll. The poll is then at
-//    most ~1.4 us against a scan of >= 65 536 rows, tens of microseconds, so a
-//    few percent of the hook at worst. The overrun is one variable's descent,
-//    irreducible from here: on a multi-million-row model that one scan plus its
-//    probes is milliseconds, and only a poll inside the probes would cut it.
-//  - Few rows: up to kMaxVarsPerPoll variables per poll. Where rows are so few
-//    that the cap binds, a variable's descent is dominated by its partials and
-//    line-search probes (each a delta_evaluate), so 256 of them are many times
-//    the 1.4 us poll, and the overrun is 256 such descents. A model with few rows
-//    but very large per-variable cones is what this proxy undercounts: there
-//    the overrun can reach 256 expensive descents.
+//  - Large models (>= kPollUnits nodes): one variable per poll -- rahue
+//    (352k nodes) is here. On a model whose objective cone or row set is that
+//    large the poll is ~1.4 us against a descent of tens of microseconds or
+//    more, a few percent at worst. The overrun is one variable's descent,
+//    irreducible from here: on a multi-million-node model that is milliseconds,
+//    and only a poll inside the probes would cut it.
+//  - Where nodes overstate the work -- a large DAG whose rows are few and
+//    satisfied and which has no objective, or whose objective cone is small --
+//    a descent can be far cheaper than a node count suggests, and polling every
+//    variable then costs up to a 1.4 us clock read per cheap descent on hpet.
+//    That is the regime this proxy loses in, accepted because it can only
+//    cost hook throughput, never the budget.
+//  - Small models: up to kMaxVarsPerPoll variables per poll. Every descent there
+//    is dominated by its partials and line-search probes (each a
+//    delta_evaluate), so 256 of them are many times the 1.4 us poll, and the
+//    overrun is 256 descents of a model with < 256 nodes -- sub-millisecond.
 // A stride sized in time, as FJ's is (#113), is not open here: the hook cannot
 // read the clock itself without breaking a clockless run's "reads no clock"
 // guarantee, and the stop it is handed does not say whether a clock exists.
 //
 // The polls never change what the descent does, only whether it continues, so
 // with `stop` never raised the trajectory is exactly what it was without them.
-constexpr int64_t kPollRowReads = int64_t{1} << 16;
+constexpr int64_t kPollUnits = int64_t{1} << 16;
 constexpr int kMaxVarsPerPoll = 256;
 
 }  // namespace
 
 int FloatIntensifyHook::vars_per_poll(const Model& model) {
-    const auto rows = std::max<int64_t>(1, static_cast<int64_t>(model.constraint_ids().size()));
-    return static_cast<int>(std::clamp<int64_t>(kPollRowReads / rows, 1, kMaxVarsPerPoll));
+    const auto size =
+        std::max<int64_t>({int64_t{1}, static_cast<int64_t>(model.constraint_ids().size()),
+                           static_cast<int64_t>(model.num_nodes())});
+    return static_cast<int>(std::clamp<int64_t>(kPollUnits / size, 1, kMaxVarsPerPoll));
 }
 
 void FloatIntensifyHook::solve(Model& model, ViolationManager& vm,

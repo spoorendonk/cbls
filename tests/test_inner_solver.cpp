@@ -247,7 +247,8 @@ TEST_CASE("solve returns within its budget when an intensification pass would ou
     REQUIRE(result.feasible);
     REQUIRE(result.counters.inner_solver_calls >= 1);
     // The tolerance covers setup, finish() and a loaded machine, not the hook:
-    // this model polls every 65 Float variables, microseconds of descent apart.
+    // this model polls every vars_per_poll() Float variables, microseconds of
+    // descent apart.
     CHECK(result.time_seconds < kBudget + 0.5);
     CHECK(wall < kBudget + 0.5);
 }
@@ -319,11 +320,14 @@ void start_all_at(Model& m, double value) {
 
 TEST_CASE("FloatIntensifyHook stops the coordinate pass at the poll that is raised",
           "[inner_solver]") {
-    // 1024 rows -> one poll per 64 Float variables. Every descended variable
-    // climbs, so the number that moved is the number descended.
+    // Every descended variable climbs, so the number that moved is the number
+    // descended. The stride is read from vars_per_poll() (31 on this ~2k-node
+    // model); the REQUIREs keep the test discriminating -- 2 strides short of
+    // the 1024 variables, so a pass that skipped its polls descends them all.
     Model m = climbing_model(1024);
     const int stride = FloatIntensifyHook::vars_per_poll(m);
-    REQUIRE(stride == 64);
+    REQUIRE(stride > 1);
+    REQUIRE(2 * stride < 1024);
     start_all_at(m, 0.0);
     const std::vector<double> before = float_values(m);
     ViolationManager vm(m);
@@ -338,8 +342,8 @@ TEST_CASE("FloatIntensifyHook stops the coordinate pass at the poll that is rais
 TEST_CASE("FloatIntensifyHook polls before every multi-variable Newton step", "[inner_solver]") {
     Model m = always_violated_model(1024);
     const int stride = FloatIntensifyHook::vars_per_poll(m);
-    REQUIRE(stride == 64);
-    const int coordinate_polls = 1024 / stride;
+    REQUIRE(stride > 1);
+    const int coordinate_polls = (1024 + stride - 1) / stride;  // first var, then every stride
     start_all_at(m, 0.0);
     FloatIntensifyHook hook;
     hook.max_sweeps = 1;
@@ -364,8 +368,8 @@ TEST_CASE("FloatIntensifyHook polls before every multi-variable Newton step", "[
 
 namespace {
 
-// Spins until the search's stop is raised, with a 1 s cap -- many times the
-// 50 ms budget below -- so a search that never raises it fails the test fast
+// Spins until the search's stop is raised, with a 1 s cap -- five times the
+// 0.2 s budget below -- so a search that never raises it fails the test fast
 // rather than hanging it.
 struct WaitForStopHook : InnerSolverHook {
     int calls = 0;
@@ -412,7 +416,9 @@ TEST_CASE("search hands a custom hook a stop raised at its deadline", "[inner_so
     WaitForStopHook hook;
     // No duration assertion: what is pinned is that the stop the hook holds
     // turns true once the deadline passes, not how promptly the solve returns.
-    const SearchResult result = solve(m, 0.05, 42, true, &hook);
+    // 0.2 s, not less: the hook must be reached at all (the first feasible
+    // batch) before the deadline, under load and under sanitizers.
+    const SearchResult result = solve(m, 0.2, 42, true, &hook);
     REQUIRE(hook.calls >= 1);
     REQUIRE(hook.stopped_calls == hook.calls);
     REQUIRE(result.termination == TerminationReason::TimeLimit);
