@@ -11,11 +11,18 @@ import subprocess
 import sys
 import threading
 import time
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
-from benchmarks.common.jobs import run_jobs, run_process, with_memory_limit
+from benchmarks.common import jobs
+from benchmarks.common.jobs import (
+    LockHeldError,
+    run_jobs,
+    run_process,
+    wallclock_lock,
+    with_memory_limit,
+)
 from benchmarks.common.provenance import build_dir_problems, cmake_cache, commit_sha, cpu_model
 from benchmarks.common.records import (
     atomic_write,
@@ -25,9 +32,6 @@ from benchmarks.common.records import (
     stamp_refusal,
     write_json,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 # --- jobs: one process ----------------------------------------------------------
 
@@ -304,3 +308,29 @@ def test_the_cpu_model_is_read_from_cpuinfo_and_absent_off_linux(tmp_path: Path)
     assert cpu_model(tmp_path / "absent") is None
     cpuinfo.write_text("processor\t: 0\n")
     assert cpu_model(cpuinfo) is None
+
+
+# --- the machine-wide wall-clock lock ---------------------------------------------
+
+
+def test_the_wallclock_lock_is_one_fixed_path_not_xdg_state_home() -> None:
+    """Two shells with different $XDG_STATE_HOME must still find one lock."""
+    assert Path.home() / ".local" / "state" / "cbls" / "wallclock.lock" == jobs.WALLCLOCK_LOCK
+
+
+def test_the_wallclock_lock_refuses_a_second_holder_and_ignores_xdg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock = tmp_path / "fixed" / "wallclock.lock"
+    monkeypatch.setattr(jobs, "WALLCLOCK_LOCK", lock)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
+    with (
+        wallclock_lock("first"),
+        pytest.raises(LockHeldError, match=r"holds .*\(pid=\d+ first\)"),
+        wallclock_lock("second"),
+    ):
+        pass
+    assert lock.exists()
+    assert not (tmp_path / "xdg").exists()
+    with wallclock_lock("third"):
+        pass  # released when the first holder's context exited
