@@ -432,12 +432,20 @@ def summarize(out: Path, bounds_csv: Path) -> str:
         f"  infeasible:           {counts.infeasible}",
         f"  coverage gaps:        {counts.coverage_gaps}",
         f"  errors:               {counts.errors}",
+        f"  non-finite:           {counts.non_finite}",
+        f"  integrality mismatch: {counts.integrality_mismatches}",
+        f"  verification failed:  {counts.verification_failures}",
         f"quality aggregates ({verdicts.denominator} feasible claim-set rows):",
         f"  matches-bks:          {verdicts.matches_bks}",
         f"  within-tolerance:     {verdicts.within_tolerance}",
         f"  worse than BKS:       {verdicts.worse}",
         f"  better than BKS:      {verdicts.better}",
+        f"  no published bound:   {verdicts.no_bks}",
     ]
+    if verdicts.unclassified:
+        lines.append(f"  unclassified:         {', '.join(verdicts.unclassified)}")
+    if counts.error_instances:
+        lines.append(f"errors (no search completed): {', '.join(counts.error_instances)}")
     by_name = {r.instance: r for r in rows}
     lines += [
         f"excluded from quality aggregates: {name} -> {by_name[name].verdict}"

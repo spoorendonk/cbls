@@ -33,15 +33,18 @@ from benchmarks.minlplib.campaign_report import (
     cbls_ahead_of_scip,
     feasibility_profile,
     free_variable_instances,
+    free_variable_split,
     gap_buckets,
     improvement_times,
     improvement_timing,
     load_bounds_index,
     load_results,
     load_scip,
+    load_trace,
     main,
     render_markdown,
     summarize_results,
+    summarize_trace,
     to_json,
 )
 from benchmarks.minlplib.runner import CLAIM_EXCLUDED
@@ -120,7 +123,9 @@ def test_the_committed_tables_reproduce_the_readme() -> None:
 
     # Provenance: what the tables record, and "not recorded" for what they do not.
     assert report.provenance.engine_commit == "21086c2+107"
-    assert report.provenance.machine == NOT_RECORDED
+    assert report.provenance.machine is None
+    assert report.provenance.seed == 1
+    assert report.provenance.warnings == []
     assert report.provenance.scip_configuration == SCIP_VERSION
 
     # Results: the tally table.
@@ -150,7 +155,7 @@ def test_the_committed_tables_reproduce_the_readme() -> None:
     assert round(false_tie.gap_pct, 2) == 1.20
 
     # Results: the anytime score.
-    at = report.anytime
+    at = report.trace.anytime
     assert at.budget_seconds == 60.0
     assert at.denominator == 48
     assert round(at.mean, 3) == 0.473
@@ -158,7 +163,7 @@ def test_the_committed_tables_reproduce_the_readme() -> None:
     assert round(at.shifted_geometric_mean, 4) == 0.0793
 
     # Why 60s: the cumulative-feasibility table and the late-feasible instances.
-    fp = report.feasibility
+    fp = report.trace.feasibility
     assert fp.checkpoints == [1.0, 5.0, 10.0, 20.0, 30.0, 45.0, 60.0]
     assert fp.counts == [41, 41, 41, 42, 44, 46, 46]
     assert {k: round(t, 1) for k, t in fp.late_feasible.items()} == {
@@ -170,7 +175,7 @@ def test_the_committed_tables_reproduce_the_readme() -> None:
     }
 
     # Why 60s: the 46% / 22% split and the eg_all_s bound-tightening walk.
-    it = report.improvement
+    it = report.trace.improvement
     assert it.denominator == 46
     assert (it.stopped_early, it.still_improving) == (21, 10)
     assert round(100 * it.stopped_early / it.denominator) == 46
@@ -466,8 +471,9 @@ def test_the_cli_writes_strict_json_and_markdown(tmp_path: Path) -> None:
     assert data["results"]["counts"]["roster"] == 2
     assert data["results"]["verdicts"]["denominator"] == 1
     assert data["results"]["rule"] == AGGREGATION_RULE
-    assert data["provenance"]["seed"].startswith("7 ")
-    assert data["provenance"]["machine"] == NOT_RECORDED
+    assert data["provenance"]["seed"] == 7
+    assert data["provenance"]["machine"] is None
+    assert data["provenance"]["machine_source"] == NOT_RECORDED
     assert data["free_variables"] is None  # no .nl files in this fixture
     assert "## SCIP head-to-head" in md_out.read_text()
 
@@ -481,3 +487,190 @@ def test_json_has_no_nan(tmp_path: Path) -> None:
     _write_campaign(tmp_path)
     report = build_report(tmp_path, budget=60.0, seed=None, machine=None, feas_tol=None)
     assert "NaN" not in to_json(report)
+
+
+# --- review round: definitions that must not fail open ---------------------------
+
+
+def verify_failed(instance: str) -> Row:
+    return row(
+        instance,
+        objective=math.nan,
+        gap=math.nan,
+        feasible=False,
+        note="VERIFY-FAILED(residual=1)",
+    )
+
+
+def test_a_verify_failed_rows_rejected_incumbents_count_nowhere() -> None:
+    """The runner traces before its re-check, so a VERIFY-FAILED row has incumbents.
+
+    They must not make it feasible in the profile, and the row is withheld from
+    the anytime score (as `mipfeas` withholds it) rather than scored from them.
+    """
+    rows = [row("a"), verify_failed("v")]
+    trace = {"a": [TracePoint(0.5, 1.0)], "v": [TracePoint(0.5, 1.0)]}
+    summary = summarize_trace(rows, trace, budget=60.0)
+    assert summary.feasibility.counts[-1] == 1
+    per = {a.instance: a for a in summary.anytime.per_instance}
+    assert math.isnan(per["v"].primal_integral)
+    assert summary.anytime.unscored == ["v"]
+    assert summary.anytime.denominator == 1
+
+
+def test_a_trace_that_is_not_the_tables_run_is_refused() -> None:
+    rows = [row("a", objective=5.0, bks=5.0), infeasible("b")]
+    with pytest.raises(ValueError, match="not the table's"):
+        summarize_trace(rows, {"a": [TracePoint(0.5, 6.0)]}, budget=60.0)
+    with pytest.raises(ValueError, match="absent from the trace"):
+        summarize_trace(rows, {}, budget=60.0)
+    with pytest.raises(ValueError, match="infeasible in the table but traced"):
+        summarize_trace(rows, {"a": [TracePoint(0.5, 5.0)], "b": [TracePoint(1, 1)]}, 60.0)
+    with pytest.raises(ValueError, match="not in the results table"):
+        summarize_trace(rows, {"a": [TracePoint(0.5, 5.0)], "z": [TracePoint(1, 1)]}, 60.0)
+
+
+def test_a_maximize_rows_trace_is_matched_after_un_negation() -> None:
+    rows = [row("m", objective=600.0, bks=1800.0, gap=66.7, maximizing=True, note="feasible")]
+    summarize_trace(rows, {"m": [TracePoint(0.0, -600.0)]}, budget=60.0)
+
+
+def test_a_non_finite_trace_entry_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "trace.csv"
+    path.write_text("instance,time_seconds,objective,new_best\na,0.5,nan,1\n")
+    with pytest.raises(ValueError, match="non-finite"):
+        load_trace(path)
+
+
+def test_an_unknown_verdict_on_a_feasible_row_is_unclassified_not_dropped() -> None:
+    verdicts = summarize_results([row("a"), row("w", note="weird")]).verdicts
+    assert verdicts.denominator == 2
+    assert verdicts.unclassified == ["w"]
+
+
+def test_every_row_is_built_a_coverage_gap_or_an_error() -> None:
+    """The allowlist complement: a note nobody has heard of is an error, not nothing."""
+    rows = [
+        row("a"),
+        row("nf", feasible=False, objective=math.nan, gap=math.nan, note="non-finite"),
+        row("rf", feasible=False, objective=math.nan, gap=math.nan, note="runner-failed(9)"),
+        row("u", feasible=False, objective=math.nan, gap=math.nan, note="unsupported(V)"),
+    ]
+    c = summarize_results(rows).counts
+    assert c.built + c.coverage_gaps + c.errors == c.roster
+    assert (c.built, c.coverage_gaps, c.errors, c.non_finite) == (2, 1, 1, 1)
+    assert c.error_instances == ["rf"]
+
+
+def test_still_improving_never_reaches_into_the_early_window() -> None:
+    rows = [row("a")]
+    trace = {"a": [TracePoint(0.2, 3.0)]}
+    timing = improvement_timing(rows, trace, budget=10.0)
+    assert (timing.stopped_early, timing.still_improving) == (1, 0)
+
+
+def test_a_first_incumbent_just_past_the_budget_still_counts_at_the_budget() -> None:
+    profile = feasibility_profile([row("a")], {"a": [TracePoint(60.02, 1.0)]}, budget=60.0)
+    assert profile.counts[-1] == 1
+
+
+def test_the_most_stepped_instances_values_are_in_its_own_sense() -> None:
+    rows = [row("m", objective=3.0, bks=3.0, maximizing=True)]
+    trace = {"m": [TracePoint(0.1, -1.0), TracePoint(0.2, -2.0), TracePoint(0.3, -3.0)]}
+    timing = improvement_timing(rows, trace, budget=60.0)
+    assert (timing.most_steps_first, timing.most_steps_last) == (1.0, 3.0)
+
+
+def test_a_budget_the_tables_contradict_is_warned_about(tmp_path: Path) -> None:
+    _write_campaign(tmp_path)
+    report = build_report(tmp_path, budget=30.0, seed=None, machine=None, feas_tol=None)
+    warnings = " ".join(report.provenance.warnings)
+    assert "median CBLS wall time is 60.00s" in warnings
+    assert "SCIP's configuration records 60s" in warnings
+    assert "**WARNING:**" in render_markdown(report)
+    clean = build_report(tmp_path, budget=60.0, seed=None, machine=None, feas_tol=None)
+    assert clean.provenance.warnings == []
+
+
+@pytest.mark.parametrize("budget", ["nan", "inf", "-1"])
+def test_the_cli_refuses_a_non_finite_or_negative_budget(tmp_path: Path, budget: str) -> None:
+    _write_campaign(tmp_path)
+    assert main(["--inst-dir", str(tmp_path), "--budget", budget]) == 2
+
+
+def test_the_cli_prints_markdown_without_output_flags(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_campaign(tmp_path)
+    assert main(["--inst-dir", str(tmp_path), "--budget", "60"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("# MINLPLib campaign report")
+    assert "## Per instance" in out
+
+
+def test_a_duplicate_instance_row_is_refused(tmp_path: Path) -> None:
+    _write_campaign(tmp_path)
+    path = tmp_path / "comparison.csv"
+    path.write_text(path.read_text() + "a,1,1,1,0,0,60,true,matches-bks,abc1234,0,0\n")
+    with pytest.raises(ValueError, match="appears twice"):
+        load_results(path, load_bounds_index(tmp_path / "bounds.csv"))
+
+
+def test_free_variable_split_groups_and_filters() -> None:
+    rows = [
+        row("f1", gap=5.0, note="feasible"),
+        row("f2", gap=50.0, note="feasible"),
+        row("f3", objective=1.0, bks=0.0, gap=1.0, note="feasible"),  # |BKS| too small
+        row("n1", gap=0.0),
+        infeasible("n2"),
+    ]
+    free = {"f1": True, "f2": True, "f3": True, "n1": False, "n2": False}
+    split = free_variable_split(rows, free)
+    assert (split.with_free, split.with_free_eligible, split.with_free_within_10pct) == (3, 2, 1)
+    assert (split.without_free, split.without_free_eligible) == (2, 1)
+    assert split.without_free_within_10pct == 1
+
+
+# --- the README states what the generator says -----------------------------------
+
+README = DEFAULT_INST_DIR / "README.md"
+
+
+def test_the_readme_states_the_generators_numbers() -> None:
+    """Read the README itself, so a README edit without a regenerate goes red too.
+
+    `test_the_committed_tables_reproduce_the_readme` pins the generator against
+    literals; this pins the README's own text against the generator, on the
+    sentences and table rows that carry the headline numbers.
+    """
+    text = " ".join(README.read_text().split())
+    report = build_report(DEFAULT_INST_DIR, budget=60.0, seed=1, machine=None, feas_tol=None)
+    res, ts, h = report.results, report.trace, report.head_to_head
+    c, v, gb, gs = res.counts, res.verdicts, res.gap_buckets, res.gap_buckets_strict
+    expected = [
+        f"| roster | {c.roster} |",
+        f"| of which mixed-integer (integrality enforced) | {c.mixed_integer} |",
+        f"| **feasible** | **{c.feasible}** |",
+        f"| — matching BKS (within the tie band) | {v.matches_bks} |",
+        f"| — worse than BKS | {v.worse} |",
+        f"| infeasible | {c.infeasible} |",
+        f"**{gb.counts[0]} within 0.01% of BKS, {gb.counts[1]} within 1%, "
+        f"{gb.counts[2]} within 10%.**",
+        f"{gs.counts[0]} / {gs.counts[1]} / {gs.counts[2]} over {gs.denominator} rows",
+        "| feasible | " + " | ".join(str(n) for n in ts.feasibility.counts) + " |",
+        f"**mean {ts.anytime.mean:.3f}, median {ts.anytime.median:.3f}, shifted geometric "
+        f"mean {ts.anytime.shifted_geometric_mean:.3g}**",
+        f"| feasible | {h.cbls.feasible} / {h.cbls.roster} | **{h.scip.feasible} / "
+        f"{h.scip.roster}** |",
+        f"| hit the 60s limit | {h.cbls.hit_limit} | {h.scip.hit_limit} |",
+        f"| total wall over the roster | {h.cbls.total_wall_seconds:.0f}s | "
+        f"{h.scip.total_wall_seconds:.0f}s (median {h.scip.median_wall_seconds:.2f}s; "
+        f"{h.scip.under_one_second} instances under 1s) |",
+        "| CBLS | " + " | ".join(str(n) for n in h.cbls_quality) + " |",
+        "| SCIP | " + " | ".join(str(n) for n in h.scip_quality) + " |",
+        f"Buckets over the {h.quality_denominator} instances",
+        f"{ts.improvement.most_steps_incumbents - 1} such steps "
+        f"({ts.improvement.most_steps_incumbents} incumbents)",
+    ]
+    missing = [e for e in expected if e not in text]
+    assert not missing, f"README does not state the generator's numbers: {missing}"

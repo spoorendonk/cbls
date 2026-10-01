@@ -630,6 +630,10 @@ def test_summary_counts_elec_in_the_roster_and_out_of_the_quality_aggregates(
     assert "  worse than BKS:       1" in text
     assert f"excluded from quality aggregates: {CLAIM_EXCLUDED[0]} -> infeasible" in text
     assert "WARNING" not in text
+    # Failure kinds the old verdict histogram showed must still be visible.
+    assert "  verification failed:  0" in text
+    assert "  integrality mismatch: 0" in text
+    assert "  no published bound:   0" in text
 
 
 def test_summary_warns_when_a_documented_failure_comes_back_feasible(tmp_path: Path) -> None:

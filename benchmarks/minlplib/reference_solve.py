@@ -79,6 +79,11 @@ SCIP_METHOD = "scip"
 BKS_METHOD = "published-bks"
 
 
+#: Below this |ref| `safe_gap` returns an ABSOLUTE residual instead of a percent.
+#: Named so the campaign report's zero-BKS rule is this one (#142).
+SAFE_GAP_ABSOLUTE_BELOW = 1e-12
+
+
 def safe_gap(obj: float, ref: float, maximizing: bool) -> float:
     """Signed gap in percent, positive == worse than `ref` in either sense.
 
@@ -92,7 +97,7 @@ def safe_gap(obj: float, ref: float, maximizing: bool) -> float:
     if math.isnan(obj) or math.isnan(ref):
         return math.nan
     diff = (ref - obj) if maximizing else (obj - ref)
-    if abs(ref) < 1e-12:
+    if abs(ref) < SAFE_GAP_ABSOLUTE_BELOW:
         return diff
     return 100.0 * diff / abs(ref)
 

@@ -18,23 +18,23 @@ It solves nothing. Usage, from the repository root:
 
 With neither output flag the Markdown report goes to stdout. `--budget` is
 required because no committed table records it: it is the horizon the anytime
-score integrates over, and the output says it was supplied rather than read.
+score integrates over, and the output says it was supplied rather than read. It
+is checked against the evidence the tables do carry (the CBLS wall times and the
+budget in SCIP's configuration cell) and a disagreement is printed as a warning.
 
-THE AGGREGATION RULE (`AGGREGATION_RULE`, printed in every output). The instances
-in `runner.CLAIM_EXCLUDED` are published as documented failures (#87). They are
-INCLUDED in roster counts -- how many instances the roster has, how many were
-built, feasible, infeasible, wall-clock totals, the SCIP head-to-head counts --
-because the roster of record is the whole table. They are EXCLUDED from quality
-aggregates -- anything that scores an objective: the verdict-vs-BKS breakdown,
-the gap buckets, improvement timing, the anytime scores and the both-solved
-quality buckets. Before #142 the README's tally used the first denominator and
-the driver's summary the second, with nothing saying which a percentage used.
+THE AGGREGATION RULE is `AGGREGATION_RULE` below, stated once and printed in
+every output: the documented-failure instances (`runner.CLAIM_EXCLUDED`, #87)
+count in roster counts and are held out of quality aggregates. Before #142 the
+README's tally used the first denominator and the driver's summary the second,
+with nothing saying which a percentage used.
 
-FOR #141 (per-seed reporting). `summarize_results(rows)` is the per-table entry
-point: one results table in, every table-level aggregate out, under the rule
-above. Call it once per seed; `load_results` reads a table at any path. Every
-definition it applies is a named constant or function here, so a per-seed median
-is a median of the same quantity this report publishes.
+FOR #141 (per-seed reporting). Two entry points, each taking one seed's inputs:
+`summarize_results(rows)` for every aggregate of a results table, and
+`summarize_trace(rows, trace, budget)` for every aggregate of that table's
+anytime trace (cumulative feasibility, improvement timing, anytime scores).
+`load_results` and `load_trace` read them at any path. Every definition they
+apply is a named constant or function here, so a per-seed median is a median of
+the same quantity this report publishes.
 """
 
 from __future__ import annotations
@@ -43,6 +43,7 @@ import argparse
 import csv
 import json
 import math
+import re
 import statistics
 import sys
 from collections import defaultdict
@@ -54,12 +55,17 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from benchmarks.minlplib.reference_solve import (  # noqa: E402
+    SAFE_GAP_ABSOLUTE_BELOW,
     Bound,
     claim_band,
     load_bounds,
     tie_band,
 )
-from benchmarks.minlplib.runner import CLAIM_EXCLUDED, completed_search  # noqa: E402
+from benchmarks.minlplib.runner import (  # noqa: E402
+    CLAIM_EXCLUDED,
+    COVERAGE_GAP_NOTES,
+    completed_search,
+)
 from benchmarks.mipfeas.primal_integral import (  # noqa: E402
     NO_SOLUTION_GAP,
     primal_gap,
@@ -92,8 +98,8 @@ AGGREGATION_RULE = (
 GAP_THRESHOLDS_PCT: tuple[float, ...] = (0.01, 1.0, 10.0)
 
 #: Below this |BKS| the runner's `safe_gap` writes an ABSOLUTE residual into the
-#: gap column, not a percentage (`reference_solve.safe_gap`, `minlplib.cpp`).
-ZERO_BKS = 1e-12
+#: gap column, not a percentage. The same constant `reference_solve.safe_gap` uses.
+ZERO_BKS = SAFE_GAP_ABSOLUTE_BELOW
 
 #: The both-solved CBLS/SCIP quality buckets admit only |BKS| at least this: below
 #: it a percentage against the bound is not informative (README, "SCIP baseline").
@@ -122,16 +128,18 @@ LATE_FEASIBLE_AFTER = 5.0
 #: improvement over 1e-12 relative (`record_best` in `src/search.cpp`), but the
 #: trace writes six significant digits, so a flagged row can print the SAME
 #: objective as the row before it -- an improvement the committed trace cannot
-#: show and the tie band would not count. An instance "stopped improving early" when its last
-#: improvement is at or before EARLY_STOP_SECONDS, and is "still improving" when
-#: its last improvement falls inside the final LATE_WINDOW_SECONDS of the budget.
+#: show and the tie band would not count. An instance "stopped improving early"
+#: when its last improvement is at or before EARLY_STOP_SECONDS, and is "still
+#: improving" when its last improvement falls inside the final
+#: LATE_WINDOW_SECONDS of the budget -- a window that never reaches back into
+#: the early one, so on a short budget the two cannot overlap.
 EARLY_STOP_SECONDS = 1.0
 LATE_WINDOW_SECONDS = 15.0
 
 #: The CBLS results table and trace write objectives at six significant digits
 #: (default `std::ostream` precision), so an objective difference below half a
 #: unit in the last place is not a difference. Used when one solver is called
-#: AHEAD of the other.
+#: AHEAD of the other, and when the trace is checked against the table.
 CELL_RELATIVE_RESOLUTION = 5e-6
 
 #: A run "hit the limit" when its wall time reaches the budget, less this
@@ -139,11 +147,10 @@ CELL_RELATIVE_RESOLUTION = 5e-6
 #: reported beside it as `proved_optimal`).
 LIMIT_RELATIVE_SLACK = 1e-3
 
-#: Notes of a runner exception or a non-finite objective (no usable result).
-ERROR_NOTES: tuple[str, ...] = ("read-error", "build-error", "solve-error", "non-finite")
-
-#: Notes of a coverage gap (instance declined or not downloaded).
-COVERAGE_NOTES: tuple[str, ...] = ("unsupported", "not-found")
+#: How far the median CBLS wall time may sit from `--budget` before the report
+#: warns that the budget it was given is probably not the campaign's. The runner
+#: spends its whole budget on this roster (every committed row is 60.00xs).
+BUDGET_EVIDENCE_TOLERANCE = 0.05
 
 NOT_RECORDED = "not recorded"
 
@@ -156,6 +163,16 @@ def verdict_of(note: str) -> str:
     annotated row becomes its own histogram bucket.
     """
     return note.split("(")[0].split(" | ")[0].split(";")[0].strip()
+
+
+#: The verdicts a FEASIBLE row can carry (`classify_against_bks` in minlplib.cpp).
+#: Anything else on a feasible row is reported as unclassified, never dropped.
+FEASIBLE_VERDICTS: tuple[str, ...] = (
+    "matches-bks",
+    "within-tolerance-of-bks",
+    "feasible",
+    "better-than-bks",
+)
 
 
 def _float(cell: str | None) -> float:
@@ -202,8 +219,23 @@ class Row:
         return completed_search(self.note)
 
     @property
+    def coverage_gap(self) -> bool:
+        return self.note.startswith(COVERAGE_GAP_NOTES)
+
+    @property
+    def verification_failed(self) -> bool:
+        """The runner rejected its own incumbent on an independent re-check."""
+        return self.note.startswith("VERIFY-FAILED")
+
+    @property
     def zero_bks(self) -> bool:
         return abs(self.primal_bks) < ZERO_BKS
+
+
+def _refuse_duplicate(path: Path, seen: set[str], name: str) -> None:
+    if name in seen:
+        raise ValueError(f"{path}: instance {name!r} appears twice")
+    seen.add(name)
 
 
 def load_bounds_index(path: Path) -> dict[str, Bound]:
@@ -214,14 +246,17 @@ def load_bounds_index(path: Path) -> dict[str, Bound]:
 def load_results(path: Path, bounds: Mapping[str, Bound]) -> list[Row]:
     """Read one CBLS results table (the published one, or any seed's), in file order.
 
-    Refuses a row whose instance `bounds.csv` does not know: without its sense the
-    trace normalisation cannot be done, and a silent default of `min` would invert
-    every maximize row.
+    Refuses a row whose instance `bounds.csv` does not know -- without its sense
+    the trace normalisation cannot be done, and a silent default of `min` would
+    invert every maximize row -- and an instance listed twice, which would inflate
+    every roster count.
     """
     rows: list[Row] = []
+    seen: set[str] = set()
     with path.open(newline="") as fh:
         for raw in csv.DictReader(fh):
             name = raw["instance"]
+            _refuse_duplicate(path, seen, name)
             if name not in bounds:
                 raise ValueError(f"{path}: instance {name!r} is not in bounds.csv")
             bound = bounds[name]
@@ -261,8 +296,10 @@ class ScipRow:
 
 def load_scip(path: Path) -> dict[str, ScipRow]:
     rows: dict[str, ScipRow] = {}
+    seen: set[str] = set()
     with path.open(newline="") as fh:
         for raw in csv.DictReader(fh):
+            _refuse_duplicate(path, seen, raw["instance"])
             n_int = _float(raw.get("n_int_vars"))
             rows[raw["instance"]] = ScipRow(
                 instance=raw["instance"],
@@ -287,14 +324,58 @@ class TracePoint:
 
 
 def load_trace(path: Path) -> dict[str, list[TracePoint]]:
-    """The anytime trace by instance, each list sorted by time."""
+    """The anytime trace by instance, each list sorted by time.
+
+    Refuses a non-finite entry, as `mipfeas.primal_integral.load_trace` does: one
+    NaN turns an integral into NaN and drops the instance from every aggregate
+    without a word. (The runner never writes one -- its recorder skips a
+    non-finite incumbent -- so one here means the file is not the runner's.)
+    """
     trace: dict[str, list[TracePoint]] = defaultdict(list)
     with path.open(newline="") as fh:
         for raw in csv.DictReader(fh):
-            trace[raw["instance"]].append(
-                TracePoint(float(raw["time_seconds"]), float(raw["objective"]))
-            )
+            point = TracePoint(float(raw["time_seconds"]), float(raw["objective"]))
+            if not (math.isfinite(point.time_seconds) and math.isfinite(point.objective)):
+                raise ValueError(f"{path}: non-finite trace entry for {raw['instance']!r}")
+            trace[raw["instance"]].append(point)
     return {name: sorted(points, key=lambda p: p.time_seconds) for name, points in trace.items()}
+
+
+def check_trace_matches_table(
+    rows: Sequence[Row], trace: Mapping[str, Sequence[TracePoint]]
+) -> None:
+    """Refuse a trace that is not the results table's own run.
+
+    Every aggregate of the trace -- the feasibility profile, improvement timing,
+    the anytime score -- is silently wrong if the trace is stale or partial, so
+    the two are cross-checked: no trace instance outside the table; every row
+    published feasible with a finite objective has a trace whose best incumbent
+    (un-negated on a maximize row) is that objective to the cells' resolution;
+    and no row published infeasible has one, except a VERIFY-FAILED row, whose
+    incumbents the runner recorded before rejecting them.
+    """
+    by_name = {r.instance: r for r in rows}
+    stray = sorted(set(trace) - set(by_name))
+    if stray:
+        raise ValueError(f"anytime trace names instances not in the results table: {stray}")
+    for r in rows:
+        points = trace.get(r.instance, [])
+        if not r.feasible:
+            if points and not r.verification_failed:
+                raise ValueError(f"{r.instance}: infeasible in the table but traced")
+            continue
+        if not math.isfinite(r.objective):
+            continue  # the non-finite-objective witness (#100) is never traced
+        if not points:
+            raise ValueError(f"{r.instance}: feasible in the table but absent from the trace")
+        best = min(p.objective for p in points)
+        best = -best if r.maximizing else best
+        slack = 2 * CELL_RELATIVE_RESOLUTION * max(abs(best), abs(r.objective)) + 1e-300
+        if abs(best - r.objective) > slack:
+            raise ValueError(
+                f"{r.instance}: trace's best incumbent {best:g} is not the table's "
+                f"objective {r.objective:g}; the trace is not this table's run"
+            )
 
 
 def free_variable_instances(inst_dir: Path, instances: Iterable[str]) -> dict[str, bool] | None:
@@ -311,8 +392,12 @@ def free_variable_instances(inst_dir: Path, instances: Iterable[str]) -> dict[st
         if not path.exists():
             return None
         lines = path.read_text().splitlines()
+        if not lines or not lines[0].startswith("g"):
+            raise ValueError(f"{path}: not a text ('g' header) NL file")
         n_vars = int(lines[1].split()[0])
-        start = next((i for i, line in enumerate(lines) if line.startswith("b")), None)
+        # The segment header is a line that is exactly "b"; line 0 is the file
+        # header and never the segment.
+        start = next((i for i, line in enumerate(lines) if i > 0 and line.strip() == "b"), None)
         if start is None:
             raise ValueError(f"{path}: no 'b' (variable bounds) segment")
         types = [line.split()[0] for line in lines[start + 1 : start + 1 + n_vars]]
@@ -327,7 +412,12 @@ def free_variable_instances(inst_dir: Path, instances: Iterable[str]) -> dict[st
 
 @dataclass
 class RosterCounts:
-    """Over EVERY row, documented failures included (`AGGREGATION_RULE`)."""
+    """Over EVERY row, documented failures included (`AGGREGATION_RULE`).
+
+    `built + coverage_gaps + errors == roster` always: an error is any row whose
+    note is neither a completed search nor a coverage gap -- the allowlist
+    complement, so a note nobody has heard of lands here rather than nowhere.
+    """
 
     roster: int
     built: int
@@ -338,6 +428,9 @@ class RosterCounts:
     infeasible_instances: list[str]
     coverage_gaps: int
     errors: int
+    error_instances: list[str]
+    #: A completed search whose objective was not finite.
+    non_finite: int
     integrality_mismatches: int
     verification_failures: int
     #: Documented-failure instances present in the table.
@@ -351,6 +444,7 @@ class RosterCounts:
 def roster_counts(rows: Sequence[Row]) -> RosterCounts:
     built = [r for r in rows if r.built]
     infeasible = [r for r in built if not r.feasible and r.verdict == "infeasible"]
+    errors = [r for r in rows if not r.built and not r.coverage_gap]
     return RosterCounts(
         roster=len(rows),
         built=len(built),
@@ -359,15 +453,17 @@ def roster_counts(rows: Sequence[Row]) -> RosterCounts:
         feasible=sum(1 for r in rows if r.feasible),
         infeasible=len(infeasible),
         infeasible_instances=[r.instance for r in infeasible],
-        coverage_gaps=sum(1 for r in rows if r.note.startswith(COVERAGE_NOTES)),
-        errors=sum(1 for r in rows if r.note.startswith(ERROR_NOTES)),
+        coverage_gaps=sum(1 for r in rows if r.coverage_gap),
+        errors=len(errors),
+        error_instances=[r.instance for r in errors],
+        non_finite=sum(1 for r in built if r.verdict == "non-finite"),
         integrality_mismatches=sum(
             1
             for r in built
             if r.n_disc_vars_bks >= 0
             and (r.n_int_vars != r.n_disc_vars_bks or "integrality-mismatch" in r.note)
         ),
-        verification_failures=sum(1 for r in rows if r.note.startswith("VERIFY-FAILED")),
+        verification_failures=sum(1 for r in rows if r.verification_failed),
         documented_failures=[r.instance for r in rows if r.excluded],
         documented_failures_feasible=[r.instance for r in rows if r.excluded and r.feasible],
         total_wall_seconds=math.fsum(r.wall_seconds for r in rows if math.isfinite(r.wall_seconds)),
@@ -376,7 +472,11 @@ def roster_counts(rows: Sequence[Row]) -> RosterCounts:
 
 @dataclass
 class BksVerdicts:
-    """The runner's own verdicts over the FEASIBLE rows of the claim set."""
+    """The runner's own verdicts over the FEASIBLE rows of the claim set.
+
+    The five counts add up to `denominator`: a verdict outside
+    `FEASIBLE_VERDICTS` is named in `unclassified`, never dropped.
+    """
 
     denominator: int
     matches_bks: int
@@ -385,6 +485,7 @@ class BksVerdicts:
     better: int
     #: Feasible rows with no published bound to classify against.
     no_bks: int
+    unclassified: list[str] = field(default_factory=list)
 
 
 def bks_verdicts(rows: Sequence[Row]) -> BksVerdicts:
@@ -398,6 +499,7 @@ def bks_verdicts(rows: Sequence[Row]) -> BksVerdicts:
         worse=by_verdict.count("feasible") - no_bks,
         better=by_verdict.count("better-than-bks"),
         no_bks=no_bks,
+        unclassified=[r.instance for r in feasible if r.verdict not in FEASIBLE_VERDICTS],
     )
 
 
@@ -521,19 +623,36 @@ def summarize_results(rows: Sequence[Row], feas_tol: float = DEFAULT_FEAS_TOL) -
 
 
 # --------------------------------------------------------------------------
-# Trace-derived aggregates.
+# Trace-derived aggregates (one trace; #141 calls `summarize_trace` per seed).
 # --------------------------------------------------------------------------
 
 
-def improvement_times(points: Sequence[TracePoint]) -> list[float]:
-    """Times of strict decreases of the recorded objective (the first point included)."""
+def improvement_steps(points: Sequence[TracePoint]) -> list[TracePoint]:
+    """The points where the recorded objective strictly decreased (the first included).
+
+    The one definition of an improvement (see `EARLY_STOP_SECONDS`'s comment).
+    """
     best = math.inf
-    times: list[float] = []
+    steps: list[TracePoint] = []
     for p in points:
         if p.objective < best:
             best = p.objective
-            times.append(p.time_seconds)
-    return times
+            steps.append(p)
+    return steps
+
+
+def improvement_times(points: Sequence[TracePoint]) -> list[float]:
+    return [p.time_seconds for p in improvement_steps(points)]
+
+
+def _trace_of(r: Row, trace: Mapping[str, Sequence[TracePoint]]) -> Sequence[TracePoint]:
+    """A row's incumbents, or none when the table does not publish it feasible.
+
+    The runner records the trace before its independent re-check, so a
+    VERIFY-FAILED row carries incumbents the runner then rejected; nothing here
+    may count them.
+    """
+    return trace.get(r.instance, []) if r.feasible else []
 
 
 @dataclass
@@ -549,10 +668,18 @@ class FeasibilityProfile:
 def feasibility_profile(
     rows: Sequence[Row], trace: Mapping[str, Sequence[TracePoint]], budget: float
 ) -> FeasibilityProfile:
+    """First-feasible times, clamped to the budget as the primal integral clamps them.
+
+    A run can record its first incumbent a few milliseconds past the budget while
+    the clock is being read; clamping keeps the last column equal to the
+    feasible count of the instances that have a trace.
+    """
     checkpoints = sorted({*(t for t in FEASIBILITY_CHECKPOINTS if t <= budget), budget})
-    first = {name: pts[0].time_seconds for name, pts in trace.items() if pts}
-    names = {r.instance for r in rows}
-    first = {k: v for k, v in first.items() if k in names}
+    first = {
+        r.instance: min(points[0].time_seconds, budget)
+        for r in rows
+        if (points := _trace_of(r, trace))
+    }
     return FeasibilityProfile(
         roster=len(rows),
         checkpoints=checkpoints,
@@ -570,9 +697,11 @@ class ImprovementTiming:
     denominator: int
     stopped_early: int
     still_improving: int
+    first_feasible: dict[str, float]
     last_improvement: dict[str, float]
     #: The instance with the most improvements, and its consecutive-incumbent ratio:
     #: the README's evidence that the trace measures the bound-tightening step.
+    #: First/last are in the instance's own sense (un-negated on a maximize row).
     most_steps_instance: str | None
     most_steps_incumbents: int
     most_steps_median_ratio: float
@@ -583,37 +712,35 @@ class ImprovementTiming:
 def improvement_timing(
     rows: Sequence[Row], trace: Mapping[str, Sequence[TracePoint]], budget: float
 ) -> ImprovementTiming:
-    claim = {r.instance for r in rows if r.feasible and not r.excluded}
+    late_start = max(budget - LATE_WINDOW_SECONDS, EARLY_STOP_SECONDS)
+    first: dict[str, float] = {}
     last: dict[str, float] = {}
-    longest: tuple[str, list[float]] | None = None
-    for name in sorted(claim):
-        points = trace.get(name, [])
-        times = improvement_times(points)
-        if not times:
+    longest: tuple[Row, list[TracePoint]] | None = None
+    for r in sorted((r for r in rows if r.feasible and not r.excluded), key=lambda r: r.instance):
+        steps = improvement_steps(_trace_of(r, trace))
+        if not steps:
             continue
-        last[name] = times[-1]
-        values: list[float] = []
-        best = math.inf
-        for p in points:
-            if p.objective < best:
-                best = p.objective
-                values.append(p.objective)
-        if longest is None or len(values) > len(longest[1]):
-            longest = (name, values)
-    ratios: list[float] = []
-    if longest is not None:
-        values = longest[1]
-        ratios = [b / a for a, b in zip(values, values[1:], strict=False) if a != 0.0]
+        first[r.instance] = steps[0].time_seconds
+        last[r.instance] = steps[-1].time_seconds
+        if longest is None or len(steps) > len(longest[1]):
+            longest = (r, steps)
+    if longest is None:
+        return ImprovementTiming(0, 0, 0, {}, {}, None, 0, math.nan, math.nan, math.nan)
+    row, steps = longest
+    values = [p.objective for p in steps]
+    ratios = [b / a for a, b in zip(values, values[1:], strict=False) if a != 0.0]
+    sign = -1.0 if row.maximizing else 1.0
     return ImprovementTiming(
         denominator=len(last),
         stopped_early=sum(1 for t in last.values() if t <= EARLY_STOP_SECONDS),
-        still_improving=sum(1 for t in last.values() if t > budget - LATE_WINDOW_SECONDS),
+        still_improving=sum(1 for t in last.values() if t > late_start),
+        first_feasible=first,
         last_improvement=last,
-        most_steps_instance=longest[0] if longest else None,
-        most_steps_incumbents=len(longest[1]) if longest else 0,
+        most_steps_instance=row.instance,
+        most_steps_incumbents=len(steps),
         most_steps_median_ratio=statistics.median(ratios) if ratios else math.nan,
-        most_steps_first=longest[1][0] if longest else math.nan,
-        most_steps_last=longest[1][-1] if longest else math.nan,
+        most_steps_first=sign * values[0],
+        most_steps_last=sign * values[-1],
     )
 
 
@@ -621,9 +748,9 @@ def improvement_timing(
 class AnytimeInstance:
     instance: str
     excluded: bool
-    #: MIPfeas primal integral over [0, budget], in [0, 2]; NaN with no BKS.
+    #: MIPfeas primal integral over [0, budget], in [0, 2]; NaN when unscored.
     primal_integral: float
-    #: MIPfeas primal gap of the final incumbent (2.0 when none).
+    #: MIPfeas primal gap of the final incumbent (2.0 when none); NaN when unscored.
     final_primal_gap: float
 
 
@@ -636,13 +763,21 @@ class AnytimeScores:
     `benchmarks.mipfeas.primal_integral.primal_gap` (|x - x*| / max(|x|, |x*|),
     2 before the first incumbent, 1 across a sign change, 0 when both are below
     1e-6), and the score is its time average over [0, budget]. 0 is "at BKS
-    immediately", 2 is "never feasible". An incumbent better than BKS scores a
-    positive gap: the measure is distance from the bound.
+    immediately", 2 is "never feasible". Two consequences to read the mean with:
+    BKS is not a proven optimum, so an incumbent better than BKS scores a
+    positive gap (the measure is distance from the bound); and a zero-BKS row
+    whose objective is not within 1e-6 of zero scores 1.0 throughout -- such
+    rows are left out of the gap buckets but are IN this score.
+
+    Unscored (NaN, out of the aggregates, named in `unscored`): a row with no
+    completed search, no published bound, or a VERIFY-FAILED verdict -- the last
+    as `mipfeas` withholds a failed-verification row rather than scoring it.
     """
 
     budget_seconds: float
     per_instance: list[AnytimeInstance]
     denominator: int
+    unscored: list[str]
     mean: float
     median: float
     shifted_geometric_mean: float
@@ -652,12 +787,15 @@ def anytime_scores(
     rows: Sequence[Row], trace: Mapping[str, Sequence[TracePoint]], budget: float
 ) -> AnytimeScores:
     per: list[AnytimeInstance] = []
+    unscored: list[str] = []
     for r in rows:
-        if not r.built or math.isnan(r.primal_bks):
+        if not r.built or math.isnan(r.primal_bks) or r.verification_failed:
             per.append(AnytimeInstance(r.instance, r.excluded, math.nan, math.nan))
+            if not r.excluded:
+                unscored.append(r.instance)
             continue
         reference = -r.primal_bks if r.maximizing else r.primal_bks
-        points = [(p.time_seconds, p.objective) for p in trace.get(r.instance, [])]
+        points = [(p.time_seconds, p.objective) for p in _trace_of(r, trace)]
         final = primal_gap(points[-1][1], reference) if points else NO_SOLUTION_GAP
         per.append(
             AnytimeInstance(
@@ -669,9 +807,36 @@ def anytime_scores(
         budget_seconds=budget,
         per_instance=per,
         denominator=len(scored),
+        unscored=unscored,
         mean=statistics.fmean(scored) if scored else math.nan,
         median=statistics.median(scored) if scored else math.nan,
         shifted_geometric_mean=shifted_geometric_mean(scored),
+    )
+
+
+@dataclass
+class TraceSummary:
+    """Every aggregate of ONE anytime trace against its results table."""
+
+    feasibility: FeasibilityProfile
+    improvement: ImprovementTiming
+    anytime: AnytimeScores
+
+
+def summarize_trace(
+    rows: Sequence[Row], trace: Mapping[str, Sequence[TracePoint]], budget: float
+) -> TraceSummary:
+    """The per-trace entry point: call once per seed's trace (for #141).
+
+    Cross-checks the trace against the table first (`check_trace_matches_table`).
+    """
+    if not (math.isfinite(budget) and budget > 0):
+        raise ValueError("budget must be positive and finite")
+    check_trace_matches_table(rows, trace)
+    return TraceSummary(
+        feasibility=feasibility_profile(rows, trace, budget),
+        improvement=improvement_timing(rows, trace, budget),
+        anytime=anytime_scores(rows, trace, budget),
     )
 
 
@@ -760,6 +925,18 @@ def _better_by(a: float, b: float, maximizing: bool, margin: float) -> bool:
     return (a - b if maximizing else b - a) > margin
 
 
+def _both_solved(rows: Sequence[Row], scip: Mapping[str, ScipRow]) -> list[Row]:
+    return [
+        r
+        for r in rows
+        if r.feasible
+        and not r.excluded
+        and r.instance in scip
+        and scip[r.instance].feasible
+        and abs(r.primal_bks) >= HEAD_TO_HEAD_MIN_ABS_BKS
+    ]
+
+
 def cbls_ahead_of_scip(
     rows: Sequence[Row], scip: Mapping[str, ScipRow], feas_tol: float
 ) -> list[AheadRow]:
@@ -780,26 +957,14 @@ def cbls_ahead_of_scip(
     return out
 
 
-def _both_solved(rows: Sequence[Row], scip: Mapping[str, ScipRow]) -> list[Row]:
-    return [
-        r
-        for r in rows
-        if r.feasible
-        and not r.excluded
-        and r.instance in scip
-        and scip[r.instance].feasible
-        and abs(r.primal_bks) >= HEAD_TO_HEAD_MIN_ABS_BKS
-    ]
-
-
 def head_to_head(
     rows: Sequence[Row], scip: Mapping[str, ScipRow], budget: float, feas_tol: float
 ) -> HeadToHead:
     counts = roster_counts(rows)
-    scip_rows = [scip[r.instance] for r in rows if r.instance in scip]
-    if len(scip_rows) != len(rows):
-        missing = sorted({r.instance for r in rows} - set(scip))
+    missing = sorted({r.instance for r in rows} - set(scip))
+    if missing:
         raise ValueError(f"scip_baseline.csv has no row for {missing}")
+    scip_rows = [scip[r.instance] for r in rows]
     bounds_disc = {r.instance: r.n_disc_vars_bks for r in rows}
     disjoint = [
         DisjointFailure(
@@ -818,6 +983,12 @@ def head_to_head(
         if r.feasible != scip[r.instance].feasible
     ]
     both = _both_solved(rows, scip)
+    scip_mismatches = sum(
+        1
+        for s in scip_rows
+        if "integrality mismatch" in s.note
+        or (bounds_disc[s.instance] >= 0 and s.n_int_vars not in (-1, bounds_disc[s.instance]))
+    )
     return HeadToHead(
         cbls=_solver_counts(
             [r.wall_seconds for r in rows],
@@ -832,15 +1003,7 @@ def head_to_head(
             sum(1 for s in scip_rows if s.feasible),
             sum(1 for s in scip_rows if s.status == "optimal"),
             budget,
-            sum(
-                1
-                for s in scip_rows
-                if "integrality mismatch" in s.note
-                or (
-                    bounds_disc[s.instance] >= 0
-                    and s.n_int_vars not in (-1, bounds_disc[s.instance])
-                )
-            ),
+            scip_mismatches,
             sum(1 for s in scip_rows if "CHECK-FAILED" in s.note),
         ),
         disjoint_failures=disjoint,
@@ -900,26 +1063,52 @@ def free_variable_split(rows: Sequence[Row], free: Mapping[str, bool]) -> FreeVa
 
 @dataclass
 class Provenance:
+    """What produced the tables. Values are null when the tables do not record them.
+
+    Each `*_source` says where the value came from, so a reader can tell a value
+    the tables carry from one the caller typed.
+    """
+
     engine_commit: str
+    search_config: str
     budget_seconds: float
     budget_source: str
-    seed: str
-    machine: str
+    seed: int | None
+    seed_source: str
+    machine: str | None
+    machine_source: str
     feas_tol: float
     feas_tol_source: str
+    observed_median_cbls_wall_seconds: float
     scip_configuration: str
+    scip_budget_seconds: float | None
     scip_machine: str
+    #: Disagreements between `--budget` and the evidence in the tables.
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class InstanceFigures:
+    """One instance's figures side by side, so a reader sees what moves the aggregates."""
+
+    instance: str
+    excluded: bool
+    verdict: str
+    gap_pct: float
+    first_feasible_seconds: float
+    last_improvement_seconds: float
+    primal_integral: float
+    final_primal_gap: float
 
 
 @dataclass
 class CampaignReport:
     provenance: Provenance
     results: ResultsSummary
-    feasibility: FeasibilityProfile
-    improvement: ImprovementTiming
-    anytime: AnytimeScores
+    trace: TraceSummary
     head_to_head: HeadToHead
     free_variables: FreeVariableSplit | None
+    per_instance: list[InstanceFigures]
     not_regenerated: list[str]
 
 
@@ -927,10 +1116,21 @@ class CampaignReport:
 #: and why. Printed in every output so a reader can tell "not derived" from
 #: "derived and agreeing".
 NOT_REGENERATED: tuple[str, ...] = (
-    "#107 'within 10% before' column: measured on a pre-#107 table that is not committed.",
+    "#107 'within 10% before' column (and the '2 of the 11' read off it): measured on "
+    "a pre-#107 table that is not committed.",
     "Per-seed and multi-commit measurements (nvs01's eight seeds, the #102 probe, the "
-    "portfolio A/B): separate campaigns, not the committed tables.",
+    "portfolio A/B, the replication spreads quoted in Results): separate campaigns, "
+    "not the committed tables.",
+    "The ex6_2_6 'stale catalogue row' note under SCIP baseline: a prose reading of "
+    "one scip_baseline.csv row, not an aggregate.",
 )
+
+_SCIP_BUDGET = re.compile(r"/\s*([0-9.]+)s\s*/")
+
+
+def _scip_budget(configuration: str) -> float | None:
+    match = _SCIP_BUDGET.search(configuration)
+    return float(match.group(1)) if match else None
 
 
 def _one_or_flag(values: Sequence[str]) -> str:
@@ -941,6 +1141,24 @@ def _one_or_flag(values: Sequence[str]) -> str:
     return "MIXED: " + ", ".join(values)
 
 
+def _budget_warnings(budget: float, cbls_median: float, scip_budget: float | None) -> list[str]:
+    out: list[str] = []
+    if (
+        math.isfinite(cbls_median)
+        and abs(cbls_median - budget) > BUDGET_EVIDENCE_TOLERANCE * budget
+    ):
+        out.append(
+            f"--budget {budget:g}s but the median CBLS wall time is {cbls_median:.2f}s: "
+            "the budget is probably not the campaign's"
+        )
+    if scip_budget is not None and scip_budget != budget:
+        out.append(
+            f"--budget {budget:g}s but SCIP's configuration records {scip_budget:g}s; "
+            "the head-to-head compares runs at different budgets"
+        )
+    return out
+
+
 def build_report(
     inst_dir: Path,
     *,
@@ -949,40 +1167,67 @@ def build_report(
     machine: str | None,
     feas_tol: float | None,
 ) -> CampaignReport:
-    if budget <= 0:
-        raise ValueError("budget must be positive")
+    if not (math.isfinite(budget) and budget > 0):
+        raise ValueError("budget must be positive and finite")
+    if feas_tol is not None and not (math.isfinite(feas_tol) and feas_tol > 0):
+        raise ValueError("feas_tol must be positive and finite")
     bounds = load_bounds_index(inst_dir / "bounds.csv")
     rows = load_results(inst_dir / "comparison.csv", bounds)
     trace = load_trace(inst_dir / "anytime_trace.csv")
     scip = load_scip(inst_dir / "scip_baseline.csv")
     tol = DEFAULT_FEAS_TOL if feas_tol is None else feas_tol
     results = summarize_results(rows, tol)
+    trace_summary = summarize_trace(rows, trace, budget)
     free = free_variable_instances(inst_dir, [r.instance for r in rows])
+    built_walls = [r.wall_seconds for r in rows if r.built and math.isfinite(r.wall_seconds)]
+    cbls_median = statistics.median(built_walls) if built_walls else math.nan
+    scip_configuration = _one_or_flag(sorted({s.version for s in scip.values() if s.version}))
+    scip_budget = _scip_budget(scip_configuration)
     provenance = Provenance(
         engine_commit=_one_or_flag(results.commit_shas),
+        search_config=_one_or_flag(results.search_configs),
         budget_seconds=budget,
         budget_source="--budget (comparison.csv does not record the budget)",
-        seed=f"{seed} (--seed; comparison.csv does not record the seed)"
+        seed=seed,
+        seed_source="--seed (comparison.csv does not record the seed)"
         if seed is not None
         else NOT_RECORDED,
-        machine=f"{machine} (--machine; comparison.csv does not record the machine)"
+        machine=machine,
+        machine_source="--machine (comparison.csv does not record the machine)"
         if machine
         else NOT_RECORDED,
         feas_tol=tol,
         feas_tol_source="--feas-tol"
         if feas_tol is not None
         else "runner default (comparison.csv does not record it)",
-        scip_configuration=_one_or_flag(sorted({s.version for s in scip.values() if s.version})),
-        scip_machine=NOT_RECORDED,
+        observed_median_cbls_wall_seconds=cbls_median,
+        scip_configuration=scip_configuration,
+        scip_budget_seconds=scip_budget,
+        scip_machine="not in scip_baseline.csv (the README's SCIP 'Hardware' note names one)",
+        warnings=_budget_warnings(budget, cbls_median, scip_budget),
     )
+    anytime = {a.instance: a for a in trace_summary.anytime.per_instance}
+    timing = trace_summary.improvement
+    per_instance = [
+        InstanceFigures(
+            instance=r.instance,
+            excluded=r.excluded,
+            verdict=r.verdict,
+            gap_pct=r.gap_pct,
+            first_feasible_seconds=timing.first_feasible.get(r.instance, math.nan),
+            last_improvement_seconds=timing.last_improvement.get(r.instance, math.nan),
+            primal_integral=anytime[r.instance].primal_integral,
+            final_primal_gap=anytime[r.instance].final_primal_gap,
+        )
+        for r in rows
+    ]
     return CampaignReport(
         provenance=provenance,
         results=results,
-        feasibility=feasibility_profile(rows, trace, budget),
-        improvement=improvement_timing(rows, trace, budget),
-        anytime=anytime_scores(rows, trace, budget),
+        trace=trace_summary,
         head_to_head=head_to_head(rows, scip, budget, tol),
         free_variables=free_variable_split(rows, free) if free is not None else None,
+        per_instance=per_instance,
         not_regenerated=list(NOT_REGENERATED),
     )
 
@@ -999,7 +1244,7 @@ def _jsonable(value: object) -> object:
 
 
 def to_json(report: CampaignReport) -> str:
-    return json.dumps(_jsonable(asdict(report)), indent=2, sort_keys=False) + "\n"
+    return json.dumps(_jsonable(asdict(report)), indent=2, allow_nan=False) + "\n"
 
 
 # --------------------------------------------------------------------------
@@ -1024,31 +1269,32 @@ def _thresholds(values: Sequence[float]) -> list[str]:
     return [f"≤{t:g}%" for t in values]
 
 
-def render_markdown(report: CampaignReport) -> str:
-    p = report.provenance
-    res = report.results
-    c = res.counts
-    v = res.verdicts
-    gb = res.gap_buckets
-    gs = res.gap_buckets_strict
-    fp = report.feasibility
-    it = report.improvement
-    at = report.anytime
-    h2h = report.head_to_head
-    out: list[str] = ["# MINLPLib campaign report", ""]
-    out += [
+def _sourced(value: object, source: str) -> str:
+    return NOT_RECORDED if value is None else f"{value} ({source})"
+
+
+def _provenance_lines(p: Provenance, rule: str) -> list[str]:
+    out = [
         "## Provenance",
         "",
         f"- engine commit: {p.engine_commit}",
-        f"- budget: {p.budget_seconds:g}s per instance ({p.budget_source})",
-        f"- seed: {p.seed}",
-        f"- machine: {p.machine}",
+        f"- search config: {p.search_config}",
+        f"- budget: {p.budget_seconds:g}s per instance ({p.budget_source}); observed "
+        f"median CBLS wall {_g(p.observed_median_cbls_wall_seconds, 5)}s",
+        f"- seed: {_sourced(p.seed, p.seed_source)}",
+        f"- machine: {_sourced(p.machine, p.machine_source)}",
         f"- feasibility tolerance: {p.feas_tol:g} ({p.feas_tol_source})",
         f"- SCIP configuration: {p.scip_configuration}; SCIP machine: {p.scip_machine}",
         "",
-        f"**Aggregation rule.** {res.rule}",
-        "",
     ]
+    for warning in p.warnings:
+        out += [f"**WARNING:** {warning}", ""]
+    return [*out, f"**Aggregation rule.** {rule}", ""]
+
+
+def _results_lines(res: ResultsSummary) -> list[str]:
+    c, v, gb, gs = res.counts, res.verdicts, res.gap_buckets, res.gap_buckets_strict
+    out: list[str] = []
     if c.documented_failures_feasible:
         out += [
             f"**WARNING:** documented-failure instance(s) {_names(c.documented_failures_feasible)} "
@@ -1069,12 +1315,18 @@ def render_markdown(report: CampaignReport) -> str:
         f"| — worse than BKS | {v.worse} |",
         f"| — better than BKS | {v.better} |",
         f"| infeasible | {c.infeasible} ({_names(c.infeasible_instances)}) |",
-        f"| unsupported / read errors / non-finite | {c.coverage_gaps + c.errors} |",
+        f"| unsupported / read errors / non-finite | {c.coverage_gaps + c.errors + c.non_finite} |",
         f"| integrality mismatches vs catalogue | {c.integrality_mismatches} |",
         f"| verification failures | {c.verification_failures} |",
         "",
         f"Verdict rows are over the {v.denominator} feasible claim-set rows"
-        + (f"; {v.no_bks} had no published bound." if v.no_bks else "."),
+        + (f"; {v.no_bks} had no published bound" if v.no_bks else "")
+        + (f"; unclassified: {_names(v.unclassified)}" if v.unclassified else "")
+        + ".",
+    ]
+    if c.errors:
+        out.append(f"Errors (no search completed): {_names(c.error_instances)}.")
+    out += [
         "",
         "## Gap distribution",
         "",
@@ -1089,7 +1341,8 @@ def render_markdown(report: CampaignReport) -> str:
         f"Excluding all of them: {' / '.join(str(n) for n in gs.counts)} "
         f"over {gs.denominator} rows.",
         "",
-        "Earlier margin rule (gap % below -1e-6) would have flagged as better-than-bks: "
+        f"Earlier margin rule (gap % below -{LEGACY_MARGIN_PCT:g}) would have flagged as "
+        "better-than-bks: "
         + (
             ", ".join(
                 f"`{e.instance}` at {_g(-e.gap_pct, 2)} percent" for e in res.legacy_margin_ties
@@ -1107,6 +1360,13 @@ def render_markdown(report: CampaignReport) -> str:
         )
         + ".",
         "",
+    ]
+    return out
+
+
+def _trace_lines(ts: TraceSummary) -> list[str]:
+    fp, it, at = ts.feasibility, ts.improvement, ts.anytime
+    out = [
         "## Cumulative feasibility (roster count)",
         "",
         "| by | " + " | ".join(f"{t:g}s" for t in fp.checkpoints) + " |",
@@ -1139,26 +1399,40 @@ def render_markdown(report: CampaignReport) -> str:
         f"Budget {at.budget_seconds:g}s. Over {at.denominator} claim-set instances: mean "
         f"{_g(at.mean, 4)}, median {_g(at.median, 4)}, shifted geometric mean "
         f"{_g(at.shifted_geometric_mean, 4)} (0 = at BKS immediately, "
-        f"{NO_SOLUTION_GAP:g} = never feasible).",
+        f"{NO_SOLUTION_GAP:g} = never feasible). Unscored: {_names(at.unscored)}.",
         "",
-        "| instance | primal integral | final primal gap | |",
-        "|---|---|---|---|",
+    ]
+    return out
+
+
+def _per_instance_lines(figures: Sequence[InstanceFigures]) -> list[str]:
+    out = [
+        "## Per instance",
+        "",
+        "| instance | verdict | gap % | first feasible | last improvement | primal integral "
+        "| final primal gap | |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     out += [
-        f"| `{a.instance}` | {_g(a.primal_integral, 4)} | {_g(a.final_primal_gap, 4)} | "
-        f"{'excluded' if a.excluded else ''} |"
-        for a in at.per_instance
+        f"| `{f.instance}` | {f.verdict} | {_g(f.gap_pct, 4)} | "
+        f"{_g(f.first_feasible_seconds, 3)} | {_g(f.last_improvement_seconds, 3)} | "
+        f"{_g(f.primal_integral, 4)} | {_g(f.final_primal_gap, 4)} | "
+        f"{'excluded' if f.excluded else ''} |"
+        for f in figures
     ]
+    return [*out, ""]
+
+
+def _head_to_head_lines(h2h: HeadToHead, budget: float) -> list[str]:
     cb, sc = h2h.cbls, h2h.scip
-    out += [
-        "",
+    out = [
         "## SCIP head-to-head (roster counts)",
         "",
         "| | CBLS | SCIP |",
         "|---|---|---|",
         f"| feasible | {cb.feasible} / {cb.roster} | {sc.feasible} / {sc.roster} |",
         f"| proved optimal | n/a (primal heuristic) | {sc.proved_optimal} / {sc.roster} |",
-        f"| hit the {p.budget_seconds:g}s limit | {cb.hit_limit} | {sc.hit_limit} |",
+        f"| hit the {budget:g}s limit | {cb.hit_limit} | {sc.hit_limit} |",
         f"| total wall over the roster | {cb.total_wall_seconds:.0f}s | "
         f"{sc.total_wall_seconds:.0f}s (median {sc.median_wall_seconds:.2f}s; "
         f"{sc.under_one_second} instances under 1s) |",
@@ -1203,7 +1477,16 @@ def render_markdown(report: CampaignReport) -> str:
         f"| `{a.instance}` | {a.cbls_gap_pct:.4g}% | {a.scip_gap_pct:.4g}% | {a.scip_status} |"
         for a in h2h.cbls_ahead
     ]
-    out += ["", "## Free variables (#107, after column)", ""]
+    return [*out, ""]
+
+
+def render_markdown(report: CampaignReport) -> str:
+    out: list[str] = ["# MINLPLib campaign report", ""]
+    out += _provenance_lines(report.provenance, report.results.rule)
+    out += _results_lines(report.results)
+    out += _trace_lines(report.trace)
+    out += _head_to_head_lines(report.head_to_head, report.provenance.budget_seconds)
+    out += ["## Free variables (#107, after column)", ""]
     fv = report.free_variables
     if fv is None:
         out.append("Not derivable: a roster `.nl` file is missing.")
@@ -1216,7 +1499,9 @@ def render_markdown(report: CampaignReport) -> str:
             f"| no free variables | {fv.without_free} | {fv.without_free_eligible} | "
             f"{fv.without_free_within_10pct} |",
         ]
-    out += ["", "## Not regenerated", ""]
+    out += [""]
+    out += _per_instance_lines(report.per_instance)
+    out += ["## Not regenerated", ""]
     out += [f"- {line}" for line in report.not_regenerated]
     return "\n".join(out) + "\n"
 
@@ -1227,7 +1512,7 @@ def render_markdown(report: CampaignReport) -> str:
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("--inst-dir", type=Path, default=DEFAULT_INST_DIR)
     parser.add_argument(
         "--budget",
@@ -1245,8 +1530,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    if args.budget <= 0:
-        print("--budget must be positive", file=sys.stderr)
+    if not (math.isfinite(args.budget) and args.budget > 0):
+        print("--budget must be positive and finite", file=sys.stderr)
+        return 2
+    if args.feas_tol is not None and not (math.isfinite(args.feas_tol) and args.feas_tol > 0):
+        print("--feas-tol must be positive and finite", file=sys.stderr)
         return 2
     report = build_report(
         args.inst_dir,
@@ -1262,6 +1550,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.markdown.write_text(markdown)
     if args.json is None and args.markdown is None:
         sys.stdout.write(markdown)
+    for warning in report.provenance.warnings:
+        print(f"WARNING: {warning}", file=sys.stderr)
     return 0
 
 
