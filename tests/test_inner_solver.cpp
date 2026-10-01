@@ -226,10 +226,14 @@ std::vector<double> float_values(const Model& m) {
 
 }  // namespace
 
+// [timing], hand-registered as timing_inner_solver_hook_deadline in
+// tests/CMakeLists.txt: a wall-clock-duration assertion, kept because its
+// subject is the user-facing budget contract #191 broke. The deterministic
+// discriminator for the polls themselves is the poll-sequence tests below.
 TEST_CASE("solve returns within its budget when an intensification pass would outlast it",
-          "[inner_solver]") {
-    // Red before #191: the hook got no stop, so the solve returned only when
-    // the pass had run all its sweeps, seconds past the budget.
+          "[inner_solver][timing]") {
+    // Red before #191 (6.7 s against this 0.5 s budget): the hook got no stop,
+    // so the solve returned only when the pass had run all its sweeps.
     Model m = climbing_model(kClimbVars);
     FloatIntensifyHook hook;
     hook.max_sweeps = kClimbSweeps;
@@ -242,8 +246,8 @@ TEST_CASE("solve returns within its budget when an intensification pass would ou
 
     REQUIRE(result.feasible);
     REQUIRE(result.counters.inner_solver_calls >= 1);
-    // The tolerance covers setup, finish() and a loaded ctest -j, not the
-    // hook: the poll stride bounds the hook's own overrun at 16 variables.
+    // The tolerance covers setup, finish() and a loaded machine, not the hook:
+    // this model polls every 65 Float variables, microseconds of descent apart.
     CHECK(result.time_seconds < kBudget + 0.5);
     CHECK(wall < kBudget + 0.5);
 }
@@ -263,43 +267,113 @@ TEST_CASE("FloatIntensifyHook returns before any work on a raised stop", "[inner
     REQUIRE(float_values(m) == std::vector<double>(m.num_vars(), 5.0));
 }
 
-TEST_CASE("FloatIntensifyHook under an unraised stop matches the stop-less call",
+namespace {
+
+// A stop source that counts its polls and turns true from poll `raise_at` on
+// (never, when 0). The poll sequence is the discriminator: each multi-variable
+// Newton step is preceded by exactly one poll, and the coordinate pass polls
+// before its first Float variable and then every vars_per_poll() of them.
+struct CountingStop {
+    int raise_at = 0;
+    mutable int polls = 0;
+    [[nodiscard]] bool requested() const {
+        ++polls;
+        return raise_at > 0 && polls >= raise_at;
+    }
+};
+
+// n Floats in [0, 1] with a row 5 - x_i <= 0 each, which no assignment
+// satisfies: every row stays violated, so a multi-variable pass always runs its
+// full max_multi_var_constraints steps (each a no-op here -- one variable per
+// row -- but polled all the same).
+Model always_violated_model(int n) {
+    Model m;
+    const auto five = m.constant(5.0);
+    const auto minus1 = m.constant(-1.0);
+    for (int i = 0; i < n; ++i) {
+        const auto x = m.float_var(0.0, 1.0);
+        m.add_constraint(m.sum({five, m.prod(minus1, x)}));
+    }
+    m.close();
+    return m;
+}
+
+int count_changed(const std::vector<double>& before, const std::vector<double>& after) {
+    int changed = 0;
+    for (size_t i = 0; i < before.size(); ++i) {
+        changed += before[i] != after[i] ? 1 : 0;
+    }
+    return changed;
+}
+
+// Puts every variable at `value` and re-evaluates, so a test does not depend on
+// how a fresh model initialises its Floats.
+void start_all_at(Model& m, double value) {
+    for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
+        m.var_mut(v).value = value;
+    }
+    full_evaluate(m);
+}
+
+}  // namespace
+
+TEST_CASE("FloatIntensifyHook stops the coordinate pass at the poll that is raised",
           "[inner_solver]") {
-    // The polls decide only whether the descent continues, never what it does.
-    auto run = [](bool with_stop) {
-        Model m = many_float_model(50);
-        for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
-            m.var_mut(v).value = 2.0 + (0.1 * v);
-        }
-        full_evaluate(m);
-        const std::vector<double> start = float_values(m);
+    // 1024 rows -> one poll per 64 Float variables. Every descended variable
+    // climbs, so the number that moved is the number descended.
+    Model m = climbing_model(1024);
+    const int stride = FloatIntensifyHook::vars_per_poll(m);
+    REQUIRE(stride == 64);
+    start_all_at(m, 0.0);
+    const std::vector<double> before = float_values(m);
+    ViolationManager vm(m);
+
+    const CountingStop stop{3};  // polls 1 and 2 pass, poll 3 stops
+    FloatIntensifyHook hook;
+    hook.solve(m, vm, {}, stop);
+    CHECK(stop.polls == 3);
+    CHECK(count_changed(before, float_values(m)) == 2 * stride);
+}
+
+TEST_CASE("FloatIntensifyHook polls before every multi-variable Newton step", "[inner_solver]") {
+    Model m = always_violated_model(1024);
+    const int stride = FloatIntensifyHook::vars_per_poll(m);
+    REQUIRE(stride == 64);
+    const int coordinate_polls = 1024 / stride;
+    start_all_at(m, 0.0);
+    FloatIntensifyHook hook;
+    hook.max_sweeps = 1;
+    REQUIRE(hook.max_multi_var_constraints == 5);
+
+    SECTION("never raised: one poll per stride, then one per multi-variable step") {
         ViolationManager vm(m);
-        FloatIntensifyHook hook;
-        hook.max_sweeps = 20;
-        const StopToken token;  // attached, never raised
-        if (with_stop) {
-            hook.solve(m, vm, {}, token);
-        } else {
-            hook.solve(m, vm);
-        }
-        std::vector<double> end = float_values(m);
-        REQUIRE(end != start);  // the comparison below is about real work
-        return end;
-    };
-    REQUIRE(run(true) == run(false));
+        const CountingStop stop{0};
+        hook.solve(m, vm, {}, stop);
+        CHECK(stop.polls == coordinate_polls + 5);
+    }
+    SECTION("raised at the first multi-variable poll: no multi-variable step runs") {
+        // Poll coordinate_polls + 1 is the first one the multi-variable pass
+        // makes; with that poll gone the pass runs unpolled, and max_sweeps = 1
+        // ends the call one poll short.
+        ViolationManager vm(m);
+        const CountingStop stop{coordinate_polls + 1};
+        hook.solve(m, vm, {}, stop);
+        CHECK(stop.polls == coordinate_polls + 1);
+    }
 }
 
 namespace {
 
-// Spins until the search's stop is raised, with a cap so a search that never
-// raises it fails the test rather than hanging it.
+// Spins until the search's stop is raised, with a 1 s cap -- many times the
+// 50 ms budget below -- so a search that never raises it fails the test fast
+// rather than hanging it.
 struct WaitForStopHook : InnerSolverHook {
     int calls = 0;
     int stopped_calls = 0;
     void solve(Model& /*model*/, ViolationManager& /*vm*/,
                const std::vector<int32_t>& /*last_changed_vars*/, StopRef stop) override {
         ++calls;
-        const auto cap = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        const auto cap = std::chrono::steady_clock::now() + std::chrono::seconds(1);
         while (std::chrono::steady_clock::now() < cap) {
             if (stop.requested()) {
                 ++stopped_calls;
@@ -336,11 +410,12 @@ struct CancelInsideHook : InnerSolverHook {
 TEST_CASE("search hands a custom hook a stop raised at its deadline", "[inner_solver]") {
     Model m = many_float_model(5);
     WaitForStopHook hook;
-    constexpr double kBudget = 0.3;
-    const SearchResult result = solve(m, kBudget, 42, true, &hook);
+    // No duration assertion: what is pinned is that the stop the hook holds
+    // turns true once the deadline passes, not how promptly the solve returns.
+    const SearchResult result = solve(m, 0.05, 42, true, &hook);
     REQUIRE(hook.calls >= 1);
     REQUIRE(hook.stopped_calls == hook.calls);
-    CHECK(result.time_seconds < kBudget + 0.5);
+    REQUIRE(result.termination == TerminationReason::TimeLimit);
 }
 
 TEST_CASE("search hands a custom hook a stop raised by a host cancel", "[inner_solver]") {

@@ -32,8 +32,13 @@ public:
     // Added as a parameter of the one virtual rather than as a second virtual
     // beside it, deliberately: with two, a subclass of FloatIntensifyHook that
     // overrode only the stop-less one was silently bypassed by the search. Here
-    // an old-signature override marked `override`, or one that was the only
-    // implementation of the pure virtual, fails to compile instead.
+    // an old-signature override fails to compile only if it is marked
+    // `override`, or if it was a direct subclass's only implementation of this
+    // pure virtual (the class stays abstract). An UNMARKED old-signature
+    // override in a FloatIntensifyHook subclass still compiles and is silently
+    // hidden. -Woverloaded-virtual flags it (GCC 15's -Wall and clang-tidy's
+    // clang-diagnostic-overloaded-virtual, both checked); modernize-use-override
+    // does not, since the function overrides nothing.
     virtual void solve(Model& model, ViolationManager& vm,
                        const std::vector<int32_t>& last_changed_vars = {}, StopRef stop = {}) = 0;
 };
@@ -47,13 +52,19 @@ public:
     int max_line_search_steps = 5;
     int max_multi_var_constraints = 5;
 
-    // Polls `stop` before every 16th Float variable and before every
-    // multi-variable Newton step, and returns at the first raised poll. Each
-    // unit between polls commits or rolls back completely, so an early return
-    // leaves a consistent model. With `stop` never raised the descent is exactly
-    // what it was before the polls existed.
+    // Polls `stop` before the first Float variable of each sweep and then every
+    // vars_per_poll(model) Float variables, and before every multi-variable
+    // Newton step; returns at the first raised poll. Each unit between polls
+    // commits or rolls back completely, so an early return leaves a consistent
+    // model. With `stop` never raised the descent is exactly what it was before
+    // the polls existed.
     void solve(Model& model, ViolationManager& vm,
                const std::vector<int32_t>& last_changed_vars = {}, StopRef stop = {}) override;
+
+    // Float variables descended between two polls of `stop` on this model:
+    // sized by row count (src/inner_solver.cpp carries the argument), between 1
+    // and 256. Public so a test can predict the poll sequence exactly.
+    static int vars_per_poll(const Model& model);
 };
 
 }  // namespace cbls

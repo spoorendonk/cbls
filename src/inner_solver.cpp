@@ -171,26 +171,12 @@ bool multi_var_newton_step(Model& model, ViolationManager& vm, int32_t cid) {
 // How one half of a sweep ended.
 enum class PassOutcome : std::uint8_t { Improved, Unchanged, Stopped };
 
-// The stop poll (#191). Without it the hook ran rahue (12k Float columns, 77k
-// rows) ~10 s past a 20 s budget: each Float variable costs at least one
-// O(rows) violated-row scan, and a sweep visits every one of them.
-//
-// Polled every kStopStride Float variables rather than every one: a poll is an
-// indirect call plus, on a timed run, one steady_clock read (~20-30 ns), and a
-// variable's descent is at least a row scan and a reverse-mode partial, so the
-// stride keeps the poll's share negligible on small models while bounding the
-// overrun at kStopStride variables' work. Each multi-variable Newton step costs
-// a whole reverse pass, so every one of those is polled.
-//
-// The polls never change what the descent does, only whether it continues, so
-// with `stop` never raised the trajectory is exactly what it was without them.
-constexpr int kStopStride = 16;
-
-// The coordinate half of a sweep: one descent step per Float variable.
-// `until_poll` is the stride countdown, carried across sweeps.
+// The coordinate half of a sweep: one descent step per Float variable, polling
+// `stop` before the first and then before every `vars_per_poll`-th one.
 PassOutcome coordinate_pass(Model& model, ViolationManager& vm, double initial_step,
-                            int max_line_search_steps, StopRef stop, int& until_poll) {
+                            int max_line_search_steps, StopRef stop, int vars_per_poll) {
     bool improved = false;
+    int until_poll = 0;
     for (const auto& var : model.variables()) {
         if (var.type != VarType::Float) {
             continue;
@@ -199,7 +185,7 @@ PassOutcome coordinate_pass(Model& model, ViolationManager& vm, double initial_s
             if (stop.requested()) {
                 return PassOutcome::Stopped;
             }
-            until_poll = kStopStride;
+            until_poll = vars_per_poll;
         }
         --until_poll;
         if (descend_float_var(model, vm, var, initial_step, max_line_search_steps)) {
@@ -211,6 +197,8 @@ PassOutcome coordinate_pass(Model& model, ViolationManager& vm, double initial_s
 
 // The multi-variable half: a minimum-norm Newton step on each of the first
 // `max_constraints` violated rows, re-reading the violated set before each.
+// Every step is polled: each is a whole reverse pass over the DAG plus a pass
+// over every variable, which no poll cost comes near.
 PassOutcome multi_var_pass(Model& model, ViolationManager& vm, int max_constraints, StopRef stop) {
     bool improved = false;
     for (int ci = 0; ci < max_constraints; ++ci) {
@@ -228,14 +216,52 @@ PassOutcome multi_var_pass(Model& model, ViolationManager& vm, int max_constrain
     return improved ? PassOutcome::Improved : PassOutcome::Unchanged;
 }
 
+// How often the coordinate pass polls (#191). Without any poll the hook ran
+// MIPfeas rahue (12k Float columns, 77k rows) ~10 s past a 20 s budget.
+//
+// The stride is sized by the model's row count, as a machine-independent proxy
+// for a variable's cost: each variable's descent reads every row's value once in
+// its violated-row scan (newton_candidates), before any partial or probe. So
+// between two polls lie at least kPollRowReads row reads, unless the
+// kMaxVarsPerPoll cap binds.
+//
+// What a poll costs is the clock read inside the search's past_deadline():
+// ~20-25 ns through the vDSO on a tsc clocksource, but 1408 ns on this project's
+// reference machine (hpet; measured for #113, docs/architecture.md). The two
+// regimes, and where each constant loses:
+//  - Many rows (>= kPollRowReads): one variable per poll. The poll is then at
+//    most ~1.4 us against a scan of >= 65 536 rows, tens of microseconds, so a
+//    few percent of the hook at worst. The overrun is one variable's descent,
+//    irreducible from here: on a multi-million-row model that one scan plus its
+//    probes is milliseconds, and only a poll inside the probes would cut it.
+//  - Few rows: up to kMaxVarsPerPoll variables per poll. Where rows are so few
+//    that the cap binds, a variable's descent is dominated by its partials and
+//    line-search probes (each a delta_evaluate), so 256 of them are many times
+//    the 1.4 us poll, and the overrun is 256 such descents. A model with few rows
+//    but very large per-variable cones is what this proxy undercounts: there
+//    the overrun can reach 256 expensive descents.
+// A stride sized in time, as FJ's is (#113), is not open here: the hook cannot
+// read the clock itself without breaking a clockless run's "reads no clock"
+// guarantee, and the stop it is handed does not say whether a clock exists.
+//
+// The polls never change what the descent does, only whether it continues, so
+// with `stop` never raised the trajectory is exactly what it was without them.
+constexpr int64_t kPollRowReads = int64_t{1} << 16;
+constexpr int kMaxVarsPerPoll = 256;
+
 }  // namespace
+
+int FloatIntensifyHook::vars_per_poll(const Model& model) {
+    const auto rows = std::max<int64_t>(1, static_cast<int64_t>(model.constraint_ids().size()));
+    return static_cast<int>(std::clamp<int64_t>(kPollRowReads / rows, 1, kMaxVarsPerPoll));
+}
 
 void FloatIntensifyHook::solve(Model& model, ViolationManager& vm,
                                const std::vector<int32_t>& /*last_changed_vars*/, StopRef stop) {
-    int until_poll = 0;
+    const int stride = vars_per_poll(model);
     for (int sweep = 0; sweep < max_sweeps; ++sweep) {
         const PassOutcome coordinate =
-            coordinate_pass(model, vm, initial_step_size, max_line_search_steps, stop, until_poll);
+            coordinate_pass(model, vm, initial_step_size, max_line_search_steps, stop, stride);
         if (coordinate == PassOutcome::Stopped) {
             return;
         }

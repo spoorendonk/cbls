@@ -107,14 +107,28 @@ catch_discover_tests(cbls_tests
 # catch_discover_tests calls above — tag them [slow] instead and they would be
 # discovered *and* hand-registered, i.e. run twice.
 #
-# Issue #104: timing_structural_batch_deadline is the suite's ONLY
-# wall-clock-duration assertion — everything else asserts on iteration counts or
-# values. Don't add another without a reason as concrete as #105's.
+# Issue #104: timing_structural_batch_deadline and (#191)
+# timing_inner_solver_hook_deadline are the suite's ONLY wall-clock-duration
+# assertions — everything else asserts on iteration counts, poll counts or
+# values. Don't add another without a reason as concrete as #105's or #191's
+# (each pins a user-facing budget contract that a run once broke, and each
+# sits beside a deterministic discriminator of the mechanism).
 add_test(NAME timing_structural_batch_deadline
     COMMAND cbls_tests "structural batch respects the wall-clock deadline"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(timing_structural_batch_deadline
     PROPERTIES LABELS "timing" TIMEOUT 60 SKIP_RETURN_CODE 4)
+
+# #191: a FloatIntensifyHook pass that would run for seconds must end at the
+# solve's deadline. LABELS "timing;slow" keeps its wall-clock half-second out of
+# the `ctest -LE slow` pre-commit set, as for the #125 floors below; TIMEOUT 60
+# so a regression (6.7 s on the pre-#191 engine) fails on the assertion, which
+# names the problem, rather than on the timeout.
+add_test(NAME timing_inner_solver_hook_deadline
+    COMMAND cbls_tests "solve returns within its budget when an intensification pass would outlast it"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(timing_inner_solver_hook_deadline
+    PROPERTIES LABELS "timing;slow" TIMEOUT 60 SKIP_RETURN_CODE 4)
 
 # A hang regression needs a TIMEOUT to report itself, so this one is
 # hand-registered too (catch_discover_tests registers at build time, so
