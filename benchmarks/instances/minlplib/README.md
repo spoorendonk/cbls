@@ -1341,3 +1341,5 @@ arm order alternating with seed parity. Each run was scored with
 `primal_integral.primal_integral` against the roster optimum over [0, 30 s].
 `portfolio_ab.py analyze` accepts the resulting rows (`instance`, `seed`,
 `share`, `pi`, `gap`).
+
+A held-out roster the shipped defaults were never fitted to lives in `heldout/`; method, pool size and composition are in [HELDOUT.md](HELDOUT.md) (#144).
