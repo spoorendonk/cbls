@@ -189,6 +189,9 @@ each run's start, 2026-10-01:
 - **Feasibility and gap at 10 s:** feasibility identical in every run; the gap
   identical on every feasible row with a bound, except `ucp13` 3-period seeds 1
   and 2 (1.13 → 1.03%, 2.72 → 2.62%).
+- **Per-horizon budgets (10-600 s), seed 42, 10:47-13:06, load 1.00-1.41:**
+  feasibility and the printed gap are identical on all 24 rows (16 feasible, 8
+  infeasible in both builds); iterations after/before 0.98-1.10.
 
 ## Reference Solver
 
