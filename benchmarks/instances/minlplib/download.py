@@ -36,6 +36,7 @@ import math
 import sys
 import urllib.error
 import urllib.request
+from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -309,19 +310,73 @@ def heldout_key(seed: int, name: str) -> str:
     return hashlib.sha256(f"cbls-minlplib-heldout:{seed}:{name}".encode()).hexdigest()
 
 
-def select_heldout(rows: list[dict[str, str]], exclude: set[str], seed: int) -> list[Instance]:
-    """The held-out candidate order: the pool minus `exclude`, seeded-shuffled.
+def select_heldout(
+    rows: list[dict[str, str]], exclude: set[str], seed: int
+) -> dict[str, list[Instance]]:
+    """The held-out candidates per structure class, each in `heldout_key` order.
 
-    Same round-robin across structure classes as `select`, so the held-out set is
-    stratified by the same rule as the published roster; the only change is that
-    within a class the order is `heldout_key` instead of smallest first.
     `exclude` is the published roster -- the instances the shipped defaults were
     fitted on -- plus the instances its walk already found unfetchable. Dropping
-    those before the round-robin rather than skipping them during the walk keeps
-    a known-binary instance from costing its class a turn.
+    those up front rather than skipping them during the walk means a
+    known-binary instance never has to be fetched to be passed over.
     """
-    pool = [inst for inst in survivors(rows) if inst.name not in exclude]
-    return _round_robin(pool, lambda i: (heldout_key(seed, i.name),))
+    by_class: dict[str, list[Instance]] = {}
+    for inst in survivors(rows):
+        if inst.name not in exclude:
+            by_class.setdefault(inst.structure, []).append(inst)
+    for bucket in by_class.values():
+        bucket.sort(key=lambda i: heldout_key(seed, i.name))
+    return dict(sorted(by_class.items()))
+
+
+def heldout_quotas(
+    published: list[Instance], drawable: dict[str, list[Instance]], limit: int
+) -> dict[str, int]:
+    """Per-class quotas for the held-out set, proportional to the published mix.
+
+    Only classes the drawable remainder still has are apportioned (the published
+    roster used up bilinear and polynomial). `limit` is split over them in
+    proportion to the published counts by largest remainder, ties broken by
+    class name. Exact fractions, so no float rounding decides a seat.
+    """
+    counts = {c: n for c, n in class_counts(published).items() if drawable.get(c)}
+    total = sum(counts.values())
+    exact = {c: Fraction(limit * n, total) for c, n in counts.items()}
+    quotas = {c: int(v) for c, v in exact.items()}
+    short = limit - sum(quotas.values())
+    for c in sorted(counts, key=lambda c: (quotas[c] - exact[c], c))[:short]:
+        quotas[c] += 1
+    return quotas
+
+
+def quota_walk(
+    by_class: dict[str, list[Instance]],
+    quotas: dict[str, int],
+    accept: Callable[[Instance], bool],
+) -> list[Instance]:
+    """Fill each class's quota from its ordered candidates, interleaving classes.
+
+    Classes take turns in sorted order, one accepted instance per turn; a
+    candidate `accept` rejects (served as binary NL) is passed over within the
+    same turn, so it never costs its class a seat. A class that runs out of
+    candidates stops early, and the caller sees a short result.
+    `accept` is the fetch when drawing, and a set lookup when replaying offline.
+    """
+    queues = {c: list(by_class.get(c, [])) for c in quotas}
+    taken = dict.fromkeys(quotas, 0)
+    chosen: list[Instance] = []
+    progressed = True
+    while progressed:
+        progressed = False
+        for c in sorted(quotas):
+            while taken[c] < quotas[c] and queues[c]:
+                inst = queues[c].pop(0)
+                if accept(inst):
+                    chosen.append(inst)
+                    taken[c] += 1
+                    progressed = True
+                    break
+    return chosen
 
 
 def walk(candidates: list[Instance], limit: int, unavailable: set[str]) -> list[Instance]:
@@ -510,45 +565,51 @@ def _recheck_published_skips(candidates: list[Instance], roster: list[str]) -> l
     return skips
 
 
-def _fetch_heldout(
-    order: list[Instance], out_dir: Path, limit: int
-) -> tuple[list[Instance], list[Skip]] | None:
-    """Walk `order` fetching text NL into `out_dir` until `limit` are in hand.
+class _OutageError(Exception):
+    """A network failure during the held-out walk: abort, never record a skip."""
 
-    An existing .nl that validates as text NL is always reused, even under --force: the committed
-    files are the pinned bytes #145 runs on, and --force only lifts the
-    membership refusal. To re-fetch one, delete it first.
+
+def _fetch_heldout(
+    by_class: dict[str, list[Instance]], quotas: dict[str, int], out_dir: Path
+) -> tuple[list[Instance], list[Skip]] | None:
+    """Fill the quotas with text-NL instances fetched into `out_dir`.
+
+    An existing .nl that validates as text NL is always reused, even under
+    --force: the committed files are the pinned bytes #145 runs on, and --force
+    only lifts the membership refusal. To re-fetch one, delete it first.
 
     Unlike the published walk, a network failure aborts instead of skipping: a
     transient outage recorded as a skip would change the committed membership.
     """
     out_dir.mkdir(exist_ok=True)
-    fetched: list[Instance] = []
     skips: list[Skip] = []
-    for inst in order:
-        if len(fetched) >= limit:
-            break
+
+    def accept(inst: Instance) -> bool:
         dest = out_dir / f"{inst.name}.nl"
         if dest.exists() and validate_nl(dest.read_bytes()) is None:
-            fetched.append(inst)
-            continue
+            return True
         try:
             body, reason = _fetch_text_nl(inst.name)
         except (urllib.error.URLError, OSError) as exc:
-            print(f"[fail]  {inst.name}: {exc} (network; aborting, roster not written)")
-            return None
+            raise _OutageError(f"{inst.name}: {exc}") from exc
         if body is None:
             print(f"[skip]  {inst.name} (held-out walk): {reason}")
             skips.append((inst.name, "heldout", str(reason)))
-            continue
+            return False
         tmp = dest.with_name(dest.name + ".tmp")
         tmp.write_bytes(body)
         tmp.replace(dest)  # a kill mid-write must not leave a truncated file to reuse
         digest = hashlib.sha256(body).hexdigest()
         print(f"        -> {dest.name} ({len(body)} bytes, sha256 {digest[:12]}...)")
-        fetched.append(inst)
-    if len(fetched) < limit:
-        print(f"[fail]  only {len(fetched)} held-out instances fetchable (target {limit})")
+        return True
+
+    try:
+        fetched = quota_walk(by_class, quotas, accept)
+    except _OutageError as exc:
+        print(f"[fail]  {exc} (network; aborting, roster not written)")
+        return None
+    if len(fetched) < sum(quotas.values()):
+        print(f"[fail]  only {class_counts(fetched)} fetchable against quotas {quotas}")
         return None
     return fetched, skips
 
@@ -576,8 +637,12 @@ def build_heldout(here: Path, rows: list[dict[str, str]], limit: int, force: boo
     published_skips = _recheck_published_skips(candidates, roster)
     if published_skips is None:
         return 1
-    exclude = set(roster) | {name for name, _, _ in published_skips}
-    walked = _fetch_heldout(select_heldout(rows, exclude, HELDOUT_SEED), out_dir, limit)
+    members = set(roster)
+    published = [inst for inst in candidates if inst.name in members]
+    exclude = members | {name for name, _, _ in published_skips}
+    by_class = select_heldout(rows, exclude, HELDOUT_SEED)
+    quotas = heldout_quotas(published, by_class, limit)
+    walked = _fetch_heldout(by_class, quotas, out_dir)
     if walked is None:
         return 1
     fetched, heldout_skips = walked
@@ -586,10 +651,9 @@ def build_heldout(here: Path, rows: list[dict[str, str]], limit: int, force: boo
     _write_atomic(out_dir / UNFETCHABLE_FILENAME, unfetchable_text(published_skips + heldout_skips))
     _write_atomic(bounds_path, bounds_text(fetched))
 
-    members = set(roster)
     print(f"\npool {len(candidates)}: {class_counts(candidates)}")
-    published = [inst for inst in candidates if inst.name in members]
     print(f"published {len(published)}: {class_counts(published)}")
+    print(f"quotas {quotas}")
     print(f"held-out  {len(fetched)} (seed {HELDOUT_SEED}): {class_counts(fetched)}")
     print(f"Wrote {bounds_path}")
     return 0

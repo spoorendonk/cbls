@@ -8,16 +8,23 @@ the headline result is published against that same roster. Without a held-out
 set, "the engine is good on non-convex MINLP" cannot be told apart from "the
 engine was fitted to these fifty instances".
 
-The membership and the seed were committed before any run on the set:
-`HELDOUT_SEED = 144` landed in the commit "feat(minlplib): add a seeded held-out
-draw to the selection tooling", and the membership in the commit after it.
-That second commit also settled one rule of the draw: the instances the
-published walk found unfetchable are removed before the round-robin rather than
-skipped during the walk, so a binary-NL instance does not cost its class a turn.
-Under the earlier rule the set differs by one instance (`graphpart_3g-0333-0333`
-in place of `ex14_2_7`, giving 18/17/15 instead of 17/17/16). No solver had been
-run on either set when the rule changed. Nothing has been solved on these
-instances. When this was written, none of
+### Provenance
+
+The seed, `HELDOUT_SEED = 144`, was fixed before any membership was computed and
+has not changed since. The draw rule was revised twice after a membership had
+been computed, both times on review, and both times before any measurement of
+any kind existed on any version of the set:
+
+1. Instances the published walk had already found to be binary NL are removed
+   before the draw instead of being skipped during it. This changed one
+   instance.
+2. The per-class mix changed from an even round-robin over the three shared
+   classes (17 / 17 / 16) to quotas proportional to the published roster's mix
+   in those classes (21 / 20 / 9; see Method). This replaced 7 of the 50
+   instances.
+
+No solver has been run on any version of this set. At no point did a result
+exist that could have informed either change. When this was written, none of
 the fifty names appeared anywhere else in the repository.
 
 ## Files
@@ -25,7 +32,7 @@ the fifty names appeared anywhere else in the repository.
 | File | What it is |
 |---|---|
 | `heldout/bounds.csv` | The held-out roster, in draw order, in `../bounds.csv`'s schema. It is the roster of record for this set. |
-| `heldout/*.nl` | The fifty text-NL files, committed (1.1 MB, about the size of the published roster's 1.2 MB). |
+| `heldout/*.nl` | The fifty text-NL files, committed (1.2 MB, about the size of the published roster's 1.2 MB). |
 | `heldout/pool.csv` | Snapshot of the catalogue rows the filter admits (all 397), limited to the columns the filter reads. Both rosters are re-derivable from it offline. |
 | `heldout/unfetchable.csv` | The instances each fetch walk skipped because MINLPLib serves them as binary NL. A walk can only be replayed offline with this list. |
 
@@ -91,24 +98,32 @@ choice is which way to differ from it (next section).
 ## Method
 
 1. Start from the pool. Remove the published roster and the instances its walk
-   already found unfetchable. Removing those before step 3 keeps a known-binary
-   instance from costing its class a turn.
+   already found unfetchable.
 2. Within each structure class, order instances by
    `sha256("cbls-minlplib-heldout:144:<name>")`. This is a seeded shuffle that
    ignores size completely. A hash is used rather than `random.shuffle`
    because Python only guarantees `random()` and seeding to stay stable across
    versions, not `shuffle`. sha256 of a fixed string is stable everywhere.
-3. Interleave the classes round-robin in sorted class order. This is the same
-   rule `select()` uses for the published roster, so both sets are stratified
-   the same way.
-4. Fetch in that order until 50 text-NL files are in hand, recording any skip
-   in `unfetchable.csv`. A network failure aborts the run instead of being
-   recorded as a skip. Otherwise a transient outage would change the
-   membership.
+3. Give each class still present in the remainder a quota proportional to the
+   published roster's count in that class. The published counts in the three
+   shared classes are 15 mixed-integer, 14 other and 6 transcendental (35 in
+   all). Scaled to 50 they are exactly 21.43, 20 and 8.57. Largest remainder,
+   computed in exact fractions with ties broken by class name, gives
+   **21 / 20 / 9**.
+4. Fill the quotas from each class's hash order, interleaving the classes in
+   sorted class order. An instance served as binary NL is passed over without
+   costing its class a seat, and is recorded in `unfetchable.csv`. A network
+   failure or an HTML error page aborts the run instead of being recorded as a
+   skip. Otherwise a transient outage would change the membership.
 
-All four steps are `download.py`'s `select_heldout` and `build_heldout`. The
-seed is a module constant with no command-line flag, because changing it
-re-draws the set.
+The quotas keep the held-out set's class mix as close to the published
+roster's as the remaining classes allow. An even split over three classes would
+have given transcendental instances 16 seats against the published roster's 6
+of 35.
+
+All of this is `download.py`'s `select_heldout`, `heldout_quotas`, `quota_walk`
+and `build_heldout`. The seed is a module constant with no command-line flag,
+because changing it re-draws the set.
 
 ### Composition of the two halves
 
@@ -116,21 +131,22 @@ re-draws the set.
 |---|---:|---:|
 | bilinear | 5 | 0 (class exhausted) |
 | polynomial | 10 | 0 (class exhausted) |
-| mixed-integer | 15 | 17 |
-| other | 14 | 17 |
-| transcendental | 6 | 16 |
+| mixed-integer | 15 | 21 |
+| other | 14 | 20 |
+| transcendental | 6 | 9 |
 | **total** | **50** | **50** |
 
 | Size (`nvars + ncons`) | Published (min / median / max) | Held-out (min / median / max) |
 |---|---|---|
 | mixed-integer | 4 / 11 / 36 | 36 / 96 / 196 |
-| other | 1 / 3 / 4 | 6 / 33 / 220 |
-| transcendental | 1 / 3.5 / 4 | 4 / 11 / 210 |
-| whole set | 1 / 6.5 / 252 | 4 / 56.5 / 220 |
+| other | 1 / 3 / 4 | 6 / 33.5 / 220 |
+| transcendental | 1 / 3.5 / 4 | 4 / 12 / 130 |
+| whole set | 1 / 6.5 / 252 | 4 / 60.5 / 220 |
 
 In both rosters the instances with integer variables are exactly the
-mixed-integer class (15 and 17), and each roster has one maximisation instance. The held-out set gets 17 mixed-integer slots because the
-round-robin runs over three classes, not five.
+mixed-integer class (15 and 21). The published roster has one maximisation
+instance (`alkylation`); the held-out set has two (`pointpack06`,
+`pointpack10`).
 
 ## Why not the "next fifty"
 
@@ -141,32 +157,55 @@ instances in every class. Measured on this pool, they form a narrow band just
 above the published roster: "other" sizes 4-6, "transcendental" 4-9,
 mixed-integer 36-96.
 
-Be clear about what that rejection does and does not buy. With the published
-roster fixed, **every** set disjoint from it is larger than it (previous
-section), and the seeded draw is further from it in size than the next fifty
-would be: whole-set median 56.5, against 7.0 for the next fifty and 6.5 for the
-published roster. So the "systematically harder" objection in #144 applies to
-the chosen set even more strongly. Choosing the seeded draw does not remove the
-size difference. It trades a small size difference for a useful property:
+This is an explicit trade-off against #144's own objection, so it is stated as
+one. With the published roster fixed, **every** set disjoint from it is larger
+than it (see the precondition check), and the seeded draw is further from it in
+size than the next fifty would be: whole-set median 60.5, against 7.0 for the
+next fifty and 6.5 for the published roster. Taken at face value, the
+"systematically harder" objection applies to the chosen set even more strongly.
+
+It does not decide the matter, because #145 is not a comparison between this
+set and the published roster. It is an A/B of arms *within* the held-out set:
+the shipped threshold against its neighbours, on the same instances, seeds and
+budget. That comparison needs no size-matching to the tuning roster. What it
+does need, to tell a size effect from a failure to transfer, is variation in
+size inside the set:
 
 - **The next fifty has no size spread to diagnose with.** The band is so
   narrow that a size effect would show up as a shift of the whole set, and
-  that shift looks exactly like over-fitting. Nothing inside the set could tell
+  that shift looks exactly like non-transfer. Nothing inside the set could tell
   them apart.
-- **The seeded draw is a sample of the remainder's own size distribution.**
-  Sizes run from 4 to 220 overall, with a wide spread inside each class
-  (mixed-integer 36-196, other 6-220, transcendental 4-210). That lets #145 ask
-  whether an arm's effect *varies with size within the held-out set*. If no
-  size trend is visible, a size explanation becomes less likely. It is not
-  ruled out: there are only fifty instances, and size is partly confounded with
-  class (every mixed-integer instance is size 36 or more). If a trend is
-  visible, the size dependence is itself the finding: the shipped value was
-  fitted to the small end of the pool.
+- **The seeded draw spans the remainder's size range.** Sizes run from 4 to 220
+  overall (spread 216, against 92 for the next fifty), and within each class
+  (mixed-integer 36-196, other 6-220, transcendental 4-130). #145 can therefore
+  report the arm effect per size band, and that is the only way to separate a
+  size effect from non-transfer. If the shipped value holds in the small band
+  and loses in the large one, the finding is a size dependence: the value was
+  fitted to the small end of the pool. If it loses across bands, that is
+  non-transfer.
+
+**Pre-registered size bands for #145.** These are fixed now, at the held-out
+set's size tertiles, before anything is run:
+
+| Band | `nvars + ncons` | Instances | mixed-integer / other / transcendental |
+|---|---|---:|---|
+| small | <= 32 | 16 | 0 / 9 / 7 |
+| medium | 33-99 | 18 | 11 / 7 / 0 |
+| large | >= 100 | 16 | 10 / 4 / 2 |
+
+#145 reports the arm effect per band **and** per class, not only pooled. Size
+and class are confounded, as the table shows: the small band has no
+mixed-integer instance and the medium band no transcendental one. So no single
+band-or-class reading isolates size, and a trend in one view should be checked
+against the other. With five or so instances per class-band cell, a null trend
+makes a size explanation less likely but does not rule it out.
 
 So #144's acceptance criterion, "both halves have comparable size and
 structure-class composition", is **not met and cannot be met** while the
 published roster stays fixed. This document records that as the precondition
-finding, rather than presenting the draw as comparable.
+finding, rather than presenting the draw as comparable. The class mix is as
+close as the remaining classes allow; the size profile is deliberately not
+matched.
 
 `test_heldout_is_not_the_size_ordered_next_fifty` pins that the committed set is
 not that construction.
@@ -190,18 +229,19 @@ published roster fixed.
 - **Not valid: comparing absolute numbers across the two sets** (for example,
   the published roster's mean gap against the held-out set's). The two sets
   differ in class mix (no bilinear or polynomial in the held-out set) and in
-  size (median 6.5 against 56.5). A difference in absolute numbers is not
+  size (median 6.5 against 60.5). A difference in absolute numbers is not
   evidence of over-fitting. If any cross-set comparison is wanted, use the
   published roster's 35 instances in the three shared classes, and still treat
   size as a covariate.
-- **Families cluster.** The held-out set holds 9 `graphpart_*` instances (9 of
-  its 17 mixed-integer ones) and 9 `ex8_*` instances (7 of them
-  transcendental). That is proportional to the pool, but instances in one
-  family behave alike, so the effective sample is smaller than fifty. A
-  count-of-wins statement should be reported per class, and a family should be
-  treated as one cluster rather than as nine independent votes.
+- **Families cluster.** The held-out set holds 12 `graphpart_*` instances (12
+  of its 21 mixed-integer ones) and 7 `ex8_*` instances (5 transcendental, 2
+  other). That follows from the pool, where graphpart is 22 of the 38 drawable
+  mixed-integer instances. But instances in one family behave alike, so the
+  effective sample is smaller than fifty. A count-of-wins statement should be
+  reported per class, and a family should be treated as one cluster rather than
+  as a dozen independent votes.
 - **`nvars + ncons` misses expression size.** `eg_disc2_s` counts as size 36
-  but its `.nl` is 925 KB, 81% of the held-out bytes. Treat it as an outlier
+  but its `.nl` is 925 KB, 78% of the held-out bytes. Treat it as an outlier
   in any size-covariate analysis.
 - **Pre-registered handling of unloadable instances.** These instances were
   admitted on catalogue metadata alone and have never been through the NL
@@ -242,9 +282,14 @@ arms added there, or a loop over the runner command above.
 
 That test re-derives both rosters from `heldout/pool.csv` and
 `heldout/unfetchable.csv`, with no network access, and compares them byte for
-byte against the two committed `bounds.csv` files. It also pins the class
-counts above, checks that the two sets are disjoint, checks that the draw
-depends on the seed, and checks that every held-out row has its text-NL file.
+byte against the two committed `bounds.csv` files. That comparison is
+circular by construction: the committed files were written by the same code. It
+pins the rosters against later changes to that code, not the method itself. The
+test also checks the quota rule on the pool independently, checks that the two
+sets are disjoint and that the draw depends on the seed, and checks that every
+held-out row has its text-NL file. Fake-server tests cover the live draw's
+refusals: a published skip that is text NL today, a network failure, and an
+HTML error page each abort the run without writing anything.
 
 To re-run the draw itself (it refuses to replace a committed roster without
 `--force`). It keeps the committed `.nl` files rather than re-fetching them, but

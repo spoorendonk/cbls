@@ -8,6 +8,12 @@ committed `bounds.csv` files, so a change to the selection code that would
 silently redefine either roster fails here rather than in a published table.
 HELDOUT.md beside the rosters carries the method and the composition tables
 these counts pin.
+
+The byte-for-byte checks are circular by construction: the committed files were
+written by the code they are compared against. They pin the rosters against
+later *changes* to that code; they say nothing about whether the method is the
+right one. That is argued in HELDOUT.md, and the class quotas and seed
+dependence are checked below on their own terms.
 """
 
 from __future__ import annotations
@@ -29,7 +35,9 @@ from benchmarks.instances.minlplib.download import (
     bounds_text,
     build_heldout,
     class_counts,
+    heldout_quotas,
     parse_csv,
+    quota_walk,
     read_bounds_names,
     read_unfetchable,
     roster_walk_skips,
@@ -59,7 +67,9 @@ PUBLISHED_CLASSES = {
     "polynomial": 10,
     "transcendental": 6,
 }
-HELDOUT_CLASSES = {"mixed-integer": 17, "other": 17, "transcendental": 16}
+#: Largest-remainder share of 50 by the published mix in the three shared
+#: classes, 15 / 14 / 6: exactly 21.43 / 20 / 8.57, so 21 / 20 / 9.
+HELDOUT_CLASSES = {"mixed-integer": 21, "other": 20, "transcendental": 9}
 
 
 @pytest.fixture(scope="module")
@@ -76,10 +86,16 @@ def published_walk(rows: list[dict[str, str]], skipped: dict[str, set[str]]) -> 
     return walk(select(rows), DEFAULT_ROSTER, skipped["published"])
 
 
-def heldout_walk(rows: list[dict[str, str]], skipped: dict[str, set[str]]) -> list[Instance]:
-    exclude = set(read_bounds_names(INST_DIR / "bounds.csv")) | skipped["published"]
-    order = select_heldout(rows, exclude, HELDOUT_SEED)
-    return walk(order, DEFAULT_ROSTER, skipped.get("heldout", set()))
+def heldout_walk(
+    rows: list[dict[str, str]], skipped: dict[str, set[str]], seed: int = HELDOUT_SEED
+) -> list[Instance]:
+    """`build_heldout`'s draw, replayed offline with the real exclusion."""
+    roster = set(read_bounds_names(INST_DIR / "bounds.csv"))
+    by_class = select_heldout(rows, roster | skipped["published"], seed)
+    published = [i for i in survivors(rows) if i.name in roster]
+    quotas = heldout_quotas(published, by_class, DEFAULT_ROSTER)
+    unavailable = skipped.get("heldout", set())
+    return quota_walk(by_class, quotas, lambda i: i.name not in unavailable)
 
 
 def test_pool_snapshot_is_exactly_the_filter_survivors(rows: list[dict[str, str]]) -> None:
@@ -122,13 +138,40 @@ def test_heldout_is_disjoint_from_the_published_roster() -> None:
     assert not published & set(heldout)
 
 
-def test_heldout_draw_depends_on_the_seed(rows: list[dict[str, str]]) -> None:
+def test_heldout_draw_depends_on_the_seed(
+    rows: list[dict[str, str]], skipped: dict[str, set[str]]
+) -> None:
     # Guards the seed actually reaching the order: a key that ignored it would
     # pass every byte-for-byte check above while making the seed decorative.
-    exclude = set(read_bounds_names(INST_DIR / "bounds.csv"))
-    first = [i.name for i in select_heldout(rows, exclude, HELDOUT_SEED)[:DEFAULT_ROSTER]]
-    other = [i.name for i in select_heldout(rows, exclude, HELDOUT_SEED + 1)[:DEFAULT_ROSTER]]
+    first = {i.name for i in heldout_walk(rows, skipped)}
+    other = {i.name for i in heldout_walk(rows, skipped, HELDOUT_SEED + 1)}
     assert first != other
+
+
+def test_heldout_quotas_follow_the_published_mix_in_shared_classes(
+    rows: list[dict[str, str]], skipped: dict[str, set[str]]
+) -> None:
+    # Independent of the committed files: the quota rule itself, on the pool.
+    roster = set(read_bounds_names(INST_DIR / "bounds.csv"))
+    by_class = select_heldout(rows, roster | skipped["published"], HELDOUT_SEED)
+    published = [i for i in survivors(rows) if i.name in roster]
+    assert set(by_class) == {"mixed-integer", "other", "transcendental"}
+    assert heldout_quotas(published, by_class, DEFAULT_ROSTER) == HELDOUT_CLASSES
+
+
+def test_quota_walk_passes_over_rejects_without_losing_a_seat() -> None:
+    def inst(name: str, cls: str) -> Instance:
+        return Instance(name, 1, 1, 0.0, None, "min", cls, 0)
+
+    by_class = {
+        "a": [inst("a1", "a"), inst("a2", "a"), inst("a3", "a")],
+        "b": [inst("b1", "b"), inst("b2", "b")],
+    }
+    chosen = quota_walk(by_class, {"a": 2, "b": 1}, lambda i: i.name != "a1")
+    assert [i.name for i in chosen] == ["a2", "b1", "a3"]
+    # A class that runs dry returns short rather than borrowing another's seats.
+    short = quota_walk(by_class, {"a": 1, "b": 3}, lambda i: True)
+    assert [i.name for i in short] == ["a1", "b1", "b2"]
 
 
 def test_heldout_is_not_the_size_ordered_next_fifty(
@@ -266,3 +309,32 @@ def test_build_heldout_refuses_a_short_published_roster(
     fetched = _fake_minlplib(monkeypatch, set())
     assert build_heldout(tmp_path, rows, DEFAULT_ROSTER, force=True) == 2
     assert not fetched
+
+
+def test_build_heldout_refuses_when_a_published_skip_is_now_text_nl(
+    rows: list[dict[str, str]],
+    skipped: dict[str, set[str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # If an instance the published walk skipped as binary NL is served as text
+    # today, a rebuild of the published roster would admit it: refuse, write nothing.
+    shutil.copy(INST_DIR / "bounds.csv", tmp_path / "bounds.csv")
+    now_text = sorted(skipped["published"])[0]
+    fetched = _fake_minlplib(monkeypatch, skipped["published"] - {now_text})
+    assert build_heldout(tmp_path, rows, DEFAULT_ROSTER, force=False) == 1
+    assert now_text in fetched
+    assert not (tmp_path / HELDOUT_DIRNAME).exists()
+
+
+def test_build_heldout_refuses_on_a_network_failure_in_the_published_recheck(
+    rows: list[dict[str, str]],
+    skipped: dict[str, set[str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shutil.copy(INST_DIR / "bounds.csv", tmp_path / "bounds.csv")
+    down = sorted(skipped["published"])[0]
+    _fake_minlplib(monkeypatch, skipped["published"], down={down})
+    assert build_heldout(tmp_path, rows, DEFAULT_ROSTER, force=False) == 1
+    assert not (tmp_path / HELDOUT_DIRNAME).exists()
