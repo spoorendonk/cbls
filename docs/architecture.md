@@ -1125,8 +1125,12 @@ the ping-pong does occur. On MINLPLib `alkylation`, tiny-score A→B→A reversa
 took up to ~5% of FJ iterations. P, the share of FJ batches that ended flat with
 no bump, rose from 0 to 0.012, under the 0.05 bar. There was no feasibility
 loss and no measurable objective loss, on MINLPLib or on an 8-instance MIPfeas
-extension. uc-chped cannot reach it at `c09a8ca`, because its rows are `Sum`
-nodes and the eligibility rule accepts only comparison nodes.
+extension. uc-chped could not reach it at `c09a8ca`, because its rows are bare
+`Sum` bodies and the eligibility rule then accepted only comparison nodes. #190
+made affine bare bodies eligible and re-ran the counters on all 8 uc-chped files
+at `9292371`: absent. The batch API still never takes the closed form there,
+since every uc-chped column also reads the weighted nonlinear objective row;
+only the `run()` path (warm start, LNS repair) engages.
 
 The batch API bounds such a cycle, but `gls()`/`run()` has no progress exit.
 The LNS repair and Python's `fj_nl_initialize` end a cycle only at their

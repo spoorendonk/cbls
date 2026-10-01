@@ -181,7 +181,7 @@ each run's start, 2026-10-01:
   objective are bit-identical on all 24 (file, horizon) pairs at 20,000
   iterations, seed 1.
 - **Iterations at `--time-limit 10` per horizon, seeds 1-3:** after/before ratio
-  0.96-1.12, median about 1.03; the 1-period rows gain most (1.06-1.12). This is
+  0.96-1.12, median 1.02 over 72 rows; the 1-period rows gain most (1.06-1.12). This is
   not the closed form — the batch API never takes it. At a fixed iteration count
   the after build used 1-5% less CPU time on 1-period rows (ucp13 6.11 → 5.99 s,
   ucp40 7.98 → 7.72 s, ucp200 8.79 → 8.39 s, means of 3; ucp13 at 24 periods
