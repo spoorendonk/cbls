@@ -12,13 +12,26 @@ re-merges the **CBLS rows** of `comparison_all.csv`, and prints a summary. See
 `benchmarks/instances/minlplib/README.md` ("Re-running the CBLS rows") for the
 surrounding procedure and the post-run steps.
 
+SEEDS (#141). `comparison.csv` is ONE pre-registered seed, `DEFAULT_SEED`, and
+only that seed may write it or `anytime_trace.csv`: the published seed is fixed
+before the run by construction, not chosen after it. Every whole-roster run
+onto the default paths -- that seed and any other -- also publishes its rows
+into `comparison_seeds.csv` beside it, with the seed on every row, replacing
+that seed's earlier rows and keeping the others'. Another seed's own table and
+trace are assembled inside its staging directory. The summary then prints the
+spread across the per-seed table's comparable seeds (`campaign_report.
+summarize_seeds`, under the same aggregation rule as the single-table tally).
+Each published set gets a run record -- commit, budget, seed, machine,
+concurrency -- beside it (`comparison.run.json`, `comparison_seeds.run.json`).
+
 Why it drives the runner one instance at a time rather than issuing the single
 whole-roster command the README used to document:
 
 * **Resumable.** `cbls_minlplib` truncates its output CSV on open and writes
   rows as it goes, so a crash 40 minutes in leaves the published table
   half-replaced and the work lost. Here each instance lands in its own staging
-  file under the build directory and a re-run skips the ones already complete.
+  file, outside the checkout (`default_staging_root`, so pre-push's
+  `rm -rf build` cannot take it), and a re-run skips the ones already complete.
 * **Non-destructive.** `comparison.csv` and `anytime_trace.csv` are only touched
   at the end, by an atomic rename of a fully-assembled file, so a failed solve
   leaves the previous tables byte-for-byte intact. `comparison_all.csv` is the
@@ -47,12 +60,16 @@ Guards, because this file's output is published:
   `--trace-out` left at its default would replace the published anytime trace at
   exit 0 while reporting a scratch table, and the converse publishes
   `comparison.csv` at this engine beside a trace from the previous one (#149);
-* refuses to resume a staging directory written by a different commit, budget or
-  seed, and re-solves any individual staged row whose `commit_sha` disagrees.
+* refuses to resume a staging directory written by a different commit, budget,
+  seed or host, and re-solves any individual staged row whose `commit_sha`
+  disagrees;
+* refuses a seed other than `DEFAULT_SEED` writing either published artifact,
+  by default or by name (#141).
 
 Usage:
     .venv/bin/python3 benchmarks/minlplib/run_benchmark.py --dry-run
     .venv/bin/python3 benchmarks/minlplib/run_benchmark.py
+    .venv/bin/python3 benchmarks/minlplib/run_benchmark.py --seed 2   # into comparison_seeds.csv
     .venv/bin/python3 benchmarks/minlplib/run_benchmark.py --instances nvs01 \
         --time-limit 3 --out /tmp/c.csv --trace-out /tmp/t.csv --staging-dir /tmp/stage
 """
@@ -61,9 +78,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
+import os
+import socket
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -79,9 +100,22 @@ from benchmarks.common.provenance import (  # noqa: E402
     build_dir_problems,
     cmake_cache,
     commit_sha,
+    machine_record,
 )
-from benchmarks.common.records import atomic_write, stamp_refusal  # noqa: E402
+from benchmarks.common.records import (  # noqa: E402
+    atomic_write,
+    csv_header,
+    stamp_refusal,
+    write_json,
+)
 from benchmarks.minlplib import campaign_report, runner  # noqa: E402
+from benchmarks.minlplib.campaign_report import (  # noqa: E402
+    RUN_RECORD_SCHEMA,
+    SEED_COLUMN,
+    SEEDS_TABLE_NAME,
+    RunRecord,
+    run_record_path,
+)
 from benchmarks.minlplib.runner import (  # noqa: E402
     RUNNER_EXIT_ERRORED,
     RUNNER_TARGET,
@@ -99,9 +133,25 @@ REFERENCE_SOLVE = Path(__file__).resolve().parent / "reference_solve.py"
 #: from the committed anytime trace in the benchmark README ("Why 60s").
 DEFAULT_TIME_LIMIT = 60.0
 
-#: Seed of the published run. Kept so a re-run differs from the old table only
-#: in the engine, not in the configuration.
+#: Seed of the published run: the PRE-REGISTERED seed (#141). Kept so a re-run
+#: differs from the old table only in the engine, not in the configuration, and
+#: the only seed allowed to write `comparison.csv` / `anytime_trace.csv` -- so the
+#: published seed is fixed before any run, never chosen after one. Every other
+#: seed publishes into the per-seed table (`campaign_report.SEEDS_TABLE_NAME`)
+#: beside it, as this one does too.
 DEFAULT_SEED = 1
+
+#: Solves per process and processes at a time, as the run record states them.
+#: The runner is single-threaded and the driver runs one instance at a time;
+#: both are recorded rather than implied, because a wall-clock-budgeted number
+#: means nothing without them.
+PARALLEL_SOLVES = 1
+THREADS_PER_SOLVE = 1
+
+#: Where a seed's assembled table and trace land when it is not the published
+#: seed: inside its own staging directory, beside the per-instance files.
+ASSEMBLED_TABLE = "comparison.assembled.csv"
+ASSEMBLED_TRACE = "anytime_trace.assembled.csv"
 
 #: Parallel jobs for the *build* only. The solves are always serial: the budget
 #: is wall-clock, so a concurrent solve is not comparable to the committed table
@@ -112,6 +162,27 @@ DEFAULT_BUILD_JOBS = 4
 STAMP_NAME = "stamp.txt"
 
 
+def default_staging_root() -> Path:
+    """The parent of every seed's default staging directory, outside the checkout.
+
+    `$XDG_STATE_HOME/cbls/minlplib-rerun` (`~/.local/state/...` when unset). Until
+    #141 it was `<build-dir>/minlplib-rerun`, which pre-push's ```clean fence
+    (`rm -rf build`) deletes -- so a push in the middle of a fifty-minute campaign
+    threw away every staged instance and its log. Outside the repository rather
+    than in a gitignored directory inside it, because the worktree workflow
+    deletes whole checkouts after a merge, and a gitignored `results/` would go
+    with them. XDG's *state* directory and not its cache: state is defined as
+    data that should survive a restart, cache as data that may be deleted at any
+    time, and a resumable campaign is the former. Two checkouts sharing it is
+    safe: the stamp refuses to resume rows from another commit, budget, seed or
+    host. Read at call time, so a test can point it elsewhere.
+    """
+    state = os.environ.get("XDG_STATE_HOME", "")
+    # The XDG spec ignores a relative value; so does this.
+    base = Path(state) if state and Path(state).is_absolute() else Path.home() / ".local" / "state"
+    return base / "cbls" / "minlplib-rerun"
+
+
 @dataclass(frozen=True)
 class Paths:
     """Where this invocation reads the roster from and writes its results to."""
@@ -120,15 +191,36 @@ class Paths:
     out: Path
     trace_out: Path
     stage: Path
+    #: The per-seed table this run's rows are published into, or None for a
+    #: scratch or subset run, which publishes nothing.
+    seeds_out: Path | None
 
 
 def resolve_paths(args: argparse.Namespace) -> Paths:
+    """Every path, with the seed policy applied (#141).
+
+    The pre-registered seed defaults to the published `comparison.csv` and
+    `anytime_trace.csv`; any other seed defaults to its own staging directory,
+    so leaving `--out` off can never publish a second seed into the published
+    table. A whole-roster run onto the default paths -- at any seed -- also
+    publishes its rows into the per-seed table.
+    """
     published_out = args.inst_dir / "comparison.csv"
+    stage = args.staging_dir or default_staging_root() / f"seed{args.seed}"
+    preregistered = args.seed == DEFAULT_SEED
+    out = args.out or (published_out if preregistered else stage / ASSEMBLED_TABLE)
+    trace_out = args.trace_out or (
+        args.inst_dir / "anytime_trace.csv" if preregistered else stage / ASSEMBLED_TRACE
+    )
+    publishing = not args.instances and (
+        args.out is None or args.out.resolve() == published_out.resolve()
+    )
     return Paths(
         published_out=published_out,
-        out=args.out or published_out,
-        trace_out=args.trace_out or args.inst_dir / "anytime_trace.csv",
-        stage=args.staging_dir or args.build_dir / "minlplib-rerun",
+        out=out,
+        trace_out=trace_out,
+        stage=stage,
+        seeds_out=args.inst_dir / SEEDS_TABLE_NAME if publishing else None,
     )
 
 
@@ -191,13 +283,44 @@ def _data_problems(args: argparse.Namespace, roster: Sequence[str]) -> list[str]
     return problems
 
 
+#: The per-seed table's header: the seed, then exactly the runner's columns.
+SEEDS_TABLE_COLUMNS: tuple[str, ...] = (SEED_COLUMN, *runner.RUNNER_COLUMNS)
+
+
+def _seeds_table_problems(args: argparse.Namespace) -> list[str]:
+    """Refusals about a per-seed table this run would add its rows to.
+
+    Checked up front because `publish_seed_rows` refuses the same things AFTER
+    the roster has been solved: a table whose header is not this runner's, or a
+    run record that does not parse, would otherwise cost fifty minutes to find.
+    """
+    seeds_out = resolve_paths(args).seeds_out
+    if seeds_out is None:
+        return []
+    problems: list[str] = []
+    if seeds_out.exists():
+        header = csv_header(seeds_out)
+        if tuple(header) != SEEDS_TABLE_COLUMNS:
+            problems.append(
+                f"{seeds_out} has columns {header}, not {list(SEEDS_TABLE_COLUMNS)}: its rows "
+                "are from another runner version, so this run's seed could not be added beside "
+                "them. Move it aside (the old campaign stays in the repository's history) and "
+                "re-run"
+            )
+    try:
+        campaign_report.load_seed_run_records(seeds_out)
+    except ValueError as exc:
+        problems.append(str(exc))
+    return problems
+
+
 def preflight(args: argparse.Namespace, sha: str, roster: Sequence[str]) -> list[str]:
     """Every reason to refuse this invocation, checked before anything is spent.
 
     All of them are cheap and all of them would otherwise surface as a wrong or
     half-written published table — some of them 50 minutes in.
     """
-    return _build_problems(args, sha) + _data_problems(args, roster)
+    return _build_problems(args, sha) + _data_problems(args, roster) + _seeds_table_problems(args)
 
 
 def usage_error(args: argparse.Namespace, published_out: Path) -> str | None:
@@ -206,47 +329,67 @@ def usage_error(args: argparse.Namespace, published_out: Path) -> str | None:
         return f"--time-limit must be > 0 (got {args.time_limit})"
     if args.build_jobs < 1:
         return f"--build-jobs must be >= 1 (got {args.build_jobs})"
-    if not args.instances:
-        # A whole-roster run replaces the published comparison.csv, so skipping
-        # the trace would leave anytime_trace.csv describing the previous engine
-        # with nothing in either file saying the two disagree — and the README's
-        # post-run step recomputes its budget table from that stale trace.
-        # EITHER way of not writing the published trace, not just --no-trace: a
-        # scratch --trace-out with a defaulted --out leaves anytime_trace.csv at
-        # the previous engine just as surely, and slips past the guard below too
-        # (that one keys on --out having moved, and here it has not).
-        if (not args.trace or args.trace_out is not None) and (
-            args.out is None or args.out.resolve() == published_out.resolve()
-        ):
-            published_trace = args.inst_dir / "anytime_trace.csv"
-            how = "--no-trace" if not args.trace else f"--trace-out {args.trace_out}"
-            return (
-                f"{how} on a whole-roster run would publish comparison.csv at this engine "
-                f"while leaving {published_trace} at the previous one; drop it, or "
-                "pass --out to write somewhere other than the published table"
-            )
-        # The converse hazard, and the one the #149 campaign walks straight into:
-        # `--out` moved off the published table but `--trace-out` left to its
-        # default, which is the published `anytime_trace.csv`. Nothing else stops
-        # it -- `publish` assembles the staged traces into `trace_out` whatever
-        # `out` is, and the runner's own guard never sees the published path
-        # because each instance is staged. A scratch run would then replace the
-        # published anytime profile with one measured at another seed or budget,
-        # at exit 0, while reporting that it wrote a scratch table.
-        if (
-            args.trace
-            and args.trace_out is None
-            and args.out is not None
-            and args.out.resolve() != published_out.resolve()
-        ):
-            return (
-                f"--out writes {args.out} but --trace-out is unset, so the trace would replace "
-                f"the published {args.inst_dir / 'anytime_trace.csv'}; pass --trace-out, or "
-                "--no-trace"
-            )
+    seed_refusal = seed_policy_error(args, published_out)
+    if seed_refusal:
+        return seed_refusal
+    if args.instances:
+        return _subset_error(args, published_out)
+    return _whole_roster_error(args, published_out)
+
+
+def _whole_roster_error(args: argparse.Namespace, published_out: Path) -> str | None:
+    """`usage_error` for a whole-roster run: never publish one of the two artifacts alone."""
+    if args.seed != DEFAULT_SEED:
+        # Its table and trace default into its own staging directory and its
+        # rows into the per-seed table, so neither published artifact is in
+        # reach and the two guards below have nothing to protect.
         return None
-    # A subset rewrites the same whole files a full run does, and its rows would
-    # be resumed by the next full run, so it must name scratch paths throughout.
+    # A whole-roster run replaces the published comparison.csv, so skipping
+    # the trace would leave anytime_trace.csv describing the previous engine
+    # with nothing in either file saying the two disagree — and the README's
+    # post-run step recomputes its budget table from that stale trace.
+    # EITHER way of not writing the published trace, not just --no-trace: a
+    # scratch --trace-out with a defaulted --out leaves anytime_trace.csv at
+    # the previous engine just as surely, and slips past the guard below too
+    # (that one keys on --out having moved, and here it has not).
+    if (not args.trace or args.trace_out is not None) and (
+        args.out is None or args.out.resolve() == published_out.resolve()
+    ):
+        published_trace = args.inst_dir / "anytime_trace.csv"
+        how = "--no-trace" if not args.trace else f"--trace-out {args.trace_out}"
+        return (
+            f"{how} on a whole-roster run would publish comparison.csv at this engine "
+            f"while leaving {published_trace} at the previous one; drop it, or "
+            "pass --out to write somewhere other than the published table"
+        )
+    # The converse hazard, and the one the #149 campaign walks straight into:
+    # `--out` moved off the published table but `--trace-out` left to its
+    # default, which is the published `anytime_trace.csv`. Nothing else stops
+    # it -- `publish` assembles the staged traces into `trace_out` whatever
+    # `out` is, and the runner's own guard never sees the published path
+    # because each instance is staged. A scratch run would then replace the
+    # published anytime profile with one measured at another seed or budget,
+    # at exit 0, while reporting that it wrote a scratch table.
+    if (
+        args.trace
+        and args.trace_out is None
+        and args.out is not None
+        and args.out.resolve() != published_out.resolve()
+    ):
+        return (
+            f"--out writes {args.out} but --trace-out is unset, so the trace would replace "
+            f"the published {args.inst_dir / 'anytime_trace.csv'}; pass --trace-out, or "
+            "--no-trace"
+        )
+    return None
+
+
+def _subset_error(args: argparse.Namespace, published_out: Path) -> str | None:
+    """`usage_error` for a subset run, which must name scratch paths throughout.
+
+    A subset rewrites the same whole files a full run does, and its rows would be
+    resumed by the next full run.
+    """
     if args.out is None:
         return (
             "--instances is a subset run; pass an explicit --out so it cannot replace the "
@@ -267,9 +410,49 @@ def usage_error(args: argparse.Namespace, published_out: Path) -> str | None:
     return None
 
 
+def seed_policy_error(args: argparse.Namespace, published_out: Path) -> str | None:
+    """Refuse any route by which a seed other than `DEFAULT_SEED` reaches a published file.
+
+    The published table is ONE pre-registered seed (#141): an A/B against the
+    previous table where only the engine differs. A second seed written there,
+    by `--out` or by `--trace-out`, would make the published seed whichever one
+    was run last -- a post-hoc selection by another name. Also refused at seed 1:
+    a `--trace-out` naming the published trace while `--out` is scratch, the
+    explicit spelling of the hazard `usage_error`'s defaulted-trace guard covers.
+    """
+    published_trace = args.inst_dir / "anytime_trace.csv"
+    out_published = args.out is not None and args.out.resolve() == published_out.resolve()
+    trace_published = (
+        args.trace
+        and args.trace_out is not None
+        and args.trace_out.resolve() == published_trace.resolve()
+    )
+    if args.seed != DEFAULT_SEED and (out_published or trace_published):
+        return (
+            f"--seed {args.seed}: {published_out.name} and {published_trace.name} hold the "
+            f"pre-registered seed {DEFAULT_SEED} alone, so no other seed may write them. Drop "
+            f"--out/--trace-out: a whole-roster run at seed {args.seed} publishes its rows into "
+            f"{SEEDS_TABLE_NAME} beside them"
+        )
+    if trace_published and not (args.out is None or out_published):
+        return (
+            f"--trace-out names the published {published_trace} but --out writes {args.out}; "
+            "the published trace would describe a run the published table does not"
+        )
+    return None
+
+
 def staging_stamp(args: argparse.Namespace, sha: str) -> str:
-    """The configuration a staging directory's rows belong to, one field per line."""
-    return f"commit={sha}\ntime-limit={args.time_limit:g}\nseed={args.seed}\n"
+    """The configuration a staging directory's rows belong to, one field per line.
+
+    The host is part of it since #141 moved the default staging directory out of
+    the build tree: a home directory can be shared between machines, and a
+    campaign resumed on another one would publish one table measured on two.
+    """
+    return (
+        f"commit={sha}\ntime-limit={args.time_limit:g}\nseed={args.seed}\n"
+        f"host={socket.gethostname()}\n"
+    )
 
 
 def staging_stamp_conflict(stage: Path, args: argparse.Namespace, sha: str) -> str | None:
@@ -408,6 +591,73 @@ def assemble(stage: Path, roster: Sequence[str], out: Path, suffix: str) -> None
     atomic_write(out, "\n".join([header, *body]) + "\n")
 
 
+def run_record(
+    args: argparse.Namespace, sha: str, roster: Sequence[str], machine: dict[str, object]
+) -> RunRecord:
+    """What produced this run's results: written beside every table it publishes (#141)."""
+    return RunRecord(
+        commit=sha,
+        budget_seconds=args.time_limit,
+        seed=args.seed,
+        roster=len(roster),
+        published_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        machine=machine,
+        concurrency={
+            "parallel_solves": PARALLEL_SOLVES,
+            "threads_per_solve": THREADS_PER_SOLVE,
+            "build_jobs": args.build_jobs,
+        },
+    )
+
+
+def write_run_record(table: Path, record: RunRecord) -> None:
+    """The single-seed table's record, `<table stem>.run.json` beside it."""
+    write_json(run_record_path(table), {"schema": RUN_RECORD_SCHEMA, **asdict(record)})
+
+
+def publish_seed_rows(seeds_out: Path, seed: int, table: Path) -> None:
+    """Replace `seed`'s rows in the per-seed table with `table`'s, keeping every other seed.
+
+    Upsert, not append: a re-run of one seed replaces that seed's block and
+    leaves the others' rows intact, so seeds published one invocation at a time
+    accumulate without one clobbering another. Rows are ordered by seed, each
+    seed's block in `table`'s (roster) order. Written atomically.
+    """
+    with table.open(newline="") as fh:
+        reader = csv.reader(fh)
+        header = next(reader, [])
+        new_rows = [[str(seed), *row] for row in reader if row]
+    if (SEED_COLUMN, *header) != SEEDS_TABLE_COLUMNS:
+        raise RuntimeError(f"{table} has columns {header}, not {list(runner.RUNNER_COLUMNS)}")
+    kept: list[list[str]] = []
+    if seeds_out.exists():
+        with seeds_out.open(newline="") as fh:
+            reader = csv.reader(fh)
+            existing = next(reader, [])
+            if tuple(existing) != SEEDS_TABLE_COLUMNS:
+                raise RuntimeError(
+                    f"{seeds_out} has columns {existing}, not {list(SEEDS_TABLE_COLUMNS)}"
+                )
+            kept = [row for row in reader if row and row[0] != str(seed)]
+    rows = sorted([*kept, *new_rows], key=lambda row: int(row[0]))
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\n").writerows([list(SEEDS_TABLE_COLUMNS), *rows])
+    atomic_write(seeds_out, buffer.getvalue())
+
+
+def publish_seed_record(seeds_out: Path, record: RunRecord) -> None:
+    """Add or replace `record.seed`'s entry in the per-seed table's run record."""
+    records = campaign_report.load_seed_run_records(seeds_out)
+    records[record.seed] = record
+    write_json(
+        run_record_path(seeds_out),
+        {
+            "schema": RUN_RECORD_SCHEMA,
+            "seeds": {str(seed): asdict(records[seed]) for seed in sorted(records)},
+        },
+    )
+
+
 def summarize(out: Path, bounds_csv: Path) -> str:
     """The written table's tally, under `campaign_report`'s aggregate definitions.
 
@@ -476,6 +726,26 @@ def print_summary(out: Path, bounds_csv: Path) -> None:
         )
 
 
+def print_seeds_summary(seeds_out: Path, bounds_csv: Path, *, commit: str, budget: float) -> None:
+    """Print the multi-seed summary of the per-seed table -- never raise (see `print_summary`)."""
+    try:
+        summary = campaign_report.summarize_seeds(
+            campaign_report.load_seed_results(
+                seeds_out, campaign_report.load_bounds_index(bounds_csv)
+            ),
+            campaign_report.load_seed_run_records(seeds_out),
+            commit=commit,
+            budget=budget,
+        )
+        print(campaign_report.render_seeds_text(summary))
+    except (ValueError, KeyError, OSError) as exc:
+        print(
+            f"WARNING: {seeds_out} is written, but its multi-seed summary could not be derived: "
+            f"{exc}. Run benchmarks/minlplib/campaign_report.py --seeds over it.",
+            file=sys.stderr,
+        )
+
+
 def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage: Path) -> None:
     """Solve every roster instance serially, skipping the ones already staged."""
     for index, name in enumerate(roster, start=1):
@@ -501,13 +771,25 @@ def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage:
             )
 
 
-def publish(args: argparse.Namespace, roster: Sequence[str], paths: Paths) -> int:
-    """Assemble the staged rows into the published tables, then re-merge."""
+def publish(
+    args: argparse.Namespace, roster: Sequence[str], paths: Paths, record: RunRecord
+) -> int:
+    """Assemble the staged rows into the tables, record the run, publish the seed, re-merge.
+
+    The run record goes beside `paths.out` whatever it is -- a scratch table is a
+    results set too, and the machine is what makes it readable later.
+    """
     assemble(paths.stage, roster, paths.out, ".csv")
     print(f"wrote {paths.out}")
     if args.trace:
         assemble(paths.stage, roster, paths.trace_out, ".trace.csv")
         print(f"wrote {paths.trace_out}")
+    write_run_record(paths.out, record)
+    print(f"wrote {run_record_path(paths.out)}")
+    if paths.seeds_out is not None:
+        publish_seed_rows(paths.seeds_out, args.seed, paths.out)
+        publish_seed_record(paths.seeds_out, record)
+        print(f"wrote seed {args.seed} into {paths.seeds_out}")
     merge_failed = False
     if args.merge:
         # check=False: `reference_solve.py --merge-only` exits 2 on its own
@@ -525,11 +807,25 @@ def publish(args: argparse.Namespace, roster: Sequence[str], paths: Paths) -> in
             )
     print("\n=== Summary (derived from the written table) ===")
     print_summary(paths.out, args.inst_dir / "bounds.csv")
+    if paths.seeds_out is not None:
+        print(f"\n=== Across seeds (derived from {paths.seeds_out.name}) ===")
+        print_seeds_summary(
+            paths.seeds_out,
+            args.inst_dir / "bounds.csv",
+            commit=record.commit,
+            budget=record.budget_seconds,
+        )
     return 1 if merge_failed else 0
 
 
 def execute(args: argparse.Namespace, sha: str, roster: Sequence[str], paths: Paths) -> int:
-    """Build, solve the roster, and publish."""
+    """Build, solve the roster, and publish.
+
+    The machine is recorded BEFORE the build and the solves: its load average is
+    the "was the box quiet" evidence, and read afterwards it would measure this
+    run's own build.
+    """
+    machine = machine_record()
     if args.build:
         subprocess.run(build_command(args), check=True)
     paths.stage.mkdir(parents=True, exist_ok=True)
@@ -538,7 +834,7 @@ def execute(args: argparse.Namespace, sha: str, roster: Sequence[str], paths: Pa
         print(conflict, file=sys.stderr)
         return 2
     run_roster(args, sha, roster, paths.stage)
-    return publish(args, roster, paths)
+    return publish(args, roster, paths, run_record(args, sha, roster, machine))
 
 
 def describe_plan(
@@ -560,6 +856,9 @@ def describe_plan(
         )
     if args.merge:
         print(f"merge: {' '.join(merge_command(args.inst_dir))}")
+    print(f"run record: {run_record_path(paths.out)}")
+    if paths.seeds_out is not None:
+        print(f"publish: seed {args.seed}'s rows into {paths.seeds_out}")
     print(f"estimated {len(roster) * args.time_limit / 60.0:.0f} min of solving on a quiet machine")
     # Non-zero on a refusal, so --dry-run is usable as a scriptable precheck.
     return 2 if problems else 0
@@ -575,12 +874,25 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     # nargs="+", not "*": a bare `--instances` would otherwise be an empty list,
     # slip past the subset guard, and run the roster into the published paths.
     parser.add_argument("--instances", nargs="+", default=[], help="subset; default whole roster")
-    parser.add_argument("--out", type=Path, default=None, help="default <inst-dir>/comparison.csv")
     parser.add_argument(
-        "--trace-out", type=Path, default=None, help="default <inst-dir>/anytime_trace.csv"
+        "--out",
+        type=Path,
+        default=None,
+        help=f"default <inst-dir>/comparison.csv at seed {DEFAULT_SEED}, "
+        f"<staging-dir>/{ASSEMBLED_TABLE} at any other seed",
     )
     parser.add_argument(
-        "--staging-dir", type=Path, default=None, help="default <build-dir>/minlplib-rerun"
+        "--trace-out",
+        type=Path,
+        default=None,
+        help=f"default <inst-dir>/anytime_trace.csv at seed {DEFAULT_SEED}, "
+        f"<staging-dir>/{ASSEMBLED_TRACE} at any other seed",
+    )
+    parser.add_argument(
+        "--staging-dir",
+        type=Path,
+        default=None,
+        help="default $XDG_STATE_HOME/cbls/minlplib-rerun/seed<N> (~/.local/state/...)",
     )
     parser.add_argument(
         "--no-trace", dest="trace", action="store_false", help="skip the anytime trace"
@@ -637,6 +949,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"out {paths.out}")
     if args.trace:
         print(f"trace {paths.trace_out}")
+    if paths.seeds_out is not None:
+        print(f"per-seed table {paths.seeds_out}")
     if args.dry_run:
         return describe_plan(args, sha, roster, paths, problems)
     if skipping_merge:

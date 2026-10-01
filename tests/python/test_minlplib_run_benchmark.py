@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from benchmarks.common.provenance import REPO_ROOT
-from benchmarks.minlplib.campaign_report import AGGREGATION_RULE, verdict_of
+from benchmarks.minlplib.campaign_report import AGGREGATION_RULE, SEEDS_TABLE_NAME, verdict_of
 from benchmarks.minlplib.run_benchmark import (
     STAMP_NAME,
     assemble,
@@ -54,6 +54,12 @@ DEFAULT_ARM = (
 )
 ROW = "nvs01,1,1,1,0,0,60,true,feasible,abc1234,0,3,7,2,9,0.25," + DEFAULT_ARM
 TRACE_HEADER = ",".join(TRACE_COLUMNS)
+
+
+@pytest.fixture(autouse=True)
+def _state_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the default staging root into the test's tmp dir, never the real home."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
 
 
 def make_args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
@@ -109,12 +115,15 @@ def test_roster_comes_from_bounds_csv_in_file_order(tmp_path: Path) -> None:
     assert roster_from_bounds(tmp_path / "nope" / "bounds.csv") == []
 
 
-def test_paths_default_to_the_published_tables_and_a_build_staging_dir(tmp_path: Path) -> None:
+def test_paths_default_to_the_published_tables_and_a_persistent_staging_dir(
+    tmp_path: Path,
+) -> None:
     paths = resolve_paths(make_args(tmp_path))
     assert paths.out == tmp_path / "inst" / "comparison.csv"
     assert paths.out == paths.published_out
     assert paths.trace_out == tmp_path / "inst" / "anytime_trace.csv"
-    assert paths.stage == tmp_path / "build" / "minlplib-rerun"
+    assert paths.stage == tmp_path / "state" / "cbls" / "minlplib-rerun" / "seed1"
+    assert paths.seeds_out == tmp_path / "inst" / SEEDS_TABLE_NAME
 
 
 # --- preflight ---------------------------------------------------------------

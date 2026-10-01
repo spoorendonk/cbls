@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 import pytest
@@ -27,9 +28,12 @@ from benchmarks.minlplib.campaign_report import (
     DEFAULT_INST_DIR,
     NOT_RECORDED,
     README_RENDERERS,
+    RUN_RECORD_SCHEMA,
+    SEEDS_TABLE_NAME,
     SUMMARY_JSON_NAME,
     CampaignReport,
     Row,
+    RunRecord,
     TracePoint,
     _pct_cell,
     _readme_tally,
@@ -43,18 +47,24 @@ from benchmarks.minlplib.campaign_report import (
     gap_buckets,
     improvement_times,
     improvement_timing,
+    instance_spread,
     legacy_margin_ties,
     load_bounds_index,
     load_results,
     load_scip,
+    load_seed_results,
+    load_seed_run_records,
     load_trace,
     main,
     readme_blocks,
     readme_write_refusal,
     render_markdown,
+    render_seeds_text,
+    run_record_path,
     single_band_false_ties,
     stale_readme_blocks,
     summarize_results,
+    summarize_seeds,
     summarize_trace,
     to_json,
 )
@@ -955,3 +965,249 @@ def test_build_report_reads_one_seeds_files_from_any_path(tmp_path: Path) -> Non
 )
 def test_percentage_cells_never_print_a_bare_decimal_point(value: float, cell: str) -> None:
     assert _pct_cell(value) == cell
+
+
+# --- run records and the per-seed table (#141) ------------------------------------
+
+MACHINE = {
+    "host": "box",
+    "cpu_count": 16,
+    "cpu_affinity": 8,
+    "memory_total_kib": 32 * 1024**2,
+    "load_average": [0.25, 0.5, 0.75],
+}
+CONCURRENCY = {"parallel_solves": 1, "threads_per_solve": 1, "build_jobs": 4}
+
+
+def _record(seed: int = 1, *, commit: str = "abc1234", budget: float = 60.0) -> RunRecord:
+    return RunRecord(
+        commit=commit,
+        budget_seconds=budget,
+        seed=seed,
+        roster=2,
+        published_at=f"2026-10-01T00:00:0{seed % 10}+00:00",
+        machine=dict(MACHINE),
+        concurrency=dict(CONCURRENCY),
+    )
+
+
+def _write_record(table: Path, record: RunRecord) -> None:
+    run_record_path(table).write_text(
+        json.dumps({"schema": RUN_RECORD_SCHEMA, **asdict(record)}) + "\n"
+    )
+
+
+def test_a_run_record_supplies_the_budget_seed_and_machine(tmp_path: Path) -> None:
+    """#142 left these to the caller; with #141's record the report reads them."""
+    _write_campaign(tmp_path)
+    _write_record(tmp_path / "comparison.csv", _record(seed=3, budget=60.0))
+    report = build_report(tmp_path, budget=None, seed=None, machine=None, feas_tol=None)
+    p = report.provenance
+    assert (p.budget_seconds, p.seed) == (60.0, 3)
+    assert p.budget_source == p.seed_source == p.machine_source == "comparison.run.json"
+    assert p.machine is not None and "box, 16 CPUs (8 usable), 32.0 GiB RAM" in p.machine
+    assert "1 solve(s) at a time" in p.machine
+    assert p.warnings == []
+    block = readme_blocks(report)["provenance"]
+    assert "read from `comparison.run.json`" in block
+    assert "stated to the generator" not in block
+
+
+def test_a_stated_value_the_record_contradicts_is_warned_and_the_record_wins(
+    tmp_path: Path,
+) -> None:
+    _write_campaign(tmp_path)
+    _write_record(tmp_path / "comparison.csv", _record(seed=3, commit="fff0000"))
+    report = build_report(tmp_path, budget=30.0, seed=1, machine="mine", feas_tol=None)
+    p = report.provenance
+    assert (p.budget_seconds, p.seed) == (60.0, 3)
+    joined = " | ".join(p.warnings)
+    assert "--budget 30s but comparison.run.json records 60s" in joined
+    assert "--seed 1 but comparison.run.json records seed 3" in joined
+    assert "--machine is ignored" in joined
+    assert "the record is not this table's" in joined
+
+
+def test_without_a_record_the_budget_is_still_required(tmp_path: Path) -> None:
+    """The committed historical tables have no record: they must still read as stated."""
+    _write_campaign(tmp_path)
+    with pytest.raises(ValueError, match="pass the budget"):
+        build_report(tmp_path, budget=None, seed=None, machine=None, feas_tol=None)
+    assert main(["--inst-dir", str(tmp_path)]) == 2
+    _write_record(tmp_path / "comparison.csv", _record())
+    assert main(["--inst-dir", str(tmp_path)]) == 0
+
+
+def test_the_committed_tables_have_no_run_record_and_read_as_not_recorded() -> None:
+    """Until #123 re-runs them, the README's provenance block must keep saying so."""
+    assert not run_record_path(DEFAULT_INST_DIR / "comparison.csv").exists()
+    assert _committed_report().provenance.run_record is None
+
+
+@pytest.mark.parametrize(
+    ("text", "match"),
+    [
+        ("{not json", "not a readable JSON object"),
+        ('{"schema": 99}', "schema 99"),
+        ('{"schema": 1, "commit": "x"}', "has no 'budget_seconds'"),
+    ],
+    ids=["unparseable", "unknown-schema", "missing-field"],
+)
+def test_a_damaged_run_record_is_refused_not_read_as_absent(
+    tmp_path: Path, text: str, match: str
+) -> None:
+    """Reading damage as absence would turn a recorded machine into "not recorded"."""
+    _write_campaign(tmp_path)
+    run_record_path(tmp_path / "comparison.csv").write_text(text)
+    with pytest.raises(ValueError, match=match):
+        build_report(tmp_path, budget=60.0, seed=None, machine=None, feas_tol=None)
+
+
+SEEDS_HEADER = "seed," + RESULTS_HEADER
+
+
+def _write_seeds(directory: Path, rows: list[str], records: list[RunRecord]) -> Path:
+    """A per-seed table over instances `a`, `b` and the documented failure."""
+    (directory / "bounds.csv").write_text(
+        f"{BOUNDS_HEADER}\na,other,1,0,min,1.0,1.0,0\nb,other,1,0,min,1.0,1.0,0\n"
+        f"{ELEC},other,1,0,min,2.0,1.0,0\n"
+    )
+    table = directory / SEEDS_TABLE_NAME
+    table.write_text(SEEDS_HEADER + "\n" + "\n".join(rows) + "\n")
+    run_record_path(table).write_text(
+        json.dumps(
+            {"schema": RUN_RECORD_SCHEMA, "seeds": {str(r.seed): asdict(r) for r in records}}
+        )
+    )
+    return table
+
+
+def _seed_rows(seed: int, a_gap: str, b_feasible: bool, *, sha: str = "abc1234") -> list[str]:
+    b = (
+        f"{seed},b,1,1,1,0,0,60,true,matches-bks,{sha},0,0"
+        if b_feasible
+        else f"{seed},b,NaN,1,1,NaN,NaN,60,false,infeasible(residual=1),{sha},1,0"
+    )
+    return [
+        f"{seed},a,1,1,1,{a_gap},0,60,true,feasible,{sha},0,0",
+        b,
+        f"{seed},{ELEC},2,2,1,0,0,60,true,matches-bks,{sha},0,0",
+    ]
+
+
+def _three_seeds(tmp_path: Path) -> Path:
+    rows = _seed_rows(1, "10", True) + _seed_rows(2, "30", False) + _seed_rows(3, "20", False)
+    return _write_seeds(tmp_path, rows, [_record(1), _record(2), _record(3)])
+
+
+def test_the_seed_spread_is_summarize_results_per_seed(tmp_path: Path) -> None:
+    """The counts ARE `summarize_results`' counts, one per seed -- not a re-derivation."""
+    table = _three_seeds(tmp_path)
+    bounds = load_bounds_index(tmp_path / "bounds.csv")
+    by_seed = load_seed_results(table, bounds)
+    records = load_seed_run_records(table)
+    summary = summarize_seeds(by_seed, records, commit="abc1234", budget=60.0)
+    assert summary.seeds == [1, 2, 3]
+    assert summary.rule == AGGREGATION_RULE
+    for seed, rows in by_seed.items():
+        per_seed = summarize_results(rows)
+        assert summary.feasible.per_seed[seed] == per_seed.counts.feasible
+        assert summary.matches_bks.per_seed[seed] == per_seed.verdicts.matches_bks
+    # elec counts in the ROSTER count (feasible on every seed) per AGGREGATION_RULE...
+    assert (summary.feasible.min, summary.feasible.median, summary.feasible.max) == (2, 2.0, 3)
+    # ...and is out of the QUALITY count: only b's matches-bks, on seed 1.
+    assert summary.matches_bks.per_seed == {1: 1, 2: 0, 3: 0}
+
+
+def test_an_infeasible_seed_counts_as_worse_than_any_gap(tmp_path: Path) -> None:
+    table = _three_seeds(tmp_path)
+    by_seed = load_seed_results(table, load_bounds_index(tmp_path / "bounds.csv"))
+    summary = summarize_seeds(by_seed, load_seed_run_records(table), commit="abc1234", budget=60.0)
+    spreads = {s.instance: s for s in summary.per_instance}
+    a, b, elec = spreads["a"], spreads["b"], spreads[ELEC]
+    assert (a.gap_median_pct, a.gap_min_pct, a.gap_max_pct) == (20.0, 10.0, 30.0)
+    assert (a.feasible_seeds, a.seeds) == (3, 3)
+    # Feasible on one seed of three: the median is an infeasible draw, not 0.
+    assert b.gap_median_pct == math.inf and b.gap_min_pct == 0.0 and b.gap_max_pct == math.inf
+    assert b.feasible_seeds == 1
+    assert elec.excluded and not a.excluded
+    text = render_seeds_text(summary)
+    assert "  a: 20 [10, 30], 3/3" in text
+    assert "  b: infeasible [0, infeasible], 1/3" in text
+    assert f"  {ELEC}: 0 [0, 0], 3/3 (excluded)" in text
+    assert "box, 16 CPUs" in text
+    assert "NOTE" not in text
+
+
+def test_a_median_is_finite_only_when_more_than_half_the_seeds_are_feasible() -> None:
+    """`SEED_AGGREGATION_RULE`: an infeasible seed is +inf, so half of them is enough."""
+    rows = [row("a", gap=1.0), row("a", gap=3.0), infeasible("a"), infeasible("a")]
+    assert instance_spread(rows).gap_median_pct == math.inf
+    assert instance_spread(rows[:3]).gap_median_pct == 3.0
+    assert instance_spread([*rows[:2], row("a", gap=2.0), rows[2]]).gap_median_pct == 2.5
+
+
+def test_seeds_from_another_commit_or_budget_or_without_a_record_are_left_out(
+    tmp_path: Path,
+) -> None:
+    """Accumulated seeds from an older campaign must never move this one's spread."""
+    rows = (
+        _seed_rows(1, "10", True)
+        + _seed_rows(2, "30", True, sha="old0000")
+        + _seed_rows(3, "20", True)
+        + _seed_rows(4, "20", True)
+    )
+    table = _write_seeds(tmp_path, rows, [_record(1), _record(2), _record(3, budget=10.0)])
+    by_seed = load_seed_results(table, load_bounds_index(tmp_path / "bounds.csv"))
+    summary = summarize_seeds(by_seed, load_seed_run_records(table), commit="abc1234", budget=60.0)
+    assert summary.seeds == [1]
+    assert summary.left_out == {
+        2: "commit old0000, not abc1234",
+        3: "budget 10s, not 60s",
+        4: "no run record, so its budget is unknown",
+    }
+    text = render_seeds_text(summary)
+    assert "NOTE: 1 seed(s) aggregated; 3 is the floor" in text
+    assert "left out: seed 4 (no run record, so its budget is unknown)" in text
+
+
+def test_seeds_that_disagree_about_the_roster_are_refused(tmp_path: Path) -> None:
+    rows = _seed_rows(1, "10", True) + _seed_rows(2, "30", True)[:2]
+    table = _write_seeds(tmp_path, rows, [_record(1), _record(2)])
+    by_seed = load_seed_results(table, load_bounds_index(tmp_path / "bounds.csv"))
+    with pytest.raises(ValueError, match="do not share the roster"):
+        summarize_seeds(by_seed, load_seed_run_records(table), commit="abc1234", budget=60.0)
+    with pytest.raises(ValueError, match="no seed in the per-seed table"):
+        summarize_seeds(by_seed, load_seed_run_records(table), commit="zzz", budget=60.0)
+
+
+def test_a_duplicate_instance_is_refused_within_a_seed_not_across_seeds(tmp_path: Path) -> None:
+    table = _three_seeds(tmp_path)
+    bounds = load_bounds_index(tmp_path / "bounds.csv")
+    assert sorted(load_seed_results(table, bounds)) == [1, 2, 3]
+    table.write_text(table.read_text() + _seed_rows(2, "5", True)[0] + "\n")
+    with pytest.raises(ValueError, match="appears twice"):
+        load_seed_results(table, bounds)
+
+
+def test_a_seed_record_filed_under_another_seed_is_refused(tmp_path: Path) -> None:
+    table = _three_seeds(tmp_path)
+    run_record_path(table).write_text(
+        json.dumps({"schema": RUN_RECORD_SCHEMA, "seeds": {"2": asdict(_record(1))}})
+    )
+    with pytest.raises(ValueError, match="is seed 1"):
+        load_seed_run_records(table)
+
+
+def test_the_cli_prints_the_seed_spread_at_the_latest_published_configuration(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rows = _seed_rows(1, "10", True, sha="old0000") + _seed_rows(2, "30", True)
+    _write_seeds(tmp_path, rows, [_record(1, commit="old0000"), _record(2)])
+    assert main(["--inst-dir", str(tmp_path), "--seeds"]) == 0
+    out = capsys.readouterr().out
+    assert "seeds aggregated: 2 (commit abc1234, 60s per instance)" in out
+    assert "left out: seed 1 (commit old0000, not abc1234)" in out
+    (tmp_path / SEEDS_TABLE_NAME).unlink()
+    run_record_path(tmp_path / SEEDS_TABLE_NAME).unlink()
+    assert main(["--inst-dir", str(tmp_path), "--seeds"]) == 2
