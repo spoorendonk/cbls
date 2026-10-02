@@ -283,19 +283,21 @@ see the next section.
 ### Result (smoke scale, 10 s)
 
 **Measured at 10 s only, this leaves #145's question at the published 60 s
-budget unanswered.** At 10 s the outcome is the first of #145's three: **the
-shipped value transfers.** No neighbour beats 300 on the held-out roster. 1000
-is consistently worse. 100 is inside the measured noise floor, so the data
-cannot rank 100 against 300; it shows only that 300 is not worse. No better
-value is identified, and the shipped default is unchanged.
+budget unanswered.** At 10 s the answer splits by neighbour. **300 is not
+beaten.** Against 1000 the shipped value transfers: 1000 is worse. Against 100
+it is not resolvable at 10 s, which is #145's third outcome for that side.
+100 shows no consistent direction, and the data shows only that 100 is not
+detectably better. The original grid's only reason to reject 100 (lost
+feasibility on `kall_ellipsoids_tc02b`) is not reproduced. No better value is
+identified, and the shipped default is unchanged.
 
 **Run.** Engine commit `1de6a7a`, `--time-limit 10`, seeds 1, 2 and 3, all 50
 held-out instances x {300 (control), 100, 1000}. That is 450 solves, all of
 which completed a search (mean wall 10.0 s per run, max 10.38 s). The run was
-serial, arms interleaved per instance, under the machine-wide wall-clock lock,
-on an otherwise idle machine. The driver refuses to start above a one-minute
-load of 0.4. Machine: `simon-Legion-5-Pro-16ACH6H`, AMD Ryzen 5 5600H (6 cores,
-12 threads). The numbers live in scratch, not in this repository, as every
+serial, with arms interleaved per instance. It ran under the machine-wide
+wall-clock lock, with a one-minute load of at most 0.4 at start (the driver
+refuses to start above that). Machine: `simon-Legion-5-Pro-16ACH6H`, AMD Ryzen
+5 5600H (6 cores, 12 threads). The numbers live in scratch, not in this repository, as every
 held-out result does. To regenerate them, run the command under "Protocol:
 smoke scale" below from `1de6a7a`, then rescore with `--report-only --no-build`
 on the same `--campaign` and `--out-dir`. That rescore reproduces the report
@@ -306,9 +308,10 @@ control spread across the three seeds, as a two-sided 95% Student band.
 Median control s = 0.59 gap points; typical per-instance floor +/-2.07 points;
 31 instances measured. Of those, 5 were raised to the runner's tie band. The
 other comparable instances (17 for the 100 arm, 16 for 1000) have no measurable
-floor and are held to the tie band instead. In two of them, `tloss` and `tln6`,
-the control was feasible on only one seed. The rest returned the same control
-gap on every seed, and most of those are solved exactly: 7 of the 12
+floor and are held to the tie band instead. In `tloss`, and for the 100 arm
+also in `tln6`, the control was feasible on only one seed. (For the 1000 arm
+`tln6` is control-only-feasible, so it is not comparable.) The rest returned
+the same control gap on every seed, and most of those are solved exactly: 7 of the 12
 `graphpart_*`, plus `st_bpv1`, `st_z`, both `ex14_*` and `ex2_1_2`. With three
 seeds the Student factor is 4.30, so this floor is wide. A small real effect
 can hide inside it.
@@ -316,38 +319,50 @@ can hide inside it.
 | Neighbour | Worse | Better | Held | Unscored, beyond tie band | Feasibility (control-only / arm-only) | Feasible runs / BKS-matching runs (control: 141 / 72) | Sign test |
 |---|---:|---:|---:|---|---|---|---:|
 | 100 | 2 | 1 | 28 of 31 | `tloss`, `tln6` (mixed direction) | 1 / 0 (`ex8_5_6`) | 141 / 75 | p = 1.000 |
-| 1000 | 9 | 0 | 22 of 31 | `ex14_2_1`, `ex14_2_6`, `tloss` (all worse) | 2 / 0 (`ex8_5_6`, `tln6`) | 139 / 61 | p = 0.004 |
+| 1000 | 9 | 0 | 22 of 31 | `ex14_2_1`, `ex14_2_6`, `tloss` (all worse) | 2 / 0 (`ex8_5_6`, `tln6`) | 139 / 61 | p = 0.004 (families 8/0, p = 0.0078) |
 
 **1000 against 300: worse.** The nine scored movers are `kriging_peaks-full030`,
 `hybriddynamic_fixedcc`, `ex8_5_4`, `wastewater02m1`, `st_fp7b`,
 `kall_circles_c6a`, `hydro`, `tltr` and `tln4`. The median delta over them is
-+14.47 points, against a median own floor of +/-1.49.
++14.47 points, against a median own floor of +/-1.49. The direction is
+consistent but the magnitude is not. Three of the nine are moves of under 0.4
+points over tiny floors: `hybriddynamic_fixedcc` +0.010, `kall_circles_c6a`
++0.0009 and `hydro` +0.38.
 
 - **Families.** Treat each family as one vote (see "Families cluster" above).
   The nine still come from eight distinct families, with only `tln4` and `tltr`
-  sharing one. All eight point the same way. The three unscored movers add
-  `ex14_*` worse and another `tl*` worse. No `graphpart_*` instance moved
+  sharing one. All eight point the same way. A family-level sign test gives
+  8 worse / 0 better, p = 0.0078 (0.016 after Bonferroni over the two
+  neighbours). This is the count to quote under this document's clustering
+  rule; the instance-level p = 0.004 overstates the sample. The three unscored
+  movers add `ex14_*` worse and another `tl*` worse. No `graphpart_*` instance moved
   outside its floor, so the result is not driven by the family that dominates
   the mixed-integer class.
 - **Size and class.** Worse in every pre-registered band (small 2, medium 4,
   large 3) and every class (mixed-integer 2, other 5, transcendental 2), with
-  no "better" anywhere. A size dependence would show as a loss in one band and
-  not the others, and this is not that.
-- **Multiplicity.** The reading is not one that multiplicity correction
-  undoes. Bonferroni over the two neighbours tested against one control still
-  leaves p = 0.008.
+  no "better" anywhere. That is consistent with no size dependence. With 2-4
+  movers per band it cannot rule one out.
+- **Multiplicity.** Bonferroni over the two neighbours tested against one
+  control leaves the instance-level p at 0.008 and the family-level p at
+  0.016.
 - **Echo of the original grid.** The original grid recorded that 1000 stopped
-  solving `st_e40`, which is not in this set. The same failure recurs here on
-  instances the control solves to BKS on every seed:
-  `hybriddynamic_fixedcc` (3/3 -> 1/3), `kall_circles_c6a`, `ex14_2_1` (one
-  seed at a 6.6e7 gap) and `ex14_2_6` (each 3/3 -> 2/3). Over the roster, 1000
-  matches BKS on 61 runs against the control's 72. The upper side of the grid
-  reproduces off the tuning roster.
+  solving `st_e40`, which is not in this set. Here there is a similar
+  regression. 1000 loses BKS matches on instances the control solves on every
+  seed: `hybriddynamic_fixedcc` (3/3 -> 1/3), and `kall_circles_c6a`,
+  `ex14_2_1` and `ex14_2_6` (each 3/3 -> 2/3). Several of these are at
+  sub-0.1-point gaps. It also has one 6.6e7-gap seed on `ex14_2_1`, and it
+  loses `tln6`'s only feasible seed. Over the roster, 1000 matches BKS on 61
+  runs against the control's 72.
 
-**100 against 300: not resolvable at 10 s.** There are three scored movers, in
-both directions:
+**100 against 300: not resolvable at 10 s.** It is **not** inside the noise
+floor. Three scored instances moved outside their own floor, two unscored
+instances moved beyond the tie band, and two instances changed feasibility.
+For that reason the report's READING declined to state the third outcome. What it shows
+is no consistent direction: 2 worse, 1 better (and that 1 is float residue),
+sign test p = 1.0. The three scored movers:
 
-- `ex9_2_3` is better by 1.2e-6, at the 1e-6 tie band, which is float residue.
+- `ex9_2_3` is better by 1.2e-6, just beyond the 1e-6 tie band. That is float
+  residue.
 - `hybriddynamic_fixedcc` is worse by 6e-4, from one seed at 0.0018.
 - `wastewater02m1` is worse by +94 points, from two of three seeds at 118 and
   171 against a control of about 2-4. It is the one sizeable move. It is a
@@ -373,7 +388,7 @@ fired.
   difference that builds up over a longer search could not show here, and
   1000's deficit could shrink or grow.
 - That 300 is better than 100, or that 300 is an optimum. The grid has three
-  points, and the lower neighbour is indistinguishable.
+  points, and the lower neighbour is not resolvable against it.
 - Anything off MINLPLib. The held-out set is unseen MINLPLib instances, not a
   different library. The scale-invariance objection recorded on
   `GFJConfig::unproductive_iterations` is untouched.
