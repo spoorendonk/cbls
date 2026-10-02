@@ -235,7 +235,20 @@ def test_uc_chped_refuses_a_partial_run_onto_the_published_table(flag: str, tmp_
     assert published.read_bytes() == before, "the published table was modified"
 
 
-def test_uc_chped_requires_a_commit_to_write_the_published_table(tmp_path: Path) -> None:
+# The published protocol must also say which engine it measured and re-check
+# what it measured: without --verify every `verified` cell is empty, which
+# fails one of the run's own acceptance criteria while exiting 0 (#146). Each
+# case satisfies every rung before the one it pins.
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ([], "requires an explicit --commit"),
+        (["--commit", "deadbee"], "requires --verify"),
+    ],
+)
+def test_uc_chped_requires_a_commit_and_verify_to_write_the_published_table(
+    extra: list[str], message: str, tmp_path: Path
+) -> None:
     if not UC_CHPED_BINARY.exists():
         pytest.skip("cbls_uc_chped not built")
     inst_dir = _uc_chped_scratch(tmp_path)
@@ -243,14 +256,15 @@ def test_uc_chped_requires_a_commit_to_write_the_published_table(tmp_path: Path)
     before = published.read_bytes()
 
     result = subprocess.run(
-        [str(UC_CHPED_BINARY), str(inst_dir), "--out", str(published)],
+        [str(UC_CHPED_BINARY), str(inst_dir), "--out", str(published), *extra],
         capture_output=True,
         text=True,
         timeout=300,
     )
 
     assert result.returncode == 2, result.stdout
-    assert "requires an explicit --commit" in result.stderr, result.stderr
+    assert message in result.stderr, result.stderr
+    assert "pass --out elsewhere" in result.stderr, result.stderr
     assert published.read_bytes() == before, "the published table was modified"
 
 
