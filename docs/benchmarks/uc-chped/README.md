@@ -247,7 +247,7 @@ The reference solver (`benchmarks/chped/reference_solve.py --uc`) uses PySCIPOpt
 - Hot/cold startup cost modeled via auxiliary binary indicator variables
 - Standard min uptime/downtime constraints
 
-The PWL approximation is necessary because SCIP cannot directly handle the `|sin(...)|` term in a MIP. It is **not** negligible at 50 segments: uniformly spaced breakpoints straddle the valve-point cusps, which are exactly where optimal dispatch sits, and the chord over a cusp overestimates the cost by up to about `d·e·Δ/2` per unit. Summed over units, the worst case for one period of `ucp13` is 213 at 50 segments and 47 at 200 (1.8% and 0.4% of the optimum); the realised error is smaller. Two further differences from the source: demand is `>=` where the source has `=`, and a startup of a `t_cold = 0` unit is priced hot, where the source and our model price every startup on these instances cold (§7 of `FIDELITY.md`).
+The PWL approximation is what makes the reference a MIP: a MIP cannot carry the `|sin(...)|` term (SCIP's MINLP mode can, which is what the exact check below uses). It is **not** negligible at 50 segments: uniformly spaced breakpoints straddle the valve-point cusps, which are exactly where optimal dispatch sits, and the chord over a cusp overestimates the cost by up to about `d·e·Δ/2` per unit. Summed over units, the worst case for one period of `ucp13` is 213 at 50 segments and 47 at 200 (1.8% and 0.4% of the optimum); the realised error is smaller. Two further differences from the source: demand is `>=` where the source has `=`, and a startup of a `t_cold = 0` unit is priced hot, where the source and our model price every startup on these instances cold (§7 of `FIDELITY.md`).
 
 For an exact check, `benchmarks/uc-chped/instance_identity.py` solves the proven-optimum cases as a SCIP MINLP with the true `sin` term (no linearisation) and compares the instance data against the authors' code.
 
@@ -507,16 +507,22 @@ Archived results:
 | ucp13    |      12 | CBLS SA (120s)    | INFEASIBLE | 231,587 |       — |    123.5 |
 | ucp13    |      24 | CBLS SA (300s)    | INFEASIBLE | 464,053 |       — |    308.9 |
 
-### 40-Unit System
+### 40-Unit System — LB column is a related system's bound (#148)
+
+The `LB` column below is Table 2's bound for the **authors'** 40-unit system,
+not for our `ucp40` (`P_max` of units 19-20 differs; see Known Bounds). The
+archived gap is struck: it compares a run on our instance with a bound for
+another. The exact 1-period optimum of our `ucp40` is 55,704.72 (`FIDELITY.md`
+§7.3); against that, the archived 1-period SA run was 39.96% above.
 
 | Instance | Periods | Method            | Objective  |       LB | Gap (%) | Time (s) |
 |----------|--------:|-------------------|------------|----------:|--------:|---------:|
-| ucp40    |       1 | Pedroso MIP (1hr) | 55,645     |    55,645 |    0.00 |        — |
-| ucp40    |       3 | Pedroso MIP (1hr) | 178,547    |   178,396 |    0.08 |        — |
-| ucp40    |       6 | Pedroso MIP (1hr) | 416,606    |   416,108 |    0.12 |        — |
-| ucp40    |      12 | Pedroso MIP (1hr) | 1,113,801  | 1,112,371 |    0.13 |        — |
-| ucp40    |      24 | Pedroso MIP (1hr) | 2,238,504  | 2,235,971 |    0.11 |        — |
-| ucp40    |       1 | CBLS SA (10s)     | 77,964.4   |    55,645 |   40.11 |     10.0 |
+| ucp40    |       1 | Pedroso MIP (1hr) [related system] | 55,645     |    55,645 |    0.00 |        — |
+| ucp40    |       3 | Pedroso MIP (1hr) [related system] | 178,547    |   178,396 |    0.08 |        — |
+| ucp40    |       6 | Pedroso MIP (1hr) [related system] | 416,606    |   416,108 |    0.12 |        — |
+| ucp40    |      12 | Pedroso MIP (1hr) [related system] | 1,113,801  | 1,112,371 |    0.13 |        — |
+| ucp40    |      24 | Pedroso MIP (1hr) [related system] | 2,238,504  | 2,235,971 |    0.11 |        — |
+| ucp40    |       1 | CBLS SA (10s)     | 77,964.4   |    55,645 | ~~40.11~~ |     10.0 |
 | ucp40    |       3 | CBLS SA (30s)     | INFEASIBLE |   178,396 |       — |     30.9 |
 | ucp40    |       6 | CBLS SA (60s)     | INFEASIBLE |   416,108 |       — |     63.2 |
 | ucp40    |      12 | CBLS SA (120s)    | INFEASIBLE | 1,112,371 |       — |    130.7 |
@@ -531,7 +537,7 @@ Archived results:
 
 ### Discussion
 
-The SA-based solver currently struggles with feasibility on multi-period UC instances. The core challenge is the tight coupling between commitment decisions across time — min uptime/downtime constraints create long-range dependencies that are difficult for local search moves (single-variable flips) to satisfy simultaneously with demand and reserve constraints. The 1-period instances are feasible but show significant gaps (18–40%) versus MIP bounds, largely due to the valve-point non-convexity making it hard for float perturbation to find good dispatch points.
+The SA-based solver currently struggles with feasibility on multi-period UC instances. The core challenge is the tight coupling between commitment decisions across time — min uptime/downtime constraints create long-range dependencies that are difficult for local search moves (single-variable flips) to satisfy simultaneously with demand and reserve constraints. The 1-period instances are feasible but show significant gaps — 18% on `ucp13` against its MIP bound, and 40% on `ucp40` against our own exact optimum (the published `ucp40` bound belongs to a related system, #148) — largely due to the valve-point non-convexity making it hard for float perturbation to find good dispatch points.
 
 Key areas for improvement:
 - **Commitment-aware moves:** Multi-variable moves that flip a unit's commitment across a block of consecutive periods, respecting min up/down constraints by construction

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import csv
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -60,3 +61,18 @@ def test_uc_chped_marks_ucp40_bounds_as_a_related_system(tmp_path: Path) -> None
         assert r["gap_pct"] == "" and r["lb"] == "", r
     # Every ucp13 horizon has a published bound, so a feasible row carries a gap.
     assert any(r["gap_pct"] != "" for r in measured if r["instance"] == "ucp13"), measured
+
+
+def test_instance_identity_refuses_an_upstream_file_with_another_hash(tmp_path: Path) -> None:
+    """A revised or tampered `ucp_data.py` must not silently become the yardstick:
+    the check loads only the file whose sha256 FIDELITY.md section 7.1 records."""
+    (tmp_path / "ucp_data.py").write_text("def ucp13(periods):\n    return None\n")
+    script = ROOT / "benchmarks" / "uc-chped" / "instance_identity.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--upstream-dir", str(tmp_path), "--skip-solves"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode != 0
+    assert "refusing to compare" in result.stderr, result.stderr

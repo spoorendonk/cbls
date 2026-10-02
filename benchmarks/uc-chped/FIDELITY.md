@@ -9,7 +9,7 @@ self-consistency.
 
 | Item | Verdict |
 |------|---------|
-| Source-vs-implementation severity | **Quantitative** (objective form matches verbatim, hot/cold `t_cold=0` divergence is bounded; the ramp-rate question is closed — the source is ramp-free too, §1.7) |
+| Source-vs-implementation severity | **Quantitative** (objective form matches verbatim, startup costs match the source — every startup on these instances is cold in both (§7.4), and only the SCIP reference diverges, pricing `t_cold = 0` startups hot; the ramp-rate question is closed — the source is ramp-free too, §1.7) |
 | Instance data vs source (§7, #148) | **`ucp13` identical; `ucp40` is not.** Checked field by field against the authors' `ucp_data.py`: `ucp40` caps units 19-20 at 500 MW where the source has 550, the authors' 1-period optimum is infeasible on ours, and the exact optimum here is 55704.72 against their 55644.79. `ucp13` reproduces both proven optima exactly. |
 | SCIP reference vs source | **Quantitative** (§7.4: the PWL chord error at the valve-point cusps is up to 1.8 % of a 1-period `ucp13` at 50 segments, not the ≈ 0.1 % first claimed; a `t_cold = 0` startup is priced hot where the source prices it cold; demand is `>=` where the source has `=`. Same ramp-free problem otherwise) |
 | Solver-internal-feasibility vs verifier | **Qualitative when this audit was written** (#32 + #33 meant the SA reported "feasible" while the verifier counted 44 / 134 / 166 violations). #33, #34 and #32 have all since been closed — #32 as not planned, on a structural argument corroborated by a probe (see §2); its hook-level coupling gap is real and untouched, only the claimed consequence was refuted. Any current claim must still come from a `--verify` run rather than from this row. |
@@ -74,11 +74,14 @@ S_i(t) = a_hot_i  if unit was on within the last t_cold_i periods
 charged whenever `y[i,t]=1 ∧ y[i,t−1]=0` (and analogously vs the
 pre-horizon initial state). Some sources (and our SCIP reference) treat
 `t_cold = 0` specially: with no lookback window the unit can never be
-"recently on" so the published convention varies — see §2.3 below. This
-is *the* genuine ambiguity in the source: Pedroso 2014 does not pin it
-down, and Kazarlis-style instances avoid the edge by giving the
-`t_cold = 0` units `a_hot = a_cold/2` (so the choice is at most a 2× cost
-on the cheapest small units).
+"recently on" so the published convention varies — see §2.3 below.
+**The source does pin it down** (corrected by #148, §7.4): the paper's
+text leaves it open, but the authors' `ucp_valve.py` forbids a hot start
+whenever `t_cold < min_off` or `t_cold = 0`. Every Kazarlis unit has
+`t_cold < min_off`, so every startup on these instances is cold — as in our
+model and verifier. Only the SCIP reference prices `t_cold = 0` startups
+hot (`a_hot = a_cold/2`, so 30 instead of 60 per startup on the smallest
+units).
 
 ### 1.4 Demand and spinning reserve
 
@@ -388,14 +391,15 @@ piecewise-linear surrogate at some segment count.
 `reference_solve.py` solves the same relaxed-no-ramps problem we do,
 modulo:
 - a PWL approximation worth a few percent of the objective, and
-- the `t_cold = 0` startup-cost convention difference (§2.3, bounded by
-  ~30 currency units per startup on the affected small units).
+- the `t_cold = 0` startup-cost convention difference (§2.3: 30 currency
+  units per affected startup, 90 and 240 on the proven `ucp13`-3p and
+  `ucp40`-1p optima, §7.4).
 
 It is therefore **not** a bound on the true optimum of our problem in
 either direction (§7.4): the chord can sit above or below the cost, and the
 hot pricing of `t_cold = 0` startups undercuts the source. At 200 segments it
-lands 0.17 % and 0.34 % *below* the proven `ucp13`-3p optimum and our exact
-`ucp40`-1p one. For an exact value use the MINLP in
+lands 0.17 % *below* the proven `ucp13`-3p optimum and 0.44 % below our
+exact `ucp40`-1p optimum (55458.43 against 55704.72). For an exact value use the MINLP in
 `benchmarks/uc-chped/instance_identity.py`.
 
 ## 5. Severity & decision
@@ -407,7 +411,7 @@ lands 0.17 % and 0.34 % *below* the proven `ucp13`-3p optimum and our exact
 | Valve-point cost form | Cosmetic | Equation matches verbatim. |
 | Min up/down semantics | Cosmetic | Rolling-window matches Pedroso. |
 | Demand & reserve | See below | Reserve matches; demand is `≥` here, `=` in the source. |
-| Hot/cold `t_cold = 0` (§2.3) | Cosmetic to quantitative | ≤30 currency units per affected startup; <0.1 % of objective on shipped instances. |
+| Hot/cold `t_cold = 0` (§2.3) | None in our model; quantitative in the SCIP reference | Our model, verifier and the source all price every startup cold on these instances (§7.4). The SCIP reference prices `t_cold = 0` startups hot: 30 per startup, 90 (0.23 %) and 240 (0.43 %) on the proven `ucp13`-3p and `ucp40`-1p optima. |
 | Pre-horizon `y_prev=0` lookback (§2.3) | Cosmetic | Vacuous on shipped instances (n_init ≥ t_cold for all off units). |
 | Ramp rates (§2.7) | None | Pedroso 2014 states no ramp constraints and their public instance code carries no ramp data. Our model, the SCIP reference and the source all solve the same ramp-free problem; #77 closed as not planned. |
 | Solver-feasibility vs verifier (#32) | **Resolved** | #33 and #34 are fixed, the tolerance is recorded per row, and #32 closed as not planned after a probe found no verifier rejection in 55 feasible rows. **The `FloatIntensifyHook` coupling gap itself is untouched** — it still does not zero `p` when `y` flips — but no engine-feasible solution has ever shown the consequence, because the coupling is a scored constraint. A published row should still carry a `--verify` verdict rather than the engine's `feasible` flag alone. |
@@ -492,7 +496,10 @@ fetched 2026-10-02:
 | `RESULTS/ucp13-3.txt` | 2013-12-04 | — | `bc35a0d0f259b53a6096539993e9f06357b20a824128c85548fba2fa91da3920` |
 | `RESULTS/ucp40-1.txt` | 2013-12-04 | — | `e74c19e14cfc7637529605aa841d09c08d2ff0a5006e6c607b49535a9e8a7706` |
 
-None of it is vendored (GPL, and the check needs it once). The `RESULTS/` logs
+None of it is vendored (GPL, and the check needs it once). The script records
+these hashes (`UPSTREAM_SHA256`) and refuses any `ucp_data.py` or log that
+does not match them, so a revised upstream file cannot silently change the
+comparison. The `RESULTS/` logs
 are the runs behind Table 2: the last `CURRENT ERROR: LB UP` line of each of
 the ten `ucp13`/`ucp40` logs carries that row's UB to the printed digits and
 its LB to within 0.5 (on the multi-period rows the log's final bound differs
@@ -608,8 +615,9 @@ optimum.
   the cost by up to about `d·e·Δ/2`. Summing each unit's worst chord error,
   one period of `ucp13` is exposed to 213 at 50 segments and 47 at 200 (1.8 %
   and 0.4 % of 11701), `ucp40` to 552 and 164. Realised: +2.8 on `ucp13`-1p at
-  200 segments, and about +25/+30 on the other two after removing the
-  startup-pricing difference. Between cusps the chord can sit *below* the
+  200 segments; +25.0 on `ucp13`-3p and +29.9 on the authors'-data
+  `ucp40`-1p, each measured from the proven optimum less the startup-pricing
+  difference (38849.84 − 90 and 55644.79 − 240). Between cusps the chord can sit *below* the
   cost, and together with the startup convention that makes the reference's
   value a number near the optimum, not a bound on it (§4.3 corrected).
 - **Table 2 is not conditioned on a PWL surrogate** (§4.2's closing sentence
@@ -646,8 +654,8 @@ is not established as that instance's optimum either), and `ucp40`/`ucp100`/
 Reproduce (from the repository root; fetch the upstream files first):
 
 ```
-mkdir -p U/RESULTS && cd U && curl -sO http://www.dcc.fc.up.pt/~jpp/code/valve/ucp_data.py
-for c in ucp13-1 ucp13-3 ucp40-1; do curl -s -o RESULTS/$c.txt http://www.dcc.fc.up.pt/~jpp/code/valve/RESULTS/$c.txt; done; cd ..
+mkdir -p U/RESULTS && cd U && curl -sLO https://www.dcc.fc.up.pt/~jpp/code/valve/ucp_data.py
+for c in ucp13-1 ucp13-3 ucp40-1; do curl -sL -o RESULTS/$c.txt https://www.dcc.fc.up.pt/~jpp/code/valve/RESULTS/$c.txt; done; cd ..
 .venv/bin/python benchmarks/uc-chped/instance_identity.py --upstream-dir U --time-limit 600 --pwl-segments 200
 .venv/bin/python benchmarks/uc-chped/instance_identity.py --upstream-dir U --data upstream --cases ucp40-1
 ```

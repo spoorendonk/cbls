@@ -32,6 +32,7 @@ Usage (from the repository root):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import math
 import os
@@ -76,6 +77,29 @@ _FIELDS = (
 )
 _UPSTREAM_NAME = {"d": "e", "e": "f", "P_min": "p_min", "P_max": "p_max"}
 
+#: sha256 of the upstream files this check was run against (FIDELITY.md 7.1),
+#: keyed by path relative to `--upstream-dir`. A revised upstream file would
+#: silently re-define the yardstick, so a mismatch is refused, not reported.
+UPSTREAM_SHA256: dict[str, str] = {
+    "ucp_data.py": "3d5b8f078550fea50c98a42389257db9f7cda891190a9676b43b29fcb18934c2",
+    "RESULTS/ucp13-1.txt": "96660c8a6ede9671a32e29b22def1a5b0f04ee99835adc9198b338eaa19eea86",
+    "RESULTS/ucp13-3.txt": "bc35a0d0f259b53a6096539993e9f06357b20a824128c85548fba2fa91da3920",
+    "RESULTS/ucp40-1.txt": "e74c19e14cfc7637529605aa841d09c08d2ff0a5006e6c607b49535a9e8a7706",
+}
+
+
+def verified_upstream_path(upstream_dir: str, rel: str) -> str:
+    """`upstream_dir/rel`, after checking it is the file the audit recorded."""
+    path = os.path.join(upstream_dir, rel)
+    with open(path, "rb") as fh:
+        digest = hashlib.sha256(fh.read()).hexdigest()
+    if digest != UPSTREAM_SHA256[rel]:
+        raise SystemExit(
+            f"{path}: sha256 {digest} is not the recorded {UPSTREAM_SHA256[rel]}; "
+            "refusing to compare against a different upstream file"
+        )
+    return path
+
 
 def _load_module(name: str, path: str) -> Any:
     spec = importlib.util.spec_from_file_location(name, path)
@@ -112,7 +136,7 @@ def load_upstream(upstream_dir: str) -> dict[str, Instance]:
     stub.multidict = _multidict  # type: ignore[attr-defined]
     stub.__all__ = ["multidict"]  # type: ignore[attr-defined]
     sys.modules.setdefault("gurobipy", stub)
-    up = _load_module("pedroso_ucp_data", os.path.join(upstream_dir, "ucp_data.py"))
+    up = _load_module("pedroso_ucp_data", verified_upstream_path(upstream_dir, "ucp_data.py"))
     out: dict[str, Instance] = {}
     for name in ("ucp13", "ucp40"):
         fields = getattr(up, name)(24)
@@ -373,9 +397,10 @@ def main() -> None:
             print(f"[data] {name}: {problems or 'IDENTICAL'}")
 
         for (name, periods), published in PROVEN_OPTIMA.items():
-            log = os.path.join(args.upstream_dir, "RESULTS", f"{name}-{periods}.txt")
-            if not os.path.exists(log):
+            rel = f"RESULTS/{name}-{periods}.txt"
+            if not os.path.exists(os.path.join(args.upstream_dir, rel)):
                 continue
+            log = verified_upstream_path(args.upstream_dir, rel)
             sched = parse_upstream_solution(log, ours[name]["n_units"])
             cost, errors = price(ours[name], sched)
             print(
