@@ -544,7 +544,7 @@ def test_uc_chped_refuses_one_path_for_both_outputs(tmp_path: Path) -> None:
         (["--commit", "deadbee"], "requires --verify: the published trace belongs"),
     ],
 )
-def test_uc_chped_requires_a_commit_to_write_the_published_trace(
+def test_uc_chped_requires_a_commit_and_verify_to_write_the_published_trace(
     extra: list[str], message: str, tmp_path: Path
 ) -> None:
     """A full-roster run may write the published trace, but only while saying

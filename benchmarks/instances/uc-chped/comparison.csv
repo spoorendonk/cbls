@@ -30,7 +30,7 @@
 # benchmarks/uc-chped/uc_chped.cpp writes this file:
 #
 #   cbls_uc_chped --out benchmarks/instances/uc-chped/comparison.csv \
-#                 --commit $(git rev-parse --short=7 HEAD) --verify
+#                 --commit "$(.venv/bin/python benchmarks/uc-chped/preflight.py)" --verify
 #
 # The measurement pass itself is tracked in #103's follow-up, issue #131, and
 # has not been run. Until it is, the rows below are the 10 cited Pedroso

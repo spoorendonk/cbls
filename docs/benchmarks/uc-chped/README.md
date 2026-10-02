@@ -11,7 +11,7 @@ Unit Commitment with Combined Heat and Power Economic Dispatch (UC-CHPED) is a p
 
 ## References
 
-- **Pedroso, Kubo & Viana (2014)** — *"Pricing and unit commitment in combined energy and reserve markets using valve-point effects"*. Source of instance data and known MIP bounds (Table 2). Original code at `http://www.dcc.fc.up.pt/~jpp/code/valve/`.
+- **Pedroso, Kubo & Viana (2014)** — *"Unit commitment with valve-point loading effect"*, DCC-2014-05 / [arXiv:1404.4944](https://arxiv.org/abs/1404.4944). Source of instance data and known MIP bounds (Table 2). Original code at `http://www.dcc.fc.up.pt/~jpp/code/valve/`.
 - **Kazarlis, Bakirtzis & Petridis (1996)** — 10-unit UC system. Source of commitment parameters (min up/down times, startup costs, initial state).
 - **Sinha, Chakrabarti & Chattopadhyay (2003)** — 13-unit system cost coefficients with valve-point effects.
 - **Taipower 40-unit system** — Cost coefficients for the 40-unit base, extended to 100/200-unit instances.
@@ -135,7 +135,7 @@ Instances can be extended to 48h and 168h (1 week) via `extend_horizon()`, which
 | Instance | Units | Periods | Binary Vars | Continuous Vars | Total Vars | Known Bounds |
 |----------|------:|--------:|------------:|----------------:|-----------:|:-------------|
 | ucp13    |    13 |    1–24 |       13–312 |          13–312 |     26–624 | Pedroso 2014 |
-| ucp40    |    40 |    1–24 |      40–960 |         40–960 |   80–1920 | Pedroso 2014 |
+| ucp40    |    40 |    1–24 |      40–960 |         40–960 |   80–1920 | Pedroso 2014 (related system, #148) |
 | ucp100   |   100 |   1–168 |    100–16800 |      100–16800 |  200–33600 | None         |
 | ucp200   |   200 |   1–168 |    200–33600 |      200–33600 |  400–67200 | None         |
 
@@ -158,7 +158,7 @@ the reserve requirement by 31 MW), so no row below is a bound on our problem
 and no gap against them is published: `comparison.csv` marks these rows
 `[related system]` and the runner scores no gap for a measured `ucp40` row.
 Correcting the two `P_max` values would restore identity, but changes the
-`chped` 40-unit dispatch instance the same data feeds.
+`chped` 40-unit dispatch instance the same data feeds; that fix is tracked in #193.
 
 ### 13-Unit System
 
@@ -274,7 +274,8 @@ cmake --build build --target cbls_uc_chped &&
 sha=$(.venv/bin/python benchmarks/uc-chped/preflight.py) &&
 ./build/cbls_uc_chped --out benchmarks/instances/uc-chped/comparison.csv \
                       --commit "$sha" --verify 2>&1 |
-    tee benchmarks/instances/uc-chped/comparison.log
+    tee benchmarks/instances/uc-chped/comparison.log.tmp &&
+mv benchmarks/instances/uc-chped/comparison.log.tmp benchmarks/instances/uc-chped/comparison.log
 ```
 
 The rebuild comes first so the binary is the `HEAD` the preflight then names.
@@ -290,11 +291,13 @@ so a caller who skips the preflight is still stopped on that half.
 `comparison.log` is committed alongside the table. The `verified` column carries
 each row's verdict; the log carries *which* checks failed on a `VERIFY FAIL`
 row, which the runner prints to standard output and nowhere else. `tee` keeps
-refusals on the terminal, and `pipefail` keeps the runner's exit status.
+refusals on the terminal, and `pipefail` keeps the runner's exit status. The log
+is renamed into place only on a run that exited 0, so a refused or killed run
+leaves the committed log matching the committed table.
 
 `--feas-tol T` overrides the tolerance, `--time-limit S` overrides the
 per-horizon budget map, `--seed N` the seed, and `--instance NAME` restricts the
-roster. The last two are refused outright when the resolved `--out` path *is*
+roster. `--instance` and `--time-limit` are refused outright when the resolved `--out` path *is*
 the published table above — a partial roster or a shortened budget cannot become
 the published result, whether the path was defaulted or spelled out. Writing
 that file at all requires `--commit`, so a published row always names the engine
@@ -427,16 +430,17 @@ property of this run and not something to assume next time.
 | ucp13 |   6 |  60s | <0.01s |   6.67s | 89% | 3.20% | **defended**, generous |
 | ucp13 |  12 | 120s | <0.01s | 105.86s | 12% | 2.99% | **defended**, the one marginal case |
 | ucp13 |  24 | 300s | <0.01s |  14.78s | 95% | 4.97% | **defended**, generous |
-| ucp40 |   1 |  10s | <0.01s |   4.90s | 51% | 4.17% | **defended**, generous |
-| ucp40 |   3 |  30s | <0.01s |   0.35s | 99% | 3.68% | **defended**, generous |
-| ucp40 |   6 |  60s | <0.01s |   2.74s | 95% | 3.15% | **defended**, generous |
+| ucp40 |   1 |  10s | <0.01s |   4.90s | 51% | ~~4.17%~~ | **defended**, generous |
+| ucp40 |   3 |  30s | <0.01s |   0.35s | 99% | ~~3.68%~~ | **defended**, generous |
+| ucp40 |   6 |  60s | <0.01s |   2.74s | 95% | ~~3.15%~~ | **defended**, generous |
 | ucp40 |  12 | 120s | never | — | — | — | **unchanged**; infeasible as built (#152) |
 | ucp40 |  24 | 300s | never | — | — | — | **unchanged**; infeasible as built (#152) |
 
 The ucp40 *Gap* cells are measured against Table 2's ucp40 lower bounds. Per
 #148 ([`FIDELITY.md`](../../../benchmarks/uc-chped/FIDELITY.md) §7), those bounds
 describe a **related system**: units 19-20 carry P_max 550 there and 500 here.
-So read the ucp40 gaps as gaps to that system's bounds, not to ucp40 as built.
+So the ucp40 gaps are struck, as in the archived table below: each compares a
+run on our instance with a bound for another one.
 The ucp13 gaps are unaffected, because ucp13 is proven identical to the source.
 The budget verdicts do not depend on the bounds.
 
@@ -485,14 +489,25 @@ contain it. The cause is the #148 data error: units 19-20 carry P_max 500 here,
 550 in the source. With the source's limits, capacity is 12722 MW and period 12
 has 94 MW of slack. The fix is tracked in #193.
 
+ucp40 is not the only case. The same check shows **ucp200** at 12 and 24
+periods short in period 12, by 30 MW (fixed by #193 too). All four extended
+horizons are also short. `extend_horizon()`'s demand variation pushes some
+periods past total capacity: ucp100-48p and ucp100-168p from period 36, and
+ucp200-48p and ucp200-168p from period 36. These stay short after #193. So 8 of
+the 24 measured rows can never be feasible as built, and their "INFEASIBLE"
+says nothing about the search. That is tracked separately (#194).
+
 The 600s probe confirms the arithmetic rather than being needed for it. Engine
 commit `e9b28a6`, seed 42, `--verify`, uniform `--time-limit 600` over the ucp40
 family, serial. The trace is
 [`traces/ucp40-600s-trace.csv`](../../../benchmarks/instances/uc-chped/traces/ucp40-600s-trace.csv).
 ucp40/12p completed **14576** ViolationLS batches and 24p completed **6499**.
-That is two orders of magnitude more search than the #147 run's 115 and 178
-at `4a320c5` (the engine got faster in between). Both still end at a maximum
-real violation of **6**, with no finite-objective incumbent. The 1-minute load
+That is 127 and 37 times the batches of the #147 run's 115 and 178 at
+`4a320c5`. The budgets and engine commits both differ, so this is not a
+throughput comparison. Both still end at a maximum
+real violation of **6** (the run's `max_violation` column; the scratch table
+is not committed, and the value is the capacity shortfall above), with no
+finite-objective incumbent. The 1-minute load
 average stayed at or below 1.26 throughout the 12p and 24p windows. The 1p, 3p
 and 6p windows overlapped another session's work (load peaks of 5-8), so the
 objectives this run reports for those horizons are not clean timings and are

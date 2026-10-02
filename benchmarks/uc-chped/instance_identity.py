@@ -198,6 +198,7 @@ class Schedule:
 
 def price(inst: Instance, s: Schedule) -> tuple[float, list[str]]:
     """Total cost (all startups cold) and the constraint violations of `s`."""
+    _assert_all_starts_cold(inst)
     n = inst["n_units"]
     cost = 0.0
     errors: list[str] = []
@@ -262,10 +263,14 @@ def parse_upstream_solution(path: str, n_units: int) -> Schedule:
 
 def _assert_all_starts_cold(inst: Instance) -> None:
     """Precondition under which every startup is cold in both codes."""
+    # Not `assert`: `python -O` would strip the precondition the pricing rests on.
     for u in range(inst["n_units"]):
-        assert inst["t_cold"][u] < inst["min_off"][u], u
-        assert inst["y_prev"][u] == 1 or inst["n_init"][u] > inst["t_cold"][u], u
-        assert inst["n_init"][u] >= max(inst["min_on"][u], inst["min_off"][u]), u
+        if not (
+            inst["t_cold"][u] < inst["min_off"][u]
+            and (inst["y_prev"][u] == 1 or inst["n_init"][u] > inst["t_cold"][u])
+            and inst["n_init"][u] >= max(inst["min_on"][u], inst["min_off"][u])
+        ):
+            raise SystemExit(f"{inst['name']} unit {u}: startups are not all cold")
 
 
 def solve_minlp(
@@ -373,6 +378,27 @@ def _reference_solver() -> Any:
     )
 
 
+def compare_with_upstream(ours: dict[str, Instance], upstream_dir: str) -> None:
+    """Checks 1 and 2 of §7.3: the data diff, and the authors' schedules re-priced on ours."""
+    theirs = load_upstream(upstream_dir)
+    for name in ("ucp13", "ucp40"):
+        problems = diff_instances(ours[name], theirs[name])
+        print(f"[data] {name}: {problems or 'IDENTICAL'}")
+
+    for (name, periods), published in PROVEN_OPTIMA.items():
+        rel = f"RESULTS/{name}-{periods}.txt"
+        if not os.path.exists(os.path.join(upstream_dir, rel)):
+            raise SystemExit(f"--upstream-dir has no {rel}; the re-price check needs it")
+        log = verified_upstream_path(upstream_dir, rel)
+        sched = parse_upstream_solution(log, ours[name]["n_units"])
+        cost, errors = price(ours[name], sched)
+        print(
+            f"[reprice] {name}-{periods}p authors' schedule at our data: {cost:.3f} "
+            f"(published {published}, diff {100 * (cost - published) / published:+.4f}%) "
+            f"violations={errors or 'none'}"
+        )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--upstream-dir", help="directory holding ucp_data.py and RESULTS/")
@@ -391,23 +417,7 @@ def main() -> None:
 
     ours = load_ours()
     if args.upstream_dir:
-        theirs = load_upstream(args.upstream_dir)
-        for name in ("ucp13", "ucp40"):
-            problems = diff_instances(ours[name], theirs[name])
-            print(f"[data] {name}: {problems or 'IDENTICAL'}")
-
-        for (name, periods), published in PROVEN_OPTIMA.items():
-            rel = f"RESULTS/{name}-{periods}.txt"
-            if not os.path.exists(os.path.join(args.upstream_dir, rel)):
-                continue
-            log = verified_upstream_path(args.upstream_dir, rel)
-            sched = parse_upstream_solution(log, ours[name]["n_units"])
-            cost, errors = price(ours[name], sched)
-            print(
-                f"[reprice] {name}-{periods}p authors' schedule at our data: {cost:.3f} "
-                f"(published {published}, diff {100 * (cost - published) / published:+.4f}%) "
-                f"violations={errors or 'none'}"
-            )
+        compare_with_upstream(ours, args.upstream_dir)
     if args.skip_solves:
         return
 
@@ -417,6 +427,9 @@ def main() -> None:
     modes = {"eq": [True], "ge": [False], "both": [True, False]}[args.demand]
     ref = _reference_solver()
     wanted = set(args.cases.split(","))
+    unknown = wanted - {f"{n}-{p}" for n, p in PROVEN_OPTIMA}
+    if unknown:
+        raise SystemExit(f"--cases: unknown {sorted(unknown)}")
     for (name, periods), published in PROVEN_OPTIMA.items():
         if f"{name}-{periods}" not in wanted:
             continue

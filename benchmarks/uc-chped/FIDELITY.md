@@ -182,10 +182,12 @@ and flags `was_on = max(y[τ] for τ in window) > 0.5`.
 The model and verifier agree, but disagree with the SCIP reference. For
 Kazarlis units 7/8/9 (1-indexed 8/9/10), `t_cold = 0` and
 `a_hot = 30 = a_cold / 2`, so the per-startup discrepancy is at most
-30 currency units. Across a 24-period horizon and the 9 affected units in
-ucp40 / 30 units in ucp100 / 60 units in ucp200, the cumulative
-discrepancy is bounded by `30 · n_starts`. **Severity: cosmetic on
-ucp13/ucp40 (subdominant), quantitative on ucp100/ucp200.**
+30 currency units. Across a 24-period horizon and the 3 affected units in
+ucp13 / 12 in ucp40 / 30 in ucp100 / 60 in ucp200, the cumulative
+discrepancy is bounded by `30 · n_starts`. **Severity: quantitative, in the
+SCIP reference only.** Our model and verifier match the source, which prices
+every startup cold (§7.4). On the proven `ucp13`-3p and `ucp40`-1p optima the
+difference is 90 and 240 (§5.1).
 
 **Deviation #2 — pre-horizon lookback for `y_prev = 0` units.**
 - SCIP reference (`reference_solve.py:251–255`): if a unit was OFF for
@@ -205,7 +207,8 @@ on our shipped instances**. Documenting it for completeness.
 demand[t] − Σ_u p[u][t] ≤ 0
 ```
 
-Matches §1.4 (≥ rewritten as ≤).
+`≥`, rewritten as `≤`. The source has `=` (§1.4, corrected by #148). This is a
+relaxation, and it leaves the proven 1- and 3-period optima unchanged (§7.3).
 
 ### 2.5 Spinning reserve (`uc_model.h:131–141`)
 
@@ -390,7 +393,8 @@ piecewise-linear surrogate at some segment count.
 
 `reference_solve.py` solves the same relaxed-no-ramps problem we do,
 modulo:
-- a PWL approximation worth a few percent of the objective, and
+- a PWL approximation whose worst case is 1.8 % of a 1-period `ucp13` at 50
+  segments (realised far less, §7.4), and
 - the `t_cold = 0` startup-cost convention difference (§2.3: 30 currency
   units per affected startup, 90 and 240 on the proven `ucp13`-3p and
   `ucp40`-1p optima, §7.4).
@@ -468,6 +472,11 @@ information. It annotates them.
   filed).
 - **#148** — instance identity against the authors' published code. Done
   in §7: `ucp13` confirmed, `ucp40` relabelled.
+- **#193** — set `P_max` of units 19-20 to 550 in the CHPED 40-unit data,
+  regenerate the `ucp*` instances, re-run §7's check and drop the relabel.
+  It also makes `ucp40` and `ucp200` at 12/24 periods satisfiable (#152).
+- **#194** — `extend_horizon()` builds 48h/168h instances whose demand plus
+  reserve exceeds total capacity in some periods.
 
 ## 7. Instance data — do we solve the published instances? (#148)
 
