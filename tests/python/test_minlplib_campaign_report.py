@@ -737,6 +737,44 @@ def test_editing_a_readme_number_makes_its_block_stale(block: str, old: str, new
     assert stale_readme_blocks(text.replace(old, new), blocks) == [block]
 
 
+@pytest.mark.parametrize(
+    ("late", "expected"),
+    [
+        (
+            {"x": 7.0},
+            "One instance reaches feasibility only after 5s — `x` (7.0s) — so a 5s "
+            "budget would publish it as infeasible, 47 solved instead of 48. Which "
+            "instance varies between draws.",
+        ),
+        (
+            {"x": 7.0, "y": 12.5},
+            "Two instances reach feasibility only after 5s — `x` (7.0s), `y` (12.5s) — "
+            "so a 5s budget would publish both as infeasible, 46 solved instead of 48. "
+            "Which instances vary between draws.",
+        ),
+        (
+            {"x": 7.0, "y": 12.5, "z": 30.0},
+            "Three instances reach feasibility only after 5s — `x` (7.0s), `y` (12.5s), "
+            "`z` (30.0s) — so a 5s budget would publish all three as infeasible, 45 solved "
+            "instead of 48. Which instances vary between draws.",
+        ),
+    ],
+)
+def test_the_late_feasibility_sentence_agrees_in_number(
+    late: dict[str, float], expected: str
+) -> None:
+    """Both branches of the sentence: #123's table has one late instance, the one before it five."""
+    report = _committed_report()
+    fp = report.trace.feasibility
+    at_five = fp.counts[-1] - len(late)
+    counts = [at_five if t <= 5.0 else c for t, c in zip(fp.checkpoints, fp.counts, strict=True)]
+    report = replace(
+        report,
+        trace=replace(report.trace, feasibility=replace(fp, late_feasible=late, counts=counts)),
+    )
+    assert expected in README_RENDERERS["feasibility"](report)
+
+
 def test_a_readme_missing_or_inventing_a_block_is_refused() -> None:
     blocks = {"a": "x"}
     with pytest.raises(ValueError, match="missing \\['a'\\]"):

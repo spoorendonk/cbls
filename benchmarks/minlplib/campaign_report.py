@@ -1133,6 +1133,12 @@ def head_to_head(
 #: sentences are rendered from these and the generated AFTER column.
 FREE_VARIABLES_BEFORE_WITHIN_10PCT = 1
 NO_FREE_VARIABLES_BEFORE_WITHIN_10PCT = 20
+#: The eligible counts that BEFORE column was over, as #107's own table states
+#: them (README at `99146d7`: 12 with a free variable, 27 without). Kept so a
+#: later table whose eligible count moved is compared as "k of n -> k' of n'",
+#: never by subtracting a count from a different denominator.
+FREE_VARIABLES_BEFORE_ELIGIBLE = 12
+NO_FREE_VARIABLES_BEFORE_ELIGIBLE = 27
 FREE_VARIABLES_BEFORE_WITHIN_10PCT_INSTANCES: tuple[str, ...] = ("maxmin",)
 
 
@@ -2487,14 +2493,14 @@ def _readme_feasibility(r: CampaignReport) -> str:
     if late and at_late is not None:
         names = ", ".join(f"`{k}` ({t:.1f}s)" for k, t in late)
         one = len(late) == 1
+        them = "both" if len(late) == 2 else f"all {_word(len(late))}"
         lines.append(
             f"**What a {LATE_FEASIBLE_AFTER:g}s budget would lose.** "
             f"{_word(len(late), capital=True)} instance{'' if one else 's'} "
             f"reach{'es' if one else ''} feasibility only after {LATE_FEASIBLE_AFTER:g}s — "
             f"{names} — so a {LATE_FEASIBLE_AFTER:g}s budget would publish "
-            f"{'it' if one else f'all {_word(len(late))}'} as infeasible, {at_late} solved "
-            f"instead of {fp.counts[-1]}. Which instance{'' if one else 's'} varies between "
-            "draws."
+            f"{'it' if one else them} as infeasible, {at_late} solved instead of "
+            f"{fp.counts[-1]}. Which instance{' varies' if one else 's vary'} between draws."
         )
     else:
         lines.append(f"No instance reaches feasibility after {LATE_FEASIBLE_AFTER:g}s in this run.")
@@ -2711,35 +2717,35 @@ def _readme_free_variables(r: CampaignReport) -> str:
     )
 
 
-def _signed(n: int) -> str:
-    return f"+{n}" if n > 0 else ("−" + str(-n) if n < 0 else "±0")
-
-
 def _free_variable_delta(fv: FreeVariableSplit) -> str:
-    """The generated column minus the fixed pre-#107 constants.
+    """The generated column beside the fixed pre-#107 constants, each over its own
+    eligible count.
 
     The difference is #107's effect only while the committed table is #107's own
     AFTER run (`21086c2+107`); against any later table it spans every engine change
-    since, so the sentence says that rather than crediting #107.
+    since, so the sentence says that rather than crediting #107. The eligible
+    counts can differ between the two tables (an instance that becomes feasible
+    joins them), so the counts are never subtracted across denominators.
     """
-    misses = fv.with_free_eligible - FREE_VARIABLES_BEFORE_WITHIN_10PCT
-    explained = fv.with_free_within_10pct - FREE_VARIABLES_BEFORE_WITHIN_10PCT
     joined = [
         n
         for n in fv.with_free_within_10pct_instances
         if n not in FREE_VARIABLES_BEFORE_WITHIN_10PCT_INSTANCES
     ]
-    no_free = fv.without_free_within_10pct - NO_FREE_VARIABLES_BEFORE_WITHIN_10PCT
     before = _and_list(_tick(FREE_VARIABLES_BEFORE_WITHIN_10PCT_INSTANCES))
     return (
-        "**Before #107** — a table that is not committed, so these two counts are fixed "
-        "constants in `campaign_report.py` — the within-10% counts were "
-        f"{FREE_VARIABLES_BEFORE_WITHIN_10PCT} ({before} only) and "
-        f"{NO_FREE_VARIABLES_BEFORE_WITHIN_10PCT}. Against this table, **{explained} of the "
-        f"{misses}** free-variable misses are now within 10% — "
-        f"{_and_list(_tick(joined)) or 'none'} join{'s' if len(joined) == 1 else ''} {before}. "
-        f"The no-free group's change is {_signed(no_free)}. That difference spans every "
-        "engine change between the pre-#107 table and this table's commit, not #107 alone."
+        "**Before #107** — a table that is not committed, so these counts are fixed "
+        "constants in `campaign_report.py` — within 10% were "
+        f"{FREE_VARIABLES_BEFORE_WITHIN_10PCT} of {FREE_VARIABLES_BEFORE_ELIGIBLE} eligible "
+        f"rows with a free variable ({before} only) and {NO_FREE_VARIABLES_BEFORE_WITHIN_10PCT} "
+        f"of {NO_FREE_VARIABLES_BEFORE_ELIGIBLE} without. Against this table: "
+        f"**{FREE_VARIABLES_BEFORE_WITHIN_10PCT} of {FREE_VARIABLES_BEFORE_ELIGIBLE} → "
+        f"{fv.with_free_within_10pct} of {fv.with_free_eligible}** with a free variable "
+        f"({_and_list(_tick(joined)) or 'none'} join{'s' if len(joined) == 1 else ''} "
+        f"{before}), and {NO_FREE_VARIABLES_BEFORE_WITHIN_10PCT} of "
+        f"{NO_FREE_VARIABLES_BEFORE_ELIGIBLE} → {fv.without_free_within_10pct} of "
+        f"{fv.without_free_eligible} without. That difference spans every engine change "
+        "between the pre-#107 table and this table's commit, not #107 alone."
     )
 
 

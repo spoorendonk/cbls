@@ -373,15 +373,17 @@ merge.
 and #123 asks for 50 instances — but their rows are published as documented
 failures and are excluded from every quality aggregate and quality claim, per
 [#87](https://github.com/spoorendonk/cbls/issues/87) ("Do not publish `elec`
-rows until #110 lands and #116's criterion can actually be checked"). They are
+rows until #110 lands and #116's criterion can actually be checked" — #110 has
+since closed as not planned and #116/#117 as completed, with the elec criterion
+retired rather than met, so no open issue tracks the failure). They are
 still counted in **roster counts** — roster size, built, feasible, infeasible,
 wall-clock totals, the SCIP head-to-head counts — because the roster of record is
 the whole table. That rule is stated once, as `AGGREGATION_RULE` in
 `benchmarks/minlplib/campaign_report.py`, and both the driver's summary and the
 report generator apply and print it (#142; before that the two used different
 denominators). **If an `elec` row comes back
-feasible with a finite objective, stop and check #110/#116 before publishing
-anything about it** — that would be a result, not a routine table refresh.
+feasible with a finite objective, stop and read the closed history in
+#110/#116/#117 before publishing anything about it** — that would be a result, not a routine table refresh.
 
 ### Seeds, and what each publish records
 
@@ -539,7 +541,9 @@ seed refuses the dirty tree that leaves.
    spanned a commit; discard the staging directory and re-run.
 7. Check the machine in `comparison.run.json`, and in **every** seed's entry of
    `comparison_seeds.run.json` — host, CPU model, cores, memory, and a
-   start-of-run load average near zero. Nothing to transcribe: step 2's
+   start-of-run load average near zero — or, for a seed started straight after
+   another, about the previous solve's 1.0 decaying, which is that solve rather
+   than a tenant; say which in **Results**. Nothing to transcribe: step 2's
    provenance block reads seed 1's from `comparison.run.json` (`--machine`
    exists only for a table with no record). If a load average says the box was
    not quiet, that seed is not publishable; a nonzero `resumed` means earlier
@@ -554,8 +558,9 @@ seed refuses the dirty tree that leaves.
    numbers are updated to match them.
    `test_safe_gap_reproduces_the_cpp_runners_published_gap_column` reads every
    seed's rows of the regenerated `comparison_seeds.csv` and requires at least
-   20 with enough resolution to cross-check (a row within 0.01% of BKS has
-   none), so a new table can legitimately turn it red. Then
+   15 distinct instances with enough resolution to cross-check (a row within
+   0.01% of BKS has none), a zero-BKS one among them, so a new table can
+   legitimately turn it red. Then
    run the full gated suite from `CLAUDE.md`'s **Build & Test** before pushing.
 
 ## Results
@@ -644,22 +649,31 @@ publish had modified the tracked tables, so the documented seed loop could not
 work. `658f32b` and `4524460` fixed that — the dirty-tree guard now ignores only
 the files the driver itself publishes — and that attempt's output was discarded
 and every seed re-run at `4524460`. There, seed 1 ran 10:41-11:31 (local time,
-2026-10-02) with no other tenant on the machine. Seed 2's first run, 11:31-12:21,
-shared the machine with another project's session (unlocked commit-hook test runs
-at 11:42 and 11:44, a CMake configure around 12:00), so it was discarded and
-re-run with `--no-resume`, 13:20-14:11. Seed 3 ran 12:30-13:20; its first two
-attempts were refused by the machine-wide wall-clock lock, held by that other
-session's queued push — the lock working as designed.
+2026-10-02). No other tenant is known in that window — the other project's
+session described next reports starting around 11:30 — but the window was not
+load-sampled, so that rests on its start-of-run load and that session's own
+account rather than on a measurement. Seed 2's first run, 11:31-12:21, shared the
+machine with that session (unlocked commit-hook test runs at 11:42 and 11:44, a
+CMake configure around 12:00), so it was discarded and re-run with
+`--no-resume`, 13:20-14:11. Seed 3 ran 12:30-13:20; its first two attempts were
+refused by the machine-wide wall-clock lock. The holder was verified with
+`fuser` at the time: the other session's `flock <lock> git push origin main`,
+waiting since 11:44, followed by its pre-push `ctest` — the lock working as
+designed.
 
 **Machine and load.** One host for all three seeds, as `comparison.run.json`
 and every entry of `comparison_seeds.run.json` record it: AMD Ryzen 5 5600H, 12
 logical CPUs (12 usable), 13.0 GiB RAM. The 1-minute load average at the start of
 each seed's run was 0.73 (seed 1), 0.92 (seed 2) and 0.49 (seed 3); seed 3's
-5-minute figure was still 2.64 from the activity that preceded it. During seeds 3
-and 2 the load was also sampled every 15s: the 1-minute figure peaked at 1.27 in
-seed 3's window (briefly, around 13:00; otherwise at most 1.10) and at 1.36 in
-seed 2's (around 14:04), where about 1.0 is the solve itself. Seed 1's window was
-not sampled.
+5-minute figure was still 2.64 from the activity that preceded it. None of those
+is the "near zero" step 7 asks for, and none indicates a tenant either: the seeds
+ran back to back, so each record's start-of-run figure still holds the previous
+single-threaded solve (about 1.0, decaying) — seed 2's re-run started the moment
+seed 3 finished, and seed 1's 0.73 followed the preflight and the runner build.
+During seeds 3 and 2 the load was also sampled every 15s: the 1-minute figure was
+above 1.10 for about three minutes of seed 3's window (12:59:50-13:02:50, peak
+1.27) and otherwise at most 1.10, and peaked at 1.36 in seed 2's (around 14:04),
+where about 1.0 is the solve itself. Seed 1's window was not sampled.
 
 **Spread.** Feasible: **48 on every seed** (min 48, median 48, max 48).
 Matching BKS, over the 48 claim-set rows: **26 / 27 / 28** (min / median / max;
@@ -730,26 +744,39 @@ the LNS counters per seed, `lns_repairs` with `lns_repairs_accepted` in brackets
 `21086c2+107` — the engine at `21086c2` with #107 applied, committed in
 `0648067`. Against it:
 
+One rule sorts the claim-set rows, applied to `gap_to_bks%` with an infeasible
+row counting as worse than any gap: a row is **better** when the old value is
+worse than every one of the three new seeds, **worse** when it is better than
+every one, and otherwise **inside the new range**, which says nothing either way.
+Rows labelled `matches-bks` in the old table and on all three seeds are left out
+as unchanged, whatever their sub-tie-band digits did.
+
 - **Feasible 46 → 48.** `nvs01` and `st_e40` are feasible on every seed. Both had
   already been measured solving after #102 (`st_e40` at `b7f8a50`, `nvs01` at
   `1559786` and `eb9e1a5`).
-- **Better on all three seeds, by more than the new spread:** `process`
-  (10.3% → 0.012-0.016%), `st_e36` (40.2% → 0.87%), `alkylation`
-  (66.1% → at most 0.012%), `nvs14` (53.4% → BKS), `st_e38` (1.05% → BKS),
-  `windfac` (195% → BKS), `spring` (39.7% → at most 2.6e-4%), `eq6_1`
+- **Better:** `process` (10.3% → 0.012-0.016%), `st_e36` (40.2% → 0.87%),
+  `alkylation` (66.1% → at most 0.012%), `nvs14` (53.4% → BKS), `st_e38`
+  (1.05% → BKS), `windfac` (195% → BKS), `spring` (39.7% → at most 2.6e-4%),
+  `nvs02` (35.2% → BKS on two seeds, 1.57% on the third), `eq6_1`
   (20.4% → 2.5-2.6%), `ex8_6_1` (49.1% → 23.9-38.7%), `nvs22` (355% → 122-311%),
-  `ex8_4_5` (1.20% → 0.05-0.23%), and the zero-BKS rows `mathopt1` and `prob09`
+  `ex8_4_5` (1.20% → 0.05-0.23%), `maxmin` (0.068% → 5.9e-4-9.0e-3%), the two
+  newly feasible rows above, and the zero-BKS rows `mathopt1` and `prob09`
   (absolute residuals 1 and 0.046 → at most 1e-9) and `least` (23349 → ~14086).
-- **Worse on all three seeds:** `chain50` (14.4% → 19.5-35.7%), and `st_e08`
-  (2.2e-4% → 1.0e-3-2.2e-3%), which no longer matches BKS.
-- **Inside a wide seed spread, so not readable as movement either way:**
-  `eg_all_s` (10.5% → 3.43 / 3.43 / 88.3%; the published seed is the outlier),
-  `nvs05` (453% → 177-1483%), `gear4`, `kall_ellipsoids_tc02b` (0.08-95%),
-  `nvs02` (BKS on two seeds, 1.57% on the third), `nvs08`, `shiporig`, `maxmin`
-  and `ex4_1_9`.
+  Some of these moved far further than the new seeds spread (`process`,
+  `alkylation`, `windfac`); others, such as `ex8_6_1` and `nvs22`, sit beyond the
+  new worst seed by less than the new seeds differ among themselves, so the old
+  single draw is the weaker side of that comparison.
+- **Worse:** `chain50` (14.4% → 19.5-35.7%), `gear4` (1.65e6% → 1.77e6-9.48e6%)
+  and `st_e08` (2.2e-4% → 1.0e-3-2.2e-3%, which no longer matches BKS).
+- **Inside the new range:** `eg_all_s` (10.5% → 3.43 / 3.43 / 88.3%; the
+  published seed is the outlier), `nvs05` (453% → 177-1483%),
+  `kall_ellipsoids_tc02b` (54.3% → 0.08-95%), `nvs08`, `shiporig`, `ex4_1_2`,
+  `ex4_1_9` and `prob06`. `ex8_1_6` and `nvs21` are identical on every seed and
+  to the old row.
 - **Wall time:** `eg_all_s` 61.1s → 60.0s, so the roster total is 3000s rather
-  than 3001s — #113's bounded deadline stride, which stops an instance that used
-  to overrun its budget.
+  than 3001s. Two changes in the range would each stop an instance that used to
+  overrun its budget — #113's bounded deadline stride and #191's stop of the
+  inner-solver hook at the deadline — and nothing here separates them.
 
 **Attribution: engine changes, not an algorithmic improvement.** 291 commits
 touched `src/` or `include/` between `0648067` and `4524460`
@@ -837,7 +864,12 @@ Left infeasible in this table: `elec25` and `elec50` (2 of 50).
 <!-- campaign_report:end infeasible -->
 
 Both are root-caused, and the verdict is recorded per row in `comparison.csv`
-(merged from `analysis_notes.csv`). They are infeasible on all three of #123's
+(merged from `analysis_notes.csv`). The published note cells, in `comparison.csv`
+and `comparison_seeds.csv`, carry the note **as it was merged at run time**,
+which still calls #110 the tracker; `analysis_notes.csv` and the table below say
+#110 is closed. The cells are left as published because each run record pins its
+table's sha256, and `campaign_report.py` refuses a table (or leaves out a seed)
+whose bytes no longer match — editing a cell would unpublish the run. They are infeasible on all three of #123's
 seeds, as they were in the previous table.
 
 **`nvs01` and `st_e40` left this list in #123's regeneration**: feasible on all
@@ -849,7 +881,7 @@ the `nvs01` section and the #102 section below still lean on them.
 
 | Instance | Verdict | Cause |
 |----------|---------|-------|
-| `elec25`, `elec50` | **bug** ([#110](https://github.com/spoorendonk/cbls/issues/110)) | Thomson problem: points on the unit sphere, Coulomb objective `+inf` wherever two coincide. **The objective-encoding defects (#100) are fixed and are no longer the blocker.** What remains: the `.nl` declares no finite variable bounds, so the box is the ±1e9 inf-clamp; random init starts ~1e9 out, and shrinking each variable toward 0 is a huge row improvement — which parks the search on the origin, a stationary point of every row `x²+y²+z²=1`. The Float jump offers a single *undamped* Newton step (`x0 - residual/grad`) plus `lb`/`ub`/midpoint; near the origin that step overshoots wildly and is rejected, and because a candidate was nonetheless *generated* the #107 escape probe is suppressed — so the variable freezes at score 0. Measured: escape probe fires only at exactly `x0 = 0`; at `x0 = 0.001/0.01/0.1` the score is 0 with the probe armed or not. Infeasible at violation ≈1 **both with the objective present and with it neutralised**, so it is not objective-related — the earlier "dropping the objective makes elec25 feasible in 20s" claim no longer reproduces. Tightening `inf_clamp` to 1 makes `elec25` feasible at violation 0 post-#100 (pre-#100 it was infeasible at *every* clamp), because clamping accidentally supplies the missing damping. |
+| `elec25`, `elec50` | **bug**, untracked ([#110](https://github.com/spoorendonk/cbls/issues/110) closed as not planned on 2026-09-07; its elec criterion had been retired to #116 and #117, both closed) | Thomson problem: points on the unit sphere, Coulomb objective `+inf` wherever two coincide. **The objective-encoding defects (#100) are fixed and are no longer the blocker.** What remains: the `.nl` declares no finite variable bounds, so the box is the ±1e9 inf-clamp; random init starts ~1e9 out, and shrinking each variable toward 0 is a huge row improvement — which parks the search on the origin, a stationary point of every row `x²+y²+z²=1`. The Float jump offers a single *undamped* Newton step (`x0 - residual/grad`) plus `lb`/`ub`/midpoint; near the origin that step overshoots wildly and is rejected, and because a candidate was nonetheless *generated* the #107 escape probe is suppressed — so the variable freezes at score 0. Measured: escape probe fires only at exactly `x0 = 0`; at `x0 = 0.001/0.01/0.1` the score is 0 with the probe armed or not. Infeasible at violation ≈1 **both with the objective present and with it neutralised**, so it is not objective-related — the earlier "dropping the objective makes elec25 feasible in 20s" claim no longer reproduces. Tightening `inf_clamp` to 1 makes `elec25` feasible at violation 0 post-#100 (pre-#100 it was infeasible at *every* clamp), because clamping accidentally supplies the missing damping. |
 
 #### Retired root causes
 
@@ -1253,9 +1285,9 @@ What each row settles — the numbers are in the block above:
   causes" above for what #102 changed.
 - `elec25` — confirms an engine gap, not hardness: a feasible point of near-BKS
   quality is easy to reach. Originally attributed to #100; that is fixed, and the
-  remaining cause is the undamped Newton jump
-  ([#110](https://github.com/spoorendonk/cbls/issues/110), see the root-cause
-  table above). Still infeasible on all three of #123's seeds.
+  remaining cause is the undamped Newton jump (see the root-cause table above;
+  [#110](https://github.com/spoorendonk/cbls/issues/110), which tracked it, is
+  closed as not planned and nothing open replaces it). Still infeasible on all three of #123's seeds.
 - `elec50` — same mechanism at 50 points; SCIP does not close it either, but it
   does reach the feasible region.
 - `st_e36` — the row the other way: SCIP spends the full budget and returns only
@@ -1421,7 +1453,7 @@ rows each group solves whose `|BKS| >= 1e-4`:
 
 Within 10% with at least one free variable: `shiporig`, `ex8_1_5`, `maxmin`, `st_e40`, `spring` and `windfac`.
 
-**Before #107** — a table that is not committed, so these two counts are fixed constants in `campaign_report.py` — the within-10% counts were 1 (`maxmin` only) and 20. Against this table, **5 of the 12** free-variable misses are now within 10% — `shiporig`, `ex8_1_5`, `st_e40`, `spring` and `windfac` join `maxmin`. The no-free group's change is +6. That difference spans every engine change between the pre-#107 table and this table's commit, not #107 alone.
+**Before #107** — a table that is not committed, so these counts are fixed constants in `campaign_report.py` — within 10% were 1 of 12 eligible rows with a free variable (`maxmin` only) and 20 of 27 without. Against this table: **1 of 12 → 6 of 13** with a free variable (`shiporig`, `ex8_1_5`, `st_e40`, `spring` and `windfac` join `maxmin`), and 20 of 27 → 26 of 28 without. That difference spans every engine change between the pre-#107 table and this table's commit, not #107 alone.
 <!-- campaign_report:end free-variables -->
 
 **#107's own share was measured against the previous table**, which was #107's

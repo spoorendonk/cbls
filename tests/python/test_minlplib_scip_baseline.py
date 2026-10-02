@@ -518,13 +518,20 @@ def test_safe_gap_reproduces_the_cpp_runners_published_gap_column() -> None:
     so a change to `minlplib.cpp` leaves them green. This one reads the committed
     per-seed table — C++ output — and re-derives its `gap_to_bks%` from the
     objective and the catalogue bound. Resolution is set by that file's six
-    significant digits, so it pins the sign convention, the sense flip and the
+    significant digits, so it pins the sign convention and the
     zero-reference fallback, not sub-1e-4 relative drift.
 
     It reads every seed's block of `comparison_seeds.csv` (the published seed's
     rows included), not `comparison.csv` alone: #123's table matches BKS on 28
     rows, and a row within 0.01% of its bound carries no resolution here, so the
-    one published seed leaves too few rows to cross-check.
+    one published seed leaves too few rows to cross-check. The floor is on
+    DISTINCT instances (15), not rows: the same instance on three seeds is one
+    sign convention checked three times. It also requires a zero-reference row
+    among them, since a count alone could be met without that branch. The sense
+    flip is NOT pinned against C++ output any more: `alkylation` is the roster's
+    only maximize instance, and since #123 it lands within ~0.01% of its bound on
+    every seed, below this file's resolution; the hand-worked tests above still
+    cover it.
     """
     comparison = INST_DIR / "comparison_seeds.csv"
     bounds = {b.instance: b for b in load_bounds(INST_DIR / "bounds.csv")}
@@ -532,7 +539,7 @@ def test_safe_gap_reproduces_the_cpp_runners_published_gap_column() -> None:
         rows = [r for r in csv.DictReader(fh) if r["feasible"] == "true"]
     assert rows, "no feasible CBLS rows to cross-check against"
 
-    checked = 0
+    checked: set[str] = set()
     for row in rows:
         bound = bounds[row["instance"]]
         published = float(row["gap_to_bks%"])
@@ -556,5 +563,6 @@ def test_safe_gap_reproduces_the_cpp_runners_published_gap_column() -> None:
                 continue
         ours = safe_gap(objective, bound.primal_bks, bound.maximizing)
         assert ours == pytest.approx(published, rel=1e-3), (row["seed"], row["instance"])
-        checked += 1
-    assert checked >= 20, f"only {checked} rows had enough resolution to cross-check"
+        checked.add(row["instance"])
+    assert len(checked) >= 15, f"only {sorted(checked)} had enough resolution to cross-check"
+    assert any(abs(bounds[i].primal_bks) < 1e-12 for i in checked), "no zero-BKS row checked"
