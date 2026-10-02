@@ -632,6 +632,14 @@ optimum.
 | `ucp13` | **Confirmed.** Field-identical, both proven optima reproduced to `< 0.01` by an exact solve. | Stand: bounds for this instance. |
 | `ucp40` | **Fails.** `P_max` of units 19-20 differs; the authors' optimum is infeasible here; the exact optimum here is 55704.72 against their 55644.79. | **Relabelled** as bounds for a related system. |
 
+A second consequence of the same 100 MW (#152): **`ucp40` at 12 and 24
+periods is infeasible as built here.** Period 12 asks for 11480 MW of demand
+plus 1148 MW of reserve, 12628 MW in all. All 40 units together offer 12622 MW
+of P_max, so the reserve row's violation is at least 6 under any assignment.
+That is the residual the search ends at. With the source's 550 MW limits it
+would have 94 MW of slack. The README's budget-defence section carries the 600s
+probe that confirms it. The data fix is #193.
+
 Relabelling, done before any gap is published:
 
 - `comparison.csv`'s five `ucp40` cited rows read `Pedroso MIP (1hr) [related

@@ -430,8 +430,15 @@ property of this run and not something to assume next time.
 | ucp40 |   1 |  10s | <0.01s |   4.90s | 51% | 4.17% | **defended**, generous |
 | ucp40 |   3 |  30s | <0.01s |   0.35s | 99% | 3.68% | **defended**, generous |
 | ucp40 |   6 |  60s | <0.01s |   2.74s | 95% | 3.15% | **defended**, generous |
-| ucp40 |  12 | 120s | never | — | — | — | **unchanged**; the clock is not what binds |
-| ucp40 |  24 | 300s | never | — | — | — | **unchanged**; the clock is not what binds |
+| ucp40 |  12 | 120s | never | — | — | — | **unchanged**; infeasible as built (#152) |
+| ucp40 |  24 | 300s | never | — | — | — | **unchanged**; infeasible as built (#152) |
+
+The ucp40 *Gap* cells are measured against Table 2's ucp40 lower bounds. Per
+#148 ([`FIDELITY.md`](../../../benchmarks/uc-chped/FIDELITY.md) §7), those bounds
+describe a **related system**: units 19-20 carry P_max 550 there and 500 here.
+So read the ucp40 gaps as gaps to that system's bounds, not to ucp40 as built.
+The ucp13 gaps are unaffected, because ucp13 is proven identical to the source.
+The budget verdicts do not depend on the bounds.
 
 **No budget was changed.** Seven horizons are flat with idle tails of 51–99%;
 at ucp40/3p the incumbent stops moving after 0.35s of a 30s budget. The
@@ -465,30 +472,39 @@ aimed at closing them should target the search, not the clock. Conversely,
 nobody may now explain these gaps away as "it needed more time"; the traces
 refuse that explanation.
 
-**ucp40/12p and 24p never reach a feasible incumbent at all**, so there is no
-incumbent to flatten and raising the budget is unjustified without evidence.
-Two independent signals say the clock is not the binding constraint:
+**ucp40/12p and 24p never reach a feasible incumbent, because none exists on
+the instance as built here (#152).** Period 12 of the demand profile asks for
+11480 MW of demand plus 1148 MW of spinning reserve, 12628 MW in all. With every
+one of the 40 units committed, the sum of P_max is 12622 MW. The reserve row of
+period 12 therefore cannot be satisfied by any assignment. Its minimum possible
+violation is **exactly 6**, which is precisely the maximum real violation both
+horizons have ended at in every run. No other period is short; the next
+tightest is period 11, with 412 MW of slack. Every horizon that contains
+period 12 is infeasible, and the 1-, 3- and 6-period sub-instances do not
+contain it. The cause is the #148 data error: units 19-20 carry P_max 500 here,
+550 in the source. With the source's limits, capacity is 12722 MW and period 12
+has 94 MW of slack. The fix is tracked in #193.
 
-1. Both end at a maximum real violation of **exactly 6**, at budgets differing
-   by 2.5x (120s and 300s). Had the clock been binding, the longer run should
-   have closed more residual than the shorter one. It closed none.
-2. They are not short of search. ucp40/12p completed **115** ViolationLS
-   batches and 24p completed **178** — *more* than the **97** and **98** with
-   which ucp40/3p and 6p reached feasibility and then converged. These horizons
-   get more batches than the siblings that succeed, and still find nothing, so
-   "too few iterations" does not describe the failure. (Batch throughput does
-   fall with horizon — 11.6, 3.23, 1.63, 0.96, 0.59 batches/s across ucp40 — but
-   the batch *counts* are what the comparison rests on.)
+The 600s probe confirms the arithmetic rather than being needed for it. Engine
+commit `e9b28a6`, seed 42, `--verify`, uniform `--time-limit 600` over the ucp40
+family, serial. The trace is
+[`traces/ucp40-600s-trace.csv`](../../../benchmarks/instances/uc-chped/traces/ucp40-600s-trace.csv).
+ucp40/12p completed **14576** ViolationLS batches and 24p completed **6499**.
+That is two orders of magnitude more search than the #147 run's 115 and 178
+at `4a320c5` (the engine got faster in between). Both still end at a maximum
+real violation of **6**, with no finite-objective incumbent. The 1-minute load
+average stayed at or below 1.26 throughout the 12p and 24p windows. The 1p, 3p
+and 6p windows overlapped another session's work (load peaks of 5-8), so the
+objectives this run reports for those horizons are not clean timings and are
+not cited anywhere.
 
-**Open, and not tested — an honest limitation.** A longer-budget probe (ucp40 at
-a uniform 600s) was attempted to settle whether these two horizons are
-budget-limited or feasibility-limited. It was killed three times by the
-measurement machine's low-memory reaper before producing usable rows, so **that
-question is open**. The two signals above are suggestive, not conclusive: neither
-rules out a feasible point sitting just beyond a 300s budget. Do not read this
-section as having tested a longer budget on ucp40/12p and 24p. Nothing here
-should be cited as evidence that a longer budget *cannot* help — only that
-nothing measured so far suggests it would.
+**So the two horizons are neither budget-limited nor search-limited. They are
+infeasible instances, and the budget map stands unchanged.** The two signals
+#147 recorded were right that the clock does not bind: a residual that does not
+move across budgets, and more batches than the siblings that converge. What
+they could not show is why. "It just needed more time" is retired. So is "the
+search cannot find it", until #193 restores the source's capacity. Then these
+two horizons need measuring again, at the existing map budgets first.
 
 Archived results:
 
