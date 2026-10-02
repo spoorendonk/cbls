@@ -232,9 +232,22 @@ stating the feasibility tolerance explicitly and recording it, the seed, the
 time budget and the engine commit on every measured row:
 
 ```bash
+sha=$(.venv/bin/python benchmarks/uc-chped/preflight.py) &&
 ./build/cbls_uc_chped --out benchmarks/instances/uc-chped/comparison.csv \
-                      --commit "$(git rev-parse --short=7 HEAD)" --verify
+                      --commit "$sha" --verify \
+                      > benchmarks/instances/uc-chped/comparison.log 2>&1
 ```
+
+`benchmarks/uc-chped/preflight.py` runs first and refuses, before any solving
+starts, a working tree with modified tracked files, a build directory that is
+not `Release`, one configured with `CBLS_SANITIZE` or `CBLS_PROFILE`, and one
+configured from a different checkout (`--build-dir DIR` if it is not `build`).
+On success it prints the commit SHA, so the recorded `--commit` comes from the
+check that found the tree clean rather than from a free-form string (issue
+#146). The redirect keeps the run's output beside the table: the `verified`
+column carries each row's verdict, and `comparison.log` carries *which* checks
+failed on a `VERIFY FAIL` row, which the runner prints to standard output and
+nowhere else.
 
 `--feas-tol T` overrides the tolerance, `--time-limit S` overrides the
 per-horizon budget map, `--seed N` the seed, and `--instance NAME` restricts the
@@ -242,7 +255,7 @@ roster. The last two are refused outright when the resolved `--out` path *is*
 the published table above — a partial roster or a shortened budget cannot become
 the published result, whether the path was defaulted or spelled out. Writing
 that file at all requires `--commit`, so a published row always names the engine
-it measured. Point `--out` at a scratch path and none of this applies — but see
+it measured, and `--verify`, so no published row leaves `verified` empty. Point `--out` at a scratch path and none of this applies — but see
 the anytime-trace section below, where `--trace` is held to the same rule
 against both published names. Note that `feasible` is
 the engine's verdict at the row's `feas_tol` while `verified` is an independent
