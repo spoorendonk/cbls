@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import re
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -29,13 +30,19 @@ from benchmarks.minlplib.ablation_report import (
 from benchmarks.minlplib.run_ablation import (
     ARMS,
     GATED_ARM,
+    HELDOUT_INST_DIR,
     LOCK_NAME,
     MAX_LOAD_AVERAGE,
     PROBE_ARM,
     RESULT_COLUMNS,
     RESULTS_NAME,
+    SHIPPED_UNPRODUCTIVE_ITERS,
     STAMP_NAME,
+    TRANSFER_ARMS,
+    TRANSFER_CAMPAIGN,
+    TRANSFER_GRID,
     Arm,
+    ArmConfigMismatchError,
     Run,
     campaign_lock,
     campaign_plan,
@@ -49,15 +56,18 @@ from benchmarks.minlplib.run_ablation import (
     header_conflict,
     load_refusal,
     main,
+    parse_args,
     probe_plan,
     read_runner_row,
     recorded_keys,
+    resolve_campaign,
     run_locked,
     runner_command,
     scratch_refusal,
     stamp_conflict,
     usage_error,
 )
+from benchmarks.minlplib.run_benchmark import DEFAULT_INST_DIR, _data_problems, roster_from_bounds
 from benchmarks.minlplib.runner import RUNNER_COLUMNS, RUNNER_EXIT_ERRORED, completed_search
 
 if TYPE_CHECKING:
@@ -79,6 +89,7 @@ def make_args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
         "seeds": [1, 2, 3],
         "instances": [],
         "lns_arm": "auto",
+        "campaign": "ablation",
         "allow_busy": False,
         "resume": True,
         "build": True,
@@ -895,4 +906,259 @@ def test_a_held_wallclock_lock_refuses_the_campaign_before_it_touches_the_out_di
     with wallclock_lock("run_benchmark.py"):
         assert run_locked(argparse.Namespace(build=False), "abc1234", ["a"], out_dir) == 2
     assert "run_benchmark.py" in capsys.readouterr().err
+    assert not out_dir.exists()
+
+
+# --- #145: the unproductive-exit transfer campaign ------------------------------
+
+
+def echoing_runner(*, ignore_flag: bool = False) -> Callable[..., FakeCompleted]:
+    """A fake runner whose `search_config` cell reports the `--unproductive-iters`
+    it was given, as the real runner's does -- or, with `ignore_flag`, a binary
+    that drops the flag and reports the shipped 300 whatever it was asked."""
+
+    def run(cmd: Sequence[str], **kwargs: object) -> FakeCompleted:
+        value = "300"
+        if "--unproductive-iters" in cmd and not ignore_flag:
+            value = cmd[cmd.index("--unproductive-iters") + 1]
+        cell = DEFAULT_ARM_CELL.replace("unproductive_iters=300", f"unproductive_iters={value}")
+        row = f"{{name}},1,1,1,5,5,10,true,feasible,{{sha}},0,0,0,0,3,0.5,{cell}"
+        return fake_runner(row=row)(cmd, **kwargs)
+
+    return run
+
+
+def test_the_transfer_arms_are_the_provenance_grid_with_the_shipped_value_as_control() -> None:
+    """#145 re-runs exactly the grid the shipped value came from, centred on it.
+
+    Pinned against the C++ header rather than restated: if the default moves,
+    this campaign would otherwise go on calling 300 the control while the engine
+    ships something else, and the "transfer" it measured would be of a value
+    nobody ships.
+    """
+    header = (REPO_ROOT / "include" / "cbls" / "feasibility_jump.h").read_text()
+    shipped = re.search(r"int64_t unproductive_iterations = (\d+);", header)
+    assert shipped is not None
+    assert int(shipped.group(1)) == SHIPPED_UNPRODUCTIVE_ITERS == 300
+    assert "{100, 300, 1000}" in header  # the provenance comment's grid
+    assert TRANSFER_GRID == (100, 300, 1000)
+
+    assert [(a.name, a.flags, a.config) for a in TRANSFER_ARMS] == [
+        (CONTROL_ARM, ("--unproductive-iters", "300"), ("unproductive_iters=300",)),
+        ("unproductive-100", ("--unproductive-iters", "100"), ("unproductive_iters=100",)),
+        ("unproductive-1000", ("--unproductive-iters", "1000"), ("unproductive_iters=1000",)),
+    ]
+    # No name is shared with an ablation arm other than the control, so the two
+    # campaigns' rows can never be mistaken for one another by arm name alone.
+    assert {a.name for a in TRANSFER_ARMS} & {a.name for a in (*ARMS, GATED_ARM)} == {CONTROL_ARM}
+
+
+def test_the_transfer_campaign_interleaves_its_arms_per_instance() -> None:
+    """The same protocol as the ablation: every grid point for one (instance,
+    seed) back to back, control first, before the next block starts."""
+    plan = campaign_plan(["a", "b"], [1, 2, 3], TRANSFER_ARMS)
+    assert len(plan) == 2 * 3 * 3
+    names = [a.name for a in TRANSFER_ARMS]
+    for start in range(0, len(plan), len(names)):
+        block = plan[start : start + len(names)]
+        assert [r.arm.name for r in block] == names
+        assert len({(r.instance, r.seed) for r in block}) == 1
+    assert [(r.instance, r.seed) for r in plan[:: len(names)]] == [
+        ("a", 1),
+        ("a", 2),
+        ("a", 3),
+        ("b", 1),
+        ("b", 2),
+        ("b", 3),
+    ]
+
+
+def test_the_stamp_refuses_a_resume_across_campaigns(tmp_path: Path) -> None:
+    """Both campaigns have a `control`, and the two are different configurations.
+    The stamp names the campaign and each arm's flags, so neither can resume into
+    the other's rows."""
+    out_dir = tmp_path / "scratch"
+    out_dir.mkdir()
+    ablation = campaign_stamp("abc1234", 10.0, [1, 2, 3], [*ARMS, GATED_ARM])
+    transfer = campaign_stamp("abc1234", 10.0, [1, 2, 3], TRANSFER_ARMS, campaign=TRANSFER_CAMPAIGN)
+    assert "campaign=transfer-145\n" in transfer
+    assert "control[--unproductive-iters 300]" in transfer
+    assert stamp_conflict(out_dir, ablation, resume=True) is None
+    conflict = stamp_conflict(out_dir, transfer, resume=True)
+    assert conflict is not None
+    assert "different configuration" in conflict
+    # ... and the other way round.
+    other = tmp_path / "other"
+    other.mkdir()
+    assert stamp_conflict(other, transfer, resume=True) is None
+    assert stamp_conflict(other, ablation, resume=True) is not None
+    # Same arm NAMES under different flags is a different arm set too.
+    renamed = campaign_stamp(
+        "abc1234",
+        10.0,
+        [1, 2, 3],
+        [Arm(CONTROL_ARM, ()), *TRANSFER_ARMS[1:]],
+        campaign=TRANSFER_CAMPAIGN,
+    )
+    assert stamp_conflict(other, renamed, resume=True) is not None
+
+
+def test_a_transfer_run_cannot_resume_into_an_ablation_out_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """End to end through `execute`: refused before a single solve."""
+    seen: list[str] = []
+    monkeypatch.setattr(subprocess, "run", fake_runner(seen=seen))
+    out_dir = tmp_path / "scratch"
+    out_dir.mkdir()  # `campaign_lock` creates it in a real run
+    assert execute(make_args(tmp_path, lns_arm="off"), "abc1234", ["a"], out_dir) == 0
+    ablation_runs = len(seen)
+    assert ablation_runs == len(ARMS) * 3
+
+    transfer = make_args(tmp_path, campaign=TRANSFER_CAMPAIGN)
+    assert execute(transfer, "abc1234", ["a"], out_dir) == 2
+    assert len(seen) == ablation_runs, "a transfer solve ran in an ablation out-dir"
+    assert "campaign=ablation" in capsys.readouterr().err
+
+
+def test_a_transfer_campaign_runs_its_grid_and_every_row_records_the_arms_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#145: "every row records engine commit, seed, budget and the arm's value".
+    The value is in `arm_flags` (so a crashed run's row has it too) and in the
+    runner's own `search_config` cell (what the binary actually applied)."""
+    monkeypatch.setattr(subprocess, "run", echoing_runner())
+    out_dir = tmp_path / "scratch"
+    out_dir.mkdir()  # `campaign_lock` creates it in a real run
+    args = make_args(tmp_path, campaign=TRANSFER_CAMPAIGN, time_limit=10.0)
+    (tmp_path / "inst").mkdir()
+    (tmp_path / "inst" / "bounds.csv").write_text(
+        "instance,structure,nvars,ncons,objsense,primal_bks,dual_bound,n_disc_vars_bks\n"
+        "a,other,3,4,min,1,1,0\nb,mixed-integer,60,50,min,1,1,0\n"
+    )
+    assert execute(args, "abc1234", ["a", "b"], out_dir) == 0
+
+    rows = _recorded(out_dir)
+    assert [(r["instance"], r["arm"], r["seed"]) for r in rows[:3]] == [
+        ("a", CONTROL_ARM, "1"),
+        ("a", "unproductive-100", "1"),
+        ("a", "unproductive-1000", "1"),
+    ]
+    assert len(rows) == 2 * 3 * 3
+    for row in rows:
+        value = {"control": "300", "unproductive-100": "100", "unproductive-1000": "1000"}[
+            row["arm"]
+        ]
+        assert row["arm_flags"] == f"--unproductive-iters {value}"
+        assert f"unproductive_iters={value};" in row["search_config"]
+        assert row["commit_sha"] == "abc1234"
+        assert row["time_limit"] == "10"
+        assert row["seed"] in ("1", "2", "3")
+    # No gate probe and no LNS arm: those are the ablation's.
+    assert not any(r["arm"] in (PROBE_ARM.name, GATED_ARM.name) for r in rows)
+    assert not (out_dir / "lns_gate.json").exists()
+    assert "campaign=transfer-145" in (out_dir / STAMP_NAME).read_text()
+    out = capsys.readouterr().out
+    assert "issue #145" in out
+    assert "by pre-registered size band" in out
+
+
+def test_a_row_whose_search_config_contradicts_its_arm_stops_the_campaign(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A binary that ignores `--unproductive-iters` would otherwise fill the
+    campaign with three copies of the control filed under three grid points --
+    and report, correctly by its own lights, that the value does not matter."""
+    monkeypatch.setattr(subprocess, "run", echoing_runner(ignore_flag=True))
+    out_dir = tmp_path / "scratch"
+    plan = campaign_plan(["a"], [1], TRANSFER_ARMS)
+    with pytest.raises(ArmConfigMismatchError, match="unproductive_iters=100"):
+        execute_runs(make_args(tmp_path), "abc1234", plan, out_dir, "campaign")
+    # The control (whose cell does say 300) was recorded; the mismatched run was not.
+    assert [r["arm"] for r in _recorded(out_dir)] == [CONTROL_ARM]
+
+
+def test_the_transfer_campaign_defaults_to_the_heldout_roster_and_refuses_the_published(
+    tmp_path: Path,
+) -> None:
+    out = ["--out-dir", str(tmp_path / "scratch")]
+    args = parse_args([*out, "--campaign", TRANSFER_CAMPAIGN])
+    assert resolve_campaign(args) is None
+    assert args.inst_dir == HELDOUT_INST_DIR
+    assert usage_error(args) is None
+
+    ablation = parse_args(out)
+    assert resolve_campaign(ablation) is None
+    assert ablation.campaign == "ablation"
+    assert ablation.inst_dir == DEFAULT_INST_DIR
+
+    published = parse_args(
+        [*out, "--campaign", TRANSFER_CAMPAIGN, "--inst-dir", str(DEFAULT_INST_DIR)]
+    )
+    assert resolve_campaign(published) is None
+    refusal = usage_error(published)
+    assert refusal is not None
+    assert "fitted on" in refusal
+
+    gated = parse_args([*out, "--campaign", TRANSFER_CAMPAIGN, "--lns-arm", "on"])
+    assert resolve_campaign(gated) is None
+    refusal = usage_error(gated)
+    assert refusal is not None
+    assert "no LNS arm" in refusal
+
+
+def test_the_heldout_roster_passes_the_drivers_roster_preflight(tmp_path: Path) -> None:
+    """The roster comes from `heldout/bounds.csv`, every instance has its `.nl`,
+    and the out-dir refusal is still about `benchmarks/instances/` as a whole --
+    a scratch dir is fine and `heldout/` itself is refused."""
+    roster = roster_from_bounds(HELDOUT_INST_DIR / "bounds.csv")
+    assert len(roster) == 50
+    args = make_args(tmp_path, campaign=TRANSFER_CAMPAIGN, inst_dir=HELDOUT_INST_DIR)
+    assert _data_problems(args, roster) == []
+    assert usage_error(args) is None
+    inside = usage_error(make_args(tmp_path, out_dir=HELDOUT_INST_DIR / "scratch"))
+    assert inside is not None
+    assert "published" in inside
+
+
+def test_report_only_scores_the_campaign_its_stamp_records(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out_dir = tmp_path / "scratch"
+    out_dir.mkdir()
+    (out_dir / STAMP_NAME).write_text(
+        campaign_stamp("abc1234", 10.0, [1, 2, 3], TRANSFER_ARMS, campaign=TRANSFER_CAMPAIGN)
+    )
+    write_results(out_dir / RESULTS_NAME, [("a", CONTROL_ARM, 1), ("a", "unproductive-100", 1)])
+    assert main(["--out-dir", str(out_dir), "--report-only"]) == 0
+    assert "issue #145" in capsys.readouterr().out
+
+    assert main(["--out-dir", str(out_dir), "--report-only", "--campaign", "ablation"]) == 2
+    assert "contradicts" in capsys.readouterr().err
+
+
+def test_the_transfer_dry_run_prints_the_grid_and_no_gate_probe(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The dry run touches nothing and needs no build; it may refuse (no build
+    dir in a test), but it still prints the plan it would run."""
+    out_dir = tmp_path / "scratch"
+    main(
+        [
+            "--out-dir",
+            str(out_dir),
+            "--campaign",
+            TRANSFER_CAMPAIGN,
+            "--time-limit",
+            "10",
+            "--dry-run",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert "campaign: transfer-145" in out
+    assert "control[--unproductive-iters 300]" in out
+    assert "unproductive-1000[--unproductive-iters 1000]" in out
+    assert "campaign: 450 run(s)" in out
+    assert "gate probe" not in out
+    assert "estimated 1.2h of solving" in out  # 450 x 10s
     assert not out_dir.exists()

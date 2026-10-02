@@ -5,6 +5,14 @@ arm, its per-instance and aggregate effect against **the control from the same
 sitting** -- never against the published table, which was measured at another
 time on a differently-loaded machine.
 
+It scores #145's unproductive-exit transfer check too (`run_ablation.py
+--campaign transfer-145`), which is the same experiment on the held-out roster
+with a different arm set. That report adds one section, `transfer_lines`: the
+pre-registered size-band and structure-class breakdown `HELDOUT.md` commits #145
+to, and the reading of the evidence against #145's three admissible outcomes.
+Its floor is the one below, computed from the held-out control's own spread in
+the same sitting -- nothing is carried over from the published roster.
+
 THE NOISE FLOOR IS MEASURED, NOT ASSUMED. Issue #143 quotes a "3-4 gap point"
 noise floor from an earlier campaign; nothing here uses that number. The only
 measurement of run-to-run noise this campaign contains is the control's own
@@ -89,11 +97,17 @@ from benchmarks.minlplib.runner import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Callable, Iterable, Sequence
     from pathlib import Path
 
 #: The arm every other arm is measured against.
 CONTROL_ARM = "control"
+
+#: The report's first line, per campaign.
+ABLATION_HEADING = "=== MINLPLib ablation campaign (issue #143) ==="
+TRANSFER_HEADING = (
+    "=== MINLPLib unproductive-exit transfer check on the held-out roster (issue #145) ==="
+)
 
 #: Notes known to mean NO SEARCH COMPLETED. Nothing is classified by this tuple
 #: any more -- `completed_search` decides that from `COMPLETED_SEARCH_NOTES`
@@ -1098,8 +1112,385 @@ def _excluded_lines(cells: dict[tuple[str, str], Cell], arms: Sequence[str]) -> 
     return lines or ["  (no rows)"]
 
 
-def render_report(results: Path, gate: dict[str, object] | None = None) -> str:
-    """The whole campaign report, as text."""
+@dataclass(frozen=True)
+class InstanceMeta:
+    """What the #145 breakdown needs to know about an instance: its class and size."""
+
+    structure: str
+    #: `nvars + ncons`, the size measure `HELDOUT.md` pre-registered its bands on.
+    size: int
+
+
+def roster_meta(bounds_csv: Path) -> dict[str, InstanceMeta]:
+    """Structure class and size per instance, from a roster's `bounds.csv`.
+
+    An absent file yields an empty mapping: the breakdown then files every
+    instance under `unknown` and says so, rather than the report failing after
+    hours of solving.
+    """
+    if not bounds_csv.exists():
+        return {}
+    with bounds_csv.open(newline="") as fh:
+        return {
+            row["instance"]: InstanceMeta(
+                structure=row["structure"], size=int(row["nvars"]) + int(row["ncons"])
+            )
+            for row in csv.DictReader(fh)
+        }
+
+
+#: THE PRE-REGISTERED SIZE BANDS for #145, copied from `HELDOUT.md` ("Pre-registered
+#: size bands for #145"), which fixed them at the held-out set's size tertiles
+#: before anything was run. `(name, lowest size, highest size or None)`, on
+#: `nvars + ncons`. A test pins them against the committed roster's 16/18/16
+#: split, so they cannot be re-cut after a result is seen without that test
+#: saying so.
+SIZE_BANDS: tuple[tuple[str, int, int | None], ...] = (
+    ("small", 0, 32),
+    ("medium", 33, 99),
+    ("large", 100, None),
+)
+
+#: The group an instance with no roster metadata is filed under.
+UNKNOWN_GROUP = "unknown"
+
+
+def size_band(size: int) -> str:
+    """The pre-registered band a size falls in."""
+    for name, low, high in SIZE_BANDS:
+        if size >= low and (high is None or size <= high):
+            return name
+    return UNKNOWN_GROUP
+
+
+def _group_line(label: str, comparisons: Sequence[Comparison], summary: ArmSummary) -> str:
+    """One group's outcome counts for one arm, with its movers named.
+
+    Movers are NAMED, not only counted, because `HELDOUT.md` asks that a family
+    (12 `graphpart_*` instances in the held-out set) be read as one cluster
+    rather than a dozen votes, and the names are what lets a reader do that.
+    """
+    floors = summary.floor.per_instance
+    worse = [
+        c.instance
+        for c in comparisons
+        if c.delta is not None and c.instance in floors and c.delta > floors[c.instance]
+    ]
+    better = [
+        c.instance
+        for c in comparisons
+        if c.delta is not None and c.instance in floors and c.delta < -floors[c.instance]
+    ]
+    held = sum(
+        1
+        for c in comparisons
+        if c.delta is not None and c.instance in floors and abs(c.delta) <= floors[c.instance]
+    )
+    unscored = sum(1 for c in comparisons if c.delta is not None and c.instance not in floors)
+    arm_only = sum(1 for c in comparisons if c.bucket == ARM_ONLY_FEASIBLE)
+    control_only = sum(1 for c in comparisons if c.bucket == CONTROL_ONLY_FEASIBLE)
+    other = len(comparisons) - len(worse) - len(better) - held - unscored - arm_only - control_only
+    named = "".join(
+        f"; {side}: {', '.join(names)}"
+        for side, names in (("worse", worse), ("better", better))
+        if names
+    )
+    return (
+        f"    {label:<16} n={len(comparisons):<3} worse {len(worse)}, better {len(better)}, "
+        f"held {held}, unscored {unscored}, arm-only-feasible {arm_only}, "
+        f"control-only-feasible {control_only}, other {other}{named}"
+    )
+
+
+def _grouped(
+    summary: ArmSummary, key: Callable[[str], str], order: Sequence[str]
+) -> list[tuple[str, list[Comparison]]]:
+    """`summary.comparisons` grouped by `key(instance)`, in `order` then any others."""
+    groups: dict[str, list[Comparison]] = {}
+    for comparison in summary.comparisons:
+        groups.setdefault(key(comparison.instance), []).append(comparison)
+    names = [g for g in order if g in groups] + sorted(g for g in groups if g not in order)
+    return [(name, groups[name]) for name in names]
+
+
+def _quiet(summary: ArmSummary) -> bool:
+    """No instance moved outside its floor and feasibility did not change.
+
+    The whole of what "inside the noise" can mean for an arm: a gap verdict of
+    INSIDE THE NOISE says nothing about an instance one side solved and the
+    other did not -- which is what the original grid's 100 did to
+    `kall_ellipsoids_tc02b` -- so those buckets and the balanced feasible-run
+    delta are part of the test.
+    """
+    return (
+        summary.scored > 0
+        and summary.uncompared == 0
+        and summary.moved_worse == 0
+        and summary.moved_better == 0
+        and summary.counts[ARM_ONLY_FEASIBLE] == 0
+        and summary.counts[CONTROL_ONLY_FEASIBLE] == 0
+        and summary.feasibility_delta_balanced == 0
+    )
+
+
+def transfer_lines(summaries: Sequence[ArmSummary], meta: dict[str, InstanceMeta]) -> list[str]:
+    """#145's section: the pre-registered breakdown and the evidence against its outcomes.
+
+    WHAT IS STATED MECHANICALLY, AND WHAT IS NOT. #145 admits three outcomes:
+    the shipped value transfers; it does not and a better value is identified;
+    or the differences sit inside the measured noise floor and the value is not
+    resolvable at this budget. Only the third can be read off this report
+    without judgement, and only in its strict form -- no arm moved any scored
+    instance outside its own floor and no arm changed feasibility anywhere.
+    Then nothing distinguishes the arms, and saying so picks no winner.
+
+    The other two are NOT decided here. Either one names a winner, and doing it
+    by rule would mean choosing a threshold on two arms tested against one
+    control with no multiplicity correction, over instances that cluster into
+    families (`HELDOUT.md`), with a per-instance floor estimated from three
+    seeds. Any such rule would pick winners from noise some of the time, which
+    is exactly what #145 forbids. So in every other case the section prints the
+    evidence -- per arm, per pre-registered size band and per structure class --
+    and leaves the outcome to the write-up.
+    """
+    lines = [
+        "=== #145: does the shipped unproductive_iters=300 transfer to the held-out roster? ===",
+        "Each arm below is one grid neighbour of the shipped value, scored against the control",
+        "(= 300) from THIS sitting. Every floor is the held-out control's own across-seed spread",
+        "-- measured here, not imported from the published roster.",
+        "",
+    ]
+    known = bool(meta)
+    if not known:
+        lines += [
+            "  (no roster metadata: bounds.csv was not found, so the size-band and class "
+            "breakdown below files every instance under 'unknown')",
+            "",
+        ]
+
+    def band_of(instance: str) -> str:
+        found = meta.get(instance)
+        return UNKNOWN_GROUP if found is None else size_band(found.size)
+
+    def class_of(instance: str) -> str:
+        found = meta.get(instance)
+        return UNKNOWN_GROUP if found is None else found.structure
+
+    band_names = [name for name, _, _ in SIZE_BANDS]
+    for summary in summaries:
+        floor = summary.floor
+        lines.append(
+            f"--- {summary.arm} vs {CONTROL_ARM} --- worse {summary.moved_worse}, better "
+            f"{summary.moved_better}, held {summary.held} of {summary.scored} scored "
+            f"(sign test p = {summary.sign_p:.3f}); "
+            f"{floor.unmeasured} comparable instance(s) unscored for want of a measured floor; "
+            f"arm-only-feasible {summary.counts[ARM_ONLY_FEASIBLE]}, control-only-feasible "
+            f"{summary.counts[CONTROL_ONLY_FEASIBLE]}, balanced feasible-run delta "
+            f"{summary.feasibility_delta_balanced:+d}"
+        )
+        lines.append(
+            "  by pre-registered size band (nvars + ncons; small <= 32, medium 33-99, "
+            "large >= 100):"
+        )
+        lines += [
+            _group_line(name, group, summary)
+            for name, group in _grouped(summary, band_of, band_names)
+        ]
+        lines.append("  by structure class:")
+        lines += [
+            _group_line(name, group, summary) for name, group in _grouped(summary, class_of, [])
+        ]
+        lines.append("")
+    if summaries and all(_quiet(s) for s in summaries):
+        scored = ", ".join(
+            f"{s.arm} {s.scored} scored, {s.floor.unmeasured} without a measurable floor"
+            for s in summaries
+        )
+        lines.append(
+            "READING: INSIDE THE MEASURED NOISE FLOOR -- no grid neighbour moved any scored "
+            f"instance outside its own floor ({scored}) and none changed feasibility on any "
+            "instance. This is #145's third outcome: the parameter is not resolvable at this "
+            "budget on this roster. It is not evidence that 300 is best, only that this "
+            "measurement cannot tell the grid points apart."
+        )
+    else:
+        lines.append(
+            "READING: NOT STATED MECHANICALLY. At least one grid neighbour moved an instance "
+            "outside its floor, changed feasibility, had nothing scorable, or is missing rows "
+            "(an incomplete campaign). Which of #145's "
+            "three outcomes this is (transfers / does not transfer and a better value is "
+            "identified / inside the noise floor) is left to the write-up, read from the "
+            "evidence above: both neighbours share one control and no multiplicity correction "
+            "is applied, families cluster (HELDOUT.md), and the per-band and per-class counts "
+            "are the pre-registered check that a difference is not a size effect."
+        )
+    return lines
+
+
+def _arm_section(summary: ArmSummary) -> list[str]:
+    """One arm's block of the report: counts, held-out rows, aggregates, floor, verdict."""
+    lines: list[str] = []
+    lines.append(f"--- {summary.arm} ---")
+    lines.append("  " + "  ".join(f"{k}={v}" for k, v in summary.counts.items()))
+    # The denominator is printed even when it is zero. `+0 over instances
+    # with equal run counts` is unreadable on an all-held-out campaign,
+    # where the honest reading is "+0 over 0 instances" -- a sum over an
+    # empty set, not a measurement that the arm changed nothing.
+    lines.append(
+        f"  feasible-run delta over the roster: {summary.feasibility_delta_balanced:+d} "
+        f"over the {summary.feasibility_balanced} instance(s) with equal run counts on "
+        "both sides"
+        + (
+            ""
+            if not summary.feasibility_unbalanced
+            else f" ({summary.feasibility_unbalanced} instance(s) left out for unequal run "
+            f"counts; counting them gives {summary.feasibility_delta:+d}, which is "
+            "bookkeeping on run counts that do not correspond -- either an incomplete "
+            "campaign or rows held out above -- rather than a result)"
+        )
+    )
+    # Issue #143 asks for the repair counts wherever the LNS arm is RUN, not
+    # only for the reading that would justify skipping it. Both sides are
+    # printed for every arm: the control's is the campaign's own answer to
+    # "is LNS doing work at this budget", measured over all three seeds
+    # rather than the gate probe's one.
+    #
+    # The accepted half (#150) is printed beside it because the attempt
+    # count alone cannot separate "LNS is working" from "LNS is spending".
+    # It is reported and not gated on: a rejected repair still randomises,
+    # still repairs and still costs seconds, so zero acceptances does NOT
+    # make an LNS arm equivalent to a no-LNS one -- see run_ablation.py's
+    # LNS_GATE_MIN_REPAIRS note.
+    control_attempted, control_accepted = _repair_totals(c.control for c in summary.comparisons)
+    arm_attempted, arm_accepted = _repair_totals(c.treatment for c in summary.comparisons)
+    lines.append(
+        "  LNS repairs over the roster: control "
+        f"{_repair_cell(control_attempted, 'attempted')}, "
+        f"{_repair_cell(control_accepted, 'accepted')}; "
+        f"arm {_repair_cell(arm_attempted, 'attempted')}, "
+        f"{_repair_cell(arm_accepted, 'accepted')}"
+    )
+    # SPLIT BY SIDE. The reason these rows are held out is that whether a
+    # solve crashes or throws can depend on the configuration, which makes
+    # the side the single most informative thing about them -- a total hides
+    # exactly the arm property it is reporting.
+    crashed_control = sum(c.control.failed_runs for c in summary.comparisons)
+    crashed_arm = sum(c.treatment.failed_runs for c in summary.comparisons)
+    if crashed_control or crashed_arm:
+        lines.append(
+            f"  {crashed_control + crashed_arm} run(s) crashed (control {crashed_control}, "
+            f"arm {crashed_arm}) and are held out of every count above -- they record no "
+            "measurement, so reading them as infeasible would score a process failure as an "
+            "arm losing feasibility"
+        )
+    unsearched_control = sum(c.control.no_search_runs for c in summary.comparisons)
+    unsearched_arm = sum(c.treatment.no_search_runs for c in summary.comparisons)
+    observed = sorted(
+        {
+            note
+            for c in summary.comparisons
+            for note in c.control.no_search_notes + c.treatment.no_search_notes
+        },
+        key=note_order,
+    )
+    if unsearched_control or unsearched_arm:
+        # The justification differs by note and the line has to say which
+        # it is making. `solve-error` is the arm-dependent one -- whether a
+        # solve throws can depend on the configuration -- while
+        # `not-found`/`read-error`/`build-error`/`unsupported` hit every arm
+        # identically and are roster problems, not arm properties. Printing
+        # the arm-dependence argument under a list of `not-found` would be
+        # the same overreach in miniature.
+        arm_dependent = [n for n in observed if n == "solve-error"]
+        unrecognised = [n for n in observed if n.startswith(UNRECOGNISED_NOTE)]
+        roster_wide = [
+            n for n in observed if n != "solve-error" and not n.startswith(UNRECOGNISED_NOTE)
+        ]
+        why = "; ".join(
+            part
+            for part in (
+                "whether a solve throws can depend on the arm, so scoring "
+                f"{', '.join(arm_dependent)} would read an exception as a lost feasibility"
+                if arm_dependent
+                else "",
+                f"{', '.join(roster_wide)} is a roster problem that hits every arm alike, "
+                "so scoring it would read a missing or unsupported instance as one"
+                if roster_wide
+                else "",
+                # The allowlist's whole point: a note nobody taught this
+                # module cannot be classified, so it is held out and SAID,
+                # rather than scored as an infeasibility on the strength of
+                # its `feasible=false` cell.
+                f"{', '.join(unrecognised)} is a note this report does not recognise, and it "
+                "scores only the notes a completed search is known to write -- so an "
+                "unfamiliar one is held out and named here rather than counted"
+                if unrecognised
+                else "",
+            )
+            if part
+        )
+        # "not scored" rather than "completed no search": a row held out
+        # only because its note is UNRECOGNISED may well have completed a
+        # search -- an allowlist that has fallen behind the runner is the
+        # acknowledged cost of the inversion, and the headline is the part a
+        # reader quotes. The `why` clause below draws the distinction; the
+        # count above it must not assert the stronger claim.
+        lines.append(
+            f"  {unsearched_control + unsearched_arm} run(s) not scored "
+            f"(control {unsearched_control}, arm {unsearched_arm}; {', '.join(observed)}) and "
+            "are held out of every count above. The row is well-formed and "
+            f"`feasible=false`, so nothing but the note says so -- and {why}"
+        )
+    held_out = [c.instance for c in summary.comparisons if c.bucket == NO_RUNS_RECORDED]
+    if held_out:
+        lines.append(
+            f"  {len(held_out)} instance(s) recorded no completed run on at least one side "
+            f"and are in no feasibility bucket and in no feasible-run delta: "
+            f"{', '.join(held_out)}"
+        )
+    if summary.uncompared:
+        lines.append(
+            f"  {summary.uncompared} scored instance(s) have rows on only one side and are "
+            "in no bucket -- the campaign is incomplete for this arm"
+        )
+    if summary.median_delta is not None:
+        lines.append(
+            f"  median per-instance gap delta: {format_points(summary.median_delta)} points "
+            f"over the {summary.scored} SCORED instance(s)"
+        )
+    if summary.mean_delta is not None:
+        largest = (
+            ""
+            if math.isnan(summary.largest_delta)
+            else "; largest single-instance |delta| "
+            f"{format_points(summary.largest_delta, signed=False)} points "
+            f"({summary.largest_delta_instance})"
+        )
+        lines.append(
+            f"  mean per-instance gap delta: {format_points(summary.mean_delta)} points over "
+            f"the {summary.comparable} COMPARABLE instance(s){largest} "
+            "-- NOT the verdict statistic, see the module docstring"
+        )
+    lines += _floor_lines(summary)
+    lines.append(f"  VERDICT: {summary.verdict}")
+    lines.append("")
+    lines += _instance_lines(summary)
+    lines.append("")
+    return lines
+
+
+def render_report(
+    results: Path,
+    gate: dict[str, object] | None = None,
+    *,
+    heading: str = ABLATION_HEADING,
+    transfer_meta: dict[str, InstanceMeta] | None = None,
+) -> str:
+    """The whole campaign report, as text.
+
+    `transfer_meta` -- the roster's class and size per instance -- switches on
+    #145's section; the ablation passes None and its report is unchanged.
+    """
     rows = load_rows(results)
     if not rows:
         return f"{results} holds no rows"
@@ -1113,7 +1504,7 @@ def render_report(results: Path, gate: dict[str, object] | None = None) -> str:
     walls = [r.wall for r in rows if math.isfinite(r.wall) and not r.no_search]
     mean_wall = statistics.fmean(walls) if walls else math.nan
     lines = [
-        "=== MINLPLib ablation campaign (issue #143) ===",
+        heading,
         f"rows recorded:        {len(rows)} "
         f"({sum(1 for r in rows if not r.no_search)} completed a search)",
         f"instances scored:     {len(instances)} "
@@ -1138,154 +1529,11 @@ def render_report(results: Path, gate: dict[str, object] | None = None) -> str:
             "",
         ]
     lines += [drift_check(cells, instances), ""]
+    summaries: list[ArmSummary] = []
     for arm in arms:
         summary = summarize_arm(arm, cells, instances)
-        lines.append(f"--- {arm} ---")
-        lines.append("  " + "  ".join(f"{k}={v}" for k, v in summary.counts.items()))
-        # The denominator is printed even when it is zero. `+0 over instances
-        # with equal run counts` is unreadable on an all-held-out campaign,
-        # where the honest reading is "+0 over 0 instances" -- a sum over an
-        # empty set, not a measurement that the arm changed nothing.
-        lines.append(
-            f"  feasible-run delta over the roster: {summary.feasibility_delta_balanced:+d} "
-            f"over the {summary.feasibility_balanced} instance(s) with equal run counts on "
-            "both sides"
-            + (
-                ""
-                if not summary.feasibility_unbalanced
-                else f" ({summary.feasibility_unbalanced} instance(s) left out for unequal run "
-                f"counts; counting them gives {summary.feasibility_delta:+d}, which is "
-                "bookkeeping on run counts that do not correspond -- either an incomplete "
-                "campaign or rows held out above -- rather than a result)"
-            )
-        )
-        # Issue #143 asks for the repair counts wherever the LNS arm is RUN, not
-        # only for the reading that would justify skipping it. Both sides are
-        # printed for every arm: the control's is the campaign's own answer to
-        # "is LNS doing work at this budget", measured over all three seeds
-        # rather than the gate probe's one.
-        #
-        # The accepted half (#150) is printed beside it because the attempt
-        # count alone cannot separate "LNS is working" from "LNS is spending".
-        # It is reported and not gated on: a rejected repair still randomises,
-        # still repairs and still costs seconds, so zero acceptances does NOT
-        # make an LNS arm equivalent to a no-LNS one -- see run_ablation.py's
-        # LNS_GATE_MIN_REPAIRS note.
-        control_attempted, control_accepted = _repair_totals(c.control for c in summary.comparisons)
-        arm_attempted, arm_accepted = _repair_totals(c.treatment for c in summary.comparisons)
-        lines.append(
-            "  LNS repairs over the roster: control "
-            f"{_repair_cell(control_attempted, 'attempted')}, "
-            f"{_repair_cell(control_accepted, 'accepted')}; "
-            f"arm {_repair_cell(arm_attempted, 'attempted')}, "
-            f"{_repair_cell(arm_accepted, 'accepted')}"
-        )
-        # SPLIT BY SIDE. The reason these rows are held out is that whether a
-        # solve crashes or throws can depend on the configuration, which makes
-        # the side the single most informative thing about them -- a total hides
-        # exactly the arm property it is reporting.
-        crashed_control = sum(c.control.failed_runs for c in summary.comparisons)
-        crashed_arm = sum(c.treatment.failed_runs for c in summary.comparisons)
-        if crashed_control or crashed_arm:
-            lines.append(
-                f"  {crashed_control + crashed_arm} run(s) crashed (control {crashed_control}, "
-                f"arm {crashed_arm}) and are held out of every count above -- they record no "
-                "measurement, so reading them as infeasible would score a process failure as an "
-                "arm losing feasibility"
-            )
-        unsearched_control = sum(c.control.no_search_runs for c in summary.comparisons)
-        unsearched_arm = sum(c.treatment.no_search_runs for c in summary.comparisons)
-        observed = sorted(
-            {
-                note
-                for c in summary.comparisons
-                for note in c.control.no_search_notes + c.treatment.no_search_notes
-            },
-            key=note_order,
-        )
-        if unsearched_control or unsearched_arm:
-            # The justification differs by note and the line has to say which
-            # it is making. `solve-error` is the arm-dependent one -- whether a
-            # solve throws can depend on the configuration -- while
-            # `not-found`/`read-error`/`build-error`/`unsupported` hit every arm
-            # identically and are roster problems, not arm properties. Printing
-            # the arm-dependence argument under a list of `not-found` would be
-            # the same overreach in miniature.
-            arm_dependent = [n for n in observed if n == "solve-error"]
-            unrecognised = [n for n in observed if n.startswith(UNRECOGNISED_NOTE)]
-            roster_wide = [
-                n for n in observed if n != "solve-error" and not n.startswith(UNRECOGNISED_NOTE)
-            ]
-            why = "; ".join(
-                part
-                for part in (
-                    "whether a solve throws can depend on the arm, so scoring "
-                    f"{', '.join(arm_dependent)} would read an exception as a lost feasibility"
-                    if arm_dependent
-                    else "",
-                    f"{', '.join(roster_wide)} is a roster problem that hits every arm alike, "
-                    "so scoring it would read a missing or unsupported instance as one"
-                    if roster_wide
-                    else "",
-                    # The allowlist's whole point: a note nobody taught this
-                    # module cannot be classified, so it is held out and SAID,
-                    # rather than scored as an infeasibility on the strength of
-                    # its `feasible=false` cell.
-                    f"{', '.join(unrecognised)} is a note this report does not recognise, and it "
-                    "scores only the notes a completed search is known to write -- so an "
-                    "unfamiliar one is held out and named here rather than counted"
-                    if unrecognised
-                    else "",
-                )
-                if part
-            )
-            # "not scored" rather than "completed no search": a row held out
-            # only because its note is UNRECOGNISED may well have completed a
-            # search -- an allowlist that has fallen behind the runner is the
-            # acknowledged cost of the inversion, and the headline is the part a
-            # reader quotes. The `why` clause below draws the distinction; the
-            # count above it must not assert the stronger claim.
-            lines.append(
-                f"  {unsearched_control + unsearched_arm} run(s) not scored "
-                f"(control {unsearched_control}, arm {unsearched_arm}; {', '.join(observed)}) and "
-                "are held out of every count above. The row is well-formed and "
-                f"`feasible=false`, so nothing but the note says so -- and {why}"
-            )
-        held_out = [c.instance for c in summary.comparisons if c.bucket == NO_RUNS_RECORDED]
-        if held_out:
-            lines.append(
-                f"  {len(held_out)} instance(s) recorded no completed run on at least one side "
-                f"and are in no feasibility bucket and in no feasible-run delta: "
-                f"{', '.join(held_out)}"
-            )
-        if summary.uncompared:
-            lines.append(
-                f"  {summary.uncompared} scored instance(s) have rows on only one side and are "
-                "in no bucket -- the campaign is incomplete for this arm"
-            )
-        if summary.median_delta is not None:
-            lines.append(
-                f"  median per-instance gap delta: {format_points(summary.median_delta)} points "
-                f"over the {summary.scored} SCORED instance(s)"
-            )
-        if summary.mean_delta is not None:
-            largest = (
-                ""
-                if math.isnan(summary.largest_delta)
-                else "; largest single-instance |delta| "
-                f"{format_points(summary.largest_delta, signed=False)} points "
-                f"({summary.largest_delta_instance})"
-            )
-            lines.append(
-                f"  mean per-instance gap delta: {format_points(summary.mean_delta)} points over "
-                f"the {summary.comparable} COMPARABLE instance(s){largest} "
-                "-- NOT the verdict statistic, see the module docstring"
-            )
-        lines += _floor_lines(summary)
-        lines.append(f"  VERDICT: {summary.verdict}")
-        lines.append("")
-        lines += _instance_lines(summary)
-        lines.append("")
+        summaries.append(summary)
+        lines += _arm_section(summary)
     lines.append(
         "NOTE ON UNITS: `gap_to_bks%` is a percentage where the reference value is nonzero "
         "and an ABSOLUTE residual where it is not (see the runner's safe_gap). Per-instance "
@@ -1293,6 +1541,9 @@ def render_report(results: Path, gate: dict[str, object] | None = None) -> str:
         "is sound; the roster-level median and mean pool the two and are quoted as 'points' "
         "for want of a better word."
     )
+    if transfer_meta is not None:
+        lines.append("")
+        lines += transfer_lines(summaries, transfer_meta)
     lines.append("")
     lines.append("--- instances excluded from every claim ---")
     lines += _excluded_lines(cells, [CONTROL_ARM, *arms])

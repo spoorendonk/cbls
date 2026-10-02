@@ -275,9 +275,85 @@ Always pass `--out`: a
 whole-roster `cbls_minlplib .../heldout` run at default flags with `--commit`
 writes `heldout/comparison.csv`. `heldout/` has no
 `comparison.csv`, `scip_baseline.csv` or `analysis_notes.csv`, and the runner
-does not need them. `run_ablation.py`'s arm set is fixed in its `ARMS` table,
-so a three-point grid around the shipped `--unproductive-iters 300` needs those
-arms added there, or a loop over the runner command above.
+does not need them. #145's grid is `run_ablation.py --campaign transfer-145`;
+see the next section.
+
+## #145: does the shipped unproductive-exit threshold transfer?
+
+**Result: pending smoke run.** Nothing below this line has been measured yet.
+
+<!-- #145 RESULT: fill in after the smoke run. State exactly one of #145's
+three outcomes -- the shipped value transfers; it does not and a better value
+is identified; or the differences sit inside the measured noise floor and the
+value is not resolvable at this budget. Quote: the engine commit, the machine
+and its load, the held-out noise floor (typical per-instance floor and median
+control spread from the report), each neighbour's worse/better/held counts and
+feasibility buckets, and the per-band and per-class breakdown. Do NOT change the
+shipped default in the same step, whatever the outcome. -->
+
+### What is run
+
+The grid the shipped value came from, exactly: `--unproductive-iters` 100, 300
+and 1000 (the provenance comment on `GFJConfig::unproductive_iterations`). 300
+is the shipped default and is the **control**. The other two are scored against
+it. The driver is `run_ablation.py` with `--campaign transfer-145`. It is the
+same experiment shape as the #143 ablation (arms against a control from the same
+sitting, interleaved per instance, three seeds, scored against a measured noise
+floor), so it reuses that driver's locks, resume rule and refusals rather than
+adding a second driver. The stamp records the campaign and each arm's flags, so
+an ablation out-dir and a transfer out-dir cannot resume into each other.
+
+Every row records the engine commit, seed, budget (`time_limit`) and the arm's
+value. The value appears twice: in `arm_flags`, which the control also carries
+as an explicit `--unproductive-iters 300` so a crashed run's row still has it,
+and in the runner's own `search_config` cell. The driver stops the campaign if
+`search_config` disagrees with the arm it ran.
+
+### Protocol: smoke scale
+
+    .venv/bin/python3 -m benchmarks.minlplib.run_ablation --campaign transfer-145 \
+        --out-dir "$HOME/.cache/cbls-145/smoke" --time-limit 10
+
+`--inst-dir` defaults to `heldout/` for this campaign, and the published roster
+is refused for it. Seeds default to 1, 2 and 3. That is 50 instances x 3 arms x 3
+seeds = 450 solves, about 1.25 h of solving. The run is serial on an otherwise
+idle machine, under the same machine-wide lock as every timed MINLPLib driver.
+Add `--dry-run` to print the plan without solving. Add `--report-only` to
+re-score the out-dir.
+
+**This is a smoke-scale check, not the run #145 describes.** #145 asks for the
+published 60 s budget. This runs at 10 s, by decision, at about a sixth of the
+cost. What that limits:
+
+- The answer is about **10 s**. The threshold is an iteration count. A shorter
+  budget runs fewer batches, so it gives the exit fewer chances to fire and the
+  arms fewer chances to diverge. A difference that only builds up over a 60 s
+  search cannot show here. "Inside the noise at 10 s" does not mean "inside the
+  noise at 60 s".
+- The noise floor is measured at 10 s too. It is the held-out control's own
+  across-seed spread from this sitting, and it applies only to this budget.
+- The original grid ran at 2 s, contended, on one seed. 10 s on three seeds is
+  a better measurement than that, but it is not the published configuration.
+  It cannot be cited as evidence about the 60 s headline result.
+
+### How the report states the outcome
+
+The report closes with a #145 section. For each neighbour it lists the
+instances that moved worse or better than their own floor, the instances that
+held, and the feasibility buckets. Each of these is broken down by the
+pre-registered size bands above and by structure class, with the movers named
+so a family such as `graphpart_*` can be read as one cluster. The floor comes
+from this run's control only. Nothing is carried over from the published
+roster.
+
+Only the third outcome is stated by rule, and only in its strict form: neither
+neighbour moved any scored instance outside its floor, neither changed
+feasibility anywhere, and the campaign is complete. Then the report prints
+"INSIDE THE MEASURED NOISE FLOOR". In every other case it prints "NOT STATED
+MECHANICALLY" and the outcome is decided in the write-up above. Naming a winner
+by rule would mean choosing a threshold across two neighbours tested against
+one control, with no multiplicity correction, over clustered instances and a
+three-seed floor. Such a rule would sometimes pick winners from noise.
 
 ## Reproducing and checking
 

@@ -26,7 +26,9 @@ from benchmarks.minlplib.ablation_report import (
     NO_COMPARABLE_GAP,
     NO_SEARCH_NOTES,
     PROBE_ARM_NAME,
+    TRANSFER_HEADING,
     Cell,
+    InstanceMeta,
     build_cells,
     compare,
     control_spreads,
@@ -35,7 +37,9 @@ from benchmarks.minlplib.ablation_report import (
     min_move_points,
     noise_floor,
     render_report,
+    roster_meta,
     scored_instances,
+    size_band,
     summarize_arm,
     t_multiplier,
 )
@@ -1177,3 +1181,121 @@ def test_the_wall_average_excludes_the_rows_that_recorded_no_search(tmp_path: Pa
 
     assert "mean wall per run:    60.0s" in report
     assert "rows recorded:        9 (6 completed a search)" in report
+
+
+# --- #145: the transfer check's section ----------------------------------------
+
+#: A three-instance held-out roster, one per pre-registered band, so a mover's
+#: band and class are both visible in the breakdown.
+TRANSFER_META = {
+    "small1": InstanceMeta(structure="other", size=10),
+    "mid1": InstanceMeta(structure="mixed-integer", size=60),
+    "big1": InstanceMeta(structure="transcendental", size=150),
+}
+
+
+def _transfer_rows(
+    shift: dict[str, float] | None = None, infeasible_arm: str | None = None
+) -> list[dict[str, object]]:
+    """Control (=300) and both grid neighbours on the three instances.
+
+    The control's spread is 0.1 per instance (gaps g, g+0.1, g+0.2). `shift`
+    moves one instance's unproductive-1000 gaps; `infeasible_arm` makes
+    unproductive-100 lose every run on `small1` -- the original grid's failure
+    shape (100 lost feasibility on kall_ellipsoids_tc02b).
+    """
+    rows: list[dict[str, object]] = []
+    for name in TRANSFER_META:
+        base = [10.0, 10.1, 10.2]
+        rows += run_rows(name, CONTROL_ARM, base)
+        rows += run_rows(
+            name,
+            "unproductive-100",
+            [None, None, None] if infeasible_arm == name else base,
+        )
+        moved = (shift or {}).get(name, 0.0)
+        rows += run_rows(name, "unproductive-1000", [g + moved for g in base])
+    return rows
+
+
+def test_the_pre_registered_size_bands_split_the_committed_heldout_roster_as_published() -> None:
+    """HELDOUT.md fixed the bands at the held-out set's size tertiles before any
+    run: small <= 32 (16 instances, 0/9/7 mixed-integer/other/transcendental),
+    medium 33-99 (18, 11/7/0), large >= 100 (16, 10/4/2). Re-cutting them after
+    seeing a result would fail here."""
+    meta = roster_meta(
+        REPO_ROOT / "benchmarks" / "instances" / "minlplib" / "heldout" / "bounds.csv"
+    )
+    assert len(meta) == 50
+    table: dict[str, dict[str, int]] = {}
+    for item in meta.values():
+        band = table.setdefault(size_band(item.size), {})
+        band[item.structure] = band.get(item.structure, 0) + 1
+    assert table == {
+        "small": {"other": 9, "transcendental": 7},
+        "medium": {"mixed-integer": 11, "other": 7},
+        "large": {"mixed-integer": 10, "other": 4, "transcendental": 2},
+    }
+    assert [size_band(s) for s in (32, 33, 99, 100)] == ["small", "medium", "medium", "large"]
+
+
+def test_a_transfer_report_with_nothing_outside_the_floor_states_the_third_outcome(
+    tmp_path: Path,
+) -> None:
+    """The one outcome the report may state by rule: nothing moved and nothing
+    changed feasibility. Its floor is the held-out control's own spread from
+    this file -- s = 0.1, so 4.303 * 0.1 * sqrt(2/3) = 0.351 points."""
+    results = write_results(tmp_path / "r.csv", _transfer_rows())
+    report = render_report(results, heading=TRANSFER_HEADING, transfer_meta=TRANSFER_META)
+    assert report.startswith(TRANSFER_HEADING)
+    assert "INSIDE THE MEASURED NOISE FLOOR" in report
+    assert "third outcome" in report
+    assert "NOT STATED MECHANICALLY" not in report
+    assert "+/-0.35 points" in report
+    assert "--- unproductive-100 vs control ---" in report
+    assert "--- unproductive-1000 vs control ---" in report
+
+
+def test_a_transfer_report_with_a_mover_leaves_the_outcome_to_the_write_up(
+    tmp_path: Path,
+) -> None:
+    """A neighbour that moved an instance names no winner by rule -- it prints the
+    evidence, with the mover filed under its pre-registered band and its class."""
+    results = write_results(tmp_path / "r.csv", _transfer_rows(shift={"big1": -5.0}))
+    report = render_report(results, heading=TRANSFER_HEADING, transfer_meta=TRANSFER_META)
+    assert "NOT STATED MECHANICALLY" in report
+    assert "INSIDE THE MEASURED NOISE FLOOR" not in report
+    section = report[report.index("--- unproductive-1000 vs control ---") :]
+    assert re.search(r"large\s+n=1\s+worse 0, better 1, .*; better: big1", section)
+    assert re.search(r"transcendental\s+n=1\s+worse 0, better 1, .*; better: big1", section)
+    assert re.search(r"small\s+n=1\s+worse 0, better 0, held 1", section)
+
+
+def test_a_feasibility_change_alone_is_not_inside_the_noise(tmp_path: Path) -> None:
+    """A gap verdict of INSIDE THE NOISE says nothing about an instance one side
+    solved and the other did not -- the exact way 100 failed in the original
+    grid -- so the third outcome needs feasibility unchanged as well."""
+    results = write_results(tmp_path / "r.csv", _transfer_rows(infeasible_arm="small1"))
+    report = render_report(results, heading=TRANSFER_HEADING, transfer_meta=TRANSFER_META)
+    assert "NOT STATED MECHANICALLY" in report
+    section = report[report.index("--- unproductive-100 vs control ---") :]
+    assert "control-only-feasible 1" in section
+
+
+def test_the_ablation_report_carries_no_transfer_section(tmp_path: Path) -> None:
+    results = write_results(tmp_path / "r.csv", _transfer_rows())
+    report = render_report(results)
+    assert report.startswith("=== MINLPLib ablation campaign (issue #143) ===")
+    assert "#145" not in report
+
+
+def test_an_incomplete_transfer_campaign_does_not_read_as_inside_the_noise(
+    tmp_path: Path,
+) -> None:
+    """An interrupted campaign has control rows for its last instance and no arm
+    rows: that instance is in no bucket, and "nothing moved" over the rest is
+    not a statement about the roster."""
+    rows = [*_transfer_rows(), *run_rows("extra", CONTROL_ARM, [1.0, 1.1, 1.2])]
+    results = write_results(tmp_path / "r.csv", rows)
+    report = render_report(results, heading=TRANSFER_HEADING, transfer_meta=TRANSFER_META)
+    assert "NOT STATED MECHANICALLY" in report
