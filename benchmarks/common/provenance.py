@@ -44,24 +44,44 @@ def commit_sha(repo_root: Path = REPO_ROOT, *, ignore: Iterable[Path] = ()) -> s
     tree dirty, so this is a guard against edited code, not against every
     difference from HEAD.
 
-    `ignore` names files whose modification does not count: a driver that
-    publishes tracked tables passes the paths it writes itself, so that its own
-    output does not mark the tree dirty for its next invocation (#123: seed 2 of
-    a multi-seed campaign refused the tables seed 1 had just published). A
-    status entry is dropped only when every path it names is ignored -- both
-    sides of a rename -- so a file moved onto an ignored name still counts.
-    Paths outside the work tree can never appear in the status, and are moot.
-    The default, nothing ignored, is every other caller's behaviour.
+    `ignore` names files whose modification does not count (`modified_paths`
+    says exactly which entries are dropped). The default, nothing ignored, is
+    every caller's behaviour but the MINLPLib re-run driver's, which passes the
+    tables it publishes itself (#123).
 
     Raises `subprocess.CalledProcessError` or `OSError` when git cannot answer;
     whether that is fatal is the caller's decision.
     """
     sha = _git(repo_root, "rev-parse", "--short=7", "HEAD")
-    return f"{sha}-dirty" if _modified_paths(repo_root, ignore) else sha
+    return f"{sha}-dirty" if modified_paths(repo_root, ignore=ignore) else sha
 
 
-def _modified_paths(repo_root: Path, ignore: Iterable[Path]) -> list[str]:
-    """Status entries of modified tracked files, less those wholly within `ignore`.
+def _unresolved_name(path: Path) -> Path:
+    """`path` absolute, with its directories' symlinks resolved but not its own name.
+
+    Resolving the last component too would let a tracked symlink named like an
+    ignored file -- `comparison.csv -> ../src/x.cpp` -- exempt every edit to its
+    target. Git tracks the link, not the target, so the name is what is compared.
+    """
+    absolute = path if path.is_absolute() else Path.cwd() / path
+    return absolute.parent.resolve() / absolute.name
+
+
+#: Porcelain XY codes of an unmerged path. Always dirty, whatever `ignore` says:
+#: a conflict in a published table is not output a driver wrote.
+_UNMERGED = frozenset({b"DD", b"AU", b"UD", b"UA", b"DU", b"AA", b"UU"})
+
+
+def modified_paths(repo_root: Path = REPO_ROOT, *, ignore: Iterable[Path] = ()) -> list[str]:
+    """The modified tracked files that make `commit_sha` say `-dirty`, as git names them.
+
+    A rename or copy is reported `old -> new`. An entry is dropped only when every
+    path it names is in `ignore` -- both sides of a rename, so a file moved onto
+    an ignored name still counts -- and never when it is unmerged. Relative
+    `ignore` paths resolve against the process's working directory, not
+    `repo_root`; paths outside the work tree can never appear in the status, and
+    are moot. Names are compared without resolving their own final symlink
+    (`_unresolved_name`).
 
     `-z` rather than the line format, which C-quotes a path holding a space, a
     quote or a non-ASCII byte, so that it would match nothing. Porcelain paths
@@ -76,26 +96,25 @@ def _modified_paths(repo_root: Path, ignore: Iterable[Path]) -> list[str]:
         check=True,
     ).stdout
     top = Path(_git(repo_root, "rev-parse", "--show-toplevel")).resolve()
-    ignored = {path.resolve() for path in ignore}
+    ignored = {_unresolved_name(path) for path in ignore}
     fields = raw.split(b"\0")
-    entries: list[list[str]] = []
+    modified: list[str] = []
     index = 0
     while index < len(fields):
         field = fields[index]
         index += 1
         if not field:
             continue
-        status, name = field[:2], os.fsdecode(field[3:])
-        entry = [name]
-        if status[:1] in (b"R", b"C") or status[1:2] in (b"R", b"C"):
-            entry.append(os.fsdecode(fields[index]))
+        status, names = field[:2], [os.fsdecode(field[3:])]
+        if b"R" in status or b"C" in status:
+            names.insert(0, os.fsdecode(fields[index]))
             index += 1
-        entries.append(entry)
-    return [
-        " -> ".join(entry)
-        for entry in entries
-        if not all((top / name).resolve() in ignored for name in entry)
-    ]
+        exempt = status not in _UNMERGED and all(
+            _unresolved_name(top / name) in ignored for name in names
+        )
+        if not exempt:
+            modified.append(" -> ".join(names))
+    return modified
 
 
 def cmake_cache(build_dir: Path) -> dict[str, str]:

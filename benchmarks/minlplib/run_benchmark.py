@@ -108,6 +108,7 @@ from benchmarks.common.provenance import (  # noqa: E402
     cmake_cache,
     commit_sha,
     machine_record,
+    modified_paths,
 )
 from benchmarks.common.records import (  # noqa: E402
     atomic_write,
@@ -255,13 +256,19 @@ def roster_from_bounds(bounds_csv: Path) -> list[str]:
         return [row["instance"] for row in csv.DictReader(fh)]
 
 
-def _build_problems(args: argparse.Namespace, sha: str) -> list[str]:
-    """Refusals about the binary this run would measure and the SHA it labels it with."""
+def _build_problems(
+    args: argparse.Namespace, sha: str, dirty_paths: Sequence[str] = ()
+) -> list[str]:
+    """Refusals about the binary this run would measure and the SHA it labels it with.
+
+    `dirty_paths` names the files that made `sha` dirty, for the refusal to show.
+    """
     problems: list[str] = []
     if sha.endswith("-dirty"):
+        which = f": {', '.join(dirty_paths)}" if dirty_paths else ""
         problems.append(
-            f"working tree is dirty ({sha}); commit or stash first — a row labelled with a "
-            "plain SHA must have been produced by that commit's code"
+            f"working tree is dirty ({sha}){which}; commit or stash first — a row labelled "
+            "with a plain SHA must have been produced by that commit's code"
         )
     cache = cmake_cache(args.build_dir)
     problems += build_dir_problems(args.build_dir, cache)
@@ -354,22 +361,26 @@ def _seeds_row_problems(seeds_out: Path) -> list[str]:
     return []
 
 
-def common_preflight(args: argparse.Namespace, sha: str, roster: Sequence[str]) -> list[str]:
+def common_preflight(
+    args: argparse.Namespace, sha: str, roster: Sequence[str], dirty_paths: Sequence[str] = ()
+) -> list[str]:
     """The refusals shared with `run_ablation.py`: the binary, the SHA and the roster.
 
     Kept apart from `preflight` because the ablation driver's namespace has no
     `--out`/`--seed`/`--staging-dir`, which the per-seed-table check needs.
     """
-    return _build_problems(args, sha) + _data_problems(args, roster)
+    return _build_problems(args, sha, dirty_paths) + _data_problems(args, roster)
 
 
-def preflight(args: argparse.Namespace, sha: str, roster: Sequence[str]) -> list[str]:
+def preflight(
+    args: argparse.Namespace, sha: str, roster: Sequence[str], dirty_paths: Sequence[str] = ()
+) -> list[str]:
     """Every reason to refuse this invocation, checked before anything is spent.
 
     All of them are cheap and all of them would otherwise surface as a wrong or
     half-written published table — some of them 50 minutes in.
     """
-    return common_preflight(args, sha, roster) + _seeds_table_problems(args)
+    return common_preflight(args, sha, roster, dirty_paths) + _seeds_table_problems(args)
 
 
 def usage_error(args: argparse.Namespace, published_out: Path) -> str | None:
@@ -508,6 +519,11 @@ def run_commit_sha(inst_dir: Path, repo_root: Path = REPO_ROOT) -> str:
     every later row's note), README or source file still marks the tree dirty.
     """
     return commit_sha(repo_root, ignore=published_paths(inst_dir))
+
+
+def run_dirty_paths(inst_dir: Path, repo_root: Path = REPO_ROOT) -> list[str]:
+    """The modified tracked files that make `run_commit_sha` dirty, for the refusal to name."""
+    return modified_paths(repo_root, ignore=published_paths(inst_dir))
 
 
 def _misdirected_output(args: argparse.Namespace, published_out: Path) -> str | None:
@@ -1168,7 +1184,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args.merge = args.merge and not skipping_merge
 
     roster = args.instances or roster_from_bounds(args.inst_dir / "bounds.csv")
-    problems = preflight(args, sha, roster)
+    dirty = run_dirty_paths(args.inst_dir, REPO_ROOT) if sha.endswith("-dirty") else []
+    problems = preflight(args, sha, roster, dirty)
     if problems and not args.dry_run:
         for problem in problems:
             print(f"refusing to run: {problem}", file=sys.stderr)

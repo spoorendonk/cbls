@@ -24,7 +24,13 @@ from benchmarks.common.jobs import (
     wallclock_lock,
     with_memory_limit,
 )
-from benchmarks.common.provenance import build_dir_problems, cmake_cache, commit_sha, cpu_model
+from benchmarks.common.provenance import (
+    build_dir_problems,
+    cmake_cache,
+    commit_sha,
+    cpu_model,
+    modified_paths,
+)
 from benchmarks.common.records import (
     atomic_write,
     csv_number,
@@ -289,6 +295,70 @@ def test_ignored_paths_do_not_mark_the_commit_dirty_and_nothing_else_is_ignored(
     ).stdout
     assert any(line.startswith("R  notes.csv -> ") for line in status.splitlines()), status
     assert commit_sha(tmp_path, ignore=[table, record]) == f"{clean}-dirty"
+    assert modified_paths(tmp_path, ignore=[table, record]) == [
+        "notes.csv -> out dir/table é.run.json"
+    ]
+
+
+def _commit_all(repo: Path, message: str = "c") -> None:
+    _git(repo, "add", "-A")
+    identity = ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+    _git(repo, *identity, "-c", "core.hooksPath=/dev/null", "commit", "-qm", message)
+
+
+def test_a_rename_between_two_ignored_names_is_ignored_and_nothing_beside_it(
+    tmp_path: Path,
+) -> None:
+    """Both halves of a rename entry are read as one entry, not as two (#123)."""
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "engine.cpp").write_text("int main() {}\n")
+    (tmp_path / "comparison.csv").write_text("published\n")
+    _commit_all(tmp_path)
+    clean = commit_sha(tmp_path)
+    ignore = [tmp_path / "comparison.csv", tmp_path / "comparison_seeds.csv"]
+    _git(tmp_path, "mv", "comparison.csv", "comparison_seeds.csv")
+    assert modified_paths(tmp_path) == ["comparison.csv -> comparison_seeds.csv"]
+    assert commit_sha(tmp_path, ignore=ignore) == clean
+    (tmp_path / "engine.cpp").write_text("int main() { return 1; }\n")
+    assert modified_paths(tmp_path, ignore=ignore) == ["engine.cpp"]
+    assert commit_sha(tmp_path, ignore=ignore) == f"{clean}-dirty"
+
+
+def test_an_ignored_name_that_is_a_symlink_does_not_exempt_its_target(tmp_path: Path) -> None:
+    """Git tracks the link, so an edit to its target is an edit to the target's own path."""
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "x.cpp").write_text("int x;\n")
+    (tmp_path / "inst").mkdir()
+    (tmp_path / "inst" / "comparison.csv").symlink_to(Path("..") / "src" / "x.cpp")
+    _commit_all(tmp_path)
+    clean = commit_sha(tmp_path)
+    (tmp_path / "src" / "x.cpp").write_text("int x = 1;\n")
+    link = tmp_path / "inst" / "comparison.csv"
+    assert commit_sha(tmp_path, ignore=[link]) == f"{clean}-dirty"
+
+
+def test_an_unmerged_ignored_file_still_counts(tmp_path: Path) -> None:
+    """A conflict in a published table is not output the driver wrote."""
+    _git(tmp_path, "init", "-q", "-b", "main")
+    table = tmp_path / "comparison.csv"
+    table.write_text("base\n")
+    _commit_all(tmp_path)
+    _git(tmp_path, "checkout", "-q", "-b", "other")
+    table.write_text("other\n")
+    _commit_all(tmp_path)
+    _git(tmp_path, "checkout", "-q", "main")
+    table.write_text("main\n")
+    _commit_all(tmp_path)
+    merged = subprocess.run(
+        ["git", "-c", "core.hooksPath=/dev/null", "merge", "-q", "other"],
+        cwd=tmp_path,
+        capture_output=True,
+        check=False,
+    )
+    assert merged.returncode != 0
+    assert modified_paths(tmp_path, ignore=[table]) == ["comparison.csv"]
+    assert commit_sha(tmp_path, ignore=[table]).endswith("-dirty")
 
 
 def _cache(tmp_path: Path, entries: str) -> Path:

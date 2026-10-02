@@ -1446,7 +1446,8 @@ def test_a_modified_source_file_still_refuses_seed_2(
     (tmp_path / "engine.cpp").write_text("int main() { return 1; }\n")
     assert run_benchmark.run_commit_sha(inst, tmp_path) == f"{sha}-dirty"
     assert _seed_2(tmp_path, monkeypatch) == 2
-    assert f"refusing to run: working tree is dirty ({sha}-dirty)" in capsys.readouterr().err
+    refusal = f"refusing to run: working tree is dirty ({sha}-dirty): engine.cpp; commit"
+    assert refusal in capsys.readouterr().err
 
 
 def test_a_modified_instance_directory_input_still_refuses_seed_2(
@@ -1457,4 +1458,5 @@ def test_a_modified_instance_directory_input_still_refuses_seed_2(
     _publish_seed_1(tmp_path, inst, monkeypatch)
     (inst / "a.nl").write_text("edited\n")
     assert _seed_2(tmp_path, monkeypatch, "--dry-run") == 2
-    assert f"WOULD REFUSE: working tree is dirty ({sha}-dirty)" in capsys.readouterr().out
+    refusal = f"WOULD REFUSE: working tree is dirty ({sha}-dirty): inst/a.nl; commit"
+    assert refusal in capsys.readouterr().out
