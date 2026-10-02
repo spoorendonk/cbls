@@ -1173,7 +1173,10 @@ def test_report_only_checks_completeness_against_the_stamped_seeds(tmp_path: Pat
     )
     args = make_args(tmp_path, campaign=TRANSFER_CAMPAIGN, out_dir=out_dir)
     assert args.seeds == [1, 2, 3]  # what a --report-only invocation carries
-    assert "lack a completed search" not in report_for(args, results, gate=None)
+    stamped = report_for(args, results, gate=None)
+    assert "lack a completed search" not in stamped
+    # ... and nothing else blocks it either: the stamped seeds make it read clean.
+    assert "INSIDE THE MEASURED NOISE FLOOR" in stamped
     (out_dir / STAMP_NAME).unlink()  # no stamp: falls back to --seeds, and says so
     assert "lack a completed search" in report_for(args, results, gate=None)
 

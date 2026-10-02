@@ -92,6 +92,7 @@ from typing import TYPE_CHECKING
 from benchmarks.common.records import csv_number
 from benchmarks.minlplib.runner import (
     CLAIM_EXCLUDED,
+    COVERAGE_GAP_NOTES,
     RUNNER_FAILED_NOTE,
     completed_search,
 )
@@ -493,6 +494,14 @@ class Cell:
     #: is exactly the campaign's seed list, which a missing seed and a repeated
     #: one both fail.
     completed_seeds: tuple[int, ...] = ()
+    #: The seed of every COVERAGE-GAP row (`unsupported`, `not-found`), sorted,
+    #: and the distinct full notes those rows carry. Read only by #145's
+    #: completeness test, which exempts an instance the runner could not load on
+    #: any arm at any seed: HELDOUT.md pre-registers that such an instance stays
+    #: in the roster and is reported, not replaced -- so it cannot be allowed to
+    #: block the reading forever either.
+    coverage_gap_seeds: tuple[int, ...] = ()
+    coverage_gap_notes: tuple[str, ...] = ()
 
     @property
     def mean_gap(self) -> float | None:
@@ -537,6 +546,12 @@ def build_cells(rows: Iterable[RunRow]) -> dict[tuple[str, str], Cell]:
                 if r.feasible and not r.no_search and math.isfinite(r.gap)
             },
             completed_seeds=tuple(sorted(r.seed for r in group if not r.no_search)),
+            coverage_gap_seeds=tuple(
+                sorted(r.seed for r in group if r.note.startswith(COVERAGE_GAP_NOTES))
+            ),
+            coverage_gap_notes=tuple(
+                sorted({r.note for r in group if r.note.startswith(COVERAGE_GAP_NOTES)})
+            ),
         )
         for key, group in grouped.items()
     }
@@ -1274,13 +1289,13 @@ def _plan_blockers(
         reasons.append(f"the rows record budget(s) {list(budgets) or 'none'}, not exactly one")
     if len(commits) != 1:
         reasons.append(f"the rows record engine commit(s) {list(commits) or 'none'}, not one")
-    roster = plan.roster
     outside = [name for name in instances if name not in plan.meta]
     if outside and plan.meta:
         reasons.append(f"rows for instance(s) outside the roster: {_named(outside)}")
     expected = tuple(sorted(plan.seeds))
+    exempt = set(coverage_gaps(cells, plan))
     incomplete: list[str] = []
-    for instance in roster:
+    for instance in (name for name in plan.roster if name not in exempt):
         for arm in (CONTROL_ARM, *plan.arms):
             cell = cells.get((instance, arm))
             # Complete means: a completed search at every planned seed, exactly
@@ -1301,8 +1316,57 @@ def _plan_blockers(
     return reasons
 
 
-def _arm_blockers(summary: ArmSummary) -> list[str]:
-    """Reasons one neighbour's FINDINGS rule out "inside the noise"."""
+def coverage_gaps(cells: dict[tuple[str, str], Cell], plan: TransferPlan) -> list[str]:
+    """Roster instances the runner could not load at all: REPORTED, NOT MEASURED.
+
+    An instance qualifies only when EVERY planned cell -- the control and each
+    neighbour, at every planned seed -- carries a coverage-gap row and nothing
+    else, and every one of those rows carries the same note. Then the gap is a
+    property of the instance, not of any arm, and HELDOUT.md's pre-registered
+    rule applies: it stays in the roster, is reported that way, and neither
+    replaced nor allowed to block the reading. An instance that loads under one
+    arm and not another is not a coverage gap; it stays incomplete.
+    """
+    expected = tuple(sorted(plan.seeds))
+    gaps: list[str] = []
+    for instance in plan.roster:
+        planned = [cells.get((instance, arm)) for arm in (CONTROL_ARM, *plan.arms)]
+        if any(
+            cell is None
+            or cell.coverage_gap_seeds != expected
+            or cell.completed_seeds
+            or cell.failed_runs
+            or cell.no_search_runs != len(expected)
+            for cell in planned
+        ):
+            continue
+        notes = {note for cell in planned if cell is not None for note in cell.coverage_gap_notes}
+        if len(notes) == 1:
+            gaps.append(instance)
+    return gaps
+
+
+def _constant_control_moves(comparison: Comparison) -> bool:
+    """Whether an arm SEED left a control that never varied by more than the tie band.
+
+    A control at one gap on every seed has no measurable floor, and comparing
+    means alone lets control [5, 5, 5] against an arm at [0, 5, 10] through:
+    the means agree, the arm does not. So where the control is constant every
+    arm seed is held to the runner's tie band around it.
+    """
+    gaps = comparison.control.gaps
+    if len(gaps) < 2 or any(g != gaps[0] for g in gaps):
+        return False
+    band = min_move_points(_bks_of(comparison))
+    return any(abs(g - gaps[0]) > band for g in comparison.treatment.gaps)
+
+
+def _arm_blockers(summary: ArmSummary, exempt: set[str]) -> list[str]:
+    """Reasons one neighbour's FINDINGS rule out "inside the noise".
+
+    `exempt` holds the coverage-gap instances, which record no run on either
+    side and so would otherwise read as a feasibility change.
+    """
     reasons: list[str] = []
     if summary.scored == 0:
         reasons.append(f"{summary.arm}: no instance could be scored against a measured floor")
@@ -1317,10 +1381,22 @@ def _arm_blockers(summary: ArmSummary) -> list[str]:
         reasons.append(f"{summary.arm}: moved outside its own floor on {_named(moved)}")
     # PER INSTANCE, not the balanced sum: 3/3 -> 2/3 on one instance and
     # 2/3 -> 3/3 on another cancel in a sum and are two feasibility changes.
-    # None (no runs on a side) counts as a change -- it is not a zero.
-    changed = [c.instance for c in summary.comparisons if c.feasibility_delta != 0]
+    changed = [
+        c.instance
+        for c in summary.comparisons
+        if c.feasibility_delta is not None and c.feasibility_delta != 0
+    ]
     if changed:
         reasons.append(f"{summary.arm}: feasible-run count differs on {_named(changed)}")
+    # None is a side with no completed run at all. Not a zero, and not a count
+    # that "differs" either: nothing was counted on that side.
+    unrun = [
+        c.instance
+        for c in summary.comparisons
+        if c.feasibility_delta is None and c.instance not in exempt
+    ]
+    if unrun:
+        reasons.append(f"{summary.arm}: no completed run on one side for {_named(unrun)}")
     # An instance with no measurable floor is not scored -- but "not scored" must
     # not mean "free to move": a control at the same gap on every seed against a
     # neighbour 50 points away is a difference. The threshold is the runner's
@@ -1333,7 +1409,7 @@ def _arm_blockers(summary: ArmSummary) -> list[str]:
         for c in summary.comparisons
         if c.delta is not None
         and c.instance not in summary.floor.per_instance
-        and abs(c.delta) > min_move_points(_bks_of(c))
+        and (abs(c.delta) > min_move_points(_bks_of(c)) or _constant_control_moves(c))
     ]
     if unscored_moves:
         reasons.append(
@@ -1372,8 +1448,9 @@ def reading_blockers(
     unexpected = [arm for arm in present if arm not in plan.arms]
     if unexpected:
         reasons.append(f"rows for arm(s) outside the grid: {', '.join(sorted(unexpected))}")
+    exempt = set(coverage_gaps(cells, plan))
     for summary in summaries:
-        reasons += _arm_blockers(summary)
+        reasons += _arm_blockers(summary, exempt)
     return reasons
 
 
@@ -1455,6 +1532,13 @@ def transfer_lines(
         ]
         lines.append("")
     blockers = reading_blockers(summaries, cells, instances, plan, budgets, commits)
+    gaps = coverage_gaps(cells, plan)
+    if gaps:
+        lines.append(
+            f"REPORTED, NOT MEASURED: {len(gaps)} roster instance(s) the runner could not load "
+            f"under any arm at any seed ({', '.join(gaps)}). Per HELDOUT.md they stay in the "
+            "roster and are reported this way -- not replaced, and not counted as a finding."
+        )
     budget = f"{budgets[0]:g}s" if len(budgets) == 1 else "this budget"
     if not blockers:
         scored = ", ".join(
@@ -1485,7 +1569,7 @@ def transfer_lines(
     return lines
 
 
-def _arm_section(summary: ArmSummary) -> list[str]:
+def _arm_section(summary: ArmSummary, *, gap_only: bool = False) -> list[str]:
     """One arm's block of the report: counts, held-out rows, aggregates, floor, verdict."""
     lines: list[str] = []
     lines.append(f"--- {summary.arm} ---")
@@ -1630,7 +1714,11 @@ def _arm_section(summary: ArmSummary) -> list[str]:
             "-- NOT the verdict statistic, see the module docstring"
         )
     lines += _floor_lines(summary)
-    lines.append(f"  VERDICT: {summary.verdict}")
+    # In #145's report this is the gap statistic alone. It ignores completeness,
+    # feasibility and unscored instances, all of which the READING checks, so
+    # it is labelled so that it cannot be quoted as #145's answer.
+    label = "VERDICT (gap only -- see READING below for #145)" if gap_only else "VERDICT"
+    lines.append(f"  {label}: {summary.verdict}")
     lines.append("")
     lines += _instance_lines(summary)
     lines.append("")
@@ -1705,7 +1793,7 @@ def render_report(
     for arm in arms:
         summary = summarize_arm(arm, cells, instances)
         summaries.append(summary)
-        lines += _arm_section(summary)
+        lines += _arm_section(summary, gap_only=transfer is not None)
     lines.append(
         "NOTE ON UNITS: `gap_to_bks%` is a percentage where the reference value is nonzero "
         "and an ABSOLUTE residual where it is not (see the runner's safe_gap). Per-instance "

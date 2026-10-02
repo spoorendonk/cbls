@@ -1308,15 +1308,23 @@ def test_the_ablation_report_carries_no_transfer_section(tmp_path: Path) -> None
     assert "#145" not in report
 
 
-def test_an_incomplete_transfer_campaign_does_not_read_as_inside_the_noise(
+def test_a_roster_instance_interrupted_after_its_control_blocks_the_inside_reading(
     tmp_path: Path,
 ) -> None:
-    """An interrupted campaign has control rows for its last instance and no arm
-    rows: that instance is in no bucket, and "nothing moved" over the rest is
-    not a statement about the roster."""
+    """An interrupted campaign has control rows for its last ROSTER instance and
+    no arm rows: that instance is in no bucket, and "nothing moved" over the rest
+    is not a statement about the roster. `extra` is in the plan's roster, so this
+    is the completeness check firing, not the outside-the-roster one."""
+    plan = TransferPlan(
+        meta={**TRANSFER_META, "extra": InstanceMeta(structure="other", size=5)},
+        seeds=TRANSFER_PLAN.seeds,
+        arms=TRANSFER_PLAN.arms,
+    )
     rows = [*_transfer_rows(), *_at_budget(run_rows("extra", CONTROL_ARM, [1.0, 1.1, 1.2]))]
-    report = _transfer_report(tmp_path, rows)
-    assert "NOT STATED MECHANICALLY" in report
+    reading = _reading(_transfer_report(tmp_path, rows, plan))
+    assert "NOT STATED MECHANICALLY" in reading
+    assert "extra/unproductive-100, extra/unproductive-1000" in reading
+    assert "outside the roster" not in reading
 
 
 # --- #145: what blocks the mechanical "inside the noise" reading ---------------
@@ -1442,6 +1450,10 @@ def test_a_neighbour_that_errors_on_every_seed_blocks_the_inside_reading(
     reading = _reading(_transfer_report(tmp_path, rows))
     assert "NOT STATED MECHANICALLY" in reading
     assert "mid1/unproductive-1000" in reading
+    # A side with no completed run is its own reason -- not a feasible-run
+    # count that "differs", since nothing was counted on that side.
+    assert "unproductive-1000: no completed run on one side for mid1" in reading
+    assert "feasible-run count differs" not in reading
 
 
 def test_a_results_file_that_mixes_budgets_is_refused(tmp_path: Path) -> None:
@@ -1450,3 +1462,92 @@ def test_a_results_file_that_mixes_budgets_is_refused(tmp_path: Path) -> None:
     report = _transfer_report(tmp_path, rows)
     assert "mixes budgets 10s, 60s" in report
     assert "READING" not in report
+
+
+def _gap_rows(instance: str, notes: dict[str, str]) -> list[dict[str, object]]:
+    """Coverage-gap rows (`unsupported`/`not-found`) for `instance`, per arm, every seed."""
+    return _at_budget(
+        [
+            {
+                "instance": instance,
+                "arm": arm,
+                "seed": seed,
+                "feasible": "false",
+                "gap_to_bks%": "NaN",
+                "note": note,
+            }
+            for arm, note in notes.items()
+            for seed in (1, 2, 3)
+        ]
+    )
+
+
+ALL_ARMS = (CONTROL_ARM, "unproductive-100", "unproductive-1000")
+UNSUPPORTED = "unsupported: NL_UNKNOWN_OPCODE 42"
+
+
+def test_an_instance_no_arm_can_load_is_reported_not_measured(tmp_path: Path) -> None:
+    """HELDOUT.md pre-registers that an unloadable instance stays in the roster
+    and is reported that way. It must not block the reading forever."""
+    rows = [r for r in _transfer_rows() if r["instance"] != "big1"]
+    rows += _gap_rows("big1", dict.fromkeys(ALL_ARMS, UNSUPPORTED))
+    report = _transfer_report(tmp_path, rows)
+    assert "REPORTED, NOT MEASURED: 1 roster instance(s)" in report
+    assert "(big1)" in report
+    assert "INSIDE THE MEASURED NOISE FLOOR" in _reading(report)
+
+
+@pytest.mark.parametrize(
+    "notes",
+    [
+        # Loads under the control, not under one neighbour: a property of the ARM.
+        {"unproductive-1000": UNSUPPORTED},
+        # Unloadable everywhere, but for different reasons per arm.
+        {
+            CONTROL_ARM: UNSUPPORTED,
+            "unproductive-100": UNSUPPORTED,
+            "unproductive-1000": "not-found",
+        },
+    ],
+    ids=["one-arm-only", "different-notes"],
+)
+def test_a_coverage_gap_that_is_not_the_instances_own_still_blocks(
+    tmp_path: Path, notes: dict[str, str]
+) -> None:
+    rows = [r for r in _transfer_rows() if not (r["instance"] == "big1" and r["arm"] in notes)]
+    rows += _gap_rows("big1", notes)
+    report = _transfer_report(tmp_path, rows)
+    assert "REPORTED, NOT MEASURED" not in report
+    assert "NOT STATED MECHANICALLY" in _reading(report)
+
+
+def test_a_seed_that_left_a_constant_control_blocks_even_when_the_means_agree(
+    tmp_path: Path,
+) -> None:
+    """Control [5, 5, 5] has no measurable floor; an arm at [0, 5, 10] has the
+    same mean and is not the same result."""
+    rows = [r for r in _transfer_rows() if r["instance"] != "big1"]
+    rows += _at_budget(
+        [
+            *run_rows("big1", CONTROL_ARM, [5.0, 5.0, 5.0]),
+            *run_rows("big1", "unproductive-100", [5.0, 5.0, 5.0]),
+            *run_rows("big1", "unproductive-1000", [0.0, 5.0, 10.0]),
+        ]
+    )
+    reading = _reading(_transfer_report(tmp_path, rows))
+    assert "NOT STATED MECHANICALLY" in reading
+    assert "unscored instance(s) big1" in reading
+
+
+def test_the_per_arm_verdict_in_the_transfer_report_says_it_is_gap_only(tmp_path: Path) -> None:
+    """The per-arm VERDICT ignores completeness and feasibility, which READING
+    checks. In #145's report it is labelled so it cannot be quoted as the answer;
+    the ablation's is unchanged."""
+    rows = [r for r in _transfer_rows() if not (r["instance"] == "mid1" and r["seed"] == 3)]
+    report = _transfer_report(tmp_path, rows)
+    assert "VERDICT (gap only -- see READING below for #145): INSIDE THE NOISE" in report
+    assert "  VERDICT: " not in report
+    assert "NOT STATED MECHANICALLY" in _reading(report)
+    ablation = render_report(write_results(tmp_path / "a.csv", rows))
+    assert "  VERDICT: " in ablation
+    assert "gap only" not in ablation

@@ -365,18 +365,27 @@ holds:
   search at exactly each planned seed: the seeds the out-dir's stamp records,
   else `--seeds`. No cell may hold a crashed or unscored row (for example
   `solve-error`). There are no rows for instances outside the roster or for arms
-  outside the grid, and the roster metadata was found.
+  outside the grid, and the roster metadata was found. One exemption follows
+  the pre-registered rule for unloadable instances above. If the runner could
+  not load an instance under any arm at any seed, and every one of those rows
+  carries the same `unsupported` or `not-found` note, that instance is listed
+  as "REPORTED, NOT MEASURED" and does not block the reading. If it fails to
+  load under only some arms, it still blocks.
 - **One budget and one commit** across the rows.
 - **No neighbour moved anything.** No instance is outside its own floor. No
   instance whose control spread could not be measured differs by more than the
   runner's own tie band. That is the smallest difference the runner itself
   calls a difference; any nonzero delta would count float residue on exactly
-  solved instances.
+  solved instances. Where the control returned the same gap on every seed,
+  every single arm seed is held to that band, not only the arm's mean.
 - **No feasibility change on any instance**, judged per instance, so a loss on
   one instance and a gain on another do not cancel.
 
 In every other case it prints "NOT STATED MECHANICALLY" with the reasons
-listed, and the outcome is decided in the write-up above. Naming a winner
+listed, and the outcome is decided in the write-up above. Each arm's own
+`VERDICT` line above the section looks at gaps only and ignores all of these
+checks, so in this report it is labelled "gap only". Quote the READING, not the
+VERDICT. Naming a winner
 by rule would mean choosing a threshold across two neighbours tested against
 one control, with no multiplicity correction, over clustered instances and a
 three-seed floor. Such a rule would sometimes pick winners from noise.
