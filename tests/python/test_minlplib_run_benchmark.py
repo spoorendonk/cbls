@@ -876,7 +876,7 @@ def test_a_second_driver_on_the_machine_is_refused_with_exit_2(
     inst = make_inst_dir(tmp_path, ["a"])
     build = make_build_dir(tmp_path)
     (build / RUNNER_TARGET).write_text("")
-    monkeypatch.setattr(run_benchmark, "commit_sha", lambda: "abc1234")
+    monkeypatch.setattr(run_benchmark, "run_commit_sha", lambda *_args: "abc1234")
     monkeypatch.setattr(subprocess, "run", seeded_runner())
     argv = ["--inst-dir", str(inst), "--build-dir", str(build), "--no-build", "--no-merge"]
     with wallclock_lock("another driver"):
@@ -1359,3 +1359,102 @@ def test_a_scratch_output_may_not_reach_another_roster_directory(
     )
     message = usage_error(args, inst_dir / "comparison.csv")
     assert message is not None and "--out" in message, message
+
+
+# --- the dirty guard across a multi-seed campaign (#123) ----------------------
+
+GIT_IDENTITY = ("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false")
+
+
+def _git(repo: Path, *argv: str) -> str:
+    """Run git in `repo`. Safe only because conftest strips a hook's GIT_* variables."""
+    done = subprocess.run(["git", *argv], cwd=repo, check=True, capture_output=True, text=True)
+    return done.stdout.strip()
+
+
+def _checkout(tmp_path: Path) -> tuple[Path, str]:
+    """`tmp_path` as a real repository: a source file, and an instance directory holding
+    the previous campaign's three tracked tables. Returns the instance directory and SHA.
+    """
+    _git(tmp_path, "init", "-q")
+    inst = make_inst_dir(tmp_path, ["a", "b"])
+    (tmp_path / "engine.cpp").write_text("int main() {}\n")
+    for name in ("comparison.csv", "anytime_trace.csv", "comparison_all.csv"):
+        (inst / name).write_text("the previous campaign\n")
+    _git(tmp_path, "add", "engine.cpp", "inst")
+    _git(tmp_path, *GIT_IDENTITY, "-c", "core.hooksPath=/dev/null", "commit", "-qm", "c")
+    return inst, _git(tmp_path, "rev-parse", "--short=7", "HEAD")
+
+
+def _publish_seed_1(tmp_path: Path, inst: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Seed 1's publish, as the README's seed loop leaves the checkout; returns its SHA.
+
+    Through `execute` with the fake runner; the merge's rewrite of
+    `comparison_all.csv` is stood in for by hand.
+    """
+    sha = run_benchmark.run_commit_sha(inst, tmp_path)
+    assert not sha.endswith("-dirty")
+    args = make_args(tmp_path, seed=1, build=False, merge=False)
+    with monkeypatch.context() as patched:
+        patched.setattr(subprocess, "run", seeded_runner())
+        assert execute(args, sha, ["a", "b"], resolve_paths(args, sha)) == 0
+    (inst / "comparison_all.csv").write_text("the merge's rewrite\n")
+    modified = _git(tmp_path, "status", "--porcelain", "--untracked-files=no").splitlines()
+    assert len(modified) == 3, modified  # all three tracked tables moved
+    return sha
+
+
+def _seed_2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *extra: str) -> int:
+    """`main` at seed 2, reading its SHA from the temporary checkout."""
+    build = make_build_dir(tmp_path)
+    (build / RUNNER_TARGET).write_text("")
+    monkeypatch.setattr(run_benchmark, "REPO_ROOT", tmp_path)
+    argv = ["--inst-dir", str(tmp_path / "inst"), "--build-dir", str(build), "--no-build"]
+    return run_benchmark.main([*argv, "--seed", "2", *extra])
+
+
+def test_seed_2_runs_at_seed_1s_sha_over_the_tables_seed_1_published(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The README's `for SEED in 1 2 3` loop, which #123's campaign found refused at seed 2.
+
+    Seed 1's publish modifies three tracked tables. They are this driver's own
+    output, not the code that ran, so seed 2 must see the same plain SHA --
+    committing between seeds instead would split the campaign across two
+    commits, and the seed summary keeps one.
+    """
+    inst, _ = _checkout(tmp_path)
+    sha = _publish_seed_1(tmp_path, inst, monkeypatch)
+    assert run_benchmark.run_commit_sha(inst, tmp_path) == sha
+    assert _seed_2(tmp_path, monkeypatch, "--dry-run") == 0
+    out = capsys.readouterr().out
+    assert f"commit {sha}, " in out
+    assert "WOULD REFUSE" not in out
+
+
+@pytest.mark.parametrize("seed_1_published", [False, True], ids=["source-only", "with-published"])
+def test_a_modified_source_file_still_refuses_seed_2(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    seed_1_published: bool,
+) -> None:
+    """Ignoring the published tables must not ignore anything beside them."""
+    inst, sha = _checkout(tmp_path)
+    if seed_1_published:
+        _publish_seed_1(tmp_path, inst, monkeypatch)
+    (tmp_path / "engine.cpp").write_text("int main() { return 1; }\n")
+    assert run_benchmark.run_commit_sha(inst, tmp_path) == f"{sha}-dirty"
+    assert _seed_2(tmp_path, monkeypatch) == 2
+    assert f"refusing to run: working tree is dirty ({sha}-dirty)" in capsys.readouterr().err
+
+
+def test_a_modified_instance_directory_input_still_refuses_seed_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An instance file sits beside the published tables but is an input, not their output."""
+    inst, sha = _checkout(tmp_path)
+    _publish_seed_1(tmp_path, inst, monkeypatch)
+    (inst / "a.nl").write_text("edited\n")
+    assert _seed_2(tmp_path, monkeypatch, "--dry-run") == 2
+    assert f"WOULD REFUSE: working tree is dirty ({sha}-dirty)" in capsys.readouterr().out

@@ -47,7 +47,9 @@ whole-roster command the README used to document:
 Guards, because this file's output is published:
 
 * refuses a dirty working tree — a plain SHA from a modified checkout claims a
-  reproducibility the numbers do not have;
+  reproducibility the numbers do not have. The files this driver itself
+  publishes into `--inst-dir` do not count (`run_commit_sha`), so the next
+  seed of a campaign runs at the same SHA as the one that just published;
 * refuses a build directory that is not `Release`, or one configured from a
   different source tree than the SHA is read from;
 * rebuilds the runner target itself, so the binary cannot lag the SHA it is
@@ -481,11 +483,31 @@ PROTECTED_INPUTS: tuple[str, ...] = (
 )
 
 
-def _published_files(inst_dir: Path) -> dict[Path, str]:
+def published_paths(inst_dir: Path) -> tuple[Path, ...]:
+    """Every file a publish into `inst_dir` writes: each published table and its run record."""
     tables = [inst_dir / name for name in PUBLISHED_NAMES]
-    owned = {f.resolve(): f.name for t in tables for f in (t, run_record_path(t))}
+    return tuple(f for t in tables for f in (t, run_record_path(t)))
+
+
+def _published_files(inst_dir: Path) -> dict[Path, str]:
+    owned = {f.resolve(): f.name for f in published_paths(inst_dir)}
     owned.update({(inst_dir / name).resolve(): name for name in PROTECTED_INPUTS})
     return owned
+
+
+def run_commit_sha(inst_dir: Path, repo_root: Path = REPO_ROOT) -> str:
+    """The SHA this run's rows are labelled with: `commit_sha`, blind to this driver's own output.
+
+    The dirty guard is about the code that ran. A multi-seed campaign runs one
+    seed per invocation, and seed 1's publish modifies the tracked
+    `comparison.csv`, `anytime_trace.csv` and `comparison_all.csv` -- so until
+    #123's campaign found it, seed 2 refused the tree seed 1 had just left, and
+    committing between seeds would have split the campaign across two SHAs,
+    which the seed summary then drops. Only `published_paths(inst_dir)` is
+    ignored: a modified instance-directory input (`analysis_notes.csv` changes
+    every later row's note), README or source file still marks the tree dirty.
+    """
+    return commit_sha(repo_root, ignore=published_paths(inst_dir))
 
 
 def _misdirected_output(args: argparse.Namespace, published_out: Path) -> str | None:
@@ -1136,7 +1158,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if refusal:
         print(refusal, file=sys.stderr)
         return 2
-    sha = commit_sha()
+    sha = run_commit_sha(args.inst_dir, REPO_ROOT)
     paths = resolve_paths(args, sha)
     # The merge reads and rewrites the published comparison_all.csv from the
     # published comparison.csv, so it is meaningless — and destructive — when

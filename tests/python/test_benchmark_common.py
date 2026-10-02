@@ -246,6 +246,51 @@ def test_the_commit_is_marked_dirty_only_for_modified_tracked_files(tmp_path: Pa
     assert commit_sha(tmp_path) == f"{clean}-dirty"
 
 
+def test_ignored_paths_do_not_mark_the_commit_dirty_and_nothing_else_is_ignored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`ignore` exempts exactly the named files: a driver's own published output (#123).
+
+    Named relative to another directory, with a space and a non-ASCII byte in it --
+    the line-format porcelain would C-quote that name and match nothing -- and a
+    rename onto an ignored name still counts, because the file it came from moved.
+    """
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "engine.cpp").write_text("int main() {}\n")
+    (tmp_path / "out dir").mkdir()
+    table = tmp_path / "out dir" / "table é.csv"
+    table.write_text("old\n")
+    (tmp_path / "notes.csv").write_text("n\n")
+    _git(tmp_path, "add", ".")
+    identity = ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+    _git(tmp_path, *identity, "-c", "core.hooksPath=/dev/null", "commit", "-qm", "c")
+    clean = commit_sha(tmp_path)
+
+    table.write_text("published\n")
+    assert commit_sha(tmp_path) == f"{clean}-dirty"  # the default ignores nothing
+    monkeypatch.chdir(tmp_path / "out dir")
+    assert commit_sha(tmp_path, ignore=[Path("table é.csv")]) == clean
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engine.cpp").write_text("int main() { return 1; }\n")
+    assert commit_sha(tmp_path, ignore=[table]) == f"{clean}-dirty"
+    _git(tmp_path, "checkout", "--", "engine.cpp")
+    assert commit_sha(tmp_path, ignore=[table]) == clean
+
+    # A run record is untracked until its first publish is committed, so a
+    # rename onto its name is a status entry naming both paths.
+    record = tmp_path / "out dir" / "table é.run.json"
+    _git(tmp_path, "mv", "notes.csv", "out dir/table é.run.json")
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=no"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert any(line.startswith("R  notes.csv -> ") for line in status.splitlines()), status
+    assert commit_sha(tmp_path, ignore=[table, record]) == f"{clean}-dirty"
+
+
 def _cache(tmp_path: Path, entries: str) -> Path:
     build = tmp_path / "build"
     build.mkdir(exist_ok=True)

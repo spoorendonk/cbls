@@ -303,7 +303,7 @@ What the driver refuses, and why each refusal matters:
 
 | Refusal | Why |
 |---|---|
-| dirty working tree | rows would carry a plain SHA whose code is not what ran |
+| dirty working tree (the tables the driver itself publishes excepted) | rows would carry a plain SHA whose code is not what ran |
 | build dir not `CMAKE_BUILD_TYPE=Release` | an unoptimised build measures a different engine |
 | unconfigured build dir | nothing to rebuild the runner from |
 | a roster instance with no `.nl` | a hole in the table found 40 minutes in |
@@ -407,6 +407,17 @@ run cannot replace a seed's 60s block. The driver runs one seed per invocation:
         .venv/bin/python3 benchmarks/minlplib/run_benchmark.py --seed "$SEED" || break
     done
 
+**Run every seed at one commit, and edit nothing between them.** Seed 1's
+publish leaves `comparison.csv`, `anytime_trace.csv` and `comparison_all.csv`
+modified in the working tree. The driver's dirty-tree refusal does not count the
+files it publishes itself (`run_benchmark.run_commit_sha`), so seed 2 runs at
+the same plain SHA. Any other modified tracked file still makes it refuse: a
+regenerated README or `campaign_summary.json`, an edited `analysis_notes.csv`
+(which the runner merges into every row's note), a test, any source. So do not
+start "After the run" steps 2-5 until the last seed has published, and do not
+commit between seeds: a commit changes the SHA, and the multi-seed summary only
+aggregates the seeds published at one commit.
+
 A seed other than 1 also skips the `comparison_all.csv` merge, and assembles its
 own table and trace inside its staging directory
 (`comparison.assembled.csv`, `anytime_trace.assembled.csv`). **Only rows are
@@ -450,6 +461,10 @@ it — as the committed one was, which is why its provenance still says "not
 recorded".
 
 ### After the run
+
+These steps are for after the **last** seed (see "Seeds, and what each publish
+records"): steps 2-5 modify tracked files the driver does not own, and a later
+seed refuses the dirty tree that leaves.
 
 1. `git diff benchmarks/instances/minlplib/` — expect changes confined to
    `comparison.csv`, `anytime_trace.csv`, the `cbls` rows of
@@ -535,10 +550,10 @@ recorded".
    step 2's provenance block reads it from there (`--machine` exists only for a
    table with no record). If the load average says the box was not quiet, the
    run is not publishable; a nonzero `resumed` means earlier invocations solved
-   some rows, and their load is not in the record. Then run the other seeds
-   ("Seeds, and what each publish records"; at least two more), and write each
-   instance's median and range from the printed spread into the prose of
-   **Results** — beside the published table, never in place of it.
+   some rows, and their load is not in the record. The other seeds ("Seeds,
+   and what each publish records"; at least two more) have already run by now;
+   write each instance's median and range from the printed spread into the prose
+   of **Results** — beside the published table, never in place of it.
 8. Run the Python suite:
    `.venv/bin/pytest tests/python/test_minlplib_scip_baseline.py tests/python/test_minlplib_campaign_report.py`.
    The second goes red on any regenerated table until step 2's README blocks

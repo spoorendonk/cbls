@@ -13,6 +13,10 @@ import platform
 import socket
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -22,7 +26,7 @@ def _git(repo_root: Path, *argv: str) -> str:
     return out.stdout.strip()
 
 
-def commit_sha(repo_root: Path = REPO_ROOT) -> str:
+def commit_sha(repo_root: Path = REPO_ROOT, *, ignore: Iterable[Path] = ()) -> str:
     """The commit a run is attributed to, marked `-dirty` when the tree is modified.
 
     A plain SHA from a modified checkout claims a reproducibility the result does
@@ -40,12 +44,58 @@ def commit_sha(repo_root: Path = REPO_ROOT) -> str:
     tree dirty, so this is a guard against edited code, not against every
     difference from HEAD.
 
+    `ignore` names files whose modification does not count: a driver that
+    publishes tracked tables passes the paths it writes itself, so that its own
+    output does not mark the tree dirty for its next invocation (#123: seed 2 of
+    a multi-seed campaign refused the tables seed 1 had just published). A
+    status entry is dropped only when every path it names is ignored -- both
+    sides of a rename -- so a file moved onto an ignored name still counts.
+    Paths outside the work tree can never appear in the status, and are moot.
+    The default, nothing ignored, is every other caller's behaviour.
+
     Raises `subprocess.CalledProcessError` or `OSError` when git cannot answer;
     whether that is fatal is the caller's decision.
     """
     sha = _git(repo_root, "rev-parse", "--short=7", "HEAD")
-    dirty = _git(repo_root, "status", "--porcelain", "--untracked-files=no")
-    return f"{sha}-dirty" if dirty else sha
+    return f"{sha}-dirty" if _modified_paths(repo_root, ignore) else sha
+
+
+def _modified_paths(repo_root: Path, ignore: Iterable[Path]) -> list[str]:
+    """Status entries of modified tracked files, less those wholly within `ignore`.
+
+    `-z` rather than the line format, which C-quotes a path holding a space, a
+    quote or a non-ASCII byte, so that it would match nothing. Porcelain paths
+    are relative to the top of the work tree whatever directory git runs in,
+    hence `--show-toplevel`. A rename or copy entry is `XY new` followed by a
+    second NUL-terminated field holding the original path.
+    """
+    raw = subprocess.run(
+        ["git", "status", "--porcelain", "-z", "--untracked-files=no"],
+        cwd=repo_root,
+        capture_output=True,
+        check=True,
+    ).stdout
+    top = Path(_git(repo_root, "rev-parse", "--show-toplevel")).resolve()
+    ignored = {path.resolve() for path in ignore}
+    fields = raw.split(b"\0")
+    entries: list[list[str]] = []
+    index = 0
+    while index < len(fields):
+        field = fields[index]
+        index += 1
+        if not field:
+            continue
+        status, name = field[:2], os.fsdecode(field[3:])
+        entry = [name]
+        if status[:1] in (b"R", b"C") or status[1:2] in (b"R", b"C"):
+            entry.append(os.fsdecode(fields[index]))
+            index += 1
+        entries.append(entry)
+    return [
+        " -> ".join(entry)
+        for entry in entries
+        if not all((top / name).resolve() in ignored for name in entry)
+    ]
 
 
 def cmake_cache(build_dir: Path) -> dict[str, str]:
