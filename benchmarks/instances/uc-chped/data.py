@@ -10,14 +10,29 @@ those files; regenerate them from the repo root with
 chdirs to its own directory, so the files land here whatever the cwd) after
 changing any instance below, or the committed data stops matching its source.
 
-Data from Pedroso, Kubo & Viana (2014), "Pricing and unit commitment in combined
-energy and reserve markets using valve-point effects", originally at
-http://www.dcc.fc.up.pt/~jpp/code/valve/ucp_data.py (GPL).
+Instances of Pedroso, Kubo & Viana (2014), "Unit commitment with valve-point
+loading effect", DCC-2014-05 / arXiv:1404.4944, whose GPL instance code is
+http://www.dcc.fc.up.pt/~jpp/code/valve/ucp_data.py (2013-12-09).
 
-The 10-unit base UC parameters (min_on, min_off, t_cold, startup costs, initial
-state) come from the Kazarlis 10-unit system. For ucp13/ucp40, cost coefficients
-(a,b,c,d,e) and power limits come from the corresponding CHPED instances (Sinha
-13-unit, Taipower 40-unit), while UC parameters are mapped from Kazarlis.
+Provenance, checked field by field against that file (#148,
+benchmarks/uc-chped/FIDELITY.md section 7):
+
+- ucp13 -- IDENTICAL to the authors' ucp13(): costs, limits, the Kazarlis
+  mapping and the demand/reserve profile. The mapping below is theirs (their
+  table annotates each unit with its "corresp. in kazarlis").
+- ucp40 -- identical EXCEPT P_max of units 19 and 20 (1-indexed): 500 here,
+  550 in the authors' ucp40() and in the standard 40-unit dispatch data. The
+  error is inherited from CHPED_40UNIT in benchmarks/chped/data.py, which this
+  module loads for its cost data. The authors' published 1-period optimum is
+  infeasible on this instance, so Table 2's ucp40 bounds are bounds for a
+  related system, not for ucp40 as built here.
+- ucp100/ucp200 and extend_horizon() -- this repository's construction; the
+  authors publish nothing for them and no bounds are claimed.
+
+Costs and limits reach this module sideways, from benchmarks/chped/data.py
+(Sinha 13-unit, Taipower 40-unit), rather than from ucp_data.py itself; the UC
+parameters (min_on, min_off, t_cold, startup costs, initial state) are the
+Kazarlis 10-unit system's, assigned per unit as the authors assign them.
 
 Cost function: F_i(P_i) = a_i + b_i*P_i + c_i*P_i^2 + |d_i*sin(e_i*(Pmin_i - P_i))|
 Startup cost: hot if off < t_cold periods, cold otherwise.
@@ -137,7 +152,8 @@ UCP_10UNIT = {
 # ---------------------------------------------------------------------------
 # UCP_13UNIT — 13-unit system with valve-point effects
 # Cost coefficients from CHPED_13UNIT (Sinha et al. 2003)
-# UC parameters mapped from Kazarlis: [1,2,3, 1,2,3,4,5,6,7,8,9,10] (1-indexed)
+# UC parameters mapped from Kazarlis: [1,2,3, 1,2,3,4,5,6,7,8,9,10] (1-indexed),
+# the authors' own assignment in ucp_data.py's ucp13() (#148)
 # ---------------------------------------------------------------------------
 _UCP13_MAP = [0, 1, 2, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]  # 0-indexed into Kazarlis
 
@@ -235,7 +251,8 @@ UCP_13UNIT = _build_ucp13()
 # ---------------------------------------------------------------------------
 # UCP_40UNIT — 40-unit system with valve-point effects
 # Cost coefficients from CHPED_40UNIT (Taipower system)
-# UC parameters mapped from Kazarlis: units i -> Kazarlis (i % 10)
+# UC parameters mapped from Kazarlis: units i -> Kazarlis (i % 10), the authors'
+# own assignment in ucp_data.py's ucp40() (#148)
 # ---------------------------------------------------------------------------
 
 
@@ -315,7 +332,9 @@ def _build_ucp40() -> Instance:
             689,
             612,
         ],
-        # Known bounds from Pedroso Table 2 (1hr MIP): {periods: (LB, UB)}
+        # Pedroso Table 2 (1hr MIP) bounds, {periods: (LB, UB)} -- computed on the
+        # AUTHORS' ucp40 (P_max 550 at units 19-20), not on this one (#148). The
+        # runner marks them [related system] and scores no gap against them.
         "known_bounds": {
             1: (55645, 55645),
             3: (178396, 178547),

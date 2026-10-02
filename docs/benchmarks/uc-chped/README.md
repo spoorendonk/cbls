@@ -80,6 +80,24 @@ $$y_{u,t-1} - y_{u,t} + y_{u,\tau} \leq 1 \quad \forall \tau \in [t+1, \min(t + 
 
 All instances share UC parameters (min uptime, min downtime, cold start threshold, startup costs, initial state) drawn from the Kazarlis 10-unit system, mapped cyclically to larger fleets.
 
+### Provenance (#148)
+
+`ucp13` and `ucp40` were checked field by field against the authors' GPL
+instance code,
+[`ucp_data.py`](http://www.dcc.fc.up.pt/~jpp/code/valve/ucp_data.py)
+(2013-12-09); method and numbers in
+[`FIDELITY.md` §7](../../../benchmarks/uc-chped/FIDELITY.md#7-instance-data--do-we-solve-the-published-instances-148).
+
+| Field | `ucp13` | `ucp40` |
+|---|---|---|
+| Cost coefficients `a b c d e`, `P_min` | sourced — identical to the authors' | sourced — identical to the authors' |
+| `P_max` | sourced — identical | **differs at units 19-20: 500 here, 550 in the source** (an error inherited from `benchmarks/chped/data.py`) |
+| Kazarlis mapping (min up/down, `t_cold`, startup costs, initial state) | sourced — the authors' own assignment | sourced — the authors' own `i % 10` |
+| Demand and reserve profile | sourced — the authors' table verbatim | sourced — the authors' table verbatim |
+
+`ucp100`/`ucp200` and the 48h/168h extensions are this repository's
+construction; the authors publish nothing for them.
+
 ### UCP_13UNIT
 
 - **Cost coefficients:** Sinha et al. 13-unit system (with valve-point: $d_u, e_u \neq 0$)
@@ -123,7 +141,24 @@ Instances can be extended to 48h and 168h (1 week) via `extend_horizon()`, which
 
 ## Known Bounds
 
-From Pedroso et al. (2014), Table 2 — MIP with 1-hour time limit:
+From Pedroso et al. (2014), Table 2 — MIP with 1-hour time limit. These are
+bounds on the **true** valve-point cost, not on a piecewise-linear surrogate:
+the authors' code refines its linearisation until the upper bound, priced at
+the true cost, meets the lower one.
+
+**The 13-unit rows describe this repository's `ucp13`.** It is the authors'
+instance field for field, and both of its proven optima are reproduced by an
+exact solve (11701.28 and 38849.84, §7 of `FIDELITY.md`).
+
+**The 40-unit rows do NOT describe this repository's `ucp40`.** They are
+bounds for the authors' 40-unit system, which differs from ours in `P_max` of
+units 19-20 (550 there, 500 here). The authors' published 1-period optimal
+schedule is infeasible on our instance (its committed capacity is short of
+the reserve requirement by 31 MW), so no row below is a bound on our problem
+and no gap against them is published: `comparison.csv` marks these rows
+`[related system]` and the runner scores no gap for a measured `ucp40` row.
+Correcting the two `P_max` values would restore identity, but changes the
+`chped` 40-unit dispatch instance the same data feeds.
 
 ### 13-Unit System
 
@@ -135,7 +170,7 @@ From Pedroso et al. (2014), Table 2 — MIP with 1-hour time limit:
 |      12 |     231,587 |     232,537 |    0.41 |
 |      24 |     464,053 |     466,187 |    0.46 |
 
-### 40-Unit System
+### 40-Unit System — bounds for a related system (see above)
 
 | Periods | Lower Bound | Upper Bound | Gap (%) |
 |--------:|------------:|------------:|--------:|
@@ -212,7 +247,9 @@ The reference solver (`benchmarks/chped/reference_solve.py --uc`) uses PySCIPOpt
 - Hot/cold startup cost modeled via auxiliary binary indicator variables
 - Standard min uptime/downtime constraints
 
-The PWL approximation is necessary because SCIP cannot directly handle the `|sin(...)|` term in a MIP. With 50 segments, the approximation error is negligible.
+The PWL approximation is necessary because SCIP cannot directly handle the `|sin(...)|` term in a MIP. It is **not** negligible at 50 segments: uniformly spaced breakpoints straddle the valve-point cusps, which are exactly where optimal dispatch sits, and the chord over a cusp overestimates the cost by up to about `d·e·Δ/2` per unit. Summed over units, the worst case for one period of `ucp13` is 213 at 50 segments and 47 at 200 (1.8% and 0.4% of the optimum); the realised error is smaller. Two further differences from the source: demand is `>=` where the source has `=`, and a startup of a `t_cold = 0` unit is priced hot, where the source and our model price every startup on these instances cold (§7 of `FIDELITY.md`).
+
+For an exact check, `benchmarks/uc-chped/instance_identity.py` solves the proven-optimum cases as a SCIP MINLP with the true `sin` term (no linearisation) and compares the instance data against the authors' code.
 
 See [`benchmarks/chped/reference_solve.py`](../../../benchmarks/chped/reference_solve.py) for the full implementation.
 
