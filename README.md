@@ -72,7 +72,7 @@ With Python bindings:
 ```bash
 cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build
-.venv/bin/pytest          # 1065 tests, 234 of them for the bindings
+.venv/bin/pytest          # 1105 tests, 234 of them for the bindings
 ```
 
 Tests of the benchmark baselines skip themselves when `ortools` or `pyscipopt` is
