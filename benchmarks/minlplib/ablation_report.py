@@ -398,6 +398,11 @@ class RunRow:
     #: nothing else distinguishes them: three segfaults on one instance under
     #: one arm would otherwise be scored as that arm losing feasibility there.
     note: str = ""
+    #: The budget and the engine commit the row was run at. Read so the report
+    #: can say what it measured -- and refuse a file that mixes budgets, whose
+    #: arms would then differ by budget as well as by arm.
+    time_limit: float = math.nan
+    commit: str = ""
 
     @property
     def runner_failed(self) -> bool:
@@ -434,6 +439,8 @@ def load_rows(path: Path) -> list[RunRow]:
                 lns_repairs_accepted=csv_number(row.get("lns_repairs_accepted")),
                 wall=csv_number(row.get("wall_seconds")),
                 note=row.get("note") or "",
+                time_limit=csv_number(row.get("time_limit")),
+                commit=row.get("commit_sha") or "",
             )
             for row in csv.DictReader(fh)
         ]
@@ -481,6 +488,11 @@ class Cell:
     #: only that check reads it, and every other construction site would
     #: otherwise carry a field it never uses.
     seed_gaps: dict[int, float] = field(default_factory=dict)
+    #: The seed of every row on which a search completed, sorted, duplicates
+    #: kept. Read only by #145's completeness test: a cell is complete when this
+    #: is exactly the campaign's seed list, which a missing seed and a repeated
+    #: one both fail.
+    completed_seeds: tuple[int, ...] = ()
 
     @property
     def mean_gap(self) -> float | None:
@@ -524,6 +536,7 @@ def build_cells(rows: Iterable[RunRow]) -> dict[tuple[str, str], Cell]:
                 for r in group
                 if r.feasible and not r.no_search and math.isfinite(r.gap)
             },
+            completed_seeds=tuple(sorted(r.seed for r in group if not r.no_search)),
         )
         for key, group in grouped.items()
     }
@@ -1213,35 +1226,174 @@ def _grouped(
     return [(name, groups[name]) for name in names]
 
 
-def _quiet(summary: ArmSummary) -> bool:
-    """No instance moved outside its floor and feasibility did not change.
+@dataclass(frozen=True)
+class TransferPlan:
+    """What #145's campaign was supposed to contain, handed in by the driver.
 
-    The whole of what "inside the noise" can mean for an arm: a gap verdict of
-    INSIDE THE NOISE says nothing about an instance one side solved and the
-    other did not -- which is what the original grid's 100 did to
-    `kall_ellipsoids_tc02b` -- so those buckets and the balanced feasible-run
-    delta are part of the test.
+    The rows alone cannot say what is MISSING from them, and "nothing moved"
+    over an incomplete file is a statement about the rows that happened to be
+    written, not about the roster. So the roster (from `bounds.csv`), the seed
+    list and the neighbour arms come from the plan, and the reading checks the
+    rows against them.
     """
-    return (
-        summary.scored > 0
-        and summary.uncompared == 0
-        and summary.moved_worse == 0
-        and summary.moved_better == 0
-        and summary.counts[ARM_ONLY_FEASIBLE] == 0
-        and summary.counts[CONTROL_ONLY_FEASIBLE] == 0
-        and summary.feasibility_delta_balanced == 0
-    )
+
+    meta: dict[str, InstanceMeta]
+    seeds: tuple[int, ...]
+    #: The grid neighbours, i.e. every arm but the control.
+    arms: tuple[str, ...]
+
+    @property
+    def roster(self) -> list[str]:
+        """The instances every arm must cover, in roster order."""
+        return [name for name in self.meta if name not in CLAIM_EXCLUDED]
 
 
-def transfer_lines(summaries: Sequence[ArmSummary], meta: dict[str, InstanceMeta]) -> list[str]:
+#: How many names a blocker line lists before it summarises the rest.
+BLOCKER_NAMES = 5
+
+
+def _named(names: Sequence[str]) -> str:
+    shown = ", ".join(names[:BLOCKER_NAMES])
+    return shown + (f", ... ({len(names)} in all)" if len(names) > BLOCKER_NAMES else "")
+
+
+def _plan_blockers(
+    cells: dict[tuple[str, str], Cell],
+    instances: Sequence[str],
+    plan: TransferPlan,
+    budgets: Sequence[float],
+    commits: Sequence[str],
+) -> list[str]:
+    """Reasons the RUN does not support a mechanical reading: what it was, not what it found."""
+    reasons: list[str] = []
+    if not plan.meta:
+        reasons.append("no roster metadata (bounds.csv not found), so completeness is uncheckable")
+    if len(plan.seeds) < 3:
+        reasons.append(f"{len(plan.seeds)} seed(s) planned; the floor needs at least three")
+    if len(budgets) != 1:
+        reasons.append(f"the rows record budget(s) {list(budgets) or 'none'}, not exactly one")
+    if len(commits) != 1:
+        reasons.append(f"the rows record engine commit(s) {list(commits) or 'none'}, not one")
+    roster = plan.roster
+    outside = [name for name in instances if name not in plan.meta]
+    if outside and plan.meta:
+        reasons.append(f"rows for instance(s) outside the roster: {_named(outside)}")
+    expected = tuple(sorted(plan.seeds))
+    incomplete: list[str] = []
+    for instance in roster:
+        for arm in (CONTROL_ARM, *plan.arms):
+            cell = cells.get((instance, arm))
+            # Complete means: a completed search at every planned seed, exactly
+            # once, and no crashed or unscored row beside them. A solve-error on
+            # every seed of one arm is a property of that arm, not noise.
+            if (
+                cell is None
+                or cell.completed_seeds != expected
+                or cell.failed_runs
+                or cell.no_search_runs
+            ):
+                incomplete.append(f"{instance}/{arm}")
+    if incomplete:
+        reasons.append(
+            f"{len(incomplete)} (instance, arm) cell(s) lack a completed search at every planned "
+            f"seed {list(expected)}, or hold a crashed or unscored row: {_named(incomplete)}"
+        )
+    return reasons
+
+
+def _arm_blockers(summary: ArmSummary) -> list[str]:
+    """Reasons one neighbour's FINDINGS rule out "inside the noise"."""
+    reasons: list[str] = []
+    if summary.scored == 0:
+        reasons.append(f"{summary.arm}: no instance could be scored against a measured floor")
+    moved = [
+        c.instance
+        for c in summary.comparisons
+        if c.delta is not None
+        and c.instance in summary.floor.per_instance
+        and abs(c.delta) > summary.floor.per_instance[c.instance]
+    ]
+    if moved:
+        reasons.append(f"{summary.arm}: moved outside its own floor on {_named(moved)}")
+    # PER INSTANCE, not the balanced sum: 3/3 -> 2/3 on one instance and
+    # 2/3 -> 3/3 on another cancel in a sum and are two feasibility changes.
+    # None (no runs on a side) counts as a change -- it is not a zero.
+    changed = [c.instance for c in summary.comparisons if c.feasibility_delta != 0]
+    if changed:
+        reasons.append(f"{summary.arm}: feasible-run count differs on {_named(changed)}")
+    # An instance with no measurable floor is not scored -- but "not scored" must
+    # not mean "free to move": a control at the same gap on every seed against a
+    # neighbour 50 points away is a difference. The threshold is the runner's
+    # own tie band (`min_move_points`), the smallest delta that IS a difference
+    # by the runner's definition. Any nonzero delta would be stricter, but it
+    # would block on residuals the runner itself calls equal -- reading float
+    # noise in an exactly-solved instance as a finding.
+    unscored_moves = [
+        c.instance
+        for c in summary.comparisons
+        if c.delta is not None
+        and c.instance not in summary.floor.per_instance
+        and abs(c.delta) > min_move_points(_bks_of(c))
+    ]
+    if unscored_moves:
+        reasons.append(
+            f"{summary.arm}: moved beyond the runner's tie band on unscored instance(s) "
+            f"{_named(unscored_moves)}"
+        )
+    return reasons
+
+
+def _bks_of(comparison: Comparison) -> float:
+    """The published bound for sizing a tie band, from whichever side recorded it."""
+    if math.isfinite(comparison.control.primal_bks):
+        return comparison.control.primal_bks
+    return comparison.treatment.primal_bks
+
+
+def reading_blockers(
+    summaries: Sequence[ArmSummary],
+    cells: dict[tuple[str, str], Cell],
+    instances: Sequence[str],
+    plan: TransferPlan,
+    budgets: Sequence[float],
+    commits: Sequence[str],
+) -> list[str]:
+    """Every reason the report may NOT state #145's third outcome by rule.
+
+    Empty means: the planned campaign is all there, at one budget and one
+    commit, and no neighbour moved any instance -- scored against its floor or
+    unscored against the runner's tie band -- or changed feasibility anywhere.
+    """
+    reasons = _plan_blockers(cells, instances, plan, budgets, commits)
+    present = {summary.arm for summary in summaries}
+    missing = [arm for arm in plan.arms if arm not in present]
+    if missing:
+        reasons.append(f"no rows at all for arm(s) {', '.join(missing)}")
+    unexpected = [arm for arm in present if arm not in plan.arms]
+    if unexpected:
+        reasons.append(f"rows for arm(s) outside the grid: {', '.join(sorted(unexpected))}")
+    for summary in summaries:
+        reasons += _arm_blockers(summary)
+    return reasons
+
+
+def transfer_lines(
+    summaries: Sequence[ArmSummary],
+    cells: dict[tuple[str, str], Cell],
+    instances: Sequence[str],
+    plan: TransferPlan,
+    budgets: Sequence[float],
+    commits: Sequence[str],
+) -> list[str]:
     """#145's section: the pre-registered breakdown and the evidence against its outcomes.
 
     WHAT IS STATED MECHANICALLY, AND WHAT IS NOT. #145 admits three outcomes:
     the shipped value transfers; it does not and a better value is identified;
     or the differences sit inside the measured noise floor and the value is not
     resolvable at this budget. Only the third can be read off this report
-    without judgement, and only in its strict form -- no arm moved any scored
-    instance outside its own floor and no arm changed feasibility anywhere.
+    without judgement, and only in its strict form: `reading_blockers` is
+    empty -- the planned campaign is complete at one budget and one commit, no
+    arm moved any instance, and no arm changed feasibility on any instance.
     Then nothing distinguishes the arms, and saying so picks no winner.
 
     The other two are NOT decided here. Either one names a winner, and doing it
@@ -1253,6 +1405,7 @@ def transfer_lines(summaries: Sequence[ArmSummary], meta: dict[str, InstanceMeta
     evidence -- per arm, per pre-registered size band and per structure class --
     and leaves the outcome to the write-up.
     """
+    meta = plan.meta
     lines = [
         "=== #145: does the shipped unproductive_iters=300 transfer to the held-out roster? ===",
         "Each arm below is one grid neighbour of the shipped value, scored against the control",
@@ -1301,28 +1454,33 @@ def transfer_lines(summaries: Sequence[ArmSummary], meta: dict[str, InstanceMeta
             _group_line(name, group, summary) for name, group in _grouped(summary, class_of, [])
         ]
         lines.append("")
-    if summaries and all(_quiet(s) for s in summaries):
+    blockers = reading_blockers(summaries, cells, instances, plan, budgets, commits)
+    budget = f"{budgets[0]:g}s" if len(budgets) == 1 else "this budget"
+    if not blockers:
         scored = ", ".join(
-            f"{s.arm} {s.scored} scored, {s.floor.unmeasured} without a measurable floor"
+            f"{s.arm} {s.scored}/{len(plan.roster)} roster instances scored, "
+            f"{s.floor.unmeasured} without a measurable floor"
             for s in summaries
         )
         lines.append(
-            "READING: INSIDE THE MEASURED NOISE FLOOR -- no grid neighbour moved any scored "
-            f"instance outside its own floor ({scored}) and none changed feasibility on any "
-            "instance. This is #145's third outcome: the parameter is not resolvable at this "
-            "budget on this roster. It is not evidence that 300 is best, only that this "
-            "measurement cannot tell the grid points apart."
+            f"READING: INSIDE THE MEASURED NOISE FLOOR at {budget} -- the planned campaign is "
+            "complete, no grid neighbour moved any scored instance outside its own floor or any "
+            "unscored one beyond the runner's tie band, and none changed feasibility on any "
+            f"instance ({scored}). This is #145's third outcome: the parameter is not "
+            f"resolvable at {budget} on this roster. It is not evidence that 300 is best, only "
+            "that this measurement cannot tell the grid points apart -- and it says nothing "
+            "about any other budget."
         )
     else:
+        lines.append(f"READING: NOT STATED MECHANICALLY (budget {budget}), because:")
+        lines += [f"  - {reason}" for reason in blockers]
         lines.append(
-            "READING: NOT STATED MECHANICALLY. At least one grid neighbour moved an instance "
-            "outside its floor, changed feasibility, had nothing scorable, or is missing rows "
-            "(an incomplete campaign). Which of #145's "
-            "three outcomes this is (transfers / does not transfer and a better value is "
-            "identified / inside the noise floor) is left to the write-up, read from the "
-            "evidence above: both neighbours share one control and no multiplicity correction "
-            "is applied, families cluster (HELDOUT.md), and the per-band and per-class counts "
-            "are the pre-registered check that a difference is not a size effect."
+            "Which of #145's three outcomes this is (transfers / does not transfer and a "
+            "better value is identified / inside the noise floor) is left to the write-up, "
+            "read from the evidence above: both neighbours share one control and no "
+            "multiplicity correction is applied, families cluster (HELDOUT.md), and the "
+            "per-band and per-class counts are the pre-registered check that a difference is "
+            "not a size effect."
         )
     return lines
 
@@ -1484,16 +1642,27 @@ def render_report(
     gate: dict[str, object] | None = None,
     *,
     heading: str = ABLATION_HEADING,
-    transfer_meta: dict[str, InstanceMeta] | None = None,
+    transfer: TransferPlan | None = None,
 ) -> str:
     """The whole campaign report, as text.
 
-    `transfer_meta` -- the roster's class and size per instance -- switches on
-    #145's section; the ablation passes None and its report is unchanged.
+    `transfer` -- the plan of #145's campaign -- switches on #145's section;
+    the ablation passes None and gets no such section.
+
+    A file that mixes budgets is refused outright: every comparison in it
+    would be a comparison of budgets as well as of arms.
     """
     rows = load_rows(results)
     if not rows:
         return f"{results} holds no rows"
+    budgets = sorted({r.time_limit for r in rows if math.isfinite(r.time_limit)})
+    commits = sorted({r.commit for r in rows if r.commit})
+    if len(budgets) > 1:
+        return (
+            f"{results} mixes budgets {', '.join(f'{b:g}s' for b in budgets)}; refusing to "
+            "score it -- an arm compared against a control run at another budget measures the "
+            "budget. Split the rows by time_limit and score each file on its own."
+        )
     cells = build_cells(rows)
     instances = scored_instances(rows)
     arms = [a for a in dict.fromkeys(r.arm for r in rows) if a not in (CONTROL_ARM, PROBE_ARM_NAME)]
@@ -1510,6 +1679,9 @@ def render_report(
         f"instances scored:     {len(instances)} "
         f"(excluding {', '.join(CLAIM_EXCLUDED)}, published as documented failures)",
         f"seeds:                {sorted({r.seed for r in rows})}",
+        "budget (time_limit):  "
+        + (", ".join(f"{b:g}s" for b in budgets) if budgets else "not recorded"),
+        f"engine commit(s):     {', '.join(commits) if commits else 'not recorded'}",
         f"arms:                 {', '.join([CONTROL_ARM, *arms])}",
         "mean wall per run:    "
         + (
@@ -1541,9 +1713,9 @@ def render_report(
         "is sound; the roster-level median and mean pool the two and are quoted as 'points' "
         "for want of a better word."
     )
-    if transfer_meta is not None:
+    if transfer is not None:
         lines.append("")
-        lines += transfer_lines(summaries, transfer_meta)
+        lines += transfer_lines(summaries, cells, instances, transfer, budgets, commits)
     lines.append("")
     lines.append("--- instances excluded from every claim ---")
     lines += _excluded_lines(cells, [CONTROL_ARM, *arms])

@@ -60,6 +60,8 @@ from benchmarks.minlplib.run_ablation import (
     probe_plan,
     read_runner_row,
     recorded_keys,
+    recorded_seeds,
+    report_for,
     resolve_campaign,
     run_locked,
     runner_command,
@@ -941,6 +943,14 @@ def test_the_transfer_arms_are_the_provenance_grid_with_the_shipped_value_as_con
     assert shipped is not None
     assert int(shipped.group(1)) == SHIPPED_UNPRODUCTIVE_ITERS == 300
     assert "{100, 300, 1000}" in header  # the provenance comment's grid
+    # ... and the default the RUNNER actually applies: search_config_flags.h
+    # seeds `--unproductive-iters` from SearchConfig, which forwards it to
+    # GFJConfig. Either could move alone.
+    flags = (REPO_ROOT / "benchmarks" / "common" / "search_config_flags.h").read_text()
+    assert "unproductive_iters = SearchConfig{}.unproductive_iterations;" in flags
+    search = (REPO_ROOT / "include" / "cbls" / "search.h").read_text()
+    runner_default = re.findall(r"int64_t unproductive_iterations = (\d+);", search)
+    assert runner_default == [str(SHIPPED_UNPRODUCTIVE_ITERS)]
     assert TRANSFER_GRID == (100, 300, 1000)
 
     assert [(a.name, a.flags, a.config) for a in TRANSFER_ARMS] == [
@@ -1135,6 +1145,37 @@ def test_report_only_scores_the_campaign_its_stamp_records(
 
     assert main(["--out-dir", str(out_dir), "--report-only", "--campaign", "ablation"]) == 2
     assert "contradicts" in capsys.readouterr().err
+
+
+def test_report_only_checks_completeness_against_the_stamped_seeds(tmp_path: Path) -> None:
+    """`--report-only` does not repeat `--seeds`, so the plan the rows are checked
+    against takes its seeds from the stamp, not from the default list."""
+    out_dir = tmp_path / "scratch"
+    out_dir.mkdir()
+    assert recorded_seeds(out_dir) is None
+    (out_dir / STAMP_NAME).write_text(
+        campaign_stamp("abc1234", 10.0, [4, 5, 6], TRANSFER_ARMS, campaign=TRANSFER_CAMPAIGN)
+    )
+    assert recorded_seeds(out_dir) == [4, 5, 6]
+
+    (tmp_path / "inst").mkdir()
+    (tmp_path / "inst" / "bounds.csv").write_text(
+        "instance,structure,nvars,ncons,objsense,primal_bks,dual_bound,n_disc_vars_bks\n"
+        "a,other,3,4,min,1,1,0\n"
+    )
+    results = _campaign_csv(
+        out_dir / RESULTS_NAME,
+        [
+            {"instance": "a", "arm": arm.name, "seed": seed, "gap_to_bks%": 1.0 + 0.1 * seed}
+            for seed in (4, 5, 6)
+            for arm in TRANSFER_ARMS
+        ],
+    )
+    args = make_args(tmp_path, campaign=TRANSFER_CAMPAIGN, out_dir=out_dir)
+    assert args.seeds == [1, 2, 3]  # what a --report-only invocation carries
+    assert "lack a completed search" not in report_for(args, results, gate=None)
+    (out_dir / STAMP_NAME).unlink()  # no stamp: falls back to --seeds, and says so
+    assert "lack a completed search" in report_for(args, results, gate=None)
 
 
 def test_the_transfer_dry_run_prints_the_grid_and_no_gate_probe(

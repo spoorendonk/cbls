@@ -29,6 +29,7 @@ from benchmarks.minlplib.ablation_report import (
     TRANSFER_HEADING,
     Cell,
     InstanceMeta,
+    TransferPlan,
     build_cells,
     compare,
     control_spreads,
@@ -1215,7 +1216,28 @@ def _transfer_rows(
         )
         moved = (shift or {}).get(name, 0.0)
         rows += run_rows(name, "unproductive-1000", [g + moved for g in base])
-    return rows
+    return _at_budget(rows)
+
+
+def _at_budget(
+    rows: list[dict[str, object]], budget: str = "10", commit: str = "abc1234"
+) -> list[dict[str, object]]:
+    """Every row stamped with one budget and one commit, as the driver writes them."""
+    return [{**row, "time_limit": budget, "commit_sha": commit} for row in rows]
+
+
+#: The plan the fixture campaign was run under: the three instances, seeds 1-3,
+#: both neighbours.
+TRANSFER_PLAN = TransferPlan(
+    meta=TRANSFER_META, seeds=(1, 2, 3), arms=("unproductive-100", "unproductive-1000")
+)
+
+
+def _transfer_report(
+    tmp_path: Path, rows: list[dict[str, object]], plan: TransferPlan = TRANSFER_PLAN
+) -> str:
+    results = write_results(tmp_path / "r.csv", rows)
+    return render_report(results, heading=TRANSFER_HEADING, transfer=plan)
 
 
 def test_the_pre_registered_size_bands_split_the_committed_heldout_roster_as_published() -> None:
@@ -1245,8 +1267,7 @@ def test_a_transfer_report_with_nothing_outside_the_floor_states_the_third_outco
     """The one outcome the report may state by rule: nothing moved and nothing
     changed feasibility. Its floor is the held-out control's own spread from
     this file -- s = 0.1, so 4.303 * 0.1 * sqrt(2/3) = 0.351 points."""
-    results = write_results(tmp_path / "r.csv", _transfer_rows())
-    report = render_report(results, heading=TRANSFER_HEADING, transfer_meta=TRANSFER_META)
+    report = _transfer_report(tmp_path, _transfer_rows())
     assert report.startswith(TRANSFER_HEADING)
     assert "INSIDE THE MEASURED NOISE FLOOR" in report
     assert "third outcome" in report
@@ -1261,8 +1282,7 @@ def test_a_transfer_report_with_a_mover_leaves_the_outcome_to_the_write_up(
 ) -> None:
     """A neighbour that moved an instance names no winner by rule -- it prints the
     evidence, with the mover filed under its pre-registered band and its class."""
-    results = write_results(tmp_path / "r.csv", _transfer_rows(shift={"big1": -5.0}))
-    report = render_report(results, heading=TRANSFER_HEADING, transfer_meta=TRANSFER_META)
+    report = _transfer_report(tmp_path, _transfer_rows(shift={"big1": -5.0}))
     assert "NOT STATED MECHANICALLY" in report
     assert "INSIDE THE MEASURED NOISE FLOOR" not in report
     section = report[report.index("--- unproductive-1000 vs control ---") :]
@@ -1275,8 +1295,7 @@ def test_a_feasibility_change_alone_is_not_inside_the_noise(tmp_path: Path) -> N
     """A gap verdict of INSIDE THE NOISE says nothing about an instance one side
     solved and the other did not -- the exact way 100 failed in the original
     grid -- so the third outcome needs feasibility unchanged as well."""
-    results = write_results(tmp_path / "r.csv", _transfer_rows(infeasible_arm="small1"))
-    report = render_report(results, heading=TRANSFER_HEADING, transfer_meta=TRANSFER_META)
+    report = _transfer_report(tmp_path, _transfer_rows(infeasible_arm="small1"))
     assert "NOT STATED MECHANICALLY" in report
     section = report[report.index("--- unproductive-100 vs control ---") :]
     assert "control-only-feasible 1" in section
@@ -1295,7 +1314,139 @@ def test_an_incomplete_transfer_campaign_does_not_read_as_inside_the_noise(
     """An interrupted campaign has control rows for its last instance and no arm
     rows: that instance is in no bucket, and "nothing moved" over the rest is
     not a statement about the roster."""
-    rows = [*_transfer_rows(), *run_rows("extra", CONTROL_ARM, [1.0, 1.1, 1.2])]
-    results = write_results(tmp_path / "r.csv", rows)
-    report = render_report(results, heading=TRANSFER_HEADING, transfer_meta=TRANSFER_META)
+    rows = [*_transfer_rows(), *_at_budget(run_rows("extra", CONTROL_ARM, [1.0, 1.1, 1.2]))]
+    report = _transfer_report(tmp_path, rows)
     assert "NOT STATED MECHANICALLY" in report
+
+
+# --- #145: what blocks the mechanical "inside the noise" reading ---------------
+
+
+def _reading(report: str) -> str:
+    return report[report.index("READING:") :]
+
+
+def test_the_clean_fixture_names_its_budget_and_commit(tmp_path: Path) -> None:
+    """The report says what it measured: one budget, one commit, both in the
+    header, and the budget again in the READING sentence it qualifies."""
+    report = _transfer_report(tmp_path, _transfer_rows())
+    assert "budget (time_limit):  10s" in report
+    assert "engine commit(s):     abc1234" in report
+    assert "INSIDE THE MEASURED NOISE FLOOR at 10s" in report
+    assert "3/3 roster instances scored" in report
+
+
+def test_an_unscored_instance_that_moved_blocks_the_inside_reading(tmp_path: Path) -> None:
+    """A control at the same gap on every seed has no measurable floor, so the
+    instance is not scored -- but a neighbour 50 points away is a difference."""
+    rows = _transfer_rows()
+    rows = [r for r in rows if r["instance"] != "big1"]
+    rows += _at_budget(
+        [
+            *run_rows("big1", CONTROL_ARM, [0.0, 0.0, 0.0]),
+            *run_rows("big1", "unproductive-100", [0.0, 0.0, 0.0]),
+            *run_rows("big1", "unproductive-1000", [50.0, 50.0, 50.0]),
+        ]
+    )
+    reading = _reading(_transfer_report(tmp_path, rows))
+    assert "NOT STATED MECHANICALLY" in reading
+    assert "unscored instance(s) big1" in reading
+
+
+def test_an_unscored_delta_inside_the_runners_tie_band_does_not_block(tmp_path: Path) -> None:
+    """The threshold is the runner's own tie band, not 'any nonzero delta': a
+    residual the runner calls equal is not a finding."""
+    rows = [r for r in _transfer_rows() if r["instance"] != "big1"]
+    rows += _at_budget(
+        [
+            *run_rows("big1", CONTROL_ARM, [5.0, 5.0, 5.0]),
+            *run_rows("big1", "unproductive-100", [5.0, 5.0, 5.0]),
+            *run_rows("big1", "unproductive-1000", [5.0 + 1e-6] * 3),
+        ]
+    )
+    assert "INSIDE THE MEASURED NOISE FLOOR" in _transfer_report(tmp_path, rows)
+
+
+@pytest.mark.parametrize(
+    ("keep", "said"),
+    [
+        # Rows for one of the three roster instances: "nothing moved" over one
+        # instance is not a statement about the roster.
+        (lambda r: r["instance"] == "small1", "lack a completed search"),
+        # Every arm present on every instance, but one instance at two seeds.
+        (lambda r: not (r["instance"] == "mid1" and r["seed"] == 3), "mid1/control"),
+    ],
+    ids=["one-of-three-instances", "one-instance-at-two-seeds"],
+)
+def test_an_incomplete_plan_blocks_the_inside_reading(
+    tmp_path: Path, keep: Callable[[dict[str, object]], bool], said: str
+) -> None:
+    rows = [r for r in _transfer_rows() if keep(r)]
+    reading = _reading(_transfer_report(tmp_path, rows))
+    assert "NOT STATED MECHANICALLY" in reading
+    assert said in reading
+
+
+def test_missing_roster_metadata_blocks_the_inside_reading(tmp_path: Path) -> None:
+    plan = TransferPlan(meta={}, seeds=(1, 2, 3), arms=TRANSFER_PLAN.arms)
+    reading = _reading(_transfer_report(tmp_path, _transfer_rows(), plan))
+    assert "NOT STATED MECHANICALLY" in reading
+    assert "no roster metadata" in reading
+
+
+def test_feasibility_changes_that_cancel_in_a_sum_still_block(tmp_path: Path) -> None:
+    """3/3 -> 2/3 on one instance and 2/3 -> 3/3 on another sum to zero. They are
+    two feasibility changes, and are judged per instance."""
+    rows = [r for r in _transfer_rows() if r["instance"] not in ("small1", "mid1")]
+    rows += _at_budget(
+        [
+            *run_rows("small1", CONTROL_ARM, [10.0, 10.1, 10.2]),
+            *run_rows("small1", "unproductive-100", [10.1, 10.1, None]),
+            *run_rows("small1", "unproductive-1000", [10.0, 10.1, 10.2]),
+            *run_rows("mid1", CONTROL_ARM, [10.0, 10.2, None]),
+            *run_rows("mid1", "unproductive-100", [10.0, 10.1, 10.2]),
+            *run_rows("mid1", "unproductive-1000", [10.0, 10.2, None]),
+        ]
+    )
+    report = _transfer_report(tmp_path, rows)
+    assert "balanced feasible-run delta +0" in report  # the sum that hid it
+    reading = _reading(report)
+    assert "NOT STATED MECHANICALLY" in reading
+    assert "feasible-run count differs on small1, mid1" in reading
+
+
+def test_a_neighbour_that_errors_on_every_seed_blocks_the_inside_reading(
+    tmp_path: Path,
+) -> None:
+    """A solve-error on every seed of one arm is held out of every count -- so
+    without a completeness test the instance simply vanishes and the reading
+    goes through. Whether a solve throws can depend on the arm."""
+    rows = [
+        r
+        for r in _transfer_rows()
+        if not (r["instance"] == "mid1" and r["arm"] == "unproductive-1000")
+    ]
+    rows += _at_budget(
+        [
+            {
+                "instance": "mid1",
+                "arm": "unproductive-1000",
+                "seed": seed,
+                "feasible": "false",
+                "gap_to_bks%": "NaN",
+                "note": "solve-error",
+            }
+            for seed in (1, 2, 3)
+        ]
+    )
+    reading = _reading(_transfer_report(tmp_path, rows))
+    assert "NOT STATED MECHANICALLY" in reading
+    assert "mid1/unproductive-1000" in reading
+
+
+def test_a_results_file_that_mixes_budgets_is_refused(tmp_path: Path) -> None:
+    rows = _transfer_rows()
+    rows[0] = {**rows[0], "time_limit": "60"}
+    report = _transfer_report(tmp_path, rows)
+    assert "mixes budgets 10s, 60s" in report
+    assert "READING" not in report

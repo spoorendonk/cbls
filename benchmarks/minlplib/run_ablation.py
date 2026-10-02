@@ -109,6 +109,7 @@ from benchmarks.minlplib.ablation_report import (  # noqa: E402
     CONTROL_ARM,
     PROBE_ARM_NAME,
     TRANSFER_HEADING,
+    TransferPlan,
     render_report,
     roster_meta,
 )
@@ -468,6 +469,18 @@ def campaign_stamp(
     )
 
 
+def stamp_field(out_dir: Path, field: str) -> str | None:
+    """One field of an out-dir's stamp, or None where the stamp has no such field."""
+    path = out_dir / STAMP_NAME
+    if not path.exists():
+        return None
+    for line in path.read_text().splitlines():
+        key, _, value = line.partition("=")
+        if key == field:
+            return value
+    return None
+
+
 def recorded_campaign(out_dir: Path) -> str | None:
     """The campaign an out-dir's stamp names, or None where it names none.
 
@@ -475,14 +488,18 @@ def recorded_campaign(out_dir: Path) -> str | None:
     campaign -- every such out-dir is an ablation, but saying so is the
     caller's decision, not this reader's.
     """
-    path = out_dir / STAMP_NAME
-    if not path.exists():
+    return stamp_field(out_dir, "campaign")
+
+
+def recorded_seeds(out_dir: Path) -> list[int] | None:
+    """The seed list an out-dir's stamp records, or None if it records none readably."""
+    text = stamp_field(out_dir, "seeds")
+    if not text:
         return None
-    for line in path.read_text().splitlines():
-        key, _, value = line.partition("=")
-        if key == "campaign":
-            return value
-    return None
+    try:
+        return [int(seed) for seed in text.split(",")]
+    except ValueError:
+        return None
 
 
 def stamp_conflict(out_dir: Path, stamp: str, *, resume: bool) -> str | None:
@@ -1158,12 +1175,20 @@ def report_for(args: argparse.Namespace, results: Path, gate: dict[str, object] 
     """
     if args.campaign != TRANSFER_CAMPAIGN:
         return render_report(results, gate=gate)
-    return render_report(
-        results,
-        gate=gate,
-        heading=TRANSFER_HEADING,
-        transfer_meta=roster_meta(args.inst_dir / "bounds.csv"),
+    meta = roster_meta(args.inst_dir / "bounds.csv")
+    if args.instances:
+        # A subset run is planned as that subset; the report's completeness
+        # check is against what was asked for, in roster order.
+        meta = {name: item for name, item in meta.items() if name in args.instances}
+    plan = TransferPlan(
+        meta=meta,
+        # The seeds the campaign was STAMPED with where there is a stamp: a
+        # `--report-only` invocation does not repeat `--seeds`, and checking the
+        # rows against the default list would misreport a campaign run at others.
+        seeds=tuple(recorded_seeds(args.out_dir) or args.seeds),
+        arms=tuple(arm.name for arm in TRANSFER_ARMS if arm.name != CONTROL_ARM),
     )
+    return render_report(results, gate=gate, heading=TRANSFER_HEADING, transfer=plan)
 
 
 def usage_error(args: argparse.Namespace) -> str | None:

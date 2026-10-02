@@ -282,10 +282,14 @@ see the next section.
 
 **Result: pending smoke run.** Nothing below this line has been measured yet.
 
+Whatever the smoke run finds, **the 60 s transfer question stays unanswered.**
+The filled-in result must say so in its first sentence.
+
 <!-- #145 RESULT: fill in after the smoke run. State exactly one of #145's
 three outcomes -- the shipped value transfers; it does not and a better value
 is identified; or the differences sit inside the measured noise floor and the
-value is not resolvable at this budget. Quote: the engine commit, the machine
+value is not resolvable at this budget. Open by saying it was measured at 10 s
+and leaves the 60 s question unanswered. Quote: the engine commit, the machine
 and its load, the held-out noise floor (typical per-instance floor and median
 control spread from the report), each neighbour's worse/better/held counts and
 feasibility buckets, and the per-band and per-class breakdown. Do NOT change the
@@ -335,6 +339,9 @@ cost. What that limits:
 - The original grid ran at 2 s, contended, on one seed. 10 s on three seeds is
   a better measurement than that, but it is not the published configuration.
   It cannot be cited as evidence about the 60 s headline result.
+- So **#145's own question, at the published 60 s budget, stays open** after
+  this run, whichever outcome it gives. Answering it needs the same command at
+  `--time-limit 60`, about 7.5 h.
 
 ### How the report states the outcome
 
@@ -346,11 +353,30 @@ so a family such as `graphpart_*` can be read as one cluster. The floor comes
 from this run's control only. Nothing is carried over from the published
 roster.
 
-Only the third outcome is stated by rule, and only in its strict form: neither
-neighbour moved any scored instance outside its floor, neither changed
-feasibility anywhere, and the campaign is complete. Then the report prints
-"INSIDE THE MEASURED NOISE FLOOR". In every other case it prints "NOT STATED
-MECHANICALLY" and the outcome is decided in the write-up above. Naming a winner
+The report header names the budget and the engine commit. A results file that
+mixes budgets is refused outright.
+
+Only the third outcome is stated by rule, and only in its strict form. The
+report prints "INSIDE THE MEASURED NOISE FLOOR" only when every one of these
+holds:
+
+- **The planned campaign is all there.** Every roster instance in
+  `heldout/bounds.csv` has, for the control and both neighbours, a completed
+  search at exactly each planned seed: the seeds the out-dir's stamp records,
+  else `--seeds`. No cell may hold a crashed or unscored row (for example
+  `solve-error`). There are no rows for instances outside the roster or for arms
+  outside the grid, and the roster metadata was found.
+- **One budget and one commit** across the rows.
+- **No neighbour moved anything.** No instance is outside its own floor. No
+  instance whose control spread could not be measured differs by more than the
+  runner's own tie band. That is the smallest difference the runner itself
+  calls a difference; any nonzero delta would count float residue on exactly
+  solved instances.
+- **No feasibility change on any instance**, judged per instance, so a loss on
+  one instance and a gain on another do not cancel.
+
+In every other case it prints "NOT STATED MECHANICALLY" with the reasons
+listed, and the outcome is decided in the write-up above. Naming a winner
 by rule would mean choosing a threshold across two neighbours tested against
 one control, with no multiplicity correction, over clustered instances and a
 three-seed floor. Such a rule would sometimes pick winners from noise.
