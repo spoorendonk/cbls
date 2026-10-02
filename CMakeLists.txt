@@ -345,6 +345,14 @@ if(CBLS_BUILD_BENCHMARKS)
     target_link_libraries(cbls_uc_chped PRIVATE cbls_lib)
     cbls_enable_warnings(cbls_uc_chped)
     target_include_directories(cbls_uc_chped PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${json_SOURCE_DIR}/include)
+    # The runner refuses to write a published artifact from a binary that is not
+    # the engine anyone runs (#146), and it can only see its own build through
+    # these: the configuration, and the same if() that turns instrumentation on
+    # above.
+    target_compile_definitions(cbls_uc_chped PRIVATE CBLS_RUNNER_BUILD_TYPE="$<CONFIG>")
+    if(CBLS_SANITIZE OR CBLS_PROFILE)
+        target_compile_definitions(cbls_uc_chped PRIVATE CBLS_INSTRUMENTED_BUILD)
+    endif()
 
     add_executable(cbls_minlplib benchmarks/minlplib/minlplib.cpp)
     target_link_libraries(cbls_minlplib PRIVATE cbls_lib)

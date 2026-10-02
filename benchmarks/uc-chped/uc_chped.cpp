@@ -40,6 +40,7 @@
 #include <ostream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -186,6 +187,38 @@ const char* non_published_protocol(const Args& a) {
     return nullptr;
 }
 
+#ifndef CBLS_RUNNER_BUILD_TYPE
+#define CBLS_RUNNER_BUILD_TYPE ""  // built outside CMakeLists.txt: unknown, so refused
+#endif
+
+/// Why this binary must not write a published artifact, or nullptr when it may.
+/// Read from the binary's own compile-time state rather than from a build
+/// directory, because the runner is invoked directly and `preflight.py` (which
+/// checks the build directory) is a step a caller can skip (#146). A Debug,
+/// sanitizer or frame-pointer binary measures a different engine at a
+/// wall-clock budget.
+const char* build_refusal() {
+    if (std::string_view(CBLS_RUNNER_BUILD_TYPE) != "Release") {
+        return "not a Release build";
+    }
+#ifndef NDEBUG
+    return "built without NDEBUG";
+#elif defined(CBLS_INSTRUMENTED_BUILD)
+    return "built with CBLS_SANITIZE or CBLS_PROFILE";
+#elif defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+    return "built with a sanitizer";
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || \
+    __has_feature(memory_sanitizer) || __has_feature(undefined_behavior_sanitizer)
+    return "built with a sanitizer";
+#else
+    return nullptr;
+#endif
+#else
+    return nullptr;
+#endif
+}
+
 /// Fills in `--out` and enforces what may overwrite this benchmark's published
 /// artifacts. Its own step because the guards are about the FILES rather than
 /// about which flags were typed -- see the comment inside.
@@ -289,11 +322,25 @@ void resolve_out_csv(Args& a) {
     }
     // Without --verify every `verified` cell is empty, and an independent
     // re-check is one of the published run's own acceptance criteria (#146).
+    // The trace has no such column, but it is only ever written by that same
+    // published run, so a trace-only publish is held to it too: refusing fails
+    // closed, and the message says why for the artifact actually named.
     if (!a.do_verify) {
+        std::fprintf(
+            stderr,
+            "writing %s requires --verify%s "
+            "(pass %s elsewhere for an unverified run)\n",
+            target.c_str(),
+            writes_table ? "" : ": the published trace belongs to the verified published run",
+            redirect);
+        std::exit(2);
+    }
+    const char* const unfit = build_refusal();
+    if (unfit != nullptr) {
         std::fprintf(stderr,
-                     "writing %s requires --verify "
-                     "(pass %s elsewhere for an unverified run)\n",
-                     target.c_str(), redirect);
+                     "this binary cannot write the published %s %s: it was %s "
+                     "(rebuild in a Release build directory without CBLS_SANITIZE/CBLS_PROFILE)\n",
+                     artifact, target.c_str(), unfit);
         std::exit(2);
     }
 }
@@ -1011,6 +1058,11 @@ int run_benchmark(int argc, char** argv) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    // Line-buffered even into a pipe: the documented command tees this output
+    // to comparison.log, the only record of WHICH checks failed on a VERIFY FAIL
+    // row, and a fully buffered stdout loses the last few KiB of it to a kill
+    // (#146). A few lines per row, so the cost is nothing.
+    (void)std::setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
     // A benchmark run is long, and an exception escaping main is std::terminate
     // -- an abort with no message, indistinguishable from a crash. Say what
     // failed and exit non-zero instead (bugprone-exception-escape).

@@ -130,6 +130,18 @@ def cmake_cache(build_dir: Path) -> dict[str, str]:
     return entries
 
 
+#: The values CMake's `if(<variable>)` reads as false, upper-cased. Anything else
+#: -- `address`, `ON`, `yes` -- switches CBLS_SANITIZE/CBLS_PROFILE on in
+#: CMakeLists.txt, so anything else must be refused here.
+_CMAKE_FALSE = frozenset({"", "0", "OFF", "NO", "FALSE", "N", "IGNORE", "NOTFOUND"})
+
+
+def cmake_true(value: str) -> bool:
+    """Whether CMake's `if()` would read the cache value `value` as on."""
+    upper = value.strip().upper()
+    return upper not in _CMAKE_FALSE and not upper.endswith("-NOTFOUND")
+
+
 def build_dir_problems(
     build_dir: Path, cache: dict[str, str], repo_root: Path = REPO_ROOT
 ) -> list[str]:
@@ -158,20 +170,27 @@ def build_dir_problems(
     # slower and -fno-omit-frame-pointer costs throughput, so either would
     # publish wall-clock-budgeted rows measured on an engine nobody runs. See
     # docs/profiling.md.
-    if cache.get("CBLS_SANITIZE"):
+    if cmake_true(cache.get("CBLS_SANITIZE", "")):
         problems.append(
             f"{build_dir} is configured with CBLS_SANITIZE={cache['CBLS_SANITIZE']}; "
             "these are wall-clock-budgeted solves and a sanitizer build measures a "
             "different engine. Use a separate build directory for sanitizers."
         )
-    if cache.get("CBLS_PROFILE", "OFF") not in ("OFF", "FALSE", "0", ""):
+    if cmake_true(cache.get("CBLS_PROFILE", "")):
         problems.append(
             f"{build_dir} is configured with CBLS_PROFILE={cache['CBLS_PROFILE']}; "
             "frame pointers cost throughput and docs/profiling.md says a build-profile "
             "wall-clock is not a benchmark number. Use a separate build directory."
         )
+    # Every configured cache records it, so a cache without one is not one this
+    # check can vouch for -- and skipping the comparison would pass it.
     home = cache.get("CMAKE_HOME_DIRECTORY")
-    if home and Path(home).resolve() != repo_root:
+    if not home:
+        problems.append(
+            f"{build_dir}/CMakeCache.txt has no CMAKE_HOME_DIRECTORY, so it cannot be "
+            f"shown to be a build of {repo_root}"
+        )
+    elif Path(home).resolve() != repo_root:
         problems.append(
             f"{build_dir} was configured from {home}, but the commit SHA is read from "
             f"{repo_root}; the rows would name one checkout and measure another"

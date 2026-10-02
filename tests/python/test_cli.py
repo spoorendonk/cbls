@@ -534,10 +534,22 @@ def test_uc_chped_refuses_one_path_for_both_outputs(tmp_path: Path) -> None:
     assert not both.exists()
 
 
-def test_uc_chped_requires_a_commit_to_write_the_published_trace(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ([], "requires an explicit --commit"),
+        # The trace has no `verified` column, but only the verified published
+        # run writes it, so a trace-only publish is refused too -- with a
+        # message that says why for the trace rather than for the table (#146).
+        (["--commit", "deadbee"], "requires --verify: the published trace belongs"),
+    ],
+)
+def test_uc_chped_requires_a_commit_to_write_the_published_trace(
+    extra: list[str], message: str, tmp_path: Path
+) -> None:
     """A full-roster run may write the published trace, but only while saying
-    which engine it profiled -- and the diagnostic names --trace, the flag that
-    redirects the file it is refusing, not --out."""
+    which engine it profiled and having verified it -- and the diagnostic names
+    --trace, the flag that redirects the file it is refusing, not --out."""
     if not UC_CHPED_BINARY.exists():
         pytest.skip("cbls_uc_chped not built")
     inst_dir = _uc_chped_scratch(tmp_path)
@@ -546,7 +558,7 @@ def test_uc_chped_requires_a_commit_to_write_the_published_trace(tmp_path: Path)
     before = published_trace.read_bytes()
 
     # No --instance and no budget override, so the run IS the published protocol
-    # and is refused for the commit alone. It exits during argument resolution,
+    # and is refused for the missing flag alone. It exits during argument resolution,
     # before a single instance is read, which is what keeps this cheap.
     result = subprocess.run(
         [
@@ -556,6 +568,7 @@ def test_uc_chped_requires_a_commit_to_write_the_published_trace(tmp_path: Path)
             str(tmp_path / "elsewhere.csv"),
             "--trace",
             str(published_trace),
+            *extra,
         ],
         capture_output=True,
         text=True,
@@ -563,7 +576,7 @@ def test_uc_chped_requires_a_commit_to_write_the_published_trace(tmp_path: Path)
     )
 
     assert result.returncode == 2, result.stdout
-    assert "requires an explicit --commit" in result.stderr, result.stderr
+    assert message in result.stderr, result.stderr
     assert "pass --trace elsewhere" in result.stderr, result.stderr
     assert published_trace.read_bytes() == before, "the published trace was modified"
 

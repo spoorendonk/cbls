@@ -383,8 +383,21 @@ RELEASE_HERE = "CMAKE_BUILD_TYPE:STRING=Release\nCMAKE_HOME_DIRECTORY:INTERNAL={
         # so the Release check alone would pass a build measured several-fold slow.
         ("CBLS_SANITIZE:STRING=address,undefined\n", "CBLS_SANITIZE=address,undefined"),
         ("CBLS_PROFILE:BOOL=ON\n", "CBLS_PROFILE=ON"),
+        # Read the way CMake's if() reads them (#146): every false constant, in
+        # any case, is off; anything else CMakeLists.txt would switch on.
+        ("CBLS_SANITIZE:STRING=OFF\nCBLS_PROFILE:BOOL=no\n", None),
+        ("CBLS_SANITIZE:STRING=x-NOTFOUND\nCBLS_PROFILE:BOOL=Ignore\n", None),
+        ("CBLS_PROFILE:BOOL=yes\n", "CBLS_PROFILE=yes"),
     ],
-    ids=["release", "options-off", "sanitizer", "frame-pointers"],
+    ids=[
+        "release",
+        "options-off",
+        "sanitizer",
+        "frame-pointers",
+        "cmake-false-constants",
+        "cmake-notfound-and-ignore",
+        "cmake-true-spelling",
+    ],
 )
 def test_a_build_dir_is_refused_for_what_it_would_measure(
     tmp_path: Path, extra: str, refusal: str | None
@@ -402,8 +415,10 @@ def test_a_build_dir_is_refused_for_what_it_would_measure(
         ("CMAKE_BUILD_TYPE:STRING=Debug\n", "not Release"),
         # The SHA is read from this checkout; the binary must come from it too.
         (RELEASE_HERE.format(home="/elsewhere"), "was configured from"),
+        # Skipping the comparison when the entry is absent would pass it (#146).
+        ("CMAKE_BUILD_TYPE:STRING=Release\n", "has no CMAKE_HOME_DIRECTORY"),
     ],
-    ids=["unconfigured", "debug", "another-checkout"],
+    ids=["unconfigured", "debug", "another-checkout", "no-home-directory"],
 )
 def test_a_build_dir_is_refused_for_what_it_is(
     tmp_path: Path, entries: str | None, refusal: str
