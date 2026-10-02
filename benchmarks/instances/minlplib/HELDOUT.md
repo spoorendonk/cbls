@@ -280,20 +280,109 @@ see the next section.
 
 ## #145: does the shipped unproductive-exit threshold transfer?
 
-**Result: pending smoke run.** Nothing below this line has been measured yet.
+### Result (smoke scale, 10 s)
 
-Whatever the smoke run finds, **the 60 s transfer question stays unanswered.**
-The filled-in result must say so in its first sentence.
+**Measured at 10 s only, this leaves #145's question at the published 60 s
+budget unanswered.** At 10 s the outcome is the first of #145's three: **the
+shipped value transfers.** No neighbour beats 300 on the held-out roster. 1000
+is consistently worse. 100 is inside the measured noise floor, so the data
+cannot rank 100 against 300; it shows only that 300 is not worse. No better
+value is identified, and the shipped default is unchanged.
 
-<!-- #145 RESULT: fill in after the smoke run. State exactly one of #145's
-three outcomes -- the shipped value transfers; it does not and a better value
-is identified; or the differences sit inside the measured noise floor and the
-value is not resolvable at this budget. Open by saying it was measured at 10 s
-and leaves the 60 s question unanswered. Quote: the engine commit, the machine
-and its load, the held-out noise floor (typical per-instance floor and median
-control spread from the report), each neighbour's worse/better/held counts and
-feasibility buckets, and the per-band and per-class breakdown. Do NOT change the
-shipped default in the same step, whatever the outcome. -->
+**Run.** Engine commit `1de6a7a`, `--time-limit 10`, seeds 1, 2 and 3, all 50
+held-out instances x {300 (control), 100, 1000}. That is 450 solves, all of
+which completed a search (mean wall 10.0 s per run, max 10.38 s). The run was
+serial, arms interleaved per instance, under the machine-wide wall-clock lock,
+on an otherwise idle machine. The driver refuses to start above a one-minute
+load of 0.4. Machine: `simon-Legion-5-Pro-16ACH6H`, AMD Ryzen 5 5600H (6 cores,
+12 threads). The numbers live in scratch, not in this repository, as every
+held-out result does. To regenerate them, run the command under "Protocol:
+smoke scale" below from `1de6a7a`, then rescore with `--report-only --no-build`
+on the same `--campaign` and `--out-dir`. That rescore reproduces the report
+quoted here exactly.
+
+**Noise floor, measured on the held-out roster.** It is each instance's own
+control spread across the three seeds, as a two-sided 95% Student band.
+Median control s = 0.59 gap points; typical per-instance floor +/-2.07 points;
+31 instances measured. Of those, 5 were raised to the runner's tie band. The
+other comparable instances (17 for the 100 arm, 16 for 1000) have no measurable
+floor and are held to the tie band instead. In two of them, `tloss` and `tln6`,
+the control was feasible on only one seed. The rest returned the same control
+gap on every seed, and most of those are solved exactly: 7 of the 12
+`graphpart_*`, plus `st_bpv1`, `st_z`, both `ex14_*` and `ex2_1_2`. With three
+seeds the Student factor is 4.30, so this floor is wide. A small real effect
+can hide inside it.
+
+| Neighbour | Worse | Better | Held | Unscored, beyond tie band | Feasibility (control-only / arm-only) | Feasible runs / BKS-matching runs (control: 141 / 72) | Sign test |
+|---|---:|---:|---:|---|---|---|---:|
+| 100 | 2 | 1 | 28 of 31 | `tloss`, `tln6` (mixed direction) | 1 / 0 (`ex8_5_6`) | 141 / 75 | p = 1.000 |
+| 1000 | 9 | 0 | 22 of 31 | `ex14_2_1`, `ex14_2_6`, `tloss` (all worse) | 2 / 0 (`ex8_5_6`, `tln6`) | 139 / 61 | p = 0.004 |
+
+**1000 against 300: worse.** The nine scored movers are `kriging_peaks-full030`,
+`hybriddynamic_fixedcc`, `ex8_5_4`, `wastewater02m1`, `st_fp7b`,
+`kall_circles_c6a`, `hydro`, `tltr` and `tln4`. The median delta over them is
++14.47 points, against a median own floor of +/-1.49.
+
+- **Families.** Treat each family as one vote (see "Families cluster" above).
+  The nine still come from eight distinct families, with only `tln4` and `tltr`
+  sharing one. All eight point the same way. The three unscored movers add
+  `ex14_*` worse and another `tl*` worse. No `graphpart_*` instance moved
+  outside its floor, so the result is not driven by the family that dominates
+  the mixed-integer class.
+- **Size and class.** Worse in every pre-registered band (small 2, medium 4,
+  large 3) and every class (mixed-integer 2, other 5, transcendental 2), with
+  no "better" anywhere. A size dependence would show as a loss in one band and
+  not the others, and this is not that.
+- **Multiplicity.** The reading is not one that multiplicity correction
+  undoes. Bonferroni over the two neighbours tested against one control still
+  leaves p = 0.008.
+- **Echo of the original grid.** The original grid recorded that 1000 stopped
+  solving `st_e40`, which is not in this set. The same failure recurs here on
+  instances the control solves to BKS on every seed:
+  `hybriddynamic_fixedcc` (3/3 -> 1/3), `kall_circles_c6a`, `ex14_2_1` (one
+  seed at a 6.6e7 gap) and `ex14_2_6` (each 3/3 -> 2/3). Over the roster, 1000
+  matches BKS on 61 runs against the control's 72. The upper side of the grid
+  reproduces off the tuning roster.
+
+**100 against 300: not resolvable at 10 s.** There are three scored movers, in
+both directions:
+
+- `ex9_2_3` is better by 1.2e-6, at the 1e-6 tie band, which is float residue.
+- `hybriddynamic_fixedcc` is worse by 6e-4, from one seed at 0.0018.
+- `wastewater02m1` is worse by +94 points, from two of three seeds at 118 and
+  171 against a control of about 2-4. It is the one sizeable move. It is a
+  single instance, and the 1000 arm moved it the same way.
+
+Feasibility nets out to zero. `ex8_5_6` lost the control's single feasible
+seed, `tloss` gained a seed, and `tln6` was feasible on one seed in each arm,
+on different seeds. Per band: small 0 worse / 1 better, medium 1 / 0, large
+1 / 0. Per class: only "other" has movers (2 worse / 1 better). No family or
+class signal. Some instances favour 100 on BKS counts, notably `tln4` (3/3
+against 1/3). Its delta (-1.61) sits inside its floor (+/-4.89), so it is not
+read as a win. The original grid's 100-side finding (lost feasibility on
+`kall_ellipsoids_tc02b`) is **not echoed**. That instance is not in this set,
+and the three `kall_*` instances here all held. The engagement counters show
+that the arm did change the search. LNS repairs went from 1157 attempted / 282
+accepted under the control to 2131 / 383 under 100, and to 464 / 121 under
+1000. So "held" here means the outcome did not move, not that the exit never
+fired.
+
+**What this does not establish.**
+
+- Nothing about 60 s. At 10 s the exit gets fewer chances to fire. A 100-vs-300
+  difference that builds up over a longer search could not show here, and
+  1000's deficit could shrink or grow.
+- That 300 is better than 100, or that 300 is an optimum. The grid has three
+  points, and the lower neighbour is indistinguishable.
+- Anything off MINLPLib. The held-out set is unseen MINLPLib instances, not a
+  different library. The scale-invariance objection recorded on
+  `GFJConfig::unproductive_iterations` is untouched.
+
+The report's own READING line is "NOT STATED MECHANICALLY (budget 10s)",
+because neighbours moved instances. The outcome above is the judgement that
+section hands to this write-up. It is not a rule's output. The default stays
+300. A change to it would need its own justification and regression evidence,
+and nothing here suggests one.
 
 ### What is run
 
