@@ -56,6 +56,16 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 /// one, so `verified` is a verdict over all three.
 constexpr double kVerifierTolerance = 1e-4;
 
+/// Instances whose Table 2 bounds were computed on a DIFFERENT instance (#148,
+/// benchmarks/uc-chped/FIDELITY.md section 7). Our ucp40 caps units 19-20 at
+/// 500 MW where the authors' ucp_data.py has 550, and their published 1-period
+/// optimum is infeasible on ours (reserve). Its cited rows are relabelled as
+/// bounds for a related system, and a measured row gets no gap against them.
+/// Drop the case once the instance data is corrected and the check re-run.
+bool bounds_describe_a_related_system(const std::string& instance) {
+    return instance == "ucp40";
+}
+
 struct InstanceSpec {
     std::string filename;
     std::vector<int> periods;
@@ -532,12 +542,17 @@ void write_header_comment(std::ostream& csv, const Args& args) {
            "# ramp-rate constraints\n"
            "# (https://web.fc.up.pt/dcc/Pubs/TReports/TR14/dcc-2014-05.pdf), and their\n"
            "# public instance-generation code carries no ramp data. The ramp question the\n"
-           "# #73 audit left open is therefore settled (#77, closed as not planned): the\n"
-           "# Table 2 bounds and our results describe the same problem, so gap_pct against\n"
-           "# them compares like with like. The SCIP reference additionally uses a\n"
-           "# 50-segment piecewise-linear approximation of the |d*sin(e*(Pmin-P))|\n"
-           "# valve-point term (objective error bounded ~0.1%). See\n"
-           "# benchmarks/uc-chped/FIDELITY.md.\n"
+           "# #73 audit left open is therefore settled (#77, closed as not planned).\n"
+           "#\n"
+           "# Instance identity (#148): ucp13 is field-for-field the authors' instance\n"
+           "# (their GPL ucp_data.py) and its proven optima are reproduced, so ucp13's\n"
+           "# gap_pct is against bounds for this instance. ucp40 is NOT: units 19-20 have\n"
+           "# Pmax 500 here and 550 there, and the authors' 1-period optimum is infeasible\n"
+           "# on ours. Its cited rows are marked [related system] and its measured rows\n"
+           "# carry no gap. Our demand row is >= where the source has ==, which does not\n"
+           "# move the proven optima. The SCIP reference's piecewise-linear valve-point\n"
+           "# term is not the ~0.1% approximation once claimed -- uniform breakpoints\n"
+           "# straddle the valve-point cusps. See benchmarks/uc-chped/FIDELITY.md section 7.\n"
            "#\n"
            "# Two tolerances, not one: `feasible` is the engine's own verdict at the\n"
            "# `feas_tol` recorded on the row, while `verified` is an independent re-check\n"
@@ -618,13 +633,16 @@ void write_reference_rows(std::ostream& csv, const cbls::uc_chped::UCInstance& b
         Row r;
         r.instance = base.name;
         r.periods = horizon;
-        r.method = "Pedroso MIP (1hr)";
+        const bool related = bounds_describe_a_related_system(base.name);
+        r.method = related ? "Pedroso MIP (1hr) [related system]" : "Pedroso MIP (1hr)";
         r.objective = ub;
         r.lb = lb;
         r.ub = ub;
         r.gap_pct = lb != 0.0 ? 100.0 * (ub - lb) / lb : kNaN;
         r.source = "Pedroso et al. 2014 Table 2";
-        r.note = "cited reference; ramp-free (see header)";
+        r.note = related ? "bound for the authors' ucp40 (Pmax 550 at units 19-20; ours 500) -- "
+                           "not a reference for this instance (#148)"
+                         : "cited reference; ramp-free (see header)";
         write_row(csv, r);
     }
 }
@@ -698,7 +716,8 @@ Scored score_result(const Args& args, const cbls::uc_chped::UCInstance& inst,
     row.search_config = args.search_config;
 
     auto it = inst.known_bounds.find(inst.n_periods);
-    s.have_bounds = it != inst.known_bounds.end();
+    s.have_bounds =
+        it != inst.known_bounds.end() && !bounds_describe_a_related_system(instance_name);
     if (s.have_bounds) {
         row.lb = it->second.first;
         row.ub = it->second.second;
