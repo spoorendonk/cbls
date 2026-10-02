@@ -1697,20 +1697,25 @@ class CampaignReport:
 NOT_REGENERATED: tuple[str, ...] = (
     "#107's BEFORE column itself: a pre-#107 table that is not committed, held as "
     "the FREE_VARIABLES_BEFORE_* / NO_FREE_VARIABLES_BEFORE_* constants (the "
-    "differences from the generated AFTER column are rendered).",
+    "differences from the generated column are rendered), and #107's own AFTER "
+    "figures, which were the previous published table's (21086c2+107).",
     "Per-seed and multi-commit measurements (nvs01's eight seeds, the #102 probe, the "
     "portfolio A/B, the replication spreads quoted in Results, the st_e40/nvs01 "
     "re-checks): separate campaigns, not the committed tables.",
+    "The across-seed spread, the per-instance median/range table and the LNS "
+    "repair summary in Results: transcribed from the driver's across-seed summary "
+    "(campaign_report.py --seeds) and comparison_seeds.csv, which no README block "
+    "renders; and the previous table's cells beside them, read from git history.",
     "The ex6_2_6 'stale catalogue row' note under SCIP baseline: a prose reading of "
     "one scip_baseline.csv row, not an aggregate.",
     "SCIP's CPU/wall ratio (~1.0), its clock type and its version string as quoted "
     "in prose: measured or read from SCIP, not from the tables' aggregates.",
-    "Machine descriptions of runs with no run record (the SCIP run's hardware, and "
-    "the committed CBLS table, which predates comparison.run.json).",
+    "Machine descriptions of runs with no run record (the SCIP run's hardware), and "
+    "load averages sampled during a campaign rather than recorded at its start.",
     "Published bounds quoted in prose (e.g. st_e40's BKS): reference values from "
     "bounds.csv, not run-derived.",
-    "Single cells quoted inside the root-cause prose (nvs01's published residual): "
-    "the table's own text, not an aggregate.",
+    "Single cells quoted inside the root-cause and per-instance prose (e.g. nvs01's "
+    "per-seed objectives): the tables' own text, not an aggregate.",
 )
 
 _SCIP_BUDGET = re.compile(r"/\s*([0-9.]+)s\s*/")
@@ -2407,7 +2412,7 @@ def _readme_two_band(r: CampaignReport) -> str:
         example = _and_list(
             [
                 f"`{e.instance}` (BKS {_sci(e.primal_bks, 3)}) as matching BKS when it was "
-                f"{e.gap_pct:.2f}% worse"
+                f"{_pct_cell(e.gap_pct)} worse"
                 for e in false_ties
             ]
         )
@@ -2422,10 +2427,10 @@ def _readme_two_band(r: CampaignReport) -> str:
             "violating a constraint by up to `feas_tol`, and that slack itself buys a small "
             "objective gain. A *tie* requires the much tighter, purely relative "
             f"`1e-6·(|BKS|+1)` — using one band for both would have published {example}, "
-            "because the absolute floor dwarfs an objective that small. A row that improves "
-            "on BKS by more than the tie band but less than the claim threshold falls between "
-            "the two and is labelled `within-tolerance-of-bks` rather than being miscounted "
-            "as worse.",
+            "because at that magnitude the absolute floor dwarfs the relative tie band. A "
+            "row that improves on BKS by more than the tie band but less than the claim "
+            "threshold falls between the two and is labelled `within-tolerance-of-bks` "
+            "rather than being miscounted as worse.",
         ]
     )
 
@@ -2481,13 +2486,15 @@ def _readme_feasibility(r: CampaignReport) -> str:
     ]
     if late and at_late is not None:
         names = ", ".join(f"`{k}` ({t:.1f}s)" for k, t in late)
-        n = _word(len(late))
+        one = len(late) == 1
         lines.append(
-            f"**This is the load-bearing argument.** {_word(len(late), capital=True)} "
-            f"instances reach feasibility only long after {LATE_FEASIBLE_AFTER:g}s — "
-            f"{names} — so a {LATE_FEASIBLE_AFTER:g}s budget would publish all {n} as "
-            f"infeasible, {at_late} solved instead of {fp.counts[-1]}. Which {n} varies "
-            "between draws; that several exist does not."
+            f"**What a {LATE_FEASIBLE_AFTER:g}s budget would lose.** "
+            f"{_word(len(late), capital=True)} instance{'' if one else 's'} "
+            f"reach{'es' if one else ''} feasibility only after {LATE_FEASIBLE_AFTER:g}s — "
+            f"{names} — so a {LATE_FEASIBLE_AFTER:g}s budget would publish "
+            f"{'it' if one else f'all {_word(len(late))}'} as infeasible, {at_late} solved "
+            f"instead of {fp.counts[-1]}. Which instance{'' if one else 's'} varies between "
+            "draws."
         )
     else:
         lines.append(f"No instance reaches feasibility after {LATE_FEASIBLE_AFTER:g}s in this run.")
@@ -2608,7 +2615,7 @@ def _readme_disjoint(r: CampaignReport) -> str:
     quick = [d for d in scip_rescues if d.scip_status == "optimal" and d.scip_wall_seconds < 0.25]
     other_way = [d for d in h.disjoint_failures if d.cbls_feasible]
     howmany = (
-        f"all {_word(cbls_failed)}"
+        ("both" if cbls_failed == 2 else f"all {_word(cbls_failed)}")
         if len(scip_rescues) == cbls_failed
         else f"{_word(len(scip_rescues))} of the {_word(cbls_failed)}"
     )
@@ -2709,7 +2716,12 @@ def _signed(n: int) -> str:
 
 
 def _free_variable_delta(fv: FreeVariableSplit) -> str:
-    """#107's effect: the generated AFTER column minus the fixed BEFORE constants."""
+    """The generated column minus the fixed pre-#107 constants.
+
+    The difference is #107's effect only while the committed table is #107's own
+    AFTER run (`21086c2+107`); against any later table it spans every engine change
+    since, so the sentence says that rather than crediting #107.
+    """
     misses = fv.with_free_eligible - FREE_VARIABLES_BEFORE_WITHIN_10PCT
     explained = fv.with_free_within_10pct - FREE_VARIABLES_BEFORE_WITHIN_10PCT
     joined = [
@@ -2723,10 +2735,11 @@ def _free_variable_delta(fv: FreeVariableSplit) -> str:
         "**Before #107** — a table that is not committed, so these two counts are fixed "
         "constants in `campaign_report.py` — the within-10% counts were "
         f"{FREE_VARIABLES_BEFORE_WITHIN_10PCT} ({before} only) and "
-        f"{NO_FREE_VARIABLES_BEFORE_WITHIN_10PCT}. So #107 explains **{explained} of the "
-        f"{misses}** free-variable misses — {_and_list(_tick(joined)) or 'none'} "
-        f"join{'s' if len(joined) == 1 else ''} {before}. The no-free group's change is "
-        f"{_signed(no_free)}."
+        f"{NO_FREE_VARIABLES_BEFORE_WITHIN_10PCT}. Against this table, **{explained} of the "
+        f"{misses}** free-variable misses are now within 10% — "
+        f"{_and_list(_tick(joined)) or 'none'} join{'s' if len(joined) == 1 else ''} {before}. "
+        f"The no-free group's change is {_signed(no_free)}. That difference spans every "
+        "engine change between the pre-#107 table and this table's commit, not #107 alone."
     )
 
 

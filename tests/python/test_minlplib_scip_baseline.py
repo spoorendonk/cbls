@@ -516,12 +516,17 @@ def test_safe_gap_reproduces_the_cpp_runners_published_gap_column() -> None:
 
     Every other test here compares the Python port to hand-worked expectations,
     so a change to `minlplib.cpp` leaves them green. This one reads the committed
-    `comparison.csv` — C++ output — and re-derives its `gap_to_bks%` from the
+    per-seed table — C++ output — and re-derives its `gap_to_bks%` from the
     objective and the catalogue bound. Resolution is set by that file's six
     significant digits, so it pins the sign convention, the sense flip and the
     zero-reference fallback, not sub-1e-4 relative drift.
+
+    It reads every seed's block of `comparison_seeds.csv` (the published seed's
+    rows included), not `comparison.csv` alone: #123's table matches BKS on 28
+    rows, and a row within 0.01% of its bound carries no resolution here, so the
+    one published seed leaves too few rows to cross-check.
     """
-    comparison = INST_DIR / "comparison.csv"
+    comparison = INST_DIR / "comparison_seeds.csv"
     bounds = {b.instance: b for b in load_bounds(INST_DIR / "bounds.csv")}
     with comparison.open(newline="") as fh:
         rows = [r for r in csv.DictReader(fh) if r["feasible"] == "true"]
@@ -550,6 +555,6 @@ def test_safe_gap_reproduces_the_cpp_runners_published_gap_column() -> None:
             if gap_uncertainty > 1e-3 * abs(published):
                 continue
         ours = safe_gap(objective, bound.primal_bks, bound.maximizing)
-        assert ours == pytest.approx(published, rel=1e-3), row["instance"]
+        assert ours == pytest.approx(published, rel=1e-3), (row["seed"], row["instance"])
         checked += 1
     assert checked >= 20, f"only {checked} rows had enough resolution to cross-check"

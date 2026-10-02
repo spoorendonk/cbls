@@ -1107,34 +1107,18 @@ def test_the_published_header_still_matches_what_the_runner_writes() -> None:
 def test_the_committed_table_uses_the_columns_the_driver_assembles() -> None:
     """The assembled table must slot into the published one column-for-column.
 
-    Five exceptions, all dated rather than permanent: `search_config` (#136),
-    `lns_repairs` (#143), `lns_repairs_accepted` (#150),
-    `first_feasible_objective` and `time_to_first_feasible` (#149) were added to
-    the runner after this table was measured, so the committed rows do not carry
-    them. They cannot be given them retroactively either -- nobody recorded what
-    configuration those rows were produced under, how often LNS repaired during
-    them, how many of those repairs were kept, or where each run first reached
-    feasibility, which is the whole reason the columns now exist. The next full
-    regeneration writes all five, and this assertion goes back to a plain
-    equality then.
-
-    The disagreement is also how a reader tells an old table from a new one: a
-    `comparison.csv` whose header stops at `n_int_vars` predates #136, and one
-    that carries the two first-feasible columns is from #149 or later. The
-    column count IS the provenance, which is why this test states the trailing
-    set explicitly rather than allowing any suffix.
+    A plain equality since #123 regenerated the table. Until then the committed
+    header stopped at `n_int_vars`, five columns short: `search_config` (#136),
+    `lns_repairs` (#143), `lns_repairs_accepted` (#150), and the first-feasible
+    pair (#149) were added to the runner after that table was measured. The
+    trailing columns are how a reader dates a `comparison.csv`, so a header that
+    disagrees with the runner's is a table from another runner, not a table to
+    publish beside this one.
     """
     published = REPO_ROOT / "benchmarks" / "instances" / "minlplib" / "comparison.csv"
     with published.open(newline="") as fh:
         columns = next(csv.reader(fh))
-    assert list(RUNNER_COLUMNS) == [
-        *columns,
-        "lns_repairs",
-        "lns_repairs_accepted",
-        "first_feasible_objective",
-        "time_to_first_feasible",
-        "search_config",
-    ]
+    assert list(RUNNER_COLUMNS) == columns
 
 
 def test_the_drivers_exit_constant_is_the_runners_own() -> None:

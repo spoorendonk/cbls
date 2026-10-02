@@ -1,0 +1,30 @@
+{
+  "budget_seconds": 60.0,
+  "commit": "4524460",
+  "concurrency": {
+    "build_jobs": 4,
+    "parallel_solves": 1,
+    "threads_per_solve": 1
+  },
+  "machine": {
+    "cpu_affinity": 12,
+    "cpu_count": 12,
+    "cpu_model": "AMD Ryzen 5 5600H with Radeon Graphics",
+    "host": "simon-Legion-5-Pro-16ACH6H",
+    "load_average": [
+      0.732421875,
+      0.935546875,
+      0.97900390625
+    ],
+    "machine": "x86_64",
+    "memory_total_kib": 13628848,
+    "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43",
+    "processor": ""
+  },
+  "published_at": "2026-10-02T09:31:19+00:00",
+  "resumed": 0,
+  "roster": 50,
+  "schema": 1,
+  "seed": 1,
+  "table_sha256": "2f71477c63e262c34a9ac19cff98e17f31d44a15102a67a248e3c84c4c108009"
+}

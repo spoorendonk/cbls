@@ -144,81 +144,80 @@ def test_the_committed_tables_reproduce_the_readme() -> None:
     (not 1.38%), `eg_all_s` walks 15930 steps between 15931 incumbents (not
     "15931 steps"), and the "within 1%" sentence missed `prob09`.
     """
-    report = build_report(DEFAULT_INST_DIR, budget=60.0, seed=1, machine=None, feas_tol=None)
+    report = build_report(DEFAULT_INST_DIR, budget=None, seed=None, machine=None, feas_tol=None)
     res = report.results
     c, v = res.counts, res.verdicts
 
-    # Provenance: what the tables record, and "not recorded" for what they do not.
-    assert report.provenance.engine_commit == "21086c2+107"
-    assert report.provenance.machine is None
+    # Provenance: the budget, seed and machine come from the run record (#123).
+    assert report.provenance.engine_commit == "4524460"
+    assert report.provenance.run_record == "comparison.run.json"
+    assert (report.provenance.budget_seconds, report.provenance.seed) == (60.0, 1)
+    assert report.provenance.machine is not None
+    assert report.provenance.machine.startswith("simon-Legion-5-Pro-16ACH6H (AMD Ryzen 5 5600H")
     assert report.provenance.warnings == []
     assert report.provenance.scip_configuration == SCIP_VERSION
 
     # Results: the tally table.
     assert (c.roster, c.built, c.built_pct, c.mixed_integer) == (50, 50, 100.0, 15)
-    assert c.feasible == 46
-    assert (v.matches_bks, v.within_tolerance, v.worse, v.better) == (18, 1, 27, 0)
-    assert v.denominator == 46
-    assert c.infeasible == 4
-    assert sorted(c.infeasible_instances) == ["elec25", "elec50", "nvs01", "st_e40"]
+    assert c.feasible == 48
+    assert (v.matches_bks, v.within_tolerance, v.worse, v.better) == (28, 0, 20, 0)
+    assert v.denominator == 48
+    assert c.infeasible == 2
+    assert sorted(c.infeasible_instances) == ["elec25", "elec50"]
     assert (c.coverage_gaps, c.errors) == (0, 0)
     assert (c.integrality_mismatches, c.verification_failures) == (0, 0)
     assert c.documented_failures_feasible == []
 
     # Results: gap distribution and the zero-BKS paragraph.
-    assert res.gap_buckets.counts == [21, 22, 26]
+    assert res.gap_buckets.counts == [29, 33, 36]
     assert sorted(res.zero_bks_instances) == ["ex14_2_4", "ex14_2_5", "least", "mathopt1", "prob09"]
     assert sorted(res.gap_buckets.excluded_zero_bks) == ["least", "mathopt1", "prob09"]
     assert sorted(res.gap_buckets.retained_zero_bks) == ["ex14_2_4", "ex14_2_5"]
-    assert (res.gap_buckets_strict.counts, res.gap_buckets_strict.denominator) == ([19, 20, 24], 41)
+    assert (res.gap_buckets_strict.counts, res.gap_buckets_strict.denominator) == ([27, 31, 34], 43)
 
     # Results: the two-band worked examples.
     legacy = {e.instance: -e.gap_pct for e in res.legacy_margin_ties}
-    assert legacy == pytest.approx({"ex6_2_6": 8.3e-5, "prob06": 3.2e-4}, rel=0.05)
-    [false_tie] = res.single_band_false_ties
-    assert false_tie.instance == "ex8_4_5"
-    assert false_tie.primal_bks == pytest.approx(3.07e-4, rel=0.01)
-    assert round(false_tie.gap_pct, 2) == 1.20
+    assert legacy == pytest.approx({"ex6_2_6": 5.8e-5, "prob06": 6.5e-5}, rel=0.05)
+    false_ties = {e.instance: e for e in res.single_band_false_ties}
+    assert sorted(false_ties) == ["spring", "st_e08"]
+    assert false_ties["spring"].primal_bks == pytest.approx(8.46e-1, rel=0.01)
+    assert false_ties["spring"].gap_pct == pytest.approx(2.6e-4, rel=0.01)
+    assert false_ties["st_e08"].primal_bks == pytest.approx(7.42e-1, rel=0.01)
+    assert false_ties["st_e08"].gap_pct == pytest.approx(1.0e-3, rel=0.03)
 
     # Results: the anytime score.
     at = report.trace.anytime
     assert at.denominator == 48
-    assert round(at.mean, 3) == 0.473
-    assert round(at.median, 3) == 0.331
-    assert round(at.shifted_geometric_mean, 4) == 0.0793
+    assert round(at.mean, 3) == 0.180
+    assert round(at.median, 3) == 0.011
+    assert round(at.shifted_geometric_mean, 3) == 0.018
 
     # Why 60s: the cumulative-feasibility table and the late-feasible instances.
     fp = report.trace.feasibility
     assert fp.checkpoints == [1.0, 5.0, 10.0, 20.0, 30.0, 45.0, 60.0]
-    assert fp.counts == [41, 41, 41, 42, 44, 46, 46]
-    assert {k: round(t, 1) for k, t in fp.late_feasible.items()} == {
-        "chain50": 17.6,
-        "ex8_4_5": 24.9,
-        "tln2": 26.9,
-        "spring": 31.4,
-        "minlphi": 36.8,
-    }
+    assert fp.counts == [44, 47, 48, 48, 48, 48, 48]
+    assert {k: round(t, 1) for k, t in fp.late_feasible.items()} == {"eg_all_s": 5.5}
 
-    # Why 60s: the 46% / 22% split and the eg_all_s bound-tightening walk.
+    # Why 60s: the 40% / 23% split and the eg_all_s bound-tightening walk.
     it = report.trace.improvement
-    assert it.denominator == 46
-    assert (it.stopped_early, it.still_improving) == (21, 10)
-    assert (it.new_best_stopped_early, it.new_best_still_improving) == (18, 12)
-    assert it.sub_resolution_new_best_rows == 1266
-    assert round(100 * it.stopped_early / it.denominator) == 46
-    assert round(100 * it.still_improving / it.denominator) == 22
+    assert it.denominator == 48
+    assert (it.stopped_early, it.still_improving) == (19, 11)
+    assert (it.new_best_stopped_early, it.new_best_still_improving) == (16, 11)
+    assert it.sub_resolution_new_best_rows == 747
+    assert round(100 * it.stopped_early / it.denominator) == 40
+    assert round(100 * it.still_improving / it.denominator) == 23
     assert it.most_steps_instance == "eg_all_s"
-    assert it.most_steps_incumbents == 15931
+    assert it.most_steps_incumbents == 15893
     assert round(it.most_steps_median_ratio, 7) == 0.9989993
     assert it.most_steps_first == pytest.approx(1e9)
-    assert round(it.most_steps_last, 2) == 8.46
+    assert round(it.most_steps_last, 1) == 14.4
 
     # SCIP baseline: the head-to-head table.
     h = report.head_to_head
-    assert (h.cbls.feasible, h.cbls.roster, h.scip.feasible, h.scip.roster) == (46, 50, 49, 50)
+    assert (h.cbls.feasible, h.cbls.roster, h.scip.feasible, h.scip.roster) == (48, 50, 49, 50)
     assert h.scip.proved_optimal == 34
     assert (h.cbls.hit_limit, h.scip.hit_limit) == (50, 16)
-    assert round(h.cbls.total_wall_seconds) == 3001
+    assert round(h.cbls.total_wall_seconds) == 3000
     assert round(h.scip.total_wall_seconds) == 1011
     assert round(h.scip.median_wall_seconds, 2) == 0.28
     assert h.scip.under_one_second == 31
@@ -226,19 +225,17 @@ def test_the_committed_tables_reproduce_the_readme() -> None:
 
     # SCIP baseline: "the failures are almost disjoint".
     disjoint = {d.instance: d for d in h.disjoint_failures}
-    assert sorted(disjoint) == ["elec25", "elec50", "nvs01", "st_e36", "st_e40"]
+    assert sorted(disjoint) == ["elec25", "elec50", "st_e36"]
     assert [d.instance for d in h.disjoint_failures if d.cbls_feasible] == ["st_e36"]
-    assert disjoint["st_e36"].cbls_objective == -147
+    assert disjoint["st_e36"].cbls_objective == -243.857
     assert round(disjoint["st_e36"].scip_dual_bound, 1) == -304.5
-    assert round(disjoint["nvs01"].scip_wall_seconds, 2) == 0.11
-    assert round(disjoint["st_e40"].scip_wall_seconds, 2) == 0.22
     assert round(disjoint["elec25"].scip_objective, 3) == 243.859
     assert round(disjoint["elec50"].scip_gap_pct, 1) == 34.8
 
     # SCIP baseline: both-solved quality buckets and the five rows CBLS leads.
-    assert h.quality_denominator == 38
-    assert h.cbls_quality == [17, 18, 22]
-    assert h.scip_quality == [32, 32, 33]
+    assert h.quality_denominator == 40
+    assert h.cbls_quality == [26, 28, 31]
+    assert h.scip_quality == [34, 34, 35]
     ahead = {a.instance: a for a in h.cbls_ahead}
     assert sorted(ahead) == ["eg_all_s", "eq6_1", "ex8_1_5", "ex8_6_1", "maxmin"]
     assert all(a.scip_status == "timelimit" for a in ahead.values())
@@ -247,20 +244,30 @@ def test_the_committed_tables_reproduce_the_readme() -> None:
     # What #107 accounted for: the AFTER column.
     fv = report.free_variables
     assert fv is not None
-    assert (fv.with_free, fv.with_free_eligible, fv.with_free_within_10pct) == (16, 12, 3)
-    assert (fv.without_free, fv.without_free_eligible, fv.without_free_within_10pct) == (34, 27, 19)
+    assert (fv.with_free, fv.with_free_eligible, fv.with_free_within_10pct) == (16, 13, 6)
+    assert (fv.without_free, fv.without_free_eligible, fv.without_free_within_10pct) == (34, 28, 26)
 
 
 def test_the_report_states_its_rule_and_its_provenance() -> None:
-    report = build_report(DEFAULT_INST_DIR, budget=60.0, seed=None, machine=None, feas_tol=None)
+    report = build_report(DEFAULT_INST_DIR, budget=None, seed=None, machine=None, feas_tol=None)
     text = render_markdown(report)
     assert AGGREGATION_RULE in text
-    assert "engine commit: 21086c2+107" in text
+    assert "engine commit: 4524460" in text
+    assert "budget: 60s per instance (comparison.run.json)" in text
+    assert "seed: 1 (comparison.run.json)" in text
+    assert "load 0.73 at start" in text
+    for line in report.not_regenerated:
+        assert line in text
+
+
+def test_a_table_without_a_record_states_what_it_does_not_record(tmp_path: Path) -> None:
+    """The pre-#141 shape the committed table had until #123: stated, not recorded."""
+    _write_campaign(tmp_path)
+    report = build_report(tmp_path, budget=60.0, seed=None, machine=None, feas_tol=None)
+    text = render_markdown(report)
     assert f"seed: {NOT_RECORDED}" in text
     assert f"machine: {NOT_RECORDED}" in text
     assert "comparison.csv does not record the budget" in text
-    for line in report.not_regenerated:
-        assert line in text
 
 
 # --- the aggregation rule -------------------------------------------------------
@@ -663,8 +670,8 @@ def test_free_variable_split_groups_and_filters() -> None:
 README = DEFAULT_INST_DIR / "README.md"
 
 #: The command `README.md`'s "After the run" step 2 documents. Change both together.
-README_BUDGET: float | None = 60.0
-README_SEED: int | None = 1
+README_BUDGET: float | None = None
+README_SEED: int | None = None
 README_MACHINE: str | None = None
 SUMMARY_JSON = DEFAULT_INST_DIR / SUMMARY_JSON_NAME
 
@@ -700,20 +707,20 @@ def test_the_committed_readme_blocks_are_the_generators_rendering() -> None:
 @pytest.mark.parametrize(
     ("block", "old", "new"),
     [
-        ("improvement", "46% stop improving", "52% stop improving"),
+        ("improvement", "40% stop improving", "52% stop improving"),
         (
             "tally",
+            "| — better than BKS, but inside the tolerance slack | 0 |",
             "| — better than BKS, but inside the tolerance slack | 1 |",
-            "| — better than BKS, but inside the tolerance slack | 2 |",
         ),
-        ("two-band", "1.20% worse", "1.38% worse"),
-        ("cbls-ahead", "| `eq6_1` | 20.4%", "| `eq6_1` | 25.4%"),
+        ("two-band", "2.6e-4% worse", "2.6e-3% worse"),
+        ("cbls-ahead", "| `eq6_1` | 2.53%", "| `eq6_1` | 25.3%"),
         (
             "free-variables",
-            "| ≥1 free variable | 16 | 12 | 3 |",
-            "| ≥1 free variable | 16 | 12 | 4 |",
+            "| ≥1 free variable | 16 | 13 | 6 |",
+            "| ≥1 free variable | 16 | 13 | 7 |",
         ),
-        ("feasibility", "41 solved instead of 46", "40 solved instead of 46"),
+        ("feasibility", "47 solved instead of 48", "46 solved instead of 48"),
         (
             "head-to-head",
             "| proved optimal | n/a (primal heuristic) | 34 / 50 |",
@@ -1058,10 +1065,13 @@ def test_without_a_record_the_budget_is_still_required(tmp_path: Path) -> None:
     assert main(["--inst-dir", str(tmp_path)]) == 0
 
 
-def test_the_committed_tables_have_no_run_record_and_read_as_not_recorded() -> None:
-    """Until #123 re-runs them, the README's provenance block must keep saying so."""
-    assert not run_record_path(DEFAULT_INST_DIR / "comparison.csv").exists()
-    assert _committed_report().provenance.run_record is None
+def test_the_committed_tables_are_read_from_their_run_record() -> None:
+    """#123 published the table with a record: the README renders from it, not from flags."""
+    assert run_record_path(DEFAULT_INST_DIR / "comparison.csv").exists()
+    assert (README_BUDGET, README_SEED, README_MACHINE) == (None, None, None)
+    provenance = _committed_report().provenance
+    assert provenance.run_record == "comparison.run.json"
+    assert provenance.warnings == []
 
 
 @pytest.mark.parametrize(

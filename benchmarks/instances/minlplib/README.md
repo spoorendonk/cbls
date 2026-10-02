@@ -571,7 +571,7 @@ seed refuses the dirty tree that leaves.
 ## Results
 
 <!-- campaign_report:begin provenance -->
-Latest run: **60s per instance, seed 1, feasibility tolerance 1e-6**, engine commit `21086c2+107` (recorded per row in `comparison.csv`; the budget and the seed are recorded in no table and are stated to the generator; machine: not recorded).
+Latest run: **60s per instance, seed 1, feasibility tolerance 1e-6**, engine commit `4524460` (recorded per row in `comparison.csv`; the budget, the seed and the machine are read from `comparison.run.json`, which the driver writes at publish time; machine: simon-Legion-5-Pro-16ACH6H (AMD Ryzen 5 5600H with Radeon Graphics), 12 CPUs (12 usable), 13.0 GiB RAM, load 0.73 at start; 1 solve(s) at a time, 1 thread(s) each).
 <!-- campaign_report:end provenance -->
 
 The tally below, the gap buckets and the
@@ -620,17 +620,17 @@ measurement, not a replication of this table.
 | roster | 50 |
 | parsed and built (closed-model rate) | 50 (100%) |
 | of which mixed-integer (integrality enforced) | 15 |
-| **feasible** | **46** |
-| — matching BKS (within the tie band) | 18 |
-| — better than BKS, but inside the tolerance slack | 1 |
-| — worse than BKS | 27 |
+| **feasible** | **48** |
+| — matching BKS (within the tie band) | 28 |
+| — better than BKS, but inside the tolerance slack | 0 |
+| — worse than BKS | 20 |
 | — better than BKS | 0 |
-| infeasible | 4 |
+| infeasible | 2 |
 | unsupported / read errors / non-finite | 0 |
 | integrality mismatches vs catalogue | 0 |
 | verification failures | 0 |
 
-The four verdict rows are over the 46 feasible claim-set rows; `elec25` and `elec50` are excluded from them per the aggregation rule below.
+The four verdict rows are over the 48 feasible claim-set rows; `elec25` and `elec50` are excluded from them per the aggregation rule below.
 <!-- campaign_report:end tally -->
 
 <!-- campaign_report:begin rule -->
@@ -652,19 +652,19 @@ generator's "Not regenerated" list names each kind. Denominators follow the
 aggregation rule stated above.
 
 <!-- campaign_report:begin gap-buckets -->
-Gap distribution over 43 of the 46 feasible claim-set instances: **21 within 0.01% of BKS, 22 within 1%, 26 within 10%.**
+Gap distribution over 45 of the 48 feasible claim-set instances: **29 within 0.01% of BKS, 33 within 1%, 36 within 10%.**
 
-Five rows have a numerically zero BKS (`|BKS| < 1e-12`), for which the runner writes an *absolute* residual into the `gap_to_bks%` column rather than a meaningless percentage against zero: `ex14_2_5`, `ex14_2_4`, `mathopt1`, `least` and `prob09`. Those values are not percentages. The buckets above exclude `mathopt1`, `least` and `prob09`, whose residual is non-zero, and retain `ex14_2_5` and `ex14_2_4`, where objective and BKS are both exactly 0 and so are exact matches at any threshold. Excluding all of them instead gives 19 / 20 / 24 over 41 rows. Counting the excluded rows *as* percentages would have put `mathopt1` (gap cell 1) and `prob09` (gap cell 0.04593) inside the "within 1%" bucket.
+Five rows have a numerically zero BKS (`|BKS| < 1e-12`), for which the runner writes an *absolute* residual into the `gap_to_bks%` column rather than a meaningless percentage against zero: `ex14_2_5`, `ex14_2_4`, `mathopt1`, `least` and `prob09`. Those values are not percentages. The buckets above exclude `mathopt1`, `least` and `prob09`, whose residual is non-zero, and retain `ex14_2_5` and `ex14_2_4`, where objective and BKS are both exactly 0 and so are exact matches at any threshold. Excluding all of them instead gives 27 / 31 / 34 over 43 rows. Counting the excluded rows *as* percentages would have put `mathopt1` (gap cell 2.107e-15) and `prob09` (gap cell -3.339e-10) inside the "within 1%" bucket.
 <!-- campaign_report:end gap-buckets -->
 
 <!-- campaign_report:begin anytime -->
-**Anytime score.** The MIPfeas Primal Integral (`benchmarks/mipfeas/primal_integral.py`) of the committed trace against BKS over the 60s budget — 0 is "at BKS from the first instant", 2 is "never feasible" — over the 48 instances outside the documented failures (`elec25` and `elec50`): **mean 0.473, median 0.331, shifted geometric mean 0.0793**. A maximize row's trace is negated, so its reference is −BKS (at catalogue precision, from `bounds.csv`). BKS is not a proven optimum, so an incumbent past it scores a positive gap; and the zero-BKS rows left out of the gap buckets (`mathopt1`, `least` and `prob09`) are *in* this score, because the scorer's own zero test is 1e-6 absolute. The per-instance scores, with the reference each was scored against, are in `campaign_summary.json`; with one seed, each is one draw.
+**Anytime score.** The MIPfeas Primal Integral (`benchmarks/mipfeas/primal_integral.py`) of the committed trace against BKS over the 60s budget — 0 is "at BKS from the first instant", 2 is "never feasible" — over the 48 instances outside the documented failures (`elec25` and `elec50`): **mean 0.180, median 0.011, shifted geometric mean 0.018**. A maximize row's trace is negated, so its reference is −BKS (at catalogue precision, from `bounds.csv`). BKS is not a proven optimum, so an incumbent past it scores a positive gap; and the zero-BKS rows left out of the gap buckets (`mathopt1`, `least` and `prob09`) are *in* this score, because the scorer's own zero test is 1e-6 absolute. The per-instance scores, with the reference each was scored against, are in `campaign_summary.json`; with one seed, each is one draw.
 <!-- campaign_report:end anytime -->
 
 <!-- campaign_report:begin two-band -->
-Nothing in this roster beats a published bound. Under the runner's earlier margin rule — which compared a *percentage* against 1e-6, i.e. 1e-8 relative — two rows of this run would have been flagged `better-than-bks`: `ex6_2_6` at 8.3e-5 percent and `prob06` at 3.2e-4 percent. Those are ties, not improvements.
+Nothing in this roster beats a published bound. Under the runner's earlier margin rule — which compared a *percentage* against 1e-6, i.e. 1e-8 relative — two rows of this run would have been flagged `better-than-bks`: `ex6_2_6` at 5.8e-5 percent and `prob06` at 6.5e-5 percent. Those are ties, not improvements.
 
-Two bands are used, deliberately different. An improvement is only *claimed* when it exceeds `max(1e-6·(|BKS|+1), 10·feas_tol)`: we accept solutions violating a constraint by up to `feas_tol`, and that slack itself buys a small objective gain. A *tie* requires the much tighter, purely relative `1e-6·(|BKS|+1)` — using one band for both would have published `ex8_4_5` (BKS 3.07e-4) as matching BKS when it was 1.20% worse, because the absolute floor dwarfs an objective that small. A row that improves on BKS by more than the tie band but less than the claim threshold falls between the two and is labelled `within-tolerance-of-bks` rather than being miscounted as worse.
+Two bands are used, deliberately different. An improvement is only *claimed* when it exceeds `max(1e-6·(|BKS|+1), 10·feas_tol)`: we accept solutions violating a constraint by up to `feas_tol`, and that slack itself buys a small objective gain. A *tie* requires the much tighter, purely relative `1e-6·(|BKS|+1)` — using one band for both would have published `spring` (BKS 8.46e-1) as matching BKS when it was 2.6e-4% worse and `st_e08` (BKS 7.42e-1) as matching BKS when it was 1.0e-3% worse, because at that magnitude the absolute floor dwarfs the relative tie band. A row that improves on BKS by more than the tie band but less than the claim threshold falls between the two and is labelled `within-tolerance-of-bks` rather than being miscounted as worse.
 <!-- campaign_report:end two-band -->
 
 ### Why 60s
@@ -674,15 +674,15 @@ Measured from the committed trace, not assumed. Cumulative instances with a feas
 
 | by | 1s | 5s | 10s | 20s | 30s | 45s | 60s |
 |----|----|----|----|----|----|----|----|
-| feasible | 41 | 41 | 41 | 42 | 44 | 46 | 46 |
+| feasible | 44 | 47 | 48 | 48 | 48 | 48 | 48 |
 
-**This is the load-bearing argument.** Five instances reach feasibility only long after 5s — `chain50` (17.6s), `ex8_4_5` (24.9s), `tln2` (26.9s), `spring` (31.4s), `minlphi` (36.8s) — so a 5s budget would publish all five as infeasible, 41 solved instead of 46. Which five varies between draws; that several exist does not.
+**What a 5s budget would lose.** One instance reaches feasibility only after 5s — `eg_all_s` (5.5s) — so a 5s budget would publish it as infeasible, 47 solved instead of 48. Which instance varies between draws.
 <!-- campaign_report:end feasibility -->
 
 <!-- campaign_report:begin improvement -->
-Solution *quality* over time is a weaker argument than it first appears, and is recorded here with that caveat. Of the 46 claim-set instances that become feasible, 46% stop improving within the first second while 22% are still improving in the final 15 seconds — reading an improvement as a strict decrease of the trace's *printed*, six-significant-digit objective. Read off the engine's own `new_best` flag instead, the split is 39% / 26%. The two part because 1266 of the trace's `new_best` rows print the same objective as the row before: improvements below the trace's print resolution, which the printed reading cannot see and the flag counts. 1209 of the 1266 are on `least`.
+Solution *quality* over time is a weaker argument than it first appears, and is recorded here with that caveat. Of the 48 claim-set instances that become feasible, 40% stop improving within the first second while 23% are still improving in the final 15 seconds — reading an improvement as a strict decrease of the trace's *printed*, six-significant-digit objective. Read off the engine's own `new_best` flag instead, the split is 33% / 23%. The two part because 747 of the trace's `new_best` rows print the same objective as the row before: improvements below the trace's print resolution, which the printed reading cannot see and the flag counts. 686 of the 747 are on `least`.
 
-But the incumbent trace cannot be read as pure search progress: `record_best` tightens the objective bound by `1e-3·(|obj|+1)` per accepted solution, so improvements are *floored* at roughly 0.1% steps. The measured median consecutive-incumbent ratio on `eg_all_s` (the instance with the most improvements) is 0.9989993 — 1 − 0.001001, against the bound step's 1 − 1e-3 — and it takes 15930 such steps (15931 incumbents) to walk from 1e9 down to 8.46.
+But the incumbent trace cannot be read as pure search progress: `record_best` tightens the objective bound by `1e-3·(|obj|+1)` per accepted solution, so improvements are *floored* at roughly 0.1% steps. The measured median consecutive-incumbent ratio on `eg_all_s` (the instance with the most improvements) is 0.9989993 — 1 − 0.001001, against the bound step's 1 − 1e-3 — and it takes 15892 such steps (15893 incumbents) to walk from 1e9 down to 14.4.
 <!-- campaign_report:end improvement -->
 
 That instance is therefore evidence about the bound-tightening step size, not about
@@ -692,7 +692,7 @@ larger step (or a direct objective descent) might achieve sooner.
 ### The instances the published run left infeasible
 
 <!-- campaign_report:begin infeasible -->
-Left infeasible in this table: `nvs01`, `elec25`, `st_e40` and `elec50` (4 of 50).
+Left infeasible in this table: `elec25` and `elec50` (2 of 50).
 <!-- campaign_report:end infeasible -->
 
 Every one is root-caused, and the verdict is recorded per row in
@@ -1010,7 +1010,7 @@ That gap matters less than it first appears, and it bites the opposite way round
 from the obvious guess. Both sides run a fixed 60s per instance, so:
 
 <!-- campaign_report:begin hardware -->
-- The **wall-clock totals are the robust number.** CBLS never terminates early — its 3001s is 50 × 60s by construction, and is therefore independent of the machine entirely. SCIP's 1011s is dominated by proving optimality on 34 instances and stopping, not by clock rate; even a 2x hardware advantage would leave 505s against 3001s.
+- The **wall-clock totals are the robust number.** CBLS never terminates early — its 3000s is 50 × 60s by construction, and is therefore independent of the machine entirely. SCIP's 1011s is dominated by proving optimality on 34 instances and stopping, not by clock rate; even a 2x hardware advantage would leave 505s against 3000s.
 - The **counts are what a hardware difference would actually move.** Both
   "feasible within the budget" and "proved optimal within the budget" scale with
   machine speed, so those are the numbers a faster or slower box would change — in
@@ -1020,23 +1020,21 @@ from the obvious guess. Both sides run a fixed 60s per instance, so:
 <!-- campaign_report:begin head-to-head -->
 | | CBLS | SCIP |
 |---|---|---|
-| feasible | 46 / 50 | **49 / 50** |
+| feasible | 48 / 50 | **49 / 50** |
 | proved optimal | n/a (primal heuristic) | 34 / 50 |
 | hit the 60s limit | 50 | 16 |
-| total wall over the roster | 3001s | 1011s (median 0.28s; 31 instances under 1s) |
+| total wall over the roster | 3000s | 1011s (median 0.28s; 31 instances under 1s) |
 | integrality mismatches vs catalogue | 0 | 0 |
 | verification failures | 0 | 0 |
 <!-- campaign_report:end head-to-head -->
 
 <!-- campaign_report:begin disjoint -->
-**The failures are almost disjoint, and that is the useful part.** SCIP reaches a feasible solution on all four instances CBLS did not solve in this run — two of them proved optimal in under a quarter of a second. One row goes the other way: CBLS feasible where SCIP found no feasible solution in 60s.
+**The failures are almost disjoint, and that is the useful part.** SCIP reaches a feasible solution on both instances CBLS did not solve in this run. One row goes the other way: CBLS feasible where SCIP found no feasible solution in 60s.
 
 | Instance | CBLS | SCIP |
 |---|---|---|
-| `st_e36` | -147 (40.24% from BKS) | **no feasible solution in 60s** (timelimit); dual bound -304.5 |
-| `nvs01` | infeasible | 12.4697 (0.00% from BKS), proved optimal in 0.11s |
+| `st_e36` | -243.857 (0.87% from BKS) | **no feasible solution in 60s** (timelimit); dual bound -304.5 |
 | `elec25` | infeasible | 243.859 (0.02% from BKS), timelimit in 60.00s |
-| `st_e40` | infeasible | 30.4142 (0.00% from BKS), proved optimal in 0.22s |
 | `elec50` | infeasible | 1422.33 (34.79% from BKS), timelimit in 60.00s |
 <!-- campaign_report:end disjoint -->
 
@@ -1063,12 +1061,12 @@ What each row settles — the numbers are in the block above:
   a dual bound.
 
 <!-- campaign_report:begin quality -->
-**Solution quality where both are feasible.** Buckets over the 38 instances that both solve and whose `|BKS| >= 0.0001` (below that a percentage against the bound is not informative — see the zero-BKS discussion above), outside the documented failures:
+**Solution quality where both are feasible.** Buckets over the 40 instances that both solve and whose `|BKS| >= 0.0001` (below that a percentage against the bound is not informative — see the zero-BKS discussion above), outside the documented failures:
 
 | | ≤0.01% | ≤1% | ≤10% |
 |---|---|---|---|
-| CBLS | 17 | 18 | 22 |
-| SCIP | 32 | 32 | 33 |
+| CBLS | 26 | 28 | 31 |
+| SCIP | 34 | 34 | 35 |
 <!-- campaign_report:end quality -->
 
 SCIP is clearly ahead on quality, as expected of a mature global solver on a
@@ -1079,11 +1077,11 @@ Five instances go the other way by a margin larger than both the claim band and 
 
 | Instance | CBLS gap | SCIP gap | SCIP status |
 |---|---|---|---|
-| `eg_all_s` | 10.5% | 2324% | timelimit |
+| `eg_all_s` | 88.3% | 2324% | timelimit |
 | `ex8_1_5` | **matches BKS** | 100% | timelimit |
-| `ex8_6_1` | 49.1% | 99.6% | timelimit |
-| `eq6_1` | 20.4% | 27.0% | timelimit |
-| `maxmin` | 0.0678% | 2.18% | timelimit |
+| `ex8_6_1` | 23.9% | 99.6% | timelimit |
+| `eq6_1` | 2.53% | 27.0% | timelimit |
+| `maxmin` | 9.0e-3% | 2.18% | timelimit |
 <!-- campaign_report:end cbls-ahead -->
 
 `ex8_1_5` is the sharpest of these: SCIP cannot make progress on it at all (its
@@ -1216,12 +1214,12 @@ over the rows each group solves whose `|BKS| >= 1e-4`:
 <!-- campaign_report:begin free-variables -->
 | | instances | eligible | within 10% |
 |---|---|---|---|
-| ≥1 free variable | 16 | 12 | 3 |
-| no free variables | 34 | 27 | 19 |
+| ≥1 free variable | 16 | 13 | 6 |
+| no free variables | 34 | 28 | 26 |
 
-Within 10% with at least one free variable: `shiporig`, `ex8_1_5` and `maxmin`.
+Within 10% with at least one free variable: `shiporig`, `ex8_1_5`, `maxmin`, `st_e40`, `spring` and `windfac`.
 
-**Before #107** — a table that is not committed, so these two counts are fixed constants in `campaign_report.py` — the within-10% counts were 1 (`maxmin` only) and 20. So #107 explains **2 of the 11** free-variable misses — `shiporig` and `ex8_1_5` join `maxmin`. The no-free group's change is −1.
+**Before #107** — a table that is not committed, so these two counts are fixed constants in `campaign_report.py` — the within-10% counts were 1 (`maxmin` only) and 20. Against this table, **5 of the 12** free-variable misses are now within 10% — `shiporig`, `ex8_1_5`, `st_e40`, `spring` and `windfac` join `maxmin`. The no-free group's change is +6. That difference spans every engine change between the pre-#107 table and this table's commit, not #107 alone.
 <!-- campaign_report:end free-variables -->
 
 A real but minority share: the correlation that motivated the issue is only
