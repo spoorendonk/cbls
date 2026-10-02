@@ -95,7 +95,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from benchmarks.common.jobs import LockHeldError, run_process, wallclock_lock  # noqa: E402
-from benchmarks.common.provenance import REPO_ROOT, commit_sha  # noqa: E402
+from benchmarks.common.provenance import REPO_ROOT, commit_sha, modified_paths  # noqa: E402
 from benchmarks.common.records import (  # noqa: E402
     append_csv_row,
     atomic_write,
@@ -1327,7 +1327,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     sha = commit_sha()
     roster = args.instances or roster_from_bounds(args.inst_dir / "bounds.csv")
-    problems = common_preflight(args, sha, roster)
+    dirty = modified_paths() if sha.endswith("-dirty") else []
+    problems = common_preflight(args, sha, roster, dirty)
     busy = load_refusal(args.allow_busy)
     if busy and not args.dry_run:
         problems = [*problems, busy]

@@ -1,8 +1,9 @@
 """Re-run the MINLPLib CBLS rows at the current engine HEAD, in one command.
 
-This is the driver for issue #123: `comparison.csv`'s `commit_sha` column names
-an engine that no longer exists, and the table has to be regenerated against a
-current build. The whole procedure is one invocation:
+This is the driver #123 regenerated the published table with: whenever the
+engine moves, `comparison.csv`'s `commit_sha` column names an engine that no
+longer exists and the table is regenerated against a current build. The whole
+procedure is one invocation:
 
     .venv/bin/python3 benchmarks/minlplib/run_benchmark.py
 
@@ -495,7 +496,12 @@ PROTECTED_INPUTS: tuple[str, ...] = (
 
 
 def published_paths(inst_dir: Path) -> tuple[Path, ...]:
-    """Every file a publish into `inst_dir` writes: each published table and its run record."""
+    """Each published table in `inst_dir` and its run-record path.
+
+    A superset of what a publish writes: no publish writes `anytime_trace.run.json`
+    or `comparison_all.run.json`, but both are the driver's own names, so the dirty
+    guard and the protected-output check treat them as its output too.
+    """
     tables = [inst_dir / name for name in PUBLISHED_NAMES]
     return tuple(f for t in tables for f in (t, run_record_path(t)))
 

@@ -1,7 +1,8 @@
 # MINLPLib held-out roster (#144)
 
 A second set of fifty MINLPLib instances that **no default was fitted to and no
-result has been published against**. It exists so the parameter transfer check
+result has been published against** (#145's transfer check below is the only
+result recorded on it, and it publishes no table). It exists so the parameter transfer check
 in #145 has unseen instances to run on. The shipped unproductive-batch exit
 threshold was set by a grid over the published roster in `../bounds.csv`, and
 the headline result is published against that same roster. Without a held-out
@@ -23,7 +24,8 @@ any kind existed on any version of the set:
    in those classes (21 / 20 / 9; see Method). This replaced 7 of the 50
    instances.
 
-No solver has been run on any version of this set. At no point did a result
+No solver had been run on any version of this set when either revision was
+made. At no point did a result
 exist that could have informed either change. When this was written, none of
 the fifty names appeared anywhere else in the repository.
 
@@ -285,10 +287,14 @@ see the next section.
 **Measured at 10 s only, this leaves #145's question at the published 60 s
 budget unanswered.** At 10 s the answer splits by neighbour. **300 is not
 beaten.** Against 1000 the shipped value transfers: 1000 is worse. Against 100
-it is not resolvable at 10 s, which is #145's third outcome for that side.
+it is not resolvable at 10 s. That is closest to #145's third outcome but not
+its strict form: 100 moved instances outside their own floor, so the difference
+is not inside the noise floor either.
 100 shows no consistent direction, and the data shows only that 100 is not
 detectably better. The original grid's only reason to reject 100 (lost
-feasibility on `kall_ellipsoids_tc02b`) is not reproduced. No better value is
+feasibility on `kall_ellipsoids_tc02b`) has no counterpart here: that instance
+is not in this set, and the three `kall_*` instances that are all held. No
+better value is
 identified, and the shipped default is unchanged.
 
 **Run.** Engine commit `1de6a7a`, `--time-limit 10`, seeds 1, 2 and 3, all 50
@@ -350,7 +356,10 @@ points over tiny floors: `hybriddynamic_fixedcc` +0.010, `kall_circles_c6a`
   regression. 1000 loses BKS matches on instances the control solves on every
   seed: `hybriddynamic_fixedcc` (3/3 -> 1/3), and `kall_circles_c6a`,
   `ex14_2_1` and `ex14_2_6` (each 3/3 -> 2/3). Several of these are at
-  sub-0.1-point gaps. It also has one 6.6e7-gap seed on `ex14_2_1`, and it
+  sub-0.1-point gaps. It also has one seed on `ex14_2_1` at objective 2.5e-5
+  against a BKS of 3.8e-11 and a dual bound of 0: that prints as a 6.6e7% gap
+  only because the BKS is numerically zero (the main README's `|BKS| >= 1e-4`
+  caveat), so read its direction, not its size. And it
   loses `tln6`'s only feasible seed. Over the roster, 1000 matches BKS on 61
   runs against the control's 72.
 
@@ -443,9 +452,10 @@ cost. What that limits:
 - The original grid ran at 2 s, contended, on one seed. 10 s on three seeds is
   a better measurement than that, but it is not the published configuration.
   It cannot be cited as evidence about the 60 s headline result.
-- So **#145's own question, at the published 60 s budget, stays open** after
-  this run, whichever outcome it gives. Answering it needs the same command at
-  `--time-limit 60`, about 7.5 h.
+- So **#145's own question, at the published 60 s budget, is not answered**
+  by this run, and nothing tracks it: #145 was closed on this 10 s result by
+  decision. Answering it needs the same command at `--time-limit 60`, about
+  7.5 h, under its own issue.
 
 ### How the report states the outcome
 

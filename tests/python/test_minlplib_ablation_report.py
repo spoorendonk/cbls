@@ -747,6 +747,9 @@ def test_the_report_discloses_both_kinds_of_held_out_row_and_agrees_with_them(
         *run_rows("throws", CONTROL_ARM, [7.0, 7.1, 7.2]),
         *solve_error_rows("throws", "x", [1, 2, 3]),
     ]
+    # The driver stamps every row with its budget, crash rows included
+    # (`crash_rows` goes through it); stamp the hand-built rows to match.
+    rows = _at_budget(rows, budget="60")
     report = render_report(write_results(tmp_path / "r.csv", rows))
 
     assert "control-only-feasible=0" in report
@@ -1157,6 +1160,9 @@ def test_the_held_out_rows_are_reported_by_side(tmp_path: Path) -> None:
         *run_rows("throws", CONTROL_ARM, [7.0, 7.1, 7.2]),
         *solve_error_rows("throws", "x", [1, 2, 3]),
     ]
+    # The driver stamps every row with its budget, crash rows included
+    # (`crash_rows` goes through it); stamp the hand-built rows to match.
+    rows = _at_budget(rows, budget="60")
     report = render_report(write_results(tmp_path / "r.csv", rows))
 
     assert "3 run(s) crashed (control 0, arm 3)" in report
@@ -1462,6 +1468,32 @@ def test_a_results_file_that_mixes_budgets_is_refused(tmp_path: Path) -> None:
     report = _transfer_report(tmp_path, rows)
     assert "mixes budgets 10s, 60s" in report
     assert "READING" not in report
+
+
+def test_a_row_with_no_recorded_budget_counts_as_a_budget_of_its_own(tmp_path: Path) -> None:
+    """Rows written before `time_limit` was recorded, merged with newer rows, are
+    not known to share their budget."""
+    rows = _transfer_rows()
+    rows[0] = {**rows[0], "time_limit": ""}
+    report = _transfer_report(tmp_path, rows)
+    assert "mixes budgets 10s, not recorded" in report
+    assert "READING" not in report
+
+
+def test_a_repeated_seed_blocks_the_inside_reading(tmp_path: Path) -> None:
+    """A seed recorded twice is not "every planned seed, exactly once"."""
+    rows = _transfer_rows()
+    rows.append(next(r for r in rows if r["instance"] == "mid1" and r["arm"] == CONTROL_ARM))
+    reading = _reading(_transfer_report(tmp_path, rows))
+    assert "NOT STATED MECHANICALLY" in reading
+    assert "mid1/control" in reading
+
+
+def test_the_header_names_only_documented_failures_the_file_carries(tmp_path: Path) -> None:
+    """The held-out roster has no elec instance, so nothing is said to be excluded."""
+    report = _transfer_report(tmp_path, _transfer_rows())
+    assert "excluding" not in report
+    assert "instances scored:     3\n" in report
 
 
 def _gap_rows(instance: str, notes: dict[str, str]) -> list[dict[str, object]]:

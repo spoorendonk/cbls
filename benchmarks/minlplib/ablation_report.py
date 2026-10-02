@@ -1745,14 +1745,23 @@ def render_report(
         return f"{results} holds no rows"
     budgets = sorted({r.time_limit for r in rows if math.isfinite(r.time_limit)})
     commits = sorted({r.commit for r in rows if r.commit})
-    if len(budgets) > 1:
+    # A row with no recorded budget is a budget of its own: rows from a file
+    # written before `time_limit` was recorded, merged with newer ones, are not
+    # known to share one.
+    unrecorded = any(not math.isfinite(r.time_limit) for r in rows)
+    if len(budgets) > 1 or (budgets and unrecorded):
+        named = [f"{b:g}s" for b in budgets] + (["not recorded"] if unrecorded else [])
         return (
-            f"{results} mixes budgets {', '.join(f'{b:g}s' for b in budgets)}; refusing to "
+            f"{results} mixes budgets {', '.join(named)}; refusing to "
             "score it -- an arm compared against a control run at another budget measures the "
             "budget. Split the rows by time_limit and score each file on its own."
         )
     cells = build_cells(rows)
     instances = scored_instances(rows)
+    # Only name the documented failures a file actually carries: the held-out
+    # roster (#145) has neither.
+    present = {r.instance for r in rows}
+    excluded = [name for name in CLAIM_EXCLUDED if name in present]
     arms = [a for a in dict.fromkeys(r.arm for r in rows) if a not in (CONTROL_ARM, PROBE_ARM_NAME)]
     # Rows where no search completed carry a 0.0 wall (`write_preread_row` and
     # the `solve-error` `write_unsolved_row` both pass one), so averaging them in
@@ -1764,8 +1773,12 @@ def render_report(
         heading,
         f"rows recorded:        {len(rows)} "
         f"({sum(1 for r in rows if not r.no_search)} completed a search)",
-        f"instances scored:     {len(instances)} "
-        f"(excluding {', '.join(CLAIM_EXCLUDED)}, published as documented failures)",
+        f"instances scored:     {len(instances)}"
+        + (
+            f" (excluding {', '.join(excluded)}, published as documented failures)"
+            if excluded
+            else ""
+        ),
         f"seeds:                {sorted({r.seed for r in rows})}",
         "budget (time_limit):  "
         + (", ".join(f"{b:g}s" for b in budgets) if budgets else "not recorded"),

@@ -216,8 +216,10 @@ struct GFJConfig {
     // ONE seed. 100 lost feasibility on kall_ellipsoids_tc02b; 1000 stopped
     // solving st_e40, the instance the mechanism was written for, so the ceiling
     // is set by the motivating case rather than independently. It is not a tuned
-    // optimum, has no second roster behind it, and nothing here establishes that
-    // 300 transfers off MINLPLib.
+    // optimum. #145 re-ran the grid on the 50-instance held-out MINLPLib roster at
+    // 10s, three seeds (benchmarks/instances/minlplib/HELDOUT.md): 1000 was worse,
+    // 100 not resolvable against 300. That says nothing about 60s, and nothing
+    // establishes that 300 transfers off MINLPLib.
     //
     // It is also DIMENSIONLESS on a quantity whose natural scale is not. An
     // iteration count says nothing about how much violation a model can shed per

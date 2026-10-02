@@ -1413,7 +1413,7 @@ def test_check_readme_refuses_output_flags_it_would_not_honour(tmp_path: Path) -
 def test_a_roster_directory_without_a_campaign_reports_no_traceback(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """heldout/ carries bounds.csv but no comparison.csv until #145 runs."""
+    """heldout/ carries bounds.csv and never a comparison.csv: results stay in scratch."""
     (tmp_path / "bounds.csv").write_text(
         "instance,structure,nvars,ncons,objsense,primal_bks,dual_bound,n_disc_vars_bks\n"
     )

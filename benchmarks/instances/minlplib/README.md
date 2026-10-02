@@ -666,13 +666,18 @@ and every entry of `comparison_seeds.run.json` record it: AMD Ryzen 5 5600H, 12
 logical CPUs (12 usable), 13.0 GiB RAM. The 1-minute load average at the start of
 each seed's run was 0.73 (seed 1), 0.92 (seed 2) and 0.49 (seed 3); seed 3's
 5-minute figure was still 2.64 from the activity that preceded it. None of those
-is the "near zero" step 7 asks for, and none indicates a tenant either: the seeds
-ran back to back, so each record's start-of-run figure still holds the previous
-single-threaded solve (about 1.0, decaying) — seed 2's re-run started the moment
-seed 3 finished, and seed 1's 0.73 followed the preflight and the runner build.
+is the "near zero" step 7 asks for. Only seed 2's falls under step 7's
+back-to-back case: its re-run started the moment seed 3 finished, so its 0.92 is
+seed 3's last solve decaying. Seed 1's 0.73 followed the preflight and the 4-job
+runner build, and seed 3's 0.49 (5-minute 2.64) followed the other session's
+pre-push `ctest`, which held the wall-clock lock until shortly before it started.
+Neither is a tenant during the run, but both are judgements from the timeline,
+not records.
 During seeds 3 and 2 the load was also sampled every 15s: the 1-minute figure was
 above 1.10 for about three minutes of seed 3's window (12:59:50-13:02:50, peak
-1.27) and otherwise at most 1.10, and peaked at 1.36 in seed 2's (around 14:04),
+1.27; by roster order roughly `st_e01`, `chain50`, `st_e40` and `st_e09`, and
+no claim rests on seed 3 alone there: `chain50`'s other two seeds are already
+worse than the old table) and otherwise at most 1.10, and peaked at 1.36 in seed 2's (around 14:04),
 where about 1.0 is the solve itself. Seed 1's window was not sampled.
 
 **Spread.** Feasible: **48 on every seed** (min 48, median 48, max 48).
@@ -994,7 +999,7 @@ established that, and feasibility is 8/8 here. What remains is a **convergence
 rate** limit, and the lever is the quality of the first feasible point rather
 than the descent that follows it.
 
-Two consequences worth noting for anyone reading this before a campaign:
+Worth noting for anyone reading this before a campaign:
 
 - A single-seed row for this instance is close to meaningless — it is a draw from
   a distribution spanning the optimum to 266% above it. This is the sharpest
