@@ -273,9 +273,14 @@ Output must go to a scratch path outside `benchmarks/instances/`, because the
 drivers treat anything under it as published: `run_ablation.py` refuses an
 `--out-dir` there, and `run_benchmark.py --inst-dir .../heldout` refuses to run
 without scratch `--out`, `--trace-out` (or `--no-trace`) and `--staging-dir`.
-Always pass `--out`: a
-whole-roster `cbls_minlplib .../heldout` run at default flags with `--commit`
-writes `heldout/comparison.csv`. `heldout/` has no
+Always pass `--out`: since #205 the runner refuses to write
+`heldout/comparison.csv` (or any `<inst-dir>/comparison.csv`) at all, default
+flags and `--commit` included, so a run without `--out` exits 2. A row from a
+direct runner call carries only the runner's own DAG check; to check it
+independently, pass `--solution-dir <dir>` and run
+`.venv/bin/python3 -m benchmarks.minlplib.independent_check <out.csv> --inst-dir
+benchmarks/instances/minlplib/heldout --solution-dir <dir>` (both drivers do
+this themselves). `heldout/` has no
 `comparison.csv`, `scip_baseline.csv` or `analysis_notes.csv`, and the runner
 does not need them. #145's grid is `run_ablation.py --campaign transfer-145`;
 see the next section.
