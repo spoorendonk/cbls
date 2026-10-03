@@ -83,13 +83,26 @@ struct SearchConfig {
     // List/Set presence alone would arm a batch that builds nothing.
     //
     // When the batch would build a generator but FJ has nothing to jump -- no
-    // Bool/Int/Float variable with at least two values in its domain, as on a
-    // List-only routing model or a mixed one whose every scalar is fixed --
-    // every batch is structural, whatever this is set to (#201). FJ and Novelty
-    // batches over an empty jumpable set did no work, reported themselves stuck
-    // and triggered a diversification kick after almost every one, which kept a
-    // List-only CVRP model from ever reaching feasibility at the 0.33 default.
-    // A model with any movable scalar keeps this setting exactly.
+    // Bool/Int/Float variable that has at least two values in its domain AND is
+    // read by some row (the folded objective counts), as on a List-only routing
+    // model or a mixed one whose every scalar is fixed or unread -- the
+    // automatic setting resolves to 1.0 (#201). At 0.33 the other batches were
+    // FJ batches over an empty jumpable set, each of which reported itself stuck
+    // and triggered a diversification kick, which kept a List-only CVRP model
+    // from ever reaching feasibility.
+    //
+    // An explicit value is honoured on such a model too (it is the in-engine
+    // control arm), but its empty FJ/Novelty batches neither take the
+    // unproductive kick nor count toward perturbation_period; they still pump
+    // the GLS weights, as they always did.
+    //
+    // RESIDUAL. A scalar read only by the objective, or any scalar FJ settles
+    // early, makes the model count as having FJ work, so it keeps the 0.33 mix.
+    // Once FJ has nothing left to improve, its batches are empty in all but name
+    // and the kick-thrash returns: on a 30-customer, 6-route partitioned-List
+    // model with one objective-only Int, the default arm is infeasible at 200000
+    // iterations on seeds 1-3 (see tests/test_no_jumpable.cpp). Set this to 1.0
+    // explicitly on such a model.
     double structural_batch_probability = -1.0;
 
     // ---- structural batch: what proposes moves, and how one is chosen (#165) --

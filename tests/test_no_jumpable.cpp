@@ -84,14 +84,20 @@ Cvrp make_cvrp() {
 
 // Hexaly-style List encoding: one List per route over the customer universe,
 // partitioned with Cover::Exact, capacity as `lambda_sum <= Q`, distance as a
-// depot-anchored `pair_lambda_sum`. `extra_scalar` optionally adds an Int
-// variable read by the objective, with the given bounds.
+// depot-anchored `pair_lambda_sum`. `extra` optionally adds one Int variable,
+// read as named.
+enum class Extra : std::uint8_t {
+    None,
+    Fixed,          // Int in [3, 3], added to the objective
+    Unread,         // Int in [0, 5] that no row and not the objective reads
+    ObjectiveOnly,  // Int in [0, 5] read only by the objective
+};
+
 struct Built {
     std::vector<int32_t> routes;
 };
 
-Built build_cvrp(Model& m, const Cvrp& c, bool extra_scalar = false, int scalar_lb = 0,
-                 int scalar_ub = 0) {
+Built build_cvrp(Model& m, const Cvrp& c, Extra extra = Extra::None) {
     Built b;
     const int n = c.customers + 1;
     const double* dist = c.dist.data();
@@ -109,8 +115,18 @@ Built build_cvrp(Model& m, const Cvrp& c, bool extra_scalar = false, int scalar_
             [dist](int e) { return dist[e + 1]; },
             [dist, n](int e) { return dist[static_cast<size_t>(e + 1) * n]; }));
     }
-    if (extra_scalar) {
-        lengths.push_back(m.int_var(scalar_lb, scalar_ub));
+    switch (extra) {
+        case Extra::None:
+            break;
+        case Extra::Fixed:
+            lengths.push_back(m.int_var(3, 3));
+            break;
+        case Extra::Unread:
+            m.int_var(0, 5);
+            break;
+        case Extra::ObjectiveOnly:
+            lengths.push_back(m.int_var(0, 5));
+            break;
     }
     m.minimize(m.sum(lengths));
     m.close();
@@ -184,39 +200,68 @@ TEST_CASE("a structural-only run reports its batches as iterations and stops on 
     REQUIRE(r.iterations == r.counters.batches);
 }
 
-TEST_CASE("an explicit structural probability cannot schedule empty FJ batches",
+TEST_CASE("an explicit structural probability is honoured, but its empty FJ batches do not kick",
           "[search][structural][no_jumpable]") {
-    // The probability apportions batches between FJ and the structural sweep;
-    // with nothing for FJ to jump there is nothing to apportion, so even an
-    // explicit 0 runs the sweep rather than a run of guaranteed no-op batches.
+    // An explicit probability is the in-engine control arm, so it keeps its
+    // mix: FJ batches really are scheduled. What #201 takes away from them is
+    // the damage: an FJ batch with nothing to jump reports itself stuck by
+    // construction, and before #201 every such batch took the unproductive
+    // kick -- and counted toward perturbation_period -- re-randomising every
+    // List. Shown red with both gates removed: ~180 kicks per seed and
+    // infeasible on all three seeds.
     const Cvrp c = make_cvrp();
-    for (const double p : {0.0, 0.33}) {
-        INFO("probability " << p);
+    for (const uint64_t seed : {1ULL, 2ULL, 3ULL}) {
+        INFO("seed " << seed);
         Model m;
-        build_cvrp(m, c);
+        const Built b = build_cvrp(m, c);
         SearchConfig cfg;
-        cfg.structural_batch_probability = p;
-        const SearchResult r = run(m, /*seed=*/1, /*max_iterations=*/300, cfg);
-        REQUIRE(r.counters.fj_batches == 0);
-        REQUIRE(r.counters.structural_batches == 300);
+        cfg.structural_batch_probability = 0.33;
+        cfg.batch_iterations = 10;
+        const SearchResult r = run(m, seed, /*max_iterations=*/20000, cfg);
+        REQUIRE(r.counters.fj_batches > 0);
+        REQUIRE(r.counters.structural_batches > 0);
         REQUIRE(r.feasible);
+        REQUIRE(independently_feasible(c, b, r));
+        // Kicks can now come only from perturbation_period structural batches
+        // without improvement, not from the FJ batches.
+        REQUIRE(r.perturbations * 100 <= r.counters.structural_batches);
     }
 }
 
-TEST_CASE("a mixed model counts as having no FJ work only when every scalar is fixed",
+TEST_CASE("a mixed model has FJ work only through a movable scalar some row reads",
           "[search][structural][no_jumpable]") {
     const Cvrp c = make_cvrp();
     SECTION("a fixed scalar leaves FJ nothing to jump") {
         Model m;
-        build_cvrp(m, c, /*extra_scalar=*/true, /*scalar_lb=*/3, /*scalar_ub=*/3);
+        build_cvrp(m, c, Extra::Fixed);
         const SearchResult r = run(m, /*seed=*/1, /*max_iterations=*/1000);
         REQUIRE(r.counters.fj_batches == 0);
         REQUIRE(r.counters.structural_batches == r.counters.batches);
         REQUIRE(r.feasible);
     }
-    SECTION("a movable scalar keeps the automatic batch mix") {
+    SECTION("a movable scalar that nothing reads leaves FJ nothing to jump") {
+        // Its G_v is empty, so FJ never scores a jump for it. Shown red without
+        // the G_v test in fj_has_work: the mix stays 0.33 and the default arm
+        // is infeasible at this budget on all three seeds.
+        for (const uint64_t seed : {1ULL, 2ULL, 3ULL}) {
+            INFO("seed " << seed);
+            Model m;
+            const Built b = build_cvrp(m, c, Extra::Unread);
+            const SearchResult r = run(m, seed, /*max_iterations=*/1000);
+            REQUIRE(r.counters.fj_batches == 0);
+            REQUIRE(r.counters.structural_batches == r.counters.batches);
+            REQUIRE(r.feasible);
+            REQUIRE(independently_feasible(c, b, r));
+        }
+    }
+    SECTION("a movable scalar read only by the objective keeps the automatic mix") {
+        // The KNOWN RESIDUAL (see SearchConfig::structural_batch_probability).
+        // The folded objective is a row, so this scalar counts as FJ work and
+        // the mix stays 0.33; FJ settles it almost at once and its later
+        // batches are empty in all but name. Pinned as a fact about the mix,
+        // not as desired behaviour.
         Model m;
-        build_cvrp(m, c, /*extra_scalar=*/true, /*scalar_lb=*/0, /*scalar_ub=*/5);
+        build_cvrp(m, c, Extra::ObjectiveOnly);
         const SearchResult r = run(m, /*seed=*/1, /*max_iterations=*/20000);
         REQUIRE(r.counters.fj_batches > 0);
         REQUIRE(r.counters.structural_batches > 0);

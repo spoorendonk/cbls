@@ -165,23 +165,42 @@ Budget make_budget(double time_limit) {
 
 // Whether a Feasibility-Jump (or Novelty-Jump) batch has anything to move: a
 // variable FJ's whitelist admits (FeasibilityJump::jumpable -- Bool, Int,
-// Float) whose domain holds at least two values. False on a model whose only
-// decisions are List/Set variables, and on a mixed one whose every scalar is
-// fixed (#201).
+// Float) whose domain holds at least two values and which some row reads. A
+// variable in no row has an empty G_v, so FJ never scores a jump for it and a
+// batch over it is as empty as one over nothing (#201). False on a model whose
+// only decisions are List/Set variables, and on a mixed one whose every scalar
+// is fixed or unread.
+//
+// The objective counts as a row: solve() folds it into the constraint set
+// (`obj <= bound`) before the loop is built, so a scalar read only by the
+// objective has a non-empty G_v and counts as work. That is deliberate -- FJ
+// is the only thing that optimises such a scalar -- and it leaves a residual:
+// once FJ has driven that scalar to its best value, the FJ batches are empty
+// in all but name, report themselves stuck and take the unproductive kick,
+// and the List-thrash this function exists to prevent returns. The same holds
+// for any mixed model whose scalars FJ settles early. See
+// SearchConfig::structural_batch_probability.
 bool fj_has_work(const Model& model) {
-    return std::any_of(model.variables().begin(), model.variables().end(), [](const Variable& v) {
+    const auto& vars = model.variables();
+    for (size_t i = 0; i < vars.size(); ++i) {
+        const Variable& v = vars[i];
         const bool jumpable =
             v.type == VarType::Bool || v.type == VarType::Int || v.type == VarType::Float;
-        return jumpable && movable_domain(v);
-    });
+        if (jumpable && movable_domain(v) &&
+            !model.constraints_of_var(static_cast<int32_t>(i)).empty()) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // Effective structural-batch probability: explicit config overrides; <0 means
 // auto (0.33 when the batch has anything to do, 0 otherwise). Zeroed on a model
 // with neither a List/Set variable nor a registered move generator, which skips
 // the structural batch -- and its per-variable generator scan -- entirely.
-// Forced to 1.0 when the structural batch has work and FJ has none (#201).
-double effective_structural_probability(const Model& model, const SearchConfig& config) {
+// Auto resolves to 1.0 when the structural batch has work and FJ has none (#201).
+double effective_structural_probability(const Model& model, const SearchConfig& config,
+                                        bool fj_work) {
     // A REGISTERED generator counts as structure in its own right (#165). Its
     // moves may touch scalar variables only -- an ejection chain over assignment
     // Bools, a block move over Int start times -- and the structural batch is
@@ -211,29 +230,32 @@ double effective_structural_probability(const Model& model, const SearchConfig& 
     if (!has_structural) {
         return 0.0;
     }
-    // Nothing for FJ to jump (#201): every batch is structural, explicit
-    // probability or not. The probability apportions batches between FJ and the
-    // structural sweep, and with FJ empty there is nothing to apportion -- the
-    // FJ share would be pure loss, and worse than idle. An FJ batch over an
-    // empty jumpable set spins its GLS loop to the iteration limit bumping
-    // weights, so it reports itself stuck (`batch_stuck()`) and maybe_diversify
-    // takes #102's unproductive kick after almost every one; each kick
-    // re-randomises every List, so the structural batches never hold progress.
-    // Measured on CVRP X-n101-k25 (30 partitioned Lists, 10 s, seed 1, LNS off,
-    // engine 1304c43): the auto 0.33 arm took 114632 kicks and never reached
-    // feasibility; 0.33 with the kick neutralised was feasible at 4.36 s
-    // (objective 49633); 1.0 was feasible at 0.006 s (40216). So the kicks are
-    // what kept it infeasible, and the empty batch share is what cost the rest.
+    if (config.structural_batch_probability >= 0.0) {
+        return config.structural_batch_probability;
+    }
+    // Automatic, and nothing for FJ to jump (#201): every batch is structural.
+    // At 0.33 the other two thirds of batches would be FJ batches over an empty
+    // jumpable set, each spinning its GLS loop to the iteration limit bumping
+    // weights; maybe_diversify used to take #102's unproductive kick after
+    // almost every one, re-randomising every List, so the structural batches
+    // never held progress. Measured on CVRP X-n101-k25 (30 partitioned Lists,
+    // 10 s, seed 1, LNS off, engine 1304c43): the auto 0.33 arm took 114632
+    // kicks and never reached feasibility; 0.33 with the kick neutralised was
+    // feasible at 4.36 s (objective 49633); 1.0 was feasible at 0.006 s
+    // (40216). So the kicks are what kept it infeasible, and the empty batch
+    // share is what cost the rest.
     //
-    // Keyed on the MODEL, not on the batch kind, so a model with any movable
-    // scalar keeps its mix -- and its RNG draw sequence -- exactly: this
-    // function is evaluated once, and pick_batch_kind still draws its one
-    // `random()` per batch whatever it returns. A model with no structure and no
-    // FJ work returns 0.0 above, unchanged.
-    if (!fj_has_work(model)) {
+    // An EXPLICIT probability is honoured -- it is the in-engine control arm --
+    // but its empty FJ batches no longer kick or count toward stagnation; see
+    // `empty_batch` in run().
+    //
+    // Keyed on the MODEL, not on the batch kind: evaluated once, and
+    // pick_batch_kind still draws its one `random()` per batch whatever this
+    // returns, so a model FJ has work in keeps its mix and RNG draws exactly.
+    if (!fj_work) {
         return 1.0;
     }
-    return config.structural_batch_probability >= 0.0 ? config.structural_batch_probability : 0.33;
+    return 0.33;
 }
 
 // Second arming condition for the Float escape probe (#117).
@@ -513,7 +535,7 @@ private:
     // whether the batch produced a new best, and may set `resync`.
     bool polish_and_record(double batch_violation, bool& resync);
     // Steps 5-6. Returns false when the run is over (pure feasibility: solved).
-    bool apply_batch_outcome(bool improved, bool resync);
+    bool apply_batch_outcome(bool improved, bool resync, bool count_stagnation);
     void maybe_arm_escape_probe();
     void maybe_diversify(BatchKind kind, bool improved);
     void maybe_emit_periodic_progress();
@@ -568,6 +590,8 @@ private:
     const bool has_obj_;
     const int32_t obj_ci_;
     const std::vector<int32_t>& cids_;
+    // Whether FJ/Novelty batches have anything to move (#201); see fj_has_work.
+    const bool fj_has_work_;
     const double structural_probability_;
     const int unproductive_arm_stagnation_;
     // Owns this search's OWN clone of every registered move generator, so a
@@ -654,7 +678,8 @@ ViolationLSLoop::ViolationLSLoop(Model& model, ViolationManager& vm, RNG& rng, F
       has_obj_(model.objective_id() >= 0),
       obj_ci_(model.objective_constraint_idx()),
       cids_(model.constraint_ids()),
-      structural_probability_(effective_structural_probability(model, config)),
+      fj_has_work_(fj_has_work(model)),
+      structural_probability_(effective_structural_probability(model, config, fj_has_work_)),
       unproductive_arm_stagnation_(
           std::max(1, config.perturbation_period / kUnproductiveArmDivisor)),
       structural_(model, config, structural_probability_ > 0.0),
@@ -1525,9 +1550,11 @@ bool ViolationLSLoop::polish_and_record(double batch_violation, bool& resync) {
     return improved;
 }
 
-bool ViolationLSLoop::apply_batch_outcome(bool improved, bool resync) {
+bool ViolationLSLoop::apply_batch_outcome(bool improved, bool resync, bool count_stagnation) {
     if (!improved) {
-        ++stagnation_;
+        if (count_stagnation) {
+            ++stagnation_;
+        }
         if (resync) {
             fj_.resync();  // re-sync after hook/structural mutation, keep GLS weights
         }
@@ -1606,8 +1633,15 @@ void ViolationLSLoop::maybe_diversify(BatchKind kind, bool improved) {
     // `stagnation >= unproductive_arm_stagnation`, so this is the second of
     // two gates rather than the only one; it is kept because it reads on the
     // state AFTER the batch, which the arming decision could not.
+    //
+    // And gated on fj_has_work_ (#201): an FJ batch over an empty jumpable set
+    // is "stuck" by construction, having had nothing to do, and the kick it
+    // would buy re-randomises every List the structural batch is working on.
+    // Only reachable at an explicit structural probability -- the automatic one
+    // schedules no FJ batch on such a model -- and constant true on any model
+    // FJ has work in, so those keep their trajectories.
     const bool unproductive_kick =
-        kind == BatchKind::FeasibilityJump && !improved && fj_.batch_stuck();
+        kind == BatchKind::FeasibilityJump && !improved && fj_.batch_stuck() && fj_has_work_;
     if (stagnation_ >= config_.perturbation_period && !past_deadline()) {
         // Genuinely stuck. Arm the Float escape probe: a variable sitting at a
         // stationary point of every violated constraint has no other candidate
@@ -1796,7 +1830,13 @@ SearchResult ViolationLSLoop::run() {
         // pure-feasibility solve is a batch like any other and has to be
         // reported as one.
         trace_batch_end(kind, improved);
-        if (!apply_batch_outcome(improved, resync)) {
+        // An FJ or Novelty batch on a model FJ has no work in (#201) moved
+        // nothing, so it is not a non-improving batch either: counting it would
+        // let empty batches alone run up perturbation_period and fire full
+        // diversification kicks at the structural search. Only reachable at an
+        // explicit structural probability; false on every model FJ has work in.
+        const bool empty_batch = kind != BatchKind::Structural && !fj_has_work_;
+        if (!apply_batch_outcome(improved, resync, /*count_stagnation=*/!empty_batch)) {
             break;
         }
         maybe_arm_escape_probe();
