@@ -149,6 +149,7 @@ def runner_command(
     sha: str,
     instance: str,
     out: Path,
+    solution_dir: Path,
     extra: Sequence[str] = (),
 ) -> list[str]:
     """The `cbls_minlplib` invocation for one instance.
@@ -156,6 +157,10 @@ def runner_command(
     `--instance` is always present, which is itself a lock on the published
     table: the runner refuses to write `comparison.csv` from a subset run
     whatever else is passed.
+
+    `--solution-dir` is always present too, and required of every caller: it
+    is where the runner leaves each verified row's assignment, and
+    `independent_check.check_rows` refuses a verified row without one (#205).
     """
     return [
         str(build_dir / RUNNER_TARGET),
@@ -170,6 +175,8 @@ def runner_command(
         instance,
         "--out",
         str(out),
+        "--solution-dir",
+        str(solution_dir),
         *extra,
     ]
 

@@ -104,6 +104,7 @@ from benchmarks.common.records import (  # noqa: E402
     repair_torn_tail,
     stamp_refusal,
 )
+from benchmarks.minlplib import independent_check  # noqa: E402
 from benchmarks.minlplib import runner as runner_contract  # noqa: E402
 from benchmarks.minlplib.ablation_report import (  # noqa: E402
     CONTROL_ARM,
@@ -602,8 +603,18 @@ def runner_command(args: argparse.Namespace, sha: str, run: Run, out_dir: Path) 
         sha=sha,
         instance=run.instance,
         out=out_dir / "runs" / f"{run.slug}.csv",
+        solution_dir=solution_dir(out_dir, run),
         extra=run.arm.flags,
     )
+
+
+def solution_dir(out_dir: Path, run: Run) -> Path:
+    """Where the runner leaves this run's verified assignment, one directory per run.
+
+    Per run, not per instance: every arm and seed of an instance writes an
+    `<instance>.sol`, and the check must read the one this run wrote.
+    """
+    return out_dir / "runs" / f"{run.slug}.sol.d"
 
 
 class ArmConfigMismatchError(Exception):
@@ -872,6 +883,7 @@ def execute_runs(
         print(_progress(index, len(runs), run, started, elapsed_each), file=sys.stderr, flush=True)
         began = time.monotonic()
         cmd = runner_command(args, sha, run, out_dir)
+        solution_dir(out_dir, run).mkdir(parents=True, exist_ok=True)
         completed = run_process(cmd, log=out_dir / "runs" / f"{run.slug}.log")
         if completed.returncode != 0:
             # Recorded as a failed run rather than raised. An instance that
@@ -891,6 +903,11 @@ def execute_runs(
             elapsed_each.append(time.monotonic() - began)
             continue
         try:
+            # The DAG-independent check (#205) before the row is read: a verified
+            # row SCIP rejects is recorded as the VERIFY-FAILED it is.
+            independent_check.check_rows(
+                out_dir / "runs" / f"{run.slug}.csv", args.inst_dir, solution_dir(out_dir, run)
+            )
             runner = read_runner_row(out_dir / "runs" / f"{run.slug}.csv", run, sha)
         except UNREADABLE_ROW as exc:
             # The runner exited 0 but its row cannot be read -- a full disk

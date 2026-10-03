@@ -2,9 +2,11 @@
 //
 // Loads each `.nl` from `benchmarks/instances/minlplib/`, builds a CBLS model
 // via the NL-to-Model adapter, runs a fixed-time ViolationLS pass, and writes a
-// per-instance row to `benchmarks/instances/minlplib/comparison.csv`. Unsupported
-// operators and non-finite blowups are reported (not crashed). The roster and
-// published bounds come from `bounds.csv` (written by download.py).
+// per-instance row to `--out`. Unsupported operators and non-finite blowups are
+// reported (not crashed). The roster and published bounds come from `bounds.csv`
+// (written by download.py). The published `comparison.csv` is assembled by
+// `run_benchmark.py`, never written here: it checks each verified row's
+// `--solution-dir` assignment in SCIP first (#205; see resolve_out_csv).
 
 #include <algorithm>
 #include <array>
@@ -49,6 +51,9 @@ struct Args {
     std::string commit_sha = "unknown";
     std::string out_csv;    // default: <inst_dir>/comparison.csv
     std::string trace_csv;  // optional: anytime profile (best objective vs time)
+    // optional: where each verified row's assignment is written, one
+    // `<instance>.sol` per instance, for the DAG-independent check (#205)
+    std::string solution_dir;
     // The ablation arm (#136). Its canonical spelling is recorded on every row
     // this run writes, so a results file states the configuration it was
     // produced under instead of leaving the reader to remember which binary
@@ -183,6 +188,20 @@ void resolve_out_csv(Args& a) {
                      target, redirect);
         std::exit(2);
     }
+    // Even a full-protocol run does not write the published files itself any
+    // more (#205). The `feasible` column it writes is this engine's verdict on
+    // its own DAG: `worst_residual` reads the very node values the search
+    // optimised, so an evaluation bug the two share -- a domain error read as a
+    // satisfiable number was one -- cannot be caught by it. `run_benchmark.py`
+    // stages every instance, checks each verified row's assignment in SCIP from
+    // the `.nl` (independent_check.py) and only then publishes. A row written
+    // here would skip that check.
+    std::fprintf(stderr,
+                 "the published %s %s is written only by benchmarks/minlplib/run_benchmark.py, "
+                 "which checks every verified row outside this engine's DAG "
+                 "(pass %s elsewhere for an unpublished run)\n",
+                 writes_table ? "table" : "anytime trace", target, redirect);
+    std::exit(2);
 }
 
 Args parse_args(int argc, char** argv) {
@@ -209,6 +228,8 @@ Args parse_args(int argc, char** argv) {
             a.out_csv = v;
         } else if (c.value_flag("--trace", v)) {
             a.trace_csv = v;
+        } else if (c.value_flag("--solution-dir", v)) {
+            a.solution_dir = v;
         } else if (cbls::bench::match_search_flag(c, s, a.search)) {
             // A search-configuration flag (#136); the table, the parse and the
             // recorded spelling all live in benchmarks/common/search_config_flags.h.
@@ -216,7 +237,7 @@ Args parse_args(int argc, char** argv) {
             std::printf(
                 "Usage: cbls_minlplib [inst-dir] [--time-limit S] [--seed N]"
                 " [--feas-tol T] [--instance NAME ...] [--commit SHA] [--out CSV]"
-                " [--trace CSV]\n"
+                " [--trace CSV] [--solution-dir DIR]\n"
                 "       %s\n",
                 cbls::bench::search_flags_usage().c_str());
             std::exit(0);
@@ -677,6 +698,44 @@ void write_preread_row(std::ostream& csv, const Args& args, const std::string& n
 }
 
 /// A row for an instance that was built but produced no publishable objective.
+/// The returned assignment of a DAG-verified row, for the DAG-independent check
+/// (#205): `benchmarks/minlplib/independent_check.py` loads the `.nl` in SCIP and
+/// checks these values there, so an evaluation bug this engine shares with its
+/// own re-check (`worst_residual` reads the same DAG node values the search
+/// does) cannot publish a `feasible` row. One value per NL column, in column
+/// order, at full precision; `objective` is the true-sense value the row
+/// reports, also at full precision (the CSV's own cell is rounded to six
+/// digits). Written to a temp file and renamed, so a crash leaves no half file;
+/// an unwritable directory ends the run (exit 2), as an unwritable `--out` does,
+/// because a verified row without its solution cannot be checked.
+void write_solution(const Args& args, const std::string& name, const cbls::NlToModelResult& built,
+                    double obj) {
+    if (args.solution_dir.empty()) {
+        return;
+    }
+    const std::string path = args.solution_dir + "/" + name + ".sol";
+    const std::string tmp = path + ".tmp";
+    {
+        std::ofstream out(tmp);
+        out << "cbls-minlplib-solution 1\n"
+            << "instance " << name << "\n"
+            << "objective " << precise_cell(obj) << "\n"
+            << "columns " << built.var_handles.size() << "\n";
+        for (const int32_t h : built.var_handles) {
+            out << precise_cell(built.model.var(cbls::handle_to_var_id(h)).value) << "\n";
+        }
+        out.flush();
+        if (!out) {
+            std::fprintf(stderr, "cannot write solution file %s\n", tmp.c_str());
+            std::exit(2);
+        }
+    }
+    if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+        std::fprintf(stderr, "cannot rename %s to %s\n", tmp.c_str(), path.c_str());
+        std::exit(2);
+    }
+}
+
 void write_unsolved_row(std::ostream& csv, const Args& args, const std::string& name,
                         const Bounds& b, double wall, const std::string& note, int n_discrete,
                         const LnsCells& lns, const FirstFeasibleCells& ff) {
@@ -1067,6 +1126,9 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
     const double pub_obj = verified ? obj : std::numeric_limits<double>::quiet_NaN();
     const double pub_gap_bks = verified ? gap_bks : std::numeric_limits<double>::quiet_NaN();
     const double pub_gap_dual = verified ? gap_dual : std::numeric_limits<double>::quiet_NaN();
+    if (verified) {
+        write_solution(args, name, built, obj);  // before the row: no row without its solution
+    }
     const LnsCells solved = lns_cells(result);
     csv << name << "," << cell(pub_obj) << "," << cell(b.primal) << "," << cell(b.dual) << ","
         << cell(pub_gap_bks) << "," << cell(pub_gap_dual) << "," << wall << ","

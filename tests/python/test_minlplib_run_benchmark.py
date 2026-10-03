@@ -23,7 +23,7 @@ import pytest
 from benchmarks.common import jobs
 from benchmarks.common.jobs import wallclock_lock
 from benchmarks.common.provenance import REPO_ROOT
-from benchmarks.minlplib import run_benchmark
+from benchmarks.minlplib import independent_check, run_benchmark
 from benchmarks.minlplib.campaign_report import (
     AGGREGATION_RULE,
     SEEDS_TABLE_NAME,
@@ -72,6 +72,21 @@ DEFAULT_ARM = (
 )
 ROW = "nvs01,1,1,1,0,0,60,true,feasible,abc1234,0,3,7,2,9,0.25," + DEFAULT_ARM
 TRACE_HEADER = ",".join(TRACE_COLUMNS)
+
+
+#: The real DAG-independent check, kept before `_no_independent_check` stubs it.
+REAL_CHECK_ROWS = independent_check.check_rows
+
+
+@pytest.fixture(autouse=True)
+def _no_independent_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skip the SCIP check (#205) in the tests that are about something else.
+
+    Their instances are names with no `.nl` behind them, and their fake runner
+    writes no solution file. The tests that ARE about the check put the real one
+    back (`REAL_CHECK_ROWS`) and stub only SCIP's verdict.
+    """
+    monkeypatch.setattr(independent_check, "check_rows", lambda *_a, **_k: [])
 
 
 @pytest.fixture(autouse=True)
@@ -1444,3 +1459,64 @@ def test_a_modified_instance_directory_input_still_refuses_seed_2(
     assert _seed_2(tmp_path, monkeypatch, "--dry-run") == 2
     refusal = f"WOULD REFUSE: working tree is dirty ({sha}-dirty): inst/a.nl; commit"
     assert refusal in capsys.readouterr().out
+
+
+# --- the DAG-independent check (#205) -----------------------------------------
+
+
+def test_every_runner_invocation_names_a_solution_dir(tmp_path: Path) -> None:
+    stage = tmp_path / "stage"
+    cmd = runner_command(make_args(tmp_path), "abc1234", "nvs01", stage)
+    assert path_after(cmd, "--solution-dir") == stage
+
+
+def _runner_with_solutions() -> Callable[..., object]:
+    """`seeded_runner`, plus the `<instance>.sol` the real runner leaves for a verified row."""
+    inner = seeded_runner()
+
+    def run(cmd: Sequence[str], **kwargs: object) -> object:
+        result = inner(cmd, **kwargs)
+        if "--instance" in cmd:
+            name = cmd[cmd.index("--instance") + 1]
+            sol = path_after(cmd, "--solution-dir") / f"{name}.sol"
+            sol.write_text(
+                f"{independent_check.SOLUTION_MAGIC}\ninstance {name}\nobjective 1\ncolumns 1\n0\n"
+            )
+        return result
+
+    return run
+
+
+def test_a_row_scip_rejects_is_published_as_verify_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """execute() runs the check over the staged rows before it publishes them."""
+    monkeypatch.setattr(independent_check, "check_rows", REAL_CHECK_ROWS)
+    monkeypatch.setattr(
+        independent_check,
+        "check_solution",
+        lambda nl, sol: (
+            "SCIP rejects the assignment (c1: violated)" if sol.instance == "b" else None
+        ),
+    )
+    inst = make_inst_dir(tmp_path, ["a", "b"])
+    monkeypatch.setattr(subprocess, "run", _runner_with_solutions())
+    assert _execute(tmp_path, 1) == 0
+    with (inst / "comparison.csv").open(newline="") as fh:
+        rows = {r["instance"]: r for r in csv.DictReader(fh)}
+    assert rows["a"]["feasible"] == "true"
+    assert rows["b"]["feasible"] == "false"
+    assert rows["b"]["objective"] == "NaN"
+    assert rows["b"]["note"].startswith("VERIFY-FAILED(independent: SCIP rejects")
+
+
+def test_a_verified_row_without_its_solution_file_is_not_published(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No solution file means nothing was checked: refuse, never pass."""
+    monkeypatch.setattr(independent_check, "check_rows", REAL_CHECK_ROWS)
+    inst = make_inst_dir(tmp_path, ["a", "b"])
+    monkeypatch.setattr(subprocess, "run", seeded_runner())
+    with pytest.raises(FileNotFoundError, match="cannot be checked"):
+        _execute(tmp_path, 1)
+    assert not (inst / "comparison.csv").exists()

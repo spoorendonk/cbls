@@ -21,6 +21,7 @@ import pytest
 from benchmarks.common import jobs
 from benchmarks.common.jobs import wallclock_lock
 from benchmarks.common.provenance import REPO_ROOT
+from benchmarks.minlplib import independent_check
 from benchmarks.minlplib.ablation_report import (
     CONTROL_ARM,
     PROBE_ARM_NAME,
@@ -80,6 +81,20 @@ DEFAULT_ARM_CELL = (
     "float_hook=on;lns=on;lns_interval=3;compound_moves=off;novelty_prob=0.5;"
     "unproductive_iters=300;perturbation_period=100;max_iterations=0;time_limit=on"
 )
+
+
+#: The real DAG-independent check, kept before `_no_independent_check` stubs it.
+REAL_CHECK_ROWS = independent_check.check_rows
+
+
+@pytest.fixture(autouse=True)
+def _no_independent_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skip the SCIP check (#205) where the test is about something else.
+
+    The fake runner's instances have no `.nl`. The test that is about the check
+    restores the real one and stubs only SCIP's verdict.
+    """
+    monkeypatch.setattr(independent_check, "check_rows", lambda *_a, **_k: [])
 
 
 def make_args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
@@ -1206,3 +1221,39 @@ def test_the_transfer_dry_run_prints_the_grid_and_no_gate_probe(
     assert "gate probe" not in out
     assert "estimated 1.2h of solving" in out  # 450 x 10s
     assert not out_dir.exists()
+
+
+# --- the DAG-independent check (#205) -----------------------------------------
+
+
+def test_a_run_scip_rejects_is_recorded_as_verify_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every run's verified row is checked outside the DAG before it is recorded."""
+    monkeypatch.setattr(independent_check, "check_rows", REAL_CHECK_ROWS)
+    monkeypatch.setattr(
+        independent_check, "check_solution", lambda nl, sol: "SCIP rejects the assignment (c1)"
+    )
+    inner = fake_runner()
+    seen_dirs: list[Path] = []
+
+    def run(cmd: Sequence[str], **kwargs: object) -> FakeCompleted:
+        name = cmd[cmd.index("--instance") + 1]
+        sol_dir = Path(cmd[cmd.index("--solution-dir") + 1])
+        seen_dirs.append(sol_dir)
+        (sol_dir / f"{name}.sol").write_text(
+            f"{independent_check.SOLUTION_MAGIC}\ninstance {name}\nobjective 1\ncolumns 1\n0\n"
+        )
+        return inner(cmd, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    out_dir = tmp_path / "scratch"
+    out_dir.mkdir()
+    assert execute(make_args(tmp_path, lns_arm="off", seeds=[1]), "abc1234", ["a"], out_dir) == 0
+    # One solution directory per run: arms of one instance must not share a file.
+    assert len(set(seen_dirs)) == len(seen_dirs) == len(ARMS)
+    with (out_dir / RESULTS_NAME).open(newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    assert rows
+    assert all(r["feasible"] == "false" for r in rows)
+    assert all(r["note"].startswith("VERIFY-FAILED(independent: ") for r in rows)

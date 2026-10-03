@@ -47,6 +47,15 @@ whole-roster command the README used to document:
 
 Guards, because this file's output is published:
 
+* checks every verified row OUTSIDE the engine's DAG before publishing it
+  (#205): the runner leaves each verified row's assignment in the staging
+  directory (`--solution-dir`), and `verify_staged` has SCIP read the `.nl` and
+  check that assignment and its objective (`independent_check.py`). A row SCIP
+  rejects is published as `VERIFY-FAILED(independent: ...)`. The runner's own
+  re-check reads the node values the search optimised, so an evaluation bug the
+  two share passed it; that is also why the runner no longer writes the
+  published table itself. Needs the `benchmarks` extra (pyscipopt);
+
 * refuses a dirty working tree — a plain SHA from a modified checkout claims a
   reproducibility the numbers do not have. The files this driver itself
   publishes into `--inst-dir` do not count (`run_commit_sha`), so the next
@@ -117,7 +126,7 @@ from benchmarks.common.records import (  # noqa: E402
     stamp_refusal,
     write_json,
 )
-from benchmarks.minlplib import campaign_report, runner  # noqa: E402
+from benchmarks.minlplib import campaign_report, independent_check, runner  # noqa: E402
 from benchmarks.minlplib.campaign_report import (  # noqa: E402
     RUN_RECORD_SCHEMA,
     SEED_COLUMN,
@@ -769,12 +778,34 @@ def runner_command(args: argparse.Namespace, sha: str, name: str, stage: Path) -
         sha=sha,
         instance=name,
         out=stage / f"{name}.csv",
+        solution_dir=stage,
         extra=["--trace", str(stage / f"{name}.trace.csv")] if args.trace else [],
     )
 
 
 def build_command(args: argparse.Namespace) -> list[str]:
     return runner.build_command(args.build_dir, args.build_jobs)
+
+
+def verify_staged(args: argparse.Namespace, roster: Sequence[str], stage: Path) -> list[str]:
+    """Check every staged verified row in SCIP, outside the DAG; demote what fails (#205).
+
+    Run over the WHOLE roster after `run_roster`, resumed rows included, rather
+    than once per fresh solve: a job killed between the runner's exit and the
+    check would otherwise leave a complete, unchecked row that the next resume
+    publishes. It is idempotent -- a demoted row is `feasible=false` and is not
+    looked at again -- so re-checking a row costs one SCIP read and nothing else.
+    """
+    demoted: list[str] = []
+    for name in roster:
+        demoted += independent_check.check_rows(stage / f"{name}.csv", args.inst_dir, stage)
+    for name in demoted:
+        print(
+            f"{name}: the independent SCIP check rejected the runner's verified row; "
+            "it is published as VERIFY-FAILED",
+            file=sys.stderr,
+        )
+    return demoted
 
 
 def merge_command(inst_dir: Path) -> list[str]:
@@ -1078,6 +1109,7 @@ def execute(args: argparse.Namespace, sha: str, roster: Sequence[str], paths: Pa
             print(conflict, file=sys.stderr)
             return 2
         resumed = run_roster(args, sha, roster, paths.stage)
+        verify_staged(args, roster, paths.stage)
         if resumed:
             print(
                 f"note: {resumed} of {len(roster)} row(s) were staged by an earlier invocation; "

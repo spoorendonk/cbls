@@ -109,7 +109,9 @@ documents. No published Yuck numbers exist for these instances.
 - `download.py` — CSV-driven selection + per-instance `.nl` fetch + validation.
 - `bounds.csv` — fetched roster with published primal/dual bounds and the
   catalogue integer-variable count.
-- `comparison.csv` — written by the `cbls_minlplib` runner: CBLS objective,
+- `comparison.csv` — the `cbls_minlplib` runner's rows, assembled by
+  `run_benchmark.py` after SCIP has checked every verified row (see
+  "Verification" below; the runner refuses to write this file itself): CBLS objective,
   gap-to-BKS, gap-to-dual, feasibility, notes, commit SHA, closest-approach
   residual (`max_violation`), integer-variable count (`n_int_vars`), the LNS
   destroy-repair count of the run (`lns_repairs`), how many of those repairs the
@@ -1207,11 +1209,20 @@ six-significant-digit resolution.
 proves a dual bound; CBLS is a primal heuristic and proves none. Only the primal
 columns are like-for-like. `comparison_all.csv`'s `dual_bound` therefore holds
 what *that method* proved — NaN on CBLS rows — rather than repeating the
-published dual on all three. Verification is also asymmetric: the C++ runner
-re-checks its assignment against the model it built, whereas the SCIP side uses
+published dual on all three. Verification: the SCIP side uses
 `Model.checkSol(original=True)`, i.e. SCIP validating its own solution against
 the pre-presolve problem. A solution SCIP cannot re-validate is not published as
-feasible.
+feasible. A CBLS row is checked twice. The C++ runner re-checks its assignment
+against the model it built -- but that reads the very DAG node values the search
+optimised, so an evaluation bug the two share agrees with itself by
+construction (#205: `sqrt` of a negative read as 0.0, and rows were marked
+feasible on it). So since #205 the runner also writes each verified row's
+assignment (`--solution-dir`), and `run_benchmark.py` has SCIP read the `.nl`
+and check that assignment, and the objective the row publishes, on SCIP's own
+expression evaluation (`benchmarks/minlplib/independent_check.py`) before
+anything is published. A row SCIP rejects is published as
+`VERIFY-FAILED(independent: ...)` with its objective blanked. This needs the
+`benchmarks` extra (pyscipopt) at publish time.
 
 <!-- campaign_report:begin scip-verification -->
 Zero rows in this run failed that check.
