@@ -477,8 +477,11 @@ information. It annotates them.
   regenerate the `ucp*` instances, re-run §7's check and drop the relabel.
   Done (§7.5): `ucp40` confirmed, relabel removed, and `ucp40` and `ucp200`
   at 12/24 periods satisfiable (#152).
-- **#194** — `extend_horizon()` builds 48h/168h instances whose demand plus
-  reserve exceeds total capacity in some periods.
+- **#194** — `extend_horizon()` built 48h/168h instances whose demand plus
+  reserve exceeded total capacity in some periods. Done: each extended day is
+  now the base day scaled by a factor in [0.94, 1.0], so no period asks for
+  more than the base profile's, and a test checks capacity in every period of
+  every committed instance.
 
 ## 7. Instance data — do we solve the published instances? (#148)
 
@@ -661,8 +664,9 @@ demand plus 1148 MW of reserve, 12628 MW in all. All 40 units together offered
 12622 MW of P_max, so the reserve row's violation was at least 6 under any
 assignment — the residual the search ended at. With the source's 550 MW limits
 there are 12722 MW and 94 MW of slack. `ucp200` was short in the same period by
-30 MW and is fixed the same way. The extended 48h/168h instances stay short
-for an unrelated reason, `extend_horizon()`'s demand variation (#194).
+30 MW and is fixed the same way. The extended 48h/168h instances stayed short
+for an unrelated reason, `extend_horizon()`'s demand variation, until #194
+capped each extended day at the base profile.
 
 What #148 did, and #193 undid:
 

@@ -128,7 +128,9 @@ construction; the authors publish nothing for them.
 
 ### Extended Horizons
 
-Instances can be extended to 48h and 168h (1 week) via `extend_horizon()`, which repeats the 24h demand profile with a ±3% daily sinusoidal variation to avoid perfect periodicity.
+Instances can be extended to 48h and 168h (1 week) via `extend_horizon()`, which repeats the 24h demand and reserve profile, scaling day `d` (0-indexed) by the weekly factor `1 + 0.03·(cos(2πd/7) − 1)`, rounded to the nearest MW. The factor lies in [0.94, 1.0], so day 0 is the base day exactly and the variation keeps the days from being exact copies of each other.
+
+**The construction rule (#194): no extended day's demand or reserve exceeds the base profile's in the same hour.** So an extended instance has at least its base instance's capacity slack, `sum(P_max) − demand[t] − reserve[t]`, in every period: 699 MW for `ucp100` and 470 MW for `ucp200`, both at hour 12 of the base day. Rounding cannot break this, because the base profile is integral and the factor never exceeds 1. Until #194 the factor was `1 + 0.03·sin(2πd/7)`, which reaches 1.03 on days 1-3; with only 0.74% of slack at `ucp200`'s base peak, that put period 36 of every extended instance, and periods 60 and 84 of the 168-period ones, past total capacity, infeasible under any assignment. `tests/python/test_uc_chped_instance_identity.py` checks `demand + reserve <= sum(P_max)` in every period of every committed instance.
 
 ## Instance Summary
 
@@ -238,6 +240,12 @@ fixed-iteration hashes were re-checked identical after it.
 - **Per-horizon budgets (10-600 s), seed 42, 10:47-13:06, load 1.00-1.41:**
   feasibility and the printed gap are identical on all 24 rows (16 feasible, 8
   infeasible in both builds); iterations after/before 0.98-1.10.
+
+All of this section predates #193 and #194: it ran the old instance files, and
+the 8 infeasible rows are exactly the 8 that were capacity-short as built
+(`ucp40` and `ucp200` at 12/24 periods, and the four extended horizons), not
+search failures. Both fixes changed the files since, so these numbers describe
+the old instances.
 
 ## Reference Solver
 
@@ -493,12 +501,14 @@ here, 550 in the source. #193 restored the source's limits: capacity is now
 
 ucp40 was not the only case. The same check showed **ucp200** at 12 and 24
 periods short in period 12, by 30 MW (fixed by #193 too). All four extended
-horizons are also short. `extend_horizon()`'s demand variation pushes some
-periods past total capacity: ucp100-48p and ucp100-168p from period 36, and
-ucp200-48p and ucp200-168p from period 36. These stay short after #193. So 8 of
+horizons were also short, for a different reason. `extend_horizon()`'s demand
+variation pushed some periods past total capacity: period 36 in all four, plus
+60 in ucp100-168p and 60 and 84 in ucp200-168p, by up to 1377 MW after #193. So 8 of
 the 24 measured rows could never be feasible as built before #193, and 4 (the
-extended horizons) still cannot; their "INFEASIBLE" says nothing about the
-search. That is tracked separately (#194).
+extended horizons) could not until #194 changed the construction (see
+**Extended Horizons** above); their "INFEASIBLE" said nothing about the
+search. Every committed instance now has capacity slack in every period, and a
+test pins it.
 
 The 600s probe confirms the arithmetic rather than being needed for it. Engine
 commit `e9b28a6`, seed 42, `--verify`, uniform `--time-limit 600` over the ucp40

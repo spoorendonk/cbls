@@ -494,7 +494,10 @@ Treatment: the engine as is. Control: `-DCBLS_PP_CONTROL`. All 8 instance files,
 every rostered horizon, seeds 1-3, `--time-limit 10` per horizon, one runner
 process per (arm, file, seed), serial under the exclusive lock, arm order
 alternating per pair. Run 2026-10-01 10:19-10:47 on the Ryzen 5 5600H, 1-minute
-load at run start 0.97-1.20. Builds Release, `CBLS_SANITIZE` empty.
+load at run start 0.97-1.20. Builds Release, `CBLS_SANITIZE` empty. The files
+were the instances as built before #193 (`P_max` of the 40-unit copies) and
+#194 (the extended horizons' demand), so the `ucp40`, `ucp100`, `ucp200` and
+extended-horizon numbers below describe those older instances.
 
 **Verdict: absent.** No engaged instance meets the Direct condition (2).
 
