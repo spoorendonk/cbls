@@ -41,6 +41,7 @@ add_executable(cbls_tests
     test_executor.cpp
     test_custom_invariant_edits.cpp
     test_element_rounding.cpp
+    test_domain_errors.cpp
 )
 target_link_libraries(cbls_tests PRIVATE cbls_lib Catch2::Catch2WithMain)
 target_include_directories(cbls_tests PRIVATE ${CMAKE_SOURCE_DIR} ${json_SOURCE_DIR}/include)

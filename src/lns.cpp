@@ -40,6 +40,13 @@ static std::pair<double, double> state_key(const Model& model) {
         real_violation += std::max(0.0, v);
     }
     double obj = model.objective_id() >= 0 ? model.node_value(model.objective_id()) : 0.0;
+    // A NaN objective (a domain error, inf - inf) ranks LAST, as +inf: compared
+    // raw, `x < NaN` is false for every x, so no repair could displace a
+    // NaN-objective incumbent at equal violation (#205). Same reading as
+    // record_best's, which treats a non-finite objective as the worst witness.
+    if (std::isnan(obj)) {
+        obj = std::numeric_limits<double>::infinity();
+    }
     return {real_violation, obj};
 }
 

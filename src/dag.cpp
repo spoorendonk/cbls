@@ -45,6 +45,35 @@ static bool child_is_const(const ChildRef& ref, const Model& model) {
     return !ref.is_var && model.nodes()[ref.id].op == NodeOp::Const;
 }
 
+// The Div case of `evaluate` (#205). A denominator below 1e-15 in magnitude is
+// read as a zero, as it always was, but the answer now follows the quotient's
+// real sign rule instead of the numerator's alone:
+//
+//  - num != 0: an infinity signed by num * denom (`1 / -0.0` is -inf, and so is
+//    `-1 / 1e-16`). Signs are combined with signbit rather than by multiplying,
+//    so an infinite numerator over an exact zero stays an infinity instead of
+//    turning into `inf * 0` = NaN.
+//  - 0 / 0 (both exactly zero): NaN -- undefined, so a comparison reads it as
+//    maximally violated. It used to be +inf, which a `>=` row reads as satisfied.
+//  - 0 / tiny-but-nonzero: the true quotient, a signed zero. The threshold is a
+//    stand-in for "this is a pole", and there is no pole under a zero numerator.
+//  - a NaN numerator stays NaN; a NaN denominator fails the threshold test and
+//    reaches the plain division, which is NaN too.
+static double div_value(double num, double denom) {
+    if (std::abs(denom) < 1e-15) {
+        if (num == 0.0) {
+            return denom == 0.0 ? std::numeric_limits<double>::quiet_NaN() : num / denom;
+        }
+        if (std::isnan(num)) {
+            return num;
+        }
+        const bool negative = std::signbit(num) != std::signbit(denom);
+        return negative ? -std::numeric_limits<double>::infinity()
+                        : std::numeric_limits<double>::infinity();
+    }
+    return num / denom;
+}
+
 static double list_element(const ChildRef& ref, const Model& model, int idx) {
     if (ref.is_var) {
         const auto& v = model.var(ref.id);
@@ -97,19 +126,43 @@ static int32_t element_index(double v, int32_t n) {
 static double element_value(const ExprNode& node, ConstSpan<ChildRef> children,
                             const Model& model) {
     const ElementTable& tbl = model.element_table(node.lambda_func_id);
-    const int32_t i = element_index(child_val(children[0], model), tbl.rows);
+    const double raw_i = child_val(children[0], model);
+    const int32_t i = element_index(raw_i, tbl.rows);
     if (i < 0) {
-        return 0.0;
+        // Out of range reads 0.0, At's rule; an undefined (NaN) index stays
+        // undefined (#205).
+        return std::isnan(raw_i) ? raw_i : 0.0;
     }
     if (children.size() == 1) {
         return tbl.values[static_cast<size_t>(i)];
     }
-    const int32_t j = element_index(child_val(children[1], model), tbl.cols);
+    const double raw_j = child_val(children[1], model);
+    const int32_t j = element_index(raw_j, tbl.cols);
     if (j < 0) {
-        return 0.0;
+        return std::isnan(raw_j) ? raw_j : 0.0;
     }
     return tbl
         .values[(static_cast<size_t>(i) * static_cast<size_t>(tbl.cols)) + static_cast<size_t>(j)];
+}
+
+// The Min and Max cases of `evaluate`. A NaN child makes the result NaN (#205):
+// std::min/std::max keep whichever operand a `<` against NaN does not displace,
+// so they returned NaN only when it came FIRST and silently dropped it anywhere
+// else -- `max(5, sqrt(-1)) <= 6` read as satisfied, and the answer depended on
+// child order.
+static double min_max_value(ConstSpan<ChildRef> children, const Model& model, bool take_max) {
+    double m = child_val(children[0], model);
+    if (std::isnan(m)) {
+        return m;
+    }
+    for (size_t i = 1; i < children.size(); ++i) {
+        const double c = child_val(children[i], model);
+        if (std::isnan(c)) {
+            return c;
+        }
+        m = take_max ? std::max(m, c) : std::min(m, c);
+    }
+    return m;
 }
 
 // The `extra` values of a LambdaExtra/PairLambdaExtra node, children[1..], read
@@ -231,41 +284,21 @@ double evaluate(const ExprNode& node, const Model& model) {
         case NodeOp::Prod:
             return child_val(children[0], model) * child_val(children[1], model);
 
-        case NodeOp::Div: {
-            double denom = child_val(children[1], model);
-            double num = child_val(children[0], model);
-            if (std::abs(denom) < 1e-15) {
-                return num >= 0 ? std::numeric_limits<double>::infinity()
-                                : -std::numeric_limits<double>::infinity();
-            }
-            return num / denom;
-        }
+        case NodeOp::Div:
+            return div_value(child_val(children[0], model), child_val(children[1], model));
 
-        case NodeOp::Pow: {
-            double base = child_val(children[0], model);
-            double exp = child_val(children[1], model);
-            double result = std::pow(base, exp);
-            if (std::isfinite(result)) {
-                return result;
-            }
-            return std::numeric_limits<double>::infinity();
-        }
+        case NodeOp::Pow:
+            // std::pow's own answer, unmodified (#205): NaN for a domain error
+            // (`pow(-8, 1/3)`) and a correctly SIGNED inf for an overflow or a
+            // pole. This used to fold every non-finite result to +inf, which a
+            // `>=` row reads as satisfied by any finite bound.
+            return std::pow(child_val(children[0], model), child_val(children[1], model));
 
-        case NodeOp::Min: {
-            double m = child_val(children[0], model);
-            for (size_t i = 1; i < children.size(); ++i) {
-                m = std::min(m, child_val(children[i], model));
-            }
-            return m;
-        }
+        case NodeOp::Min:
+            return min_max_value(children, model, /*take_max=*/false);
 
-        case NodeOp::Max: {
-            double m = child_val(children[0], model);
-            for (size_t i = 1; i < children.size(); ++i) {
-                m = std::max(m, child_val(children[i], model));
-            }
-            return m;
-        }
+        case NodeOp::Max:
+            return min_max_value(children, model, /*take_max=*/true);
 
         case NodeOp::Abs:
             return std::abs(child_val(children[0], model));
@@ -282,27 +315,25 @@ double evaluate(const ExprNode& node, const Model& model) {
         case NodeOp::Exp:
             return std::exp(child_val(children[0], model));
 
-        case NodeOp::Log: {
-            double x = child_val(children[0], model);
-            if (x <= 0) {
-                return -std::numeric_limits<double>::infinity();
-            }
-            return std::log(x);
-        }
+        case NodeOp::Log:
+            // std::log as is (#205): -inf at exactly 0 (either sign), NaN below.
+            // A negative argument used to read as -inf, which `log(x) <= c`
+            // scored as satisfied.
+            return std::log(child_val(children[0], model));
 
-        case NodeOp::Sqrt: {
-            double x = child_val(children[0], model);
-            if (x < 0) {
-                return 0.0;
-            }
-            return std::sqrt(x);
-        }
+        case NodeOp::Sqrt:
+            // std::sqrt as is (#205): NaN below 0. It used to read 0.0 there, a
+            // satisfiable value -- `sqrt(x) <= 1` held at x = -10.
+            return std::sqrt(child_val(children[0], model));
 
         case NodeOp::SignPower: {
             // sign(x) * |x|^p  (AMPL OPSIGNPOWER / MINLPLib opsignpower).
             double x = child_val(children[0], model);
             double p = child_val(children[1], model);
             double mag = std::pow(std::abs(x), p);
+            if (std::isnan(mag)) {
+                return mag;  // a NaN operand: undefined, not an infinity of x's sign
+            }
             if (!std::isfinite(mag)) {
                 return x >= 0 ? std::numeric_limits<double>::infinity()
                               : -std::numeric_limits<double>::infinity();
@@ -315,13 +346,26 @@ double evaluate(const ExprNode& node, const Model& model) {
 
         case NodeOp::If: {
             double cond = child_val(children[0], model);
+            if (std::isnan(cond)) {
+                // An undefined condition selects no branch (#205): reading it as
+                // false would hand back the else-branch, a defined value.
+                return cond;
+            }
             return cond > 0 ? child_val(children[1], model) : child_val(children[2], model);
         }
 
         case NodeOp::At: {
-            // children[0] = list var, children[1] = index expr
-            int idx = static_cast<int>(child_val(children[1], model));
-            return list_element(children[0], model, idx);
+            // children[0] = list var, children[1] = index expr. The index goes
+            // through element_index, Element's guard, so a NaN or an
+            // out-of-int-range value is never cast (that cast is undefined
+            // behaviour). Out of range keeps reading 0.0; a NaN index is
+            // undefined and stays NaN (#205).
+            const double raw = child_val(children[1], model);
+            if (std::isnan(raw)) {
+                return raw;
+            }
+            return list_element(children[0], model,
+                                element_index(raw, list_size(children[0], model)));
         }
 
         case NodeOp::Count: {
@@ -396,10 +440,12 @@ double evaluate(const ExprNode& node, const Model& model) {
                                        child_is_const(children[0], model));
 
         case NodeOp::Neq:
-            // 1 when equal (violated), 0 when not equal (satisfied)
-            return (std::abs(child_val(children[0], model) - child_val(children[1], model)) < 1e-9)
-                       ? 1.0
-                       : 0.0;
+            // 1 when equal (violated), 0 when not equal (satisfied). Written as
+            // "satisfied only when provably apart", so a NaN difference -- an
+            // undefined side -- is violated rather than satisfied (#205).
+            return (std::abs(child_val(children[0], model) - child_val(children[1], model)) >= 1e-9)
+                       ? 0.0
+                       : 1.0;
 
         case NodeOp::Lt:
             // a - b + ε (≤ 0 when a < b strictly)
@@ -450,13 +496,21 @@ double evaluate(const ExprNode& node, const Model& model) {
 // edge, so it sits on the same hot path. The `default:`-free table is gated the
 // same way -- see the note on evaluate() above.
 //
-// One asymmetry worth naming, because it is DELIBERATE and looks like an
-// oversight: the `Custom` case folds a non-finite partial to 0, and the built-in
-// cases do not. `Div`, `Pow`, `Log` and `SignPower` can each return an infinite
-// derivative at a singular point, and nothing clamps them. That is pre-existing
-// behaviour the whole engine is tuned around, and widening the clamp to the
-// built-ins would change every AD trajectory; the Custom arm is new, so it starts
-// strict. Do not "harmonise" the two by loosening the new one.
+// Non-finite partials. The reverse sweep accumulates `adjoint[child] += adj *
+// ld`, so one infinite edge turns the next `ld == 0.0` on the same path into
+// `inf * 0.0` -- NaN -- in the partial of a variable that has nothing to do with
+// the singular node (see the Custom case). `Custom`, `Pow`, `SignPower`, and
+// since #205 `Div` and `Tan`, therefore fold a non-finite partial to 0; `Log`
+// and `Sqrt` return 0 on and below their singular point, where their value is
+// -inf or NaN. What stays finite but huge near a pole (`1/x` at x = 1e-15) is
+// left alone: that slope is real, and clamping it would change every AD
+// trajectory that passes near one.
+//
+// And no op offers a finite slope where its VALUE is NaN (#205): a Newton step
+// built from it would aim at a root inside a region where the function is not
+// defined. `Log` returns 0 for x < 0, `Sqrt` for x < 1e-15, and `Pow`'s
+// `pow(base, exp - 1)` is itself NaN wherever `pow(base, exp)` is, which the
+// isfinite fold catches.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 double local_derivative(const ExprNode& node, int child_idx, const Model& model) {
     const ConstSpan<ChildRef> children = model.children(node);
@@ -476,15 +530,15 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
         }
 
         case NodeOp::Div: {
-            if (child_idx == 0) {
-                double denom = child_val(children[1], model);
-                return std::abs(denom) > 1e-15 ? 1.0 / denom : 0.0;
-            }
             double denom = child_val(children[1], model);
-            if (std::abs(denom) < 1e-15) {
+            if (!(std::abs(denom) >= 1e-15)) {  // the pole, or a NaN denominator
                 return 0.0;
             }
-            return -child_val(children[0], model) / (denom * denom);
+            // -num / denom^2 overflows for a large numerator over a small
+            // denominator, and a NaN numerator propagates: fold both (#205).
+            const double d =
+                child_idx == 0 ? 1.0 / denom : -child_val(children[0], model) / (denom * denom);
+            return std::isfinite(d) ? d : 0.0;
         }
 
         case NodeOp::Pow: {
@@ -541,8 +595,11 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
             return -std::sin(child_val(children[0], model));
 
         case NodeOp::Tan: {
+            // sec^2: infinite where cos is exactly 0, NaN for a non-finite
+            // argument. Folded to 0 like Div's (#205).
             double c = std::cos(child_val(children[0], model));
-            return 1.0 / (c * c);
+            const double d = 1.0 / (c * c);
+            return std::isfinite(d) ? d : 0.0;
         }
 
         case NodeOp::Exp:
@@ -550,7 +607,9 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
 
         case NodeOp::Log: {
             double x = child_val(children[0], model);
-            if (std::abs(x) < 1e-15) {
+            // 0 at the pole and below it: log is NaN for x < 0 (#205), so 1/x
+            // there is a slope of nothing. NaN fails the test too.
+            if (!(x >= 1e-15)) {
                 return 0.0;
             }
             return 1.0 / x;
@@ -558,7 +617,7 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
 
         case NodeOp::Sqrt: {
             double x = child_val(children[0], model);
-            if (x < 1e-15) {
+            if (!(x >= 1e-15)) {  // the cusp, the NaN region below it, and a NaN x
                 return 0.0;
             }
             return 1.0 / (2.0 * std::sqrt(x));

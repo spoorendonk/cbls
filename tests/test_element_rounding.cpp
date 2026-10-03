@@ -75,13 +75,16 @@ TEST_CASE("element truncates a fractional index toward zero, as at does", "[dag]
     REQUIRE(eval_at(m, e) == 5.0);
     m.var_mut(vid(x)).value = 3.0;
     REQUIRE(eval_at(m, e) == 0.0);
-    // Non-finite and far out of int range are "outside", not undefined
+    // Infinite and far out of int range are "outside", not undefined
     // behaviour in a cast.
-    for (double v : {std::numeric_limits<double>::quiet_NaN(),
-                     std::numeric_limits<double>::infinity(), 1e30, -1e30}) {
+    for (double v : {std::numeric_limits<double>::infinity(), 1e30, -1e30}) {
         m.var_mut(vid(x)).value = v;
         REQUIRE(eval_at(m, e) == 0.0);
     }
+    // A NaN index is not cast either, but it is undefined rather than outside:
+    // reading it as 0.0 would hand a domain error a satisfiable value (#205).
+    m.var_mut(vid(x)).value = std::numeric_limits<double>::quiet_NaN();
+    REQUIRE(std::isnan(eval_at(m, e)));
 }
 
 TEST_CASE("a two-index element reads table[row][col] and 0.0 if either is outside",
