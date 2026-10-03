@@ -544,6 +544,22 @@ satisfiable and the flow works end to end. The objectives are 10s runs under
 contention, below the map budgets, and are not results; the horizons
 need measuring at the map budgets (#131).
 
+**After #194: a smoke test, not a measurement.** With the extended days capped
+at the base profile, the runner was run once over the four extended instances
+(`ucp100-48p`, `ucp100-168p`, `ucp200-48p`, `ucp200-168p`) with a uniform
+`--time-limit 10`, seed 42, `--verify`, at commit `374e09d` (instances
+regenerated at `eee6296`), on a shared machine at a 1-minute load average of
+2.3. All four were feasible and verified: 12,313,040.6, 41,620,012.7,
+24,288,585.0 and 81,279,997.6 respectively. As with #193's smoke, that settles
+only satisfiability and the end-to-end flow; the objectives are 10s runs, far
+below the 600s map budget, and are not results.
+
+**The 48h/168h budgets have never been defended.** The traces above cover
+ucp13 and ucp40 only, and every extended-horizon row measured before #194 ran
+an instance that no assignment could satisfy, so no measurement of those
+horizons says anything about their 600s budget. Defending it needs traces of
+the regenerated instances at the map budget (#131).
+
 Archived results:
 
 ### 13-Unit System
