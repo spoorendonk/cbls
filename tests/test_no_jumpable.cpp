@@ -21,6 +21,7 @@
 //
 // All runs are iteration-budgeted with time_limit = 0, so nothing reads a clock.
 
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cbls/search.h>
@@ -132,12 +133,7 @@ bool independently_feasible(const Cvrp& c, const Built& b, const SearchResult& r
             return false;
         }
     }
-    for (const int s : seen) {
-        if (s != 1) {
-            return false;
-        }
-    }
-    return true;
+    return std::all_of(seen.begin(), seen.end(), [](int s) { return s == 1; });
 }
 
 SearchResult run(Model& m, uint64_t seed, int64_t max_iterations, const SearchConfig& base = {}) {
