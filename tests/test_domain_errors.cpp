@@ -71,11 +71,30 @@ const char* const kLogModel = R"({"var":"x","type":"Float","lb":-10,"ub":10}
 {"minimize":"o"}
 )";
 
-// -1/y <= -1 holds for y in (0, 1] and at the pole y = +0 (where -1/+0 = -inf);
-// for every y < 0 the quotient is positive. The unfixed engine signed the
-// near-zero quotient by the numerator alone, so every |y| < 1e-15 read as
-// -inf -- satisfied -- including the negative ones the search then minimised to.
-const char* const kDivModel = R"({"var":"y","type":"Float","lb":-10,"ub":10}
+// The issue's fourth repro is `-1/y <= c`, minimising y. Its false claim sits
+// at the pole: the unfixed engine signed a near-zero quotient by the numerator
+// alone. At y = +0 that sign is also the true one (-1/+0 = -inf), and this
+// issue keeps a signed infinity at the pole by design, so that literal model
+// reaches y = 0 before and after the fix alike -- see the last test in this
+// section. Where the numerator-only rule was WRONG is a negative zero or a
+// negative near-zero denominator, and this model is the same row with the
+// denominator negated so that the search lands there: 1/(-y) >= 5 over
+// y in [0, 10] has no feasible point -- -y <= 0, so the quotient is negative
+// for y > 0 and -inf at y = 0, where -y = -0.0. The unfixed engine read
+// 1/(-0.0) as +inf and reported y = 0 feasible.
+const char* const kDivModel = R"({"var":"y","type":"Float","lb":0,"ub":10}
+{"node":"one","op":"Const","value":1.0}
+{"node":"ny","op":"Neg","children":["y"]}
+{"node":"d","op":"Div","children":["one","ny"]}
+{"node":"c5","op":"Const","value":5.0}
+{"node":"g","op":"Geq","children":["d","c5"]}
+{"constraint":"g"}
+{"node":"o","op":"Sum","children":["y"]}
+{"minimize":"o"}
+)";
+
+// The issue's literal fourth model.
+const char* const kIssueDivModel = R"({"var":"y","type":"Float","lb":-10,"ub":10}
 {"node":"m1","op":"Const","value":-1.0}
 {"node":"d","op":"Div","children":["m1","y"]}
 {"node":"g","op":"Leq","children":["d","m1"]}
@@ -115,8 +134,20 @@ TEST_CASE("log(x) <= 1 minimising x reaches 0, not a negative x", "[dag][domain]
     REQUIRE(r.objective >= 0.0);
 }
 
-TEST_CASE("minimising y under -1/y <= -1 never settles on a negative y", "[dag][domain]") {
+TEST_CASE("1/(-y) >= 5 over y >= 0 is reported infeasible, not feasible at the pole",
+          "[dag][domain]") {
     Model m = load(kDivModel);
+    const SearchResult r = solve_deterministic(m, kIters);
+    REQUIRE_FALSE(r.feasible);
+}
+
+TEST_CASE("the issue's -1/y <= -1 model never settles on a negative y", "[dag][domain]") {
+    // Pinned for what it does show: no y < 0 satisfies the row (the quotient
+    // is positive there), and the search must not claim one. Its optimum is
+    // the pole y = +0, where -1/+0 = -inf reads as satisfied by the signed-
+    // infinity rule this issue keeps -- the same verdict the unfixed engine
+    // gave, which is why this test is not the red one; kDivModel above is.
+    Model m = load(kIssueDivModel);
     const SearchResult r = solve_deterministic(m, kIters);
     REQUIRE(r.feasible);
     REQUIRE(r.objective >= 0.0);
@@ -324,22 +355,23 @@ TEST_CASE("no slope is offered where log's value is NaN", "[dag][domain][ad]") {
 }
 
 TEST_CASE("a div partial that overflows does not poison a sibling's partial", "[dag][domain][ad]") {
-    // f = (n / d) * y at n = 1e300, d = 1e-5, y = 0. The quotient is a finite
-    // 1e305, but d(n/d)/dd = -n/d^2 = -1e310 overflows to -inf. The edge into the
-    // quotient carries y = 0, and the sweep multiplies the two: 0 * -inf = NaN
-    // in d's partial, although f does not move with d at all here.
+    // f = n / max(w, z) at n = 1e300, w = 1e-5, z = -1. The quotient is a finite
+    // 1e305, but d(n/d)/dd = -n/d^2 = -1e310 overflows to -inf. That infinite
+    // adjoint reaches the Max, whose edge into the unselected z has slope 0 --
+    // and the sweep's `adj * ld` is then -inf * 0 = NaN in z's partial, a
+    // variable f does not depend on here at all.
     Model m;
     const int32_t n = m.float_var(-1e300, 1e300, "n");
-    const int32_t d = m.float_var(-1, 1, "d");
-    const int32_t y = m.float_var(-1, 1, "y");
-    const int32_t q = m.div_expr(n, d);
-    const int32_t f = m.prod(q, y);
+    const int32_t w = m.float_var(-1, 1, "w");
+    const int32_t z = m.float_var(-1, 1, "z");
+    const int32_t f = m.div_expr(n, m.max_expr({w, z}));
     m.minimize(f);
     m.close();
     m.var_mut(vid(n)).value = 1e300;
-    m.var_mut(vid(d)).value = 1e-5;
-    m.var_mut(vid(y)).value = 0.0;
+    m.var_mut(vid(w)).value = 1e-5;
+    m.var_mut(vid(z)).value = -1.0;
     full_evaluate(m);
+    REQUIRE(std::isfinite(m.node_value(f)));
     const std::vector<double> g = compute_all_partials(m, f);
     for (double v : g) {
         CHECK(std::isfinite(v));
