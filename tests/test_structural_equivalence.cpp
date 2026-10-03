@@ -219,13 +219,27 @@ struct Scenario {
 };
 
 // Recorded at a805cb6. See the header comment: do not regenerate.
+//
+// EXCEPT five rows, which #201 changed on purpose and re-derived WITHOUT the
+// current build. #201 changed two things these digests see: on a model with no
+// movable Bool/Int/Float variable every batch is now structural whatever the
+// probability, and SearchResult::iterations reports max(GLS iterations,
+// batches) instead of GLS iterations alone. set_cover and list_tour have no
+// scalar variable at all, so their `auto` rows now run the 1.0 mix; and every
+// `struct1` row ran no FJ batch, so its iteration count moved from 0 to 4000.
+// The new values were produced on the UNFIXED engine (1304c43, which still
+// reproduced every a805cb6 digest) with the test emulating exactly those two
+// changes -- probability forced to 1.0 on a model with no movable scalar, and
+// `iterations = max(iterations, counters.batches)` before digesting -- and the
+// fixed engine then reproduced all six digests bit for bit. mixed/seed42/auto
+// has movable scalars, ran FJ batches and did not move.
 const std::array<Scenario, 6> kScenarios = {{
-    {"set_cover/seed42/auto", set_cover_model, 42, 4000, -1.0, 0x2afb90b15172f4d2ULL},
-    {"set_cover/seed7/struct1", set_cover_model, 7, 4000, 1.0, 0x77c1525046818defULL},
-    {"list_tour/seed42/auto", list_tour_model, 42, 4000, -1.0, 0xa25f848877a8ad48ULL},
-    {"list_tour/seed7/struct1", list_tour_model, 7, 4000, 1.0, 0x24b5d55b1947f7c1ULL},
+    {"set_cover/seed42/auto", set_cover_model, 42, 4000, -1.0, 0x393b052b77449698ULL},
+    {"set_cover/seed7/struct1", set_cover_model, 7, 4000, 1.0, 0xfc1af445e51ed08aULL},
+    {"list_tour/seed42/auto", list_tour_model, 42, 4000, -1.0, 0x8445d676f8d4fdd3ULL},
+    {"list_tour/seed7/struct1", list_tour_model, 7, 4000, 1.0, 0x662c868a45a1f1f8ULL},
     {"mixed/seed42/auto", mixed_model, 42, 4000, -1.0, 0x20189d0215c20c7aULL},
-    {"mixed/seed7/struct1", mixed_model, 7, 4000, 1.0, 0x7ff39ed3c0d80834ULL},
+    {"mixed/seed7/struct1", mixed_model, 7, 4000, 1.0, 0xbea4bc2d3d05c9a1ULL},
 }};
 
 uint64_t run_scenario(const Scenario& sc) {

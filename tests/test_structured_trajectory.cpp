@@ -13,6 +13,16 @@
 // whatever the engine produced, and any change to them is a trajectory change
 // that has to be explained rather than re-recorded.
 //
+// The List and Set witnesses were re-recorded once, by #201, which made every
+// batch structural on a model with no movable Bool/Int/Float variable (both of
+// those models) and made `iters` report max(GLS iterations, batches). The new
+// signatures were derived on the UNFIXED engine (1304c43) with those two changes
+// emulated in the test -- structural probability 1.0, `iters` taken as
+// max(iterations, counters.batches) -- and the fixed engine reproduces them
+// exactly. Both seeds now reach the same assignment on each model (for the Set,
+// the optimum: weight 12 is the row's bound). The mixed witness has movable
+// scalars and did not move.
+//
 // Reproducibility rests on `solve_deterministic`: `time_limit = 0` removes the
 // wall clock entirely, so an iteration budget alone bounds the run and no clock
 // read can reach control flow (see the `has_deadline` note in src/search.cpp).
@@ -67,9 +77,9 @@ TEST_CASE("structured trajectory witness: List with pair_lambda_sum", "[trajecto
     m.close();
 
     REQUIRE(signature(solve_deterministic(m, 4000, 20240163), vid(lv)) ==
-            "iters=4000 feasible=1 obj=20 elements=6,1,0,4,2,3,5");
+            "iters=4000 feasible=1 obj=11 elements=6,1,5,3,4,2,0");
     REQUIRE(signature(solve_deterministic(m, 4000, 7), vid(lv)) ==
-            "iters=4000 feasible=1 obj=30 elements=0,2,1,4,6,5,3");
+            "iters=4000 feasible=1 obj=11 elements=6,1,5,3,4,2,0");
 }
 
 TEST_CASE("structured trajectory witness: Set with lambda_sum", "[trajectory][structured]") {
@@ -81,9 +91,9 @@ TEST_CASE("structured trajectory witness: Set with lambda_sum", "[trajectory][st
     m.close();
 
     REQUIRE(signature(solve_deterministic(m, 4000, 20240163), vid(sv)) ==
-            "iters=4000 feasible=1 obj=15 elements=0,8,7,4");
+            "iters=4000 feasible=1 obj=12 elements=3,8,2");
     REQUIRE(signature(solve_deterministic(m, 4000, 7), vid(sv)) ==
-            "iters=4000 feasible=1 obj=12 elements=3,8,6,7");
+            "iters=4000 feasible=1 obj=12 elements=3,8,2");
 }
 
 TEST_CASE("structured trajectory witness: List mixed with scalars", "[trajectory][structured]") {

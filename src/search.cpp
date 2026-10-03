@@ -163,10 +163,24 @@ Budget make_budget(double time_limit) {
     return b;
 }
 
+// Whether a Feasibility-Jump (or Novelty-Jump) batch has anything to move: a
+// variable FJ's whitelist admits (FeasibilityJump::jumpable -- Bool, Int,
+// Float) whose domain holds at least two values. False on a model whose only
+// decisions are List/Set variables, and on a mixed one whose every scalar is
+// fixed (#201).
+bool fj_has_work(const Model& model) {
+    return std::any_of(model.variables().begin(), model.variables().end(), [](const Variable& v) {
+        const bool jumpable =
+            v.type == VarType::Bool || v.type == VarType::Int || v.type == VarType::Float;
+        return jumpable && movable_domain(v);
+    });
+}
+
 // Effective structural-batch probability: explicit config overrides; <0 means
 // auto (0.33 when the batch has anything to do, 0 otherwise). Zeroed on a model
 // with neither a List/Set variable nor a registered move generator, which skips
 // the structural batch -- and its per-variable generator scan -- entirely.
+// Forced to 1.0 when the structural batch has work and FJ has none (#201).
 double effective_structural_probability(const Model& model, const SearchConfig& config) {
     // A REGISTERED generator counts as structure in its own right (#165). Its
     // moves may touch scalar variables only -- an ejection chain over assignment
@@ -196,6 +210,28 @@ double effective_structural_probability(const Model& model, const SearchConfig& 
                      [](const Variable& v) { return is_structured(v.type); }));
     if (!has_structural) {
         return 0.0;
+    }
+    // Nothing for FJ to jump (#201): every batch is structural, explicit
+    // probability or not. The probability apportions batches between FJ and the
+    // structural sweep, and with FJ empty there is nothing to apportion -- the
+    // FJ share would be pure loss, and worse than idle. An FJ batch over an
+    // empty jumpable set spins its GLS loop to the iteration limit bumping
+    // weights, so it reports itself stuck (`batch_stuck()`) and maybe_diversify
+    // takes #102's unproductive kick after almost every one; each kick
+    // re-randomises every List, so the structural batches never hold progress.
+    // Measured on CVRP X-n101-k25 (30 partitioned Lists, 10 s, seed 1, LNS off,
+    // engine 1304c43): the auto 0.33 arm took 114632 kicks and never reached
+    // feasibility; 0.33 with the kick neutralised was feasible at 4.36 s
+    // (objective 49633); 1.0 was feasible at 0.006 s (40216). So the kicks are
+    // what kept it infeasible, and the empty batch share is what cost the rest.
+    //
+    // Keyed on the MODEL, not on the batch kind, so a model with any movable
+    // scalar keeps its mix -- and its RNG draw sequence -- exactly: this
+    // function is evaluated once, and pick_batch_kind still draws its one
+    // `random()` per batch whatever it returns. A model with no structure and no
+    // FJ work returns 0.0 above, unchanged.
+    if (!fj_has_work(model)) {
+        return 1.0;
     }
     return config.structural_batch_probability >= 0.0 ? config.structural_batch_probability : 0.33;
 }
@@ -1683,7 +1719,14 @@ SearchResult ViolationLSLoop::finish() {
     // Residual of the assignment actually being returned, from the fresh
     // full_evaluate above rather than the incrementally-maintained node values.
     result.best_violation = max_real_violation();
-    result.iterations = fj_.iterations();  // total GLS iterations (not batch count)
+    // The unit max_iterations is charged in (#201): GLS iterations, or the
+    // outer batch count when that is larger. budget_exhausted() stops on
+    // either reaching the limit, i.e. on this max reaching it, so the reported
+    // count and the budget agree by construction. On any model FJ has work in,
+    // a batch charges up to batch_iterations GLS iterations and the max is the
+    // GLS count; on a structural-only run, where no GLS iteration is ever
+    // charged, it is the batch count rather than a 0 that hides the work done.
+    result.iterations = std::max(fj_.iterations(), batches_);
     result.time_seconds = run_seconds;
     result.termination = termination_;
     result.escape_probe_armed = fj_.escape_probe();

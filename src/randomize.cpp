@@ -59,6 +59,24 @@ DomainWindow int_sample_window(const Variable& var) {
             std::floor(std::min(w.hi, kExactIntMagnitude - 1.0))};
 }
 
+bool movable_domain(const Variable& var) {
+    switch (var.type) {
+        case VarType::Int: {
+            // Exact and UB-free at any magnitude, where an int64_t cast is
+            // neither: the window holds two distinct integers iff
+            // floor(hi) - ceil(lo) >= 1. Note this calls [0.9, 1.2] immovable,
+            // where truncating casts called it movable — 1 is the only integer
+            // in it, so immovable is the right answer.
+            const DomainWindow w = int_sample_window(var);
+            return std::floor(w.hi) - std::ceil(w.lo) >= 1.0;
+        }
+        default: {  // Bool, Float
+            const DomainWindow w = domain_window(var);
+            return w.hi > w.lo;
+        }
+    }
+}
+
 double random_in_domain(const Variable& var, RNG& rng) {
     const DomainWindow w = domain_window(var);
     switch (var.type) {

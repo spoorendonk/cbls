@@ -120,6 +120,18 @@ DomainWindow domain_window(const Variable& var);
 /// Int variables only; on any other type it is `domain_window` unchanged.
 DomainWindow int_sample_window(const Variable& var);
 
+/// Whether a scalar variable's domain holds at least two values, i.e. whether
+/// anything can move it: a perturbation, a Feasibility-Jump jump, or a forced
+/// kick. Bool spans {0,1} today, but its bounds are asked rather than assumed,
+/// so a pinnable Bool would be reported immovable. Int reads the same
+/// `int_sample_window` that `random_in_domain` draws from, so both agree on which
+/// values the domain contains — `[0.9, 1.2]` holds only the integer 1 and is
+/// immovable. Float is movable iff its window has positive width.
+///
+/// Scalar types only (Bool/Int/Float). Shared by FJ's kick (#109) and the
+/// search's "does FJ have anything to jump" test (#201).
+bool movable_domain(const Variable& var);
+
 /// Draw a uniformly random value from a scalar variable's domain. Finite and
 /// in-domain for every domain — see `domain_window`. On the one Int case
 /// `int_sample_window` cannot name (a domain wholly past 2^53) the draw falls
@@ -129,7 +141,7 @@ DomainWindow int_sample_window(const Variable& var);
 /// which is in-domain for every Bool the model can build (`bool_var` fixes the
 /// bounds at [0, 1], and a fixed binary read from MPS becomes an Int). A Bool
 /// pinned by `lb == ub` would not be respected here — unreachable today, but the
-/// reason `movable_domain` in feasibility_jump.cpp checks the bounds anyway.
+/// reason `movable_domain` checks the bounds anyway.
 double random_in_domain(const Variable& var, RNG& rng);
 
 /// How a List's new order relates to its current one.

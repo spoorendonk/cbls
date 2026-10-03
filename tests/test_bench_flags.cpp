@@ -488,9 +488,10 @@ TEST_CASE("the --no-time-limit flag hands solve() an iteration budget alone",
 TEST_CASE("the --compound-moves flag changes the batches the search runs",
           "[bench][flags][probe]") {
     // With Novelty Jump on and its probability at 1 every batch is a compound
-    // batch, which is a different search from the Feasibility-Jump-only default
-    // -- and Novelty batches do not charge fj.iterations(), so the difference
-    // shows in the iteration count as well as in the trajectory.
+    // batch, which is a different search from the Feasibility-Jump-only default.
+    // Read off the batch counters, not the iteration count: since #201 that
+    // reports the larger of GLS iterations and batches, so an all-Novelty run
+    // reports its 300 batches against the FJ arm's 300 GLS iterations.
     const std::vector<std::string> budget = {"--no-lns", "--max-iterations", "300",
                                              "--perturbation-period", "5"};
     std::vector<std::string> on = budget;
@@ -498,7 +499,9 @@ TEST_CASE("the --compound-moves flag changes the batches the search runs",
 
     const SearchResult off_arm = probe(budget, build_stagnant_model, /*batch_iterations=*/10);
     const SearchResult on_arm = probe(on, build_stagnant_model, /*batch_iterations=*/10);
-    REQUIRE(off_arm.iterations != on_arm.iterations);
+    REQUIRE(off_arm.counters.novelty_batches == 0);
+    REQUIRE(on_arm.counters.novelty_batches > 0);
+    REQUIRE(on_arm.counters.fj_batches == 0);
 }
 
 TEST_CASE("the --novelty-prob flag changes how many batches are compound",
@@ -515,7 +518,9 @@ TEST_CASE("the --novelty-prob flag changes how many batches are compound",
 
     const SearchResult always_arm = probe(always, build_stagnant_model, /*batch_iterations=*/10);
     const SearchResult never_arm = probe(never, build_stagnant_model, /*batch_iterations=*/10);
-    REQUIRE(always_arm.iterations != never_arm.iterations);
+    REQUIRE(never_arm.counters.novelty_batches == 0);
+    REQUIRE(always_arm.counters.novelty_batches > 0);
+    REQUIRE(always_arm.counters.fj_batches == 0);
 }
 
 TEST_CASE("the --no-float-hook flag changes where a continuous run lands",

@@ -43,7 +43,12 @@ struct SearchConfig {
     bool skip_init = false;
     // Total GLS iterations (not batches). 0 = unlimited (bounded by time_limit).
     // Checked at batch boundaries, so SearchResult::iterations may exceed this
-    // by up to batch_iterations - 1.
+    // by up to batch_iterations - 1. The outer batch count is held to the same
+    // limit, because Structural and Novelty batches charge no GLS iteration: the
+    // run stops when EITHER count reaches it, and SearchResult::iterations
+    // reports the larger of the two (#201). On a model with no FJ-jumpable
+    // variable (List/Set only), every batch is structural and this is exactly a
+    // batch budget: SearchResult::iterations == max_iterations at the limit.
     int64_t max_iterations = 0;
     bool use_fj = true;
     int lns_interval = 3;
@@ -76,6 +81,15 @@ struct SearchConfig {
     // entry in `move_generators`, or a List/Set variable with
     // `default_structural_generators` on -- and 0.0 otherwise. Keying it on
     // List/Set presence alone would arm a batch that builds nothing.
+    //
+    // When the batch would build a generator but FJ has nothing to jump -- no
+    // Bool/Int/Float variable with at least two values in its domain, as on a
+    // List-only routing model or a mixed one whose every scalar is fixed --
+    // every batch is structural, whatever this is set to (#201). FJ and Novelty
+    // batches over an empty jumpable set did no work, reported themselves stuck
+    // and triggered a diversification kick after almost every one, which kept a
+    // List-only CVRP model from ever reaching feasibility at the 0.33 default.
+    // A model with any movable scalar keeps this setting exactly.
     double structural_batch_probability = -1.0;
 
     // ---- structural batch: what proposes moves, and how one is chosen (#165) --
@@ -302,6 +316,12 @@ struct SearchResult {
     /// constraints alone — independent of whether the objective is finite there.
     bool feasible = false;
     Model::State best_state;
+    /// The work `SearchConfig::max_iterations` is charged against: the larger of
+    /// the GLS iterations Feasibility-Jump batches ran and the number of outer
+    /// batches (#201). On a model FJ has work in that is the GLS count; on one
+    /// with no FJ-jumpable variable, where every batch is structural and no GLS
+    /// iteration is ever charged, it is the batch count. Never 0 for a run that
+    /// ran a batch. `counters` splits the batches by kind.
     int64_t iterations = 0;
     double time_seconds = 0.0;
     /// Which budget ended the run — the qualifier on `iterations` and

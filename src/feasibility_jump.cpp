@@ -96,34 +96,11 @@ double clamp_to_domain(const Variable& var, double value) {
 
 // --- perturbation helpers --------------------------------------------------
 // `random_in_domain` itself lives in randomize.h, shared with search.cpp's
-// initialisers and LNS's destroy step (#112). The two below are specific to the
-// kick and stay here; they read the domain through the same
-// `int_sample_window`, so the values they consider in-domain are exactly the
-// ones it can draw.
+// initialisers and LNS's destroy step (#112), and so does `movable_domain`,
+// which the search also reads (#201). The one below is specific to the kick and
+// stays here; it reads the domain through the same `int_sample_window`, so the
+// values it considers in-domain are exactly the ones `random_in_domain` can draw.
 //
-// A variable can be moved by a perturbation only if its domain holds at least
-// two values. Bool spans {0,1} today, but ask its bounds rather than assume so:
-// should a Bool ever become pinnable, flipping it would put it outside its own
-// domain. Int reads the same window random_different_in_domain draws from, so
-// both agree on which values the domain contains.
-bool movable_domain(const Variable& var) {
-    switch (var.type) {
-        case VarType::Int: {
-            // Exact and UB-free at any magnitude, where an int64_t cast is
-            // neither: the window holds two distinct integers iff
-            // floor(hi) - ceil(lo) >= 1. Note this calls [0.9, 1.2] immovable,
-            // where truncating casts called it movable — 1 is the only integer
-            // in it, so immovable is the right answer.
-            const DomainWindow w = int_sample_window(var);
-            return std::floor(w.hi) - std::ceil(w.lo) >= 1.0;
-        }
-        default: {  // Bool, Float
-            const DomainWindow w = domain_window(var);
-            return w.hi > w.lo;
-        }
-    }
-}
-
 // Draw a random value from the domain that DIFFERS from the current one, for
 // the single variable a perturbation is guaranteed to move (#109). Plain
 // resampling is not enough: it redraws the current value with probability

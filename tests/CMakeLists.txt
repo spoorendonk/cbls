@@ -9,6 +9,7 @@ add_executable(cbls_tests
     test_search.cpp
     test_structural_equivalence.cpp
     test_structural_batch.cpp
+    test_no_jumpable.cpp
     test_parallel.cpp
     test_initialization.cpp
     test_violation_delta.cpp

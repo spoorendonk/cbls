@@ -40,7 +40,11 @@ Model quadratic_model() {
 // A List and a Set, both consumed by the objective and a constraint, so the
 // structural batch has generators to sweep and moves to score. An unconsumed
 // structured variable would give a sweep with nothing to improve.
-Model structured_model() {
+//
+// `with_scalar` adds a movable Int, read by a row and the objective. Without
+// one FJ has nothing to jump and every batch is structural (#201), so a test
+// that needs all three batch kinds to run must ask for it.
+Model structured_model(bool with_scalar = false) {
     Model m;
     auto route = m.list_var(8, "route");
     auto chosen = m.set_var(10, 3, 6, "chosen");
@@ -58,7 +62,13 @@ Model structured_model() {
     const int32_t load =
         m.lambda_sum(chosen, [](int e) { return static_cast<double>((e * 5) % 7) + 1.0; });
     m.add_constraint(m.sum({m.constant(-12.0), load}));  // load >= 12
-    m.minimize(m.sum({tour, load}));
+    if (with_scalar) {
+        const int32_t level = m.int_var(0, 9, "level");
+        m.add_constraint(m.sum({m.constant(-3.0), level}));  // level >= 3
+        m.minimize(m.sum({tour, load, level}));
+    } else {
+        m.minimize(m.sum({tour, load}));
+    }
     m.close();
     return m;
 }
@@ -94,7 +104,9 @@ TEST_CASE("batches by kind sum to the batch count", "[counters]") {
     config.use_compound_moves = true;
     config.novelty_jump_probability = 0.3;
 
-    Model m = structured_model();
+    // With a movable scalar, or FJ would have nothing to jump and the run would
+    // be all structural batches (#201).
+    Model m = structured_model(/*with_scalar=*/true);
     const SearchResult r = run(m, config, /*seed=*/4);
     const SearchCounters& c = r.counters;
 
