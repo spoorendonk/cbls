@@ -593,7 +593,7 @@ average near 14): the data diff reports `ucp40: IDENTICAL`, the authors'
 schedule re-prices feasible, and both MINLPs find the published optimum to the
 printed decimals. At the halved cap the `=` solve's bound stopped 6.4 short;
 the `>=` relaxation closed, and its optimum is a lower bound on the `=` one,
-so 55644.79 is certified for both. Every column matches the authors'-data
+so 55644.79 is certified for both. Every objective matches the authors'-data
 control row.
 
 **Tolerance.** The issue proposed ~0.1 %, from §4.2's PWL envelope. That band
@@ -616,8 +616,8 @@ optimum.
 
 - **Demand is `=` in the source, `>=` here** (our model, verifier and SCIP
   reference). With a non-monotone valve-point cost, overproducing can be
-  cheaper, so `>=` is a relaxation that *could* lower the optimum. On all four
-  MINLP cases it does not (the two columns agree), so the 1- and 3-period
+  cheaper, so `>=` is a relaxation that *could* lower the optimum. On all five
+  MINLP rows it does not (the two columns' incumbents agree), so the 1- and 3-period
   bounds are unaffected; longer horizons are unmeasured. §1.4's statement of
   the source as `>=` was wrong.
 - **Startups.** `ucp_valve.py` forbids a hot start whenever `t_cold < min_off`
@@ -636,7 +636,8 @@ optimum.
   uniformly spaced breakpoints straddle them; over a cusp the chord sits above
   the cost by up to about `d·e·Δ/2`. Summing each unit's worst chord error,
   one period of `ucp13` is exposed to 213 at 50 segments and 47 at 200 (1.8 %
-  and 0.4 % of 11701), `ucp40` to 552 and 164. Realised: +2.8 on `ucp13`-1p at
+  and 0.4 % of 11701), `ucp40` to 564 and 167 on the data as corrected by #193 (552 and 164
+  before it). Realised: +2.8 on `ucp13`-1p at
   200 segments; +25.0 on `ucp13`-3p and +29.9 on the authors'-data
   `ucp40`-1p, each measured from the proven optimum less the startup-pricing
   difference (38849.84 − 90 and 55644.79 − 240). Between cusps the chord can sit *below* the
@@ -691,7 +692,7 @@ it (121635.52, +0.18 %); the test asserts only `objective >= known_optimum`
 and `< 140000`.
 
 A 10 s smoke run after #193 (engine `ca67584`, not a measurement) found
-`ucp40` and `ucp200` feasible and verified at every horizon including 12 and
+`ucp40` and `ucp200` feasible and verified at every 1-24 period horizon, including 12 and
 24; the README's budget-defence section carries the numbers and their caveats.
 
 Reproduce (from the repository root; fetch the upstream files first):
@@ -704,3 +705,7 @@ for c in ucp13-1 ucp13-3 ucp40-1; do curl -sL -o RESULTS/$c.txt https://www.dcc.
 ```
 
 `--skip-solves` runs checks 7.2 and 7.3(1) alone, in about a second.
+
+At HEAD the first command reproduces the `ours after #193` row of §7.3 (#193
+ran it at `--time-limit 300 --cases ucp40-1`); the `ours before #193` row needs
+`benchmarks/chped/data.py` as of `79ae972^`.

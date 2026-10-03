@@ -332,7 +332,7 @@ def _build_ucp40() -> Instance:
             612,
         ],
         # Pedroso Table 2 (1hr MIP) bounds, {periods: (LB, UB)} -- for this
-        # instance since #193 restored units 19-20 to P_max 550 (#148).
+        # instance since #193 restored units 19-20 to P_max 550 (the error #148 found).
         "known_bounds": {
             1: (55645, 55645),
             3: (178396, 178547),

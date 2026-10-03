@@ -57,6 +57,10 @@ TEST_CASE("UC-CHPED 40-unit 1-period feasibility", "[uc-chped][slow]") {
     LNS lns(0.3);
     auto result = solve_deterministic(ucm.model, 71000, 42, &hook, &lns);
     REQUIRE(result.feasible);
+    // Since #193 this is the authors' instance, whose proven optimum is
+    // 55644.79 (Pedroso 2014 Table 2; FIDELITY.md section 7.3), so no feasible
+    // solution may come in under it.
+    REQUIRE(result.objective >= 55644.0);
     printf("\n40-unit 1p: obj=%.1f, iters=%ld, time=%.3fs\n", result.objective,
            static_cast<long>(result.iterations), result.time_seconds);
 }

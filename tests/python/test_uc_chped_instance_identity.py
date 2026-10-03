@@ -82,6 +82,7 @@ def test_uc_chped_scores_ucp40_against_its_table2_bounds(tmp_path: Path) -> None
             # Every horizon run here has a published bound, so every row carries it.
             assert r["lb"] == lbs[(name, r["periods"])], r
             assert (r["gap_pct"] != "") == (r["feasible"] == "true" and r["objective"] != ""), r
+        assert any(r["gap_pct"] != "" for r in mine), f"no scored {name} row: {mine}"
 
 
 def test_instance_identity_refuses_an_upstream_file_with_another_hash(tmp_path: Path) -> None:

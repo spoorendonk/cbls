@@ -148,7 +148,8 @@ def solve_scip(inst: Instance, time_limit: float) -> tuple[float, float, float]:
     return obj, solve_time, gap
 
 
-# CBLS SA results from our solver (for comparison)
+# CBLS SA results from our solver (for comparison). Historical: the SA-era
+# engine, and the 40-unit row predates #193's P_max fix (units 19-20 at 500).
 CBLS_RESULTS = {
     "13-unit": {"obj": 18727.0, "time": 5.0},
     "40-unit": {"obj": 128391.0, "time": 15.0},

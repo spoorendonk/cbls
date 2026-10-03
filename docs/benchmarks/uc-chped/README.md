@@ -444,7 +444,7 @@ P_max 500 where the source (and the bounds) have 550
 gaps are struck, as in the archived table below: each compares a run on the
 old instance with a bound for the corrected one.
 The ucp13 gaps are unaffected, because ucp13 is proven identical to the source.
-The budget verdicts do not depend on the bounds.
+The budget verdicts do not depend on the bounds, but ucp40's were measured on the pre-#193 instance and are not re-established for the corrected one (#131).
 
 **No budget was changed.** Seven horizons are flat with idle tails of 51–99%;
 at ucp40/3p the incumbent stops moving after 0.35s of a 30s budget. The
@@ -481,12 +481,12 @@ refuse that explanation.
 **ucp40/12p and 24p never reached a feasible incumbent, because none existed
 on the instance as built before #193 (#152).** Period 12 of the demand profile asks for
 11480 MW of demand plus 1148 MW of spinning reserve, 12628 MW in all. With every
-one of the 40 units committed, the sum of P_max is 12622 MW. The reserve row of
-period 12 therefore cannot be satisfied by any assignment. Its minimum possible
-violation is **exactly 6**, which is precisely the maximum real violation both
-horizons have ended at in every run. No other period is short; the next
-tightest is period 11, with 412 MW of slack. Every horizon that contains
-period 12 is infeasible, and the 1-, 3- and 6-period sub-instances do not
+one of the 40 units committed, the sum of P_max was 12622 MW. The reserve row of
+period 12 therefore could not be satisfied by any assignment. Its minimum possible
+violation was **exactly 6**, which is precisely the maximum real violation both
+horizons ended at in every run. No other period was short; the next
+tightest was period 11, with 412 MW of slack. Every horizon that contained
+period 12 was infeasible, and the 1-, 3- and 6-period sub-instances do not
 contain it. The cause was the #148 data error: units 19-20 carried P_max 500
 here, 550 in the source. #193 restored the source's limits: capacity is now
 12722 MW and period 12 has 94 MW of slack.
@@ -524,14 +524,14 @@ they could not show is why. "It just needed more time" is retired. So is "the
 search cannot find it" for the old instance.
 
 **After #193: a smoke test, not a measurement.** With units 19-20 at 550 MW,
-the runner was run once over `ucp40` and `ucp200` at every horizon with a
+the runner was run once over `ucp40` and `ucp200` at every 1-24 period horizon with a
 uniform `--time-limit 10`, seed 42, `--verify`, at engine commit `ca67584` (the
 runner at `a95c0cb`), on a shared machine at a 1-minute load average near 14.
 Every row was feasible and verified, including the four horizons #152 had shown
 infeasible: ucp40/12p 1,173,270 and ucp40/24p 2,415,513, ucp200/12p 5,938,070
 and ucp200/24p 12,297,047. That settles only that those instances are now
 satisfiable and the flow works end to end. The objectives are 10s runs under
-contention, below the map budgets, and are not cited anywhere; the horizons
+contention, below the map budgets, and are not results; the horizons
 need measuring at the map budgets (#131).
 
 Archived results:
@@ -574,7 +574,9 @@ was 39.96% above.
 | ucp40    |      12 | CBLS SA (120s)    | INFEASIBLE | 1,112,371 |       — |    130.7 |
 | ucp40    |      24 | CBLS SA (300s)    | INFEASIBLE | 2,235,971 |       — |    391.3 |
 
-### Scaled Systems
+### Scaled Systems — runs predate the #193 data fix
+
+Both systems cycle the 40-unit data, so these runs solved the pre-#193 `P_max` too.
 
 | Instance | Periods | Method        | Result     | Time (s) |
 |----------|--------:|---------------|------------|:--------:|
