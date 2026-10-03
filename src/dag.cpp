@@ -53,19 +53,20 @@ static bool child_is_const(const ChildRef& ref, const Model& model) {
 //    `-1 / 1e-16`). Signs are combined with signbit rather than by multiplying,
 //    so an infinite numerator over an exact zero stays an infinity instead of
 //    turning into `inf * 0` = NaN.
-//  - 0 / 0 (both exactly zero): NaN -- undefined, so a comparison reads it as
-//    maximally violated. It used to be +inf, which a `>=` row reads as satisfied.
-//  - 0 / tiny-but-nonzero: the true quotient, a signed zero. The threshold is a
-//    stand-in for "this is a pole", and there is no pole under a zero numerator.
+//  - num == 0: 0 / 0, NaN -- undefined, so a comparison reads it as maximally
+//    violated. It used to be +inf, which a `>=` row reads as satisfied. This
+//    holds for a tiny NONZERO denominator too, because below the threshold the
+//    denominator is a zero by definition -- and it keeps a sub-threshold Div
+//    from ever evaluating finite, which LinearJumpScorer depends on: such a Div
+//    is affine by rule with local derivative 0, and `prepare` keeps the row off
+//    the closed form only because its side is non-finite. A finite 0 / 1e-16
+//    would let the scorer read `x / 1e-16` as constant at x = 0 (#205 review).
 //  - a NaN numerator stays NaN; a NaN denominator fails the threshold test and
 //    reaches the plain division, which is NaN too.
 static double div_value(double num, double denom) {
     if (std::abs(denom) < 1e-15) {
-        if (num == 0.0) {
-            return denom == 0.0 ? std::numeric_limits<double>::quiet_NaN() : num / denom;
-        }
-        if (std::isnan(num)) {
-            return num;
+        if (num == 0.0 || std::isnan(num)) {
+            return std::numeric_limits<double>::quiet_NaN();
         }
         const bool negative = std::signbit(num) != std::signbit(denom);
         return negative ? -std::numeric_limits<double>::infinity()

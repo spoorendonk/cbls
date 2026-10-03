@@ -236,8 +236,9 @@ TEST_CASE("a near-zero denominator signs the quotient by num * denom, and 0/0 is
     CHECK(at(1.0, -0.0) == -kInf);
     CHECK(std::isnan(at(0.0, 0.0)));
     CHECK(std::isnan(at(-0.0, -0.0)));
-    // 0 over a tiny nonzero denominator has no pole to stand in for.
-    CHECK(at(0.0, 1e-16) == 0.0);
+    // A sub-threshold denominator IS a zero, numerator 0 included: 0 / 1e-16 is
+    // 0/0. Never finite, which LinearJumpScorer relies on (test at the end).
+    CHECK(std::isnan(at(0.0, 1e-16)));
     // Ordinary division is untouched.
     CHECK(at(3.0, 2.0) == 1.5);
 }
@@ -419,4 +420,37 @@ TEST_CASE("LNS accepts a repair that turns a NaN objective finite", "[lns][domai
         }
     }
     REQUIRE(accepted > 0);
+}
+
+// ---------------------------------------------------------------------------
+// The closed-form linear scorer and a sub-threshold divisor
+// ---------------------------------------------------------------------------
+
+TEST_CASE("x / 1e-16 never reads finite, so the linear scorer cannot call it constant",
+          "[dag][domain][linear_jump]") {
+    // `x / c` with a literal |c| < 1e-15 is affine by rule, with local derivative
+    // 0. LinearJumpScorer relies on such a side never being finite (prepare()
+    // refuses a non-finite computed side) to keep the row off the closed form.
+    // If 0 / tiny read as a finite 0, the row at x = 0 looked constant to it:
+    // from x = 0 with rows x/1e-16 <= 5 and x >= 0.5 the closed form picked
+    // j = 0.5 while the exact probe picked j = 0.
+    Model m;
+    const int32_t x = m.float_var(-1, 1, "x");
+    m.add_constraint(m.leq(m.div_expr(x, m.constant(1e-16)), m.constant(5.0)));
+    m.add_constraint(m.geq(x, m.constant(0.5)));
+    m.close();
+    m.var_mut(vid(x)).value = 0.0;
+    full_evaluate(m);
+    CHECK(std::isnan(m.node_value(m.constraint_ids()[0])));
+
+    LinearJumpScorer sc(m);
+    sc.resize_rows(m.constraint_ids().size());
+    for (size_t c = 0; c < m.constraint_ids().size(); ++c) {
+        sc.set_row_eligible(static_cast<int32_t>(c), true);
+    }
+    const std::vector<double> w = {1.0, 1.0};
+    const JumpResult probe = compute_var_jump(m, w, vid(x));
+    const JumpResult linear = compute_var_jump(m, w, vid(x), false, &sc);
+    CHECK(linear.jump_value == probe.jump_value);
+    CHECK(linear.score == probe.score);
 }

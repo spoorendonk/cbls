@@ -134,8 +134,9 @@ bool LinearJumpScorer::row_eligible(int32_t ci) const {
 //
 // Every slope must be finite, or the row goes back to ineligible: an affine cone
 // through Prod by an infinite constant has no linear model. (Div by a constant
-// below 1e-15 is the opposite case -- local derivative 0, value +/-inf -- and is
-// caught in `prepare` by its non-finite side, not here.)
+// below 1e-15 is the opposite case -- local derivative 0, value +/-inf or NaN,
+// never finite (`div_value` in dag.cpp) -- and is caught in `prepare` by its
+// non-finite side, not here.)
 const LinearJumpScorer::BuiltRow* LinearJumpScorer::build_row(int32_t ci) {
     const int32_t nid = model_.constraint_ids()[static_cast<size_t>(ci)];
     const ExprNode& nd = model_.nodes()[static_cast<size_t>(nid)];
@@ -297,14 +298,12 @@ bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weight
         // bound opens at +inf) but not NaN.
         //
         // Checked BEFORE the zero-slope skip below: `Div` by a constant below
-        // 1e-15 has local derivative 0 yet evaluates to +/-inf by the numerator's
-        // sign, so a zero slope alone does not make the row constant -- but that
-        // side is never finite, which this catches. (At exactly 1e-15 `evaluate`
-        // divides while `local_derivative` still reports 0: a pre-existing AD
-        // inconsistency. Before this scorer only Newton steps saw it; here the
-        // row is scored as constant while the DAG moves it by 1e15 per unit, so
-        // such a row's jump SCORE is wrong too. Reachable only with a literal
-        // divisor of exactly +/-1e-15.)
+        // 1e-15 has local derivative 0 yet evaluates to an infinity signed by
+        // num * denom, or NaN when the numerator is 0 (`div_value` in dag.cpp),
+        // so a zero slope alone does not make the row constant -- but that side
+        // is never finite, which this catches. At exactly 1e-15 both `evaluate`
+        // and `local_derivative` divide (#205 aligned the derivative's
+        // threshold), so that divisor gets an ordinary slope.
         if ((p_literal ? std::isnan(p) : !std::isfinite(p)) ||
             (q_literal ? std::isnan(q) : !std::isfinite(q))) {
             ok = false;
