@@ -1280,6 +1280,34 @@ int32_t FeasibilityJump::active_violated_rows_of(int32_t var_id) const {
     return active_violated_of_var_[static_cast<size_t>(var_id)];
 }
 
+namespace {
+
+// A scan set and its membership flags agree: no duplicate, and the flag is set
+// exactly for the members.
+bool flags_match(const std::vector<int32_t>& set, const std::vector<uint8_t>& flag) {
+    std::vector<uint8_t> seen(flag.size(), 0);
+    for (const int32_t v : set) {
+        const auto i = static_cast<size_t>(v);
+        if (v < 0 || i >= flag.size() || seen[i] != 0 || flag[i] == 0) {
+            return false;
+        }
+        seen[i] = 1;
+    }
+    return static_cast<size_t>(std::count(flag.begin(), flag.end(), uint8_t{1})) == set.size();
+}
+
+}  // namespace
+
+bool FeasibilityJump::scan_sets_consistent() const {
+    // No var on the compound-move stack is in Q' (OR-Tools' ShouldScan): the
+    // chosen var leaves Q' as it goes on, and nothing re-queues an on-stack var.
+    const bool none_on_stack = std::none_of(nj_queue_.begin(), nj_queue_.end(), [this](int32_t v) {
+        const auto i = static_cast<size_t>(v);
+        return i < on_stack_.size() && on_stack_[i] != 0;
+    });
+    return flags_match(queue_, in_queue_) && flags_match(nj_queue_, nj_in_queue_) && none_on_stack;
+}
+
 void FeasibilityJump::enqueue(int32_t var_id) {
     if (in_queue_[var_id] == 0) {
         in_queue_[var_id] = 1;

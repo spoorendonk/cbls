@@ -302,6 +302,15 @@ public:
     [[nodiscard]] std::vector<int32_t> violated_rows() const;
     [[nodiscard]] int32_t active_violated_rows_of(int32_t var_id) const;
 
+    /// Read-only check of the two scan sets' bookkeeping (#206), for tests:
+    /// true iff Q (apply_jump's) and Q' (Novelty's) each hold no duplicate and
+    /// their membership flags are set exactly for the vars they hold, and no
+    /// var on Novelty's compound-move stack is in Q'. Both sets are swap-removed
+    /// from by index, so a removal at the wrong index either strands a flag or
+    /// leaves the chosen var in Q' while it sits on the stack. Meaningful
+    /// between calls, not inside one. O(|V| + |Q| + |Q'|).
+    [[nodiscard]] bool scan_sets_consistent() const;
+
     [[nodiscard]] bool all_satisfied() const;
     [[nodiscard]] int64_t iterations() const {
         return iterations_;
