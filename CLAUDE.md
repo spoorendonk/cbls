@@ -393,6 +393,17 @@ If a benchmark is ever retired, it is a tracker job as well as a tree job:
 
 **Any agent or agent team that produces code must run `/review` on its own changes before that code can merge to main.** No subagent returns unreviewed work; no orchestrator merges unreviewed work. This applies to every agent team, not just the parallel-issue workflow.
 
+**One reviewer per issue** (user decision, 2026-10-03). In a team run, each
+issue gets exactly **one** cold reviewer: a separate agent that did not write
+the code, reading the issue's acceptance criteria literally. That reviewer *is*
+the issue's review — the implementer does not also fan out `/review`'s three
+reviewers, and the orchestrator does not add a second reviewer per issue. The
+cold review runs **at most two rounds**: review, a fix round, re-review. A
+finding still open after round two goes to the orchestrator to fix or to file;
+it does not start a third round. The final combined review of the merged result
+(step 6 below) is a separate single pass over the whole batch, not a per-issue
+reviewer.
+
 ## Parallel Issue Workflow
 
 When the user brings multiple gh issues to work on at once:
@@ -412,7 +423,8 @@ When the user brings multiple gh issues to work on at once:
 3. **Orchestrator role.** Spawn one subagent per issue (Agent tool with
    `isolation: "worktree"`). Pass each subagent its gh issue number, its
    worktree path, and any plan file path.
-4. **Subagents self-review** per the Agent Self-Review rule above. Subagents
+4. **One cold reviewer per issue**, at most two rounds, per the Agent
+   Self-Review rule above — a different agent from the implementer. Subagents
    commit locally in their worktree and **do not push, merge, or touch another
    branch** — worktrees share `.git`, so the orchestrator sees their commits via
    `git log <branch>` with no network round-trip.
