@@ -18,7 +18,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cstdint>
-#include <random>
 #include <vector>
 
 using namespace cbls;
@@ -153,22 +152,20 @@ TEST_CASE("scan-set bookkeeping survives batches and Novelty jumps", "[fj][novel
     // A random over-constrained integer model, so batches bump, Novelty picks,
     // backtracks and re-queues, and both scan sets are swap-removed from many
     // times. After every step each set must agree with its membership flags.
-    std::mt19937 gen(4242);
-    std::uniform_int_distribution<int> pick_var(0, 59);
-    std::uniform_int_distribution<int> pick_coef(-3, 3);
-    std::uniform_int_distribution<int> pick_rhs(-2, 6);
+    RNG gen(4242);  // builds the model; integers() is [lo, hi)
     Model m;
     std::vector<int32_t> vars;
+    vars.reserve(60);
     for (int i = 0; i < 60; ++i) {
         vars.push_back(m.int_var(0, 4));
     }
     for (int r = 0; r < 130; ++r) {
-        std::vector<int32_t> terms{m.constant(static_cast<double>(-pick_rhs(gen)))};
+        std::vector<int32_t> terms{m.constant(static_cast<double>(-gen.integers(-2, 7)))};
         for (int k = 0; k < 4; ++k) {
-            const int coef = pick_coef(gen);
+            const int64_t coef = gen.integers(-3, 4);
             if (coef != 0) {
                 terms.push_back(m.prod(m.constant(static_cast<double>(coef)),
-                                       vars[static_cast<size_t>(pick_var(gen))]));
+                                       vars[static_cast<size_t>(gen.integers(0, 60))]));
             }
         }
         m.add_constraint(m.sum(terms));  // sum(a x) - rhs <= 0
