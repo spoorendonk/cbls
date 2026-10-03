@@ -871,9 +871,10 @@ comparative claim, so the table's ordering rule does not gate them:
   (see `benchmarks/instances/setcover/README.md`). Keep it as the `Set` example;
   don't grow it into an epic.
 - **`List` → CVRP** (CVRPLIB X set, Hexaly's List encoding, scored as gap to
-  the pinned best-known values, with PyVRP at equal budget as context). Tracked
-  under epic #182 (#196-#204). **Not in the tree yet**, so until its runner lands
-  `List` still has no evidence (next section).
+  the pinned best-known values, with PyVRP at equal budget and threads as
+  context). Tracked under epic #182 (#196-#204). **Not in the tree yet**; until
+  #204 publishes results `List` still has no evidence (next section), and the
+  single-seed smoke numbers quoted in #201-#203 are not results.
 
 Engine-wide (cross-cutting) work is tracked under epic #24.
 
@@ -884,8 +885,8 @@ validated on a published formulation. The evidence position is:
 
 - **`Set`** — measured and **negative**. The `Set` encoding lands at
   8.6-11.0x the proven optimum where the same data in Bools is within 9-20%.
-- **`List`** — **no evidence either way.** No benchmark in the tree uses a
-  `List` variable.
+- **`List`** — **no evidence either way.** No `List` result is published yet;
+  CVRP (#204) will be the first.
 
 The mechanical cause of the `Set` result is generic and applies to `List`
 equally, and it has **two independent halves** — fixing either alone changes
@@ -932,18 +933,17 @@ result in either direction, and do not pick the one-sided framing because it
 clears 0.05 when the two-sided one does not.
 
 So the prerequisite is **implemented, measured, and not demonstrably better**,
-and the guidance is unchanged in substance: **don't build another `Set`
-benchmark** (and the `List` one is CVRP; see the examples under **Benchmark
-priority**). What would settle the `Set` reading, in order: a longer per-run budget (attacks the
-noise at source), then more seeds (~740 paired runs for a 3-SE reading), then a
-harder roster. None of that is worth doing without a reason to care about
+and for `Set` the guidance stands: **don't build another `Set` benchmark.**
+(`List`'s example is CVRP; see **Benchmark priority**.) What would settle the
+`Set` reading, in order: a longer per-run budget (attacks the noise at source),
+then more seeds (~740 paired runs for a 3-SE reading), then a harder roster. None of that is worth doing without a reason to care about
 `Set`-encoded set covering specifically.
 
 Note also that #164 generalised `List` itself — a variable-length ordered subset
 of a universe, with an optional partition across several Lists whose cover the
-moves maintain. That is **new capability, not new evidence**: no benchmark uses
-a `List` variable, the paragraph above still stands unchanged, and nothing in the
-tree may claim otherwise.
+moves maintain. That is **new capability, not new evidence**: until CVRP
+publishes (#204) there is no measured `List` result, the evidence position above
+stands, and nothing in the tree may claim otherwise.
 
 **Epic #182 (compact route-network models) is where List work lives, and it has
 resumed with CVRP as the `List` example** (2026-10-03). Its first sub-issues —
@@ -951,8 +951,9 @@ the CVRP benchmark #183, guided List search #184, expensive-invariant screening
 #185, repeated List elements #187 and O(edits) lambda deltas #189 — were closed
 as not planned in the 2026-09-30 triage, because each was speculative with no
 benchmark to measure it against. That rule still holds: the CVRP benchmark comes
-first (#196, #197, #199), and List engine work is filed against its measured
-results, not ahead of them. Don't reopen the closed ones.
+first (#196, #198, #197, #199), and List engine work is filed against measured
+CVRP data, not ahead of it. #201-#203 cite smoke runs and qualify; #201 is a
+prerequisite of the campaign (#204). Don't reopen the closed ones.
 
 ### Benchmark workflow
 
