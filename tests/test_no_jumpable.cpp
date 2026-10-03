@@ -226,7 +226,7 @@ TEST_CASE("an explicit structural probability is honoured, but its empty FJ batc
         REQUIRE(independently_feasible(c, b, r));
         // Kicks can now come only from perturbation_period structural batches
         // without improvement, not from the FJ batches.
-        REQUIRE(r.perturbations * 100 <= r.counters.structural_batches);
+        REQUIRE(static_cast<int64_t>(r.perturbations) * 100 <= r.counters.structural_batches);
     }
 }
 

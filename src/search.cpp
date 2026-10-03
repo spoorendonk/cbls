@@ -194,13 +194,8 @@ bool fj_has_work(const Model& model) {
     return false;
 }
 
-// Effective structural-batch probability: explicit config overrides; <0 means
-// auto (0.33 when the batch has anything to do, 0 otherwise). Zeroed on a model
-// with neither a List/Set variable nor a registered move generator, which skips
-// the structural batch -- and its per-variable generator scan -- entirely.
-// Auto resolves to 1.0 when the structural batch has work and FJ has none (#201).
-double effective_structural_probability(const Model& model, const SearchConfig& config,
-                                        bool fj_work) {
+// Whether the structural batch will hold at least one generator.
+bool structural_batch_has_work(const Model& model, const SearchConfig& config) {
     // A REGISTERED generator counts as structure in its own right (#165). Its
     // moves may touch scalar variables only -- an ejection chain over assignment
     // Bools, a block move over Int start times -- and the structural batch is
@@ -221,17 +216,27 @@ double effective_structural_probability(const Model& model, const SearchConfig& 
     // counted out here too: the predicate is exactly "the batch will hold at
     // least one generator", and a vector of nothing but nullptrs is the same
     // guaranteed no-op as the two cases above.
-    const bool has_structural =
-        std::any_of(config.move_generators.begin(), config.move_generators.end(),
-                    [](const std::shared_ptr<const MoveGenerator>& g) { return g != nullptr; }) ||
-        (config.default_structural_generators &&
-         std::any_of(model.variables().begin(), model.variables().end(),
-                     [](const Variable& v) { return is_structured(v.type); }));
+    return std::any_of(
+               config.move_generators.begin(), config.move_generators.end(),
+               [](const std::shared_ptr<const MoveGenerator>& g) { return g != nullptr; }) ||
+           (config.default_structural_generators &&
+            std::any_of(model.variables().begin(), model.variables().end(),
+                        [](const Variable& v) { return is_structured(v.type); }));
+}
+
+// Effective structural-batch probability: explicit config overrides; <0 means
+// auto (0.33 when the batch has anything to do, 0 otherwise). Zeroed on a model
+// with neither a List/Set variable nor a registered move generator, which skips
+// the structural batch -- and its per-variable generator scan -- entirely.
+// Auto resolves to 1.0 when the structural batch has work and FJ has none (#201).
+//
+// `fj_idle`: the structural batch has work and FJ has none (see fj_has_work).
+double effective_structural_probability(bool has_structural, double configured, bool fj_idle) {
     if (!has_structural) {
         return 0.0;
     }
-    if (config.structural_batch_probability >= 0.0) {
-        return config.structural_batch_probability;
+    if (configured >= 0.0) {
+        return configured;
     }
     // Automatic, and nothing for FJ to jump (#201): every batch is structural.
     // At 0.33 the other two thirds of batches would be FJ batches over an empty
@@ -252,7 +257,7 @@ double effective_structural_probability(const Model& model, const SearchConfig& 
     // Keyed on the MODEL, not on the batch kind: evaluated once, and
     // pick_batch_kind still draws its one `random()` per batch whatever this
     // returns, so a model FJ has work in keeps its mix and RNG draws exactly.
-    if (!fj_work) {
+    if (fj_idle) {
         return 1.0;
     }
     return 0.33;
@@ -590,8 +595,10 @@ private:
     const bool has_obj_;
     const int32_t obj_ci_;
     const std::vector<int32_t>& cids_;
-    // Whether FJ/Novelty batches have anything to move (#201); see fj_has_work.
-    const bool fj_has_work_;
+    // The structural batch has work and FJ/Novelty batches have none (#201);
+    // see fj_has_work. False on every model without structure, so a scalar-only
+    // model -- even one with no movable scalar at all -- is never touched by it.
+    const bool fj_idle_;
     const double structural_probability_;
     const int unproductive_arm_stagnation_;
     // Owns this search's OWN clone of every registered move generator, so a
@@ -678,8 +685,9 @@ ViolationLSLoop::ViolationLSLoop(Model& model, ViolationManager& vm, RNG& rng, F
       has_obj_(model.objective_id() >= 0),
       obj_ci_(model.objective_constraint_idx()),
       cids_(model.constraint_ids()),
-      fj_has_work_(fj_has_work(model)),
-      structural_probability_(effective_structural_probability(model, config, fj_has_work_)),
+      fj_idle_(structural_batch_has_work(model, config) && !fj_has_work(model)),
+      structural_probability_(effective_structural_probability(
+          structural_batch_has_work(model, config), config.structural_batch_probability, fj_idle_)),
       unproductive_arm_stagnation_(
           std::max(1, config.perturbation_period / kUnproductiveArmDivisor)),
       structural_(model, config, structural_probability_ > 0.0),
@@ -1634,14 +1642,15 @@ void ViolationLSLoop::maybe_diversify(BatchKind kind, bool improved) {
     // two gates rather than the only one; it is kept because it reads on the
     // state AFTER the batch, which the arming decision could not.
     //
-    // And gated on fj_has_work_ (#201): an FJ batch over an empty jumpable set
+    // And gated on fj_idle_ (#201): an FJ batch over an empty jumpable set
     // is "stuck" by construction, having had nothing to do, and the kick it
     // would buy re-randomises every List the structural batch is working on.
     // Only reachable at an explicit structural probability -- the automatic one
-    // schedules no FJ batch on such a model -- and constant true on any model
-    // FJ has work in, so those keep their trajectories.
+    // schedules no FJ batch on such a model -- and constant false on any model
+    // FJ has work in, or that has no structure, so those keep their
+    // trajectories.
     const bool unproductive_kick =
-        kind == BatchKind::FeasibilityJump && !improved && fj_.batch_stuck() && fj_has_work_;
+        kind == BatchKind::FeasibilityJump && !improved && fj_.batch_stuck() && !fj_idle_;
     if (stagnation_ >= config_.perturbation_period && !past_deadline()) {
         // Genuinely stuck. Arm the Float escape probe: a variable sitting at a
         // stationary point of every violated constraint has no other candidate
@@ -1834,8 +1843,9 @@ SearchResult ViolationLSLoop::run() {
         // nothing, so it is not a non-improving batch either: counting it would
         // let empty batches alone run up perturbation_period and fire full
         // diversification kicks at the structural search. Only reachable at an
-        // explicit structural probability; false on every model FJ has work in.
-        const bool empty_batch = kind != BatchKind::Structural && !fj_has_work_;
+        // explicit structural probability; false on every model FJ has work in
+        // and on every model without structure.
+        const bool empty_batch = kind != BatchKind::Structural && fj_idle_;
         if (!apply_batch_outcome(improved, resync, /*count_stagnation=*/!empty_batch)) {
             break;
         }
