@@ -1224,6 +1224,16 @@ anything is published. A row SCIP rejects is published as
 `VERIFY-FAILED(independent: ...)` with its objective blanked. This needs the
 `benchmarks` extra (pyscipopt) at publish time.
 
+**#205's smoke re-run: no verdict changed.** The 50-instance roster at 5s, seed
+1, run twice serially on one machine (`simon-Legion-5-Pro-16ACH6H`, 1-minute
+load 1.20 and 1.16 at the two starts): once with the engine before #205 (the
+`src/dag.cpp`/`src/lns.cpp` of `1304c43` under this runner and check), once with
+the fix through `run_benchmark.py` at `8bda0b7`. Both report 47 feasible and the
+same three infeasible (`elec25`, `elec50`, `eg_all_s`), and SCIP rejected none of
+the 47 verified rows in either run -- so none of that smoke run's feasible
+claims rested on a domain error. A smoke reading, single seed, not a
+measurement of quality.
+
 <!-- campaign_report:begin scip-verification -->
 Zero rows in this run failed that check.
 <!-- campaign_report:end scip-verification -->
