@@ -506,6 +506,7 @@ fetched 2026-10-02:
 | `RESULTS/ucp13-1.txt` | 2013-12-04 | — | `96660c8a6ede9671a32e29b22def1a5b0f04ee99835adc9198b338eaa19eea86` |
 | `RESULTS/ucp13-3.txt` | 2013-12-04 | — | `bc35a0d0f259b53a6096539993e9f06357b20a824128c85548fba2fa91da3920` |
 | `RESULTS/ucp40-1.txt` | 2013-12-04 | — | `e74c19e14cfc7637529605aa841d09c08d2ff0a5006e6c607b49535a9e8a7706` |
+| `RESULTS/eld40-10500.txt` (fetched 2026-10-03, #193; cited, not loaded by the script) | — | 51985 | `d9b4abc16a696d52c0d7f3c410bcd8d288bd1b37798acca3ef39a9643b80c320` |
 
 None of it is vendored (GPL, and the check needs it once). The script records
 these hashes (`UPSTREAM_SHA256`) and refuses any `ucp_data.py` or log that
