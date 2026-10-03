@@ -175,12 +175,15 @@ def test_check_rows_demotes_what_scip_rejects_and_leaves_the_rest(tmp_path: Path
     assert check_rows(out, inst, sols) == ["bad"]
     rows = _read_csv(out)
     bad = rows["bad"]
-    assert (bad["feasible"], bad["objective"], bad["gap_to_bks%"], bad["gap_to_dual%"]) == (
-        "false",
-        "NaN",
-        "NaN",
-        "NaN",
-    )
+    assert bad["feasible"] == "false"
+    for column in (
+        "objective",
+        "gap_to_bks%",
+        "gap_to_dual%",
+        "first_feasible_objective",
+        "time_to_first_feasible",
+    ):
+        assert bad[column] == "NaN", column
     assert bad["note"].startswith("VERIFY-FAILED(independent: SCIP rejects the assignment")
     assert bad["note"].endswith("was feasible)")
     assert "," not in bad["note"]

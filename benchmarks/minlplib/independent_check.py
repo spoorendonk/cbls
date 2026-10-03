@@ -76,8 +76,18 @@ SOLUTION_MAGIC = "cbls-minlplib-solution 1"
 DEMOTED_NOTE_PREFIX = "VERIFY-FAILED(independent: "
 
 #: The columns a demoted row blanks: what it would otherwise publish about a
-#: solution nobody stands behind (`run_instance` in `minlplib.cpp`, same rule).
-BLANKED_COLUMNS = ("objective", "gap_to_bks%", "gap_to_dual%")
+#: solution nobody stands behind (`run_instance` in `minlplib.cpp`, same rule),
+#: plus the first-feasible pair. That point came from the same DAG verdicts SCIP
+#: has just contradicted, and no assignment of it was kept to check, so a row
+#: SCIP rejects stands behind no feasible point at all: `first_feasible_report`
+#: must not count it as reaching feasibility.
+BLANKED_COLUMNS = (
+    "objective",
+    "gap_to_bks%",
+    "gap_to_dual%",
+    "first_feasible_objective",
+    "time_to_first_feasible",
+)
 
 #: SCIP's name for the auxiliary objective column of its `.nl` reader.
 NLOBJVAR = "nlobjvar"

@@ -1212,7 +1212,9 @@ what *that method* proved — NaN on CBLS rows — rather than repeating the
 published dual on all three. Verification: the SCIP side uses
 `Model.checkSol(original=True)`, i.e. SCIP validating its own solution against
 the pre-presolve problem. A solution SCIP cannot re-validate is not published as
-feasible. A CBLS row is checked twice. The C++ runner re-checks its assignment
+feasible. A CBLS row published by `run_benchmark.py` since #205 is checked
+twice (the committed `comparison.csv` predates #205, so its rows carry only the
+first check). The C++ runner re-checks its assignment
 against the model it built -- but that reads the very DAG node values the search
 optimised, so an evaluation bug the two share agrees with itself by
 construction (#205: `sqrt` of a negative read as 0.0, and rows were marked
@@ -1221,7 +1223,8 @@ assignment (`--solution-dir`), and `run_benchmark.py` has SCIP read the `.nl`
 and check that assignment, and the objective the row publishes, on SCIP's own
 expression evaluation (`benchmarks/minlplib/independent_check.py`) before
 anything is published. A row SCIP rejects is published as
-`VERIFY-FAILED(independent: ...)` with its objective blanked. This needs the
+`VERIFY-FAILED(independent: ...)` with its objective, gaps and first-feasible
+pair blanked. This needs the
 `benchmarks` extra (pyscipopt) at publish time.
 
 **#205's smoke re-run: no verdict changed.** The 50-instance roster at 5s, seed
