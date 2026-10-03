@@ -32,17 +32,47 @@ def _rows(path: Path) -> list[dict[str, str]]:
 @pytest.mark.parametrize("name", ["ucp40", "ucp100", "ucp200"])
 def test_uc_chped_40_unit_copies_carry_the_sources_pmax_at_units_19_20(name: str) -> None:
     """Every copy of the 40-unit system (the `i % 40` cycle) has 550 MW at
-    units 19-20, as the authors' `ucp40()` does, and so no base 24-period
-    instance asks for more demand + reserve than its total P_max (#152)."""
+    units 19-20, as the authors' `ucp40()` does (#193)."""
     inst = json.loads((INSTANCES / f"{name}.jsonl").read_text())
     p_max = inst["P_max"]
     copies = range(0, inst["n_units"], 40)
     assert [(p_max[k + 18], p_max[k + 19]) for k in copies] == [(550.0, 550.0)] * len(copies)
-    capacity = sum(p_max)
-    short = [
-        t + 1 for t in range(inst["n_periods"]) if inst["demand"][t] + inst["reserve"][t] > capacity
-    ]
-    assert short == [], f"{name}: capacity-short periods {short}"
+
+
+_COMMITTED = sorted(INSTANCES.glob("*.jsonl"))
+
+
+def test_uc_chped_committed_instances_are_all_checked() -> None:
+    """The glob below must see the roster, or the capacity test proves nothing."""
+    assert {f.stem for f in _COMMITTED} >= {
+        "ucp13",
+        "ucp40",
+        "ucp100",
+        "ucp200",
+        "ucp100-48p",
+        "ucp100-168p",
+        "ucp200-48p",
+        "ucp200-168p",
+    }
+
+
+@pytest.mark.parametrize("path", _COMMITTED, ids=[f.stem for f in _COMMITTED])
+def test_uc_chped_instance_has_capacity_for_demand_plus_reserve_in_every_period(
+    path: Path,
+) -> None:
+    """No committed instance asks, in any period, for more demand + spinning
+    reserve than the sum of every unit's P_max. Such a period is infeasible
+    under any assignment, so a run on it says nothing about the search. #152
+    found it at ucp40/ucp200 period 12 (the P_max error, #193) and #194 in the
+    48h/168h instances `extend_horizon()` builds."""
+    inst = json.loads(path.read_text())
+    capacity = sum(inst["P_max"])
+    short = {
+        t + 1: inst["demand"][t] + inst["reserve"][t] - capacity
+        for t in range(inst["n_periods"])
+        if inst["demand"][t] + inst["reserve"][t] > capacity
+    }
+    assert short == {}, f"{path.stem}: MW short per (1-indexed) period {short}"
 
 
 def test_uc_chped_scores_ucp40_against_its_table2_bounds(tmp_path: Path) -> None:
