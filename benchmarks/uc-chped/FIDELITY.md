@@ -692,8 +692,9 @@ What #148 did, and #193 undid:
 The same data is the `chped` 40-unit dispatch instance. Its `known_optimum`
 (121412, rounded down from the authors' 121412.53, whose `eld40` log closes
 LB/UB to 0.003) was not attainable on the old data, because its dispatch puts
-units 19-20 at 511.28 MW. It is now this instance's proven optimum and
-attainable. The `chped` 40-unit test's iteration-bounded run does not attain
+units 19-20 at 511.28 MW. That dispatch is now feasible here, so the value is
+attainable; it is the proven optimum of the authors' `=` instance, while our
+model's demand row is `>=`, a relaxation not certified to share it (§7.4). The `chped` 40-unit test's iteration-bounded run does not attain
 it (121635.52, +0.18 %); the test asserts only `objective >= known_optimum`
 and `< 140000`.
 

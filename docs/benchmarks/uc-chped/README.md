@@ -130,7 +130,7 @@ construction; the authors publish nothing for them.
 
 Instances can be extended to 48h and 168h (1 week) via `extend_horizon()`, which repeats the 24h demand and reserve profile, scaling day `d` (0-indexed) by the weekly factor `1 + 0.03·(sin(2πd/7) − 1)` and rounding to the nearest MW. That is the original ±3% weekly sinusoid shifted down by its amplitude. Its seven values (0.970, 0.993, 0.999, 0.983, 0.957, 0.941, 0.947) are distinct, so no two days of a week are exact copies, which a search could exploit. (A cosine would make day 0 the base day exactly, but it is symmetric about mid-week and repeats days 1-3 as days 6-4.)
 
-**The construction rule (#194): no extended day's demand or reserve exceeds the base profile's in the same hour.** So an extended instance has at least its base instance's capacity slack, `sum(P_max) − demand[t] − reserve[t]`, in every period. The base slack is 699 MW for `ucp100` and 470 MW for `ucp200`, both at hour 12; the extended instances' minimum slack is 906/723 MW (`ucp100` 48/168 periods) and 884/517 MW (`ucp200`). Rounding cannot break the rule, because the base profile is integral and the factor is below 1. Until #194 the factor was `1 + 0.03·sin(2πd/7)`, which exceeds 1 on days 1-3 (up to 1.029 on day 2). With only 0.74% of slack at `ucp200`'s base peak, that put period 36 of every extended instance, period 60 of both 168-period ones and period 84 of `ucp200-168p` past total capacity, infeasible under any assignment. `tests/python/test_uc_chped_instance_identity.py` checks `demand + reserve <= sum(P_max)` in every period of every committed instance, and checks the rule itself on `extend_horizon()`.
+**The construction rule (#194): no extended day's demand or reserve exceeds the base profile's in the same hour.** So an extended instance has at least its base instance's capacity slack, `sum(P_max) − demand[t] − reserve[t]`, in every period. The base slack is 699 MW for `ucp100` and 470 MW for `ucp200`, both at hour 12; the extended instances' minimum slack is 906/723 MW (`ucp100` 48/168 periods) and 884/517 MW (`ucp200`). Rounding cannot break the rule, because the base profile is integral and the factor is below 1. Until #194 the factor was `1 + 0.03·sin(2πd/7)`, which exceeds 1 on days 1-3 (up to 1.029 on day 2). With only 0.74% of slack at `ucp200`'s base peak, that put period 36 of every extended instance, period 60 of both 168-period ones and period 84 of `ucp200-168p` past total capacity (counting with #193's `P_max`), infeasible under any assignment. `tests/python/test_uc_chped_instance_identity.py` checks `demand + reserve <= sum(P_max)` in every period of every committed instance, and checks the rule itself on `extend_horizon()`.
 
 ## Instance Summary
 
@@ -156,8 +156,8 @@ exact solve (11701.28 and 38849.84, §7 of `FIDELITY.md`).
 found that ours capped units 19-20 at 500 MW where the authors' instance has
 550, which made their 1-period optimal schedule infeasible here, and relabelled
 these rows as bounds for a related system. #193 corrected the two values (in
-`benchmarks/chped/data.py`/`data.h`, which `ucp40`, `ucp100` and `ucp200` all
-draw from) and removed the relabel: `ucp40` is now the authors' instance field
+`benchmarks/chped/data.py`, which `ucp40`, `ucp100` and `ucp200` all draw
+from, and its C++ twin `data.h`) and removed the relabel: `ucp40` is now the authors' instance field
 for field, and an exact solve reproduces its proven 1-period optimum
 (55644.79). Every `ucp40` result measured **before** #193 — the budget-defence
 traces and the archived table below — was run on the old instance, so its gap
@@ -517,7 +517,7 @@ family, serial. The trace is
 ucp40/12p completed **14576** ViolationLS batches and 24p completed **6499**.
 That is 127 and 37 times the batches of the #147 run's 115 and 178 at
 `4a320c5`. The budgets and engine commits both differ, so this is not a
-throughput comparison. Both still end at a maximum
+throughput comparison. Both still ended at a maximum
 real violation of **6** (the run's `max_violation` column; the scratch table
 is not committed, and the value is the capacity shortfall above), with no
 finite-objective incumbent. The 1-minute load

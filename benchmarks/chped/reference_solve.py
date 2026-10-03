@@ -432,7 +432,14 @@ def main_chped() -> None:
         cbls = CBLS_RESULTS[name]
         pct = (cbls["obj"] - bks) / bks * 100
         rows.append(
-            (name, "CBLS SA", f"{cbls['obj']:.2f}", f"{cbls['time']:.2f}", "-", f"+{pct:.2f}%")
+            (
+                name,
+                "CBLS SA (archived)",
+                f"{cbls['obj']:.2f}",
+                f"{cbls['time']:.2f}",
+                "-",
+                f"+{pct:.2f}%",
+            )
         )
 
         for row in rows:

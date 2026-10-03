@@ -88,8 +88,9 @@ TEST_CASE("CHPED 40-unit feasibility and quality", "[chped][slow]") {
     // result no longer depends on how much core this test gets under `ctest -j`.
     // Budget set from what reliably clears obj < 140000 (measured: the objective
     // was already 127128 well before this on the pre-#193 data); raise it if the
-    // bar tightens. Since #193 restored units 19-20 to 550 MW, the proven optimum
-    // 121412.53 (known_optimum rounds it down) is attainable; this run ends
+    // bar tightens. Since #193 restored units 19-20 to 550 MW, the authors'
+    // proven optimum 121412.53 for their `=` instance (known_optimum rounds it
+    // down) is feasible on our `>=` model; this run ends
     // at 121635.52 (+0.18%), so it does not attain it.
     auto result = solve_deterministic(m, 95000, 42);
     REQUIRE(result.feasible);
