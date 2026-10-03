@@ -12,12 +12,17 @@ exactly as it does ucp13.
 from __future__ import annotations
 
 import csv
+import importlib.util
 import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import pytest
+
+if TYPE_CHECKING:
+    from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[2]
 UC_CHPED_BINARY = ROOT / "build" / "cbls_uc_chped"
@@ -128,3 +133,40 @@ def test_instance_identity_refuses_an_upstream_file_with_another_hash(tmp_path: 
     )
     assert result.returncode != 0
     assert "refusing to compare" in result.stderr, result.stderr
+
+
+def _uc_chped_data() -> ModuleType:
+    # The module sits in a hyphenated directory, so it is loaded by path.
+    spec = importlib.util.spec_from_file_location("uc_chped_data", INSTANCES / "data.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize(
+    ("base_name", "n_periods"), [("ucp100", 48), ("ucp100", 168), ("ucp200", 48), ("ucp200", 168)]
+)
+def test_uc_chped_extend_horizon_never_exceeds_the_base_day_and_matches_the_committed_file(
+    base_name: str, n_periods: int
+) -> None:
+    """#194's construction rule, pinned at the generator rather than only on its
+    output: every extended period's demand and reserve is at most the base
+    profile's in the same hour, no two days of a week are exact copies, and the
+    committed jsonl is what `extend_horizon()` builds today (so a rule change
+    that is not regenerated fails here, not silently)."""
+    data = _uc_chped_data()
+    base: dict[str, Any] = getattr(data, f"UCP_{base_name[3:]}UNIT")
+    ext: dict[str, Any] = data.extend_horizon(base, n_periods)
+    hours = base["n_periods"]
+    for key in ("demand", "reserve"):
+        over = [t + 1 for t in range(n_periods) if ext[key][t] > base[key][t % hours]]
+        assert over == [], f"{key} above the base day at periods {over}"
+    days = [tuple(ext["demand"][d * hours : (d + 1) * hours]) for d in range(n_periods // hours)]
+    assert len(set(days)) == len(days), "two extended days are exact copies"
+
+    committed = json.loads((INSTANCES / f"{base_name}-{n_periods}p.jsonl").read_text())
+    for key in ("n_periods", "demand", "reserve", "P_max"):
+        assert committed[key] == ext[key], (
+            f"{key} differs from extend_horizon(); rerun gen_jsonl.py"
+        )

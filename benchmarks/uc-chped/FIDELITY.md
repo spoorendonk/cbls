@@ -479,8 +479,9 @@ information. It annotates them.
   at 12/24 periods satisfiable (#152).
 - **#194** — `extend_horizon()` built 48h/168h instances whose demand plus
   reserve exceeded total capacity in some periods. Done: each extended day is
-  now the base day scaled by a factor in [0.94, 1.0], so no period asks for
-  more than the base profile's, and a test checks capacity in every period of
+  now the base day scaled by a factor below 1 (the old weekly sinusoid
+  shifted down by its 3% amplitude), so no period asks for more than the base
+  profile's, and a test checks capacity in every period of
   every committed instance.
 
 ## 7. Instance data — do we solve the published instances? (#148)

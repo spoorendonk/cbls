@@ -441,19 +441,22 @@ def extend_horizon(inst: Instance, n_periods: int) -> Instance:
     """Extend an instance to n_periods by repeating the 24h demand profile.
 
     Day d (0-indexed) is the base profile scaled by the weekly factor
-    1 + 0.03*(cos(2*pi*d/7) - 1), which lies in [0.94, 1.0]: day 0 is the base
-    day exactly, and the variation keeps days from being exact copies of each
-    other, which a search could exploit.
+    1 + 0.03*(sin(2*pi*d/7) - 1): the original weekly sinusoid shifted down by
+    its 3% amplitude. Its seven values (0.970, 0.993, 0.999, 0.983, 0.957,
+    0.941, 0.947) are distinct, so no two days of a week are exact copies,
+    which a search could exploit. A cosine would put day 0 at exactly 1, but
+    it is symmetric about mid-week and repeats days 1-3 as days 6-4.
 
-    The factor never exceeds 1, so no day's demand or reserve exceeds the base
-    profile's in the same hour, and an extended instance has at least the base
-    instance's capacity slack (sum(P_max) - demand - reserve) in every period.
-    That is the rule (#194). Until then the factor was 1 + 0.03*sin(2*pi*d/7),
-    which reached 1.03 and pushed the peaks of days 1-3 past total capacity --
-    ucp200's base peak has only 470 MW (0.74%) of slack -- so period 36 of every
-    extended instance, and 60 and 84 of the 168-period ones, were infeasible
-    under any assignment. `round()` cannot break the rule: scaling an integer
-    by a factor <= 1 and rounding never rounds above it.
+    The factor is below 1 for every day, so no day's demand or reserve exceeds
+    the base profile's in the same hour, and an extended instance has at least
+    the base instance's capacity slack (sum(P_max) - demand - reserve) in every
+    period. That is the rule (#194). Until then the factor was
+    1 + 0.03*sin(2*pi*d/7), which exceeded 1 on days 1-3 (up to 1.029 on day
+    2) and pushed their peaks past total capacity -- ucp200's base peak has
+    only 470 MW (0.74%) of slack -- so period 36 of every extended instance,
+    60 of both 168-period ones and 84 of ucp200-168p were infeasible under any
+    assignment. `round()` cannot break the rule: the base profile is integral,
+    and scaling an integer by a factor <= 1 never rounds above it.
     """
     import math as _math
 
@@ -466,8 +469,8 @@ def extend_horizon(inst: Instance, n_periods: int) -> Instance:
     for t in range(n_periods):
         day = t // base_T
         hour = t % base_T
-        # Weekly variation in [0.94, 1.0]; never above the base day (#194).
-        variation = 1.0 + 0.03 * (_math.cos(2 * _math.pi * day / 7) - 1.0)
+        # Weekly variation in [0.94, 1.0); never above the base day (#194).
+        variation = 1.0 + 0.03 * (_math.sin(2 * _math.pi * day / 7) - 1.0)
         demand.append(round(inst["demand"][hour] * variation))
         reserve.append(round(inst["reserve"][hour] * variation))
     sub["demand"] = demand
