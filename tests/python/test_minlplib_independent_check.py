@@ -43,6 +43,10 @@ def sqrt_nl(tmp_path: Path) -> Path:
     model.setObjective(x)
     path = tmp_path / "sqrtge.nl"
     model.writeProblem(str(path), verbose=False)
+    # SCIP's writer leaves .col/.row name files beside it; without them the
+    # reader names the column x0, as it does for every MINLPLib instance.
+    for side in (".col", ".row"):
+        path.with_suffix(side).unlink(missing_ok=True)
     return path
 
 
@@ -279,5 +283,38 @@ def test_columns_follow_the_nl_column_index_not_scips_type_order() -> None:
     model.hideOutput()
     model.readProblem(str(INST / "nvs08.nl"))
     assert [v.name for v in model.getVars() if v.name != "nlobjvar"] == ["i1", "i2", "x0"]
-    columns, _ = independent_check._columns(model, 3)
+    columns, _, _ = independent_check._columns(model, 3)
     assert [v.name for v in columns] == ["x0", "i1", "i2"]
+
+
+def test_an_objective_constant_column_is_loaded_at_its_fixed_value(tmp_path: Path) -> None:
+    """heldout/ex9_2_3: SCIP adds a fixed `objconstant` column (-60) for the constant."""
+    nl = INST / "heldout" / "ex9_2_3.nl"
+    model = pyscipopt.Model()
+    model.hideOutput()
+    model.readProblem(str(nl))
+    columns, _, fixed = independent_check._columns(model, 16)
+    assert len(columns) == 16
+    assert [(v.name, value) for v, value in fixed] == [("objconstant", -60.0)]
+    # A feasible point of SCIP's own, read back as the runner would write it,
+    # passes; the same point claiming another objective does not.
+    model.setParam("limits/time", 20)
+    model.optimize()
+    best = model.getBestSol()
+    values = tuple(float(model.getSolVal(best, v)) for v in columns)
+    objective = float(model.getSolObjVal(best))
+    good = Solution("ex9_2_3", objective, values)
+    assert check_solution(nl, good) is None
+    assert check_solution(nl, replace(good, objective=objective - 5.0)) is not None
+
+
+def test_a_column_name_without_an_index_is_refused_not_guessed(tmp_path: Path) -> None:
+    model = pyscipopt.Model()
+    model.hideOutput()
+    x = model.addVar("x", lb=0, ub=1)
+    model.addCons(x <= 1)
+    model.setObjective(x)
+    path = tmp_path / "named.nl"
+    model.writeProblem(str(path), verbose=False)  # with its .col file: the column is "x"
+    with pytest.raises(ValueError, match="carries no column index"):
+        check_solution(path, Solution("named", 0.0, (0.0,)))

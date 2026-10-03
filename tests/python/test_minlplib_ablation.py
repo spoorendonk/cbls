@@ -1257,3 +1257,22 @@ def test_a_run_scip_rejects_is_recorded_as_verify_failed(
     assert rows
     assert all(r["feasible"] == "false" for r in rows)
     assert all(r["note"].startswith("VERIFY-FAILED(independent: ") for r in rows)
+
+
+def test_a_run_the_check_cannot_apply_is_held_out_not_fatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ValueError from the check (an unrecognised SCIP model) must not end the campaign."""
+
+    def refuse(*_a: object, **_k: object) -> list[str]:
+        raise ValueError("SCIP sees 17 columns; the solution has 16")
+
+    monkeypatch.setattr(independent_check, "check_rows", refuse)
+    monkeypatch.setattr(subprocess, "run", fake_runner())
+    out_dir = tmp_path / "scratch"
+    out_dir.mkdir()
+    assert execute(make_args(tmp_path, lns_arm="off", seeds=[1]), "abc1234", ["a"], out_dir) == 0
+    with (out_dir / RESULTS_NAME).open(newline="") as fh:
+        notes = [r["note"] for r in csv.DictReader(fh)]
+    assert notes and all("independent-check-error" in n for n in notes)
+    assert not any(completed_search(n) for n in notes)

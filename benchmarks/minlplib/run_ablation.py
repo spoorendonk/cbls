@@ -908,6 +908,20 @@ def execute_runs(
             independent_check.check_rows(
                 out_dir / "runs" / f"{run.slug}.csv", args.inst_dir, solution_dir(out_dir, run)
             )
+        except ValueError as exc:
+            # The check could not be applied (a solution or a SCIP model it does
+            # not recognise). Not a verdict either way, so the run is held out
+            # like any other failed one rather than wedging the campaign.
+            print(f"    -> UNCHECKABLE row ({exc}); recorded as a failed run", file=sys.stderr)
+            append_result(results, failed_row(run, args, sha, 0, "independent-check-error"))
+            elapsed_each.append(time.monotonic() - began)
+            continue
+        except UNREADABLE_ROW as exc:
+            print(f"    -> UNREADABLE row ({exc}); recorded as a failed run", file=sys.stderr)
+            append_result(results, failed_row(run, args, sha, 0, "unreadable-row"))
+            elapsed_each.append(time.monotonic() - began)
+            continue
+        try:
             runner = read_runner_row(out_dir / "runs" / f"{run.slug}.csv", run, sha)
         except UNREADABLE_ROW as exc:
             # The runner exited 0 but its row cannot be read -- a full disk

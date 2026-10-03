@@ -82,6 +82,11 @@ BLANKED_COLUMNS = ("objective", "gap_to_bks%", "gap_to_dual%")
 #: SCIP's name for the auxiliary objective column of its `.nl` reader.
 NLOBJVAR = "nlobjvar"
 
+#: The fixed column SCIP's `.nl` reader adds for an objective CONSTANT
+#: (`heldout/ex9_2_3`: lb = ub = -60, objective coefficient 1). Not an NL
+#: column: it is loaded at its fixed value, never from the solution file.
+OBJCONSTANT = "objconstant"
+
 _COLUMN_NAME = re.compile(r"^[a-z](\d+)$")
 
 #: An `nlobjvar` value no finite objective in the roster comes near (the largest
@@ -171,31 +176,43 @@ def _check(model: Any, sol: Any) -> tuple[bool, str]:
     return bool(ok), _first_reason(out.getvalue())
 
 
-def _columns(model: Any, n: int) -> tuple[list[Any], Any | None]:
-    """SCIP's variables in NL column order, and its `nlobjvar` if it made one."""
+def _columns(model: Any, n: int) -> tuple[list[Any], Any | None, list[tuple[Any, float]]]:
+    """SCIP's variables in NL column order, its `nlobjvar`, and its fixed auxiliaries.
+
+    The auxiliaries are the columns the reader adds that the NL file does not
+    have: `nlobjvar` (free, set by the objective bracketing) and `objconstant`
+    (fixed; returned with the value it is fixed at).
+    """
     nlobj = None
+    fixed: list[tuple[Any, float]] = []
     columns: list[Any] = []
     for var in model.getVars():
         if var.name == NLOBJVAR:
             nlobj = var
+        elif var.name == OBJCONSTANT:
+            lb, ub = float(var.getLbOriginal()), float(var.getUbOriginal())
+            if lb != ub:
+                raise ValueError(f"SCIP's {OBJCONSTANT} is not fixed: [{lb}, {ub}]")
+            fixed.append((var, lb))
         else:
             columns.append(var)
     if len(columns) != n:
         raise ValueError(f"SCIP sees {len(columns)} columns; the solution has {n}")
     # Without a .col file the reader names column j `x<j>`/`i<j>`/`b<j>`, and
     # `getVars()` lists them by TYPE, not by column (nvs05: i2, i3, x0, x1, ...),
-    # so the order comes from the names. A model whose names carry no index (a
-    # .col file, or SCIP's own writer) is taken in getVars() order; a mixture is
-    # refused rather than guessed.
+    # so the order comes from the names, and only from them: a name without an
+    # index (a .col/.row file beside the .nl) is refused, never guessed from
+    # getVars() order.
     indices = [_COLUMN_NAME.match(var.name) for var in columns]
-    if all(m is None for m in indices):
-        return columns, nlobj
-    if any(m is None for m in indices):
-        raise ValueError("SCIP's column names mix indexed and unindexed names")
+    unindexed = [var.name for m, var in zip(indices, columns, strict=True) if m is None]
+    if unindexed:
+        raise ValueError(
+            f"SCIP column {unindexed[0]!r} carries no column index (a .col file beside the .nl?)"
+        )
     by_index = {int(m.group(1)): var for m, var in zip(indices, columns, strict=True) if m}
     if sorted(by_index) != list(range(n)):
         raise ValueError(f"SCIP's column names are not a permutation of 0..{n - 1}")
-    return [by_index[j] for j in range(n)], nlobj
+    return [by_index[j] for j in range(n)], nlobj, fixed
 
 
 class _Probe:
@@ -207,7 +224,7 @@ class _Probe:
         self.model: Any = Model()
         self.model.hideOutput()
         self.model.readProblem(str(nl_path))
-        self.columns, self.nlobj = _columns(self.model, len(solution.values))
+        self.columns, self.nlobj, self.fixed = _columns(self.model, len(solution.values))
         self.values = solution.values
         self.maximizing = self.model.getObjectiveSense() == "maximize"
 
@@ -215,6 +232,8 @@ class _Probe:
         """The assignment, with SCIP's `nlobjvar` (when it made one) at `nlobj_value`."""
         sol = self.model.createSol()
         for var, value in zip(self.columns, self.values, strict=True):
+            self.model.setSolVal(sol, var, value)
+        for var, value in self.fixed:
             self.model.setSolVal(sol, var, value)
         if self.nlobj is not None:
             self.model.setSolVal(sol, self.nlobj, nlobj_value)
