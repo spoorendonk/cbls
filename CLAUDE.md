@@ -897,7 +897,8 @@ Do not write, in docs or issues or commit messages, that List variables are
 validated on a published formulation. The evidence position is:
 
 - **`Set`** — measured and **negative**. The `Set` encoding lands at
-  8.6-11.0x the proven optimum where the same data in Bools is within 9-20%.
+  3.4-5.1x the proven optimum where the same data in Bools is within 4-9%
+  (engine `153dc72`, after #201; it was 8.6-11.0x against 9-20% at `adc8ee4`).
 - **`List`** — **no evidence either way.** No `List` result is published yet;
   CVRP (#204) will be the first.
 

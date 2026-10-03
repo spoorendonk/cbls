@@ -1464,7 +1464,14 @@ A batch is structural with probability `structural_batch_probability`: `< 0`
 auto-selects `0.33` when the batch would build at least one move generator --
 a registered `move_generators` entry, or a List/Set variable with
 `default_structural_generators` on (#165) -- and `0.0` otherwise, so a model
-whose batch would propose nothing never spends an iteration on one. After a structural batch commits
+whose batch would propose nothing never spends an iteration on one. When the
+batch would build a generator but FJ has nothing to jump -- no Bool/Int/Float
+variable with two values in its domain, as on a List-only CVRP model or a mixed
+one whose every scalar is fixed -- it is `1.0`, explicit setting or not (#201).
+An FJ batch over an empty jumpable set did no work, reported itself stuck and
+took #102's unproductive kick, which re-randomised every List after almost every
+batch; on CVRP X-n101-k25 the 0.33 default never reached feasibility. A model
+with any movable scalar keeps its mix and RNG draws exactly. After a structural batch commits
 anything, the engine `resync()`s its scan set.
 
 ### Registering a move generator
@@ -1585,34 +1592,38 @@ only variables are structured. There, everything else is inert:
 
 | Mechanism | On a structure-only model |
 |---|---|
-| FJ batch | no jumpable variable: `apply_jump` fails every iteration and the batch degenerates into a pure GLS weight pump |
-| Novelty Jump | compound moves are chains of scalar jumps — nothing to chain |
+| FJ batch | not scheduled since #201: with no movable scalar every batch is structural. Before that it ran anyway, `apply_jump` failed every iteration, and the batch degenerated into a pure GLS weight pump that reported itself stuck and took the unproductive kick |
+| Novelty Jump | not scheduled either — compound moves are chains of scalar jumps, nothing to chain |
 | `perturb` kick | reaches them since #111 (each List/Set variable gets its own pass of `clamp(round(p*|elements|), 1, |elements|)` random structural moves), but the moves are the same unguided ones — see [Diversification](#diversification) |
 | LNS | destroys the structured variables wholesale, i.e. a random restart, then repairs with an FJ that has nothing to jump. On a `ListPartition` it is weaker still: its destroy step uses `ListOrder::Perturb`, which shuffles a list in place, so it can neither gain nor lose an element — which is what keeps the cover safe, and also means LNS diversifies the ORDER within each list and never the membership across them |
 
 so progress is slow once the sampled neighbourhood stops improving — slow, not
 finished: 6x the budget still buys ~18% on these instances (scp41 `set`, best of
-seeds 42-44: 4739 at 10s, 3876 at 60s, both measured at the engine commit the
-table below records), so the 10s numbers below are budget-limited rather than
-neighbourhood-limited. Measured on OR-Library set covering
-(`benchmarks/instances/setcover/`, issue #93): on the weighted instances the
-same data modelled as one `Set` variable costs **8.6-11.0x the proven optimum**,
-against **+9-20%** for one Bool per column — while on *unicost* instances,
+seeds 42-44: 4739 at 10s, 3876 at 60s, both at engine `adc8ee4`), so the 10s
+numbers are budget-limited rather than neighbourhood-limited. Measured on
+OR-Library set covering (`benchmarks/instances/setcover/`, issue #93): on the
+weighted instances the same data modelled as one `Set` variable costs
+**3.4-5.1x the proven optimum** at engine `153dc72` (8.6-11.0x at `adc8ee4`,
+before #201 stopped scheduling empty FJ batches on it), against **+4-9%** for
+one Bool per column — while on *unicost* instances,
 where the objective is just cardinality, the two nearly converge. What the Set
 search lacks is not reach but a violation-guided choice of *which* element to
 move. A 3-row, 4-column fixture in `tests/test_setcover.cpp` reproduces it
 exactly: the Set encoding stalls one move away from the optimum because every
 single add/remove/swap from its incumbent is worse.
 
-Note what the idle FJ batches cost. Their weight pump inflates `W` on the
+Note what the idle FJ batches cost — which is why #201 no longer schedules
+them on a model with no movable scalar. Their weight pump inflates `W` on the
 persistently-violated objective row, and a skewed enough `W` is what lets the
 structural pass accept a move that breaks a constraint — which is why the pump
 was once thought to be load-bearing for a structure-only model. Setting
 `structural_batch_probability = 1.0` removes the pump in exchange for more
 structural passes, and at engine HEAD that trade measures *better* in both
 regimes — unicost 7/7/7 -> 6/6/6, weighted 4917/4739/4902 -> 2593/2727/2916,
-i.e. best-of-3 4739 -> 2593, a 45% improvement on scp41. The pump is not buying
-anything that outweighs the passes it displaces.
+i.e. best-of-3 4739 -> 2593, a 45% improvement on scp41 (engine `adc8ee4`). The
+pump is not buying anything that outweighs the passes it displaces. #201 made
+that the default: the roster's weighted `Set` gap went from +387% to +291% (mean
+best-of-3) at the one commit, `1304c43` against `153dc72`.
 Neither setting is a fix; both are symptoms of the structural batch having no
 guidance of its own.
 
@@ -1880,7 +1891,12 @@ approach* to the feasible region rather than the untouched initial assignment �
 release the objective bound to `+inf`, full-evaluate, and return the best
 feasible objective (or `+inf` / infeasible). `SearchResult::best_violation`
 carries the largest real-constraint residual at the returned assignment.
-`SearchResult::iterations` is the total GLS iteration count, not the batch count.
+`SearchResult::iterations` is the unit `max_iterations` is charged in: the
+larger of the total GLS iteration count and the batch count (#201). The budget
+stops the run when either reaches the limit, so the two agree by construction.
+On a model FJ has work in that is the GLS count, as it always was; on a
+structural-only run, which charges no GLS iteration, it is the batch count
+rather than 0.
 `SearchResult::termination` says which budget ended the run — see below.
 `SearchResult::first_feasible_objective` and `time_to_first_feasible` record
 where the run *arrived* in the feasible region, as against where the descent
@@ -2548,7 +2564,8 @@ struct SearchConfig {
     int perturbation_period = 100;          // batches without improvement before diversifying
     double perturbation_probability = 0.1;  // scalar randomisation prob + List/Set
                                             // kick size (never a no-op)
-    double structural_batch_probability = -1.0;  // <0 = auto (0.33 if any generator, else 0)
+    double structural_batch_probability = -1.0;  // <0 = auto (0.33 if any generator, else 0);
+                                                 // 1.0 whenever FJ has nothing to jump (#201)
     bool use_compound_moves = false;        // run Novelty Jump batches (else FJ only)
     double novelty_jump_probability = 0.5;  // P(a batch is Novelty Jump) when enabled
 };
@@ -3174,7 +3191,7 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `batch_iterations` | 1000 | `SearchConfig` | GLS iterations per FJ batch |
 | `perturbation_period` | 100 | `SearchConfig` | stagnant batches before a diversification kick |
 | `perturbation_probability` | 0.1 | `SearchConfig` | per-var scalar randomisation probability on perturb; also scales the List/Set moves per kick (a no-op kick moves one var anyway) |
-| `structural_batch_probability` | -1 (auto) | `SearchConfig` | P(structural batch); auto 0.33 when a generator would be built, else 0 |
+| `structural_batch_probability` | -1 (auto) | `SearchConfig` | P(structural batch); auto 0.33 when a generator would be built, else 0; forced to 1 when FJ has no movable variable (#201) |
 | `use_compound_moves` | false | `SearchConfig` | enable Novelty Jump batches |
 | `novelty_jump_probability` | 0.5 | `SearchConfig` | P(Novelty Jump batch) when enabled |
 | `lns_interval` | 3 | `SearchConfig` / arg | LNS fires every Nth diversification kick |

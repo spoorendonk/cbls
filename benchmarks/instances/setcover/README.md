@@ -19,7 +19,7 @@ so the model is one `Set` variable and nothing else.
 |---|---|
 | Can a standard set-based problem be *expressed* with a `Set` variable? | **Yes** — one `Set` over the columns, one `lambda_sum` coverage row per row. No new DAG op was needed. |
 | Does the search produce genuine, verified solutions? | **Yes** — every run on the roster returns a real cover, re-checked against the instance file. |
-| Is the `Set` encoding *competitive*? | **No.** It never beats the plain Bool encoding of the same instance (it ties on two unicost instances), and on the weighted instances it costs 8.6-11.0x the optimum where Bool is within 9-20%. See [Result](#result). |
+| Is the `Set` encoding *competitive*? | **No.** It never beats the plain Bool encoding of the same instance (it ties on three unicost instances), and on the weighted instances it costs 3.4-5.1x the optimum where Bool is within 4-9% (engine `153dc72`, after #201 stopped scheduling empty FJ batches on it; 8.6-11.0x at `adc8ee4`). See [Result](#result). |
 | Does #165's cost-aware selection fix it? | **Not demonstrably.** At 20 seeds per arm and a 10s budget, `ViolationGuided` beats the default by 2.6% on the weighted instances with a 95% CI of [−5.6%, +0.3%] — it crosses zero, and the estimate shrank as seeds were added. See [Cost-aware structural selection](#cost-aware-structural-selection-165--measured-twice-still-not-established). |
 
 So the honest scope of the structured-variable claim today is: **`Set`
@@ -89,71 +89,84 @@ variable work" but "does it buy anything the scalar encoding does not".
 ## Result
 
 Best of seeds 42-44, 10s wall clock per run, single thread, default
-`SearchConfig`, Release build. Every one of the 60 runs returned a **verified
-cover** — feasibility recomputed from the instance file — so the expressiveness
-half of the claim holds outright.
+`SearchConfig`, Release build. Every one of the 90 runs behind this section
+returned a **verified cover** — feasibility recomputed from the instance file —
+so the expressiveness half of the claim holds outright.
 
-**Measured at engine commit `adc8ee4`** (#118, the per-constraint structural-pass
-fix). Commits after it do touch engine code, but not these numbers: #114's
-changes are all Int-gated, and these models declare no Int variable — the `Set`
-encoding is one `Set`, the Bool encoding is N Bools. Re-derive the per-seed form
-with the runner's `--csv` output. No summary table is committed; the table above
-is the record.
+**Measured at engine commit `153dc72`** (#201), on one machine
+(`simon-Legion-5-Pro-16ACH6H`, 12 cores), one solve at a time under the shared
+benchmark lock, 1-minute load 1.02-1.49 at the start of every run. The
+`set (before #201)` column is engine `1304c43`, the commit #201 branched from,
+run interleaved with the `set` column (old then new, per instance and seed) so
+the two see the same machine state. Re-derive the per-seed form with the
+runner's `--csv` output. No summary table is committed; the table below is the
+record.
 
-| Instance | Optimum | `set` best | gap | `bool` best | gap |
-|---|---|---|---|---|---|
-| scp41 | 429 | 4739 | +1005% | 469 | +9% |
-| scp42 | 512 | 4445 | +768% | 613 | +20% |
-| scp43 | 516 | 4596 | +791% | 615 | +19% |
-| scp44 | 494 | 4287 | +768% | 573 | +16% |
-| scp45 | 512 | 4392 | +758% | 596 | +16% |
-| scpe1 | 5 | 7 | +40% | 6 | +20% |
-| scpe2 | 5 | 6 | +20% | 6 | +20% |
-| scpe3 | 5 | 5 | **+0%** | 5 | **+0%** |
-| scpe4 | 5 | 7 | +40% | 6 | +20% |
-| scpe5 | 5 | 7 | +40% | 6 | +20% |
-| **mean gap, weighted (scp4x)** | | | **+818%** | | **+16.1%** |
-| **mean gap, unicost (scpex)** | | | **+28%** | | **+16%** |
+| Instance | Optimum | `set` best | gap | `set` before #201 | gap | `bool` best | gap |
+|---|---|---|---|---|---|---|---|
+| scp41 | 429 | 2184 | +409% | 2665 | +521% | 448 | +4% |
+| scp42 | 512 | 1904 | +272% | 2336 | +356% | 555 | +8% |
+| scp43 | 516 | 1776 | +244% | 2086 | +304% | 546 | +6% |
+| scp44 | 494 | 1894 | +283% | 2240 | +353% | 537 | +9% |
+| scp45 | 512 | 1787 | +249% | 2560 | +400% | 538 | +5% |
+| scpe1 | 5 | 6 | +20% | 6 | +20% | 5 | **+0%** |
+| scpe2 | 5 | 5 | **+0%** | 7 | +40% | 5 | **+0%** |
+| scpe3 | 5 | 6 | +20% | 6 | +20% | 5 | **+0%** |
+| scpe4 | 5 | 5 | **+0%** | 6 | +20% | 5 | **+0%** |
+| scpe5 | 5 | 5 | **+0%** | 7 | +40% | 5 | **+0%** |
+| **mean gap, weighted (scp4x)** | | | **+291%** | | **+387%** | | **+6.5%** |
+| **mean gap, unicost (scpex)** | | | **+8%** | | **+28%** | | **+0%** |
+
+Per seed (42 / 43 / 44), `set` after → before: scp41 2268/2247/2184 →
+2902/2763/2665; scp42 2239/2263/1904 → 2336/2666/2551; scp43 2269/1776/1937 →
+3535/2663/2086; scp44 1894/2389/2346 → 2664/2917/2240; scp45 1787/2365/2073 →
+2560/2935/2897. #201 is better on 14 of the 15 weighted pairs (scp44 seed 44 is
+the exception, 2346 against 2240) and better or tied on all 15 unicost ones.
+
+**What #201 changed here.** The `Set` encoding has no scalar variable, so FJ has
+nothing to jump. Before #201 the automatic structural probability was 0.33 and
+the other two thirds of batches were empty FJ batches — GLS weight pumps that
+reported themselves stuck and took the unproductive diversification kick. #201
+makes every batch structural on such a model, which is exactly the
+`--struct-prob 1.0` arm measured in [Why the Set encoding
+loses](#why-the-set-encoding-loses), now as the default. The `bool` encoding has
+no structured variable, so #201 cannot reach it: its column is a fresh
+measurement at the same commit, not a before/after.
+
+The `iterations` column in the runner's CSV changes unit with this: a `set` run
+now reports its structural batches (~45-51k on scp4x, ~0.75-0.81M on scpex)
+where it used to report the empty FJ batches' GLS iterations (~16-19M and
+~162-165M), because `SearchResult::iterations` is now the larger of GLS
+iterations and batches.
 
 These are best-of-3 at a fixed wall-clock budget, so they are samples, not
-constants. Every row above comes from one serial sweep on an idle machine. What
-repeated measurement has shown:
-
-- The `bool` rows cannot move for a *code* reason across the #118 fix at all —
-  `build_bool_model` creates no List or Set, so `has_structural` is false and
-  the structural pass never runs — which makes them a control on measurement
-  rather than on the engine. A pre-fix sweep and this post-fix sweep give the
-  same best on all five weighted instances, and the same per-seed triple on four
-  of the five; the exception is `scp41`, whose pre-fix `bool` block was itself
-  run at reduced throughput.
-- The `set` rows only compare within the post-fix engine. `scp41` has been swept
-  three times post-fix, with a best of 4739 every time (seeds 42 and 43 are
-  stable to the unit, seed 44 spans 4902-4963). The rest of the roster has one
-  clean post-fix sweep each, so treat those as single samples.
-- One earlier sweep was taken while the machine was loaded, and its `scp41` and
-  `scp44` blocks ran at ~2/3 the iteration throughput of the rest. That did not
-  move `scp41`/`set` — this search stalls well inside 10s — but it did move
-  `scp44`/`bool`, which this table reported as 607 until the clean re-runs put
-  it back at 573. Check `uptime` and the per-run iteration counts before
-  trusting a sweep; the runner writes both to its `--csv` output.
+constants: per-seed spread on the weighted `set` rows is up to ±15%.
 
 Read it as two different results, because they are:
 
-- **Weighted costs (`scp4x`)**: the `Set` encoding is *not usable*. It lands at
-  8.6-11.0x the optimal cost while the Bool encoding of the identical instance is
-  within 9-20%. Both select a comparable *number* of columns (100-102 vs 65-73) —
-  the Set search is simply blind to which ones are cheap, because nothing in its
-  move generator looks at cost or violation before proposing an element.
-- **Unicost (`scpex`)**: the two encodings nearly converge (5-7 vs 5-6), and on
-  `scpe3` the Set encoding reaches the proven optimum. With all costs equal,
-  "which column" matters far less, and the objective reduces to cardinality —
-  the one thing a random add/remove/swap can optimise.
+- **Weighted costs (`scp4x`)**: the `Set` encoding is still *not usable*. It
+  lands at 3.4-5.1x the optimal cost while the Bool encoding of the identical
+  instance is within 4-9%. #201 took it from 4.0-6.2x, which is real and changes
+  nothing about the conclusion — the Set search is still blind to which columns
+  are cheap, because nothing in its move generator looks at cost or violation
+  before proposing an element.
+- **Unicost (`scpex`)**: the two encodings nearly converge (5-6 vs 5), and the
+  `Set` encoding reaches the proven optimum on three of the five. With all costs
+  equal, "which column" matters far less, and the objective reduces to
+  cardinality — the one thing a random add/remove/swap can optimise.
 
 That contrast is the sharpest available evidence for what is missing: not the
 `Set` type, but a violation-guided choice of *which* element to move.
 
-The one-instance headline: on `scp41`, `Set` reaches 4739 against a proven
-optimum of 429, while the ordinary Bool encoding of the same data reaches 469.
+The one-instance headline: on `scp41`, `Set` reaches 2184 against a proven
+optimum of 429, while the ordinary Bool encoding of the same data reaches 448.
+
+**History.** The first published table, at engine `adc8ee4` (#118), had the
+`Set` encoding at 8.6-11.0x on the weighted instances (scp41 best 4739) and
+`bool` within 9-20%. The engine moved between that commit and `1304c43` — both
+encodings were better there before #201 touched anything — so the
+`adc8ee4`-to-`1304c43` difference is not #201's, and the sections below that
+quote `adc8ee4` or `8dc906b` numbers describe the engine at those commits.
 
 ## Cost-aware structural selection (#165) — measured twice, still not established
 
@@ -212,8 +225,8 @@ doing before there is a reason to care about `Set`-encoded set covering
 specifically. The honest summary is that cost-aware selection is **implemented,
 measured, and not demonstrably better** on the one roster that can test it.
 
-It does not rescue the headline result below either: the `Set` encoding's
-8.6-11.0x remains what it was, because a prerequisite being *implemented* is not
+It does not rescue the headline result either: the `Set` encoding's
+8.6-11.0x at the time remained what it was, because a prerequisite being *implemented* is not
 the same as its being *effective*.
 
 **On the representation, separately.** #164 made a structured candidate carry
@@ -234,8 +247,8 @@ On a model whose only variable is a `Set`, most of the engine is inert:
 
 | Mechanism | On a Set-only model |
 |---|---|
-| Feasibility Jump batch | no jumpable variable, so `apply_jump` fails every iteration and the batch degenerates into a pure GLS weight pump |
-| Novelty Jump | same — compound moves are built from scalar jumps (and it is off by default) |
+| Feasibility Jump batch | not scheduled since #201 — with no movable scalar every batch is structural. Before that it ran on two thirds of all batches at the default mix, `apply_jump` failed every iteration, and the batch degenerated into a pure GLS weight pump |
+| Novelty Jump | not scheduled either — compound moves are built from scalar jumps (and it is off by default) |
 | `perturb` diversification kick | reaches the Set since #111 (a kick applies `clamp(round(p*|elements|), 1, |elements|)` random structural moves to it), but those are the same unguided add/remove/swap, so it lands somewhere arbitrary rather than somewhere better — measured ~30% *worse* on the weighted instances than the pre-#111 no-op |
 | LNS destroy-repair | destroys the single Set variable wholesale (a random restart) and repairs with FJ, which has nothing to jump |
 | STRUCTURAL batch | the only mechanism that moves anything |
@@ -246,8 +259,8 @@ random remove and one random swap, each kept only if it strictly lowers weighted
 violation. There is no violation-guided choice of *which* element to add or drop
 (the scalar path has exactly that, in FJ's jump table and best-of-N scan-set
 sampling). Progress once the sampled neighbourhood dries up is slow rather than
-absent: 6x the budget buys ~18% (scp41 `set`, best of seeds 42-44 at the current
-engine commit: 4739 at 10s, 3876 at 60s — the 60s sweep is 4275 / 4438 / 3876),
+absent: 6x the budget buys ~18% (scp41 `set`, best of seeds 42-44 at engine
+`adc8ee4`, before #201: 4739 at 10s, 3876 at 60s — the 60s sweep is 4275 / 4438 / 3876),
 so the table above is a floor set by the budget, not a converged result.
 
 The 3x4 fixture in `tests/test_setcover.cpp` shows the failure in miniature:
@@ -271,9 +284,14 @@ Scored **best-to-best**, the way the roster table above is scored, that is
 changes nothing about the conclusion: the encoding is not competitive at either
 setting. (Mean-to-mean the same sweep gives ~43%; an earlier revision of this
 file quoted the two methods against each other, so the number is stated with its
-method from here on.) It is reported here rather than in the roster table
+method from here on.) It was reported here rather than in the roster table
 because the roster uses the engine default throughout, which is the
 configuration a user gets.
+
+**Since #201 this is the default** on any model where FJ has nothing to jump,
+so the roster table above now measures the `1.0` arm, and `--struct-prob` has
+no effect on the `Set` encoding at all: with no movable scalar every batch is
+structural whatever it is set to.
 
 (An earlier revision of this file recorded the opposite for the unicost column
 and explained it as a weight-pump-as-diversification effect. That reading was an
