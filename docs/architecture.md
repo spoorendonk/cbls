@@ -171,7 +171,10 @@ keep plain `|a - b|`.
 `std::pow` is NaN (`pow(-8, 1/3)`) and `0/0` evaluate to NaN, which every row
 reads as maximally violated (`clamped_node_violation`). `Log(0)` is `-inf`, a
 `Pow` overflow keeps its sign, and a `Div` whose denominator is below `1e-15` in
-magnitude is an infinity signed by `num * denom` (`1/-0.0 = -inf`). Before #205
+magnitude is an infinity signed by `num * denom` (`1/-0.0 = -inf`), or NaN when
+the numerator is 0 -- below the threshold the denominator is a zero, so such a
+`Div` is never finite, which `LinearJumpScorer` relies on to keep it off the
+closed form. Before #205
 these read as ordinary numbers — `sqrt(-10)` as `0.0`, every non-finite `pow` as
 `+inf` — and a comparison scored them as satisfiable, so the search reported
 infeasible models feasible. The ops that consume a child also keep a NaN NaN
@@ -368,8 +371,8 @@ propagated: the sweep accumulates `adjoint += adj * ld`, so one infinite edge
 would make `inf * 0` — NaN — in the partial of an unrelated sibling variable.
 
 The built-ins follow the same rule since #205: `Pow`, `SignPower`, `Div` and
-`Tan` fold a non-finite partial to 0, and `Log`/`Sqrt` return 0 on and below
-their singular point. No op offers a finite slope where its *value* is NaN — a
+`Tan` fold a non-finite partial to 0, `Log`/`Sqrt` return 0 on and below
+their singular point, and an `If` on a NaN condition gives neither branch a slope. No op offers a finite slope where its *value* is NaN — a
 Newton step built from one would aim into a region where the function is not
 defined. What stays finite but huge near a pole (`1/x` at `x = 1e-15`) is left
 alone; the rule is at the site in `src/dag.cpp`.
