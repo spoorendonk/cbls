@@ -475,6 +475,10 @@ CHPED_40UNIT = {
     ],
     "demand": [10500.0],
     "reserve": [0.0],
+    # Proven optimum 121412.53 (the authors' RESULTS/eld40-10500.txt closes
+    # LB/UB to 0.003 on data field-identical to this table); its dispatch puts
+    # units 19-20 at 511.28 MW, feasible here since #193. Rounded down, so it
+    # stays a lower bound.
     "known_optimum": 121412.0,
     "all_committed": True,
 }

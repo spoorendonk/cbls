@@ -166,7 +166,12 @@ inline Instance make_40unit() {
         {10500.0},
         // reserve
         {0.0},
-        // known_optimum (~121,412 $/h)
+        // known_optimum (~121,412 $/h). The proven optimum of this instance is
+        // 121412.53: the authors' RESULTS/eld40-10500.txt closes LB/UB to 0.003
+        // on data field-identical to this table, and its dispatch (units 19-20
+        // at 511.28 MW) is feasible here since #193 -- before it, 500 MW cut it
+        // off and this value was only a lower bound. Kept rounded down, so it
+        // stays a valid lower bound for `objective >= known_optimum`.
         121412.0,
         // all_committed (all units must be on)
         true};

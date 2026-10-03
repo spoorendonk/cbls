@@ -20,12 +20,11 @@ benchmarks/uc-chped/FIDELITY.md section 7):
 - ucp13 -- IDENTICAL to the authors' ucp13(): costs, limits, the Kazarlis
   mapping and the demand/reserve profile. The mapping below is theirs (their
   table annotates each unit with its "corresp. in kazarlis").
-- ucp40 -- identical EXCEPT P_max of units 19 and 20 (1-indexed): 500 here,
-  550 in the authors' ucp40() and in the standard 40-unit dispatch data. The
-  error is inherited from CHPED_40UNIT in benchmarks/chped/data.py, which this
-  module loads for its cost data. The authors' published 1-period optimum is
-  infeasible on this instance, so Table 2's ucp40 bounds are bounds for a
-  related system, not for ucp40 as built here.
+- ucp40 -- IDENTICAL to the authors' ucp40(). Until #193 it was not: P_max of
+  units 19 and 20 (1-indexed) was 500 here against the source's 550, an error
+  in CHPED_40UNIT (benchmarks/chped/data.py), which this module loads for its
+  cost data. With it corrected, the exact 1-period optimum reproduces Table 2's
+  55644.79 and Table 2's ucp40 bounds are bounds for this instance.
 - ucp100/ucp200 and extend_horizon() -- this repository's construction; the
   authors publish nothing for them and no bounds are claimed.
 
@@ -332,9 +331,8 @@ def _build_ucp40() -> Instance:
             689,
             612,
         ],
-        # Pedroso Table 2 (1hr MIP) bounds, {periods: (LB, UB)} -- computed on the
-        # AUTHORS' ucp40 (P_max 550 at units 19-20), not on this one (#148). The
-        # runner marks them [related system] and scores no gap against them.
+        # Pedroso Table 2 (1hr MIP) bounds, {periods: (LB, UB)} -- for this
+        # instance since #193 restored units 19-20 to P_max 550 (#148).
         "known_bounds": {
             1: (55645, 55645),
             3: (178396, 178547),

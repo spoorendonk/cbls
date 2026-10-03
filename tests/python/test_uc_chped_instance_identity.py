@@ -1,15 +1,18 @@
-"""#148: the Table 2 bounds describe ucp13 but not this repository's ucp40.
+"""#148/#193: the Table 2 bounds describe this repository's ucp13 and ucp40.
 
-`benchmarks/uc-chped/instance_identity.py` established it (FIDELITY.md section
-7): ucp40 caps units 19-20 at 500 MW where the authors' instance has 550, and the
-authors' 1-period optimum is infeasible on ours. What the runner must therefore
-do, and what this pins, is mark ucp40's cited rows as bounds for a related system
-and publish no gap for a measured ucp40 row -- while ucp13 keeps both.
+`benchmarks/uc-chped/instance_identity.py` settles it against the authors' GPL
+`ucp_data.py` (FIDELITY.md section 7). #148 found ucp40's units 19-20 capped at
+500 MW where the source has 550, and relabelled its cited rows as bounds for a
+related system; #193 corrected the data in `benchmarks/chped/` and removed the
+relabel. What this pins is the corrected state: the committed instances carry
+the source's limits, and the runner scores ucp40 against its own Table 2 bounds
+exactly as it does ucp13.
 """
 
 from __future__ import annotations
 
 import csv
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +21,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 UC_CHPED_BINARY = ROOT / "build" / "cbls_uc_chped"
+INSTANCES = ROOT / "benchmarks" / "instances" / "uc-chped"
 
 
 def _rows(path: Path) -> list[dict[str, str]]:
@@ -25,13 +29,28 @@ def _rows(path: Path) -> list[dict[str, str]]:
     return list(csv.DictReader(lines))
 
 
-def test_uc_chped_marks_ucp40_bounds_as_a_related_system(tmp_path: Path) -> None:
+@pytest.mark.parametrize("name", ["ucp40", "ucp100", "ucp200"])
+def test_uc_chped_40_unit_copies_carry_the_sources_pmax_at_units_19_20(name: str) -> None:
+    """Every copy of the 40-unit system (the `i % 40` cycle) has 550 MW at
+    units 19-20, as the authors' `ucp40()` does, and so no base 24-period
+    instance asks for more demand + reserve than its total P_max (#152)."""
+    inst = json.loads((INSTANCES / f"{name}.jsonl").read_text())
+    p_max = inst["P_max"]
+    copies = range(0, inst["n_units"], 40)
+    assert [(p_max[k + 18], p_max[k + 19]) for k in copies] == [(550.0, 550.0)] * len(copies)
+    capacity = sum(p_max)
+    short = [
+        t + 1 for t in range(inst["n_periods"]) if inst["demand"][t] + inst["reserve"][t] > capacity
+    ]
+    assert short == [], f"{name}: capacity-short periods {short}"
+
+
+def test_uc_chped_scores_ucp40_against_its_table2_bounds(tmp_path: Path) -> None:
     if not UC_CHPED_BINARY.exists():
         pytest.skip("cbls_uc_chped not built")
-    src = ROOT / "benchmarks" / "instances" / "uc-chped"
     inst_dir = tmp_path / "uc-chped"
     inst_dir.mkdir()
-    for f in src.iterdir():
+    for f in INSTANCES.iterdir():
         if f.is_file():
             (inst_dir / f.name).write_bytes(f.read_bytes())
     out = tmp_path / "o.csv"
@@ -50,17 +69,19 @@ def test_uc_chped_marks_ucp40_bounds_as_a_related_system(tmp_path: Path) -> None
     assert result.returncode == 0, result.stderr
 
     rows = _rows(out)
-    cited = {(r["instance"], r["method"]) for r in rows if r["source"] != "this work"}
-    assert {m for i, m in cited if i == "ucp13"} == {"Pedroso MIP (1hr)"}
-    assert {m for i, m in cited if i == "ucp40"} == {"Pedroso MIP (1hr) [related system]"}
+    cited = [r for r in rows if r["source"] != "this work"]
+    assert {r["method"] for r in cited} == {"Pedroso MIP (1hr)"}, cited
+    assert {r["instance"] for r in cited} == {"ucp13", "ucp40"}
+    lbs = {(r["instance"], r["periods"]): r["lb"] for r in cited}
 
     measured = [r for r in rows if r["source"] == "this work"]
-    ucp40 = [r for r in measured if r["instance"] == "ucp40"]
-    assert ucp40, "no measured ucp40 rows"
-    for r in ucp40:
-        assert r["gap_pct"] == "" and r["lb"] == "", r
-    # Every ucp13 horizon has a published bound, so a feasible row carries a gap.
-    assert any(r["gap_pct"] != "" for r in measured if r["instance"] == "ucp13"), measured
+    for name in ("ucp13", "ucp40"):
+        mine = [r for r in measured if r["instance"] == name]
+        assert mine, f"no measured {name} rows"
+        for r in mine:
+            # Every horizon run here has a published bound, so every row carries it.
+            assert r["lb"] == lbs[(name, r["periods"])], r
+            assert (r["gap_pct"] != "") == (r["feasible"] == "true" and r["objective"] != ""), r
 
 
 def test_instance_identity_refuses_an_upstream_file_with_another_hash(tmp_path: Path) -> None:
