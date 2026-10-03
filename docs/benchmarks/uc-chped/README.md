@@ -503,12 +503,12 @@ ucp40 was not the only case. The same check showed **ucp200** at 12 and 24
 periods short in period 12, by 30 MW (fixed by #193 too). All four extended
 horizons were also short, for a different reason. `extend_horizon()`'s demand
 variation pushed some periods past total capacity: period 36 in all four, plus
-60 in ucp100-168p and 60 and 84 in ucp200-168p, by up to 1377 MW after #193. So 8 of
-the 24 measured rows could never be feasible as built before #193, and 4 (the
-extended horizons) could not until #194 changed the construction (see
-**Extended Horizons** above); their "INFEASIBLE" said nothing about the
-search. Every committed instance now has capacity slack in every period, and a
-test pins it.
+60 in ucp100-168p and 60 and 84 in ucp200-168p, by up to 1377 MW after #193. So
+8 of the 24 measured rows could never be feasible as built before #193, and 4
+(the extended horizons) could not until #194 changed the construction (see
+**Extended Horizons** above); their "INFEASIBLE" said nothing about the search.
+Every committed instance now has capacity slack in every period, and a test
+pins it.
 
 The 600s probe confirms the arithmetic rather than being needed for it. Engine
 commit `e9b28a6`, seed 42, `--verify`, uniform `--time-limit 600` over the ucp40
@@ -548,11 +548,12 @@ need measuring at the map budgets (#131).
 at the base profile, the runner was run once over the four extended instances
 (`ucp100-48p`, `ucp100-168p`, `ucp200-48p`, `ucp200-168p`) with a uniform
 `--time-limit 10`, seed 42, `--verify`, on the instances as regenerated at
-`0aef444` (runner and engine unchanged since `374e09d`), on a shared machine at
-a 1-minute load average of 5.2. All four were feasible and verified:
-12,050,605.2, 41,536,813.2, 23,699,696.9 and 81,122,064.4 respectively. As with #193's smoke, that settles
-only satisfiability and the end-to-end flow; the objectives are 10s runs, far
-below the 600s map budget, and are not results.
+`0aef444`, with the engine and runner of #193's tip `3e7c3ea` (#194 changes no
+code), on a shared machine at a 1-minute load average of 5.2. All four were
+feasible and verified: 12,050,605.2, 41,536,813.2, 23,699,696.9 and
+81,122,064.4 respectively. As with #193's smoke, that settles only
+satisfiability and the end-to-end flow; the objectives are 10s runs, far below
+the 600s map budget, and are not results.
 
 **The 48h/168h budgets have never been defended.** The traces above cover
 ucp13 and ucp40 only, and every extended-horizon row measured before #194 ran

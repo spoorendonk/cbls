@@ -12,6 +12,7 @@ exactly as it does ucp13.
 from __future__ import annotations
 
 import csv
+import functools
 import importlib.util
 import json
 import subprocess
@@ -135,6 +136,7 @@ def test_instance_identity_refuses_an_upstream_file_with_another_hash(tmp_path: 
     assert "refusing to compare" in result.stderr, result.stderr
 
 
+@functools.cache
 def _uc_chped_data() -> ModuleType:
     # The module sits in a hyphenated directory, so it is loaded by path.
     spec = importlib.util.spec_from_file_location("uc_chped_data", INSTANCES / "data.py")

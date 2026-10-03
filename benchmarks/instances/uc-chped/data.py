@@ -454,9 +454,10 @@ def extend_horizon(inst: Instance, n_periods: int) -> Instance:
     1 + 0.03*sin(2*pi*d/7), which exceeded 1 on days 1-3 (up to 1.029 on day
     2) and pushed their peaks past total capacity -- ucp200's base peak has
     only 470 MW (0.74%) of slack -- so period 36 of every extended instance,
-    60 of both 168-period ones and 84 of ucp200-168p were infeasible under any
-    assignment. `round()` cannot break the rule: the base profile is integral,
-    and scaling an integer by a factor <= 1 never rounds above it.
+    60 of both 168-period ones and 84 of ucp200-168p (with #193's P_max) were
+    infeasible under any assignment. `round()` cannot break the rule: the base
+    profile is integral, and scaling an integer by a factor <= 1 never rounds
+    above it.
     """
     import math as _math
 
