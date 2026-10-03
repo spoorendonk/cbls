@@ -683,7 +683,8 @@ What #148 did, and #193 undid:
   relabel from the runner, `comparison.csv`, the instance-data comments and the
   README. `tests/python/test_uc_chped_instance_identity.py` now pins the
   corrected state: every 40-unit copy in the committed instances carries 550 at
-  units 19-20 with no capacity-short period in the base 24-period profile, and
+  units 19-20 with no capacity-short period in the base 24-period profile
+  (since #194 checked by a per-instance test over every committed jsonl), and
   the runner scores `ucp40` against its own bounds as it does `ucp13`.
 - `ucp40` results measured before #193 solved the old instance; the README
   keeps their gaps struck.

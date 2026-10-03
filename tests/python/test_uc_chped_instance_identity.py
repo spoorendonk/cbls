@@ -6,7 +6,9 @@
 related system; #193 corrected the data in `benchmarks/chped/` and removed the
 relabel. What this pins is the corrected state: the committed instances carry
 the source's limits, and the runner scores ucp40 against its own Table 2 bounds
-exactly as it does ucp13.
+exactly as it does ucp13. It also pins #194: no committed instance asks for
+more demand + reserve than its total P_max in any period, and
+`extend_horizon()` never scales a day above the base profile.
 """
 
 from __future__ import annotations
@@ -49,7 +51,7 @@ _COMMITTED = sorted(INSTANCES.glob("*.jsonl"))
 
 
 def test_uc_chped_committed_instances_are_all_checked() -> None:
-    """The glob below must see the roster, or the capacity test proves nothing."""
+    """The glob above must see the roster, or the capacity test below proves nothing."""
     assert {f.stem for f in _COMMITTED} >= {
         "ucp13",
         "ucp40",
