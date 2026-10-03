@@ -182,13 +182,20 @@ def _columns(model: Any, n: int) -> tuple[list[Any], Any | None]:
             columns.append(var)
     if len(columns) != n:
         raise ValueError(f"SCIP sees {len(columns)} columns; the solution has {n}")
-    # Without a .col file the reader names column j `x<j>`/`i<j>`/`b<j>`; check
-    # the order rather than assume it.
-    for j, var in enumerate(columns):
-        match = _COLUMN_NAME.match(var.name)
-        if match is not None and int(match.group(1)) != j:
-            raise ValueError(f"SCIP column {j} is named {var.name}")
-    return columns, nlobj
+    # Without a .col file the reader names column j `x<j>`/`i<j>`/`b<j>`, and
+    # `getVars()` lists them by TYPE, not by column (nvs05: i2, i3, x0, x1, ...),
+    # so the order comes from the names. A model whose names carry no index (a
+    # .col file, or SCIP's own writer) is taken in getVars() order; a mixture is
+    # refused rather than guessed.
+    indices = [_COLUMN_NAME.match(var.name) for var in columns]
+    if all(m is None for m in indices):
+        return columns, nlobj
+    if any(m is None for m in indices):
+        raise ValueError("SCIP's column names mix indexed and unindexed names")
+    by_index = {int(m.group(1)): var for m, var in zip(indices, columns, strict=True) if m}
+    if sorted(by_index) != list(range(n)):
+        raise ValueError(f"SCIP's column names are not a permutation of 0..{n - 1}")
+    return [by_index[j] for j in range(n)], nlobj
 
 
 class _Probe:

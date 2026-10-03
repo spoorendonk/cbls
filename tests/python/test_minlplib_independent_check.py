@@ -269,3 +269,15 @@ def test_the_runner_refuses_to_write_the_published_table_even_on_protocol(
 
 def test_the_check_module_names_the_note_prefix_the_scorer_allowlists() -> None:
     assert completed_search(independent_check.DEMOTED_NOTE_PREFIX)
+
+
+def test_columns_follow_the_nl_column_index_not_scips_type_order() -> None:
+    # SCIP lists nvs08's variables integers first (i1, i2, x0); the solution
+    # file is in NL column order, so mapping by position would load x0's value
+    # into i1. Found on the first smoke run of this check.
+    model = pyscipopt.Model()
+    model.hideOutput()
+    model.readProblem(str(INST / "nvs08.nl"))
+    assert [v.name for v in model.getVars() if v.name != "nlobjvar"] == ["i1", "i2", "x0"]
+    columns, _ = independent_check._columns(model, 3)
+    assert [v.name for v in columns] == ["x0", "i1", "i2"]
