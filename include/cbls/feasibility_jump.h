@@ -545,6 +545,7 @@ private:
     void init_novelty_weights();
     void seed_novelty_scan_set();
     void nj_enqueue(int32_t var_id);
+    void nj_requeue_neighbours(int32_t v);
     NoveltyPick select_novelty_var(double s_m, double s_c);
     bool novelty_jump_search(double s_m, int budget);
 

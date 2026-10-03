@@ -40,7 +40,12 @@
 // alone: run() never calls Novelty. The batch-API hash moves for it too, and
 // additionally because select_novelty_var now counts only filter-passing
 // variables toward its 3, draws from the unsampled suffix of Q', and has no
-// 32-draw cap.
+// 32-draw cap. The #206 review round moved the batch-API hash once more, and
+// only that one (run() never calls Novelty, and its hash reproduced): Novelty
+// now swap-removes a var that fails F or is on the stack from Q' for good, as
+// OR-Tools' ScanRelevantVariables does, and re-queues a moved or undone var's
+// row-neighbours -- so Q' holds different vars, in a different order, at every
+// draw.
 //
 // The two-phase hash sees only the final assignment and weights, and run()
 // refills every weight to 1 before its general phase, so phase-1 weights never
@@ -168,7 +173,7 @@ TEST_CASE("FJ's batch-API trajectory matches its recorded fingerprint",
           "[fj][violated_set][trajectory]") {
     const uint64_t h = batch_api_trajectory();
     CAPTURE(h);
-    REQUIRE(h == 0x4d8bcaa70f7c5599ULL);
+    REQUIRE(h == 0x3ae394e1c1d36960ULL);
 }
 
 TEST_CASE("FJ's two-phase run() trajectory matches its recorded fingerprint",

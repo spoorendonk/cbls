@@ -2493,31 +2493,45 @@ void FeasibilityJump::seed_novelty_scan_set() {
 // F = (s_m + novelty_score > 0)  OR  (score > s_c). "Best" = highest original
 // score. The chosen var is removed from Q (paper Algorithm 5 line 6).
 //
-// Only variables that PASS F count toward the 3, and the draw goes on until 3
-// have passed or Q\T is exhausted (#206). Counting the filtered draws too --
-// with a 32-draw cap besides -- made three non-passing draws in a row look like
-// a dead end and forced a backtrack while passing variables were still in Q.
+// Scan-set discipline follows OR-Tools' ScanRelevantVariables in its compound-
+// move mode (ortools/sat/feasibility_jump.cc, stable branch, checked for #206):
+// a drawn var that is on the stack (T) or fails F is swap-removed from Q for
+// good, does not count toward the 3, and the draw goes on until 3 have passed
+// or Q is empty. There is no draw cap. A removed var comes back only when
+// something that can change its verdict happens -- a move or an undo touching
+// one of its rows (nj_requeue_neighbours, OR-Tools' MarkJumpsThatNeedToBeRe-
+// computed -> AddVarToScan), a row promoted to full novelty weight, or a fresh
+// seed of Q at the next root (OR-Tools' ResetChangedCompoundWeights). So a var
+// failing F is scored once per change of its neighbourhood, not once per call.
 //
-// A variable that fails F, or is on the stack (T), leaves only this call's
-// sample pool, not Q: F depends on s_m and s_c, which differ at the next call.
-// The pool is Q's suffix: [0, k) holds everything drawn this call, each draw is
-// uniform over [k, |Q|) and swaps its pick to position k. So every draw is a
-// distinct variable, the loop ends after at most |Q| draws, and the chosen
-// var's position stays put (the prefix is never touched again) for the
-// swap-remove at the end. Q's order is read by nothing but this draw.
+// #206 first kept F-failers in Q and excluded them per call only, on the
+// argument that F depends on s_m and s_c; that re-scored the whole of Q on every
+// call with fewer than 3 passers, and halved FJ throughput on MIPfeas. The cap
+// it replaced (32 draws, counting filtered ones toward the 3) declared dead
+// ends while passing vars were still in Q.
+//
+// Passing vars stay in Q and are kept distinct by the same prefix trick as
+// apply_jump: [0, n) holds the passers sampled this call, each draw is uniform
+// over [n, |Q|), a passer is swapped to position n, a removal swap-removes from
+// the suffix (Q's back is in it), so the prefix -- and the chosen var's index --
+// never moves.
 FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, double s_c) {
     NoveltyPick best;
     size_t best_idx = 0;
-    int passed = 0;
-    size_t k = 0;
-    while (k < nj_queue_.size() && passed < 3) {
+    size_t n = 0;
+    constexpr size_t kNoveltySample = 3;
+    auto remove_at = [this](size_t idx) {
+        nj_in_queue_[static_cast<size_t>(nj_queue_[idx])] = 0;
+        nj_queue_[idx] = nj_queue_.back();
+        nj_queue_.pop_back();
+    };
+    while (n < nj_queue_.size() && n < kNoveltySample) {
         const auto idx =
-            k + static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(nj_queue_.size() - k)));
+            n + static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(nj_queue_.size() - n)));
         const int32_t v = nj_queue_[idx];
-        std::swap(nj_queue_[k], nj_queue_[idx]);
-        const size_t pos = k++;
         if (on_stack_[v] != 0) {
-            continue;  // on the stack (T)
+            remove_at(idx);  // in T; re-queued by the undo that takes it off
+            continue;
         }
         // W'-argmin, then its score under W. Both in closed form where the rows
         // allow it, exactly as apply_jump scores.
@@ -2530,21 +2544,35 @@ FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, dou
         }
         const bool passes = (s_m + nr.score > 0.0) || (score > s_c);
         if (!passes) {
+            remove_at(idx);
             continue;
         }
-        ++passed;
+        std::swap(nj_queue_[n], nj_queue_[idx]);
         if (best.var < 0 || score > best.score) {
             best = {v, nr.jump_value, score, nr.score};
-            best_idx = pos;
+            best_idx = n;
         }
+        ++n;
     }
     if (best.var >= 0) {
-        // Remove the chosen var from Q (swap-remove).
-        nj_in_queue_[best.var] = 0;
-        nj_queue_[best_idx] = nj_queue_.back();
-        nj_queue_.pop_back();
+        remove_at(best_idx);  // the chosen var leaves Q (Algorithm 5 line 6)
     }
     return best;
+}
+
+// Re-queue the vars sharing a row with `v` after v moved (forward or undo): their
+// novelty scores and F verdicts may have changed, and select_novelty_var dropped
+// any that failed before. OR-Tools does the same from MarkJumpsThatNeedToBe-
+// Recomputed, and likewise skips vars on the stack (AddVarToScan -> ShouldScan).
+// O(sum of v's row lengths), the same walk update_var makes per move.
+void FeasibilityJump::nj_requeue_neighbours(int32_t v) {
+    for (const int32_t c : model_.constraints_of_var(v)) {
+        for (const int32_t vp : vars_of_constraint_[static_cast<size_t>(c)]) {
+            if (on_stack_[static_cast<size_t>(vp)] == 0) {
+                nj_enqueue(vp);
+            }
+        }
+    }
 }
 
 // NoveltyJumpSearch (Algorithm 5), recursive with the explicit move_stack_ for
@@ -2573,17 +2601,16 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         on_stack_[v] = 1;
         --nj_work_remaining_;  // bound total moves applied per apply_novelty_jump
 
-        // Refresh violated_ for v's constraints; promote any now-broken
-        // constraint to full novelty weight and add its vars to the scan set.
+        // Refresh violated_ for v's constraints and promote any now-broken
+        // constraint to full novelty weight; then re-queue v's row-neighbours,
+        // whose scores both changes may have moved.
         for (int32_t c : model_.constraints_of_var(v)) {
             set_violated(c, is_violated(model_.node_value(cids[c])));
             if (violated_[c] != 0 && novelty_weights_[c] != vm_.weights[c]) {
                 novelty_weights_[c] = vm_.weights[c];
-                for (int32_t vp : vars_of_constraint_[c]) {
-                    nj_enqueue(vp);
-                }
             }
         }
+        nj_requeue_neighbours(v);
 
         if (s_m + pick.score > 0.0) {
             return true;  // commit (leave applied)
@@ -2600,6 +2627,7 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         for (int32_t c : model_.constraints_of_var(v)) {
             set_violated(c, is_violated(model_.node_value(cids[c])));
         }
+        nj_requeue_neighbours(v);  // v itself included, now that it is off T
         budget -= 1;
     }
 }
