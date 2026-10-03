@@ -748,7 +748,7 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 | `cbls_mipfeas` | `benchmarks/mipfeas/` | MIPfeas runner (one instance per process) |
 | `cbls_minlplib` | `benchmarks/minlplib/` | MINLPLib benchmark runner |
 | `cbls_minlplib_portfolio` | `benchmarks/minlplib/portfolio_ab.cpp` | MINLPLib portfolio A/B harness (shared-bound on/off, #179) |
-| `cbls_setcover` | `benchmarks/setcover/` | OR-Library set-covering runner (`Set`-variable coverage check) |
+| `cbls_setcover` | `benchmarks/setcover/` | OR-Library set-covering runner (the `Set`-variable example) |
 
 Examples, tests, benchmarks and bindings are each behind an option:
 `CBLS_BUILD_EXAMPLES`/`CBLS_BUILD_TESTS`/`CBLS_BUILD_BENCHMARKS` default ON,
@@ -861,11 +861,19 @@ head-to-head (row 1). Nothing else qualifies.
 compare against CP-SAT's default full portfolio, Xpress, Gurobi or CPLEX — see
 epic #87 for why that framing is rejected.
 
-Nothing outside this table is a benchmark. `setcover` is the scoped coverage
-check the `Set` variable type had been missing: ten small OR-Library
-set-covering instances, run under both a `Set` and a Bool encoding, whose result
-is a documented limitation rather than a comparative claim (see
-`benchmarks/instances/setcover/README.md`). Don't grow it into an epic.
+Nothing outside this table is a comparative benchmark. Beside it sit **one
+worked example per structured variable type** (user decision, 2026-10-03). Their
+job is to exercise and measure that type on real instances, not to carry a
+comparative claim, so the table's ordering rule does not gate them:
+
+- **`Set` → `setcover`.** Ten small OR-Library set-covering instances, run under
+  both a `Set` and a Bool encoding, whose result is a documented limitation
+  (see `benchmarks/instances/setcover/README.md`). Keep it as the `Set` example;
+  don't grow it into an epic.
+- **`List` → CVRP** (CVRPLIB X set, Hexaly's List encoding, scored as gap to
+  the pinned best-known values, with PyVRP at equal budget as context). Tracked
+  under epic #182 (#196-#204). **Not in the tree yet**, so until its runner lands
+  `List` still has no evidence (next section).
 
 Engine-wide (cross-cutting) work is tracked under epic #24.
 
@@ -924,8 +932,9 @@ result in either direction, and do not pick the one-sided framing because it
 clears 0.05 when the two-sided one does not.
 
 So the prerequisite is **implemented, measured, and not demonstrably better**,
-and the guidance is unchanged in substance: **still do not build a new List/Set
-benchmark.** What would settle it, in order: a longer per-run budget (attacks the
+and the guidance is unchanged in substance: **don't build another `Set`
+benchmark** (and the `List` one is CVRP; see the examples under **Benchmark
+priority**). What would settle the `Set` reading, in order: a longer per-run budget (attacks the
 noise at source), then more seeds (~740 paired runs for a 3-SE reading), then a
 harder roster. None of that is worth doing without a reason to care about
 `Set`-encoded set covering specifically.
@@ -936,14 +945,14 @@ moves maintain. That is **new capability, not new evidence**: no benchmark uses
 a `List` variable, the paragraph above still stands unchanged, and nothing in the
 tree may claim otherwise.
 
-**Epic #182 (compact route-network models: CVRP, transit line planning) is the
-one open item for List work, and it is parked.** Its sub-issues — the CVRP
-benchmark #183, guided List search #184, expensive-invariant screening #185,
-repeated List elements #187 and O(edits) lambda deltas #189 — were closed as not
-planned in the 2026-09-30 triage, because each was speculative with no benchmark
-to measure it against. Don't reopen them or start List engine work on your own;
-when the direction resumes, the user decides, and new sub-issues are filed from
-#182 with the benchmark first.
+**Epic #182 (compact route-network models) is where List work lives, and it has
+resumed with CVRP as the `List` example** (2026-10-03). Its first sub-issues —
+the CVRP benchmark #183, guided List search #184, expensive-invariant screening
+#185, repeated List elements #187 and O(edits) lambda deltas #189 — were closed
+as not planned in the 2026-09-30 triage, because each was speculative with no
+benchmark to measure it against. That rule still holds: the CVRP benchmark comes
+first (#196, #197, #199), and List engine work is filed against its measured
+results, not ahead of them. Don't reopen the closed ones.
 
 ### Benchmark workflow
 
