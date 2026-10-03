@@ -1266,6 +1266,18 @@ follows the same rule: only vars passing the filter F count toward its 3, and,
 as in OR-Tools, a var that fails F or is on the move stack leaves `Q'` until a
 move or undo on one of its rows re-queues it.
 
+Measured effect on MIPfeas (#206), single seed (42), so read the objectives as
+anecdote: 60s, one thread, CBLS at `56bad9f` against `1304c43`, serial, 1-minute
+load 1.46-1.49 at each start, on an AMD Ryzen 5 5600H (6 cores, 12 threads).
+Feasibility: the neos-662469 / neos-860300 / cbs-cta trio went 0/3 -> 3/3
+(CP-SAT's `num_violation_ls` worker: 3/3); the 11-instance smoke roster stayed
+8/11, the same 8 as CP-SAT's. Objectives on the 8 feasible smoke instances: better on 4
+(gen-ip054, gen-ip002, mas76, binkar10_1), worse on 3 (markshare2 67 -> 72, pk1
+23 -> 28, mad 0.136 -> 0.190), equal on neos5. GLS iterations in the budget fell
+on every instance (e.g. mad 4.40M -> 0.71M), because a call now scans until it
+holds N improving vars or Q is empty. The first version of this change,
+which kept F-failing vars in `Q'`, was worse on 6 of the 8 at the same seed.
+
 `update_var` writes `X[v]`, delta-evaluates, refreshes the violated set for
 `v`'s constraints, invalidates neighbour jumps, and replenishes `Q` with vars now participating in active violated constraints.
 
