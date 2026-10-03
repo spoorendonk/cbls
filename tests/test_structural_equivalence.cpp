@@ -231,7 +231,8 @@ struct Scenario {
 // reproduced every a805cb6 digest) with the test emulating exactly those two
 // changes -- probability forced to 1.0 on a model with no movable scalar, and
 // `iterations = max(iterations, counters.batches)` before digesting -- and the
-// fixed engine then reproduced all six digests bit for bit. mixed/seed42/auto
+// fixed engine then reproduced all six digests bit for bit (one of them,
+// mixed/seed42/auto, was since re-recorded by #206 below). mixed/seed42/auto
 // has movable scalars, ran FJ batches and did not move.
 //
 // One deliberate re-record, mixed/seed42/auto, for #206 (FJ's scan-set
@@ -241,6 +242,7 @@ struct Scenario {
 // select_novelty_var change applied, this file run there. The other five
 // digests reproduced unchanged on that build, and the current build matches
 // all six.
+//
 // Combined on rebase: #201's five rows and #206's mixed/seed42/auto row are
 // disjoint (no-scalar and struct1 rows run no FJ batch; mixed/auto never hit
 // #201's no-FJ-work rule), so each row keeps the value its own change set.

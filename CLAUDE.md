@@ -155,7 +155,7 @@ C++ tests use **Catch2** (not GoogleTest): files in `tests/`, registered in `tes
 plan (non-trivial) → implement → test → /review → push to main
 ```
 
-Run tests locally before considering work done — don't skip the suite even on changes that look trivial. The pre-push hook is the final gate for build and tests; `/review` is a discipline nothing enforces, so it is on you to actually run it.
+Run tests locally before considering work done — don't skip the suite even on changes that look trivial. The pre-push hook is the final gate for build and tests; review (`/review`, or the cold reviewer in a team run) is a discipline nothing enforces, so it is on you to actually get it done.
 
 ## Git Hooks
 
@@ -264,7 +264,7 @@ The hooks live in **`.githooks/`, tracked in this repo** — that directory is t
   follows the local GCC version, so an upgrade can block a push; it cannot
   break a user's build, which is what `-Werror` would.
 
-Nothing enforces `/review` at push time, by design — a gate keyed on gitignored local tooling can only be satisfied in whichever checkout happens to carry it, and passes silently everywhere else. `/review` is still expected on every change (see **Agent Self-Review**); running it is on you.
+Nothing enforces `/review` at push time, by design — a gate keyed on gitignored local tooling can only be satisfied in whichever checkout happens to carry it, and passes silently everywhere else. Review is still expected on every change (see **Agent Self-Review**); getting it done is on you.
 
 Gating lives in git hooks only — `.claude/settings.json` carries no `hooks` block, and none should be added. A `PostToolUse` formatter cannot see which file was edited, so it silently formats nothing; formatting belongs at commit time. Don't hand-tune formatting.
 
@@ -391,7 +391,7 @@ If a benchmark is ever retired, it is a tracker job as well as a tree job:
 
 ## Agent Self-Review
 
-**Any agent or agent team that produces code must run `/review` on its own changes before that code can merge to main.** No subagent returns unreviewed work; no orchestrator merges unreviewed work. This applies to every agent team, not just the parallel-issue workflow.
+**Code produced by any agent or agent team must be reviewed before it can merge to main** — solo work by `/review`, a team run by one cold reviewer per issue (below). No subagent returns unreviewed work; no orchestrator merges unreviewed work. This applies to every agent team, not just the parallel-issue workflow.
 
 **One reviewer per issue** (user decision, 2026-10-03). In a team run, each
 issue gets exactly **one** cold reviewer: a separate agent that did not write
@@ -436,7 +436,8 @@ When the user brings multiple gh issues to work on at once:
    the cold review, not a second yes. **Outside a goal** — an ad-hoc "have a look
    at these two issues" — ask before merging.
 6. **Final combined review, then push.** The orchestrator merges every approved
-   branch into local main, runs `/review` over the merged result, and only then
+   branch into local main, has **one** reviewer make a single pass over the merged
+   result (not `/review`'s three-agent fan-out), and only then
    runs `git push origin main`. No pushes — of main or of a feature branch —
    happen before that final review. Then close the issues the push resolved and
    delete the branches and worktrees, per **Git Workflow**.
