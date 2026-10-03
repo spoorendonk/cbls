@@ -652,6 +652,9 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
                 return 0.0;  // non-differentiable w.r.t. condition
             }
             double cond = child_val(children[0], model);
+            if (std::isnan(cond)) {
+                return 0.0;  // the value is NaN (evaluate): no branch lends a slope (#205)
+            }
             if (child_idx == 1) {
                 return cond > 0 ? 1.0 : 0.0;
             }

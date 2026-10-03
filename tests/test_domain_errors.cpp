@@ -454,3 +454,19 @@ TEST_CASE("x / 1e-16 never reads finite, so the linear scorer cannot call it con
     CHECK(linear.jump_value == probe.jump_value);
     CHECK(linear.score == probe.score);
 }
+
+TEST_CASE("if with a NaN condition offers no slope through either branch", "[dag][domain][ad]") {
+    // Its value is NaN (above), so neither branch may lend it a slope.
+    Model m;
+    const int32_t c = m.float_var(-kInf, kInf, "c");
+    const int32_t a = m.float_var(-10, 10, "a");
+    const int32_t b = m.float_var(-10, 10, "b");
+    const int32_t ite = m.if_then_else(c, a, b);
+    m.minimize(ite);
+    m.close();
+    m.var_mut(vid(c)).value = kNaN;
+    full_evaluate(m);
+    REQUIRE(std::isnan(m.node_value(ite)));
+    CHECK(compute_partial(m, ite, vid(a)) == 0.0);
+    CHECK(compute_partial(m, ite, vid(b)) == 0.0);  // was 1: the else-branch's slope
+}
