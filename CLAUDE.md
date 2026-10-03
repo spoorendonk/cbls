@@ -274,21 +274,21 @@ Three conventions therefore rest on you rather than on a tool: branch only from 
 
 ### Fast vs. slow tests
 
-The C++ suite is **685 ctest tests**: 683 Catch2 ones over **682 `TEST_CASE`s**
-— 677 registered by `catch_discover_tests` plus **6 registered by hand**, the 5
+The C++ suite is **717 ctest tests**: 715 Catch2 ones over **714 `TEST_CASE`s**
+— 709 registered by `catch_discover_tests` plus **6 registered by hand**, the 5
 `[timing]` cases and `hang_guard_iteration_only_portfolio`, which is
 hand-registered *as well as* discovered (it needs a `TIMEOUT` to report a hang,
 but is cheap enough to belong in the fast set), so one `TEST_CASE` accounts for
 two ctest tests — plus **2 shell tests that are not Catch2 at all**,
 `clang_tidy_gate_probe` and `gate_lib_shell_test`, registered in the root
-`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 677,
+`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 709,
 **6 carry the
 Catch2 `[slow]` tag** — the CHPED and UC-CHPED benchmark solves, ~46s of
 aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~25s
 wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 675 tests, ~12s with `-j`. This is what **pre-commit** runs.
+- `ctest -LE slow` — the other 707 tests, ~12s with `-j`. This is what **pre-commit** runs.
 - `ctest` — everything. This is what **pre-push** and CI run.
 - `ctest -L timing` — 5 tests: `timing_structural_batch_deadline`, the three
   `timing_throughput_*` floors added for #125, and
@@ -317,7 +317,7 @@ agree:
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
 4. the comment above the `ctest` call in `.githooks/pre-commit`,
-5. the `.venv/bin/pytest` line in `README.md` for the Python side (1141 tests, 234
+5. the `.venv/bin/pytest` line in `README.md` for the Python side (1162 tests, 234
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`),
 6. the `-LE slow` guidance and the ~25s/~490s figures in `docs/profiling.md`.
@@ -898,7 +898,7 @@ validated on a published formulation. The evidence position is:
 
 - **`Set`** — measured and **negative**. The `Set` encoding lands at
   3.4-5.1x the proven optimum where the same data in Bools is within 4-9%
-  (engine `153dc72`, after #201; it was 8.6-11.0x against 9-20% at `adc8ee4`).
+  (engine `35ec07c`, after #201; it was 8.6-11.0x against 9-20% at `adc8ee4`).
 - **`List`** — **no evidence either way.** No `List` result is published yet;
   CVRP (#204) will be the first.
 

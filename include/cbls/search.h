@@ -102,7 +102,7 @@ struct SearchConfig {
     // Once FJ has nothing left to improve, its batches are empty in all but name
     // and the kick-thrash returns: on a 30-customer, 6-route partitioned-List
     // model with one objective-only Int, the default arm was probed infeasible
-    // at 200000 iterations on seeds 1-3, with ~560-570 kicks each. Set this to
+    // at 200000 iterations on seeds 1-3, with 560-572 kicks each. Set this to
     // 1.0 explicitly on such a model, which reaches feasibility at once.
     double structural_batch_probability = -1.0;
 

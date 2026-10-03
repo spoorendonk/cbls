@@ -1267,7 +1267,8 @@ as in OR-Tools, a var that fails F or is on the move stack leaves `Q'` until a
 move or undo on one of its rows re-queues it.
 
 Measured effect on MIPfeas (#206), single seed (42), so read the objectives as
-anecdote: 60s, one thread, CBLS at `56bad9f` against `1304c43`, serial, 1-minute
+anecdote: 60s, one thread, CBLS at `548f57d` (measured on that patch before its rebase onto #201
+and #205) against `1304c43`, serial, 1-minute
 load 1.46-1.49 at each start, on an AMD Ryzen 5 5600H (6 cores, 12 threads).
 Feasibility: the neos-662469 / neos-860300 / cbs-cta trio went 0/3 -> 3/3
 (CP-SAT's `num_violation_ls` worker: 3/3); the 11-instance smoke roster stayed
@@ -1500,7 +1501,7 @@ exactly -- which is not the same as being safe: the folded objective counts as
 a row, so a List model whose only movable scalar is read by the objective alone
 keeps the 0.33 mix, FJ settles that scalar at once, and the empty-batch kicks
 return (a 30-customer, 6-route partitioned-List model with one objective-only
-Int is infeasible at 200000 iterations on seeds 1-3, ~560-570 kicks each).
+Int is infeasible at 200000 iterations on seeds 1-3, 560-572 kicks each).
 Set the probability to `1.0` explicitly there. After a structural batch commits
 anything, the engine `resync()`s its scan set.
 
@@ -1633,7 +1634,7 @@ seeds 42-44: 4739 at 10s, 3876 at 60s, both at engine `adc8ee4`), so the 10s
 numbers are budget-limited rather than neighbourhood-limited. Measured on
 OR-Library set covering (`benchmarks/instances/setcover/`, issue #93): on the
 weighted instances the same data modelled as one `Set` variable costs
-**3.4-5.1x the proven optimum** at engine `153dc72` (8.6-11.0x at `adc8ee4`,
+**3.4-5.1x the proven optimum** at engine `35ec07c` (8.6-11.0x at `adc8ee4`,
 before #201 stopped scheduling empty FJ batches on it), against **+4-9%** for
 one Bool per column — while on *unicost* instances,
 where the objective is just cardinality, the two nearly converge. What the Set
@@ -1653,7 +1654,7 @@ regimes — unicost 7/7/7 -> 6/6/6, weighted 4917/4739/4902 -> 2593/2727/2916,
 i.e. best-of-3 4739 -> 2593, a 45% improvement on scp41 (engine `adc8ee4`). The
 pump is not buying anything that outweighs the passes it displaces. #201 made
 that the default: the roster's weighted `Set` gap went from +387% to +291% (mean
-best-of-3) at the one commit, `1304c43` against `153dc72`.
+best-of-3) at the one commit, `1304c43` against `35ec07c`.
 Neither setting is a fix; both are symptoms of the structural batch having no
 guidance of its own.
 
