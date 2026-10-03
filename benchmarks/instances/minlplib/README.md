@@ -1231,9 +1231,10 @@ pair blanked. This needs the
 1, run twice serially on one machine (`simon-Legion-5-Pro-16ACH6H`, 1-minute
 load 1.20 and 1.16 at the two starts): once with the engine before #205 (the
 `src/dag.cpp`/`src/lns.cpp` of `1304c43` under this runner and check), once with
-the fix through `run_benchmark.py` at `8bda0b7`. Both report 47 feasible and the
+the fix through `run_benchmark.py` at `8bda0b7`, repeated at `5df0372` after the
+review round's engine changes (load 1.11). All three report 47 feasible and the
 same three infeasible (`elec25`, `elec50`, `eg_all_s`), and SCIP rejected none of
-the 47 verified rows in either run -- so none of that smoke run's feasible
+the 47 verified rows in any run -- so none of that smoke run's feasible
 claims rested on a domain error. A smoke reading, single seed, not a
 measurement of quality.
 
