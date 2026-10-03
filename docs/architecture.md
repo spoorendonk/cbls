@@ -1255,7 +1255,14 @@ iteration, whichever is larger) — see
 set `Q` (best-of-N: `sample_size_general = 3` general, `sample_size_linear = 5`
 linear phase), refreshes any stale `JumpTable` entries via `compute_var_jump`,
 removes non-improving vars from `Q` permanently, and commits the best improving
-jump via `update_var`. `update_var` writes `X[v]`, delta-evaluates, refreshes
+jump via `update_var`. A removed var does not count toward `sample_size`, and
+there is no draw cap: `apply_jump` returns false — the local minimum that
+triggers a GLS bump — only once `Q` holds no positive-score var (ViolationLS
+Algorithm 2; OR-Tools' `ScanRelevantVariables`). Distinctness comes from
+drawing over `Q`'s unsampled suffix, so no redraw is ever needed. A cap that
+counted the removals declared false minima on long rows of non-improving vars
+and over-bumped their weights (#206). Novelty Jump's `select_novelty_var`
+follows the same rule: only vars passing the filter F count toward its 3. `update_var` writes `X[v]`, delta-evaluates, refreshes
 the violated set for `v`'s constraints, invalidates neighbour jumps, and
 replenishes `Q` with vars now participating in active violated constraints.
 
