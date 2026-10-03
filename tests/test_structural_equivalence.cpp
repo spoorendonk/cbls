@@ -233,12 +233,23 @@ struct Scenario {
 // `iterations = max(iterations, counters.batches)` before digesting -- and the
 // fixed engine then reproduced all six digests bit for bit. mixed/seed42/auto
 // has movable scalars, ran FJ batches and did not move.
+//
+// One deliberate re-record, mixed/seed42/auto, for #206 (FJ's scan-set
+// sampling stopped declaring false local minima, which moves any trajectory
+// with scalar variables). It was recorded the way the header prescribes, not
+// from the current build: a805cb6 with ONLY #206's apply_jump and
+// select_novelty_var change applied, this file run there. The other five
+// digests reproduced unchanged on that build, and the current build matches
+// all six.
+// Combined on rebase: #201's five rows and #206's mixed/seed42/auto row are
+// disjoint (no-scalar and struct1 rows run no FJ batch; mixed/auto never hit
+// #201's no-FJ-work rule), so each row keeps the value its own change set.
 const std::array<Scenario, 6> kScenarios = {{
     {"set_cover/seed42/auto", set_cover_model, 42, 4000, -1.0, 0x393b052b77449698ULL},
     {"set_cover/seed7/struct1", set_cover_model, 7, 4000, 1.0, 0xfc1af445e51ed08aULL},
     {"list_tour/seed42/auto", list_tour_model, 42, 4000, -1.0, 0x8445d676f8d4fdd3ULL},
     {"list_tour/seed7/struct1", list_tour_model, 7, 4000, 1.0, 0x662c868a45a1f1f8ULL},
-    {"mixed/seed42/auto", mixed_model, 42, 4000, -1.0, 0x20189d0215c20c7aULL},
+    {"mixed/seed42/auto", mixed_model, 42, 4000, -1.0, 0x7ee6a8062ae30f81ULL},
     {"mixed/seed7/struct1", mixed_model, 7, 4000, 1.0, 0xbea4bc2d3d05c9a1ULL},
 }};
 

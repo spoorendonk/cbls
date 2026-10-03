@@ -625,7 +625,6 @@ private:
     std::vector<int32_t> active_violated_of_var_;  // per var: counted rows listing it
     std::vector<uint8_t> in_queue_;                // per var: in Q
     std::vector<int32_t> queue_;                   // scan set Q (vars with possibly-positive score)
-    std::vector<int32_t> examined_;  // scratch: distinct vars sampled in one apply_jump
     // ---- The incremental Sums' drift (#188) ----
     // Row -> the slot of the incremental Sum it reads directly, or -1; and the
     // inverse, slot -> its rows, as CSR (an MPS range row is two rows over one

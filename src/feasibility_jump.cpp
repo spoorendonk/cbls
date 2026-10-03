@@ -12,6 +12,7 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace cbls {
 
@@ -1739,41 +1740,58 @@ void FeasibilityJump::build_row_slots() {
 }
 
 bool FeasibilityJump::apply_jump(int sample_size) {
-    // Sample up to `sample_size` DISTINCT variables from the scan set Q and
-    // apply the best improving jump (paper Algorithm 2). Variables with a
-    // non-positive score are removed from Q permanently (swap-remove); positive
-    // ones stay. `examined` keeps the sample distinct; the draw cap is a
-    // backstop when fewer than sample_size distinct positives remain.
+    // Sample up to `sample_size` DISTINCT positive-score variables from the scan
+    // set Q and apply the best one's jump (ViolationLS, Davies et al. CPAIOR
+    // 2024, Algorithm 2; OR-Tools' ScanRelevantVariables). A variable with a
+    // non-positive score is removed from Q permanently (swap-remove) and does
+    // not count toward the sample; positive ones stay in Q.
+    //
+    // There is no draw cap, and returning false therefore MEANS that Q holds no
+    // positive-score variable -- the local minimum the GLS loop answers with a
+    // weight bump. A cap on draws (#206: `sample_size * 8 + 16`, counting the
+    // removals too) gave up while improving variables were still in Q whenever
+    // they were rare in it, so a long violated row of non-improving variables
+    // read as a false minimum, the bump re-queued the whole row, and the false
+    // minimum repeated -- inflating every long row's weight far faster than the
+    // reference allows.
+    //
+    // Distinctness without redraws: Q's prefix [0, n) holds the positives
+    // sampled so far this call, and each draw is uniform over the unsampled
+    // suffix [n, |Q|). A positive is swapped into the prefix; a non-positive is
+    // swap-removed from the suffix (Q's back is in the suffix, so the prefix is
+    // undisturbed). Every draw either grows the prefix or shrinks Q, so the loop
+    // ends after at most |Q| draws and needs no backstop. Each removal is paid
+    // for by the enqueue that put the variable there, so the uncapped scan
+    // costs no more amortised than the capped one did.
+    //
+    // Reordering Q is harmless: in_queue_ is a flag, nothing reads Q's order
+    // except this draw, and the draw is uniform over a set, so the sample's
+    // distribution does not depend on where in Q a variable sits.
     int32_t best_v = -1;
     double best_score = 0.0;
-    int n = 0;
-    int draws = 0;
-    const int max_draws = (sample_size * 8) + 16;
-    examined_.clear();
-    while (!queue_.empty() && n < sample_size && draws < max_draws) {
-        ++draws;
-        auto idx = static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(queue_.size())));
-        int32_t v = queue_[idx];
-        if (std::find(examined_.begin(), examined_.end(), v) != examined_.end()) {
-            continue;  // already sampled this call; redraw for a distinct var
-        }
+    size_t n = 0;
+    const auto want = static_cast<size_t>(std::max(sample_size, 0));
+    while (n < queue_.size() && n < want) {
+        const auto idx =
+            n + static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(queue_.size() - n)));
+        const int32_t v = queue_[idx];
         if (!jumps_.valid(v)) {
             JumpResult r = compute_var_jump(model_, vm_.weights, v, escape_probe_, &linear_);
             jumps_.set(v, r.jump_value, r.score);
         }
-        double s = jumps_.score(v);
+        const double s = jumps_.score(v);
         if (s <= 0.0) {
             in_queue_[v] = 0;
             queue_[idx] = queue_.back();
             queue_.pop_back();
             continue;
         }
-        examined_.push_back(v);
+        std::swap(queue_[n], queue_[idx]);
+        ++n;
         if (s > best_score) {
             best_score = s;
             best_v = v;
         }
-        ++n;
     }
     if (best_v < 0) {
         return false;
@@ -2474,22 +2492,33 @@ void FeasibilityJump::seed_novelty_scan_set() {
 // Best of up to 3 sampled vars in Q\T satisfying the filter F (paper §4):
 // F = (s_m + novelty_score > 0)  OR  (score > s_c). "Best" = highest original
 // score. The chosen var is removed from Q (paper Algorithm 5 line 6).
+//
+// Only variables that PASS F count toward the 3, and the draw goes on until 3
+// have passed or Q\T is exhausted (#206). Counting the filtered draws too --
+// with a 32-draw cap besides -- made three non-passing draws in a row look like
+// a dead end and forced a backtrack while passing variables were still in Q.
+//
+// A variable that fails F, or is on the stack (T), leaves only this call's
+// sample pool, not Q: F depends on s_m and s_c, which differ at the next call.
+// The pool is Q's suffix: [0, k) holds everything drawn this call, each draw is
+// uniform over [k, |Q|) and swaps its pick to position k. So every draw is a
+// distinct variable, the loop ends after at most |Q| draws, and the chosen
+// var's position stays put (the prefix is never touched again) for the
+// swap-remove at the end. Q's order is read by nothing but this draw.
 FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, double s_c) {
     NoveltyPick best;
-    int sampled = 0;
-    int draws = 0;
-    const int max_draws = 32;
-    examined_.clear();
-    while (!nj_queue_.empty() && sampled < 3 && draws < max_draws) {
-        ++draws;
-        auto idx = static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(nj_queue_.size())));
-        int32_t v = nj_queue_[idx];
-        if (on_stack_[v] != 0 ||
-            std::find(examined_.begin(), examined_.end(), v) != examined_.end()) {
-            continue;  // on the stack (T) or already sampled this call
+    size_t best_idx = 0;
+    int passed = 0;
+    size_t k = 0;
+    while (k < nj_queue_.size() && passed < 3) {
+        const auto idx =
+            k + static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(nj_queue_.size() - k)));
+        const int32_t v = nj_queue_[idx];
+        std::swap(nj_queue_[k], nj_queue_[idx]);
+        const size_t pos = k++;
+        if (on_stack_[v] != 0) {
+            continue;  // on the stack (T)
         }
-        examined_.push_back(v);
-        ++sampled;
         // W'-argmin, then its score under W. Both in closed form where the rows
         // allow it, exactly as apply_jump scores.
         JumpResult nr = compute_var_jump(model_, novelty_weights_, v, false, &linear_);
@@ -2499,21 +2528,21 @@ FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, dou
         } else {
             score = -model_.weighted_violation_delta(v, nr.jump_value, vm_.weights);
         }
-        bool passes = (s_m + nr.score > 0.0) || (score > s_c);
-        if (passes && (best.var < 0 || score > best.score)) {
+        const bool passes = (s_m + nr.score > 0.0) || (score > s_c);
+        if (!passes) {
+            continue;
+        }
+        ++passed;
+        if (best.var < 0 || score > best.score) {
             best = {v, nr.jump_value, score, nr.score};
+            best_idx = pos;
         }
     }
     if (best.var >= 0) {
         // Remove the chosen var from Q (swap-remove).
-        for (size_t i = 0; i < nj_queue_.size(); ++i) {
-            if (nj_queue_[i] == best.var) {
-                nj_in_queue_[best.var] = 0;
-                nj_queue_[i] = nj_queue_.back();
-                nj_queue_.pop_back();
-                break;
-            }
-        }
+        nj_in_queue_[best.var] = 0;
+        nj_queue_[best_idx] = nj_queue_.back();
+        nj_queue_.pop_back();
     }
     return best;
 }

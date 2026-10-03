@@ -159,13 +159,17 @@ TEST_CASE("a stalled search adopts a peer's solution from the pool", "[parallel]
     // diversification kick started from the incumbent rather than from wherever
     // the previous kick left the search (#158): the single-threaded run simply
     // finds this model's optimum now, so there was no gift left to be out of
-    // reach. 80 columns puts it back out of reach -- the control converges to
-    // 734 against the balanced optimum's 720 -- at the same budget. Raise the
-    // column count, not the budget, if it ever goes vacuous again: the control's
-    // 734 is where the search CONVERGES here, not where the budget stops it, so
-    // a longer run does not widen the margin.
-    constexpr int kVars = 80;
-    constexpr double kTarget = 240.0;
+    // reach. 80 columns put it back out of reach -- the control converged to
+    // 734 against the balanced optimum's 720 -- at the same budget. It went
+    // vacuous a third time when apply_jump stopped declaring false local minima
+    // (#206): the control then reached 720 itself. 96 columns restores it --
+    // control 876 against the optimum's 864. Raise the column count, not the
+    // budget, if it ever goes vacuous again: the control's value is where the
+    // search CONVERGES here, not where the budget stops it, so a longer run does
+    // not widen the margin. (Scanned at #206: 112-176 columns also keep the
+    // control out of reach, but flip the parity-dependent latch asserted below.)
+    constexpr int kVars = 96;
+    constexpr double kTarget = 3.0 * kVars;
     auto build = []() {
         Model m;
         std::vector<int32_t> xs;
@@ -188,14 +192,14 @@ TEST_CASE("a stalled search adopts a peer's solution from the pool", "[parallel]
         return m;
     };
 
-    // The balanced assignment: every column at 3 -- sum 240, objective 80*9 = 720,
-    // which is this model's optimum.
+    // The balanced assignment: every column at 3 -- sum kTarget, objective
+    // 9 * kVars, which is this model's optimum.
     Model donor = build();
     Model::State balanced = donor.copy_state();
     for (int i = 0; i < kVars; ++i) {
         balanced.values[i] = 3.0;
     }
-    constexpr double kGiftObjective = 720.0;
+    constexpr double kGiftObjective = 9.0 * kVars;
 
     SearchConfig config;
     config.max_iterations = 20000;
@@ -261,14 +265,14 @@ TEST_CASE("a stalled search adopts a peer's solution from the pool", "[parallel]
     //
     // Since #158 the worker is NOT reliably sitting on the gift when that test
     // runs: diversify() restores kick_origin() -- here the gift, which IS
-    // best_state_ because it improved on the control's 734 -- and then perturb()
+    // best_state_ because it improved on the control's value -- and then perturb()
     // is guaranteed to move at least one variable (#109/#111). So whether the
     // draw is a self-draw now depends on FJ having come back to the gift, which
     // is the same parity dependence the paragraph below already describes rather
-    // than a new one. Re-measured on this branch at kVars = 80: both assertions
-    // hold. The pre-#158 note said "armed with the guard, unarmed without it",
-    // measured at kVars = 20 on a trajectory this change replaced; it is
-    // restated here rather than carried over.
+    // than a new one. Re-measured at kVars = 80 then, and at kVars = 96 for
+    // #206: both assertions hold. The pre-#158 note said "armed with the guard, unarmed without
+    // it", measured at kVars = 20 on a trajectory this change replaced; it is restated here rather
+    // than carried over.
     //
     // The control is asserted too, and that is the point of asserting it: this
     // proxy is parity-dependent -- it really says "the LAST full-period kick of
@@ -1914,8 +1918,11 @@ TEST_CASE("an own best behind the shared bound is not an improvement",
     config.max_iterations = kSharedBoundIterations;
     config.batch_iterations = 100;
     config.tracer = &ledger;
+    // Seed 1 since #206: at seed 5 the fixed scan-set sampling records nothing
+    // after batch 1, so the case never happens (seeds 1, 7, 8 and 9 of 1-12
+    // produce it).
     const SearchResult r =
-        solve(m, /*time_limit=*/0.0, /*seed=*/5, true, &hook, nullptr, 3, nullptr, config, &coord);
+        solve(m, /*time_limit=*/0.0, /*seed=*/1, true, &hook, nullptr, 3, nullptr, config, &coord);
     REQUIRE(r.feasible);
     int behind_batches = 0;
     // From batch 2 on the bound is at the cap before the batch starts, so a
@@ -2031,9 +2038,11 @@ TEST_CASE("an own best that ties the shared bound still counts as an improvement
     // bound is not an improvement"). The A/B was measured with this tie
     // behaviour; change it deliberately, with a re-measurement, or not at all.
     //
-    // The peer's 68 is an objective this worker records exactly, at seed 5, in
-    // a batch that starts with the bound already at the cap 68 earns.
-    constexpr double kTiePeer = 68.0;
+    // The peer's 69 is an objective this worker records exactly, at seed 5, in
+    // a batch that starts with the bound already at the cap 69 earns. (It was
+    // 68 until #206 moved the trajectory; a scan of 40-140 at seed 5 now finds
+    // 69 alone.)
+    constexpr double kTiePeer = 69.0;
     SolutionPool pool(1);
     SearchCoordination coord;
     coord.pool = &pool;

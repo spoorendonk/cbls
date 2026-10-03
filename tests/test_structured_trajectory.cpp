@@ -96,6 +96,11 @@ TEST_CASE("structured trajectory witness: Set with lambda_sum", "[trajectory][st
             "iters=4000 feasible=1 obj=12 elements=3,8,2");
 }
 
+// Both signatures re-recorded for #206: the Bool and Int here go through FJ,
+// whose scan-set sampling no longer gives up on a Q that still holds an
+// improving variable, so the scalar trajectory -- and the List's with it --
+// moved. The pure List and Set witnesses above have no FJ-jumpable variable
+// and reproduced unchanged.
 TEST_CASE("structured trajectory witness: List mixed with scalars", "[trajectory][structured]") {
     Model m;
     auto lv = m.list_var(6, "order");
@@ -108,7 +113,7 @@ TEST_CASE("structured trajectory witness: List mixed with scalars", "[trajectory
     m.close();
 
     REQUIRE(signature(solve_deterministic(m, 4000, 20240163), vid(lv)) ==
-            "iters=4071 feasible=1 obj=13 elements=3,4,2,0,1,5");
+            "iters=4083 feasible=1 obj=11 elements=0,4,2,3,1,5");
     REQUIRE(signature(solve_deterministic(m, 4000, 7), vid(lv)) ==
-            "iters=4000 feasible=1 obj=22 elements=0,4,3,1,2,5");
+            "iters=4000 feasible=1 obj=32 elements=1,4,2,5,3,0");
 }

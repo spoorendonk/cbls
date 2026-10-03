@@ -30,6 +30,18 @@
 // swap-remove that mis-places a row still moves both hashes. Neither can be
 // reproduced against c19c982 any more.
 //
+// #206 re-recorded both on purpose. apply_jump no longer gives up after a fixed
+// number of draws: it samples until it holds sample_size positive-score
+// variables or Q has none, and keeps the sample distinct by drawing from Q's
+// unsampled suffix and swapping each positive into the prefix -- so the same
+// RNG value now indexes a different variable, Q's order changes after every
+// call, and a call that used to return false (bump) on a Q still holding an
+// improving variable now applies it. The two-phase hash moves for that reason
+// alone: run() never calls Novelty. The batch-API hash moves for it too, and
+// additionally because select_novelty_var now counts only filter-passing
+// variables toward its 3, draws from the unsampled suffix of Q', and has no
+// 32-draw cap.
+//
 // The two-phase hash sees only the final assignment and weights, and run()
 // refills every weight to 1 before its general phase, so phase-1 weights never
 // reach it directly -- only through the assignment phase 1 ends on.
@@ -156,12 +168,12 @@ TEST_CASE("FJ's batch-API trajectory matches its recorded fingerprint",
           "[fj][violated_set][trajectory]") {
     const uint64_t h = batch_api_trajectory();
     CAPTURE(h);
-    REQUIRE(h == 0xf79597c62086247bULL);
+    REQUIRE(h == 0x4d8bcaa70f7c5599ULL);
 }
 
 TEST_CASE("FJ's two-phase run() trajectory matches its recorded fingerprint",
           "[fj][violated_set][trajectory]") {
     const uint64_t h = two_phase_run_trajectory();
     CAPTURE(h);
-    REQUIRE(h == 0xac3e4c76b0aa79ecULL);
+    REQUIRE(h == 0xe301f93dfd43f693ULL);
 }
