@@ -2614,7 +2614,13 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
     }
     double s_c = 0.0;  // best explored child score at this level
     const auto& cids = model_.constraint_ids();
-    while (true) {
+    // Both bounds are re-checked before every sibling, not only on entry, as
+    // OR-Tools checks its discrepancy bound at every ScanRelevantVariables call.
+    // An undo re-queues the reverted var and its row-neighbours, so Q' no
+    // longer shrinks monotonically and cannot be what ends this loop: checked
+    // on entry only, a level kept trying siblings with its budget and the work
+    // cap long gone -- mas76 spent minutes of a 20s budget in one call (#206).
+    while (budget >= 0 && nj_work_remaining_ > 0) {
         NoveltyPick pick = select_novelty_var(s_m, s_c);
         if (pick.var < 0) {
             return false;
@@ -2658,6 +2664,7 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         nj_requeue_neighbours(v);  // v itself included, now that it is off T
         budget -= 1;
     }
+    return false;
 }
 
 bool FeasibilityJump::apply_novelty_jump() {

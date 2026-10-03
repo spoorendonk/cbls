@@ -45,7 +45,10 @@
 // now swap-removes a var that fails F or is on the stack from Q' for good, as
 // OR-Tools' ScanRelevantVariables does, and re-queues a moved or undone var's
 // row-neighbours -- so Q' holds different vars, in a different order, at every
-// draw.
+// draw. It moved again when the sibling loop began re-checking the discrepancy
+// budget and the work cap before every sibling rather than on entry only (the
+// re-queue meant Q' no longer ran dry on its own); the fence model reaches
+// levels whose budget is spent.
 //
 // The two-phase hash sees only the final assignment and weights, and run()
 // refills every weight to 1 before its general phase, so phase-1 weights never
@@ -173,7 +176,7 @@ TEST_CASE("FJ's batch-API trajectory matches its recorded fingerprint",
           "[fj][violated_set][trajectory]") {
     const uint64_t h = batch_api_trajectory();
     CAPTURE(h);
-    REQUIRE(h == 0x3ae394e1c1d36960ULL);
+    REQUIRE(h == 0x206569d42147218ULL);
 }
 
 TEST_CASE("FJ's two-phase run() trajectory matches its recorded fingerprint",

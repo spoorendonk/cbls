@@ -192,6 +192,7 @@ TEST_CASE("scan-set bookkeeping survives batches and Novelty jumps", "[fj][novel
         fj.apply_novelty_jump();
         ++novelty_calls;
         REQUIRE(fj.scan_sets_consistent());
+        REQUIRE(fj.novelty_moves_last_call() <= FeasibilityJump::novelty_work_budget());
         fj.resync();
         REQUIRE(fj.scan_sets_consistent());
     }
@@ -224,4 +225,40 @@ TEST_CASE("Novelty removes the var it picks from the scan set, not another",
         REQUIRE(m.var(vid(a)).value == 0.0);
         REQUIRE(fj.scan_sets_consistent());
     }
+}
+
+TEST_CASE("Novelty stops trying siblings once its budget is spent", "[fj][novelty][scan_set]") {
+    // Infeasible by construction: A: v >= 1 is violated at entry; fixing it
+    // breaks R: v - sum(u) <= 0, and each u_k that repairs R breaks its own
+    // S_k: u_k <= 0. At the root v passes F (novelty 1 - eps, score 0). Below
+    // it every u_k passes F once (novelty 1 - eps, score 0), never commits,
+    // and fails F after its undo has promoted S_k. A level that only checked
+    // its discrepancy budget and the work cap on entry tried all K of them,
+    // so one call applied ~K moves against a cap of novelty_work_budget().
+    constexpr int kSiblings = 600;
+    static_assert(kSiblings > FeasibilityJump::novelty_work_budget());
+    Model m;
+    const int32_t v = m.bool_var();
+    std::vector<int32_t> r_terms{v};
+    std::vector<int32_t> us;
+    for (int k = 0; k < kSiblings; ++k) {
+        us.push_back(m.bool_var());
+        r_terms.push_back(m.prod(m.constant(-1.0), us.back()));
+    }
+    m.add_constraint(m.geq(v, m.constant(1.0)));               // A
+    m.add_constraint(m.leq(m.sum(r_terms), m.constant(0.0)));  // R
+    for (const int32_t u : us) {
+        m.add_constraint(m.leq(u, m.constant(0.0)));  // S_k
+    }
+    m.close();
+
+    ViolationManager vm(m);
+    RNG rng(5);
+    FeasibilityJump fj(m, vm, rng, GFJConfig{});
+    fj.begin(/*set_initial_x=*/false);
+    REQUIRE_FALSE(fj.apply_novelty_jump());
+    CAPTURE(fj.novelty_moves_last_call());
+    REQUIRE(fj.novelty_moves_last_call() > 0);  // the search actually ran
+    REQUIRE(fj.novelty_moves_last_call() <= FeasibilityJump::novelty_work_budget());
+    REQUIRE(fj.scan_sets_consistent());
 }

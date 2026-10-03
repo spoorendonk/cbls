@@ -387,6 +387,14 @@ public:
     // kCompoundDiscount*W for constraints not violated at entry, full W for
     // those violated at entry.
     bool apply_novelty_jump();
+    /// Moves (applies, not undos) the last apply_novelty_jump() made, and the
+    /// cap on that number. Observability for the regression test that pins
+    /// the cap (#206): a sibling loop that kept going after the cap ran out
+    /// is what let one call outlive a 20s budget.
+    [[nodiscard]] int64_t novelty_moves_last_call() const {
+        return kNoveltyWorkBudget - nj_work_remaining_;
+    }
+    [[nodiscard]] static constexpr int64_t novelty_work_budget() { return kNoveltyWorkBudget; }
 
 private:
     // One GLS pass over the constraints whose weight is currently > 0 (the
