@@ -45,6 +45,9 @@ void newton_candidates(Model& model, ViolationManager& vm, const Variable& var, 
     for (int ci = 0; ci < n_check; ++ci) {
         int32_t cid = model.constraint_ids()[violated[ci]];
         double g = model.node_value(cid);
+        if (std::isnan(g)) {
+            continue;  // no root to step toward; the candidate would be NaN (#205)
+        }
         double dg = compute_partial(model, cid, var.id);
         // Negated form of the original `> 1e-12` guard, not `<= 1e-12`: a NaN
         // partial must skip the candidate, and every comparison against NaN is
@@ -111,7 +114,12 @@ bool descend_float_var(Model& model, ViolationManager& vm, const Variable& var, 
 // Returns true if the step was kept.
 bool multi_var_newton_step(Model& model, ViolationManager& vm, int32_t cid) {
     double g = model.node_value(cid);
-    if (std::abs(g) < 1e-15) {
+    // A non-finite residual (a domain error is NaN since #205) gives a NaN or
+    // infinite step for every variable at once. Rejecting it must not hang on
+    // two augmented_objective() readings comparing exactly: that total is an
+    // incrementally maintained accumulator with a periodic resync, so a
+    // last-ulp drift could accept an all-NaN assignment.
+    if (!std::isfinite(g) || std::abs(g) < 1e-15) {
         return false;
     }
 

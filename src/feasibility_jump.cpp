@@ -425,8 +425,12 @@ bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
         if (linear == nullptr || !linear->residual_partial_at(var_id, k, grad)) {
             grad = compute_partial(model, cids[c], var_id);
         }
-        if (std::abs(grad) > 1e-12) {
-            consider(clamp_to_domain(var, x0 - (residual / grad)));
+        // A NaN residual (a domain error, #205) gives a NaN step, and an
+        // infinite one on an unbounded column an infinite candidate: neither
+        // is a Newton candidate.
+        const double step_to = clamp_to_domain(var, x0 - (residual / grad));
+        if (std::abs(grad) > 1e-12 && std::isfinite(step_to)) {
+            consider(step_to);
             any_newton = true;
             --budget;
         }
