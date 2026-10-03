@@ -472,7 +472,7 @@ first if the map is ever revisited.
 could make before #147. A 4.97% gap at ucp13/24p is **a statement about the
 search stagnating, not about the budget**: the incumbent stopped moving at 14.8s
 of 300s and the remaining 95% of the budget bought nothing. The same holds at
-ucp13/6p and across ucp40's three feasible horizons. So these gaps are evidence
+ucp13/6p and across ucp40's three feasible horizons (old instance, pre-#193). So these gaps are evidence
 about *search quality* — diversification, LNS, structural moves — and any work
 aimed at closing them should target the search, not the clock. Conversely,
 nobody may now explain these gaps away as "it needed more time"; the traces

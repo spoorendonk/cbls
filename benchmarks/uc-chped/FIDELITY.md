@@ -706,6 +706,7 @@ for c in ucp13-1 ucp13-3 ucp40-1; do curl -sL -o RESULTS/$c.txt https://www.dcc.
 
 `--skip-solves` runs checks 7.2 and 7.3(1) alone, in about a second.
 
-At HEAD the first command reproduces the `ours after #193` row of §7.3 (#193
-ran it at `--time-limit 300 --cases ucp40-1`); the `ours before #193` row needs
-`benchmarks/chped/data.py` as of `79ae972^`.
+At HEAD the first command (600 s cap) reproduces the objectives of the `ours
+after #193` row of §7.3; the row itself, including the `=` bound 55638.420,
+which depends on the cap, needs `--time-limit 300 --cases ucp40-1`. The `ours
+before #193` row needs `benchmarks/chped/data.py` as of `79ae972^`.
