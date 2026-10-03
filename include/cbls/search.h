@@ -47,8 +47,9 @@ struct SearchConfig {
     // limit, because Structural and Novelty batches charge no GLS iteration: the
     // run stops when EITHER count reaches it, and SearchResult::iterations
     // reports the larger of the two (#201). On a model with no FJ-jumpable
-    // variable (List/Set only), every batch is structural and this is exactly a
-    // batch budget: SearchResult::iterations == max_iterations at the limit.
+    // variable (List/Set only) at the automatic structural probability, every
+    // batch is structural and this is exactly a batch budget:
+    // SearchResult::iterations == max_iterations at the limit.
     int64_t max_iterations = 0;
     bool use_fj = true;
     int lns_interval = 3;
@@ -100,9 +101,9 @@ struct SearchConfig {
     // early, makes the model count as having FJ work, so it keeps the 0.33 mix.
     // Once FJ has nothing left to improve, its batches are empty in all but name
     // and the kick-thrash returns: on a 30-customer, 6-route partitioned-List
-    // model with one objective-only Int, the default arm is infeasible at 200000
-    // iterations on seeds 1-3 (see tests/test_no_jumpable.cpp). Set this to 1.0
-    // explicitly on such a model.
+    // model with one objective-only Int, the default arm was probed infeasible
+    // at 200000 iterations on seeds 1-3, with ~560-570 kicks each. Set this to
+    // 1.0 explicitly on such a model, which reaches feasibility at once.
     double structural_batch_probability = -1.0;
 
     // ---- structural batch: what proposes moves, and how one is chosen (#165) --
@@ -332,8 +333,9 @@ struct SearchResult {
     /// The work `SearchConfig::max_iterations` is charged against: the larger of
     /// the GLS iterations Feasibility-Jump batches ran and the number of outer
     /// batches (#201). On a model FJ has work in that is the GLS count; on one
-    /// with no FJ-jumpable variable, where every batch is structural and no GLS
-    /// iteration is ever charged, it is the batch count. Never 0 for a run that
+    /// with no FJ-jumpable variable at the automatic structural probability,
+    /// where every batch is structural and no GLS iteration is ever charged, it
+    /// is the batch count. Never 0 for a run that
     /// ran a batch. `counters` splits the batches by kind.
     int64_t iterations = 0;
     double time_seconds = 0.0;

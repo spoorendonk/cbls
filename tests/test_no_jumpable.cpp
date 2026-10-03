@@ -207,8 +207,11 @@ TEST_CASE("an explicit structural probability is honoured, but its empty FJ batc
     // the damage: an FJ batch with nothing to jump reports itself stuck by
     // construction, and before #201 every such batch took the unproductive
     // kick -- and counted toward perturbation_period -- re-randomising every
-    // List. Shown red with both gates removed: ~180 kicks per seed and
-    // infeasible on all three seeds.
+    // List. Probed at this budget (kicks per seed 1/2/3): with both gates 4/4/2
+    // and feasible; without the kick gate ~1070-1140 and infeasible on all
+    // three; without the stagnation gate 14/11/17, which the kick bound below
+    // catches, and infeasible on seed 3. The default batch length matters: a
+    // batch shorter than unproductive_iterations can never report itself stuck.
     const Cvrp c = make_cvrp();
     for (const uint64_t seed : {1ULL, 2ULL, 3ULL}) {
         INFO("seed " << seed);
@@ -216,8 +219,7 @@ TEST_CASE("an explicit structural probability is honoured, but its empty FJ batc
         const Built b = build_cvrp(m, c);
         SearchConfig cfg;
         cfg.structural_batch_probability = 0.33;
-        cfg.batch_iterations = 10;
-        const SearchResult r = run(m, seed, /*max_iterations=*/20000, cfg);
+        const SearchResult r = run(m, seed, /*max_iterations=*/400000, cfg);
         REQUIRE(r.counters.fj_batches > 0);
         REQUIRE(r.counters.structural_batches > 0);
         REQUIRE(r.feasible);
@@ -242,7 +244,8 @@ TEST_CASE("a mixed model has FJ work only through a movable scalar some row read
     SECTION("a movable scalar that nothing reads leaves FJ nothing to jump") {
         // Its G_v is empty, so FJ never scores a jump for it. Shown red without
         // the G_v test in fj_has_work: the mix stays 0.33 and the default arm
-        // is infeasible at this budget on all three seeds.
+        // is infeasible on all three seeds (1 FJ batch at this budget; at
+        // 200000 iterations ~595 FJ batches, ~560 kicks, still infeasible).
         for (const uint64_t seed : {1ULL, 2ULL, 3ULL}) {
             INFO("seed " << seed);
             Model m;
