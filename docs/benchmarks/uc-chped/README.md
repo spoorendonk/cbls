@@ -80,7 +80,7 @@ $$y_{u,t-1} - y_{u,t} + y_{u,\tau} \leq 1 \quad \forall \tau \in [t+1, \min(t + 
 
 All instances share UC parameters (min uptime, min downtime, cold start threshold, startup costs, initial state) drawn from the Kazarlis 10-unit system, mapped cyclically to larger fleets.
 
-### Provenance (#148)
+### Provenance (#148, #193)
 
 `ucp13` and `ucp40` were checked field by field against the authors' GPL
 instance code,
@@ -91,7 +91,7 @@ instance code,
 | Field | `ucp13` | `ucp40` |
 |---|---|---|
 | Cost coefficients `a b c d e`, `P_min` | sourced — identical to the authors' | sourced — identical to the authors' |
-| `P_max` | sourced — identical | **differs at units 19-20: 500 here, 550 in the source** (an error inherited from `benchmarks/chped/data.py`) |
+| `P_max` | sourced — identical | sourced — identical since #193 (units 19-20 were 500 here until then, against the source's 550: an error in `benchmarks/chped/data.py`) |
 | Kazarlis mapping (min up/down, `t_cold`, startup costs, initial state) | sourced — the authors' own assignment | sourced — the authors' own `i % 10` |
 | Demand and reserve profile | sourced — the authors' table verbatim | sourced — the authors' table verbatim |
 
@@ -135,7 +135,7 @@ Instances can be extended to 48h and 168h (1 week) via `extend_horizon()`, which
 | Instance | Units | Periods | Binary Vars | Continuous Vars | Total Vars | Known Bounds |
 |----------|------:|--------:|------------:|----------------:|-----------:|:-------------|
 | ucp13    |    13 |    1–24 |       13–312 |          13–312 |     26–624 | Pedroso 2014 |
-| ucp40    |    40 |    1–24 |      40–960 |         40–960 |   80–1920 | Pedroso 2014 (related system, #148) |
+| ucp40    |    40 |    1–24 |      40–960 |         40–960 |   80–1920 | Pedroso 2014 |
 | ucp100   |   100 |   1–168 |    100–16800 |      100–16800 |  200–33600 | None         |
 | ucp200   |   200 |   1–168 |    200–33600 |      200–33600 |  400–67200 | None         |
 
@@ -150,15 +150,16 @@ the true cost, meets the lower one.
 instance field for field, and both of its proven optima are reproduced by an
 exact solve (11701.28 and 38849.84, §7 of `FIDELITY.md`).
 
-**The 40-unit rows do NOT describe this repository's `ucp40`.** They are
-bounds for the authors' 40-unit system, which differs from ours in `P_max` of
-units 19-20 (550 there, 500 here). The authors' published 1-period optimal
-schedule is infeasible on our instance (its committed capacity is short of
-the reserve requirement by 31 MW), so no row below is a bound on our problem
-and no gap against them is published: `comparison.csv` marks these rows
-`[related system]` and the runner scores no gap for a measured `ucp40` row.
-Correcting the two `P_max` values would restore identity, but changes the
-`chped` 40-unit dispatch instance the same data feeds; that fix is tracked in #193.
+**The 40-unit rows describe this repository's `ucp40` since #193.** #148
+found that ours capped units 19-20 at 500 MW where the authors' instance has
+550, which made their 1-period optimal schedule infeasible here, and relabelled
+these rows as bounds for a related system. #193 corrected the two values (in
+`benchmarks/chped/data.py`/`data.h`, which `ucp40`, `ucp100` and `ucp200` all
+draw from) and removed the relabel: `ucp40` is now the authors' instance field
+for field, and an exact solve reproduces its proven 1-period optimum
+(55644.79). Every `ucp40` result measured **before** #193 — the budget-defence
+traces and the archived table below — was run on the old instance, so its gap
+against these bounds stays struck.
 
 ### 13-Unit System
 
@@ -170,7 +171,7 @@ Correcting the two `P_max` values would restore identity, but changes the
 |      12 |     231,587 |     232,537 |    0.41 |
 |      24 |     464,053 |     466,187 |    0.46 |
 
-### 40-Unit System — bounds for a related system (see above)
+### 40-Unit System
 
 | Periods | Lower Bound | Upper Bound | Gap (%) |
 |--------:|------------:|------------:|--------:|
@@ -433,14 +434,15 @@ property of this run and not something to assume next time.
 | ucp40 |   1 |  10s | <0.01s |   4.90s | 51% | ~~4.17%~~ | **defended**, generous |
 | ucp40 |   3 |  30s | <0.01s |   0.35s | 99% | ~~3.68%~~ | **defended**, generous |
 | ucp40 |   6 |  60s | <0.01s |   2.74s | 95% | ~~3.15%~~ | **defended**, generous |
-| ucp40 |  12 | 120s | never | — | — | — | **unchanged**; infeasible as built (#152) |
-| ucp40 |  24 | 300s | never | — | — | — | **unchanged**; infeasible as built (#152) |
+| ucp40 |  12 | 120s | never | — | — | — | **unchanged**; infeasible as built then (#152), re-measure after #193 |
+| ucp40 |  24 | 300s | never | — | — | — | **unchanged**; infeasible as built then (#152), re-measure after #193 |
 
-The ucp40 *Gap* cells are measured against Table 2's ucp40 lower bounds. Per
-#148 ([`FIDELITY.md`](../../../benchmarks/uc-chped/FIDELITY.md) §7), those bounds
-describe a **related system**: units 19-20 carry P_max 550 there and 500 here.
-So the ucp40 gaps are struck, as in the archived table below: each compares a
-run on our instance with a bound for another one.
+The ucp40 *Gap* cells are measured against Table 2's ucp40 lower bounds, but
+these runs predate #193: they solved the old ucp40, whose units 19-20 carried
+P_max 500 where the source (and the bounds) have 550
+([`FIDELITY.md`](../../../benchmarks/uc-chped/FIDELITY.md) §7). So the ucp40
+gaps are struck, as in the archived table below: each compares a run on the
+old instance with a bound for the corrected one.
 The ucp13 gaps are unaffected, because ucp13 is proven identical to the source.
 The budget verdicts do not depend on the bounds.
 
@@ -476,8 +478,8 @@ aimed at closing them should target the search, not the clock. Conversely,
 nobody may now explain these gaps away as "it needed more time"; the traces
 refuse that explanation.
 
-**ucp40/12p and 24p never reach a feasible incumbent, because none exists on
-the instance as built here (#152).** Period 12 of the demand profile asks for
+**ucp40/12p and 24p never reached a feasible incumbent, because none existed
+on the instance as built before #193 (#152).** Period 12 of the demand profile asks for
 11480 MW of demand plus 1148 MW of spinning reserve, 12628 MW in all. With every
 one of the 40 units committed, the sum of P_max is 12622 MW. The reserve row of
 period 12 therefore cannot be satisfied by any assignment. Its minimum possible
@@ -485,17 +487,18 @@ violation is **exactly 6**, which is precisely the maximum real violation both
 horizons have ended at in every run. No other period is short; the next
 tightest is period 11, with 412 MW of slack. Every horizon that contains
 period 12 is infeasible, and the 1-, 3- and 6-period sub-instances do not
-contain it. The cause is the #148 data error: units 19-20 carry P_max 500 here,
-550 in the source. With the source's limits, capacity is 12722 MW and period 12
-has 94 MW of slack. The fix is tracked in #193.
+contain it. The cause was the #148 data error: units 19-20 carried P_max 500
+here, 550 in the source. #193 restored the source's limits: capacity is now
+12722 MW and period 12 has 94 MW of slack.
 
-ucp40 is not the only case. The same check shows **ucp200** at 12 and 24
+ucp40 was not the only case. The same check showed **ucp200** at 12 and 24
 periods short in period 12, by 30 MW (fixed by #193 too). All four extended
 horizons are also short. `extend_horizon()`'s demand variation pushes some
 periods past total capacity: ucp100-48p and ucp100-168p from period 36, and
 ucp200-48p and ucp200-168p from period 36. These stay short after #193. So 8 of
-the 24 measured rows can never be feasible as built, and their "INFEASIBLE"
-says nothing about the search. That is tracked separately (#194).
+the 24 measured rows could never be feasible as built before #193, and 4 (the
+extended horizons) still cannot; their "INFEASIBLE" says nothing about the
+search. That is tracked separately (#194).
 
 The 600s probe confirms the arithmetic rather than being needed for it. Engine
 commit `e9b28a6`, seed 42, `--verify`, uniform `--time-limit 600` over the ucp40
@@ -513,13 +516,23 @@ and 6p windows overlapped another session's work (load peaks of 5-8), so the
 objectives this run reports for those horizons are not clean timings and are
 not cited anywhere.
 
-**So the two horizons are neither budget-limited nor search-limited. They are
-infeasible instances, and the budget map stands unchanged.** The two signals
+**So the two horizons were neither budget-limited nor search-limited. They
+were infeasible instances, and the budget map stands unchanged.** The two signals
 #147 recorded were right that the clock does not bind: a residual that does not
 move across budgets, and more batches than the siblings that converge. What
 they could not show is why. "It just needed more time" is retired. So is "the
-search cannot find it", until #193 restores the source's capacity. Then these
-two horizons need measuring again, at the existing map budgets first.
+search cannot find it" for the old instance.
+
+**After #193: a smoke test, not a measurement.** With units 19-20 at 550 MW,
+the runner was run once over `ucp40` and `ucp200` at every horizon with a
+uniform `--time-limit 10`, seed 42, `--verify`, at engine commit `ca67584` (the
+runner at `a95c0cb`), on a shared machine at a 1-minute load average near 14.
+Every row was feasible and verified, including the four horizons #152 had shown
+infeasible: ucp40/12p 1,173,270 and ucp40/24p 2,415,513, ucp200/12p 5,938,070
+and ucp200/24p 12,297,047. That settles only that those instances are now
+satisfiable and the flow works end to end. The objectives are 10s runs under
+contention, below the map budgets, and are not cited anywhere; the horizons
+need measuring at the map budgets (#131).
 
 Archived results:
 
@@ -538,21 +551,23 @@ Archived results:
 | ucp13    |      12 | CBLS SA (120s)    | INFEASIBLE | 231,587 |       — |    123.5 |
 | ucp13    |      24 | CBLS SA (300s)    | INFEASIBLE | 464,053 |       — |    308.9 |
 
-### 40-Unit System — LB column is a related system's bound (#148)
+### 40-Unit System — runs predate the #193 data fix
 
-The `LB` column below is Table 2's bound for the **authors'** 40-unit system,
-not for our `ucp40` (`P_max` of units 19-20 differs; see Known Bounds). The
-archived gap is struck: it compares a run on our instance with a bound for
-another. The exact 1-period optimum of our `ucp40` is 55,704.72 (`FIDELITY.md`
-§7.3); against that, the archived 1-period SA run was 39.96% above.
+The `LB` column below is Table 2's bound for the authors' 40-unit system, which
+is this repository's `ucp40` since #193. The CBLS SA runs below are older: they
+solved the pre-#193 instance, whose units 19-20 carried `P_max` 500 (see Known
+Bounds). The archived gap is struck: it compares a run on the old instance with
+a bound for the corrected one. The exact 1-period optimum of the old instance
+was 55,704.72 (`FIDELITY.md` §7.3); against that, the archived 1-period SA run
+was 39.96% above.
 
 | Instance | Periods | Method            | Objective  |       LB | Gap (%) | Time (s) |
 |----------|--------:|-------------------|------------|----------:|--------:|---------:|
-| ucp40    |       1 | Pedroso MIP (1hr) [related system] | 55,645     |    55,645 |    0.00 |        — |
-| ucp40    |       3 | Pedroso MIP (1hr) [related system] | 178,547    |   178,396 |    0.08 |        — |
-| ucp40    |       6 | Pedroso MIP (1hr) [related system] | 416,606    |   416,108 |    0.12 |        — |
-| ucp40    |      12 | Pedroso MIP (1hr) [related system] | 1,113,801  | 1,112,371 |    0.13 |        — |
-| ucp40    |      24 | Pedroso MIP (1hr) [related system] | 2,238,504  | 2,235,971 |    0.11 |        — |
+| ucp40    |       1 | Pedroso MIP (1hr) | 55,645     |    55,645 |    0.00 |        — |
+| ucp40    |       3 | Pedroso MIP (1hr) | 178,547    |   178,396 |    0.08 |        — |
+| ucp40    |       6 | Pedroso MIP (1hr) | 416,606    |   416,108 |    0.12 |        — |
+| ucp40    |      12 | Pedroso MIP (1hr) | 1,113,801  | 1,112,371 |    0.13 |        — |
+| ucp40    |      24 | Pedroso MIP (1hr) | 2,238,504  | 2,235,971 |    0.11 |        — |
 | ucp40    |       1 | CBLS SA (10s)     | 77,964.4   |    55,645 | ~~40.11~~ |     10.0 |
 | ucp40    |       3 | CBLS SA (30s)     | INFEASIBLE |   178,396 |       — |     30.9 |
 | ucp40    |       6 | CBLS SA (60s)     | INFEASIBLE |   416,108 |       — |     63.2 |
@@ -568,7 +583,7 @@ another. The exact 1-period optimum of our `ucp40` is 55,704.72 (`FIDELITY.md`
 
 ### Discussion
 
-The SA-based solver currently struggles with feasibility on multi-period UC instances. The core challenge is the tight coupling between commitment decisions across time — min uptime/downtime constraints create long-range dependencies that are difficult for local search moves (single-variable flips) to satisfy simultaneously with demand and reserve constraints. The 1-period instances are feasible but show significant gaps — 18% on `ucp13` against its MIP bound, and 40% on `ucp40` against our own exact optimum (the published `ucp40` bound belongs to a related system, #148) — largely due to the valve-point non-convexity making it hard for float perturbation to find good dispatch points.
+The SA-based solver currently struggles with feasibility on multi-period UC instances. The core challenge is the tight coupling between commitment decisions across time — min uptime/downtime constraints create long-range dependencies that are difficult for local search moves (single-variable flips) to satisfy simultaneously with demand and reserve constraints. The 1-period instances are feasible but show significant gaps — 18% on `ucp13` against its MIP bound, and 40% on `ucp40` against the exact optimum of the instance it then solved (those runs predate #193's `P_max` fix, so the published `ucp40` bound is not their yardstick) — largely due to the valve-point non-convexity making it hard for float perturbation to find good dispatch points.
 
 Key areas for improvement:
 - **Commitment-aware moves:** Multi-variable moves that flip a unit's commitment across a block of consecutive periods, respecting min up/down constraints by construction

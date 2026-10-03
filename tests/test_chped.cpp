@@ -87,7 +87,10 @@ TEST_CASE("CHPED 40-unit feasibility and quality", "[chped][slow]") {
     // Iteration-bounded, so unlike the wall-clock budget this replaced, the
     // result no longer depends on how much core this test gets under `ctest -j`.
     // Budget set from what reliably clears obj < 140000 (measured: the objective
-    // is already 127128 well before this); raise it if the bar tightens.
+    // was already 127128 well before this on the pre-#193 data); raise it if the
+    // bar tightens. Since #193 restored units 19-20 to 550 MW, known_optimum's
+    // 121412.53 is this instance's proven optimum and attainable; this run ends
+    // at 121635.52 (+0.18%), so it does not attain it.
     auto result = solve_deterministic(m, 95000, 42);
     REQUIRE(result.feasible);
     REQUIRE(result.objective >= inst.known_optimum);
