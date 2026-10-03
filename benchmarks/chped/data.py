@@ -426,6 +426,11 @@ CHPED_40UNIT = {
         25.0,
         242.0,
     ],
+    # Units 19-20 are 550 MW (#193; this table carried 500 until then). Source:
+    # Pedroso's GPL `ucp_data.py`, http://www.dcc.fc.up.pt/~jpp/code/valve/
+    # (sha256 3d5b8f07..., pinned in benchmarks/uc-chped/FIDELITY.md section 7.1),
+    # whose `eld40()` and `ucp40()` both give 550; the authors' 10500 MW optimum
+    # (121412.53, RESULTS/eld40-10500.txt) dispatches both at 511.28 MW.
     "P_max": [
         114.0,
         114.0,
@@ -445,8 +450,8 @@ CHPED_40UNIT = {
         500.0,
         500.0,
         500.0,
-        500.0,
-        500.0,
+        550.0,  # unit 19
+        550.0,  # unit 20
         550.0,
         550.0,
         550.0,
