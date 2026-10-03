@@ -1262,9 +1262,12 @@ Algorithm 2; OR-Tools' `ScanRelevantVariables`). Distinctness comes from
 drawing over `Q`'s unsampled suffix, so no redraw is ever needed. A cap that
 counted the removals declared false minima on long rows of non-improving vars
 and over-bumped their weights (#206). Novelty Jump's `select_novelty_var`
-follows the same rule: only vars passing the filter F count toward its 3. `update_var` writes `X[v]`, delta-evaluates, refreshes
-the violated set for `v`'s constraints, invalidates neighbour jumps, and
-replenishes `Q` with vars now participating in active violated constraints.
+follows the same rule: only vars passing the filter F count toward its 3, and,
+as in OR-Tools, a var that fails F or is on the move stack leaves `Q'` until a
+move or undo on one of its rows re-queues it.
+
+`update_var` writes `X[v]`, delta-evaluates, refreshes the violated set for
+`v`'s constraints, invalidates neighbour jumps, and replenishes `Q` with vars now participating in active violated constraints.
 
 ### Two-Phase Linear-First (construction only)
 
