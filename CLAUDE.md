@@ -487,8 +487,9 @@ When implementing from papers, pseudocode, or open-source references:
 
   Measurement is still required for three things, and a plausible argument is
   never a substitute: any number that goes into a doc, a README or a published
-  table; any choice of a *parameter* (see the over-fitting rule under
-  **Benchmark priority**); and any claim that a change made something faster,
+  table; any choice of a *parameter*, which is never fitted on the instances it
+  is reported on (fit on one roster, report on a held-out one, as
+  `benchmarks/instances/minlplib/HELDOUT.md` does); and any claim that a change made something faster,
   which means an A/B at one budget on one idle machine, not two runs at different
   budgets compared to each other.
 
