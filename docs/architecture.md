@@ -1299,7 +1299,12 @@ binkar10_1 795k -> 876k GLS iterations with compound moves (1.10x), 1.85M ->
 1.83M without; neos-662469 6.9k -> 10.4k (1.50x), 129k -> 131k without. Far
 less than the skip-always probes quoted in the issue, because both instances
 are feasible within 0.5s and the row is then mostly tight; the regimes are in
-the comment above `objective_row_inert`.
+the comment above `objective_row_inert`. Where no feasible point is found and
+the bound stays `+inf`, the skip fires on every move: on the 11-instance smoke
+roster at 60s (same seed, `40e04c8` against `8905532`, serial, load 1.47-1.49)
+enlight_hard went 2.43M -> 7.45M iterations, atlanta-ip 198k -> 919k and
+neos-5114902-kasavu 15.8k -> 28.8k, still without a solution; the eight
+feasible instances changed by under 2%. Feasibility stayed 8/11, the same 8.
 
 ### Two-Phase Linear-First (construction only)
 
