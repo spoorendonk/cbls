@@ -417,14 +417,7 @@ private:
     }
 
     // ---- the incumbent, and the kicks that leave it ----
-    // Algorithm 6 draws rho and the algorithm A together, at exactly three
-    // points: the start (lines 1-3), a new best (lines 5-10) and a perturbation
-    // (lines 11-15). So every caller of this is one of those points, and it also
-    // asks the next FJ/Novelty batch to draw A again; see pick_batch_kind.
-    void sample_rho() {
-        fj_.set_rho(rng_.random() < 0.5 ? 0.95 : 1.0);
-        redraw_algorithm_ = true;
-    }
+    void sample_rho() { fj_.set_rho(rng_.random() < 0.5 ? 0.95 : 1.0); }
     void emit_progress(bool new_best);
     // Record the current (real-feasible) assignment if it improves the best and
     // tighten the objective bound. Returns true on a new best.
@@ -607,11 +600,6 @@ private:
     // model -- even one with no movable scalar at all -- is never touched by it.
     const bool fj_idle_;
     const double structural_probability_;
-    // Algorithm 6's A, FJ or Novelty, kept from batch to batch until
-    // sample_rho() asks for a new draw (#209). Only consulted with compound
-    // moves on.
-    BatchKind scalar_algorithm_ = BatchKind::FeasibilityJump;
-    bool redraw_algorithm_ = true;
     const int unproductive_arm_stagnation_;
     // Owns this search's OWN clone of every registered move generator, so a
     // portfolio worker shares no mutable generator state with its peers (#157,
@@ -1476,38 +1464,36 @@ void ViolationLSLoop::count_batch(BatchKind kind) {
     }
 }
 
-// The FJ/Novelty choice is Algorithm 6's A: drawn at the start, on a new best
-// and on a perturbation (sample_rho sets redraw_algorithm_ at each) and KEPT for
-// every batch in between -- "Otherwise we continue with the same algorithm as
-// last batch, reusing the same weights" (paper §5). Before #209 it was redrawn
-// every batch, so a run alternated at random and neither algorithm saw a long
-// enough stretch for its own GLS weights to mean anything to it. The draw is
-// lazy, here, so it consumes the RNG in batch order; without compound moves
-// nothing is drawn, exactly as before. The structural draw stays per batch: it
-// is this engine's extension, with no counterpart in Algorithm 6 to follow.
+// The FJ/Novelty choice is redrawn EVERY batch. This is a deliberate deviation
+// from ViolationLS §5 / Algorithm 6, which draws A at the start, on a new best
+// and on a perturbation, and keeps it in between. #209 implemented that sticky
+// draw and settled it with a pre-registered paired A/B (committed before either
+// arm ran; docs/architecture.md has the protocol): MIPfeas smoke roster, 30s,
+// seeds 1-10, engine a19b222, primal integral per (instance, seed). Sticky minus
+// per-batch: mean +0.031, 95% CI [+0.016, +0.046] over 110 pairs; per-batch won
+// 72, sticky 8, 30 ties (the three instances neither arm solves); sgm 0.2018
+// per-batch against 0.2467 sticky; 80/110 feasible in both. The CI excludes zero,
+// so the rule shipped the winner. The mechanism is visible on binkar10_1: a
+// productive FJ stretch ends at its next new best while a Novelty one runs to
+// perturbation_period, so the sticky draw drifts toward the less productive
+// algorithm.
 //
-// What it cost, measured at 2be4316 against a build that redraws per batch
-// (MIPfeas smoke roster, 30s, seed 42; docs/architecture.md has the rest): the
-// roster's primal-integral sgm 0.2447 sticky, 0.2270 per batch, 0.2485 before
-// #209, same 8/11 feasible. On binkar10_1 the sticky draw leaves 1376 of 1470
-// batches to Novelty, because a productive FJ stretch ends at its next new best
-// while a Novelty one runs to perturbation_period -- OR-Tools' Randomize on a
-// new best has the same property. Single-seed, so kept for fidelity rather
-// than reverted on that evidence.
+// Per-batch redraw is also the closer of the two to OR-Tools, the reference
+// implementation mipfeas is compared against: its ls worker interleaves several
+// states, almost all of which restart on a shared Luby schedule
+// (restart_factor * SUniv: 1, 1, 2, 1, 1, 2, 4, ... batches;
+// SharedLsStates::ConfigureNextLubyRestart), and LsOptions::Randomize redraws
+// use_compound_moves at every restart and every new best -- so its choice is
+// short-lived, not held to a perturbation period. Without compound moves
+// nothing is drawn. The structural draw is this engine's extension.
 BatchKind ViolationLSLoop::pick_batch_kind() {
     if (rng_.random() < structural_probability_) {
         return BatchKind::Structural;
     }
-    if (!config_.use_compound_moves) {
-        return BatchKind::FeasibilityJump;
+    if (config_.use_compound_moves && rng_.random() < config_.novelty_jump_probability) {
+        return BatchKind::NoveltyJump;
     }
-    if (redraw_algorithm_) {
-        redraw_algorithm_ = false;
-        scalar_algorithm_ = rng_.random() < config_.novelty_jump_probability
-                                ? BatchKind::NoveltyJump
-                                : BatchKind::FeasibilityJump;
-    }
-    return scalar_algorithm_;
+    return BatchKind::FeasibilityJump;
 }
 
 bool ViolationLSLoop::run_batch(BatchKind kind) {
@@ -1761,17 +1747,9 @@ void ViolationLSLoop::maybe_diversify(BatchKind kind, bool improved) {
         // budgeted run (no wall clock) the only one it has. Carrying the
         // count across keeps "100 non-improving batches" meaning what it
         // says while still buying the early kick.
-        //
-        // Nor Algorithm 6's A (#209): this early kick is #102's, not the
-        // paper's perturbation (lines 11-15, which redraw A), and only an FJ
-        // batch can report itself stuck. Letting it redraw would end FJ
-        // stretches at every unproductive batch while Novelty stretches run to
-        // the full perturbation_period, tilting a 50/50 draw toward Novelty.
         const int carried = stagnation_;
-        const bool redraw = redraw_algorithm_;
         diversify(/*allow_lns=*/!have_feasible_);
         stagnation_ = carried;
-        redraw_algorithm_ = redraw;
     }
 }
 

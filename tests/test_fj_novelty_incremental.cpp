@@ -201,14 +201,13 @@ TEST_CASE("Novelty's incremental W' matches the per-level re-init between calls"
     REQUIRE(fj.novelty_weight_bumps() > 0);
 }
 
-TEST_CASE("the search keeps its FJ-or-Novelty choice until a new best or a kick",
-          "[search][novelty]") {
-    // Algorithm 6 draws A in {FJ, NJ} at the start, on a new best and on a
-    // perturbation, and otherwise "continue[s] with the same algorithm as last
-    // batch" (paper section 5). So between two consecutive scalar batches the
-    // kind may change only if the first produced a new best or a kick came
-    // between them. Before #209 it was redrawn every batch.
-    int switches = 0;
+TEST_CASE("the search redraws FJ-or-Novelty every batch", "[search][novelty]") {
+    // ViolationLS §5 keeps the algorithm A until a new best or a perturbation;
+    // #209 implemented that and a pre-registered A/B on the MIPfeas smoke roster
+    // rejected it (see pick_batch_kind), so the draw is per batch. Pinned by its
+    // signature: the kind changes between two consecutive scalar batches with
+    // no new best and no kick in between -- which the sticky draw never allows.
+    int unprompted_switches = 0;
     for (uint64_t seed = 1; seed <= 6; ++seed) {
         CAPTURE(seed);
         Model m;
@@ -225,23 +224,22 @@ TEST_CASE("the search keeps its FJ-or-Novelty choice until a new best or a kick"
         solve(m, /*time_limit=*/0.0, seed, true, nullptr, nullptr, 3, nullptr, cfg);
         bool have_prev = false;
         BatchKind prev = BatchKind::FeasibilityJump;
-        bool redraw_allowed = true;
+        bool prompted = true;
         for (const auto& e : rec.events) {
             if (e.type == KindRecorder::Event::Type::Kick) {
-                redraw_allowed = true;
+                prompted = true;
                 continue;
             }
             REQUIRE(e.kind != BatchKind::Structural);  // no structure in the model
-            if (have_prev && e.kind != prev) {
-                REQUIRE(redraw_allowed);
-                ++switches;
+            if (have_prev && e.kind != prev && !prompted) {
+                ++unprompted_switches;
             }
             have_prev = true;
             prev = e.kind;
-            redraw_allowed = e.improved;
+            prompted = e.improved;
         }
     }
-    REQUIRE(switches > 0);  // both kinds ran, so the check above had teeth
+    REQUIRE(unprompted_switches > 0);
 }
 
 TEST_CASE("a Novelty batch that applies no move still stops at the deadline",
