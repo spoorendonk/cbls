@@ -504,14 +504,18 @@ private:
     // UpdateVar (Algorithm 1): commit X[v] <- jump, refresh V, invalidate
     // neighbour jumps, replenish Q.
     void update_var(int32_t var_id);
-    // Whether a move that took the objective row's residual from `before` to
-    // `after` leaves every cached jump, and every Novelty verdict, of the row's
+    // Whether a move that took the objective's VALUE from `before` to `after`
+    // leaves every cached jump, and every Novelty verdict, of the row's
     // other variables as it was -- so update_var and nj_requeue_neighbours can
     // skip the row's neighbour walk (#210). See the definition for the
     // predicate and the regime each answer wins and loses in.
     [[nodiscard]] bool objective_row_inert(double before, double after);
-    // The objective row's residual as the DAG holds it now; 0.0 without one.
-    [[nodiscard]] double objective_residual() const;
+    // The objective's value as the DAG holds it now; 0.0 without an objective row.
+    [[nodiscard]] double objective_value() const;
+    // Whether every jumpable column of the objective row holds a value inside
+    // its declared box -- the premise of the finite-bound skip. O(objective
+    // support); run by rebuild_violated_and_scan_set.
+    [[nodiscard]] bool objective_columns_in_box() const;
 
     [[nodiscard]] bool active(int32_t constraint_idx) const;  // weight > 0
     [[nodiscard]] bool jumpable(int32_t var_id) const;        // scalar var
@@ -586,8 +590,8 @@ private:
     void init_novelty_weights();
     void seed_novelty_scan_set();
     void nj_enqueue(int32_t var_id);
-    // `objective_before`: the objective row's residual before v's move or undo
-    // (objective_residual()), for the inert-row skip.
+    // `objective_before`: the objective's value before v's move or undo
+    // (objective_value()), for the inert-row skip.
     void nj_requeue_neighbours(int32_t v, double objective_before);
     NoveltyPick select_novelty_var(double s_m, double s_c);
     bool novelty_jump_search(double s_m, int budget);
@@ -905,10 +909,17 @@ private:
     // The objective row's max single-variable variation (OR-Tools'
     // row_max_variations; LinearJumpScorer::row_max_variation) over its
     // jumpable variables, built on the first objective_row_inert call that
-    // needs it. objective_mv_state_: 0 not yet built, 1 built, 2 the row is not
-    // affine -- the skip then never applies. See objective_row_inert.
-    uint8_t objective_mv_state_ = 0;
+    // needs it. NotAffine: the row has no slopes, and the skip never applies.
+    // See objective_row_inert.
+    enum class ObjectiveSlopes : uint8_t { Unbuilt, Built, NotAffine };
+    ObjectiveSlopes objective_slopes_ = ObjectiveSlopes::Unbuilt;
     double objective_max_variation_ = 0.0;
+    // objective_columns_in_box() as of the last rebuild_violated_and_scan_set.
+    // False switches the finite-bound skip off until the next rebuild: a value
+    // outside its box (reachable through the API: a Python `Variable.value`
+    // write, then `skip_init`) can move a jump further than M. FJ's own moves
+    // stay inside the box, so a rebuild is the only point it can change.
+    bool objective_in_box_ = true;
     int64_t objective_skips_fj_ = 0;       // see objective_walks_skipped()
     int64_t objective_skips_novelty_ = 0;  // see novelty_objective_walks_skipped()
 

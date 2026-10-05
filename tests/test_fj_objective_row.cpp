@@ -188,3 +188,72 @@ TEST_CASE("Novelty's re-queue skips the objective row exactly when update_var wo
         CHECK(fj2.novelty_objective_walks_skipped() == 0);
     }
 }
+
+TEST_CASE("FJ keeps the objective row's walk once the objective itself is infinite",
+          "[fj][objective_row]") {
+    // With no bound the row's residual is -inf both for a finite objective and
+    // for obj = -inf, but only the first is inert: at obj = -inf a jump of w to
+    // its +inf box bound gives -inf + inf = NaN, which reads as violated. x's
+    // only row, exp(x) <= 0, is best served by x's -inf lower bound (exp(-inf)
+    // = 0, where the Newton step only reaches -1), so the move under test takes
+    // the objective x + w from 0 to -inf. w (row w >= 0.5, the smaller gain) is
+    // scored in the same apply_jump; its entry must not survive.
+    const double inf = std::numeric_limits<double>::infinity();
+    Model m;
+    const int32_t x = m.float_var(-inf, inf);
+    const int32_t w = m.float_var(-inf, inf);
+    m.add_constraint(m.leq(m.exp_expr(x), m.constant(0.0)));
+    m.add_constraint(m.geq(w, m.constant(0.5)));
+    m.minimize(m.sum({x, w}));
+    m.close();
+    m.add_objective_soft_constraint();
+    ViolationManager vm(m);
+    RNG rng(7);
+    GFJConfig cfg;
+    cfg.two_phase = false;
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(true);
+    REQUIRE_FALSE(fj.batch(1));
+    REQUIRE(m.var(vid(x)).value == -inf);  // the move under test
+    REQUIRE(m.var(vid(w)).value == 0.0);
+    CHECK_FALSE(fj.cached_jump(vid(w)).has_value());
+    CHECK(fj.objective_walks_skipped() == 0);
+}
+
+TEST_CASE("FJ drops the finite-bound skip while an objective column sits outside its box",
+          "[fj][objective_row]") {
+    // The slack case of the fixture, plus a third objective column z in [0, 1]
+    // that only the objective reads. Inside its box the move of a is skipped as
+    // usual; set to -20 through the API (as a Python `Variable.value` write
+    // plus `skip_init` can), M no longer bounds a jump, so the walk is kept.
+    double z_value = 0.0;
+    int64_t expect_skips = 1;
+    SECTION("inside the box") {}
+    SECTION("outside the box") {
+        z_value = -20.0;
+        expect_skips = 0;
+    }
+    Model m;
+    const int32_t a = m.bool_var();
+    const int32_t y = m.bool_var();
+    const int32_t z = m.int_var(0, 1);
+    m.add_constraint(m.geq(m.prod(m.constant(2.0), a), m.constant(2.0)));
+    m.add_constraint(m.geq(y, m.constant(1.0)));
+    m.minimize(m.sum({a, y, z}));
+    m.close();
+    m.add_objective_soft_constraint();
+    m.set_objective_bound(10.0);
+    m.var_mut(vid(a)).value = 0.0;
+    m.var_mut(vid(y)).value = 0.0;
+    m.var_mut(vid(z)).value = z_value;
+    ViolationManager vm(m);
+    RNG rng(7);
+    GFJConfig cfg;
+    cfg.two_phase = false;
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(false);
+    REQUIRE_FALSE(fj.batch(1));
+    REQUIRE(m.var(vid(a)).value == 1.0);
+    CHECK(fj.objective_walks_skipped() == expect_skips);
+    CHECK(fj.cached_jump(vid(y)).has_value() == (expect_skips == 1));
+}

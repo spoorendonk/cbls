@@ -1506,6 +1506,7 @@ void FeasibilityJump::rebuild_violated_and_scan_set() {
     }
     rebuild_violated_index();
     refresh_unweighted_violation();
+    objective_in_box_ = objective_columns_in_box();
     std::fill(in_queue_.begin(), in_queue_.end(), 0);
     queue_.clear();
     // A counted row is exactly one in V and active. The rebuild has just laid V
@@ -1533,7 +1534,7 @@ void FeasibilityJump::update_var(int32_t var_id) {
             violation_delta -= progress_residual(model_.node_value(cids[c]));
         }
     }
-    const double objective_before = objective_residual();
+    const double objective_before = objective_value();
 
     const double j = jumps_.jump_value(var_id);
     Variable& var = model_.var_mut(var_id);
@@ -1574,7 +1575,7 @@ void FeasibilityJump::update_var(int32_t var_id) {
     // variable's participation count either. A variable sharing another row of
     // gv with var_id is still reached through that row.
     for (int32_t c : gv) {
-        if (c == objective_ci_ && objective_row_inert(objective_before, objective_residual())) {
+        if (c == objective_ci_ && objective_row_inert(objective_before, objective_value())) {
             ++objective_skips_fj_;
             continue;
         }
@@ -1607,12 +1608,15 @@ void FeasibilityJump::update_var(int32_t var_id) {
 // yet the domain is AllValues, so the objective row is always skipped. This is
 // that test, for the objective row only, in two forms:
 //
-//  - bound +inf. The residual is obj - inf = -inf for any obj below +inf, and a
-//    jump of one variable of an AFFINE objective moves obj by a finite slope
-//    times a step, so obj stays below +inf or lands on it (the sentinel reads
-//    that as 0, satisfied): the row contributes exactly 0 to every candidate's
-//    delta, before the move and after. Inert iff the residual is -inf on both
-//    sides.
+//  - bound +inf. Inert iff the objective VALUE is finite before and after
+//    the move. A finite affine objective has every term finite, so a jump of
+//    one variable -- to a finite value, or to an infinite box bound -- leaves
+//    it finite or makes it +/-inf: the residual is -inf, or the sentinel's 0
+//    at obj = +inf, and the row contributes exactly 0 to every candidate's
+//    delta in both states. The residual alone cannot tell this apart: it is
+//    -inf for obj = -inf too, and there a candidate at +inf gives
+//    -inf + inf = NaN, which reads as violated (kInfPenalty) -- a contribution
+//    that depends on where the OTHER variables sit (#210 review).
 //  - finite bound. A jump of v inside its declared box moves the residual by at
 //    most M = max_v |a_v| (ub_v - lb_v) (row_max_variation). If r + M < 0 both
 //    before and after the move, every candidate of every variable leaves the
@@ -1628,7 +1632,8 @@ void FeasibilityJump::update_var(int32_t var_id) {
 // contribution is zero in both states, and the row feeds no candidate (a Newton
 // candidate needs a violated row; an affine row reaches no breakpoint op). It is
 // satisfied on both sides, so it moves no V membership or participation count.
-// That makes the skip exact for the jump table, not an approximation.
+// That makes the skip exact for the jump table up to the rounding the
+// closed-form scorer already accepts (the guard above), not a heuristic.
 //
 // What it changes is Q, on purpose. The walk re-queued every objective column
 // that sat in some active violated row, whether or not anything about it had
@@ -1667,34 +1672,58 @@ void FeasibilityJump::update_var(int32_t var_id) {
 // gave finite but wide boxes) and 5% (neos-662469, M = 5e4). The skip-always
 // gain is the price of a stale jump table, not a faithful saving.
 //
-// Assumes each variable's value lies inside its declared box, which every
-// writer in the engine keeps (clamp_to_domain, random_in_domain); a value set
-// outside it from the API can move a jump further than M.
-double FeasibilityJump::objective_residual() const {
+// The finite-bound form needs each column's value inside its declared box,
+// since M bounds a jump only from inside it. FJ's own moves keep it there
+// (clamp_to_domain, random_in_domain), but the API does not: a Python
+// `Variable.value` write followed by `skip_init` hands FJ an assignment outside
+// it. So rebuild_violated_and_scan_set -- which every entry that takes an
+// assignment from outside runs (begin, resync, reset_weights, perturb, gls) --
+// checks the objective's columns, and while any is outside its box only the
+// +inf form applies. O(objective support) per rebuild, beside the rebuild's own
+// O(#rows).
+double FeasibilityJump::objective_value() const {
     if (objective_ci_ < 0) {
         return 0.0;
     }
-    return model_.node_value(model_.constraint_ids()[static_cast<size_t>(objective_ci_)]);
+    return model_.node_value(model_.objective_id());
+}
+
+bool FeasibilityJump::objective_columns_in_box() const {
+    if (objective_ci_ < 0) {
+        return true;
+    }
+    const auto& cols = vars_of_constraint_[static_cast<size_t>(objective_ci_)];
+    return std::all_of(cols.begin(), cols.end(), [this](int32_t v) {
+        const Variable& var = model_.var(v);
+        return var.value >= var.lb && var.value <= var.ub;  // false on a NaN
+    });
 }
 
 bool FeasibilityJump::objective_row_inert(double before, double after) {
-    if (objective_mv_state_ == 0) {
+    if (objective_slopes_ == ObjectiveSlopes::Unbuilt) {
         const bool affine = linear_.row_max_variation(
             objective_ci_, vars_of_constraint_[static_cast<size_t>(objective_ci_)],
             objective_max_variation_);
-        objective_mv_state_ = affine ? 1 : 2;
+        objective_slopes_ = affine ? ObjectiveSlopes::Built : ObjectiveSlopes::NotAffine;
     }
-    if (objective_mv_state_ != 1) {
+    if (objective_slopes_ != ObjectiveSlopes::Built ||
+        !(std::isfinite(before) && std::isfinite(after))) {
         return false;
     }
     const double bound = model_.objective_bound();
     if (bound == kInf) {
-        return before == -kInf && after == -kInf;
+        return true;
     }
-    // Every comparison is false on a NaN, and +inf on either side of a sum makes
-    // it +inf or NaN: an infinite M, or an infinite or NaN residual, keeps the walk.
+    if (!objective_in_box_) {
+        return false;
+    }
+    // The row's residual, as the DAG's Leq computes it for a finite pair
+    // (comparison_residual). Every comparison is false on a NaN, and +inf on
+    // either side of a sum makes it +inf or NaN: an infinite M, or a bound of
+    // -inf (residual +inf), keeps the walk.
     const double m = objective_max_variation_;
-    auto clear = [&](double r) {
+    auto clear = [&](double obj) {
+        const double r = obj - bound;
         const double guard = 0x1p-40 * (std::fabs(bound) + std::fabs(r) + m);
         return r + m + guard < 0.0;
     };
@@ -2733,7 +2762,7 @@ FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, dou
 // UpdateScoreOnActivityChange's early return.
 void FeasibilityJump::nj_requeue_neighbours(int32_t v, double objective_before) {
     for (const int32_t c : model_.constraints_of_var(v)) {
-        if (c == objective_ci_ && objective_row_inert(objective_before, objective_residual())) {
+        if (c == objective_ci_ && objective_row_inert(objective_before, objective_value())) {
             ++objective_skips_novelty_;
             continue;
         }
@@ -2771,7 +2800,7 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
 
         const int32_t v = pick.var;
         const double old_value = model_.var(v).value;
-        const double objective_before = objective_residual();
+        const double objective_before = objective_value();
         model_.var_mut(v).value = pick.jump;
         delta_evaluate(model_, &v, 1);
         move_stack_.push_back({v, old_value});
@@ -2799,13 +2828,16 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         // Backtrack: revert this move and try a sibling (consumes a discrepancy).
         on_stack_[v] = 0;
         move_stack_.pop_back();
-        const double objective_before_undo = objective_residual();
+        const double objective_before_undo = objective_value();
         model_.var_mut(v).value = old_value;
         delta_evaluate(model_, &v, 1);
         for (int32_t c : model_.constraints_of_var(v)) {
             set_violated(c, is_violated(model_.node_value(cids[c])));
         }
-        nj_requeue_neighbours(v, objective_before_undo);  // v itself included, now off T
+        // v is re-queued through its rows now that it is off T -- except one that
+        // sits in no row but an inert objective row, which stays out, as in
+        // OR-Tools: nothing about its score changed.
+        nj_requeue_neighbours(v, objective_before_undo);
         budget -= 1;
     }
     return false;

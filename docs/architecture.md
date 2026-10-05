@@ -1286,11 +1286,16 @@ which kept F-failing vars in `Q'`, was worse on 6 of the 8 at the same seed.
 row spans every objective column, so walking it on each move of an objective
 variable cost O(#columns) on a MIP. `update_var` and Novelty's
 `nj_requeue_neighbours` skip it when it cannot change any neighbour's score:
-the bound is `+inf` and the residual stays `-inf`, or the row is slack by more
-than `M = max_v |a_v| (ub_v - lb_v)` both before and after the move (OR-Tools'
-`row_max_variations`; `LinearJumpScorer::row_max_variation`). Only for an
-affine objective: a nonlinear one keeps the walk even at `+inf`, since a jump
-can turn it NaN. The skip is exact for the jump table; what changes is `Q`,
+the bound is `+inf` and the objective value stays finite (at `obj = -inf` a
+candidate at `+inf` gives NaN, so the residual's `-inf` alone is not enough), or
+the row is slack by more than `M = max_v |a_v| (ub_v - lb_v)` both before and
+after the move (OR-Tools' `row_max_variations`;
+`LinearJumpScorer::row_max_variation`). The finite-bound form also needs every
+objective column inside its box, which the API does not guarantee, so each
+rebuild of `V`/`Q` checks it and switches that form off while one is outside.
+Only for an affine objective: a nonlinear one keeps the walk even at `+inf`,
+since a jump can turn it NaN. The skip is exact for the jump table up to the
+rounding the closed-form scorer already accepts; what changes is `Q`,
 which no longer re-admits unchanged objective columns after every move, so
 trajectories on models with an objective move. The bump's re-queue needs no
 skip: it visits only violated rows, and an inert row never is. Measured at
