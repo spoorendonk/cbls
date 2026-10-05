@@ -1441,6 +1441,10 @@ NB_MODULE(_cbls_core, m) {
         .def_rw("use_fj", &SearchConfig::use_fj)
         .def_rw("lns_interval", &SearchConfig::lns_interval)
         .def_rw("structural_batch_probability", &SearchConfig::structural_batch_probability)
+        // Novelty Jump batches (#209). Plain scalars, read once per draw of the
+        // batch kind, so a bad value cannot reach an unchecked index.
+        .def_rw("use_compound_moves", &SearchConfig::use_compound_moves)
+        .def_rw("novelty_jump_probability", &SearchConfig::novelty_jump_probability)
         .def_rw("structural_selection", &SearchConfig::structural_selection)
         .def_rw("structural_sample_size", &SearchConfig::structural_sample_size)
         // Copies in and out rather than sharing the C++ shared_ptr: a

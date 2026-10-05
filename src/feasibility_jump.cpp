@@ -2703,6 +2703,35 @@ double FeasibilityJump::novelty_weight(int32_t ci) const {
     return novelty_weights_[static_cast<size_t>(ci)];
 }
 
+bool FeasibilityJump::novelty_weights_consistent() const {
+    const size_t nc = novelty_weights_.size();
+    if (nc == 0) {
+        return true;  // no Novelty call yet
+    }
+    if (nc != vm_.weights.size() || nw_in_changed_.size() != nc) {
+        return false;
+    }
+    std::vector<uint8_t> seen(nc, 0);
+    for (const int32_t c : nw_changed_) {
+        const auto ci = static_cast<size_t>(c);
+        if (c < 0 || ci >= nc || seen[ci] != 0 || nw_in_changed_[ci] == 0) {
+            return false;
+        }
+        seen[ci] = 1;
+    }
+    for (size_t c = 0; c < nc; ++c) {
+        if (nw_in_changed_[c] != seen[c]) {
+            return false;
+        }
+        const double expected =
+            violated_[c] != 0 ? vm_.weights[c] : kCompoundDiscount * vm_.weights[c];
+        if (seen[c] == 0 && novelty_weights_[c] != expected) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void FeasibilityJump::nj_enqueue(int32_t var_id) {
     if (nj_in_queue_[var_id] == 0) {
         nj_in_queue_[var_id] = 1;
@@ -2718,6 +2747,7 @@ void FeasibilityJump::nj_enqueue(int32_t var_id) {
 // read. That order feeds select_novelty_var's draw, so it is part of the
 // trajectory, but no longer ascending. Once per Novelty run since #209.
 void FeasibilityJump::seed_novelty_scan_set() {
+    ++novelty_seeds_;
     for (const int32_t v : nj_queue_) {
         nj_in_queue_[static_cast<size_t>(v)] = 0;
     }

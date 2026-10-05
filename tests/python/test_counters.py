@@ -143,3 +143,26 @@ def test_counters_are_read_only() -> None:
     result = cbls.solve(_quadratic(), 0.0, 42, config=_config())
     with pytest.raises(AttributeError):
         result.counters.batches = 0
+
+
+def test_novelty_engagement_is_readable() -> None:
+    """The Novelty counters (#209) come back under their C++ names, and count.
+
+    `novelty_jump_probability = 1.0` makes every scalar batch a Novelty batch,
+    so the run cannot pass without the Novelty half having worked. With it off
+    they must all stay 0: a Novelty batch is the only thing that writes them.
+    """
+    on = _config()
+    on.use_compound_moves = True
+    on.novelty_jump_probability = 1.0
+    # A Novelty batch charges no GLS iteration, so the budget binds on the batch
+    # count (see `budget_exhausted()`): keep it small.
+    on.max_iterations = 20
+    counters = cbls.solve(_quadratic(), 0.0, 42, config=on).counters
+    assert counters.novelty_batches == counters.batches > 0
+    assert counters.novelty_moves > 0
+    assert 0 <= counters.novelty_commits <= counters.novelty_moves
+    assert counters.novelty_weight_bumps >= 0
+
+    off = cbls.solve(_quadratic(), 0.0, 42, config=_config()).counters
+    assert (off.novelty_moves, off.novelty_commits, off.novelty_weight_bumps) == (0, 0, 0)

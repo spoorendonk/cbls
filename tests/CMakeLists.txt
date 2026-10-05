@@ -20,6 +20,7 @@ add_executable(cbls_tests
     test_fj_trajectory_fence.cpp
     test_fj_scan_set.cpp
     test_fj_objective_row.cpp
+    test_fj_novelty_incremental.cpp
     test_linear_jump.cpp
     test_perturb.cpp
     test_unbounded_domain.cpp

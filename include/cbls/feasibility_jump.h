@@ -435,6 +435,18 @@ public:
     /// Throws `std::out_of_range` on a row the model does not have, or before
     /// any Novelty call has sized W'.
     [[nodiscard]] double novelty_weight(int32_t ci) const;
+    /// Read-only check of W's incremental upkeep (#209), for tests: true iff
+    /// every row NOT noted for the next level reset holds its level-start
+    /// novelty weight as of the current assignment and weights --
+    /// W[c] if the row is violated, kCompoundDiscount * W[c] otherwise -- and
+    /// the noted list agrees with its flags. That is the invariant that lets a
+    /// level reset visit only the noted rows. Meaningful between calls, and
+    /// vacuously true before the first Novelty call. O(#rows).
+    [[nodiscard]] bool novelty_weights_consistent() const;
+    /// How many times Q' has been seeded from V's rows since construction:
+    /// once per apply_novelty_jump() or novelty_batch() since #209, where it
+    /// used to be once per committed compound move and per discrepancy level.
+    [[nodiscard]] int64_t novelty_scan_set_seeds() const { return novelty_seeds_; }
 
 private:
     // One GLS pass over the constraints whose weight is currently > 0 (the
@@ -975,6 +987,7 @@ private:
     int64_t novelty_moves_ = 0;                         // see novelty_moves()
     int64_t novelty_commits_ = 0;                       // see novelty_commits()
     int64_t novelty_bumps_ = 0;                         // see novelty_weight_bumps()
+    int64_t novelty_seeds_ = 0;                         // see novelty_scan_set_seeds()
     std::vector<double> novelty_weights_;               // W'
     // Rows whose W' may differ from its level-start value (W for a violated
     // row, kCompoundDiscount * W otherwise), each once: OR-Tools'
