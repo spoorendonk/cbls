@@ -183,7 +183,7 @@ TEST_CASE("FJ's batch-API trajectory matches its recorded fingerprint",
           "[fj][violated_set][trajectory]") {
     const uint64_t h = batch_api_trajectory();
     CAPTURE(h);
-    REQUIRE(h == 0x11b541a11804e78bULL);
+    REQUIRE(h == 0x98500f946b1c27d5ULL);
 }
 
 TEST_CASE("FJ's two-phase run() trajectory matches its recorded fingerprint",

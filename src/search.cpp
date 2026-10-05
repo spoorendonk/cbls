@@ -1752,9 +1752,17 @@ void ViolationLSLoop::maybe_diversify(BatchKind kind, bool improved) {
         // budgeted run (no wall clock) the only one it has. Carrying the
         // count across keeps "100 non-improving batches" meaning what it
         // says while still buying the early kick.
+        //
+        // Nor Algorithm 6's A (#209): this early kick is #102's, not the
+        // paper's perturbation (lines 11-15, which redraw A), and only an FJ
+        // batch can report itself stuck. Letting it redraw would end FJ
+        // stretches at every unproductive batch while Novelty stretches run to
+        // the full perturbation_period, tilting a 50/50 draw toward Novelty.
         const int carried = stagnation_;
+        const bool redraw = redraw_algorithm_;
         diversify(/*allow_lns=*/!have_feasible_);
         stagnation_ = carried;
+        redraw_algorithm_ = redraw;
     }
 }
 

@@ -2833,7 +2833,8 @@ void FeasibilityJump::reset_changed_novelty_weights() {
             continue;
         }
         for (const int32_t vp : vars_of_constraint_[ci]) {
-            if (on_stack_[static_cast<size_t>(vp)] == 0) {
+            // The same admission test as nj_requeue_neighbours.
+            if (on_stack_[static_cast<size_t>(vp)] == 0 && participates_in_active_violated(vp)) {
                 nj_enqueue(vp);
             }
         }
@@ -2912,13 +2913,12 @@ FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, dou
     NoveltyPick best;
     size_t best_idx = 0;
     size_t n = 0;
-    constexpr size_t kNoveltySample = 3;
     auto remove_at = [this](size_t idx) {
         nj_in_queue_[static_cast<size_t>(nj_queue_[idx])] = 0;
         nj_queue_[idx] = nj_queue_.back();
         nj_queue_.pop_back();
     };
-    while (n < nj_queue_.size() && n < kNoveltySample) {
+    while (n < nj_queue_.size() && n < static_cast<size_t>(kNoveltySample)) {
         const auto idx =
             n + static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(nj_queue_.size() - n)));
         const int32_t v = nj_queue_[idx];
@@ -2963,6 +2963,17 @@ FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, dou
 // variable's novelty score, W score or F verdict can have changed on its
 // account. OR-Tools' compound mode skips it the same way, through
 // UpdateScoreOnActivityChange's early return.
+//
+// Only a var that sits in an active violated row is re-queued, as update_var
+// re-queues for FJ: Algorithm 1 lines 16-17 admit v' to Q only "if V meets
+// G_v'", and OR-Tools' AddVarToScan -> ShouldScan likewise wants a violated
+// row. Nothing is lost: a var all of whose rows hold can only break rows, so its
+// score and novelty score are both <= 0, and s_m <= 0 on the stack and s_c >= 0
+// make it fail both arms of F. Before #209 Q' admitted every neighbour, which
+// the per-commit reseed then threw away; without the reseed, Q' filled with
+// such vars and select_novelty_var scored each once per re-queue -- 88% of a
+// binkar10_1 run at c8fc6bf. The counts are current here: v's rows were
+// re-evaluated (set_violated) before this is called.
 void FeasibilityJump::nj_requeue_neighbours(int32_t v, double objective_before) {
     for (const int32_t c : model_.constraints_of_var(v)) {
         if (c == objective_ci_ && objective_row_inert(objective_before, objective_value())) {
@@ -2970,7 +2981,7 @@ void FeasibilityJump::nj_requeue_neighbours(int32_t v, double objective_before) 
             continue;
         }
         for (const int32_t vp : vars_of_constraint_[static_cast<size_t>(c)]) {
-            if (on_stack_[static_cast<size_t>(vp)] == 0) {
+            if (on_stack_[static_cast<size_t>(vp)] == 0 && participates_in_active_violated(vp)) {
                 nj_enqueue(vp);
             }
         }
@@ -3124,9 +3135,20 @@ bool FeasibilityJump::novelty_batch(int64_t batch_iterations) {
     // row in V before the bump trusts the counted bits. O(|V|).
     reconcile_all_counted();
     begin_novelty_run();
-    // <= 0 is "no per-batch limit", as for batch(): the deadline then ends it.
-    nj_work_remaining_ =
-        batch_iterations > 0 ? batch_iterations : std::numeric_limits<int64_t>::max();
+    // The batch's move budget is batch_iterations / kNoveltySample: the closest
+    // a move count gets to the equal per-batch effort Algorithm 6 assumes (its
+    // batches, like OR-Tools', are bounded by the same deterministic time
+    // whichever algorithm runs). An FJ iteration applies the best of its sample
+    // from CACHED jumps and re-scores only the vars a move invalidated; a
+    // Novelty move scores its whole sample -- at least kNoveltySample vars --
+    // afresh, under W' and again under W, since no jump is cached under W'. So
+    // per applied move Novelty scores at least kNoveltySample times what FJ
+    // does. Derived from the sample size, not fitted; what it measured to on
+    // MIPfeas is in docs/architecture.md (#209). <= 0 is "no per-batch limit",
+    // as for batch(): the deadline then ends it.
+    nj_work_remaining_ = batch_iterations > 0
+                             ? std::max<int64_t>(1, batch_iterations / kNoveltySample)
+                             : std::numeric_limits<int64_t>::max();
     nj_moves_this_call_ = 0;
     bool feasible = false;
     // The lazy decay's scale is local to the batch, as it is to gls_loop: W and

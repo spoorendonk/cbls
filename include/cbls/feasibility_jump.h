@@ -410,11 +410,13 @@ public:
     /// Each time a whole ApplyNoveltyJump finds no compound move at its largest
     /// discrepancy budget, the GLS weights are decayed and bumped exactly as
     /// batch()'s are, and the search goes on; W' and Q' are set up once per
-    /// batch and maintained incrementally from there. `batch_iterations` bounds
-    /// the batch's work in the unit batch() uses: one applied move (a compound
-    /// move's legs and the moves it explores and undoes each count once, undos
-    /// themselves not at all) or one weight bump; <= 0 sets no limit, as for
-    /// batch(), and leaves the deadline to end it. Returns true if no active
+    /// batch and maintained incrementally from there. The batch applies at most
+    /// `batch_iterations / 3` moves (a compound move's legs and the moves it
+    /// explores and undoes each count once, undos not at all; a weight bump
+    /// counts as one too), since a Novelty move scores its whole sample of 3
+    /// afresh where an FJ iteration reads cached jumps -- see the definition;
+    /// <= 0 sets no limit, as for batch(), and leaves the deadline to end it.
+    /// Returns true if no active
     /// constraint is violated. Leaves FJ's own state (V, Q, jump table) current,
     /// so the caller needs no resync() -- unlike apply_novelty_jump(). Charges
     /// nothing to iterations(); see novelty_moves() and friends.
@@ -985,6 +987,7 @@ private:
     // Novelty Jump state (Algorithms 4-5).
     static constexpr double kCompoundDiscount = 1.0 / 1024.0;  // epsilon (OR-tools value)
     static constexpr int64_t kNoveltyWorkBudget = 256;  // max moves applied per apply_novelty_jump
+    static constexpr int64_t kNoveltySample = 3;        // vars select_novelty_var keeps (paper §4)
     int64_t nj_work_remaining_ = 0;                     // bounds compound-move search cost
     int64_t nj_moves_this_call_ = 0;                    // see novelty_moves_last_call()
     int64_t novelty_moves_ = 0;                         // see novelty_moves()
