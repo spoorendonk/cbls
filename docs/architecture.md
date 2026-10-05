@@ -1308,12 +1308,16 @@ binkar10_1's objective-row visits (none in Novelty), so its 1.10x is the moved
 trajectory, not the skip; on neos-662469 it skipped 20% of `update_var`'s and
 13% of Novelty's. Far less than the skip-always probes quoted in the issue,
 because both instances are feasible within 0.5s and the row is then mostly
-tight; the counts and regimes are in the comment above `objective_row_inert`. Where no feasible point is found and
-the bound stays `+inf`, the skip fires on every move: on the 11-instance smoke
-roster at 60s (same seed, `40e04c8` against `8905532`, serial, load 1.47-1.49)
-enlight_hard went 2.43M -> 7.45M iterations, atlanta-ip 198k -> 919k and
-neos-5114902-kasavu 15.8k -> 28.8k, still without a solution; the eight
-feasible instances changed by under 2%. Feasibility stayed 8/11, the same 8.
+tight; the counts and regimes are in the comment above `objective_row_inert`.
+Where no feasible point is found and the bound stays `+inf`, the skip fires on
+every move: on the 11-instance smoke roster at 60s (same seed, `40e04c8`
+against `8905532`, serial, load 1.47-1.49) enlight_hard went 2.43M -> 7.45M
+iterations, atlanta-ip 198k -> 919k and neos-5114902-kasavu 15.8k -> 28.8k,
+still without a solution; the eight feasible instances changed by under 2%.
+Feasibility stayed 8/11, the same 8. Both measured commits predate the
+finite-objective and in-box guards (`05d872d`); on these MIP models the
+objective is finite and every column stays in its box, so the guards never
+change the predicate there and the trajectories are the same.
 
 ### Two-Phase Linear-First (construction only)
 
