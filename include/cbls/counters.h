@@ -13,8 +13,9 @@ namespace cbls {
 /// it. It was a detail of `src/search.cpp` until #169; nothing else about it
 /// changed.
 ///
-/// Structural and Novelty batches commit changes outside FeasibilityJump's
-/// scan-set and jump-table, so the loop owes an `fj.resync()` after them.
+/// Structural batches commit changes outside FeasibilityJump's scan-set and
+/// jump-table, so the loop owes an `fj.resync()` after them. A Novelty batch
+/// rebuilds FJ's state itself (#209) and needs none.
 enum class BatchKind : std::uint8_t { FeasibilityJump, NoveltyJump, Structural };
 
 /// Stable snake_case token for a `BatchKind` ("feasibility_jump",

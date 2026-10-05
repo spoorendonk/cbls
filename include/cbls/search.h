@@ -147,11 +147,12 @@ struct SearchConfig {
     // immutable, and copying a k-nearest list per worker is the cost sharing the
     // model's structure exists to avoid (#157).
     std::shared_ptr<const NeighbourList> structural_neighbours;
-    // Novelty Jump is implemented, wired, and unit-tested, but OFF by default:
-    // its per-batch cost is not yet bounded tightly enough for the large
-    // continuous benchmarks (it burns the time budget there). Enable + tune
-    // (probability, work budget, when-stuck-only) in P5 (#70); the paper uses
-    // 0.5 with deterministic-time-bounded batches.
+    // Novelty Jump is implemented, wired, and unit-tested, but OFF by default.
+    // Since #209 a Novelty batch is bounded by batch_iterations (3 per move, 1
+    // per bump) and polls the deadline per move and per bump, so the original
+    // reason -- an unbounded per-batch cost on the large continuous benchmarks
+    // -- no longer holds; the default stays off pending a measurement there.
+    // The MIPfeas runner turns it on; the paper uses 0.5.
     bool use_compound_moves = false;  // run Novelty Jump batches (else FJ only)
     // P(a scalar batch is Novelty Jump), drawn afresh every batch -- not held
     // until a new best as ViolationLS §5 does; see pick_batch_kind for the

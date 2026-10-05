@@ -1286,9 +1286,10 @@ which kept F-failing vars in `Q'`, was worse on 6 of the 8 at the same seed.
 
 **The objective row is skipped while inert (#210).** The folded `obj <= bound`
 row spans every objective column, so walking it on each move of an objective
-variable cost O(#columns) on a MIP. `update_var` and Novelty's
-`nj_requeue_neighbours` skip it when it cannot change any neighbour's score:
-the bound is `+inf` and the objective value stays finite (at `obj = -inf` a
+variable cost O(#columns) on a MIP. `update_var`, Novelty's
+`nj_requeue_neighbours` and (since #209) its W' reset re-queue
+`reset_changed_novelty_weights` skip it when it cannot change any neighbour's
+score: the bound is `+inf` and the objective value stays finite (at `obj = -inf` a
 candidate at `+inf` gives NaN, so the residual's `-inf` alone is not enough), or
 the row is slack by more than `M = max_v |a_v| (ub_v - lb_v)` both before and
 after the move (OR-Tools' `row_max_variations`;
@@ -1305,7 +1306,8 @@ skip: it visits only violated rows, and an inert row never is. Measured at
 binkar10_1 795k -> 876k GLS iterations with compound moves (1.10x), 1.85M ->
 1.83M without; neos-662469 6.9k -> 10.4k (1.50x), 129k -> 131k without. Those
 compound-on ratios are single-seed and trajectory-confounded, since `Q` changes:
-a counting build with compound moves on saw the walk skipped on 0.12% of
+a counting build at `05d872d` with compound moves on (before #209 reshaped
+Novelty into batches, so these shares no longer describe Novelty) saw the walk skipped on 0.12% of
 binkar10_1's objective-row visits (none in Novelty), so its 1.10x is the moved
 trajectory, not the skip; on neos-662469 it skipped 20% of `update_var`'s and
 13% of Novelty's. Far less than the skip-always probes quoted in the issue,
@@ -3301,7 +3303,7 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
     │
     ├── run batch:
     │     FJ:         fj.batch(batch_iterations)      # GLS: best-of-N jump + weight bump
-    │     NOVELTY:    fj.apply_novelty_jump()         # compound moves; resync
+    │     NOVELTY:    fj.novelty_batch(batch_iters)   # GLS over ApplyNoveltyJump
     │     STRUCTURAL: structural_.run()               # move generators; resync
     │
     ├── if max_real_violation() <= config.feasibility_tolerance:
@@ -3355,7 +3357,7 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `use_fj` | true | `SearchConfig` | vestigial (GFJ always the engine) |
 | `max_iterations` | 0 | `SearchConfig` | GLS-iteration cap (0 = use time_limit) |
 | `skip_init` | false | `SearchConfig` | keep the current assignment whole — suppresses both List/Set randomisation and FJ's scalar start (portfolio restarts, caller-supplied starts) |
-| `batch_iterations` | 1000 | `SearchConfig` | GLS iterations per FJ batch |
+| `batch_iterations` | 1000 | `SearchConfig` | GLS iterations per FJ batch; also sizes a Novelty batch, charged 3 per move and 1 per bump |
 | `perturbation_period` | 100 | `SearchConfig` | stagnant batches before a diversification kick |
 | `perturbation_probability` | 0.1 | `SearchConfig` | per-var scalar randomisation probability on perturb; also scales the List/Set moves per kick (a no-op kick moves one var anyway) |
 | `structural_batch_probability` | -1 (auto) | `SearchConfig` | P(structural batch); auto 0.33 when a generator would be built, else 0; auto is 1 when FJ has no movable, row-read variable (#201) |

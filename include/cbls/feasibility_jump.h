@@ -321,7 +321,8 @@ public:
     [[nodiscard]] std::optional<JumpResult> cached_jump(int32_t var_id) const;
     /// How many times the objective row's neighbour walk was skipped as inert
     /// (#210) -- by update_var, and by Novelty's re-queue after a move or undo
-    /// -- since construction. Diagnostics, and the pin on each site's wiring.
+    /// and its W' reset re-queue (#209) -- since construction. Diagnostics, and the pin on each
+    /// site's wiring.
     [[nodiscard]] int64_t objective_walks_skipped() const { return objective_skips_fj_; }
     [[nodiscard]] int64_t novelty_objective_walks_skipped() const {
         return objective_skips_novelty_;
@@ -399,7 +400,8 @@ public:
     // fresh W' and Q', capped at novelty_work_budget() applied moves. Commits
     // the improving compound move(s) it finds (left applied) and returns true
     // if it reaches feasibility, else leaves any committed moves applied and
-    // returns false. Call from a local optimum with violated_/weights current
+    // returns false. Each applied move charges 3 to iterations(), as in
+    // novelty_batch(). Call from a local optimum with violated_/weights current
     // (e.g. right after begin() or a stalled batch); the caller must resync()
     // afterwards. Uses novelty weights W' = kCompoundDiscount*W for constraints
     // not violated at entry, full W for those violated at entry. The search
