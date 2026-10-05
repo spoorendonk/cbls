@@ -1282,6 +1282,25 @@ which kept F-failing vars in `Q'`, was worse on 6 of the 8 at the same seed.
 `update_var` writes `X[v]`, delta-evaluates, refreshes the violated set for
 `v`'s constraints, invalidates neighbour jumps, and replenishes `Q` with vars now participating in active violated constraints.
 
+**The objective row is skipped while inert (#210).** The folded `obj <= bound`
+row spans every objective column, so walking it on each move of an objective
+variable cost O(#columns) on a MIP. `update_var` and Novelty's
+`nj_requeue_neighbours` skip it when it cannot change any neighbour's score:
+the bound is `+inf` and the residual stays `-inf`, or the row is slack by more
+than `M = max_v |a_v| (ub_v - lb_v)` both before and after the move (OR-Tools'
+`row_max_variations`; `LinearJumpScorer::row_max_variation`). Only for an
+affine objective: a nonlinear one keeps the walk even at `+inf`, since a jump
+can turn it NaN. The skip is exact for the jump table; what changes is `Q`,
+which no longer re-admits unchanged objective columns after every move, so
+trajectories on models with an objective move. The bump's re-queue needs no
+skip: it visits only violated rows, and an inert row never is. Measured at
+`713bbf2` against `8905532` (MIPfeas, 20s, seed 42, serial, load 1.46-1.49):
+binkar10_1 795k -> 876k GLS iterations with compound moves (1.10x), 1.85M ->
+1.83M without; neos-662469 6.9k -> 10.4k (1.50x), 129k -> 131k without. Far
+less than the skip-always probes quoted in the issue, because both instances
+are feasible within 0.5s and the row is then mostly tight; the regimes are in
+the comment above `objective_row_inert`.
+
 ### Two-Phase Linear-First (construction only)
 
 `FeasibilityJump::run()` (standalone construction) optionally runs GLS on the

@@ -1652,6 +1652,21 @@ void FeasibilityJump::update_var(int32_t var_id) {
 // applies the same test to EVERY row; here only the objective row has it, the
 // one row whose support is the whole model.
 //
+// MEASURED, and smaller than the issue's probes: MIPfeas, 20s, seed 42, one
+// thread, serial under the wall-clock lock at 1-minute load 1.46-1.49, engine
+// 713bbf2 against 8905532 (AMD Ryzen 5 5600H). GLS iterations, compound moves
+// on (the runner's default) / off:
+//   binkar10_1   795k -> 876k (1.10x)    1.85M -> 1.83M (0.99x)
+//   neos-662469  6.9k -> 10.4k (1.50x)   129k -> 131k (1.01x)
+// #206's attribution probe skipped the row UNCONDITIONALLY (neos-662469 6.6k
+// -> 37k), and the probe behind the issue's 1.26x did too. Both instances find
+// a first feasible point inside 0.5s, after which the bound is finite and the
+// row is mostly tight: a counting build at 10s without compound moves saw it
+// violated on 40-57% of the objective-row visits, and skipped it on 0.2%
+// (binkar10_1, whose M is 9e6 through the 2128 continuous columns propagation
+// gave finite but wide boxes) and 5% (neos-662469, M = 5e4). The skip-always
+// gain is the price of a stale jump table, not a faithful saving.
+//
 // Assumes each variable's value lies inside its declared box, which every
 // writer in the engine keeps (clamp_to_domain, random_in_domain); a value set
 // outside it from the API can move a jump further than M.
