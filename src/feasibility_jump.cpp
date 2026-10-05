@@ -1666,11 +1666,19 @@ void FeasibilityJump::update_var(int32_t var_id) {
 // #206's attribution probe skipped the row UNCONDITIONALLY (neos-662469 6.6k
 // -> 37k), and the probe behind the issue's 1.26x did too. Both instances find
 // a first feasible point inside 0.5s, after which the bound is finite and the
-// row is mostly tight: a counting build at 10s without compound moves saw it
-// violated on 40-57% of the objective-row visits, and skipped it on 0.2%
-// (binkar10_1, whose M is 9e6 through the 2128 continuous columns propagation
-// gave finite but wide boxes) and 5% (neos-662469, M = 5e4). The skip-always
-// gain is the price of a stale jump table, not a faithful saving.
+// row is mostly tight. A counting build (engine 05d872d + counters, 20s, seed
+// 42, compound moves on, serial, load 1.46-1.48; counts include LNS repairs)
+// saw the walk skipped on:
+//   binkar10_1   update_var 694 of 598,688 visits (0.12%, all before the
+//                first feasible point), Novelty 0 of 319,044
+//   neos-662469  update_var 1,891 of 9,428 (20%), Novelty 973 of 7,491 (13%)
+// So binkar10_1's 1.10x is NOT this mechanism: its M is 9e6 (2128 continuous
+// columns that propagation gave finite but wide boxes), the slack test never
+// passes, and the difference is the changed Q moving the trajectory. Read both
+// compound-on ratios as single-seed and trajectory-confounded; neos-662469's
+// is at most partly the skip. Without compound moves the counts were 0.25% and
+// 5% and the ratios ~1.0x. The skip-always gain is the price of a stale jump
+// table, not a faithful saving.
 //
 // The finite-bound form needs each column's value inside its declared box,
 // since M bounds a jump only from inside it. FJ's own moves keep it there
