@@ -1432,8 +1432,9 @@ bool ViolationLSLoop::budget_exhausted() {
     // Structural batches do not charge fj.iterations(), so on a
     // List/Set model with no wall clock the iteration budget alone cannot
     // guarantee termination (structural_batch_probability = 1.0 would spin
-    // forever). Batches <= iterations by construction, so this only bites
-    // when iterations have stalled.
+    // forever). A batch that charges nothing -- every Structural batch, or an
+    // FJ or Novelty batch that starts with V empty -- is the only way batches
+    // can outrun iterations, so this only bites when iterations have stalled.
     if (config_.max_iterations > 0 && batches_ >= config_.max_iterations) {
         termination_ = TerminationReason::IterationLimit;
         return true;

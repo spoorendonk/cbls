@@ -66,10 +66,10 @@ include(Catch)
 #
 # Measured at Release: the 6 [slow]-tagged tests account for ~46s of the suite's
 # aggregate (summed per-test) time; with `-j$(nproc)` the full run is ~25s of
-# wall clock. The remaining 707 (703 discovered, plus the
-# four hand-registered tests that carry no slow label --
-# timing_structural_batch_deadline and hang_guard_iteration_only_portfolio
-# here, and the two shell gate tests clang_tidy_gate_probe and
+# wall clock. The remaining 721 (716 discovered, plus the
+# five hand-registered tests that carry no slow label --
+# timing_structural_batch_deadline, hang_guard_iteration_only_portfolio and
+# hang_guard_novelty_zero_move_batch here, and the two shell gate tests clang_tidy_gate_probe and
 # gate_lib_shell_test in the root CMakeLists.txt)
 # finish in ~12s with `-j`, which is what pre-commit runs via `ctest -LE slow`.
 # pre-push still runs everything.
@@ -82,11 +82,11 @@ include(Catch)
 # the tag -- "measure both ways before tagging" applies to KEEPING a tag as
 # much as to adding one.
 #
-# The roster is therefore 717 ctest tests: 709 discovered here, the 6
+# The roster is therefore 731 ctest tests: 722 discovered here, the 7
 # hand-registered ones below, and the 2 non-Catch2 shell gate tests the root
-# CMakeLists.txt registers. The 715 Catch2 ones are one more than the 714
-# TEST_CASEs in tests/*.cpp, because hang_guard_iteration_only_portfolio is both discovered
-# and hand-registered -- see its note below. `ctest -N -L slow` reports 10, not 6 --
+# CMakeLists.txt registers. The 729 Catch2 ones are two more than the 727
+# TEST_CASEs in tests/*.cpp, because the two hang_guard_* tests are both
+# discovered and hand-registered -- see their notes below. `ctest -N -L slow` reports 10, not 6 --
 # the three #125 throughput floors and #191's hook deadline carry the slow
 # LABEL without the Catch2 [slow] TAG. Re-derive with `ctest -N`, never by incrementing.
 #
