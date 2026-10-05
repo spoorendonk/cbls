@@ -148,8 +148,10 @@ struct SearchConfig {
     // continuous benchmarks (it burns the time budget there). Enable + tune
     // (probability, work budget, when-stuck-only) in P5 (#70); the paper uses
     // 0.5 with deterministic-time-bounded batches.
-    bool use_compound_moves = false;        // run Novelty Jump batches (else FJ only)
-    double novelty_jump_probability = 0.5;  // P(a batch is Novelty Jump)
+    bool use_compound_moves = false;  // run Novelty Jump batches (else FJ only)
+    // P(Algorithm 6's A is Novelty Jump) at each draw of A: at the start, on a
+    // new best and on a kick, kept for every batch in between (#209).
+    double novelty_jump_probability = 0.5;
 
     // A constraint counts as satisfied when its violation is <= this. Absolute,
     // applied to the constraint node's violation value (for an equality row that

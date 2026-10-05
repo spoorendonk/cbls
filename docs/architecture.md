@@ -1018,7 +1018,9 @@ feasibility test swept every row. Now a dense list of violated rows and a
 per-variable count of active violated rows are maintained wherever a row flips,
 so the participation test is O(1) and those scans are O(|V|), plus the variable
 lists of the rows they queue from. A Novelty batch as a whole stays O(#rows),
-through `init_novelty_weights` and the resync that follows it. At #174
+through `init_novelty_weights` and the rebuild it ends with -- once per batch
+since #209, which stopped Novelty reseeding its scan set per commit and per
+level (see [Novelty Jump](#novelty-jump)). At #174
 (`f9edd3b`) the scans that queue variables sorted V back into ascending row
 order first, because the scan set's order feeds the RNG draw, and trajectories
 were bit-identical to `c19c982`: an iteration-bounded fingerprint of `solve()`
@@ -1355,7 +1357,7 @@ The ViolationLS outer loop owns the iteration clock and calls:
 ## Novelty Jump
 
 **Files:** `include/cbls/feasibility_jump.h`, `src/feasibility_jump.cpp`
-(`apply_novelty_jump`)
+(`novelty_batch`, `apply_novelty_jump`)
 
 Novelty Jump (paper Algorithms 4–5) is a bounded-backtracking **compound-move**
 search that escapes local optima single-variable FJ cannot — chained-invariant
@@ -1364,7 +1366,8 @@ does.
 
 ### Novelty Weights
 
-On entry it builds `W' = ` novelty weights from the GLS weights `W`:
+At the start of a Novelty batch it builds `W' = ` novelty weights from the GLS
+weights `W`:
 
 - `W'[c] = W[c]` for constraints **violated at entry**,
 - `W'[c] = kCompoundDiscount * W[c]` (`kCompoundDiscount = 1/1024`, OR-Tools'
@@ -1373,7 +1376,12 @@ On entry it builds `W' = ` novelty weights from the GLS weights `W`:
 Breaking a currently-satisfied constraint is therefore *cheap*, which lets the
 search build chains that target the initially-broken constraints. When a move
 breaks a satisfied constraint, that constraint is promoted to full weight and
-its vars are enqueued.
+its vars are enqueued. Algorithm 4 re-initialises `W'` this way at every
+discrepancy level; since #209 only the rows noted since the last reset are
+redone (`reset_changed_novelty_weights`, OR-Tools'
+`ResetChangedCompoundWeights`), which reproduces the whole-row re-init exactly
+because every other row still holds its re-init value — the comment above
+that function gives the argument, and `novelty_weights_consistent()` checks it.
 
 ### Bounded-Backtracking Search
 
@@ -1381,23 +1389,47 @@ its vars are enqueued.
 explicit move stack (the paper's set `T`). `s_m` is the cumulative
 *original-weight* score of moves on the stack; `s_c` tracks the best child score
 explored at the current level. A candidate var is selected (`select_novelty_var`)
-as the best of up to 3 sampled vars in `Q\T` passing the filter
+as the best — by **novelty score**, as OR-Tools ranks its sample (#209) — of up
+to 3 sampled vars in `Q\T` passing the filter
 `(s_m + W'-score > 0) OR (W-score > s_c)`, scored by `compute_var_jump` under
 `W'`. The move is applied; if `s_m + W-score > 0` the compound move is committed
 (left applied) and returns true; otherwise it recurses, and on failure backtracks
-(reverting the move and consuming a `budget` discrepancy).
+(reverting the move and consuming a `budget` discrepancy — at the root too, as
+in the paper; OR-Tools does not count root backtracks, see the comment above
+`novelty_jump_search`).
 
-`apply_novelty_jump()` iterates `budget = 0, 1, 2` (iterated-deepening style),
-committing improving compound moves and restarting from the new state; it stops
-when feasibility is reached or `kNoveltyWorkBudget = 256` total applied moves are
-exhausted. It commits its moves in place and returns whether it reached
-feasibility; the caller must `resync()` afterward.
+One ApplyNoveltyJump (`novelty_descent`, Algorithm 4) iterates `budget = 0, 1,
+2`, committing improving compound moves and restarting at `budget = 0` from the
+new state. A commit keeps `Q'` and `W'` as they are: the moves that made it up
+already re-queued every var whose verdict they could have changed.
+
+### The Novelty batch
+
+`novelty_batch(batch_iterations)` is Algorithm 6 line 22, GLS with
+ApplyNoveltyJump as its move (#209): when a whole ApplyNoveltyJump fails at
+`budget = 2` — a Novelty local minimum — the GLS weights are decayed and bumped
+exactly as an FJ batch's are (`W'` follows on the bumped rows), and the search
+goes on. `W'` is initialised and `Q'` seeded once per batch; the batch's work is
+bounded by `batch_iterations` applied moves plus bumps, its wall clock by the
+GLS loop's deadline stride, and it ends by rebuilding FJ's `V`, `Q` and jump
+table, so the caller needs no resync. It charges nothing to the GLS iteration
+count; `SearchCounters::novelty_moves`, `novelty_commits` and
+`novelty_weight_bumps` record its work. Before #209 a Novelty batch was a single
+ApplyNoveltyJump capped at 256 moves whose failure was ignored, it reseeded
+`Q'` from every violated row after every commit and at every level, and the
+search redrew FJ-or-Novelty every batch.
+
+`apply_novelty_jump()` is one stand-alone ApplyNoveltyJump from a fresh `W'` and
+`Q'`, capped at `kNoveltyWorkBudget = 256` applied moves; the caller must
+`resync()` afterward. Tests and the trajectory fence's history use it; the
+search runs `novelty_batch`.
 
 > **Status:** Novelty Jump is implemented, wired, and unit-tested, but **off by
-> default** (`SearchConfig::use_compound_moves = false`). Its per-batch cost is
-> not yet bounded tightly enough for the large continuous benchmarks. When
-> enabled, `novelty_jump_probability` (default 0.5, matching the paper) sets the
-> fraction of batches that are Novelty Jump.
+> default** (`SearchConfig::use_compound_moves = false`; the MIPfeas runner turns
+> it on). When enabled, `novelty_jump_probability` (default 0.5, matching the
+> paper) is the probability that each draw of Algorithm 6's `A` picks Novelty;
+> the draw is kept until a new best or a perturbation (see
+> [Main Loop](#main-loop)).
 
 ---
 
@@ -1900,11 +1932,14 @@ point**; the kick and LNS destroy need the window above.
 While time and `max_iterations` remain, each pass:
 
 1. **Pick the batch kind.** With probability `structural_batch_probability`,
-   STRUCTURAL; else with probability `novelty_jump_probability` (only when
-   `use_compound_moves`), NOVELTY JUMP; else FEASIBILITY JUMP. Structural and
-   novelty batches mutate state outside FJ's bookkeeping, so they set a `resync`
-   flag.
-2. **Run the batch.** `fj.batch(batch_iterations)`, `fj.apply_novelty_jump()`,
+   STRUCTURAL; else, with `use_compound_moves`, Algorithm 6's `A` — NOVELTY JUMP
+   with probability `novelty_jump_probability`, else FEASIBILITY JUMP — which is
+   drawn at the start, on a new best and on a kick (wherever `rho` is
+   resampled) and kept for every batch in between (#209); without compound
+   moves, FEASIBILITY JUMP. Structural batches mutate state outside FJ's
+   bookkeeping, so they set a `resync` flag; a Novelty batch rebuilds FJ's state
+   itself.
+2. **Run the batch.** `fj.batch(batch_iterations)`, `fj.novelty_batch(batch_iterations)`,
    or `StructuralBatch::run(...)`. Just before it, **portfolio only**, sync the
    shared bound (#179): if the pool's best feasible objective earns a tighter
    bound than this worker holds, tighten to it (see
@@ -1927,8 +1962,8 @@ While time and `max_iterations` remain, each pass:
    the first feasible solution ends the search.
 5. **On a new best**, reset GLS weights to 1, resample `rho`, and **disarm the
    Float escape probe** — the latch `SearchResult::escape_probe_armed` reports.
-6. **Otherwise** increment `stagnation`, and `resync()` if a structural/novelty
-   /hook mutation happened.
+6. **Otherwise** increment `stagnation`, and `resync()` if a structural or hook
+   mutation happened.
 7. **Arm the Float escape probe** if the search is stuck: either
    `stagnation >= perturbation_period` (armed at the same site as the kick in
    step 8), or — with a wall clock — a quarter of the budget elapsed since the

@@ -395,13 +395,15 @@ public:
 
     // Novelty Jump (paper Algorithms 4-5): a bounded-backtracking compound-move
     // search that escapes local optima single-variable FJ cannot (chained-
-    // invariant fixes). Commits the improving compound move(s) it finds (left
-    // applied) and returns true if it reaches feasibility, else leaves any
-    // committed moves applied and returns false. Call from a local optimum with
-    // violated_/weights current (e.g. right after begin() or a stalled batch);
-    // the caller must resync() afterwards. Uses novelty weights W' =
-    // kCompoundDiscount*W for constraints not violated at entry, full W for
-    // those violated at entry.
+    // invariant fixes). One stand-alone ApplyNoveltyJump (Algorithm 4) from a
+    // fresh W' and Q', capped at novelty_work_budget() applied moves. Commits
+    // the improving compound move(s) it finds (left applied) and returns true
+    // if it reaches feasibility, else leaves any committed moves applied and
+    // returns false. Call from a local optimum with violated_/weights current
+    // (e.g. right after begin() or a stalled batch); the caller must resync()
+    // afterwards. Uses novelty weights W' = kCompoundDiscount*W for constraints
+    // not violated at entry, full W for those violated at entry. The search
+    // runs novelty_batch() instead.
     bool apply_novelty_jump();
     /// One Novelty Jump BATCH (#209): GLS with ApplyNoveltyJump as its move
     /// (ViolationLS Algorithm 6 line 22, Algorithm 3 with M = Algorithm 4).
@@ -693,8 +695,9 @@ private:
     // exit that decayed (and, in an unlimited gls()/run() loop, one per 1347
     // decays at rho = 0.95).
     // A Novelty batch as a whole likewise stays O(#rows), through
-    // init_novelty_weights (every row, every b-round) and the caller's resync;
-    // only the seeds repeated after each committed compound move got cheaper.
+    // init_novelty_weights and the rebuild it ends with -- once per batch since
+    // #209, which made W' and Q' incremental inside it (see the Novelty section
+    // of feasibility_jump.cpp).
     //
     // The price is a constant per row FLIP: a push or a swap-remove, and a walk
     // of the flipped row's variable list to adjust the counts. In update_var that
