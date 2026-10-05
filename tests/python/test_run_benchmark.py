@@ -874,6 +874,49 @@ def test_the_runner_publishes_how_many_workers_completed(tmp_path: Path, threads
     assert scored.status == "feasible"
 
 
+@pytest.mark.parametrize("compound", [True, False], ids=["compound", "no-compound"])
+def test_the_runner_publishes_the_batch_split_and_novelty_counters(
+    tmp_path: Path, compound: bool
+) -> None:
+    """Every row says where its batches went and what Novelty did (#209).
+
+    A Novelty batch's work is charged to `iterations` alongside FJ's, so these
+    are what tell the two apart, and a Novelty half that never ran from one that
+    never committed. Their values are the engine's business; this pins that the
+    runner publishes them, under these names, as numbers -- and that with
+    compound moves off every Novelty counter is 0.
+    """
+    pytest.importorskip("pyscipopt", reason="pyscipopt is in the 'benchmarks' extra, not 'dev'")
+    from test_verify_solution import TINY_MPS
+
+    inst_dir, _ = _instance_dir(tmp_path, "tiny", TINY_MPS.encode(), 9.0)
+    out_dir = tmp_path / "cbls"
+    completed = subprocess.run(
+        [
+            str(_binary()),
+            *("--instance", "tiny", "--inst-dir", str(inst_dir), "--out-dir", str(out_dir)),
+            *("--budget", "0.5"),
+            *([] if compound else ["--no-compound-moves"]),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    row = json.loads((out_dir / "tiny.json").read_text())
+    keys = (
+        "fj_batches",
+        "novelty_batches",
+        "novelty_moves",
+        "novelty_commits",
+        "novelty_weight_bumps",
+    )
+    for key in keys:
+        assert isinstance(row[key], int), key
+        assert row[key] >= 0, key
+    if not compound:
+        assert all(row[key] == 0 for key in keys[1:])
+
+
 @pytest.mark.parametrize("share", [True, False], ids=["shared-bound", "no-share-bound"])
 def test_the_runner_publishes_the_shared_bound_arm_and_counters(
     tmp_path: Path, share: bool

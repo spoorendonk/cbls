@@ -2811,10 +2811,11 @@ void FeasibilityJump::note_novelty_weight_changed(int32_t c) {
 //    so every undo since has been matched), and W' still has its value.
 //  - A weight bump sets W' = W on the rows it bumps -- all violated, so that
 //    is their level-start value -- and the lazy decay scales W' with W
-//    (fold_novelty_weights), kCompoundDiscount being a power of two.
+//    (fold_novelty_weights), kCompoundDiscount being a power of two -- exact
+//    while the weights stay normal (see fold_novelty_weights for subnormals).
 // So redoing only the noted rows reproduces the paper's whole-row re-init
-// exactly, at O(|nw_changed_|) instead of O(#rows) per level. A row whose W'
-// actually moves re-queues its variables: their novelty scores did.
+// exactly (up to that subnormal caveat), at O(|nw_changed_|) instead of O(#rows) per level. A row
+// whose W' actually moves re-queues its variables: their novelty scores did.
 void FeasibilityJump::reset_changed_novelty_weights() {
     const double obj = objective_value();
     for (const int32_t c : nw_changed_) {
@@ -2844,7 +2845,11 @@ void FeasibilityJump::reset_changed_novelty_weights() {
 
 void FeasibilityJump::fold_novelty_weights(double factor) {
     // LazyWeightDecay::fold's rule, so W' = kCompoundDiscount * W survives a
-    // fold bit for bit: a power-of-two multiple commutes with the product.
+    // fold bit for bit while both stay normal: multiplying by a power of two
+    // is exact there and commutes with the product. Where either product
+    // rounds into the subnormal range (or hits the denorm_min floor), the two
+    // orders can differ in the last bits; the next level reset re-derives W'
+    // from W only for the rows it visits.
     constexpr double kFloor = std::numeric_limits<double>::denorm_min();
     for (double& x : novelty_weights_) {
         const double y = x * factor;
@@ -2967,9 +2972,13 @@ FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, dou
 // Only a var that sits in an active violated row is re-queued, as update_var
 // re-queues for FJ: Algorithm 1 lines 16-17 admit v' to Q only "if V meets
 // G_v'", and OR-Tools' AddVarToScan -> ShouldScan likewise wants a violated
-// row. Nothing is lost: a var all of whose rows hold can only break rows, so its
-// score and novelty score are both <= 0, and s_m <= 0 on the stack and s_c >= 0
-// make it fail both arms of F. Before #209 Q' admitted every neighbour, which
+// row. This is update_var's admission test, with its one blind spot: a row
+// whose residual is in (0, kTol] counts as satisfied but still contributes
+// violation, so a var whose only "violated" rows are of that kind could have a
+// tiny positive score and is not admitted. Otherwise nothing is lost: a var all
+// of whose rows hold (residual <= 0) can only break rows, so its score and
+// novelty score are both <= 0, and s_m <= 0 on the stack and s_c >= 0 make it
+// fail both arms of F. Before #209 Q' admitted every neighbour, which
 // the per-commit reseed then threw away; without the reseed, Q' filled with
 // such vars and select_novelty_var scored each once per re-queue -- 88% of a
 // binkar10_1 run at c8fc6bf. The counts are current here: v's rows were
@@ -3049,7 +3058,8 @@ void FeasibilityJump::nj_apply(int32_t v, double jump) {
     model_.var_mut(v).value = jump;
     delta_evaluate(model_, &v, 1);
     on_stack_[v] = 1;
-    --nj_work_remaining_;  // bound total moves applied per call or batch
+    nj_work_remaining_ -= nj_move_cost_;  // bound the work per call or batch
+    iterations_ += kNoveltySample;        // see novelty_batch: a move's GLS-iteration cost
     ++nj_moves_this_call_;
     ++novelty_moves_;
     // The batch's deadline, observed on the GLS loop's own stride. Spending the
@@ -3123,7 +3133,8 @@ bool FeasibilityJump::apply_novelty_jump() {
     // (#188).
     reground_drifted_rows();
     begin_novelty_run();
-    nj_work_remaining_ = kNoveltyWorkBudget;  // bound the compound-move search
+    nj_work_remaining_ = kNoveltyWorkBudget;  // bound the compound-move search, in moves
+    nj_move_cost_ = 1;
     nj_moves_this_call_ = 0;
     return novelty_descent() == NoveltyOutcome::Feasible;
 }
@@ -3140,20 +3151,27 @@ bool FeasibilityJump::novelty_batch(int64_t batch_iterations) {
     // row in V before the bump trusts the counted bits. O(|V|).
     reconcile_all_counted();
     begin_novelty_run();
-    // The batch's move budget is batch_iterations / kNoveltySample: the closest
-    // a move count gets to the equal per-batch effort Algorithm 6 assumes (its
-    // batches, like OR-Tools', are bounded by the same deterministic time
-    // whichever algorithm runs). An FJ iteration applies the best of its sample
-    // from CACHED jumps and re-scores only the vars a move invalidated; a
-    // Novelty move scores its whole sample -- at least kNoveltySample vars --
-    // afresh, under W' and again under W, since no jump is cached under W'. So
-    // per applied move Novelty scores at least kNoveltySample times what FJ
-    // does. Derived from the sample size, not fitted; what it measured to on
-    // MIPfeas is in docs/architecture.md (#209). <= 0 is "no per-batch limit",
-    // as for batch(): the deadline then ends it.
-    nj_work_remaining_ = batch_iterations > 0
-                             ? std::max<int64_t>(1, batch_iterations / kNoveltySample)
-                             : std::numeric_limits<int64_t>::max();
+    // The batch is bounded in GLS iterations, the unit batch() and
+    // SearchConfig::max_iterations count: each Novelty move is charged
+    // kNoveltySample of them and each weight bump one (#209). An FJ iteration
+    // applies the best of its sample from CACHED jumps and re-scores only the
+    // vars a move invalidated; a Novelty move scores its whole sample -- at
+    // least kNoveltySample vars -- afresh, under W' and again under W, since no
+    // jump is cached under W'. So per applied move Novelty scores at least
+    // kNoveltySample times what FJ does, and charging that many is the closest
+    // an iteration count gets to the equal per-batch effort Algorithm 6 assumes
+    // (its batches, like OR-Tools', are bounded by the same deterministic time
+    // whichever algorithm runs). Derived from the sample size, not fitted; what
+    // it measured to on MIPfeas is in docs/architecture.md. <= 0 is "no
+    // per-batch limit", as for batch(): the deadline, or GFJConfig::
+    // max_iterations, then ends it.
+    nj_work_remaining_ =
+        batch_iterations > 0 ? batch_iterations : std::numeric_limits<int64_t>::max();
+    if (config_.max_iterations > 0) {
+        nj_work_remaining_ = std::min(nj_work_remaining_,
+                                      std::max<int64_t>(0, config_.max_iterations - iterations_));
+    }
+    nj_move_cost_ = kNoveltySample;
     nj_moves_this_call_ = 0;
     bool feasible = false;
     // The lazy decay's scale is local to the batch, as it is to gls_loop: W and
@@ -3180,7 +3198,13 @@ bool FeasibilityJump::novelty_batch(int64_t batch_iterations) {
                 break;
             }
             novelty_bump_weights();
-            if (--nj_work_remaining_ <= 0) {
+            ++iterations_;  // a bump is one GLS iteration, as in gls_loop
+            // A search that applies no move -- every var in Q' failing F at
+            // the root -- would otherwise never reach nj_apply's deadline poll,
+            // and with no per-batch limit it bumps forever. So the bump polls
+            // the deadline too, on the same stride (#209 review).
+            if (--nj_work_remaining_ <= 0 ||
+                (has_deadline_ && --deadline_countdown_ <= 0 && deadline_passed_and_retune())) {
                 break;
             }
         }

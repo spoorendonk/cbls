@@ -1441,7 +1441,7 @@ bool ViolationLSLoop::budget_exhausted() {
         termination_ = TerminationReason::IterationLimit;
         return true;
     }
-    // Structural and Novelty batches do not charge fj.iterations(), so on a
+    // Structural batches do not charge fj.iterations(), so on a
     // List/Set model with no wall clock the iteration budget alone cannot
     // guarantee termination (structural_batch_probability = 1.0 would spin
     // forever). Batches <= iterations by construction, so this only bites

@@ -410,16 +410,17 @@ public:
     /// Each time a whole ApplyNoveltyJump finds no compound move at its largest
     /// discrepancy budget, the GLS weights are decayed and bumped exactly as
     /// batch()'s are, and the search goes on; W' and Q' are set up once per
-    /// batch and maintained incrementally from there. The batch applies at most
-    /// `batch_iterations / 3` moves (a compound move's legs and the moves it
-    /// explores and undoes each count once, undos not at all; a weight bump
-    /// counts as one too), since a Novelty move scores its whole sample of 3
-    /// afresh where an FJ iteration reads cached jumps -- see the definition;
-    /// <= 0 sets no limit, as for batch(), and leaves the deadline to end it.
-    /// Returns true if no active
-    /// constraint is violated. Leaves FJ's own state (V, Q, jump table) current,
-    /// so the caller needs no resync() -- unlike apply_novelty_jump(). Charges
-    /// nothing to iterations(); see novelty_moves() and friends.
+    /// batch and maintained incrementally from there. The batch's work is
+    /// charged to iterations() and bounded by `batch_iterations` of it: each
+    /// applied move (a compound move's legs and the moves it explores and
+    /// undoes count once each, undos not at all) costs kNoveltySample = 3
+    /// iterations, since a Novelty move scores its whole sample afresh where an
+    /// FJ iteration reads cached jumps, and each weight bump costs one -- see
+    /// the definition. <= 0 sets no per-batch limit, as for batch(), and leaves
+    /// the deadline (polled per move and per bump) and GFJConfig::max_iterations
+    /// to end it. Returns true if no active constraint is violated. Leaves FJ's
+    /// own state (V, Q, jump table) current, so the caller needs no resync() --
+    /// unlike apply_novelty_jump().
     bool novelty_batch(int64_t batch_iterations);
     /// Moves (applies, not undos) the last apply_novelty_jump() made, and the
     /// cap on that number. Observability for the regression test that pins
@@ -993,11 +994,12 @@ private:
     static constexpr int64_t kNoveltySample = 3;        // vars select_novelty_var keeps (paper §4)
     int64_t nj_work_remaining_ = 0;                     // bounds compound-move search cost
     int64_t nj_moves_this_call_ = 0;                    // see novelty_moves_last_call()
-    int64_t novelty_moves_ = 0;                         // see novelty_moves()
-    int64_t novelty_commits_ = 0;                       // see novelty_commits()
-    int64_t novelty_bumps_ = 0;                         // see novelty_weight_bumps()
-    int64_t novelty_seeds_ = 0;                         // see novelty_scan_set_seeds()
-    std::vector<double> novelty_weights_;               // W'
+    int64_t nj_move_cost_ = 1;             // work units a move takes from nj_work_remaining_
+    int64_t novelty_moves_ = 0;            // see novelty_moves()
+    int64_t novelty_commits_ = 0;          // see novelty_commits()
+    int64_t novelty_bumps_ = 0;            // see novelty_weight_bumps()
+    int64_t novelty_seeds_ = 0;            // see novelty_scan_set_seeds()
+    std::vector<double> novelty_weights_;  // W'
     // Rows whose W' may differ from its level-start value (W for a violated
     // row, kCompoundDiscount * W otherwise), each once: OR-Tools'
     // compound_weight_changed. See reset_changed_novelty_weights.

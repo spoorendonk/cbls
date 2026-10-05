@@ -57,6 +57,10 @@
 // that is what the search runs; Q' is no longer reseeded after each commit or
 // at each discrepancy level, W' is reset only on the rows that moved, and
 // select_novelty_var ranks its sample by novelty score rather than W score.
+// It moved twice more inside #209: when Q' began admitting only vars in an
+// active violated row and the batch was sized at a third of its iterations in
+// moves, and when a Novelty move began charging 3 GLS iterations and a bump 1
+// (the hash reads iterations()).
 //
 // The two-phase hash sees only the final assignment and weights, and run()
 // refills every weight to 1 before its general phase, so phase-1 weights never
@@ -183,7 +187,7 @@ TEST_CASE("FJ's batch-API trajectory matches its recorded fingerprint",
           "[fj][violated_set][trajectory]") {
     const uint64_t h = batch_api_trajectory();
     CAPTURE(h);
-    REQUIRE(h == 0x98500f946b1c27d5ULL);
+    REQUIRE(h == 0x2f86c730c509644dULL);
 }
 
 TEST_CASE("FJ's two-phase run() trajectory matches its recorded fingerprint",

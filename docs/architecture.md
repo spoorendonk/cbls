@@ -1409,19 +1409,23 @@ already re-queued every var whose verdict they could have changed.
 ApplyNoveltyJump as its move (#209): when a whole ApplyNoveltyJump fails at
 `budget = 2` — a Novelty local minimum — the GLS weights are decayed and bumped
 exactly as an FJ batch's are (`W'` follows on the bumped rows), and the search
-goes on. `W'` is initialised and `Q'` seeded once per batch; the batch's work is
-bounded by `batch_iterations / 3` applied moves plus bumps — a Novelty move
-scores its whole sample of 3 afresh under `W'`, where an FJ iteration reads
-cached jumps, so this is the move count closest to the equal per-batch effort
-Algorithm 6 assumes — its wall clock by the GLS loop's deadline stride, and it
-ends by rebuilding FJ's `V`, `Q` and jump table, so the caller needs no resync.
+goes on. `W'` is initialised and `Q'` seeded once per batch. Its work is
+charged to the GLS iteration count, 3 per applied move and 1 per bump, and
+bounded by `batch_iterations` of it — a Novelty move scores its whole sample of
+3 afresh under `W'`, where an FJ iteration reads cached jumps, so this is the
+charge closest to the equal per-batch effort Algorithm 6 assumes, and it keeps
+`max_iterations` meaning comparable work with compound moves on or off. Its
+wall clock is bounded by the GLS loop's deadline stride, polled per move and per
+bump (a search that applies no move still bumps), and it ends by rebuilding
+FJ's `V`, `Q` and jump table, so the caller needs no resync.
 Like FJ's `update_var`, a move or undo re-queues into `Q'` only the neighbours
 that sit in an active violated row (Algorithm 1 lines 16-17, OR-Tools'
 `ShouldScan`): a var whose rows all hold fails both arms of the filter, and
 without the per-commit reseed to clear them out, scoring such vars was 88% of a
-binkar10_1 run. It charges nothing to the GLS iteration
-count; `SearchCounters::novelty_moves`, `novelty_commits` and
-`novelty_weight_bumps` record its work. Before #209 a Novelty batch was a single
+binkar10_1 run (that admission test is `update_var`'s, and like it ignores a row
+whose residual is in `(0, kTol]`, which counts as satisfied but still scores).
+`SearchCounters::novelty_moves`, `novelty_commits` and `novelty_weight_bumps`
+record its work apart from FJ's. Before #209 a Novelty batch was a single
 ApplyNoveltyJump capped at 256 moves whose failure was ignored, it reseeded
 `Q'` from every violated row after every commit and at every level, and the
 search redrew FJ-or-Novelty every batch.

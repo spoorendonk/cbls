@@ -82,9 +82,9 @@ struct SearchCounters {
     /// What the Novelty batches did (#209): moves applied (each leg of a
     /// compound move, and each move explored and then undone, counts once; the
     /// undos do not), compound moves committed, and GLS weight bumps. A
-    /// Novelty batch charges nothing to the GLS iteration count, so these are
-    /// the only record of its work -- and what tells a run whose Novelty never
-    /// committed from one that never ran it.
+    /// Novelty batch charges 3 GLS iterations per move and 1 per bump, so the
+    /// iteration count cannot tell its work from FJ's; these can -- and they
+    /// tell a run whose Novelty never committed from one that never ran it.
     int64_t novelty_moves = 0;
     int64_t novelty_commits = 0;
     int64_t novelty_weight_bumps = 0;

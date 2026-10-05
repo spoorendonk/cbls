@@ -151,6 +151,15 @@ add_test(NAME hang_guard_iteration_only_portfolio
 set_tests_properties(hang_guard_iteration_only_portfolio
     PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 4)
 
+# #209 review: a Novelty batch whose search applies no move must still reach the
+# deadline. The failure mode is a hang, which only a TIMEOUT reports, so it is
+# hand-registered as well as discovered, like the hang guard above.
+add_test(NAME hang_guard_novelty_zero_move_batch
+    COMMAND cbls_tests "a Novelty batch that applies no move still stops at the deadline"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(hang_guard_novelty_zero_move_batch
+    PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 4)
+
 # Issue #125: one throughput floor per benchmarked problem class — a floor on
 # GLS iterations completed inside a fixed wall-clock budget, not a ceiling on
 # duration. See tests/test_throughput.cpp for the measurement provenance behind

@@ -243,3 +243,30 @@ TEST_CASE("the search keeps its FJ-or-Novelty choice until a new best or a kick"
     }
     REQUIRE(switches > 0);  // both kinds ran, so the check above had teeth
 }
+
+TEST_CASE("a Novelty batch that applies no move still stops at the deadline",
+          "[search][novelty][novelty_batch]") {
+    // x - y >= 1 and y - x >= 1 at x = y = 0: each flip fixes one row by 1 and
+    // worsens the other by 1, both violated at full W', so every var fails F at
+    // the root and ApplyNoveltyJump returns a local minimum having applied no
+    // move. The batch bumps both rows equally and descends again, forever, and
+    // with batch_iterations = 0 nothing but the deadline can stop it. The
+    // deadline used to be polled only when a move was applied (#209 review).
+    // Hand-registered in tests/CMakeLists.txt with a TIMEOUT, so a hang reports.
+    Model m;
+    const int32_t x = m.bool_var();
+    const int32_t y = m.bool_var();
+    m.add_constraint(m.geq(m.sum({x, m.prod(m.constant(-1.0), y)}), m.constant(1.0)));
+    m.add_constraint(m.geq(m.sum({y, m.prod(m.constant(-1.0), x)}), m.constant(1.0)));
+    m.close();
+    SearchConfig cfg;
+    cfg.use_compound_moves = true;
+    cfg.novelty_jump_probability = 1.0;
+    cfg.batch_iterations = 0;
+    const SearchResult r = solve(m, /*time_limit=*/0.3, 7, true, nullptr, nullptr, 3, nullptr, cfg);
+    REQUIRE_FALSE(r.feasible);
+    REQUIRE(r.counters.novelty_batches > 0);
+    REQUIRE(r.counters.novelty_moves == 0);  // the zero-move case, as intended
+    REQUIRE(r.counters.novelty_weight_bumps > 0);
+    REQUIRE(r.time_seconds < 5.0);
+}

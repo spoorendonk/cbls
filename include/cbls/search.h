@@ -43,8 +43,12 @@ struct SearchConfig {
     bool skip_init = false;
     // Total GLS iterations (not batches). 0 = unlimited (bounded by time_limit).
     // Checked at batch boundaries, so SearchResult::iterations may exceed this
-    // by up to batch_iterations - 1. The outer batch count is held to the same
-    // limit, because Structural and Novelty batches charge no GLS iteration: the
+    // by up to batch_iterations - 1. A Novelty batch charges 3 GLS iterations
+    // per move it applies and 1 per weight bump (#209: a Novelty move scores its
+    // whole sample of 3 afresh, where an FJ iteration reads cached jumps), so the
+    // limit means comparable work with compound moves on or off. The outer batch
+    // count is held to the same limit, because Structural batches charge no GLS
+    // iteration: the
     // run stops when EITHER count reaches it, and SearchResult::iterations
     // reports the larger of the two (#201). On a model with no FJ-jumpable
     // variable (List/Set only) at the automatic structural probability, every
@@ -333,7 +337,8 @@ struct SearchResult {
     bool feasible = false;
     Model::State best_state;
     /// The work `SearchConfig::max_iterations` is charged against: the larger of
-    /// the GLS iterations Feasibility-Jump batches ran and the number of outer
+    /// the GLS iterations Feasibility-Jump and Novelty batches charged (a
+    /// Novelty move counts 3, a bump 1) and the number of outer
     /// batches (#201). On a model FJ has work in that is the GLS count; on one
     /// with no FJ-jumpable variable at the automatic structural probability,
     /// where every batch is structural and no GLS iteration is ever charged, it

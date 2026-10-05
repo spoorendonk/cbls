@@ -71,8 +71,9 @@ public:
     /// One batch finished. `iterations` is the run's CUMULATIVE GLS iteration
     /// count as it stands after the batch -- the same quantity
     /// `SearchResult::iterations` reports, so a consumer can difference
-    /// consecutive events to get the batch's own cost. Structural and Novelty
-    /// batches do not charge the GLS counter, so the value repeats across them.
+    /// consecutive events to get the batch's own cost. Structural batches do not
+    /// charge the GLS counter, so the value repeats across them; a Novelty
+    /// batch charges 3 per move and 1 per weight bump (#209).
     /// `improved` is whether the batch produced a new best.
     virtual void batch_end(BatchKind kind, int64_t iterations, bool improved);
 
