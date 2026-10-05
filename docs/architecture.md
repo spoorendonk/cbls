@@ -1426,6 +1426,34 @@ ApplyNoveltyJump capped at 256 moves whose failure was ignored, it reseeded
 `Q'` from every violated row after every commit and at every level, and the
 search redrew FJ-or-Novelty every batch.
 
+**Measured (#209)**, MIPfeas runner, seed 42, one thread, Release, serial under
+the wall-clock lock at 1-minute load 1.36-1.49 (AMD Ryzen 5 5600H). "Before" is
+`f9a425a` (#210's head), "after" `2be4316`; `cd235e3` after it only splits
+`novelty_jump_search` into helpers and reproduces the trajectory fence, so the
+numbers stand for the head. A SIGPROF profile of binkar10_1 at 20s puts
+`seed_novelty_scan_set` and `init_novelty_weights` at 0.0% (33.6% at
+`c339b47`); Novelty's time is now scoring its sample (`select_novelty_var`
+63.5%), at ~27 us per Novelty move against ~11 us per FJ iteration -- the
+ratio the `/ 3` batch sizing assumes. binkar10_1, 20s, GLS iterations with
+compound moves on / off: before 880k / 1.82M (0.48); after 60k / 1.83M (0.03),
+plus 458k Novelty moves in 1376 Novelty batches against 94 FJ ones. That ratio
+no longer measures throughput: with Algorithm 6's sticky `A`, binkar10_1's FJ
+stretches end at every new best while Novelty stretches run to the
+perturbation period, so most batches are Novelty and charge no GLS iteration. A
+counterfactual build of `2be4316` that redraws `A` every batch, as before, gives
+1.06M / 1.81M (0.59) with 459k Novelty moves in 1380 Novelty batches.
+
+The 11-instance smoke roster at 30s against CP-SAT's `num_violation_ls` worker
+(CP-SAT rows from the 2026-10-03 run at `c339b47`, one worker; primal integral,
+shifted geometric mean, lower is better): CP-SAT 0.2917, 8/11 feasible; before
+0.2485, 8/11; after 0.2447, 8/11; the per-batch-redraw counterfactual 0.2270,
+8/11 -- the same eight instances throughout. Single-seed, so per-instance
+objectives are anecdote: binkar10_1's primal integral went 0.297 -> 0.624
+(counterfactual 0.369), neos5's 0.009 -> 0.001, mas76's 0.089 -> 0.066,
+markshare2 ended at 174 against 61. Every Novelty arm engaged wherever it was
+drawn: the Novelty counters are non-zero on every instance except
+neos-5114902-kasavu after, whose three draws of `A` in 327 batches were all FJ.
+
 `apply_novelty_jump()` is one stand-alone ApplyNoveltyJump from a fresh `W'` and
 `Q'`, capped at `kNoveltyWorkBudget = 256` applied moves; the caller must
 `resync()` afterward. Tests and the trajectory fence's history use it; the

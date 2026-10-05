@@ -1485,6 +1485,15 @@ void ViolationLSLoop::count_batch(BatchKind kind) {
 // lazy, here, so it consumes the RNG in batch order; without compound moves
 // nothing is drawn, exactly as before. The structural draw stays per batch: it
 // is this engine's extension, with no counterpart in Algorithm 6 to follow.
+//
+// What it cost, measured at 2be4316 against a build that redraws per batch
+// (MIPfeas smoke roster, 30s, seed 42; docs/architecture.md has the rest): the
+// roster's primal-integral sgm 0.2447 sticky, 0.2270 per batch, 0.2485 before
+// #209, same 8/11 feasible. On binkar10_1 the sticky draw leaves 1376 of 1470
+// batches to Novelty, because a productive FJ stretch ends at its next new best
+// while a Novelty one runs to perturbation_period -- OR-Tools' Randomize on a
+// new best has the same property. Single-seed, so kept for fidelity rather
+// than reverted on that evidence.
 BatchKind ViolationLSLoop::pick_batch_kind() {
     if (rng_.random() < structural_probability_) {
         return BatchKind::Structural;
