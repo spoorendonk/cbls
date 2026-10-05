@@ -149,6 +149,18 @@ public:
     /// this scorer's.
     bool residual_partial_at(int32_t var_id, size_t k, double& out);
 
+    /// OR-Tools' `row_max_variations` for row `ci`, over the variables `vars`:
+    /// the largest |d(p - q)/dv| * (ub_v - lb_v), a bound on how far any ONE of
+    /// them can move the row's residual by a jump inside its declared box. Builds
+    /// the row if pending. +inf when a variable with a nonzero slope has an
+    /// infinite (or NaN) box. False when the row is not eligible (or its build
+    /// demoted it), or the scorer is not sized to the model's rows: a non-affine
+    /// row has no such bound. Every variable of `vars` must have `ci` in its G_v;
+    /// one that does not throws `std::logic_error`. O(sum over `vars` of
+    /// log |G_v|); FeasibilityJump calls it once per object, for the objective
+    /// row (#210).
+    bool row_max_variation(int32_t ci, const std::vector<int32_t>& vars, double& out);
+
     /// Prepares that took the closed form / fell back, and row partials served
     /// from the cache. Diagnostics, and the pins on the wiring in tests.
     [[nodiscard]] int64_t fast_prepares() const { return fast_prepares_; }

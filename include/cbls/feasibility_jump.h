@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -311,6 +312,14 @@ public:
     /// between calls, not inside one. O(|V| + |Q| + |Q'|).
     [[nodiscard]] bool scan_sets_consistent() const;
 
+    /// The jump table's cached entry for `var_id` -- jump value and score as
+    /// apply_jump last computed them -- or nullopt when the entry is invalid and
+    /// the next draw of the variable will recompute it. Read-only observability
+    /// for the tests that pin which moves invalidate whose entries (#210); the
+    /// search never calls it. Throws `std::out_of_range` on an index the model
+    /// has no variable for.
+    [[nodiscard]] std::optional<JumpResult> cached_jump(int32_t var_id) const;
+
     [[nodiscard]] bool all_satisfied() const;
     [[nodiscard]] int64_t iterations() const {
         return iterations_;
@@ -488,6 +497,14 @@ private:
     // UpdateVar (Algorithm 1): commit X[v] <- jump, refresh V, invalidate
     // neighbour jumps, replenish Q.
     void update_var(int32_t var_id);
+    // Whether a move that took the objective row's residual from `before` to
+    // `after` leaves every cached jump, and every Novelty verdict, of the row's
+    // other variables as it was -- so update_var and nj_requeue_neighbours can
+    // skip the row's neighbour walk (#210). See the definition for the
+    // predicate and the regime each answer wins and loses in.
+    [[nodiscard]] bool objective_row_inert(double before, double after);
+    // The objective row's residual as the DAG holds it now; 0.0 without one.
+    [[nodiscard]] double objective_residual() const;
 
     [[nodiscard]] bool active(int32_t constraint_idx) const;  // weight > 0
     [[nodiscard]] bool jumpable(int32_t var_id) const;        // scalar var
@@ -562,7 +579,9 @@ private:
     void init_novelty_weights();
     void seed_novelty_scan_set();
     void nj_enqueue(int32_t var_id);
-    void nj_requeue_neighbours(int32_t v);
+    // `objective_before`: the objective row's residual before v's move or undo
+    // (objective_residual()), for the inert-row skip.
+    void nj_requeue_neighbours(int32_t v, double objective_before);
     NoveltyPick select_novelty_var(double s_m, double s_c);
     bool novelty_jump_search(double s_m, int budget);
 
@@ -876,6 +895,13 @@ private:
     // model with no objective. Fixed at close(); cached because the accumulator
     // consults it on the hot path.
     int32_t objective_ci_ = -1;
+    // The objective row's max single-variable variation (OR-Tools'
+    // row_max_variations; LinearJumpScorer::row_max_variation) over its
+    // jumpable variables, built on the first objective_row_inert call that
+    // needs it. objective_mv_state_: 0 not yet built, 1 built, 2 the row is not
+    // affine -- the skip then never applies. See objective_row_inert.
+    uint8_t objective_mv_state_ = 0;
+    double objective_max_variation_ = 0.0;
 
     // Novelty Jump state (Algorithms 4-5).
     static constexpr double kCompoundDiscount = 1.0 / 1024.0;  // epsilon (OR-tools value)

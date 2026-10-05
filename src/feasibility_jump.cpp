@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -1280,6 +1281,16 @@ int32_t FeasibilityJump::active_violated_rows_of(int32_t var_id) const {
     return active_violated_of_var_[static_cast<size_t>(var_id)];
 }
 
+std::optional<JumpResult> FeasibilityJump::cached_jump(int32_t var_id) const {
+    if (var_id < 0 || static_cast<size_t>(var_id) >= model_.num_vars()) {
+        throw std::out_of_range("FeasibilityJump::cached_jump: no such variable");
+    }
+    if (!jumps_.valid(var_id)) {
+        return std::nullopt;
+    }
+    return JumpResult{jumps_.jump_value(var_id), jumps_.score(var_id)};
+}
+
 namespace {
 
 // A scan set and its membership flags agree: no duplicate, and the flag is set
@@ -1522,6 +1533,7 @@ void FeasibilityJump::update_var(int32_t var_id) {
             violation_delta -= progress_residual(model_.node_value(cids[c]));
         }
     }
+    const double objective_before = objective_residual();
 
     const double j = jumps_.jump_value(var_id);
     Variable& var = model_.var_mut(var_id);
@@ -1555,7 +1567,16 @@ void FeasibilityJump::update_var(int32_t var_id) {
     // already touched, a byte load and at most one 4-byte count load -- no more
     // than a stamp check-and-set, which would also charge every FIRST visit and
     // 4 B per variable.
+    //
+    // The objective row is skipped whole while it is inert (#210): no jump of
+    // any of its variables can see it, so no cached entry is stale on its
+    // account, and -- being satisfied before and after -- it changed no
+    // variable's participation count either. A variable sharing another row of
+    // gv with var_id is still reached through that row.
     for (int32_t c : gv) {
+        if (c == objective_ci_ && objective_row_inert(objective_before, objective_residual())) {
+            continue;
+        }
         for (int32_t vp : vars_of_constraint_[c]) {
             if (vp == var_id) {
                 continue;
@@ -1566,6 +1587,102 @@ void FeasibilityJump::update_var(int32_t var_id) {
             }
         }
     }
+}
+
+// ---- The inert objective row (#210) ----
+//
+// The folded `obj <= bound` row spans every objective column, which on a MIP is
+// most of them, and it is in vars_of_constraint_ like any row. So every move of
+// an objective variable walked the whole row: an invalidate per column in
+// update_var, and on a Novelty move or undo a re-queue of every column into Q'.
+// At c339b47 that walk was 20-40% of MIPfeas time (binkar10_1: update_var 21.7%,
+// JumpTable::invalidate 19.9%), and before the first feasible solution, while
+// the bound is +inf, it can change nothing.
+//
+// OR-Tools skips a row in this upkeep when its activity cannot leave its domain
+// under any one-variable move: UpdateScoreOnActivityChange
+// (ortools/sat/constraint_violation.cc) returns early unless the row's activity
+// is within row_max_variations_ of a domain bound, and with no objective bound
+// yet the domain is AllValues, so the objective row is always skipped. This is
+// that test, for the objective row only, in two forms:
+//
+//  - bound +inf. The residual is obj - inf = -inf for any obj below +inf, and a
+//    jump of one variable of an AFFINE objective moves obj by a finite slope
+//    times a step, so obj stays below +inf or lands on it (the sentinel reads
+//    that as 0, satisfied): the row contributes exactly 0 to every candidate's
+//    delta, before the move and after. Inert iff the residual is -inf on both
+//    sides.
+//  - finite bound. A jump of v inside its declared box moves the residual by at
+//    most M = max_v |a_v| (ub_v - lb_v) (row_max_variation). If r + M < 0 both
+//    before and after the move, every candidate of every variable leaves the
+//    row satisfied, so its contribution max(0, r') - max(0, r) is 0 in both
+//    states. The test carries a guard of 2^-40 x (|bound| + |r| + M) for the
+//    rounding of r' itself; a sum cancelling worse than that can put a
+//    candidate's computed r' a rounding error above 0 while the exact one is
+//    below, which leaves a cached score off by W times that rounding error --
+//    the same order as the difference between the closed-form score and the
+//    probe's, which the engine already accepts (linear_jump.h).
+//
+// A row inert on both sides changes no cached jump and no Novelty verdict: the
+// contribution is zero in both states, and the row feeds no candidate (a Newton
+// candidate needs a violated row; an affine row reaches no breakpoint op). It is
+// satisfied on both sides, so it moves no V membership or participation count.
+// That makes the skip exact for the jump table, not an approximation.
+//
+// What it changes is Q, on purpose. The walk re-queued every objective column
+// that sat in some active violated row, whether or not anything about it had
+// changed -- so a column apply_jump had dropped for a non-positive score came
+// back after every move of any objective variable, to be drawn, found
+// unchanged and dropped again. OR-Tools re-queues on a changed score only, and
+// so does this now; the draws that used to land on such a column land
+// elsewhere, so trajectories on models with an objective move.
+//
+// WHERE IT WINS: every move of an objective variable while the row is inert --
+// before the first feasible solution always, after it whenever the incumbent
+// bound leaves more room than one variable can take. It saves O(objective
+// support) per move, which on a MIP is close to O(#columns).
+// WHERE IT LOSES: a tight row (r + M >= 0, the usual state right after a bound
+// tightening), a non-affine objective (MINLPLib: no slope, so no M, and a jump
+// can turn a nonlinear objective NaN, which reads as violated -- so it keeps
+// the walk even at +inf), or an objective column with an unbounded box (M =
+// +inf: only the +inf form applies). Those pay two residual loads and two
+// compares per move on top of the walk they always paid, plus one
+// row_max_variation, O(support x log |G_v|), on the first call. OR-Tools
+// applies the same test to EVERY row; here only the objective row has it, the
+// one row whose support is the whole model.
+//
+// Assumes each variable's value lies inside its declared box, which every
+// writer in the engine keeps (clamp_to_domain, random_in_domain); a value set
+// outside it from the API can move a jump further than M.
+double FeasibilityJump::objective_residual() const {
+    if (objective_ci_ < 0) {
+        return 0.0;
+    }
+    return model_.node_value(model_.constraint_ids()[static_cast<size_t>(objective_ci_)]);
+}
+
+bool FeasibilityJump::objective_row_inert(double before, double after) {
+    if (objective_mv_state_ == 0) {
+        const bool affine = linear_.row_max_variation(
+            objective_ci_, vars_of_constraint_[static_cast<size_t>(objective_ci_)],
+            objective_max_variation_);
+        objective_mv_state_ = affine ? 1 : 2;
+    }
+    if (objective_mv_state_ != 1) {
+        return false;
+    }
+    const double bound = model_.objective_bound();
+    if (bound == kInf) {
+        return before == -kInf && after == -kInf;
+    }
+    // Every comparison is false on a NaN, and +inf on either side of a sum makes
+    // it +inf or NaN: an infinite M, or an infinite or NaN residual, keeps the walk.
+    const double m = objective_max_variation_;
+    auto clear = [&](double r) {
+        const double guard = 0x1p-40 * (std::fabs(bound) + std::fabs(r) + m);
+        return r + m + guard < 0.0;
+    };
+    return clear(before) && clear(after);
 }
 
 // ---- The incremental Sums' drift (#188) ----
@@ -2593,8 +2710,16 @@ FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, dou
 // any that failed before. OR-Tools does the same from MarkJumpsThatNeedToBe-
 // Recomputed, and likewise skips vars on the stack (AddVarToScan -> ShouldScan).
 // O(sum of v's row lengths), the same walk update_var makes per move.
-void FeasibilityJump::nj_requeue_neighbours(int32_t v) {
+//
+// The objective row is skipped while inert (#210, objective_row_inert): no
+// variable's novelty score, W score or F verdict can have changed on its
+// account. OR-Tools' compound mode skips it the same way, through
+// UpdateScoreOnActivityChange's early return.
+void FeasibilityJump::nj_requeue_neighbours(int32_t v, double objective_before) {
     for (const int32_t c : model_.constraints_of_var(v)) {
+        if (c == objective_ci_ && objective_row_inert(objective_before, objective_residual())) {
+            continue;
+        }
         for (const int32_t vp : vars_of_constraint_[static_cast<size_t>(c)]) {
             if (on_stack_[static_cast<size_t>(vp)] == 0) {
                 nj_enqueue(vp);
@@ -2629,6 +2754,7 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
 
         const int32_t v = pick.var;
         const double old_value = model_.var(v).value;
+        const double objective_before = objective_residual();
         model_.var_mut(v).value = pick.jump;
         delta_evaluate(model_, &v, 1);
         move_stack_.push_back({v, old_value});
@@ -2644,7 +2770,7 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
                 novelty_weights_[c] = vm_.weights[c];
             }
         }
-        nj_requeue_neighbours(v);
+        nj_requeue_neighbours(v, objective_before);
 
         if (s_m + pick.score > 0.0) {
             return true;  // commit (leave applied)
@@ -2656,12 +2782,13 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         // Backtrack: revert this move and try a sibling (consumes a discrepancy).
         on_stack_[v] = 0;
         move_stack_.pop_back();
+        const double objective_before_undo = objective_residual();
         model_.var_mut(v).value = old_value;
         delta_evaluate(model_, &v, 1);
         for (int32_t c : model_.constraints_of_var(v)) {
             set_violated(c, is_violated(model_.node_value(cids[c])));
         }
-        nj_requeue_neighbours(v);  // v itself included, now that it is off T
+        nj_requeue_neighbours(v, objective_before_undo);  // v itself included, now off T
         budget -= 1;
     }
     return false;

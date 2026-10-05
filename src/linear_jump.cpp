@@ -382,4 +382,35 @@ bool LinearJumpScorer::residual_partial_at(int32_t var_id, size_t k, double& out
     return true;
 }
 
+bool LinearJumpScorer::row_max_variation(int32_t ci, const std::vector<int32_t>& vars,
+                                         double& out) {
+    if (slots_.size() != model_.constraint_ids().size()) {
+        return false;  // the layout moved under the slope array; see residual_partial_at
+    }
+    if (ready_row(ci) == nullptr) {
+        return false;
+    }
+    const double* const slopes = slope_at_.get();  // the row is built, so the array exists
+    double m = 0.0;
+    for (const int32_t v : vars) {
+        const ConstSpan<int32_t> gv = model_.constraints_of_var(v);
+        const auto* it = std::lower_bound(gv.begin(), gv.end(), ci);
+        if (it == gv.end() || *it != ci) {
+            throw std::logic_error("LinearJumpScorer::row_max_variation: variable " +
+                                   std::to_string(v) + " is not in row " + std::to_string(ci));
+        }
+        const double slope =
+            slopes[model_.constraints_of_var_offset(v) + static_cast<size_t>(it - gv.begin())];
+        if (slope == 0.0) {
+            continue;  // cancelled, or through a zero factor: v cannot move the row
+        }
+        const Variable& var = model_.var(v);
+        const double reach = std::abs(slope) * (var.ub - var.lb);
+        // NaN -- a NaN bound, or an inf - inf box -- bounds nothing.
+        m = std::isnan(reach) ? std::numeric_limits<double>::infinity() : std::max(m, reach);
+    }
+    out = m;
+    return true;
+}
+
 }  // namespace cbls
