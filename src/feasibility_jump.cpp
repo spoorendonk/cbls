@@ -1575,6 +1575,7 @@ void FeasibilityJump::update_var(int32_t var_id) {
     // gv with var_id is still reached through that row.
     for (int32_t c : gv) {
         if (c == objective_ci_ && objective_row_inert(objective_before, objective_residual())) {
+            ++objective_skips_fj_;
             continue;
         }
         for (int32_t vp : vars_of_constraint_[c]) {
@@ -2718,6 +2719,7 @@ FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, dou
 void FeasibilityJump::nj_requeue_neighbours(int32_t v, double objective_before) {
     for (const int32_t c : model_.constraints_of_var(v)) {
         if (c == objective_ci_ && objective_row_inert(objective_before, objective_residual())) {
+            ++objective_skips_novelty_;
             continue;
         }
         for (const int32_t vp : vars_of_constraint_[static_cast<size_t>(c)]) {

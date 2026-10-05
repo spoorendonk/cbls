@@ -319,6 +319,13 @@ public:
     /// search never calls it. Throws `std::out_of_range` on an index the model
     /// has no variable for.
     [[nodiscard]] std::optional<JumpResult> cached_jump(int32_t var_id) const;
+    /// How many times the objective row's neighbour walk was skipped as inert
+    /// (#210) -- by update_var, and by Novelty's re-queue after a move or undo
+    /// -- since construction. Diagnostics, and the pin on each site's wiring.
+    [[nodiscard]] int64_t objective_walks_skipped() const { return objective_skips_fj_; }
+    [[nodiscard]] int64_t novelty_objective_walks_skipped() const {
+        return objective_skips_novelty_;
+    }
 
     [[nodiscard]] bool all_satisfied() const;
     [[nodiscard]] int64_t iterations() const {
@@ -902,6 +909,8 @@ private:
     // affine -- the skip then never applies. See objective_row_inert.
     uint8_t objective_mv_state_ = 0;
     double objective_max_variation_ = 0.0;
+    int64_t objective_skips_fj_ = 0;       // see objective_walks_skipped()
+    int64_t objective_skips_novelty_ = 0;  // see novelty_objective_walks_skipped()
 
     // Novelty Jump state (Algorithms 4-5).
     static constexpr double kCompoundDiscount = 1.0 / 1024.0;  // epsilon (OR-tools value)

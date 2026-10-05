@@ -53,6 +53,7 @@ struct Outcome {
     std::optional<JumpResult> cached;  // y's entry after a's move
     JumpResult fresh;                  // y's jump computed from scratch after it
     JumpResult before;                 // y's jump computed from scratch before it
+    int64_t skipped = 0;               // objective_walks_skipped() after it
 };
 
 // One GLS iteration from the all-zero start under `bound` (+inf: left as
@@ -73,6 +74,7 @@ Outcome one_move(ObjectiveFixture& f, double bound) {
     REQUIRE(f.m.var(vid(f.a)).value == 1.0);  // the move under test was a's flip
     REQUIRE(f.m.var(vid(f.y)).value == 0.0);
     out.cached = fj.cached_jump(vid(f.y));
+    out.skipped = fj.objective_walks_skipped();
     out.fresh = compute_var_jump(f.m, vm.weights, vid(f.y), false, nullptr);
     return out;
 }
@@ -91,6 +93,7 @@ TEST_CASE(
         bound = 10.0;
     }
     const Outcome o = one_move(f, bound);
+    CHECK(o.skipped == 1);
     if (!o.cached.has_value()) {
         FAIL("y's cached jump was invalidated by a move that cannot change it");
         return;
@@ -111,6 +114,7 @@ TEST_CASE("FJ invalidates an objective variable's cached jump when the objective
     ObjectiveFixture f(false);
     const Outcome o = one_move(f, 1.5);
     CHECK_FALSE(o.cached.has_value());
+    CHECK(o.skipped == 0);
     CHECK(o.before.score == 1.0);
     CHECK(o.fresh.score == 0.5);  // the invalidation was needed
 }
@@ -151,4 +155,36 @@ TEST_CASE("LinearJumpScorer::row_max_variation is the largest one-variable reach
     CHECK_FALSE(sc.row_max_variation(2, {vid(x), vid(b)}, out));
     // A variable outside the row is a caller error, not a zero.
     CHECK_THROWS_AS(sc.row_max_variation(0, {vid(f)}, out), std::logic_error);
+}
+
+TEST_CASE("Novelty's re-queue skips the objective row exactly when update_var would",
+          "[fj][novelty][objective_row]") {
+    // Every variable of the fixture is in the objective row, so every Novelty
+    // move or undo reaches nj_requeue_neighbours over it. With no bound the row
+    // is inert and each such re-queue skips it; at the tight bound 1.5 (M = 1,
+    // so r + M >= 0 once any variable is at 1) a move that takes obj to 1 or
+    // more keeps the walk.
+    ObjectiveFixture f(false);
+    ViolationManager vm(f.m);
+    RNG rng(7);
+    GFJConfig cfg;
+    cfg.two_phase = false;
+    FeasibilityJump fj(f.m, vm, rng, cfg);
+    fj.begin(true);
+    fj.apply_novelty_jump();
+    REQUIRE(fj.novelty_moves_last_call() > 0);
+    CHECK(fj.novelty_objective_walks_skipped() > 0);
+    CHECK(fj.objective_walks_skipped() == 0);  // no FJ move was made
+
+    SECTION("but not when every move it makes leaves the row tight") {
+        ObjectiveFixture g(false);
+        g.m.set_objective_bound(1.5);
+        ViolationManager vm2(g.m);
+        RNG rng2(7);
+        FeasibilityJump fj2(g.m, vm2, rng2, cfg);
+        fj2.begin(true);
+        fj2.apply_novelty_jump();
+        REQUIRE(fj2.novelty_moves_last_call() > 0);
+        CHECK(fj2.novelty_objective_walks_skipped() == 0);
+    }
 }
