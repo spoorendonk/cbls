@@ -644,6 +644,9 @@ private:
     void nj_requeue_neighbours(int32_t v, double objective_before);
     NoveltyPick select_novelty_var(double s_m, double s_c);
     bool novelty_jump_search(double s_m, int budget);
+    // Algorithm 5 lines 11-16 and 20-21: one leg applied, and one undone.
+    void nj_apply(int32_t v, double jump);
+    void nj_undo(int32_t v, double old_value);
     // Algorithm 4 over the state begin_novelty_run() set up, incrementally.
     NoveltyOutcome novelty_descent();
     // Algorithm 4 lines 3-5 for the next discrepancy level, in O(rows whose W'

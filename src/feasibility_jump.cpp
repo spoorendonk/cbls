@@ -3009,7 +3009,6 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         return false;
     }
     double s_c = 0.0;  // best explored child score at this level
-    const auto& cids = model_.constraint_ids();
     // Both bounds are re-checked before every sibling, not only on entry, as
     // OR-Tools checks its discrepancy bound at every ScanRelevantVariables call.
     // An undo re-queues the reverted var and its row-neighbours, so Q' no
@@ -3023,67 +3022,73 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         }
         s_c = std::max(s_c, pick.score);
 
-        const int32_t v = pick.var;
-        const double old_value = model_.var(v).value;
-        const double objective_before = objective_value();
-        model_.var_mut(v).value = pick.jump;
-        delta_evaluate(model_, &v, 1);
-        move_stack_.push_back({v, old_value});
-        on_stack_[v] = 1;
-        --nj_work_remaining_;  // bound total moves applied per call or batch
-        ++nj_moves_this_call_;
-        ++novelty_moves_;
-        // The batch's deadline, observed on the GLS loop's own stride: a move
-        // here costs what a GLS iteration does. Spending the work bound makes
-        // every level unwind, which reverts this move unless it commits.
-        if (has_deadline_ && --deadline_countdown_ <= 0 && deadline_passed_and_retune()) {
-            nj_work_remaining_ = 0;
-        }
-
-        // Refresh violated_ for v's constraints and promote any now-broken
-        // constraint to full novelty weight; then re-queue v's row-neighbours,
-        // whose scores both changes may have moved. Every W' change, and every
-        // row this move satisfied at full weight, is noted for the next level's
-        // reset (reset_changed_novelty_weights).
-        for (int32_t c : model_.constraints_of_var(v)) {
-            const bool was_violated = violated_[c] != 0;
-            set_violated(c, is_violated(model_.node_value(cids[c])));
-            if (violated_[c] != 0) {
-                if (novelty_weights_[c] != vm_.weights[c]) {
-                    novelty_weights_[c] = vm_.weights[c];
-                    note_novelty_weight_changed(c);
-                }
-            } else if (was_violated && novelty_weights_[c] == vm_.weights[c]) {
-                note_novelty_weight_changed(c);
-            }
-        }
-        nj_requeue_neighbours(v, objective_before);
-
+        const double old_value = model_.var(pick.var).value;
+        nj_apply(pick.var, pick.jump);
         if (s_m + pick.score > 0.0) {
             return true;  // commit (leave applied)
         }
         if (novelty_jump_search(s_m + pick.score, budget)) {
             return true;
         }
-
         // Backtrack: revert this move and try a sibling (consumes a discrepancy).
-        // W' keeps every promotion (paper §4: novelty weights are reset only
-        // when a whole level fails), so an undo notes nothing.
-        on_stack_[v] = 0;
-        move_stack_.pop_back();
-        const double objective_before_undo = objective_value();
-        model_.var_mut(v).value = old_value;
-        delta_evaluate(model_, &v, 1);
-        for (int32_t c : model_.constraints_of_var(v)) {
-            set_violated(c, is_violated(model_.node_value(cids[c])));
-        }
-        // v is re-queued through its rows now that it is off T -- except one that
-        // sits in no row but an inert objective row, which stays out, as in
-        // OR-Tools: nothing about its score changed.
-        nj_requeue_neighbours(v, objective_before_undo);
+        nj_undo(pick.var, old_value);
         budget -= 1;
     }
     return false;
+}
+
+// One forward leg of a compound move: apply it, push it on T, charge the work
+// bound, then refresh V for v's rows, promote any row it broke to full novelty
+// weight, and re-queue v's row-neighbours, whose scores both changes may have
+// moved. Every W' change, and every row this move satisfied at full weight, is
+// noted for the next level's reset (reset_changed_novelty_weights).
+void FeasibilityJump::nj_apply(int32_t v, double jump) {
+    const auto& cids = model_.constraint_ids();
+    const double objective_before = objective_value();
+    move_stack_.push_back({v, model_.var(v).value});
+    model_.var_mut(v).value = jump;
+    delta_evaluate(model_, &v, 1);
+    on_stack_[v] = 1;
+    --nj_work_remaining_;  // bound total moves applied per call or batch
+    ++nj_moves_this_call_;
+    ++novelty_moves_;
+    // The batch's deadline, observed on the GLS loop's own stride. Spending the
+    // work bound makes every level unwind, which reverts this move unless it
+    // commits.
+    if (has_deadline_ && --deadline_countdown_ <= 0 && deadline_passed_and_retune()) {
+        nj_work_remaining_ = 0;
+    }
+    for (const int32_t c : model_.constraints_of_var(v)) {
+        const bool was_violated = violated_[c] != 0;
+        set_violated(c, is_violated(model_.node_value(cids[c])));
+        if (violated_[c] != 0) {
+            if (novelty_weights_[c] != vm_.weights[c]) {
+                novelty_weights_[c] = vm_.weights[c];
+                note_novelty_weight_changed(c);
+            }
+        } else if (was_violated && novelty_weights_[c] == vm_.weights[c]) {
+            note_novelty_weight_changed(c);
+        }
+    }
+    nj_requeue_neighbours(v, objective_before);
+}
+
+// Revert the top leg, v, to `old_value`. W' keeps every promotion (paper §4:
+// novelty weights are reset only when a whole level fails), so an undo notes
+// nothing. v is re-queued through its rows now that it is off T -- except one
+// that sits in no row but an inert objective row, which stays out, as in
+// OR-Tools: nothing about its score changed.
+void FeasibilityJump::nj_undo(int32_t v, double old_value) {
+    const auto& cids = model_.constraint_ids();
+    on_stack_[v] = 0;
+    move_stack_.pop_back();
+    const double objective_before = objective_value();
+    model_.var_mut(v).value = old_value;
+    delta_evaluate(model_, &v, 1);
+    for (const int32_t c : model_.constraints_of_var(v)) {
+        set_violated(c, is_violated(model_.node_value(cids[c])));
+    }
+    nj_requeue_neighbours(v, objective_before);
 }
 
 // ApplyNoveltyJump (Algorithm 4) over the W', Q' and stack begin_novelty_run

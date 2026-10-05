@@ -1410,9 +1410,16 @@ ApplyNoveltyJump as its move (#209): when a whole ApplyNoveltyJump fails at
 `budget = 2` — a Novelty local minimum — the GLS weights are decayed and bumped
 exactly as an FJ batch's are (`W'` follows on the bumped rows), and the search
 goes on. `W'` is initialised and `Q'` seeded once per batch; the batch's work is
-bounded by `batch_iterations` applied moves plus bumps, its wall clock by the
-GLS loop's deadline stride, and it ends by rebuilding FJ's `V`, `Q` and jump
-table, so the caller needs no resync. It charges nothing to the GLS iteration
+bounded by `batch_iterations / 3` applied moves plus bumps — a Novelty move
+scores its whole sample of 3 afresh under `W'`, where an FJ iteration reads
+cached jumps, so this is the move count closest to the equal per-batch effort
+Algorithm 6 assumes — its wall clock by the GLS loop's deadline stride, and it
+ends by rebuilding FJ's `V`, `Q` and jump table, so the caller needs no resync.
+Like FJ's `update_var`, a move or undo re-queues into `Q'` only the neighbours
+that sit in an active violated row (Algorithm 1 lines 16-17, OR-Tools'
+`ShouldScan`): a var whose rows all hold fails both arms of the filter, and
+without the per-commit reseed to clear them out, scoring such vars was 88% of a
+binkar10_1 run. It charges nothing to the GLS iteration
 count; `SearchCounters::novelty_moves`, `novelty_commits` and
 `novelty_weight_bumps` record its work. Before #209 a Novelty batch was a single
 ApplyNoveltyJump capped at 256 moves whose failure was ignored, it reseeded
