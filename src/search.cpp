@@ -417,7 +417,14 @@ private:
     }
 
     // ---- the incumbent, and the kicks that leave it ----
-    void sample_rho() { fj_.set_rho(rng_.random() < 0.5 ? 0.95 : 1.0); }
+    // Algorithm 6 draws rho and the algorithm A together, at exactly three
+    // points: the start (lines 1-3), a new best (lines 5-10) and a perturbation
+    // (lines 11-15). So every caller of this is one of those points, and it also
+    // asks the next FJ/Novelty batch to draw A again; see pick_batch_kind.
+    void sample_rho() {
+        fj_.set_rho(rng_.random() < 0.5 ? 0.95 : 1.0);
+        redraw_algorithm_ = true;
+    }
     void emit_progress(bool new_best);
     // Record the current (real-feasible) assignment if it improves the best and
     // tighten the objective bound. Returns true on a new best.
@@ -600,6 +607,11 @@ private:
     // model -- even one with no movable scalar at all -- is never touched by it.
     const bool fj_idle_;
     const double structural_probability_;
+    // Algorithm 6's A, FJ or Novelty, kept from batch to batch until
+    // sample_rho() asks for a new draw (#209). Only consulted with compound
+    // moves on.
+    BatchKind scalar_algorithm_ = BatchKind::FeasibilityJump;
+    bool redraw_algorithm_ = true;
     const int unproductive_arm_stagnation_;
     // Owns this search's OWN clone of every registered move generator, so a
     // portfolio worker shares no mutable generator state with its peers (#157,
@@ -1464,14 +1476,29 @@ void ViolationLSLoop::count_batch(BatchKind kind) {
     }
 }
 
+// The FJ/Novelty choice is Algorithm 6's A: drawn at the start, on a new best
+// and on a perturbation (sample_rho sets redraw_algorithm_ at each) and KEPT for
+// every batch in between -- "Otherwise we continue with the same algorithm as
+// last batch, reusing the same weights" (paper §5). Before #209 it was redrawn
+// every batch, so a run alternated at random and neither algorithm saw a long
+// enough stretch for its own GLS weights to mean anything to it. The draw is
+// lazy, here, so it consumes the RNG in batch order; without compound moves
+// nothing is drawn, exactly as before. The structural draw stays per batch: it
+// is this engine's extension, with no counterpart in Algorithm 6 to follow.
 BatchKind ViolationLSLoop::pick_batch_kind() {
     if (rng_.random() < structural_probability_) {
         return BatchKind::Structural;
     }
-    if (config_.use_compound_moves && rng_.random() < config_.novelty_jump_probability) {
-        return BatchKind::NoveltyJump;
+    if (!config_.use_compound_moves) {
+        return BatchKind::FeasibilityJump;
     }
-    return BatchKind::FeasibilityJump;
+    if (redraw_algorithm_) {
+        redraw_algorithm_ = false;
+        scalar_algorithm_ = rng_.random() < config_.novelty_jump_probability
+                                ? BatchKind::NoveltyJump
+                                : BatchKind::FeasibilityJump;
+    }
+    return scalar_algorithm_;
 }
 
 bool ViolationLSLoop::run_batch(BatchKind kind) {
@@ -1479,8 +1506,10 @@ bool ViolationLSLoop::run_batch(BatchKind kind) {
         case BatchKind::Structural:
             return structural_.run(model_, vm_, rng_, has_deadline_, deadline_);
         case BatchKind::NoveltyJump:
-            fj_.apply_novelty_jump();
-            return true;
+            // A whole GLS batch over ApplyNoveltyJump at FJ's batch size, which
+            // hands FJ's scan set and jump table back current (#209).
+            fj_.novelty_batch(config_.batch_iterations);
+            return false;
         case BatchKind::FeasibilityJump:
             fj_.batch(config_.batch_iterations);
             return false;
@@ -1779,6 +1808,9 @@ SearchResult ViolationLSLoop::finish() {
     result.first_feasible_objective = first_feasible_obj_;
     result.time_to_first_feasible = first_feasible_time_;
     result.counters = counters_;
+    result.counters.novelty_moves = fj_.novelty_moves();
+    result.counters.novelty_commits = fj_.novelty_commits();
+    result.counters.novelty_weight_bumps = fj_.novelty_weight_bumps();
     // The structural sweep keeps its own per-generator tallies, since it is the
     // only thing that knows which generator scored which candidate. Copied out
     // here rather than accumulated per batch: the batch outlives no solve, and

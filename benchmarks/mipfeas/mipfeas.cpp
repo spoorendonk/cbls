@@ -808,6 +808,15 @@ int run_benchmark(int argc, char** argv) {
         {"perturbations", result.perturbations},
         {"lns_repairs", result.lns_repairs},
         {"lns_repairs_accepted", result.lns_repairs_accepted},
+        // Where the batches went, and what the Novelty ones did (#209): a
+        // Novelty batch charges nothing to `iterations`, so without these a
+        // compound-moves row cannot tell a Novelty half that worked from one
+        // that never ran, never committed or never bumped. Summed over workers.
+        {"fj_batches", result.counters.fj_batches},
+        {"novelty_batches", result.counters.novelty_batches},
+        {"novelty_moves", result.counters.novelty_moves},
+        {"novelty_commits", result.counters.novelty_commits},
+        {"novelty_weight_bumps", result.counters.novelty_weight_bumps},
         // The shared objective bound's engagement (#179), summed over workers,
         // so a null A/B result can be told apart from a mechanism that never
         // fired. All zero at --threads 1. Published in both arms: with sharing

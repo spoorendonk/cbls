@@ -50,6 +50,14 @@
 // re-queue meant Q' no longer ran dry on its own); the fence model reaches
 // levels whose budget is spent.
 //
+// #209 re-recorded the batch-API hash on purpose, and only that one (run()
+// never calls Novelty). The fence now drives a Novelty BATCH (novelty_batch,
+// GLS over ApplyNoveltyJump, which bumps weights at a Novelty local minimum and
+// needs no resync) where it drove one apply_novelty_jump() and a resync, since
+// that is what the search runs; Q' is no longer reseeded after each commit or
+// at each discrepancy level, W' is reset only on the rows that moved, and
+// select_novelty_var ranks its sample by novelty score rather than W score.
+//
 // The two-phase hash sees only the final assignment and weights, and run()
 // refills every weight to 1 before its general phase, so phase-1 weights never
 // reach it directly -- only through the assignment phase 1 ends on.
@@ -123,7 +131,7 @@ uint64_t hash_state(uint64_t h, const Model& m, const ViolationManager& vm) {
     return h;
 }
 
-// Batches with GLS bumps at both rho values, a Novelty jump every third batch
+// Batches with GLS bumps at both rho values, a Novelty batch every third batch
 // and a kick every tenth, hashing the assignment and the weights after each.
 uint64_t batch_api_trajectory() {
     Model m;
@@ -142,9 +150,8 @@ uint64_t batch_api_trajectory() {
         h = mix(h, static_cast<uint64_t>(fj.iterations()));
         h = hash_state(h, m, vm);
         if (b % 3 == 2) {
-            h = mix(h, fj.apply_novelty_jump() ? 1U : 0U);
+            h = mix(h, fj.novelty_batch(200) ? 1U : 0U);
             h = hash_state(h, m, vm);
-            fj.resync();
         }
         if (b % 10 == 9) {
             fj.perturb(0.1);
@@ -176,7 +183,7 @@ TEST_CASE("FJ's batch-API trajectory matches its recorded fingerprint",
           "[fj][violated_set][trajectory]") {
     const uint64_t h = batch_api_trajectory();
     CAPTURE(h);
-    REQUIRE(h == 0x206569d42147218ULL);
+    REQUIRE(h == 0x11b541a11804e78bULL);
 }
 
 TEST_CASE("FJ's two-phase run() trajectory matches its recorded fingerprint",

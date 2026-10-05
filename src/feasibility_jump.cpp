@@ -2646,6 +2646,43 @@ bool FeasibilityJump::all_satisfied() const {
 // ---------------------------------------------------------------------------
 // Novelty Jump (paper Algorithms 4-5)
 // ---------------------------------------------------------------------------
+//
+// ---- What is incremental, and what a batch still pays (#209) ----
+//
+// A Novelty batch is GLS with ApplyNoveltyJump as its move (novelty_batch). It
+// sets W' up over every row and seeds Q' from V's rows ONCE, in
+// begin_novelty_run, and from there keeps both incrementally across every
+// committed compound move, every discrepancy level, every ApplyNoveltyJump
+// call and every weight bump of the batch, as OR-Tools keeps its compound
+// weights and its scan set (ortools/sat/feasibility_jump.cc,
+// DoSomeGeneralIterations, ResetChangedCompoundWeights, AddVarToScan):
+//
+//  - Q'. A commit leaves Q' as the search left it. The moves that made it up
+//    re-queued their row-neighbours as they went (nj_requeue_neighbours), so
+//    every var whose novelty score, W score or F verdict can have moved is
+//    already in it; Algorithm 5 never reseeds either (only line 16 adds to Q).
+//    A W' reset re-queues the rows whose W' it changes, and a bump the rows it
+//    bumps. Before #209 Q' was cleared and reseeded with every var of every
+//    active violated row after every commit and at every level, O(nnz(V))
+//    each -- 33.6% of a binkar10_1 run at c339b47.
+//  - W'. Algorithm 4 re-initialises W' at the start of every level (lines
+//    3-5): kCompoundDiscount * W everywhere, W on the rows in V. Only a row on
+//    nw_changed_ can differ from that, so reset_changed_novelty_weights redoes
+//    just those, O(|changed|) instead of O(#rows) per level. See it for why.
+//
+// WHERE IT WINS: many violated rows, long rows, and short compound moves --
+// the reseed was paid per commit whatever the commit cost, so a search
+// committing one- or two-move compounds over a large V paid O(nnz(V)) for each.
+// That is MIPfeas before its first feasible point. WHERE IT LOSES: a forward
+// move pays a compare per row of G_v and a push per row whose status flips (to
+// note it on nw_changed_), and every committed compound move draws from a Q'
+// that holds only what the search re-queued rather than all of V's vars. The
+// second is a change of search, not of cost: a level can now run dry where a
+// reseed would have offered vars nothing had touched, and the GLS bump that
+// follows is what refills Q' then, as in OR-Tools. What each batch still pays
+// is one O(#rows) W' init, one O(nnz(V)) seed and the O(#rows + #vars) resync
+// that hands V, Q and the jump table back to FJ -- per batch_iterations moves,
+// against per commit and per level before.
 
 void FeasibilityJump::init_novelty_weights() {
     // W'[c] = W[c] for constraints violated at entry, else kCompoundDiscount*W[c]
@@ -2657,6 +2694,13 @@ void FeasibilityJump::init_novelty_weights() {
         novelty_weights_[c] =
             violated_[c] != 0 ? vm_.weights[c] : kCompoundDiscount * vm_.weights[c];
     }
+}
+
+double FeasibilityJump::novelty_weight(int32_t ci) const {
+    if (ci < 0 || static_cast<size_t>(ci) >= novelty_weights_.size()) {
+        throw std::out_of_range("FeasibilityJump::novelty_weight: no such row, or no Novelty yet");
+    }
+    return novelty_weights_[static_cast<size_t>(ci)];
 }
 
 void FeasibilityJump::nj_enqueue(int32_t var_id) {
@@ -2672,7 +2716,7 @@ void FeasibilityJump::nj_enqueue(int32_t var_id) {
 // queue is the same as clearing the whole vector. The rows are visited in V's
 // list order (deterministic; see bump_weights_and_requeue) with a live weight
 // read. That order feeds select_novelty_var's draw, so it is part of the
-// trajectory, but no longer ascending.
+// trajectory, but no longer ascending. Once per Novelty run since #209.
 void FeasibilityJump::seed_novelty_scan_set() {
     for (const int32_t v : nj_queue_) {
         nj_in_queue_[static_cast<size_t>(v)] = 0;
@@ -2687,9 +2731,129 @@ void FeasibilityJump::seed_novelty_scan_set() {
     }
 }
 
+// on_stack_[v] is set exactly for the v on move_stack_ (pushed together,
+// popped together, and select_novelty_var never picks a var already on it),
+// so clearing through the stack is the whole-vector clear at O(|T|) (#174).
+void FeasibilityJump::clear_novelty_stack() {
+    for (const StackMove& m : move_stack_) {
+        on_stack_[static_cast<size_t>(m.var)] = 0;
+    }
+    move_stack_.clear();
+}
+
+void FeasibilityJump::begin_novelty_run() {
+    // resize sizes the flags on the first call and is a no-op after. Every flag
+    // is set only for an entry of its list, and each list is cleared through
+    // below -- also across calls, since a return can leave Q' populated.
+    nj_in_queue_.resize(model_.num_vars(), 0);
+    on_stack_.resize(model_.num_vars(), 0);
+    nw_in_changed_.resize(vm_.weights.size(), 0);
+    for (const int32_t c : nw_changed_) {
+        nw_in_changed_[static_cast<size_t>(c)] = 0;
+    }
+    nw_changed_.clear();
+    clear_novelty_stack();
+    init_novelty_weights();
+    seed_novelty_scan_set();
+}
+
+void FeasibilityJump::note_novelty_weight_changed(int32_t c) {
+    if (nw_in_changed_[static_cast<size_t>(c)] == 0) {
+        nw_in_changed_[static_cast<size_t>(c)] = 1;
+        nw_changed_.push_back(c);
+    }
+}
+
+// Algorithm 4 lines 3-5 for the level about to start, done incrementally
+// (OR-Tools' ResetChangedCompoundWeights). The invariant: a row NOT on
+// nw_changed_ holds its level-start value, kCompoundDiscount * W[c] if it is
+// satisfied and W[c] if violated -- as of the current assignment. Why it holds:
+//  - A violated row always has W' = W: violated at the last reset it got W,
+//    and a row a forward move violates is promoted to W on the spot (and
+//    noted). An undo restores a row's state from before a move, when the row
+//    already obeyed this.
+//  - A satisfied row with W' = W is noted when a forward move satisfies it
+//    (noted if not already). One an undo satisfies was violated by the move
+//    the undo reverts, which promoted and noted it.
+//  - So a row off the list has not changed status since the last reset (a
+//    status change by a forward move notes it, one by an undo returns it to a
+//    status it held after the last reset, and the stack is empty at a reset,
+//    so every undo since has been matched), and W' still has its value.
+//  - A weight bump sets W' = W on the rows it bumps -- all violated, so that
+//    is their level-start value -- and the lazy decay scales W' with W
+//    (fold_novelty_weights), kCompoundDiscount being a power of two.
+// So redoing only the noted rows reproduces the paper's whole-row re-init
+// exactly, at O(|nw_changed_|) instead of O(#rows) per level. A row whose W'
+// actually moves re-queues its variables: their novelty scores did.
+void FeasibilityJump::reset_changed_novelty_weights() {
+    const double obj = objective_value();
+    for (const int32_t c : nw_changed_) {
+        const auto ci = static_cast<size_t>(c);
+        nw_in_changed_[ci] = 0;
+        const double expected =
+            violated_[ci] != 0 ? vm_.weights[ci] : kCompoundDiscount * vm_.weights[ci];
+        if (novelty_weights_[ci] == expected) {
+            continue;
+        }
+        novelty_weights_[ci] = expected;
+        // An inert objective row (#210) contributes 0 to every candidate under
+        // any weight, so re-weighting it moves no score.
+        if (c == objective_ci_ && objective_row_inert(obj, obj)) {
+            ++objective_skips_novelty_;
+            continue;
+        }
+        for (const int32_t vp : vars_of_constraint_[ci]) {
+            if (on_stack_[static_cast<size_t>(vp)] == 0) {
+                nj_enqueue(vp);
+            }
+        }
+    }
+    nw_changed_.clear();
+}
+
+void FeasibilityJump::fold_novelty_weights(double factor) {
+    // LazyWeightDecay::fold's rule, so W' = kCompoundDiscount * W survives a
+    // fold bit for bit: a power-of-two multiple commutes with the product.
+    constexpr double kFloor = std::numeric_limits<double>::denorm_min();
+    for (double& x : novelty_weights_) {
+        const double y = x * factor;
+        x = (y == 0.0 && x > 0.0 && factor > 0.0) ? kFloor : y;
+    }
+}
+
+// Algorithm 3 lines 8-12 with M = ApplyNoveltyJump: the same decay and bump
+// bump_weights_and_requeue makes for FJ, in the same lazy representation (#175),
+// plus W'[c] = W[c] on every bumped row (all are violated; OR-Tools'
+// UpdateViolatedConstraintWeights does the same to its compound weights), and
+// their variables re-queued into Q'. FJ's own jump table and Q are not touched:
+// they are stale for the whole batch and rebuilt at its end.
+void FeasibilityJump::novelty_bump_weights() {
+    ++novelty_bumps_;
+    const double folded = weight_decay_.decay(vm_.weights, config_.rho);
+    if (folded != 1.0) {
+        fold_novelty_weights(folded);
+    }
+    vm_.invalidate_cache();
+    for (const int32_t c : violated_rows_) {
+        const auto ci = static_cast<size_t>(c);
+        weight_decay_.bump(vm_.weights, ci);
+        reconcile_counted(c);
+        novelty_weights_[ci] = vm_.weights[ci];
+        if ((violated_[ci] & kCounted) != 0) {
+            for (const int32_t v : vars_of_constraint_[ci]) {
+                nj_enqueue(v);  // the stack is empty between ApplyNoveltyJump calls
+            }
+        }
+    }
+}
+
 // Best of up to 3 sampled vars in Q\T satisfying the filter F (paper §4):
-// F = (s_m + novelty_score > 0)  OR  (score > s_c). "Best" = highest original
-// score. The chosen var is removed from Q (paper Algorithm 5 line 6).
+// F = (s_m + novelty_score > 0)  OR  (score > s_c). "Best" = highest NOVELTY
+// score, as OR-Tools ranks its sample by the compound-weight jump score
+// (ScanRelevantVariables' best_scan_score); the W score decides F's second arm
+// and, through s_m, the commit (#209). The paper's Algorithm 5 line 5 does not
+// say which score ranks the sample. The chosen var is removed from Q (paper
+// Algorithm 5 line 6).
 //
 // Scan-set discipline follows OR-Tools' ScanRelevantVariables in its compound-
 // move mode (ortools/sat/feasibility_jump.cc, stable branch, checked for #206):
@@ -2698,9 +2862,10 @@ void FeasibilityJump::seed_novelty_scan_set() {
 // or Q is empty. There is no draw cap. A removed var comes back only when
 // something that can change its verdict happens -- a move or an undo touching
 // one of its rows (nj_requeue_neighbours, OR-Tools' MarkJumpsThatNeedToBeRe-
-// computed -> AddVarToScan), a row promoted to full novelty weight, or a fresh
-// seed of Q at the next root (OR-Tools' ResetChangedCompoundWeights). So a var
-// failing F is scored once per change of its neighbourhood, not once per call.
+// computed -> AddVarToScan), a row promoted to full novelty weight, a W' reset
+// that moves one of its rows (reset_changed_novelty_weights, OR-Tools'
+// ResetChangedCompoundWeights) or a weight bump. So a var failing F is scored
+// once per change of its neighbourhood, not once per call.
 //
 // #206 first kept F-failers in Q and excluded them per call only, on the
 // argument that F depends on s_m and s_c; that re-scored the whole of Q on every
@@ -2746,7 +2911,7 @@ FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, dou
             continue;
         }
         std::swap(nj_queue_[n], nj_queue_[idx]);
-        if (best.var < 0 || score > best.score) {
+        if (best.var < 0 || nr.score > best.novelty_score) {
             best = {v, nr.jump_value, score, nr.score};
             best_idx = n;
         }
@@ -2787,6 +2952,17 @@ void FeasibilityJump::nj_requeue_neighbours(int32_t v, double objective_before) 
 // the moves currently on the stack. Returns true once a compound move with
 // positive cumulative score is found (left applied); false leaves the assignment
 // as it was on entry (every move it applied is reverted).
+//
+// The discrepancy budget is the paper's: every backtrack at every level costs
+// one, the root's included (Algorithm 5 line 22), so the root of a level-b
+// search tries at most b + 1 children and Algorithm 4 widens b on failure.
+// OR-Tools differs here and this deliberately does not follow it: its
+// CompoundMoveBuilder::Backtrack increments the discrepancy of the entry BELOW
+// the one it pops, and popping the last one increments nothing, so its root
+// siblings are bounded by the scan set alone and its max discrepancy bounds only
+// the backtracks below the root (#206's review). The paper is the reference
+// this implements; its text says the same ("If we backtrack to the root, the
+// limit is increased").
 bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
     if (budget < 0 || nj_work_remaining_ <= 0) {
         return false;
@@ -2813,15 +2989,31 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         delta_evaluate(model_, &v, 1);
         move_stack_.push_back({v, old_value});
         on_stack_[v] = 1;
-        --nj_work_remaining_;  // bound total moves applied per apply_novelty_jump
+        --nj_work_remaining_;  // bound total moves applied per call or batch
+        ++nj_moves_this_call_;
+        ++novelty_moves_;
+        // The batch's deadline, observed on the GLS loop's own stride: a move
+        // here costs what a GLS iteration does. Spending the work bound makes
+        // every level unwind, which reverts this move unless it commits.
+        if (has_deadline_ && --deadline_countdown_ <= 0 && deadline_passed_and_retune()) {
+            nj_work_remaining_ = 0;
+        }
 
         // Refresh violated_ for v's constraints and promote any now-broken
         // constraint to full novelty weight; then re-queue v's row-neighbours,
-        // whose scores both changes may have moved.
+        // whose scores both changes may have moved. Every W' change, and every
+        // row this move satisfied at full weight, is noted for the next level's
+        // reset (reset_changed_novelty_weights).
         for (int32_t c : model_.constraints_of_var(v)) {
+            const bool was_violated = violated_[c] != 0;
             set_violated(c, is_violated(model_.node_value(cids[c])));
-            if (violated_[c] != 0 && novelty_weights_[c] != vm_.weights[c]) {
-                novelty_weights_[c] = vm_.weights[c];
+            if (violated_[c] != 0) {
+                if (novelty_weights_[c] != vm_.weights[c]) {
+                    novelty_weights_[c] = vm_.weights[c];
+                    note_novelty_weight_changed(c);
+                }
+            } else if (was_violated && novelty_weights_[c] == vm_.weights[c]) {
+                note_novelty_weight_changed(c);
             }
         }
         nj_requeue_neighbours(v, objective_before);
@@ -2834,6 +3026,8 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         }
 
         // Backtrack: revert this move and try a sibling (consumes a discrepancy).
+        // W' keeps every promotion (paper §4: novelty weights are reset only
+        // when a whole level fails), so an undo notes nothing.
         on_stack_[v] = 0;
         move_stack_.pop_back();
         const double objective_before_undo = objective_value();
@@ -2851,6 +3045,30 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
     return false;
 }
 
+// ApplyNoveltyJump (Algorithm 4) over the W', Q' and stack begin_novelty_run
+// set up -- or the previous call left. A commit resets the discrepancy budget
+// (line 8) and keeps W' and Q' as they are; a failed level resets the W' rows
+// that moved (lines 3-5, incrementally) before the next one. Neither reseeds Q'.
+FeasibilityJump::NoveltyOutcome FeasibilityJump::novelty_descent() {
+    int b = 0;
+    while (b <= 2) {
+        while (novelty_jump_search(0.0, b)) {
+            ++novelty_commits_;
+            clear_novelty_stack();
+            if (!any_active_violated()) {
+                return NoveltyOutcome::Feasible;
+            }
+            b = 0;
+        }
+        if (nj_work_remaining_ <= 0) {
+            return NoveltyOutcome::OutOfWork;  // cut short: not a local minimum
+        }
+        reset_changed_novelty_weights();
+        b += 1;
+    }
+    return NoveltyOutcome::LocalMin;
+}
+
 bool FeasibilityJump::apply_novelty_jump() {
     require_tables_in_step();
     // Its legs are plain commits, which add no drift, so once whatever an
@@ -2858,42 +3076,66 @@ bool FeasibilityJump::apply_novelty_jump() {
     // normally -- every "reached feasibility" below is read off re-summed rows
     // (#188).
     reground_drifted_rows();
-    const size_t nv = model_.num_vars();
-    // Flags stay set only for entries of nj_queue_ / move_stack_, which
-    // seed_novelty_scan_set and clear_stack clear through below -- also across
-    // calls, since an early return leaves both populated. resize sizes them on
-    // the first call and is a no-op after.
-    nj_in_queue_.resize(nv, 0);
-    on_stack_.resize(nv, 0);
+    begin_novelty_run();
     nj_work_remaining_ = kNoveltyWorkBudget;  // bound the compound-move search
+    nj_moves_this_call_ = 0;
+    return novelty_descent() == NoveltyOutcome::Feasible;
+}
 
-    // on_stack_[v] is set exactly for the v on move_stack_ (pushed together,
-    // popped together, and select_novelty_var never picks a var already on it),
-    // so clearing through the stack is the whole-vector clear at O(|T|) (#174).
-    auto clear_stack = [this]() {
-        for (const StackMove& m : move_stack_) {
-            on_stack_[static_cast<size_t>(m.var)] = 0;
+// ViolationLS Algorithm 6 line 22: GLS(G, X, W, ApplyNoveltyJump, rho). Before
+// #209 a Novelty batch was a single ApplyNoveltyJump whose failure was ignored,
+// so it never bumped a weight; now a failure is Algorithm 3's local minimum,
+// answered with the bump, and the batch goes on until its work bound.
+bool FeasibilityJump::novelty_batch(int64_t batch_iterations) {
+    require_tables_in_step();
+    batch_stuck_ = false;
+    reground_drifted_rows();
+    // The weights may have been changed between batches; re-read them for every
+    // row in V before the bump trusts the counted bits. O(|V|).
+    reconcile_all_counted();
+    begin_novelty_run();
+    // <= 0 is "no per-batch limit", as for batch(): the deadline then ends it.
+    nj_work_remaining_ =
+        batch_iterations > 0 ? batch_iterations : std::numeric_limits<int64_t>::max();
+    nj_moves_this_call_ = 0;
+    bool feasible = false;
+    // The lazy decay's scale is local to the batch, as it is to gls_loop: W and
+    // W' are effective weights again whichever way the batch is left.
+    auto materialise = [this]() {
+        const double folded = weight_decay_.materialise(vm_.weights);
+        if (folded != 1.0) {
+            fold_novelty_weights(folded);
+            vm_.invalidate_cache();
         }
-        move_stack_.clear();
     };
-    int b = 0;
-    while (b <= 2) {
-        init_novelty_weights();
-        seed_novelty_scan_set();
-        clear_stack();
-        while (novelty_jump_search(0.0, b)) {
-            if (!any_active_violated()) {
-                return true;  // reached feasibility
+    try {
+        while (true) {
+            const NoveltyOutcome outcome = novelty_descent();
+            if (outcome == NoveltyOutcome::Feasible) {
+                feasible = true;
+                break;
             }
-            // Committed a compound move; start a fresh one from the new state
-            // (reset budget per Algorithm 4 line 8, keep evolving W').
-            b = 0;
-            seed_novelty_scan_set();
-            clear_stack();
+            if (outcome == NoveltyOutcome::OutOfWork) {
+                break;
+            }
+            if (!any_active_violated()) {
+                feasible = true;  // V had no active row to start with
+                break;
+            }
+            novelty_bump_weights();
+            if (--nj_work_remaining_ <= 0) {
+                break;
+            }
         }
-        b += 1;
+        materialise();
+    } catch (...) {
+        materialise();
+        throw;
     }
-    return false;
+    // Novelty's moves bypass update_var, so FJ's V is current but its jump
+    // table and Q are not: hand them back rebuilt, once per batch.
+    rebuild_violated_and_scan_set();
+    return feasible;
 }
 
 GFJStatus FeasibilityJump::run() {

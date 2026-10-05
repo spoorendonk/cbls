@@ -403,14 +403,38 @@ public:
     // kCompoundDiscount*W for constraints not violated at entry, full W for
     // those violated at entry.
     bool apply_novelty_jump();
+    /// One Novelty Jump BATCH (#209): GLS with ApplyNoveltyJump as its move
+    /// (ViolationLS Algorithm 6 line 22, Algorithm 3 with M = Algorithm 4).
+    /// Each time a whole ApplyNoveltyJump finds no compound move at its largest
+    /// discrepancy budget, the GLS weights are decayed and bumped exactly as
+    /// batch()'s are, and the search goes on; W' and Q' are set up once per
+    /// batch and maintained incrementally from there. `batch_iterations` bounds
+    /// the batch's work in the unit batch() uses: one applied move (a compound
+    /// move's legs and the moves it explores and undoes each count once, undos
+    /// themselves not at all) or one weight bump; <= 0 sets no limit, as for
+    /// batch(), and leaves the deadline to end it. Returns true if no active
+    /// constraint is violated. Leaves FJ's own state (V, Q, jump table) current,
+    /// so the caller needs no resync() -- unlike apply_novelty_jump(). Charges
+    /// nothing to iterations(); see novelty_moves() and friends.
+    bool novelty_batch(int64_t batch_iterations);
     /// Moves (applies, not undos) the last apply_novelty_jump() made, and the
     /// cap on that number. Observability for the regression test that pins
     /// the cap (#206): a sibling loop that kept going after the cap ran out
     /// is what let one call outlive a 20s budget.
-    [[nodiscard]] int64_t novelty_moves_last_call() const {
-        return kNoveltyWorkBudget - nj_work_remaining_;
-    }
+    [[nodiscard]] int64_t novelty_moves_last_call() const { return nj_moves_this_call_; }
     [[nodiscard]] static constexpr int64_t novelty_work_budget() { return kNoveltyWorkBudget; }
+    /// Cumulative Novelty engagement since construction, over both entry
+    /// points: moves applied (undos not counted), compound moves committed,
+    /// and GLS weight bumps a Novelty batch made. Diagnostics: the search
+    /// never reads them back.
+    [[nodiscard]] int64_t novelty_moves() const { return novelty_moves_; }
+    [[nodiscard]] int64_t novelty_commits() const { return novelty_commits_; }
+    [[nodiscard]] int64_t novelty_weight_bumps() const { return novelty_bumps_; }
+    /// The novelty weight W' of row `ci` as Novelty last left it -- read-only
+    /// observability for the tests that pin its incremental upkeep (#209).
+    /// Throws `std::out_of_range` on a row the model does not have, or before
+    /// any Novelty call has sized W'.
+    [[nodiscard]] double novelty_weight(int32_t ci) const;
 
 private:
     // One GLS pass over the constraints whose weight is currently > 0 (the
@@ -587,6 +611,15 @@ private:
         double score = 0.0;          // -W . deltaG(v, jump)
         double novelty_score = 0.0;  // -W' . deltaG(v, jump)
     };
+    // How an ApplyNoveltyJump (Algorithm 4) ended.
+    enum class NoveltyOutcome : uint8_t {
+        Feasible,   // a committed compound move left no active row violated
+        LocalMin,   // no compound move at the largest discrepancy budget: bump
+        OutOfWork,  // the work bound or the deadline cut the search short
+    };
+    // Set up W', Q' and the stack for a run of Novelty: the per-BATCH O(#rows)
+    // W' init and O(nnz(V)) seed, which nothing inside the run repeats.
+    void begin_novelty_run();
     void init_novelty_weights();
     void seed_novelty_scan_set();
     void nj_enqueue(int32_t var_id);
@@ -595,6 +628,17 @@ private:
     void nj_requeue_neighbours(int32_t v, double objective_before);
     NoveltyPick select_novelty_var(double s_m, double s_c);
     bool novelty_jump_search(double s_m, int budget);
+    // Algorithm 4 over the state begin_novelty_run() set up, incrementally.
+    NoveltyOutcome novelty_descent();
+    // Algorithm 4 lines 3-5 for the next discrepancy level, in O(rows whose W'
+    // moved off its level-start value) rather than O(#rows); see the definition.
+    void reset_changed_novelty_weights();
+    void note_novelty_weight_changed(int32_t c);
+    // Algorithm 3 lines 8-12 inside a Novelty batch.
+    void novelty_bump_weights();
+    // Multiply W' by a lazy-decay fold factor, under LazyWeightDecay::fold's rule.
+    void fold_novelty_weights(double factor);
+    void clear_novelty_stack();
 
     Model& model_;
     ViolationManager& vm_;
@@ -927,10 +971,19 @@ private:
     static constexpr double kCompoundDiscount = 1.0 / 1024.0;  // epsilon (OR-tools value)
     static constexpr int64_t kNoveltyWorkBudget = 256;  // max moves applied per apply_novelty_jump
     int64_t nj_work_remaining_ = 0;                     // bounds compound-move search cost
+    int64_t nj_moves_this_call_ = 0;                    // see novelty_moves_last_call()
+    int64_t novelty_moves_ = 0;                         // see novelty_moves()
+    int64_t novelty_commits_ = 0;                       // see novelty_commits()
+    int64_t novelty_bumps_ = 0;                         // see novelty_weight_bumps()
     std::vector<double> novelty_weights_;               // W'
-    std::vector<int32_t> nj_queue_;                     // novelty scan set Q
-    std::vector<uint8_t> nj_in_queue_;                  // per var: in the novelty scan set
-    std::vector<uint8_t> on_stack_;  // per var: on the compound-move stack (the paper's T)
+    // Rows whose W' may differ from its level-start value (W for a violated
+    // row, kCompoundDiscount * W otherwise), each once: OR-Tools'
+    // compound_weight_changed. See reset_changed_novelty_weights.
+    std::vector<int32_t> nw_changed_;
+    std::vector<uint8_t> nw_in_changed_;  // per row: on nw_changed_
+    std::vector<int32_t> nj_queue_;       // novelty scan set Q
+    std::vector<uint8_t> nj_in_queue_;    // per var: in the novelty scan set
+    std::vector<uint8_t> on_stack_;       // per var: on the compound-move stack (the paper's T)
     struct StackMove {
         int32_t var;
         double old_value;
