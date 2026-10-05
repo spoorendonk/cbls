@@ -1460,6 +1460,25 @@ neos-5114902-kasavu after, where every draw of `A` in its 327 batches -- the
 start and at most three full-period kicks; its other kicks were #102's early
 ones, which keep `A` -- came out FJ.
 
+**Pre-registered A/B: when Algorithm 6's `A` is redrawn (#209 review).**
+Written and committed before either arm was run. Arms, both built from engine
+commit `a19b222`: (a) `A` kept until a new best or a full-period perturbation
+(Algorithm 6 / paper §5, the code at `a19b222`); (b) `A` redrawn every batch (the
+pre-#209 behaviour; `a19b222` with `pick_batch_kind` redrawing unconditionally,
+built as a variant, not a flag). Roster: the 11-instance MIPfeas smoke roster.
+30s per run, seeds 1-10, one thread, MIPfeas runner defaults (compound moves
+on), run serially under the wall-clock lock at 1-minute load < 1.5. Metric:
+each run's primal integral as `primal_integral.py` scores it at 30s. Reported:
+sgm per arm (the scorer's shifted geometric mean over all 110 runs); the paired
+difference (a) - (b) per (instance, seed), its mean with a 95% t-interval over
+the 110 pairs; win/loss/tie counts (tie: equal integrals); feasible runs per arm;
+and per arm the share of batches that were Novelty, from the runner's counters.
+Decision rule: if the interval excludes zero, ship the arm with the lower mean
+integral; otherwise ship (b), the pre-#209 behaviour and the closer of the two
+to OR-Tools, whose `ls` worker redraws `use_compound_moves` at every restart of
+a short Luby schedule (`SharedLsStates::ConfigureNextLubyRestart`,
+`LsOptions::Randomize`).
+
 `apply_novelty_jump()` is one stand-alone ApplyNoveltyJump from a fresh `W'` and
 `Q'`, capped at `kNoveltyWorkBudget = 256` applied moves; the caller must
 `resync()` afterward. Tests and the trajectory fence's history use it; the
