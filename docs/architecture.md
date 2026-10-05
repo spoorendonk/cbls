@@ -1427,38 +1427,32 @@ whose residual is in `(0, kTol]`, which counts as satisfied but still scores).
 `SearchCounters::novelty_moves`, `novelty_commits` and `novelty_weight_bumps`
 record its work apart from FJ's. Before #209 a Novelty batch was a single
 ApplyNoveltyJump capped at 256 moves whose failure was ignored, it reseeded
-`Q'` from every violated row after every commit and at every level, and the
-search redrew FJ-or-Novelty every batch.
+`Q'` from every violated row after every commit and at every level, and it
+charged no GLS iteration.
 
-**Measured (#209)**, MIPfeas runner, seed 42, one thread, Release, serial under
-the wall-clock lock at 1-minute load 1.36-1.49 (AMD Ryzen 5 5600H). "Before" is
-`f9a425a` (#210's head), "after" `2be4316`; `cd235e3` after it only splits
-`novelty_jump_search` into helpers and reproduces the trajectory fence, so the
-numbers stand for the head. A SIGPROF profile of binkar10_1 at 20s puts
-`seed_novelty_scan_set` and `init_novelty_weights` at 0.0% (33.6% at
-`c339b47`); Novelty's time is now scoring its sample (`select_novelty_var`
-63.5%), at ~27 us per Novelty move against ~11 us per FJ iteration -- the
-ratio the `/ 3` batch sizing assumes. binkar10_1, 20s, GLS iterations with
-compound moves on / off: before 880k / 1.82M (0.48); after 60k / 1.83M (0.03),
-plus 458k Novelty moves in 1376 Novelty batches against 94 FJ ones. That ratio
-no longer measures throughput: with Algorithm 6's sticky `A`, binkar10_1's FJ
-stretches end at every new best while Novelty stretches run to the
-perturbation period, so most batches are Novelty and charge no GLS iteration. A
-counterfactual build of `2be4316` that redraws `A` every batch, as before, gives
-1.06M / 1.81M (0.59) with 459k Novelty moves in 1380 Novelty batches.
+**Measured (#209)**, MIPfeas runner, one thread, Release, serial under the
+wall-clock lock at 1-minute load 1.36-1.49 (AMD Ryzen 5 5600H). "Before" is
+`f9a425a` (#210's head); the shipped code is `143c8da`. A SIGPROF profile of
+binkar10_1 at 20s (`cd235e3`) puts `seed_novelty_scan_set` and
+`init_novelty_weights` at 0.0% (33.6% at `c339b47`); Novelty's time is now
+scoring its sample (`select_novelty_var` 63.5%), at roughly 27 us per Novelty
+move against roughly 11 us per FJ iteration, about 2.5x -- the same order as
+the 3 iterations a move is charged.
 
-The 11-instance smoke roster at 30s against CP-SAT's `num_violation_ls` worker
-(CP-SAT rows from the 2026-10-03 run at `c339b47`, one worker; primal integral,
-shifted geometric mean, lower is better): CP-SAT 0.2917, 8/11 feasible; before
-0.2485, 8/11; after 0.2447, 8/11; the per-batch-redraw counterfactual 0.2270,
-8/11 -- the same eight instances throughout. Single-seed, so per-instance
-objectives are anecdote: binkar10_1's primal integral went 0.297 -> 0.624
-(counterfactual 0.369), neos5's 0.009 -> 0.001, mas76's 0.089 -> 0.066,
-markshare2 ended at 174 against 61. Every Novelty arm engaged wherever it was
-drawn: the Novelty counters are non-zero on every instance except
-neos-5114902-kasavu after, where every draw of `A` in its 327 batches -- the
-start and at most three full-period kicks; its other kicks were #102's early
-ones, which keep `A` -- came out FJ.
+binkar10_1, 20s, seed 42, compound moves on / off. Before: 880k / 1.82M GLS
+iterations (0.48), Novelty batches then charging nothing. Shipped: 2.60M /
+1.83M charged iterations, of which 1.08M are FJ GLS iterations (0.59 on the
+before metric) and 505k Novelty moves (1.51M charged), with 1514 Novelty and
+1513 FJ batches, 236k compound moves committed and 79 Novelty weight bumps.
+
+The 11-instance smoke roster at 30s, seed 42, against CP-SAT's
+`num_violation_ls` worker (CP-SAT rows from the 2026-10-03 run at `c339b47`,
+one worker; primal integral, shifted geometric mean, lower is better):
+CP-SAT 0.2917, 8/11 feasible; before 0.2485, 8/11; shipped 0.2257, 8/11 -- the
+same eight instances. Single-seed; the ten-seed comparison below is the
+evidence that carries weight. Novelty engaged on every instance: it ran about
+half the batches and committed compound moves on all eleven, and bumped weights
+on all but neos-5114902-kasavu.
 
 **Pre-registered A/B: when Algorithm 6's `A` is redrawn (#209 review).**
 Written and committed before either arm was run. Arms, both built from engine
@@ -1479,6 +1473,17 @@ to OR-Tools, whose `ls` worker redraws `use_compound_moves` at every restart of
 a short Luby schedule (`SharedLsStates::ConfigureNextLubyRestart`,
 `LsOptions::Randomize`).
 
+*Outcome*, 220 runs, all exit 0, load 1.42-1.49. Sticky minus per-batch,
+paired over 110 (instance, seed): mean +0.031, sd 0.080, 95% CI [+0.016,
++0.046]. Per-batch had the lower integral in 72 pairs, sticky in 8, 30 ties
+(atlanta-ip, enlight_hard and neos-5114902-kasavu, unsolved by both at 2.0).
+sgm 0.2467 sticky, 0.2018 per-batch; 80/110 feasible in both; Novelty's share of
+scalar batches 47.6% sticky, 50.0% per-batch. Per-batch won all ten seeds on
+binkar10_1, gen-ip002, gen-ip054, markshare2 and pk1, 9 of 10 on mad, 8 on
+mas76, and 5-5 on neos5. The interval excludes zero, so by the rule the winner,
+per-batch redraw, ships (`143c8da`); `pick_batch_kind` carries the deviation from
+§5 and its reasoning.
+
 `apply_novelty_jump()` is one stand-alone ApplyNoveltyJump from a fresh `W'` and
 `Q'`, capped at `kNoveltyWorkBudget = 256` applied moves; the caller must
 `resync()` afterward. Tests and the trajectory fence's history use it; the
@@ -1487,9 +1492,8 @@ search runs `novelty_batch`.
 > **Status:** Novelty Jump is implemented, wired, and unit-tested, but **off by
 > default** (`SearchConfig::use_compound_moves = false`; the MIPfeas runner turns
 > it on). When enabled, `novelty_jump_probability` (default 0.5, matching the
-> paper) is the probability that each draw of Algorithm 6's `A` picks Novelty;
-> the draw is kept until a new best or a perturbation (see
-> [Main Loop](#main-loop)).
+> paper) is the probability that a scalar batch is Novelty, drawn afresh every
+> batch (see [Main Loop](#main-loop)).
 
 ---
 
@@ -1992,11 +1996,11 @@ point**; the kick and LNS destroy need the window above.
 While time and `max_iterations` remain, each pass:
 
 1. **Pick the batch kind.** With probability `structural_batch_probability`,
-   STRUCTURAL; else, with `use_compound_moves`, Algorithm 6's `A` — NOVELTY JUMP
-   with probability `novelty_jump_probability`, else FEASIBILITY JUMP — which is
-   drawn at the start, on a new best and on a kick (wherever `rho` is
-   resampled) and kept for every batch in between (#209); without compound
-   moves, FEASIBILITY JUMP. Structural batches mutate state outside FJ's
+   STRUCTURAL; else with probability `novelty_jump_probability` (only when
+   `use_compound_moves`), NOVELTY JUMP; else FEASIBILITY JUMP. All drawn afresh
+   every batch: ViolationLS §5 keeps the algorithm until a new best or a
+   perturbation, and #209's pre-registered A/B rejected that here (see
+   [Novelty Jump](#novelty-jump)). Structural batches mutate state outside FJ's
    bookkeeping, so they set a `resync` flag; a Novelty batch rebuilds FJ's state
    itself.
 2. **Run the batch.** `fj.batch(batch_iterations)`, `fj.novelty_batch(batch_iterations)`,

@@ -4,10 +4,11 @@
 // set Q' from every violated row after every committed compound move and at
 // every discrepancy level, rewrote W' over every row per level, ignored a
 // failed search instead of bumping the GLS weights, ranked its sample by the W
-// score, and the search redrew FJ-or-Novelty every batch. Each test below pins
-// one of those changes against ViolationLS (Davies et al. CPAIOR 2024,
-// Algorithms 3-6) and OR-Tools' compound-move mode
-// (ortools/sat/feasibility_jump.cc).
+// score, and could not see its deadline unless it applied a move. Each test
+// below pins one of those changes against ViolationLS (Davies et al. CPAIOR
+// 2024, Algorithms 3-6) and OR-Tools' compound-move mode
+// (ortools/sat/feasibility_jump.cc) -- plus the one place #209 deliberately
+// keeps the pre-#209 behaviour: FJ-or-Novelty is still drawn every batch.
 
 #include "test_helpers.h"
 
