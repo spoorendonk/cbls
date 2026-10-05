@@ -1452,7 +1452,9 @@ objectives are anecdote: binkar10_1's primal integral went 0.297 -> 0.624
 (counterfactual 0.369), neos5's 0.009 -> 0.001, mas76's 0.089 -> 0.066,
 markshare2 ended at 174 against 61. Every Novelty arm engaged wherever it was
 drawn: the Novelty counters are non-zero on every instance except
-neos-5114902-kasavu after, whose three draws of `A` in 327 batches were all FJ.
+neos-5114902-kasavu after, where every draw of `A` in its 327 batches -- the
+start and at most three full-period kicks; its other kicks were #102's early
+ones, which keep `A` -- came out FJ.
 
 `apply_novelty_jump()` is one stand-alone ApplyNoveltyJump from a fresh `W'` and
 `Q'`, capped at `kNoveltyWorkBudget = 256` applied moves; the caller must
