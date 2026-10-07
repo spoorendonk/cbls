@@ -251,7 +251,7 @@ On a model whose only variable is a `Set`, most of the engine is inert:
 | Mechanism | On a Set-only model |
 |---|---|
 | Feasibility Jump batch | not scheduled at the automatic mix since #201 — with no movable scalar every batch is structural. Before that it ran on two thirds of all batches at the default mix, `apply_jump` failed every iteration, and the batch degenerated into a pure GLS weight pump |
-| Novelty Jump | not scheduled at the automatic mix either — compound moves are built from scalar jumps (and it is off by default) |
+| Novelty Jump | not scheduled at the automatic mix either — compound moves are built from scalar jumps |
 | `perturb` diversification kick | reaches the Set since #111 (a kick applies `clamp(round(p*|elements|), 1, |elements|)` random structural moves to it), but those are the same unguided add/remove/swap, so it lands somewhere arbitrary rather than somewhere better — measured ~30% *worse* on the weighted instances than the pre-#111 no-op |
 | LNS destroy-repair | destroys the single Set variable wholesale (a random restart) and repairs with FJ, which has nothing to jump |
 | STRUCTURAL batch | the only mechanism that moves anything |

@@ -227,7 +227,9 @@ TRANSFER_ARMS: tuple[Arm, ...] = tuple(
 )
 
 #: Three seeds, as the protocol requires. 1 is the seed the published table was
-#: measured at, so the control arm stays comparable with it; 2 and 3 are the
+#: measured at, so the control arm stays comparable with it -- once that table
+#: is regenerated under the current defaults: it predates compound moves
+#: becoming the default (2026-10-07) and records `compound_moves=off`; 2 and 3 are the
 #: next two, chosen for being unremarkable -- any seed is as good as any other
 #: to this engine, and picking memorable ones invites the suspicion that they
 #: were picked after looking.

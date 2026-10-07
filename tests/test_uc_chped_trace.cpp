@@ -211,6 +211,7 @@ TEST_CASE("a recorder handed to solve() records the run's incumbents", "[uc-chpe
     cbls::SearchConfig cfg;
     cfg.skip_init = true;
     cfg.max_iterations = 300;
+    cfg.use_compound_moves = false;  // the uc-chped runner's protocol
     const cbls::SearchResult result =
         cbls::solve(ucm.model, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/false, &hook, &lns,
                     /*lns_interval=*/3, &recorder, cfg);

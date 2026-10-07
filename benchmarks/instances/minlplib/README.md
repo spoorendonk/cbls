@@ -210,15 +210,20 @@ file states the configuration it was produced under (#136):
 ```
 
 Two combinations are refused rather than accepted: `--lns-interval` with
-`--no-lns`, and `--novelty-prob` with `--no-compound-moves`. Compound moves are
-on by default since 2026-10-07 (the published tables predate that and record
-`compound_moves=off` in their `search_config` cells). The engine
-short-circuits past the second flag in each pair, so accepting them would record
-an arm that the run did not have.
+`--no-lns`, and `--novelty-prob` with `--no-compound-moves`. The engine never
+reads `--lns-interval` or `--novelty-prob` in those pairs, so accepting them
+would record an arm that the run did not have.
+
+Compound moves are on by default since 2026-10-07. The published tables predate
+that and record `compound_moves=off` in their `search_config` cells; until they
+are regenerated they are an off-default arm, and the guard below refuses
+`--no-compound-moves` onto them like any other arm.
 
 Any non-default value refuses to write the published `comparison.csv` (and
 `anytime_trace.csv`): an arm's rows would look exactly like the published ones
-while describing a different search. `cbls_uc_chped` carries the same flags, and
+while describing a different search. `cbls_uc_chped` carries the same flags,
+judged against its own protocol (compound moves off, so there `--compound-moves`
+is the arm and `--novelty-prob` alone is refused), and
 `benchmarks/common/search_config_flags.h` is the single definition of all of
 them.
 

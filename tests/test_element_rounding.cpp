@@ -806,7 +806,8 @@ TEST_CASE("line planning: both encodings solve to the brute-force optimum",
         // 58/60 before, so the old seeds were luck, not a margin. Re-picked
         // again when compound moves became the default (2026-10-07): 54/60
         // reach it with them on against 57/60 off, with the misses on
-        // different seeds (7 among them), so again a draw rather than a loss.
+        // different seeds (7 among them): a 3-in-60 difference, within seed
+        // noise, so the old seeds were again luck rather than a margin.
         for (uint64_t seed : {1U, 4U, 2U}) {
             LineModel lm;
             build_line_model(lm, new_ops);

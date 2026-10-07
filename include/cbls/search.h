@@ -152,7 +152,7 @@ struct SearchConfig {
     // (3 per move, 1 per bump) with a deadline poll per move and per bump. A
     // single-seed smoke at b8f52f4 (5s MINLPLib, 10s UC-CHPED, serial, load
     // 1.2-2.4) then favoured it on MINLPLib (16 better, 7 worse, 25 tied;
-    // feasible 46 vs 47) and not on UC-CHPED (3 better, 16 worse, typically
+    // feasible 46 with it, 47 without) and not on UC-CHPED (3 better, 16 worse, typically
     // +0.2-1% objective), so the UC-CHPED runner turns it off. One seed, so
     // an indication rather than a result. The paper runs it at 0.5.
     bool use_compound_moves = true;  // run Novelty Jump batches (else FJ only)

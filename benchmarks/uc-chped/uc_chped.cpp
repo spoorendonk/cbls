@@ -63,9 +63,10 @@ struct InstanceSpec {
 
 /// This runner's published search protocol: the engine's defaults with compound
 /// moves (Novelty Jump) OFF. The engine turned them on by default on 2026-10-07,
-/// but a single-seed 10s smoke at b8f52f4 found them worse on 16 of the 19
-/// instances that differed (typically +0.2-1% objective, up to +2.4% on ucp13
-/// 3p), against better on MINLPLib. `--compound-moves` is then an ablation arm,
+/// but a single-seed 10s smoke at b8f52f4 (at load above 1.5: an indication, not
+/// a result) found them worse on 16 of the 19 (instance, horizon) rows that
+/// differed (typically +0.2-1% objective, up to +2.4% on ucp13 3p), against
+/// better on MINLPLib. `--compound-moves` is then an ablation arm,
 /// refused onto the published table like any other.
 cbls::bench::SearchFlags published_search_flags() {
     cbls::bench::SearchFlags f;

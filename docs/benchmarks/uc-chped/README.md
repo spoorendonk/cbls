@@ -275,7 +275,12 @@ reference rows only; regenerating the measured rows is tracked in issue #131.
 
 The table now has a generator — `benchmarks/uc-chped/uc_chped.cpp` writes it,
 stating the feasibility tolerance explicitly and recording it, the seed, the
-time budget and the engine commit on every measured row:
+time budget, the search configuration and the engine commit on every measured
+row. The search configuration is the engine's defaults with compound moves
+(Novelty Jump) **off** (`published_search_flags()` in the runner): the engine
+turned them on by default on 2026-10-07, but a single-seed smoke at `b8f52f4`
+found them worse on 16 of the 19 rows that differed here, so `--compound-moves`
+is an ablation arm the runner refuses to write onto the published table:
 
 ```bash
 set -o pipefail

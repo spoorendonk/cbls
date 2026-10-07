@@ -279,6 +279,9 @@ def test_uc_chped_requires_a_commit_and_verify_to_write_the_published_table(
         ["--lns-interval", "5"],
         ["--no-float-hook"],
         ["--no-time-limit", "--max-iterations", "100"],
+        # The engine default is the arm here: uc-chped publishes with compound
+        # moves OFF, so the guard must judge against that, not SearchFlags{}.
+        ["--compound-moves"],
     ],
 )
 def test_uc_chped_refuses_an_ablation_arm_onto_the_published_table(

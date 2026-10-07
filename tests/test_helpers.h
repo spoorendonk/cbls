@@ -35,8 +35,9 @@ inline cbls::SearchResult solve_deterministic(cbls::Model& model, int64_t max_it
                                               uint64_t seed = 42,
                                               cbls::InnerSolverHook* hook = nullptr,
                                               cbls::LNS* lns = nullptr, int lns_interval = 3,
-                                              cbls::SolveCallback* callback = nullptr) {
-    cbls::SearchConfig cfg;
+                                              cbls::SolveCallback* callback = nullptr,
+                                              const cbls::SearchConfig& base = {}) {
+    cbls::SearchConfig cfg = base;  // a test's protocol (e.g. uc-chped's); budget set here
     cfg.max_iterations = max_iterations;
     double time_limit = 0.0;  // 0 = no wall clock; the iteration budget binds
 

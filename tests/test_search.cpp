@@ -1145,7 +1145,8 @@ TEST_CASE("solve disarms the escape probe on a new best", "[search][escape]") {
     // still forces exactly one variable (#109), which counts as a kick without
     // randomising a tenth of the model on every stagnant batch.
     config.perturbation_probability = 0.0;
-    config.max_iterations = 20000;  // ample: the model needs ~25 improving jumps
+    config.max_iterations = 20000;      // ample: the model needs ~25 improving jumps
+    config.use_compound_moves = false;  // FJ batches only: see the non-vacuity note below
 
     auto result = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
                         nullptr, config);
@@ -1155,7 +1156,7 @@ TEST_CASE("solve disarms the escape probe on a new best", "[search][escape]") {
     // Not vacuous: more than one batch ran, so batch 1 was stagnant and (at
     // perturbation_period = 1) armed the probe before the improvement disarmed
     // it. Every batch is a Feasibility Jump here -- the model is Int-only, so
-    // structural_probability is 0 and compound moves are off by default -- which
+    // structural_probability is 0 and compound moves are switched off above -- which
     // is what makes the iteration count a batch count.
     REQUIRE(result.iterations > 1);
     REQUIRE_FALSE(result.escape_probe_armed);

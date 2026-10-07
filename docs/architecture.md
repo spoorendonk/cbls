@@ -1493,9 +1493,12 @@ search runs `novelty_batch`.
 
 > **Status:** Novelty Jump is **on by default** since 2026-10-07
 > (`SearchConfig::use_compound_moves = true`), after a single-seed smoke at
-> `b8f52f4` favoured it on MINLPLib (16 better, 7 worse, 25 tied at 5s) and not
-> on UC-CHPED (3 better, 16 worse at 10s), whose runner therefore turns it off.
-> One seed per arm, so an indication rather than a result. When enabled, `novelty_jump_probability` (default 0.5, matching the
+> `b8f52f4` favoured it on MINLPLib on objective (16 better, 7 worse, 25 tied at
+> 5s; feasible on 46 instances with it against 47 without: nvs02 and nvs14 lost,
+> chain50 gained) and not on UC-CHPED (3 better, 16 worse of its (instance,
+> horizon) rows at 10s), whose runner therefore turns it off. One seed per arm,
+> at load 1.2-2.4 (above the 1.5 the A/B protocol asks for), so an indication
+> rather than a result. When enabled, `novelty_jump_probability` (default 0.5, matching the
 > paper) is the probability that a scalar batch is Novelty, drawn afresh every
 > batch (see [Main Loop](#main-loop)).
 
@@ -2737,7 +2740,7 @@ struct SearchConfig {
                                             // kick size (never a no-op)
     double structural_batch_probability = -1.0;  // <0 = auto (0.33 if any generator, else 0);
                                                  // auto is 1.0 when FJ has nothing to jump (#201)
-    bool use_compound_moves = false;        // run Novelty Jump batches (else FJ only)
+    bool use_compound_moves = true;         // run Novelty Jump batches (else FJ only)
     double novelty_jump_probability = 0.5;  // P(a batch is Novelty Jump) when enabled
 };
 ```
@@ -3243,7 +3246,7 @@ escape mechanism.
 
 **Chosen:** Novelty Jump (bounded-backtracking compound moves with novelty
 weights) to escape FJ local optima where only a sequence of moves improves.
-Currently off by default pending tighter per-batch cost bounds.
+On by default since 2026-10-07, once #209 bounded a Novelty batch's cost (see the Status note under Novelty Jump); the UC-CHPED runner turns it off.
 
 **Alternative:** rely solely on perturbation/LNS diversification. Simpler, but
 cannot find the chained-invariant fixes Novelty Jump targets.
@@ -3363,7 +3366,7 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `perturbation_period` | 100 | `SearchConfig` | stagnant batches before a diversification kick |
 | `perturbation_probability` | 0.1 | `SearchConfig` | per-var scalar randomisation probability on perturb; also scales the List/Set moves per kick (a no-op kick moves one var anyway) |
 | `structural_batch_probability` | -1 (auto) | `SearchConfig` | P(structural batch); auto 0.33 when a generator would be built, else 0; auto is 1 when FJ has no movable, row-read variable (#201) |
-| `use_compound_moves` | false | `SearchConfig` | enable Novelty Jump batches |
+| `use_compound_moves` | true | `SearchConfig` | enable Novelty Jump batches (the UC-CHPED runner turns it off) |
 | `novelty_jump_probability` | 0.5 | `SearchConfig` | P(Novelty Jump batch) when enabled |
 | `lns_interval` | 3 | `SearchConfig` / arg | LNS fires every Nth diversification kick |
 | `rho` (GLS decay) | {0.95, 1.0} | sampled per batch | GLS weight decay factor |
