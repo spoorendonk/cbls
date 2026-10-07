@@ -2041,7 +2041,8 @@ TEST_CASE("an own best that ties the shared bound still counts as an improvement
     // The peer's 69 is an objective this worker records exactly, at seed 5, in
     // a batch that starts with the bound already at the cap 69 earns. (It was
     // 68 until #206 moved the trajectory; a scan of 40-140 at seed 5 now finds
-    // 69 alone.)
+    // 69 alone.) Compound moves are off, as they were when #179 was measured
+    // and the tie was found; the engine default turned them on afterwards.
     constexpr double kTiePeer = 69.0;
     SolutionPool pool(1);
     SearchCoordination coord;
@@ -2052,6 +2053,7 @@ TEST_CASE("an own best that ties the shared bound still counts as an improvement
     config.max_iterations = kSharedBoundIterations;
     config.batch_iterations = 100;
     config.tracer = &ledger;
+    config.use_compound_moves = false;
     const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/5, true, nullptr, nullptr, 3,
                                  nullptr, config, &coord);
     REQUIRE(r.feasible);

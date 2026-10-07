@@ -67,7 +67,7 @@ if TYPE_CHECKING:
 
 HEADER = ",".join(RUNNER_COLUMNS)
 DEFAULT_ARM = (
-    "float_hook=on;lns=on;lns_interval=3;compound_moves=off;novelty_prob=0.5;"
+    "float_hook=on;lns=on;lns_interval=3;compound_moves=on;novelty_prob=0.5;"
     "unproductive_iters=300;perturbation_period=100;max_iterations=0;time_limit=on"
 )
 ROW = "nvs01,1,1,1,0,0,60,true,feasible,abc1234,0,3,7,2,9,0.25," + DEFAULT_ARM

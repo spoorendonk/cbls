@@ -210,7 +210,9 @@ file states the configuration it was produced under (#136):
 ```
 
 Two combinations are refused rather than accepted: `--lns-interval` with
-`--no-lns`, and `--novelty-prob` without `--compound-moves`. The engine
+`--no-lns`, and `--novelty-prob` with `--no-compound-moves`. Compound moves are
+on by default since 2026-10-07 (the published tables predate that and record
+`compound_moves=off` in their `search_config` cells). The engine
 short-circuits past the second flag in each pair, so accepting them would record
 an arm that the run did not have.
 

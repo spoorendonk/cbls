@@ -243,6 +243,12 @@ struct Scenario {
 // digests reproduced unchanged on that build, and the current build matches
 // all six.
 //
+// A second re-record of mixed/seed42/auto on 2026-10-07, when compound moves
+// became the engine default: it is the one row that runs scalar batches under
+// default settings, so some of them are now Novelty batches. Recorded on main
+// at b8f52f4 with only `SearchConfig::use_compound_moves` flipped; the other
+// five digests reproduced unchanged.
+//
 // Combined on rebase: #201's five rows and #206's mixed/seed42/auto row are
 // disjoint (no-scalar and struct1 rows run no FJ batch; mixed/auto never hit
 // #201's no-FJ-work rule), so each row keeps the value its own change set.
@@ -251,7 +257,7 @@ const std::array<Scenario, 6> kScenarios = {{
     {"set_cover/seed7/struct1", set_cover_model, 7, 4000, 1.0, 0xfc1af445e51ed08aULL},
     {"list_tour/seed42/auto", list_tour_model, 42, 4000, -1.0, 0x8445d676f8d4fdd3ULL},
     {"list_tour/seed7/struct1", list_tour_model, 7, 4000, 1.0, 0x662c868a45a1f1f8ULL},
-    {"mixed/seed42/auto", mixed_model, 42, 4000, -1.0, 0x7ee6a8062ae30f81ULL},
+    {"mixed/seed42/auto", mixed_model, 42, 4000, -1.0, 0x61f45f0b73e2d4cdULL},
     {"mixed/seed7/struct1", mixed_model, 7, 4000, 1.0, 0xbea4bc2d3d05c9a1ULL},
 }};
 

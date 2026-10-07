@@ -1491,9 +1491,11 @@ per-batch redraw, ships (`143c8da`); `pick_batch_kind` carries the deviation fro
 `resync()` afterward. Tests and the trajectory fence's history use it; the
 search runs `novelty_batch`.
 
-> **Status:** Novelty Jump is implemented, wired, and unit-tested, but **off by
-> default** (`SearchConfig::use_compound_moves = false`; the MIPfeas runner turns
-> it on). When enabled, `novelty_jump_probability` (default 0.5, matching the
+> **Status:** Novelty Jump is **on by default** since 2026-10-07
+> (`SearchConfig::use_compound_moves = true`), after a single-seed smoke at
+> `b8f52f4` favoured it on MINLPLib (16 better, 7 worse, 25 tied at 5s) and not
+> on UC-CHPED (3 better, 16 worse at 10s), whose runner therefore turns it off.
+> One seed per arm, so an indication rather than a result. When enabled, `novelty_jump_probability` (default 0.5, matching the
 > paper) is the probability that a scalar batch is Novelty, drawn afresh every
 > batch (see [Main Loop](#main-loop)).
 

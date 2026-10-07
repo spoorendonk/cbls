@@ -607,7 +607,7 @@ def test_uc_chped_rejects_a_trace_flag_with_no_value(tmp_path: Path) -> None:
 MINLPLIB_BINARY = Path(__file__).resolve().parents[2] / "build" / "cbls_minlplib"
 
 MINLPLIB_DEFAULT_ARM = (
-    "float_hook=on;lns=on;lns_interval=3;compound_moves=off;novelty_prob=0.5;"
+    "float_hook=on;lns=on;lns_interval=3;compound_moves=on;novelty_prob=0.5;"
     "unproductive_iters=300;perturbation_period=100;max_iterations=0;time_limit=on"
 )
 
@@ -659,7 +659,7 @@ def test_minlplib_refuses_an_ablation_arm_onto_the_published_table(
         ["--novelty-prob", "2"],  # a number, but not one the engine can use
         ["--no-time-limit"],  # no iteration budget, so no budget at all
         ["--no-lns", "--lns-interval", "5"],  # the interval is read by nothing
-        ["--novelty-prob", "0.25"],  # read by nothing without --compound-moves
+        ["--no-compound-moves", "--novelty-prob", "0.25"],  # read by nothing then
     ],
 )
 def test_minlplib_rejects_a_bad_search_flag_value(bad: list[str], tmp_path: Path) -> None:
@@ -688,7 +688,7 @@ def test_minlplib_records_the_arm_on_an_early_exit_row(tmp_path: Path) -> None:
     out = tmp_path / "arm.csv"
 
     result = _run_minlplib(
-        str(inst_dir), "--compound-moves", "--novelty-prob", "0.25", "--out", str(out)
+        str(inst_dir), "--no-compound-moves", "--lns-interval", "5", "--out", str(out)
     )
     assert result.returncode == 0, result.stderr
 
@@ -699,8 +699,8 @@ def test_minlplib_records_the_arm_on_an_early_exit_row(tmp_path: Path) -> None:
     cells = lines[1].split(",")
     assert len(cells) == len(header), lines[1]
     assert cells[-1] == MINLPLIB_DEFAULT_ARM.replace(
-        "compound_moves=off", "compound_moves=on"
-    ).replace("novelty_prob=0.5", "novelty_prob=0.25")
+        "compound_moves=on", "compound_moves=off"
+    ).replace("lns_interval=3", "lns_interval=5")
     # The #143 LNS counter is on the row too, and on THIS row it must read NaN:
     # no solve ran, and a 0 here would be indistinguishable from "LNS ran and
     # never repaired" -- the reading the ablation's LNS gate is decided on. The

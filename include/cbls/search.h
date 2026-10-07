@@ -147,13 +147,15 @@ struct SearchConfig {
     // immutable, and copying a k-nearest list per worker is the cost sharing the
     // model's structure exists to avoid (#157).
     std::shared_ptr<const NeighbourList> structural_neighbours;
-    // Novelty Jump is implemented, wired, and unit-tested, but OFF by default.
-    // Since #209 a Novelty batch is bounded by batch_iterations (3 per move, 1
-    // per bump) and polls the deadline per move and per bump, so the original
-    // reason -- an unbounded per-batch cost on the large continuous benchmarks
-    // -- no longer holds; the default stays off pending a measurement there.
-    // The MIPfeas runner turns it on; the paper uses 0.5.
-    bool use_compound_moves = false;  // run Novelty Jump batches (else FJ only)
+    // Novelty Jump, ON by default since 2026-10-07. It was off while a
+    // Novelty batch's cost was unbounded; #209 bounded it by batch_iterations
+    // (3 per move, 1 per bump) with a deadline poll per move and per bump. A
+    // single-seed smoke at b8f52f4 (5s MINLPLib, 10s UC-CHPED, serial, load
+    // 1.2-2.4) then favoured it on MINLPLib (16 better, 7 worse, 25 tied;
+    // feasible 46 vs 47) and not on UC-CHPED (3 better, 16 worse, typically
+    // +0.2-1% objective), so the UC-CHPED runner turns it off. One seed, so
+    // an indication rather than a result. The paper runs it at 0.5.
+    bool use_compound_moves = true;  // run Novelty Jump batches (else FJ only)
     // P(a scalar batch is Novelty Jump), drawn afresh every batch -- not held
     // until a new best as ViolationLS §5 does; see pick_batch_kind for the
     // pre-registered A/B that settled it (#209).

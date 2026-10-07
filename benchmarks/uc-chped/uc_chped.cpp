@@ -61,6 +61,18 @@ struct InstanceSpec {
     std::vector<int> periods;
 };
 
+/// This runner's published search protocol: the engine's defaults with compound
+/// moves (Novelty Jump) OFF. The engine turned them on by default on 2026-10-07,
+/// but a single-seed 10s smoke at b8f52f4 found them worse on 16 of the 19
+/// instances that differed (typically +0.2-1% objective, up to +2.4% on ucp13
+/// 3p), against better on MINLPLib. `--compound-moves` is then an ablation arm,
+/// refused onto the published table like any other.
+cbls::bench::SearchFlags published_search_flags() {
+    cbls::bench::SearchFlags f;
+    f.compound_moves = false;
+    return f;
+}
+
 struct Args {
     std::string inst_dir = "benchmarks/instances/uc-chped";
     bool do_verify = false;
@@ -86,7 +98,7 @@ struct Args {
     // The ablation arm (#136). Its canonical spelling is recorded on every
     // measured row, so a results file states the configuration it was produced
     // under instead of leaving the reader to remember which binary produced it.
-    cbls::bench::SearchFlags search;
+    cbls::bench::SearchFlags search = published_search_flags();
     std::string search_config;  // search_config_string(search); filled in by parse_args
 };
 
@@ -177,7 +189,8 @@ const char* non_published_protocol(const Args& a) {
     if (!a.instances.empty()) {
         return "--instance";
     }
-    const char* arm = cbls::bench::first_non_default_search_flag(a.search);
+    const char* arm =
+        cbls::bench::first_non_default_search_flag(a.search, published_search_flags());
     if (arm != nullptr) {
         return arm;
     }

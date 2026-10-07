@@ -126,11 +126,12 @@ TEST_CASE("batches by kind sum to the batch count", "[counters]") {
 TEST_CASE("a scalar model runs feasibility-jump batches only", "[counters]") {
     // The control for the test above, and the statement that the buckets track
     // the batch kind rather than just the count: with no structured variable the
-    // structural probability resolves to 0.0, and compound moves are off by
-    // default.
+    // structural probability resolves to 0.0, and compound moves are switched
+    // off (they are on by default).
     SearchConfig config;
     config.max_iterations = 5000;
     config.batch_iterations = 100;
+    config.use_compound_moves = false;
 
     Model m = quadratic_model();
     const SearchCounters& c = run(m, config, /*seed=*/4).counters;

@@ -53,8 +53,11 @@ def _structured() -> "cbls.Model":
 
 
 def _config() -> "cbls.SearchConfig":
+    """FJ batches only: compound moves are on by default, and these tests read
+    the FJ-only breakdown (the Novelty test below turns them back on)."""
     config = cbls.SearchConfig()
     config.max_iterations = ITERATIONS
+    config.use_compound_moves = False
     return config
 
 
@@ -155,8 +158,8 @@ def test_novelty_engagement_is_readable() -> None:
     on = _config()
     on.use_compound_moves = True
     on.novelty_jump_probability = 1.0
-    # A Novelty batch charges no GLS iteration, so the budget binds on the batch
-    # count (see `budget_exhausted()`): keep it small.
+    # A Novelty batch charges 3 GLS iterations per move (#209), so a small
+    # budget still gives several batches and keeps the run quick.
     on.max_iterations = 20
     counters = cbls.solve(_quadratic(), 0.0, 42, config=on).counters
     assert counters.novelty_batches == counters.batches > 0

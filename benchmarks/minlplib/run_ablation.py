@@ -9,7 +9,7 @@ equally rather than accumulating against whichever arm ran last:
     control            (all defaults)
     no-float-hook      --no-float-hook
     unproductive-0     --unproductive-iters 0
-    compound-moves     --compound-moves
+    no-compound-moves  --no-compound-moves
     no-lns             --no-lns              (gated -- see LNS_GATE_* below)
 
 Usage, from a configured Release build directory and a clean checkout:
@@ -174,7 +174,9 @@ ARMS: tuple[Arm, ...] = (
     Arm(CONTROL_ARM, ()),
     Arm("no-float-hook", ("--no-float-hook",)),
     Arm("unproductive-0", ("--unproductive-iters", "0")),
-    Arm("compound-moves", ("--compound-moves",)),
+    # Compound moves are on by default since 2026-10-07, so the arm turns them
+    # OFF; it measures the same on/off difference #143 asked for.
+    Arm("no-compound-moves", ("--no-compound-moves",)),
 )
 
 #: The gated fifth arm.

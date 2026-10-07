@@ -78,7 +78,7 @@ if TYPE_CHECKING:
 
 RUNNER_HEADER = ",".join(RUNNER_COLUMNS)
 DEFAULT_ARM_CELL = (
-    "float_hook=on;lns=on;lns_interval=3;compound_moves=off;novelty_prob=0.5;"
+    "float_hook=on;lns=on;lns_interval=3;compound_moves=on;novelty_prob=0.5;"
     "unproductive_iters=300;perturbation_period=100;max_iterations=0;time_limit=on"
 )
 

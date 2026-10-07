@@ -219,15 +219,17 @@ inline bool validate_search_flags(const SearchFlags& f, bool time_limit_set, std
     return true;
 }
 
-/// The first flag whose value is not the engine default, or nullptr when the
-/// arm is the default configuration.
+/// The first flag whose value is not the runner's default, or nullptr when the
+/// arm is the default configuration. `d` is the runner's published protocol:
+/// the engine's defaults unless the runner pins a field away from them, as
+/// uc-chped does for compound moves.
 ///
 /// This is what lets a runner's published-table guard treat an ablation arm the
 /// way it treats a shortened budget or a partial roster: a table generated under
 /// a non-default search configuration is not the published measurement, whatever
 /// else was passed.
-inline const char* first_non_default_search_flag(const SearchFlags& f) {
-    const SearchFlags d;
+inline const char* first_non_default_search_flag(const SearchFlags& f,
+                                                 const SearchFlags& d = SearchFlags{}) {
     if (f.float_hook != d.float_hook) {
         return "--no-float-hook";
     }
@@ -238,7 +240,7 @@ inline const char* first_non_default_search_flag(const SearchFlags& f) {
         return "--lns-interval";
     }
     if (f.compound_moves != d.compound_moves) {
-        return "--compound-moves";
+        return f.compound_moves ? "--compound-moves" : "--no-compound-moves";
     }
     if (f.novelty_prob != d.novelty_prob) {
         return "--novelty-prob";

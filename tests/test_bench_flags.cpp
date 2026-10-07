@@ -223,7 +223,7 @@ TEST_CASE("an unrelated argument is left for the runner", "[bench][flags]") {
 
 TEST_CASE("the search config cell is canonical and deterministic", "[bench][flags]") {
     REQUIRE(cbls::bench::search_config_string(SearchFlags{}) ==
-            "float_hook=on;lns=on;lns_interval=3;compound_moves=off;novelty_prob=0.5;"
+            "float_hook=on;lns=on;lns_interval=3;compound_moves=on;novelty_prob=0.5;"
             "unproductive_iters=300;perturbation_period=100;max_iterations=0;time_limit=on");
 
     const SearchFlags f =
@@ -258,8 +258,8 @@ TEST_CASE("one run cannot be recorded under two different cells", "[bench][flags
     REQUIRE_FALSE(cbls::bench::validate_search_flags(
         parse({"--no-lns", "--lns-interval", "5"}).flags, false, error));
     REQUIRE(error.find("--lns-interval") != std::string::npos);
-    REQUIRE_FALSE(
-        cbls::bench::validate_search_flags(parse({"--novelty-prob", "0.25"}).flags, false, error));
+    REQUIRE_FALSE(cbls::bench::validate_search_flags(
+        parse({"--no-compound-moves", "--novelty-prob", "0.25"}).flags, false, error));
     REQUIRE(error.find("--novelty-prob") != std::string::npos);
 
     // Restating the default alongside the switch is not a no-effect flag; it is
@@ -293,8 +293,8 @@ TEST_CASE("a non-default arm is named for the published-table guard", "[bench][f
         {"--no-float-hook"},
         {"--no-lns"},
         {"--lns-interval", "5"},
-        {"--compound-moves"},
-        {"--compound-moves", "--novelty-prob", "0.1"},
+        {"--no-compound-moves"},
+        {"--novelty-prob", "0.1"},
         {"--unproductive-iters", "0"},
         {"--perturbation-period", "7"},
         {"--max-iterations", "10"},
@@ -307,8 +307,20 @@ TEST_CASE("a non-default arm is named for the published-table guard", "[bench][f
         REQUIRE(cbls::bench::first_non_default_search_flag(parsed.flags) != nullptr);
     }
     // A flag restated at its default is not an arm.
-    REQUIRE(cbls::bench::first_non_default_search_flag(parse({"--no-compound-moves"}).flags) ==
+    REQUIRE(cbls::bench::first_non_default_search_flag(parse({"--compound-moves"}).flags) ==
             nullptr);
+    // A runner whose protocol pins a field away from the engine (uc-chped runs
+    // compound moves off) judges arms against its own defaults: the engine's
+    // default is then the arm, named in the direction it was asked for, and
+    // restating the runner's value is not.
+    SearchFlags off;
+    off.compound_moves = false;
+    REQUIRE(std::string(cbls::bench::first_non_default_search_flag(parse({}).flags, off)) ==
+            "--compound-moves");
+    REQUIRE(cbls::bench::first_non_default_search_flag(parse({"--no-compound-moves"}).flags, off) ==
+            nullptr);
+    REQUIRE(std::string(cbls::bench::first_non_default_search_flag(
+                parse({"--no-compound-moves"}).flags)) == "--no-compound-moves");
     REQUIRE(cbls::bench::first_non_default_search_flag(parse({"--lns-interval", "3"}).flags) ==
             nullptr);
 }
@@ -407,12 +419,15 @@ TEST_CASE("the --no-lns flag stops the repairs the default arm makes", "[bench][
 }
 
 TEST_CASE("the --lns-interval flag changes how often a kick is a repair", "[bench][flags][probe]") {
-    const SearchResult every =
-        probe({"--perturbation-period", "1", "--lns-interval", "1", "--max-iterations", "25"},
-              build_stagnant_model, /*batch_iterations=*/1);
-    const SearchResult fifth =
-        probe({"--perturbation-period", "1", "--lns-interval", "5", "--max-iterations", "25"},
-              build_stagnant_model, /*batch_iterations=*/1);
+    // FJ batches only: a Novelty batch's iteration charge depends on the moves
+    // it found, so with compound moves on the two arms' budgets end after
+    // different numbers of batches and the kick counts stop being comparable.
+    const SearchResult every = probe({"--perturbation-period", "1", "--lns-interval", "1",
+                                      "--max-iterations", "25", "--no-compound-moves"},
+                                     build_stagnant_model, /*batch_iterations=*/1);
+    const SearchResult fifth = probe({"--perturbation-period", "1", "--lns-interval", "5",
+                                      "--max-iterations", "25", "--no-compound-moves"},
+                                     build_stagnant_model, /*batch_iterations=*/1);
     REQUIRE(fifth.lns_repairs > 0);
     REQUIRE(every.lns_repairs > fifth.lns_repairs);
     // Same number of kicks either way; only their composition changed.
@@ -488,7 +503,7 @@ TEST_CASE("the --no-time-limit flag hands solve() an iteration budget alone",
 TEST_CASE("the --compound-moves flag changes the batches the search runs",
           "[bench][flags][probe]") {
     // With Novelty Jump on and its probability at 1 every batch is a compound
-    // batch, which is a different search from the Feasibility-Jump-only default.
+    // batch, which is a different search from the Feasibility-Jump-only arm.
     // Read off the batch counters, not the iteration count: since #201 that
     // reports the larger of GLS iterations and batches, so an all-Novelty run
     // reports its 300 batches against the FJ arm's 300 GLS iterations.
@@ -496,8 +511,10 @@ TEST_CASE("the --compound-moves flag changes the batches the search runs",
                                              "--perturbation-period", "5"};
     std::vector<std::string> on = budget;
     on.insert(on.end(), {"--compound-moves", "--novelty-prob", "1.0"});
+    std::vector<std::string> off = budget;
+    off.emplace_back("--no-compound-moves");
 
-    const SearchResult off_arm = probe(budget, build_stagnant_model, /*batch_iterations=*/10);
+    const SearchResult off_arm = probe(off, build_stagnant_model, /*batch_iterations=*/10);
     const SearchResult on_arm = probe(on, build_stagnant_model, /*batch_iterations=*/10);
     REQUIRE(off_arm.counters.novelty_batches == 0);
     REQUIRE(on_arm.counters.novelty_batches > 0);

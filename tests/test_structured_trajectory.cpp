@@ -101,6 +101,12 @@ TEST_CASE("structured trajectory witness: Set with lambda_sum", "[trajectory][st
 // improving variable, so the scalar trajectory -- and the List's with it --
 // moved. The pure List and Set witnesses above have no FJ-jumpable variable
 // and reproduced unchanged.
+//
+// Re-recorded again on 2026-10-07, when compound moves (Novelty Jump) became
+// the engine default: this witness runs default settings and has scalars, so
+// some of its scalar batches are now Novelty batches. Recorded on main at
+// b8f52f4 with only `SearchConfig::use_compound_moves` flipped; the pure List
+// and Set witnesses run no scalar batch and reproduced unchanged.
 TEST_CASE("structured trajectory witness: List mixed with scalars", "[trajectory][structured]") {
     Model m;
     auto lv = m.list_var(6, "order");
@@ -113,7 +119,7 @@ TEST_CASE("structured trajectory witness: List mixed with scalars", "[trajectory
     m.close();
 
     REQUIRE(signature(solve_deterministic(m, 4000, 20240163), vid(lv)) ==
-            "iters=4083 feasible=1 obj=11 elements=0,4,2,3,1,5");
+            "iters=4073 feasible=1 obj=13 elements=3,4,2,0,1,5");
     REQUIRE(signature(solve_deterministic(m, 4000, 7), vid(lv)) ==
-            "iters=4000 feasible=1 obj=32 elements=1,4,2,5,3,0");
+            "iters=4002 feasible=1 obj=13 elements=4,2,0,1,5,3");
 }

@@ -129,6 +129,7 @@ TEST_CASE("a recording tracer sees ordered batch events", "[tracer]") {
     config.max_iterations = 5000;
     config.batch_iterations = 100;
     config.tracer = &tracer;
+    config.use_compound_moves = false;  // so every batch is FJ (asserted below)
 
     Model m = quadratic_model();
     const SearchResult r =
@@ -151,7 +152,7 @@ TEST_CASE("a recording tracer sees ordered batch events", "[tracer]") {
         REQUIRE(e.iterations >= previous);
         previous = e.iterations;
         last_batch_iterations = e.iterations;
-        REQUIRE(e.batch == BatchKind::FeasibilityJump);  // a scalar model runs FJ only
+        REQUIRE(e.batch == BatchKind::FeasibilityJump);  // scalar, compound moves off
     }
     REQUIRE(last_batch_iterations == r.iterations);
 

@@ -610,12 +610,13 @@ inherited, so a published number cannot silently change when a default moves:
 | Recorded per result | commit SHA, seed, tolerance, clamp + columns it still narrows, columns declared unbounded, columns tightened, propagation verdict and pass cap, compound-move and propagation flags, peak RSS, read/build/setup seconds, trace point count and trace source | OR-Tools version, seed, full parameter string, solver verdict, peak RSS, read/setup seconds, free-row count, trace source |
 | Solution verified against the instance file | yes, by SCIP | yes, by SCIP |
 
-Two of those are deliberate departures from the engine's own defaults, both made
-to keep the two sides comparable rather than to flatter either:
+Two of those are deliberate choices against the engine's defaults as they stood
+(the first is now the default too), both made to keep the two sides comparable
+rather than to flatter either:
 
-* **Novelty Jump is on**, though `SearchConfig::use_compound_moves` defaults to
-  off. That default exists because the per-batch cost was not bounded tightly
-  enough for the large *continuous* benchmarks — not this roster. Roughly half of
+* **Novelty Jump is on.** It was a departure from the engine default when this
+  was written; the engine turned it on by default on 2026-10-07, and the runner
+  still states it explicitly. Roughly half of
   CP-SAT's incumbents here come from its own compound-move subsolvers
   (`ls_restart_*compound*`: 45–67% of improving solutions on binkar10_1 and pk1),
   so running without it would compare our Feasibility Jump against their

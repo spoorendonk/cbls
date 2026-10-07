@@ -61,12 +61,10 @@ struct Args {
     // Stated explicitly rather than inherited from the engine default: a published
     // result must not silently change when an engine default moves (issue #103).
     double feas_tol = cbls::kDefaultFeasibilityTolerance;
-    // Novelty Jump (compound moves), on for this benchmark although the engine
-    // default is off. That default was set because the per-batch cost was not
-    // bounded tightly enough for the large *continuous* benchmarks (bounded
-    // since #209; the default awaits a measurement there), which is not this
-    // roster; and roughly half of CP-SAT's incumbents here come from its own
-    // compound-move subsolvers (`ls_restart_*compound*` — 45-67% of improving
+    // Novelty Jump (compound moves), on for this benchmark. That is also the
+    // engine default since 2026-10-07, but it is stated here rather than
+    // inherited, for the same #103 reason as feas_tol: roughly half of CP-SAT's incumbents here
+    // come from its own compound-move subsolvers (`ls_restart_*compound*` — 45-67% of improving
     // solutions on binkar10_1 and pk1). Running without it would compare our
     // Feasibility Jump against their Feasibility Jump plus Novelty Jump and call
     // the difference a reimplementation gap.
