@@ -82,6 +82,39 @@ TEST_CASE("FloatIntensifyHook with infeasible start (no objective)", "[inner_sol
     REQUIRE(after_aug < before_aug);
 }
 
+TEST_CASE("FloatIntensifyHook steps toward a violated row outside the first three globally",
+          "[inner_solver]") {
+    // y is descended first (lowest id), but its row is the FOURTH violated one:
+    // rows 0-2 belong to x0..x2. Before #207 the Newton candidates came from the
+    // first three rows of the global violated list, where y's partial is 0, so
+    // with no objective y had no candidate at all in the first sweep.
+    Model m;
+    auto y = m.float_var(0, 10);
+    std::vector<int32_t> xs;
+    xs.reserve(3);
+    for (int i = 0; i < 3; ++i) {
+        xs.push_back(m.float_var(0, 10));
+    }
+    auto neg1 = m.constant(-1.0);
+    auto five = m.constant(5.0);
+    for (const int32_t x : xs) {
+        m.add_constraint(m.sum({five, m.prod(neg1, x)}));  // 5 - x <= 0
+    }
+    m.add_constraint(m.sum({five, m.prod(neg1, y)}));  // 5 - y <= 0, row 3
+    m.close();
+    full_evaluate(m);  // every variable at 0: all four rows violated by 5
+
+    ViolationManager vm(m);
+    REQUIRE(vm.violated_constraints().size() == 4);
+
+    FloatIntensifyHook hook;
+    hook.max_sweeps = 1;
+    hook.solve(m, vm);
+
+    REQUIRE_THAT(m.var(vid(y)).value, Catch::Matchers::WithinAbs(5.0, 1e-9));
+    REQUIRE(vm.is_feasible());
+}
+
 TEST_CASE("Backtracking line search finds better step than fixed", "[inner_solver]") {
     // min (x - 3)^2, starting at x = 0
     Model m;

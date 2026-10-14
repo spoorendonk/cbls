@@ -1313,6 +1313,10 @@ void Model::rebuild_back_references() {
 //    the GLS loop, whose end re-grounds every drifted Sum
 //    (reground_drifted_rows), and a throw out of a batch is followed by
 //    solve()'s full_evaluate. A raw reader inside a batch would break this.
+//    The inner solver is a batch of its own in this sense since #207: its
+//    coordinate commits are incremental, its probes score against the drifted
+//    values (a difference of two readings over the same drift, as FJ's
+//    probes do), and it re-grounds every drifted Sum before it returns.
 //
 // Terms may be anything else: every node term is flagged `kFeedsIncSum`, and a
 // dirty one pushes its change into the Sum. Whether an update is exact is a
@@ -1656,15 +1660,15 @@ double Model::weighted_violation_delta(int32_t var_id, double j,
     //
     // NARROWED DELIBERATELY: THREE other sites score by applying and then putting
     // back, and every leg of all three stays a plain `Commit` delta -- the
-    // structural batch, the inner solver, and Novelty Jump's backtracking chain
-    // (`novelty_jump_search`), which is on the same per-candidate path this probe
-    // is. They are correct: each leg is a real assignment and the `changed` set
-    // each passes is a complete superset of what it moved. But a custom node in
-    // one of their cones costs two `delta()` + two `commit()` per candidate
-    // instead of one `delta()` + one `rollback()`, and an invariant caching a
-    // List's prefix sums rebuilds it on both legs. Bracketing them is a separate
-    // change to `src/structural_batch.cpp`, `src/inner_solver.cpp` and
-    // `src/feasibility_jump.cpp`.
+    // structural batch, the inner solver's multi-variable Newton step (its
+    // coordinate probes are bracketed since #207), and Novelty Jump's
+    // backtracking chain (`novelty_jump_search`), which is on the same
+    // per-candidate path this probe is. They are correct: each leg is a real assignment and the
+    // `changed` set each passes is a complete superset of what it moved. But a custom node in one
+    // of their cones costs two `delta()` + two `commit()` per candidate instead of one `delta()` +
+    // one `rollback()`, and an invariant caching a List's prefix sums rebuilds it on both legs.
+    // Bracketing them is a separate change to `src/structural_batch.cpp`, `src/inner_solver.cpp`
+    // and `src/feasibility_jump.cpp`.
     //
     // The old value is what lets the probe move each incremental Sum in the
     // cone by its term's change, as the commit's update does (#188): the score

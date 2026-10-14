@@ -557,8 +557,9 @@ Jump runs for every jump value — are bracketed as `Probe` then `Rollback`, so 
 custom node in one of those cones costs **one `delta` and one `rollback`** per
 candidate rather than two deltas. **Three** other sites score by evaluating
 forwards and evaluating back, and every leg of all three stays `Commit`: the
-structural batch (`src/structural_batch.cpp`), the inner solver
-(`src/inner_solver.cpp`), and Novelty Jump's backtracking compound-move search
+structural batch (`src/structural_batch.cpp`), the inner solver's
+multi-variable Newton step (`src/inner_solver.cpp`; its coordinate probes are
+bracketed since #207), and Novelty Jump's backtracking compound-move search
 (`src/feasibility_jump.cpp`), which is on the same per-candidate path the
 bracketed probe is. All three are correct — each leg really is a new committed
 assignment, and the `changed` set each passes is a complete superset of what it
@@ -2786,18 +2787,53 @@ Note the bound tightening in `record_best()` now happens *before* the hook runs,
 so the hook descends against an already-tightened `obj <= bound`.
 
 It descends `ViolationManager::augmented_objective()` = `obj + total_violation()`
-and mutates Float variables directly via `delta_evaluate`.
+and mutates Float variables directly.
+
+### Per-variable cost (#207)
+
+Each coordinate step on a Float variable v reads only what v can move:
+
+- **Slopes:** one forward-mode pass over v's up-cone (`UpConeSlopes`) gives
+  d(row)/dv for every row of G_v and d(objective)/dv. The pass costs
+  O(u log u) for an up-cone of u nodes. A wide Sum's operand multiplicity is
+  memoised per hook call, so an objective Sum over n terms is not scanned once
+  per variable.
+- **Scoring:** a candidate is scored by the augmented objective's change over
+  G_v plus the objective (`AugmentedDelta`), differenced per row the way
+  `weighted_delta_from` does it, instead of by two full `augmented_objective()`
+  readings.
+- **Probes and commits:** these go through `probe_scalar_move` / `Rollback` and
+  `commit_scalar_move`, so an incremental Sum (#188) above v moves by its one
+  changed term rather than being re-summed. `solve()` re-grounds every drifted
+  Sum before it returns, early stop included, so the search's raw reads after
+  the hook see re-grounded values.
+
+A coordinate sweep is therefore O(Σ_v up-cone(v)). Before #207 every variable
+paid a reverse sweep over the objective's whole cone and a scan of every row,
+O(Float vars × nodes) per sweep. On UC-CHPED ucp100-48p (9.6k variables, 195k
+nodes) one sweep then outlasted a 10 s budget, and FJ ran 0 iterations.
+
+The forward pass wins on a separable objective over many variables (UC-CHPED,
+any linear objective), where each up-cone is a handful of nodes. It gains
+nothing on a dense objective in a few variables (MINLPLib's least-squares
+shapes), where each up-cone is about the whole objective cone. There it costs
+what the per-variable reverse sweep it replaced did. Mechanism 3 is unchanged
+and still costs O(model) per step, at most `max_multi_var_constraints` steps per
+sweep.
 
 ### Mechanism 1 — Single-Variable Newton Steps
 
-For each Float variable, examine up to 3 violated constraints. For each,
-`g = constraint_value`, `dg = d(constraint)/d(var)` (reverse-mode AD); if
-`|dg| > 1e-12`, propose `clamp(var - g/dg, [lb, ub])` and keep it if
-`augmented_objective` improves.
+For each Float variable, examine its own violated rows (G_v, in ascending
+order) and stop after 3 Newton candidates. For each row,
+`g = constraint_value` and `dg = d(constraint)/d(var)`, taken from the forward
+slopes; if `|dg| > 1e-12`, propose `clamp(var - g/dg, [lb, ub])` and keep it if
+the augmented objective improves. (Before #207 these were the first 3 rows of the
+*global* violated list, which for most variables of a large model did not
+contain the variable at all.)
 
 ### Mechanism 2 — Backtracking Line Search on Objective
 
-For each Float variable, `df = d(objective)/d(var)`; if `|df| > 1e-12`, try
+For each Float variable, `df = d(objective)/d(var)` (forward slopes); if `|df| > 1e-12`, try
 `clamp(var - step*df, [lb, ub])` for `step = initial_step_size`, halving up to
 `max_line_search_steps` times, keeping the best improvement (Armijo-style).
 
@@ -2813,8 +2849,8 @@ else fully rolled back.
 Sweeps repeat up to `max_sweeps` times, stopping early when a sweep makes no
 improvement, or when the search's `stop` is raised (#191: the deadline, a peer
 worker's stop or a host cancel). Before that poll existed the hook ran MIPfeas
-`neos-4300652-rahue` (12k Float columns, 77k rows; every Float variable costs an
-O(rows) violated-row scan) past its budget once the run turned feasible. Measured
+`neos-4300652-rahue` (12k Float columns, 77k rows; at the time every Float variable
+cost an O(rows) violated-row scan, removed by #207) past its budget once the run turned feasible. Measured
 at `--threads 1 --budget 20`, Release, one run per arm under an exclusive lock
 with the 1-minute load below 1.5:
 
@@ -2829,8 +2865,9 @@ Measured 2026-10-01 on an AMD Ryzen 5 5600H at `c4b4861`: #191 on `7291a2c`,
 before #192 and #190, landing as `752e18a` (same patch-id). Neither of those
 reaches rahue: its MPS rows are comparisons over Sums, so it has no Sum posted
 as a row (#192), no bare constraint body and no nested comparison (#190). The
-stride was later resized by node count, which leaves rahue's stride at 1. So
-these runs still describe the landed code.
+stride was later resized by node count, which leaves rahue's stride at 1. #207
+then changed what each descent does, so these runs record the #191 overrun fix.
+They are not a timing of the current hook.
 
 The poll changes only whether the descent continues, so a pass that finishes
 within budget is bit-identical to before: fixed-iteration final-assignment hashes

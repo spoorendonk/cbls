@@ -288,8 +288,8 @@ Three conventions therefore rest on you rather than on a tool: branch only from 
 
 ### Fast vs. slow tests
 
-The C++ suite is **747 ctest tests**: 745 Catch2 ones over **742 `TEST_CASE`s**
-— 737 registered by `catch_discover_tests` plus **8 registered by hand**, the 5
+The C++ suite is **748 ctest tests**: 746 Catch2 ones over **743 `TEST_CASE`s**
+— 738 registered by `catch_discover_tests` plus **8 registered by hand**, the 5
 `[timing]` cases and the three hang guards `hang_guard_iteration_only_portfolio`,
 `hang_guard_novelty_zero_move_batch` and `hang_guard_nonpositive_batch_iterations`,
 each hand-registered *as well as*
@@ -297,14 +297,14 @@ discovered (a hang only reports through a `TIMEOUT`, but all three are cheap eno
 to belong in the fast set), so each of those `TEST_CASE`s accounts for two
 ctest tests — plus **2 shell tests that are not Catch2 at all**,
 `clang_tidy_gate_probe` and `gate_lib_shell_test`, registered in the root
-`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 737,
+`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 738,
 **6 carry the
 Catch2 `[slow]` tag** — the CHPED and UC-CHPED benchmark solves, ~46s of
 aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~25s
 wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 737 tests, ~12s with `-j`. The fast inner loop; run it yourself before committing (the hook no longer does).
+- `ctest -LE slow` — the other 738 tests, ~12s with `-j`. The fast inner loop; run it yourself before committing (the hook no longer does).
 - `ctest` — everything. This is what **pre-push** and CI run.
 - `ctest -L timing` — 5 tests: `timing_structural_batch_deadline`, the three
   `timing_throughput_*` floors added for #125, and
@@ -864,7 +864,8 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
   cannot carry state. A model holding one cannot be written to `.cbls`, and it
   is **not** exposed to Python (that waits on #132). `docs/architecture.md`
   carries the contract table and names the **three** apply-then-revert sites
-  deliberately left unbracketed. `in.edits(i)` (#172) says *where* a List/Set
+  deliberately left unbracketed (the inner solver's is only its multi-variable
+  step since #207). `in.edits(i)` (#172) says *where* a List/Set
   input moved, as positional edits since the last committed state, so a delta
   over a List can be O(edits) — but only the structural batch supplies them, only
   for an invariant that opts in (`wants_positional_edits()`), and on every other
