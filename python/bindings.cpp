@@ -284,8 +284,8 @@ auto guarded(R (Model::*method)(A...), const char* what) {
 // else. The function the public keep_alive call policy is implemented with is
 // called directly, since the policy itself can only name call arguments: it is
 // `nb::detail::keep_alive` up to nanobind 2.x and the public
-// `nb::keep_alive_obj` from 3.0, which removed the former. `pyproject.toml`
-// admits both (`nanobind>=2.0`), and a fresh venv resolves 3.x.
+// `nb::keep_alive_obj` from 3.1. 3.0.x has neither (3.0 removed the first, 3.1
+// added the second), so `pyproject.toml` excludes it; a fresh venv resolves 3.1.
 //
 // A model with no Python object (none is reachable from Python today) is left
 // untied, which is what the plain binding did.
@@ -293,7 +293,7 @@ nb::object expr_object(const Expr& e) {
     const nb::object owner = nb::find(*e.model);
     nb::object out = nb::cast(e, nb::rv_policy::copy);
     if (owner.is_valid()) {
-#if NB_VERSION_MAJOR >= 3
+#if NB_VERSION_MAJOR > 3 || (NB_VERSION_MAJOR == 3 && NB_VERSION_MINOR >= 1)
         nb::keep_alive_obj(out, owner);
 #else
         nb::detail::keep_alive(out.ptr(), owner.ptr());

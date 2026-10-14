@@ -1,5 +1,5 @@
 [build-system]
-requires = ["scikit-build-core>=0.5", "nanobind>=2.0"]
+requires = ["scikit-build-core>=0.5", "nanobind>=2.0,!=3.0.*"]
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -47,8 +47,10 @@ dev = [
     # (CLAUDE.md's ```build fence) locates nanobind by running
     # `python -m nanobind --cmake_dir` against .venv/bin/python, so without it
     # here the documented bootstrap yields a venv that cannot build the
-    # bindings -- and the 235 binding tests would go unrun.
-    "nanobind>=2.0",
+    # bindings -- and the 235 binding tests would go unrun. 3.0.x is excluded
+    # in both places: it has neither keep_alive entry point python/bindings.cpp
+    # calls (see expr_object there).
+    "nanobind>=2.0,!=3.0.*",
 ]
 benchmarks = [
     # CP-SAT's violation_ls worker, the MIPfeas baseline. 9.7 is when the
