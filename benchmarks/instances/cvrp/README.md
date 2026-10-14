@@ -70,6 +70,24 @@ each BKS actually uses.
 X-n247-k50, X-n524-k153 and X-n670-k130 are listed with minimum fleets of 47,
 137 and 126. Their BKS use 51, 155 and 133 routes.
 
+**Fleet size `R` in the model.** `cbls_cvrp` (`benchmarks/cvrp/`) gives the
+model `R = k + max(3, ceil(0.1 k))` Lists, `k` being the name's `k`
+(`default_fleet` in `benchmarks/cvrp/cvrp_model.h`), unless `--fleet R` says
+otherwise. That covers `bks_routes` on all 100 instances (the largest excess is
+X-n936-k151's 6 routes, under its 16) and leaves slack for the search to move
+through. Unused Lists cost nothing in the objective, an empty route being 0,
+but each is a structure the batch samples and moves; what that costs in search
+is not measured yet and is #204's to measure on `dev.csv`. Every result row
+records its `fleet`.
+
+**Search arm for the smoke check.** At 10 s and seed 1 on the five `smoke.csv`
+instances (engine `edc3500`, one run each, a runner check and not a result),
+the engine's default structural arm -- `first_improving`, no neighbour list --
+was feasible on the three smaller instances but not on X-n801-k40 or
+X-n1001-k43. With `--structural-selection violation_guided --neighbours 20`,
+the arm #197's smoke evidence used, both were feasible and verified. So check
+the runner with that arm; which arm a campaign runs is decided on `dev.csv`.
+
 ## Dev and report rosters
 
 Arms, the fleet rule `R` and the neighbour count `k` are chosen on `dev.csv`, so

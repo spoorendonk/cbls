@@ -102,6 +102,9 @@ def test_cvrp_writes_a_verified_solution_its_record_agrees_with(
     assert record["feasible"] and record["verified"], record
     assert record["bks"] == 27591
     assert record["fleet"] == 28  # default_fleet(25)
+    assert record["batches"] == (
+        record["fj_batches"] + record["novelty_batches"] + record["structural_batches"]
+    )
     assert record["threads"] == int(threads)
     assert record["workers_completed"] == int(threads)
     assert "structural_selection=violation_guided" in record["search_config"]
@@ -119,6 +122,7 @@ def test_cvrp_writes_no_solution_without_a_verified_one(tmp_path: Path) -> None:
     """A fleet too small to carry the demand can never be feasible, so no `.sol`
     may appear: a solution file is a claim the instance's checker would test."""
     sol_path = tmp_path / "r.sol"
+    sol_path.write_text("Route #1: 1\nCost 1\n")  # a previous run's, which must not survive
     out = tmp_path / "r.json"
     result = _run(
         "--instance",

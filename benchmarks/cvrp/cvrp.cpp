@@ -10,7 +10,10 @@
 // trusting the DAG, and only a verified solution is written to --solution-out.
 //
 // Smoke and campaign runs only. No result table is written by this runner;
-// publishing is #204's job.
+// publishing is #204's job. The engine's default structural arm is not feasible
+// within 10 s on the largest smoke instances; the smoke check uses
+// `--structural-selection violation_guided --neighbours 20` (see
+// benchmarks/instances/cvrp/README.md, "Search arm for the smoke check").
 
 #include "cvrp_model.h"
 #include "data.h"
@@ -291,6 +294,19 @@ int run_benchmark(int argc, char** argv) {
     const int fleet = args.fleet > 0 ? args.fleet : cbls::cvrp::default_fleet(k);
     const Bks bks = read_bks(args.inst_dir, args.instance);
 
+    // A previous run's solution at this path must not survive a run that
+    // produces none: a `.sol` beside a record saying `verified=false` would be
+    // checked as if this run had written it.
+    if (!args.solution_out.empty()) {
+        std::error_code rm_ec;
+        std::filesystem::remove(args.solution_out, rm_ec);
+        if (rm_ec) {
+            std::fprintf(stderr, "Cannot remove the old %s: %s\n", args.solution_out.c_str(),
+                         rm_ec.message().c_str());
+            return 2;
+        }
+    }
+
     const auto t_build = std::chrono::steady_clock::now();
     cbls::cvrp::CvrpModel cm = cbls::cvrp::build_model(inst, fleet);
     const double build_seconds = seconds_since(t_build);
@@ -344,6 +360,7 @@ int run_benchmark(int argc, char** argv) {
         {"iterations", result.iterations},
         {"batches", result.counters.batches},
         {"fj_batches", result.counters.fj_batches},
+        {"novelty_batches", result.counters.novelty_batches},
         {"structural_batches", result.counters.structural_batches},
         {"structural_moves_tried", result.counters.structural_moves_tried},
         {"structural_moves_accepted", result.counters.structural_moves_accepted},
