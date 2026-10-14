@@ -89,7 +89,10 @@ def _numbered(rows: list[list[str]], width: int, label: str) -> dict[int, list[s
     for row in rows:
         if len(row) != width:
             raise ValueError(f"bad {label} line: {' '.join(row)!r}")
-        out[int(row[0])] = row[1:]
+        node = int(row[0])
+        if node in out:
+            raise ValueError(f"node {node} appears twice in {label}")
+        out[node] = row[1:]
     return out
 
 
@@ -105,6 +108,9 @@ def read_vrp(text: str) -> VrpInstance:
         raise ValueError(f"TYPE {header.get('TYPE')!r} is not CVRP")
     if header.get("EDGE_WEIGHT_TYPE", "").upper() != "EUC_2D":
         raise ValueError(f"EDGE_WEIGHT_TYPE {header.get('EDGE_WEIGHT_TYPE')!r} is not EUC_2D")
+    missing = [k for k in ("DIMENSION", "CAPACITY") if k not in header]
+    if missing:
+        raise ValueError(f"the header lacks {missing}")
     dimension = int(header["DIMENSION"])
     coords = _numbered(sections["NODE_COORD_SECTION"], 3, "NODE_COORD_SECTION")
     demands = _numbered(sections["DEMAND_SECTION"], 2, "DEMAND_SECTION")

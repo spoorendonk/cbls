@@ -110,6 +110,15 @@ def test_distance_matrix_is_square_symmetric_and_zero_on_the_diagonal() -> None:
     assert all(d[i][j] == d[j][i] for i in range(101) for j in range(i))
 
 
+def test_read_vrp_refuses_a_duplicate_node_and_a_missing_header() -> None:
+    text = (INST_DIR / "X" / "X-n101-k25.vrp").read_text()
+    doubled = text.replace("DEMAND_SECTION", "2\t1\t1\nDEMAND_SECTION", 1)
+    with pytest.raises(ValueError, match="twice"):
+        read_vrp(doubled)
+    with pytest.raises(ValueError, match="CAPACITY"):
+        read_vrp("\n".join(ln for ln in text.splitlines() if not ln.startswith("CAPACITY")))
+
+
 def test_read_vrp_refuses_another_metric() -> None:
     text = (INST_DIR / "X" / "X-n101-k25.vrp").read_text().replace("EUC_2D", "GEO")
     with pytest.raises(ValueError, match="EUC_2D"):
@@ -142,7 +151,7 @@ def _job(**kw: object) -> rb.Job:
 
 def test_record_path_is_the_resume_key(tmp_path: Path) -> None:
     job = _job(budget=2.5, seed=7, threads=4)
-    assert rb.record_path(job, tmp_path) == tmp_path / "guided/t4/b2.5/X-n101-k25.s7.json"
+    assert rb.record_path(job, tmp_path) == tmp_path / "cbls/guided/t4/b2.5/X-n101-k25.s7.json"
     assert rb.solution_path(job, tmp_path).name == "X-n101-k25.s7.sol"
 
 
@@ -498,6 +507,46 @@ def test_score_refuses_the_published_table_for_a_non_default_arm(tmp_path: Path)
         _score(results, "out", score.PUBLISHED_TABLE)
 
 
+def test_score_refuses_the_published_table_from_a_modified_tree(tmp_path: Path) -> None:
+    results = _stamped(tmp_path / "r")
+    for instance in SMOKE:
+        _write_run(results, instance, arm=DEFAULT, commit_sha="abc1234-dirty")
+    assert "**MODIFIED TREE**" in _score(results)
+    with pytest.raises(score.ScoreError, match="banners"):
+        _score(results, "out", score.PUBLISHED_TABLE)
+
+
+def test_a_modified_tree_stamps_the_directory_not_comparable(tmp_path: Path) -> None:
+    binary = _fake_binary(tmp_path)
+    results = tmp_path / "results"
+    args = _args(results, roster="smoke", arms=["guided"], inst_dir=_one_instance_dir(tmp_path))
+    assert rb.execute(args, "abc1234-dirty", binary) == 0
+    assert not rb.stamp_comparable(results)
+
+
+def test_score_treats_uneven_seed_sets_as_partial(tmp_path: Path) -> None:
+    """A run killed between seeds: every instance present, not every seed."""
+    results = _stamped(tmp_path / "r")
+    for instance in SMOKE:
+        _write_run(results, instance, seed=1)
+    _write_run(results, SMOKE[0], seed=2)
+    with pytest.raises(score.ScoreError, match=r"lacks seed\(s\) \[2\]"):
+        _score(results)
+    assert "**PARTIAL**" in _score(results, "allow_partial", True)
+
+
+def test_score_refuses_a_row_whose_instance_file_is_missing(tmp_path: Path) -> None:
+    inst = tmp_path / "inst"
+    inst.mkdir()
+    for name in ("smoke.csv", "manifest.csv"):
+        shutil.copy(INST_DIR / name, inst / name)
+    results = _stamped(tmp_path / "r")
+    for instance in SMOKE:
+        _write_run(results, instance)
+    with pytest.raises(score.ScoreError, match="cannot read"):
+        _score(results, "inst_dir", inst)
+
+
 def test_score_refuses_the_published_table_from_a_not_comparable_run(tmp_path: Path) -> None:
     results = _stamped(tmp_path / "r", comparable=False)
     for instance in SMOKE:
@@ -539,6 +588,14 @@ def test_paired_ab_counts_a_pair_with_an_infeasible_side(tmp_path: Path) -> None
     text = _score(results, "allow_partial", True, "ab", ["guided", "default"])
     assert "1 pair(s) where at least one side was infeasible" in text
     assert "pairs: n=5" in text
+
+
+def test_ab_labels_name_the_engine_when_arms_collide() -> None:
+    groups = [("cbls", "default", 1), ("pyvrp", "default", 1), ("cbls", "default", 4)]
+    assert score.parse_group("pyvrp/default", groups) == ("pyvrp", "default", 1)
+    assert score.parse_group("cbls/default@4", groups) == ("cbls", "default", 4)
+    with pytest.raises(score.ScoreError, match="engine/arm@threads"):
+        score.parse_group("default@1", groups)
 
 
 def test_paired_ab_refuses_different_thread_counts(tmp_path: Path) -> None:

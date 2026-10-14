@@ -8,10 +8,10 @@ directory into tables; this driver writes no table.
 
 THE RESUME RULE. A job is done when its record path,
 
-    <results>/<arm>/t<threads>/b<budget>/<instance>.s<seed>.json
+    <results>/<engine>/<arm>/t<threads>/b<budget>/<instance>.s<seed>.json
 
-holds a readable record whose (instance, arm, budget_seconds, seed, threads)
-are that job's. A failure record -- a timeout, a crash, a run the runner itself
+holds a readable record whose (engine, instance, arm, budget_seconds, seed,
+threads) are that job's. A failure record -- a timeout, a crash, a run the runner itself
 failed -- is readable and so is done: resume does not silently retry a job that
 keeps failing. `--retry-failed` re-runs those, `--force` re-runs everything.
 
@@ -28,7 +28,7 @@ WHAT IS REFUSED, before anything runs:
 * a build directory that is not a Release, uninstrumented build of this
   checkout (`provenance.build_dir_problems`);
 * a modified tree, whose commit names code that did not run, unless
-  `--allow-dirty`;
+  `--allow-dirty`, which stamps the directory not comparable (below);
 * a results directory stamped by another commit or another arm table
   (`records.stamp_refusal` on `stamp.txt`);
 * `--jobs` above 1 without `--not-comparable`. Jobs sharing the machine halve
@@ -104,14 +104,15 @@ STATUS_TIMEOUT = "timeout"
 
 @dataclass(frozen=True)
 class Arm:
-    """A named search configuration: the flags `cbls_cvrp` runs it with."""
+    """A named configuration of one engine: the flags its program runs with."""
 
     name: str
     flags: tuple[str, ...]
+    engine: str = "cbls"
 
 
 #: The arms this driver knows. `default` is the engine's own configuration, the
-#: one a published table carries (`score.PUBLISHABLE_ARMS`). `guided` is the arm
+#: one a published table carries (`score.PUBLISHABLE_GROUPS`). `guided` is the arm
 #: the smoke check uses (benchmarks/instances/cvrp/README.md, "Search arm for
 #: the smoke check"); which arm a campaign runs is decided on `dev.csv` (#204).
 ARMS: dict[str, Arm] = {
@@ -135,6 +136,7 @@ class Job:
         """The path every file of this job shares, less its suffix: the resume key."""
         return (
             results
+            / self.arm.engine
             / self.arm.name
             / f"t{self.threads}"
             / f"b{self.budget:g}"
@@ -145,6 +147,7 @@ class Job:
         """The record fields that identify this job. A record whose fields differ
         is not this job's, whatever path it sits at."""
         return {
+            "engine": self.arm.engine,
             "instance": self.instance,
             "arm": self.arm.name,
             "budget_seconds": self.budget,
@@ -245,7 +248,6 @@ def failure_record(job: Job, status: str, outcome: jobs.Outcome, sha: str) -> di
     """What a job that left no usable runner JSON records: its key and how it ended."""
     return {
         **job.key(),
-        "engine": "cbls",
         "arm_flags": list(job.arm.flags),
         "status": status,
         "returncode": outcome.returncode,
@@ -318,7 +320,7 @@ def stamp_text(sha: str, comparable: bool) -> str:
     (every arm, not just this invocation's, so adding an arm to a later
     invocation does not refuse), and whether the jobs ran one at a time."""
     lines = [f"commit={sha}", f"comparable={'yes' if comparable else 'no'}"]
-    lines += [f"arm {arm.name}={' '.join(arm.flags)}" for arm in ARMS.values()]
+    lines += [f"arm {arm.engine}/{arm.name}={' '.join(arm.flags)}" for arm in ARMS.values()]
     return "\n".join(lines) + "\n"
 
 
@@ -390,7 +392,9 @@ def execute(args: argparse.Namespace, sha: str, binary: Path) -> int:
     results.mkdir(parents=True, exist_ok=True)
     refusal = stamp_refusal(
         results / STAMP_NAME,
-        stamp_text(sha, comparable=not args.not_comparable),
+        # A modified tree is never comparable: two different uncommitted edits of
+        # one commit stamp alike, so their records could share a directory.
+        stamp_text(sha, comparable=not args.not_comparable and not sha.endswith("-dirty")),
         resume=True,
         label="recorded",
         advice="\nUse a new --results directory.\n",

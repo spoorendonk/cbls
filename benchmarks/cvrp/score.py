@@ -6,10 +6,10 @@ the per-job records whenever the question is asked. The reference values are the
 pinned BKS in the roster tables of `benchmarks/instances/cvrp/`.
 
 THE RECORD SHAPE, for every engine. `run_benchmark.py` writes one JSON record per
-job at `<results>/<arm>/t<threads>/b<budget>/<instance>.s<seed>.json`, its `.sol`
-beside it; the PyVRP baseline (#200) writes the same shape. A record must carry
-`RECORD_FIELDS`; `workers_completed` is read when present (#170). Arm names are
-unique across engines, so `(engine, arm, threads)` names one row group.
+job at `<results>/<engine>/<arm>/t<threads>/b<budget>/<instance>.s<seed>.json`,
+its `.sol` beside it; the PyVRP baseline (#200) writes the same shape. A record
+must carry `RECORD_FIELDS`; `workers_completed` is read when present (#170).
+`(engine, arm, threads)` names one row group.
 
 What is scored, per group:
 
@@ -32,12 +32,13 @@ What is refused, rather than scored:
   re-run (`run_benchmark.py --retry-failed`), not an infeasible result;
 * a row with fewer completed portfolio workers than `threads` (#170);
 * a feasible row whose `.sol` fails `verify_solution.py`, or that has none;
-* a group missing roster instances, unless `--allow-partial`, which banners the
-  table with what is missing;
+* a group missing roster instances, or whose instances ran different seed sets,
+  unless `--allow-partial`, which banners the table with what is uneven;
 * an A/B between different thread counts: PyVRP is single-threaded, and a
   multi-thread CBLS row set beside it would not be the same comparison;
-* writing `PUBLISHED_TABLE` from a directory run `--not-comparable`, from a
-  partial roster, or with an arm outside `PUBLISHABLE_ARMS`.
+* writing `PUBLISHED_TABLE` from a directory stamped not comparable (`--jobs`
+  above 1, or a modified tree), from rows of a modified tree, from a partial
+  roster, or with a group outside `PUBLISHABLE_GROUPS`.
 
     .venv/bin/python benchmarks/cvrp/score.py /tmp/cvrp-smoke --roster smoke
     .venv/bin/python benchmarks/cvrp/score.py /tmp/cvrp-ab --roster dev --ab guided default
@@ -96,9 +97,9 @@ RECORD_FIELDS: tuple[str, ...] = (
 #: comparable, complete run of the arms below.
 PUBLISHED_TABLE = REPO_ROOT / "benchmarks" / "instances" / "cvrp" / "results.md"
 
-#: The arms a published table may carry. `default` is the engine's own
-#: configuration; #204 decides which arm it publishes and edits this.
-PUBLISHABLE_ARMS: frozenset[str] = frozenset({"default"})
+#: The (engine, arm) pairs a published table may carry. `cbls/default` is the
+#: engine's own configuration; #204 decides which arm it publishes and edits this.
+PUBLISHABLE_GROUPS: frozenset[tuple[str, str]] = frozenset({("cbls", "default")})
 
 #: Hexaly's published X-set figures (60 s, AMD Ryzen 7 7700, 8 cores): average
 #: gap to BKS per size band, in `SIZE_BANDS` order. Quoted, not re-run.
@@ -187,7 +188,10 @@ def _row_refusal(path: Path, record: dict[str, object], inst_dir: Path) -> str |
         if not sol.exists():
             return f"{path}: feasible, but no {sol.name} to verify"
         vrp = inst_dir / "X" / f"{record['instance']}.vrp"
-        verdict = verify(vrp, sol, _float(record["objective"]))
+        try:
+            verdict = verify(vrp, sol, _float(record["objective"]))
+        except (OSError, ValueError) as exc:
+            return f"{path}: cannot read {vrp}: {exc}"
         if not verdict.ok:
             return f"{sol}: failed verification: {'; '.join(verdict.errors)}"
     return None
@@ -305,11 +309,18 @@ def _interval(values: list[float]) -> tuple[float, float]:
 
 
 def parse_group(label: str, groups: Iterable[tuple[str, str, int]]) -> tuple[str, str, int]:
-    """`arm` (one thread count present) or `arm@threads`, to its group."""
-    arm, _, threads = label.partition("@")
-    matches = [g for g in groups if g[1] == arm and (not threads or g[2] == int(threads))]
+    """`[engine/]arm[@threads]` to its group; the parts left out must not be needed."""
+    name, _, threads = label.partition("@")
+    engine, _, arm = name.rpartition("/")
+    matches = [
+        g
+        for g in groups
+        if g[1] == arm and (not engine or g[0] == engine) and (not threads or str(g[2]) == threads)
+    ]
     if len(matches) != 1:
-        raise ScoreError(f"--ab {label!r} matches {len(matches)} group(s); name one as arm@threads")
+        raise ScoreError(
+            f"--ab {label!r} matches {len(matches)} group(s); name one as engine/arm@threads"
+        )
     return matches[0]
 
 
@@ -362,15 +373,23 @@ def paired_ab(runs: list[Run], label_a: str, label_b: str) -> list[str]:
     return lines
 
 
-def missing_instances(runs: list[Run], instances: list[str]) -> dict[str, list[str]]:
-    present: dict[tuple[str, str, int], set[str]] = defaultdict(set)
+def uneven_groups(runs: list[Run], instances: list[str]) -> dict[str, list[str]]:
+    """Per group, what makes it partial: roster instances it has no run on, and
+    instances whose seed set differs from the group's (a run killed between
+    seeds), which would average different seed counts per instance."""
+    seeds: dict[tuple[str, str, int], dict[str, set[int]]] = defaultdict(lambda: defaultdict(set))
     for run in runs:
-        present[run.group].add(run.instance)
-    return {
-        _group_label(g): [i for i in instances if i not in seen]
-        for g, seen in sorted(present.items())
-        if any(i not in seen for i in instances)
-    }
+        seeds[run.group][run.instance].add(run.seed)
+    out: dict[str, list[str]] = {}
+    for group, by_instance in sorted(seeds.items()):
+        every = set().union(*by_instance.values())
+        problems = [f"no run on {i}" for i in instances if i not in by_instance]
+        problems += [
+            f"{i} lacks seed(s) {sorted(every - s)}" for i, s in by_instance.items() if s != every
+        ]
+        if problems:
+            out[_group_label(group)] = problems
+    return out
 
 
 def score(args: argparse.Namespace) -> str:
@@ -381,37 +400,47 @@ def score(args: argparse.Namespace) -> str:
     customers = {
         name: int(row["n"]) for name, row in read_manifest(args.inst_dir / "manifest.csv").items()
     }
+    unknown = [i for i in instances if i not in customers]
+    if unknown:
+        raise ScoreError(f"{args.inst_dir / 'manifest.csv'} has no row for {unknown[:5]}")
     budget, records = select_budget(load_records(results), args.budget)
     runs = build_runs(records, bks, args.inst_dir)
     if not runs:
         raise ScoreError(f"no record in {results} is on the {args.roster} roster")
     comparable = stamp_comparable(results)
-    missing = missing_instances(runs, instances)
-    if missing and not args.allow_partial:
+    uneven = uneven_groups(runs, instances)
+    if uneven and not args.allow_partial:
         raise ScoreError(
             "partial roster: "
-            + "; ".join(f"{g} lacks {len(m)} ({', '.join(m[:3])}...)" for g, m in missing.items())
+            + "; ".join(f"{g}: {', '.join(p[:3])}" for g, p in uneven.items())
             + ". Finish the run, or pass --allow-partial to banner the table."
         )
+    commits = sorted({str(r.record["commit_sha"]) for r in runs})
     banners: list[str] = []
     if not comparable:
         banners.append(
             "**NOT COMPARABLE**: this directory was run with jobs sharing the machine, or "
             "carries no stamp. Its numbers are a tooling check, not a measurement."
         )
-    for group, names in missing.items():
-        banners.append(f"**PARTIAL**: {group} has no run on {len(names)}: {', '.join(names)}")
+    dirty = [c for c in commits if c.endswith("-dirty")]
+    if dirty:
+        banners.append(f"**MODIFIED TREE**: rows from {', '.join(dirty)} ran code no commit names.")
+    for group, problems in uneven.items():
+        banners.append(f"**PARTIAL**: {group}: {'; '.join(problems)}")
     if args.out is not None and args.out.resolve() == PUBLISHED_TABLE.resolve():
-        arms = sorted({r.group[1] for r in runs} - PUBLISHABLE_ARMS)
-        if arms or banners:
+        groups = sorted({r.group[:2] for r in runs} - PUBLISHABLE_GROUPS)
+        if groups or banners:
             raise ScoreError(
                 f"refusing to write the published table {PUBLISHED_TABLE}: "
-                + (f"non-publishable arm(s) {arms}" if arms else "the table carries banners")
+                + (
+                    f"non-publishable group(s) {['/'.join(g) for g in groups]}"
+                    if groups
+                    else "the table carries banners"
+                )
             )
     machine = read_json_object(results / MACHINE_NAME) or {}
     host = machine.get("machine")
     cpu = host.get("cpu_model") if isinstance(host, dict) else None
-    commits = sorted({str(r.record["commit_sha"]) for r in runs})
     lines = [
         f"# CVRP results: {results.name}",
         "",

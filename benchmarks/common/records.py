@@ -45,8 +45,9 @@ A/B row (#179)         `cbls_minlplib_portfolio` JSON     the `.jsonl`, less a t
                        line + `run_campaign`'s stamp)     every row matching the run's
                                                           `commit_sha`/`budget`/`threads`
 cvrp job record        `cvrp.score.RECORD_FIELDS` (both   `<arm>/t<threads>/b<budget>/
-(#199)                 engines); written by               <instance>.s<seed>.json` holds a
-                       `cvrp.run_benchmark.job_record`    readable record with that key
+(#199)                 engines); written by               <instance>.s<seed>.json` under
+                       `cvrp.run_benchmark.job_record`    `<engine>/` holds a readable
+                                                          record with that key
                                                           (`run_benchmark.needs_run`)
 =====================  =================================  ==============================
 """
