@@ -187,7 +187,7 @@ private:
     static constexpr uint32_t kPLiteral = 1U << 2U;  // a Const node: the sentinel flag
     static constexpr uint32_t kQLiteral = 1U << 3U;
     static constexpr uint32_t kAbs = 1U << 4U;          // Eq: |p - q|
-    static constexpr uint32_t kStrict = 1U << 5U;       // Lt/Gt: + the strictness epsilon
+    static constexpr uint32_t kStrict = 1U << 5U;       // Lt/Gt: + the row's strictness margin
     static constexpr uint32_t kNewtonExact = 1U << 6U;  // see residual_partial_at
     static constexpr uint32_t kQZero = 1U << 7U;        // bare body: q is a literal 0, no node
     // A built row: its two residual arguments; its slopes are in slope_at_.
@@ -206,7 +206,7 @@ private:
         bool p_literal;
         bool q_literal;
         bool is_abs;
-        bool strict;
+        double strict_margin;  // Lt/Gt: the node's margin (ExprNode::const_value), else 0
     };
 
     // Build row ci (must be pending); returns the row, or nullptr if the build

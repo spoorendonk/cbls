@@ -19,7 +19,6 @@ namespace cbls {
 
 namespace {
 
-constexpr double kTol = 1e-9;
 constexpr double kInf = std::numeric_limits<double>::infinity();
 
 // The jump-candidate budgets. `int_jump_candidates` enumerates an Int domain
@@ -62,8 +61,15 @@ constexpr double kExhaustiveBreakpoints = kJumpGridPoints;
 // that non-finite residuals (NaN from inf-inf, or +inf) count as violated:
 // !(x <= tol) is true for x > tol and for NaN. This prevents a NaN constraint
 // from being silently treated as satisfied (a false "feasible").
-bool is_violated(double residual) {
-    return !(residual <= kTol);
+//
+// `tol` is GFJConfig::tolerance, which solve() sets to the search's
+// feasibility_tolerance. It used to be a file constant of 1e-9, 1000x tighter
+// than the search's 1e-6 (#211): rows violated in (1e-9, 1e-6] stayed in V, were
+// bumped and blocked FJ's Feasible exit although the search already called them
+// satisfied, and an Eq row above ~1e7 in magnitude could never get |a - b| under
+// 1e-9 at all (the ulp is larger) and was bumped forever.
+bool is_violated(double residual, double tol) {
+    return !(residual <= tol);
 }
 
 // A row's contribution to the unproductive-batch progress measure (see
@@ -74,8 +80,8 @@ bool is_violated(double residual) {
 // incremental update -- go through this, so the two definitions cannot drift
 // apart.
 //
-// The threshold is is_violated's kTol, not a bare `> 0.0`. A residual in
-// (0, kTol] is a SATISFIED row everywhere else in this file, and counting it
+// The threshold is is_violated's tolerance, not a bare `> 0.0`. A residual in
+// (0, tol] is a SATISFIED row everywhere else in this file, and counting it
 // here made the measure disagree with the engine's own predicate. That
 // disagreement is invisible on inequality rows over integers, where a satisfied
 // row's residual is a clean 0.0, and structural on EQUALITY rows over
@@ -85,11 +91,10 @@ bool is_violated(double residual) {
 // say" was dead code on such a model (#102, MINLPLib ex8_6_1: 45 nonlinear
 // equalities over 75 continuous variables).
 //
-// Rows violated between kTol and the search's feasibility_tolerance are a
-// different band and are still counted. They are violated as far as FJ is
-// concerned, and it is FJ's progress this measures.
-double progress_residual(double residual) {
-    return (residual > kTol && residual < std::numeric_limits<double>::infinity()) ? residual : 0.0;
+// Since #211 FJ's tolerance is the search's, so there is no longer a band of
+// rows FJ calls violated and the search calls satisfied.
+double progress_residual(double residual, double tol) {
+    return (residual > tol && residual < std::numeric_limits<double>::infinity()) ? residual : 0.0;
 }
 
 double clamp_to_domain(const Variable& var, double value) {
@@ -381,7 +386,7 @@ bool int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
 // would produce, without the sweep.
 template <class Consider>
 bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, double x0,
-                           LinearJumpScorer* linear, Consider&& consider) {
+                           LinearJumpScorer* linear, double tol, Consider&& consider) {
     if (var.ub <= var.lb) {
         return true;  // fixed: nothing to escape
     }
@@ -396,7 +401,7 @@ bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
         }
         const int32_t c = gv[k];
         double residual = model.node_value(cids[c]);
-        if (residual <= kTol) {
+        if (residual <= tol) {
             continue;  // satisfied: no root to chase
         }
         saw_violated = true;
@@ -414,9 +419,20 @@ bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
             --budget;
         }
     }
-    consider(0.5 * (var.lb + var.ub));
-    consider(var.lb);
-    consider(var.ub);
+    // The box candidates only where they are finite (#211). On an unbounded
+    // Float the endpoints are +-inf and the midpoint inf or NaN; a committed
+    // infinite value turns the objective into -inf and its rows into NaN
+    // (`-inf + inf`), the hazard #112 closed for initialisation.
+    const double mid = 0.5 * (var.lb + var.ub);
+    if (std::isfinite(mid)) {
+        consider(mid);
+    }
+    if (std::isfinite(var.lb)) {
+        consider(var.lb);
+    }
+    if (std::isfinite(var.ub)) {
+        consider(var.ub);
+    }
     return !saw_violated || any_newton;
 }
 
@@ -1011,7 +1027,7 @@ void float_escape_candidates(const Variable& var, double x0, Consider&& consider
 // ---------------------------------------------------------------------------
 
 JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id,
-                            bool allow_escape_probe, LinearJumpScorer* linear) {
+                            bool allow_escape_probe, LinearJumpScorer* linear, double tol) {
     const Variable& var = model.var(var_id);
     const double x0 = var.value;
 
@@ -1078,7 +1094,7 @@ JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, in
         // diversification never fires. Hence `allow_escape_probe`, which the
         // search loop arms only once it is genuinely stuck.
         const bool gradient_usable =
-            float_jump_candidates(model, var_id, var, x0, linear, consider_seen);
+            float_jump_candidates(model, var_id, var, x0, linear, tol, consider_seen);
         // After the Newton candidates, so those keep winning a tie (#186).
         if (breakpoints) {
             breakpoint_jump_candidates(model, var_id, var, x0, extra);
@@ -1092,13 +1108,13 @@ JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, in
     return {best_j, -best_f};
 }
 
-void gls_update_weights(ViolationManager& vm, double rho) {
+void gls_update_weights(ViolationManager& vm, double rho, double tol) {
     const size_t nc = vm.weights.size();
     for (size_t c = 0; c < nc; ++c) {
         vm.weights[c] *= rho;
         // Bump only active (weight > 0) constraints that are currently violated;
         // masked constraints (weight 0) stay 0.
-        if (vm.weights[c] > 0.0 && vm.constraint_violation(static_cast<int>(c)) > kTol) {
+        if (vm.weights[c] > 0.0 && vm.constraint_violation(static_cast<int>(c)) > tol) {
             vm.weights[c] += 1.0;
         }
     }
@@ -1487,7 +1503,7 @@ void FeasibilityJump::refresh_unweighted_violation() {
         if (ci == objective_ci_ || !active(ci)) {
             continue;  // objective row: see unweighted_violation_. Masked: not being solved.
         }
-        total += progress_residual(model_.node_value(cids[c]));
+        total += progress_residual(model_.node_value(cids[c]), config_.tolerance);
     }
     unweighted_violation_ = total;
 }
@@ -1501,7 +1517,7 @@ void FeasibilityJump::rebuild_violated_and_scan_set() {
     uncertain_rows_.clear();
     for (size_t c = 0; c < nc; ++c) {
         const double residual = model_.node_value(cids[c]);
-        violated_[c] = is_violated(residual) ? kInV : 0;
+        violated_[c] = is_violated(residual, config_.tolerance) ? kInV : 0;
         note_row_certainty(static_cast<int32_t>(c), residual);
     }
     rebuild_violated_index();
@@ -1531,7 +1547,7 @@ void FeasibilityJump::update_var(int32_t var_id) {
     double violation_delta = 0.0;
     for (int32_t c : gv) {
         if (c != objective_ci_ && active(c)) {
-            violation_delta -= progress_residual(model_.node_value(cids[c]));
+            violation_delta -= progress_residual(model_.node_value(cids[c]), config_.tolerance);
         }
     }
     const double objective_before = objective_value();
@@ -1556,9 +1572,9 @@ void FeasibilityJump::update_var(int32_t var_id) {
     for (int32_t c : gv) {
         const double after = model_.node_value(cids[c]);
         if (c != objective_ci_ && active(c)) {
-            violation_delta += progress_residual(after);
+            violation_delta += progress_residual(after, config_.tolerance);
         }
-        set_violated(c, is_violated(after));
+        set_violated(c, is_violated(after, config_.tolerance));
         note_row_certainty(c, after);
     }
     unweighted_violation_ += violation_delta;
@@ -1756,9 +1772,9 @@ bool FeasibilityJump::objective_row_inert(double before, double after) {
 //   - the batch end, and anything that reads the model after it.
 //
 // The gate (settle_undecided_rows) handles the first two at O(1) in the common
-// case: update_var notes every row whose verdict -- residual against kTol --
+// case: update_var notes every row whose verdict -- residual against tol --
 // the bound leaves undecided, in either direction, and at a local minimum only
-// those rows' Sums are re-summed. A row whose residual clears kTol by more
+// those rows' Sums are re-summed. A row whose residual clears tol by more
 // than its bound has the same verdict on the real sum; on integral data no
 // update is inexact, no row is ever noted, and the gate costs one empty-list
 // test. The re-groundings (reground_drifted_rows) re-sum every drifted Sum
@@ -1777,7 +1793,7 @@ bool FeasibilityJump::verdict_undecided(int32_t c, double residual) const {
     // The row computes fl(S - q) (or |S - q|, or S - q plus the strict margin,
     // rounded once more) where the real sum T would give T - q: they differ by
     // at most M = drift_bound + 2^-51 |residual| (two half-ulps of the
-    // residual). The verdict is decided when |residual - kTol| > M in real
+    // residual). The verdict is decided when |residual - tol| > M in real
     // arithmetic. Both sides are computed in floating point: the difference
     // rounds by at most a factor (1 + u), and M's one add by as much again, so
     // the margin is nudged up the way the drift bound is (see
@@ -1785,7 +1801,7 @@ bool FeasibilityJump::verdict_undecided(int32_t c, double residual) const {
     // computed "decided" is decided exactly.
     const double m = st.drift_bound + (std::fabs(residual) * 0x1p-51);
     const double margin = m + (m * 0x1p-51);
-    return std::fabs(residual - kTol) <= margin;
+    return std::fabs(residual - config_.tolerance) <= margin;
 }
 
 void FeasibilityJump::note_row_certainty(int32_t c, double residual) {
@@ -1807,7 +1823,7 @@ void FeasibilityJump::capture_rows_of_slot(int32_t slot) {
 
 // O(|uncertain_rows_|) plus, per Sum it re-sums, that Sum's length and its
 // rows' variables. Where it loses: a model whose rows sit within their drift
-// bound of kTol at most local minima -- big-M rows at equality, whose bound is
+// bound of tol at most local minima -- big-M rows at equality, whose bound is
 // ulps of M -- pays a re-sum per such row per minimum, which is what the
 // exact-only commit paid per commit touching it.
 bool FeasibilityJump::settle_undecided_rows() {
@@ -1880,10 +1896,11 @@ bool FeasibilityJump::settle_regrounded_rows() {
             continue;
         }
         if (c != objective_ci_ && active(c)) {
-            unweighted_violation_ += progress_residual(after) - progress_residual(before);
+            unweighted_violation_ += progress_residual(after, config_.tolerance) -
+                                     progress_residual(before, config_.tolerance);
         }
         const bool was = (violated_[ci] & kInV) != 0;
-        const bool now = is_violated(after);
+        const bool now = is_violated(after, config_.tolerance);
         set_violated(c, now);
         flipped = flipped || was != now;
         row_before_[n_moved++].first = c;
@@ -1974,7 +1991,8 @@ bool FeasibilityJump::apply_jump(int sample_size) {
             n + static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(queue_.size() - n)));
         const int32_t v = queue_[idx];
         if (!jumps_.valid(v)) {
-            JumpResult r = compute_var_jump(model_, vm_.weights, v, escape_probe_, &linear_);
+            JumpResult r = compute_var_jump(model_, vm_.weights, v, escape_probe_, &linear_,
+                                            config_.tolerance);
             jumps_.set(v, r.jump_value, r.score);
         }
         const double s = jumps_.score(v);
@@ -2118,7 +2136,7 @@ void FeasibilityJump::arm_deadline() {
 // bump is O(|V|) plus the requeue below (the nonzeros of V's counted rows)
 // rather than O(#rows). The algorithm's weights are unchanged (ViolationLS, Davies et al. CPAIOR
 // 2024, Algorithm 3); only their storage is. The violated rows are V's, which is the eager form's
-// `constraint_violation(c) > kTol` row for row: is_violated is the same kTol test and a NaN or +inf
+// `constraint_violation(c) > tol` row for row: is_violated is the same tol test and a NaN or +inf
 // clamps to kInfPenalty there. That holds only while V is current -- update_var keeps it so inside
 // the loop, and a caller that mutates the assignment outside FJ must resync() before the next batch
 // (solve() does). A stale V now mis-weights rows, not just mis-queues them.
@@ -2127,7 +2145,7 @@ void FeasibilityJump::bump_weights_and_requeue() {
     if (folded != 1.0) {
         // Cached scores live in the scaled space too, and this rescale is
         // REQUIRED, not cosmetic. A valid entry that survives a bump has no
-        // counted violated row, so its score is <= 0 -- except in the (0, kTol]
+        // counted violated row, so its score is <= 0 -- except in the (0, tol]
         // residual band, where it is positive. Such an entry left in Q
         // unrescaled would be up to 1 / folded (~1e30) times too large against
         // every score computed after the fold, and apply_jump's argmax would take
@@ -2198,7 +2216,7 @@ bool FeasibilityJump::track_batch_progress(double& batch_best_violation, bool wa
     if (unweighted_violation_ <= 0.0) {
         // The measure has no usable signal, which covers TWO states and
         // deliberately treats them alike. Either every real row is
-        // satisfied (progress_residual counts only residuals > kTol, the
+        // satisfied (progress_residual counts only residuals > tol, the
         // same threshold is_violated uses, so a zero sum means exactly
         // that for finite rows) -- or every violated real row is +inf or
         // NaN, which progress_residual also contributes 0 for. Both are
@@ -2933,7 +2951,8 @@ FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, dou
         }
         // W'-argmin, then its score under W. Both in closed form where the rows
         // allow it, exactly as apply_jump scores.
-        JumpResult nr = compute_var_jump(model_, novelty_weights_, v, false, &linear_);
+        JumpResult nr =
+            compute_var_jump(model_, novelty_weights_, v, false, &linear_, config_.tolerance);
         double score = 0.0;
         if (linear_.prepare(v, vm_.weights) && std::isfinite(nr.jump_value - model_.var(v).value)) {
             score = -linear_.delta(nr.jump_value);
@@ -2973,7 +2992,7 @@ FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, dou
 // re-queues for FJ: Algorithm 1 lines 16-17 admit v' to Q only "if V meets
 // G_v'", and OR-Tools' AddVarToScan -> ShouldScan likewise wants a violated
 // row. This is update_var's admission test, with its one blind spot: a row
-// whose residual is in (0, kTol] counts as satisfied but still contributes
+// whose residual is in (0, tol] counts as satisfied but still contributes
 // violation, so a var whose only "violated" rows are of that kind could have a
 // tiny positive score and is not admitted. Otherwise nothing is lost: a var all
 // of whose rows hold (residual <= 0) can only break rows, so its score and
@@ -3070,7 +3089,7 @@ void FeasibilityJump::nj_apply(int32_t v, double jump) {
     }
     for (const int32_t c : model_.constraints_of_var(v)) {
         const bool was_violated = violated_[c] != 0;
-        set_violated(c, is_violated(model_.node_value(cids[c])));
+        set_violated(c, is_violated(model_.node_value(cids[c]), config_.tolerance));
         if (violated_[c] != 0) {
             if (novelty_weights_[c] != vm_.weights[c]) {
                 novelty_weights_[c] = vm_.weights[c];
@@ -3096,7 +3115,7 @@ void FeasibilityJump::nj_undo(int32_t v, double old_value) {
     model_.var_mut(v).value = old_value;
     delta_evaluate(model_, &v, 1);
     for (const int32_t c : model_.constraints_of_var(v)) {
-        set_violated(c, is_violated(model_.node_value(cids[c])));
+        set_violated(c, is_violated(model_.node_value(cids[c]), config_.tolerance));
     }
     nj_requeue_neighbours(v, objective_before);
 }
@@ -3237,15 +3256,22 @@ GFJStatus FeasibilityJump::run() {
     if (config_.two_phase && has_nonlinear) {
         // Phase 1: GLS on the linear submodel. Non-linear constraint weights are
         // masked to 0 (a mask, not a learned weight); active() == weight>0 then
-        // excludes them, and the GLS decay leaves 0-weights at 0. Phase 2
-        // restores all weights to 1 (the paper uses fresh weights per phase).
+        // excludes them, and the GLS decay leaves 0-weights at 0.
         for (size_t c = 0; c < nc; ++c) {
             vm_.weights[c] = is_linear_[c] != 0 ? 1.0 : 0.0;
         }
         vm_.invalidate_cache();
         gls(config_.sample_size_linear);
-        // Restore full weights for the general phase.
-        std::fill(vm_.weights.begin(), vm_.weights.end(), 1.0);
+        // Phase 2 continues from the weights phase 1 learned: ViolationLS's
+        // Algorithm 6 (lines 18-19) passes the same W to both GLS calls. Only
+        // the mask comes off -- a non-linear row enters at weight 1. This used
+        // to refill every weight to 1, under a comment claiming the paper does
+        // (#211).
+        for (size_t c = 0; c < nc; ++c) {
+            if (is_linear_[c] == 0) {
+                vm_.weights[c] = 1.0;
+            }
+        }
         vm_.invalidate_cache();
     } else {
         std::fill(vm_.weights.begin(), vm_.weights.end(), 1.0);

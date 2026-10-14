@@ -1,4 +1,5 @@
 #include <cbls/cbls.h>
+#include <cmath>
 #include <memory>
 #include <mutex>
 #include <nanobind/nanobind.h>
@@ -215,6 +216,30 @@ struct VariableRef {
 VariableRef variable_ref(Model& model, int32_t id) {
     static_cast<void>(model.var(id));
     return VariableRef{&model, id};
+}
+
+// The `Variable.value` setter's check (#211). Several components rely on every
+// scalar value lying in its box -- and `SearchConfig.skip_init`, the documented
+// way to keep a caller's assignment, hands this value to the search as it is.
+// So a value the engine could never have produced is REFUSED (ValueError), not
+// clamped: NaN or an infinity, a value outside [lb, ub], or a non-integer on a
+// Bool/Int. Clamping would change the caller's assignment without a word.
+void set_checked_value(Variable& var, double value) {
+    if (!std::isfinite(value)) {
+        throw nb::value_error(
+            ("Variable.value: " + var.name + " cannot take a non-finite value").c_str());
+    }
+    if (value < var.lb || value > var.ub) {
+        throw nb::value_error(("Variable.value: " + std::to_string(value) +
+                               " lies outside the domain [" + std::to_string(var.lb) + ", " +
+                               std::to_string(var.ub) + "] of " + var.name)
+                                  .c_str());
+    }
+    if ((var.type == VarType::Bool || var.type == VarType::Int) && value != std::trunc(value)) {
+        throw nb::value_error(
+            ("Variable.value: " + var.name + " is integral; got " + std::to_string(value)).c_str());
+    }
+    var.value = value;
 }
 
 class SolvingScope {
@@ -654,7 +679,7 @@ NB_MODULE(_cbls_core, m) {
         .def_prop_ro("type", [](const VariableRef& v) { return v.get().type; })
         .def_prop_rw(
             "value", [](const VariableRef& v) { return v.get().value; },
-            [](const VariableRef& v, double value) { v.get().value = value; })
+            [](const VariableRef& v, double value) { set_checked_value(v.get(), value); })
         .def_prop_ro("lb", [](const VariableRef& v) { return v.get().lb; })
         .def_prop_ro("ub", [](const VariableRef& v) { return v.get().ub; })
         .def_prop_ro("name", [](const VariableRef& v) { return v.get().name; })
@@ -1704,5 +1729,6 @@ NB_MODULE(_cbls_core, m) {
     m.def("initialize_structured_random", &initialize_structured_random, nb::arg("model"),
           nb::arg("rng"));
     m.def("fj_nl_initialize", &fj_nl_initialize, nb::arg("model"), nb::arg("vm"),
-          nb::arg("max_iterations") = 10000, nb::arg("rng") = nullptr, nb::arg("time_limit") = 2.0);
+          nb::arg("max_iterations") = 10000, nb::arg("rng") = nullptr, nb::arg("time_limit") = 2.0,
+          nb::arg("tolerance") = kDefaultFeasibilityTolerance);
 }

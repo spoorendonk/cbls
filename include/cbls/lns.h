@@ -4,7 +4,16 @@
 #include "rng.h"
 #include "violation.h"
 
+#include <utility>
+
 namespace cbls {
+
+/// The key the built-in LNS accepts a repair on, compared lexicographically:
+/// (real violation, objective). The real violation sums each row's residual
+/// ABOVE `tol` -- a row at or below it is satisfied and adds nothing -- over
+/// every row but the artificial `obj <= bound`; a NaN row makes it +inf, and a
+/// NaN objective ranks as +inf. Public so the rule can be tested directly.
+std::pair<double, double> lns_acceptance_key(const Model& model, double tol);
 
 /// Destroy-and-repair diversification for the ViolationLS loop.
 ///
@@ -45,8 +54,18 @@ public:
     int destroy_repair_cycle(Model& model, ViolationManager& vm, RNG& rng, int n_rounds = 10,
                              double repair_time_limit = 2.0);
 
+    /// The residual a row may keep and still count as satisfied, both in the
+    /// repair's FJ and in the acceptance key, which clamps each row's violation
+    /// to 0 at or below it. `solve()` sets it to `SearchConfig::
+    /// feasibility_tolerance` before each kick. Without the clamp two feasible
+    /// states were ranked by sub-tolerance rounding noise on their equality
+    /// rows (1e-12 against 3e-12), and the objective was never consulted (#211).
+    void set_feasibility_tolerance(double tol) { feasibility_tolerance_ = tol; }
+    [[nodiscard]] double feasibility_tolerance() const { return feasibility_tolerance_; }
+
 private:
     double destroy_fraction_;
+    double feasibility_tolerance_ = kDefaultFeasibilityTolerance;
 };
 
 }  // namespace cbls

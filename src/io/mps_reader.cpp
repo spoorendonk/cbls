@@ -584,6 +584,11 @@ MpsProblem read_mps(const std::string& filename) {
     // bound entry whatsoever; an explicit LI/LO/MI entry sets no upper bound and
     // must leave it at +inf.
     std::vector<char> col_had_bound_entry;
+    // MIPX-DIFF: columns whose lower bound a BOUNDS entry set explicitly (LO,
+    // LI, FX, FR, MI, BV, SC, SI). A negative UP/UI on a column without one
+    // moves the default lb = 0 to -inf -- the CPLEX/SCIP convention -- where
+    // vendored mipx keeps lb = 0 and the column loads as lb > ub.
+    std::vector<char> col_lb_explicit;
     Section section = Section::None;
     bool have_objective = false;
     // MIPX-DIFF: track ENDATA sentinel to warn on truncated files; vendored
@@ -813,11 +818,28 @@ MpsProblem read_mps(const std::string& filename) {
                 col_had_bound_entry[static_cast<size_t>(col_idx)] = 1;
                 const bool has_value = tokens.n >= 4;
                 MpsVar& v = prob.vars[col_idx];
+                if (static_cast<size_t>(col_idx) >= col_lb_explicit.size()) {
+                    col_lb_explicit.resize(static_cast<size_t>(col_idx) + 1, 0);
+                }
+                char& lb_explicit = col_lb_explicit[static_cast<size_t>(col_idx)];
+                // MIPX-DIFF: a negative upper bound on a column whose lower bound
+                // is still the default 0 makes that lower bound -inf (CPLEX/SCIP).
+                const auto apply_upper = [&v, &lb_explicit](double ub) {
+                    v.ub = ub;
+                    if (ub < 0.0 && lb_explicit == 0 && v.lb == 0.0) {
+                        v.lb = -kMpsInf;
+                    }
+                };
+                if (bound_type == "LO" || bound_type == "LI" || bound_type == "FX" ||
+                    bound_type == "FR" || bound_type == "MI" || bound_type == "BV" ||
+                    bound_type == "SC" || bound_type == "SI") {
+                    lb_explicit = 1;
+                }
 
                 if (bound_type == "LO" && has_value) {
                     v.lb = parseReal(tokens[3]);
                 } else if (bound_type == "UP" && has_value) {
-                    v.ub = parseReal(tokens[3]);
+                    apply_upper(parseReal(tokens[3]));
                 } else if (bound_type == "FX" && has_value) {
                     double x = parseReal(tokens[3]);
                     v.lb = x;
@@ -837,7 +859,7 @@ MpsProblem read_mps(const std::string& filename) {
                     v.lb = parseReal(tokens[3]);
                     v.kind = MpsVarKind::Integer;
                 } else if (bound_type == "UI" && has_value) {
-                    v.ub = parseReal(tokens[3]);
+                    apply_upper(parseReal(tokens[3]));
                     v.kind = MpsVarKind::Integer;
                 } else if (bound_type == "SC" || bound_type == "SI") {
                     // Semi-continuous / semi-integer: not modelled in CBLS.

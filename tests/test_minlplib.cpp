@@ -292,6 +292,20 @@ TEST_CASE("NL reader throws a tagged marker on an unsupported opcode", "[minlpli
                         Catch::Matchers::ContainsSubstring("NL_UNKNOWN_OPCODE"));
 }
 
+TEST_CASE("NL reader refuses a complementarity bound instead of misparsing", "[minlplib]") {
+    // Bound type 5 (`5 k i`) used to match no case and consume no tokens, so the
+    // cursor was left on its payload and the rest of the file was read as
+    // something else (#211). It is now refused with the reader's "unsupported"
+    // wording, which the MINLPLib runner buckets as a coverage gap.
+    std::string text = nl_header(2, 1, 1);
+    text += "b\n0 0 10\n0 0 10\n";
+    text += "r\n5 1 1\n";  // con0: complementary with var 1
+    text += "J0 1\n0 1\n";
+    text += "O0 0\nn0\n";
+    REQUIRE_THROWS_WITH(parse_nl(text, "compl"),
+                        Catch::Matchers::ContainsSubstring("not supported by this reader"));
+}
+
 // ---- P4: NL -> Model adapter ----
 
 TEST_CASE("nl_to_model builds a closed model", "[minlplib]") {
@@ -310,6 +324,23 @@ TEST_CASE("nl_to_model builds a closed model", "[minlplib]") {
     REQUIRE(r.var_handles.size() == 2);
     REQUIRE(r.objective_node_id >= 0);
     REQUIRE(r.constraint_node_ids[0] >= 0);
+}
+
+TEST_CASE("nl_to_model translates FLOOR and CEIL", "[minlplib]") {
+    // FLOOR (13) and CEIL (14) were parsed but not translated, so an instance
+    // using them was skipped as unsupported although the DAG has had Floor and
+    // Ceil since #186 (#211). minimize floor(x0) + ceil(x1).
+    std::string text = nl_header(2, 0, 1);
+    text += "b\n0 -10 10\n0 -10 10\n";
+    text += "O0 0\n";
+    text += "o0\no13\nv0\no14\nv1\n";
+    NlProblem p = parse_nl(text, "floorceil");
+    NlToModelResult r = nl_to_model(p);
+    REQUIRE(r.supported);
+    r.model.var_mut(0).value = 2.7;
+    r.model.var_mut(1).value = -1.3;
+    full_evaluate(r.model);
+    REQUIRE_THAT(r.model.node_value(r.objective_node_id), WithinAbs(2.0 + -1.0, 1e-12));
 }
 
 TEST_CASE("nl_to_model: feasible point has zero violation and correct objective", "[minlplib]") {

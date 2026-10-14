@@ -249,7 +249,7 @@ differences of its changed terms instead of re-summing it.
 FeasibilityJump acts on no verdict that drift could have flipped:
 
 - `update_var` notes any row whose residual lies within its Sum's bound, plus
-  the comparison's own rounding, of kTol, on either side.
+  the comparison's own rounding, of the tolerance (`GFJConfig::tolerance`), on either side.
 - At a local minimum only the noted rows' Sums are re-summed, before any GLS
   bump or Feasible verdict. A row violated only by drift leaves V instead of
   being bumped. A row satisfied only by drift enters V and is bumped with the
@@ -939,7 +939,7 @@ left a cached jump score that the bump did not invalidate at its pre-decay
 scale, stale by `rho^-k` against freshly computed ones, whereas in the scaled
 space a decay leaves every cached score exact. That affects only entries whose
 rows the bump did not touch, which in practice means rows violated by at most
-`kTol`: any other valid entry in Q has a positive score, so it sits in a counted
+the tolerance (`GFJConfig::tolerance`): any other valid entry in Q has a positive score, so it sits in a counted
 row and the bump invalidates it. Scores carried across a batch boundary are
 rescaled by the folded factor and match the eager form to rounding.
 
@@ -1327,8 +1327,10 @@ change the predicate there and the trajectories are the same.
 
 `FeasibilityJump::run()` (standalone construction) optionally runs GLS on the
 *linear submodel* first: nonlinear constraint weights are masked to `0`, GLS
-satisfies the affine constraints, then all weights are restored to `1` for the
-general phase. `compute_linear_constraints()` marks each constraint affine by a
+satisfies the affine constraints, then the general phase continues from the
+weights the linear phase learned, with the masked rows unmasked at `1`
+(ViolationLS Algorithm 6, lines 18-19, passes one W to both GLS calls; until
+#211 every weight was refilled to `1`). `compute_linear_constraints()` marks each constraint affine by a
 single topo pass (Const/Neg/Sum affine in affine children; Prod/Div affine with
 a constant factor/divisor; comparisons affine when both sides are). This is the
 default for GFJ-as-solver. As a warm-start (LNS repair, SA-style seeding) the
@@ -1425,7 +1427,7 @@ that sit in an active violated row (Algorithm 1 lines 16-17, OR-Tools'
 `ShouldScan`): a var whose rows all hold fails both arms of the filter, and
 without the per-commit reseed to clear them out, scoring such vars was 88% of a
 binkar10_1 run (that admission test is `update_var`'s, and like it ignores a row
-whose residual is in `(0, kTol]`, which counts as satisfied but still scores).
+whose residual is in `(0, tol]`, which counts as satisfied but still scores).
 `SearchCounters::novelty_moves`, `novelty_commits` and `novelty_weight_bumps`
 record its work apart from FJ's. Before #209 a Novelty batch was a single
 ApplyNoveltyJump capped at 256 moves whose failure was ignored, it reseeded
@@ -2028,8 +2030,10 @@ While time and `max_iterations` remain, each pass:
 4. **`record_best()`** keeps the assignment if it strictly improves
    `best_feasible_obj`, snapshots the state, and tightens the objective bound to
    the min of `obj - eps` and, in a portfolio, the shared cap (#179)
-   (`eps = 1e-3*(|obj|+1)`; the step doubles as the Newton step size
-   for hook-less continuous descent). For pure-feasibility models (no objective)
+   (`eps = 1` on an integral objective, as CP-SAT's best - 1 (#211), else
+   `eps = 1e-3*(|obj|+1)`; the step doubles as the Newton step size
+   for hook-less continuous descent, which is why the continuous one is not
+   smaller -- see `objective_bound_below`). For pure-feasibility models (no objective)
    the first feasible solution ends the search.
 5. **On a new best**, reset GLS weights to 1, resample `rho`, and **disarm the
    Float escape probe** — the latch `SearchResult::escape_probe_armed` reports.
@@ -3056,7 +3060,7 @@ bit-identical to what it was before the parameter existed:
 3. **Share the objective bound** (#179). The pool keeps its best feasible,
    finite objective `G` in an atomic, written under the mutex by `submit` and
    read without it. At each **batch boundary** a worker whose bound is looser
-   than `G - eps(G)` -- the same `eps = 1e-3*(|obj|+1)` rule `record_best` uses
+   than `G - eps(G)` -- the same `eps` rule `record_best` uses
    -- tightens to it, then `fj.resync()`. Without it
    a worker behind a peer kept searching for points the portfolio had already
    beaten until it stagnated long enough to adopt. The rules:
@@ -3370,14 +3374,14 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `novelty_jump_probability` | 0.5 | `SearchConfig` | P(Novelty Jump batch) when enabled |
 | `lns_interval` | 3 | `SearchConfig` / arg | LNS fires every Nth diversification kick |
 | `rho` (GLS decay) | {0.95, 1.0} | sampled per batch | GLS weight decay factor |
-| `sample_size_general` | 3 | `GFJConfig` | best-of-N scan-set sample, general phase |
+| `sample_size_general` | 5 | `GFJConfig` | best-of-N scan-set sample, general phase (ViolationLS §3; 3 until #211) |
 | `sample_size_linear` | 5 | `GFJConfig` | best-of-N scan-set sample, linear phase |
 | `two_phase` | true (solver) / false (outer loop, warm-start) | `GFJConfig` | linear-first GLS pass |
 | `set_initial_x` | true | `GFJConfig` | set X to domain value nearest 0 first |
 | `kCompoundDiscount` | 1/1024 | `feasibility_jump.cpp` | Novelty-weight discount on satisfied constraints |
 | `kNoveltyWorkBudget` | 256 | `feasibility_jump.cpp` | max moves per `apply_novelty_jump` |
 | `kEscapeArmFraction` | 0.25 | `search.cpp` `solve` | fraction of the wall-clock budget without a new best that arms the Float escape probe (#117). Not a `SearchConfig` knob |
-| `objective_bound_eps` | 1e-3·(|obj|+1) | `search.cpp` `record_best` | bound tightening / hook Newton step |
+| `objective_bound_eps` | 1 (integral objective) / 1e-3·(|obj|+1) | `search.cpp` `objective_bound_below` | bound tightening / hook Newton step |
 | `destroy_fraction` | 0.3 | `LNS` ctor | fraction of variables/sequences destroyed |
 | `repair_time_limit` | 2.0 s | `LNS::destroy_repair` | FJ repair budget; `<= 0` = iteration-bounded only |
 | `feasibility_tolerance` | 1e-6 | `SearchConfig` / `kDefaultFeasibilityTolerance` | violation below which a constraint counts as satisfied |

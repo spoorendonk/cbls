@@ -59,7 +59,7 @@ struct SearchConfig {
     int lns_interval = 3;
 
     // ViolationLS batch outer loop (Algorithm 6).
-    int64_t batch_iterations = 1000;  // GLS iterations per batch
+    int64_t batch_iterations = 1000;  // GLS iterations per batch; must be > 0
     int perturbation_period = 100;    // batches without improvement before perturbing
     // How much of the model a diversification kick moves: each scalar variable
     // is randomised with this probability, and each List/Set variable gets
@@ -620,7 +620,8 @@ void initialize_structured_random(Model& model, RNG& rng);
 /// call, which is why the test that was supposed to cover it could not tell the
 /// difference (#104).
 int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations = 10000,
-                         RNG* rng = nullptr, double time_limit = 2.0);
+                         RNG* rng = nullptr, double time_limit = 2.0,
+                         double tolerance = kDefaultFeasibilityTolerance);
 
 /// `time_limit <= 0` disables the wall clock entirely: the run is then bounded by
 /// `config.max_iterations` alone and is fully deterministic for a given seed
@@ -635,6 +636,14 @@ int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations 
 /// too at its default `--threads 1`, which is the arm every published MIPfeas
 /// figure was measured on and the one that keeps the same-algorithm comparison
 /// about the engine rather than about the portfolio.
+/// Throws `std::invalid_argument` on a `SearchConfig` the search cannot run:
+/// today, `batch_iterations <= 0`. Every batch loop counts its work against
+/// that budget, and at <= 0 a loop whose only exit is the counter would ignore
+/// the time limit (#211). `solve()` and `ParallelSearch` both call it on entry
+/// -- the latter before any worker exists, so the error reaches the caller
+/// rather than being parked as N identical worker failures.
+void validate_search_config(const SearchConfig& config);
+
 SearchResult solve(Model& model, double time_limit = 10.0, uint64_t seed = 42, bool use_fj = true,
                    InnerSolverHook* hook = nullptr, LNS* lns = nullptr, int lns_interval = 3,
                    SolveCallback* callback = nullptr, const SearchConfig& config = {},

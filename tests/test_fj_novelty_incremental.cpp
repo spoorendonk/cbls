@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
+#include <chrono>
 #include <cstdint>
 #include <random>
 #include <vector>
@@ -252,20 +253,28 @@ TEST_CASE("a Novelty batch that applies no move still stops at the deadline",
     // with batch_iterations = 0 nothing but the deadline can stop it. The
     // deadline used to be polled only when a move was applied (#209 review).
     // Hand-registered in tests/CMakeLists.txt with a TIMEOUT, so a hang reports.
+    //
+    // Driven at the FJ level: since #211 solve() refuses a SearchConfig with
+    // batch_iterations <= 0, while novelty_batch(0) still means "no per-batch
+    // limit" -- exactly the call whose only exit is the deadline.
     Model m;
     const int32_t x = m.bool_var();
     const int32_t y = m.bool_var();
     m.add_constraint(m.geq(m.sum({x, m.prod(m.constant(-1.0), y)}), m.constant(1.0)));
     m.add_constraint(m.geq(m.sum({y, m.prod(m.constant(-1.0), x)}), m.constant(1.0)));
     m.close();
-    SearchConfig cfg;
-    cfg.use_compound_moves = true;
-    cfg.novelty_jump_probability = 1.0;
-    cfg.batch_iterations = 0;
-    const SearchResult r = solve(m, /*time_limit=*/0.3, 7, true, nullptr, nullptr, 3, nullptr, cfg);
-    REQUIRE_FALSE(r.feasible);
-    REQUIRE(r.counters.novelty_batches > 0);
-    REQUIRE(r.counters.novelty_moves == 0);  // the zero-move case, as intended
-    REQUIRE(r.counters.novelty_weight_bumps > 0);
-    REQUIRE(r.time_seconds < 5.0);
+    ViolationManager vm(m);
+    RNG rng(7);
+    GFJConfig cfg;
+    cfg.two_phase = false;
+    cfg.time_limit = 0.3;
+    FeasibilityJump fj(m, vm, rng, cfg);
+    const auto start = std::chrono::steady_clock::now();
+    fj.begin(/*set_initial_x=*/false);
+    REQUIRE_FALSE(fj.novelty_batch(0));
+    const double seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    REQUIRE(fj.novelty_moves() == 0);  // the zero-move case, as intended
+    REQUIRE(fj.novelty_weight_bumps() > 0);
+    REQUIRE(seconds < 5.0);
 }

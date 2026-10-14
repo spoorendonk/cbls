@@ -505,7 +505,19 @@ int64_t segment_index(const std::string& seg) {
 
 BoundRecord read_bound(Tokenizer& tok) {
     BoundRecord b;
-    b.type = static_cast<NlBoundType>(tok.next_int());
+    const int64_t code = tok.next_int();
+    // Type 5 is a complementarity record (`5 k i`, two ints this struct has no
+    // place for), and nothing past 5 is defined. Cast unchecked, either one
+    // matched no case below, consumed none of its payload and left the cursor
+    // mid-record: the rest of the file was misparsed rather than refused
+    // (#211). Refused with the reader's "unsupported" wording, which the
+    // MINLPLib runner buckets as a coverage gap rather than a broken file.
+    if (code < 0 || code > static_cast<int64_t>(NlBoundType::Equal)) {
+        throw std::runtime_error("NL: bound type " + std::to_string(code) +
+                                 (code == 5 ? " (complementarity)" : "") +
+                                 " is not supported by this reader");
+    }
+    b.type = static_cast<NlBoundType>(code);
     switch (b.type) {
         case NlBoundType::Range:
             b.lower = tok.next_double();

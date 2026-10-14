@@ -18,8 +18,9 @@ using namespace cbls;
 
 namespace {
 
-// is_violated's threshold in src/feasibility_jump.cpp; NaN counts as violated.
-constexpr double kTol = 1e-9;
+// is_violated's threshold in src/feasibility_jump.cpp: GFJConfig::tolerance,
+// whose default these tests run at. NaN counts as violated.
+constexpr double kTol = kDefaultFeasibilityTolerance;
 
 bool fresh_violated(const Model& m, size_t ci) {
     return !(m.node_value(m.constraint_ids()[ci]) <= kTol);

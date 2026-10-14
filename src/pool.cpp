@@ -17,6 +17,23 @@
 
 namespace cbls {
 
+bool ranks_before(bool feasible_a, double objective_a, double violation_a, bool feasible_b,
+                  double objective_b, double violation_b) {
+    if (feasible_a != feasible_b) {
+        return feasible_a;
+    }
+    if (!feasible_a) {
+        const double va =
+            std::isnan(violation_a) ? std::numeric_limits<double>::infinity() : violation_a;
+        const double vb =
+            std::isnan(violation_b) ? std::numeric_limits<double>::infinity() : violation_b;
+        if (va != vb) {
+            return va < vb;
+        }
+    }
+    return objective_a < objective_b;
+}
+
 // --- SolutionPool ---
 
 SolutionPool::SolutionPool(int capacity) : capacity_(std::max(1, capacity)) {}
@@ -31,10 +48,8 @@ bool SolutionPool::submit(Solution sol) {
     }
     solutions_.push_back(std::move(sol));
     std::sort(solutions_.begin(), solutions_.end(), [](const Solution& a, const Solution& b) {
-        if (a.feasible != b.feasible) {
-            return a.feasible > b.feasible;
-        }
-        return a.objective < b.objective;
+        return ranks_before(a.feasible, a.objective, a.violation, b.feasible, b.objective,
+                            b.violation);
     });
     if (static_cast<int>(solutions_.size()) > capacity_) {
         solutions_.resize(capacity_);
@@ -285,8 +300,9 @@ struct WorkerAccumulator {
             result.time_to_first_feasible = reached;
             result.first_feasible_objective = r.first_feasible_objective;
         }
-        const bool better = !any_run || (r.feasible && !result.feasible) ||
-                            (r.feasible == result.feasible && r.objective < result.objective);
+        const bool better =
+            !any_run || ranks_before(r.feasible, r.objective, r.best_violation, result.feasible,
+                                     result.objective, result.best_violation);
         if (better) {
             result.objective = r.objective;
             result.feasible = r.feasible;
@@ -796,6 +812,7 @@ SearchResult ParallelSearch::solve_portfolio(
     // contribute a default SearchResult to the aggregate and read as a worker
     // that searched and found nothing.
     const int n_workers = portfolio_workers(n_threads, par_config.executor);
+    validate_search_config(config);
 
     // A tracer set on the SearchConfig and no factory to replace it is a data
     // race, not a configuration: every worker would call that one object from its

@@ -66,10 +66,11 @@ include(Catch)
 #
 # Measured at Release: the 6 [slow]-tagged tests account for ~46s of the suite's
 # aggregate (summed per-test) time; with `-j$(nproc)` the full run is ~25s of
-# wall clock. The remaining 721 (716 discovered, plus the
-# five hand-registered tests that carry no slow label --
-# timing_structural_batch_deadline, hang_guard_iteration_only_portfolio and
-# hang_guard_novelty_zero_move_batch here, and the two shell gate tests clang_tidy_gate_probe and
+# wall clock. The remaining 737 (731 discovered, plus the
+# six hand-registered tests that carry no slow label --
+# timing_structural_batch_deadline, hang_guard_iteration_only_portfolio,
+# hang_guard_novelty_zero_move_batch and hang_guard_nonpositive_batch_iterations
+# here, and the two shell gate tests clang_tidy_gate_probe and
 # gate_lib_shell_test in the root CMakeLists.txt)
 # finish in ~12s with `-j`, which is what pre-commit runs via `ctest -LE slow`.
 # pre-push still runs everything.
@@ -82,10 +83,10 @@ include(Catch)
 # the tag -- "measure both ways before tagging" applies to KEEPING a tag as
 # much as to adding one.
 #
-# The roster is therefore 731 ctest tests: 722 discovered here, the 7
+# The roster is therefore 747 ctest tests: 737 discovered here, the 8
 # hand-registered ones below, and the 2 non-Catch2 shell gate tests the root
-# CMakeLists.txt registers. The 729 Catch2 ones are two more than the 727
-# TEST_CASEs in tests/*.cpp, because the two hang_guard_* tests are both
+# CMakeLists.txt registers. The 745 Catch2 ones are three more than the 742
+# TEST_CASEs in tests/*.cpp, because the three hang_guard_* tests are both
 # discovered and hand-registered -- see their notes below. `ctest -N -L slow` reports 10, not 6 --
 # the three #125 throughput floors and #191's hook deadline carry the slow
 # LABEL without the Catch2 [slow] TAG. Re-derive with `ctest -N`, never by incrementing.
@@ -158,6 +159,15 @@ add_test(NAME hang_guard_novelty_zero_move_batch
     COMMAND cbls_tests "a Novelty batch that applies no move still stops at the deadline"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(hang_guard_novelty_zero_move_batch
+    PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 4)
+
+# #211: a non-positive SearchConfig::batch_iterations is refused at the API.
+# Unfixed, the batch ran unlimited under an iteration-only budget and hung, so
+# this is a hang guard too: hand-registered with a TIMEOUT as well as discovered.
+add_test(NAME hang_guard_nonpositive_batch_iterations
+    COMMAND cbls_tests "a non-positive batch_iterations is refused rather than run unbounded"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(hang_guard_nonpositive_batch_iterations
     PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 4)
 
 # Issue #125: one throughput floor per benchmarked problem class — a floor on

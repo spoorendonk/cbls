@@ -17,6 +17,8 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -101,7 +103,7 @@ const char* termination_reason_name(TerminationReason reason) {
 // the model's current assignment toward feasibility. Delegates to
 // FeasibilityJump; see src/feasibility_jump.cpp.
 int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations, RNG* rng_ptr,
-                         double time_limit) {
+                         double time_limit, double tolerance) {
     RNG local_rng(42);
     RNG& rng = rng_ptr != nullptr ? *rng_ptr : local_rng;
 
@@ -109,6 +111,7 @@ int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations,
     config.max_iterations = max_iterations;
     config.time_limit = time_limit;
     config.set_initial_x = false;  // refine the current (already-initialised) assignment
+    config.tolerance = tolerance;
     // As an SA/LNS warm-start (not the full solver), the two-phase linear-first
     // pass over-commits the linear submodel to cost-pessimal feasibility-boundary
     // values; single-phase gives a better start. Two-phase stays the default for
@@ -336,13 +339,32 @@ constexpr double kEscapeArmFraction = 0.25;
 // the shortening is whatever perturbation_period happens to be, not 20x.
 constexpr int kUnproductiveArmDivisor = 20;
 
-// The objective bound a feasible objective `obj` earns: strictly below it, by a
-// step relative to its magnitude. One rule for every writer -- record_best, an
-// adoption's re-grounding and the shared bound (#179) -- because "never loosen"
-// across them rests on it: `obj - 1e-3 * (|obj| + 1)` is strictly increasing in
-// `obj` (slope 1 +- 1e-3), so a better objective always gives a tighter bound,
-// whichever of the three writers derived it.
-double objective_bound_below(double obj) {
+// The objective bound a feasible objective `obj` earns: strictly below it. One
+// rule for every writer -- record_best, an adoption's re-grounding and the
+// shared bound (#179) -- because "never loosen" across them rests on it: the
+// bound must be strictly increasing in `obj`, so a better objective always gives
+// a tighter bound, whichever of the three writers derived it. Both branches are
+// (slope 1, and 1 +- 1e-3):
+//
+//  - An INTEGRAL objective (Model::is_integral) takes `obj - 1`, as CP-SAT
+//    tightens one to best - 1: the next integer below is the only improvement
+//    there is, and it is exactly reachable (#211). The relative step below
+//    hid every improvement under 0.1% -- at obj = 1e4, the integer objectives
+//    9,990-9,999 kept the objective row violated.
+//  - Any other takes `obj - 1e-3 * (|obj| + 1)`, and that has the same
+//    consequence, stated here because it is one: an improvement smaller than
+//    ~0.1% of |obj| + 1 is never asked for, so a continuous objective is only
+//    resolved to that granularity (the search can still land on a finer one,
+//    but nothing pulls it there). It is kept because the step is also the
+//    descent's pace -- FJ's Newton candidate on the objective row lands on the
+//    bound, so each incumbent improves by about one step: eg_all_s walks from
+//    1e9 to 14.4 in 15,892 of them (benchmarks/instances/minlplib/README.md),
+//    and a 1e-6 step would need ~1000x as many. A smaller or adaptive step is
+//    open on #211 pending a measurement.
+double objective_bound_below(double obj, bool integral) {
+    if (integral) {
+        return obj - 1.0;
+    }
     return obj - (1e-3 * (std::abs(obj) + 1.0));
 }
 
@@ -459,10 +481,14 @@ private:
     // when sharing is off or there is nothing to share. Every writer of the bound
     // takes the min with it, which is what keeps a shared tightening from being
     // undone by the worker's own later, worse incumbent (see record_best).
+    // objective_bound_below for this model.
+    [[nodiscard]] double bound_below(double obj) const {
+        return objective_bound_below(obj, obj_integral_);
+    }
     [[nodiscard]] double shared_bound_cap() const {
         const double global = global_best();
         return coord_ != nullptr && coord_->share_objective_bound && std::isfinite(global)
-                   ? objective_bound_below(global)
+                   ? bound_below(global)
                    : std::numeric_limits<double>::infinity();
     }
     // At a batch boundary: tighten the bound to the shared cap if it is looser,
@@ -593,6 +619,8 @@ private:
     const double budget_seconds_;
 
     const bool has_obj_;
+    // Whether the objective is integral, which sets objective_bound_below's step.
+    const bool obj_integral_;
     const int32_t obj_ci_;
     const std::vector<int32_t>& cids_;
     // The structural batch has work and FJ/Novelty batches have none (#201);
@@ -683,6 +711,7 @@ ViolationLSLoop::ViolationLSLoop(Model& model, ViolationManager& vm, RNG& rng, F
       has_deadline_(budget.has_deadline),
       budget_seconds_(budget.seconds),
       has_obj_(model.objective_id() >= 0),
+      obj_integral_(has_obj_ && model.is_integral(model.objective_id())),
       obj_ci_(model.objective_constraint_idx()),
       cids_(model.constraint_ids()),
       fj_idle_(structural_batch_has_work(model, config) && !fj_has_work(model)),
@@ -896,7 +925,7 @@ bool ViolationLSLoop::record_best() {
         // reground_objective_bound_after_adoption's comment rules out. The cap
         // is +inf without a pool or with sharing off, and min(x, +inf) is x for
         // the finite x here, so those runs set exactly what they always did.
-        const double own = objective_bound_below(obj);
+        const double own = bound_below(obj);
         const double cap = shared_bound_cap();
         const double previous = model_.objective_bound();
         // Counted only when the cap MOVED the bound -- a peer improved since
@@ -998,7 +1027,7 @@ void ViolationLSLoop::sync_shared_bound() {
     if (!std::isfinite(global)) {
         return;  // no pool, or nothing feasible in it yet
     }
-    const double target = objective_bound_below(global);
+    const double target = bound_below(global);
     if (!(target < model_.objective_bound())) {
         return;  // already at least as tight: our own best, or an earlier sync
     }
@@ -1083,9 +1112,9 @@ void ViolationLSLoop::reground_objective_bound_after_adoption(bool feasible_here
     // The shared cap (#179), for the same reason record_best takes it: `target`
     // is this worker's view, and a bound the pool had tightened past it must not
     // be loosened by re-grounding on it. +inf with sharing off.
-    const double bound = std::min(std::isfinite(target) ? objective_bound_below(target)
-                                                        : std::numeric_limits<double>::infinity(),
-                                  shared_bound_cap());
+    const double bound = std::min(
+        std::isfinite(target) ? bound_below(target) : std::numeric_limits<double>::infinity(),
+        shared_bound_cap());
     if (std::isfinite(bound)) {
         model_.set_objective_bound(bound);
     } else if (!std::isfinite(model_.objective_bound())) {
@@ -1401,6 +1430,7 @@ void ViolationLSLoop::diversify(bool allow_lns) {
         // kick should fall through to a perturb is a trajectory change and so a
         // separate measurement, not a tidy-up.
         trace_kick(KickKind::LNS);
+        lns_->set_feasibility_tolerance(config_.feasibility_tolerance);
         const bool accepted = lns_->destroy_repair(model_, vm_, rng_, repair_limit);
         ++lns_repairs_;
         lns_repairs_accepted_ += accepted ? 1 : 0;
@@ -1916,10 +1946,18 @@ SearchResult ViolationLSLoop::run() {
 // the bound is tightened on each new (real-)feasible solution. On stagnation the
 // assignment is perturbed (or diversified via LNS). The InnerSolverHook polishes
 // continuous variables (objective descent) on each feasible solution.
+void validate_search_config(const SearchConfig& config) {
+    if (config.batch_iterations <= 0) {
+        throw std::invalid_argument("SearchConfig::batch_iterations must be positive, got " +
+                                    std::to_string(config.batch_iterations));
+    }
+}
+
 SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
                    InnerSolverHook* hook, LNS* lns, int lns_interval, SolveCallback* callback,
                    const SearchConfig& config, SearchCoordination* coord) {
     (void)use_fj;  // GFJ is always the engine now; the flag is vestigial.
+    validate_search_config(config);
     RNG rng(seed);
 
     // An unclosed model is closed here rather than refused: callers have always
@@ -1973,6 +2011,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     gfj.time_limit = budget.seconds;  // saturated: begin() casts to integer ticks
     gfj.max_iterations = 0;
     gfj.unproductive_iterations = config.unproductive_iterations;
+    gfj.tolerance = config.feasibility_tolerance;  // one meaning of "satisfied" (#211)
     FeasibilityJump fj(model, vm, rng, gfj);
     fj.begin(/*set_initial_x=*/!config.skip_init);
 

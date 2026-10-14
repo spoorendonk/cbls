@@ -4,8 +4,13 @@
 // outside the supported set do not throw: the result is marked unsupported with
 // a human-readable reason, mirroring the "skip, don't crash" contract in
 // io_nl.h. The supported set is the MINLPLib op subset CBLS can express today
-// (+, -, *, /, pow, min, max, abs, sin, cos, tan, exp, log, log10, sqrt,
-// signpower, tanh, unary minus) plus the linear J/G parts.
+// (+, -, *, /, pow, min, max, abs, floor, ceil, sin, cos, tan, exp, log,
+// log10, sqrt, tanh, unary minus) plus the linear J/G parts.
+//
+// Not signpower, although the DAG has `SignPower`: AMPL has no opcode for it
+// and writes it as an imported-function call, whose `F` declaration segment
+// the reader refuses. `Model::signpower_expr` is reachable from the C++ and
+// Python APIs only.
 
 #include "cbls/bound_propagation.h"
 #include "cbls/expr.h"
@@ -35,6 +40,8 @@ enum AmplOp : std::uint8_t {
     OPPOW = 5,
     MINLIST = 11,
     MAXLIST = 12,
+    FLOOR = 13,
+    CEIL = 14,
     ABS = 15,
     OPUMINUS = 16,
     OP_tanh = 37,
@@ -132,6 +139,10 @@ private:
                 return m_.pow_expr(kids[0], kids[1]);
             case OPUMINUS:
                 return m_.neg(kids[0]);
+            case FLOOR:
+                return m_.floor_expr(kids[0]);
+            case CEIL:
+                return m_.ceil_expr(kids[0]);
             case ABS:
                 return m_.abs_expr(kids[0]);
             case OP_sqrt:

@@ -449,18 +449,19 @@ double evaluate(const ExprNode& node, const Model& model) {
                        : 1.0;
 
         case NodeOp::Lt:
-            // a - b + ε (≤ 0 when a < b strictly)
+            // a - b + margin (≤ 0 when a < b strictly); the margin is the node's
+            // (`strict_comparison_margin`, stored in const_value at creation).
             return comparison_residual(child_val(children[0], model), child_val(children[1], model),
                                        child_is_const(children[0], model),
                                        child_is_const(children[1], model)) +
-                   kStrictComparisonEps;
+                   node.const_value;
 
         case NodeOp::Gt:
-            // b - a + ε (≤ 0 when a > b strictly)
+            // b - a + margin (≤ 0 when a > b strictly)
             return comparison_residual(child_val(children[1], model), child_val(children[0], model),
                                        child_is_const(children[1], model),
                                        child_is_const(children[0], model)) +
-                   kStrictComparisonEps;
+                   node.const_value;
 
         case NodeOp::Custom:
             // From scratch, which is what this entry point means: the
@@ -486,6 +487,26 @@ double evaluate(const ExprNode& node, const Model& model) {
             return pair_lambda_extra_value(node, children, model);
     }
     return 0.0;
+}
+
+// The local derivative of a Min/Max with respect to one child: the child's
+// share of the attaining set. A child that attains the extremum gets 1/k, where
+// k children tie for it, and any other child 0. Giving each tied child 1.0, as
+// this used to, made a k-way tie a slope of k in the chain rule's sum over the
+// children, and a Newton step through it overshot k-fold (#211). The 1/k split
+// is a subgradient: it keeps the sum of the shares at 1, the slope the node
+// actually has along a direction moving every tied child together.
+static double extremum_share(const ExprNode& node, ConstSpan<ChildRef> children, int child_idx,
+                             const Model& model) {
+    const double extremum = model.node_values()[node.id];
+    const auto attains = [&](const ChildRef& c) {
+        return std::abs(child_val(c, model) - extremum) < 1e-12;
+    };
+    if (!attains(children[child_idx])) {
+        return 0.0;
+    }
+    const auto ties = std::count_if(children.begin(), children.end(), attains);
+    return 1.0 / static_cast<double>(ties);
 }
 
 // The AD peer of evaluate() above, and suppressed for the same reason and by the
@@ -568,15 +589,9 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
             }
         }
 
-        case NodeOp::Min: {
-            double min_val = model.node_values()[node.id];
-            return std::abs(child_val(children[child_idx], model) - min_val) < 1e-12 ? 1.0 : 0.0;
-        }
-
-        case NodeOp::Max: {
-            double max_val = model.node_values()[node.id];
-            return std::abs(child_val(children[child_idx], model) - max_val) < 1e-12 ? 1.0 : 0.0;
-        }
+        case NodeOp::Min:
+        case NodeOp::Max:
+            return extremum_share(node, children, child_idx, model);
 
         case NodeOp::Abs: {
             double v = child_val(children[0], model);

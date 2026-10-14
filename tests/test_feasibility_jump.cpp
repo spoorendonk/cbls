@@ -1425,3 +1425,92 @@ TEST_CASE("a Sum that is itself a row is not incremental and its row never drift
     CHECK_FALSE(f.fj.batch(20));  // nothing FJ may move repairs the row
     CHECK(f.fj.row_violated(0));
 }
+
+TEST_CASE("FJ never commits an unbounded Float to an infinite endpoint", "[fj][run]") {
+    // The Float candidates used to include lb, ub and their midpoint verbatim:
+    // -inf, +inf and NaN on a free column (#211). At x = 0 the row x*x >= 10 has
+    // a zero gradient, so no Newton candidate exists and only those were left --
+    // and x = +-inf satisfies the row, so FJ committed it. Downstream that is a
+    // -inf objective and NaN rows. Now no infinite value is ever offered.
+    constexpr double kInf = std::numeric_limits<double>::infinity();
+    Model m;
+    auto x = m.float_var(-kInf, kInf);
+    m.add_constraint(m.geq(m.prod(x, x), m.constant(10.0)));
+    m.close();
+
+    ViolationManager vm(m);
+    RNG rng(3);
+    GFJConfig cfg;
+    cfg.max_iterations = 200;
+    cfg.time_limit = 2.0;
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.run();
+    REQUIRE(std::isfinite(m.var(vid(x)).value));
+}
+
+TEST_CASE("FJ calls a row satisfied at the search's tolerance", "[fj][run]") {
+    // FJ's tolerance used to be a fixed 1e-9 against the search's 1e-6 (#211):
+    // a row left violated by 5e-7 -- satisfied as far as the search is
+    // concerned -- stayed in V, was bumped, and FJ never reported Feasible.
+    // x <= 1 cannot meet x >= 1 + 5e-7 better than that.
+    Model m;
+    auto x = m.float_var(0.0, 1.0);
+    m.add_constraint(m.geq(x, m.constant(1.0 + 5e-7)));
+    m.close();
+
+    ViolationManager vm(m);
+    RNG rng(5);
+    GFJConfig cfg;
+    cfg.max_iterations = 500;
+    cfg.time_limit = 2.0;
+    FeasibilityJump fj(m, vm, rng, cfg);
+    REQUIRE(cfg.tolerance == kDefaultFeasibilityTolerance);
+    REQUIRE(fj.run() == GFJStatus::Feasible);
+
+    // And a caller's tighter tolerance is honoured, not overridden.
+    GFJConfig tight = cfg;
+    tight.tolerance = 1e-9;
+    m.var_mut(vid(x)).value = 0.0;
+    full_evaluate(m);
+    FeasibilityJump fj_tight(m, vm, rng, tight);
+    REQUIRE(fj_tight.run() != GFJStatus::Feasible);
+}
+
+TEST_CASE("FJ samples five in either phase, as ViolationLS does", "[fj][config]") {
+    // ViolationLS §3 samples 5 for a Feasibility Jump; 3 is its Novelty sample.
+    // The general phase -- every solve() FJ batch -- used 3 (#211).
+    const GFJConfig cfg;
+    REQUIRE(cfg.sample_size_linear == 5);
+    REQUIRE(cfg.sample_size_general == 5);
+}
+
+TEST_CASE("two-phase run() carries the linear phase's weights into the general phase",
+          "[fj][run]") {
+    // ViolationLS Algorithm 6 (lines 18-19) hands the same W to both GLS calls;
+    // run() used to refill every weight to 1 between them (#211). From
+    // a = b = c = 0 the linear rows r0: a + b >= 1, r1: a <= 0 and
+    // r2: b - c <= 0 leave every single flip at score 0, so the linear phase
+    // must bump r0 before it can finish. The general phase then starts feasible
+    // (c*c <= 4 always holds) and returns at once, so the weights run() leaves
+    // are the linear phase's: r0 bumped above 1. Refilled, every one is 1.
+    Model m;
+    auto a = m.bool_var();
+    auto b = m.bool_var();
+    auto c = m.bool_var();
+    m.add_constraint(m.geq(m.sum({a, b}), m.constant(1.0)));
+    m.add_constraint(m.leq(a, m.constant(0.0)));
+    m.add_constraint(m.leq(m.sum({b, m.prod(m.constant(-1.0), c)}), m.constant(0.0)));
+    m.add_constraint(m.leq(m.prod(c, c), m.constant(4.0)));
+    m.close();
+
+    ViolationManager vm(m);
+    RNG rng(11);
+    GFJConfig cfg;
+    cfg.max_iterations = 1000;
+    cfg.time_limit = 2.0;
+    REQUIRE(cfg.two_phase);
+    FeasibilityJump fj(m, vm, rng, cfg);
+    REQUIRE(fj.run() == GFJStatus::Feasible);
+    REQUIRE(vm.weights[0] > 1.0);
+    REQUIRE(vm.weights[3] == 1.0);  // the non-linear row: unmasked at 1
+}

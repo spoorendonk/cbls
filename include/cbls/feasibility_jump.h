@@ -95,8 +95,11 @@ struct JumpResult {
 // are exact) -- on fractional data an ulp can flip a near-tie.
 // It also supplies the Float Newton candidates' row partials where its cached
 // slope is bit-identical to `compute_partial`, so those candidates do not move.
+// `tol` is the residual a row may keep and still count as satisfied (FJ passes
+// GFJConfig::tolerance): a satisfied row offers no Newton candidate.
 JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id,
-                            bool allow_escape_probe = false, LinearJumpScorer* linear = nullptr);
+                            bool allow_escape_probe = false, LinearJumpScorer* linear = nullptr,
+                            double tol = kDefaultFeasibilityTolerance);
 
 // Guided Local Search weight update (paper Algorithm 3, lines 8-10): decay all
 // weights by rho, then bump every currently-violated constraint by 1. Weights
@@ -108,7 +111,8 @@ JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, in
 // uses LazyWeightDecay below (#175), the same update in a different
 // representation -- and it stays as the public reference the lazy form is
 // tested against.
-void gls_update_weights(ViolationManager& vm, double rho);
+void gls_update_weights(ViolationManager& vm, double rho,
+                        double tol = kDefaultFeasibilityTolerance);
 
 // The GLS weight decay of ViolationLS (Davies et al., CPAIOR 2024, Algorithm 3),
 // represented lazily (#175). THE ALGORITHM'S WEIGHTS ARE UNCHANGED; only how
@@ -198,13 +202,23 @@ private:
 };
 
 struct GFJConfig {
-    int sample_size_linear = 5;   // best-of-N sampling, linear phase (paper)
-    int sample_size_general = 3;  // best-of-N sampling, general phase (paper)
-    double rho = 0.95;            // GLS decay; caller samples from {0.95, 1.0} per batch
-    bool two_phase = true;        // GLS on linear submodel first, then full model
-    bool set_initial_x = true;    // set X[v] to the domain value closest to 0 first
-    int64_t max_iterations = 0;   // 0 = unbounded (bounded by time_limit)
-    double time_limit = 0.0;      // seconds; 0 = no limit
+    // Best-of-N sampling of ApplyJump. ViolationLS §3 samples 5 for a Feasibility
+    // Jump in either phase; 3 is its Novelty Jump sample (kNoveltySample below).
+    // The general phase used 3 until #211, so every solve() FJ batch sampled
+    // the Novelty number while LNS repair (single-phase run(), the linear size)
+    // sampled 5. Its MIPfeas effect was not measured when it moved.
+    int sample_size_linear = 5;
+    int sample_size_general = 5;
+    double rho = 0.95;  // GLS decay; caller samples from {0.95, 1.0} per batch
+    // A row whose residual is at most this counts as satisfied: out of V, never
+    // bumped, no Newton candidate. solve() sets it to the search's
+    // SearchConfig::feasibility_tolerance, so FJ's "feasible" and the search's
+    // agree (#211); it was a fixed 1e-9 before.
+    double tolerance = kDefaultFeasibilityTolerance;
+    bool two_phase = true;       // GLS on linear submodel first, then full model
+    bool set_initial_x = true;   // set X[v] to the domain value closest to 0 first
+    int64_t max_iterations = 0;  // 0 = unbounded (bounded by time_limit)
+    double time_limit = 0.0;     // seconds; 0 = no limit
     // End a *batch* that has run this many GLS iterations without reducing the
     // unweighted violation of the REAL rows below its best so far for that
     // batch. <= 0 disables the check. See the comment on unweighted_violation_
@@ -480,7 +494,7 @@ private:
     // incremental Sum directly (row_slot_) can be, and only while that Sum
     // is drifting (IncSumState::drifting): then its real residual
     // lies within drift_bound (plus the rounding of the comparison itself) of
-    // `residual`, and the question is whether that interval straddles kTol.
+    // `residual`, and the question is whether that interval straddles GFJConfig::tolerance.
     [[nodiscard]] bool verdict_undecided(int32_t c, double residual) const;
     // Put row c on uncertain_rows_ if its verdict is undecided now. Called
     // wherever a row's value or its Sum's drift changes inside a batch --
@@ -873,7 +887,7 @@ private:
     //     tightened on every new best, FJ pulls the assignment off the
     //     real-feasible set to chase the objective row, and the real rows settle
     //     at an equilibrium the measure can see but cannot interpret --
-    //     0.016 to 0.51 on ex8_6_1, three orders above kTol. batch_best_violation
+    //     0.016 to 0.51 on ex8_6_1, far above FJ's tolerance. batch_best_violation
     //     is a running MINIMUM, so "unproductive_iterations without a new
     //     all-time low" is the normal state of any such plateau;
     //   * on a model whose real rows are EQUALITIES an exactly-zero sum is

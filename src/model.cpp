@@ -10,7 +10,9 @@
 #include <limits>
 #include <numeric>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace cbls {
 
@@ -454,12 +456,138 @@ int32_t Model::neq(int32_t a, int32_t b) {
 
 int32_t Model::lt(int32_t a, int32_t b) {
     require_buildable("lt");
-    return alloc_node(NodeOp::Lt, {wrap(a), wrap(b)});
+    const int32_t id = alloc_node(NodeOp::Lt, {wrap(a), wrap(b)});
+    mut().nodes[id].const_value = strict_comparison_margin(is_integral(a) && is_integral(b));
+    return id;
 }
 
 int32_t Model::gt(int32_t a, int32_t b) {
     require_buildable("gt");
-    return alloc_node(NodeOp::Gt, {wrap(a), wrap(b)});
+    const int32_t id = alloc_node(NodeOp::Gt, {wrap(a), wrap(b)});
+    mut().nodes[id].const_value = strict_comparison_margin(is_integral(a) && is_integral(b));
+    return id;
+}
+
+namespace {
+
+bool integral_var_type(VarType t) {
+    return t == VarType::Bool || t == VarType::Int;
+}
+
+// What decides whether one node is integral: either the node alone (`leaf`,
+// with its answer in `value`), or its children in [first, last), all of which
+// must be.
+struct IntegralRule {
+    bool leaf = true;
+    bool value = false;
+    size_t first = 0;
+    size_t last = 0;
+};
+
+IntegralRule integral_rule(const Model& model, const ExprNode& nd, ConstSpan<ChildRef> kids) {
+    IntegralRule r;
+    switch (nd.op) {
+        case NodeOp::Const:
+            r.value = std::isfinite(nd.const_value) && nd.const_value == std::trunc(nd.const_value);
+            break;
+        case NodeOp::Ceil:
+        case NodeOp::Floor:
+        case NodeOp::Round:
+        case NodeOp::Count:
+        case NodeOp::Neq:
+            r.value = true;
+            break;
+        case NodeOp::Pow: {
+            // The base decides, under a non-negative integer constant exponent.
+            const ChildRef e = kids[1];
+            const ExprNode* en = e.is_var ? nullptr : &model.node(e.id);
+            if (en != nullptr && en->op == NodeOp::Const && en->const_value >= 0.0 &&
+                en->const_value == std::trunc(en->const_value)) {
+                r = IntegralRule{false, false, 0, 1};
+            }
+            break;
+        }
+        case NodeOp::If:
+            r = IntegralRule{false, false, 1, kids.size()};  // the branches, not the condition
+            break;
+        case NodeOp::Neg:
+        case NodeOp::Sum:
+        case NodeOp::Prod:
+        case NodeOp::Min:
+        case NodeOp::Max:
+        case NodeOp::Abs:
+            r = IntegralRule{false, false, 0, kids.size()};
+            break;
+        // Not known integral. Listed rather than `default:`ed, so that a new
+        // op is a -Wswitch finding here, not a silent "no".
+        case NodeOp::Div:
+        case NodeOp::Sin:
+        case NodeOp::Cos:
+        case NodeOp::Tan:
+        case NodeOp::Exp:
+        case NodeOp::Log:
+        case NodeOp::Sqrt:
+        case NodeOp::SignPower:
+        case NodeOp::Tanh:
+        case NodeOp::At:
+        case NodeOp::Lambda:
+        case NodeOp::PairLambda:
+        case NodeOp::Leq:
+        case NodeOp::Eq:
+        case NodeOp::Geq:
+        case NodeOp::Lt:
+        case NodeOp::Gt:
+        case NodeOp::Custom:
+        case NodeOp::Element:
+        case NodeOp::LambdaExtra:
+        case NodeOp::PairLambdaExtra:
+            break;
+    }
+    return r;
+}
+
+}  // namespace
+
+// Iterative, memoised per call: the expression is a DAG, and a recursion
+// without a memo would revisit a shared subexpression once per path to it.
+bool Model::is_integral(int32_t handle) const {
+    if (handle < 0) {
+        return integral_var_type(var(-(handle + 1)).type);
+    }
+    std::unordered_map<int32_t, bool> known;
+    std::vector<int32_t> stack{handle};
+    while (!stack.empty()) {
+        const int32_t id = stack.back();
+        if (known.count(id) != 0) {
+            stack.pop_back();
+            continue;
+        }
+        const ExprNode& nd = node(id);
+        const ConstSpan<ChildRef> kids = children(nd);
+        const IntegralRule rule = integral_rule(*this, nd, kids);
+        bool all = rule.value;
+        if (!rule.leaf) {
+            all = true;
+            bool pending = false;
+            for (size_t k = rule.first; k < rule.last; ++k) {
+                const ChildRef c = kids[k];
+                if (c.is_var) {
+                    all = all && integral_var_type(var(c.id).type);
+                } else if (const auto it = known.find(c.id); it != known.end()) {
+                    all = all && it->second;
+                } else {
+                    stack.push_back(c.id);
+                    pending = true;
+                }
+            }
+            if (pending) {
+                continue;  // revisit once the children are known
+            }
+        }
+        known.emplace(id, all);
+        stack.pop_back();
+    }
+    return known.at(handle);
 }
 
 int32_t Model::lambda_sum(int32_t list_var_id, std::function<double(int)> func) {

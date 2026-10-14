@@ -138,6 +138,41 @@ def test_constraints_of_var_lists_ascending_constraint_indices() -> None:
         m.constraints_of_var(-1)
 
 
+@pytest.mark.parametrize(
+    ("kind", "bad"),
+    [
+        ("float", float("nan")),
+        ("float", float("inf")),
+        ("float", 1.5),
+        ("float", -0.25),
+        ("int", 11.0),
+        ("int", 2.5),
+        ("bool", 2.0),
+        ("bool", 0.5),
+    ],
+)
+def test_variable_value_setter_refuses_a_value_outside_the_box(kind: str, bad: float) -> None:
+    """`Variable.value` raises on NaN, infinity, out-of-box or fractional-integer (#211).
+
+    With `SearchConfig.skip_init` the assignment reaches the search as written, and
+    several components rely on every value lying in its box. The setter refuses
+    rather than clamps, and the variable keeps its old value.
+    """
+    m = cbls.Model()
+    handle = {
+        "float": lambda: m.float_var(0.0, 1.0),
+        "int": lambda: m.int_var(0, 10),
+        "bool": lambda: m.bool_var(),
+    }[kind]()
+    var = m.var_mut(vid(handle))
+    before = var.value
+    with pytest.raises(ValueError):
+        var.value = bad
+    assert var.value == before
+    var.value = 1.0  # in every box above, and integral
+    assert var.value == 1.0
+
+
 def _scenario_bad_child(handle: int) -> None:
     """Every way a child handle enters the model rejects an out-of-range one."""
     builders: dict[str, Callable[[Any, int], object]] = {

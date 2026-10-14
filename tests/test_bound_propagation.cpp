@@ -116,6 +116,33 @@ TEST_CASE("bound propagation rounds a derived bound inward on an integer column"
     CHECK_THAT(ub[0], WithinAbs(2.0, 1e-12));
 }
 
+TEST_CASE("bound propagation's margin covers cancellation in a large activity") {
+    // x + sum_k a_k y_k <= b with every y_k fixed at 1: the implied bound on the
+    // integral x is exactly 3 (b - sum a_k = 3 in exact arithmetic), but the
+    // recursive sum over activities of ~1e8 rounds, and the computed slack is
+    // 2.99999997. A margin scaled to the derived bound (max(1e-9, 1e-12 * 3))
+    // could not cover that, and floor() cut x to 2 -- off the feasible point
+    // x = 3 (#211). The instance was found by a search for exactly that.
+    const std::vector<double> a{-21277352.036, 90497762.657, 12689081.523,
+                                54983421.887,  8443173.837,  -57685250.429};
+    const double b = 87650840.43900001;
+    std::vector<int32_t> cols{0};
+    std::vector<double> coefs{1.0};
+    std::vector<double> lb{0.0};
+    std::vector<double> ub{10.0};
+    std::vector<uint8_t> integral{1};
+    for (size_t k = 0; k < a.size(); ++k) {
+        cols.push_back(static_cast<int32_t>(k + 1));
+        coefs.push_back(a[k]);
+        lb.push_back(1.0);
+        ub.push_back(1.0);
+        integral.push_back(1);
+    }
+    const auto stats = propagate_bounds(one_row(cols, coefs, -kInf, b).rows, integral, lb, ub);
+    CHECK_FALSE(stats.infeasible);
+    CHECK(ub[0] == 3.0);
+}
+
 TEST_CASE("bound propagation does not round an integral bound off a feasible point") {
     // 3x <= 9: the implied bound is exactly 3, and floating-point slop in the
     // activity sum must not turn it into 2.

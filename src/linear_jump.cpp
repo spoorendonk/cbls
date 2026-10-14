@@ -318,7 +318,9 @@ bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weight
         }
         terms_.push_back(Term{w, clamped_node_violation(node_values[static_cast<size_t>(cids[c])]),
                               p, q, r, p_literal, q_literal, (row.flags & kAbs) != 0,
-                              (row.flags & kStrict) != 0});
+                              (row.flags & kStrict) != 0
+                                  ? model_.nodes()[static_cast<size_t>(cids[c])].const_value
+                                  : 0.0});
     }
     if (!ok) {
         terms_.clear();
@@ -344,10 +346,8 @@ double LinearJumpScorer::delta(double j) const {
         if (t.is_abs) {
             residual = std::abs(p - q);
         } else {
-            residual = comparison_residual(p, q, t.p_literal, t.q_literal);
-            if (t.strict) {
-                residual += kStrictComparisonEps;
-            }
+            // + 0.0 on a non-strict row, which leaves every residual unchanged.
+            residual = comparison_residual(p, q, t.p_literal, t.q_literal) + t.strict_margin;
         }
         sum += t.weight * (clamped_node_violation(residual) - t.old_viol);
     }

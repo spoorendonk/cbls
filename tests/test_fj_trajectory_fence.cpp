@@ -62,9 +62,15 @@
 // moves, and when a Novelty move began charging 3 GLS iterations and a bump 1
 // (the hash reads iterations()).
 //
-// The two-phase hash sees only the final assignment and weights, and run()
-// refills every weight to 1 before its general phase, so phase-1 weights never
-// reach it directly -- only through the assignment phase 1 ends on.
+// #211 re-recorded both on purpose. sample_size_general went from 3 to 5
+// (ViolationLS §3 samples 5 for a Feasibility Jump), which every batch() and
+// run()'s general phase read, so apply_jump draws a different sample from the
+// first local minimum on. The two-phase hash moved for a second reason: run()
+// now carries the linear phase's learned weights into the general phase,
+// unmasking only the non-linear rows at 1, where it used to refill every
+// weight to 1 -- so phase-1 weights now reach the hash directly. FJ's tolerance
+// moving from 1e-9 to the search's 1e-6 does not touch either: both fence
+// models are integral, so every residual is an integer.
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
@@ -187,12 +193,12 @@ TEST_CASE("FJ's batch-API trajectory matches its recorded fingerprint",
           "[fj][violated_set][trajectory]") {
     const uint64_t h = batch_api_trajectory();
     CAPTURE(h);
-    REQUIRE(h == 0x2f86c730c509644dULL);
+    REQUIRE(h == 0xe63589f3625faca1ULL);
 }
 
 TEST_CASE("FJ's two-phase run() trajectory matches its recorded fingerprint",
           "[fj][violated_set][trajectory]") {
     const uint64_t h = two_phase_run_trajectory();
     CAPTURE(h);
-    REQUIRE(h == 0xe301f93dfd43f693ULL);
+    REQUIRE(h == 0xfefd9a2f749d666bULL);
 }

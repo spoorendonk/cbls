@@ -20,7 +20,11 @@ LNS::~LNS() = default;
 // then objective — mirroring solve()'s record_best. Real violation excludes the
 // artificial `obj <= bound` soft constraint (when present) so the objective is
 // not double-counted, the way the dead augmented_objective() accept rule did.
-static std::pair<double, double> state_key(const Model& model) {
+//
+// A row's violation counts only ABOVE `tol`: at or below it the row is
+// satisfied, as the search reads it, and its residual is rounding noise that
+// must not decide between two feasible states -- the objective does.
+std::pair<double, double> lns_acceptance_key(const Model& model, double tol) {
     const int32_t obj_ci = model.has_objective_constraint() ? model.objective_constraint_idx() : -1;
     const auto& cids = model.constraint_ids();
     double real_violation = 0.0;
@@ -29,7 +33,7 @@ static std::pair<double, double> state_key(const Model& model) {
             continue;
         }
         const double v = model.node_value(cids[i]);
-        // NaN must be handled before max(): std::max(0.0, NaN) is 0.0, which
+        // NaN must be handled before the clamp: `NaN > tol` is false, which
         // would score a NaN-poisoned repair as perfectly feasible and accept it
         // over a genuinely better incumbent. Same guard as
         // clamped_node_violation and search.cpp's max_real_violation.
@@ -37,7 +41,7 @@ static std::pair<double, double> state_key(const Model& model) {
             real_violation = std::numeric_limits<double>::infinity();
             break;
         }
-        real_violation += std::max(0.0, v);
+        real_violation += v > tol ? v : 0.0;
     }
     double obj = model.objective_id() >= 0 ? model.node_value(model.objective_id()) : 0.0;
     // A NaN objective (a domain error, inf - inf) ranks LAST, as +inf: compared
@@ -51,7 +55,7 @@ static std::pair<double, double> state_key(const Model& model) {
 }
 
 bool LNS::destroy_repair(Model& model, ViolationManager& vm, RNG& rng, double repair_time_limit) {
-    auto old_key = state_key(model);
+    auto old_key = lns_acceptance_key(model, feasibility_tolerance_);
     auto saved_state = model.copy_state();
 
     // Collect variables to destroy
@@ -114,9 +118,9 @@ bool LNS::destroy_repair(Model& model, ViolationManager& vm, RNG& rng, double re
     full_evaluate(model);
 
     // Repair via FJ-NL
-    fj_nl_initialize(model, vm, 2000, &rng, repair_time_limit);
+    fj_nl_initialize(model, vm, 2000, &rng, repair_time_limit, feasibility_tolerance_);
 
-    auto new_key = state_key(model);
+    auto new_key = lns_acceptance_key(model, feasibility_tolerance_);
 
     if (new_key < old_key) {
         return true;

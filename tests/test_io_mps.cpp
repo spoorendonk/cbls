@@ -354,6 +354,48 @@ TEST_CASE("read_mps leaves an LI-bounded integer column unbounded above", "[mps]
     REQUIRE_THAT(prob.vars[1].ub, WithinAbs(1.0, 1e-12));
 }
 
+TEST_CASE("a negative UP bound on a default lower bound makes it -inf", "[mps][reader]") {
+    // CPLEX/SCIP convention (#211): `UP` (or `UI`) below zero on a column whose
+    // lower bound is still the default 0 sets lb = -inf. Keeping lb = 0 made the
+    // column lb > ub, and the adapter refused the whole instance. An explicit
+    // lower bound, in either order, is the file's own word and is kept.
+    const std::string content =
+        "NAME          NEGUP\n"
+        "ROWS\n"
+        " N  COST\n"
+        " G  C1\n"
+        "COLUMNS\n"
+        "    X    COST   1.0   C1   1.0\n"
+        "    Y    COST   1.0   C1   1.0\n"
+        "    Z    COST   1.0   C1   1.0\n"
+        "    MARKER1     'MARKER'                 'INTORG'\n"
+        "    W    COST   1.0   C1   1.0\n"
+        "    MARKER2     'MARKER'                 'INTEND'\n"
+        "RHS\n"
+        "    RHS  C1     -100.0\n"
+        "BOUNDS\n"
+        " UP bnd  X      -2.0\n"
+        " LO bnd  Y      -5.0\n"
+        " UP bnd  Y      -1.0\n"
+        " UP bnd  Z      -3.0\n"
+        " LO bnd  Z      -4.0\n"
+        " UI bnd  W      -7.0\n"
+        "ENDATA\n";
+    auto path = write_file("negup.mps", content);
+    auto prob = cbls::read_mps(path.string());
+    REQUIRE(prob.vars.size() == 4);
+    REQUIRE(prob.vars[0].lb == -cbls::kMpsInf);
+    REQUIRE(prob.vars[0].ub == -2.0);
+    REQUIRE(prob.vars[1].lb == -5.0);
+    REQUIRE(prob.vars[1].ub == -1.0);
+    REQUIRE(prob.vars[2].lb == -4.0);
+    REQUIRE(prob.vars[2].ub == -3.0);
+    REQUIRE(prob.vars[3].lb == -cbls::kMpsInf);
+    REQUIRE(prob.vars[3].ub == -7.0);
+    // And the adapter now loads it rather than throwing "lb > ub".
+    REQUIRE_NOTHROW(cbls::mps_to_model(prob));
+}
+
 TEST_CASE("read_mps records OBJSENSE and adapter rejects MAX", "[mps][reader]") {
     const std::string content =
         "NAME          MAX\n"

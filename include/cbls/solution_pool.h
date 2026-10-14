@@ -25,6 +25,16 @@ struct Solution {
     double violation = std::numeric_limits<double>::infinity();
 };
 
+/// The order a portfolio ranks two candidate answers by: feasible before
+/// infeasible; between two feasible ones the lower objective; between two
+/// INFEASIBLE ones the lower violation, then the lower objective. An infeasible
+/// run reports objective +inf, so comparing those by objective alone kept
+/// whichever came first rather than the closer approach (#211). A NaN violation
+/// ranks as +inf. Shared by `SolutionPool`'s sort and by a worker's
+/// across-restarts accumulator, so the two cannot disagree.
+bool ranks_before(bool feasible_a, double objective_a, double violation_a, bool feasible_b,
+                  double objective_b, double violation_b);
+
 /// A bounded, sorted store of the best solutions seen, shared across the workers
 /// of a `ParallelSearch`. Every method takes the mutex, so it is the one object
 /// the workers touch concurrently; everything else about a worker is private to

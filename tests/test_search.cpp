@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_exception.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cbls/cbls.h>
@@ -2099,4 +2100,117 @@ TEST_CASE("a kick after adoption departs from the adopted point, not our incumbe
                          << " columns away from the adopted point");
         REQUIRE(lns.entry_values[i] == adopted);
     }
+}
+
+TEST_CASE("a strict comparison over Ints is not satisfied at equality", "[search][strict]") {
+    // x, y pinned to 3 with x < y used to come back feasible at x = y = 3: the
+    // strict residual's 1e-9 sat inside the feasibility tolerance (#211).
+    SECTION("pinned at equality: infeasible") {
+        Model m;
+        auto x = m.int_var(3, 3);
+        auto y = m.int_var(3, 3);
+        m.add_constraint(m.lt(x, y));
+        m.close();
+        SearchConfig config;
+        config.max_iterations = 200;
+        const SearchResult r =
+            solve(m, /*time_limit=*/0.0, 42, true, nullptr, nullptr, 0, nullptr, config);
+        REQUIRE_FALSE(r.feasible);
+    }
+    SECTION("room below: the answer keeps the gap") {
+        Model m;
+        auto x = m.int_var(0, 5);
+        auto y = m.int_var(3, 3);
+        m.add_constraint(m.lt(y, x));  // 3 < x
+        m.close();
+        SearchConfig config;
+        config.max_iterations = 2000;
+        const SearchResult r =
+            solve(m, /*time_limit=*/0.0, 42, true, nullptr, nullptr, 0, nullptr, config);
+        REQUIRE(r.feasible);
+        REQUIRE(r.best_state.values[static_cast<size_t>(vid(x))] >= 4.0);
+    }
+}
+
+namespace {
+
+// After every batch that found a new best, the bound the search set from it:
+// (best objective, model's objective bound) pairs. The bound is released at the
+// end of solve(), so it is sampled while the search runs.
+class BoundLedger : public Tracer {
+public:
+    explicit BoundLedger(const Model& model) : model_(model) {}
+    void new_best(double objective, double /*seconds*/) override {
+        last_ = objective;
+        pending_ = true;
+    }
+    void batch_end(BatchKind /*kind*/, int64_t /*iterations*/, bool /*improved*/) override {
+        if (pending_) {
+            pairs.emplace_back(last_, model_.objective_bound());
+            pending_ = false;
+        }
+    }
+    std::vector<std::pair<double, double>> pairs;
+
+private:
+    const Model& model_;
+    double last_ = 0.0;
+    bool pending_ = false;
+};
+
+}  // namespace
+
+TEST_CASE("the objective bound steps by one on an integral objective", "[search][objective]") {
+    // The bound a new incumbent earns used to be obj - 1e-3 (|obj| + 1) for every
+    // objective, so on an integral one every improvement under 0.1% kept the
+    // objective row violated (#211). An integral objective now steps to obj - 1,
+    // as CP-SAT does. A continuous one keeps the relative step, whose
+    // consequence objective_bound_below documents.
+    const bool integral = GENERATE(true, false);
+    Model m;
+    const int32_t x = integral ? m.int_var(0, 20000) : m.float_var(0.0, 20000.0);
+    m.add_constraint(m.geq(x, m.constant(9995.5)));
+    m.minimize(m.sum({x}));
+    m.close();
+    BoundLedger ledger(m);
+    SearchConfig config;
+    config.max_iterations = 3000;
+    config.tracer = &ledger;
+    const SearchResult r =
+        solve(m, /*time_limit=*/0.0, 42, true, nullptr, nullptr, 0, nullptr, config);
+    REQUIRE(r.feasible);
+    REQUIRE_FALSE(ledger.pairs.empty());
+    for (const auto& [obj, bound] : ledger.pairs) {
+        CAPTURE(integral, obj, bound);
+        REQUIRE(bound == (integral ? obj - 1.0 : obj - (1e-3 * (std::abs(obj) + 1.0))));
+    }
+}
+
+TEST_CASE("LNS acceptance ranks two feasible states by objective, not by noise", "[search][lns]") {
+    // The key summed every row's raw max(0, residual), so two feasible states
+    // whose equality rows sat 1e-12 and 3e-12 off were ranked by that rounding
+    // noise and the objective was never consulted (#211). At or below the
+    // feasibility tolerance a row now adds nothing.
+    Model m;
+    auto x = m.float_var(0.0, 10.0);
+    auto y = m.float_var(0.0, 10.0);
+    auto z = m.float_var(0.0, 10.0);
+    m.add_constraint(m.eq_expr(x, y));
+    m.minimize(m.sum({z}));
+    m.close();
+    const auto key_at = [&](double xv, double yv, double zv) {
+        m.var_mut(vid(x)).value = xv;
+        m.var_mut(vid(y)).value = yv;
+        m.var_mut(vid(z)).value = zv;
+        full_evaluate(m);
+        return lns_acceptance_key(m, kDefaultFeasibilityTolerance);
+    };
+    const auto noisier_better = key_at(1.0, 1.0 + 3e-12, 1.0);
+    const auto cleaner_worse = key_at(1.0, 1.0 + 1e-12, 2.0);
+    REQUIRE(noisier_better.first == 0.0);
+    REQUIRE(noisier_better < cleaner_worse);
+    // A real violation still dominates the objective.
+    const auto violated = key_at(1.0, 1.5, 0.0);
+    REQUIRE(violated.first == 0.5);
+    REQUIRE(cleaner_worse < violated);
 }

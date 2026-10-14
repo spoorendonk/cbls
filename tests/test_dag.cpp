@@ -119,6 +119,69 @@ TEST_CASE("Min/Max evaluation", "[dag]") {
     REQUIRE(m.node_value(mx) == 7.0);
 }
 
+TEST_CASE("a tied Min/Max splits its slope among the tied children", "[dag][ad]") {
+    // Each tied child used to get local derivative 1.0, so a k-way tie summed to
+    // a slope of k through the chain rule and a Newton step through it overshot
+    // k-fold (#211). min(x, x, x) is x: its derivative is 1, not 3.
+    Model m;
+    auto x = m.float_var(0, 10);
+    auto y = m.float_var(0, 10);
+    auto mn3 = m.min_expr({x, x, x});
+    auto mx = m.max_expr({x, y});
+    m.minimize(m.sum({mn3, mx}));
+    m.close();
+    m.var_mut(vid(x)).value = 4.0;
+    m.var_mut(vid(y)).value = 4.0;
+    full_evaluate(m);
+    REQUIRE(compute_partial(m, mn3, vid(x)) == 1.0);
+    // A two-way tie between distinct variables: each holds half the slope.
+    REQUIRE(compute_partial(m, mx, vid(x)) == 0.5);
+    REQUIRE(compute_partial(m, mx, vid(y)) == 0.5);
+    // Untied, the attaining child keeps the whole slope.
+    m.var_mut(vid(y)).value = 6.0;
+    full_evaluate(m);
+    REQUIRE(compute_partial(m, mx, vid(x)) == 0.0);
+    REQUIRE(compute_partial(m, mx, vid(y)) == 1.0);
+}
+
+TEST_CASE("a strict comparison over integers needs a gap of one", "[dag][strict]") {
+    // The strict residual used to be a - b + 1e-9 whatever the sides, inside the
+    // search's feasibility tolerance of 1e-6 -- so `x < y` over Ints read 3 < 3
+    // as satisfied (#211). Integral sides now take a margin of 1: 3 < 3 is
+    // violated by 1, 2 < 3 sits exactly on the boundary. A continuous side
+    // keeps the epsilon (and is strict only up to the tolerance; see dag.h).
+    Model m;
+    auto x = m.int_var(0, 10);
+    auto y = m.int_var(0, 10);
+    auto f = m.float_var(0, 10);
+    auto lt = m.lt(x, y);
+    auto x_plus_1 = m.sum({x, m.constant(1.0)});
+    auto gt = m.gt(x_plus_1, y);
+    auto lt_float = m.lt(f, y);
+    auto x_half = m.sum({x, m.constant(0.5)});
+    m.add_constraint(lt);
+    m.add_constraint(gt);
+    m.add_constraint(lt_float);
+    m.close();
+    REQUIRE(m.is_integral(x));
+    REQUIRE(m.is_integral(x_plus_1));
+    REQUIRE_FALSE(m.is_integral(x_half));
+    REQUIRE_FALSE(m.is_integral(f));
+
+    m.var_mut(vid(x)).value = 3.0;
+    m.var_mut(vid(y)).value = 3.0;
+    m.var_mut(vid(f)).value = 3.0;
+    full_evaluate(m);
+    REQUIRE(m.node_value(lt) == 1.0);
+    REQUIRE(m.node_value(gt) == 0.0);  // y = 3 < x + 1 = 4 holds, by exactly the gap
+    REQUIRE(m.node_value(lt_float) == kStrictComparisonEps);
+
+    m.var_mut(vid(x)).value = 2.0;
+    full_evaluate(m);
+    REQUIRE(m.node_value(lt) == 0.0);
+    REQUIRE(m.node_value(gt) == 1.0);  // 3 > 3 fails by the gap
+}
+
 TEST_CASE("Neg evaluation", "[dag]") {
     Model m;
     auto x = m.float_var(0, 10);

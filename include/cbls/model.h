@@ -315,8 +315,24 @@ public:
     int32_t eq_expr(int32_t a, int32_t b);
     int32_t geq(int32_t a, int32_t b);
     int32_t neq(int32_t a, int32_t b);
+    /// Strict `a < b` / `a > b`. The row's residual is `a - b + margin`, with
+    /// the margin fixed here and stored on the node (see
+    /// `kIntegralStrictMargin` in dag.h): 1 when both sides are integral
+    /// (`is_integral`), so `x < y` over integers is exactly `x <= y - 1`; the
+    /// tiny `kStrictComparisonEps` otherwise.
     int32_t lt(int32_t a, int32_t b);
     int32_t gt(int32_t a, int32_t b);
+
+    /// Whether the expression `handle` (a variable or node handle) takes only
+    /// integer values at every integral assignment of its variables: a Bool or
+    /// Int variable, an integer constant, a Ceil/Floor/Round, a Count or a Neq,
+    /// and Neg/Sum/Prod/Min/Max/Abs over integral children, an If over integral
+    /// branches, a Pow of an integral base to a non-negative integer constant.
+    /// Conservative: anything else -- every Float, every other op -- is "not
+    /// known integral", which is the safe reading for both callers (the strict
+    /// margin, and the objective-bound step in `solve()`).
+    [[nodiscard]] bool is_integral(int32_t handle) const;
+
     int32_t lambda_sum(int32_t list_var_id, std::function<double(int)> func);
 
     /// Sum `func` over the consecutive pairs of a List (or Set) variable's

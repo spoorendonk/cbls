@@ -227,6 +227,8 @@ struct ExprNode {
     uint8_t inc_sum_flags = 0;
     static constexpr uint8_t kIncSum = 1;
     static constexpr uint8_t kFeedsIncSum = 2;
+    /// A `Const`'s literal; on `Lt`/`Gt`, the row's strictness margin (see
+    /// `strict_comparison_margin`). Unused by every other op.
     double const_value = 0.0;
     uint32_t child_begin = 0;
     uint32_t child_count = 0;
@@ -310,11 +312,10 @@ struct PairLambdaSpec {
 /// whenever either side is NaN.
 ///
 /// A sentinel-vacuous row returns 0.0 — satisfied, sitting exactly on the
-/// boundary. `Lt`/`Gt` then add their strictness epsilon (1e-9) on top, so a
-/// vacuous strict row reads as violated by 1e-9, which is *inside* the default
-/// feasibility tolerance of 1e-6 and therefore still counts as satisfied. That
-/// is not special to infinities: it is the pre-existing epsilon convention, and
-/// a finite `1.0 < 1.0` behaves identically.
+/// boundary. `Lt`/`Gt` then add their strictness margin on top. A side that is
+/// a +-inf constant is not integral (`Model::is_integral`), so the margin is the
+/// 1e-9 epsilon, *inside* the default feasibility tolerance of 1e-6: a vacuous
+/// strict row still counts as satisfied.
 ///
 /// Scope: used by `Leq`/`Geq`/`Lt`/`Gt`. `Eq`/`Neq` deliberately keep plain
 /// `|a - b|`, so `x == y` at inf/inf stays NaN (maximally violated). An
@@ -342,10 +343,27 @@ inline bool is_comparison_op(NodeOp op) {
 }
 
 /// The strictness margin `Lt`/`Gt` add on top of `comparison_residual`: a strict
-/// row reads as violated by this much at equality (see above). One constant for
-/// `evaluate` and for FJ's closed-form linear scorer (`linear_jump.h`), which
-/// must reproduce the residual exactly.
+/// row reads as violated by its margin at equality. Each strict node carries its
+/// own margin in `ExprNode::const_value`, fixed by `Model::lt`/`gt` when the node
+/// is built, and both `evaluate` and FJ's closed-form linear scorer
+/// (`linear_jump.h`) read it from there, so the two reproduce one residual.
+///
+/// Integral sides (`Model::is_integral`) get `kIntegralStrictMargin` = 1: over
+/// integers `a < b` IS `a - b + 1 <= 0`, and that is exact. Before #211 every
+/// strict row got the epsilon below, which is far inside the search's
+/// feasibility tolerance (1e-6) -- so `x < y` over Ints accepted x = y.
+///
+/// Any other strict row keeps `kStrictComparisonEps`, and it is honest to say
+/// what that means: such a row is strict only up to the feasibility tolerance,
+/// i.e. it behaves as `a <= b`. Over a continuous side strictness is not
+/// representable at a positive tolerance at all -- the open set has no closest
+/// feasible point -- which is why MPS and NL carry no strict rows. A caller who
+/// needs a gap writes it: `x + delta <= y`.
 inline constexpr double kStrictComparisonEps = 1e-9;
+inline constexpr double kIntegralStrictMargin = 1.0;
+constexpr double strict_comparison_margin(bool integral_sides) {
+    return integral_sides ? kIntegralStrictMargin : kStrictComparisonEps;
+}
 
 // Forward declaration
 class Model;

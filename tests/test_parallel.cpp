@@ -1479,9 +1479,11 @@ TEST_CASE("a portfolio cancelled before it starts still accounts for its workers
 
 namespace {
 
-// The bound a feasible objective earns; search.cpp's objective_bound_below.
+// The bound a feasible objective earns; search.cpp's objective_bound_below. The
+// covering MIP below has an integral objective (integer columns, integer
+// costs), so since #211 that is the next integer down.
 double bound_below(double obj) {
-    return obj - (1e-3 * (std::abs(obj) + 1.0));
+    return obj - 1.0;
 }
 
 // A small covering MIP with a LINEAR objective: 40 integer columns in [0, 10],
@@ -2038,12 +2040,13 @@ TEST_CASE("an own best that ties the shared bound still counts as an improvement
     // bound is not an improvement"). The A/B was measured with this tie
     // behaviour; change it deliberately, with a re-measurement, or not at all.
     //
-    // The peer's 69 is an objective this worker records exactly, at seed 5, in
-    // a batch that starts with the bound already at the cap 69 earns. (It was
-    // 68 until #206 moved the trajectory; a scan of 40-140 at seed 5 now finds
-    // 69 alone.) Compound moves are off, as they were when #179 was measured
-    // and the tie was found; the engine default turned them on afterwards.
-    constexpr double kTiePeer = 69.0;
+    // The peer's 65 is an objective this worker records exactly, at seed 5, in
+    // a batch that starts with the bound already at the cap 65 earns. (It was
+    // 68 until #206 moved the trajectory, then 69; #211 -- the integral
+    // objective's bound step of 1, and FJ's sample of 5 -- moved it again, and a
+    // scan of 40-140 at seed 5 now finds 65 alone.) Compound moves are off, as they were when #179
+    // was measured and the tie was found; the engine default turned them on afterwards.
+    constexpr double kTiePeer = 65.0;
     SolutionPool pool(1);
     SearchCoordination coord;
     coord.pool = &pool;
@@ -2113,4 +2116,61 @@ TEST_CASE("a pure-feasibility model ignores a shared objective",
     REQUIRE(r.feasible);
     REQUIRE(r.termination == TerminationReason::Feasible);
     REQUIRE(r.counters.shared_bound_tightenings == 0);
+}
+
+TEST_CASE("two infeasible answers are ranked by violation, not by objective", "[parallel]") {
+    // An infeasible run reports objective +inf, so ranking two of them by
+    // objective compared inf with inf and kept whichever arrived first -- the
+    // pool, and a worker's across-restarts accumulator, could both return the
+    // farther approach (#211). The lower violation must win, wherever it lands.
+    constexpr double kInf = std::numeric_limits<double>::infinity();
+    REQUIRE(cbls::ranks_before(false, kInf, 1.0, false, kInf, 5.0));
+    REQUIRE_FALSE(cbls::ranks_before(false, kInf, 5.0, false, kInf, 1.0));
+    REQUIRE(cbls::ranks_before(false, kInf, 1.0, false, kInf, std::nan("")));
+    REQUIRE(cbls::ranks_before(true, 9.0, 0.0, false, 1.0, 0.5));
+    REQUIRE(cbls::ranks_before(true, 1.0, 0.0, true, 2.0, 0.0));
+
+    cbls::SolutionPool pool(4);
+    cbls::Solution far;
+    far.violation = 5.0;
+    cbls::Solution near;
+    near.violation = 1.0;
+    pool.submit(far);
+    pool.submit(near);
+    const auto best = pool.best();
+    if (!best.has_value()) {
+        FAIL("the pool holds two solutions");
+        return;
+    }
+    REQUIRE(best->violation == 1.0);
+}
+
+TEST_CASE("a non-positive batch_iterations is refused rather than run unbounded", "[parallel]") {
+    // `batch_iterations <= 0` used to mean "unlimited", so on an infeasible model
+    // under an iteration-only budget a batch never returned to the loop that
+    // counts max_iterations (#211). Refused at both entry points now. A hang is
+    // what the unfixed engine does here, so tests/CMakeLists.txt registers this
+    // with a TIMEOUT as well.
+    auto infeasible = []() {
+        Model m;
+        auto x = m.Int(0, 10, "x");
+        m.add_constraint(x >= 20);
+        m.close();
+        return m;
+    };
+    for (const int64_t bad : {int64_t{0}, int64_t{-5}}) {
+        SearchConfig config;
+        config.max_iterations = 200;
+        config.batch_iterations = bad;
+        Model m = infeasible();
+        REQUIRE_THROWS_AS(
+            solve(m, /*time_limit=*/0.0, 42, true, nullptr, nullptr, 0, nullptr, config),
+            std::invalid_argument);
+        ParallelConfig pc;
+        pc.n_threads = 2;
+        ParallelSearch ps(2);
+        REQUIRE_THROWS_AS(
+            ps.solve(infeasible, /*time_limit=*/0.0, 42, config, nullptr, nullptr, nullptr, pc),
+            std::invalid_argument);
+    }
 }

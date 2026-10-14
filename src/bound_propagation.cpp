@@ -33,11 +33,15 @@ double eff_hi(double b, double infinity) {
 /// the activity of *everything else* is still finite and still bounds it.
 struct Activity {
     double sum = 0.0;
+    /// Sum of the finite terms' magnitudes: what the rounding error of `sum`
+    /// (and of `without`) scales with, however much of it cancels.
+    double magnitude = 0.0;
     int n_infinite = 0;
 
     void add(double contribution) {
         if (std::isfinite(contribution)) {
             sum += contribution;
+            magnitude += std::abs(contribution);
         } else {
             ++n_infinite;
         }
@@ -117,12 +121,13 @@ struct Tightener {
     bool infeasible = false;
 
     /// Apply `x[col] <= value` (or `>=` when `upper` is false), relaxed outward
-    /// and then rounded inward on an integral column.
-    void apply(int32_t col, double value, bool upper) {
+    /// and then rounded inward on an integral column. `roundoff` bounds the
+    /// floating-point error `value` was derived with (see `tighten_term`).
+    void apply(int32_t col, double value, bool upper, double roundoff) {
         if (!std::isfinite(value) || std::abs(value) >= opts.infinity) {
             return;
         }
-        const double eps = relaxation(value, opts);
+        const double eps = std::max(relaxation(value, opts), roundoff);
         value = upper ? value + eps : value - eps;
         const auto j = static_cast<std::size_t>(col);
         if (integral[j] != 0) {
@@ -158,19 +163,34 @@ struct Tightener {
     }
 
     /// Derive both bounds on one term of a row from the activity of the rest.
+    ///
+    /// The margin a derived bound is relaxed by has to cover the error it was
+    /// computed with, and that error scales with the ACTIVITY, not with the
+    /// bound: a slack of 3 left over from activities of 1e8 carries the 1e8's
+    /// rounding (#211). A recursive sum of n terms is off by at most about
+    /// n * DBL_EPSILON * sum |terms|; the rest-of-row subtraction, the slack
+    /// and the division add three operations. So the margin in x-space is
+    /// `(nnz + 3) * DBL_EPSILON * (|row bound| + magnitude) / |coef|`, applied
+    /// whenever it exceeds the bound-scaled one. It costs nothing on the rows
+    /// where cancellation cannot bite: there the bound-scaled term dominates.
     void tighten_term(double coef, int32_t col, double row_lo, double row_hi, double min_rest,
-                      double max_rest) {
+                      double max_rest, double min_magnitude, double max_magnitude,
+                      std::size_t nnz) {
         // coef * x <= row_hi - min_rest  and  coef * x >= row_lo - max_rest.
         const double upper_slack =
             (std::isfinite(row_hi) && std::isfinite(min_rest)) ? row_hi - min_rest : kPosInf;
         const double lower_slack =
             (std::isfinite(row_lo) && std::isfinite(max_rest)) ? row_lo - max_rest : kNegInf;
+        const double per_unit =
+            static_cast<double>(nnz + 3) * std::numeric_limits<double>::epsilon() / std::abs(coef);
+        const double upper_roundoff = per_unit * (std::abs(row_hi) + min_magnitude);
+        const double lower_roundoff = per_unit * (std::abs(row_lo) + max_magnitude);
         if (coef > 0.0) {
-            apply(col, upper_slack / coef, /*upper=*/true);
-            apply(col, lower_slack / coef, /*upper=*/false);
+            apply(col, upper_slack / coef, /*upper=*/true, upper_roundoff);
+            apply(col, lower_slack / coef, /*upper=*/false, lower_roundoff);
         } else {
-            apply(col, upper_slack / coef, /*upper=*/false);
-            apply(col, lower_slack / coef, /*upper=*/true);
+            apply(col, upper_slack / coef, /*upper=*/false, upper_roundoff);
+            apply(col, lower_slack / coef, /*upper=*/true, lower_roundoff);
         }
     }
 
@@ -211,7 +231,8 @@ struct Tightener {
             const double hi = eff_hi(ub[j], infinity);
             const double min_rest = min_act.without(min_contribution(a, lo, hi), kNegInf);
             const double max_rest = max_act.without(max_contribution(a, lo, hi), kPosInf);
-            tighten_term(a, col, row_lo, row_hi, min_rest, max_rest);
+            tighten_term(a, col, row_lo, row_hi, min_rest, max_rest, min_act.magnitude,
+                         max_act.magnitude, nnz);
             if (infeasible) {
                 return;
             }
