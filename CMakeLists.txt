@@ -373,6 +373,12 @@ if(CBLS_BUILD_BENCHMARKS)
     target_link_libraries(cbls_mipfeas PRIVATE cbls_lib)
     cbls_enable_warnings(cbls_mipfeas)
     target_include_directories(cbls_mipfeas PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${json_SOURCE_DIR}/include)
+
+    # CVRP on the CVRPLIB X set, the worked example for List variables (#197).
+    add_executable(cbls_cvrp benchmarks/cvrp/cvrp.cpp)
+    target_link_libraries(cbls_cvrp PRIVATE cbls_lib)
+    cbls_enable_warnings(cbls_cvrp)
+    target_include_directories(cbls_cvrp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${json_SOURCE_DIR}/include)
 endif()
 
 # Python bindings (optional)

@@ -886,6 +886,7 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 | `cbls_minlplib` | `benchmarks/minlplib/` | MINLPLib benchmark runner |
 | `cbls_minlplib_portfolio` | `benchmarks/minlplib/portfolio_ab.cpp` | MINLPLib portfolio A/B harness (shared-bound on/off, #179) |
 | `cbls_setcover` | `benchmarks/setcover/` | OR-Library set-covering runner (the `Set`-variable example) |
+| `cbls_cvrp` | `benchmarks/cvrp/` | CVRPLIB X-set CVRP runner (the `List`-variable example, one instance per process) |
 
 Examples, tests, benchmarks and bindings are each behind an option:
 `CBLS_BUILD_EXAMPLES`/`CBLS_BUILD_TESTS`/`CBLS_BUILD_BENCHMARKS` default ON,

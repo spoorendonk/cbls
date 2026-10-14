@@ -36,6 +36,7 @@ add_executable(cbls_tests
     test_bench_flags.cpp
     test_minlplib.cpp
     test_setcover.cpp
+    test_cvrp.cpp
     test_model_share.cpp
     test_build_after_close.cpp
     test_throughput.cpp
